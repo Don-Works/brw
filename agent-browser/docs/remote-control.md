@@ -7,7 +7,7 @@ Remote browser control is viable and fits the product model well, as long as the
 The runtime default is stdio MCP over SSH to the browser machine:
 
 ```sh
-ssh maxrevitt@max-air.ts.net \
+ssh maxrevitt@max-air \
   '"$HOME/Library/Application Support/agent-browser/bin/agent-browserd" --mcp --http off --profile max-gmail --profile-policy "$HOME/Library/Application Support/agent-browser/config/browser-profiles.json"'
 ```
 
@@ -17,7 +17,7 @@ Advantages:
 - The browser opens visibly on the remote machine.
 - The remote machine keeps its own Chrome profile, passkeys, downloads, and OAuth sessions.
 - SSH handles authentication, encryption, audit logs, and transport security.
-- Tailscale DNS (`max-air.ts.net`) gives a stable private name without exposing browser control on the LAN or public internet.
+- Tailscale DNS (`max-air`) gives a stable private name without exposing browser control on the LAN or public internet.
 
 Tradeoff: the human takeover happens at the remote machine's display, or through screen sharing.
 
@@ -41,7 +41,7 @@ agent-browserd --http 127.0.0.1:17310
 Tunnel from the agent machine:
 
 ```sh
-ssh -L 17310:127.0.0.1:17310 maxrevitt@max-air.ts.net
+ssh -L 17310:127.0.0.1:17310 maxrevitt@max-air
 ```
 
 Then call:
@@ -57,7 +57,7 @@ This is good for custom clients and debugging.
 Tailscale should be used first as the SSH host identity:
 
 ```sh
-ssh maxrevitt@max-air.ts.net ...
+ssh maxrevitt@max-air ...
 ```
 
 For a future streamable-HTTP MCP transport, expose only an authenticated proxy on the tailnet. Do not bind raw browser-control HTTP directly to `100.x.y.z` or `0.0.0.0`.

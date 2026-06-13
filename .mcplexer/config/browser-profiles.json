@@ -60,7 +60,7 @@
     {
       "name": "max-air",
       "kind": "ssh-stdio",
-      "host": "max-air.ts.net",
+      "host": "max-air",
       "user": "maxrevitt",
       "preferred_network": "tailscale",
       "app_dir": "~/Library/Application Support/agent-browser"
@@ -68,7 +68,7 @@
     {
       "name": "max-air-http",
       "kind": "streamable-http",
-      "host": "max-air.ts.net",
+      "host": "max-air",
       "preferred_network": "tailscale",
       "bind": "127.0.0.1",
       "expose": "tailscale-authenticated-proxy"

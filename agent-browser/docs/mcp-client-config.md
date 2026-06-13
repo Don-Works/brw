@@ -37,7 +37,7 @@ For `max-gmail`, use bridge mode because it is an installed Chrome profile.
     "agent-browser-max-air": {
       "command": "ssh",
       "args": [
-        "maxrevitt@max-air.ts.net",
+        "maxrevitt@max-air",
         "\"$HOME/Library/Application Support/agent-browser/bin/agent-browserd\" --bridge --mcp --http off --profile max-gmail --bridge-addr 127.0.0.1:17311 --profile-policy \"$HOME/Library/Application Support/agent-browser/config/browser-profiles.json\""
       ]
     }

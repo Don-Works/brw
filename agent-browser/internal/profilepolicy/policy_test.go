@@ -14,7 +14,7 @@ func TestLoadAndFindProfile(t *testing.T) {
 			{"name":"revitt","user_data_dir":"~/Library/Application Support/Google/Chrome","profile_directory":"Profile 1","direct_cdp_allowed":false}
 		],
 		"transports": [
-			{"name":"max-air","kind":"ssh-stdio","host":"max-air.ts.net","user":"maxrevitt","app_dir":"~/Library/Application Support/agent-browser"}
+			{"name":"max-air","kind":"ssh-stdio","host":"max-air","user":"maxrevitt","app_dir":"~/Library/Application Support/agent-browser"}
 		]
 	}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -41,7 +41,7 @@ func TestLoadAndFindProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if transport.Host != "max-air.ts.net" {
+	if transport.Host != "max-air" {
 		t.Fatalf("transport host = %q", transport.Host)
 	}
 	if transport.AppDir != "~/Library/Application Support/agent-browser" {

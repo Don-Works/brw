@@ -59,7 +59,7 @@ agent-browserctl mcp-config \
 ```
 
 The generated MCP command runs over SSH, usually through Tailscale DNS such as
-`max-air.ts.net`.
+`max-air`.
 
 Chrome 137+ branded builds removed reliable command-line unpacked extension
 loading. The bridge extension therefore needs to be installed as an extension:

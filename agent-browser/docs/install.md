@@ -40,16 +40,16 @@ make package-darwin-arm64
 Use the Tailscale DNS name as the SSH host identity:
 
 ```sh
-ssh maxrevitt@max-air.ts.net 'mkdir -p "$HOME/Library/Application Support/agent-browser/bin" "$HOME/Library/Application Support/agent-browser/config" "$HOME/Library/Application Support/agent-browser/extension" "$HOME/Library/Application Support/agent-browser/tests"'
+ssh maxrevitt@max-air 'mkdir -p "$HOME/Library/Application Support/agent-browser/bin" "$HOME/Library/Application Support/agent-browser/config" "$HOME/Library/Application Support/agent-browser/extension" "$HOME/Library/Application Support/agent-browser/tests"'
 
-scp bin/agent-browserd-darwin-arm64 'maxrevitt@max-air.ts.net:Library/Application Support/agent-browser/bin/agent-browserd'
-scp bin/agent-browserctl-darwin-arm64 'maxrevitt@max-air.ts.net:Library/Application Support/agent-browser/bin/agent-browserctl'
-scp bin/browsercheck-darwin-arm64 'maxrevitt@max-air.ts.net:Library/Application Support/agent-browser/bin/browsercheck'
-scp bin/agent-browser-devtools-mcp-darwin-arm64 'maxrevitt@max-air.ts.net:Library/Application Support/agent-browser/bin/agent-browser-devtools-mcp'
-scp ../.mcplexer/config/browser-profiles.json 'maxrevitt@max-air.ts.net:Library/Application Support/agent-browser/config/browser-profiles.json'
-scp -r extension/* 'maxrevitt@max-air.ts.net:Library/Application Support/agent-browser/extension/'
-scp -r tests/* 'maxrevitt@max-air.ts.net:Library/Application Support/agent-browser/tests/'
-ssh maxrevitt@max-air.ts.net 'chmod +x "$HOME/Library/Application Support/agent-browser/bin/"*'
+scp bin/agent-browserd-darwin-arm64 'maxrevitt@max-air:Library/Application Support/agent-browser/bin/agent-browserd'
+scp bin/agent-browserctl-darwin-arm64 'maxrevitt@max-air:Library/Application Support/agent-browser/bin/agent-browserctl'
+scp bin/browsercheck-darwin-arm64 'maxrevitt@max-air:Library/Application Support/agent-browser/bin/browsercheck'
+scp bin/agent-browser-devtools-mcp-darwin-arm64 'maxrevitt@max-air:Library/Application Support/agent-browser/bin/agent-browser-devtools-mcp'
+scp ../.mcplexer/config/browser-profiles.json 'maxrevitt@max-air:Library/Application Support/agent-browser/config/browser-profiles.json'
+scp -r extension/* 'maxrevitt@max-air:Library/Application Support/agent-browser/extension/'
+scp -r tests/* 'maxrevitt@max-air:Library/Application Support/agent-browser/tests/'
+ssh maxrevitt@max-air 'chmod +x "$HOME/Library/Application Support/agent-browser/bin/"*'
 ```
 
 These commands install files only. They do not control Chrome.
@@ -66,7 +66,7 @@ Generate the MCP config from the workspace policy:
   --mode bridge
 ```
 
-The generated command runs `agent-browserd` on `max-air.ts.net` through SSH.
+The generated command runs `agent-browserd` on `max-air` through SSH.
 The Chrome profile remains on max-air.
 
 ## Bridge Extension
@@ -112,7 +112,7 @@ Create the CRX and update XML:
 ./bin/agent-browserctl update-xml \
   --profile max-gmail \
   --profile-policy ../.mcplexer/config/browser-profiles.json \
-  --crx-url https://max-air.ts.net/agent-browser/agent-browser-bridge.crx \
+  --crx-url https://max-air/agent-browser/agent-browser-bridge.crx \
   --output dist/extension/updates.xml
 ```
 
@@ -122,7 +122,7 @@ Generate a macOS Chrome configuration profile:
 ./bin/agent-browserctl macos-policy \
   --profile max-gmail \
   --profile-policy ../.mcplexer/config/browser-profiles.json \
-  --update-url https://max-air.ts.net/agent-browser/updates.xml \
+  --update-url https://max-air/agent-browser/updates.xml \
   --output dist/agent-browser-chrome.mobileconfig
 ```
 
@@ -135,7 +135,7 @@ or `force_installed`.
 After install, verify the app and Chrome profile:
 
 ```sh
-ssh maxrevitt@max-air.ts.net \
+ssh maxrevitt@max-air \
   '"$HOME/Library/Application Support/agent-browser/bin/agent-browserctl" doctor --profile max-gmail --profile-policy "$HOME/Library/Application Support/agent-browser/config/browser-profiles.json"'
 ```
 
