@@ -96,8 +96,14 @@ to `ws://127.0.0.1:17311/extension` on the same machine.
 
 ### Managed/Repeatable Install
 
-For repeatable installs, package the extension and install it through Chrome
-policy or a private Chrome Web Store listing.
+For repeatable installs, package the extension and install it through a private
+Chrome Web Store listing or managed Chrome policy.
+
+On unmanaged macOS Chrome, external CRX installs are restricted. A self-hosted
+CRX policy is viable only when the Chrome instance is managed through MDM,
+Chrome Enterprise Core, or equivalent management. For a personal unmanaged Mac,
+use the one-time Developer Mode install until the extension is published through
+a private Web Store channel.
 
 Create the CRX and update XML:
 
@@ -120,9 +126,9 @@ Generate a macOS Chrome configuration profile:
   --output dist/agent-browser-chrome.mobileconfig
 ```
 
-Install the `.mobileconfig` with the macOS profile UI or an MDM/profile manager.
-For managed policy, Chrome supports `ExtensionSettings` with
-`normal_installed` or `force_installed`.
+Install the `.mobileconfig` with an MDM/profile manager or managed Chrome setup.
+For managed policy, Chrome supports `ExtensionSettings` with `normal_installed`
+or `force_installed`.
 
 ## Doctor
 

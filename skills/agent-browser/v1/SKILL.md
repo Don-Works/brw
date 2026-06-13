@@ -64,7 +64,7 @@ For max-air, the installed runtime lives at:
 
 `revitt-work` points at Chrome `Default` / `max@revitt.co` and is extension-bridge only.
 
-Chrome 136+ blocks direct remote debugging against the default Chrome data dir. Chrome 137+ branded builds do not reliably support `--load-extension` for installed profiles. Do not edit Chrome profile JSON by hand. Use the stable bridge extension `hkomepfdcddgepbdalomhabiphokllkd`, installed once through Developer Mode or repeatably through Chrome policy/private distribution.
+Chrome 136+ blocks direct remote debugging against the default Chrome data dir. Chrome 137+ branded builds do not reliably support `--load-extension` for installed profiles. Do not edit Chrome profile JSON by hand. Use the stable bridge extension `hkomepfdcddgepbdalomhabiphokllkd`, installed once through Developer Mode or repeatably through a private Chrome Web Store channel or managed Chrome policy.
 
 Run `agent-browserctl doctor --profile max-gmail` on the browser machine before authenticated tests.
 

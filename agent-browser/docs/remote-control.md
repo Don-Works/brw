@@ -91,7 +91,7 @@ Runtime MCP clients should call the installed binary over SSH. Repository helper
 Current branded Chrome no longer supports reliable unpacked extension auto-loading through `--load-extension`. The bridge is therefore repeatable only when the extension is actually installed in the target Chrome profile:
 
 - development: user enables Developer Mode and loads the unpacked extension once
-- managed/private deployment: force-install a signed/private extension with a stable ID
+- managed/private deployment: install a signed/private extension with a stable ID through Chrome Web Store private distribution or managed Chrome policy
 - alternative: use a DevTools MCP wrapper when Chrome grants the relevant auto-connect permission
 
 The daemon's `--bridge` mode is the MCP/HTTP surface once that extension is installed. It is not an extension installer.

@@ -24,8 +24,10 @@ should stay in the private repo.
 For development, load this directory once through `chrome://extensions` in the
 target profile.
 
-For repeatable deployment, package it as a CRX and install it through Chrome
-policy or private managed distribution:
+For repeatable deployment, publish it through a private Chrome Web Store channel
+or package it as a CRX for managed Chrome policy. Self-hosted CRX installs on
+macOS require managed Chrome/MDM/Chrome Enterprise; unmanaged personal Chrome
+should use the one-time Developer Mode install.
 
 ```sh
 agent-browserctl pack-extension
