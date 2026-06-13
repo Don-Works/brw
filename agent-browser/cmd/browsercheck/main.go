@@ -286,14 +286,58 @@ func main() {
 }
 
 func (r *runner) runScenario(sc scenario) error {
+	existingTabs := r.captureTabIDs()
+	r.preClick = nil
+	defer func() {
+		if err := r.cleanupScenarioTabs(existingTabs); err != nil {
+			fmt.Printf("WARN %-32s tab cleanup failed: %v\n", sc.ID, err)
+		}
+	}()
+	var total time.Duration
+	var slowest time.Duration
+	slowestStep := 0
 	for i, st := range sc.Actions {
-		if err := r.runStep(st); err != nil {
+		start := time.Now()
+		err := r.runStep(st)
+		dur := time.Since(start)
+		total += dur
+		if dur > slowest {
+			slowest = dur
+			slowestStep = i + 1
+		}
+		if err != nil {
 			if st.Optional {
 				fmt.Printf("WARN %-32s optional step %d skipped: %v\n", sc.ID, i+1, err)
 				continue
 			}
 			return fmt.Errorf("step %d: %w", i+1, err)
 		}
+	}
+	fmt.Printf("TIME %-32s total=%dms steps=%d slowest=step%d@%dms\n",
+		sc.ID, total.Milliseconds(), len(sc.Actions), slowestStep, slowest.Milliseconds())
+	return nil
+}
+
+func (r *runner) cleanupScenarioTabs(existing map[string]bool) error {
+	if existing == nil {
+		return nil
+	}
+	tabs, err := r.client.listTabs()
+	if err != nil {
+		return err
+	}
+	var closeErrs []string
+	for _, tab := range tabs {
+		if existing[tab.ID] {
+			continue
+		}
+		var result browser.ActionResult
+		if err := r.client.postJSON("/api/browser/close", map[string]string{"id": tab.ID}, &result); err != nil {
+			closeErrs = append(closeErrs, fmt.Sprintf("%s: %v", tab.ID, err))
+		}
+	}
+	if len(closeErrs) > 0 {
+		return errors.New(strings.Join(closeErrs, "; "))
 	}
 	return nil
 }

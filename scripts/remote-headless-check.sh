@@ -8,9 +8,12 @@
 set -u
 
 APPDIR="$HOME/Library/Application Support/agent-browser"
-# AB_BIN overrides the binary dir (e.g. a freshly-built test build in /tmp) while
-# still using the installed tests/fixtures under APPDIR.
+# AB_BIN overrides the browserd binary dir (e.g. a freshly-built test build in
+# /tmp) while still using the installed tests/fixtures under APPDIR.
 BIN="${AB_BIN:-$APPDIR/bin}"
+# AB_CHECK_BIN optionally points browsercheck at a different build (for A/B: run
+# the timing-instrumented checker against an older daemon for a baseline).
+CHECK_BIN="${AB_CHECK_BIN:-$BIN}"
 # Dedicated, unusual ports — NOT the conventional 17310/17311 bridge ports.
 PORT="${AB_PORT:-17358}"
 DBG_PORT="${AB_DBG_PORT:-17368}"
@@ -25,7 +28,7 @@ echo "http:     127.0.0.1:$PORT   cdp: 127.0.0.1:$DBG_PORT"
 echo
 
 [ -x "$BIN/agent-browserd" ] || { echo "FATAL: agent-browserd not at $BIN" >&2; exit 2; }
-[ -x "$BIN/browsercheck" ]   || { echo "FATAL: browsercheck not at $BIN" >&2; exit 2; }
+[ -x "$CHECK_BIN/browsercheck" ] || { echo "FATAL: browsercheck not at $CHECK_BIN" >&2; exit 2; }
 [ -f "$APPDIR/tests/scenarios/core.json" ] || { echo "FATAL: core.json not under $APPDIR" >&2; exit 2; }
 
 # HARD SAFETY: never hijack an existing listener (e.g. the persistent bridge daemon
@@ -91,7 +94,7 @@ echo "== running browsercheck (local fixtures; network/auth/manual auto-skipped)
 NETFLAG=""
 if [ -n "${AB_NET:-}" ]; then NETFLAG="--include-network"; echo "(including --include-network public scenarios)"; fi
 set +e
-"$BIN/browsercheck" --base-url "http://127.0.0.1:$PORT" --repo-root "$APPDIR" --suite "tests/scenarios/core.json" $NETFLAG
+"$CHECK_BIN/browsercheck" --base-url "http://127.0.0.1:$PORT" --repo-root "$APPDIR" --suite "tests/scenarios/core.json" $NETFLAG
 RC=$?
 set +e
 

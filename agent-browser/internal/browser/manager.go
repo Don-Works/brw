@@ -33,6 +33,14 @@ type Manager struct {
 	tabContexts   map[string]tabContext
 	refs          *store.RefStore
 	timeout       time.Duration
+
+	// lastState caches each tab's most-recent post-action SemanticState so the
+	// next action can reuse it as its "before" baseline instead of taking a
+	// second viewport snapshot. The before-state only feeds the advisory
+	// ChangedState diff, so a slightly stale cache never corrupts an action
+	// result — it just halves the per-action snapshot round-trips in steady state.
+	stateMu   sync.Mutex
+	lastState map[string]*SemanticState
 }
 
 type tabContext struct {
@@ -74,6 +82,7 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		tabContexts:   map[string]tabContext{},
 		refs:          store.New(),
 		timeout:       timeout,
+		lastState:     map[string]*SemanticState{},
 	}
 
 	if err := m.connect(); err != nil {
@@ -203,6 +212,7 @@ func (m *Manager) CloseTab(ctx context.Context, id string) error {
 	}
 	m.mu.Unlock()
 	m.refs.DropTab(id)
+	m.invalidateState(id)
 	return nil
 }
 
@@ -260,7 +270,7 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 	}
 	defer cancel()
 
-	before := captureSemanticState(tabCtx)
+	before := m.cachedBefore(tabID, tabCtx)
 	if err := clickElementCenter(tabCtx, ref, 150*time.Millisecond); err != nil {
 		return ActionResult{}, err
 	}
@@ -277,7 +287,7 @@ func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, err
 	if err := snapshot.Focus(tabCtx, ref); err != nil {
 		return ActionResult{}, err
 	}
-	before := captureSemanticState(tabCtx)
+	before := m.cachedBefore(tabID, tabCtx)
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return input.InsertText(text).Do(ctx)
 	}), chromedp.Sleep(100*time.Millisecond)); err != nil {
@@ -309,7 +319,7 @@ func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionRe
 		ref = result.Elements[0].Ref
 		m.refs.Observe(tabID, result.Elements)
 	}
-	before := captureSemanticState(tabCtx)
+	before := m.cachedBefore(tabID, tabCtx)
 	if err := snapshot.Fill(tabCtx, ref, opts.Text, opts.Replace); err != nil {
 		return ActionResult{}, err
 	}
@@ -357,7 +367,7 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 		}
 	}
 
-	before := captureSemanticState(tabCtx)
+	before := m.cachedBefore(tabID, tabCtx)
 	if err := snapshot.SetFileInputFiles(tabCtx, ref, paths); err != nil {
 		return ActionResult{}, err
 	}
@@ -373,7 +383,7 @@ func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, 
 		return ActionResult{}, err
 	}
 	defer cancel()
-	before := captureSemanticState(tabCtx)
+	before := m.cachedBefore(tabID, tabCtx)
 	if err := snapshot.Select(tabCtx, ref, value); err != nil {
 		if !strings.Contains(err.Error(), "ref is not a select element") {
 			return ActionResult{}, err
@@ -460,7 +470,7 @@ func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
 	if desc.Key == "" {
 		return ActionResult{}, errors.New("key is required")
 	}
-	before := captureSemanticState(tabCtx)
+	before := m.cachedBefore(tabID, tabCtx)
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		down := input.DispatchKeyEvent(input.KeyDown).
 			WithModifiers(input.Modifier(desc.Modifiers)).
@@ -498,7 +508,7 @@ func (m *Manager) Scroll(ctx context.Context, direction string) (ActionResult, e
 	if direction == "" {
 		direction = "down"
 	}
-	before := captureSemanticState(tabCtx)
+	before := m.cachedBefore(tabID, tabCtx)
 	scroll, err := snapshot.Scroll(tabCtx, direction)
 	if err != nil {
 		return ActionResult{}, err
@@ -600,6 +610,7 @@ func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, 
 	}
 	after := NewSemanticState(snap)
 	ApplyStateDiff(&result, before, after)
+	m.storeState(tabID, after)
 	frontier := SelectFrontierElements(snap.Elements, result.Focus, 12)
 	result.Elements = frontier
 	result.Changed = summarizeElements(frontier, 12)
@@ -613,6 +624,35 @@ func captureSemanticState(tabCtx context.Context) *SemanticState {
 	}
 	state := NewSemanticState(snap)
 	return &state
+}
+
+// cachedBefore returns the tab's most-recent post-action state as the baseline
+// for the next action, avoiding a snapshot round-trip. Falls back to a live
+// capture when no cached state exists (first action on a freshly opened tab).
+func (m *Manager) cachedBefore(tabID string, tabCtx context.Context) *SemanticState {
+	m.stateMu.Lock()
+	cached := m.lastState[tabID]
+	m.stateMu.Unlock()
+	if cached != nil {
+		return cached
+	}
+	return captureSemanticState(tabCtx)
+}
+
+func (m *Manager) storeState(tabID string, state SemanticState) {
+	if tabID == "" {
+		return
+	}
+	s := state
+	m.stateMu.Lock()
+	m.lastState[tabID] = &s
+	m.stateMu.Unlock()
+}
+
+func (m *Manager) invalidateState(tabID string) {
+	m.stateMu.Lock()
+	delete(m.lastState, tabID)
+	m.stateMu.Unlock()
 }
 
 func summarizeElements(elements []snapshot.Element, limit int) []string {
