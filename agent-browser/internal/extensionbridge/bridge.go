@@ -470,10 +470,19 @@ func (b *Bridge) Fill(ctx context.Context, opts snapshot.FillOptions) (browser.A
 	refJSON, _ := json.Marshal(ref)
 	textJSON, _ := json.Marshal(opts.Text)
 	replaceJSON, _ := json.Marshal(opts.Replace)
-	var ignored any
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
 	before := b.captureSemanticState(ctx)
-	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s,%s,%s)", snapshot.FillElementScript, refJSON, textJSON, replaceJSON), "", &ignored); err != nil {
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s,%s,%s)", snapshot.FillElementScript, refJSON, textJSON, replaceJSON), "", &result); err != nil {
 		return browser.ActionResult{}, err
+	}
+	if !result.OK {
+		if result.Error == "" {
+			result.Error = "fill failed"
+		}
+		return browser.ActionResult{}, errors.New(result.Error)
 	}
 	time.Sleep(100 * time.Millisecond)
 	return b.observeActionWithBefore(ctx, "filled "+ref, before), nil

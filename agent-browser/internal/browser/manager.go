@@ -136,7 +136,12 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	tabID := string(id)
 	m.refs.SetActive(tabID)
 	_ = m.WaitFor(ctx, "load", 10*time.Second)
-	_ = m.FocusTab(ctx, tabID)
+	// Do NOT activate the new tab here. OS foreground focus is reserved for the
+	// explicit FocusTab/browser_focus_tab tool so automation never steals the
+	// user's foreground — especially on the remote browser machine (max-air),
+	// where an implicit activate raises Chrome over whatever the human is doing.
+	// The tab is tracked as the active ref above; page tools bind to it via
+	// chromedp.WithTargetID without needing OS activation.
 
 	tab, err := m.tabByID(ctx, tabID)
 	if err != nil {

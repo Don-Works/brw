@@ -53,7 +53,7 @@ func main() {
 	var bridgeExtensionID string
 	var upstreamHTTP string
 
-	flag.StringVar(&httpAddr, "http", envDefault("AGENT_BROWSER_HTTP_ADDR", ":17310"), "HTTP listen address, or off")
+	flag.StringVar(&httpAddr, "http", envDefault("AGENT_BROWSER_HTTP_ADDR", "127.0.0.1:17310"), "HTTP listen address, or off. Defaults to loopback; bind a non-loopback address only behind SSH/Tailscale with caller auth.")
 	flag.BoolVar(&mcpMode, "mcp", false, "run MCP stdio server")
 	flag.BoolVar(&bridgeMode, "bridge", false, "use installed Chrome extension bridge instead of direct CDP")
 	flag.StringVar(&bridgeAddr, "bridge-addr", envDefault("AGENT_BROWSER_BRIDGE_ADDR", "127.0.0.1:17311"), "extension bridge WebSocket listen address")
@@ -153,8 +153,10 @@ func main() {
 		go func() {
 			log.Printf("HTTP API listening on %s", httpAddr)
 			if err := api.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Printf("HTTP API stopped: %v", err)
-				stop()
+				// Fail loudly instead of limping on with a dead control plane.
+				// In MCP mode the stdin Serve loop would otherwise keep running
+				// with no HTTP listener (a zombie a port clash silently created).
+				log.Fatalf("HTTP API failed on %s: %v", httpAddr, err)
 			}
 		}()
 	}
