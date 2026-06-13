@@ -112,6 +112,7 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		log.Printf("extension websocket accept: %v", err)
 		return
 	}
+	conn.SetReadLimit(64 << 20)
 
 	b.mu.Lock()
 	if b.conn != nil {
@@ -141,6 +142,7 @@ func (b *Bridge) readLoop(ctx context.Context, conn *websocket.Conn) {
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
+			log.Printf("extension bridge read: %v", err)
 			return
 		}
 		var resp response
@@ -268,11 +270,9 @@ func (b *Bridge) Snapshot(ctx context.Context) (snapshot.PageSnapshot, error) {
 	if err := b.evaluate(ctx, snapshot.SnapshotScript, "", &snap); err != nil {
 		return snap, err
 	}
-	nodes, err := b.axNodes(ctx, "")
-	if err != nil {
-		snap.Accessibility = snapshot.AccessibilitySummary{Available: false, Error: err.Error()}
-	} else {
-		snapshot.ApplyAccessibilityNodes(&snap, nodes)
+	snap.Accessibility = snapshot.AccessibilitySummary{
+		Available: false,
+		Error:     "accessibility tree is unavailable through the Chrome extension bridge; use direct CDP attach for AX enrichment",
 	}
 	return snap, nil
 }
@@ -286,6 +286,9 @@ func (b *Bridge) Read(ctx context.Context) (readability.PageRead, error) {
 func (b *Bridge) Click(ctx context.Context, ref string) error {
 	box, err := b.resolveBox(ctx, ref)
 	if err != nil {
+		if fallbackErr := b.activate(ctx, ref); fallbackErr == nil {
+			return nil
+		}
 		return err
 	}
 	for _, typ := range []string{"mousePressed", "mouseReleased"} {
@@ -304,6 +307,56 @@ func (b *Bridge) Click(ctx context.Context, ref string) error {
 		}); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (b *Bridge) activate(ctx context.Context, ref string) error {
+	refJSON, _ := json.Marshal(ref)
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	expr := fmt.Sprintf(`(function(ref) {
+	  function roots() {
+	    const out = [document];
+	    for (let i = 0; i < out.length; i++) {
+	      const root = out[i];
+	      if (!root.querySelectorAll) continue;
+	      for (const el of Array.from(root.querySelectorAll('*'))) {
+	        if (el.shadowRoot) out.push(el.shadowRoot);
+	      }
+	    }
+	    return out;
+	  }
+	  function findByRef(ref) {
+	    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
+	    for (const root of roots()) {
+	      const el = root.querySelector && root.querySelector(selector);
+	      if (el) return el;
+	    }
+	    return null;
+	  }
+	  const el = findByRef(ref);
+	  if (!el) return { ok: false, error: 'ref not found' };
+	  if (el.closest('[hidden],[aria-hidden="true"]')) return { ok: false, error: 'ref hidden' };
+	  el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+	  if (typeof el.focus === 'function') el.focus({ preventScroll: true });
+	  el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+	  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+	  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+	  if (typeof el.click === 'function') el.click();
+	  else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+	  return { ok: true };
+	})(%s)`, refJSON)
+	if err := b.evaluate(ctx, expr, "", &result); err != nil {
+		return err
+	}
+	if !result.OK {
+		if result.Error == "" {
+			result.Error = "ref activation failed"
+		}
+		return errors.New(result.Error)
 	}
 	return nil
 }
