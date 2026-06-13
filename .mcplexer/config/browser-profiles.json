@@ -1,0 +1,21 @@
+{
+  "profiles": [
+    {
+      "name": "revitt",
+      "description": "Chrome profile revitt.co / max@revitt.co in the installed default Chrome user data dir.",
+      "kind": "chrome-default-profile",
+      "user_data_dir": "~/Library/Application Support/Google/Chrome",
+      "profile_directory": "Profile 1",
+      "direct_cdp_allowed": false,
+      "extension_bridge_allowed": true
+    },
+    {
+      "name": "agent-revitt",
+      "description": "Persistent non-default agent-browser profile for revitt workflows. Sign in once, then reuse.",
+      "kind": "agent-browser-profile",
+      "user_data_dir": "~/.agent-browser/profiles/revitt",
+      "direct_cdp_allowed": true,
+      "extension_bridge_allowed": false
+    }
+  ]
+}

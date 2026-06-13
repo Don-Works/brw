@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "agent-browser Profile Bridge",
+  "version": "0.1.0",
+  "description": "Local, user-installed bridge for agent-browserd to control this visible Chrome profile with explicit debugger permission.",
+  "permissions": ["debugger", "tabs", "activeTab"],
+  "host_permissions": ["http://127.0.0.1/*", "ws://127.0.0.1/*"],
+  "background": {
+    "service_worker": "service_worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "agent-browser"
+  }
+}

@@ -1,0 +1,8 @@
+workspace: agent-browser
+source: repo
+runtime:
+  language: go
+  daemon: agent-browserd
+mcplexer:
+  harness_sync: true
+  gateway_required: false
