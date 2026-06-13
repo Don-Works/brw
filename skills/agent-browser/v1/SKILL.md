@@ -21,8 +21,8 @@ From the repo root:
 
 ```sh
 cd agent-browser
-go test ./...
-go build -o bin/agent-browserd ./cmd/browserd
+make test
+make build
 ./bin/agent-browserd --profile agent-revitt --http 127.0.0.1:17310
 ```
 
@@ -39,38 +39,42 @@ Expected signal: a visible Chrome window opens, `listTabs()` shows the tab, and 
 
 ## Remote Workflow
 
-Prefer SSH so the browser and profile stay on the machine that owns them:
+Prefer stdio MCP over SSH so the browser and profile stay on the machine that owns them. Use Tailscale DNS for the host identity:
 
 ```sh
 cd agent-browser
-./scripts/remote-ssh.sh maxrevitt@max-air
+./bin/agent-browserctl mcp-config \
+  --profile max-gmail \
+  --transport max-air \
+  --profile-policy ../.mcplexer/config/browser-profiles.json \
+  --mode bridge
 ```
 
-Then call the remote HTTP API through SSH:
+For max-air, the installed runtime lives at:
 
-```sh
-ssh maxrevitt@max-air "curl -sS http://127.0.0.1:17310/api/page/snapshot"
-```
-
-For local tooling, tunnel:
-
-```sh
-ssh -L 17310:127.0.0.1:17310 maxrevitt@max-air
+```text
+~/Library/Application Support/agent-browser/
 ```
 
 ## Profile Policy
 
 `agent-revitt` is the direct-CDP persistent non-default profile.
 
-`revitt` points at the installed Chrome profile and is intentionally marked extension-bridge only. Chrome 136+ blocks direct remote debugging against the default Chrome data dir; do not override this except for a deliberate diagnostic.
+`max-gmail` points at Chrome `Profile 1` / `max.revitt@gmail.com` and is extension-bridge only.
 
-If the user needs existing default-profile auth, implement/use the Chrome extension bridge in `agent-browser/extension/`.
+`revitt-work` points at Chrome `Default` / `max@revitt.co` and is extension-bridge only.
+
+Chrome 136+ blocks direct remote debugging against the default Chrome data dir. Chrome 137+ branded builds do not reliably support `--load-extension` for installed profiles. Do not edit Chrome profile JSON by hand. Use the stable bridge extension `hkomepfdcddgepbdalomhabiphokllkd`, installed once through Developer Mode or repeatably through Chrome policy/private distribution.
+
+Run `agent-browserctl doctor --profile max-gmail` on the browser machine before authenticated tests.
 
 ## MCP Tools
 
 The daemon exposes:
 
 - `browser_open`
+- `browser_list_tabs`
+- `browser_focus_tab`
 - `browser_read`
 - `browser_snapshot`
 - `browser_click`
@@ -86,3 +90,4 @@ Operate on refs returned by `browser_snapshot`, not CSS selectors. Example: `bro
 - SSH-launched Chrome on macOS may lack interactive Keychain/Bluetooth access. Passkeys or stored-password flows may require launching from the user session or the extension bridge.
 - Full-fat installed Chrome is required. Do not switch to headless Chrome, Chrome-for-Testing-only workflows, or custom renderers unless explicitly requested for a separate test.
 - The current optional UI is not implemented; rely on visible Chrome plus logs.
+- Chrome DevTools MCP may be used only through `agent-browser-devtools-mcp`, which checks the same profile policy and fails closed when it cannot correlate the DevTools session to the requested workspace profile.

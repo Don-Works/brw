@@ -9,13 +9,28 @@ import (
 	"time"
 
 	"github.com/revitt/agent-browser/internal/browser"
+	"github.com/revitt/agent-browser/internal/readability"
+	"github.com/revitt/agent-browser/internal/snapshot"
 )
 
-type Server struct {
-	manager *browser.Manager
+type Controller interface {
+	Open(context.Context, string) (browser.OpenResult, error)
+	ListTabs(context.Context) ([]browser.Tab, error)
+	FocusTab(context.Context, string) error
+	Read(context.Context) (readability.PageRead, error)
+	Snapshot(context.Context) (snapshot.PageSnapshot, error)
+	Click(context.Context, string) error
+	Type(context.Context, string, string) error
+	Press(context.Context, string) error
+	Screenshot(context.Context) (browser.Screenshot, error)
+	WaitFor(context.Context, string, time.Duration) error
 }
 
-func New(manager *browser.Manager) *Server {
+type Server struct {
+	manager Controller
+}
+
+func New(manager Controller) *Server {
 	return &Server{manager: manager}
 }
 
@@ -116,6 +131,16 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(s.manager.Open(ctx, req.URL))
+	case "browser_list_tabs":
+		return toolJSON(s.manager.ListTabs(ctx))
+	case "browser_focus_tab":
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolOK(s.manager.FocusTab(ctx, req.ID))
 	case "browser_read":
 		return toolJSON(s.manager.Read(ctx))
 	case "browser_snapshot":
@@ -208,6 +233,10 @@ func tools() []map[string]any {
 		tool("browser_open", "Open a URL in a visible Chrome/Chromium tab.", object(map[string]any{
 			"url": stringSchema("URL to open. Scheme defaults to https."),
 		}, []string{"url"})),
+		tool("browser_list_tabs", "List visible Chrome/Chromium page tabs.", object(nil, nil)),
+		tool("browser_focus_tab", "Focus a visible Chrome/Chromium tab by id.", object(map[string]any{
+			"id": stringSchema("Tab id from browser_list_tabs."),
+		}, []string{"id"})),
 		tool("browser_read", "Return semantic page content: main text, headings, links, forms, tables, and metadata.", object(nil, nil)),
 		tool("browser_snapshot", "Return visible interactive controls with stable refs from DOM and accessibility data.", object(nil, nil)),
 		tool("browser_click", "Click a semantic element ref from browser_snapshot.", object(map[string]any{
@@ -218,11 +247,11 @@ func tools() []map[string]any {
 			"text": stringSchema("Text to insert."),
 		}, []string{"ref", "text"})),
 		tool("browser_press", "Press a keyboard key in the active tab.", object(map[string]any{
-			"key": stringSchema("Key name, for example Enter, Tab, Escape, ArrowDown."),
+			"key": stringSchema("Key name or chord, for example Enter, Tab, Escape, ArrowDown, Meta+Enter."),
 		}, []string{"key"})),
 		tool("browser_screenshot", "Capture a PNG screenshot for visual fallback/debugging.", object(nil, nil)),
 		tool("browser_wait_for", "Wait for page readiness, URL/title/text substring, or ref availability.", object(map[string]any{
-			"condition":  stringSchema("load, text:..., url:..., title:..., ref:..., or plain text."),
+			"condition":  stringSchema("load, text:..., not_text:..., url:..., not_url:..., title:..., ref:..., or plain text."),
 			"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds."},
 		}, []string{"condition"})),
 	}

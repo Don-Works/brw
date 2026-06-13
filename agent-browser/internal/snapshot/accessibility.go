@@ -28,7 +28,10 @@ func EnrichAccessibility(ctx context.Context, snap *PageSnapshot) {
 		snap.Accessibility = AccessibilitySummary{Available: false, Error: err.Error()}
 		return
 	}
+	ApplyAccessibilityNodes(snap, nodes)
+}
 
+func ApplyAccessibilityNodes(snap *PageSnapshot, nodes []*accessibility.Node) {
 	summary := AccessibilitySummary{
 		Available: true,
 		NodeCount: len(nodes),

@@ -16,6 +16,7 @@ import (
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+	"github.com/revitt/agent-browser/internal/actions"
 	cdplaunch "github.com/revitt/agent-browser/internal/cdp"
 	"github.com/revitt/agent-browser/internal/readability"
 	"github.com/revitt/agent-browser/internal/snapshot"
@@ -276,7 +277,31 @@ func (m *Manager) Press(ctx context.Context, key string) error {
 		return err
 	}
 	defer cancel()
-	return chromedp.Run(tabCtx, chromedp.KeyEvent(key))
+	desc := actions.DescribeKey(key)
+	if desc.Key == "" {
+		return errors.New("key is required")
+	}
+	return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		down := input.DispatchKeyEvent(input.KeyDown).
+			WithModifiers(input.Modifier(desc.Modifiers)).
+			WithKey(desc.Key).
+			WithCode(desc.Code).
+			WithWindowsVirtualKeyCode(desc.WindowsVirtualKeyCode).
+			WithNativeVirtualKeyCode(desc.WindowsVirtualKeyCode)
+		if desc.Text != "" {
+			down = down.WithText(desc.Text).WithUnmodifiedText(desc.Text)
+		}
+		if err := down.Do(ctx); err != nil {
+			return err
+		}
+		return input.DispatchKeyEvent(input.KeyUp).
+			WithModifiers(input.Modifier(desc.Modifiers)).
+			WithKey(desc.Key).
+			WithCode(desc.Code).
+			WithWindowsVirtualKeyCode(desc.WindowsVirtualKeyCode).
+			WithNativeVirtualKeyCode(desc.WindowsVirtualKeyCode).
+			Do(ctx)
+	}))
 }
 
 func (m *Manager) Scroll(ctx context.Context, direction string) error {
@@ -468,11 +493,30 @@ func evaluateCondition(ctx context.Context, condition string) (bool, error) {
 	}
 	condJSON, _ := json.Marshal(condition)
 	expr := fmt.Sprintf(`(function(condition) {
+	  function roots() {
+	    const out = [document];
+	    for (let i = 0; i < out.length; i++) {
+	      const root = out[i];
+	      if (!root.querySelectorAll) continue;
+	      for (const el of Array.from(root.querySelectorAll('*'))) {
+	        if (el.shadowRoot) out.push(el.shadowRoot);
+	      }
+	    }
+	    return out;
+	  }
+	  function hasRef(ref) {
+	    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
+	    return roots().some(root => root.querySelector && root.querySelector(selector));
+	  }
 	  if (condition === "ready" || condition === "load") return document.readyState === "complete" || document.readyState === "interactive";
 	  if (condition.startsWith("url:")) return location.href.includes(condition.slice(4));
+	  if (condition.startsWith("not_url:")) return !location.href.includes(condition.slice(8));
 	  if (condition.startsWith("title:")) return document.title.includes(condition.slice(6));
+	  if (condition.startsWith("not_title:")) return !document.title.includes(condition.slice(10));
 	  if (condition.startsWith("text:")) return document.body && document.body.innerText.includes(condition.slice(5));
-	  if (condition.startsWith("ref:")) return Boolean(document.querySelector('[data-agent-browser-ref="' + CSS.escape(condition.slice(4)) + '"]'));
+	  if (condition.startsWith("not_text:")) return !document.body || !document.body.innerText.includes(condition.slice(9));
+	  if (condition.startsWith("ref:")) return hasRef(condition.slice(4));
+	  if (condition.startsWith("not_ref:")) return !hasRef(condition.slice(8));
 	  return document.body && document.body.innerText.includes(condition);
 	})(%s)`, condJSON)
 	var ok bool

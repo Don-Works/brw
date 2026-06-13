@@ -2,12 +2,42 @@
   "profiles": [
     {
       "name": "revitt",
-      "description": "Chrome profile revitt.co / max@revitt.co in the installed default Chrome user data dir.",
+      "description": "Legacy alias for the installed Chrome Max profile / max.revitt@gmail.com. Prefer max-gmail for new configs.",
       "kind": "chrome-default-profile",
       "user_data_dir": "~/Library/Application Support/Google/Chrome",
       "profile_directory": "Profile 1",
       "direct_cdp_allowed": false,
-      "extension_bridge_allowed": true
+      "extension_bridge_allowed": true,
+      "bridge_extension_id": "hkomepfdcddgepbdalomhabiphokllkd",
+      "bridge_install_mode": "stable-installed-extension",
+      "devtools_mcp_allowed": true,
+      "devtools_mcp_mode": "profile-correlated-wrapper"
+    },
+    {
+      "name": "max-gmail",
+      "description": "Installed Chrome Max profile / max.revitt@gmail.com. Extension bridge only; carries existing Chrome auth.",
+      "kind": "chrome-default-profile",
+      "user_data_dir": "~/Library/Application Support/Google/Chrome",
+      "profile_directory": "Profile 1",
+      "direct_cdp_allowed": false,
+      "extension_bridge_allowed": true,
+      "bridge_extension_id": "hkomepfdcddgepbdalomhabiphokllkd",
+      "bridge_install_mode": "stable-installed-extension",
+      "devtools_mcp_allowed": true,
+      "devtools_mcp_mode": "profile-correlated-wrapper"
+    },
+    {
+      "name": "revitt-work",
+      "description": "Installed Chrome revitt.co profile / max@revitt.co. Extension bridge only; carries existing Chrome auth.",
+      "kind": "chrome-default-profile",
+      "user_data_dir": "~/Library/Application Support/Google/Chrome",
+      "profile_directory": "Default",
+      "direct_cdp_allowed": false,
+      "extension_bridge_allowed": true,
+      "bridge_extension_id": "hkomepfdcddgepbdalomhabiphokllkd",
+      "bridge_install_mode": "stable-installed-extension",
+      "devtools_mcp_allowed": true,
+      "devtools_mcp_mode": "profile-correlated-wrapper"
     },
     {
       "name": "agent-revitt",
@@ -15,7 +45,33 @@
       "kind": "agent-browser-profile",
       "user_data_dir": "~/.agent-browser/profiles/revitt",
       "direct_cdp_allowed": true,
-      "extension_bridge_allowed": false
+      "extension_bridge_allowed": false,
+      "devtools_mcp_allowed": true,
+      "devtools_mcp_mode": "cdp-endpoint"
+    }
+  ],
+  "transports": [
+    {
+      "name": "local",
+      "kind": "stdio",
+      "host": "localhost",
+      "command": "agent-browserd"
+    },
+    {
+      "name": "max-air",
+      "kind": "ssh-stdio",
+      "host": "max-air.ts.net",
+      "user": "maxrevitt",
+      "preferred_network": "tailscale",
+      "app_dir": "~/Library/Application Support/agent-browser"
+    },
+    {
+      "name": "max-air-http",
+      "kind": "streamable-http",
+      "host": "max-air.ts.net",
+      "preferred_network": "tailscale",
+      "bind": "127.0.0.1",
+      "expose": "tailscale-authenticated-proxy"
     }
   ]
 }

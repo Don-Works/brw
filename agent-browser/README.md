@@ -17,12 +17,15 @@ This repository contains the Go daemon MVP:
 - Capture screenshots only as a fallback/debug API.
 - Expose HTTP JSON endpoints.
 - Expose MCP stdio tools for harness-agnostic agent use.
+- Bridge to an already-authenticated installed Chrome profile through a stable installed Chrome extension transport.
+- Ship `agent-browserctl` for install verification, MCP config generation, Chrome policy generation, and extension packaging.
 
 ## Build
 
 ```sh
 cd agent-browser
 go build ./cmd/browserd
+go build ./cmd/agent-browserctl
 ```
 
 ## Run HTTP Daemon
@@ -68,6 +71,8 @@ curl -s localhost:17310/api/page/click \
 The MCP server currently exposes:
 
 - `browser_open`
+- `browser_list_tabs`
+- `browser_focus_tab`
 - `browser_read`
 - `browser_snapshot`
 - `browser_click`
@@ -78,6 +83,27 @@ The MCP server currently exposes:
 
 For remote MCP over SSH, see [docs/mcp-client-config.md](docs/mcp-client-config.md) and [docs/remote-control.md](docs/remote-control.md).
 
+## Installed Profile Bridge
+
+For an existing installed Chrome profile such as `max-gmail`, use the extension bridge after the bridge extension is installed in that Chrome profile:
+
+```sh
+agent-browserd --bridge --mcp --http off --profile max-gmail
+```
+
+Generate a remote SSH MCP config:
+
+```sh
+agent-browserctl mcp-config \
+  --profile max-gmail \
+  --transport max-air \
+  --profile-policy ../.mcplexer/config/browser-profiles.json \
+  --mode bridge
+```
+
+The runtime transport is stdio MCP over SSH. The Chrome profile remains on the
+browser machine. See [docs/install.md](docs/install.md).
+
 ## Auth Model
 
 Chrome 136+ blocks CDP remote debugging against the default Chrome data directory. Launch mode therefore uses a persistent, non-default profile at:
@@ -87,6 +113,10 @@ Chrome 136+ blocks CDP remote debugging against the default Chrome data director
 ```
 
 That profile is a real Chrome profile: the browser is visible, extensions can be installed, OAuth can complete, passkeys can be used where Chrome supports them, and downloads work normally. You sign in once, then reuse it.
+
+The extension bridge is the route for carrying over auth that already exists in
+your installed Chrome profile. It does not extract cookies, edit Chrome profile
+databases, or copy profile data.
 
 For more detail, see [docs/auth-model.md](docs/auth-model.md).
 

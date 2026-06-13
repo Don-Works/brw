@@ -14,6 +14,7 @@ import (
 
 	"github.com/revitt/agent-browser/internal/browser"
 	cdplaunch "github.com/revitt/agent-browser/internal/cdp"
+	"github.com/revitt/agent-browser/internal/extensionbridge"
 	httpapi "github.com/revitt/agent-browser/internal/http"
 	"github.com/revitt/agent-browser/internal/mcp"
 	"github.com/revitt/agent-browser/internal/profilepolicy"
@@ -41,13 +42,18 @@ func main() {
 	var cfg browser.Config
 	var httpAddr string
 	var mcpMode bool
+	var bridgeMode bool
+	var bridgeAddr string
 	var timeout time.Duration
 	var profileName string
 	var profilePolicyPath string
 	var unsafeAllowDefaultProfileCDP bool
+	var bridgeExtensionID string
 
 	flag.StringVar(&httpAddr, "http", ":17310", "HTTP listen address, or off")
 	flag.BoolVar(&mcpMode, "mcp", false, "run MCP stdio server")
+	flag.BoolVar(&bridgeMode, "bridge", false, "use installed Chrome extension bridge instead of direct CDP")
+	flag.StringVar(&bridgeAddr, "bridge-addr", "127.0.0.1:17311", "extension bridge WebSocket listen address")
 	flag.StringVar(&cfg.RemoteURL, "remote", "", "attach to existing CDP endpoint, for example http://127.0.0.1:9222")
 	flag.StringVar(&profileName, "profile", "", "workspace-allowed browser profile name")
 	flag.StringVar(&profilePolicyPath, "profile-policy", "", "profile policy JSON path; defaults to .mcplexer/config/browser-profiles.json discovery")
@@ -74,7 +80,15 @@ func main() {
 		if err != nil {
 			log.Fatalf("profile policy: %v", err)
 		}
-		if !profile.DirectCDPAllowed && cfg.RemoteURL == "" && !unsafeAllowDefaultProfileCDP {
+		if bridgeMode {
+			if !profile.ExtensionBridgeAllowed {
+				log.Fatalf("profile %q is not allowed through extension bridge by workspace policy", profileName)
+			}
+			bridgeExtensionID = profile.BridgeExtensionID
+			if bridgeExtensionID == "" {
+				bridgeExtensionID = profilepolicy.DefaultBridgeExtensionID
+			}
+		} else if !profile.DirectCDPAllowed && cfg.RemoteURL == "" && !unsafeAllowDefaultProfileCDP {
 			log.Fatalf("profile %q is allowed only through extension bridge, not direct CDP launch; use --profile agent-revitt, --remote, or --unsafe-allow-default-profile-cdp for diagnostics", profileName)
 		}
 		cfg.UserDataDir = profile.UserDataDir
@@ -85,19 +99,41 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	manager, err := browser.New(ctx, cfg)
-	if err != nil {
-		log.Fatalf("start browser: %v", err)
-	}
-	defer func() {
-		if err := manager.Close(); err != nil {
-			log.Printf("close browser: %v", err)
+	var controller httpapi.Controller
+	var bridge *extensionbridge.Bridge
+	var manager *browser.Manager
+
+	if bridgeMode {
+		bridge = extensionbridge.New(bridgeAddr, timeout, bridgeExtensionID)
+		controller = bridge
+		go func() {
+			if bridgeExtensionID != "" {
+				log.Printf("extension bridge listening on %s for extension %s", bridgeAddr, bridgeExtensionID)
+			} else {
+				log.Printf("extension bridge listening on %s", bridgeAddr)
+			}
+			if err := bridge.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("extension bridge stopped: %v", err)
+				stop()
+			}
+		}()
+	} else {
+		var err error
+		manager, err = browser.New(ctx, cfg)
+		if err != nil {
+			log.Fatalf("start browser: %v", err)
 		}
-	}()
+		controller = manager
+		defer func() {
+			if err := manager.Close(); err != nil {
+				log.Printf("close browser: %v", err)
+			}
+		}()
+	}
 
 	var api *httpapi.Server
 	if httpAddr != "" && httpAddr != "off" {
-		api = httpapi.New(httpAddr, manager)
+		api = httpapi.New(httpAddr, controller)
 		go func() {
 			log.Printf("HTTP API listening on %s", httpAddr)
 			if err := api.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -109,7 +145,7 @@ func main() {
 
 	if mcpMode {
 		log.Printf("MCP stdio server ready")
-		if err := mcp.New(manager).Serve(ctx, os.Stdin, os.Stdout); err != nil && ctx.Err() == nil {
+		if err := mcp.New(controller).Serve(ctx, os.Stdin, os.Stdout); err != nil && ctx.Err() == nil {
 			log.Fatalf("mcp server: %v", err)
 		}
 		return
@@ -126,6 +162,11 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = api.Shutdown(shutdownCtx)
+	}
+	if bridge != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = bridge.Shutdown(shutdownCtx)
 	}
 }
 

@@ -20,7 +20,7 @@ That overlaps strongly with the product idea here. The reason to keep this repos
 ## Related Projects
 
 - Microsoft Playwright MCP provides browser automation through structured accessibility snapshots instead of screenshot-only interaction.
-- Chrome DevTools MCP exposes Chrome debugging and inspection capabilities through MCP.
+- Chrome DevTools MCP exposes Chrome debugging, performance, console, and network inspection capabilities through MCP.
 - Several Chrome debug MCP servers attach to a manually launched Chrome debugging port.
 
 ## Product Position
@@ -28,5 +28,11 @@ That overlaps strongly with the product idea here. The reason to keep this repos
 The clean position is not "we invented semantic browser refs". The position is:
 
 > A Go, daemon-first, harness-agnostic semantic browser control layer for a visible real Chrome/Chromium, designed around persistent user control and future installed-profile bridging.
+
+Chrome DevTools MCP should be used as an augmenting diagnostics surface, not as
+the primary agent action layer. `agent-browser` owns stable semantic refs,
+readability extraction, and profile-policy authorization. DevTools MCP must be
+launched through `agent-browser-devtools-mcp` so it correlates to the same
+workspace-approved browser profile.
 
 If this becomes a public product, consider renaming or clearly scoping it to avoid confusion with Vercel's `agent-browser`.

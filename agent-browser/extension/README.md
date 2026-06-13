@@ -1,15 +1,38 @@
-# Default-Profile Bridge Prototype
+# agent-browser Profile Bridge Extension
 
-This directory is a placeholder for the installed Chrome extension bridge needed to control a user's already-authenticated default Chrome profile.
+This is the minimal Chrome extension transport for installed-profile auth.
 
-Direct CDP launch cannot carry the default profile on Chrome 136+. The bridge path is:
+Extension ID:
 
-1. User installs an extension in their existing Chrome profile.
-2. The extension requests the `debugger` permission.
-3. The extension uses `chrome.debugger` as an alternate CDP transport for active tabs.
-4. The extension connects to `agent-browserd` over localhost WebSocket or native messaging.
-5. The Go daemon exposes the same HTTP/MCP tools, but routes browser operations through the extension transport.
+```text
+hkomepfdcddgepbdalomhabiphokllkd
+```
 
-This preserves existing cookies, passkeys, OAuth state, extensions, and financial-site sessions without extracting profile data.
+The ID is stable because `manifest.json` contains the extension public key. The
+matching packaging key lives in `../packaging/agent-browser-bridge.pem` and
+should stay in the private repo.
 
-The MVP daemon in this repository currently implements direct CDP launch/attach mode. The bridge should be implemented as an auditable second transport, not mixed into the direct `chromedp` manager.
+## What It Does
+
+- Connects to `ws://127.0.0.1:17311/extension`.
+- Uses `chrome.debugger` as a CDP transport for visible tabs.
+- Sends tab summaries and CDP results to `agent-browserd --bridge`.
+- Never reads or exports Chrome cookies, passwords, passkeys, or profile files.
+
+## Install Modes
+
+For development, load this directory once through `chrome://extensions` in the
+target profile.
+
+For repeatable deployment, package it as a CRX and install it through Chrome
+policy or private managed distribution:
+
+```sh
+agent-browserctl pack-extension
+agent-browserctl update-xml --profile max-gmail --crx-url https://example/agent-browser-bridge.crx
+agent-browserctl macos-policy --profile max-gmail --update-url https://example/updates.xml
+```
+
+Chrome 137+ branded builds do not reliably support `--load-extension` for
+installing unpacked extensions. Do not depend on launch flags for installed
+Chrome profiles.

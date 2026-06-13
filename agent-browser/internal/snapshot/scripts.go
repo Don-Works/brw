@@ -28,6 +28,26 @@ const SnapshotScript = `(function() {
     return String(s || '').replace(/\s+/g, ' ').trim();
   }
 
+  function roots() {
+    const out = [document];
+    for (let i = 0; i < out.length; i++) {
+      const root = out[i];
+      if (!root.querySelectorAll) continue;
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        if (el.shadowRoot) out.push(el.shadowRoot);
+      }
+    }
+    return out;
+  }
+
+  function all(selector) {
+    const out = [];
+    for (const root of roots()) {
+      if (root.querySelectorAll) out.push(...Array.from(root.querySelectorAll(selector)));
+    }
+    return out;
+  }
+
   function visible(el) {
     if (!el || !(el instanceof Element)) return false;
     if (el.closest('[hidden],[aria-hidden="true"]')) return false;
@@ -46,7 +66,9 @@ const SnapshotScript = `(function() {
     if (!el) return '';
     if (el.labels && el.labels.length) return clean(Array.from(el.labels).map(l => l.innerText || l.textContent).join(' '));
     if (el.id) {
-      const label = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      const root = el.getRootNode && el.getRootNode();
+      const labelRoot = root && root.querySelector ? root : document;
+      const label = labelRoot.querySelector('label[for="' + CSS.escape(el.id) + '"]');
       if (label) return clean(label.innerText || label.textContent);
     }
     const parent = el.closest('label');
@@ -149,7 +171,7 @@ const SnapshotScript = `(function() {
 
   const seen = new Set();
   const elements = [];
-  for (const el of Array.from(document.querySelectorAll(selector))) {
+  for (const el of all(selector)) {
     if (!(el instanceof HTMLElement) && !(el instanceof SVGElement)) continue;
     if (seen.has(el)) continue;
     seen.add(el);
@@ -192,7 +214,26 @@ const SnapshotScript = `(function() {
 })()`
 
 const ResolveBoxScript = `(function(ref) {
-  const el = document.querySelector('[data-agent-browser-ref="' + CSS.escape(ref) + '"]');
+  function roots() {
+    const out = [document];
+    for (let i = 0; i < out.length; i++) {
+      const root = out[i];
+      if (!root.querySelectorAll) continue;
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        if (el.shadowRoot) out.push(el.shadowRoot);
+      }
+    }
+    return out;
+  }
+  function findByRef(ref) {
+    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
+    for (const root of roots()) {
+      const el = root.querySelector && root.querySelector(selector);
+      if (el) return el;
+    }
+    return null;
+  }
+  const el = findByRef(ref);
   if (!el) return { ok: false, ref };
   el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   const r = el.getBoundingClientRect();
@@ -209,15 +250,66 @@ const ResolveBoxScript = `(function(ref) {
 })`
 
 const FocusElementScript = `(function(ref) {
-  const el = document.querySelector('[data-agent-browser-ref="' + CSS.escape(ref) + '"]');
+  function roots() {
+    const out = [document];
+    for (let i = 0; i < out.length; i++) {
+      const root = out[i];
+      if (!root.querySelectorAll) continue;
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        if (el.shadowRoot) out.push(el.shadowRoot);
+      }
+    }
+    return out;
+  }
+  function findByRef(ref) {
+    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
+    for (const root of roots()) {
+      const el = root.querySelector && root.querySelector(selector);
+      if (el) return el;
+    }
+    return null;
+  }
+  function deepActive(root) {
+    let active = root && root.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) {
+      active = active.shadowRoot.activeElement;
+    }
+    return active;
+  }
+  function focused(el) {
+    const active = deepActive(document);
+    const root = el.getRootNode && el.getRootNode();
+    const rootActive = deepActive(root);
+    return active === el || el.contains(active) || rootActive === el || el.contains(rootActive);
+  }
+  const el = findByRef(ref);
   if (!el) return false;
   el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   if (typeof el.focus === 'function') el.focus({ preventScroll: true });
-  return document.activeElement === el || el.contains(document.activeElement);
+  return focused(el);
 })`
 
 const SelectElementScript = `(function(ref, value) {
-  const el = document.querySelector('[data-agent-browser-ref="' + CSS.escape(ref) + '"]');
+  function roots() {
+    const out = [document];
+    for (let i = 0; i < out.length; i++) {
+      const root = out[i];
+      if (!root.querySelectorAll) continue;
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        if (el.shadowRoot) out.push(el.shadowRoot);
+      }
+    }
+    return out;
+  }
+  function findByRef(ref) {
+    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
+    for (const root of roots()) {
+      const el = root.querySelector && root.querySelector(selector);
+      if (el) return el;
+    }
+    return null;
+  }
+  const el = findByRef(ref);
   if (!el) return { ok: false, error: 'ref not found' };
   if (el.tagName.toLowerCase() !== 'select') return { ok: false, error: 'ref is not a select element' };
   el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });

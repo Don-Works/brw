@@ -1,13 +1,14 @@
-# Remote Control Over SSH or Tailscale
+# Remote Control Over SSH And Tailscale
 
 Remote browser control is viable and fits the product model well, as long as the browser profile stays on the machine that owns it.
 
-## Best Default: MCP Over SSH
+## Default: MCP Stdio Over SSH
 
-The simplest secure path is running `agent-browserd --mcp` on the browser machine through SSH:
+The runtime default is stdio MCP over SSH to the browser machine:
 
 ```sh
-ssh mac-mini.local /path/to/agent-browserd --mcp --http off
+ssh maxrevitt@max-air.ts.net \
+  '"$HOME/Library/Application Support/agent-browser/bin/agent-browserd" --mcp --http off --profile max-gmail --profile-policy "$HOME/Library/Application Support/agent-browser/config/browser-profiles.json"'
 ```
 
 Advantages:
@@ -15,11 +16,21 @@ Advantages:
 - MCP remains stdio, so most harnesses can run it as a command.
 - The browser opens visibly on the remote machine.
 - The remote machine keeps its own Chrome profile, passkeys, downloads, and OAuth sessions.
-- SSH handles authentication, encryption, audit logs, and port exposure.
+- SSH handles authentication, encryption, audit logs, and transport security.
+- Tailscale DNS (`max-air.ts.net`) gives a stable private name without exposing browser control on the LAN or public internet.
 
 Tradeoff: the human takeover happens at the remote machine's display, or through screen sharing.
 
+The workspace policy should name both pieces separately:
+
+- `profile`: for example `max-gmail`
+- `transport`: for example `max-air`
+
+The profile determines which Chrome profile may be controlled. The transport only determines where the MCP process runs.
+
 ## HTTP API Over SSH Tunnel
+
+HTTP remains a development/debug surface, not the primary remote transport.
 
 Run the daemon on the browser machine:
 
@@ -30,7 +41,7 @@ agent-browserd --http 127.0.0.1:17310
 Tunnel from the agent machine:
 
 ```sh
-ssh -L 17310:127.0.0.1:17310 mac-mini.local
+ssh -L 17310:127.0.0.1:17310 maxrevitt@max-air.ts.net
 ```
 
 Then call:
@@ -41,33 +52,53 @@ curl http://127.0.0.1:17310/api/page/snapshot
 
 This is good for custom clients and debugging.
 
-## Tailscale
+## Tailscale Transport
 
-Tailscale is viable if the daemon binds deliberately to the Tailscale interface or a locked-down localhost proxy on the browser machine.
+Tailscale should be used first as the SSH host identity:
 
-Recommended posture:
+```sh
+ssh maxrevitt@max-air.ts.net ...
+```
+
+For a future streamable-HTTP MCP transport, expose only an authenticated proxy on the tailnet. Do not bind raw browser-control HTTP directly to `100.x.y.z` or `0.0.0.0`.
+
+Required posture:
 
 - Bind to `127.0.0.1` by default.
-- If exposing on Tailscale, add an auth layer before accepting remote HTTP.
-- Prefer Tailscale SSH or Funnel-free private tailnet access.
+- Prefer Tailscale SSH or private tailnet access.
+- If exposing HTTP on Tailscale, require caller auth before accepting browser actions.
 - Log every action with caller identity once auth is added.
+- Preserve the same workspace profile authorization as stdio SSH.
 
 Do not expose raw unauthenticated browser control on a public interface.
 
-## Repository Helper
+## Repeatable Install Shape
 
-From this repository, the helper script builds a macOS ARM binary, copies it and `.mcplexer` policy to the remote machine, and starts a visible browser there:
+The repeatable browser-machine install location is:
 
-```sh
-cd agent-browser
-./scripts/remote-ssh.sh max-air
+```text
+~/Library/Application Support/agent-browser/
+  bin/agent-browserd
+  config/browser-profiles.json
+  extension/
+  tests/
 ```
 
-This requires SSH auth to `max-air` first.
+Runtime MCP clients should call the installed binary over SSH. Repository helper scripts are development/install conveniences only; they are not the control protocol.
 
-## MCP Over Remote HTTP
+## Installed-Profile Bridge
 
-For a future remote MCP transport, the daemon can expose MCP over streamable HTTP/SSE behind Tailscale. The tool semantics stay the same; only the transport changes.
+Current branded Chrome no longer supports reliable unpacked extension auto-loading through `--load-extension`. The bridge is therefore repeatable only when the extension is actually installed in the target Chrome profile:
+
+- development: user enables Developer Mode and loads the unpacked extension once
+- managed/private deployment: force-install a signed/private extension with a stable ID
+- alternative: use a DevTools MCP wrapper when Chrome grants the relevant auto-connect permission
+
+The daemon's `--bridge` mode is the MCP/HTTP surface once that extension is installed. It is not an extension installer.
+
+## Future MCP Over Remote HTTP
+
+For a future remote MCP transport, the daemon can expose MCP over streamable HTTP behind Tailscale. The tool semantics stay the same; only the transport changes.
 
 Security requirements before enabling this:
 

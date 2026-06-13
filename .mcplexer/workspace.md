@@ -15,6 +15,8 @@ Current objective:
 - Prefer semantic page state from DOM, accessibility tree, visible controls, and readability extraction.
 - Keep screenshots as fallback/debug output.
 - Preserve human visibility and takeover.
+- Use stdio MCP over SSH through Tailscale DNS for remote profile ownership.
+- Keep Chrome profile permissions in `.mcplexer/config/browser-profiles.json`.
 
 Important product note:
 

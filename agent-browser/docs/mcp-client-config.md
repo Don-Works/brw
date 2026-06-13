@@ -1,21 +1,35 @@
 # MCP Client Config
 
-## Local Stdio
+`agent-browser` is a stdio MCP server. Remote control should still use stdio;
+SSH is the transport that places the process on the browser machine.
+
+## Local Non-Default Profile
+
+Use this for direct CDP development profiles.
 
 ```json
 {
   "mcpServers": {
     "agent-browser": {
       "command": "/Users/max/github/revitt/brw/agent-browser/bin/agent-browserd",
-      "args": ["--mcp", "--http", "off", "--profile", "agent-revitt"]
+      "args": [
+        "--mcp",
+        "--http",
+        "off",
+        "--profile",
+        "agent-revitt",
+        "--profile-policy",
+        "/Users/max/github/revitt/brw/.mcplexer/config/browser-profiles.json"
+      ]
     }
   }
 }
 ```
 
-## Remote Browser On max-air Over SSH
+## max-air Installed Profile Over Tailscale SSH
 
-This runs the MCP server on `max-air`, so the visible browser window and Chrome profile are also on `max-air`.
+Use the Tailscale DNS name for the host, but keep MCP as stdio over SSH.
+For `max-gmail`, use bridge mode because it is an installed Chrome profile.
 
 ```json
 {
@@ -23,38 +37,37 @@ This runs the MCP server on `max-air`, so the visible browser window and Chrome 
     "agent-browser-max-air": {
       "command": "ssh",
       "args": [
-        "max-air",
-        "cd ~/agent-browser && ./agent-browserd-darwin-arm64 --mcp --http off --profile agent-revitt"
+        "maxrevitt@max-air.ts.net",
+        "\"$HOME/Library/Application Support/agent-browser/bin/agent-browserd\" --bridge --mcp --http off --profile max-gmail --bridge-addr 127.0.0.1:17311 --profile-policy \"$HOME/Library/Application Support/agent-browser/config/browser-profiles.json\""
       ]
     }
   }
 }
 ```
 
-If you want to use the already-authenticated `revitt` default Chrome profile, the profile policy currently requires the extension bridge:
+This controls the browser profile declared as `max-gmail` in the workspace
+policy. The transport name is `max-air`; the profile name is `max-gmail`.
+Do not merge those concepts.
 
-```json
-{
-  "mcpServers": {
-    "agent-browser-max-air": {
-      "command": "ssh",
-      "args": [
-        "max-air",
-        "cd ~/agent-browser && ./agent-browserd-darwin-arm64 --mcp --http off --profile revitt"
-      ]
-    }
-  }
-}
-```
+## Installed-Profile Bridge Requirement
 
-That command will reject direct CDP until the extension bridge transport is implemented and installed, by design.
+For installed Chrome profiles, direct CDP is not the auth-preserving path.
+Use bridge mode only after the bridge extension is installed in that Chrome
+profile.
 
-## SSH Prerequisite
+The bridge extension connects locally on `max-air` to
+`ws://127.0.0.1:17311/extension`. Browser-control traffic does not need a
+network listener.
 
-The controlling machine's public key must be trusted on `max-air`.
+## Chrome DevTools MCP Companion
 
-```sh
-ssh-copy-id max-air
-```
+Chrome DevTools MCP can sit beside `agent-browser`, but should be launched
+through a profile-correlating wrapper. The wrapper must read the same workspace
+profile policy and either:
 
-On macOS without `ssh-copy-id`, append the controlling machine's public key to `~/.ssh/authorized_keys` on `max-air`, or enable Remote Login and add the key in your normal device setup process.
+- pass the exact direct-CDP endpoint for an `agent-browserd` direct-CDP session
+- use Chrome's approved auto-connect flow for the same installed profile
+- fail closed when it cannot prove the DevTools session belongs to the requested profile
+
+Do not configure Chrome DevTools MCP manually against an arbitrary open Chrome.
+That breaks the workspace profile boundary.

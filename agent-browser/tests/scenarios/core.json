@@ -1,0 +1,372 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "fixture-content-read",
+      "name": "Read structured article content",
+      "tags": ["local", "readability", "tables", "metadata"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/content.html" } },
+        { "wait_for": { "condition": "title:Readable Content Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "min_elements": 4,
+            "require": [
+              { "role": "link", "name_contains": "Skip to main", "save_as": "skip" },
+              { "role": "link", "name_contains": "CDP architecture", "save_as": "cdp_link" }
+            ]
+          }
+        },
+        {
+          "read": {
+            "title_contains": "Readable Content Fixture",
+            "main_contains": ["semantic browser coverage", "Screenshots are useful only for visual fallback"],
+            "min_headings": 2,
+            "min_links": 4,
+            "min_tables": 1,
+            "metadata": {
+              "description_contains": "Deterministic content fixture",
+              "canonical_contains": "example.test/agent-browser/content",
+              "lang": "en"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-form-actions",
+      "name": "Type, select, click, and submit accessible form controls",
+      "tags": ["local", "forms", "actions", "refs"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/forms.html" } },
+        { "wait_for": { "condition": "title:Form Interaction Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "min_elements": 8,
+            "require": [
+              { "role": "textbox", "name_contains": "Email", "save_as": "email" },
+              { "role": "textbox", "name_contains": "Full name", "save_as": "full_name" },
+              { "role": "combobox", "name_contains": "Plan", "save_as": "plan" },
+              { "role": "checkbox", "name_contains": "Accept terms", "save_as": "terms" },
+              { "role": "textbox", "name_contains": "Project notes", "save_as": "notes" },
+              { "role": "button", "name_contains": "Submit request", "save_as": "submit" }
+            ]
+          }
+        },
+        { "type": { "target": "email", "text": "max@example.com" } },
+        { "type": { "target": "full_name", "text": "Ada Lovelace" } },
+        { "select": { "target": "plan", "value": "pro" } },
+        { "click": { "target": "terms" } },
+        { "type": { "target": "notes", "text": "Testing semantic refs" } },
+        { "click": { "target": "submit" } },
+        { "wait_for": { "condition": "text:Submitted max@example.com Ada Lovelace pro accepted Testing semantic refs", "timeout_ms": 5000 } }
+      ]
+    },
+    {
+      "id": "fixture-dynamic-keyboard",
+      "name": "Keyboard events and delayed dynamic controls",
+      "tags": ["local", "dynamic", "keyboard", "wait"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/dynamic.html" } },
+        { "wait_for": { "condition": "title:Dynamic Interaction Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "min_elements": 3,
+            "require": [
+              { "role": "searchbox", "name_contains": "Knowledge search", "save_as": "search" },
+              { "role": "button", "name_contains": "Search now", "save_as": "search_button" },
+              { "role": "button", "name_contains": "Load delayed controls", "save_as": "load" }
+            ]
+          }
+        },
+        { "type": { "target": "search", "text": "semantic search" } },
+        { "press": { "key": "Enter" } },
+        { "wait_for": { "condition": "text:Search submitted: semantic search", "timeout_ms": 5000 } },
+        { "click": { "target": "load" } },
+        { "wait_for": { "condition": "text:Delayed Notes", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "min_elements": 5,
+            "require": [
+              { "role": "textbox", "name_contains": "Delayed Notes", "save_as": "delayed_notes" },
+              { "role": "button", "name_contains": "Save delayed notes", "save_as": "save_delayed" }
+            ]
+          }
+        },
+        { "type": { "target": "delayed_notes", "text": "async control works" } },
+        { "click": { "target": "save_delayed" } },
+        { "wait_for": { "condition": "text:Saved delayed note: async control works", "timeout_ms": 5000 } }
+      ]
+    },
+    {
+      "id": "fixture-visual-fallback",
+      "name": "Screenshots remain fallback for canvas and map-like content",
+      "tags": ["local", "visual", "screenshots", "canvas"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/visual.html" } },
+        { "wait_for": { "condition": "title:Visual Fallback Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              { "role": "img", "name_contains": "Revenue chart", "save_as": "chart" },
+              { "role": "img", "name_contains": "Map tile preview", "save_as": "map" }
+            ]
+          }
+        },
+        { "screenshot": { "min_bytes": 1000 } },
+        { "screenshot_element": { "target": "chart", "min_bytes": 1000 } }
+      ]
+    },
+    {
+      "id": "fixture-open-shadow-dom",
+      "name": "Find and operate controls inside open Shadow DOM",
+      "tags": ["local", "shadow-dom", "web-components", "refs"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/shadow.html" } },
+        { "wait_for": { "condition": "title:Shadow DOM Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              { "role": "textbox", "name_contains": "Shadow Email", "save_as": "shadow_email" },
+              { "role": "button", "name_contains": "Save shadow email", "save_as": "shadow_save" }
+            ]
+          }
+        },
+        { "type": { "target": "shadow_email", "text": "shadow@example.com" } },
+        { "click": { "target": "shadow_save" } },
+        { "wait_for": { "condition": "text:Shadow saved: shadow@example.com", "timeout_ms": 5000 } }
+      ]
+    },
+    {
+      "id": "public-example-domain",
+      "name": "Read and click a stable public documentation page",
+      "requires": ["network"],
+      "tags": ["public", "readability", "links"],
+      "actions": [
+        { "open": { "url": "https://example.com/" } },
+        { "wait_for": { "condition": "title:Example Domain", "timeout_ms": 10000 } },
+        {
+          "snapshot": {
+            "min_elements": 1,
+            "require": [
+              { "role": "link", "name_contains": "Learn more", "save_as": "learn_more" }
+            ]
+          }
+        },
+        { "click": { "target": "learn_more" } },
+        {
+          "wait_for_tab": {
+            "url_contains": "iana.org/help/example-domains",
+            "focus": true,
+            "timeout_ms": 10000
+          }
+        },
+        { "wait_for": { "condition": "title:Example Domains", "timeout_ms": 10000 } },
+        {
+          "read": {
+            "title_contains": "Example Domains",
+            "main_contains": ["As described in RFC", "Further Reading"],
+            "min_headings": 2,
+            "min_links": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "public-login-form",
+      "name": "Operate a public non-auth login form safely",
+      "requires": ["network"],
+      "tags": ["public", "forms", "login-like"],
+      "actions": [
+        { "open": { "url": "https://quotes.toscrape.com/login" } },
+        { "wait_for": { "condition": "title:Quotes to Scrape", "timeout_ms": 10000 } },
+        {
+          "snapshot": {
+            "min_elements": 3,
+            "require": [
+              { "role": "textbox", "name_contains": "Username", "save_as": "username" },
+              { "role": "textbox", "name_contains": "Password", "save_as": "password" },
+              { "role": "button", "name_contains": "Login", "save_as": "login" }
+            ]
+          }
+        },
+        { "type": { "target": "username", "text": "agent-browser" } },
+        { "type": { "target": "password", "text": "not-a-secret" } },
+        { "click": { "target": "login" } },
+        { "wait_for": { "condition": "text:Logout", "timeout_ms": 10000 } }
+      ]
+    },
+    {
+      "id": "auth-gmail-inbox",
+      "name": "Gmail profile auth state and human-assist flow",
+      "requires": ["network", "auth", "manual"],
+      "tags": ["auth", "gmail", "manual-assist", "profile-revitt"],
+      "actions": [
+        { "open": { "url": "https://mail.google.com/mail/u/0/#inbox" } },
+        { "wait_for": { "condition": "ready", "timeout_ms": 20000 } },
+        {
+          "read": {
+            "any_title_contains": ["Gmail", "Sign in"],
+            "any_main_contains": ["Inbox", "Sign in", "Use your Google Account"]
+          }
+        }
+      ],
+      "human_assist": "If Gmail asks for login, passkey, MFA, recovery, or CAPTCHA, stop and ask the user to complete it in the visible browser."
+    },
+    {
+      "id": "auth-reddit-ads",
+      "name": "Reddit Ads profile auth and takeover flow",
+      "requires": ["network", "auth", "manual"],
+      "tags": ["auth", "ads", "manual-assist", "profile-revitt"],
+      "actions": [
+        { "open": { "url": "https://ads.reddit.com/" } },
+        { "wait_for": { "condition": "ready", "timeout_ms": 20000 } },
+        {
+          "read": {
+            "any_title_contains": ["Reddit", "Ads", "Log In"],
+            "any_main_contains": ["Reddit Ads", "Log In", "advertise"]
+          }
+        }
+      ],
+      "human_assist": "If Reddit shows login, MFA, bot checks, or an account-risk prompt, stop and ask the user to take over."
+    },
+    {
+      "id": "auth-financial-dashboard",
+      "name": "Financial dashboard controls through real profile",
+      "requires": ["network", "auth", "manual"],
+      "tags": ["auth", "financial", "manual-assist", "profile-revitt"],
+      "actions": [
+        { "open": { "url": "https://dashboard.stripe.com/" } },
+        { "wait_for": { "condition": "ready", "timeout_ms": 20000 } },
+        {
+          "read": {
+            "any_title_contains": ["Stripe", "Sign in", "Dashboard"],
+            "any_main_contains": ["Dashboard", "Sign in", "Continue", "Stripe"]
+          }
+        },
+        { "screenshot": { "min_bytes": 1000, "optional": true } }
+      ],
+      "human_assist": "Financial sites may require passkeys, hardware keys, MFA, or fraud checks. The agent must ask for human assistance and must not bypass controls."
+    },
+    {
+      "id": "auth-intervalspro-existing-profile-chat",
+      "name": "IntervalsPro preserved-profile auth and visible chat",
+      "requires": ["network", "auth", "manual"],
+      "tags": ["auth", "chat", "intervalspro", "existing-profile", "max-gmail"],
+      "actions": [
+        { "open": { "url": "${ENV:INTERVALSPRO_PROFILE_CHAT_URL:https://intervals.pro/chat}", "save_as": "intervals_chat" } },
+        { "focus_tab": { "target": "intervals_chat" } },
+        { "wait_for": { "condition": "ready", "timeout_ms": 30000 } },
+        { "click": { "match": { "role": "button", "name_contains": "Not now" } }, "optional": true },
+        { "click": { "match": { "role": "button", "name_contains": "Continue" } }, "optional": true },
+        { "press": { "key": "Escape" }, "optional": true },
+        {
+          "snapshot": {
+            "min_elements": 1,
+            "require": [
+              { "role": "textbox", "tag": "textarea", "save_as": "chat_input" }
+            ]
+          }
+        },
+        { "type": { "target": "chat_input", "text": "From agent-browser on max-air: reply in one short sentence and include the token visible-max-air." } },
+        { "press": { "key": "Meta+Enter" } },
+        { "wait_for": { "condition": "text:Stop", "timeout_ms": 10000 }, "optional": true },
+        { "wait_for": { "condition": "not_text:Stop", "timeout_ms": 180000 } },
+        {
+          "read": {
+            "any_title_contains": ["IntervalsPro", "Intervals"],
+            "any_main_contains": ["visible-max-air", "agent-browser", "max-air"]
+          }
+        }
+      ],
+      "human_assist": "This scenario relies on the selected visible Chrome profile already being authenticated. If IntervalsPro or Intervals.icu asks for login, passkey, MFA, CAPTCHA, or consent, stop and ask the user to complete it in the visible browser."
+    },
+    {
+      "id": "auth-intervalspro-oauth-chat",
+      "name": "IntervalsPro OAuth interstitial and multi-turn chat",
+      "requires": ["network", "auth", "manual"],
+      "tags": ["auth", "oauth", "chat", "multi-tab", "intervalspro"],
+      "actions": [
+        { "open": { "url": "${ENV:INTERVALSPRO_CHAT_URL:https://staging.intervals.pro/chat}", "save_as": "intervals_chat" } },
+        { "focus_tab": { "target": "intervals_chat" } },
+        { "wait_for": { "condition": "ready", "timeout_ms": 30000 } },
+        { "wait_for": { "condition": "text:Connect with Intervals.icu", "timeout_ms": 30000 } },
+        {
+          "snapshot": {
+            "min_elements": 1,
+            "require": [
+              { "role": "button", "name_contains": "Connect with Intervals", "save_as": "connect_intervals" }
+            ]
+          }
+        },
+        { "click": { "target": "connect_intervals" } },
+        {
+          "wait_for_tab": {
+            "url_contains": "intervals.icu",
+            "new_only": true,
+            "save_as": "intervals_oauth",
+            "focus": true,
+            "timeout_ms": 30000
+          }
+        },
+        { "wait_for": { "condition": "text:Please enter your email and password", "timeout_ms": 30000 } },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              { "role": "textbox", "name_contains": "email", "save_as": "icu_email" },
+              { "role": "textbox", "type": "password", "save_as": "icu_password" },
+              { "role": "button", "name_contains": "LOGIN", "save_as": "icu_login" }
+            ]
+          }
+        },
+        { "type": { "target": "icu_email", "text": "${ENV:ICU_USERNAME}" } },
+        { "type": { "target": "icu_password", "text": "${ENV:ICU_PASSWORD}" } },
+        { "click": { "target": "icu_login" } },
+        { "press": { "key": "Enter" }, "optional": true },
+        { "wait_for": { "condition": "text:Authorize", "timeout_ms": 10000 }, "optional": true },
+        { "click": { "match": { "role": "button", "name_contains": "Authorize" } }, "optional": true },
+        { "wait_for": { "condition": "text:Allow", "timeout_ms": 10000 }, "optional": true },
+        { "click": { "match": { "role": "button", "name_contains": "Allow" } }, "optional": true },
+        { "focus_tab": { "target": "intervals_chat" } },
+        { "wait_for": { "condition": "not_text:Waiting for authorization", "timeout_ms": 120000 } },
+        { "click": { "match": { "role": "button", "name_contains": "Not now" } }, "optional": true },
+        { "click": { "match": { "role": "button", "name_contains": "Continue" } }, "optional": true },
+        { "press": { "key": "Escape" }, "optional": true },
+        {
+          "snapshot": {
+            "min_elements": 1,
+            "require": [
+              { "role": "textbox", "tag": "textarea", "save_as": "chat_input" }
+            ]
+          }
+        },
+        { "type": { "target": "chat_input", "text": "Reply in one short sentence and include the words agent-browser pineapple." } },
+        { "press": { "key": "Meta+Enter" } },
+        { "wait_for": { "condition": "text:Stop", "timeout_ms": 10000 }, "optional": true },
+        { "wait_for": { "condition": "not_text:Stop", "timeout_ms": 120000 } },
+        {
+          "snapshot": {
+            "min_elements": 1,
+            "require": [
+              { "role": "textbox", "tag": "textarea", "save_as": "chat_input" }
+            ]
+          }
+        },
+        { "type": { "target": "chat_input", "text": "Now summarize my last 7 days of training in two bullets." } },
+        { "press": { "key": "Meta+Enter" } },
+        { "wait_for": { "condition": "text:Stop", "timeout_ms": 10000 }, "optional": true },
+        { "wait_for": { "condition": "not_text:Stop", "timeout_ms": 180000 } },
+        {
+          "read": {
+            "any_title_contains": ["IntervalsPro", "Intervals"],
+            "any_main_contains": ["agent-browser", "training", "pineapple", "7 days"]
+          }
+        }
+      ],
+      "human_assist": "If Intervals.icu shows MFA, CAPTCHA, account-risk prompts, or a changed OAuth consent screen, stop and ask the user to complete the visible browser step."
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Visual Fallback Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 32px; max-width: 840px; }
+      canvas { border: 1px solid #9aa7b3; display: block; margin-top: 16px; }
+      .map-like { width: 640px; height: 240px; overflow: hidden; margin-top: 20px; border: 1px solid #9aa7b3; }
+      .map-like div { width: 960px; height: 420px; background: linear-gradient(45deg, #e8eef4 25%, #c7d4df 25%, #c7d4df 50%, #e8eef4 50%, #e8eef4 75%, #c7d4df 75%); background-size: 48px 48px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Visual Fallback Fixture</h1>
+      <p>This page includes canvas and map-like surfaces that require screenshot fallback.</p>
+      <canvas id="chart" width="640" height="280" role="img" aria-label="Revenue chart"></canvas>
+      <div class="map-like" role="img" aria-label="Map tile preview"><div></div></div>
+    </main>
+    <script>
+      const canvas = document.getElementById('chart');
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#182026';
+      ctx.font = '18px system-ui';
+      ctx.fillText('Revenue chart', 24, 32);
+      const bars = [80, 140, 110, 190, 230, 170];
+      const colors = ['#4361ee', '#2a9d8f', '#e76f51', '#6d597a', '#f4a261', '#457b9d'];
+      bars.forEach((height, index) => {
+        ctx.fillStyle = colors[index];
+        ctx.fillRect(56 + index * 88, 250 - height, 48, height);
+      });
+      ctx.strokeStyle = '#182026';
+      ctx.beginPath();
+      ctx.moveTo(40, 250);
+      ctx.lineTo(590, 250);
+      ctx.stroke();
+    </script>
+  </body>
+</html>

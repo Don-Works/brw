@@ -9,8 +9,11 @@ import (
 	"strings"
 )
 
+const DefaultBridgeExtensionID = "hkomepfdcddgepbdalomhabiphokllkd"
+
 type Policy struct {
-	Profiles []Profile `json:"profiles"`
+	Profiles   []Profile   `json:"profiles"`
+	Transports []Transport `json:"transports,omitempty"`
 }
 
 type Profile struct {
@@ -21,6 +24,22 @@ type Profile struct {
 	ProfileDirectory       string `json:"profile_directory,omitempty"`
 	DirectCDPAllowed       bool   `json:"direct_cdp_allowed"`
 	ExtensionBridgeAllowed bool   `json:"extension_bridge_allowed"`
+	BridgeExtensionID      string `json:"bridge_extension_id,omitempty"`
+	BridgeInstallMode      string `json:"bridge_install_mode,omitempty"`
+	DevToolsMCPAllowed     bool   `json:"devtools_mcp_allowed,omitempty"`
+	DevToolsMCPMode        string `json:"devtools_mcp_mode,omitempty"`
+}
+
+type Transport struct {
+	Name             string `json:"name"`
+	Kind             string `json:"kind"`
+	Host             string `json:"host,omitempty"`
+	User             string `json:"user,omitempty"`
+	PreferredNetwork string `json:"preferred_network,omitempty"`
+	AppDir           string `json:"app_dir,omitempty"`
+	Command          string `json:"command,omitempty"`
+	Bind             string `json:"bind,omitempty"`
+	Expose           string `json:"expose,omitempty"`
 }
 
 func Load(path string) (Policy, error) {
@@ -82,6 +101,15 @@ func (p Policy) Find(name string) (Profile, error) {
 		}
 	}
 	return Profile{}, fmt.Errorf("profile %q is not allowed by workspace policy", name)
+}
+
+func (p Policy) FindTransport(name string) (Transport, error) {
+	for _, transport := range p.Transports {
+		if transport.Name == name {
+			return transport, nil
+		}
+	}
+	return Transport{}, fmt.Errorf("transport %q is not allowed by workspace policy", name)
 }
 
 func expandPath(path string) string {

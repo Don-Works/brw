@@ -22,11 +22,13 @@ const ReadScript = `(function() {
     return clean(el ? (el.innerText || el.textContent || '') : '');
   }
   function bestMain() {
+    const body = document.body || document.documentElement;
+    if (!body) return document.documentElement;
     const direct = document.querySelector('article, main, [role="main"], .article, .post, .content');
     if (direct && text(direct).length > 120) return direct;
-    let best = document.body;
+    let best = body;
     let bestScore = 0;
-    for (const el of Array.from(document.body.querySelectorAll('article,main,section,div'))) {
+    for (const el of Array.from(body.querySelectorAll('article,main,section,div'))) {
       if (!visible(el)) continue;
       const t = text(el);
       if (t.length < 120) continue;
@@ -37,7 +39,7 @@ const ReadScript = `(function() {
         bestScore = score;
       }
     }
-    return best || document.body;
+    return best || body;
   }
   function roleFor(el) {
     const explicit = clean(el.getAttribute('role'));
@@ -68,7 +70,7 @@ const ReadScript = `(function() {
     return parent ? text(parent) : '';
   }
   function nameFor(el) {
-    return clean(el.getAttribute('aria-label') || labelText(el) || el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('title') || text(el));
+    return clean(el.getAttribute('aria-label') || labelText(el) || el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('title') || (('value' in el) ? el.value : '') || text(el));
   }
 
   const mainEl = bestMain();

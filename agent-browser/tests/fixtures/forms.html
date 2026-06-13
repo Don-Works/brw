@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Form Interaction Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 32px; max-width: 760px; }
+      form { display: grid; gap: 14px; }
+      label { display: grid; gap: 4px; font-weight: 600; }
+      input, select, textarea, [contenteditable] { font: inherit; padding: 8px; border: 1px solid #9aa7b3; }
+      button { width: fit-content; padding: 8px 12px; }
+      [contenteditable] { min-height: 44px; }
+      #result { margin-top: 20px; padding: 12px; background: #eef6f1; min-height: 22px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Form Interaction Fixture</h1>
+      <form id="signup" aria-label="Account setup">
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="email" required>
+
+        <label for="full-name">Full name</label>
+        <input id="full-name" name="full_name" autocomplete="name">
+
+        <label for="plan">Plan</label>
+        <select id="plan" name="plan">
+          <option value="free">Free</option>
+          <option value="pro">Pro</option>
+          <option value="enterprise">Enterprise</option>
+        </select>
+
+        <label>
+          <input id="terms" name="terms" type="checkbox">
+          Accept terms
+        </label>
+
+        <label for="notes">Project notes</label>
+        <div id="notes" role="textbox" contenteditable="true" aria-label="Project notes"></div>
+
+        <button type="submit">Submit request</button>
+      </form>
+      <div id="result" role="status" aria-live="polite"></div>
+    </main>
+    <script>
+      document.getElementById('signup').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const form = new FormData(event.currentTarget);
+        const notes = document.getElementById('notes').innerText.trim();
+        const accepted = document.getElementById('terms').checked ? 'accepted' : 'missing';
+        document.getElementById('result').textContent =
+          `Submitted ${form.get('email')} ${form.get('full_name')} ${form.get('plan')} ${accepted} ${notes}`;
+      });
+    </script>
+  </body>
+</html>

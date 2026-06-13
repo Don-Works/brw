@@ -8,14 +8,33 @@ import (
 	"time"
 
 	"github.com/revitt/agent-browser/internal/browser"
+	"github.com/revitt/agent-browser/internal/readability"
+	"github.com/revitt/agent-browser/internal/snapshot"
 )
 
+type Controller interface {
+	Open(context.Context, string) (browser.OpenResult, error)
+	ListTabs(context.Context) ([]browser.Tab, error)
+	FocusTab(context.Context, string) error
+	CloseTab(context.Context, string) error
+	Snapshot(context.Context) (snapshot.PageSnapshot, error)
+	Read(context.Context) (readability.PageRead, error)
+	Click(context.Context, string) error
+	Type(context.Context, string, string) error
+	Select(context.Context, string, string) error
+	Press(context.Context, string) error
+	Scroll(context.Context, string) error
+	WaitFor(context.Context, string, time.Duration) error
+	Screenshot(context.Context) (browser.Screenshot, error)
+	ScreenshotElement(context.Context, string) (browser.Screenshot, error)
+}
+
 type Server struct {
-	manager *browser.Manager
+	manager Controller
 	server  *http.Server
 }
 
-func New(addr string, manager *browser.Manager) *Server {
+func New(addr string, manager Controller) *Server {
 	mux := http.NewServeMux()
 	s := &Server{manager: manager, server: &http.Server{Addr: addr, Handler: mux}}
 	s.routes(mux)

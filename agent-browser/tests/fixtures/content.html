@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="description" content="Deterministic content fixture for agent-browser readability tests.">
+    <meta property="og:title" content="Agent Browser Readability Fixture">
+    <link rel="canonical" href="https://example.test/agent-browser/content">
+    <title>Readable Content Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; color: #182026; background: #f7f8fa; }
+      header, main, footer { max-width: 860px; margin: 0 auto; padding: 24px; }
+      main { background: white; }
+      table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+      th, td { border: 1px solid #cfd6dd; padding: 8px; text-align: left; }
+      caption { font-weight: 700; margin-bottom: 8px; text-align: left; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <a href="#main">Skip to main content</a>
+      <nav aria-label="Primary">
+        <a href="/docs">Docs</a>
+        <a href="/pricing">Pricing</a>
+      </nav>
+    </header>
+    <main id="main">
+      <article>
+        <h1>Semantic Browser Coverage</h1>
+        <p>
+          This fixture checks that read() extracts the main article text,
+          headings, visible links, tables, language metadata, canonical URLs,
+          descriptions, and Open Graph metadata without relying on screenshots.
+        </p>
+        <h2>Controls Under Test</h2>
+        <p>
+          Agents should prefer page meaning and structured content over pixels.
+          Screenshots are useful only for visual fallback cases such as charts,
+          canvases, maps, dense screenshots, and image-heavy pages.
+        </p>
+        <p>
+          Read the <a href="https://developer.chrome.com/docs/devtools/protocol/">CDP architecture notes</a>
+          and compare them with the <a href="https://www.w3.org/TR/wai-aria/">ARIA reference</a>.
+        </p>
+        <h2>Coverage Table</h2>
+        <table>
+          <caption>Quarterly browser coverage</caption>
+          <thead>
+            <tr><th>Area</th><th>Status</th><th>Owner</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Accessibility tree</td><td>Required</td><td>daemon</td></tr>
+            <tr><td>Stable refs</td><td>Required</td><td>store</td></tr>
+            <tr><td>Visual fallback</td><td>Fallback</td><td>screenshots</td></tr>
+          </tbody>
+        </table>
+      </article>
+    </main>
+    <footer>
+      <p>Fixture footer.</p>
+    </footer>
+  </body>
+</html>
