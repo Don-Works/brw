@@ -910,6 +910,85 @@ func Fill(ctx context.Context, ref, text string, replace bool) error {
 	return nil
 }
 
+// WaitConditionScript returns a Promise that resolves true as soon as the given
+// condition holds, or false after timeoutMs. It checks immediately, then re-checks
+// on DOM mutations (MutationObserver) and history events, with a 100ms safety
+// interval for signals those miss (e.g. pushState URL changes) — replacing a
+// fixed-interval CDP poll loop with a single awaited in-page promise.
+const WaitConditionScript = `(function(condition, timeoutMs){
+  if (!condition || condition === 'load') condition = 'ready';
+  function roots(){
+    const out=[document];
+    for(let i=0;i<out.length;i++){
+      const root=out[i];
+      if(!root.querySelectorAll) continue;
+      for(const el of Array.from(root.querySelectorAll('*'))){ if(el.shadowRoot) out.push(el.shadowRoot); }
+    }
+    return out;
+  }
+  function hasRef(ref){
+    const selector='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
+    return roots().some(root => root.querySelector && root.querySelector(selector));
+  }
+  function check(){
+    if(condition==='ready') return document.readyState==='complete'||document.readyState==='interactive';
+    if(condition.startsWith('url:')) return location.href.includes(condition.slice(4));
+    if(condition.startsWith('not_url:')) return !location.href.includes(condition.slice(8));
+    if(condition.startsWith('title:')) return document.title.includes(condition.slice(6));
+    if(condition.startsWith('not_title:')) return !document.title.includes(condition.slice(10));
+    if(condition.startsWith('text:')) return !!document.body && document.body.innerText.includes(condition.slice(5));
+    if(condition.startsWith('not_text:')) return !document.body || !document.body.innerText.includes(condition.slice(9));
+    if(condition.startsWith('ref:')) return hasRef(condition.slice(4));
+    if(condition.startsWith('not_ref:')) return !hasRef(condition.slice(8));
+    return !!document.body && document.body.innerText.includes(condition);
+  }
+  return new Promise(function(resolve){
+    if(check()){ resolve(true); return; }
+    var done=false, obs=null, iv=0, to=0;
+    function recheck(){ try{ if(check()) finish(true); }catch(e){} }
+    function finish(v){
+      if(done) return; done=true;
+      try{ if(obs) obs.disconnect(); }catch(e){}
+      if(iv) clearInterval(iv);
+      if(to) clearTimeout(to);
+      try{ window.removeEventListener('popstate', recheck); window.removeEventListener('hashchange', recheck); }catch(e){}
+      resolve(v);
+    }
+    try{ obs=new MutationObserver(recheck); obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
+    try{ window.addEventListener('popstate', recheck); window.addEventListener('hashchange', recheck); }catch(e){}
+    iv=setInterval(recheck, 100);
+    to=setTimeout(function(){ finish(check()); }, Math.max(0, timeoutMs|0));
+  });
+})`
+
+// WaitForCondition evaluates WaitConditionScript and awaits its promise, returning
+// whether the condition was met within timeoutMs.
+func WaitForCondition(ctx context.Context, condition string, timeoutMs int64) (bool, error) {
+	condJSON, _ := json.Marshal(condition)
+	expr := fmt.Sprintf("%s(%s,%d)", WaitConditionScript, condJSON, timeoutMs)
+	var matched bool
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		obj, exception, err := runtime.Evaluate(expr).
+			WithReturnByValue(true).
+			WithAwaitPromise(true).
+			Do(ctx)
+		if err != nil {
+			return err
+		}
+		if exception != nil {
+			details, _ := json.Marshal(exception)
+			return fmt.Errorf("wait condition failed: %s", details)
+		}
+		if obj == nil || len(obj.Value) == 0 {
+			return nil
+		}
+		return json.Unmarshal(obj.Value, &matched)
+	})); err != nil {
+		return false, err
+	}
+	return matched, nil
+}
+
 func SetFileInputFiles(ctx context.Context, ref string, paths []string) error {
 	if ref == "" {
 		return errors.New("ref is required")

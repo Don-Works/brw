@@ -527,28 +527,25 @@ func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Du
 	if timeout == 0 {
 		timeout = m.timeout
 	}
-	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout)
+	// Buffer the Go-side context slightly beyond the in-page timeout so the
+	// page's own timer resolves the wait before the CDP call is cancelled.
+	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
 	if err != nil {
 		return err
 	}
 	defer cancel()
 
-	deadline := time.Now().Add(timeout)
-	for {
-		ok, err := evaluateCondition(tabCtx, condition)
-		if err == nil && ok {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			if err != nil {
-				return err
-			}
-			return fmt.Errorf("timed out waiting for %q", condition)
-		}
-		if err := chromedp.Run(tabCtx, chromedp.Sleep(250*time.Millisecond)); err != nil {
-			return err
-		}
+	// Event-driven: a single awaited in-page promise that resolves the moment a
+	// MutationObserver / nav event satisfies the condition, instead of a 250ms
+	// CDP poll loop. One round-trip instead of N — the win compounds remotely.
+	matched, err := snapshot.WaitForCondition(tabCtx, condition, timeout.Milliseconds())
+	if err != nil {
+		return err
 	}
+	if !matched {
+		return fmt.Errorf("timed out waiting for %q", condition)
+	}
+	return nil
 }
 
 func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
@@ -780,40 +777,3 @@ func (m *Manager) tabByID(ctx context.Context, id string) (Tab, error) {
 	return Tab{}, fmt.Errorf("tab %q not found", id)
 }
 
-func evaluateCondition(ctx context.Context, condition string) (bool, error) {
-	condition = strings.TrimSpace(condition)
-	if condition == "" || condition == "load" {
-		condition = "ready"
-	}
-	condJSON, _ := json.Marshal(condition)
-	expr := fmt.Sprintf(`(function(condition) {
-	  function roots() {
-	    const out = [document];
-	    for (let i = 0; i < out.length; i++) {
-	      const root = out[i];
-	      if (!root.querySelectorAll) continue;
-	      for (const el of Array.from(root.querySelectorAll('*'))) {
-	        if (el.shadowRoot) out.push(el.shadowRoot);
-	      }
-	    }
-	    return out;
-	  }
-	  function hasRef(ref) {
-	    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
-	    return roots().some(root => root.querySelector && root.querySelector(selector));
-	  }
-	  if (condition === "ready" || condition === "load") return document.readyState === "complete" || document.readyState === "interactive";
-	  if (condition.startsWith("url:")) return location.href.includes(condition.slice(4));
-	  if (condition.startsWith("not_url:")) return !location.href.includes(condition.slice(8));
-	  if (condition.startsWith("title:")) return document.title.includes(condition.slice(6));
-	  if (condition.startsWith("not_title:")) return !document.title.includes(condition.slice(10));
-	  if (condition.startsWith("text:")) return document.body && document.body.innerText.includes(condition.slice(5));
-	  if (condition.startsWith("not_text:")) return !document.body || !document.body.innerText.includes(condition.slice(9));
-	  if (condition.startsWith("ref:")) return hasRef(condition.slice(4));
-	  if (condition.startsWith("not_ref:")) return !hasRef(condition.slice(8));
-	  return document.body && document.body.innerText.includes(condition);
-	})(%s)`, condJSON)
-	var ok bool
-	err := chromedp.Run(ctx, chromedp.Evaluate(expr, &ok))
-	return ok, err
-}
