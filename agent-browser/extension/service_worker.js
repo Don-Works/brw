@@ -105,7 +105,11 @@ async function handle(message) {
       return;
     }
     if (message.type === "open_tab") {
-      const tab = await chrome.tabs.create({ url: message.params?.url || "about:blank", active: true });
+      // Open in the BACKGROUND (active:false): automation must never steal the
+      // human's foreground tab/window. The daemon tracks this as the active tab
+      // for subsequent CDP ops (which attach by tabId regardless of focus);
+      // raising it to the foreground is reserved for the explicit focus_tab op.
+      const tab = await chrome.tabs.create({ url: message.params?.url || "about:blank", active: false });
       state.activeTabId = tab.id || null;
       send({ id: message.id, ok: true, result: await tabSummary(tab) });
       return;
