@@ -60,6 +60,7 @@ Generate the MCP config from the workspace policy:
 
 ```sh
 ./bin/agent-browserctl mcp-config \
+  --workspace agent-browser \
   --profile max-gmail \
   --transport max-air \
   --profile-policy ../.mcplexer/config/browser-profiles.json \
@@ -110,6 +111,7 @@ Create the CRX and update XML:
 ```sh
 ./bin/agent-browserctl pack-extension
 ./bin/agent-browserctl update-xml \
+  --workspace agent-browser \
   --profile max-gmail \
   --profile-policy ../.mcplexer/config/browser-profiles.json \
   --crx-url https://max-air/agent-browser/agent-browser-bridge.crx \
@@ -120,6 +122,7 @@ Generate a macOS Chrome configuration profile:
 
 ```sh
 ./bin/agent-browserctl macos-policy \
+  --workspace agent-browser \
   --profile max-gmail \
   --profile-policy ../.mcplexer/config/browser-profiles.json \
   --update-url https://max-air/agent-browser/updates.xml \
@@ -136,7 +139,7 @@ After install, verify the app and Chrome profile:
 
 ```sh
 ssh maxrevitt@max-air \
-  '"$HOME/Library/Application Support/agent-browser/bin/agent-browserctl" doctor --profile max-gmail --profile-policy "$HOME/Library/Application Support/agent-browser/config/browser-profiles.json"'
+  'AGENT_BROWSER_WORKSPACE=agent-browser AGENT_BROWSER_PROFILE=max-gmail AGENT_BROWSER_PROFILE_POLICY="$HOME/Library/Application Support/agent-browser/config/browser-profiles.json" "$HOME/Library/Application Support/agent-browser/bin/agent-browserctl" doctor'
 ```
 
 `doctor` fails if the requested profile is not allowed, app files are missing,
@@ -147,9 +150,15 @@ or the expected bridge extension ID is not installed in the Chrome profile.
 Use `agent-browser-devtools-mcp` only through policy:
 
 ```sh
-agent-browser-devtools-mcp --profile agent-revitt --cdp-endpoint http://127.0.0.1:9222
+AGENT_BROWSER_WORKSPACE=agent-browser \
+AGENT_BROWSER_PROFILE=agent-revitt \
+agent-browser-devtools-mcp --cdp-endpoint http://127.0.0.1:9222
 ```
 
 For installed-profile auth profiles, the wrapper fails closed until Chrome
 DevTools MCP can be correlated to the same workspace profile through an approved
 Chrome permission flow or managed extension install.
+
+Use `--workspace agent-browser` with the wrapper whenever a workspace binding is
+present, so DevTools MCP inherits the same profile allow-list as
+`agent-browserd`.

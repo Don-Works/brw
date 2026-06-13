@@ -73,12 +73,16 @@ The MCP server currently exposes:
 - `browser_open`
 - `browser_list_tabs`
 - `browser_focus_tab`
+- `browser_close_tab`
 - `browser_read`
 - `browser_snapshot`
 - `browser_click`
 - `browser_type`
+- `browser_select`
 - `browser_press`
+- `browser_scroll`
 - `browser_screenshot`
+- `browser_screenshot_element`
 - `browser_wait_for`
 
 For remote MCP over SSH, see [docs/mcp-client-config.md](docs/mcp-client-config.md) and [docs/remote-control.md](docs/remote-control.md).
@@ -88,13 +92,17 @@ For remote MCP over SSH, see [docs/mcp-client-config.md](docs/mcp-client-config.
 For an existing installed Chrome profile such as `max-gmail`, use the extension bridge after the bridge extension is installed in that Chrome profile:
 
 ```sh
-agent-browserd --bridge --mcp --http off --profile max-gmail
+AGENT_BROWSER_WORKSPACE=agent-browser \
+AGENT_BROWSER_PROFILE=max-gmail \
+AGENT_BROWSER_PROFILE_POLICY=../.mcplexer/config/browser-profiles.json \
+agent-browserd --bridge --mcp --http off
 ```
 
 Generate a remote SSH MCP config:
 
 ```sh
 agent-browserctl mcp-config \
+  --workspace agent-browser \
   --profile max-gmail \
   --transport max-air \
   --profile-policy ../.mcplexer/config/browser-profiles.json \
@@ -117,6 +125,11 @@ That profile is a real Chrome profile: the browser is visible, extensions can be
 The extension bridge is the route for carrying over auth that already exists in
 your installed Chrome profile. It does not extract cookies, edit Chrome profile
 databases, or copy profile data.
+
+Workspace bindings in `.mcplexer/config/browser-profiles.json` define which
+Chrome profiles and transports a workspace may use. For this workspace the
+default binding is `agent-browser -> max-gmail over max-air`; direct CDP remains
+restricted to the non-default `agent-revitt` profile.
 
 For more detail, see [docs/auth-model.md](docs/auth-model.md).
 

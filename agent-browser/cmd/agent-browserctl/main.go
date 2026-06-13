@@ -64,22 +64,23 @@ commands:
 
 func doctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	var profileName, policyPath, appDir string
-	fs.StringVar(&profileName, "profile", "", "workspace profile name")
-	fs.StringVar(&policyPath, "profile-policy", "", "profile policy JSON path")
+	var profileName, workspaceName, policyPath, appDir string
+	fs.StringVar(&profileName, "profile", os.Getenv("AGENT_BROWSER_PROFILE"), "workspace profile name")
+	fs.StringVar(&workspaceName, "workspace", os.Getenv("AGENT_BROWSER_WORKSPACE"), "workspace binding name for default/restricted profiles")
+	fs.StringVar(&policyPath, "profile-policy", os.Getenv("AGENT_BROWSER_PROFILE_POLICY"), "profile policy JSON path")
 	fs.StringVar(&appDir, "app-dir", defaultAppDir(), "agent-browser app install directory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if profileName == "" {
-		return errors.New("--profile is required")
+	if profileName == "" && workspaceName == "" {
+		return errors.New("--profile or --workspace is required")
 	}
 
 	policy, err := profilepolicy.Load(policyPath)
 	if err != nil {
 		return err
 	}
-	profile, err := policy.Find(profileName)
+	profile, err := policy.ResolveProfile(workspaceName, profileName)
 	if err != nil {
 		return err
 	}
@@ -140,27 +141,31 @@ func doctor(args []string) error {
 
 func mcpConfig(args []string) error {
 	fs := flag.NewFlagSet("mcp-config", flag.ContinueOnError)
-	var profileName, transportName, policyPath, mode string
-	fs.StringVar(&profileName, "profile", "", "workspace profile name")
-	fs.StringVar(&transportName, "transport", "local", "workspace transport name")
-	fs.StringVar(&policyPath, "profile-policy", "", "profile policy JSON path")
-	fs.StringVar(&mode, "mode", "auto", "auto, direct, or bridge")
+	var profileName, workspaceName, transportName, policyPath, mode string
+	fs.StringVar(&profileName, "profile", os.Getenv("AGENT_BROWSER_PROFILE"), "workspace profile name")
+	fs.StringVar(&workspaceName, "workspace", os.Getenv("AGENT_BROWSER_WORKSPACE"), "workspace binding name for default/restricted profiles")
+	fs.StringVar(&transportName, "transport", os.Getenv("AGENT_BROWSER_TRANSPORT"), "workspace transport name")
+	fs.StringVar(&policyPath, "profile-policy", os.Getenv("AGENT_BROWSER_PROFILE_POLICY"), "profile policy JSON path")
+	fs.StringVar(&mode, "mode", "auto", "auto, direct, bridge, or upstream-http")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if profileName == "" {
-		return errors.New("--profile is required")
+	if profileName == "" && workspaceName == "" {
+		return errors.New("--profile or --workspace is required")
+	}
+	if transportName == "" && workspaceName == "" {
+		transportName = "local"
 	}
 
 	policy, err := profilepolicy.Load(policyPath)
 	if err != nil {
 		return err
 	}
-	profile, err := policy.Find(profileName)
+	profile, err := policy.ResolveProfile(workspaceName, profileName)
 	if err != nil {
 		return err
 	}
-	transport, err := policy.FindTransport(transportName)
+	transport, err := policy.ResolveTransport(workspaceName, transportName)
 	if err != nil {
 		return err
 	}
@@ -176,11 +181,20 @@ func mcpConfig(args []string) error {
 	if mode == "bridge" && !profile.ExtensionBridgeAllowed {
 		return fmt.Errorf("profile %q is not allowed for bridge mode", profile.Name)
 	}
+	if mode == "upstream-http" && !profile.ExtensionBridgeAllowed && !profile.DirectCDPAllowed {
+		return fmt.Errorf("profile %q is not allowed for upstream HTTP mode", profile.Name)
+	}
 	if mode == "direct" && !profile.DirectCDPAllowed {
 		return fmt.Errorf("profile %q is not allowed for direct mode", profile.Name)
 	}
 
-	argsOut := runtimeArgs(profile.Name, mode, remotePolicyPath(transport))
+	envPolicyPath := policyPath
+	if transport.Kind == "ssh-stdio" {
+		envPolicyPath = remotePolicyPath(transport)
+	}
+	envOut := runtimeEnv(workspaceName, profile.Name, envPolicyPath)
+	runtimeOut := runtimeArgs(mode)
+	argsOut := append([]string{}, runtimeOut...)
 	command := ""
 	switch transport.Kind {
 	case "stdio":
@@ -193,8 +207,14 @@ func mcpConfig(args []string) error {
 		if transport.User != "" {
 			host = transport.User + "@" + host
 		}
-		command = "ssh"
-		argsOut = []string{host, shellJoin(append([]string{remoteBinary(transport, "agent-browserd")}, argsOut...))}
+		command = transport.Command
+		if command == "" {
+			command = "ssh"
+		}
+		commandArgs := append([]string{}, transport.CommandArgs...)
+		remoteArgs := append([]string{remoteBinary(transport, "agent-browserd")}, runtimeOut...)
+		argsOut = append(commandArgs, host, shellJoin(append(shellEnv(envOut), remoteArgs...)))
+		envOut = nil
 	default:
 		return fmt.Errorf("transport %q has unsupported kind %q for stdio MCP config", transport.Name, transport.Kind)
 	}
@@ -211,23 +231,27 @@ func mcpConfig(args []string) error {
 			},
 		},
 	}
+	if len(envOut) > 0 {
+		result["mcpServers"].(map[string]any)[name].(map[string]any)["env"] = envOut
+	}
 	writeJSON(os.Stdout, result)
 	return nil
 }
 
 func macOSPolicy(args []string) error {
 	fs := flag.NewFlagSet("macos-policy", flag.ContinueOnError)
-	var profileName, policyPath, updateURL, installMode, output string
-	fs.StringVar(&profileName, "profile", "", "workspace profile name")
-	fs.StringVar(&policyPath, "profile-policy", "", "profile policy JSON path")
+	var profileName, workspaceName, policyPath, updateURL, installMode, output string
+	fs.StringVar(&profileName, "profile", os.Getenv("AGENT_BROWSER_PROFILE"), "workspace profile name")
+	fs.StringVar(&workspaceName, "workspace", os.Getenv("AGENT_BROWSER_WORKSPACE"), "workspace binding name for default/restricted profiles")
+	fs.StringVar(&policyPath, "profile-policy", os.Getenv("AGENT_BROWSER_PROFILE_POLICY"), "profile policy JSON path")
 	fs.StringVar(&updateURL, "update-url", "", "Chrome extension update URL")
 	fs.StringVar(&installMode, "install-mode", "normal_installed", "normal_installed or force_installed")
 	fs.StringVar(&output, "output", "", "output .mobileconfig path; stdout when empty")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if profileName == "" {
-		return errors.New("--profile is required")
+	if profileName == "" && workspaceName == "" {
+		return errors.New("--profile or --workspace is required")
 	}
 	if updateURL == "" {
 		return errors.New("--update-url is required")
@@ -240,7 +264,7 @@ func macOSPolicy(args []string) error {
 	if err != nil {
 		return err
 	}
-	profile, err := policy.Find(profileName)
+	profile, err := policy.ResolveProfile(workspaceName, profileName)
 	if err != nil {
 		return err
 	}
@@ -296,17 +320,18 @@ func packExtension(args []string) error {
 
 func updateXML(args []string) error {
 	fs := flag.NewFlagSet("update-xml", flag.ContinueOnError)
-	var profileName, policyPath, crxURL, version, output string
-	fs.StringVar(&profileName, "profile", "", "workspace profile name")
-	fs.StringVar(&policyPath, "profile-policy", "", "profile policy JSON path")
+	var profileName, workspaceName, policyPath, crxURL, version, output string
+	fs.StringVar(&profileName, "profile", os.Getenv("AGENT_BROWSER_PROFILE"), "workspace profile name")
+	fs.StringVar(&workspaceName, "workspace", os.Getenv("AGENT_BROWSER_WORKSPACE"), "workspace binding name for default/restricted profiles")
+	fs.StringVar(&policyPath, "profile-policy", os.Getenv("AGENT_BROWSER_PROFILE_POLICY"), "profile policy JSON path")
 	fs.StringVar(&crxURL, "crx-url", "", "absolute URL to agent-browser-bridge.crx")
 	fs.StringVar(&version, "version", extensionVersion("extension/manifest.json"), "extension version")
 	fs.StringVar(&output, "output", "", "output XML path; stdout when empty")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if profileName == "" {
-		return errors.New("--profile is required")
+	if profileName == "" && workspaceName == "" {
+		return errors.New("--profile or --workspace is required")
 	}
 	if crxURL == "" {
 		return errors.New("--crx-url is required")
@@ -315,7 +340,7 @@ func updateXML(args []string) error {
 	if err != nil {
 		return err
 	}
-	profile, err := policy.Find(profileName)
+	profile, err := policy.ResolveProfile(workspaceName, profileName)
 	if err != nil {
 		return err
 	}
@@ -358,16 +383,30 @@ func chromeExtensionInstalled(profileDir, id string) (bool, string, error) {
 	return false, "", nil
 }
 
-func runtimeArgs(profile, mode, policyPath string) []string {
-	args := []string{"--mcp", "--http", "off", "--profile", profile}
+func runtimeArgs(mode string) []string {
+	args := []string{"--mcp", "--http", "off"}
 	if mode == "bridge" {
 		args = append([]string{"--bridge"}, args...)
 		args = append(args, "--bridge-addr", "127.0.0.1:17311")
 	}
-	if policyPath != "" {
-		args = append(args, "--profile-policy", policyPath)
+	if mode == "upstream-http" {
+		args = append(args, "--upstream-http", "http://127.0.0.1:17310")
 	}
 	return args
+}
+
+func runtimeEnv(workspace, profile, policyPath string) map[string]string {
+	env := map[string]string{}
+	if workspace != "" {
+		env["AGENT_BROWSER_WORKSPACE"] = workspace
+	}
+	if profile != "" {
+		env["AGENT_BROWSER_PROFILE"] = profile
+	}
+	if policyPath != "" {
+		env["AGENT_BROWSER_PROFILE_POLICY"] = policyPath
+	}
+	return env
 }
 
 func remoteBinary(t profilepolicy.Transport, name string) string {
@@ -395,9 +434,31 @@ func defaultAppDir() string {
 func shellJoin(args []string) string {
 	quoted := make([]string, 0, len(args))
 	for _, arg := range args {
+		if isShellAssignment(arg) {
+			quoted = append(quoted, arg)
+			continue
+		}
 		quoted = append(quoted, quoteRemote(arg))
 	}
 	return strings.Join(quoted, " ")
+}
+
+func isShellAssignment(s string) bool {
+	name, _, ok := strings.Cut(s, "=")
+	return ok && strings.HasPrefix(name, "AGENT_BROWSER_")
+}
+
+func shellEnv(env map[string]string) []string {
+	keys := []string{"AGENT_BROWSER_WORKSPACE", "AGENT_BROWSER_PROFILE", "AGENT_BROWSER_PROFILE_POLICY"}
+	assignments := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value, ok := env[key]
+		if !ok || value == "" {
+			continue
+		}
+		assignments = append(assignments, key+"="+quoteRemote(value))
+	}
+	return assignments
 }
 
 func quoteRemote(s string) string {

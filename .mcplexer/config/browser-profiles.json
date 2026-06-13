@@ -1,4 +1,21 @@
 {
+  "workspace_bindings": [
+    {
+      "workspace": "agent-browser",
+      "default_profile": "max-gmail",
+      "allowed_profiles": [
+        "max-gmail",
+        "revitt",
+        "revitt-work",
+        "agent-revitt"
+      ],
+      "default_transport": "max-air",
+      "allowed_transports": [
+        "max-air",
+        "local"
+      ]
+    }
+  ],
   "profiles": [
     {
       "name": "revitt",
@@ -63,7 +80,13 @@
       "host": "max-air",
       "user": "maxrevitt",
       "preferred_network": "tailscale",
-      "app_dir": "~/Library/Application Support/agent-browser"
+      "app_dir": "~/Library/Application Support/agent-browser",
+      "command_args": [
+        "-o",
+        "UserKnownHostsFile=/Users/max/Library/Application Support/agent-browser/ssh/known_hosts",
+        "-o",
+        "StrictHostKeyChecking=accept-new"
+      ]
     },
     {
       "name": "max-air-http",

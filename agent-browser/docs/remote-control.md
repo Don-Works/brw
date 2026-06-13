@@ -8,7 +8,7 @@ The runtime default is stdio MCP over SSH to the browser machine:
 
 ```sh
 ssh maxrevitt@max-air \
-  '"$HOME/Library/Application Support/agent-browser/bin/agent-browserd" --mcp --http off --profile max-gmail --profile-policy "$HOME/Library/Application Support/agent-browser/config/browser-profiles.json"'
+  'AGENT_BROWSER_WORKSPACE=agent-browser AGENT_BROWSER_PROFILE=max-gmail AGENT_BROWSER_PROFILE_POLICY="$HOME/Library/Application Support/agent-browser/config/browser-profiles.json" "$HOME/Library/Application Support/agent-browser/bin/agent-browserd" --bridge --mcp --http off --bridge-addr 127.0.0.1:17311'
 ```
 
 Advantages:
@@ -23,10 +23,18 @@ Tradeoff: the human takeover happens at the remote machine's display, or through
 
 The workspace policy should name both pieces separately:
 
+- `workspace`: for example `agent-browser`
 - `profile`: for example `max-gmail`
 - `transport`: for example `max-air`
 
-The profile determines which Chrome profile may be controlled. The transport only determines where the MCP process runs.
+The workspace binding determines the default profile/transport and the allow-list.
+The profile determines which Chrome profile may be controlled. The transport only
+determines where the MCP process runs.
+
+For stdio clients, profile pinning is passed as launcher environment rather than
+an HTTP header: `AGENT_BROWSER_WORKSPACE`, `AGENT_BROWSER_PROFILE`, and
+`AGENT_BROWSER_PROFILE_POLICY`. The daemon treats flags and env the same way and
+still fails closed if the profile is outside the workspace policy.
 
 ## HTTP API Over SSH Tunnel
 

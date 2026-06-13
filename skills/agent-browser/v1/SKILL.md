@@ -23,7 +23,10 @@ From the repo root:
 cd agent-browser
 make test
 make build
-./bin/agent-browserd --profile agent-revitt --http 127.0.0.1:17310
+AGENT_BROWSER_WORKSPACE=agent-browser \
+AGENT_BROWSER_PROFILE=agent-revitt \
+AGENT_BROWSER_PROFILE_POLICY=../.mcplexer/config/browser-profiles.json \
+./bin/agent-browserd --http 127.0.0.1:17310
 ```
 
 Smoke test:
@@ -44,6 +47,7 @@ Prefer stdio MCP over SSH so the browser and profile stay on the machine that ow
 ```sh
 cd agent-browser
 ./bin/agent-browserctl mcp-config \
+  --workspace agent-browser \
   --profile max-gmail \
   --transport max-air \
   --profile-policy ../.mcplexer/config/browser-profiles.json \
@@ -58,6 +62,14 @@ For max-air, the installed runtime lives at:
 
 ## Profile Policy
 
+The workspace binding `agent-browser` defaults to `max-gmail` over `max-air`
+and restricts this workspace to the profiles/transports declared in
+`.mcplexer/config/browser-profiles.json`. Runtime MCP profile pinning should use
+launcher env (`AGENT_BROWSER_WORKSPACE`, `AGENT_BROWSER_PROFILE`, and
+`AGENT_BROWSER_PROFILE_POLICY`) so mcplexer can register the server as a normal,
+visible stdio MCP downstream and later move those values into credential/env
+injection without changing the daemon.
+
 `agent-revitt` is the direct-CDP persistent non-default profile.
 
 `max-gmail` points at Chrome `Profile 1` / `max.revitt@gmail.com` and is extension-bridge only.
@@ -66,7 +78,7 @@ For max-air, the installed runtime lives at:
 
 Chrome 136+ blocks direct remote debugging against the default Chrome data dir. Chrome 137+ branded builds do not reliably support `--load-extension` for installed profiles. Do not edit Chrome profile JSON by hand. Use the stable bridge extension `hkomepfdcddgepbdalomhabiphokllkd`, installed once through Developer Mode or repeatably through a private Chrome Web Store channel or managed Chrome policy.
 
-Run `agent-browserctl doctor --profile max-gmail` on the browser machine before authenticated tests.
+Run `AGENT_BROWSER_WORKSPACE=agent-browser AGENT_BROWSER_PROFILE=max-gmail agent-browserctl doctor` on the browser machine before authenticated tests.
 
 ## MCP Tools
 
@@ -75,12 +87,16 @@ The daemon exposes:
 - `browser_open`
 - `browser_list_tabs`
 - `browser_focus_tab`
+- `browser_close_tab`
 - `browser_read`
 - `browser_snapshot`
 - `browser_click`
 - `browser_type`
+- `browser_select`
 - `browser_press`
+- `browser_scroll`
 - `browser_screenshot`
+- `browser_screenshot_element`
 - `browser_wait_for`
 
 Operate on refs returned by `browser_snapshot`, not CSS selectors. Example: `browser_type({ref:"e2", text:"..."})`, then `browser_click({ref:"e8"})`.
@@ -91,3 +107,4 @@ Operate on refs returned by `browser_snapshot`, not CSS selectors. Example: `bro
 - Full-fat installed Chrome is required. Do not switch to headless Chrome, Chrome-for-Testing-only workflows, or custom renderers unless explicitly requested for a separate test.
 - The current optional UI is not implemented; rely on visible Chrome plus logs.
 - Chrome DevTools MCP may be used only through `agent-browser-devtools-mcp`, which checks the same profile policy and fails closed when it cannot correlate the DevTools session to the requested workspace profile.
+- The installed-profile extension bridge returns DOM semantic snapshots and readable content; direct CDP profiles are the path for full accessibility-tree enrichment.

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "agent-browser Profile Bridge",
   "short_name": "agent-browser",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvSms15ZH0wJw84NNQ1UYd/2uG+1q1rEvtoJDedVsPZc8r/vzajWbqNSFjNe7F77XUm1tZwl+yN3FVWyRaNhzcSrp9e2+69SdAC+ZYcqeWska6xYxNbexXHDxG9SEmzOteRd4lcyrMyeM/xDcWEb4A6ckuPrKX24D0DmJcHOZ4OD5SAWdqX7iN06SeY9RxnxxLek7HSfEiFy3zSKmT9+U7N9+dNOseCX/RnjcvB2gyf1aUM7RMPSKU8JK/cBiTetHU8jywKI5Jo1WnHBiQ3Kis4m5j5/Q/amOzewZjH3cCpZNS3GUkuPvHEHmjTwrfFJq9p+vrFud72XKb7hFtcBzZQIDAQAB",
   "description": "Local, user-installed bridge for agent-browserd to control this visible Chrome profile with explicit debugger permission.",
   "minimum_chrome_version": "116",

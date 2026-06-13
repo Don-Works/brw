@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Popup Child Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 24px; max-width: 560px; }
+      label { display: grid; gap: 6px; font-weight: 600; }
+      input, button { font: inherit; padding: 8px; }
+      #result { margin-top: 16px; min-height: 24px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Popup Child Fixture</h1>
+      <p>This is the popup target content. Reads from this page prove target focus did not drift.</p>
+      <label for="popup-note">Popup note</label>
+      <input id="popup-note" name="popup_note" autocomplete="off">
+      <button id="save-popup" type="button">Save popup note</button>
+      <p id="result" role="status" aria-live="polite"></p>
+    </main>
+    <script>
+      document.getElementById('save-popup').addEventListener('click', () => {
+        const value = document.getElementById('popup-note').value;
+        document.getElementById('result').textContent = `Popup saved: ${value}`;
+      });
+    </script>
+  </body>
+</html>

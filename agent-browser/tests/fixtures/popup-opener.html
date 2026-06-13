@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Popup Opener Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 32px; max-width: 720px; }
+      button { font: inherit; padding: 8px 12px; }
+      #status { margin-top: 16px; min-height: 24px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Popup Opener Fixture</h1>
+      <p>This page opens a synthetic popup target for agent-browser tab routing checks.</p>
+      <button id="open-popup" type="button" aria-haspopup="dialog">Open synthetic popup</button>
+      <p id="status" role="status" aria-live="polite">Popup not opened</p>
+    </main>
+    <script>
+      document.getElementById('open-popup').addEventListener('click', () => {
+        const child = window.open(
+          'popup-child.html',
+          'agentBrowserPopupFixture',
+          'popup=yes,width=520,height=420'
+        );
+        document.getElementById('status').textContent = child ? 'Popup opened' : 'Popup blocked';
+      });
+    </script>
+  </body>
+</html>

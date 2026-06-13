@@ -16,7 +16,10 @@ Run the default deterministic suite:
 ```sh
 go build -o bin/agent-browserd ./cmd/browserd
 go build -o bin/browsercheck ./cmd/browsercheck
-./bin/agent-browserd --profile agent-revitt --http 127.0.0.1:17310
+AGENT_BROWSER_WORKSPACE=agent-browser \
+AGENT_BROWSER_PROFILE=agent-revitt \
+AGENT_BROWSER_PROFILE_POLICY=../.mcplexer/config/browser-profiles.json \
+./bin/agent-browserd --http 127.0.0.1:17310
 ./bin/browsercheck
 ```
 
@@ -37,6 +40,10 @@ Run the preserved-auth IntervalsPro profile scenario after the bridge extension
 is installed in `max-gmail`:
 
 ```sh
+AGENT_BROWSER_WORKSPACE=agent-browser \
+AGENT_BROWSER_PROFILE=max-gmail \
+AGENT_BROWSER_PROFILE_POLICY=../.mcplexer/config/browser-profiles.json \
+agent-browserd --bridge --http 127.0.0.1:17310
 ./bin/browsercheck --include-network --include-auth --include-manual \
   --only auth-intervalspro-existing-profile-chat
 ```

@@ -12,8 +12,17 @@ import (
 const DefaultBridgeExtensionID = "hkomepfdcddgepbdalomhabiphokllkd"
 
 type Policy struct {
-	Profiles   []Profile   `json:"profiles"`
-	Transports []Transport `json:"transports,omitempty"`
+	WorkspaceBindings []WorkspaceBinding `json:"workspace_bindings,omitempty"`
+	Profiles          []Profile          `json:"profiles"`
+	Transports        []Transport        `json:"transports,omitempty"`
+}
+
+type WorkspaceBinding struct {
+	Workspace         string   `json:"workspace"`
+	DefaultProfile    string   `json:"default_profile,omitempty"`
+	AllowedProfiles   []string `json:"allowed_profiles,omitempty"`
+	DefaultTransport  string   `json:"default_transport,omitempty"`
+	AllowedTransports []string `json:"allowed_transports,omitempty"`
 }
 
 type Profile struct {
@@ -31,15 +40,16 @@ type Profile struct {
 }
 
 type Transport struct {
-	Name             string `json:"name"`
-	Kind             string `json:"kind"`
-	Host             string `json:"host,omitempty"`
-	User             string `json:"user,omitempty"`
-	PreferredNetwork string `json:"preferred_network,omitempty"`
-	AppDir           string `json:"app_dir,omitempty"`
-	Command          string `json:"command,omitempty"`
-	Bind             string `json:"bind,omitempty"`
-	Expose           string `json:"expose,omitempty"`
+	Name             string   `json:"name"`
+	Kind             string   `json:"kind"`
+	Host             string   `json:"host,omitempty"`
+	User             string   `json:"user,omitempty"`
+	PreferredNetwork string   `json:"preferred_network,omitempty"`
+	AppDir           string   `json:"app_dir,omitempty"`
+	Command          string   `json:"command,omitempty"`
+	CommandArgs      []string `json:"command_args,omitempty"`
+	Bind             string   `json:"bind,omitempty"`
+	Expose           string   `json:"expose,omitempty"`
 }
 
 func Load(path string) (Policy, error) {
@@ -103,6 +113,20 @@ func (p Policy) Find(name string) (Profile, error) {
 	return Profile{}, fmt.Errorf("profile %q is not allowed by workspace policy", name)
 }
 
+func (p Policy) ResolveProfile(workspace, name string) (Profile, error) {
+	binding, bound := p.FindWorkspace(workspace)
+	if name == "" && bound {
+		name = binding.DefaultProfile
+	}
+	if name == "" {
+		return Profile{}, errors.New("--profile is required when workspace has no default_profile")
+	}
+	if bound && len(binding.AllowedProfiles) > 0 && !contains(binding.AllowedProfiles, name) {
+		return Profile{}, fmt.Errorf("profile %q is not allowed for workspace %q", name, workspace)
+	}
+	return p.Find(name)
+}
+
 func (p Policy) FindTransport(name string) (Transport, error) {
 	for _, transport := range p.Transports {
 		if transport.Name == name {
@@ -110,6 +134,41 @@ func (p Policy) FindTransport(name string) (Transport, error) {
 		}
 	}
 	return Transport{}, fmt.Errorf("transport %q is not allowed by workspace policy", name)
+}
+
+func (p Policy) ResolveTransport(workspace, name string) (Transport, error) {
+	binding, bound := p.FindWorkspace(workspace)
+	if name == "" && bound {
+		name = binding.DefaultTransport
+	}
+	if name == "" {
+		return Transport{}, errors.New("--transport is required when workspace has no default_transport")
+	}
+	if bound && len(binding.AllowedTransports) > 0 && !contains(binding.AllowedTransports, name) {
+		return Transport{}, fmt.Errorf("transport %q is not allowed for workspace %q", name, workspace)
+	}
+	return p.FindTransport(name)
+}
+
+func (p Policy) FindWorkspace(name string) (WorkspaceBinding, bool) {
+	if name == "" {
+		return WorkspaceBinding{}, false
+	}
+	for _, binding := range p.WorkspaceBindings {
+		if binding.Workspace == name {
+			return binding, true
+		}
+	}
+	return WorkspaceBinding{}, false
+}
+
+func contains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func expandPath(path string) string {

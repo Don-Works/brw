@@ -1,11 +1,12 @@
 const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
-const PROTOCOL_VERSION = "0.1.0";
+const PROTOCOL_VERSION = "0.1.3";
 
 const state = {
   socket: null,
   reconnectTimer: null,
   keepAliveTimer: null,
   attachedTabs: new Set(),
+  activeTabId: null,
   reconnectAttempt: 0
 };
 
@@ -24,7 +25,21 @@ chrome.action.onClicked.addListener(async (tab) => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "agent-browser-connect") connect();
 });
-chrome.tabs.onActivated.addListener(connect);
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  await publishActiveTab(activeInfo?.tabId);
+});
+chrome.tabs.onCreated.addListener(async (tab) => {
+  if (tab?.active) await publishActiveTab(tab.id);
+});
+chrome.tabs.onRemoved.addListener((tabId) => {
+  state.attachedTabs.delete(tabId);
+  if (state.activeTabId === tabId) state.activeTabId = null;
+});
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+  const tabs = await chrome.tabs.query({ windowId, active: true }).catch(() => []);
+  if (tabs[0]?.id) await publishActiveTab(tabs[0].id);
+});
 chrome.debugger.onDetach.addListener((source) => {
   if (source.tabId) state.attachedTabs.delete(source.tabId);
 });
@@ -86,20 +101,22 @@ async function handle(message) {
       return;
     }
     if (message.type === "list_tabs") {
-      const tabs = await chrome.tabs.query({});
-      send({ id: message.id, ok: true, result: tabs.map(tabSummary) });
+      send({ id: message.id, ok: true, result: await listTabSummaries() });
       return;
     }
     if (message.type === "open_tab") {
       const tab = await chrome.tabs.create({ url: message.params?.url || "about:blank", active: true });
-      send({ id: message.id, ok: true, result: tabSummary(tab) });
+      state.activeTabId = tab.id || null;
+      send({ id: message.id, ok: true, result: await tabSummary(tab) });
       return;
     }
     if (message.type === "focus_tab") {
       const tabId = Number(message.params?.tabId);
+      const before = await chrome.tabs.get(tabId).catch(() => null);
+      if (before?.windowId) await chrome.windows.update(before.windowId, { focused: true });
       const tab = await chrome.tabs.update(tabId, { active: true });
-      if (tab?.windowId) await chrome.windows.update(tab.windowId, { focused: true });
-      send({ id: message.id, ok: true, result: tabSummary(tab) });
+      state.activeTabId = tabId;
+      send({ id: message.id, ok: true, result: await tabSummary(tab) });
       return;
     }
     if (message.type === "close_tab") {
@@ -137,20 +154,84 @@ async function attach(tabId) {
 }
 
 async function activeTabId() {
+  if (state.activeTabId) {
+    const tab = await chrome.tabs.get(state.activeTabId).catch(() => null);
+    if (tab?.id) return tab.id;
+    state.activeTabId = null;
+  }
+  const windows = await chrome.windows.getAll({
+    populate: true,
+    windowTypes: ["normal", "popup"]
+  }).catch(() => []);
+  for (const win of windows) {
+    if (!win.focused) continue;
+    const tab = (win.tabs || []).find((candidate) => candidate.active);
+    if (tab?.id) {
+      state.activeTabId = tab.id;
+      return tab.id;
+    }
+  }
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tabs[0]?.id) return tabs[0].id;
+  if (tabs[0]?.id) {
+    state.activeTabId = tabs[0].id;
+    return tabs[0].id;
+  }
   const any = await chrome.tabs.query({ active: true });
-  if (any[0]?.id) return any[0].id;
+  if (any[0]?.id) {
+    state.activeTabId = any[0].id;
+    return any[0].id;
+  }
   throw new Error("no active tab");
 }
 
-function tabSummary(tab) {
+async function listTabSummaries() {
+  const windows = await chrome.windows.getAll({
+    populate: true,
+    windowTypes: ["normal", "popup"]
+  });
+  const out = [];
+  for (const win of windows) {
+    for (const tab of win.tabs || []) out.push(tabSummaryFrom(tab, win));
+  }
+  return out;
+}
+
+async function tabSummary(tab) {
+  if (!tab) return {};
+  let win = null;
+  if (tab?.windowId) win = await chrome.windows.get(tab.windowId).catch(() => null);
+  return tabSummaryFrom(tab, win);
+}
+
+function tabSummaryFrom(tab, win) {
+  if (!tab) return {};
   return {
     id: tab.id,
     url: tab.url || "",
+    pendingUrl: tab.pendingUrl || "",
     title: tab.title || "",
-    active: Boolean(tab.active)
+    active: Boolean(tab.active),
+    highlighted: Boolean(tab.highlighted),
+    windowId: tab.windowId || win?.id || 0,
+    windowFocused: Boolean(win?.focused),
+    windowType: win?.type || "",
+    openerTabId: tab.openerTabId || 0
   };
+}
+
+async function publishActiveTab(tabId) {
+  if (!tabId) return;
+  state.activeTabId = tabId;
+  await connect();
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const summary = tab ? await tabSummary(tab) : { id: tabId };
+  send({
+    type: "active_tab",
+    tabId,
+    tab: summary,
+    url: summary.url || "",
+    title: summary.title || ""
+  });
 }
 
 function startKeepAlive() {

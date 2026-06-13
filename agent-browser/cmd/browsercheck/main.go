@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,9 +41,12 @@ type step struct {
 	WaitForTab        *tabStep               `json:"wait_for_tab,omitempty"`
 	FocusTab          *tabStep               `json:"focus_tab,omitempty"`
 	Snapshot          *snapshotStep          `json:"snapshot,omitempty"`
+	Find              *findStep              `json:"find,omitempty"`
 	Read              *readStep              `json:"read,omitempty"`
 	Click             *targetStep            `json:"click,omitempty"`
 	Type              *typeStep              `json:"type,omitempty"`
+	Fill              *fillStep              `json:"fill,omitempty"`
+	UploadFile        *uploadFileStep        `json:"upload_file,omitempty"`
 	Select            *selectStep            `json:"select,omitempty"`
 	Press             *pressStep             `json:"press,omitempty"`
 	Scroll            *scrollStep            `json:"scroll,omitempty"`
@@ -72,8 +76,29 @@ type tabStep struct {
 }
 
 type snapshotStep struct {
-	MinElements int            `json:"min_elements,omitempty"`
-	Require     []elementMatch `json:"require,omitempty"`
+	Mode          string         `json:"mode,omitempty"`
+	Query         string         `json:"query,omitempty"`
+	Role          string         `json:"role,omitempty"`
+	Text          string         `json:"text,omitempty"`
+	Limit         int            `json:"limit,omitempty"`
+	ViewportOnly  *bool          `json:"viewport_only,omitempty"`
+	IncludeHidden bool           `json:"include_hidden,omitempty"`
+	IncludeAX     *bool          `json:"include_ax,omitempty"`
+	Since         string         `json:"since,omitempty"`
+	MaxBytes      int            `json:"max_bytes,omitempty"`
+	MinElements   int            `json:"min_elements,omitempty"`
+	Require       []elementMatch `json:"require,omitempty"`
+}
+
+type findStep struct {
+	Query         string         `json:"query,omitempty"`
+	Role          string         `json:"role,omitempty"`
+	Text          string         `json:"text,omitempty"`
+	Limit         int            `json:"limit,omitempty"`
+	ViewportOnly  *bool          `json:"viewport_only,omitempty"`
+	IncludeHidden bool           `json:"include_hidden,omitempty"`
+	MinElements   int            `json:"min_elements,omitempty"`
+	Require       []elementMatch `json:"require,omitempty"`
 }
 
 type elementMatch struct {
@@ -119,6 +144,26 @@ type typeStep struct {
 	Text   string        `json:"text"`
 }
 
+type fillStep struct {
+	Target  string        `json:"target,omitempty"`
+	Ref     string        `json:"ref,omitempty"`
+	Query   string        `json:"query,omitempty"`
+	Role    string        `json:"role,omitempty"`
+	Match   *elementMatch `json:"match,omitempty"`
+	Text    string        `json:"text"`
+	Replace *bool         `json:"replace,omitempty"`
+}
+
+type uploadFileStep struct {
+	Target string        `json:"target,omitempty"`
+	Ref    string        `json:"ref,omitempty"`
+	Query  string        `json:"query,omitempty"`
+	Role   string        `json:"role,omitempty"`
+	Match  *elementMatch `json:"match,omitempty"`
+	Path   string        `json:"path,omitempty"`
+	Paths  []string      `json:"paths,omitempty"`
+}
+
 type selectStep struct {
 	Target string        `json:"target,omitempty"`
 	Ref    string        `json:"ref,omitempty"`
@@ -145,6 +190,10 @@ type screenshotElementStep struct {
 	Match    *elementMatch `json:"match,omitempty"`
 	MinBytes int           `json:"min_bytes,omitempty"`
 	Optional bool          `json:"optional,omitempty"`
+}
+
+type findResult struct {
+	Elements []snapshot.Element `json:"elements"`
 }
 
 type runner struct {
@@ -289,10 +338,16 @@ func (r *runner) runStep(st step) error {
 		return r.client.postJSON("/api/browser/focus", map[string]string{"id": id}, &result)
 	case st.Snapshot != nil:
 		var snap snapshot.PageSnapshot
-		if err := r.client.getJSON("/api/page/snapshot", &snap); err != nil {
+		if err := r.client.getJSON(snapshotPath(*st.Snapshot), &snap); err != nil {
 			return err
 		}
 		return r.assertSnapshot(snap, *st.Snapshot)
+	case st.Find != nil:
+		var result findResult
+		if err := r.client.getJSON(findPath(*st.Find), &result); err != nil {
+			return err
+		}
+		return r.assertFind(result.Elements, *st.Find)
 	case st.Read != nil:
 		var read readability.PageRead
 		if err := r.client.getJSON("/api/page/read", &read); err != nil {
@@ -314,6 +369,55 @@ func (r *runner) runStep(st step) error {
 		}
 		var result browser.ActionResult
 		return r.client.postJSON("/api/page/type", map[string]string{"ref": ref, "text": expandVars(st.Type.Text)}, &result)
+	case st.Fill != nil:
+		body := map[string]any{"text": expandVars(st.Fill.Text)}
+		if st.Fill.Query != "" || st.Fill.Role != "" {
+			if st.Fill.Query != "" {
+				body["query"] = expandVars(st.Fill.Query)
+			}
+			if st.Fill.Role != "" {
+				body["role"] = st.Fill.Role
+			}
+		} else {
+			ref, err := r.resolveTarget(st.Fill.Ref, st.Fill.Target, st.Fill.Match)
+			if err != nil {
+				return err
+			}
+			body["ref"] = ref
+		}
+		if st.Fill.Replace != nil {
+			body["replace"] = *st.Fill.Replace
+		}
+		var result browser.ActionResult
+		return r.client.postJSON("/api/page/fill", body, &result)
+	case st.UploadFile != nil:
+		body := map[string]any{}
+		if st.UploadFile.Path != "" {
+			body["path"] = r.expandPath(st.UploadFile.Path)
+		}
+		if len(st.UploadFile.Paths) > 0 {
+			paths := make([]string, 0, len(st.UploadFile.Paths))
+			for _, path := range st.UploadFile.Paths {
+				paths = append(paths, r.expandPath(path))
+			}
+			body["paths"] = paths
+		}
+		if st.UploadFile.Query != "" || st.UploadFile.Role != "" {
+			if st.UploadFile.Query != "" {
+				body["query"] = expandVars(st.UploadFile.Query)
+			}
+			if st.UploadFile.Role != "" {
+				body["role"] = st.UploadFile.Role
+			}
+		} else {
+			ref, err := r.resolveTarget(st.UploadFile.Ref, st.UploadFile.Target, st.UploadFile.Match)
+			if err != nil {
+				return err
+			}
+			body["ref"] = ref
+		}
+		var result browser.ActionResult
+		return r.client.postJSON("/api/page/upload_file", body, &result)
 	case st.Select != nil:
 		ref, err := r.resolveTarget(st.Select.Ref, st.Select.Target, st.Select.Match)
 		if err != nil {
@@ -376,6 +480,77 @@ func (r *runner) assertSnapshot(snap snapshot.PageSnapshot, want snapshotStep) e
 		}
 	}
 	return nil
+}
+
+func (r *runner) assertFind(elements []snapshot.Element, want findStep) error {
+	if len(elements) < want.MinElements {
+		return fmt.Errorf("find returned %d elements, want at least %d", len(elements), want.MinElements)
+	}
+	for _, match := range want.Require {
+		el, ok := findElement(elements, match)
+		if !ok {
+			return fmt.Errorf("find missing element %s", describeMatch(match))
+		}
+		if match.SaveAs != "" {
+			r.refs[match.SaveAs] = el.Ref
+		}
+	}
+	return nil
+}
+
+func snapshotPath(step snapshotStep) string {
+	values := url.Values{}
+	addQuery(values, "mode", step.Mode)
+	addQuery(values, "query", expandVars(step.Query))
+	addQuery(values, "role", step.Role)
+	addQuery(values, "text", expandVars(step.Text))
+	addIntQuery(values, "limit", step.Limit)
+	addBoolQuery(values, "viewport_only", step.ViewportOnly)
+	if step.IncludeHidden {
+		values.Set("include_hidden", "true")
+	}
+	addBoolQuery(values, "include_ax", step.IncludeAX)
+	addQuery(values, "since", step.Since)
+	addIntQuery(values, "max_bytes", step.MaxBytes)
+	return pathWithQuery("/api/page/snapshot", values)
+}
+
+func findPath(step findStep) string {
+	values := url.Values{}
+	addQuery(values, "query", expandVars(step.Query))
+	addQuery(values, "role", step.Role)
+	addQuery(values, "text", expandVars(step.Text))
+	addIntQuery(values, "limit", step.Limit)
+	addBoolQuery(values, "viewport_only", step.ViewportOnly)
+	if step.IncludeHidden {
+		values.Set("include_hidden", "true")
+	}
+	return pathWithQuery("/api/page/find", values)
+}
+
+func pathWithQuery(path string, values url.Values) string {
+	if encoded := values.Encode(); encoded != "" {
+		return path + "?" + encoded
+	}
+	return path
+}
+
+func addQuery(values url.Values, key, value string) {
+	if value != "" {
+		values.Set(key, value)
+	}
+}
+
+func addIntQuery(values url.Values, key string, value int) {
+	if value > 0 {
+		values.Set(key, strconv.Itoa(value))
+	}
+}
+
+func addBoolQuery(values url.Values, key string, value *bool) {
+	if value != nil {
+		values.Set(key, strconv.FormatBool(*value))
+	}
 }
 
 func (r *runner) resolveTarget(ref, target string, match *elementMatch) (string, error) {
@@ -563,6 +738,19 @@ func (r *runner) expandURL(raw string) string {
 	if strings.HasPrefix(raw, "${REPO_ROOT}/") {
 		rel := strings.TrimPrefix(raw, "${REPO_ROOT}/")
 		return fileURL(filepath.Join(r.repoRoot, rel))
+	}
+	return raw
+}
+
+func (r *runner) expandPath(raw string) string {
+	raw = expandVars(raw)
+	if strings.HasPrefix(raw, "${FIXTURES}/") {
+		rel := strings.TrimPrefix(raw, "${FIXTURES}/")
+		return filepath.Join(r.repoRoot, "tests", "fixtures", rel)
+	}
+	if strings.HasPrefix(raw, "${REPO_ROOT}/") {
+		rel := strings.TrimPrefix(raw, "${REPO_ROOT}/")
+		return filepath.Join(r.repoRoot, rel)
 	}
 	return raw
 }

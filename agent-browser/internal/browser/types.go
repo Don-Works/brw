@@ -1,6 +1,10 @@
 package browser
 
-import "time"
+import (
+	"time"
+
+	"github.com/revitt/agent-browser/internal/snapshot"
+)
 
 type Config struct {
 	ChromePath       string
@@ -14,10 +18,17 @@ type Config struct {
 }
 
 type Tab struct {
-	ID    string `json:"id"`
-	URL   string `json:"url"`
-	Title string `json:"title"`
-	Type  string `json:"type"`
+	ID            string `json:"id"`
+	URL           string `json:"url"`
+	Title         string `json:"title"`
+	Type          string `json:"type"`
+	WindowID      int    `json:"window_id,omitempty"`
+	WindowType    string `json:"window_type,omitempty"`
+	Active        bool   `json:"active,omitempty"`
+	Highlighted   bool   `json:"highlighted,omitempty"`
+	WindowFocused bool   `json:"window_focused,omitempty"`
+	OpenerTabID   string `json:"opener_tab_id,omitempty"`
+	Popup         bool   `json:"popup,omitempty"`
 }
 
 type OpenResult struct {
@@ -25,8 +36,17 @@ type OpenResult struct {
 }
 
 type ActionResult struct {
-	OK      bool   `json:"ok"`
-	Message string `json:"message,omitempty"`
+	OK           bool               `json:"ok"`
+	Message      string             `json:"message,omitempty"`
+	Warning      string             `json:"warning,omitempty"`
+	Version      int64              `json:"version,omitempty"`
+	URL          string             `json:"url,omitempty"`
+	Title        string             `json:"title,omitempty"`
+	Focus        string             `json:"focus,omitempty"`
+	ChangedState *bool              `json:"changed_state,omitempty"`
+	Targets      []Tab              `json:"targets,omitempty"`
+	Changed      []string           `json:"changed,omitempty"`
+	Elements     []snapshot.Element `json:"elements,omitempty"`
 }
 
 type Screenshot struct {

@@ -31,6 +31,7 @@ type Bridge struct {
 	mu      sync.RWMutex
 	conn    *websocket.Conn
 	hello   hello
+	active  string
 	pending map[string]chan response
 	writeMu sync.Mutex
 	nextID  atomic.Uint64
@@ -52,6 +53,7 @@ type request struct {
 type response struct {
 	ID     string          `json:"id,omitempty"`
 	Type   string          `json:"type,omitempty"`
+	TabID  int             `json:"tabId,omitempty"`
 	OK     bool            `json:"ok,omitempty"`
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  string          `json:"error,omitempty"`
@@ -93,10 +95,12 @@ func (b *Bridge) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	b.mu.RLock()
 	connected := b.conn != nil
 	hello := b.hello
+	active := b.active
 	b.mu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"connected": connected,
-		"hello":     hello,
+		"connected":     connected,
+		"hello":         hello,
+		"active_tab_id": active,
 	})
 }
 
@@ -154,6 +158,12 @@ func (b *Bridge) readLoop(ctx context.Context, conn *websocket.Conn) {
 			b.mu.Lock()
 			b.hello = resp.Hello
 			b.mu.Unlock()
+			continue
+		}
+		if resp.Type == "active_tab" {
+			if resp.TabID != 0 {
+				b.setActiveTabID(strconv.Itoa(resp.TabID))
+			}
 			continue
 		}
 		if resp.ID == "" {
@@ -236,7 +246,11 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	if err := json.Unmarshal(raw, &tab); err != nil {
 		return browser.OpenResult{}, err
 	}
-	return browser.OpenResult{Tab: tab.toBrowserTab()}, nil
+	out := tab.toBrowserTab()
+	if out.ID != "" {
+		b.setActiveTabID(out.ID)
+	}
+	return browser.OpenResult{Tab: out}, nil
 }
 
 func (b *Bridge) ListTabs(ctx context.Context) ([]browser.Tab, error) {
@@ -249,25 +263,60 @@ func (b *Bridge) ListTabs(ctx context.Context) ([]browser.Tab, error) {
 		return nil, err
 	}
 	out := make([]browser.Tab, 0, len(tabs))
+	activeID := ""
+	fallbackActiveID := ""
+	hasFocusedWindow := false
 	for _, tab := range tabs {
-		out = append(out, tab.toBrowserTab())
+		outTab := tab.toBrowserTab()
+		out = append(out, outTab)
+		if outTab.WindowFocused {
+			hasFocusedWindow = true
+		}
+		if outTab.Active && outTab.WindowFocused {
+			activeID = outTab.ID
+		}
+		if fallbackActiveID == "" && outTab.Active {
+			fallbackActiveID = outTab.ID
+		}
+	}
+	if activeID == "" && !hasFocusedWindow && b.activeTabID() == "" {
+		activeID = fallbackActiveID
+	}
+	if activeID != "" {
+		b.setActiveTabID(activeID)
 	}
 	return out, nil
 }
 
 func (b *Bridge) FocusTab(ctx context.Context, id string) error {
-	_, err := b.call(ctx, "focus_tab", map[string]any{"tabId": parseTabID(id)})
-	return err
+	raw, err := b.call(ctx, "focus_tab", map[string]any{"tabId": parseTabID(id)})
+	if err != nil {
+		return err
+	}
+	var tab extTab
+	if err := json.Unmarshal(raw, &tab); err == nil && tab.ID != 0 {
+		b.setActiveTabID(strconv.Itoa(tab.ID))
+		return nil
+	}
+	if strings.TrimSpace(id) != "" {
+		b.setActiveTabID(id)
+	}
+	return nil
 }
 
 func (b *Bridge) CloseTab(ctx context.Context, id string) error {
 	_, err := b.call(ctx, "close_tab", map[string]any{"tabId": parseTabID(id)})
+	if err == nil && strings.TrimSpace(id) == b.activeTabID() {
+		b.setActiveTabID("")
+	}
 	return err
 }
 
-func (b *Bridge) Snapshot(ctx context.Context) (snapshot.PageSnapshot, error) {
+func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
 	var snap snapshot.PageSnapshot
-	if err := b.evaluate(ctx, snapshot.SnapshotScript, "", &snap); err != nil {
+	opts.IncludeAX = false
+	optsJSON, _ := json.Marshal(opts)
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.SnapshotFunctionScript, optsJSON), "", &snap); err != nil {
 		return snap, err
 	}
 	snap.Accessibility = snapshot.AccessibilitySummary{
@@ -277,13 +326,42 @@ func (b *Bridge) Snapshot(ctx context.Context) (snapshot.PageSnapshot, error) {
 	return snap, nil
 }
 
+func (b *Bridge) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
+	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{
+		Query:         opts.Query,
+		Text:          opts.Text,
+		Role:          opts.Role,
+		Limit:         opts.Limit,
+		ViewportOnly:  opts.ViewportOnly,
+		IncludeHidden: opts.IncludeHidden,
+	})
+	if err != nil {
+		return snapshot.FindResult{}, err
+	}
+	return snapshot.FindResult{
+		URL:      snap.URL,
+		Title:    snap.Title,
+		Elements: snap.Elements,
+		Metadata: snap.Metadata,
+	}, nil
+}
+
 func (b *Bridge) Read(ctx context.Context) (readability.PageRead, error) {
 	var read readability.PageRead
 	err := b.evaluate(ctx, readability.ReadScript, "", &read)
 	return read, err
 }
 
-func (b *Bridge) Click(ctx context.Context, ref string) error {
+func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
+	before := b.captureSemanticState(ctx)
+	if err := b.clickRef(ctx, ref); err != nil {
+		return browser.ActionResult{}, err
+	}
+	time.Sleep(150 * time.Millisecond)
+	return b.observeActionWithBefore(ctx, "clicked "+ref, before), nil
+}
+
+func (b *Bridge) clickRef(ctx context.Context, ref string) error {
 	box, err := b.resolveBox(ctx, ref)
 	if err != nil {
 		if fallbackErr := b.activate(ctx, ref); fallbackErr == nil {
@@ -291,7 +369,7 @@ func (b *Bridge) Click(ctx context.Context, ref string) error {
 		}
 		return err
 	}
-	for _, typ := range []string{"mousePressed", "mouseReleased"} {
+	for _, typ := range []string{"mouseMoved", "mousePressed", "mouseReleased"} {
 		if _, err := b.cdp(ctx, "", "Input.dispatchMouseEvent", map[string]any{
 			"type":   typ,
 			"x":      box.ViewportX,
@@ -361,29 +439,205 @@ func (b *Bridge) activate(ctx context.Context, ref string) error {
 	return nil
 }
 
-func (b *Bridge) Type(ctx context.Context, ref, text string) error {
+func (b *Bridge) Type(ctx context.Context, ref, text string) (browser.ActionResult, error) {
 	if err := b.focus(ctx, ref); err != nil {
-		return err
+		return browser.ActionResult{}, err
 	}
-	_, err := b.cdp(ctx, "", "Input.insertText", map[string]any{"text": text})
-	return err
+	before := b.captureSemanticState(ctx)
+	if _, err := b.cdp(ctx, "", "Input.insertText", map[string]any{"text": text}); err != nil {
+		return browser.ActionResult{}, err
+	}
+	time.Sleep(100 * time.Millisecond)
+	return b.observeActionWithBefore(ctx, "typed into "+ref, before), nil
 }
 
-func (b *Bridge) Select(ctx context.Context, ref, value string) error {
+func (b *Bridge) Fill(ctx context.Context, opts snapshot.FillOptions) (browser.ActionResult, error) {
+	ref := opts.Ref
+	if ref == "" {
+		result, err := b.Find(ctx, snapshot.FindOptions{
+			Query: opts.Query,
+			Role:  opts.Role,
+			Limit: 1,
+		})
+		if err != nil {
+			return browser.ActionResult{}, err
+		}
+		if len(result.Elements) == 0 {
+			return browser.ActionResult{}, fmt.Errorf("no fill target found for query %q", opts.Query)
+		}
+		ref = result.Elements[0].Ref
+	}
+	refJSON, _ := json.Marshal(ref)
+	textJSON, _ := json.Marshal(opts.Text)
+	replaceJSON, _ := json.Marshal(opts.Replace)
+	var ignored any
+	before := b.captureSemanticState(ctx)
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s,%s,%s)", snapshot.FillElementScript, refJSON, textJSON, replaceJSON), "", &ignored); err != nil {
+		return browser.ActionResult{}, err
+	}
+	time.Sleep(100 * time.Millisecond)
+	return b.observeActionWithBefore(ctx, "filled "+ref, before), nil
+}
+
+func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (browser.ActionResult, error) {
+	paths, err := browser.NormalizeUploadPaths(opts)
+	if err != nil {
+		return browser.ActionResult{}, err
+	}
+
+	ref := opts.Ref
+	if ref == "" {
+		query := opts.Query
+		if strings.TrimSpace(query) == "" {
+			query = "file"
+		}
+		result, err := b.Find(ctx, snapshot.FindOptions{
+			Query: query,
+			Role:  opts.Role,
+			Limit: 20,
+		})
+		if err != nil {
+			return browser.ActionResult{}, err
+		}
+		for _, el := range result.Elements {
+			if el.Tag == "input" && el.Type == "file" {
+				ref = el.Ref
+				break
+			}
+		}
+		if ref == "" {
+			return browser.ActionResult{}, fmt.Errorf("no file input found for query %q", query)
+		}
+	}
+
+	refJSON, _ := json.Marshal(ref)
+	raw, err := b.cdp(ctx, "", "Runtime.evaluate", map[string]any{
+		"expression":    fmt.Sprintf("%s(%s)", snapshot.FileInputElementScript, refJSON),
+		"returnByValue": false,
+		"awaitPromise":  true,
+		"objectGroup":   "agent-browser-upload",
+	})
+	if err != nil {
+		return browser.ActionResult{}, err
+	}
+	var eval struct {
+		Result struct {
+			ObjectID string `json:"objectId"`
+		} `json:"result"`
+		ExceptionDetails any `json:"exceptionDetails,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &eval); err != nil {
+		return browser.ActionResult{}, err
+	}
+	if eval.ExceptionDetails != nil {
+		details, _ := json.Marshal(eval.ExceptionDetails)
+		return browser.ActionResult{}, fmt.Errorf("file input resolution failed: %s", details)
+	}
+	if eval.Result.ObjectID == "" {
+		return browser.ActionResult{}, errors.New("file input resolution returned no object id")
+	}
+	defer func() {
+		_, _ = b.cdp(ctx, "", "Runtime.releaseObject", map[string]any{"objectId": eval.Result.ObjectID})
+	}()
+	before := b.captureSemanticState(ctx)
+	if _, err := b.cdp(ctx, "", "DOM.setFileInputFiles", map[string]any{
+		"files":    paths,
+		"objectId": eval.Result.ObjectID,
+	}); err != nil {
+		return browser.ActionResult{}, err
+	}
+	var ignored any
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.FileInputEventsScript, refJSON), "", &ignored); err != nil {
+		return browser.ActionResult{}, err
+	}
+	time.Sleep(100 * time.Millisecond)
+	return b.observeActionWithBefore(ctx, "uploaded file to "+ref, before), nil
+}
+
+func (b *Bridge) Select(ctx context.Context, ref, value string) (browser.ActionResult, error) {
 	refJSON, _ := json.Marshal(ref)
 	valueJSON, _ := json.Marshal(value)
-	var ignored any
-	return b.evaluate(ctx, fmt.Sprintf("%s(%s,%s)", snapshot.SelectElementScript, refJSON, valueJSON), "", &ignored)
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	before := b.captureSemanticState(ctx)
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s,%s)", snapshot.SelectElementScript, refJSON, valueJSON), "", &result); err != nil {
+		return browser.ActionResult{}, err
+	}
+	if !result.OK {
+		if result.Error == "" {
+			result.Error = "select failed"
+		}
+		if !strings.Contains(result.Error, "ref is not a select element") {
+			return browser.ActionResult{}, errors.New(result.Error)
+		}
+		return b.selectCustomOption(ctx, ref, value, before)
+	}
+	time.Sleep(100 * time.Millisecond)
+	return b.observeActionWithBefore(ctx, "selected "+ref, before), nil
 }
 
-func (b *Bridge) Press(ctx context.Context, key string) error {
+func (b *Bridge) selectCustomOption(ctx context.Context, ref, value string, before *browser.SemanticState) (browser.ActionResult, error) {
+	if b.elementValueMatches(ctx, ref, value) {
+		return b.observeAction(ctx, "selected "+ref+" already "+value), nil
+	}
+	option, err := b.findOptionCandidate(ctx, value)
+	if err != nil {
+		if err := b.clickRef(ctx, ref); err != nil {
+			return browser.ActionResult{}, fmt.Errorf("open custom select %s: %w", ref, err)
+		}
+		time.Sleep(125 * time.Millisecond)
+		option, err = b.findOptionCandidate(ctx, value)
+		if err != nil {
+			return browser.ActionResult{}, err
+		}
+	}
+	if err := b.clickRef(ctx, option.Ref); err != nil {
+		return browser.ActionResult{}, fmt.Errorf("select option %s: %w", option.Ref, err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	return b.observeActionWithBefore(ctx, "selected "+ref+" via option "+option.Ref, before), nil
+}
+
+func (b *Bridge) elementValueMatches(ctx context.Context, ref, value string) bool {
+	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{Limit: 0, ViewportOnly: false})
+	if err != nil {
+		return false
+	}
+	for _, el := range snap.Elements {
+		if el.Ref == ref && browser.ElementMatchesOptionValue(el, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *Bridge) findOptionCandidate(ctx context.Context, value string) (snapshot.Element, error) {
+	for _, opts := range []snapshot.SnapshotOptions{
+		{Role: "option", Query: value, Limit: 100, ViewportOnly: false},
+		{Role: "option", Limit: 200, ViewportOnly: false},
+	} {
+		snap, err := b.Snapshot(ctx, opts)
+		if err != nil {
+			return snapshot.Element{}, err
+		}
+		if option, ok := browser.SelectOptionCandidate(snap.Elements, value); ok {
+			return option, nil
+		}
+	}
+	return snapshot.Element{}, fmt.Errorf("no visible option found for %q", value)
+}
+
+func (b *Bridge) Press(ctx context.Context, key string) (browser.ActionResult, error) {
 	if key == "" {
-		return errors.New("key is required")
+		return browser.ActionResult{}, errors.New("key is required")
 	}
 	desc := actions.DescribeKey(key)
 	if desc.Key == "" {
-		return errors.New("key is required")
+		return browser.ActionResult{}, errors.New("key is required")
 	}
+	before := b.captureSemanticState(ctx)
 	for _, typ := range []string{"keyDown", "keyUp"} {
 		params := map[string]any{
 			"type":                  typ,
@@ -398,32 +652,36 @@ func (b *Bridge) Press(ctx context.Context, key string) error {
 			params["unmodifiedText"] = desc.Text
 		}
 		if _, err := b.cdp(ctx, "", "Input.dispatchKeyEvent", params); err != nil {
-			return err
+			return browser.ActionResult{}, err
 		}
 	}
-	return nil
+	time.Sleep(150 * time.Millisecond)
+	return b.observeActionWithBefore(ctx, "pressed "+key, before), nil
 }
 
-func (b *Bridge) Scroll(ctx context.Context, direction string) error {
+func (b *Bridge) Scroll(ctx context.Context, direction string) (browser.ActionResult, error) {
 	direction = strings.ToLower(strings.TrimSpace(direction))
 	if direction == "" {
 		direction = "down"
 	}
-	dx, dy := 0, 0
-	switch direction {
-	case "up":
-		dy = -700
-	case "down":
-		dy = 700
-	case "left":
-		dx = -700
-	case "right":
-		dx = 700
-	default:
-		return fmt.Errorf("unsupported scroll direction %q", direction)
+	before := b.captureSemanticState(ctx)
+	directionJSON, _ := json.Marshal(direction)
+	var scroll snapshot.ScrollResult
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.ScrollPageScript, directionJSON), "", &scroll); err != nil {
+		return browser.ActionResult{}, err
 	}
-	var ignored any
-	return b.evaluate(ctx, fmt.Sprintf(`window.scrollBy({left:%d,top:%d,behavior:"smooth"}); true`, dx, dy), "", &ignored)
+	if !scroll.OK {
+		if scroll.Error == "" {
+			scroll.Error = "scroll failed"
+		}
+		return browser.ActionResult{}, errors.New(scroll.Error)
+	}
+	time.Sleep(100 * time.Millisecond)
+	message := fmt.Sprintf("scrolled %s target:%s", direction, scroll.Target)
+	if scroll.Name != "" {
+		message += " " + strconv.Quote(scroll.Name)
+	}
+	return b.observeActionWithBefore(ctx, message, before), nil
 }
 
 func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Duration) error {
@@ -475,6 +733,45 @@ func (b *Bridge) ScreenshotElement(ctx context.Context, ref string) (browser.Scr
 	return screenshotFromRaw(raw)
 }
 
+func (b *Bridge) observeAction(ctx context.Context, message string) browser.ActionResult {
+	return b.observeActionWithBefore(ctx, message, nil)
+}
+
+func (b *Bridge) observeActionWithBefore(ctx context.Context, message string, before *browser.SemanticState) browser.ActionResult {
+	result := browser.ActionResult{OK: true, Message: message}
+	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
+	if err != nil {
+		result.Message = message + "; observation failed: " + err.Error()
+		return result
+	}
+	result.URL = snap.URL
+	result.Title = snap.Title
+	if snap.Metadata != nil {
+		result.Version = metadataInt64(snap.Metadata["version"])
+		if focus, ok := snap.Metadata["focused_ref"].(string); ok {
+			result.Focus = focus
+		}
+	}
+	after := browser.NewSemanticState(snap)
+	browser.ApplyStateDiff(&result, before, after)
+	frontier := browser.SelectFrontierElements(snap.Elements, result.Focus, 12)
+	result.Elements = frontier
+	result.Changed = summarizeElements(frontier, 12)
+	if tabs, err := b.ListTabs(ctx); err == nil {
+		result.Targets = actionTargets(tabs, b.activeTabID(), 8)
+	}
+	return result
+}
+
+func (b *Bridge) captureSemanticState(ctx context.Context) *browser.SemanticState {
+	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
+	if err != nil {
+		return nil
+	}
+	state := browser.NewSemanticState(snap)
+	return &state
+}
+
 func (b *Bridge) evaluate(ctx context.Context, expression, tabID string, dst any) error {
 	raw, err := b.cdp(ctx, tabID, "Runtime.evaluate", map[string]any{
 		"expression":    expression,
@@ -503,15 +800,64 @@ func (b *Bridge) evaluate(ctx context.Context, expression, tabID string, dst any
 	return json.Unmarshal(payload.Result.Value, dst)
 }
 
+func summarizeElements(elements []snapshot.Element, limit int) []string {
+	if limit <= 0 || len(elements) == 0 {
+		return nil
+	}
+	if len(elements) < limit {
+		limit = len(elements)
+	}
+	out := make([]string, 0, limit)
+	for i, el := range elements {
+		if i >= limit {
+			break
+		}
+		summary := strings.TrimSpace(el.Role + " " + el.Ref + " " + strconv.Quote(el.Name))
+		if el.Value != "" {
+			summary += " value:" + strconv.Quote(el.Value)
+		}
+		if el.Disabled {
+			summary += " disabled"
+		}
+		out = append(out, summary)
+	}
+	return out
+}
+
+func metadataInt64(value any) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	default:
+		return 0
+	}
+}
+
 func (b *Bridge) cdp(ctx context.Context, tabID, method string, params map[string]any) (json.RawMessage, error) {
 	if params == nil {
 		params = map[string]any{}
 	}
 	req := map[string]any{"method": method, "params": params}
+	if strings.TrimSpace(tabID) == "" {
+		tabID = b.activeTabID()
+	}
 	if tabID != "" {
 		req["tabId"] = parseTabID(tabID)
 	}
-	return b.call(ctx, "cdp", req)
+	raw, err := b.call(ctx, "cdp", req)
+	if err != nil && tabID != "" && strings.Contains(strings.ToLower(err.Error()), "no tab") {
+		b.setActiveTabID("")
+		delete(req, "tabId")
+		return b.call(ctx, "cdp", req)
+	}
+	return raw, err
 }
 
 func (b *Bridge) axNodes(ctx context.Context, tabID string) ([]*accessibility.Node, error) {
@@ -591,19 +937,88 @@ func (b *Bridge) condition(ctx context.Context, condition string) (bool, error) 
 }
 
 type extTab struct {
-	ID     int    `json:"id"`
-	URL    string `json:"url"`
-	Title  string `json:"title"`
-	Active bool   `json:"active"`
+	ID            int    `json:"id"`
+	URL           string `json:"url"`
+	Title         string `json:"title"`
+	Active        bool   `json:"active"`
+	Highlighted   bool   `json:"highlighted"`
+	WindowID      int    `json:"windowId"`
+	WindowFocused bool   `json:"windowFocused"`
+	WindowType    string `json:"windowType"`
+	OpenerTabID   int    `json:"openerTabId"`
 }
 
 func (t extTab) toBrowserTab() browser.Tab {
-	return browser.Tab{
-		ID:    strconv.Itoa(t.ID),
-		URL:   t.URL,
-		Title: t.Title,
-		Type:  "page",
+	windowType := strings.TrimSpace(t.WindowType)
+	tabType := "page"
+	if windowType == "popup" {
+		tabType = "popup"
 	}
+	openerID := ""
+	if t.OpenerTabID != 0 {
+		openerID = strconv.Itoa(t.OpenerTabID)
+	}
+	return browser.Tab{
+		ID:            strconv.Itoa(t.ID),
+		URL:           t.URL,
+		Title:         t.Title,
+		Type:          tabType,
+		WindowID:      t.WindowID,
+		WindowType:    windowType,
+		Active:        t.Active,
+		Highlighted:   t.Highlighted,
+		WindowFocused: t.WindowFocused,
+		OpenerTabID:   openerID,
+		Popup:         windowType == "popup" || t.OpenerTabID != 0,
+	}
+}
+
+func (b *Bridge) activeTabID() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.active
+}
+
+func (b *Bridge) setActiveTabID(id string) {
+	b.mu.Lock()
+	b.active = strings.TrimSpace(id)
+	b.mu.Unlock()
+}
+
+func actionTargets(tabs []browser.Tab, activeID string, limit int) []browser.Tab {
+	if limit <= 0 || len(tabs) == 0 {
+		return nil
+	}
+	out := make([]browser.Tab, 0, min(limit, len(tabs)))
+	seen := map[string]bool{}
+	add := func(tab browser.Tab) {
+		if tab.ID == "" || seen[tab.ID] || len(out) >= limit {
+			return
+		}
+		seen[tab.ID] = true
+		out = append(out, tab)
+	}
+	for _, tab := range tabs {
+		if tab.ID == activeID {
+			add(tab)
+		}
+	}
+	for _, tab := range tabs {
+		if tab.Popup || tab.WindowType == "popup" {
+			add(tab)
+		}
+	}
+	for _, tab := range tabs {
+		if tab.Active && tab.WindowFocused {
+			add(tab)
+		}
+	}
+	for _, tab := range tabs {
+		if tab.Active {
+			add(tab)
+		}
+	}
+	return out
 }
 
 func parseTabID(id string) int {

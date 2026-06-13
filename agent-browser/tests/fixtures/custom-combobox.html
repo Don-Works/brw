@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Custom ARIA Combobox Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 32px; max-width: 520px; }
+      main { display: grid; gap: 16px; }
+      label { font-weight: 600; }
+      button, [role="option"] { font: inherit; }
+      #channel-combo {
+        width: 100%;
+        padding: 8px 10px;
+        text-align: left;
+        border: 1px solid #8792a2;
+        background: #fff;
+      }
+      #channel-list {
+        margin-top: 4px;
+        border: 1px solid #8792a2;
+      }
+      #channel-list[hidden] { display: none; }
+      [role="option"] {
+        padding: 8px 10px;
+        cursor: default;
+      }
+      [role="option"][aria-selected="true"] {
+        background: #dbeafe;
+      }
+      #continue {
+        width: fit-content;
+        padding: 8px 12px;
+      }
+      #result {
+        min-height: 24px;
+        padding: 10px;
+        background: #eef6f1;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Custom ARIA Combobox Fixture</h1>
+
+      <div>
+        <label id="channel-label" for="channel-combo">Release channel</label>
+        <button
+          id="channel-combo"
+          type="button"
+          role="combobox"
+          aria-label="Release channel"
+          aria-haspopup="listbox"
+          aria-expanded="false"
+          aria-controls="channel-list"
+        >
+          <span id="channel-value">Choose channel</span>
+        </button>
+        <div id="channel-list" role="listbox" aria-labelledby="channel-label" hidden>
+          <div id="channel-draft" role="option" aria-selected="false" tabindex="-1" data-value="draft">Draft channel</div>
+          <div id="channel-stable" role="option" aria-selected="false" tabindex="-1" data-value="stable">Stable channel</div>
+          <div id="channel-archive" role="option" aria-selected="false" tabindex="-1" data-value="archive">Archive channel</div>
+        </div>
+      </div>
+
+      <input id="committed-channel" type="hidden" name="channel" value="">
+      <button id="continue" type="button">Continue with channel</button>
+      <p id="result" role="status" aria-live="polite">Waiting for committed channel</p>
+    </main>
+
+    <script>
+      const combo = document.getElementById('channel-combo');
+      const valueLabel = document.getElementById('channel-value');
+      const list = document.getElementById('channel-list');
+      const result = document.getElementById('result');
+      const committed = document.getElementById('committed-channel');
+      const options = Array.from(list.querySelectorAll('[role="option"]'));
+
+      const setOpen = (open) => {
+        list.hidden = !open;
+        combo.setAttribute('aria-expanded', String(open));
+      };
+
+      const commitOption = (option) => {
+        const label = option.textContent.trim();
+        committed.value = option.dataset.value;
+        valueLabel.textContent = label;
+        combo.setAttribute('aria-activedescendant', option.id);
+        options.forEach((item) => {
+          item.setAttribute('aria-selected', String(item === option));
+        });
+        result.textContent = `Selected ${label}; pending continue`;
+        setOpen(false);
+        combo.focus();
+      };
+
+      combo.addEventListener('click', () => {
+        setOpen(list.hidden);
+      });
+
+      options.forEach((option) => {
+        option.addEventListener('click', () => commitOption(option));
+      });
+
+      document.getElementById('continue').addEventListener('click', () => {
+        if (!committed.value) {
+          result.textContent = 'Blocked: no committed channel';
+          return;
+        }
+        result.textContent = `Result: committed channel ${committed.value}`;
+      });
+    </script>
+  </body>
+</html>

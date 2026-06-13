@@ -49,6 +49,7 @@
               { "role": "combobox", "name_contains": "Plan", "save_as": "plan" },
               { "role": "checkbox", "name_contains": "Accept terms", "save_as": "terms" },
               { "role": "textbox", "name_contains": "Project notes", "save_as": "notes" },
+              { "role": "textbox", "name_contains": "Attachment", "type": "file", "save_as": "attachment" },
               { "role": "button", "name_contains": "Submit request", "save_as": "submit" }
             ]
           }
@@ -58,8 +59,49 @@
         { "select": { "target": "plan", "value": "pro" } },
         { "click": { "target": "terms" } },
         { "type": { "target": "notes", "text": "Testing semantic refs" } },
+        { "upload_file": { "target": "attachment", "path": "${FIXTURES}/upload.txt" } },
         { "click": { "target": "submit" } },
-        { "wait_for": { "condition": "text:Submitted max@example.com Ada Lovelace pro accepted Testing semantic refs", "timeout_ms": 5000 } }
+        { "wait_for": { "condition": "text:Submitted max@example.com Ada Lovelace pro accepted Testing semantic refs upload.txt", "timeout_ms": 5000 } }
+      ]
+    },
+    {
+      "id": "fixture-custom-aria-combobox-commit",
+      "name": "Commit a custom ARIA combobox option before continuing",
+      "tags": ["local", "forms", "combobox", "listbox", "actions"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/custom-combobox.html" } },
+        { "wait_for": { "condition": "title:Custom ARIA Combobox Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              { "role": "combobox", "name_contains": "Release channel", "save_as": "channel" },
+              { "role": "button", "name_contains": "Continue with channel", "save_as": "continue" }
+            ]
+          }
+        },
+        { "click": { "target": "continue" } },
+        { "wait_for": { "condition": "text:Blocked: no committed channel", "timeout_ms": 5000 } },
+        { "click": { "target": "channel" } },
+        {
+          "snapshot": {
+            "min_elements": 5,
+            "require": [
+              { "role": "listbox", "name_contains": "Draft channel", "save_as": "channel_list" },
+              { "role": "option", "name_contains": "Stable channel", "save_as": "stable_channel" }
+            ]
+          }
+        },
+        { "click": { "target": "channel" } },
+        { "select": { "target": "channel", "value": "Stable channel" } },
+        { "click": { "target": "continue" } },
+        { "wait_for": { "condition": "text:Result: committed channel stable", "timeout_ms": 5000 } },
+        {
+          "read": {
+            "title_contains": "Custom ARIA Combobox Fixture",
+            "main_contains": ["Result: committed channel stable"]
+          }
+        }
       ]
     },
     {
@@ -96,6 +138,28 @@
         { "type": { "target": "delayed_notes", "text": "async control works" } },
         { "click": { "target": "save_delayed" } },
         { "wait_for": { "condition": "text:Saved delayed note: async control works", "timeout_ms": 5000 } }
+      ]
+    },
+    {
+      "id": "fixture-drawer-scroll-container",
+      "name": "Scroll the active nested drawer before the page",
+      "tags": ["local", "scroll", "modal", "drawer", "actions"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/drawer-scroll.html" } },
+        { "wait_for": { "condition": "title:Drawer Scroll Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              { "role": "dialog", "name_contains": "Scrollable task drawer", "save_as": "drawer" },
+              { "role": "button", "name_contains": "Confirm drawer item", "save_as": "drawer_confirm" }
+            ]
+          }
+        },
+        { "scroll": { "direction": "down" } },
+        { "scroll": { "direction": "down" } },
+        { "click": { "target": "drawer_confirm" } },
+        { "wait_for": { "condition": "text:Drawer confirmed at scroll", "timeout_ms": 5000 } }
       ]
     },
     {
@@ -137,6 +201,73 @@
         { "type": { "target": "shadow_email", "text": "shadow@example.com" } },
         { "click": { "target": "shadow_save" } },
         { "wait_for": { "condition": "text:Shadow saved: shadow@example.com", "timeout_ms": 5000 } }
+      ]
+    },
+    {
+      "id": "fixture-popup-target-routing",
+      "name": "Focus and operate a newly opened popup target",
+      "tags": ["local", "popup", "targets", "tab-scope"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/popup-opener.html", "save_as": "popup_opener" } },
+        { "wait_for": { "condition": "title:Popup Opener Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "min_elements": 1,
+            "require": [
+              { "role": "button", "name_contains": "Open synthetic popup", "save_as": "open_popup" }
+            ]
+          }
+        },
+        { "click": { "target": "open_popup" } },
+        {
+          "wait_for_tab": {
+            "url_contains": "popup-child.html",
+            "new_only": true,
+            "save_as": "popup_child",
+            "focus": true,
+            "timeout_ms": 5000
+          }
+        },
+        { "wait_for": { "condition": "title:Popup Child Fixture", "timeout_ms": 5000 } },
+        {
+          "read": {
+            "title_contains": "Popup Child Fixture",
+            "main_contains": ["popup target content"]
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              { "role": "textbox", "name_contains": "Popup note", "save_as": "popup_note" },
+              { "role": "button", "name_contains": "Save popup note", "save_as": "save_popup" }
+            ]
+          }
+        },
+        { "fill": { "target": "popup_note", "text": "target scoped popup", "replace": true } },
+        { "click": { "target": "save_popup" } },
+        { "wait_for": { "condition": "text:Popup saved: target scoped popup", "timeout_ms": 5000 } },
+        {
+          "read": {
+            "title_contains": "Popup Child Fixture",
+            "main_contains": ["Popup saved: target scoped popup"]
+          }
+        },
+        { "focus_tab": { "target": "popup_opener" } },
+        { "wait_for": { "condition": "title:Popup Opener Fixture", "timeout_ms": 5000 } },
+        {
+          "read": {
+            "title_contains": "Popup Opener Fixture",
+            "main_contains": ["synthetic popup target"]
+          }
+        },
+        { "focus_tab": { "target": "popup_child" } },
+        {
+          "read": {
+            "title_contains": "Popup Child Fixture",
+            "main_contains": ["Popup saved: target scoped popup"]
+          }
+        }
       ]
     },
     {

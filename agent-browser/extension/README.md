@@ -31,8 +31,8 @@ should use the one-time Developer Mode install.
 
 ```sh
 agent-browserctl pack-extension
-agent-browserctl update-xml --profile max-gmail --crx-url https://example/agent-browser-bridge.crx
-agent-browserctl macos-policy --profile max-gmail --update-url https://example/updates.xml
+agent-browserctl update-xml --workspace agent-browser --profile max-gmail --crx-url https://example/agent-browser-bridge.crx
+agent-browserctl macos-policy --workspace agent-browser --profile max-gmail --update-url https://example/updates.xml
 ```
 
 Chrome 137+ branded builds do not reliably support `--load-extension` for

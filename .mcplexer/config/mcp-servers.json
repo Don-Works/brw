@@ -5,8 +5,12 @@
       "transport": "max-air",
       "command": "ssh",
       "args": [
+        "-o",
+        "UserKnownHostsFile=/Users/max/Library/Application Support/agent-browser/ssh/known_hosts",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
         "maxrevitt@max-air",
-        "\"$HOME/Library/Application Support/agent-browser/bin/agent-browserd\" --bridge --mcp --http off --profile max-gmail --bridge-addr 127.0.0.1:17311 --profile-policy \"$HOME/Library/Application Support/agent-browser/config/browser-profiles.json\""
+        "AGENT_BROWSER_WORKSPACE='agent-browser' AGENT_BROWSER_PROFILE='max-gmail' AGENT_BROWSER_PROFILE_POLICY=\"$HOME/Library/Application Support/agent-browser/config/browser-profiles.json\" \"$HOME/Library/Application Support/agent-browser/bin/agent-browserd\" '--bridge' '--mcp' '--http' 'off' '--bridge-addr' '127.0.0.1:17311'"
       ],
       "requires": [
         "agent-browser install in ~/Library/Application Support/agent-browser",

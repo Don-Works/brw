@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Drawer Scroll Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        min-height: 220vh;
+      }
+      main {
+        padding: 32px;
+        max-width: 680px;
+      }
+      #drawer {
+        position: fixed;
+        inset: 0 0 0 auto;
+        width: min(420px, 90vw);
+        background: #fff;
+        border-left: 1px solid #9aa4b2;
+        box-shadow: -10px 0 30px rgb(15 23 42 / 18%);
+        overflow-y: auto;
+        padding: 20px;
+      }
+      #drawer-content {
+        min-height: 1450px;
+        display: grid;
+        align-content: space-between;
+      }
+      button {
+        font: inherit;
+        padding: 8px 12px;
+      }
+      #result {
+        margin-top: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Drawer Scroll Fixture</h1>
+      <p>The page itself is also scrollable, but the active task is inside a fixed drawer.</p>
+      <button id="page-button" type="button">Page button outside drawer</button>
+    </main>
+
+    <aside id="drawer" role="dialog" aria-modal="true" aria-label="Scrollable task drawer" tabindex="-1">
+      <div id="drawer-content">
+        <div>
+          <h2>Scrollable task drawer</h2>
+          <p>Drawer top marker</p>
+        </div>
+        <button id="drawer-action" type="button">Confirm drawer item</button>
+      </div>
+    </aside>
+
+    <p id="result" role="status" aria-live="polite">Waiting for drawer confirmation</p>
+
+    <script>
+      const drawer = document.getElementById('drawer');
+      const result = document.getElementById('result');
+      drawer.focus();
+      document.getElementById('drawer-action').addEventListener('click', () => {
+        result.textContent = `Drawer confirmed at scroll ${Math.round(drawer.scrollTop)}`;
+      });
+    </script>
+  </body>
+</html>

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -200,20 +201,37 @@ func (m *Manager) CloseTab(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *Manager) Snapshot(ctx context.Context) (snapshot.PageSnapshot, error) {
+func (m *Manager) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return snapshot.PageSnapshot{}, err
 	}
 	defer cancel()
 
-	snap, err := snapshot.Evaluate(tabCtx)
+	snap, err := snapshot.EvaluateWithOptions(tabCtx, opts)
 	if err != nil {
 		return snapshot.PageSnapshot{}, err
 	}
-	snapshot.EnrichAccessibility(tabCtx, &snap)
+	if opts.IncludeAX {
+		snapshot.EnrichAccessibility(tabCtx, &snap)
+	}
 	m.refs.Observe(tabID, snap.Elements)
 	return snap, nil
+}
+
+func (m *Manager) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return snapshot.FindResult{}, err
+	}
+	defer cancel()
+
+	result, err := snapshot.Find(tabCtx, opts)
+	if err != nil {
+		return snapshot.FindResult{}, err
+	}
+	m.refs.Observe(tabID, result.Elements)
+	return result, nil
 }
 
 func (m *Manager) Read(ctx context.Context) (readability.PageRead, error) {
@@ -223,65 +241,222 @@ func (m *Manager) Read(ctx context.Context) (readability.PageRead, error) {
 	}
 	defer cancel()
 
-	snap, err := snapshot.Evaluate(tabCtx)
+	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{})
 	if err == nil {
 		m.refs.Observe(tabID, snap.Elements)
 	}
 	return readability.Evaluate(tabCtx)
 }
 
-func (m *Manager) Click(ctx context.Context, ref string) error {
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
-		return err
+		return ActionResult{}, err
 	}
 	defer cancel()
 
-	box, err := snapshot.ResolveBox(tabCtx, ref)
-	if err != nil {
-		return err
+	before := captureSemanticState(tabCtx)
+	if err := clickElementCenter(tabCtx, ref, 150*time.Millisecond); err != nil {
+		return ActionResult{}, err
 	}
-	return chromedp.Run(tabCtx, chromedp.MouseClickXY(box.ViewportX, box.ViewportY))
+	return m.observeActionWithBefore(tabID, tabCtx, "clicked "+ref, before), nil
 }
 
-func (m *Manager) Type(ctx context.Context, ref, text string) error {
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, error) {
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
-		return err
+		return ActionResult{}, err
 	}
 	defer cancel()
 
 	if err := snapshot.Focus(tabCtx, ref); err != nil {
-		return err
+		return ActionResult{}, err
 	}
-	return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	before := captureSemanticState(tabCtx)
+	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return input.InsertText(text).Do(ctx)
-	}))
+	}), chromedp.Sleep(100*time.Millisecond)); err != nil {
+		return ActionResult{}, err
+	}
+	return m.observeActionWithBefore(tabID, tabCtx, "typed into "+ref, before), nil
 }
 
-func (m *Manager) Select(ctx context.Context, ref, value string) error {
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionResult, error) {
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
-		return err
+		return ActionResult{}, err
 	}
 	defer cancel()
-	return snapshot.Select(tabCtx, ref, value)
+
+	ref := opts.Ref
+	if ref == "" {
+		result, err := snapshot.Find(tabCtx, snapshot.FindOptions{
+			Query: opts.Query,
+			Role:  opts.Role,
+			Limit: 1,
+		})
+		if err != nil {
+			return ActionResult{}, err
+		}
+		if len(result.Elements) == 0 {
+			return ActionResult{}, fmt.Errorf("no fill target found for query %q", opts.Query)
+		}
+		ref = result.Elements[0].Ref
+		m.refs.Observe(tabID, result.Elements)
+	}
+	before := captureSemanticState(tabCtx)
+	if err := snapshot.Fill(tabCtx, ref, opts.Text, opts.Replace); err != nil {
+		return ActionResult{}, err
+	}
+	if err := chromedp.Run(tabCtx, chromedp.Sleep(100*time.Millisecond)); err != nil {
+		return ActionResult{}, err
+	}
+	return m.observeActionWithBefore(tabID, tabCtx, "filled "+ref, before), nil
 }
 
-func (m *Manager) Press(ctx context.Context, key string) error {
-	if key == "" {
-		return errors.New("key is required")
+func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (ActionResult, error) {
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return ActionResult{}, err
 	}
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	defer cancel()
+
+	paths, err := NormalizeUploadPaths(opts)
+	if err != nil {
+		return ActionResult{}, err
+	}
+
+	ref := opts.Ref
+	if ref == "" {
+		query := opts.Query
+		if strings.TrimSpace(query) == "" {
+			query = "file"
+		}
+		result, err := snapshot.Find(tabCtx, snapshot.FindOptions{
+			Query: query,
+			Role:  opts.Role,
+			Limit: 20,
+		})
+		if err != nil {
+			return ActionResult{}, err
+		}
+		m.refs.Observe(tabID, result.Elements)
+		for _, el := range result.Elements {
+			if el.Tag == "input" && el.Type == "file" {
+				ref = el.Ref
+				break
+			}
+		}
+		if ref == "" {
+			return ActionResult{}, fmt.Errorf("no file input found for query %q", query)
+		}
+	}
+
+	before := captureSemanticState(tabCtx)
+	if err := snapshot.SetFileInputFiles(tabCtx, ref, paths); err != nil {
+		return ActionResult{}, err
+	}
+	if err := chromedp.Run(tabCtx, chromedp.Sleep(100*time.Millisecond)); err != nil {
+		return ActionResult{}, err
+	}
+	return m.observeActionWithBefore(tabID, tabCtx, "uploaded file to "+ref, before), nil
+}
+
+func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, error) {
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	defer cancel()
+	before := captureSemanticState(tabCtx)
+	if err := snapshot.Select(tabCtx, ref, value); err != nil {
+		if !strings.Contains(err.Error(), "ref is not a select element") {
+			return ActionResult{}, err
+		}
+		return m.selectCustomOption(tabID, tabCtx, ref, value, before)
+	}
+	if err := chromedp.Run(tabCtx, chromedp.Sleep(100*time.Millisecond)); err != nil {
+		return ActionResult{}, err
+	}
+	return m.observeActionWithBefore(tabID, tabCtx, "selected "+ref, before), nil
+}
+
+func (m *Manager) selectCustomOption(tabID string, tabCtx context.Context, ref, value string, before *SemanticState) (ActionResult, error) {
+	if elementValueMatches(tabCtx, ref, value) {
+		return m.observeAction(tabID, tabCtx, "selected "+ref+" already "+value), nil
+	}
+	option, err := findOptionCandidate(tabCtx, value)
+	if err != nil {
+		if err := clickElementCenter(tabCtx, ref, 125*time.Millisecond); err != nil {
+			return ActionResult{}, fmt.Errorf("open custom select %s: %w", ref, err)
+		}
+		option, err = findOptionCandidate(tabCtx, value)
+		if err != nil {
+			return ActionResult{}, err
+		}
+	}
+	if err := clickElementCenter(tabCtx, option.Ref, 150*time.Millisecond); err != nil {
+		return ActionResult{}, fmt.Errorf("select option %s: %w", option.Ref, err)
+	}
+	return m.observeActionWithBefore(tabID, tabCtx, "selected "+ref+" via option "+option.Ref, before), nil
+}
+
+func elementValueMatches(tabCtx context.Context, ref, value string) bool {
+	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{Limit: 0, ViewportOnly: false})
+	if err != nil {
+		return false
+	}
+	for _, el := range snap.Elements {
+		if el.Ref == ref && ElementMatchesOptionValue(el, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func clickElementCenter(tabCtx context.Context, ref string, delay time.Duration) error {
+	box, err := snapshot.ResolveBox(tabCtx, ref)
 	if err != nil {
 		return err
+	}
+	actions := []chromedp.Action{chromedp.MouseClickXY(box.ViewportX, box.ViewportY)}
+	if delay > 0 {
+		actions = append(actions, chromedp.Sleep(delay))
+	}
+	return chromedp.Run(tabCtx, actions...)
+}
+
+func findOptionCandidate(tabCtx context.Context, value string) (snapshot.Element, error) {
+	for _, opts := range []snapshot.SnapshotOptions{
+		{Role: "option", Query: value, Limit: 100, ViewportOnly: false},
+		{Role: "option", Limit: 200, ViewportOnly: false},
+	} {
+		snap, err := snapshot.EvaluateWithOptions(tabCtx, opts)
+		if err != nil {
+			return snapshot.Element{}, err
+		}
+		if option, ok := SelectOptionCandidate(snap.Elements, value); ok {
+			return option, nil
+		}
+	}
+	return snapshot.Element{}, fmt.Errorf("no visible option found for %q", value)
+}
+
+func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
+	if key == "" {
+		return ActionResult{}, errors.New("key is required")
+	}
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return ActionResult{}, err
 	}
 	defer cancel()
 	desc := actions.DescribeKey(key)
 	if desc.Key == "" {
-		return errors.New("key is required")
+		return ActionResult{}, errors.New("key is required")
 	}
-	return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	before := captureSemanticState(tabCtx)
+	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		down := input.DispatchKeyEvent(input.KeyDown).
 			WithModifiers(input.Modifier(desc.Modifiers)).
 			WithKey(desc.Key).
@@ -301,13 +476,16 @@ func (m *Manager) Press(ctx context.Context, key string) error {
 			WithWindowsVirtualKeyCode(desc.WindowsVirtualKeyCode).
 			WithNativeVirtualKeyCode(desc.WindowsVirtualKeyCode).
 			Do(ctx)
-	}))
+	}), chromedp.Sleep(150*time.Millisecond)); err != nil {
+		return ActionResult{}, err
+	}
+	return m.observeActionWithBefore(tabID, tabCtx, "pressed "+key, before), nil
 }
 
-func (m *Manager) Scroll(ctx context.Context, direction string) error {
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+func (m *Manager) Scroll(ctx context.Context, direction string) (ActionResult, error) {
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
-		return err
+		return ActionResult{}, err
 	}
 	defer cancel()
 
@@ -315,22 +493,19 @@ func (m *Manager) Scroll(ctx context.Context, direction string) error {
 	if direction == "" {
 		direction = "down"
 	}
-	dx, dy := 0, 0
-	switch direction {
-	case "up":
-		dy = -700
-	case "down":
-		dy = 700
-	case "left":
-		dx = -700
-	case "right":
-		dx = 700
-	default:
-		return fmt.Errorf("unsupported scroll direction %q", direction)
+	before := captureSemanticState(tabCtx)
+	scroll, err := snapshot.Scroll(tabCtx, direction)
+	if err != nil {
+		return ActionResult{}, err
 	}
-	var ignored any
-	expr := fmt.Sprintf(`window.scrollBy({left:%d,top:%d,behavior:"smooth"}); true`, dx, dy)
-	return chromedp.Run(tabCtx, chromedp.Evaluate(expr, &ignored))
+	if err := chromedp.Run(tabCtx, chromedp.Sleep(100*time.Millisecond)); err != nil {
+		return ActionResult{}, err
+	}
+	message := fmt.Sprintf("scrolled %s target:%s", direction, scroll.Target)
+	if scroll.Name != "" {
+		message += " " + strconv.Quote(scroll.Name)
+	}
+	return m.observeActionWithBefore(tabID, tabCtx, message, before), nil
 }
 
 func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Duration) error {
@@ -396,6 +571,80 @@ func (m *Manager) ScreenshotElement(ctx context.Context, ref string) (Screenshot
 		return Screenshot{}, err
 	}
 	return Screenshot{MIMEType: "image/png", Data: data, Base64: base64.StdEncoding.EncodeToString(data)}, nil
+}
+
+func (m *Manager) observeAction(tabID string, tabCtx context.Context, message string) ActionResult {
+	return m.observeActionWithBefore(tabID, tabCtx, message, nil)
+}
+
+func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, message string, before *SemanticState) ActionResult {
+	result := ActionResult{OK: true, Message: message}
+	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})
+	if err != nil {
+		result.Message = message + "; observation failed: " + err.Error()
+		return result
+	}
+	m.refs.Observe(tabID, snap.Elements)
+	result.URL = snap.URL
+	result.Title = snap.Title
+	if snap.Metadata != nil {
+		result.Version = metadataInt64(snap.Metadata["version"])
+		if focus, ok := snap.Metadata["focused_ref"].(string); ok {
+			result.Focus = focus
+		}
+	}
+	after := NewSemanticState(snap)
+	ApplyStateDiff(&result, before, after)
+	frontier := SelectFrontierElements(snap.Elements, result.Focus, 12)
+	result.Elements = frontier
+	result.Changed = summarizeElements(frontier, 12)
+	return result
+}
+
+func captureSemanticState(tabCtx context.Context) *SemanticState {
+	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})
+	if err != nil {
+		return nil
+	}
+	state := NewSemanticState(snap)
+	return &state
+}
+
+func summarizeElements(elements []snapshot.Element, limit int) []string {
+	if limit <= 0 || len(elements) == 0 {
+		return nil
+	}
+	out := make([]string, 0, min(limit, len(elements)))
+	for i, el := range elements {
+		if i >= limit {
+			break
+		}
+		summary := strings.TrimSpace(el.Role + " " + el.Ref + " " + strconv.Quote(el.Name))
+		if el.Value != "" {
+			summary += " value:" + strconv.Quote(el.Value)
+		}
+		if el.Disabled {
+			summary += " disabled"
+		}
+		out = append(out, summary)
+	}
+	return out
+}
+
+func metadataInt64(value any) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	default:
+		return 0
+	}
 }
 
 func (m *Manager) runBrowser(ctx context.Context, fn func(context.Context) error) error {

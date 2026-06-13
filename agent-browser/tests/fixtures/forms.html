@@ -38,6 +38,9 @@
         <label for="notes">Project notes</label>
         <div id="notes" role="textbox" contenteditable="true" aria-label="Project notes"></div>
 
+        <label for="attachment">Attachment</label>
+        <input id="attachment" name="attachment" type="file">
+
         <button type="submit">Submit request</button>
       </form>
       <div id="result" role="status" aria-live="polite"></div>
@@ -48,8 +51,9 @@
         const form = new FormData(event.currentTarget);
         const notes = document.getElementById('notes').innerText.trim();
         const accepted = document.getElementById('terms').checked ? 'accepted' : 'missing';
+        const file = document.getElementById('attachment').files[0]?.name || 'no-file';
         document.getElementById('result').textContent =
-          `Submitted ${form.get('email')} ${form.get('full_name')} ${form.get('plan')} ${accepted} ${notes}`;
+          `Submitted ${form.get('email')} ${form.get('full_name')} ${form.get('plan')} ${accepted} ${notes} ${file}`;
       });
     </script>
   </body>
