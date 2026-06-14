@@ -283,3 +283,16 @@ func (fakeController) ScreenshotElement(context.Context, string) (browser.Screen
 	return browser.Screenshot{}, nil
 }
 func (fakeController) WaitFor(context.Context, string, time.Duration) error { return nil }
+func (fakeController) Hover(context.Context, string) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+func (fakeController) Evaluate(context.Context, string) (any, error)              { return nil, nil }
+func (fakeController) NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error) {
+	return nil, nil
+}
+func (fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error) {
+	return browser.PlanResult{}, nil
+}
+func (fakeController) OpenInGroup(context.Context, string, string) (browser.OpenResult, error) {
+	return browser.OpenResult{}, nil
+}

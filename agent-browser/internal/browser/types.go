@@ -54,3 +54,43 @@ type Screenshot struct {
 	Data     []byte `json:"-"`
 	Base64   string `json:"base64,omitempty"`
 }
+
+type NetworkRequest struct {
+	URL           string `json:"url"`
+	InitiatorType string `json:"initiator_type,omitempty"`
+	StartTime     int64  `json:"start_time"`
+	Duration      int64  `json:"duration"`
+	TransferSize  int64  `json:"transfer_size,omitempty"`
+	Status        int    `json:"status,omitempty"`
+}
+
+type PlanStep struct {
+	Action     string `json:"action"`
+	Ref        string `json:"ref,omitempty"`
+	Text       string `json:"text,omitempty"`
+	Value      string `json:"value,omitempty"`
+	Direction  string `json:"direction,omitempty"`
+	Condition  string `json:"condition,omitempty"`
+	TimeoutMS  int    `json:"timeout_ms,omitempty"`
+	URL        string `json:"url,omitempty"`
+	ID         string `json:"id,omitempty"`
+	Key        string `json:"key,omitempty"`
+	ExpectRef  string `json:"expect_ref,omitempty"`
+	ExpectRole string `json:"expect_role,omitempty"`
+}
+
+type PlanStepResult struct {
+	Index    int                    `json:"index"`
+	Action   string                 `json:"action"`
+	OK       bool                   `json:"ok"`
+	Message  string                 `json:"message,omitempty"`
+	Error    string                 `json:"error,omitempty"`
+	Snapshot *snapshot.PageSnapshot `json:"snapshot,omitempty"`
+}
+
+type PlanResult struct {
+	OK       bool             `json:"ok"`
+	Steps    []PlanStepResult `json:"steps"`
+	FailedAt *int             `json:"failed_at,omitempty"`
+	Error    string           `json:"error,omitempty"`
+}

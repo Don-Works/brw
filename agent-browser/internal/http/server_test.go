@@ -133,6 +133,10 @@ func (f *fakeController) Open(context.Context, string) (browser.OpenResult, erro
 	return browser.OpenResult{}, nil
 }
 
+func (f *fakeController) OpenInGroup(context.Context, string, string) (browser.OpenResult, error) {
+	return browser.OpenResult{}, nil
+}
+
 func (f *fakeController) ListTabs(context.Context) ([]browser.Tab, error) {
 	return nil, nil
 }
@@ -200,3 +204,24 @@ func (f *fakeController) Screenshot(context.Context) (browser.Screenshot, error)
 func (f *fakeController) ScreenshotElement(context.Context, string) (browser.Screenshot, error) {
 	return browser.Screenshot{}, nil
 }
+
+func (f *fakeController) Hover(context.Context, string) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+
+func (f *fakeController) Evaluate(context.Context, string) (any, error) {
+	return nil, nil
+}
+
+func (f *fakeController) NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error) {
+	return nil, nil
+}
+
+func (f *fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error) {
+	return browser.PlanResult{OK: true}, nil
+}
+
+func (f *fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error) {
+	return browser.PlanResult{OK: true}, nil
+}
+

@@ -19,6 +19,7 @@ import (
 
 type Controller interface {
 	Open(context.Context, string) (browser.OpenResult, error)
+	OpenInGroup(context.Context, string, string) (browser.OpenResult, error)
 	ListTabs(context.Context) ([]browser.Tab, error)
 	FocusTab(context.Context, string) error
 	CloseTab(context.Context, string) error
@@ -26,6 +27,7 @@ type Controller interface {
 	Snapshot(context.Context, snapshot.SnapshotOptions) (snapshot.PageSnapshot, error)
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
 	Click(context.Context, string) (browser.ActionResult, error)
+	Hover(context.Context, string) (browser.ActionResult, error)
 	Type(context.Context, string, string) (browser.ActionResult, error)
 	Fill(context.Context, snapshot.FillOptions) (browser.ActionResult, error)
 	UploadFile(context.Context, snapshot.UploadOptions) (browser.ActionResult, error)
@@ -35,6 +37,9 @@ type Controller interface {
 	Screenshot(context.Context) (browser.Screenshot, error)
 	ScreenshotElement(context.Context, string) (browser.Screenshot, error)
 	WaitFor(context.Context, string, time.Duration) error
+	Evaluate(context.Context, string) (any, error)
+	NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error)
+	ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error)
 }
 
 type Server struct {
@@ -244,10 +249,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	switch name {
 	case "browser_open":
 		var req struct {
-			URL string `json:"url"`
+			URL   string `json:"url"`
+			Group string `json:"group"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		if req.Group != "" {
+			return toolJSON(s.manager.OpenInGroup(ctx, req.URL, req.Group))
 		}
 		return toolJSON(s.manager.Open(ctx, req.URL))
 	case "browser_list_tabs":
@@ -292,6 +301,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(s.manager.Click(ctx, req.Ref))
+	case "browser_hover":
+		var req struct {
+			Ref string `json:"ref"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.Hover(ctx, req.Ref))
 	case "browser_type":
 		var req struct {
 			Ref  string `json:"ref"`
@@ -369,6 +386,30 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolOK(s.manager.WaitFor(ctx, req.Condition, time.Duration(req.TimeoutMS)*time.Millisecond))
+	case "browser_evaluate":
+		var req struct {
+			Expression string `json:"expression"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.Evaluate(ctx, req.Expression))
+	case "browser_network_requests":
+		var req struct {
+			Filter string `json:"filter"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.NetworkRequests(ctx, req.Filter))
+	case "browser_plan":
+		var req struct {
+			Steps []browser.PlanStep `json:"steps"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.ExecutePlan(ctx, req.Steps))
 	default:
 		return nil, &rpcError{Code: -32602, Message: fmt.Sprintf("unknown tool %q", name)}
 	}
@@ -439,7 +480,8 @@ func invalid(err error) *rpcError {
 func tools() []map[string]any {
 	return []map[string]any{
 		tool("browser_open", "Open a URL in a visible Chrome/Chromium tab.", object(map[string]any{
-			"url": stringSchema("URL to open. Scheme defaults to https."),
+			"url":   stringSchema("URL to open. Scheme defaults to https."),
+			"group": stringSchema("Optional Chrome tab group name. When set, the new tab is added to a tab group with this title."),
 		}, []string{"url"})),
 		tool("browser_list_tabs", "List controllable Chrome/Chromium browser targets, including tabs and popup windows when the extension bridge reports them.", object(nil, nil)),
 		tool("browser_focus_tab", "Focus a controllable Chrome/Chromium target by id and make it the default target for following reads/actions.", object(map[string]any{
@@ -449,7 +491,7 @@ func tools() []map[string]any {
 			"id": stringSchema("Target id from browser_list_tabs."),
 		}, []string{"id"})),
 		tool("browser_read", "Return semantic page content: main text, headings, links, forms, tables, and metadata.", object(nil, nil)),
-		tool("browser_snapshot", "Return interactive controls with stable refs. Defaults to a bounded visible/actionable viewport frontier; use mode:\"all\" for full-page debugging, and add include_hidden:true only when hidden inputs are needed.", object(map[string]any{
+		tool("browser_snapshot", "Return interactive controls with stable refs. Defaults to a bounded visible/actionable viewport frontier; use mode:\"all\" for full-page debugging (returns every matching element including offscreen/hidden controls — useful for comprehensive page analysis), and add include_hidden:true only when hidden inputs are needed. Metadata includes total_candidates for the full count before filtering.", object(map[string]any{
 			"mode":           stringSchema("frontier (default, scored visible/actionable controls) or all (full matching list, including offscreen/currently invisible matching controls)."),
 			"query":          stringSchema("Case-insensitive substring match across ref, role, name, tag, type, href, and value."),
 			"text":           stringSchema("Alias for query-style text filtering."),
@@ -471,6 +513,15 @@ func tools() []map[string]any {
 		tool("browser_click", "Click a semantic element ref from browser_snapshot.", object(map[string]any{
 			"ref": stringSchema("Element ref, for example e18."),
 		}, []string{"ref"})),
+		tool("browser_hover", "Hover over a semantic element ref to trigger mouseenter/mouseover/pointermove events.", object(map[string]any{
+			"ref": stringSchema("Element ref, for example e18."),
+		}, []string{"ref"})),
+		tool("browser_evaluate", "Run arbitrary JavaScript in the page context and return the JSON-serializable result. Supports async expressions.", object(map[string]any{
+			"expression": stringSchema("JavaScript expression to evaluate. May use await for async operations."),
+		}, []string{"expression"})),
+		tool("browser_network_requests", "Return network resource requests captured by the Performance API (performance.getEntriesByType).", object(map[string]any{
+			"filter": stringSchema("Optional case-insensitive substring to filter request URLs."),
+		}, nil)),
 		tool("browser_type", "Type text into a semantic element ref.", object(map[string]any{
 			"ref":  stringSchema("Element ref, for example e17."),
 			"text": stringSchema("Text to insert."),
@@ -507,6 +558,30 @@ func tools() []map[string]any {
 			"condition":  stringSchema("load, text:..., not_text:..., url:..., not_url:..., title:..., ref:..., or plain text."),
 			"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds."},
 		}, []string{"condition"})),
+		tool("browser_plan", "Execute a sequence of browser operations in one round-trip. Steps run sequentially and stop on first failure.", object(map[string]any{
+			"steps": map[string]any{
+				"type":        "array",
+				"description": "Ordered list of steps to execute.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"action":      stringSchema("One of: click, type, fill, select, press, scroll, hover, wait, snapshot, open, focus_tab."),
+						"ref":         stringSchema("Element ref for click, type, fill, select, hover."),
+						"text":        stringSchema("Text for type and fill actions."),
+						"value":       stringSchema("Option value for select action."),
+						"direction":   stringSchema("Scroll direction: up, down, left, right."),
+						"condition":   stringSchema("Wait condition (load, text:..., ref:..., url:..., etc)."),
+						"timeout_ms":  map[string]any{"type": "integer", "description": "Timeout for wait action in milliseconds."},
+						"url":         stringSchema("URL for open action."),
+						"id":          stringSchema("Tab id for focus_tab action."),
+						"key":         stringSchema("Key name for press action (Enter, Tab, Escape, etc)."),
+						"expect_ref":  stringSchema("Validate this ref exists before running the action (fail-fast)."),
+						"expect_role": stringSchema("Validate the expect_ref element has this role."),
+					},
+					"required": []string{"action"},
+				},
+			},
+		}, []string{"steps"})),
 	}
 }
 

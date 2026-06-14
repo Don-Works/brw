@@ -312,9 +312,53 @@ func (b *Bridge) CloseTab(ctx context.Context, id string) error {
 	return err
 }
 
+func (b *Bridge) GroupTabs(ctx context.Context, tabIDs []string, name string, color string) error {
+	ids := make([]int, 0, len(tabIDs))
+	for _, id := range tabIDs {
+		ids = append(ids, parseTabID(id))
+	}
+	if color == "" {
+		color = "blue"
+	}
+	_, err := b.call(ctx, "group_tabs", map[string]any{
+		"tabIds": ids,
+		"name":   name,
+		"color":  color,
+	})
+	return err
+}
+
+func (b *Bridge) OpenInGroup(ctx context.Context, url string, groupName string) (browser.OpenResult, error) {
+	if strings.TrimSpace(url) == "" {
+		url = "about:blank"
+	}
+	if !strings.Contains(url, "://") && url != "about:blank" {
+		url = "https://" + url
+	}
+	raw, err := b.call(ctx, "open_tab", map[string]any{
+		"url":       url,
+		"groupName": groupName,
+	})
+	if err != nil {
+		return browser.OpenResult{}, err
+	}
+	var tab extTab
+	if err := json.Unmarshal(raw, &tab); err != nil {
+		return browser.OpenResult{}, err
+	}
+	out := tab.toBrowserTab()
+	if out.ID != "" {
+		b.setActiveTabID(out.ID)
+	}
+	return browser.OpenResult{Tab: out}, nil
+}
+
 func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
 	var snap snapshot.PageSnapshot
 	opts.IncludeAX = false
+	if cached, ok := b.tryCachedSnapshot(ctx, opts); ok {
+		return cached, nil
+	}
 	optsJSON, _ := json.Marshal(opts)
 	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.SnapshotFunctionScript, optsJSON), "", &snap); err != nil {
 		return snap, err
@@ -323,7 +367,37 @@ func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (s
 		Available: false,
 		Error:     "accessibility tree is unavailable through the Chrome extension bridge; use direct CDP attach for AX enrichment",
 	}
+	b.storeCachedSnapshot(ctx, snap)
 	return snap, nil
+}
+
+func (b *Bridge) tryCachedSnapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, bool) {
+	if opts.Mode == "all" || opts.IncludeHidden {
+		return snapshot.PageSnapshot{}, false
+	}
+	raw, err := b.call(ctx, "cached_snapshot", map[string]any{"tabId": parseTabID(b.activeTabID())})
+	if err != nil {
+		return snapshot.PageSnapshot{}, false
+	}
+	var resp struct {
+		Cached   bool                  `json:"cached"`
+		Snapshot snapshot.PageSnapshot `json:"snapshot"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil || !resp.Cached {
+		return snapshot.PageSnapshot{}, false
+	}
+	return resp.Snapshot, true
+}
+
+func (b *Bridge) storeCachedSnapshot(ctx context.Context, snap snapshot.PageSnapshot) {
+	tabID := b.activeTabID()
+	if tabID == "" {
+		return
+	}
+	_, _ = b.call(ctx, "snapshot_result", map[string]any{
+		"tabId":    parseTabID(tabID),
+		"snapshot": snap,
+	})
 }
 
 func (b *Bridge) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
@@ -359,6 +433,64 @@ func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, e
 	}
 	time.Sleep(150 * time.Millisecond)
 	return b.observeActionWithBefore(ctx, "clicked "+ref, before), nil
+}
+
+func (b *Bridge) Hover(ctx context.Context, ref string) (browser.ActionResult, error) {
+	refJSON, _ := json.Marshal(ref)
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	before := b.captureSemanticState(ctx)
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.HoverElementScript, refJSON), "", &result); err != nil {
+		return browser.ActionResult{}, err
+	}
+	if !result.OK {
+		if result.Error == "" {
+			result.Error = "hover failed"
+		}
+		return browser.ActionResult{}, errors.New(result.Error)
+	}
+	time.Sleep(150 * time.Millisecond)
+	return b.observeActionWithBefore(ctx, "hovered "+ref, before), nil
+}
+
+func (b *Bridge) Evaluate(ctx context.Context, expression string) (any, error) {
+	var result json.RawMessage
+	if err := b.evaluate(ctx, expression, "", &result); err != nil {
+		return nil, err
+	}
+	var value any
+	if err := json.Unmarshal(result, &value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func (b *Bridge) NetworkRequests(ctx context.Context, filter string) ([]browser.NetworkRequest, error) {
+	filterJSON, _ := json.Marshal(filter)
+	expr := fmt.Sprintf(`(function(filter) {
+	  var entries = performance.getEntriesByType('resource');
+	  if (filter) {
+	    var lower = filter.toLowerCase();
+	    entries = entries.filter(function(e) { return e.name.toLowerCase().indexOf(lower) !== -1; });
+	  }
+	  return entries.map(function(e) {
+	    return {
+	      url: e.name,
+	      initiator_type: e.initiatorType || '',
+	      start_time: Math.round(e.startTime),
+	      duration: Math.round(e.duration),
+	      transfer_size: e.transferSize || 0,
+	      status: 0
+	    };
+	  });
+	})(%s)`, filterJSON)
+	var requests []browser.NetworkRequest
+	if err := b.evaluate(ctx, expr, "", &requests); err != nil {
+		return nil, err
+	}
+	return requests, nil
 }
 
 func (b *Bridge) clickRef(ctx context.Context, ref string) error {
@@ -691,6 +823,120 @@ func (b *Bridge) Scroll(ctx context.Context, direction string) (browser.ActionRe
 		message += " " + strconv.Quote(scroll.Name)
 	}
 	return b.observeActionWithBefore(ctx, message, before), nil
+}
+
+func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {
+	result := browser.PlanResult{OK: true, Steps: make([]browser.PlanStepResult, 0, len(steps))}
+	for i, step := range steps {
+		stepResult := b.executePlanStep(ctx, i, step)
+		result.Steps = append(result.Steps, stepResult)
+		if !stepResult.OK {
+			result.OK = false
+			failedAt := i
+			result.FailedAt = &failedAt
+			result.Error = stepResult.Error
+			return result, nil
+		}
+	}
+	return result, nil
+}
+
+func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.PlanStep) browser.PlanStepResult {
+	sr := browser.PlanStepResult{Index: index, Action: step.Action, OK: true}
+
+	if step.ExpectRef != "" {
+		findResult, err := b.Find(ctx, snapshot.FindOptions{Query: step.ExpectRef, Limit: 1})
+		if err != nil {
+			sr.OK = false
+			sr.Error = fmt.Sprintf("expect_ref %q lookup failed: %v", step.ExpectRef, err)
+			return sr
+		}
+		if len(findResult.Elements) == 0 {
+			sr.OK = false
+			sr.Error = fmt.Sprintf("expect_ref %q not found", step.ExpectRef)
+			return sr
+		}
+		if step.ExpectRole != "" && findResult.Elements[0].Role != step.ExpectRole {
+			sr.OK = false
+			sr.Error = fmt.Sprintf("expect_ref %q has role %q, expected %q", step.ExpectRef, findResult.Elements[0].Role, step.ExpectRole)
+			return sr
+		}
+	}
+
+	var actionErr error
+	switch step.Action {
+	case "click":
+		if step.Ref == "" {
+			actionErr = errors.New("click requires ref")
+			break
+		}
+		_, actionErr = b.Click(ctx, step.Ref)
+	case "type":
+		if step.Ref == "" || step.Text == "" {
+			actionErr = errors.New("type requires ref and text")
+			break
+		}
+		_, actionErr = b.Type(ctx, step.Ref, step.Text)
+	case "fill":
+		_, actionErr = b.Fill(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+	case "select":
+		if step.Ref == "" || step.Value == "" {
+			actionErr = errors.New("select requires ref and value")
+			break
+		}
+		_, actionErr = b.Select(ctx, step.Ref, step.Value)
+	case "press":
+		if step.Key == "" {
+			actionErr = errors.New("press requires key")
+			break
+		}
+		_, actionErr = b.Press(ctx, step.Key)
+	case "scroll":
+		_, actionErr = b.Scroll(ctx, step.Direction)
+	case "hover":
+		if step.Ref == "" {
+			actionErr = errors.New("hover requires ref")
+			break
+		}
+		_, actionErr = b.Hover(ctx, step.Ref)
+	case "wait":
+		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
+		if timeout == 0 {
+			timeout = b.timeout
+		}
+		actionErr = b.WaitFor(ctx, step.Condition, timeout)
+	case "snapshot":
+		snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
+		if err != nil {
+			actionErr = err
+			break
+		}
+		sr.Snapshot = &snap
+		sr.Message = "snapshot captured"
+	case "open":
+		if step.URL == "" {
+			actionErr = errors.New("open requires url")
+			break
+		}
+		_, actionErr = b.Open(ctx, step.URL)
+	case "focus_tab":
+		if step.ID == "" {
+			actionErr = errors.New("focus_tab requires id")
+			break
+		}
+		actionErr = b.FocusTab(ctx, step.ID)
+	default:
+		actionErr = fmt.Errorf("unknown action %q", step.Action)
+	}
+
+	if actionErr != nil {
+		sr.OK = false
+		sr.Error = actionErr.Error()
+	}
+	if sr.Message == "" && sr.OK {
+		sr.Message = step.Action + " ok"
+	}
+	return sr
 }
 
 func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Duration) error {

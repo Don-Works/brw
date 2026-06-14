@@ -15,6 +15,7 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/revitt/agent-browser/internal/actions"
@@ -159,6 +160,10 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	return OpenResult{Tab: tab}, nil
 }
 
+func (m *Manager) OpenInGroup(ctx context.Context, url string, groupName string) (OpenResult, error) {
+	return m.Open(ctx, url)
+}
+
 func (m *Manager) ListTabs(ctx context.Context) ([]Tab, error) {
 	var infos []*target.Info
 	if err := m.runBrowser(ctx, func(ctx context.Context) error {
@@ -275,6 +280,83 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 		return ActionResult{}, err
 	}
 	return m.observeActionWithBefore(tabID, tabCtx, "clicked "+ref, before), nil
+}
+
+func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	defer cancel()
+
+	before := m.cachedBefore(tabID, tabCtx)
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	refJSON, _ := json.Marshal(ref)
+	expr := fmt.Sprintf("%s(%s)", snapshot.HoverElementScript, refJSON)
+	if err := chromedp.Run(tabCtx, chromedp.Evaluate(expr, &result)); err != nil {
+		return ActionResult{}, err
+	}
+	if !result.OK {
+		if result.Error == "" {
+			result.Error = "hover failed"
+		}
+		return ActionResult{}, errors.New(result.Error)
+	}
+	if err := chromedp.Run(tabCtx, chromedp.Sleep(150*time.Millisecond)); err != nil {
+		return ActionResult{}, err
+	}
+	return m.observeActionWithBefore(tabID, tabCtx, "hovered "+ref, before), nil
+}
+
+func (m *Manager) Evaluate(ctx context.Context, expression string) (any, error) {
+	_, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+
+	var result any
+	if err := chromedp.Run(tabCtx, chromedp.Evaluate(expression, &result, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+		return p.WithAwaitPromise(true)
+	})); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (m *Manager) NetworkRequests(ctx context.Context, filter string) ([]NetworkRequest, error) {
+	_, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+
+	filterJSON, _ := json.Marshal(filter)
+	expr := fmt.Sprintf(`(function(filter) {
+	  var entries = performance.getEntriesByType('resource');
+	  if (filter) {
+	    var lower = filter.toLowerCase();
+	    entries = entries.filter(function(e) { return e.name.toLowerCase().indexOf(lower) !== -1; });
+	  }
+	  return entries.map(function(e) {
+	    return {
+	      url: e.name,
+	      initiator_type: e.initiatorType || '',
+	      start_time: Math.round(e.startTime),
+	      duration: Math.round(e.duration),
+	      transfer_size: e.transferSize || 0,
+	      status: 0
+	    };
+	  });
+	})(%s)`, filterJSON)
+	var requests []NetworkRequest
+	if err := chromedp.Run(tabCtx, chromedp.Evaluate(expr, &requests)); err != nil {
+		return nil, err
+	}
+	return requests, nil
 }
 
 func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, error) {
@@ -587,6 +669,120 @@ func (m *Manager) ScreenshotElement(ctx context.Context, ref string) (Screenshot
 
 func (m *Manager) observeAction(tabID string, tabCtx context.Context, message string) ActionResult {
 	return m.observeActionWithBefore(tabID, tabCtx, message, nil)
+}
+
+func (m *Manager) ExecutePlan(ctx context.Context, steps []PlanStep) (PlanResult, error) {
+	result := PlanResult{OK: true, Steps: make([]PlanStepResult, 0, len(steps))}
+	for i, step := range steps {
+		stepResult := m.executePlanStep(ctx, i, step)
+		result.Steps = append(result.Steps, stepResult)
+		if !stepResult.OK {
+			result.OK = false
+			failedAt := i
+			result.FailedAt = &failedAt
+			result.Error = stepResult.Error
+			return result, nil
+		}
+	}
+	return result, nil
+}
+
+func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep) PlanStepResult {
+	sr := PlanStepResult{Index: index, Action: step.Action, OK: true}
+
+	if step.ExpectRef != "" {
+		findResult, err := m.Find(ctx, snapshot.FindOptions{Query: step.ExpectRef, Limit: 1})
+		if err != nil {
+			sr.OK = false
+			sr.Error = fmt.Sprintf("expect_ref %q lookup failed: %v", step.ExpectRef, err)
+			return sr
+		}
+		if len(findResult.Elements) == 0 {
+			sr.OK = false
+			sr.Error = fmt.Sprintf("expect_ref %q not found", step.ExpectRef)
+			return sr
+		}
+		if step.ExpectRole != "" && findResult.Elements[0].Role != step.ExpectRole {
+			sr.OK = false
+			sr.Error = fmt.Sprintf("expect_ref %q has role %q, expected %q", step.ExpectRef, findResult.Elements[0].Role, step.ExpectRole)
+			return sr
+		}
+	}
+
+	var actionErr error
+	switch step.Action {
+	case "click":
+		if step.Ref == "" {
+			actionErr = errors.New("click requires ref")
+			break
+		}
+		_, actionErr = m.Click(ctx, step.Ref)
+	case "type":
+		if step.Ref == "" || step.Text == "" {
+			actionErr = errors.New("type requires ref and text")
+			break
+		}
+		_, actionErr = m.Type(ctx, step.Ref, step.Text)
+	case "fill":
+		_, actionErr = m.Fill(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+	case "select":
+		if step.Ref == "" || step.Value == "" {
+			actionErr = errors.New("select requires ref and value")
+			break
+		}
+		_, actionErr = m.Select(ctx, step.Ref, step.Value)
+	case "press":
+		if step.Key == "" {
+			actionErr = errors.New("press requires key")
+			break
+		}
+		_, actionErr = m.Press(ctx, step.Key)
+	case "scroll":
+		_, actionErr = m.Scroll(ctx, step.Direction)
+	case "hover":
+		if step.Ref == "" {
+			actionErr = errors.New("hover requires ref")
+			break
+		}
+		_, actionErr = m.Hover(ctx, step.Ref)
+	case "wait":
+		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
+		if timeout == 0 {
+			timeout = m.timeout
+		}
+		actionErr = m.WaitFor(ctx, step.Condition, timeout)
+	case "snapshot":
+		snap, err := m.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
+		if err != nil {
+			actionErr = err
+			break
+		}
+		sr.Snapshot = &snap
+		sr.Message = "snapshot captured"
+	case "open":
+		if step.URL == "" {
+			actionErr = errors.New("open requires url")
+			break
+		}
+		_, actionErr = m.Open(ctx, step.URL)
+	case "focus_tab":
+		if step.ID == "" {
+			actionErr = errors.New("focus_tab requires id")
+			break
+		}
+		actionErr = m.FocusTab(ctx, step.ID)
+	default:
+		actionErr = fmt.Errorf("unknown action %q", step.Action)
+	}
+
+	if actionErr != nil {
+		sr.OK = false
+		sr.Error = actionErr.Error()
+	}
+	if sr.Message == "" && sr.OK {
+		sr.Message = step.Action + " ok"
+	}
+	return sr
 }
 
 func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, message string, before *SemanticState) ActionResult {

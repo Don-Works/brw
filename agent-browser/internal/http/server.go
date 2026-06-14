@@ -14,6 +14,7 @@ import (
 
 type Controller interface {
 	Open(context.Context, string) (browser.OpenResult, error)
+	OpenInGroup(context.Context, string, string) (browser.OpenResult, error)
 	ListTabs(context.Context) ([]browser.Tab, error)
 	FocusTab(context.Context, string) error
 	CloseTab(context.Context, string) error
@@ -21,6 +22,7 @@ type Controller interface {
 	Snapshot(context.Context, snapshot.SnapshotOptions) (snapshot.PageSnapshot, error)
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
 	Click(context.Context, string) (browser.ActionResult, error)
+	Hover(context.Context, string) (browser.ActionResult, error)
 	Type(context.Context, string, string) (browser.ActionResult, error)
 	Fill(context.Context, snapshot.FillOptions) (browser.ActionResult, error)
 	UploadFile(context.Context, snapshot.UploadOptions) (browser.ActionResult, error)
@@ -30,6 +32,9 @@ type Controller interface {
 	WaitFor(context.Context, string, time.Duration) error
 	Screenshot(context.Context) (browser.Screenshot, error)
 	ScreenshotElement(context.Context, string) (browser.Screenshot, error)
+	Evaluate(context.Context, string) (any, error)
+	NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error)
+	ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error)
 }
 
 type Server struct {

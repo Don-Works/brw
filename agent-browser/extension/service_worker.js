@@ -7,7 +7,9 @@ const state = {
   keepAliveTimer: null,
   attachedTabs: new Set(),
   activeTabId: null,
-  reconnectAttempt: 0
+  reconnectAttempt: 0,
+  snapshotCache: new Map(),
+  observerInjected: new Set()
 };
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -33,6 +35,8 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   state.attachedTabs.delete(tabId);
+  state.snapshotCache.delete(tabId);
+  state.observerInjected.delete(tabId);
   if (state.activeTabId === tabId) state.activeTabId = null;
 });
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
@@ -105,12 +109,15 @@ async function handle(message) {
       return;
     }
     if (message.type === "open_tab") {
-      // Open in the BACKGROUND (active:false): automation must never steal the
-      // human's foreground tab/window. The daemon tracks this as the active tab
-      // for subsequent CDP ops (which attach by tabId regardless of focus);
-      // raising it to the foreground is reserved for the explicit focus_tab op.
       const tab = await chrome.tabs.create({ url: message.params?.url || "about:blank", active: false });
       state.activeTabId = tab.id || null;
+      const groupName = message.params?.groupName;
+      if (groupName && tab.id) {
+        try {
+          const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
+          await chrome.tabGroups.update(groupId, { title: groupName, color: message.params?.groupColor || "blue" });
+        } catch (_) {}
+      }
       send({ id: message.id, ok: true, result: await tabSummary(tab) });
       return;
     }
@@ -127,6 +134,46 @@ async function handle(message) {
       const tabId = Number(message.params?.tabId);
       await chrome.tabs.remove(tabId);
       send({ id: message.id, ok: true, result: { closed: tabId } });
+      return;
+    }
+    if (message.type === "group_tabs") {
+      const tabIds = (message.params?.tabIds || []).map(Number);
+      const name = message.params?.name || "agent-browser";
+      const color = message.params?.color || "blue";
+      if (tabIds.length === 0) {
+        send({ id: message.id, ok: false, error: "tabIds is required" });
+        return;
+      }
+      const groupId = await chrome.tabs.group({ tabIds });
+      await chrome.tabGroups.update(groupId, { title: name, color });
+      send({ id: message.id, ok: true, result: { groupId, tabIds, name, color } });
+      return;
+    }
+    if (message.type === "ungroup_tabs") {
+      const tabIds = (message.params?.tabIds || []).map(Number);
+      if (tabIds.length === 0) {
+        send({ id: message.id, ok: false, error: "tabIds is required" });
+        return;
+      }
+      await chrome.tabs.ungroup(tabIds);
+      send({ id: message.id, ok: true, result: { ungrouped: tabIds } });
+      return;
+    }
+    if (message.type === "cached_snapshot") {
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      const cached = state.snapshotCache.get(tabId);
+      if (cached && !cached.dirty) {
+        send({ id: message.id, ok: true, result: { cached: true, snapshot: cached.snapshot } });
+        return;
+      }
+      send({ id: message.id, ok: true, result: { cached: false } });
+      return;
+    }
+    if (message.type === "snapshot_result") {
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      state.snapshotCache.set(tabId, { dirty: false, snapshot: message.params?.snapshot });
+      ensureObserver(tabId);
+      send({ id: message.id, ok: true, result: { stored: true } });
       return;
     }
     if (message.type === "cdp") {
@@ -248,6 +295,31 @@ function startKeepAlive() {
 function stopKeepAlive() {
   if (state.keepAliveTimer) clearInterval(state.keepAliveTimer);
   state.keepAliveTimer = null;
+}
+
+function ensureObserver(tabId) {
+  if (state.observerInjected.has(tabId)) return;
+  state.observerInjected.add(tabId);
+  const observerScript = `(function() {
+    if (window.__agentBrowserObserver) return;
+    window.__agentBrowserObserver = true;
+    window.__agentBrowserDirty = false;
+    const observer = new MutationObserver(function() {
+      window.__agentBrowserDirty = true;
+    });
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true
+    });
+  })()`;
+  chrome.debugger.attach({ tabId }, "1.3").catch(() => {}).then(() => {
+    chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+      expression: observerScript,
+      returnByValue: true
+    }).catch(() => {});
+  });
 }
 
 function send(payload) {

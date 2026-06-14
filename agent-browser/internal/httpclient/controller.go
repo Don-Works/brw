@@ -50,6 +50,12 @@ func (c *Controller) Open(ctx context.Context, targetURL string) (browser.OpenRe
 	return out, err
 }
 
+func (c *Controller) OpenInGroup(ctx context.Context, targetURL string, groupName string) (browser.OpenResult, error) {
+	var out browser.OpenResult
+	err := c.post(ctx, "/api/browser/open", map[string]string{"url": targetURL, "group": groupName}, &out)
+	return out, err
+}
+
 func (c *Controller) ListTabs(ctx context.Context) ([]browser.Tab, error) {
 	var out []browser.Tab
 	err := c.get(ctx, "/api/browser/tabs", nil, &out)
@@ -152,6 +158,30 @@ func (c *Controller) ScreenshotElement(ctx context.Context, ref string) (browser
 	if err == nil && len(out.Data) == 0 && out.Base64 != "" {
 		out.Data, _ = base64.StdEncoding.DecodeString(out.Base64)
 	}
+	return out, err
+}
+
+func (c *Controller) Hover(ctx context.Context, ref string) (browser.ActionResult, error) {
+	var out browser.ActionResult
+	err := c.post(ctx, "/api/page/hover", map[string]string{"ref": ref}, &out)
+	return out, err
+}
+
+func (c *Controller) Evaluate(ctx context.Context, expression string) (any, error) {
+	var out any
+	err := c.post(ctx, "/api/page/evaluate", map[string]string{"expression": expression}, &out)
+	return out, err
+}
+
+func (c *Controller) NetworkRequests(ctx context.Context, filter string) ([]browser.NetworkRequest, error) {
+	var out []browser.NetworkRequest
+	err := c.post(ctx, "/api/page/network_requests", map[string]string{"filter": filter}, &out)
+	return out, err
+}
+
+func (c *Controller) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {
+	var out browser.PlanResult
+	err := c.post(ctx, "/api/page/execute_plan", steps, &out)
 	return out, err
 }
 
