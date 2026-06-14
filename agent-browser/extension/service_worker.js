@@ -1,5 +1,5 @@
 const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
-const PROTOCOL_VERSION = "0.1.6";
+const PROTOCOL_VERSION = "0.1.7";
 
 const state = {
   socket: null,
@@ -210,11 +210,7 @@ async function handle(message) {
     if (message.type === "cdp") {
       const tabId = Number(message.params?.tabId || (await activeTabId()));
       await attach(tabId);
-      const result = await chrome.debugger.sendCommand(
-        { tabId },
-        message.params?.method,
-        message.params?.params || {}
-      );
+      const result = await sendDebuggerCommand(tabId, message.params?.method, message.params?.params || {});
       send({ id: message.id, ok: true, result: result || {} });
       return;
     }
@@ -261,6 +257,24 @@ async function attach(tabId) {
     if (!String(error?.message || error).includes("Another debugger is already attached")) throw error;
   }
   state.attachedTabs.add(tabId);
+}
+
+async function sendDebuggerCommand(tabId, method, params) {
+  try {
+    return await chrome.debugger.sendCommand({ tabId }, method, params);
+  } catch (error) {
+    if (!isDetachedDebuggerError(error)) throw error;
+    state.attachedTabs.delete(tabId);
+    await attach(tabId);
+    return await chrome.debugger.sendCommand({ tabId }, method, params);
+  }
+}
+
+function isDetachedDebuggerError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return message.includes("detached while handling command") ||
+    message.includes("debugger is not attached") ||
+    message.includes("target closed");
 }
 
 async function activeTabId() {

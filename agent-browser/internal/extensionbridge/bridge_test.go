@@ -1,6 +1,7 @@
 package extensionbridge
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -113,10 +114,27 @@ func TestServiceWorkerReconnectCadence(t *testing.T) {
 		"periodInMinutes: 0.5",
 		"5 * 1000",
 		"ensureConnectAlarm();",
+		"sendDebuggerCommand(tabId",
+		"isDetachedDebuggerError",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("service worker reconnect/keepalive guard missing %q", want)
 		}
+	}
+}
+
+func TestBridgeDebuggerDetachedErrors(t *testing.T) {
+	for _, msg := range []string{
+		"Detached while handling command.",
+		"Debugger is not attached to the tab with id: 123",
+		"target closed",
+	} {
+		if !isBridgeDebuggerDetachedError(errors.New(msg)) {
+			t.Fatalf("expected debugger detach retry error for %q", msg)
+		}
+	}
+	if isBridgeDebuggerDetachedError(errors.New("ref not found")) {
+		t.Fatal("semantic/action errors must not be treated as debugger detach retries")
 	}
 }
 

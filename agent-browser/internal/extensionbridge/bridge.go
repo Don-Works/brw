@@ -1188,10 +1188,16 @@ func (b *Bridge) cdp(ctx context.Context, tabID, method string, params map[strin
 		req["tabId"] = parseTabID(tabID)
 	}
 	raw, err := b.call(ctx, "cdp", req)
-	if err != nil && tabID != "" && strings.Contains(strings.ToLower(err.Error()), "no tab") {
+	if err != nil && tabID != "" && isBridgeTabLostError(err) {
 		b.setActiveTabID("")
 		delete(req, "tabId")
 		return b.call(ctx, "cdp", req)
+	}
+	if err != nil && tabID != "" && isBridgeDebuggerDetachedError(err) {
+		retryRaw, retryErr := b.call(ctx, "cdp", req)
+		if retryErr == nil {
+			return retryRaw, nil
+		}
 	}
 	return raw, err
 }
@@ -1201,6 +1207,23 @@ func (b *Bridge) contextTabID(ctx context.Context) string {
 		return tabID
 	}
 	return b.activeTabID()
+}
+
+func isBridgeTabLostError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no tab")
+}
+
+func isBridgeDebuggerDetachedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "detached while handling command") ||
+		strings.Contains(msg, "debugger is not attached") ||
+		strings.Contains(msg, "target closed")
 }
 
 func (b *Bridge) axNodes(ctx context.Context, tabID string) ([]*accessibility.Node, error) {
