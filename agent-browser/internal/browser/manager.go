@@ -684,17 +684,38 @@ func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Du
 	}
 	defer cancel()
 
-	// Event-driven: a single awaited in-page promise that resolves the moment a
-	// MutationObserver / nav event satisfies the condition, instead of a 250ms
-	// CDP poll loop. One round-trip instead of N — the win compounds remotely.
-	matched, err := snapshot.WaitForCondition(tabCtx, condition, timeout.Milliseconds())
-	if err != nil {
-		return err
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("timed out waiting for %q", condition)
+		}
+		// Event-driven: one awaited in-page promise that resolves the moment a
+		// MutationObserver / nav event satisfies the condition. If Chrome tears
+		// down the execution context during navigation, retry inside the same
+		// caller-supplied deadline.
+		matched, err := snapshot.WaitForCondition(tabCtx, condition, remaining.Milliseconds())
+		if err == nil {
+			if matched {
+				return nil
+			}
+			return fmt.Errorf("timed out waiting for %q", condition)
+		}
+		if !isTransientNavigationError(err) {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	if !matched {
-		return fmt.Errorf("timed out waiting for %q", condition)
+}
+
+func isTransientNavigationError(err error) bool {
+	if err == nil {
+		return false
 	}
-	return nil
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "execution context was destroyed") ||
+		strings.Contains(msg, "cannot find context with specified id") ||
+		strings.Contains(msg, "frame was detached")
 }
 
 func (m *Manager) AssertVisible(ctx context.Context, ref string, timeout time.Duration) error {

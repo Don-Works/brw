@@ -1,5 +1,5 @@
 const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
-const PROTOCOL_VERSION = "0.1.5";
+const PROTOCOL_VERSION = "0.1.6";
 
 const state = {
   socket: null,
@@ -13,11 +13,14 @@ const state = {
 };
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create("agent-browser-connect", { periodInMinutes: 1 });
+  ensureConnectAlarm();
   connect();
 });
 
-chrome.runtime.onStartup.addListener(connect);
+chrome.runtime.onStartup.addListener(() => {
+  ensureConnectAlarm();
+  connect();
+});
 chrome.action.onClicked.addListener(async (tab) => {
   await connect();
   if (tab?.id) {
@@ -49,6 +52,7 @@ chrome.debugger.onDetach.addListener((source) => {
 });
 
 connect();
+ensureConnectAlarm();
 
 async function connect() {
   if (state.socket && state.socket.readyState === WebSocket.OPEN) return;
@@ -161,8 +165,9 @@ async function handle(message) {
     }
     if (message.type === "cached_snapshot") {
       const tabId = Number(message.params?.tabId || (await activeTabId()));
+      const cacheKey = String(message.params?.cacheKey || "");
       const cached = state.snapshotCache.get(tabId);
-      if (cached) {
+      if (cached && cached.cacheKey === cacheKey) {
         // Check if the page's MutationObserver flagged DOM changes
         let pageDirty = false;
         try {
@@ -193,7 +198,11 @@ async function handle(message) {
     }
     if (message.type === "snapshot_result") {
       const tabId = Number(message.params?.tabId || (await activeTabId()));
-      state.snapshotCache.set(tabId, { dirty: false, snapshot: message.params?.snapshot });
+      state.snapshotCache.set(tabId, {
+        cacheKey: String(message.params?.cacheKey || ""),
+        dirty: false,
+        snapshot: message.params?.snapshot
+      });
       ensureObserver(tabId);
       send({ id: message.id, ok: true, result: { stored: true } });
       return;
@@ -339,12 +348,16 @@ function startKeepAlive() {
   stopKeepAlive();
   state.keepAliveTimer = setInterval(() => {
     send({ type: "keepalive", at: Date.now() });
-  }, 20 * 1000);
+  }, 5 * 1000);
 }
 
 function stopKeepAlive() {
   if (state.keepAliveTimer) clearInterval(state.keepAliveTimer);
   state.keepAliveTimer = null;
+}
+
+function ensureConnectAlarm() {
+  chrome.alarms.create("agent-browser-connect", { periodInMinutes: 0.5 }).catch(() => {});
 }
 
 function ensureObserver(tabId) {

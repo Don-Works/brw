@@ -376,7 +376,7 @@ func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (s
 		Available: false,
 		Error:     "accessibility tree is unavailable through the Chrome extension bridge; use direct CDP attach for AX enrichment",
 	}
-	b.storeCachedSnapshot(ctx, snap)
+	b.storeCachedSnapshot(ctx, opts, snap)
 	return snap, nil
 }
 
@@ -385,7 +385,10 @@ func (b *Bridge) tryCachedSnapshot(ctx context.Context, opts snapshot.SnapshotOp
 		return snapshot.PageSnapshot{}, false
 	}
 	tabID := b.contextTabID(ctx)
-	raw, err := b.call(ctx, "cached_snapshot", map[string]any{"tabId": parseTabID(tabID)})
+	raw, err := b.call(ctx, "cached_snapshot", map[string]any{
+		"tabId":    parseTabID(tabID),
+		"cacheKey": snapshotCacheKey(opts),
+	})
 	if err != nil {
 		return snapshot.PageSnapshot{}, false
 	}
@@ -399,15 +402,22 @@ func (b *Bridge) tryCachedSnapshot(ctx context.Context, opts snapshot.SnapshotOp
 	return resp.Snapshot, true
 }
 
-func (b *Bridge) storeCachedSnapshot(ctx context.Context, snap snapshot.PageSnapshot) {
+func (b *Bridge) storeCachedSnapshot(ctx context.Context, opts snapshot.SnapshotOptions, snap snapshot.PageSnapshot) {
 	tabID := b.contextTabID(ctx)
 	if tabID == "" {
 		return
 	}
 	_, _ = b.call(ctx, "snapshot_result", map[string]any{
 		"tabId":    parseTabID(tabID),
+		"cacheKey": snapshotCacheKey(opts),
 		"snapshot": snap,
 	})
+}
+
+func snapshotCacheKey(opts snapshot.SnapshotOptions) string {
+	opts.IncludeAX = false
+	data, _ := json.Marshal(opts)
+	return string(data)
 }
 
 func (b *Bridge) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
@@ -436,33 +446,45 @@ func (b *Bridge) Read(ctx context.Context) (readability.PageRead, error) {
 	return read, err
 }
 
+const (
+	observedActionSettle = 75 * time.Millisecond
+	batchActionSettle    = 25 * time.Millisecond
+)
+
 func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
 	if err := b.clickRef(ctx, ref); err != nil {
 		return browser.ActionResult{}, err
 	}
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(observedActionSettle)
 	return b.observeActionWithBefore(ctx, "clicked "+ref, before), nil
 }
 
 func (b *Bridge) Hover(ctx context.Context, ref string) (browser.ActionResult, error) {
+	before := b.captureSemanticState(ctx)
+	if err := b.hoverRef(ctx, ref); err != nil {
+		return browser.ActionResult{}, err
+	}
+	time.Sleep(observedActionSettle)
+	return b.observeActionWithBefore(ctx, "hovered "+ref, before), nil
+}
+
+func (b *Bridge) hoverRef(ctx context.Context, ref string) error {
 	refJSON, _ := json.Marshal(ref)
 	var result struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error,omitempty"`
 	}
-	before := b.captureSemanticState(ctx)
 	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.HoverElementScript, refJSON), "", &result); err != nil {
-		return browser.ActionResult{}, err
+		return err
 	}
 	if !result.OK {
 		if result.Error == "" {
 			result.Error = "hover failed"
 		}
-		return browser.ActionResult{}, errors.New(result.Error)
+		return errors.New(result.Error)
 	}
-	time.Sleep(150 * time.Millisecond)
-	return b.observeActionWithBefore(ctx, "hovered "+ref, before), nil
+	return nil
 }
 
 func (b *Bridge) Evaluate(ctx context.Context, expression string) (any, error) {
@@ -582,32 +604,36 @@ func (b *Bridge) activate(ctx context.Context, ref string) error {
 }
 
 func (b *Bridge) Type(ctx context.Context, ref, text string) (browser.ActionResult, error) {
-	if err := b.focus(ctx, ref); err != nil {
-		return browser.ActionResult{}, err
-	}
 	before := b.captureSemanticState(ctx)
-	if _, err := b.cdp(ctx, "", "Input.insertText", map[string]any{"text": text}); err != nil {
+	if err := b.typeRef(ctx, ref, text); err != nil {
 		return browser.ActionResult{}, err
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(observedActionSettle)
 	return b.observeActionWithBefore(ctx, "typed into "+ref, before), nil
 }
 
+func (b *Bridge) typeRef(ctx context.Context, ref, text string) error {
+	if err := b.focus(ctx, ref); err != nil {
+		return err
+	}
+	_, err := b.cdp(ctx, "", "Input.insertText", map[string]any{"text": text})
+	return err
+}
+
 func (b *Bridge) Fill(ctx context.Context, opts snapshot.FillOptions) (browser.ActionResult, error) {
-	ref := opts.Ref
-	if ref == "" {
-		result, err := b.Find(ctx, snapshot.FindOptions{
-			Query: opts.Query,
-			Role:  opts.Role,
-			Limit: 1,
-		})
-		if err != nil {
-			return browser.ActionResult{}, err
-		}
-		if len(result.Elements) == 0 {
-			return browser.ActionResult{}, fmt.Errorf("no fill target found for query %q", opts.Query)
-		}
-		ref = result.Elements[0].Ref
+	before := b.captureSemanticState(ctx)
+	ref, err := b.fillOptions(ctx, opts)
+	if err != nil {
+		return browser.ActionResult{}, err
+	}
+	time.Sleep(observedActionSettle)
+	return b.observeActionWithBefore(ctx, "filled "+ref, before), nil
+}
+
+func (b *Bridge) fillOptions(ctx context.Context, opts snapshot.FillOptions) (string, error) {
+	ref, err := b.resolveFillRef(ctx, opts)
+	if err != nil {
+		return "", err
 	}
 	refJSON, _ := json.Marshal(ref)
 	textJSON, _ := json.Marshal(opts.Text)
@@ -616,18 +642,34 @@ func (b *Bridge) Fill(ctx context.Context, opts snapshot.FillOptions) (browser.A
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
 	}
-	before := b.captureSemanticState(ctx)
 	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s,%s,%s)", snapshot.FillElementScript, refJSON, textJSON, replaceJSON), "", &result); err != nil {
-		return browser.ActionResult{}, err
+		return "", err
 	}
 	if !result.OK {
 		if result.Error == "" {
 			result.Error = "fill failed"
 		}
-		return browser.ActionResult{}, errors.New(result.Error)
+		return "", errors.New(result.Error)
 	}
-	time.Sleep(100 * time.Millisecond)
-	return b.observeActionWithBefore(ctx, "filled "+ref, before), nil
+	return ref, nil
+}
+
+func (b *Bridge) resolveFillRef(ctx context.Context, opts snapshot.FillOptions) (string, error) {
+	if opts.Ref != "" {
+		return opts.Ref, nil
+	}
+	result, err := b.Find(ctx, snapshot.FindOptions{
+		Query: opts.Query,
+		Role:  opts.Role,
+		Limit: 1,
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(result.Elements) == 0 {
+		return "", fmt.Errorf("no fill target found for query %q", opts.Query)
+	}
+	return result.Elements[0].Ref, nil
 }
 
 func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (browser.ActionResult, error) {
@@ -701,54 +743,61 @@ func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (b
 	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.FileInputEventsScript, refJSON), "", &ignored); err != nil {
 		return browser.ActionResult{}, err
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(observedActionSettle)
 	return b.observeActionWithBefore(ctx, "uploaded file to "+ref, before), nil
 }
 
 func (b *Bridge) Select(ctx context.Context, ref, value string) (browser.ActionResult, error) {
+	before := b.captureSemanticState(ctx)
+	message, err := b.selectValue(ctx, ref, value)
+	if err != nil {
+		return browser.ActionResult{}, err
+	}
+	time.Sleep(observedActionSettle)
+	return b.observeActionWithBefore(ctx, message, before), nil
+}
+
+func (b *Bridge) selectValue(ctx context.Context, ref, value string) (string, error) {
 	refJSON, _ := json.Marshal(ref)
 	valueJSON, _ := json.Marshal(value)
 	var result struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
 	}
-	before := b.captureSemanticState(ctx)
 	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s,%s)", snapshot.SelectElementScript, refJSON, valueJSON), "", &result); err != nil {
-		return browser.ActionResult{}, err
+		return "", err
 	}
 	if !result.OK {
 		if result.Error == "" {
 			result.Error = "select failed"
 		}
 		if !strings.Contains(result.Error, "ref is not a select element") {
-			return browser.ActionResult{}, errors.New(result.Error)
+			return "", errors.New(result.Error)
 		}
-		return b.selectCustomOption(ctx, ref, value, before)
+		return b.selectCustomOption(ctx, ref, value)
 	}
-	time.Sleep(100 * time.Millisecond)
-	return b.observeActionWithBefore(ctx, "selected "+ref, before), nil
+	return "selected " + ref, nil
 }
 
-func (b *Bridge) selectCustomOption(ctx context.Context, ref, value string, before *browser.SemanticState) (browser.ActionResult, error) {
+func (b *Bridge) selectCustomOption(ctx context.Context, ref, value string) (string, error) {
 	if b.elementValueMatches(ctx, ref, value) {
-		return b.observeAction(ctx, "selected "+ref+" already "+value), nil
+		return "selected " + ref + " already " + value, nil
 	}
 	option, err := b.findOptionCandidate(ctx, value)
 	if err != nil {
 		if err := b.clickRef(ctx, ref); err != nil {
-			return browser.ActionResult{}, fmt.Errorf("open custom select %s: %w", ref, err)
+			return "", fmt.Errorf("open custom select %s: %w", ref, err)
 		}
-		time.Sleep(125 * time.Millisecond)
+		time.Sleep(observedActionSettle)
 		option, err = b.findOptionCandidate(ctx, value)
 		if err != nil {
-			return browser.ActionResult{}, err
+			return "", err
 		}
 	}
 	if err := b.clickRef(ctx, option.Ref); err != nil {
-		return browser.ActionResult{}, fmt.Errorf("select option %s: %w", option.Ref, err)
+		return "", fmt.Errorf("select option %s: %w", option.Ref, err)
 	}
-	time.Sleep(150 * time.Millisecond)
-	return b.observeActionWithBefore(ctx, "selected "+ref+" via option "+option.Ref, before), nil
+	return "selected " + ref + " via option " + option.Ref, nil
 }
 
 func (b *Bridge) elementValueMatches(ctx context.Context, ref, value string) bool {
@@ -781,14 +830,22 @@ func (b *Bridge) findOptionCandidate(ctx context.Context, value string) (snapsho
 }
 
 func (b *Bridge) Press(ctx context.Context, key string) (browser.ActionResult, error) {
+	before := b.captureSemanticState(ctx)
+	if err := b.pressKey(ctx, key); err != nil {
+		return browser.ActionResult{}, err
+	}
+	time.Sleep(observedActionSettle)
+	return b.observeActionWithBefore(ctx, "pressed "+key, before), nil
+}
+
+func (b *Bridge) pressKey(ctx context.Context, key string) error {
 	if key == "" {
-		return browser.ActionResult{}, errors.New("key is required")
+		return errors.New("key is required")
 	}
 	desc := actions.DescribeKey(key)
 	if desc.Key == "" {
-		return browser.ActionResult{}, errors.New("key is required")
+		return errors.New("key is required")
 	}
-	before := b.captureSemanticState(ctx)
 	for _, typ := range []string{"keyDown", "keyUp"} {
 		params := map[string]any{
 			"type":                  typ,
@@ -803,36 +860,43 @@ func (b *Bridge) Press(ctx context.Context, key string) (browser.ActionResult, e
 			params["unmodifiedText"] = desc.Text
 		}
 		if _, err := b.cdp(ctx, "", "Input.dispatchKeyEvent", params); err != nil {
-			return browser.ActionResult{}, err
+			return err
 		}
 	}
-	time.Sleep(150 * time.Millisecond)
-	return b.observeActionWithBefore(ctx, "pressed "+key, before), nil
+	return nil
 }
 
 func (b *Bridge) Scroll(ctx context.Context, direction string) (browser.ActionResult, error) {
+	before := b.captureSemanticState(ctx)
+	message, err := b.scrollDirection(ctx, direction)
+	if err != nil {
+		return browser.ActionResult{}, err
+	}
+	time.Sleep(observedActionSettle)
+	return b.observeActionWithBefore(ctx, message, before), nil
+}
+
+func (b *Bridge) scrollDirection(ctx context.Context, direction string) (string, error) {
 	direction = strings.ToLower(strings.TrimSpace(direction))
 	if direction == "" {
 		direction = "down"
 	}
-	before := b.captureSemanticState(ctx)
 	directionJSON, _ := json.Marshal(direction)
 	var scroll snapshot.ScrollResult
 	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.ScrollPageScript, directionJSON), "", &scroll); err != nil {
-		return browser.ActionResult{}, err
+		return "", err
 	}
 	if !scroll.OK {
 		if scroll.Error == "" {
 			scroll.Error = "scroll failed"
 		}
-		return browser.ActionResult{}, errors.New(scroll.Error)
+		return "", errors.New(scroll.Error)
 	}
-	time.Sleep(100 * time.Millisecond)
 	message := fmt.Sprintf("scrolled %s target:%s", direction, scroll.Target)
 	if scroll.Name != "" {
 		message += " " + strconv.Quote(scroll.Name)
 	}
-	return b.observeActionWithBefore(ctx, message, before), nil
+	return message, nil
 }
 
 func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {
@@ -880,35 +944,42 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			actionErr = errors.New("click requires ref")
 			break
 		}
-		_, actionErr = b.Click(ctx, step.Ref)
+		actionErr = b.clickRef(ctx, step.Ref)
+		time.Sleep(batchActionSettle)
 	case "type":
 		if step.Ref == "" || step.Text == "" {
 			actionErr = errors.New("type requires ref and text")
 			break
 		}
-		_, actionErr = b.Type(ctx, step.Ref, step.Text)
+		actionErr = b.typeRef(ctx, step.Ref, step.Text)
+		time.Sleep(batchActionSettle)
 	case "fill":
-		_, actionErr = b.Fill(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+		_, actionErr = b.fillOptions(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+		time.Sleep(batchActionSettle)
 	case "select":
 		if step.Ref == "" || step.Value == "" {
 			actionErr = errors.New("select requires ref and value")
 			break
 		}
-		_, actionErr = b.Select(ctx, step.Ref, step.Value)
+		_, actionErr = b.selectValue(ctx, step.Ref, step.Value)
+		time.Sleep(batchActionSettle)
 	case "press":
 		if step.Key == "" {
 			actionErr = errors.New("press requires key")
 			break
 		}
-		_, actionErr = b.Press(ctx, step.Key)
+		actionErr = b.pressKey(ctx, step.Key)
+		time.Sleep(batchActionSettle)
 	case "scroll":
-		_, actionErr = b.Scroll(ctx, step.Direction)
+		_, actionErr = b.scrollDirection(ctx, step.Direction)
+		time.Sleep(batchActionSettle)
 	case "hover":
 		if step.Ref == "" {
 			actionErr = errors.New("hover requires ref")
 			break
 		}
-		_, actionErr = b.Hover(ctx, step.Ref)
+		actionErr = b.hoverRef(ctx, step.Ref)
+		time.Sleep(batchActionSettle)
 	case "wait":
 		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
 		if timeout == 0 {
@@ -1351,35 +1422,42 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 			actionErr = errors.New("click requires ref")
 			break
 		}
-		_, actionErr = b.Click(ctx, step.Ref)
+		actionErr = b.clickRef(ctx, step.Ref)
+		time.Sleep(batchActionSettle)
 	case "type":
 		if step.Ref == "" || step.Text == "" {
 			actionErr = errors.New("type requires ref and text")
 			break
 		}
-		_, actionErr = b.Type(ctx, step.Ref, step.Text)
+		actionErr = b.typeRef(ctx, step.Ref, step.Text)
+		time.Sleep(batchActionSettle)
 	case "fill":
-		_, actionErr = b.Fill(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+		_, actionErr = b.fillOptions(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+		time.Sleep(batchActionSettle)
 	case "select":
 		if step.Ref == "" || step.Value == "" {
 			actionErr = errors.New("select requires ref and value")
 			break
 		}
-		_, actionErr = b.Select(ctx, step.Ref, step.Value)
+		_, actionErr = b.selectValue(ctx, step.Ref, step.Value)
+		time.Sleep(batchActionSettle)
 	case "press":
 		if step.Key == "" {
 			actionErr = errors.New("press requires key")
 			break
 		}
-		_, actionErr = b.Press(ctx, step.Key)
+		actionErr = b.pressKey(ctx, step.Key)
+		time.Sleep(batchActionSettle)
 	case "scroll":
-		_, actionErr = b.Scroll(ctx, step.Direction)
+		_, actionErr = b.scrollDirection(ctx, step.Direction)
+		time.Sleep(batchActionSettle)
 	case "hover":
 		if step.Ref == "" {
 			actionErr = errors.New("hover requires ref")
 			break
 		}
-		_, actionErr = b.Hover(ctx, step.Ref)
+		actionErr = b.hoverRef(ctx, step.Ref)
+		time.Sleep(batchActionSettle)
 	case "wait":
 		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
 		if timeout == 0 {
