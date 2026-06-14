@@ -181,7 +181,7 @@ func (c *Controller) NetworkRequests(ctx context.Context, filter string) ([]brow
 
 func (c *Controller) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {
 	var out browser.PlanResult
-	err := c.post(ctx, "/api/page/execute_plan", steps, &out)
+	err := c.post(ctx, "/api/page/execute_plan", map[string]any{"steps": steps}, &out)
 	return out, err
 }
 
@@ -191,6 +191,60 @@ func (c *Controller) GroupTabs(ctx context.Context, tabIDs []string, name string
 
 func (c *Controller) UngroupTabs(ctx context.Context, tabIDs []string) error {
 	return c.post(ctx, "/api/browser/ungroup_tabs", map[string]any{"tab_ids": tabIDs}, nil)
+}
+
+func (c *Controller) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
+	var out browser.BatchResult
+	err := c.post(ctx, "/api/page/batch", map[string]any{"steps": steps}, &out)
+	return out, err
+}
+
+func (c *Controller) Observe(ctx context.Context) (browser.ObserveResult, error) {
+	var out browser.ObserveResult
+	err := c.get(ctx, "/api/page/observe", nil, &out)
+	return out, err
+}
+
+func (c *Controller) ConsoleMessages(ctx context.Context) ([]browser.ConsoleMessage, error) {
+	var out []browser.ConsoleMessage
+	err := c.get(ctx, "/api/page/console", nil, &out)
+	return out, err
+}
+
+func (c *Controller) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYResult, error) {
+	var out snapshot.ClickXYResult
+	err := c.post(ctx, "/api/page/click_xy", map[string]any{"x": x, "y": y}, &out)
+	return out, err
+}
+
+func (c *Controller) GetTrace() browser.TraceResult {
+	var out browser.TraceResult
+	_ = c.get(context.Background(), "/api/page/trace", nil, &out)
+	return out
+}
+
+func (c *Controller) ClearTrace() {
+	_ = c.post(context.Background(), "/api/page/clear_trace", nil, nil)
+}
+
+func (c *Controller) AssertVisible(ctx context.Context, ref string, timeout time.Duration) error {
+	return c.post(ctx, "/api/page/assert_visible", map[string]any{"ref": ref, "timeout_ms": timeout.Milliseconds()}, nil)
+}
+
+func (c *Controller) AssertText(ctx context.Context, ref, text string, timeout time.Duration) error {
+	return c.post(ctx, "/api/page/assert_text", map[string]any{"ref": ref, "text": text, "timeout_ms": timeout.Milliseconds()}, nil)
+}
+
+func (c *Controller) AssertValue(ctx context.Context, ref, value string, timeout time.Duration) error {
+	return c.post(ctx, "/api/page/assert_value", map[string]any{"ref": ref, "value": value, "timeout_ms": timeout.Milliseconds()}, nil)
+}
+
+func (c *Controller) AssertHidden(ctx context.Context, ref string, timeout time.Duration) error {
+	return c.post(ctx, "/api/page/assert_hidden", map[string]any{"ref": ref, "timeout_ms": timeout.Milliseconds()}, nil)
+}
+
+func (c *Controller) CommitField(ctx context.Context, ref string) error {
+	return c.post(ctx, "/api/page/commit", map[string]any{"ref": ref}, nil)
 }
 
 func (c *Controller) get(ctx context.Context, path string, values url.Values, out any) error {

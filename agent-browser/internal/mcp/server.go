@@ -42,6 +42,17 @@ type Controller interface {
 	Evaluate(context.Context, string) (any, error)
 	NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error)
 	ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error)
+	ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error)
+	Observe(context.Context) (browser.ObserveResult, error)
+	ConsoleMessages(context.Context) ([]browser.ConsoleMessage, error)
+	ClickXY(context.Context, float64, float64) (snapshot.ClickXYResult, error)
+	GetTrace() browser.TraceResult
+	ClearTrace()
+	AssertVisible(context.Context, string, time.Duration) error
+	AssertText(context.Context, string, string, time.Duration) error
+	AssertValue(context.Context, string, string, time.Duration) error
+	AssertHidden(context.Context, string, time.Duration) error
+	CommitField(context.Context, string) error
 }
 
 type Server struct {
@@ -248,6 +259,16 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 }
 
 func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage) (any, *rpcError) {
+	// Extract optional tab_id from any tool call and inject into context
+	var tabProbe struct {
+		TabID string `json:"tab_id"`
+	}
+	if len(args) > 0 {
+		_ = json.Unmarshal(args, &tabProbe)
+	}
+	if tabProbe.TabID != "" {
+		ctx = browser.WithTabID(ctx, tabProbe.TabID)
+	}
 	switch name {
 	case "browser_open":
 		var req struct {
@@ -412,6 +433,16 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(s.manager.ExecutePlan(ctx, req.Steps))
+	case "browser_batch":
+		var req struct {
+			Steps []browser.BatchStep `json:"steps"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.ExecuteBatch(ctx, req.Steps))
+	case "browser_observe":
+		return toolJSON(s.manager.Observe(ctx))
 	case "browser_group_tabs":
 		var req struct {
 			TabIDs []string `json:"tab_ids"`
@@ -430,6 +461,69 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolOK(s.manager.UngroupTabs(ctx, req.TabIDs))
+	case "browser_assert_visible":
+		var req struct {
+			Ref       string `json:"ref"`
+			TimeoutMS int    `json:"timeout_ms"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolOK(s.manager.AssertVisible(ctx, req.Ref, time.Duration(req.TimeoutMS)*time.Millisecond))
+	case "browser_assert_text":
+		var req struct {
+			Ref       string `json:"ref"`
+			Text      string `json:"text"`
+			TimeoutMS int    `json:"timeout_ms"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolOK(s.manager.AssertText(ctx, req.Ref, req.Text, time.Duration(req.TimeoutMS)*time.Millisecond))
+	case "browser_assert_value":
+		var req struct {
+			Ref       string `json:"ref"`
+			Value     string `json:"value"`
+			TimeoutMS int    `json:"timeout_ms"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolOK(s.manager.AssertValue(ctx, req.Ref, req.Value, time.Duration(req.TimeoutMS)*time.Millisecond))
+	case "browser_assert_hidden":
+		var req struct {
+			Ref       string `json:"ref"`
+			TimeoutMS int    `json:"timeout_ms"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolOK(s.manager.AssertHidden(ctx, req.Ref, time.Duration(req.TimeoutMS)*time.Millisecond))
+	case "browser_commit":
+		var req struct {
+			Ref string `json:"ref"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolOK(s.manager.CommitField(ctx, req.Ref))
+	case "browser_click_xy":
+		var req struct {
+			X float64 `json:"x"`
+			Y float64 `json:"y"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.ClickXY(ctx, req.X, req.Y))
+	case "browser_console":
+		return toolJSON(s.manager.ConsoleMessages(ctx))
+	case "browser_trace":
+		trace := s.manager.GetTrace()
+		return toolJSON(trace, nil)
+	case "browser_clear_trace":
+		s.manager.ClearTrace()
+		return toolOK(nil)
 	default:
 		return nil, &rpcError{Code: -32602, Message: fmt.Sprintf("unknown tool %q", name)}
 	}
@@ -510,9 +604,12 @@ func tools() []map[string]any {
 		tool("browser_close_tab", "Close a controllable Chrome/Chromium target by id.", object(map[string]any{
 			"id": stringSchema("Target id from browser_list_tabs."),
 		}, []string{"id"})),
-		tool("browser_read", "Return semantic page content: main text, headings, links, forms, tables, and metadata.", object(nil, nil)),
-		tool("browser_snapshot", "Return interactive controls with stable refs. Defaults to a bounded visible/actionable viewport frontier; use mode:\"all\" for full-page debugging (returns every matching element including offscreen/hidden controls — useful for comprehensive page analysis), and add include_hidden:true only when hidden inputs are needed. Metadata includes total_candidates for the full count before filtering.", object(map[string]any{
-			"mode":           stringSchema("frontier (default, scored visible/actionable controls) or all (full matching list, including offscreen/currently invisible matching controls)."),
+		tool("browser_read", "Return semantic page content: main text, headings, links, forms, tables, and metadata. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		}, nil)),
+		tool("browser_snapshot", "Return interactive controls with stable refs. Defaults to a bounded visible/actionable viewport frontier; use mode:\"all\" for full-page debugging (returns every matching element including offscreen/hidden controls — useful for comprehensive page analysis), and add include_hidden:true only when hidden inputs are needed. Metadata includes total_candidates for the full count before filtering. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"tab_id":         stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+			"mode":           stringSchema("frontier (default, scored visible/actionable controls) or all (full matching list, including offscreen/currently invisible matching controls) or form_lens (form fields with validation state only)."),
 			"query":          stringSchema("Case-insensitive substring match across ref, role, name, tag, type, href, and value."),
 			"text":           stringSchema("Alias for query-style text filtering."),
 			"role":           stringSchema("ARIA/semantic role to include, for example button or textbox."),
@@ -530,11 +627,13 @@ func tools() []map[string]any {
 			"viewport_only":  boolSchema("Only return elements intersecting the viewport."),
 			"include_hidden": boolSchema("Include input[type=hidden] fields as role hidden for explicit debugging. Defaults false."),
 		}, nil)),
-		tool("browser_click", "Click a semantic element ref from browser_snapshot.", object(map[string]any{
-			"ref": stringSchema("Element ref, for example e18."),
+		tool("browser_click", "Click a semantic element ref from browser_snapshot. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"ref":    stringSchema("Element ref, for example e18."),
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
-		tool("browser_hover", "Hover over a semantic element ref to trigger mouseenter/mouseover/pointermove events.", object(map[string]any{
-			"ref": stringSchema("Element ref, for example e18."),
+		tool("browser_hover", "Hover over a semantic element ref to trigger mouseenter/mouseover/pointermove events. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"ref":    stringSchema("Element ref, for example e18."),
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
 		tool("browser_evaluate", "Run arbitrary JavaScript in the page context and return the JSON-serializable result. Supports async expressions.", object(map[string]any{
 			"expression": stringSchema("JavaScript expression to evaluate. May use await for async operations."),
@@ -542,9 +641,10 @@ func tools() []map[string]any {
 		tool("browser_network_requests", "Return network resource requests captured by the Performance API (performance.getEntriesByType).", object(map[string]any{
 			"filter": stringSchema("Optional case-insensitive substring to filter request URLs."),
 		}, nil)),
-		tool("browser_type", "Type text into a semantic element ref.", object(map[string]any{
-			"ref":  stringSchema("Element ref, for example e17."),
-			"text": stringSchema("Text to insert."),
+		tool("browser_type", "Type text into a semantic element ref. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"ref":    stringSchema("Element ref, for example e17."),
+			"text":   stringSchema("Text to insert."),
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"ref", "text"})),
 		tool("browser_fill", "Replace or append text in a semantic text field by ref or query and return a post-action observation.", object(map[string]any{
 			"ref":     stringSchema("Element ref, for example e17. Optional when query is supplied."),
@@ -602,6 +702,31 @@ func tools() []map[string]any {
 				},
 			},
 		}, []string{"steps"})),
+		tool("browser_batch", "Execute multiple browser actions in one round-trip without intermediate observations. Returns a single compact observation at the end. Supports actions (click, type, fill, select, press, scroll, hover, wait, open, focus_tab) and inline assertions (assert_visible, assert_text, assert_value, assert_hidden).", object(map[string]any{
+			"steps": map[string]any{
+				"type":        "array",
+				"description": "Ordered list of actions and assertions to execute.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"action":     stringSchema("One of: click, type, fill, select, press, scroll, hover, wait, open, focus_tab, assert_visible, assert_text, assert_value, assert_hidden."),
+						"ref":        stringSchema("Element ref for click, type, fill, select, hover, and assert_* actions."),
+						"text":       stringSchema("Text for type and fill actions, or expected text for assert_text."),
+						"value":      stringSchema("Option value for select action, or expected value for assert_value."),
+						"direction":  stringSchema("Scroll direction: up, down, left, right."),
+						"condition":  stringSchema("Wait condition (load, text:..., ref:..., url:..., etc)."),
+						"timeout_ms": map[string]any{"type": "integer", "description": "Timeout for wait/assert actions in milliseconds."},
+						"url":        stringSchema("URL for open action."),
+						"id":         stringSchema("Tab id for focus_tab action."),
+						"key":        stringSchema("Key name for press action (Enter, Tab, Escape, etc)."),
+					},
+					"required": []string{"action"},
+				},
+			},
+		}, []string{"steps"})),
+		tool("browser_observe", "Return compact page state: version, URL, title, focused ref, and frontier element changes since last observe. Use this to check what changed without a full snapshot. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		}, nil)),
 		tool("browser_group_tabs", "Group tabs into a named Chrome tab group with a color.", object(map[string]any{
 			"tab_ids": map[string]any{"type": "array", "items": stringSchema("Tab id."), "description": "Tab IDs to group."},
 			"name":    stringSchema("Group name shown in Chrome tab strip."),
@@ -610,6 +735,34 @@ func tools() []map[string]any {
 		tool("browser_ungroup_tabs", "Remove tabs from their Chrome tab group.", object(map[string]any{
 			"tab_ids": map[string]any{"type": "array", "items": stringSchema("Tab id."), "description": "Tab IDs to ungroup."},
 		}, []string{"tab_ids"})),
+		tool("browser_assert_visible", "Assert that an element ref is visible. Retries until visible or timeout (web-first assertion).", object(map[string]any{
+			"ref":        stringSchema("Element ref from browser_snapshot."),
+			"timeout_ms": integerSchema("Timeout in milliseconds. Defaults to 5000."),
+		}, []string{"ref"})),
+		tool("browser_assert_text", "Assert that an element ref contains the expected text (case-insensitive substring). Retries until matched or timeout.", object(map[string]any{
+			"ref":        stringSchema("Element ref from browser_snapshot."),
+			"text":       stringSchema("Expected text substring (case-insensitive)."),
+			"timeout_ms": integerSchema("Timeout in milliseconds. Defaults to 5000."),
+		}, []string{"ref", "text"})),
+		tool("browser_assert_value", "Assert that an element ref has the expected value (exact match). Retries until matched or timeout.", object(map[string]any{
+			"ref":        stringSchema("Element ref from browser_snapshot."),
+			"value":      stringSchema("Expected value (exact match)."),
+			"timeout_ms": integerSchema("Timeout in milliseconds. Defaults to 5000."),
+		}, []string{"ref", "value"})),
+		tool("browser_assert_hidden", "Assert that an element ref is hidden or absent from the DOM. Retries until hidden or timeout.", object(map[string]any{
+			"ref":        stringSchema("Element ref from browser_snapshot."),
+			"timeout_ms": integerSchema("Timeout in milliseconds. Defaults to 5000."),
+		}, []string{"ref"})),
+		tool("browser_commit", "Commit a form field: submits the enclosing form (via submit button or requestSubmit) or presses Enter if no form. Use after filling a field that requires explicit submission.", object(map[string]any{
+			"ref": stringSchema("Element ref from browser_snapshot."),
+		}, []string{"ref"})),
+		tool("browser_click_xy", "Click at specific viewport coordinates (x, y). Returns the element that was clicked. Use for canvas interactions or when semantic refs are not available.", object(map[string]any{
+			"x": map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
+			"y": map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
+		}, []string{"x", "y"})),
+		tool("browser_console", "Return and drain buffered console messages (log, warn, error, info) from the page. Messages are captured by an injected console interceptor and cleared after reading.", object(nil, nil)),
+		tool("browser_trace", "Return the action trace: a compact log of recent actions with refs, timing, and outcomes. Use for debugging and performance analysis.", object(nil, nil)),
+		tool("browser_clear_trace", "Clear the action trace buffer.", object(nil, nil)),
 	}
 }
 

@@ -1,5 +1,5 @@
 const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
-const PROTOCOL_VERSION = "0.1.3";
+const PROTOCOL_VERSION = "0.1.5";
 
 const state = {
   socket: null,
@@ -209,6 +209,34 @@ async function handle(message) {
       send({ id: message.id, ok: true, result: result || {} });
       return;
     }
+    if (message.type === "show_indicator") {
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      await attach(tabId);
+      const indicatorScript = `(function() {
+        if (window.__agentBrowserIndicator) return;
+        window.__agentBrowserIndicator = true;
+        var el = document.createElement('div');
+        el.id = 'agent-browser-indicator';
+        el.style.cssText = 'position:fixed;top:8px;right:8px;z-index:2147483647;background:#1a7f37;color:white;padding:6px 12px;border-radius:6px;font:600 12px system-ui;box-shadow:0 2px 8px rgba(0,0,0,0.2);pointer-events:none;opacity:0.95;transition:opacity 0.3s;';
+        el.textContent = '🤖 agent-browser active';
+        document.documentElement.appendChild(el);
+      })()`;
+      await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: indicatorScript, returnByValue: true }).catch(() => {});
+      send({ id: message.id, ok: true, result: { shown: true } });
+      return;
+    }
+    if (message.type === "hide_indicator") {
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      await attach(tabId);
+      const hideScript = `(function() {
+        var el = document.getElementById('agent-browser-indicator');
+        if (el) el.remove();
+        window.__agentBrowserIndicator = false;
+      })()`;
+      await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: hideScript, returnByValue: true }).catch(() => {});
+      send({ id: message.id, ok: true, result: { hidden: true } });
+      return;
+    }
     send({ id: message.id, ok: false, error: `unknown message type ${message.type}` });
   } catch (error) {
     rememberStatus(`request failed: ${String(error?.message || error)}`).catch(() => {});
@@ -326,6 +354,7 @@ function ensureObserver(tabId) {
     if (window.__agentBrowserObserver) return;
     window.__agentBrowserObserver = true;
     window.__agentBrowserDirty = false;
+    window.__agentBrowserConsole = [];
     const observer = new MutationObserver(function() {
       window.__agentBrowserDirty = true;
     });
@@ -334,6 +363,17 @@ function ensureObserver(tabId) {
       subtree: true,
       attributes: true,
       characterData: true
+    });
+    ['log','warn','error','info'].forEach(function(level) {
+      const orig = console[level];
+      console[level] = function() {
+        var text = Array.from(arguments).map(function(a) {
+          try { return typeof a === 'object' ? JSON.stringify(a) : String(a); } catch(e) { return String(a); }
+        }).join(' ');
+        window.__agentBrowserConsole.push({level: level, text: text.slice(0, 500)});
+        if (window.__agentBrowserConsole.length > 200) window.__agentBrowserConsole.shift();
+        if (orig.apply) orig.apply(console, arguments); else orig(arguments);
+      };
     });
   })()`;
   chrome.debugger.attach({ tabId }, "1.3").catch(() => {}).then(() => {

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Decathlon-style Shop Fixture</title>
+  <meta name="description" content="Deterministic ecommerce fixture: search, product, size, add-to-basket, cart count." />
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1.5rem; max-width: 900px; }
+    .hidden { display: none; }
+    .card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin: .5rem 0; }
+    header { display: flex; gap: 1rem; align-items: center; justify-content: space-between; }
+    #basket-count { font-weight: bold; }
+    button { padding: .4rem .8rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Decathlon-style Shop</h1>
+    <div>Basket: <span id="basket-count" aria-label="basket item count">0</span> item(s)
+      <button id="view-basket">View basket</button>
+    </div>
+  </header>
+
+  <main>
+    <section aria-label="search">
+      <label for="q">Search products</label>
+      <input id="q" type="search" role="searchbox" aria-label="Search products" placeholder="e.g. running shoes" />
+      <button id="search-btn">Search</button>
+    </section>
+
+    <section id="results" aria-label="results"></section>
+    <section id="product" class="hidden card" aria-label="product"></section>
+    <section id="basket" class="hidden card" aria-label="basket"></section>
+  </main>
+
+  <script>
+    const CATALOG = [
+      { id: "kalenji-run-100", name: "Kalenji Run Support 100 Running Shoes", price: 32.99,
+        sizes: ["UK 6", "UK 7", "UK 8", "UK 9", "UK 10", "UK 11"] },
+      { id: "kiprun-ks500", name: "Kiprun KS500 Running Shoes", price: 64.99,
+        sizes: ["UK 7", "UK 8", "UK 9", "UK 10"] },
+    ];
+    let basket = [];
+
+    function el(tag, attrs, text) {
+      const e = document.createElement(tag);
+      for (const k in (attrs || {})) e.setAttribute(k, attrs[k]);
+      if (text != null) e.textContent = text;
+      return e;
+    }
+
+    document.getElementById("search-btn").addEventListener("click", runSearch);
+    document.getElementById("q").addEventListener("keydown", (ev) => { if (ev.key === "Enter") runSearch(); });
+
+    function runSearch() {
+      const q = document.getElementById("q").value.toLowerCase().trim();
+      const results = document.getElementById("results");
+      results.innerHTML = "";
+      const matches = CATALOG.filter(p => !q || p.name.toLowerCase().includes(q) || q.includes("running") || q.includes("shoe"));
+      results.appendChild(el("h2", {}, `${matches.length} result(s) for "${document.getElementById("q").value}"`));
+      for (const p of matches) {
+        const card = el("div", { class: "card" });
+        card.appendChild(el("h3", {}, p.name));
+        card.appendChild(el("div", {}, `£${p.price.toFixed(2)}`));
+        const btn = el("button", { "data-id": p.id, "aria-label": `View ${p.name}` }, "View product");
+        btn.addEventListener("click", () => openProduct(p.id));
+        card.appendChild(btn);
+        results.appendChild(card);
+      }
+    }
+
+    function openProduct(id) {
+      const p = CATALOG.find(x => x.id === id);
+      const prod = document.getElementById("product");
+      prod.classList.remove("hidden");
+      prod.innerHTML = "";
+      prod.appendChild(el("h2", {}, p.name));
+      prod.appendChild(el("div", {}, `£${p.price.toFixed(2)}`));
+      const sel = el("select", { id: "size", "aria-label": "Select size" });
+      sel.appendChild(el("option", { value: "" }, "Choose a size"));
+      for (const s of p.sizes) sel.appendChild(el("option", { value: s }, s));
+      prod.appendChild(el("label", { for: "size" }, "Size"));
+      prod.appendChild(sel);
+      const status = el("div", { id: "product-status", role: "status" });
+      const add = el("button", { id: "add-to-basket", "aria-label": "Add to basket" }, "Add to basket");
+      add.addEventListener("click", () => {
+        const size = sel.value;
+        if (!size) { status.textContent = "Please choose a size"; return; }
+        basket.push({ id: p.id, name: p.name, price: p.price, size });
+        document.getElementById("basket-count").textContent = String(basket.length);
+        status.textContent = `Added ${p.name} (${size}) to basket`;
+      });
+      prod.appendChild(add);
+      prod.appendChild(status);
+    }
+
+    document.getElementById("view-basket").addEventListener("click", () => {
+      const b = document.getElementById("basket");
+      b.classList.remove("hidden");
+      b.innerHTML = "";
+      b.appendChild(el("h2", {}, "Your basket"));
+      if (!basket.length) { b.appendChild(el("div", { role: "status" }, "Basket is empty")); return; }
+      let total = 0;
+      for (const item of basket) {
+        total += item.price;
+        b.appendChild(el("div", {}, `${item.name} — ${item.size} — £${item.price.toFixed(2)}`));
+      }
+      b.appendChild(el("div", { id: "basket-total" }, `Total: £${total.toFixed(2)}`));
+      b.appendChild(el("div", { role: "status" }, `Basket has ${basket.length} item(s)`));
+    });
+  </script>
+</body>
+</html>

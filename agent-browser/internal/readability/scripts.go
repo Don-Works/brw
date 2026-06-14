@@ -70,7 +70,18 @@ const ReadScript = `(function() {
     return parent ? text(parent) : '';
   }
   function nameFor(el) {
-    return clean(el.getAttribute('aria-label') || labelText(el) || el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('title') || (('value' in el) ? el.value : '') || text(el));
+    return clean(el.getAttribute('aria-label') || labelText(el) || el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('title') || (sensitive(el) ? '' : ((('value' in el) ? el.value : '') || text(el))));
+  }
+  function sensitive(el) {
+    if (!el || !el.tagName) return false;
+    const tag = el.tagName.toLowerCase();
+    if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return false;
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (type === 'password' || type === 'hidden') return true;
+    const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+    const hints = ['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc', 'cc-exp', 'cc-exp-month', 'cc-exp-year', 'cc-name', 'cc-type', 'cc-given-name', 'cc-family-name'];
+    for (const hint of hints) { if (ac.includes(hint)) return true; }
+    return false;
   }
 
   const mainEl = bestMain();
@@ -102,15 +113,19 @@ const ReadScript = `(function() {
     method: clean(form.method || form.getAttribute('method') || 'get').toLowerCase(),
     controls: Array.from(form.querySelectorAll('input:not([type="hidden"]),textarea,select,button'))
       .filter(visible)
-      .map(el => ({
-        ref: el.getAttribute('data-agent-browser-ref') || '',
-        role: roleFor(el),
-        name: nameFor(el),
-        type: clean(el.getAttribute('type') || ''),
-        value: ('value' in el) ? clean(el.value) : '',
-        required: Boolean(el.required || el.getAttribute('aria-required') === 'true'),
-        disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true')
-      }))
+      .map(el => {
+        const isSensitive = sensitive(el);
+        return {
+          ref: el.getAttribute('data-agent-browser-ref') || '',
+          role: roleFor(el),
+          name: nameFor(el),
+          type: clean(el.getAttribute('type') || ''),
+          value: isSensitive ? '' : (('value' in el) ? clean(el.value) : ''),
+          sensitive: isSensitive || undefined,
+          required: Boolean(el.required || el.getAttribute('aria-required') === 'true'),
+          disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true')
+        };
+      })
   }));
 
   const tables = Array.from(document.querySelectorAll('table')).filter(visible).slice(0, 20).map(table => {

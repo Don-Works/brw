@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Sensitive Fields Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 32px; max-width: 760px; }
+      form { display: grid; gap: 14px; }
+      label { display: grid; gap: 4px; font-weight: 600; }
+      input, select { font: inherit; padding: 8px; border: 1px solid #9aa7b3; }
+      button { width: fit-content; padding: 8px 12px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Sensitive Fields Fixture</h1>
+      <form id="payment" aria-label="Payment form">
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="email" required>
+
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+        <label for="card-number">Card number</label>
+        <input id="card-number" name="card_number" type="text" autocomplete="cc-number" inputmode="numeric">
+
+        <label for="card-cvv">CVV</label>
+        <input id="card-cvv" name="card_cvv" type="text" autocomplete="cc-csc" inputmode="numeric">
+
+        <label for="card-expiry">Expiry</label>
+        <input id="card-expiry" name="card_expiry" type="text" autocomplete="cc-exp" placeholder="MM/YY">
+
+        <label for="name">Full name</label>
+        <input id="name" name="full_name" type="text" autocomplete="name">
+
+        <label for="country">Country</label>
+        <select id="country" name="country" autocomplete="country">
+          <option value="GB">United Kingdom</option>
+          <option value="US">United States</option>
+        </select>
+
+        <label for="otp">Verification code</label>
+        <input id="otp" name="otp" type="text" autocomplete="one-time-code" inputmode="numeric">
+
+        <label for="notes">Order notes</label>
+        <textarea id="notes" name="notes"></textarea>
+
+        <button type="submit">Pay now</button>
+      </form>
+      <div id="result" role="status" aria-live="polite"></div>
+    </main>
+    <script>
+      document.getElementById('payment').addEventListener('submit', function(e) {
+        e.preventDefault();
+        document.getElementById('result').textContent = 'Payment submitted';
+      });
+    </script>
+  </body>
+</html>

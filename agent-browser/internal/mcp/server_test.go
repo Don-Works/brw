@@ -286,15 +286,38 @@ func (fakeController) WaitFor(context.Context, string, time.Duration) error { re
 func (fakeController) Hover(context.Context, string) (browser.ActionResult, error) {
 	return browser.ActionResult{OK: true}, nil
 }
-func (fakeController) Evaluate(context.Context, string) (any, error)              { return nil, nil }
+func (fakeController) Evaluate(context.Context, string) (any, error) { return nil, nil }
 func (fakeController) NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error) {
 	return nil, nil
 }
 func (fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error) {
 	return browser.PlanResult{}, nil
 }
+func (fakeController) ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error) {
+	return browser.BatchResult{}, nil
+}
+func (fakeController) Observe(context.Context) (browser.ObserveResult, error) {
+	return browser.ObserveResult{}, nil
+}
+func (fakeController) ConsoleMessages(context.Context) ([]browser.ConsoleMessage, error) {
+	return nil, nil
+}
+func (fakeController) ClickXY(context.Context, float64, float64) (snapshot.ClickXYResult, error) {
+	return snapshot.ClickXYResult{}, nil
+}
+func (fakeController) GetTrace() browser.TraceResult { return browser.TraceResult{} }
+func (fakeController) ClearTrace()                   {}
 func (fakeController) OpenInGroup(context.Context, string, string) (browser.OpenResult, error) {
 	return browser.OpenResult{}, nil
 }
-func (fakeController) GroupTabs(context.Context, []string, string, string) error { return nil }
-func (fakeController) UngroupTabs(context.Context, []string) error               { return nil }
+func (fakeController) GroupTabs(context.Context, []string, string, string) error  { return nil }
+func (fakeController) UngroupTabs(context.Context, []string) error                { return nil }
+func (fakeController) AssertVisible(context.Context, string, time.Duration) error { return nil }
+func (fakeController) AssertText(context.Context, string, string, time.Duration) error {
+	return nil
+}
+func (fakeController) AssertValue(context.Context, string, string, time.Duration) error {
+	return nil
+}
+func (fakeController) AssertHidden(context.Context, string, time.Duration) error { return nil }
+func (fakeController) CommitField(context.Context, string) error                 { return nil }

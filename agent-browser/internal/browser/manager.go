@@ -42,11 +42,35 @@ type Manager struct {
 	// result — it just halves the per-action snapshot round-trips in steady state.
 	stateMu   sync.Mutex
 	lastState map[string]*SemanticState
+	versions  map[string]int64
+
+	traceMu sync.Mutex
+	trace   []TraceEntry
 }
 
 type tabContext struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+type ctxKeyTabID struct{}
+
+func WithTabID(ctx context.Context, tabID string) context.Context {
+	return context.WithValue(ctx, ctxKeyTabID{}, tabID)
+}
+
+func TabIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(ctxKeyTabID{}).(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+func tabIDFromCtx(ctx context.Context) string {
+	return TabIDFromContext(ctx)
 }
 
 func New(ctx context.Context, cfg Config) (*Manager, error) {
@@ -84,6 +108,8 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		refs:          store.New(),
 		timeout:       timeout,
 		lastState:     map[string]*SemanticState{},
+		versions:      map[string]int64{},
+		trace:         make([]TraceEntry, 0, 256),
 	}
 
 	if err := m.connect(); err != nil {
@@ -277,17 +303,35 @@ func (m *Manager) Read(ctx context.Context) (readability.PageRead, error) {
 }
 
 func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
+	start := time.Now()
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return ActionResult{}, err
 	}
 	defer cancel()
 
-	before := m.cachedBefore(tabID, tabCtx)
-	if err := clickElementCenter(tabCtx, ref, 150*time.Millisecond); err != nil {
+	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
 		return ActionResult{}, err
 	}
-	return m.observeActionWithBefore(tabID, tabCtx, "clicked "+ref, before), nil
+	before := m.cachedBefore(tabID, tabCtx)
+	warning, clickErr := clickElementCenter(tabCtx, ref, 150*time.Millisecond)
+	if clickErr != nil {
+		return ActionResult{}, clickErr
+	}
+	result := m.observeActionWithBefore(tabID, tabCtx, "clicked "+ref, before)
+	if warning != "" {
+		result.Warning = warning
+	}
+	result.DurationMS = time.Since(start).Milliseconds()
+	m.recordTrace(TraceEntry{
+		Action:     "click",
+		Ref:        ref,
+		OK:         result.OK,
+		Error:      result.Warning,
+		DurationMS: result.DurationMS,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	})
+	return result, nil
 }
 
 func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
@@ -297,6 +341,9 @@ func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
 	}
 	defer cancel()
 
+	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
+		return ActionResult{}, err
+	}
 	before := m.cachedBefore(tabID, tabCtx)
 	var result struct {
 		OK    bool   `json:"ok"`
@@ -374,6 +421,9 @@ func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, err
 	}
 	defer cancel()
 
+	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
+		return ActionResult{}, err
+	}
 	if err := snapshot.Focus(tabCtx, ref); err != nil {
 		return ActionResult{}, err
 	}
@@ -408,6 +458,9 @@ func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionRe
 		}
 		ref = result.Elements[0].Ref
 		m.refs.Observe(tabID, result.Elements)
+	}
+	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
+		return ActionResult{}, err
 	}
 	before := m.cachedBefore(tabID, tabCtx)
 	if err := snapshot.Fill(tabCtx, ref, opts.Text, opts.Replace); err != nil {
@@ -492,16 +545,16 @@ func (m *Manager) selectCustomOption(tabID string, tabCtx context.Context, ref, 
 	}
 	option, err := findOptionCandidate(tabCtx, value)
 	if err != nil {
-		if err := clickElementCenter(tabCtx, ref, 125*time.Millisecond); err != nil {
-			return ActionResult{}, fmt.Errorf("open custom select %s: %w", ref, err)
+		if _, clickErr := clickElementCenter(tabCtx, ref, 125*time.Millisecond); clickErr != nil {
+			return ActionResult{}, fmt.Errorf("open custom select %s: %w", ref, clickErr)
 		}
 		option, err = findOptionCandidate(tabCtx, value)
 		if err != nil {
 			return ActionResult{}, err
 		}
 	}
-	if err := clickElementCenter(tabCtx, option.Ref, 150*time.Millisecond); err != nil {
-		return ActionResult{}, fmt.Errorf("select option %s: %w", option.Ref, err)
+	if _, clickErr := clickElementCenter(tabCtx, option.Ref, 150*time.Millisecond); clickErr != nil {
+		return ActionResult{}, fmt.Errorf("select option %s: %w", option.Ref, clickErr)
 	}
 	return m.observeActionWithBefore(tabID, tabCtx, "selected "+ref+" via option "+option.Ref, before), nil
 }
@@ -519,16 +572,22 @@ func elementValueMatches(tabCtx context.Context, ref, value string) bool {
 	return false
 }
 
-func clickElementCenter(tabCtx context.Context, ref string, delay time.Duration) error {
-	box, err := snapshot.ResolveBox(tabCtx, ref)
+func clickElementCenter(tabCtx context.Context, ref string, delay time.Duration) (string, error) {
+	box, err := snapshot.ResolveOrRecoverBox(tabCtx, ref)
 	if err != nil {
-		return err
+		return "", err
 	}
 	actions := []chromedp.Action{chromedp.MouseClickXY(box.ViewportX, box.ViewportY)}
 	if delay > 0 {
 		actions = append(actions, chromedp.Sleep(delay))
 	}
-	return chromedp.Run(tabCtx, actions...)
+	if err := chromedp.Run(tabCtx, actions...); err != nil {
+		return "", err
+	}
+	if box.Recovered {
+		return fmt.Sprintf("ref recovered: %s -> %s", box.OldRef, box.Ref), nil
+	}
+	return "", nil
 }
 
 func findOptionCandidate(tabCtx context.Context, value string) (snapshot.Element, error) {
@@ -636,6 +695,96 @@ func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Du
 		return fmt.Errorf("timed out waiting for %q", condition)
 	}
 	return nil
+}
+
+func (m *Manager) AssertVisible(ctx context.Context, ref string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return snapshot.EvalAssert(tabCtx, snapshot.AssertVisibleScript, ref, timeout.Milliseconds())
+}
+
+func (m *Manager) AssertText(ctx context.Context, ref, expected string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return snapshot.EvalAssert(tabCtx, snapshot.AssertTextScript, ref, expected, timeout.Milliseconds())
+}
+
+func (m *Manager) AssertValue(ctx context.Context, ref, expected string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return snapshot.EvalAssert(tabCtx, snapshot.AssertValueScript, ref, expected, timeout.Milliseconds())
+}
+
+func (m *Manager) AssertHidden(ctx context.Context, ref string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return snapshot.EvalAssert(tabCtx, snapshot.AssertHiddenScript, ref, timeout.Milliseconds())
+}
+
+func (m *Manager) CommitField(ctx context.Context, ref string) error {
+	_, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return snapshot.CommitField(tabCtx, ref)
+}
+
+func (m *Manager) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYResult, error) {
+	_, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return snapshot.ClickXYResult{}, err
+	}
+	defer cancel()
+	return snapshot.ClickXY(tabCtx, x, y)
+}
+
+type ConsoleMessage struct {
+	Level string `json:"level"`
+	Text  string `json:"text"`
+}
+
+func (m *Manager) ConsoleMessages(ctx context.Context) ([]ConsoleMessage, error) {
+	_, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+	expr := `(function() {
+		if (!window.__agentBrowserConsole) return [];
+		var msgs = window.__agentBrowserConsole.slice();
+		window.__agentBrowserConsole.length = 0;
+		return msgs;
+	})()`
+	var msgs []ConsoleMessage
+	if err := chromedp.Run(tabCtx, chromedp.Evaluate(expr, &msgs)); err != nil {
+		return nil, err
+	}
+	return msgs, nil
 }
 
 func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
@@ -793,6 +942,181 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 	return sr
 }
 
+// ExecuteBatch executes multiple actions sequentially without intermediate
+// observations, then returns a single compact observation at the end. This is
+// much more token-efficient than calling individual tools or browser_plan.
+func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchResult, error) {
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return BatchResult{}, err
+	}
+	defer func() { cancel() }()
+
+	result := BatchResult{OK: true, Steps: make([]BatchStepResult, 0, len(steps))}
+	for i, step := range steps {
+		sr := m.executeBatchStep(tabCtx, i, step)
+		result.Steps = append(result.Steps, sr)
+		if !sr.OK {
+			result.OK = false
+			result.Error = sr.Error
+			break
+		}
+		if step.Action == "open" || step.Action == "focus_tab" {
+			if newTabID, newTabCtx, newCancel, err := m.activeContext(ctx); err == nil {
+				cancel()
+				tabID = newTabID
+				tabCtx = newTabCtx
+				cancel = newCancel
+			}
+		}
+	}
+
+	// Single observation at the end
+	snap, snapErr := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})
+	if snapErr == nil {
+		m.refs.Observe(tabID, snap.Elements)
+		result.URL = snap.URL
+		result.Title = snap.Title
+		if snap.Metadata != nil {
+			result.Version = metadataInt64(snap.Metadata["version"])
+			if focus, ok := snap.Metadata["focused_ref"].(string); ok {
+				result.Focus = focus
+			}
+		}
+		frontier := SelectFrontierElements(snap.Elements, result.Focus, 12)
+		result.Changed = summarizeElements(frontier, 12)
+	}
+	return result, nil
+}
+
+func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step BatchStep) BatchStepResult {
+	sr := BatchStepResult{Index: index, Action: step.Action, OK: true}
+
+	var actionErr error
+	switch step.Action {
+	case "click":
+		if step.Ref == "" {
+			actionErr = errors.New("click requires ref")
+			break
+		}
+		actionErr = snapshot.WaitForActionable(tabCtx, step.Ref, 5000)
+		if actionErr != nil {
+			break
+		}
+		_, actionErr = m.Click(tabCtx, step.Ref)
+	case "type":
+		if step.Ref == "" || step.Text == "" {
+			actionErr = errors.New("type requires ref and text")
+			break
+		}
+		actionErr = snapshot.WaitForActionable(tabCtx, step.Ref, 5000)
+		if actionErr != nil {
+			break
+		}
+		_, actionErr = m.Type(tabCtx, step.Ref, step.Text)
+	case "fill":
+		actionErr = snapshot.WaitForActionable(tabCtx, step.Ref, 5000)
+		if actionErr != nil {
+			break
+		}
+		_, actionErr = m.Fill(tabCtx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+	case "select":
+		if step.Ref == "" || step.Value == "" {
+			actionErr = errors.New("select requires ref and value")
+			break
+		}
+		actionErr = snapshot.WaitForActionable(tabCtx, step.Ref, 5000)
+		if actionErr != nil {
+			break
+		}
+		_, actionErr = m.Select(tabCtx, step.Ref, step.Value)
+	case "press":
+		if step.Key == "" {
+			actionErr = errors.New("press requires key")
+			break
+		}
+		_, actionErr = m.Press(tabCtx, step.Key)
+	case "scroll":
+		_, actionErr = m.Scroll(tabCtx, step.Direction)
+	case "hover":
+		if step.Ref == "" {
+			actionErr = errors.New("hover requires ref")
+			break
+		}
+		actionErr = snapshot.WaitForActionable(tabCtx, step.Ref, 5000)
+		if actionErr != nil {
+			break
+		}
+		_, actionErr = m.Hover(tabCtx, step.Ref)
+	case "wait":
+		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
+		if timeout == 0 {
+			timeout = m.timeout
+		}
+		actionErr = m.WaitFor(tabCtx, step.Condition, timeout)
+	case "open":
+		if step.URL == "" {
+			actionErr = errors.New("open requires url")
+			break
+		}
+		_, actionErr = m.Open(tabCtx, step.URL)
+	case "focus_tab":
+		if step.ID == "" {
+			actionErr = errors.New("focus_tab requires id")
+			break
+		}
+		actionErr = m.FocusTab(tabCtx, step.ID)
+	case "assert_visible":
+		if step.Ref == "" {
+			actionErr = errors.New("assert_visible requires ref")
+			break
+		}
+		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		actionErr = snapshot.EvalAssert(tabCtx, snapshot.AssertVisibleScript, step.Ref, timeout.Milliseconds())
+	case "assert_text":
+		if step.Ref == "" || step.Text == "" {
+			actionErr = errors.New("assert_text requires ref and text")
+			break
+		}
+		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		actionErr = snapshot.EvalAssert(tabCtx, snapshot.AssertTextScript, step.Ref, step.Text, timeout.Milliseconds())
+	case "assert_value":
+		if step.Ref == "" || step.Value == "" {
+			actionErr = errors.New("assert_value requires ref and value")
+			break
+		}
+		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		actionErr = snapshot.EvalAssert(tabCtx, snapshot.AssertValueScript, step.Ref, step.Value, timeout.Milliseconds())
+	case "assert_hidden":
+		if step.Ref == "" {
+			actionErr = errors.New("assert_hidden requires ref")
+			break
+		}
+		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		actionErr = snapshot.EvalAssert(tabCtx, snapshot.AssertHiddenScript, step.Ref, timeout.Milliseconds())
+	default:
+		actionErr = fmt.Errorf("unknown action %q", step.Action)
+	}
+
+	if actionErr != nil {
+		sr.OK = false
+		sr.Error = actionErr.Error()
+	}
+	return sr
+}
+
 func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, message string, before *SemanticState) ActionResult {
 	result := ActionResult{OK: true, Message: message}
 	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})
@@ -847,13 +1171,90 @@ func (m *Manager) storeState(tabID string, state SemanticState) {
 	s := state
 	m.stateMu.Lock()
 	m.lastState[tabID] = &s
+	m.versions[tabID] = m.versions[tabID] + 1
 	m.stateMu.Unlock()
 }
 
 func (m *Manager) invalidateState(tabID string) {
 	m.stateMu.Lock()
 	delete(m.lastState, tabID)
+	delete(m.versions, tabID)
 	m.stateMu.Unlock()
+}
+
+func (m *Manager) recordTrace(entry TraceEntry) {
+	m.traceMu.Lock()
+	m.trace = append(m.trace, entry)
+	if len(m.trace) > 500 {
+		m.trace = m.trace[len(m.trace)-500:]
+	}
+	m.traceMu.Unlock()
+}
+
+func (m *Manager) GetTrace() TraceResult {
+	m.traceMu.Lock()
+	entries := make([]TraceEntry, len(m.trace))
+	copy(entries, m.trace)
+	m.traceMu.Unlock()
+	return TraceResult{Entries: entries, Count: len(entries)}
+}
+
+func (m *Manager) ClearTrace() {
+	m.traceMu.Lock()
+	m.trace = m.trace[:0]
+	m.traceMu.Unlock()
+}
+
+type ObserveResult struct {
+	Version int64    `json:"version"`
+	URL     string   `json:"url,omitempty"`
+	Title   string   `json:"title,omitempty"`
+	Focus   string   `json:"focus,omitempty"`
+	Changed []string `json:"changed,omitempty"`
+}
+
+func (m *Manager) Observe(ctx context.Context) (ObserveResult, error) {
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return ObserveResult{}, err
+	}
+	defer cancel()
+
+	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})
+	if err != nil {
+		return ObserveResult{}, err
+	}
+	m.refs.Observe(tabID, snap.Elements)
+
+	focus := ""
+	if snap.Metadata != nil {
+		if f, ok := snap.Metadata["focused_ref"].(string); ok {
+			focus = f
+		}
+	}
+
+	m.stateMu.Lock()
+	m.versions[tabID] = m.versions[tabID] + 1
+	version := m.versions[tabID]
+	prev := m.lastState[tabID]
+	m.stateMu.Unlock()
+
+	after := NewSemanticState(snap)
+	m.storeState(tabID, after)
+
+	changed := summarizeElements(SelectFrontierElements(snap.Elements, focus, 12), 12)
+
+	if prev != nil && prev.URL == after.URL && prev.Title == after.Title && prev.Focus == after.Focus && prev.Signature == after.Signature {
+		changed = nil
+	}
+
+	return ObserveResult{
+		Version: version,
+		URL:     snap.URL,
+		Title:   snap.Title,
+		Focus:   focus,
+		Changed: changed,
+	}, nil
 }
 
 func summarizeElements(elements []snapshot.Element, limit int) []string {
@@ -913,7 +1314,22 @@ func (m *Manager) runBrowser(ctx context.Context, fn func(context.Context) error
 }
 
 func (m *Manager) activeContext(ctx context.Context) (string, context.Context, context.CancelFunc, error) {
+	if tabID := tabIDFromCtx(ctx); tabID != "" {
+		return m.contextForTab(ctx, tabID)
+	}
 	return m.activeContextWithTimeout(ctx, m.timeout)
+}
+
+func (m *Manager) contextForTab(ctx context.Context, tabID string) (string, context.Context, context.CancelFunc, error) {
+	if tabID == "" {
+		return m.activeContext(ctx)
+	}
+	tabCtx, err := m.tabContext(tabID)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	timeoutCtx, timeoutCancel := context.WithTimeout(tabCtx, m.timeout)
+	return tabID, timeoutCtx, timeoutCancel, nil
 }
 
 func (m *Manager) activeContextWithTimeout(ctx context.Context, timeout time.Duration) (string, context.Context, context.CancelFunc, error) {
@@ -980,4 +1396,3 @@ func (m *Manager) tabByID(ctx context.Context, id string) (Tab, error) {
 	}
 	return Tab{}, fmt.Errorf("tab %q not found", id)
 }
-

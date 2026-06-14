@@ -107,6 +107,57 @@ func TestUploadFileForwardsBody(t *testing.T) {
 	}
 }
 
+func TestNewPageActionRoutes(t *testing.T) {
+	ctrl := &fakeController{snap: sampleSnapshot()}
+	server := New("", ctrl)
+
+	cases := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPost, "/api/page/batch", `{"steps":[{"action":"click","ref":"e1"}]}`},
+		{http.MethodGet, "/api/page/observe", ``},
+		{http.MethodPost, "/api/page/commit", `{"ref":"e1"}`},
+		{http.MethodPost, "/api/page/assert_visible", `{"ref":"e1","timeout_ms":100}`},
+		{http.MethodPost, "/api/page/assert_hidden", `{"ref":"e1","timeout_ms":100}`},
+		{http.MethodPost, "/api/page/assert_text", `{"ref":"e1","text":"Email","timeout_ms":100}`},
+		{http.MethodPost, "/api/page/assert_value", `{"ref":"e1","value":"x","timeout_ms":100}`},
+		{http.MethodPost, "/api/page/click_xy", `{"x":12,"y":34}`},
+		{http.MethodGet, "/api/page/console", ``},
+		{http.MethodGet, "/api/page/trace", ``},
+		{http.MethodPost, "/api/page/clear_trace", `{}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			var body *bytes.Buffer
+			if tc.body == "" {
+				body = bytes.NewBuffer(nil)
+			} else {
+				body = bytes.NewBufferString(tc.body)
+			}
+			req := httptest.NewRequest(tc.method, tc.path, body)
+			req.Header.Set("content-type", "application/json")
+			rec := httptest.NewRecorder()
+			server.server.Handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	if len(ctrl.batchSteps) != 1 || ctrl.batchSteps[0].Action != "click" {
+		t.Fatalf("batch steps = %#v", ctrl.batchSteps)
+	}
+	if ctrl.commitRef != "e1" {
+		t.Fatalf("commit ref = %q", ctrl.commitRef)
+	}
+	if ctrl.clickX != 12 || ctrl.clickY != 34 {
+		t.Fatalf("click xy = %v,%v", ctrl.clickX, ctrl.clickY)
+	}
+}
+
 func sampleSnapshot() snapshot.PageSnapshot {
 	return snapshot.PageSnapshot{
 		URL:   "https://example.test/form",
@@ -127,6 +178,10 @@ type fakeController struct {
 	findOpts     snapshot.FindOptions
 	fillOpts     snapshot.FillOptions
 	uploadOpts   snapshot.UploadOptions
+	batchSteps   []browser.BatchStep
+	commitRef    string
+	clickX       float64
+	clickY       float64
 }
 
 func (f *fakeController) Open(context.Context, string) (browser.OpenResult, error) {
@@ -224,3 +279,38 @@ func (f *fakeController) ExecutePlan(context.Context, []browser.PlanStep) (brows
 	return browser.PlanResult{OK: true}, nil
 }
 
+func (f *fakeController) ExecuteBatch(_ context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
+	f.batchSteps = steps
+	return browser.BatchResult{OK: true}, nil
+}
+
+func (f *fakeController) Observe(context.Context) (browser.ObserveResult, error) {
+	return browser.ObserveResult{}, nil
+}
+
+func (f *fakeController) ConsoleMessages(context.Context) ([]browser.ConsoleMessage, error) {
+	return nil, nil
+}
+
+func (f *fakeController) ClickXY(_ context.Context, x float64, y float64) (snapshot.ClickXYResult, error) {
+	f.clickX = x
+	f.clickY = y
+	return snapshot.ClickXYResult{}, nil
+}
+
+func (f *fakeController) GetTrace() browser.TraceResult { return browser.TraceResult{} }
+func (f *fakeController) ClearTrace()                   {}
+
+func (f *fakeController) AssertVisible(context.Context, string, time.Duration) error { return nil }
+func (f *fakeController) AssertText(context.Context, string, string, time.Duration) error {
+	return nil
+}
+func (f *fakeController) AssertValue(context.Context, string, string, time.Duration) error {
+	return nil
+}
+func (f *fakeController) AssertHidden(context.Context, string, time.Duration) error { return nil }
+
+func (f *fakeController) CommitField(_ context.Context, ref string) error {
+	f.commitRef = ref
+	return nil
+}

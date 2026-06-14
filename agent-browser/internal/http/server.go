@@ -37,6 +37,17 @@ type Controller interface {
 	Evaluate(context.Context, string) (any, error)
 	NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error)
 	ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error)
+	ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error)
+	Observe(context.Context) (browser.ObserveResult, error)
+	ConsoleMessages(context.Context) ([]browser.ConsoleMessage, error)
+	ClickXY(context.Context, float64, float64) (snapshot.ClickXYResult, error)
+	GetTrace() browser.TraceResult
+	ClearTrace()
+	AssertVisible(context.Context, string, time.Duration) error
+	AssertText(context.Context, string, string, time.Duration) error
+	AssertValue(context.Context, string, string, time.Duration) error
+	AssertHidden(context.Context, string, time.Duration) error
+	CommitField(context.Context, string) error
 }
 
 type Server struct {
@@ -85,7 +96,19 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/hover", s.hover)
 	mux.HandleFunc("POST /api/page/evaluate", s.evaluate)
 	mux.HandleFunc("GET /api/page/network_requests", s.networkRequests)
+	mux.HandleFunc("POST /api/page/network_requests", s.networkRequests)
 	mux.HandleFunc("POST /api/page/execute_plan", s.executePlan)
+	mux.HandleFunc("POST /api/page/batch", s.executeBatch)
+	mux.HandleFunc("GET /api/page/observe", s.observe)
+	mux.HandleFunc("POST /api/page/commit", s.commitField)
+	mux.HandleFunc("POST /api/page/assert_visible", s.assertVisible)
+	mux.HandleFunc("POST /api/page/assert_hidden", s.assertHidden)
+	mux.HandleFunc("POST /api/page/assert_text", s.assertText)
+	mux.HandleFunc("POST /api/page/assert_value", s.assertValue)
+	mux.HandleFunc("POST /api/page/click_xy", s.clickXY)
+	mux.HandleFunc("GET /api/page/console", s.consoleMessages)
+	mux.HandleFunc("GET /api/page/trace", s.trace)
+	mux.HandleFunc("POST /api/page/clear_trace", s.clearTrace)
 	mux.HandleFunc("POST /api/browser/group_tabs", s.groupTabs)
 	mux.HandleFunc("POST /api/browser/ungroup_tabs", s.ungroupTabs)
 	mux.HandleFunc("GET /api/visual/screenshot", s.screenshot)
@@ -94,6 +117,17 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func requestContext(r *http.Request) context.Context {
+	return contextWithTabID(r.Context(), r.URL.Query().Get("tab_id"))
+}
+
+func contextWithTabID(ctx context.Context, tabID string) context.Context {
+	if tabID == "" {
+		return ctx
+	}
+	return browser.WithTabID(ctx, tabID)
 }
 
 func (s *Server) open(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +171,7 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	snap, err := s.manager.Snapshot(r.Context(), req.Options)
+	snap, err := s.manager.Snapshot(requestContext(r), req.Options)
 	if err == nil && req.MaxBytes > 0 {
 		snap = trimSnapshotToMaxBytes(snap, req.MaxBytes)
 	}
@@ -149,53 +183,61 @@ func (s *Server) find(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	result, err := s.manager.Find(r.Context(), opts)
+	result, err := s.manager.Find(requestContext(r), opts)
 	writeResult(w, result, err)
 }
 
 func (s *Server) read(w http.ResponseWriter, r *http.Request) {
-	read, err := s.manager.Read(r.Context())
+	read, err := s.manager.Read(requestContext(r))
 	writeResult(w, read, err)
 }
 
 func (s *Server) click(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Ref string `json:"ref"`
+		Ref   string `json:"ref"`
+		TabID string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Click(r.Context(), req.Ref)
+	result, err := s.manager.Click(contextWithTabID(r.Context(), req.TabID), req.Ref)
 	writeResult(w, result, err)
 }
 
 func (s *Server) typeText(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Ref  string `json:"ref"`
-		Text string `json:"text"`
+		Ref   string `json:"ref"`
+		Text  string `json:"text"`
+		TabID string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Type(r.Context(), req.Ref, req.Text)
+	result, err := s.manager.Type(contextWithTabID(r.Context(), req.TabID), req.Ref, req.Text)
 	writeResult(w, result, err)
 }
 
 func (s *Server) fill(w http.ResponseWriter, r *http.Request) {
-	req := snapshot.FillOptions{Replace: true}
+	req := struct {
+		snapshot.FillOptions
+		TabID string `json:"tab_id"`
+	}{FillOptions: snapshot.FillOptions{Replace: true}}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Fill(r.Context(), req)
+	result, err := s.manager.Fill(contextWithTabID(r.Context(), req.TabID), req.FillOptions)
 	writeResult(w, result, err)
 }
 
 func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
-	var req snapshot.UploadOptions
+	var req struct {
+		snapshot.UploadOptions
+		TabID string `json:"tab_id"`
+	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.UploadFile(r.Context(), req)
+	result, err := s.manager.UploadFile(contextWithTabID(r.Context(), req.TabID), req.UploadOptions)
 	writeResult(w, result, err)
 }
 
@@ -203,33 +245,36 @@ func (s *Server) selectValue(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Ref   string `json:"ref"`
 		Value string `json:"value"`
+		TabID string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Select(r.Context(), req.Ref, req.Value)
+	result, err := s.manager.Select(contextWithTabID(r.Context(), req.TabID), req.Ref, req.Value)
 	writeResult(w, result, err)
 }
 
 func (s *Server) press(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Key string `json:"key"`
+		Key   string `json:"key"`
+		TabID string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Press(r.Context(), req.Key)
+	result, err := s.manager.Press(contextWithTabID(r.Context(), req.TabID), req.Key)
 	writeResult(w, result, err)
 }
 
 func (s *Server) scroll(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Direction string `json:"direction"`
+		TabID     string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Scroll(r.Context(), req.Direction)
+	result, err := s.manager.Scroll(contextWithTabID(r.Context(), req.TabID), req.Direction)
 	writeResult(w, result, err)
 }
 
@@ -237,50 +282,171 @@ func (s *Server) waitFor(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Condition string `json:"condition"`
 		TimeoutMS int    `json:"timeout_ms"`
+		TabID     string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.WaitFor(r.Context(), req.Condition, time.Duration(req.TimeoutMS)*time.Millisecond))
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.WaitFor(contextWithTabID(r.Context(), req.TabID), req.Condition, time.Duration(req.TimeoutMS)*time.Millisecond))
 }
 
 func (s *Server) hover(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Ref string `json:"ref"`
+		Ref   string `json:"ref"`
+		TabID string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Hover(r.Context(), req.Ref)
+	result, err := s.manager.Hover(contextWithTabID(r.Context(), req.TabID), req.Ref)
 	writeResult(w, result, err)
 }
 
 func (s *Server) evaluate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Expression string `json:"expression"`
+		TabID      string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Evaluate(r.Context(), req.Expression)
+	result, err := s.manager.Evaluate(contextWithTabID(r.Context(), req.TabID), req.Expression)
 	writeResult(w, result, err)
 }
 
 func (s *Server) networkRequests(w http.ResponseWriter, r *http.Request) {
 	filter := r.URL.Query().Get("filter")
-	result, err := s.manager.NetworkRequests(r.Context(), filter)
+	ctx := requestContext(r)
+	if r.Method == http.MethodPost {
+		var req struct {
+			Filter string `json:"filter"`
+			TabID  string `json:"tab_id"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		filter = req.Filter
+		ctx = contextWithTabID(r.Context(), req.TabID)
+	}
+	result, err := s.manager.NetworkRequests(ctx, filter)
 	writeResult(w, result, err)
 }
 
 func (s *Server) executePlan(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Steps []browser.PlanStep `json:"steps"`
+		TabID string             `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.ExecutePlan(r.Context(), req.Steps)
+	result, err := s.manager.ExecutePlan(contextWithTabID(r.Context(), req.TabID), req.Steps)
 	writeResult(w, result, err)
+}
+
+func (s *Server) executeBatch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Steps []browser.BatchStep `json:"steps"`
+		TabID string              `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.ExecuteBatch(contextWithTabID(r.Context(), req.TabID), req.Steps)
+	writeResult(w, result, err)
+}
+
+func (s *Server) observe(w http.ResponseWriter, r *http.Request) {
+	result, err := s.manager.Observe(requestContext(r))
+	writeResult(w, result, err)
+}
+
+func (s *Server) commitField(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Ref   string `json:"ref"`
+		TabID string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.CommitField(contextWithTabID(r.Context(), req.TabID), req.Ref))
+}
+
+func (s *Server) assertVisible(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Ref       string `json:"ref"`
+		TimeoutMS int    `json:"timeout_ms"`
+		TabID     string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertVisible(contextWithTabID(r.Context(), req.TabID), req.Ref, time.Duration(req.TimeoutMS)*time.Millisecond))
+}
+
+func (s *Server) assertHidden(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Ref       string `json:"ref"`
+		TimeoutMS int    `json:"timeout_ms"`
+		TabID     string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertHidden(contextWithTabID(r.Context(), req.TabID), req.Ref, time.Duration(req.TimeoutMS)*time.Millisecond))
+}
+
+func (s *Server) assertText(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Ref       string `json:"ref"`
+		Text      string `json:"text"`
+		TimeoutMS int    `json:"timeout_ms"`
+		TabID     string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertText(contextWithTabID(r.Context(), req.TabID), req.Ref, req.Text, time.Duration(req.TimeoutMS)*time.Millisecond))
+}
+
+func (s *Server) assertValue(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Ref       string `json:"ref"`
+		Value     string `json:"value"`
+		TimeoutMS int    `json:"timeout_ms"`
+		TabID     string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertValue(contextWithTabID(r.Context(), req.TabID), req.Ref, req.Value, time.Duration(req.TimeoutMS)*time.Millisecond))
+}
+
+func (s *Server) clickXY(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		X     float64 `json:"x"`
+		Y     float64 `json:"y"`
+		TabID string  `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.ClickXY(contextWithTabID(r.Context(), req.TabID), req.X, req.Y)
+	writeResult(w, result, err)
+}
+
+func (s *Server) consoleMessages(w http.ResponseWriter, r *http.Request) {
+	result, err := s.manager.ConsoleMessages(requestContext(r))
+	writeResult(w, result, err)
+}
+
+func (s *Server) trace(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.manager.GetTrace())
+}
+
+func (s *Server) clearTrace(w http.ResponseWriter, _ *http.Request) {
+	s.manager.ClearTrace()
+	writeJSON(w, http.StatusOK, browser.ActionResult{OK: true})
 }
 
 func (s *Server) groupTabs(w http.ResponseWriter, r *http.Request) {
@@ -306,7 +472,7 @@ func (s *Server) ungroupTabs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
-	shot, err := s.manager.Screenshot(r.Context())
+	shot, err := s.manager.Screenshot(requestContext(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -322,7 +488,7 @@ func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) screenshotElement(w http.ResponseWriter, r *http.Request) {
 	ref := r.URL.Query().Get("ref")
-	shot, err := s.manager.ScreenshotElement(r.Context(), ref)
+	shot, err := s.manager.ScreenshotElement(requestContext(r), ref)
 	if err != nil {
 		writeError(w, err)
 		return

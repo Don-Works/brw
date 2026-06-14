@@ -384,7 +384,8 @@ func (b *Bridge) tryCachedSnapshot(ctx context.Context, opts snapshot.SnapshotOp
 	if opts.Mode == "all" || opts.IncludeHidden {
 		return snapshot.PageSnapshot{}, false
 	}
-	raw, err := b.call(ctx, "cached_snapshot", map[string]any{"tabId": parseTabID(b.activeTabID())})
+	tabID := b.contextTabID(ctx)
+	raw, err := b.call(ctx, "cached_snapshot", map[string]any{"tabId": parseTabID(tabID)})
 	if err != nil {
 		return snapshot.PageSnapshot{}, false
 	}
@@ -399,7 +400,7 @@ func (b *Bridge) tryCachedSnapshot(ctx context.Context, opts snapshot.SnapshotOp
 }
 
 func (b *Bridge) storeCachedSnapshot(ctx context.Context, snap snapshot.PageSnapshot) {
-	tabID := b.activeTabID()
+	tabID := b.contextTabID(ctx)
 	if tabID == "" {
 		return
 	}
@@ -1110,7 +1111,7 @@ func (b *Bridge) cdp(ctx context.Context, tabID, method string, params map[strin
 	}
 	req := map[string]any{"method": method, "params": params}
 	if strings.TrimSpace(tabID) == "" {
-		tabID = b.activeTabID()
+		tabID = b.contextTabID(ctx)
 	}
 	if tabID != "" {
 		req["tabId"] = parseTabID(tabID)
@@ -1122,6 +1123,13 @@ func (b *Bridge) cdp(ctx context.Context, tabID, method string, params map[strin
 		return b.call(ctx, "cdp", req)
 	}
 	return raw, err
+}
+
+func (b *Bridge) contextTabID(ctx context.Context) string {
+	if tabID := browser.TabIDFromContext(ctx); tabID != "" {
+		return tabID
+	}
+	return b.activeTabID()
 }
 
 func (b *Bridge) axNodes(ctx context.Context, tabID string) ([]*accessibility.Node, error) {
@@ -1306,6 +1314,279 @@ func screenshotFromRaw(raw json.RawMessage) (browser.Screenshot, error) {
 	}
 	return browser.Screenshot{MIMEType: "image/png", Data: data, Base64: payload.Data}, nil
 }
+
+func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
+	result := browser.BatchResult{OK: true, Steps: make([]browser.BatchStepResult, 0, len(steps))}
+	for i, step := range steps {
+		sr := b.executeBatchStep(ctx, i, step)
+		result.Steps = append(result.Steps, sr)
+		if !sr.OK {
+			result.OK = false
+			result.Error = sr.Error
+			break
+		}
+	}
+	snap, snapErr := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
+	if snapErr == nil {
+		result.URL = snap.URL
+		result.Title = snap.Title
+		if snap.Metadata != nil {
+			if v, ok := snap.Metadata["version"].(float64); ok {
+				result.Version = int64(v)
+			}
+			if focus, ok := snap.Metadata["focused_ref"].(string); ok {
+				result.Focus = focus
+			}
+		}
+	}
+	return result, nil
+}
+
+func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.BatchStep) browser.BatchStepResult {
+	sr := browser.BatchStepResult{Index: index, Action: step.Action, OK: true}
+	var actionErr error
+	switch step.Action {
+	case "click":
+		if step.Ref == "" {
+			actionErr = errors.New("click requires ref")
+			break
+		}
+		_, actionErr = b.Click(ctx, step.Ref)
+	case "type":
+		if step.Ref == "" || step.Text == "" {
+			actionErr = errors.New("type requires ref and text")
+			break
+		}
+		_, actionErr = b.Type(ctx, step.Ref, step.Text)
+	case "fill":
+		_, actionErr = b.Fill(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+	case "select":
+		if step.Ref == "" || step.Value == "" {
+			actionErr = errors.New("select requires ref and value")
+			break
+		}
+		_, actionErr = b.Select(ctx, step.Ref, step.Value)
+	case "press":
+		if step.Key == "" {
+			actionErr = errors.New("press requires key")
+			break
+		}
+		_, actionErr = b.Press(ctx, step.Key)
+	case "scroll":
+		_, actionErr = b.Scroll(ctx, step.Direction)
+	case "hover":
+		if step.Ref == "" {
+			actionErr = errors.New("hover requires ref")
+			break
+		}
+		_, actionErr = b.Hover(ctx, step.Ref)
+	case "wait":
+		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
+		if timeout == 0 {
+			timeout = 10 * time.Second
+		}
+		actionErr = b.WaitFor(ctx, step.Condition, timeout)
+	case "open":
+		if step.URL == "" {
+			actionErr = errors.New("open requires url")
+			break
+		}
+		_, actionErr = b.Open(ctx, step.URL)
+	case "focus_tab":
+		if step.ID == "" {
+			actionErr = errors.New("focus_tab requires id")
+			break
+		}
+		actionErr = b.FocusTab(ctx, step.ID)
+	case "assert_visible":
+		if step.Ref == "" {
+			actionErr = errors.New("assert_visible requires ref")
+			break
+		}
+		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		actionErr = b.AssertVisible(ctx, step.Ref, timeout)
+	case "assert_text":
+		if step.Ref == "" || step.Text == "" {
+			actionErr = errors.New("assert_text requires ref and text")
+			break
+		}
+		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		actionErr = b.AssertText(ctx, step.Ref, step.Text, timeout)
+	case "assert_value":
+		if step.Ref == "" || step.Value == "" {
+			actionErr = errors.New("assert_value requires ref and value")
+			break
+		}
+		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		actionErr = b.AssertValue(ctx, step.Ref, step.Value, timeout)
+	case "assert_hidden":
+		if step.Ref == "" {
+			actionErr = errors.New("assert_hidden requires ref")
+			break
+		}
+		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		actionErr = b.AssertHidden(ctx, step.Ref, timeout)
+	default:
+		actionErr = fmt.Errorf("unknown action %q", step.Action)
+	}
+	if actionErr != nil {
+		sr.OK = false
+		sr.Error = actionErr.Error()
+	}
+	return sr
+}
+
+func (b *Bridge) Observe(ctx context.Context) (browser.ObserveResult, error) {
+	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
+	if err != nil {
+		return browser.ObserveResult{}, err
+	}
+	focus := ""
+	if snap.Metadata != nil {
+		if f, ok := snap.Metadata["focused_ref"].(string); ok {
+			focus = f
+		}
+	}
+	changed := make([]string, 0)
+	for _, el := range snap.Elements {
+		if el.Visible {
+			summary := el.Role + " " + el.Ref + " " + el.Name
+			if el.Value != "" {
+				summary += " value:" + el.Value
+			}
+			changed = append(changed, summary)
+		}
+	}
+	if len(changed) > 12 {
+		changed = changed[:12]
+	}
+	return browser.ObserveResult{
+		Version: 1,
+		URL:     snap.URL,
+		Title:   snap.Title,
+		Focus:   focus,
+		Changed: changed,
+	}, nil
+}
+
+func (b *Bridge) AssertVisible(ctx context.Context, ref string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	return b.evalAssert(ctx, snapshot.AssertVisibleScript, ref, timeout.Milliseconds())
+}
+
+func (b *Bridge) AssertText(ctx context.Context, ref, text string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	return b.evalAssert(ctx, snapshot.AssertTextScript, ref, text, timeout.Milliseconds())
+}
+
+func (b *Bridge) AssertValue(ctx context.Context, ref, value string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	return b.evalAssert(ctx, snapshot.AssertValueScript, ref, value, timeout.Milliseconds())
+}
+
+func (b *Bridge) AssertHidden(ctx context.Context, ref string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	return b.evalAssert(ctx, snapshot.AssertHiddenScript, ref, timeout.Milliseconds())
+}
+
+func (b *Bridge) evalAssert(ctx context.Context, script string, args ...any) error {
+	marshaled := make([]string, len(args))
+	for i, arg := range args {
+		value, _ := json.Marshal(arg)
+		marshaled[i] = string(value)
+	}
+	var ok bool
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", script, strings.Join(marshaled, ",")), "", &ok); err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("assertion did not pass within timeout")
+	}
+	return nil
+}
+
+func (b *Bridge) CommitField(ctx context.Context, ref string) error {
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	refJSON, _ := json.Marshal(ref)
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.CommitFieldScript, refJSON), "", &result); err != nil {
+		return err
+	}
+	if !result.OK {
+		if result.Error == "" {
+			result.Error = "commit failed"
+		}
+		return errors.New(result.Error)
+	}
+	return nil
+}
+
+func (b *Bridge) ConsoleMessages(ctx context.Context) ([]browser.ConsoleMessage, error) {
+	expr := `(function() {
+		if (!window.__agentBrowserConsole) return [];
+		var msgs = window.__agentBrowserConsole.slice();
+		window.__agentBrowserConsole.length = 0;
+		return msgs;
+	})()`
+	raw, err := b.call(ctx, "cdp", map[string]any{"method": "Runtime.evaluate", "params": map[string]any{"expression": expr, "returnByValue": true}})
+	if err != nil {
+		return nil, err
+	}
+	var evalResult struct {
+		Result struct {
+			Value json.RawMessage `json:"value"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &evalResult); err != nil {
+		return nil, err
+	}
+	var msgs []browser.ConsoleMessage
+	if len(evalResult.Result.Value) > 0 {
+		_ = json.Unmarshal(evalResult.Result.Value, &msgs)
+	}
+	return msgs, nil
+}
+
+func (b *Bridge) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYResult, error) {
+	var result snapshot.ClickXYResult
+	xJSON, _ := json.Marshal(x)
+	yJSON, _ := json.Marshal(y)
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s,%s)", snapshot.ClickXYScript, xJSON, yJSON), "", &result); err != nil {
+		return snapshot.ClickXYResult{}, err
+	}
+	if !result.OK {
+		if result.Error == "" {
+			result.Error = "click failed"
+		}
+		return result, errors.New(result.Error)
+	}
+	return result, nil
+}
+
+func (b *Bridge) GetTrace() browser.TraceResult { return browser.TraceResult{} }
+func (b *Bridge) ClearTrace()                   {}
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("content-type", "application/json")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/runtime"
@@ -84,6 +85,20 @@ const SnapshotFunctionScript = `(function(opts) {
     return '';
   }
 
+  function sensitive(el) {
+    if (!el || !el.tagName) return false;
+    const tag = el.tagName.toLowerCase();
+    if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return false;
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (type === 'password' || type === 'hidden') return true;
+    const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+    const sensitiveHints = ['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc', 'cc-exp', 'cc-exp-month', 'cc-exp-year', 'cc-name', 'cc-type', 'cc-given-name', 'cc-family-name', 'cc-number'];
+    for (const hint of sensitiveHints) {
+      if (ac.includes(hint)) return true;
+    }
+    return false;
+  }
+
   function textFor(el) {
     const tag = el.tagName.toLowerCase();
     if (tag === 'input') return clean(el.value || el.getAttribute('value') || '');
@@ -98,7 +113,7 @@ const SnapshotFunctionScript = `(function(opts) {
       el.getAttribute('title') ||
       el.getAttribute('placeholder') ||
       el.getAttribute('name') ||
-      textFor(el)
+      (sensitive(el) ? '' : textFor(el))
     );
   }
 
@@ -178,9 +193,10 @@ const SnapshotFunctionScript = `(function(opts) {
     return Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true');
   }
 
-  function structuralSignals(el, role, active) {
-    const signals = [];
-    if (active === el) signals.push('focused');
+	function structuralSignals(el, role, active) {
+		const signals = [];
+		const tag = el.tagName.toLowerCase();
+		if (active === el) signals.push('focused');
     else if (active && el.contains && el.contains(active)) signals.push('focus-within');
     if (el.getAttribute('aria-expanded') === 'true') signals.push('expanded');
     if (el.getAttribute('aria-haspopup')) signals.push('has-popup');
@@ -195,6 +211,12 @@ const SnapshotFunctionScript = `(function(opts) {
     if (el.getAttribute('aria-live') && el.getAttribute('aria-live') !== 'off') signals.push('live');
     if (['dialog', 'alertdialog', 'alert', 'status', 'log', 'listbox', 'menu', 'menuitem', 'option'].includes(role)) {
       signals.push('frontier-role');
+    }
+    if (tag === 'canvas' || tag === 'svg' || tag === 'video' || tag === 'iframe' || tag === 'embed' || tag === 'object') {
+      signals.push('visual-island');
+    }
+    if (tag === 'img' && el.width > 100 && el.height > 100) {
+      signals.push('visual-island');
     }
     return signals;
   }
@@ -212,10 +234,12 @@ const SnapshotFunctionScript = `(function(opts) {
   const roleFilter = clean(opts.role || '').toLowerCase();
   const mode = clean(opts.mode || '').toLowerCase();
   const frontierMode = mode === 'frontier';
-  const viewportOnly = Boolean(opts.viewport_only);
+  const formLensMode = mode === 'form_lens';
+  const viewportOnly = Boolean(opts.viewport_only) || frontierMode;
   const limit = Math.max(0, Number(opts.limit || 0));
   const active = deepActive(document);
 
+  const formRoles = new Set(['textbox', 'searchbox', 'combobox', 'listbox', 'checkbox', 'radio', 'slider', 'spinbutton', 'button', 'switch', 'option', 'menuitem']);
   const seen = new Set();
   const elements = [];
   for (const el of all(selector)) {
@@ -227,12 +251,15 @@ const SnapshotFunctionScript = `(function(opts) {
     const isFocusable = el.tabIndex >= 0;
     const isUseful = role !== 'generic' || isFocusable || typeof el.onclick === 'function';
     if (!isUseful) continue;
+    if (formLensMode && !formRoles.has(role)) continue;
     const key = keyFor(el, role, name);
     const ref = refFor(el, key);
     const checked = ('checked' in el) ? Boolean(el.checked) : null;
     const selected = ('selected' in el) ? Boolean(el.selected) : (el.getAttribute('aria-selected') === 'true' ? true : (el.getAttribute('aria-selected') === 'false' ? false : null));
     const expanded = el.getAttribute('aria-expanded') === 'true' ? true : (el.getAttribute('aria-expanded') === 'false' ? false : null);
     const signals = structuralSignals(el, role, active);
+    const isSensitive = sensitive(el);
+    const rawValue = ('value' in el) ? clean(el.value) : '';
     const item = {
       ref,
       role,
@@ -240,7 +267,7 @@ const SnapshotFunctionScript = `(function(opts) {
       tag: el.tagName.toLowerCase(),
       type: (el.getAttribute('type') || '').toLowerCase(),
       href: el.href || el.getAttribute('href') || '',
-      value: ('value' in el) ? clean(el.value) : '',
+      value: isSensitive ? '' : rawValue,
       visible: visible(el),
       in_viewport: inViewport(el),
       disabled: disabled(el),
@@ -251,9 +278,16 @@ const SnapshotFunctionScript = `(function(opts) {
       key,
       _frontier_score: frontierScore(role, name, signals, visible(el), inViewport(el), disabled(el))
     };
+    if (isSensitive) item.sensitive = true;
     if (checked !== null) item.checked = checked;
     if (selected !== null) item.selected = selected;
     if (expanded !== null) item.expanded = expanded;
+    if (formLensMode && el.validity) {
+      item.valid = el.validity.valid;
+      if (!el.validity.valid) {
+        item.validation_message = el.validationMessage || '';
+      }
+    }
     const haystack = [
       item.ref,
       item.role,
@@ -267,6 +301,18 @@ const SnapshotFunctionScript = `(function(opts) {
     if (roleFilter && item.role !== roleFilter) continue;
     if (textFilter && !haystack.includes(textFilter)) continue;
     if (query && !haystack.includes(query)) continue;
+    if (query || textFilter) {
+      var needle = (query || textFilter);
+      var reasons = [];
+      if (item.name.toLowerCase().indexOf(needle) !== -1) reasons.push('name');
+      if (item.role.toLowerCase().indexOf(needle) !== -1) reasons.push('role');
+      if (item.ref.toLowerCase().indexOf(needle) !== -1) reasons.push('ref');
+      if (item.value.toLowerCase().indexOf(needle) !== -1) reasons.push('value');
+      if (item.tag.toLowerCase().indexOf(needle) !== -1) reasons.push('tag');
+      if (item.type.toLowerCase().indexOf(needle) !== -1) reasons.push('type');
+      if (item.href.toLowerCase().indexOf(needle) !== -1) reasons.push('href');
+      item.match_reasons = reasons;
+    }
     elements.push(item);
     if (!frontierMode && limit > 0 && elements.length >= limit) break;
   }
@@ -375,6 +421,125 @@ const ResolveBoxScript = `(function(ref) {
     viewport_x: r.left + r.width / 2,
     viewport_y: r.top + r.height / 2
   };
+})`
+
+const ResolveOrRecoverBoxScript = `(function(ref) {
+  const state = window.__agentBrowser || (window.__agentBrowser = { next: 1, byKey: {}, byRef: {} });
+  function roots() {
+    const out = [document];
+    for (let i = 0; i < out.length; i++) {
+      const root = out[i];
+      if (!root.querySelectorAll) continue;
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        if (el.shadowRoot) out.push(el.shadowRoot);
+      }
+    }
+    return out;
+  }
+  function findByRef(ref) {
+    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
+    for (const root of roots()) {
+      const el = root.querySelector && root.querySelector(selector);
+      if (el) return el;
+    }
+    return null;
+  }
+  function clean(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
+  function labelText(el) {
+    if (!el) return '';
+    if (el.labels && el.labels.length) return clean(Array.from(el.labels).map(function(l){ return l.innerText || l.textContent; }).join(' '));
+    if (el.id) {
+      var root = el.getRootNode && el.getRootNode();
+      var labelRoot = root && root.querySelector ? root : document;
+      var label = labelRoot.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (label) return clean(label.innerText || label.textContent);
+    }
+    var parent = el.closest('label');
+    if (parent) return clean(parent.innerText || parent.textContent);
+    return '';
+  }
+  function nameFor(el) {
+    return clean(el.getAttribute('aria-label') || labelText(el) || el.getAttribute('alt') || el.getAttribute('title') || el.getAttribute('placeholder') || el.getAttribute('name') || (el.innerText || el.textContent || ''));
+  }
+  function roleFor(el) {
+    var explicit = clean(el.getAttribute('role'));
+    if (explicit) return explicit.split(/\s+/)[0];
+    var tag = el.tagName.toLowerCase();
+    var type = (el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'a' && el.href) return 'link';
+    if (tag === 'button' || type === 'button' || type === 'submit' || type === 'reset') return 'button';
+    if (tag === 'textarea' || el.isContentEditable) return 'textbox';
+    if (tag === 'select') return el.multiple ? 'listbox' : 'combobox';
+    if (tag === 'input') {
+      if (type === 'checkbox') return 'checkbox';
+      if (type === 'radio') return 'radio';
+      if (type === 'range') return 'slider';
+      if (type === 'number') return 'spinbutton';
+      if (type === 'search') return 'searchbox';
+      return 'textbox';
+    }
+    return 'generic';
+  }
+  function recoverByRoleAndName(role, name, tag, type) {
+    var best = null;
+    var bestScore = 0;
+    for (var i = 0; i < roots().length; i++) {
+      var root = roots()[i];
+      if (!root.querySelectorAll) continue;
+      var candidates = root.querySelectorAll('*');
+      for (var j = 0; j < candidates.length; j++) {
+        var el = candidates[j];
+        if (!(el instanceof HTMLElement)) continue;
+        var elRole = roleFor(el);
+        var elName = nameFor(el);
+        if (elRole !== role) continue;
+        var score = 0;
+        if (elName === name) score += 100;
+        else if (name && elName.toLowerCase().indexOf(name.toLowerCase()) !== -1) score += 50;
+        if (tag && el.tagName.toLowerCase() === tag) score += 20;
+        if (type && (el.getAttribute('type') || '').toLowerCase() === type) score += 10;
+        if (score > bestScore && score >= 50) {
+          bestScore = score;
+          best = el;
+        }
+      }
+    }
+    return best;
+  }
+  function refFor(el, key) {
+    var existing = el.getAttribute('data-agent-browser-ref');
+    if (existing) {
+      state.byRef[existing] = key;
+      state.byKey[key] = existing;
+      return existing;
+    }
+    var prior = state.byKey[key];
+    var ref = prior || ('e' + state.next++);
+    state.byKey[key] = ref;
+    state.byRef[ref] = key;
+    try { el.setAttribute('data-agent-browser-ref', ref); } catch (_) {}
+    return ref;
+  }
+  var el = findByRef(ref);
+  if (el) {
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    var r = el.getBoundingClientRect();
+    return { ok: r.width > 0 && r.height > 0, ref: ref, recovered: false, x: r.left + window.scrollX, y: r.top + window.scrollY, width: r.width, height: r.height, viewport_x: r.left + r.width / 2, viewport_y: r.top + r.height / 2 };
+  }
+  var key = state.byRef[ref];
+  if (!key) return { ok: false, ref: ref, recovered: false, reason: 'no_key' };
+  var parts = key.split('|');
+  var kTag = parts[0] || '';
+  var kRole = parts[1] || '';
+  var kName = parts[2] || '';
+  var kType = parts[6] || '';
+  var recovered = recoverByRoleAndName(kRole, kName, kTag, kType);
+  if (!recovered) return { ok: false, ref: ref, recovered: false, reason: 'no_match' };
+  var newKey = [kTag, kRole, kName, recovered.id || '', recovered.getAttribute('name') || '', recovered.getAttribute('href') || '', kType, recovered.getAttribute('aria-controls') || '', ''].join('|');
+  var newRef = refFor(recovered, newKey);
+  recovered.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  var r2 = recovered.getBoundingClientRect();
+  return { ok: r2.width > 0 && r2.height > 0, ref: newRef, recovered: true, old_ref: ref, x: r2.left + window.scrollX, y: r2.top + window.scrollY, width: r2.width, height: r2.height, viewport_x: r2.left + r2.width / 2, viewport_y: r2.top + r2.height / 2 };
 })`
 
 const FocusElementScript = `(function(ref) {
@@ -890,6 +1055,30 @@ func ResolveBox(ctx context.Context, ref string) (ElementBox, error) {
 	return box, nil
 }
 
+type RecoveredBox struct {
+	ElementBox
+	Recovered bool   `json:"recovered"`
+	OldRef    string `json:"old_ref,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+func ResolveOrRecoverBox(ctx context.Context, ref string) (RecoveredBox, error) {
+	var box RecoveredBox
+	args, _ := json.Marshal(ref)
+	expr := fmt.Sprintf("%s(%s)", ResolveOrRecoverBoxScript, args)
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &box)); err != nil {
+		return RecoveredBox{}, err
+	}
+	if !box.OK {
+		reason := box.Reason
+		if reason == "" {
+			reason = "not_visible"
+		}
+		return box, fmt.Errorf("element ref %q not recoverable: %s", ref, reason)
+	}
+	return box, nil
+}
+
 func Focus(ctx context.Context, ref string) error {
 	var ok bool
 	args, _ := json.Marshal(ref)
@@ -1023,6 +1212,365 @@ func WaitForCondition(ctx context.Context, condition string, timeoutMs int64) (b
 	return matched, nil
 }
 
+// WaitForActionableScript returns a Promise that resolves true when the element
+// identified by ref is visible, stable (bounding box unchanged for two
+// consecutive checks 100ms apart), and enabled. Resolves false on timeout.
+const WaitForActionableScript = `(function(ref, timeoutMs){
+  function roots(){
+    const out=[document];
+    for(let i=0;i<out.length;i++){
+      const root=out[i];
+      if(!root.querySelectorAll) continue;
+      for(const el of Array.from(root.querySelectorAll('*'))){ if(el.shadowRoot) out.push(el.shadowRoot); }
+    }
+    return out;
+  }
+  function findByRef(ref){
+    const selector='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
+    for(const root of roots()){
+      const el=root.querySelector&&root.querySelector(selector);
+      if(el) return el;
+    }
+    return recoverRef(ref);
+  }
+  function clean(s){ return String(s||'').replace(/\s+/g,' ').trim(); }
+  function labelText(el){
+    if(!el) return '';
+    if(el.labels&&el.labels.length) return clean(Array.from(el.labels).map(function(l){return l.innerText||l.textContent;}).join(' '));
+    if(el.id){
+      var root=el.getRootNode&&el.getRootNode();
+      var labelRoot=root&&root.querySelector?root:document;
+      var label=labelRoot.querySelector('label[for="'+CSS.escape(el.id)+'"]');
+      if(label) return clean(label.innerText||label.textContent);
+    }
+    var parent=el.closest('label');
+    return parent?clean(parent.innerText||parent.textContent):'';
+  }
+  function nameFor(el){
+    return clean(el.getAttribute('aria-label')||labelText(el)||el.getAttribute('alt')||el.getAttribute('title')||el.getAttribute('placeholder')||el.getAttribute('name')||(el.innerText||el.textContent||''));
+  }
+  function roleFor(el){
+    var explicit=clean(el.getAttribute('role'));
+    if(explicit) return explicit.split(/\s+/)[0];
+    var tag=el.tagName.toLowerCase();
+    var type=(el.getAttribute('type')||'').toLowerCase();
+    if(tag==='a'&&el.href) return 'link';
+    if(tag==='button'||type==='button'||type==='submit'||type==='reset'||type==='image') return 'button';
+    if(tag==='textarea'||el.isContentEditable) return 'textbox';
+    if(tag==='select') return el.multiple?'listbox':'combobox';
+    if(tag==='input'){
+      if(type==='checkbox') return 'checkbox';
+      if(type==='radio') return 'radio';
+      if(type==='range') return 'slider';
+      if(type==='number') return 'spinbutton';
+      if(type==='search') return 'searchbox';
+      return 'textbox';
+    }
+    return 'generic';
+  }
+  function refFor(el,key){
+    var state=window.__agentBrowser||(window.__agentBrowser={next:1,byKey:{},byRef:{}});
+    var existing=el.getAttribute('data-agent-browser-ref');
+    if(existing){ state.byRef[existing]=key; state.byKey[key]=existing; return existing; }
+    var prior=state.byKey[key];
+    var newRef=prior||('e'+state.next++);
+    state.byKey[key]=newRef;
+    state.byRef[newRef]=key;
+    try{ el.setAttribute('data-agent-browser-ref',newRef); }catch(_){}
+    return newRef;
+  }
+  function recoverByRoleAndName(role,name,tag,type){
+    var best=null,bestScore=0;
+    var allRoots=roots();
+    for(var i=0;i<allRoots.length;i++){
+      var root=allRoots[i];
+      if(!root.querySelectorAll) continue;
+      var candidates=root.querySelectorAll('*');
+      for(var j=0;j<candidates.length;j++){
+        var el=candidates[j];
+        if(!(el instanceof HTMLElement)) continue;
+        var elRole=roleFor(el);
+        if(elRole!==role) continue;
+        var elName=nameFor(el);
+        var score=0;
+        if(elName===name) score+=100;
+        else if(name&&elName.toLowerCase().indexOf(name.toLowerCase())!==-1) score+=50;
+        if(tag&&el.tagName.toLowerCase()===tag) score+=20;
+        if(type&&(el.getAttribute('type')||'').toLowerCase()===type) score+=10;
+        if(score>bestScore&&score>=50){ bestScore=score; best=el; }
+      }
+    }
+    return best;
+  }
+  function recoverRef(ref){
+    var state=window.__agentBrowser;
+    var key=state&&state.byRef&&state.byRef[ref];
+    if(!key) return null;
+    var parts=key.split('|');
+    var recovered=recoverByRoleAndName(parts[1]||'',parts[2]||'',parts[0]||'',parts[6]||'');
+    if(!recovered) return null;
+    var newKey=[parts[0]||'',parts[1]||'',parts[2]||'',recovered.id||'',recovered.getAttribute('name')||'',recovered.getAttribute('href')||'',parts[6]||'',recovered.getAttribute('aria-controls')||'',''].join('|');
+    refFor(recovered,newKey);
+    return recovered;
+  }
+  function visible(el){
+    if(!el||!(el instanceof Element)) return false;
+    if(el.closest('[hidden],[aria-hidden="true"]')) return false;
+    const s=getComputedStyle(el);
+    if(!s||s.display==='none'||s.visibility==='hidden'||Number(s.opacity)===0) return false;
+    const r=el.getClientRects();
+    return r&&r.length>0&&Array.from(r).some(function(x){return x.width>0&&x.height>0;});
+  }
+  function boxKey(el){
+    const r=el.getBoundingClientRect();
+    return [r.x,r.y,r.width,r.height].join(',');
+  }
+  function check(){
+    var el=findByRef(ref);
+    if(!el) return {ok:false,reason:'not_found'};
+    if(!visible(el)) return {ok:false,reason:'not_visible'};
+    if(el.disabled||el.getAttribute('aria-disabled')==='true') return {ok:false,reason:'disabled'};
+    return {ok:true};
+  }
+  return new Promise(function(resolve){
+    var c=check();
+    if(!c.ok&&c.reason!=='not_visible'){ resolve(false); return; }
+    var done=false,stable=false,lastBox='',iv=0,to=0;
+    function tick(){
+      c=check();
+      if(!c.ok){ stable=false; return; }
+      var bk=boxKey(findByRef(ref));
+      if(bk===lastBox){ stable=true; } else { stable=false; lastBox=bk; }
+    }
+    function finish(v){ if(done)return; done=true; if(iv)clearInterval(iv); if(to)clearTimeout(to); resolve(v); }
+    tick();
+    iv=setInterval(function(){ tick(); if(stable) finish(true); }, 100);
+    to=setTimeout(function(){ tick(); finish(stable); }, Math.max(0, timeoutMs|0));
+  });
+})`
+
+// WaitForActionable waits for the element identified by ref to become visible,
+// stable, and enabled within timeoutMs. Returns nil on success, error on timeout.
+func WaitForActionable(ctx context.Context, ref string, timeoutMs int64) error {
+	refJSON, _ := json.Marshal(ref)
+	expr := fmt.Sprintf("%s(%s,%d)", WaitForActionableScript, refJSON, timeoutMs)
+	var ok bool
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		obj, exception, err := runtime.Evaluate(expr).
+			WithReturnByValue(true).
+			WithAwaitPromise(true).
+			Do(ctx)
+		if err != nil {
+			return err
+		}
+		if exception != nil {
+			details, _ := json.Marshal(exception)
+			return fmt.Errorf("actionable wait failed: %s", details)
+		}
+		if obj == nil || len(obj.Value) == 0 {
+			return nil
+		}
+		return json.Unmarshal(obj.Value, &ok)
+	})); err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("element ref %q not actionable within %dms", ref, timeoutMs)
+	}
+	return nil
+}
+
+// AssertTextScript returns a Promise that resolves true when the element
+// identified by ref contains the expected text (case-insensitive substring
+// match). Resolves false on timeout.
+const AssertTextScript = `(function(ref, expected, timeoutMs){
+  function roots(){
+    const out=[document];
+    for(let i=0;i<out.length;i++){
+      const root=out[i];
+      if(!root.querySelectorAll) continue;
+      for(const el of Array.from(root.querySelectorAll('*'))){ if(el.shadowRoot) out.push(el.shadowRoot); }
+    }
+    return out;
+  }
+  function findByRef(ref){
+    const selector='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
+    for(const root of roots()){
+      const el=root.querySelector&&root.querySelector(selector);
+      if(el) return el;
+    }
+    return null;
+  }
+  function check(){
+    var el=findByRef(ref);
+    if(!el) return false;
+    var text=(el.innerText||el.textContent||el.value||'').toLowerCase();
+    return text.indexOf(expected.toLowerCase())!==-1;
+  }
+  return new Promise(function(resolve){
+    if(check()){ resolve(true); return; }
+    var done=false,iv=0,to=0;
+    function finish(v){ if(done)return; done=true; if(iv)clearInterval(iv); if(to)clearTimeout(to); resolve(v); }
+    var obs=null;
+    try{ obs=new MutationObserver(function(){ if(check()) finish(true); });
+         obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
+    iv=setInterval(function(){ if(check()) finish(true); }, 100);
+    to=setTimeout(function(){ finish(check()); }, Math.max(0, timeoutMs|0));
+  });
+})`
+
+// AssertValueScript returns a Promise that resolves true when the element
+// identified by ref has a value matching expected (exact match).
+const AssertValueScript = `(function(ref, expected, timeoutMs){
+  function roots(){
+    const out=[document];
+    for(let i=0;i<out.length;i++){
+      const root=out[i];
+      if(!root.querySelectorAll) continue;
+      for(const el of Array.from(root.querySelectorAll('*'))){ if(el.shadowRoot) out.push(el.shadowRoot); }
+    }
+    return out;
+  }
+  function findByRef(ref){
+    const selector='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
+    for(const root of roots()){
+      const el=root.querySelector&&root.querySelector(selector);
+      if(el) return el;
+    }
+    return null;
+  }
+  function check(){
+    var el=findByRef(ref);
+    if(!el) return false;
+    var val=('value' in el)?el.value:(el.innerText||el.textContent||'');
+    return String(val)===expected;
+  }
+  return new Promise(function(resolve){
+    if(check()){ resolve(true); return; }
+    var done=false,iv=0,to=0;
+    function finish(v){ if(done)return; done=true; if(iv)clearInterval(iv); if(to)clearTimeout(to); resolve(v); }
+    try{ var obs=new MutationObserver(function(){ if(check()) finish(true); });
+         obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
+    iv=setInterval(function(){ if(check()) finish(true); }, 100);
+    to=setTimeout(function(){ finish(check()); }, Math.max(0, timeoutMs|0));
+  });
+})`
+
+// AssertVisibleScript returns a Promise that resolves true when the element
+// identified by ref is visible in the viewport.
+const AssertVisibleScript = `(function(ref, timeoutMs){
+  function roots(){
+    const out=[document];
+    for(let i=0;i<out.length;i++){
+      const root=out[i];
+      if(!root.querySelectorAll) continue;
+      for(const el of Array.from(root.querySelectorAll('*'))){ if(el.shadowRoot) out.push(el.shadowRoot); }
+    }
+    return out;
+  }
+  function findByRef(ref){
+    const selector='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
+    for(const root of roots()){
+      const el=root.querySelector&&root.querySelector(selector);
+      if(el) return el;
+    }
+    return null;
+  }
+  function visible(el){
+    if(!el||!(el instanceof Element)) return false;
+    if(el.closest('[hidden],[aria-hidden="true"]')) return false;
+    var s=getComputedStyle(el);
+    if(!s||s.display==='none'||s.visibility==='hidden'||Number(s.opacity)===0) return false;
+    var r=el.getClientRects();
+    return r&&r.length>0&&Array.from(r).some(function(x){return x.width>0&&x.height>0;});
+  }
+  function check(){ return visible(findByRef(ref)); }
+  return new Promise(function(resolve){
+    if(check()){ resolve(true); return; }
+    var done=false,iv=0,to=0;
+    function finish(v){ if(done)return; done=true; if(iv)clearInterval(iv); if(to)clearTimeout(to); resolve(v); }
+    try{ var obs=new MutationObserver(function(){ if(check()) finish(true); });
+         obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
+    iv=setInterval(function(){ if(check()) finish(true); }, 100);
+    to=setTimeout(function(){ finish(check()); }, Math.max(0, timeoutMs|0));
+  });
+})`
+
+// AssertHiddenScript returns a Promise that resolves true when the element
+// identified by ref is hidden or absent from the DOM.
+const AssertHiddenScript = `(function(ref, timeoutMs){
+  function roots(){
+    const out=[document];
+    for(let i=0;i<out.length;i++){
+      const root=out[i];
+      if(!root.querySelectorAll) continue;
+      for(const el of Array.from(root.querySelectorAll('*'))){ if(el.shadowRoot) out.push(el.shadowRoot); }
+    }
+    return out;
+  }
+  function findByRef(ref){
+    const selector='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
+    for(const root of roots()){
+      const el=root.querySelector&&root.querySelector(selector);
+      if(el) return el;
+    }
+    return null;
+  }
+  function hidden(){
+    var el=findByRef(ref);
+    if(!el) return true;
+    if(el.closest('[hidden],[aria-hidden="true"]')) return true;
+    var s=getComputedStyle(el);
+    if(!s||s.display==='none'||s.visibility==='hidden'||Number(s.opacity)===0) return true;
+    var r=el.getClientRects();
+    return !r||r.length===0||!Array.from(r).some(function(x){return x.width>0&&x.height>0;});
+  }
+  return new Promise(function(resolve){
+    if(hidden()){ resolve(true); return; }
+    var done=false,iv=0,to=0;
+    function finish(v){ if(done)return; done=true; if(iv)clearInterval(iv); if(to)clearTimeout(to); resolve(v); }
+    try{ var obs=new MutationObserver(function(){ if(hidden()) finish(true); });
+         obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
+    iv=setInterval(function(){ if(hidden()) finish(true); }, 100);
+    to=setTimeout(function(){ finish(hidden()); }, Math.max(0, timeoutMs|0));
+  });
+})`
+
+// EvalAssert evaluates an assertion script that returns a Promise<bool>.
+func EvalAssert(ctx context.Context, script string, args ...any) error {
+	// Marshal each arg and build the expression
+	marshaled := make([]string, len(args))
+	for i, a := range args {
+		j, _ := json.Marshal(a)
+		marshaled[i] = string(j)
+	}
+	expr := fmt.Sprintf("%s(%s)", script, strings.Join(marshaled, ","))
+	var ok bool
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		obj, exception, err := runtime.Evaluate(expr).
+			WithReturnByValue(true).
+			WithAwaitPromise(true).
+			Do(ctx)
+		if err != nil {
+			return err
+		}
+		if exception != nil {
+			details, _ := json.Marshal(exception)
+			return fmt.Errorf("assertion failed: %s", details)
+		}
+		if obj == nil || len(obj.Value) == 0 {
+			return nil
+		}
+		return json.Unmarshal(obj.Value, &ok)
+	})); err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("assertion did not pass within timeout")
+	}
+	return nil
+}
+
 func SetFileInputFiles(ctx context.Context, ref string, paths []string) error {
 	if ref == "" {
 		return errors.New("ref is required")
@@ -1073,4 +1621,104 @@ func DispatchFileInputEvents(ctx context.Context, ref string) error {
 		return errors.New(result.Error)
 	}
 	return nil
+}
+
+const ClickXYScript = `(function(x, y) {
+  var el = document.elementFromPoint(x, y);
+  if (!el) return { ok: false, error: 'no element at coordinates' };
+  el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  var tag = el.tagName.toLowerCase();
+  var role = el.getAttribute('role') || '';
+  var name = (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || '').slice(0, 100);
+  return { ok: true, x: x, y: y, tag: tag, role: role, name: name.trim() };
+})`
+
+const CommitFieldScript = `(function(ref) {
+  function roots() {
+    const out = [document];
+    for (let i = 0; i < out.length; i++) {
+      const root = out[i];
+      if (!root.querySelectorAll) continue;
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        if (el.shadowRoot) out.push(el.shadowRoot);
+      }
+    }
+    return out;
+  }
+  function findByRef(ref) {
+    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
+    for (const root of roots()) {
+      const el = root.querySelector && root.querySelector(selector);
+      if (el) return el;
+    }
+    return null;
+  }
+  const el = findByRef(ref);
+  if (!el) return { ok: false, error: 'ref not found' };
+  el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  if (typeof el.focus === 'function') el.focus({ preventScroll: true });
+  const form = el.closest('form');
+  if (form) {
+    const submitBtn = form.querySelector('button[type="submit"], input[type="submit"], button:not([type])');
+    if (submitBtn) {
+      submitBtn.click();
+      return { ok: true, ref: ref, method: 'submit_button' };
+    }
+    form.requestSubmit();
+    return { ok: true, ref: ref, method: 'form_submit' };
+  }
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+  el.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+  el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+  return { ok: true, ref: ref, method: 'enter_key' };
+})`
+
+func CommitField(ctx context.Context, ref string) error {
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	refJSON, _ := json.Marshal(ref)
+	expr := fmt.Sprintf("%s(%s)", CommitFieldScript, refJSON)
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result)); err != nil {
+		return err
+	}
+	if !result.OK {
+		if result.Error == "" {
+			result.Error = "commit failed"
+		}
+		return errors.New(result.Error)
+	}
+	return nil
+}
+
+type ClickXYResult struct {
+	OK    bool    `json:"ok"`
+	X     float64 `json:"x"`
+	Y     float64 `json:"y"`
+	Tag   string  `json:"tag,omitempty"`
+	Role  string  `json:"role,omitempty"`
+	Name  string  `json:"name,omitempty"`
+	Error string  `json:"error,omitempty"`
+}
+
+func ClickXY(ctx context.Context, x, y float64) (ClickXYResult, error) {
+	var result ClickXYResult
+	xJSON, _ := json.Marshal(x)
+	yJSON, _ := json.Marshal(y)
+	expr := fmt.Sprintf("%s(%s,%s)", ClickXYScript, xJSON, yJSON)
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result)); err != nil {
+		return ClickXYResult{}, err
+	}
+	if !result.OK {
+		if result.Error == "" {
+			result.Error = "click failed"
+		}
+		return result, errors.New(result.Error)
+	}
+	return result, nil
 }

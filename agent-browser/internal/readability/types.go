@@ -32,13 +32,14 @@ type Form struct {
 }
 
 type FormControl struct {
-	Ref      string `json:"ref,omitempty"`
-	Role     string `json:"role"`
-	Name     string `json:"name"`
-	Type     string `json:"type,omitempty"`
-	Value    string `json:"value,omitempty"`
-	Required bool   `json:"required,omitempty"`
-	Disabled bool   `json:"disabled,omitempty"`
+	Ref       string `json:"ref,omitempty"`
+	Role      string `json:"role"`
+	Name      string `json:"name"`
+	Type      string `json:"type,omitempty"`
+	Value     string `json:"value,omitempty"`
+	Sensitive bool   `json:"sensitive,omitempty"`
+	Required  bool   `json:"required,omitempty"`
+	Disabled  bool   `json:"disabled,omitempty"`
 }
 
 type Table struct {

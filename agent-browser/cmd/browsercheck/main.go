@@ -52,6 +52,31 @@ type step struct {
 	Scroll            *scrollStep            `json:"scroll,omitempty"`
 	Screenshot        *screenshotStep        `json:"screenshot,omitempty"`
 	ScreenshotElement *screenshotElementStep `json:"screenshot_element,omitempty"`
+	Commit            *targetStep            `json:"commit,omitempty"`
+	AssertVisible     *assertRefStep         `json:"assert_visible,omitempty"`
+	AssertHidden      *assertRefStep         `json:"assert_hidden,omitempty"`
+	AssertText        *assertTextStep        `json:"assert_text,omitempty"`
+	AssertValue       *assertValueStep       `json:"assert_value,omitempty"`
+}
+
+type assertRefStep struct {
+	Ref       string `json:"ref,omitempty"`
+	Target    string `json:"target,omitempty"`
+	TimeoutMS int    `json:"timeout_ms,omitempty"`
+}
+
+type assertTextStep struct {
+	Ref       string `json:"ref,omitempty"`
+	Target    string `json:"target,omitempty"`
+	Text      string `json:"text"`
+	TimeoutMS int    `json:"timeout_ms,omitempty"`
+}
+
+type assertValueStep struct {
+	Ref       string `json:"ref,omitempty"`
+	Target    string `json:"target,omitempty"`
+	Value     string `json:"value"`
+	TimeoutMS int    `json:"timeout_ms,omitempty"`
 }
 
 type openStep struct {
@@ -110,6 +135,8 @@ type elementMatch struct {
 	HrefContains string `json:"href_contains,omitempty"`
 	SaveAs       string `json:"save_as,omitempty"`
 	Visible      *bool  `json:"visible,omitempty"`
+	Sensitive    *bool  `json:"sensitive,omitempty"`
+	ValueEmpty   *bool  `json:"value_empty,omitempty"`
 }
 
 type readStep struct {
@@ -123,6 +150,19 @@ type readStep struct {
 	MinForms         int            `json:"min_forms,omitempty"`
 	MinTables        int            `json:"min_tables,omitempty"`
 	Metadata         metadataAssert `json:"metadata,omitempty"`
+	Forms            []formAssert   `json:"forms,omitempty"`
+}
+
+type formAssert struct {
+	NameContains   string         `json:"name_contains,omitempty"`
+	MinControls    int            `json:"min_controls,omitempty"`
+	RequireControl *controlAssert `json:"require_control,omitempty"`
+}
+
+type controlAssert struct {
+	NameContains string `json:"name_contains,omitempty"`
+	Sensitive    *bool  `json:"sensitive,omitempty"`
+	ValueEmpty   *bool  `json:"value_empty,omitempty"`
 }
 
 type metadataAssert struct {
@@ -202,6 +242,7 @@ type runner struct {
 	refs     map[string]string
 	tabRefs  map[string]string
 	preClick map[string]bool
+	tabID    string
 }
 
 type apiClient struct {
@@ -271,6 +312,7 @@ func main() {
 		}
 		r.refs = map[string]string{}
 		r.tabRefs = map[string]string{}
+		r.tabID = ""
 		if err := r.runScenario(sc); err != nil {
 			fmt.Printf("FAIL %-32s %v\n", sc.ID, err)
 			failed++
@@ -352,9 +394,11 @@ func (r *runner) runStep(st step) error {
 		if st.Open.SaveAs != "" {
 			r.tabRefs[st.Open.SaveAs] = result.Tab.ID
 		}
+		r.tabID = result.Tab.ID
 		return nil
 	case st.WaitFor != nil:
 		req := map[string]any{"condition": expandVars(st.WaitFor.Condition)}
+		r.addTabID(req)
 		if st.WaitFor.TimeoutMS > 0 {
 			req["timeout_ms"] = st.WaitFor.TimeoutMS
 		}
@@ -369,6 +413,7 @@ func (r *runner) runStep(st step) error {
 			r.tabRefs[st.WaitForTab.SaveAs] = tab.ID
 		}
 		if st.WaitForTab.Focus {
+			r.tabID = tab.ID
 			var result browser.ActionResult
 			return r.client.postJSON("/api/browser/focus", map[string]string{"id": tab.ID}, &result)
 		}
@@ -379,22 +424,26 @@ func (r *runner) runStep(st step) error {
 			return err
 		}
 		var result browser.ActionResult
-		return r.client.postJSON("/api/browser/focus", map[string]string{"id": id}, &result)
+		if err := r.client.postJSON("/api/browser/focus", map[string]string{"id": id}, &result); err != nil {
+			return err
+		}
+		r.tabID = id
+		return nil
 	case st.Snapshot != nil:
 		var snap snapshot.PageSnapshot
-		if err := r.client.getJSON(snapshotPath(*st.Snapshot), &snap); err != nil {
+		if err := r.client.getJSON(r.withTabQuery(snapshotPath(*st.Snapshot)), &snap); err != nil {
 			return err
 		}
 		return r.assertSnapshot(snap, *st.Snapshot)
 	case st.Find != nil:
 		var result findResult
-		if err := r.client.getJSON(findPath(*st.Find), &result); err != nil {
+		if err := r.client.getJSON(r.withTabQuery(findPath(*st.Find)), &result); err != nil {
 			return err
 		}
 		return r.assertFind(result.Elements, *st.Find)
 	case st.Read != nil:
 		var read readability.PageRead
-		if err := r.client.getJSON("/api/page/read", &read); err != nil {
+		if err := r.client.getJSON(r.withTabQuery("/api/page/read"), &read); err != nil {
 			return err
 		}
 		return assertRead(read, *st.Read)
@@ -405,16 +454,21 @@ func (r *runner) runStep(st step) error {
 			return err
 		}
 		var result browser.ActionResult
-		return r.client.postJSON("/api/page/click", map[string]string{"ref": ref}, &result)
+		body := map[string]any{"ref": ref}
+		r.addTabID(body)
+		return r.client.postJSON("/api/page/click", body, &result)
 	case st.Type != nil:
 		ref, err := r.resolveTarget(st.Type.Ref, st.Type.Target, st.Type.Match)
 		if err != nil {
 			return err
 		}
 		var result browser.ActionResult
-		return r.client.postJSON("/api/page/type", map[string]string{"ref": ref, "text": expandVars(st.Type.Text)}, &result)
+		body := map[string]any{"ref": ref, "text": expandVars(st.Type.Text)}
+		r.addTabID(body)
+		return r.client.postJSON("/api/page/type", body, &result)
 	case st.Fill != nil:
 		body := map[string]any{"text": expandVars(st.Fill.Text)}
+		r.addTabID(body)
 		if st.Fill.Query != "" || st.Fill.Role != "" {
 			if st.Fill.Query != "" {
 				body["query"] = expandVars(st.Fill.Query)
@@ -436,6 +490,7 @@ func (r *runner) runStep(st step) error {
 		return r.client.postJSON("/api/page/fill", body, &result)
 	case st.UploadFile != nil:
 		body := map[string]any{}
+		r.addTabID(body)
 		if st.UploadFile.Path != "" {
 			body["path"] = r.expandPath(st.UploadFile.Path)
 		}
@@ -468,15 +523,21 @@ func (r *runner) runStep(st step) error {
 			return err
 		}
 		var result browser.ActionResult
-		return r.client.postJSON("/api/page/select", map[string]string{"ref": ref, "value": expandVars(st.Select.Value)}, &result)
+		body := map[string]any{"ref": ref, "value": expandVars(st.Select.Value)}
+		r.addTabID(body)
+		return r.client.postJSON("/api/page/select", body, &result)
 	case st.Press != nil:
 		var result browser.ActionResult
-		return r.client.postJSON("/api/page/press", map[string]string{"key": expandVars(st.Press.Key)}, &result)
+		body := map[string]any{"key": expandVars(st.Press.Key)}
+		r.addTabID(body)
+		return r.client.postJSON("/api/page/press", body, &result)
 	case st.Scroll != nil:
 		var result browser.ActionResult
-		return r.client.postJSON("/api/page/scroll", map[string]string{"direction": st.Scroll.Direction}, &result)
+		body := map[string]any{"direction": st.Scroll.Direction}
+		r.addTabID(body)
+		return r.client.postJSON("/api/page/scroll", body, &result)
 	case st.Screenshot != nil:
-		data, err := r.client.getBytes("/api/visual/screenshot")
+		data, err := r.client.getBytes(r.withTabQuery("/api/visual/screenshot"))
 		if err != nil {
 			if st.Screenshot.Optional {
 				fmt.Printf("WARN optional screenshot failed: %v\n", err)
@@ -493,7 +554,7 @@ func (r *runner) runStep(st step) error {
 		if err != nil {
 			return err
 		}
-		data, err := r.client.getBytes("/api/visual/screenshot_element?ref=" + url.QueryEscape(ref))
+		data, err := r.client.getBytes(r.withTabQuery("/api/visual/screenshot_element?ref=" + url.QueryEscape(ref)))
 		if err != nil {
 			if st.ScreenshotElement.Optional {
 				fmt.Printf("WARN optional element screenshot failed: %v\n", err)
@@ -505,6 +566,62 @@ func (r *runner) runStep(st step) error {
 			return fmt.Errorf("element screenshot too small: got %d bytes, want at least %d", len(data), st.ScreenshotElement.MinBytes)
 		}
 		return nil
+	case st.Commit != nil:
+		ref, err := r.resolveTarget(st.Commit.Ref, st.Commit.Target, st.Commit.Match)
+		if err != nil {
+			return err
+		}
+		body := map[string]any{"ref": ref}
+		r.addTabID(body)
+		return r.client.postJSON("/api/page/commit", body, nil)
+	case st.AssertVisible != nil:
+		ref, err := r.resolveTarget(st.AssertVisible.Ref, st.AssertVisible.Target, nil)
+		if err != nil {
+			return err
+		}
+		timeout := st.AssertVisible.TimeoutMS
+		if timeout == 0 {
+			timeout = 5000
+		}
+		body := map[string]any{"ref": ref, "timeout_ms": timeout}
+		r.addTabID(body)
+		return r.client.postJSON("/api/page/assert_visible", body, nil)
+	case st.AssertHidden != nil:
+		ref, err := r.resolveTarget(st.AssertHidden.Ref, st.AssertHidden.Target, nil)
+		if err != nil {
+			return err
+		}
+		timeout := st.AssertHidden.TimeoutMS
+		if timeout == 0 {
+			timeout = 5000
+		}
+		body := map[string]any{"ref": ref, "timeout_ms": timeout}
+		r.addTabID(body)
+		return r.client.postJSON("/api/page/assert_hidden", body, nil)
+	case st.AssertText != nil:
+		ref, err := r.resolveTarget(st.AssertText.Ref, st.AssertText.Target, nil)
+		if err != nil {
+			return err
+		}
+		timeout := st.AssertText.TimeoutMS
+		if timeout == 0 {
+			timeout = 5000
+		}
+		body := map[string]any{"ref": ref, "text": st.AssertText.Text, "timeout_ms": timeout}
+		r.addTabID(body)
+		return r.client.postJSON("/api/page/assert_text", body, nil)
+	case st.AssertValue != nil:
+		ref, err := r.resolveTarget(st.AssertValue.Ref, st.AssertValue.Target, nil)
+		if err != nil {
+			return err
+		}
+		timeout := st.AssertValue.TimeoutMS
+		if timeout == 0 {
+			timeout = 5000
+		}
+		body := map[string]any{"ref": ref, "value": st.AssertValue.Value, "timeout_ms": timeout}
+		r.addTabID(body)
+		return r.client.postJSON("/api/page/assert_value", body, nil)
 	default:
 		return errors.New("empty or unknown step")
 	}
@@ -579,6 +696,23 @@ func pathWithQuery(path string, values url.Values) string {
 	return path
 }
 
+func (r *runner) withTabQuery(path string) string {
+	if r.tabID == "" {
+		return path
+	}
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "tab_id=" + url.QueryEscape(r.tabID)
+}
+
+func (r *runner) addTabID(body map[string]any) {
+	if r.tabID != "" {
+		body["tab_id"] = r.tabID
+	}
+}
+
 func addQuery(values url.Values, key, value string) {
 	if value != "" {
 		values.Set(key, value)
@@ -614,7 +748,7 @@ func (r *runner) resolveTarget(ref, target string, match *elementMatch) (string,
 		return "", errors.New("target, ref, or match is required")
 	}
 	var snap snapshot.PageSnapshot
-	if err := r.client.getJSON("/api/page/snapshot", &snap); err != nil {
+	if err := r.client.getJSON(r.withTabQuery("/api/page/snapshot"), &snap); err != nil {
 		return "", err
 	}
 	el, ok := findElement(snap.Elements, *match)
@@ -726,6 +860,15 @@ func findElement(elements []snapshot.Element, match elementMatch) (snapshot.Elem
 		if match.Visible != nil && el.Visible != *match.Visible {
 			continue
 		}
+		if match.Sensitive != nil && el.Sensitive != *match.Sensitive {
+			continue
+		}
+		if match.ValueEmpty != nil {
+			isEmpty := el.Value == ""
+			if *match.ValueEmpty != isEmpty {
+				continue
+			}
+		}
 		return el, true
 	}
 	return snapshot.Element{}, false
@@ -769,6 +912,44 @@ func assertRead(read readability.PageRead, want readStep) error {
 	}
 	if want.Metadata.Lang != "" && !equalFold(read.Metadata.Lang, want.Metadata.Lang) {
 		return fmt.Errorf("metadata lang %q does not equal %q", read.Metadata.Lang, want.Metadata.Lang)
+	}
+	for _, fa := range want.Forms {
+		found := false
+		for _, form := range read.Forms {
+			if fa.NameContains != "" && !containsFold(form.Name, fa.NameContains) {
+				continue
+			}
+			if len(form.Controls) < fa.MinControls {
+				continue
+			}
+			if fa.RequireControl != nil {
+				ctrlMatch := false
+				for _, ctrl := range form.Controls {
+					if fa.RequireControl.NameContains != "" && !containsFold(ctrl.Name, fa.RequireControl.NameContains) {
+						continue
+					}
+					if fa.RequireControl.Sensitive != nil && ctrl.Sensitive != *fa.RequireControl.Sensitive {
+						continue
+					}
+					if fa.RequireControl.ValueEmpty != nil {
+						isEmpty := ctrl.Value == ""
+						if *fa.RequireControl.ValueEmpty != isEmpty {
+							continue
+						}
+					}
+					ctrlMatch = true
+					break
+				}
+				if !ctrlMatch {
+					continue
+				}
+			}
+			found = true
+			break
+		}
+		if !found {
+			return fmt.Errorf("missing form assertion %v", fa)
+		}
 	}
 	return nil
 }

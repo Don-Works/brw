@@ -498,6 +498,133 @@
         }
       ],
       "human_assist": "If Intervals.icu shows MFA, CAPTCHA, account-risk prompts, or a changed OAuth consent screen, stop and ask the user to complete the visible browser step."
+    },
+    {
+      "id": "fixture-sensitive-redaction",
+      "name": "Sensitive form values are redacted in snapshots",
+      "tags": ["local", "forms", "sensitive", "security", "privacy"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/sensitive-fields.html" } },
+        { "wait_for": { "condition": "title:Sensitive Fields Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "mode": "all",
+            "min_elements": 8,
+            "require": [
+              { "role": "textbox", "name_contains": "Email", "save_as": "email" },
+              { "role": "textbox", "name_contains": "Password", "type": "password", "sensitive": true, "value_empty": true, "save_as": "password" },
+              { "role": "textbox", "name_contains": "Card number", "sensitive": true, "value_empty": true, "save_as": "card_number" },
+              { "role": "textbox", "name_contains": "CVV", "sensitive": true, "value_empty": true, "save_as": "cvv" },
+              { "role": "textbox", "name_contains": "Expiry", "sensitive": true, "value_empty": true, "save_as": "expiry" },
+              { "role": "textbox", "name_contains": "Full name", "save_as": "name" },
+              { "role": "combobox", "name_contains": "Country", "save_as": "country" },
+              { "role": "textbox", "name_contains": "Verification code", "sensitive": true, "value_empty": true, "save_as": "otp" },
+              { "role": "textbox", "name_contains": "Order notes", "save_as": "notes" },
+              { "role": "button", "name_contains": "Pay now", "save_as": "submit" }
+            ]
+          }
+        },
+        {
+          "read": {
+            "title_contains": "Sensitive Fields Fixture",
+            "min_forms": 1,
+            "forms": [
+              {
+                "name_contains": "Payment form",
+                "min_controls": 6,
+                "require_control": { "name_contains": "Password", "sensitive": true, "value_empty": true }
+              }
+            ]
+          }
+        },
+        { "type": { "target": "email", "text": "test@example.com" } },
+        { "type": { "target": "password", "text": "supersecret123" } },
+        { "type": { "target": "card_number", "text": "4111111111111111" } },
+        { "type": { "target": "cvv", "text": "123" } },
+        { "type": { "target": "name", "text": "Jane Doe" } },
+        {
+          "snapshot": {
+            "mode": "all",
+            "require": [
+              { "role": "textbox", "name_contains": "Password", "type": "password", "sensitive": true, "value_empty": true },
+              { "role": "textbox", "name_contains": "Card number", "sensitive": true, "value_empty": true },
+              { "role": "textbox", "name_contains": "CVV", "sensitive": true, "value_empty": true },
+              { "role": "textbox", "name_contains": "Full name", "save_as": "name_after" }
+            ]
+          }
+        },
+        { "click": { "target": "submit" } },
+        { "wait_for": { "condition": "text:Payment submitted", "timeout_ms": 5000 } }
+      ]
+    },
+    {
+      "id": "fixture-form-lens",
+      "name": "Form lens mode returns only form fields with validation state",
+      "tags": ["local", "forms", "form_lens", "validation"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/forms.html" } },
+        { "wait_for": { "condition": "title:Form Interaction Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "mode": "form_lens",
+            "min_elements": 4,
+            "require": [
+              { "role": "textbox", "name_contains": "Email", "save_as": "email" },
+              { "role": "textbox", "name_contains": "Full name", "save_as": "full_name" },
+              { "role": "combobox", "name_contains": "Plan", "save_as": "plan" },
+              { "role": "button", "name_contains": "Submit request", "save_as": "submit" }
+            ]
+          }
+        },
+        { "click": { "target": "submit" } },
+        {
+          "snapshot": {
+            "mode": "form_lens",
+            "require": [
+              { "role": "textbox", "name_contains": "Email" }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-commit-field",
+      "name": "Commit a form field via browser_commit",
+      "tags": ["local", "forms", "commit", "actions"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/forms.html" } },
+        { "wait_for": { "condition": "title:Form Interaction Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "require": [
+              { "role": "textbox", "name_contains": "Email", "save_as": "email" }
+            ]
+          }
+        },
+        { "type": { "target": "email", "text": "test@example.com" } },
+        { "commit": { "target": "email" } },
+        { "wait_for": { "condition": "text:Submitted", "timeout_ms": 5000 } }
+      ]
+    },
+    {
+      "id": "fixture-assert-tools",
+      "name": "Web-first assertions pass on visible elements",
+      "tags": ["local", "assertions", "actions"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/forms.html" } },
+        { "wait_for": { "condition": "title:Form Interaction Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "require": [
+              { "role": "textbox", "name_contains": "Email", "save_as": "email" },
+              { "role": "button", "name_contains": "Submit request", "save_as": "submit" }
+            ]
+          }
+        },
+        { "assert_visible": { "target": "submit", "timeout_ms": 3000 } },
+        { "type": { "target": "email", "text": "assert@test.com" } },
+        { "assert_value": { "target": "email", "value": "assert@test.com", "timeout_ms": 3000 } }
+      ]
     }
   ]
 }

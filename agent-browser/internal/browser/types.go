@@ -47,6 +47,7 @@ type ActionResult struct {
 	Targets      []Tab              `json:"targets,omitempty"`
 	Changed      []string           `json:"changed,omitempty"`
 	Elements     []snapshot.Element `json:"elements,omitempty"`
+	DurationMS   int64              `json:"duration_ms,omitempty"`
 }
 
 type Screenshot struct {
@@ -93,4 +94,56 @@ type PlanResult struct {
 	Steps    []PlanStepResult `json:"steps"`
 	FailedAt *int             `json:"failed_at,omitempty"`
 	Error    string           `json:"error,omitempty"`
+}
+
+type BatchStep struct {
+	Action    string `json:"action"`
+	Ref       string `json:"ref,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Value     string `json:"value,omitempty"`
+	Direction string `json:"direction,omitempty"`
+	Condition string `json:"condition,omitempty"`
+	TimeoutMS int    `json:"timeout_ms,omitempty"`
+	URL       string `json:"url,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Key       string `json:"key,omitempty"`
+	AssertRef string `json:"assert_ref,omitempty"`
+	AssertText string `json:"assert_text,omitempty"`
+	AssertValue string `json:"assert_value,omitempty"`
+	AssertVisible *bool `json:"assert_visible,omitempty"`
+	AssertHidden *bool `json:"assert_hidden,omitempty"`
+}
+
+type BatchStepResult struct {
+	Index  int    `json:"index"`
+	Action string `json:"action"`
+	OK     bool   `json:"ok"`
+	Error  string `json:"error,omitempty"`
+}
+
+type BatchResult struct {
+	OK      bool              `json:"ok"`
+	Steps   []BatchStepResult `json:"steps"`
+	Error   string            `json:"error,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Title   string            `json:"title,omitempty"`
+	Focus   string            `json:"focus,omitempty"`
+	Changed []string          `json:"changed,omitempty"`
+	Version int64             `json:"version,omitempty"`
+}
+
+type TraceEntry struct {
+	Action    string `json:"action"`
+	Ref       string `json:"ref,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Value     string `json:"value,omitempty"`
+	OK        bool   `json:"ok"`
+	Error     string `json:"error,omitempty"`
+	DurationMS int64 `json:"duration_ms"`
+	Timestamp string `json:"timestamp"`
+}
+
+type TraceResult struct {
+	Entries []TraceEntry `json:"entries"`
+	Count   int          `json:"count"`
 }
