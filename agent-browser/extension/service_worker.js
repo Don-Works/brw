@@ -162,9 +162,31 @@ async function handle(message) {
     if (message.type === "cached_snapshot") {
       const tabId = Number(message.params?.tabId || (await activeTabId()));
       const cached = state.snapshotCache.get(tabId);
-      if (cached && !cached.dirty) {
-        send({ id: message.id, ok: true, result: { cached: true, snapshot: cached.snapshot } });
-        return;
+      if (cached) {
+        // Check if the page's MutationObserver flagged DOM changes
+        let pageDirty = false;
+        try {
+          await attach(tabId);
+          const evalResult = await chrome.debugger.sendCommand(
+            { tabId },
+            "Runtime.evaluate",
+            { expression: "!!window.__agentBrowserDirty", returnByValue: true }
+          );
+          pageDirty = Boolean(evalResult?.result?.value);
+        } catch (_) {}
+        if (!pageDirty && !cached.dirty) {
+          send({ id: message.id, ok: true, result: { cached: true, snapshot: cached.snapshot } });
+          return;
+        }
+        // Reset dirty flags
+        cached.dirty = false;
+        try {
+          await chrome.debugger.sendCommand(
+            { tabId },
+            "Runtime.evaluate",
+            { expression: "window.__agentBrowserDirty = false", returnByValue: true }
+          );
+        } catch (_) {}
       }
       send({ id: message.id, ok: true, result: { cached: false } });
       return;

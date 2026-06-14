@@ -328,6 +328,15 @@ func (b *Bridge) GroupTabs(ctx context.Context, tabIDs []string, name string, co
 	return err
 }
 
+func (b *Bridge) UngroupTabs(ctx context.Context, tabIDs []string) error {
+	ids := make([]int, 0, len(tabIDs))
+	for _, id := range tabIDs {
+		ids = append(ids, parseTabID(id))
+	}
+	_, err := b.call(ctx, "ungroup_tabs", map[string]any{"tabIds": ids})
+	return err
+}
+
 func (b *Bridge) OpenInGroup(ctx context.Context, url string, groupName string) (browser.OpenResult, error) {
 	if strings.TrimSpace(url) == "" {
 		url = "about:blank"

@@ -296,3 +296,5 @@ func (fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.
 func (fakeController) OpenInGroup(context.Context, string, string) (browser.OpenResult, error) {
 	return browser.OpenResult{}, nil
 }
+func (fakeController) GroupTabs(context.Context, []string, string, string) error { return nil }
+func (fakeController) UngroupTabs(context.Context, []string) error               { return nil }

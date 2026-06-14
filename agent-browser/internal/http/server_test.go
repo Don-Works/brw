@@ -149,6 +149,9 @@ func (f *fakeController) CloseTab(context.Context, string) error {
 	return nil
 }
 
+func (f *fakeController) GroupTabs(context.Context, []string, string, string) error { return nil }
+func (f *fakeController) UngroupTabs(context.Context, []string) error               { return nil }
+
 func (f *fakeController) Snapshot(_ context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
 	f.snapshotOpts = opts
 	return f.snap, nil

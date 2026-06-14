@@ -164,6 +164,14 @@ func (m *Manager) OpenInGroup(ctx context.Context, url string, groupName string)
 	return m.Open(ctx, url)
 }
 
+func (m *Manager) GroupTabs(ctx context.Context, tabIDs []string, name string, color string) error {
+	return nil
+}
+
+func (m *Manager) UngroupTabs(ctx context.Context, tabIDs []string) error {
+	return nil
+}
+
 func (m *Manager) ListTabs(ctx context.Context) ([]Tab, error) {
 	var infos []*target.Info
 	if err := m.runBrowser(ctx, func(ctx context.Context) error {

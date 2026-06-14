@@ -18,6 +18,8 @@ type Controller interface {
 	ListTabs(context.Context) ([]browser.Tab, error)
 	FocusTab(context.Context, string) error
 	CloseTab(context.Context, string) error
+	GroupTabs(context.Context, []string, string, string) error
+	UngroupTabs(context.Context, []string) error
 	Read(context.Context) (readability.PageRead, error)
 	Snapshot(context.Context, snapshot.SnapshotOptions) (snapshot.PageSnapshot, error)
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
@@ -80,6 +82,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/press", s.press)
 	mux.HandleFunc("POST /api/page/scroll", s.scroll)
 	mux.HandleFunc("POST /api/page/wait_for", s.waitFor)
+	mux.HandleFunc("POST /api/page/hover", s.hover)
+	mux.HandleFunc("POST /api/page/evaluate", s.evaluate)
+	mux.HandleFunc("GET /api/page/network_requests", s.networkRequests)
+	mux.HandleFunc("POST /api/page/execute_plan", s.executePlan)
+	mux.HandleFunc("POST /api/browser/group_tabs", s.groupTabs)
+	mux.HandleFunc("POST /api/browser/ungroup_tabs", s.ungroupTabs)
 	mux.HandleFunc("GET /api/visual/screenshot", s.screenshot)
 	mux.HandleFunc("GET /api/visual/screenshot_element", s.screenshotElement)
 }
@@ -234,6 +242,67 @@ func (s *Server) waitFor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResult(w, browser.ActionResult{OK: true}, s.manager.WaitFor(r.Context(), req.Condition, time.Duration(req.TimeoutMS)*time.Millisecond))
+}
+
+func (s *Server) hover(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Ref string `json:"ref"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.Hover(r.Context(), req.Ref)
+	writeResult(w, result, err)
+}
+
+func (s *Server) evaluate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Expression string `json:"expression"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.Evaluate(r.Context(), req.Expression)
+	writeResult(w, result, err)
+}
+
+func (s *Server) networkRequests(w http.ResponseWriter, r *http.Request) {
+	filter := r.URL.Query().Get("filter")
+	result, err := s.manager.NetworkRequests(r.Context(), filter)
+	writeResult(w, result, err)
+}
+
+func (s *Server) executePlan(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Steps []browser.PlanStep `json:"steps"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.ExecutePlan(r.Context(), req.Steps)
+	writeResult(w, result, err)
+}
+
+func (s *Server) groupTabs(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TabIDs []string `json:"tab_ids"`
+		Name   string   `json:"name"`
+		Color  string   `json:"color"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.GroupTabs(r.Context(), req.TabIDs, req.Name, req.Color))
+}
+
+func (s *Server) ungroupTabs(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TabIDs []string `json:"tab_ids"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.UngroupTabs(r.Context(), req.TabIDs))
 }
 
 func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {

@@ -23,6 +23,8 @@ type Controller interface {
 	ListTabs(context.Context) ([]browser.Tab, error)
 	FocusTab(context.Context, string) error
 	CloseTab(context.Context, string) error
+	GroupTabs(context.Context, []string, string, string) error
+	UngroupTabs(context.Context, []string) error
 	Read(context.Context) (readability.PageRead, error)
 	Snapshot(context.Context, snapshot.SnapshotOptions) (snapshot.PageSnapshot, error)
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
@@ -410,6 +412,24 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(s.manager.ExecutePlan(ctx, req.Steps))
+	case "browser_group_tabs":
+		var req struct {
+			TabIDs []string `json:"tab_ids"`
+			Name   string   `json:"name"`
+			Color  string   `json:"color"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolOK(s.manager.GroupTabs(ctx, req.TabIDs, req.Name, req.Color))
+	case "browser_ungroup_tabs":
+		var req struct {
+			TabIDs []string `json:"tab_ids"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolOK(s.manager.UngroupTabs(ctx, req.TabIDs))
 	default:
 		return nil, &rpcError{Code: -32602, Message: fmt.Sprintf("unknown tool %q", name)}
 	}
@@ -582,6 +602,14 @@ func tools() []map[string]any {
 				},
 			},
 		}, []string{"steps"})),
+		tool("browser_group_tabs", "Group tabs into a named Chrome tab group with a color.", object(map[string]any{
+			"tab_ids": map[string]any{"type": "array", "items": stringSchema("Tab id."), "description": "Tab IDs to group."},
+			"name":    stringSchema("Group name shown in Chrome tab strip."),
+			"color":   stringSchema("Group color: grey, blue, red, yellow, green, pink, purple, cyan, orange."),
+		}, []string{"tab_ids", "name"})),
+		tool("browser_ungroup_tabs", "Remove tabs from their Chrome tab group.", object(map[string]any{
+			"tab_ids": map[string]any{"type": "array", "items": stringSchema("Tab id."), "description": "Tab IDs to ungroup."},
+		}, []string{"tab_ids"})),
 	}
 }
 

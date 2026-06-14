@@ -185,6 +185,14 @@ func (c *Controller) ExecutePlan(ctx context.Context, steps []browser.PlanStep) 
 	return out, err
 }
 
+func (c *Controller) GroupTabs(ctx context.Context, tabIDs []string, name string, color string) error {
+	return c.post(ctx, "/api/browser/group_tabs", map[string]any{"tab_ids": tabIDs, "name": name, "color": color}, nil)
+}
+
+func (c *Controller) UngroupTabs(ctx context.Context, tabIDs []string) error {
+	return c.post(ctx, "/api/browser/ungroup_tabs", map[string]any{"tab_ids": tabIDs}, nil)
+}
+
 func (c *Controller) get(ctx context.Context, path string, values url.Values, out any) error {
 	reqURL := c.baseURL + path
 	if len(values) > 0 {
