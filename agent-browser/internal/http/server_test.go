@@ -221,7 +221,3 @@ func (f *fakeController) ExecutePlan(context.Context, []browser.PlanStep) (brows
 	return browser.PlanResult{OK: true}, nil
 }
 
-func (f *fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error) {
-	return browser.PlanResult{OK: true}, nil
-}
-

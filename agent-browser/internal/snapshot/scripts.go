@@ -596,6 +596,40 @@ const FileInputEventsScript = `(function(ref) {
   return { ok: true, ref, files: Array.from(el.files || []).map(f => f.name) };
 })`
 
+const HoverElementScript = `(function(ref) {
+  function roots() {
+    const out = [document];
+    for (let i = 0; i < out.length; i++) {
+      const root = out[i];
+      if (!root.querySelectorAll) continue;
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        if (el.shadowRoot) out.push(el.shadowRoot);
+      }
+    }
+    return out;
+  }
+  function findByRef(ref) {
+    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
+    for (const root of roots()) {
+      const el = root.querySelector && root.querySelector(selector);
+      if (el) return el;
+    }
+    return null;
+  }
+  const el = findByRef(ref);
+  if (!el) return { ok: false, error: 'ref not found' };
+  if (el.closest('[hidden],[aria-hidden="true"]')) return { ok: false, error: 'ref hidden' };
+  el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  const r = el.getBoundingClientRect();
+  const cx = r.left + r.width / 2;
+  const cy = r.top + r.height / 2;
+  const opts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy };
+  el.dispatchEvent(new PointerEvent('pointermove', opts));
+  el.dispatchEvent(new MouseEvent('mouseenter', opts));
+  el.dispatchEvent(new MouseEvent('mouseover', opts));
+  return { ok: true, ref: ref };
+})`
+
 const ScrollPageScript = `(function(direction) {
   direction = String(direction || 'down').toLowerCase().trim() || 'down';
   const amount = 700;
