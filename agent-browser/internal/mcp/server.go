@@ -61,6 +61,8 @@ type Controller interface {
 	AssertHidden(context.Context, string, time.Duration) error
 	CommitField(context.Context, string) error
 	Notify(context.Context, browser.NotifyOptions) (browser.NotifyResult, error)
+	GetPolicy(context.Context) (browser.PolicySettings, error)
+	SetPolicy(context.Context, browser.PolicySettings) (browser.PolicySettings, error)
 }
 
 type Server struct {
@@ -592,6 +594,38 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	case "browser_clear_trace":
 		s.manager.ClearTrace()
 		return toolOK(nil)
+	case "browser_policy":
+		var req struct {
+			Action             string   `json:"action"`
+			PurchaseGate       *bool    `json:"purchase_gate"`
+			PurchaseAuthorized *bool    `json:"purchase_authorized"`
+			Allow              []string `json:"allow"`
+			Deny               []string `json:"deny"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		if strings.EqualFold(strings.TrimSpace(req.Action), "set") {
+			current, err := s.manager.GetPolicy(ctx)
+			if err != nil {
+				return toolError(err), nil
+			}
+			next := current
+			if req.PurchaseGate != nil {
+				next.PurchaseGate = *req.PurchaseGate
+			}
+			if req.PurchaseAuthorized != nil {
+				next.PurchaseAuthorized = *req.PurchaseAuthorized
+			}
+			if req.Allow != nil {
+				next.Allow = req.Allow
+			}
+			if req.Deny != nil {
+				next.Deny = req.Deny
+			}
+			return toolJSON(s.manager.SetPolicy(ctx, next))
+		}
+		return toolJSON(s.manager.GetPolicy(ctx))
 	default:
 		return nil, &rpcError{Code: -32602, Message: fmt.Sprintf("unknown tool %q", name)}
 	}
@@ -880,6 +914,13 @@ func tools() []map[string]any {
 		tool("browser_downloads", "Return and drain tracked file downloads. Download capture is enabled lazily on first call (Browser.setDownloadBehavior with events); subsequent triggered downloads are recorded via the Browser.downloadWillBegin/downloadProgress CDP events with url, suggested_filename, state (inProgress/completed/canceled), received_bytes, total_bytes, guid, and path. The buffer is cleared after reading. Over the extension bridge this returns an empty list plus an explanatory note.", object(nil, nil)),
 		tool("browser_trace", "Return the action trace: a compact log of recent actions with refs, timing, and outcomes. Use for debugging and performance analysis.", object(nil, nil)),
 		tool("browser_clear_trace", "Clear the action trace buffer.", object(nil, nil)),
+		tool("browser_policy", "Get or set the session consent/safety envelope. The web is open by default; this layer adds an enforceable purchase/payment gate and optional opt-in per-origin allow/deny lists. Action \"get\" (default) returns the current settings; action \"set\" updates only the provided fields. Purchase/checkout/place-order actions are BLOCKED while purchase_gate is true unless purchase_authorized is also set true. Setting a non-empty allow list switches to allow-list-only for origins; deny always blocks. Cross-domain navigation is reported on each action's domain_transition field (advisory, never blocked).", object(map[string]any{
+			"action":              stringSchema("get (default) to read settings, or set to update them."),
+			"purchase_gate":       boolSchema("Enforce the purchase/payment gate. Defaults true; blocks checkout/place-order/pay actions unless purchase_authorized is true."),
+			"purchase_authorized": boolSchema("Explicit per-session authorization to allow purchase/payment/place-order actions through the gate. Defaults false."),
+			"allow":               map[string]any{"type": "array", "items": stringSchema("Origin host, for example example.com (subdomains included)."), "description": "Optional opt-in allow list. When non-empty, ONLY these origins (and subdomains) may be acted on. Empty means open (all origins allowed)."},
+			"deny":                map[string]any{"type": "array", "items": stringSchema("Origin host, for example ads.example.com (subdomains included)."), "description": "Optional opt-in deny list. These origins (and subdomains) are always blocked. Empty by default."},
+		}, nil)),
 	}
 }
 

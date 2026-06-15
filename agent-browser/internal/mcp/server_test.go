@@ -339,6 +339,95 @@ func TestBrowserNavigateDispatch(t *testing.T) {
 	}
 }
 
+func TestBrowserPolicyToolRoundtrip(t *testing.T) {
+	ctrl := &policyController{settings: browser.DefaultPolicySettings()}
+
+	// get returns the default (gate enforced, open web).
+	getResp := callPolicy(t, ctrl, `{"action":"get"}`)
+	sc := getResp["structuredContent"].(map[string]any)
+	if sc["purchase_gate"] != true {
+		t.Fatalf("default purchase_gate should be true, got %v", sc["purchase_gate"])
+	}
+	if sc["purchase_authorized"] != false {
+		t.Fatalf("default purchase_authorized should be false, got %v", sc["purchase_authorized"])
+	}
+
+	// set authorizes purchases and adds a deny entry.
+	setResp := callPolicy(t, ctrl, `{"action":"set","purchase_authorized":true,"deny":["ads.example.com"]}`)
+	sc = setResp["structuredContent"].(map[string]any)
+	if sc["purchase_authorized"] != true {
+		t.Fatalf("set did not persist purchase_authorized: %v", sc)
+	}
+	deny := sc["deny"].([]any)
+	if len(deny) != 1 || deny[0] != "ads.example.com" {
+		t.Fatalf("set did not persist deny list: %v", sc["deny"])
+	}
+	if !ctrl.settings.PurchaseAuthorized {
+		t.Fatal("controller state did not update on set")
+	}
+
+	// a subsequent get reflects the updated state.
+	getResp = callPolicy(t, ctrl, `{"action":"get"}`)
+	sc = getResp["structuredContent"].(map[string]any)
+	if sc["purchase_authorized"] != true {
+		t.Fatalf("get after set lost authorization: %v", sc)
+	}
+}
+
+func TestBrowserPolicyToolRegistered(t *testing.T) {
+	var policyTool map[string]any
+	for _, tool := range tools() {
+		if tool["name"] == "browser_policy" {
+			policyTool = tool
+			break
+		}
+	}
+	if policyTool == nil {
+		t.Fatal("browser_policy tool not registered")
+	}
+	props := policyTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	for _, p := range []string{"action", "purchase_gate", "purchase_authorized", "allow", "deny"} {
+		if _, ok := props[p]; !ok {
+			t.Fatalf("browser_policy schema missing %s: %#v", p, props)
+		}
+	}
+}
+
+func callPolicy(t *testing.T, ctrl Controller, args string) map[string]any {
+	t.Helper()
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_policy","arguments":` + args + `}}` + "\n"
+	var output bytes.Buffer
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("policy call returned no result: %v", resp)
+	}
+	if result["isError"] == true {
+		t.Fatalf("policy call errored: %v", result)
+	}
+	return result
+}
+
+type policyController struct {
+	fakeController
+	settings browser.PolicySettings
+}
+
+func (p *policyController) GetPolicy(context.Context) (browser.PolicySettings, error) {
+	return p.settings, nil
+}
+
+func (p *policyController) SetPolicy(_ context.Context, settings browser.PolicySettings) (browser.PolicySettings, error) {
+	p.settings = settings
+	return settings, nil
+}
+
 func framedJSON(t *testing.T, value any) string {
 	t.Helper()
 	data, err := json.Marshal(value)
@@ -533,4 +622,10 @@ func (fakeController) AssertHidden(context.Context, string, time.Duration) error
 func (fakeController) CommitField(context.Context, string) error                 { return nil }
 func (fakeController) Notify(context.Context, browser.NotifyOptions) (browser.NotifyResult, error) {
 	return browser.NotifyResult{OK: true, Delivery: "extension"}, nil
+}
+func (fakeController) GetPolicy(context.Context) (browser.PolicySettings, error) {
+	return browser.DefaultPolicySettings(), nil
+}
+func (fakeController) SetPolicy(_ context.Context, s browser.PolicySettings) (browser.PolicySettings, error) {
+	return s, nil
 }

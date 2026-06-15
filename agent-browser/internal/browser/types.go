@@ -49,6 +49,11 @@ type ActionResult struct {
 	Changed      []string           `json:"changed,omitempty"`
 	Elements     []snapshot.Element `json:"elements,omitempty"`
 	DurationMS   int64              `json:"duration_ms,omitempty"`
+	// DomainTransition is set to the new registrable domain when an action
+	// caused navigation into a different registrable domain than the page was on
+	// before the action. Advisory only (cross-site escalation is visible but not
+	// blocked); empty when no cross-domain navigation occurred.
+	DomainTransition string `json:"domain_transition,omitempty"`
 }
 
 type Screenshot struct {

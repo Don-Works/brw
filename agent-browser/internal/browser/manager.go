@@ -62,6 +62,10 @@ type Manager struct {
 	// loops) keyed by an operation token so browser_cancel can stop a specific
 	// run cooperatively instead of killing the whole daemon.
 	cancels *cancelRegistry
+
+	// policy holds the opt-in consent/safety envelope (purchase gate +
+	// per-origin allow/deny). Default-empty preserves the open-web stance.
+	policy *PolicyStore
 }
 
 type tabContext struct {
@@ -129,6 +133,7 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		userDataDir:   cfg.UserDataDir,
 		downloadIndex: map[string]int{},
 		cancels:       newCancelRegistry(),
+		policy:        NewPolicyStore(),
 	}
 
 	if err := m.connect(); err != nil {
@@ -334,6 +339,11 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 		return ActionResult{}, err
 	}
 	before := m.cachedBefore(tabID, tabCtx)
+	label, href, currentURL := m.describeRef(tabCtx, ref, before)
+	policyWarning, blockErr := m.guardAction(currentURL, label, href)
+	if blockErr != nil {
+		return ActionResult{}, blockErr
+	}
 	warning, clickErr := clickElementCenter(tabCtx, ref, 150*time.Millisecond)
 	if clickErr != nil {
 		return ActionResult{}, clickErr
@@ -341,6 +351,12 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 	result := m.observeActionWithBefore(tabID, tabCtx, "clicked "+ref, before)
 	if warning != "" {
 		result.Warning = warning
+	}
+	if policyWarning != "" {
+		result.Warning = policyWarning
+	}
+	if before != nil {
+		annotateTransition(&result, before.URL)
 	}
 	result.DurationMS = time.Since(start).Milliseconds()
 	m.recordTrace(TraceEntry{
@@ -363,6 +379,17 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 	defer cancel()
 
 	before := m.cachedBefore(tabID, tabCtx)
+	currentURL := ""
+	if before != nil {
+		currentURL = before.URL
+	}
+	// The control label is the requested text pre-click; the purchase gate must
+	// fire before the click runs so a checkout/place-order click is refused, not
+	// merely warned about after the fact.
+	preWarning, blockErr := m.guardAction(currentURL, opts.Text, "")
+	if blockErr != nil {
+		return ActionResult{}, blockErr
+	}
 	clicked, err := snapshot.ClickText(tabCtx, opts)
 	if err != nil {
 		return ActionResult{}, err
@@ -379,6 +406,10 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 	if warning := PurchaseControlWarning(label, clicked.Href); warning != "" {
 		result.Warning = warning
 	}
+	if preWarning != "" {
+		result.Warning = preWarning
+	}
+	annotateTransition(&result, currentURL)
 	m.recordTrace(TraceEntry{
 		Action:     "click_text",
 		Text:       opts.Text,
@@ -801,31 +832,6 @@ func isTransientNavigationError(err error) bool {
 		strings.Contains(msg, "inspected target navigated or closed")
 }
 
-func PurchaseControlWarning(label, href string) string {
-	combined := strings.ToLower(strings.TrimSpace(label + " " + href))
-	if combined == "" {
-		return ""
-	}
-	risky := []string{
-		"place order",
-		"submit order",
-		"confirm order",
-		"pay now",
-		"complete purchase",
-		"buy now",
-		"purchase now",
-	}
-	for _, phrase := range risky {
-		if strings.Contains(combined, phrase) {
-			return "purchase/payment control clicked; require explicit user confirmation before placing an order or paying"
-		}
-	}
-	if strings.Contains(combined, "checkout") || strings.Contains(combined, "check out") {
-		return "checkout navigation clicked; stop before payment or place-order controls unless explicitly confirmed"
-	}
-	return ""
-}
-
 func (m *Manager) AssertVisible(ctx context.Context, ref string, timeout time.Duration) error {
 	if timeout == 0 {
 		timeout = 5 * time.Second
@@ -880,6 +886,12 @@ func (m *Manager) CommitField(ctx context.Context, ref string) error {
 		return err
 	}
 	defer cancel()
+	// A form commit can submit a checkout/payment form, so it passes through the
+	// purchase gate just like a click does.
+	label, href, currentURL := m.describeRef(tabCtx, ref, nil)
+	if _, blockErr := m.guardAction(currentURL, label, href); blockErr != nil {
+		return blockErr
+	}
 	return snapshot.CommitField(tabCtx, ref)
 }
 
