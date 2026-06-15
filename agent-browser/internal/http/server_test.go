@@ -287,6 +287,12 @@ func (f *fakeController) OpenInGroup(context.Context, string, string) (browser.O
 	return browser.OpenResult{}, nil
 }
 
+func (f *fakeController) OpenIncognito(context.Context, string) (browser.OpenResult, error) {
+	return browser.OpenResult{}, nil
+}
+
+func (f *fakeController) CloseContext(context.Context, string) error { return nil }
+
 func (f *fakeController) ListTabs(context.Context) ([]browser.Tab, error) {
 	return nil, nil
 }

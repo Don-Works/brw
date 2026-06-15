@@ -30,6 +30,10 @@ type Tab struct {
 	WindowFocused bool   `json:"window_focused,omitempty"`
 	OpenerTabID   string `json:"opener_tab_id,omitempty"`
 	Popup         bool   `json:"popup,omitempty"`
+	// BrowserContextID is set when the tab lives in a non-default (incognito)
+	// browser context created via browser_open_incognito. Pass it to
+	// browser_close_context to dispose that isolated context.
+	BrowserContextID string `json:"browser_context_id,omitempty"`
 }
 
 type OpenResult struct {

@@ -629,6 +629,10 @@ func (r *recordingController) Find(ctx context.Context, opts snapshot.FindOption
 func (fakeController) Open(context.Context, string) (browser.OpenResult, error) {
 	return browser.OpenResult{}, nil
 }
+func (fakeController) OpenIncognito(context.Context, string) (browser.OpenResult, error) {
+	return browser.OpenResult{Tab: browser.Tab{ID: "t1", BrowserContextID: "ctx-1"}}, nil
+}
+func (fakeController) CloseContext(context.Context, string) error      { return nil }
 func (fakeController) ListTabs(context.Context) ([]browser.Tab, error) { return nil, nil }
 func (fakeController) FocusTab(context.Context, string) error          { return nil }
 func (fakeController) CloseTab(context.Context, string) error          { return nil }

@@ -20,6 +20,8 @@ import (
 type Controller interface {
 	Open(context.Context, string) (browser.OpenResult, error)
 	OpenInGroup(context.Context, string, string) (browser.OpenResult, error)
+	OpenIncognito(context.Context, string) (browser.OpenResult, error)
+	CloseContext(context.Context, string) error
 	ListTabs(context.Context) ([]browser.Tab, error)
 	FocusTab(context.Context, string) error
 	CloseTab(context.Context, string) error
@@ -296,6 +298,22 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return toolJSON(s.manager.OpenInGroup(ctx, req.URL, req.Group))
 		}
 		return toolJSON(s.manager.Open(ctx, req.URL))
+	case "browser_open_incognito":
+		var req struct {
+			URL string `json:"url"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.OpenIncognito(ctx, req.URL))
+	case "browser_close_context":
+		var req struct {
+			BrowserContextID string `json:"browser_context_id"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolOK(s.manager.CloseContext(ctx, req.BrowserContextID))
 	case "browser_list_tabs":
 		return toolJSON(s.manager.ListTabs(ctx))
 	case "browser_focus_tab":
@@ -783,6 +801,12 @@ func tools() []map[string]any {
 			"url":   stringSchema("URL to open. Scheme defaults to https."),
 			"group": stringSchema("Optional Chrome tab group name. When set, the new tab is added to a tab group with this title."),
 		}, []string{"url"})),
+		tool("browser_open_incognito", "Open a URL in a brand-new INCOGNITO browser context: a fully isolated session with its own cookies, storage, and cache that shares nothing with the normal profile or other contexts (the CDP equivalent of an incognito window). Returns the new tab including its browser_context_id. WHEN DONE, call browser_close_context with that browser_context_id to dispose the whole context (closes every tab in it and discards its data). DIRECT-CDP TRANSPORT ONLY: on the extension-bridge transport (driving the user's existing signed-in Chrome) this returns an error — use a direct-CDP profile (e.g. agent-revitt) for incognito. Ideal for clean-room / logged-out internal testing.", object(map[string]any{
+			"url": stringSchema("URL to open in the new incognito context. Scheme defaults to https."),
+		}, []string{"url"})),
+		tool("browser_close_context", "Dispose an incognito browser context created by browser_open_incognito: closes every tab inside it and discards its isolated cookies/storage. Pass the browser_context_id returned by browser_open_incognito. Direct-CDP transport only.", object(map[string]any{
+			"browser_context_id": stringSchema("The browser_context_id returned by browser_open_incognito."),
+		}, []string{"browser_context_id"})),
 		tool("browser_list_tabs", "List controllable Chrome/Chromium browser targets, including tabs and popup windows when the extension bridge reports them.", object(nil, nil)),
 		tool("browser_focus_tab", "Focus a controllable Chrome/Chromium target by id and make it the default target for following reads/actions.", object(map[string]any{
 			"id": stringSchema("Target id from browser_list_tabs."),

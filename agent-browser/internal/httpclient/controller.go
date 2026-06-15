@@ -56,6 +56,17 @@ func (c *Controller) OpenInGroup(ctx context.Context, targetURL string, groupNam
 	return out, err
 }
 
+func (c *Controller) OpenIncognito(ctx context.Context, targetURL string) (browser.OpenResult, error) {
+	var out browser.OpenResult
+	err := c.post(ctx, "/api/browser/open_incognito", map[string]string{"url": targetURL}, &out)
+	return out, err
+}
+
+func (c *Controller) CloseContext(ctx context.Context, contextID string) error {
+	var out browser.ActionResult
+	return c.post(ctx, "/api/browser/close_context", map[string]string{"browser_context_id": contextID}, &out)
+}
+
 func (c *Controller) ListTabs(ctx context.Context) ([]browser.Tab, error) {
 	var out []browser.Tab
 	err := c.get(ctx, "/api/browser/tabs", nil, &out)

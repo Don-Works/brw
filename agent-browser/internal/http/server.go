@@ -16,6 +16,8 @@ import (
 type Controller interface {
 	Open(context.Context, string) (browser.OpenResult, error)
 	OpenInGroup(context.Context, string, string) (browser.OpenResult, error)
+	OpenIncognito(context.Context, string) (browser.OpenResult, error)
+	CloseContext(context.Context, string) error
 	ListTabs(context.Context) ([]browser.Tab, error)
 	FocusTab(context.Context, string) error
 	CloseTab(context.Context, string) error
@@ -93,6 +95,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("POST /api/browser/open", s.open)
+	mux.HandleFunc("POST /api/browser/open_incognito", s.openIncognito)
+	mux.HandleFunc("POST /api/browser/close_context", s.closeContext)
 	mux.HandleFunc("GET /api/browser/tabs", s.tabs)
 	mux.HandleFunc("POST /api/browser/focus", s.focus)
 	mux.HandleFunc("POST /api/browser/close", s.closeTab)
@@ -168,6 +172,27 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.manager.Open(r.Context(), req.URL)
 	writeResult(w, result, err)
+}
+
+func (s *Server) openIncognito(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL string `json:"url"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.OpenIncognito(r.Context(), req.URL)
+	writeResult(w, result, err)
+}
+
+func (s *Server) closeContext(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BrowserContextID string `json:"browser_context_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.CloseContext(r.Context(), req.BrowserContextID))
 }
 
 func (s *Server) tabs(w http.ResponseWriter, r *http.Request) {
