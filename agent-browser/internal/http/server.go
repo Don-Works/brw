@@ -25,6 +25,7 @@ type Controller interface {
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
 	Click(context.Context, string) (browser.ActionResult, error)
 	ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error)
+	Navigate(context.Context, string) (browser.ActionResult, error)
 	Hover(context.Context, string) (browser.ActionResult, error)
 	Type(context.Context, string, string) (browser.ActionResult, error)
 	Fill(context.Context, snapshot.FillOptions) (browser.ActionResult, error)
@@ -88,6 +89,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/page/read", s.read)
 	mux.HandleFunc("POST /api/page/click", s.click)
 	mux.HandleFunc("POST /api/page/click_text", s.clickText)
+	mux.HandleFunc("POST /api/page/navigate", s.navigate)
 	mux.HandleFunc("POST /api/page/type", s.typeText)
 	mux.HandleFunc("POST /api/page/fill", s.fill)
 	mux.HandleFunc("POST /api/page/upload_file", s.uploadFile)
@@ -215,6 +217,18 @@ func (s *Server) clickText(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.manager.ClickText(contextWithTabID(r.Context(), req.TabID), req.ClickTextOptions)
+	writeResult(w, result, err)
+}
+
+func (s *Server) navigate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Direction string `json:"direction"`
+		TabID     string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.Navigate(contextWithTabID(r.Context(), req.TabID), req.Direction)
 	writeResult(w, result, err)
 }
 

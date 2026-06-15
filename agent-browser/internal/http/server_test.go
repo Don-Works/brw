@@ -230,6 +230,10 @@ func (f *fakeController) ClickText(context.Context, snapshot.ClickTextOptions) (
 	return browser.ActionResult{OK: true}, nil
 }
 
+func (f *fakeController) Navigate(context.Context, string) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+
 func (f *fakeController) Type(context.Context, string, string) (browser.ActionResult, error) {
 	return browser.ActionResult{OK: true}, nil
 }

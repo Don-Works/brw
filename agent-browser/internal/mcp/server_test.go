@@ -205,6 +205,52 @@ func TestToolSchemasExposeTabScopedErgonomics(t *testing.T) {
 	}
 }
 
+func TestBrowserNavigateToolRegistration(t *testing.T) {
+	var navTool map[string]any
+	for _, tool := range tools() {
+		if tool["name"] == "browser_navigate" {
+			navTool = tool
+			break
+		}
+	}
+	if navTool == nil {
+		t.Fatal("browser_navigate tool not found")
+	}
+	schema := navTool["inputSchema"].(map[string]any)
+	props := schema["properties"].(map[string]any)
+	if _, ok := props["direction"]; !ok {
+		t.Fatalf("browser_navigate schema missing direction: %#v", props)
+	}
+	if _, ok := props["tab_id"]; !ok {
+		t.Fatalf("browser_navigate schema missing tab_id: %#v", props)
+	}
+	required, ok := schema["required"].([]string)
+	if !ok || len(required) != 1 || required[0] != "direction" {
+		t.Fatalf("browser_navigate required = %#v, want [direction]", schema["required"])
+	}
+}
+
+func TestBrowserNavigateDispatch(t *testing.T) {
+	ctrl := &recordingController{}
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"direction":"back"}}}` + "\n"
+	var output bytes.Buffer
+
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+
+	if ctrl.navigateDirection != "back" {
+		t.Fatalf("navigate direction = %q, want back", ctrl.navigateDirection)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := resp["result"].(map[string]any); !ok {
+		t.Fatalf("missing result: %#v", resp)
+	}
+}
+
 func framedJSON(t *testing.T, value any) string {
 	t.Helper()
 	data, err := json.Marshal(value)
@@ -251,8 +297,14 @@ type fakeController struct{}
 
 type recordingController struct {
 	fakeController
-	snapshotOpts snapshot.SnapshotOptions
-	findOpts     snapshot.FindOptions
+	snapshotOpts      snapshot.SnapshotOptions
+	findOpts          snapshot.FindOptions
+	navigateDirection string
+}
+
+func (r *recordingController) Navigate(ctx context.Context, direction string) (browser.ActionResult, error) {
+	r.navigateDirection = direction
+	return r.fakeController.Navigate(ctx, direction)
 }
 
 func (r *recordingController) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
@@ -296,6 +348,9 @@ func (fakeController) Click(context.Context, string) (browser.ActionResult, erro
 	return browser.ActionResult{OK: true}, nil
 }
 func (fakeController) ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+func (fakeController) Navigate(context.Context, string) (browser.ActionResult, error) {
 	return browser.ActionResult{OK: true}, nil
 }
 func (fakeController) Type(context.Context, string, string) (browser.ActionResult, error) {
