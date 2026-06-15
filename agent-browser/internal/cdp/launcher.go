@@ -53,6 +53,14 @@ func Launch(ctx context.Context, cfg LaunchConfig) (*Launcher, error) {
 		"--user-data-dir=" + cfg.UserDataDir,
 		"--no-first-run",
 		"--no-default-browser-check",
+		// Keep in-page timers (setTimeout/setInterval) firing at their requested
+		// rate. Chrome throttles timers to ~1Hz on hidden/occluded/headless
+		// pages, which silently turned the 100ms actionability poll into a
+		// ~700-900ms stall per click. These flags are standard for an automation
+		// browser and only affect background-throttling, never foreground tabs.
+		"--disable-background-timer-throttling",
+		"--disable-backgrounding-occluded-windows",
+		"--disable-renderer-backgrounding",
 	}
 	if cfg.ProfileDirectory != "" {
 		args = append(args, "--profile-directory="+cfg.ProfileDirectory)

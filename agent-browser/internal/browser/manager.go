@@ -622,6 +622,26 @@ func clickElementCenter(tabCtx context.Context, ref string, delay time.Duration)
 	if err != nil {
 		return "", err
 	}
+	warning := ""
+	if box.Recovered {
+		warning = fmt.Sprintf("ref recovered: %s -> %s", box.OldRef, box.Ref)
+	}
+	// Fast path: actuate the click with a single in-page round-trip. CDP
+	// Input.dispatchMouseEvent (chromedp.MouseClickXY) blocks on a renderer ack
+	// that costs ~0.8-1.1s per click on heavy pages; the in-page
+	// pointer/mouse/click sequence fires the same handlers in one
+	// Runtime.evaluate (~ms). Mirrors the extension-bridge clickRef fast path.
+	// Both paths hit-test by viewport point, so semantics match; trusted CDP
+	// dispatch stays as the fallback when the point is not hit-testable in-page
+	// (e.g. element scrolled out of the layout viewport, elementFromPoint null).
+	if inPage, evalErr := snapshot.ClickXY(tabCtx, box.ViewportX, box.ViewportY); evalErr == nil && inPage.OK {
+		if delay > 0 {
+			if err := chromedp.Run(tabCtx, chromedp.Sleep(delay)); err != nil {
+				return "", err
+			}
+		}
+		return warning, nil
+	}
 	actions := []chromedp.Action{chromedp.MouseClickXY(box.ViewportX, box.ViewportY)}
 	if delay > 0 {
 		actions = append(actions, chromedp.Sleep(delay))
@@ -629,10 +649,7 @@ func clickElementCenter(tabCtx context.Context, ref string, delay time.Duration)
 	if err := chromedp.Run(tabCtx, actions...); err != nil {
 		return "", err
 	}
-	if box.Recovered {
-		return fmt.Sprintf("ref recovered: %s -> %s", box.OldRef, box.Ref), nil
-	}
-	return "", nil
+	return warning, nil
 }
 
 func findOptionCandidate(tabCtx context.Context, value string) (snapshot.Element, error) {

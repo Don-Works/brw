@@ -1335,17 +1335,29 @@ const WaitForActionableScript = `(function(ref, timeoutMs){
   return new Promise(function(resolve){
     var c=check();
     if(!c.ok&&c.reason!=='not_visible'){ resolve(false); return; }
-    var done=false,stable=false,lastBox='',iv=0,to=0;
-    function tick(){
-      c=check();
-      if(!c.ok){ stable=false; return; }
-      var bk=boxKey(findByRef(ref));
-      if(bk===lastBox){ stable=true; } else { stable=false; lastBox=bk; }
+    // Re-check stability with a short setTimeout chain, not setInterval(100) and
+    // not requestAnimationFrame. Hidden/headless pages PAUSE rAF entirely and
+    // (without --disable-background-timer-throttling) clamp timers to ~1Hz,
+    // which silently turned the old 100ms poll into a ~700-900ms stall per
+    // click. With throttling disabled at launch a 16ms timeout fires promptly,
+    // so a statically-positioned element settles in ~2 samples (~16ms). The
+    // in-page deadline (performance.now) bounds the wait regardless.
+    var done=false,lastBox='',start=performance.now();
+    function finish(v){ if(done)return; done=true; resolve(v); }
+    function step(){
+      if(done) return;
+      var cc=check();
+      if(cc.ok){
+        var bk=boxKey(findByRef(ref));
+        if(bk===lastBox){ finish(true); return; } // unchanged across two samples => stable
+        lastBox=bk;
+      } else {
+        lastBox='';
+      }
+      if(performance.now()-start>=Math.max(0, timeoutMs|0)){ finish(check().ok); return; }
+      setTimeout(step,16);
     }
-    function finish(v){ if(done)return; done=true; if(iv)clearInterval(iv); if(to)clearTimeout(to); resolve(v); }
-    tick();
-    iv=setInterval(function(){ tick(); if(stable) finish(true); }, 100);
-    to=setTimeout(function(){ tick(); finish(stable); }, Math.max(0, timeoutMs|0));
+    step();
   });
 })`
 
