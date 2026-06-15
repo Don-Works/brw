@@ -663,19 +663,8 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 }
 
 func normalizeMCPSnapshotOptions(opts snapshot.SnapshotOptions) snapshot.SnapshotOptions {
-	opts.Mode = strings.TrimSpace(strings.ToLower(opts.Mode))
-	if opts.Mode == "" {
-		opts.Mode = defaultSnapshotMode
-	}
-	if opts.Mode == defaultSnapshotMode {
-		opts.ViewportOnly = true
-		if opts.Limit <= 0 {
-			opts.Limit = defaultSnapshotLimit
-		}
-	} else if opts.Limit < 0 {
-		opts.Limit = 0
-	}
-	return opts
+	// Shared with the HTTP surface so both transports default identically.
+	return snapshot.NormalizeOptions(opts)
 }
 
 func normalizeMCPFindOptions(opts snapshot.FindOptions) snapshot.FindOptions {

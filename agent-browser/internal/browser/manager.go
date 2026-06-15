@@ -196,7 +196,15 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	}
 	tabID := string(id)
 	m.refs.SetActive(tabID)
-	_ = m.WaitFor(ctx, "load", 10*time.Second)
+	// Wait for the target document to actually commit, not the transient
+	// about:blank that a freshly created target reports as "ready" before the
+	// real navigation lands — otherwise an immediate snapshot races to an empty
+	// about:blank page. Plain about:blank opens just wait for readiness.
+	if url == "about:blank" {
+		_ = m.WaitFor(ctx, "ready", 5*time.Second)
+	} else {
+		_ = m.WaitFor(ctx, "committed", 10*time.Second)
+	}
 	// Do NOT activate the new tab here. OS foreground focus is reserved for the
 	// explicit FocusTab/browser_focus_tab tool so automation never steals the
 	// user's foreground — especially on the remote browser machine (max-air),

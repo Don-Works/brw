@@ -1096,6 +1096,7 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
   }
   function check(){
     if(condition==='ready') return document.readyState==='complete'||document.readyState==='interactive';
+    if(condition==='committed') return (document.readyState==='complete'||document.readyState==='interactive') && location.href !== 'about:blank' && location.href !== '';
     if(condition.startsWith('url:')) return location.href.includes(condition.slice(4));
     if(condition.startsWith('not_url:')) return !location.href.includes(condition.slice(8));
     if(condition.startsWith('title:')) return document.title.includes(condition.slice(6));

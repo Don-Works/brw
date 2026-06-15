@@ -761,7 +761,10 @@ func parseSnapshotOptions(w http.ResponseWriter, r *http.Request) (snapshotReque
 		return snapshotRequest{}, false
 	}
 	return snapshotRequest{
-		Options: snapshot.SnapshotOptions{
+		// Share the MCP surface's default envelope: an unspecified mode collapses
+		// to the bounded frontier so HTTP callers don't get unbounded multi-thousand
+		// element dumps on dense pages.
+		Options: snapshot.NormalizeOptions(snapshot.SnapshotOptions{
 			Mode:          q.Get("mode"),
 			Query:         q.Get("query"),
 			Role:          q.Get("role"),
@@ -771,7 +774,7 @@ func parseSnapshotOptions(w http.ResponseWriter, r *http.Request) (snapshotReque
 			IncludeHidden: includeHidden,
 			IncludeAX:     includeAX,
 			Since:         since,
-		},
+		}),
 		MaxBytes: maxBytes,
 	}, true
 }

@@ -34,6 +34,32 @@ func TestSnapshotAppliesQueryParams(t *testing.T) {
 	}
 }
 
+// TestSnapshotDefaultsToBoundedFrontier guards the fix for the unbounded-HTTP-
+// snapshot bug the Grok fleet surfaced: a bare /api/page/snapshot (no mode)
+// must collapse to the bounded frontier so dense pages don't dump thousands of
+// elements, matching the MCP surface.
+func TestSnapshotDefaultsToBoundedFrontier(t *testing.T) {
+	ctrl := &fakeController{snap: sampleSnapshot()}
+	server := New("", ctrl)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/page/snapshot", nil)
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if ctrl.snapshotOpts.Mode != "frontier" {
+		t.Fatalf("default mode = %q, want frontier", ctrl.snapshotOpts.Mode)
+	}
+	if ctrl.snapshotOpts.Limit != 40 {
+		t.Fatalf("default limit = %d, want 40", ctrl.snapshotOpts.Limit)
+	}
+	if !ctrl.snapshotOpts.ViewportOnly {
+		t.Fatal("default viewport_only = false, want true for frontier")
+	}
+}
+
 func TestFindForwardsQueryParams(t *testing.T) {
 	ctrl := &fakeController{snap: sampleSnapshot()}
 	server := New("", ctrl)
