@@ -919,6 +919,77 @@ func (b *Bridge) Scroll(ctx context.Context, direction string) (browser.ActionRe
 	return b.observeActionWithBefore(ctx, message, before), nil
 }
 
+// Navigate moves through the active tab's session history (back/forward) or
+// reloads the current document via the in-page History/Location web APIs, then
+// returns a post-navigation observation. Standards-only: history.back(),
+// history.forward(), location.reload().
+func (b *Bridge) Navigate(ctx context.Context, direction string) (browser.ActionResult, error) {
+	dir, err := normalizeNavigateDirection(direction)
+	if err != nil {
+		return browser.ActionResult{}, err
+	}
+	before := b.captureSemanticState(ctx)
+	if err := b.navigateDirection(ctx, dir); err != nil {
+		return browser.ActionResult{}, err
+	}
+	// A history move / reload may tear down and rebuild the document; give it a
+	// moment to settle, then wait for readiness before observing.
+	time.Sleep(observedActionSettle)
+	_ = b.WaitFor(ctx, "load", 10*time.Second)
+	return b.observeActionWithBefore(ctx, "navigated "+dir, before), nil
+}
+
+func (b *Bridge) navigateDirection(ctx context.Context, dir string) error {
+	var expr string
+	switch dir {
+	case navigateBack:
+		expr = "(function(){history.back();return true;})()"
+	case navigateForward:
+		expr = "(function(){history.forward();return true;})()"
+	case navigateReload:
+		expr = "(function(){location.reload();return true;})()"
+	default:
+		return fmt.Errorf("direction must be one of back, forward, reload; got %q", dir)
+	}
+	var ok bool
+	if err := b.evaluate(ctx, expr, "", &ok); err != nil {
+		// A reload/history move can destroy the execution context mid-evaluate;
+		// that is the expected outcome of navigation, not a failure.
+		if isNavigationTeardownError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+const (
+	navigateBack    = "back"
+	navigateForward = "forward"
+	navigateReload  = "reload"
+)
+
+func normalizeNavigateDirection(direction string) (string, error) {
+	d := strings.ToLower(strings.TrimSpace(direction))
+	switch d {
+	case navigateBack, navigateForward, navigateReload:
+		return d, nil
+	default:
+		return "", fmt.Errorf("direction must be one of back, forward, reload; got %q", direction)
+	}
+}
+
+func isNavigationTeardownError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "execution context was destroyed") ||
+		strings.Contains(msg, "cannot find context with specified id") ||
+		strings.Contains(msg, "frame was detached") ||
+		strings.Contains(msg, "no by-value result")
+}
+
 func (b *Bridge) scrollDirection(ctx context.Context, direction string) (string, error) {
 	direction = strings.ToLower(strings.TrimSpace(direction))
 	if direction == "" {

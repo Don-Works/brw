@@ -108,6 +108,12 @@ func (c *Controller) ClickText(ctx context.Context, opts snapshot.ClickTextOptio
 	return out, err
 }
 
+func (c *Controller) Navigate(ctx context.Context, direction string) (browser.ActionResult, error) {
+	var out browser.ActionResult
+	err := c.post(ctx, "/api/page/navigate", map[string]string{"direction": direction}, &out)
+	return out, err
+}
+
 func (c *Controller) Type(ctx context.Context, ref, text string) (browser.ActionResult, error) {
 	var out browser.ActionResult
 	err := c.post(ctx, "/api/page/type", map[string]string{"ref": ref, "text": text}, &out)

@@ -777,7 +777,8 @@ func isTransientNavigationError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "execution context was destroyed") ||
 		strings.Contains(msg, "cannot find context with specified id") ||
-		strings.Contains(msg, "frame was detached")
+		strings.Contains(msg, "frame was detached") ||
+		strings.Contains(msg, "inspected target navigated or closed")
 }
 
 func PurchaseControlWarning(label, href string) string {

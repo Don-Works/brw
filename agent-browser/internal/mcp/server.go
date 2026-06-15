@@ -31,6 +31,7 @@ type Controller interface {
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
 	Click(context.Context, string) (browser.ActionResult, error)
 	ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error)
+	Navigate(context.Context, string) (browser.ActionResult, error)
 	Hover(context.Context, string) (browser.ActionResult, error)
 	Type(context.Context, string, string) (browser.ActionResult, error)
 	Fill(context.Context, snapshot.FillOptions) (browser.ActionResult, error)
@@ -334,6 +335,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(s.manager.ClickText(ctx, req))
+	case "browser_navigate":
+		var req struct {
+			Direction string `json:"direction"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.Navigate(ctx, req.Direction))
 	case "browser_hover":
 		var req struct {
 			Ref string `json:"ref"`
@@ -651,6 +660,10 @@ func tools() []map[string]any {
 			"exact":  boolSchema("Require an exact normalized text/name match instead of allowing substring matches."),
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"text"})),
+		tool("browser_navigate", "Navigate the active tab's session history: back, forward, or reload. Uses the page navigation history (no URL needed); returns a post-navigation observation. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"direction": stringSchema("back (previous history entry), forward (next history entry), or reload (re-fetch the current document)."),
+			"tab_id":    stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		}, []string{"direction"})),
 		tool("browser_hover", "Hover over a semantic element ref to trigger mouseenter/mouseover/pointermove events. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":    stringSchema("Element ref, for example e18."),
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
