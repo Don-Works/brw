@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>agent-browser keepalive</title>
+  </head>
+  <body>
+    <!-- This offscreen document exists only to hold a long-lived port to the
+         service worker so Chrome does not terminate it after ~30s idle. Keeping
+         the SW alive keeps the daemon WebSocket connected, which keeps active-tab
+         resolution deterministic even while Chrome runs in the background. -->
+    <script src="offscreen.js"></script>
+  </body>
+</html>

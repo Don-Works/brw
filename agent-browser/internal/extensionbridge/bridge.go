@@ -498,6 +498,12 @@ const (
 	observedActionSettle = 75 * time.Millisecond
 	batchActionSettle    = 25 * time.Millisecond
 	waitForPollInterval  = 250 * time.Millisecond
+	// activeTabResolveAttempts/Backoff bound how hard contextTabID retries live
+	// active-tab resolution before falling back to the last-known cached tab. The
+	// MV3 service worker can be mid-reconnect when a call lands; a couple of quick
+	// retries ride that out so we don't act on a stale tab.
+	activeTabResolveAttempts = 3
+	activeTabResolveBackoff  = 150 * time.Millisecond
 )
 
 func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
@@ -1526,11 +1532,26 @@ func (b *Bridge) contextTabID(ctx context.Context) string {
 	// No explicit tab in context: resolve the browser's genuinely focused tab
 	// from the extension rather than trusting the cached b.active reference,
 	// which drifts when the user switches tabs manually in Chrome (the daemon
-	// only updates b.active on explicit FocusTab/ListTabs/Open). Falls back to
-	// the cached value if the bridge isn't connected or the query fails, so
-	// behaviour never regresses below the previous cached-only path.
-	if live := b.resolveActiveTabID(ctx); live != "" {
-		return live
+	// only updates b.active on explicit FocusTab/ListTabs/Open).
+	//
+	// Retry briefly before trusting the cache. The MV3 service worker sleeps when
+	// Chrome is idle and may be mid-reconnect when a tool call arrives; a single
+	// transient resolution failure must NOT silently drop us onto a stale cached
+	// tab, because that is exactly how read/observe/snapshot end up resolving three
+	// different tabs (one re-resolves live, another serves the stale cache). Three
+	// quick attempts ride out a reconnect hiccup; only a genuinely unreachable
+	// extension falls through to the last-known tab.
+	for attempt := 0; attempt < activeTabResolveAttempts; attempt++ {
+		if live := b.resolveActiveTabID(ctx); live != "" {
+			return live
+		}
+		if attempt < activeTabResolveAttempts-1 {
+			select {
+			case <-ctx.Done():
+				return b.activeTabID()
+			case <-time.After(activeTabResolveBackoff):
+			}
+		}
 	}
 	return b.activeTabID()
 }

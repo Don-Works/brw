@@ -1,5 +1,5 @@
 const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
-const PROTOCOL_VERSION = "0.1.12";
+const PROTOCOL_VERSION = "0.1.14";
 
 const state = {
   socket: null,
@@ -14,12 +14,24 @@ const state = {
 
 chrome.runtime.onInstalled.addListener(() => {
   ensureConnectAlarm();
+  ensureOffscreen();
   connect();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   ensureConnectAlarm();
+  ensureOffscreen();
   connect();
+});
+// Accept the long-lived keepalive port from the offscreen document. Holding this
+// port open continuously resets the MV3 service worker's idle timer so Chrome
+// does not terminate the worker — which keeps the daemon WebSocket connected and
+// active-tab resolution deterministic even while Chrome is idle (see offscreen.js
+// / ensureOffscreen).
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "keepalive") return;
+  port.onMessage.addListener(() => {});
+  port.onDisconnect.addListener(() => {});
 });
 chrome.action.onClicked.addListener(async (tab) => {
   await connect();
@@ -28,7 +40,10 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "agent-browser-connect") connect();
+  if (alarm.name === "agent-browser-connect") {
+    ensureOffscreen();
+    connect();
+  }
 });
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   await publishActiveTab(activeInfo?.tabId);
@@ -376,15 +391,20 @@ async function resolveForegroundTabId() {
     const tab = (win.tabs || []).find((candidate) => candidate.active);
     if (tab?.id) return tab.id;
   }
-  // No window is focused (Chrome is backgrounded behind another OS app). Honor
-  // the last-targeted tab if it is still alive so the agent does not drift to an
-  // arbitrary tab while the human works in another app.
+  // No window is OS-focused (Chrome is backgrounded behind another app — the
+  // common case when an agent drives it while the human works elsewhere). Use the
+  // active tab of the LAST-focused window: deterministic and stable, unlike
+  // currentWindow (unreliable in a service worker, which has no window of its own)
+  // and unlike trusting the cache ahead of a live query. This is the single source
+  // of truth that list_tabs and every no-tab_id page tool share.
+  const lastFocused = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+  if (lastFocused[0]?.id) return lastFocused[0].id;
+  // Honor the last-targeted tab if it is still alive (focus_tab/open set this).
   if (state.activeTabId) {
     const cached = await chrome.tabs.get(state.activeTabId).catch(() => null);
     if (cached?.id) return cached.id;
   }
-  const current = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
-  if (current[0]?.id) return current[0].id;
+  // Last resort: any active tab.
   const any = await chrome.tabs.query({ active: true }).catch(() => []);
   if (any[0]?.id) return any[0].id;
   return null;
@@ -498,6 +518,27 @@ function stopKeepAlive() {
 
 function ensureConnectAlarm() {
   chrome.alarms.create("agent-browser-connect", { periodInMinutes: 0.5 }).catch(() => {});
+}
+
+// ensureOffscreen creates the offscreen keepalive document if it is not already
+// open. The offscreen page is exempt from the MV3 idle timer and holds a
+// long-lived port to this worker (offscreen.js), preventing Chrome from
+// terminating it — which keeps the daemon WebSocket connected and active-tab
+// resolution reliable while Chrome is idle in the background. Safe to call
+// repeatedly; a second create on an existing document is caught and ignored.
+async function ensureOffscreen() {
+  try {
+    if (!chrome.offscreen) return;
+    if (await chrome.offscreen.hasDocument()) return;
+    await chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: ["BLOBS"],
+      justification:
+        "Maintain a persistent connection so the bridge service worker stays alive and the daemon WebSocket and active-tab resolution remain reliable while Chrome is idle."
+    });
+  } catch (_) {
+    // Document already exists (creation race) or the offscreen API is unavailable.
+  }
 }
 
 function ensureObserver(tabId) {
