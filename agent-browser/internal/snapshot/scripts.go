@@ -12,7 +12,7 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-const SnapshotFunctionScript = `(function(opts) {
+const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   opts = opts || {};
   const state = window.__agentBrowser || (window.__agentBrowser = { next: 1, byKey: {}, byRef: {} });
   const includeHidden = Boolean(opts.include_hidden);
@@ -38,15 +38,7 @@ const SnapshotFunctionScript = `(function(opts) {
   }
 
   function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
+    return __abRootList();
   }
 
   function all(selector) {
@@ -57,18 +49,36 @@ const SnapshotFunctionScript = `(function(opts) {
     return out;
   }
 
+  function winFor(el) {
+    var doc = el && el.ownerDocument;
+    return (doc && doc.defaultView) || window;
+  }
+
+  // isElementLike performs a realm-agnostic instanceof: elements inside an iframe
+  // belong to that frame's realm, so a top-window 'el instanceof HTMLElement'
+  // check returns false for them. Test against the element's OWN window
+  // constructors (falling back to nodeType for safety).
+  function isElementLike(el) {
+    if (!el) return false;
+    var w = winFor(el);
+    if (w && (w.HTMLElement && el instanceof w.HTMLElement)) return true;
+    if (w && (w.SVGElement && el instanceof w.SVGElement)) return true;
+    return el.nodeType === 1;
+  }
+
   function visible(el) {
-    if (!el || !(el instanceof Element)) return false;
+    if (!el || el.nodeType !== 1) return false;
     if (el.closest('[hidden],[aria-hidden="true"]')) return false;
-    const style = window.getComputedStyle(el);
+    const style = winFor(el).getComputedStyle(el);
     if (!style || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
     const rects = el.getClientRects();
     return rects && rects.length > 0 && Array.from(rects).some(r => r.width > 0 && r.height > 0);
   }
 
   function inViewport(el) {
+    const w = winFor(el);
     const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && r.bottom >= 0 && r.right >= 0 && r.top <= window.innerHeight && r.left <= window.innerWidth;
+    return r.width > 0 && r.height > 0 && r.bottom >= 0 && r.right >= 0 && r.top <= w.innerHeight && r.left <= w.innerWidth;
   }
 
   function labelText(el) {
@@ -243,7 +253,7 @@ const SnapshotFunctionScript = `(function(opts) {
   const seen = new Set();
   const elements = [];
   for (const el of all(selector)) {
-    if (!(el instanceof HTMLElement) && !(el instanceof SVGElement)) continue;
+    if (!isElementLike(el)) continue;
     if (seen.has(el)) continue;
     seen.add(el);
     const role = roleFor(el);
@@ -387,62 +397,45 @@ const SnapshotFunctionScript = `(function(opts) {
 
 const SnapshotScript = SnapshotFunctionScript + `({})`
 
-const ResolveBoxScript = `(function(ref) {
-  function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
-  }
-  function findByRef(ref) {
-    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
-    for (const root of roots()) {
-      const el = root.querySelector && root.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
-  }
-  const el = findByRef(ref);
-  if (!el) return { ok: false, ref };
+const ResolveBoxScript = `(function(ref) {` + FrameWalkHelpers + `
+  const hit = __abFindDeep(ref);
+  if (!hit) return { ok: false, ref };
+  const el = hit.el;
   el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   const r = el.getBoundingClientRect();
+  // r is in the element's own (possibly framed) viewport; hit.ox/oy translate to
+  // the top-level viewport that CDP MouseClickXY operates in. x/y add scroll so
+  // they stay document-absolute for the top document.
   return {
     ok: r.width > 0 && r.height > 0,
     ref,
-    x: r.left + window.scrollX,
-    y: r.top + window.scrollY,
+    x: r.left + hit.ox + window.scrollX,
+    y: r.top + hit.oy + window.scrollY,
     width: r.width,
     height: r.height,
-    viewport_x: r.left + r.width / 2,
-    viewport_y: r.top + r.height / 2
+    viewport_x: r.left + hit.ox + r.width / 2,
+    viewport_y: r.top + hit.oy + r.height / 2
   };
 })`
 
-const ResolveOrRecoverBoxScript = `(function(ref) {
+const ResolveOrRecoverBoxScript = `(function(ref) {` + FrameWalkHelpers + `
   const state = window.__agentBrowser || (window.__agentBrowser = { next: 1, byKey: {}, byRef: {} });
   function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
+    return __abRootList();
+  }
+  // offsetFor returns the cumulative top-level viewport offset for an element by
+  // matching it against the frame-aware root descriptors. 0,0 for the top document.
+  function offsetFor(el) {
+    var root = (el.getRootNode && el.getRootNode()) || document;
+    var entries = __abRoots();
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].root === root) return { ox: entries[i].ox, oy: entries[i].oy };
     }
-    return out;
+    return { ox: 0, oy: 0 };
   }
   function findByRef(ref) {
-    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
-    for (const root of roots()) {
-      const el = root.querySelector && root.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   function clean(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
   function labelText(el) {
@@ -489,7 +482,7 @@ const ResolveOrRecoverBoxScript = `(function(ref) {
       var candidates = root.querySelectorAll('*');
       for (var j = 0; j < candidates.length; j++) {
         var el = candidates[j];
-        if (!(el instanceof HTMLElement)) continue;
+        if (!el || el.nodeType !== 1) continue;
         var elRole = roleFor(el);
         var elName = nameFor(el);
         if (elRole !== role) continue;
@@ -524,7 +517,8 @@ const ResolveOrRecoverBoxScript = `(function(ref) {
   if (el) {
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     var r = el.getBoundingClientRect();
-    return { ok: r.width > 0 && r.height > 0, ref: ref, recovered: false, x: r.left + window.scrollX, y: r.top + window.scrollY, width: r.width, height: r.height, viewport_x: r.left + r.width / 2, viewport_y: r.top + r.height / 2 };
+    var o = offsetFor(el);
+    return { ok: r.width > 0 && r.height > 0, ref: ref, recovered: false, x: r.left + o.ox + window.scrollX, y: r.top + o.oy + window.scrollY, width: r.width, height: r.height, viewport_x: r.left + o.ox + r.width / 2, viewport_y: r.top + o.oy + r.height / 2 };
   }
   var key = state.byRef[ref];
   if (!key) return { ok: false, ref: ref, recovered: false, reason: 'no_key' };
@@ -539,20 +533,13 @@ const ResolveOrRecoverBoxScript = `(function(ref) {
   var newRef = refFor(recovered, newKey);
   recovered.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   var r2 = recovered.getBoundingClientRect();
-  return { ok: r2.width > 0 && r2.height > 0, ref: newRef, recovered: true, old_ref: ref, x: r2.left + window.scrollX, y: r2.top + window.scrollY, width: r2.width, height: r2.height, viewport_x: r2.left + r2.width / 2, viewport_y: r2.top + r2.height / 2 };
+  var o2 = offsetFor(recovered);
+  return { ok: r2.width > 0 && r2.height > 0, ref: newRef, recovered: true, old_ref: ref, x: r2.left + o2.ox + window.scrollX, y: r2.top + o2.oy + window.scrollY, width: r2.width, height: r2.height, viewport_x: r2.left + o2.ox + r2.width / 2, viewport_y: r2.top + o2.oy + r2.height / 2 };
 })`
 
-const FocusElementScript = `(function(ref) {
+const FocusElementScript = `(function(ref) {` + FrameWalkHelpers + `
   function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
+    return __abRootList();
   }
   function findByRef(ref) {
     const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
@@ -582,20 +569,12 @@ const FocusElementScript = `(function(ref) {
   return focused(el);
 })`
 
-const SelectElementScript = `(function(ref, value) {
+const SelectElementScript = `(function(ref, value) {` + FrameWalkHelpers + `
   function clean(s) {
     return String(s || '').replace(/\s+/g, ' ').trim();
   }
   function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
+    return __abRootList();
   }
   function findByRef(ref) {
     const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
@@ -620,17 +599,9 @@ const SelectElementScript = `(function(ref, value) {
   return { ok: true, ref, value: el.value, text: clean(option.textContent) };
 })`
 
-const FillElementScript = `(function(ref, text, replace) {
+const FillElementScript = `(function(ref, text, replace) {` + FrameWalkHelpers + `
   function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
+    return __abRootList();
   }
   function findByRef(ref) {
     const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
@@ -683,17 +654,9 @@ const FillElementScript = `(function(ref, text, replace) {
   return { ok: true, ref, value: next };
 })`
 
-const FileInputElementScript = `(function(ref) {
+const FileInputElementScript = `(function(ref) {` + FrameWalkHelpers + `
   function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
+    return __abRootList();
   }
   function findByRef(ref) {
     if (!ref) return null;
@@ -720,17 +683,9 @@ const FileInputElementScript = `(function(ref) {
   return el;
 })`
 
-const FileInputEventsScript = `(function(ref) {
+const FileInputEventsScript = `(function(ref) {` + FrameWalkHelpers + `
   function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
+    return __abRootList();
   }
   function findByRef(ref) {
     if (!ref) return null;
@@ -761,17 +716,9 @@ const FileInputEventsScript = `(function(ref) {
   return { ok: true, ref, files: Array.from(el.files || []).map(f => f.name) };
 })`
 
-const HoverElementScript = `(function(ref) {
+const HoverElementScript = `(function(ref) {` + FrameWalkHelpers + `
   function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
+    return __abRootList();
   }
   function findByRef(ref) {
     const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
@@ -811,7 +758,7 @@ const ScrollPageScript = `(function(direction) {
   }
 
   function visible(el) {
-    if (!el || !(el instanceof Element)) return false;
+    if (!el || el.nodeType !== 1) return false;
     if (el.closest('[hidden],[aria-hidden="true"]')) return false;
     const style = window.getComputedStyle(el);
     if (!style || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
@@ -820,7 +767,7 @@ const ScrollPageScript = `(function(direction) {
   }
 
   function canMove(el) {
-    if (!el || !(el instanceof Element)) return false;
+    if (!el || el.nodeType !== 1) return false;
     const style = window.getComputedStyle(el);
     const overflowY = style.overflowY;
     const overflowX = style.overflowX;
@@ -1138,16 +1085,10 @@ func Fill(ctx context.Context, ref, text string, replace bool) error {
 // on DOM mutations (MutationObserver) and history events, with a 100ms safety
 // interval for signals those miss (e.g. pushState URL changes) — replacing a
 // fixed-interval CDP poll loop with a single awaited in-page promise.
-const WaitConditionScript = `(function(condition, timeoutMs){
+const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelpers + `
   if (!condition || condition === 'load') condition = 'ready';
   function roots(){
-    const out=[document];
-    for(let i=0;i<out.length;i++){
-      const root=out[i];
-      if(!root.querySelectorAll) continue;
-      for(const el of Array.from(root.querySelectorAll('*'))){ if(el.shadowRoot) out.push(el.shadowRoot); }
-    }
-    return out;
+    return __abRootList();
   }
   function hasRef(ref){
     const selector='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
@@ -1215,15 +1156,9 @@ func WaitForCondition(ctx context.Context, condition string, timeoutMs int64) (b
 // WaitForActionableScript returns a Promise that resolves true when the element
 // identified by ref is visible, stable (bounding box unchanged for two
 // consecutive checks 100ms apart), and enabled. Resolves false on timeout.
-const WaitForActionableScript = `(function(ref, timeoutMs){
+const WaitForActionableScript = `(function(ref, timeoutMs){` + FrameWalkHelpers + `
   function roots(){
-    const out=[document];
-    for(let i=0;i<out.length;i++){
-      const root=out[i];
-      if(!root.querySelectorAll) continue;
-      for(const el of Array.from(root.querySelectorAll('*'))){ if(el.shadowRoot) out.push(el.shadowRoot); }
-    }
-    return out;
+    return __abRootList();
   }
   function findByRef(ref){
     const selector='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
@@ -1288,7 +1223,7 @@ const WaitForActionableScript = `(function(ref, timeoutMs){
       var candidates=root.querySelectorAll('*');
       for(var j=0;j<candidates.length;j++){
         var el=candidates[j];
-        if(!(el instanceof HTMLElement)) continue;
+        if(!el||el.nodeType!==1) continue;
         var elRole=roleFor(el);
         if(elRole!==role) continue;
         var elName=nameFor(el);
@@ -1314,9 +1249,10 @@ const WaitForActionableScript = `(function(ref, timeoutMs){
     return recovered;
   }
   function visible(el){
-    if(!el||!(el instanceof Element)) return false;
+    if(!el||el.nodeType!==1) return false;
     if(el.closest('[hidden],[aria-hidden="true"]')) return false;
-    const s=getComputedStyle(el);
+    var w=(el.ownerDocument&&el.ownerDocument.defaultView)||window;
+    const s=w.getComputedStyle(el);
     if(!s||s.display==='none'||s.visibility==='hidden'||Number(s.opacity)===0) return false;
     const r=el.getClientRects();
     return r&&r.length>0&&Array.from(r).some(function(x){return x.width>0&&x.height>0;});
@@ -1395,15 +1331,9 @@ func WaitForActionable(ctx context.Context, ref string, timeoutMs int64) error {
 // AssertTextScript returns a Promise that resolves true when the element
 // identified by ref contains the expected text (case-insensitive substring
 // match). Resolves false on timeout.
-const AssertTextScript = `(function(ref, expected, timeoutMs){
+const AssertTextScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelpers + `
   function roots(){
-    const out=[document];
-    for(let i=0;i<out.length;i++){
-      const root=out[i];
-      if(!root.querySelectorAll) continue;
-      for(const el of Array.from(root.querySelectorAll('*'))){ if(el.shadowRoot) out.push(el.shadowRoot); }
-    }
-    return out;
+    return __abRootList();
   }
   function findByRef(ref){
     const selector='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
@@ -1433,15 +1363,9 @@ const AssertTextScript = `(function(ref, expected, timeoutMs){
 
 // AssertValueScript returns a Promise that resolves true when the element
 // identified by ref has a value matching expected (exact match).
-const AssertValueScript = `(function(ref, expected, timeoutMs){
+const AssertValueScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelpers + `
   function roots(){
-    const out=[document];
-    for(let i=0;i<out.length;i++){
-      const root=out[i];
-      if(!root.querySelectorAll) continue;
-      for(const el of Array.from(root.querySelectorAll('*'))){ if(el.shadowRoot) out.push(el.shadowRoot); }
-    }
-    return out;
+    return __abRootList();
   }
   function findByRef(ref){
     const selector='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
@@ -1470,15 +1394,9 @@ const AssertValueScript = `(function(ref, expected, timeoutMs){
 
 // AssertVisibleScript returns a Promise that resolves true when the element
 // identified by ref is visible in the viewport.
-const AssertVisibleScript = `(function(ref, timeoutMs){
+const AssertVisibleScript = `(function(ref, timeoutMs){` + FrameWalkHelpers + `
   function roots(){
-    const out=[document];
-    for(let i=0;i<out.length;i++){
-      const root=out[i];
-      if(!root.querySelectorAll) continue;
-      for(const el of Array.from(root.querySelectorAll('*'))){ if(el.shadowRoot) out.push(el.shadowRoot); }
-    }
-    return out;
+    return __abRootList();
   }
   function findByRef(ref){
     const selector='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
@@ -1489,9 +1407,10 @@ const AssertVisibleScript = `(function(ref, timeoutMs){
     return null;
   }
   function visible(el){
-    if(!el||!(el instanceof Element)) return false;
+    if(!el||el.nodeType!==1) return false;
     if(el.closest('[hidden],[aria-hidden="true"]')) return false;
-    var s=getComputedStyle(el);
+    var w=(el.ownerDocument&&el.ownerDocument.defaultView)||window;
+    var s=w.getComputedStyle(el);
     if(!s||s.display==='none'||s.visibility==='hidden'||Number(s.opacity)===0) return false;
     var r=el.getClientRects();
     return r&&r.length>0&&Array.from(r).some(function(x){return x.width>0&&x.height>0;});
@@ -1510,15 +1429,9 @@ const AssertVisibleScript = `(function(ref, timeoutMs){
 
 // AssertHiddenScript returns a Promise that resolves true when the element
 // identified by ref is hidden or absent from the DOM.
-const AssertHiddenScript = `(function(ref, timeoutMs){
+const AssertHiddenScript = `(function(ref, timeoutMs){` + FrameWalkHelpers + `
   function roots(){
-    const out=[document];
-    for(let i=0;i<out.length;i++){
-      const root=out[i];
-      if(!root.querySelectorAll) continue;
-      for(const el of Array.from(root.querySelectorAll('*'))){ if(el.shadowRoot) out.push(el.shadowRoot); }
-    }
-    return out;
+    return __abRootList();
   }
   function findByRef(ref){
     const selector='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
@@ -1532,7 +1445,8 @@ const AssertHiddenScript = `(function(ref, timeoutMs){
     var el=findByRef(ref);
     if(!el) return true;
     if(el.closest('[hidden],[aria-hidden="true"]')) return true;
-    var s=getComputedStyle(el);
+    var w=(el.ownerDocument&&el.ownerDocument.defaultView)||window;
+    var s=w.getComputedStyle(el);
     if(!s||s.display==='none'||s.visibility==='hidden'||Number(s.opacity)===0) return true;
     var r=el.getClientRects();
     return !r||r.length===0||!Array.from(r).some(function(x){return x.width>0&&x.height>0;});
@@ -1658,19 +1572,11 @@ const ClickXYScript = `(function(x, y) {
   return { ok: true, x: x, y: y, tag: tag, role: role, name: name.trim() };
 })`
 
-const ClickTextScript = `(function(opts) {
+const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
   opts = opts || {};
   function clean(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
   function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
+    return __abRootList();
   }
   function all(selector) {
     const out = [];
@@ -1679,10 +1585,14 @@ const ClickTextScript = `(function(opts) {
     }
     return out;
   }
+  function winFor(el) {
+    var doc = el && el.ownerDocument;
+    return (doc && doc.defaultView) || window;
+  }
   function visible(el) {
-    if (!el || !(el instanceof Element)) return false;
+    if (!el || el.nodeType !== 1) return false;
     if (el.closest('[hidden],[aria-hidden="true"]')) return false;
-    const style = window.getComputedStyle(el);
+    const style = winFor(el).getComputedStyle(el);
     if (!style || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
     const rects = el.getClientRects();
     return rects && rects.length > 0 && Array.from(rects).some(r => r.width > 0 && r.height > 0);
@@ -1794,17 +1704,9 @@ const ClickTextScript = `(function(opts) {
   };
 })`
 
-const CommitFieldScript = `(function(ref) {
+const CommitFieldScript = `(function(ref) {` + FrameWalkHelpers + `
   function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
+    return __abRootList();
   }
   function findByRef(ref) {
     const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
