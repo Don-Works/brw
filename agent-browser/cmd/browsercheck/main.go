@@ -258,6 +258,12 @@ func main() {
 	var includeManual bool
 	var only string
 	var repoRootFlag string
+	var benchMode bool
+	var benchJSON bool
+	var benchFixture string
+	flag.BoolVar(&benchMode, "bench", false, "run direct-CDP speed benchmark against local fixtures")
+	flag.BoolVar(&benchJSON, "bench-json", false, "emit benchmark scorecard as JSON")
+	flag.StringVar(&benchFixture, "bench-fixture", "custom-combobox.html", "fixture file under tests/fixtures/")
 	flag.StringVar(&suitePath, "suite", "tests/scenarios/core.json", "scenario suite JSON path")
 	flag.StringVar(&baseURL, "base-url", envDefault("AGENT_BROWSER_URL", "http://127.0.0.1:17310"), "agent-browserd HTTP base URL")
 	flag.StringVar(&repoRootFlag, "repo-root", envDefault("AGENT_BROWSER_REPO_ROOT", ""), "repo/share root containing tests and fixtures")
@@ -278,6 +284,16 @@ func main() {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		fatal(err)
+	}
+	if benchMode {
+		if err := runBench(benchOptions{
+			RepoRoot: root,
+			Fixture:  benchFixture,
+			JSON:     benchJSON,
+		}); err != nil {
+			fatal(err)
+		}
+		return
 	}
 	if !filepath.IsAbs(suitePath) {
 		suitePath = filepath.Join(root, suitePath)
