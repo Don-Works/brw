@@ -120,6 +120,7 @@ func TestNewPageActionRoutes(t *testing.T) {
 		{http.MethodPost, "/api/page/click_text", `{"text":"Submit"}`},
 		{http.MethodGet, "/api/page/observe", ``},
 		{http.MethodPost, "/api/page/commit", `{"ref":"e1"}`},
+		{http.MethodPost, "/api/page/notify", `{"kind":"done","title":"Checkout complete","message":"Order placed"}`},
 		{http.MethodPost, "/api/page/assert_visible", `{"ref":"e1","timeout_ms":100}`},
 		{http.MethodPost, "/api/page/assert_hidden", `{"ref":"e1","timeout_ms":100}`},
 		{http.MethodPost, "/api/page/assert_text", `{"ref":"e1","text":"Email","timeout_ms":100}`},
@@ -157,6 +158,34 @@ func TestNewPageActionRoutes(t *testing.T) {
 	if ctrl.clickX != 12 || ctrl.clickY != 34 {
 		t.Fatalf("click xy = %v,%v", ctrl.clickX, ctrl.clickY)
 	}
+	if ctrl.notifyOpts.Kind != "done" || ctrl.notifyOpts.Title != "Checkout complete" || ctrl.notifyOpts.Message != "Order placed" {
+		t.Fatalf("notify options = %#v", ctrl.notifyOpts)
+	}
+}
+
+func TestNotifyForwardsBodyAndReturnsDelivery(t *testing.T) {
+	ctrl := &fakeController{snap: sampleSnapshot()}
+	server := New("", ctrl)
+	body := bytes.NewBufferString(`{"kind":"error","title":"Login failed","message":"Wrong password"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/page/notify", body)
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if ctrl.notifyOpts.Kind != "error" || ctrl.notifyOpts.Title != "Login failed" || ctrl.notifyOpts.Message != "Wrong password" {
+		t.Fatalf("notify options = %#v", ctrl.notifyOpts)
+	}
+	var got browser.NotifyResult
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.OK || got.Delivery != "extension" {
+		t.Fatalf("notify result = %#v", got)
+	}
 }
 
 func sampleSnapshot() snapshot.PageSnapshot {
@@ -183,6 +212,7 @@ type fakeController struct {
 	commitRef    string
 	clickX       float64
 	clickY       float64
+	notifyOpts   browser.NotifyOptions
 }
 
 func (f *fakeController) Open(context.Context, string) (browser.OpenResult, error) {
@@ -318,4 +348,9 @@ func (f *fakeController) AssertHidden(context.Context, string, time.Duration) er
 func (f *fakeController) CommitField(_ context.Context, ref string) error {
 	f.commitRef = ref
 	return nil
+}
+
+func (f *fakeController) Notify(_ context.Context, opts browser.NotifyOptions) (browser.NotifyResult, error) {
+	f.notifyOpts = opts
+	return browser.NotifyResult{OK: true, Delivery: "extension"}, nil
 }

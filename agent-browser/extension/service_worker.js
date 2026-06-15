@@ -242,6 +242,15 @@ async function handle(message) {
       send({ id: message.id, ok: true, result: { hidden: true } });
       return;
     }
+    if (message.type === "notify") {
+      // Surface a desktop notification so the user is pulled back to a
+      // human-handoff point (MFA/CAPTCHA/purchase confirmation), a completed
+      // run, or an error — even when the agent tab is backgrounded.
+      // chrome.notifications.create works regardless of which tab is focused.
+      const result = await createNotification(message.params || {});
+      send({ id: message.id, ok: true, result });
+      return;
+    }
     send({ id: message.id, ok: false, error: `unknown message type ${message.type}` });
   } catch (error) {
     rememberStatus(`request failed: ${String(error?.message || error)}`).catch(() => {});
@@ -408,6 +417,48 @@ function ensureObserver(tabId) {
       expression: observerScript,
       returnByValue: true
     }).catch(() => {});
+  });
+}
+
+// createNotification turns a bridge "notify" command into a basic desktop
+// notification. The icon path falls back to the extension action icon if none
+// is bundled; chrome.notifications requires an iconUrl, so we use the
+// extension's own packaged URL. Returns { ok, delivery, note } so the daemon
+// can report the honest delivery channel rather than faking success.
+function createNotification(params) {
+  const title = String(params.title || "agent-browser");
+  const messageText = String(params.message || "");
+  const options = {
+    type: "basic",
+    iconUrl: chrome.runtime.getURL("icon.png"),
+    title,
+    message: messageText,
+    priority: params.kind === "needs_input" || params.kind === "error" ? 2 : 0,
+    requireInteraction: params.kind === "needs_input"
+  };
+  return new Promise((resolve) => {
+    try {
+      chrome.notifications.create("", options, (notificationId) => {
+        if (chrome.runtime.lastError) {
+          // Retry without an iconUrl — a missing packaged icon is the most
+          // common create() failure, and the notification is still useful
+          // without one.
+          const fallback = Object.assign({}, options);
+          delete fallback.iconUrl;
+          chrome.notifications.create("", fallback, (retryId) => {
+            if (chrome.runtime.lastError) {
+              resolve({ ok: false, delivery: "unavailable", note: String(chrome.runtime.lastError.message || chrome.runtime.lastError) });
+            } else {
+              resolve({ ok: true, delivery: "extension", note: retryId || "" });
+            }
+          });
+        } else {
+          resolve({ ok: true, delivery: "extension", note: notificationId || "" });
+        }
+      });
+    } catch (error) {
+      resolve({ ok: false, delivery: "unavailable", note: String(error && error.message ? error.message : error) });
+    }
   });
 }
 
