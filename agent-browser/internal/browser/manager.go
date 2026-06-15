@@ -294,6 +294,11 @@ func (m *Manager) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (
 	if opts.IncludeAX {
 		snapshot.EnrichAccessibility(tabCtx, &snap)
 	}
+	// Record whether accessibility was opt-in so agents can tell "not requested"
+	// (available:false, requested:false) apart from "requested but the AX fetch
+	// failed" (available:false, requested:true, error:...). EnrichAccessibility
+	// replaces the whole summary, so set this last to survive both paths.
+	snap.Accessibility.Requested = opts.IncludeAX
 	m.refs.Observe(tabID, snap.Elements)
 	return snap, nil
 }

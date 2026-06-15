@@ -789,12 +789,13 @@ func tools() []map[string]any {
 		}, nil)),
 		tool("browser_find", "Find matching semantic element refs without dumping the full page. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id":         stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
-			"query":          stringSchema("Case-insensitive substring match across ref, role, name, tag, type, href, and value."),
+			"query":          stringSchema("Case-insensitive substring match across ref, role, name, tag, type, href, and value. Set text_content:true to also match visible prose text."),
 			"text":           stringSchema("Alias for query-style text filtering."),
 			"role":           stringSchema("ARIA/semantic role to include, for example button or textbox."),
 			"limit":          integerSchema("Maximum number of elements to return."),
 			"viewport_only":  boolSchema("Only return elements intersecting the viewport."),
 			"include_hidden": boolSchema("Include input[type=hidden] fields as role hidden for explicit debugging. Defaults false."),
+			"text_content":   boolSchema("Also match against full visible text content (innerText), surfacing prose-bearing elements like headings, paragraphs, and list items — not just interactive-element metadata. Opt-in; defaults false."),
 		}, nil)),
 		tool("browser_click", "Click a semantic element ref (or x,y coordinates) from browser_snapshot. Defaults to a left single-click; set button to right (opens context menus) or middle, and click_count to 2 (double-click) or 3 (triple-click selects a line). Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":         stringSchema("Element ref, for example e18. Provide ref or x,y."),

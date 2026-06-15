@@ -464,6 +464,7 @@ func findValues(opts snapshot.FindOptions) url.Values {
 	addInt(values, "limit", opts.Limit)
 	addBool(values, "viewport_only", opts.ViewportOnly)
 	addBool(values, "include_hidden", opts.IncludeHidden)
+	addBool(values, "text_content", opts.TextContent)
 	return values
 }
 

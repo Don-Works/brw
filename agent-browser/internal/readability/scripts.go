@@ -137,10 +137,25 @@ const ReadScript = `(function() {
     return { caption, headers, rows };
   });
 
+  // Primary extraction is the scored semantic main element. On link-heavy pages
+  // (Hacker News, Wikipedia category lists) and SPA shells the bestMain()
+  // heuristic can fall back to <body> whose innerText is empty/near-empty, so
+  // .main came back blank even though links extracted fine (they query a[href]
+  // directly, bypassing the heuristic). When the primary text is too short to be
+  // useful, fall back to the cleaned full-document text. This only activates on
+  // failed/near-empty primary extraction, so well-formed article pages are
+  // unaffected.
+  let main = text(mainEl).slice(0, 100000);
+  if (main.length < 50) {
+    const fb = document.body || document.documentElement;
+    const fallback = fb ? clean(fb.innerText || fb.textContent || '') : '';
+    if (fallback.length > main.length) main = fallback.slice(0, 100000);
+  }
+
   return {
     url: location.href,
     title: document.title || '',
-    main: text(mainEl).slice(0, 100000),
+    main: main,
     headings,
     links,
     forms,

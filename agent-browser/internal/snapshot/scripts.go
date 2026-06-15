@@ -16,6 +16,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   opts = opts || {};
   const state = window.__agentBrowser || (window.__agentBrowser = { next: 1, byKey: {}, byRef: {} });
   const includeHidden = Boolean(opts.include_hidden);
+  const textContent = Boolean(opts.text_content);
   const selectorParts = [
     'a[href]',
     'button',
@@ -31,6 +32,14 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     'label'
   ];
   if (includeHidden) selectorParts.push('input[type="hidden"]');
+  // When text_content matching is requested, also capture common prose-bearing
+  // elements (headings, paragraphs, list items, etc.) so visible page text — not
+  // just interactive-element metadata — becomes searchable. These extra elements
+  // are still subject to the usefulness filter unless they actually match the
+  // query/text, so they don't bloat unfiltered output.
+  if (textContent) {
+    selectorParts.push('h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'dt', 'dd', 'td', 'th', 'blockquote', 'figcaption', 'caption');
+  }
   const selector = selectorParts.join(',');
 
   function clean(s) {
@@ -168,6 +177,11 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     return parts.reverse().join('>');
   }
 
+  // keyFor builds the CANONICAL key in the legacy positional layout
+  // (tag|role|name|id|name_attr|href|type|aria-controls|path). This layout is
+  // load-bearing: the ref-recovery paths split on '|' and read positional
+  // indices (parts[0]=tag, parts[1]=role, parts[2]=name, parts[6]=type), so the
+  // stored key must keep this shape. It is what gets written to state.byRef[ref].
   function keyFor(el, role, name) {
     const tag = el.tagName.toLowerCase();
     const stable = [
@@ -184,16 +198,56 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     return stable.join('|');
   }
 
-  function refFor(el, key) {
+  // stableKeyFor builds a render-stable identity that excludes the two mutable
+  // inputs that cause refs to renumber on SPA re-renders: innerText-derived name
+  // (button/heading/list text changes on re-render) and pathFor() (sibling
+  // reorder / conditional mount shifts nth-of-type indices). It is composed only
+  // from attributes that survive re-render. To avoid COLLAPSING genuinely
+  // distinct siblings that share tag+role and have no distinguishing attribute
+  // (e.g. a list of bare <button> with no id/name/href/aria), it returns '' —
+  // meaning "no reliable stable identity" — unless the element carries at least
+  // one strong identity attribute (id, name, href, or aria-label). When it
+  // returns '', refFor falls back to the legacy key, preserving today's behavior
+  // exactly for those elements.
+  function stableKeyFor(el, role) {
+    const id = el.id || '';
+    const nameAttr = el.getAttribute('name') || '';
+    const href = el.getAttribute('href') || '';
+    const ariaLabel = el.getAttribute('aria-label') || '';
+    if (!id && !nameAttr && !href && !ariaLabel) return '';
+    const tag = el.tagName.toLowerCase();
+    return [
+      'S',
+      tag,
+      role,
+      id,
+      nameAttr,
+      href,
+      el.getAttribute('type') || '',
+      ariaLabel,
+      el.getAttribute('aria-controls') || '',
+      el.getAttribute('aria-describedby') || ''
+    ].join('|');
+  }
+
+  // refFor resolves an element to a persistent ref. Lookup order:
+  //   1. an already-stamped data-agent-browser-ref attribute (authoritative),
+  //   2. the render-stable key (new; survives SPA re-renders),
+  //   3. the legacy key (backward compat with refs assigned before this change).
+  // The canonical legacy key is always stored in state.byRef[ref] so recovery
+  // keeps working; the stable key is also indexed in state.byKey when present.
+  function refFor(el, key, stableKey) {
     const existing = el.getAttribute('data-agent-browser-ref');
     if (existing) {
       state.byRef[existing] = key;
       state.byKey[key] = existing;
+      if (stableKey) state.byKey[stableKey] = existing;
       return existing;
     }
-    const prior = state.byKey[key];
+    const prior = (stableKey && state.byKey[stableKey]) || state.byKey[key];
     const ref = prior || ('e' + state.next++);
     state.byKey[key] = ref;
+    if (stableKey) state.byKey[stableKey] = ref;
     state.byRef[ref] = key;
     try { el.setAttribute('data-agent-browser-ref', ref); } catch (_) {}
     return ref;
@@ -259,11 +313,15 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     const role = roleFor(el);
     const name = nameFor(el);
     const isFocusable = el.tabIndex >= 0;
-    const isUseful = role !== 'generic' || isFocusable || typeof el.onclick === 'function';
+    // textContent value for prose matching: only computed when requested, capped
+    // so a huge container's innerText cannot explode the per-element cost.
+    const proseText = textContent ? clean(el.innerText || el.textContent || '').slice(0, 2000) : '';
+    const isUseful = role !== 'generic' || isFocusable || typeof el.onclick === 'function' || (textContent && proseText.length > 0);
     if (!isUseful) continue;
     if (formLensMode && !formRoles.has(role)) continue;
     const key = keyFor(el, role, name);
-    const ref = refFor(el, key);
+    const stableKey = stableKeyFor(el, role);
+    const ref = refFor(el, key, stableKey);
     const checked = ('checked' in el) ? Boolean(el.checked) : null;
     const selected = ('selected' in el) ? Boolean(el.selected) : (el.getAttribute('aria-selected') === 'true' ? true : (el.getAttribute('aria-selected') === 'false' ? false : null));
     const expanded = el.getAttribute('aria-expanded') === 'true' ? true : (el.getAttribute('aria-expanded') === 'false' ? false : null);
@@ -305,7 +363,8 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       item.tag,
       item.type,
       item.href,
-      item.value
+      item.value,
+      proseText
     ].join(' ').toLowerCase();
     if (viewportOnly && !item.in_viewport) continue;
     if (roleFilter && item.role !== roleFilter) continue;
@@ -321,6 +380,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       if (item.tag.toLowerCase().indexOf(needle) !== -1) reasons.push('tag');
       if (item.type.toLowerCase().indexOf(needle) !== -1) reasons.push('type');
       if (item.href.toLowerCase().indexOf(needle) !== -1) reasons.push('href');
+      if (textContent && proseText.toLowerCase().indexOf(needle) !== -1) reasons.push('text');
       item.match_reasons = reasons;
     }
     elements.push(item);
@@ -961,6 +1021,7 @@ func Find(ctx context.Context, opts FindOptions) (FindResult, error) {
 		Limit:         opts.Limit,
 		ViewportOnly:  opts.ViewportOnly,
 		IncludeHidden: opts.IncludeHidden,
+		TextContent:   opts.TextContent,
 	})
 	if err != nil {
 		return FindResult{}, err

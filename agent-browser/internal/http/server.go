@@ -804,6 +804,10 @@ func parseFindOptions(w http.ResponseWriter, r *http.Request) (snapshot.FindOpti
 	if !ok {
 		return snapshot.FindOptions{}, false
 	}
+	textContent, ok := parseBoolValue(w, q.Get("text_content"), "text_content")
+	if !ok {
+		return snapshot.FindOptions{}, false
+	}
 	return snapshot.FindOptions{
 		Query:         q.Get("query"),
 		Role:          q.Get("role"),
@@ -811,6 +815,7 @@ func parseFindOptions(w http.ResponseWriter, r *http.Request) (snapshot.FindOpti
 		Limit:         limit,
 		ViewportOnly:  viewportOnly,
 		IncludeHidden: includeHidden,
+		TextContent:   textContent,
 	}, true
 }
 

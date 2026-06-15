@@ -17,7 +17,12 @@ type SnapshotOptions struct {
 	ViewportOnly  bool   `json:"viewport_only,omitempty"`
 	IncludeHidden bool   `json:"include_hidden,omitempty"`
 	IncludeAX     bool   `json:"include_ax,omitempty"`
-	Since         int64  `json:"since,omitempty"`
+	// TextContent, when true, expands the search haystack to include each
+	// element's full visible text (innerText) so queries can match prose that is
+	// not otherwise captured by the element's name/attributes. Opt-in to avoid
+	// bloating normal ref-based output.
+	TextContent bool  `json:"text_content,omitempty"`
+	Since       int64 `json:"since,omitempty"`
 }
 
 type FindOptions struct {
@@ -27,6 +32,10 @@ type FindOptions struct {
 	Limit         int    `json:"limit,omitempty"`
 	ViewportOnly  bool   `json:"viewport_only,omitempty"`
 	IncludeHidden bool   `json:"include_hidden,omitempty"`
+	// TextContent enables matching against full visible text content (innerText)
+	// in addition to element name/attributes — lets browser_find locate visible
+	// prose, not just interactive-element metadata. Opt-in.
+	TextContent bool `json:"text_content,omitempty"`
 }
 
 type FindResult struct {
@@ -84,6 +93,12 @@ type Element struct {
 }
 
 type AccessibilitySummary struct {
+	// Requested distinguishes "accessibility was never asked for" (the default,
+	// include_ax=false) from "accessibility was requested but the fetch failed".
+	// Without it, the Available:false zero value is semantically overloaded and
+	// misleads agents into thinking an AX fetch failed when it was simply not
+	// opt-in.
+	Requested            bool           `json:"requested"`
 	Available            bool           `json:"available"`
 	NodeCount            int            `json:"node_count"`
 	InteractiveNodeCount int            `json:"interactive_node_count"`
