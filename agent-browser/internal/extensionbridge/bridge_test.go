@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -419,9 +420,46 @@ func TestServiceWorkerVersionBumped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(manifest), `"version": "0.1.9"`) {
-		t.Fatal("manifest version must be bumped to 0.1.9 after service_worker changes")
+	var m struct {
+		Version string `json:"version"`
 	}
+	if err := json.Unmarshal(manifest, &m); err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+	// The service_worker change that introduced this guard required the manifest to
+	// be bumped to at least 0.1.9. Assert a FLOOR, not an exact match: a later
+	// legitimate bump (0.1.10, 0.2.0, ...) must keep passing rather than break this
+	// test on every release. An exact-equality assertion silently rotted here once
+	// the manifest moved past 0.1.9.
+	const floor = "0.1.9"
+	if compareSemver(m.Version, floor) < 0 {
+		t.Fatalf("manifest version %q is below the required floor %q after service_worker changes", m.Version, floor)
+	}
+}
+
+// compareSemver compares two dotted numeric version strings (e.g. "0.1.10" vs
+// "0.1.9"), returning -1, 0, or 1. Non-numeric or missing components compare as 0,
+// which is sufficient for the manifest's simple MAJOR.MINOR.PATCH scheme and avoids
+// pulling in a semver dependency for one assertion.
+func compareSemver(a, b string) int {
+	pa := strings.Split(a, ".")
+	pb := strings.Split(b, ".")
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		var na, nb int
+		if i < len(pa) {
+			na, _ = strconv.Atoi(strings.TrimSpace(pa[i]))
+		}
+		if i < len(pb) {
+			nb, _ = strconv.Atoi(strings.TrimSpace(pb[i]))
+		}
+		if na < nb {
+			return -1
+		}
+		if na > nb {
+			return 1
+		}
+	}
+	return 0
 }
 
 func waitUntil(t *testing.T, cond func() bool) {

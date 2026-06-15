@@ -25,16 +25,45 @@ import (
 	"github.com/revitt/agent-browser/internal/store"
 )
 
-// Action settle delays — the brief pause after an action (click, type, fill,
-// scroll, etc.) before the post-action observation snapshot. The delay lets
-// the page react (DOM mutation, focus change, navigation start) before we
-// read the result. Named here so every call site uses the same value and the
-// delay is easy to tune globally.
+// Action settle delays — the upper bound on the pause after an action (click,
+// type, fill, scroll, etc.) before the post-action observation snapshot. The
+// settle lets the page react (DOM mutation, focus change, navigation start)
+// before we read the result.
+//
+// These are now CAPS, not fixed sleeps: settle (below) runs an in-page,
+// event-driven SettleScript that returns the moment the page demonstrably
+// settles (DOM mutations quiesce ~2 frames, OR a navigation/popstate/hashchange/
+// pagehide fires, OR a network response lands) and is hard-bounded by the cap so
+// the worst case is exactly today's fixed delay — never slower. Named here so
+// every call site shares the same bound and it is easy to tune globally.
 const (
 	actionSettleDelay     = 150 * time.Millisecond // click, hover, press, drag, mouse half
 	actionSettleDelayFast = 100 * time.Millisecond // type, fill, select, scroll, upload
 	mouseHalfSettleDelay  = 75 * time.Millisecond  // mouse_down/mouse_up press/release
 )
+
+// settle waits for the page to settle after an action, bounded by cap. It
+// replaces the old unconditional chromedp.Sleep(cap): event-driven so a page that
+// settles fast returns in a few milliseconds, but hard-capped at cap so a page
+// that never quiesces degrades to exactly the old fixed behavior.
+//
+// It returns the actually-observed settle duration (for trace/latency reporting).
+// Like the chromedp.Sleep it replaces, it never fails the action on a settle
+// error: a navigation can tear down the execution context mid-settle (the action
+// itself succeeded), so an eval error degrades to "settled, duration unknown"
+// rather than surfacing — matching the previous fixed-sleep semantics where a
+// nav-during-sleep was invisible to the caller.
+func (m *Manager) settle(tabCtx context.Context, cap time.Duration) time.Duration {
+	res, err := snapshot.Settle(tabCtx, cap.Milliseconds())
+	if err != nil {
+		// Treat a settle eval error (commonly execution-context-destroyed during a
+		// navigation the action triggered) as a non-fatal full-cap wait: the action
+		// already happened, and the post-action snapshot will retry against the new
+		// document. This preserves the old chromedp.Sleep contract (never errors).
+		return cap
+	}
+	return time.Duration(res.SettledMS) * time.Millisecond
+}
 
 type Manager struct {
 	mu            sync.RWMutex
@@ -398,9 +427,7 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 	if err != nil {
 		return ActionResult{}, err
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Sleep(actionSettleDelay)); err != nil {
-		return ActionResult{}, err
-	}
+	m.settle(tabCtx, actionSettleDelay)
 	label := opts.Text
 	if clicked.Name != "" {
 		label = clicked.Name
@@ -444,9 +471,7 @@ func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
 		}
 		return ActionResult{}, errors.New(result.Error)
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Sleep(actionSettleDelay)); err != nil {
-		return ActionResult{}, err
-	}
+	m.settle(tabCtx, actionSettleDelay)
 	return m.observeActionWithBefore(tabID, tabCtx, "hovered "+ref, before), nil
 }
 
@@ -514,9 +539,10 @@ func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, err
 	before := m.cachedBefore(tabID, tabCtx)
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return input.InsertText(text).Do(ctx)
-	}), chromedp.Sleep(actionSettleDelayFast)); err != nil {
+	})); err != nil {
 		return ActionResult{}, err
 	}
+	m.settle(tabCtx, actionSettleDelayFast)
 	return m.observeActionWithBefore(tabID, tabCtx, "typed into "+ref, before), nil
 }
 
@@ -550,9 +576,7 @@ func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionRe
 	if err := snapshot.Fill(tabCtx, ref, opts.Text, opts.Replace); err != nil {
 		return ActionResult{}, err
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Sleep(actionSettleDelayFast)); err != nil {
-		return ActionResult{}, err
-	}
+	m.settle(tabCtx, actionSettleDelayFast)
 	return m.observeActionWithBefore(tabID, tabCtx, "filled "+ref, before), nil
 }
 
@@ -598,9 +622,7 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 	if err := snapshot.SetFileInputFiles(tabCtx, ref, paths); err != nil {
 		return ActionResult{}, err
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Sleep(actionSettleDelayFast)); err != nil {
-		return ActionResult{}, err
-	}
+	m.settle(tabCtx, actionSettleDelayFast)
 	return m.observeActionWithBefore(tabID, tabCtx, "uploaded file to "+ref, before), nil
 }
 
@@ -617,9 +639,7 @@ func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, 
 		}
 		return m.selectCustomOption(tabID, tabCtx, ref, value, before)
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Sleep(actionSettleDelayFast)); err != nil {
-		return ActionResult{}, err
-	}
+	m.settle(tabCtx, actionSettleDelayFast)
 	return m.observeActionWithBefore(tabID, tabCtx, "selected "+ref, before), nil
 }
 
@@ -674,21 +694,28 @@ func clickElementCenter(tabCtx context.Context, ref string, delay time.Duration)
 	// dispatch stays as the fallback when the point is not hit-testable in-page
 	// (e.g. element scrolled out of the layout viewport, elementFromPoint null).
 	if inPage, evalErr := snapshot.ClickXY(tabCtx, box.ViewportX, box.ViewportY); evalErr == nil && inPage.OK {
-		if delay > 0 {
-			if err := chromedp.Run(tabCtx, chromedp.Sleep(delay)); err != nil {
-				return "", err
-			}
-		}
+		settleAfterClick(tabCtx, delay)
 		return warning, nil
 	}
-	actions := []chromedp.Action{chromedp.MouseClickXY(box.ViewportX, box.ViewportY)}
-	if delay > 0 {
-		actions = append(actions, chromedp.Sleep(delay))
-	}
-	if err := chromedp.Run(tabCtx, actions...); err != nil {
+	if err := chromedp.Run(tabCtx, chromedp.MouseClickXY(box.ViewportX, box.ViewportY)); err != nil {
 		return "", err
 	}
+	settleAfterClick(tabCtx, delay)
 	return warning, nil
+}
+
+// settleAfterClick runs the event-driven in-page settle bounded by cap after a
+// click actuation, degrading to a no-op on a zero cap and to a non-fatal full-cap
+// wait on a settle error (e.g. a navigation the click triggered tore down the
+// execution context — the click already happened). It mirrors the old
+// chromedp.Sleep(cap) the click paths used, but returns early when the page
+// settles fast. It is a free function (clickElementCenter is not a Manager method)
+// so it cannot reuse Manager.settle, but shares snapshot.Settle.
+func settleAfterClick(tabCtx context.Context, cap time.Duration) {
+	if cap <= 0 {
+		return
+	}
+	_, _ = snapshot.Settle(tabCtx, cap.Milliseconds())
 }
 
 func findOptionCandidate(tabCtx context.Context, value string) (snapshot.Element, error) {
@@ -741,9 +768,10 @@ func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
 			WithWindowsVirtualKeyCode(desc.WindowsVirtualKeyCode).
 			WithNativeVirtualKeyCode(desc.WindowsVirtualKeyCode).
 			Do(ctx)
-	}), chromedp.Sleep(actionSettleDelay)); err != nil {
+	})); err != nil {
 		return ActionResult{}, err
 	}
+	m.settle(tabCtx, actionSettleDelay)
 	return m.observeActionWithBefore(tabID, tabCtx, "pressed "+key, before), nil
 }
 
@@ -763,9 +791,7 @@ func (m *Manager) Scroll(ctx context.Context, direction string) (ActionResult, e
 	if err != nil {
 		return ActionResult{}, err
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Sleep(actionSettleDelay)); err != nil {
-		return ActionResult{}, err
-	}
+	m.settle(tabCtx, actionSettleDelay)
 	message := fmt.Sprintf("scrolled %s target:%s", direction, scroll.Target)
 	if scroll.Name != "" {
 		message += " " + strconv.Quote(scroll.Name)

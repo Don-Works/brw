@@ -122,9 +122,10 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 	before := m.cachedBefore(tabID, tabCtx)
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return dispatchClick(ctx, x, y, button, clickCount)
-	}), chromedp.Sleep(actionSettleDelay)); err != nil {
+	})); err != nil {
 		return ActionResult{}, err
 	}
+	m.settle(tabCtx, actionSettleDelay)
 
 	desc := fmt.Sprintf("%s-clicked %s", buttonLabel(button), pointDescriptor(opts.MousePoint))
 	if clickCount > 1 {
@@ -188,9 +189,10 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 			WithButtons(buttons).
 			WithClickCount(1).
 			Do(ctx)
-	}), chromedp.Sleep(mouseHalfSettleDelay)); err != nil {
+	})); err != nil {
 		return ActionResult{}, err
 	}
+	m.settle(tabCtx, mouseHalfSettleDelay)
 
 	desc := fmt.Sprintf("%s %s at %s", action, buttonLabel(button), pointDescriptor(opts.MousePoint))
 	result := m.observeActionWithBefore(tabID, tabCtx, desc, before)
@@ -247,9 +249,10 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	before := m.cachedBefore(tabID, tabCtx)
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return dispatchDrag(ctx, fromX, fromY, toX, toY, steps, button)
-	}), chromedp.Sleep(actionSettleDelay)); err != nil {
+	})); err != nil {
 		return ActionResult{}, err
 	}
+	m.settle(tabCtx, actionSettleDelay)
 
 	desc := fmt.Sprintf("dragged %s -> %s", pointDescriptor(opts.From), pointDescriptor(opts.To))
 	result := m.observeActionWithBefore(tabID, tabCtx, desc, before)

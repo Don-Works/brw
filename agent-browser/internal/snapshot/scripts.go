@@ -1359,6 +1359,122 @@ func WaitForCondition(ctx context.Context, condition string, timeoutMs int64) (b
 	return matched, nil
 }
 
+// SettleScript returns a Promise that resolves the MOMENT the page settles after
+// an action, bounded by capMs. It replaces the old unconditional fixed
+// post-action chromedp.Sleep with an event-driven wait that returns early when the
+// page has demonstrably reacted and gone quiet:
+//
+//   - DOM-mutation quiesce: a MutationObserver watches the whole tree; every
+//     mutation arms a short quiet timer (quietMs, ~2 animation frames). When no
+//     further mutation lands for quietMs after at least one mutation was seen, the
+//     page has visibly reacted and stopped, so resolve.
+//   - Navigation / history signals: popstate, hashchange, and pagehide all mean
+//     the action triggered a navigation; resolve promptly (the post-action snapshot
+//     reads the new state). beforeunload is treated the same way.
+//   - Network signal: a PerformanceObserver for 'resource' entries resolves as soon
+//     as a network response lands (XHR/fetch/img), which is the common "click ->
+//     request -> render" case.
+//
+// The hard cap (capMs, via performance.now) bounds the worst case so a page that
+// never quiesces (continuous animation, polling) degrades to exactly today's fixed
+// delay — never slower. It always resolves an object reporting how long it actually
+// waited (settledMs) and why (reason), so the caller can record the latency win.
+//
+// Reuses the same MutationObserver + nav-event + performance.now() primitives proven
+// by WaitConditionScript; it is additive and carries no site-specific logic.
+const SettleScript = `(function(capMs){
+  var cap=Math.max(0, capMs|0);
+  // quietMs is the DOM-mutation quiesce window: once a mutation is seen, the page
+  // is considered settled if no further mutation arrives within this window. ~2
+  // animation frames at 60fps; clamped well under the cap so the early path is a
+  // genuine win even at small caps.
+  var quietMs=Math.min(40, cap);
+  var start=performance.now();
+  return new Promise(function(resolve){
+    var done=false, obs=null, po=null, capTo=0, quietTo=0, sawMutation=false;
+    function elapsed(){ return Math.round(performance.now()-start); }
+    function finish(reason){
+      if(done) return; done=true;
+      try{ if(obs) obs.disconnect(); }catch(e){}
+      try{ if(po) po.disconnect(); }catch(e){}
+      if(capTo) clearTimeout(capTo);
+      if(quietTo) clearTimeout(quietTo);
+      try{
+        window.removeEventListener('popstate', onNav, true);
+        window.removeEventListener('hashchange', onNav, true);
+        window.removeEventListener('pagehide', onNav, true);
+        window.removeEventListener('beforeunload', onNav, true);
+      }catch(e){}
+      resolve({settledMs:elapsed(), reason:reason, cap:cap});
+    }
+    function onNav(){ finish('navigation'); }
+    function armQuiet(){
+      if(quietTo) clearTimeout(quietTo);
+      quietTo=setTimeout(function(){ finish('quiesce'); }, quietMs);
+    }
+    function onMutation(){
+      sawMutation=true;
+      armQuiet();
+    }
+    // Hard cap — never slower than today's fixed delay.
+    capTo=setTimeout(function(){ finish(sawMutation?'quiesce_cap':'cap'); }, cap);
+    if(cap===0){ finish('cap'); return; }
+    try{
+      obs=new MutationObserver(onMutation);
+      obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true});
+    }catch(e){}
+    try{
+      po=new PerformanceObserver(function(){ finish('network'); });
+      po.observe({type:'resource', buffered:false});
+    }catch(e){}
+    try{
+      window.addEventListener('popstate', onNav, true);
+      window.addEventListener('hashchange', onNav, true);
+      window.addEventListener('pagehide', onNav, true);
+      window.addEventListener('beforeunload', onNav, true);
+    }catch(e){}
+  });
+})`
+
+// SettleResult reports how an in-page settle wait resolved: how long it actually
+// waited (SettledMS), why it stopped (Reason: quiesce | navigation | network |
+// quiesce_cap | cap), and the cap that bounded it.
+type SettleResult struct {
+	SettledMS int64  `json:"settledMs"`
+	Reason    string `json:"reason"`
+	Cap       int64  `json:"cap"`
+}
+
+// Settle awaits SettleScript: it resolves the moment the page settles after an
+// action (DOM mutations quiesce, OR a navigation/popstate/hashchange/pagehide
+// fires, OR a network response lands) bounded by capMs so the worst case equals
+// today's fixed delay. On any evaluation error it returns a zero result and the
+// error; callers treat that as "no settle observed" without failing the action.
+func Settle(ctx context.Context, capMs int64) (SettleResult, error) {
+	expr := fmt.Sprintf("%s(%d)", SettleScript, capMs)
+	var result SettleResult
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		obj, exception, err := runtime.Evaluate(expr).
+			WithReturnByValue(true).
+			WithAwaitPromise(true).
+			Do(ctx)
+		if err != nil {
+			return err
+		}
+		if exception != nil {
+			details, _ := json.Marshal(exception)
+			return fmt.Errorf("settle failed: %s", details)
+		}
+		if obj == nil || len(obj.Value) == 0 {
+			return nil
+		}
+		return json.Unmarshal(obj.Value, &result)
+	})); err != nil {
+		return SettleResult{}, err
+	}
+	return result, nil
+}
+
 // WaitForActionableScript returns a Promise that resolves true when the element
 // identified by ref is visible, stable (bounding box unchanged for two
 // consecutive checks 100ms apart), and enabled. Resolves false on timeout.
