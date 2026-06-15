@@ -2,13 +2,50 @@ package readability
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
-const ReadScript = `(function() {
+// readMinMainLen is the threshold below which .main is considered too short to be
+// useful, triggering the document-text fallback and (on CSR/SPA shells) the brief
+// content-settle wait before giving up.
+const readMinMainLen = 50
+
+// readSettleCapMS bounds how long ReadScript waits for client-side-rendered
+// content to populate the DOM when the first synchronous extraction comes back
+// empty/near-empty. It resolves the MOMENT real text appears (MutationObserver),
+// so well-formed pages pay nothing and only blank SPA shells wait — and never
+// longer than this cap.
+const readSettleCapMS = 800
+
+const ReadScript = `(function(minMainLen, settleCapMs) {
+  minMainLen = Number(minMainLen) || 50;
+  settleCapMs = Math.max(0, Number(settleCapMs) || 0);
   function clean(s) {
     return String(s || '').replace(/\s+/g, ' ').trim();
+  }
+  // deepBodyText gathers visible text from the document body AND any open shadow
+  // roots, so a CSR page that renders its content inside web components (whose
+  // innerText does NOT include shadow content) still yields a usable body-text
+  // fallback. Bounded by the same 100k slice the primary path uses.
+  function deepBodyText() {
+    var fb = document.body || document.documentElement;
+    var base = fb ? clean(fb.innerText || fb.textContent || '') : '';
+    var parts = base ? [base] : [];
+    try {
+      var hosts = (fb || document).querySelectorAll('*');
+      for (var i = 0; i < hosts.length; i++) {
+        var sr = hosts[i].shadowRoot;
+        if (sr) {
+          var st = clean(sr.textContent || '');
+          if (st) parts.push(st);
+        }
+      }
+    } catch (_) {}
+    return clean(parts.join(' '));
   }
   function visible(el) {
     if (!el || !(el instanceof Element)) return false;
@@ -84,6 +121,9 @@ const ReadScript = `(function() {
     return false;
   }
 
+  // extract() runs one full readability pass against the CURRENT DOM. It is
+  // re-runnable so the CSR settle loop below can retry it as content streams in.
+  function extract() {
   const mainEl = bestMain();
   const metadata = { open_graph: {} };
   const desc = document.querySelector('meta[name="description"]');
@@ -142,13 +182,13 @@ const ReadScript = `(function() {
   // heuristic can fall back to <body> whose innerText is empty/near-empty, so
   // .main came back blank even though links extracted fine (they query a[href]
   // directly, bypassing the heuristic). When the primary text is too short to be
-  // useful, fall back to the cleaned full-document text. This only activates on
+  // useful, fall back to the cleaned full-document text — now shadow-DOM aware so
+  // content rendered inside web components is captured. This only activates on
   // failed/near-empty primary extraction, so well-formed article pages are
   // unaffected.
   let main = text(mainEl).slice(0, 100000);
-  if (main.length < 50) {
-    const fb = document.body || document.documentElement;
-    const fallback = fb ? clean(fb.innerText || fb.textContent || '') : '';
+  if (main.length < minMainLen) {
+    const fallback = deepBodyText();
     if (fallback.length > main.length) main = fallback.slice(0, 100000);
   }
 
@@ -162,11 +202,74 @@ const ReadScript = `(function() {
     tables,
     metadata
   };
-})()`
+  }
+
+  // CSR/SPA settle: a heavy client-side-rendered page often serves a near-empty
+  // shell on first paint and streams the real content in milliseconds later, so a
+  // single synchronous extract() returns blank .main. If the first pass is
+  // too short to be useful AND there is a settle budget, wait for the DOM to
+  // produce real text (MutationObserver, with a short interval safety net) and
+  // re-extract — resolving the MOMENT content appears, bounded by settleCapMs.
+  // A page that already has content resolves immediately and pays nothing.
+  return new Promise(function(resolve) {
+    var first = extract();
+    if (settleCapMs <= 0 || (first.main && first.main.length >= minMainLen)) {
+      resolve(first);
+      return;
+    }
+    var done = false, obs = null, iv = 0, to = 0;
+    function finish() {
+      if (done) return; done = true;
+      try { if (obs) obs.disconnect(); } catch (e) {}
+      if (iv) clearInterval(iv);
+      if (to) clearTimeout(to);
+      // Final re-extract so we return the freshest content seen.
+      var out = extract();
+      // Never regress below the first pass.
+      if (!out.main || out.main.length < (first.main || '').length) out.main = first.main;
+      resolve(out);
+    }
+    function recheck() {
+      var r = extract();
+      if (r.main && r.main.length >= minMainLen) { first = r; finish(); }
+    }
+    try {
+      obs = new MutationObserver(recheck);
+      obs.observe(document.documentElement || document, { subtree: true, childList: true, characterData: true });
+    } catch (e) {}
+    iv = setInterval(recheck, 60);
+    to = setTimeout(finish, settleCapMs);
+  });
+})`
+
+// ReadExpr returns the full ReadScript invocation expression (with the
+// min-main-length and CSR settle-cap arguments applied) that resolves to a
+// Promise<PageRead>. Both the direct-CDP path and the extension bridge use it so
+// the script is invoked — not left as a bare function definition — and awaited.
+func ReadExpr() string {
+	return fmt.Sprintf("(%s)(%d,%d)", ReadScript, readMinMainLen, readSettleCapMS)
+}
 
 func Evaluate(ctx context.Context) (PageRead, error) {
 	var read PageRead
-	if err := chromedp.Run(ctx, chromedp.Evaluate(ReadScript, &read)); err != nil {
+	expr := ReadExpr()
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		obj, exception, err := runtime.Evaluate(expr).
+			WithReturnByValue(true).
+			WithAwaitPromise(true).
+			Do(ctx)
+		if err != nil {
+			return err
+		}
+		if exception != nil {
+			details, _ := json.Marshal(exception)
+			return fmt.Errorf("read failed: %s", details)
+		}
+		if obj == nil || len(obj.Value) == 0 {
+			return nil
+		}
+		return json.Unmarshal(obj.Value, &read)
+	})); err != nil {
 		return PageRead{}, err
 	}
 	return read, nil

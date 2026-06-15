@@ -824,7 +824,7 @@ func (fakeController) Scroll(context.Context, string) (browser.ActionResult, err
 func (fakeController) Screenshot(context.Context) (browser.Screenshot, error) {
 	return browser.Screenshot{MIMEType: "image/png", Base64: "UExBSU4="}, nil
 }
-func (fakeController) ScreenshotAnnotated(context.Context, string) (browser.AnnotatedScreenshot, error) {
+func (fakeController) ScreenshotAnnotated(context.Context, browser.AnnotatedScreenshotOptions) (browser.AnnotatedScreenshot, error) {
 	return browser.AnnotatedScreenshot{
 		MIMEType: "image/png",
 		Base64:   "QU5OT1RBVEVE",

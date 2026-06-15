@@ -41,7 +41,7 @@ type Controller interface {
 	Press(context.Context, string) (ActionResult, error)
 	Scroll(context.Context, string) (ActionResult, error)
 	Screenshot(context.Context) (Screenshot, error)
-	ScreenshotAnnotated(context.Context, string) (AnnotatedScreenshot, error)
+	ScreenshotAnnotated(context.Context, AnnotatedScreenshotOptions) (AnnotatedScreenshot, error)
 	ScreenshotElement(context.Context, string) (Screenshot, error)
 	WaitFor(context.Context, string, time.Duration) error
 	Evaluate(context.Context, string) (any, error)

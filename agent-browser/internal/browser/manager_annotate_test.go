@@ -82,7 +82,7 @@ func TestScreenshotAnnotatedProducesValidPNGAndCleansUp(t *testing.T) {
 	}
 	beforeRefs := refSet(before.Elements)
 
-	shot, err := m.ScreenshotAnnotated(ctx, "frontier")
+	shot, err := m.ScreenshotAnnotated(ctx, AnnotatedScreenshotOptions{Mode: "frontier"})
 	if err != nil {
 		t.Fatalf("annotated screenshot: %v", err)
 	}
@@ -142,6 +142,98 @@ func TestScreenshotAnnotatedProducesValidPNGAndCleansUp(t *testing.T) {
 		if !afterRefs[ref] {
 			t.Fatalf("snapshot ref %q disappeared after annotate (page was mutated)", ref)
 		}
+	}
+}
+
+// TestScreenshotAnnotatedRefCropIsSmaller proves SPEC 3: a ref-scoped annotated
+// capture returns a TIGHT crop clipped to that element's box, which is a smaller
+// PNG (fewer pixels => fewer vision tokens) than the full-viewport annotated
+// capture, and whose legend is pruned to refs inside the crop.
+func TestScreenshotAnnotatedRefCropIsSmaller(t *testing.T) {
+	m, ctx, cancel := newSoMTab(t)
+	defer cancel()
+
+	full, err := m.ScreenshotAnnotated(ctx, AnnotatedScreenshotOptions{Mode: "frontier"})
+	if err != nil {
+		t.Fatalf("full annotated screenshot: %v", err)
+	}
+	fullImg, err := png.Decode(bytes.NewReader(full.Data))
+	if err != nil {
+		t.Fatalf("full PNG decode: %v", err)
+	}
+
+	// Pick a small element ref (the Buy button) to crop to.
+	snap, err := m.Snapshot(ctx, snapshot.SnapshotOptions{Mode: "frontier"})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	var cropRef string
+	for _, el := range snap.Elements {
+		if el.Role == "button" && el.Name == "Buy now" {
+			cropRef = el.Ref
+			break
+		}
+	}
+	if cropRef == "" {
+		t.Fatalf("Buy now button ref not found (elements=%d)", len(snap.Elements))
+	}
+
+	crop, err := m.ScreenshotAnnotated(ctx, AnnotatedScreenshotOptions{Mode: "frontier", Ref: cropRef})
+	if err != nil {
+		t.Fatalf("ref-cropped annotated screenshot: %v", err)
+	}
+	if len(crop.Data) == 0 {
+		t.Fatal("ref-cropped screenshot is empty")
+	}
+	cropImg, err := png.Decode(bytes.NewReader(crop.Data))
+	if err != nil {
+		t.Fatalf("crop PNG decode: %v", err)
+	}
+
+	// The crop must cover far fewer pixels than the full viewport capture.
+	fullPx := fullImg.Bounds().Dx() * fullImg.Bounds().Dy()
+	cropPx := cropImg.Bounds().Dx() * cropImg.Bounds().Dy()
+	if cropPx >= fullPx {
+		t.Fatalf("ref crop is not smaller than full capture: crop=%dpx full=%dpx", cropPx, fullPx)
+	}
+	// And the encoded PNG should be smaller too (a tight crop of a simple button
+	// is dramatically fewer bytes than the whole busy viewport).
+	if len(crop.Data) >= len(full.Data) {
+		t.Fatalf("ref crop PNG is not smaller: crop=%dB full=%dB", len(crop.Data), len(full.Data))
+	}
+
+	// The crop legend must include the cropped ref and must not include refs whose
+	// boxes lie entirely outside the crop (e.g. the search input far below).
+	if _, ok := crop.Legend[cropRef]; !ok {
+		t.Fatalf("crop legend missing the cropped ref %q", cropRef)
+	}
+	if len(crop.Legend) >= len(full.Legend) {
+		t.Fatalf("crop legend should be pruned to the crop region: crop=%d full=%d", len(crop.Legend), len(full.Legend))
+	}
+
+	// A region-scoped crop (explicit box) must also work and stay smaller.
+	region, err := m.ScreenshotAnnotated(ctx, AnnotatedScreenshotOptions{
+		Mode:   "frontier",
+		Region: ScreenshotRegion{X: 20, Y: 290, Width: 140, Height: 44},
+	})
+	if err != nil {
+		t.Fatalf("region-cropped annotated screenshot: %v", err)
+	}
+	regionImg, err := png.Decode(bytes.NewReader(region.Data))
+	if err != nil {
+		t.Fatalf("region PNG decode: %v", err)
+	}
+	if regionImg.Bounds().Dx()*regionImg.Bounds().Dy() >= fullPx {
+		t.Fatalf("region crop is not smaller than full capture")
+	}
+
+	// Page must be left clean after the crops too.
+	leftover, err := m.Evaluate(ctx, `document.querySelectorAll('[data-agent-browser-annotation]').length`)
+	if err != nil {
+		t.Fatalf("eval leftover: %v", err)
+	}
+	if n, _ := leftover.(float64); n != 0 {
+		t.Fatalf("overlay nodes left after cropped capture: %v", leftover)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -653,8 +654,16 @@ func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
 	// return the PNG plus a ref->box legend. The legend is only representable in
 	// the JSON (base64) response; a raw response still returns the annotated PNG
 	// bytes but drops the legend.
-	if q.Get("annotate") == "1" {
-		shot, err := s.manager.ScreenshotAnnotated(requestContext(r), "frontier")
+	// A ref or region query implies an annotated (Set-of-Marks) crop even without
+	// annotate=1 — the legend is the point of the crop.
+	ref := q.Get("ref")
+	region, hasRegion := parseScreenshotRegion(q)
+	if q.Get("annotate") == "1" || strings.TrimSpace(ref) != "" || hasRegion {
+		aopts := browser.AnnotatedScreenshotOptions{Mode: "frontier", Ref: ref}
+		if hasRegion {
+			aopts.Region = region
+		}
+		shot, err := s.manager.ScreenshotAnnotated(requestContext(r), aopts)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -697,6 +706,26 @@ func (s *Server) screenshotElement(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("content-length", strconv.Itoa(len(shot.Data)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(shot.Data)
+}
+
+// parseScreenshotRegion reads an optional viewport-space clip rectangle from the
+// region_x/region_y/region_w/region_h query params for a tight annotated crop.
+// Returns ok=false (and a zero region) when no usable width/height is supplied.
+func parseScreenshotRegion(q url.Values) (browser.ScreenshotRegion, bool) {
+	parse := func(k string) float64 {
+		v, _ := strconv.ParseFloat(q.Get(k), 64)
+		return v
+	}
+	region := browser.ScreenshotRegion{
+		X:      parse("region_x"),
+		Y:      parse("region_y"),
+		Width:  parse("region_w"),
+		Height: parse("region_h"),
+	}
+	if region.IsZero() {
+		return browser.ScreenshotRegion{}, false
+	}
+	return region, true
 }
 
 func parseSnapshotOptions(w http.ResponseWriter, r *http.Request) (snapshotRequest, bool) {

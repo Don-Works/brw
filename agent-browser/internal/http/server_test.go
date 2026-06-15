@@ -412,7 +412,7 @@ func (f *fakeController) Screenshot(context.Context) (browser.Screenshot, error)
 	return browser.Screenshot{}, nil
 }
 
-func (f *fakeController) ScreenshotAnnotated(context.Context, string) (browser.AnnotatedScreenshot, error) {
+func (f *fakeController) ScreenshotAnnotated(context.Context, browser.AnnotatedScreenshotOptions) (browser.AnnotatedScreenshot, error) {
 	return browser.AnnotatedScreenshot{
 		MIMEType: "image/png",
 		Data:     []byte("ANNOTATEDPNG"),

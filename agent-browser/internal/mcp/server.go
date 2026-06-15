@@ -418,13 +418,26 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return toolJSON(s.manager.Scroll(ctx, req.Direction))
 	case "browser_screenshot":
 		var req struct {
-			Annotate bool `json:"annotate"`
+			Annotate bool   `json:"annotate"`
+			Ref      string `json:"ref"`
+			Region   *struct {
+				X      float64 `json:"x"`
+				Y      float64 `json:"y"`
+				Width  float64 `json:"width"`
+				Height float64 `json:"height"`
+			} `json:"region"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		if req.Annotate {
-			shot, err := s.manager.ScreenshotAnnotated(ctx, "frontier")
+		// A ref or region implies an annotated (Set-of-Marks) crop even if annotate
+		// was omitted — the whole point of the crop is the ref legend.
+		if req.Annotate || strings.TrimSpace(req.Ref) != "" || req.Region != nil {
+			aopts := browser.AnnotatedScreenshotOptions{Mode: "frontier", Ref: req.Ref}
+			if req.Region != nil {
+				aopts.Region = browser.ScreenshotRegion{X: req.Region.X, Y: req.Region.Y, Width: req.Region.Width, Height: req.Region.Height}
+			}
+			shot, err := s.manager.ScreenshotAnnotated(ctx, aopts)
 			if err != nil {
 				return toolError(err), nil
 			}
@@ -861,9 +874,20 @@ func tools() []map[string]any {
 			"direction": stringSchema("up, down, left, or right."),
 			"tab_id":    stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"direction"})),
-		tool("browser_screenshot", "Capture a PNG screenshot for visual fallback/debugging. Pass optional tab_id to target a specific tab. Set annotate:true for a Set-of-Marks capture: each in-viewport frontier element is drawn with a labelled box whose label is the SAME ref returned by browser_snapshot (e.g. e17), and the response carries a legend mapping each ref to its box (x,y,width,height) plus role and name — so a vision model can read a label off the image and act on it with browser_click using that exact ref. The overlay is removed immediately after capture and never mutates the page. Default (annotate omitted/false) is byte-identical to the plain capture.", object(map[string]any{
+		tool("browser_screenshot", "Capture a PNG screenshot for visual fallback/debugging. Pass optional tab_id to target a specific tab. Set annotate:true for a Set-of-Marks capture: each in-viewport frontier element is drawn with a labelled box whose label is the SAME ref returned by browser_snapshot (e.g. e17), and the response carries a legend mapping each ref to its box (x,y,width,height) plus role and name — so a vision model can read a label off the image and act on it with browser_click using that exact ref. To save vision tokens on a dense page, pass ref OR region to get a TIGHT annotated crop of just that element / box instead of the whole viewport (a far smaller image); ref/region imply annotate. The overlay is removed immediately after capture and never mutates the page. Default (annotate omitted/false, no ref/region) is byte-identical to the plain capture.", object(map[string]any{
 			"tab_id":   stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 			"annotate": boolSchema("Draw Set-of-Marks ref labels over frontier elements and return a ref->box legend. Defaults false (plain screenshot)."),
+			"ref":      stringSchema("Optional element ref from browser_snapshot. Returns a tight annotated crop clipped to that element's box (smaller image, fewer vision tokens). Implies annotate."),
+			"region": map[string]any{
+				"type":        "object",
+				"description": "Optional viewport-space clip rectangle for a tight annotated crop (in CSS pixels). Implies annotate. Use when you know the box of the visual island you want to inspect.",
+				"properties": map[string]any{
+					"x":      map[string]any{"type": "number", "description": "Left edge in viewport pixels."},
+					"y":      map[string]any{"type": "number", "description": "Top edge in viewport pixels."},
+					"width":  map[string]any{"type": "number", "description": "Clip width in pixels."},
+					"height": map[string]any{"type": "number", "description": "Clip height in pixels."},
+				},
+			},
 		}, nil)),
 		tool("browser_screenshot_element", "Capture a PNG screenshot of a semantic element ref for visual fallback/debugging. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":    stringSchema("Element ref from browser_snapshot."),

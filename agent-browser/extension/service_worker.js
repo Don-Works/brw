@@ -1,5 +1,5 @@
 const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
-const PROTOCOL_VERSION = "0.1.10";
+const PROTOCOL_VERSION = "0.1.12";
 
 const state = {
   socket: null,
@@ -60,6 +60,20 @@ chrome.webNavigation.onCommitted.addListener((details) => {
   if (typeof details.tabId === "number" && details.frameId === 0) {
     state.snapshotCache.delete(details.tabId);
     state.observerInjected.delete(details.tabId);
+  }
+});
+// SPA route changes via history.pushState/replaceState (the way frameworks like
+// Decathlon's storefront navigate) do NOT fire onCommitted — the document is
+// never replaced — so the snapshot cache would go stale across a client-side
+// route change and serve pre-navigation content. onHistoryStateUpdated fires
+// exactly for these in-page history transitions; invalidate the per-tab snapshot
+// cache on a main-frame (frameId === 0) update so the next Snapshot()/Find()
+// re-evaluates against the new route. The injected MutationObserver/console hook
+// survive (same execution context), so observerInjected is intentionally NOT
+// cleared here — only the stale snapshot is dropped.
+chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+  if (typeof details.tabId === "number" && details.frameId === 0) {
+    state.snapshotCache.delete(details.tabId);
   }
 });
 
@@ -134,7 +148,15 @@ async function handle(message) {
       return;
     }
     if (message.type === "open_tab") {
-      const tab = await chrome.tabs.create({ url: message.params?.url || "about:blank", active: false });
+      // Create the tab ACTIVE within its window so it becomes the authoritative
+      // foreground tab (resolveForegroundTabId returns it) and subsequent
+      // no-tab_id page tools — read, observe, snapshot — follow to the new tab,
+      // matching what list_tabs now reports as active. active:true only changes
+      // which tab is active inside the window; it does NOT raise Chrome over
+      // other OS apps (that needs chrome.windows.update({focused:true}), which we
+      // intentionally do not call here so automation never steals the user's OS
+      // foreground).
+      const tab = await chrome.tabs.create({ url: message.params?.url || "about:blank", active: true });
       state.activeTabId = tab.id || null;
       const groupName = message.params?.groupName;
       if (groupName && tab.id) {
@@ -323,12 +345,28 @@ function isDetachedDebuggerError(error) {
     message.includes("target closed");
 }
 
-async function activeTabId() {
-  if (state.activeTabId) {
-    const tab = await chrome.tabs.get(state.activeTabId).catch(() => null);
-    if (tab?.id) return tab.id;
-    state.activeTabId = null;
-  }
+// resolveForegroundTabId computes the SINGLE authoritative "active tab": the
+// active tab of the focused window. This is the one source of truth that both
+// get_active_tab_id AND list_tabs's active flag are derived from, so every
+// no-tab_id page tool (read, observe, snapshot, click, ...) targets the exact
+// tab list_tabs marks active. Returns null when no foreground tab can be found
+// (e.g. no window is focused and no fallback active tab exists).
+//
+// Precedence, in order:
+//   1. The active tab of the focused normal/popup window — the genuine
+//      foreground tab the user (or the agent's last focus_tab/open) is on.
+//   2. state.activeTabId, but ONLY when it still resolves to a live tab — used
+//      when Chrome reports no focused window (e.g. another OS app is foreground)
+//      so the agent keeps acting on the tab it last targeted instead of drifting.
+//   3. The active tab of the current window, then any active tab — last-resort
+//      fallbacks so a headless/odd-focus state still resolves something.
+//
+// Critically, the cache is NOT trusted ahead of the focused-window scan: the
+// previous implementation returned state.activeTabId whenever the tab merely
+// existed, which drifted away from list_tabs (which scans focused windows) the
+// moment the cache pointed at a background tab — the root cause of read/observe/
+// list_tabs each resolving a different tab.
+async function resolveForegroundTabId() {
   const windows = await chrome.windows.getAll({
     populate: true,
     windowTypes: ["normal", "popup"]
@@ -336,21 +374,32 @@ async function activeTabId() {
   for (const win of windows) {
     if (!win.focused) continue;
     const tab = (win.tabs || []).find((candidate) => candidate.active);
-    if (tab?.id) {
-      state.activeTabId = tab.id;
-      return tab.id;
-    }
+    if (tab?.id) return tab.id;
   }
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tabs[0]?.id) {
-    state.activeTabId = tabs[0].id;
-    return tabs[0].id;
+  // No window is focused (Chrome is backgrounded behind another OS app). Honor
+  // the last-targeted tab if it is still alive so the agent does not drift to an
+  // arbitrary tab while the human works in another app.
+  if (state.activeTabId) {
+    const cached = await chrome.tabs.get(state.activeTabId).catch(() => null);
+    if (cached?.id) return cached.id;
   }
-  const any = await chrome.tabs.query({ active: true });
-  if (any[0]?.id) {
-    state.activeTabId = any[0].id;
-    return any[0].id;
+  const current = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+  if (current[0]?.id) return current[0].id;
+  const any = await chrome.tabs.query({ active: true }).catch(() => []);
+  if (any[0]?.id) return any[0].id;
+  return null;
+}
+
+// activeTabId resolves and CACHES the authoritative foreground tab. The cache is
+// a hint that self-heals on every call — it is refreshed to match the resolver
+// rather than being trusted ahead of it, so it can never cause divergence.
+async function activeTabId() {
+  const id = await resolveForegroundTabId();
+  if (id) {
+    state.activeTabId = id;
+    return id;
   }
+  state.activeTabId = null;
   throw new Error("no active tab");
 }
 
@@ -359,6 +408,13 @@ async function listTabSummaries() {
     populate: true,
     windowTypes: ["normal", "popup"]
   });
+  // Resolve the authoritative foreground tab ONCE and mark exactly that tab as
+  // active in the list. This guarantees list_tabs's active flag is identical to
+  // what get_active_tab_id (and therefore every no-tab_id page tool) resolves —
+  // they share resolveForegroundTabId(). Without this, list_tabs reported
+  // Chrome's per-window active flag while page tools used the cache, and the two
+  // diverged whenever they disagreed about which window was foreground.
+  const foregroundId = await resolveForegroundTabId().catch(() => null);
   const out = [];
   for (const win of windows) {
     for (const tab of win.tabs || []) {
@@ -373,7 +429,18 @@ async function listTabSummaries() {
         const got = await chrome.tabs.get(tab.id).catch(() => null);
         if (got) fresh = got;
       }
-      out.push(tabSummaryFrom(fresh, win));
+      const summary = tabSummaryFrom(fresh, win);
+      // Override Chrome's per-window active flag with the single authoritative
+      // foreground tab so only one tab in the whole list is reported active, and
+      // it is the same tab page tools act on. windowFocused is also forced true
+      // for that tab so the daemon's (Active && WindowFocused) filter selects it
+      // even when Chrome briefly reports no focused window.
+      if (foregroundId != null && typeof fresh.id === "number") {
+        const isForeground = fresh.id === foregroundId;
+        summary.active = isForeground;
+        if (isForeground) summary.windowFocused = true;
+      }
+      out.push(summary);
     }
   }
   return out;

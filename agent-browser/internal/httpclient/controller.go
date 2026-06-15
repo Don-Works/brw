@@ -223,18 +223,26 @@ func (c *Controller) Screenshot(ctx context.Context) (browser.Screenshot, error)
 	return out, err
 }
 
-func (c *Controller) ScreenshotAnnotated(ctx context.Context, mode string) (browser.AnnotatedScreenshot, error) {
+func (c *Controller) ScreenshotAnnotated(ctx context.Context, aopts browser.AnnotatedScreenshotOptions) (browser.AnnotatedScreenshot, error) {
 	var out browser.AnnotatedScreenshot
 	// annotate=1 routes the bridge to the Set-of-Marks path; base64=1 forces the
 	// JSON response so the ref->box legend (not representable in a raw PNG body)
-	// comes back. mode is fixed server-side to frontier today; passed through for
-	// forward-compat.
+	// comes back. ref/region scope the capture to a tight annotated crop.
 	vals := url.Values{
 		"base64":   []string{"1"},
 		"annotate": []string{"1"},
 	}
-	if strings.TrimSpace(mode) != "" {
-		vals.Set("mode", mode)
+	if strings.TrimSpace(aopts.Mode) != "" {
+		vals.Set("mode", aopts.Mode)
+	}
+	if strings.TrimSpace(aopts.Ref) != "" {
+		vals.Set("ref", aopts.Ref)
+	}
+	if !aopts.Region.IsZero() {
+		vals.Set("region_x", strconv.FormatFloat(aopts.Region.X, 'f', -1, 64))
+		vals.Set("region_y", strconv.FormatFloat(aopts.Region.Y, 'f', -1, 64))
+		vals.Set("region_w", strconv.FormatFloat(aopts.Region.Width, 'f', -1, 64))
+		vals.Set("region_h", strconv.FormatFloat(aopts.Region.Height, 'f', -1, 64))
 	}
 	err := c.get(ctx, "/api/visual/screenshot", vals, &out)
 	if err == nil && len(out.Data) == 0 && out.Base64 != "" {

@@ -581,21 +581,54 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
 
   state.version = (state.version || 0) + 1;
   const focusedRef = active && active.getAttribute ? (active.getAttribute('data-agent-browser-ref') || '') : '';
+
+  // Coverage signal: detect "sparse semantic surface over a content-heavy
+  // viewport" — the custom-component / CSR case where the DOM walker finds few
+  // useful interactive elements even though the page is visibly painted and
+  // interactive. When that happens we emit low_semantic_coverage:true plus a
+  // hint steering the agent to a Set-of-Marks screenshot (browser_screenshot
+  // annotate:true) and coordinate clicks. Generic + conservative: it fires only
+  // when the in-viewport semantic element count is low AND the viewport carries
+  // substantial content (lots of DOM nodes or visible text), so well-populated
+  // pages never trip it.
+  function coverageSignal() {
+    var inViewportCount = 0;
+    for (var i = 0; i < elements.length; i++) {
+      if (elements[i].in_viewport) inViewportCount++;
+    }
+    var domNodes = 0, textLen = 0;
+    try { domNodes = document.getElementsByTagName('*').length; } catch (_) {}
+    try { textLen = clean((document.body && document.body.innerText) || '').length; } catch (_) {}
+    // "content-heavy" = a real page worth of DOM or visible prose. Thresholds are
+    // intentionally high so a near-empty page (which legitimately has few
+    // elements) does not falsely report low coverage.
+    var contentHeavy = domNodes >= 150 || textLen >= 400;
+    var low = contentHeavy && inViewportCount <= 5;
+    return { low: low, in_viewport_count: inViewportCount, dom_node_count: domNodes };
+  }
+  const coverage = coverageSignal();
+
+  const metadata = {
+    generated_at: new Date().toISOString(),
+    element_count: returned.length,
+    total_candidates: totalCandidates,
+    visual_island_count: visualElements.length,
+    truncated: limit > 0 && (totalCandidates + visualElements.length) > returned.length,
+    mode: frontierMode ? 'frontier' : 'all',
+    include_hidden: includeHidden,
+    version: state.version,
+    focused_ref: focusedRef,
+    low_semantic_coverage: coverage.low
+  };
+  if (coverage.low) {
+    metadata.coverage_hint = 'Sparse semantic surface for a content-heavy page (likely custom web components or client-side rendering). Use browser_screenshot with annotate:true (Set-of-Marks) to read ref labels off the image, or click by coordinates; a region/ref-scoped annotated crop keeps the image small.';
+  }
+
   return {
     url: location.href,
     title: document.title || '',
     elements: returned,
-    metadata: {
-      generated_at: new Date().toISOString(),
-      element_count: returned.length,
-      total_candidates: totalCandidates,
-      visual_island_count: visualElements.length,
-      truncated: limit > 0 && (totalCandidates + visualElements.length) > returned.length,
-      mode: frontierMode ? 'frontier' : 'all',
-      include_hidden: includeHidden,
-      version: state.version,
-      focused_ref: focusedRef
-    }
+    metadata: metadata
   };
 })`
 
@@ -1570,6 +1603,14 @@ const WaitForActionableScript = `(function(ref, timeoutMs){` + FrameWalkHelpers 
     refFor(recovered,newKey);
     return recovered;
   }
+  // visible() is the strict AX-style heuristic: the element is not display:none /
+  // visibility:hidden / opacity:0, not inside [hidden]/[aria-hidden], and paints a
+  // non-zero box. Custom web components frequently FAIL this (a host element with
+  // a zero-size shadow host, an aria-hidden wrapper, opacity driven by a CSS var
+  // the heuristic can't read) even though they are visibly painted and clickable,
+  // which is exactly the false-negative that burned the full WaitForActionable
+  // timeout on heavy-CSR pages. It stays the FAST PATH; geometryActionable() is the
+  // fallback that proceeds when the AX heuristic disagrees but the pixel is real.
   function visible(el){
     if(!el||el.nodeType!==1) return false;
     if(el.closest('[hidden],[aria-hidden="true"]')) return false;
@@ -1579,20 +1620,82 @@ const WaitForActionableScript = `(function(ref, timeoutMs){` + FrameWalkHelpers 
     const r=el.getClientRects();
     return r&&r.length>0&&Array.from(r).some(function(x){return x.width>0&&x.height>0;});
   }
+  // cssRemoved() is the ONLY hard-disqualifier geometry actionability honours: a
+  // display:none / visibility:hidden / opacity:0 element (or descendant of one)
+  // genuinely cannot receive a pointer event, so it is never geometry-actionable.
+  // Unlike visible(), it ignores aria-hidden and getClientRects heuristics — a
+  // custom component can be aria-hidden yet fully painted and clickable.
+  function cssRemoved(el){
+    var n=el;
+    while(n&&n.nodeType===1){
+      var w=(n.ownerDocument&&n.ownerDocument.defaultView)||window;
+      var s=w.getComputedStyle(n);
+      if(s&&(s.display==='none'||s.visibility==='hidden'||Number(s.opacity)===0)) return true;
+      n=n.parentElement||(n.getRootNode&&n.getRootNode().host)||null;
+    }
+    return false;
+  }
+  function deepFromPoint(doc, x, y){
+    var el=doc.elementFromPoint(x,y);
+    // Pierce shadow roots so the hit-test resolves the real painted leaf inside a
+    // custom component, not just its shadow host.
+    while(el&&el.shadowRoot){
+      var inner=el.shadowRoot.elementFromPoint(x,y);
+      if(!inner||inner===el) break;
+      el=inner;
+    }
+    return el;
+  }
+  // geometryActionable() is the hit-test path: the element occupies a non-zero box
+  // inside the viewport, is not CSS-removed, and the pixel at its (viewport-clamped)
+  // center actually belongs to it — elementFromPoint resolves to the element, a
+  // descendant, or an ancestor that contains it (a wrapper that intercepts the
+  // pointer on the element's behalf). This is what makes an AX-invisible custom
+  // component clickable without burning the timeout, and is intentionally pointer-
+  // event-honest (an element fully occluded by an overlay fails the contains test).
+  function geometryActionable(el){
+    if(!el||el.nodeType!==1) return false;
+    if(cssRemoved(el)) return false;
+    var w=(el.ownerDocument&&el.ownerDocument.defaultView)||window;
+    var r=el.getBoundingClientRect();
+    if(!(r.width>0&&r.height>0)) return false;
+    var vw=w.innerWidth||0, vh=w.innerHeight||0;
+    // Must intersect the viewport (a screenshot/click only reaches painted pixels).
+    if(r.bottom<0||r.right<0||r.top>vh||r.left>vw) return false;
+    var cx=Math.max(1,Math.min((vw||r.right)-1, r.left+r.width/2));
+    var cy=Math.max(1,Math.min((vh||r.bottom)-1, r.top+r.height/2));
+    var doc=el.ownerDocument||document;
+    var hit=deepFromPoint(doc, cx, cy);
+    if(!hit) return false;
+    return hit===el||el.contains(hit)||(hit.contains&&hit.contains(el));
+  }
   function boxKey(el){
     const r=el.getBoundingClientRect();
     return [r.x,r.y,r.width,r.height].join(',');
   }
+  // check() reports actionability AND which path established it (mode): 'ax_visible'
+  // when the strict heuristic passes, 'hit_test' when only geometry+hit-test does.
+  // The mode is surfaced to the Go caller so it can decide whether the optimized
+  // in-page click suffices or a coordinate fallback is warranted.
   function check(){
     var el=findByRef(ref);
     if(!el) return {ok:false,reason:'not_found'};
-    if(!visible(el)) return {ok:false,reason:'not_visible'};
     if(el.disabled||el.getAttribute('aria-disabled')==='true') return {ok:false,reason:'disabled'};
-    return {ok:true};
+    if(visible(el)) return {ok:true,mode:'ax_visible'};
+    if(geometryActionable(el)) return {ok:true,mode:'hit_test'};
+    return {ok:false,reason:'not_visible'};
   }
   return new Promise(function(resolve){
     var c=check();
-    if(!c.ok&&c.reason!=='not_visible'){ resolve(false); return; }
+    if(!c.ok&&c.reason!=='not_visible'){ resolve({ok:false,reason:c.reason}); return; }
+    // FAIL-FAST: an element present in the DOM but neither AX-visible NOR
+    // geometry-actionable rarely recovers within the full timeout (it is genuinely
+    // off-screen / occluded / not yet laid out). Bound that case to a short window
+    // (failFastMs) so a present-but-invisible element returns promptly instead of
+    // burning the whole 5s, then degrades to the retry path. A geometry-actionable
+    // element proceeds immediately via the normal stability loop.
+    var deadline=Math.max(0, timeoutMs|0);
+    var failFastMs=Math.min(deadline, 400);
     // Re-check stability with a short setTimeout chain, not setInterval(100) and
     // not requestAnimationFrame. Hidden/headless pages PAUSE rAF entirely and
     // (without --disable-background-timer-throttling) clamp timers to ~1Hz,
@@ -1600,31 +1703,52 @@ const WaitForActionableScript = `(function(ref, timeoutMs){` + FrameWalkHelpers 
     // click. With throttling disabled at launch a 16ms timeout fires promptly,
     // so a statically-positioned element settles in ~2 samples (~16ms). The
     // in-page deadline (performance.now) bounds the wait regardless.
-    var done=false,lastBox='',start=performance.now();
-    function finish(v){ if(done)return; done=true; resolve(v); }
+    var done=false,lastBox='',start=performance.now(),mode='';
+    function finish(v,m){ if(done)return; done=true; resolve({ok:v,mode:m||'',reason:v?'':'not_visible'}); }
     function step(){
       if(done) return;
       var cc=check();
       if(cc.ok){
+        mode=cc.mode;
         var bk=boxKey(findByRef(ref));
-        if(bk===lastBox){ finish(true); return; } // unchanged across two samples => stable
+        if(bk===lastBox){ finish(true,mode); return; } // unchanged across two samples => stable
         lastBox=bk;
       } else {
         lastBox='';
       }
-      if(performance.now()-start>=Math.max(0, timeoutMs|0)){ finish(check().ok); return; }
+      var now=performance.now()-start;
+      // While the element has NEVER become actionable, honour the short fail-fast
+      // budget; once it has been seen actionable at least once, the full deadline
+      // applies so a briefly-jittering box still gets time to settle.
+      var budget=(mode==='')?failFastMs:deadline;
+      if(now>=budget){ var fc=check(); finish(fc.ok, fc.mode); return; }
       setTimeout(step,16);
     }
     step();
   });
 })`
 
-// WaitForActionable waits for the element identified by ref to become visible,
-// stable, and enabled within timeoutMs. Returns nil on success, error on timeout.
-func WaitForActionable(ctx context.Context, ref string, timeoutMs int64) error {
+// ActionableResult reports how WaitForActionableScript resolved: whether the
+// element became actionable (OK), which path established it (Mode: "ax_visible"
+// when the strict AX heuristic passed, "hit_test" when only geometry+elementFromPoint
+// did), and the failure reason on timeout. Mode lets callers decide whether the
+// optimized in-page click suffices ("ax_visible") or a coordinate/CDP fallback is
+// the more reliable actuation ("hit_test" custom components).
+type ActionableResult struct {
+	OK     bool   `json:"ok"`
+	Mode   string `json:"mode,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// WaitForActionableResult waits for the element identified by ref to become
+// actionable (AX-visible OR geometry+hit-test actionable), stable, and enabled
+// within timeoutMs, returning the resolution detail. A present-but-AX-invisible
+// element that is also not geometry-actionable fails fast (short bounded wait)
+// rather than burning the full timeout.
+func WaitForActionableResult(ctx context.Context, ref string, timeoutMs int64) (ActionableResult, error) {
 	refJSON, _ := json.Marshal(ref)
 	expr := fmt.Sprintf("%s(%s,%d)", WaitForActionableScript, refJSON, timeoutMs)
-	var ok bool
+	var res ActionableResult
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		obj, exception, err := runtime.Evaluate(expr).
 			WithReturnByValue(true).
@@ -1640,11 +1764,21 @@ func WaitForActionable(ctx context.Context, ref string, timeoutMs int64) error {
 		if obj == nil || len(obj.Value) == 0 {
 			return nil
 		}
-		return json.Unmarshal(obj.Value, &ok)
+		return json.Unmarshal(obj.Value, &res)
 	})); err != nil {
+		return ActionableResult{}, err
+	}
+	return res, nil
+}
+
+// WaitForActionable waits for the element identified by ref to become actionable,
+// stable, and enabled within timeoutMs. Returns nil on success, error on timeout.
+func WaitForActionable(ctx context.Context, ref string, timeoutMs int64) error {
+	res, err := WaitForActionableResult(ctx, ref, timeoutMs)
+	if err != nil {
 		return err
 	}
-	if !ok {
+	if !res.OK {
 		return fmt.Errorf("element ref %q not actionable within %dms", ref, timeoutMs)
 	}
 	return nil

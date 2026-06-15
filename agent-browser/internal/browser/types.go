@@ -83,6 +83,33 @@ type LegendEntry struct {
 	Height float64 `json:"height"`
 }
 
+// ScreenshotRegion is an optional viewport-space clip rectangle for an annotated
+// screenshot. When set (Width and Height both > 0) the CDP capture is clipped to
+// this box, producing a TIGHT crop of just one visual island — a far smaller PNG
+// (fewer vision tokens) than a full-viewport capture.
+type ScreenshotRegion struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+// IsZero reports whether the region carries no usable clip (no width/height), in
+// which case the capture falls back to the full viewport.
+func (r ScreenshotRegion) IsZero() bool { return r.Width <= 0 || r.Height <= 0 }
+
+// AnnotatedScreenshotOptions drives a Set-of-Marks capture. Mode selects which
+// elements are labelled (defaults to "frontier"). Ref OR Region scopes the
+// capture to a tight crop: Ref clips to that element's box (with a small margin so
+// the label badge is not clipped off), Region clips to an explicit viewport
+// rectangle. When both are empty the capture is the full viewport (today's
+// behavior). Marks outside the clip are dropped so the legend matches the crop.
+type AnnotatedScreenshotOptions struct {
+	Mode   string           `json:"mode,omitempty"`
+	Ref    string           `json:"ref,omitempty"`
+	Region ScreenshotRegion `json:"region,omitempty"`
+}
+
 // AnnotatedScreenshot is a Set-of-Marks (SoM) capture: a PNG with transient
 // numbered/labelled boxes drawn over the frontier elements, plus a legend mapping
 // each drawn ref to its box + role + name. The overlay is injected immediately

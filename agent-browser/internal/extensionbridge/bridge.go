@@ -484,7 +484,7 @@ func (b *Bridge) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.
 
 func (b *Bridge) Read(ctx context.Context) (readability.PageRead, error) {
 	var read readability.PageRead
-	err := b.evaluate(ctx, readability.ReadScript, "", &read)
+	err := b.evaluate(ctx, readability.ReadExpr(), "", &read)
 	return read, err
 }
 
@@ -1256,7 +1256,8 @@ func (b *Bridge) ScreenshotElement(ctx context.Context, ref string) (browser.Scr
 // returns the PNG plus a ref->box legend. It mirrors the direct-CDP manager path
 // but runs the overlay JS over the bridge's own Runtime.evaluate channel. The
 // overlay is removed in every path so the page the agent acts on is unmutated.
-func (b *Bridge) ScreenshotAnnotated(ctx context.Context, mode string) (browser.AnnotatedScreenshot, error) {
+func (b *Bridge) ScreenshotAnnotated(ctx context.Context, aopts browser.AnnotatedScreenshotOptions) (browser.AnnotatedScreenshot, error) {
+	mode := aopts.Mode
 	if strings.TrimSpace(mode) == "" {
 		mode = snapshot.DefaultSnapshotMode
 	}
@@ -1267,6 +1268,15 @@ func (b *Bridge) ScreenshotAnnotated(ctx context.Context, mode string) (browser.
 	}
 
 	tabID := b.contextTabID(ctx)
+
+	// Resolve the optional crop clip (ref -> element box, or explicit region),
+	// clamped to the viewport, in top-level viewport space — the same space the
+	// overlay labels are painted at. nil means a full-viewport capture.
+	clip, clipErr := b.resolveAnnotationClip(ctx, tabID, aopts)
+	if clipErr != nil {
+		return browser.AnnotatedScreenshot{}, clipErr
+	}
+
 	marks := make([]snapshot.AnnotationMark, 0, len(snap.Elements))
 	meta := make(map[string]snapshot.Element, len(snap.Elements))
 	for _, el := range snap.Elements {
@@ -1292,7 +1302,13 @@ func (b *Bridge) ScreenshotAnnotated(ctx context.Context, mode string) (browser.
 		return browser.AnnotatedScreenshot{}, err
 	}
 
-	raw, err := b.cdp(ctx, tabID, "Page.captureScreenshot", map[string]any{"format": "png"})
+	capParams := map[string]any{"format": "png"}
+	if clip != nil {
+		capParams["clip"] = map[string]any{
+			"x": clip.X, "y": clip.Y, "width": clip.Width, "height": clip.Height, "scale": 1,
+		}
+	}
+	raw, err := b.cdp(ctx, tabID, "Page.captureScreenshot", capParams)
 	if err != nil {
 		return browser.AnnotatedScreenshot{}, err
 	}
@@ -1304,6 +1320,9 @@ func (b *Bridge) ScreenshotAnnotated(ctx context.Context, mode string) (browser.
 	legend := make(map[string]browser.LegendEntry, len(overlay.Legend))
 	for _, box := range overlay.Legend {
 		if !box.OK {
+			continue
+		}
+		if clip != nil && !annotationBoxIntersects(box, clip) {
 			continue
 		}
 		el := meta[box.Ref]
@@ -1324,6 +1343,73 @@ func (b *Bridge) ScreenshotAnnotated(ctx context.Context, mode string) (browser.
 		Base64:   shot.Base64,
 		Legend:   legend,
 	}, nil
+}
+
+// annotationClipMargin pads a ref-derived crop so the label badge and border are
+// not sliced off the edge of the crop.
+const annotationClipMargin = 18.0
+
+// annotationClip is the bridge's resolved viewport clip for an annotated crop.
+type annotationClip struct {
+	X, Y, Width, Height float64
+}
+
+// resolveAnnotationClip turns the requested ref/region into a viewport clip,
+// clamped to the page viewport. Returns nil for a full-viewport capture. Box and
+// viewport resolution run over the bridge's own evaluate channel.
+func (b *Bridge) resolveAnnotationClip(ctx context.Context, tabID string, aopts browser.AnnotatedScreenshotOptions) (*annotationClip, error) {
+	var x, y, w, h float64
+	switch {
+	case strings.TrimSpace(aopts.Ref) != "":
+		refJSON, _ := json.Marshal(aopts.Ref)
+		expr := fmt.Sprintf("%s(%s)", snapshot.ResolveBoxScript, refJSON)
+		var box snapshot.ElementBox
+		if err := b.evaluate(ctx, expr, tabID, &box); err != nil {
+			return nil, err
+		}
+		if !box.OK {
+			return nil, fmt.Errorf("element ref %q not found or not visible", aopts.Ref)
+		}
+		x = box.ViewportX - box.Width/2 - annotationClipMargin
+		y = box.ViewportY - box.Height/2 - annotationClipMargin
+		w = box.Width + 2*annotationClipMargin
+		h = box.Height + 2*annotationClipMargin
+	case !aopts.Region.IsZero():
+		x = aopts.Region.X - annotationClipMargin
+		y = aopts.Region.Y - annotationClipMargin
+		w = aopts.Region.Width + 2*annotationClipMargin
+		h = aopts.Region.Height + 2*annotationClipMargin
+	default:
+		return nil, nil
+	}
+	var dims struct {
+		W float64 `json:"w"`
+		H float64 `json:"h"`
+	}
+	_ = b.evaluate(ctx, `({w: window.innerWidth||document.documentElement.clientWidth||0, h: window.innerHeight||document.documentElement.clientHeight||0})`, tabID, &dims)
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	if dims.W > 0 && x+w > dims.W {
+		w = dims.W - x
+	}
+	if dims.H > 0 && y+h > dims.H {
+		h = dims.H - y
+	}
+	if w <= 0 || h <= 0 {
+		return nil, fmt.Errorf("screenshot clip resolves to an empty region")
+	}
+	return &annotationClip{X: x, Y: y, Width: w, Height: h}, nil
+}
+
+// annotationBoxIntersects reports whether an overlay box overlaps the clip
+// rectangle (both in top-level viewport space), used to prune the legend.
+func annotationBoxIntersects(box snapshot.AnnotationBox, clip *annotationClip) bool {
+	return box.X < clip.X+clip.Width && box.X+box.Width > clip.X &&
+		box.Y < clip.Y+clip.Height && box.Y+box.Height > clip.Y
 }
 
 func (b *Bridge) observeAction(ctx context.Context, message string) browser.ActionResult {

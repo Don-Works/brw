@@ -390,15 +390,36 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 	}
 	defer cancel()
 
-	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
+	// Gate actuation on actionability that accepts EITHER the strict AX heuristic
+	// OR geometry+hit-test (so a custom web component reporting visible:false in
+	// the AX snapshot, but painted and hit-testable, still clicks). The
+	// present-but-invisible case fails fast inside the script rather than burning
+	// the full 5s. A "hit_test" mode means we clicked an element the AX heuristic
+	// would have refused — surfaced as a warning for observability.
+	actionable, err := snapshot.WaitForActionableResult(tabCtx, ref, 5000)
+	if err != nil {
 		return ActionResult{}, err
 	}
+	if !actionable.OK {
+		return ActionResult{}, fmt.Errorf("element ref %q not actionable within %dms", ref, 5000)
+	}
 	before := m.cachedBefore(tabID, tabCtx)
+	// clickElementCenter already actuates by coordinate (in-page ClickXY at the
+	// element box, CDP MouseClickXY fallback), which is the correct path for an
+	// AX-invisible custom component resolved by hit-test.
 	warning, clickErr := clickElementCenter(tabCtx, ref, 150*time.Millisecond)
 	if clickErr != nil {
 		return ActionResult{}, clickErr
 	}
 	result := m.observeActionWithBefore(tabID, tabCtx, "clicked "+ref, before)
+	if actionable.Mode == "hit_test" {
+		note := "clicked via geometry hit-test (element reported AX-invisible)"
+		if warning != "" {
+			warning = warning + "; " + note
+		} else {
+			warning = note
+		}
+	}
 	if warning != "" {
 		result.Warning = warning
 	}
@@ -974,13 +995,14 @@ func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
 // gone) and the next snapshot's pre-injection cleanup clears any residue, so
 // back-to-back annotated captures on a navigating page may briefly co-exist with
 // stale overlay nodes until the next snapshot.
-func (m *Manager) ScreenshotAnnotated(ctx context.Context, mode string) (AnnotatedScreenshot, error) {
+func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreenshotOptions) (AnnotatedScreenshot, error) {
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return AnnotatedScreenshot{}, err
 	}
 	defer cancel()
 
+	mode := aopts.Mode
 	if strings.TrimSpace(mode) == "" {
 		mode = snapshot.DefaultSnapshotMode
 	}
@@ -991,9 +1013,23 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, mode string) (Annotat
 	}
 	m.refs.Observe(tabID, snap.Elements)
 
+	// Resolve the optional crop clip. A ref scopes the crop to that element's box
+	// (plus a small margin so the label badge above it is not clipped off);
+	// an explicit Region clips to a given viewport rectangle. clip==nil means a
+	// full-viewport capture (today's default). The clip is in top-level viewport
+	// coordinates — the SAME space the overlay labels are painted at and the CDP
+	// capture clips in — so the labels line up inside the crop.
+	clip, clipErr := m.resolveAnnotationClip(tabCtx, aopts)
+	if clipErr != nil {
+		return AnnotatedScreenshot{}, clipErr
+	}
+
 	// Build marks (and the role/name half of the legend) from the snapshot. Only
 	// in-viewport elements are worth labelling — a screenshot captures the current
-	// viewport, so an off-screen ref would draw nothing.
+	// viewport, so an off-screen ref would draw nothing. When a clip is set, also
+	// drop elements whose box does not intersect the clip, so the legend matches
+	// exactly what is visible in the tight crop (and the crop is not littered with
+	// labels for elements painted outside it).
 	marks := make([]snapshot.AnnotationMark, 0, len(snap.Elements))
 	meta := make(map[string]snapshot.Element, len(snap.Elements))
 	for _, el := range snap.Elements {
@@ -1012,13 +1048,27 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, mode string) (Annotat
 	}
 
 	var data []byte
-	if err := chromedp.Run(tabCtx, chromedp.CaptureScreenshot(&data)); err != nil {
-		return AnnotatedScreenshot{}, err
+	if clip != nil {
+		if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			var capErr error
+			data, capErr = page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatPng).WithClip(clip).Do(ctx)
+			return capErr
+		})); err != nil {
+			return AnnotatedScreenshot{}, err
+		}
+	} else {
+		if err := chromedp.Run(tabCtx, chromedp.CaptureScreenshot(&data)); err != nil {
+			return AnnotatedScreenshot{}, err
+		}
 	}
 
 	legend := make(map[string]LegendEntry, len(boxes))
 	for _, b := range boxes {
 		if !b.OK {
+			continue
+		}
+		// When clipped, only legend boxes that intersect the crop are meaningful.
+		if clip != nil && !boxIntersectsClip(b, clip) {
 			continue
 		}
 		el := meta[b.Ref]
@@ -1039,6 +1089,74 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, mode string) (Annotat
 		Base64:   base64.StdEncoding.EncodeToString(data),
 		Legend:   legend,
 	}, nil
+}
+
+// annotationClipMargin pads a ref-derived crop so the label badge (drawn ~14px
+// above the box top-left) and a thin border are not sliced off the edge.
+const annotationClipMargin = 18.0
+
+// resolveAnnotationClip turns the requested ref/region into a CDP viewport clip,
+// clamped to the page viewport. Returns nil for a full-viewport capture.
+func (m *Manager) resolveAnnotationClip(tabCtx context.Context, aopts AnnotatedScreenshotOptions) (*page.Viewport, error) {
+	var x, y, w, h float64
+	switch {
+	case strings.TrimSpace(aopts.Ref) != "":
+		box, err := snapshot.ResolveBox(tabCtx, aopts.Ref)
+		if err != nil {
+			return nil, err
+		}
+		x = box.ViewportX - box.Width/2 - annotationClipMargin
+		y = box.ViewportY - box.Height/2 - annotationClipMargin
+		w = box.Width + 2*annotationClipMargin
+		h = box.Height + 2*annotationClipMargin
+	case !aopts.Region.IsZero():
+		x = aopts.Region.X - annotationClipMargin
+		y = aopts.Region.Y - annotationClipMargin
+		w = aopts.Region.Width + 2*annotationClipMargin
+		h = aopts.Region.Height + 2*annotationClipMargin
+	default:
+		return nil, nil
+	}
+	// Clamp into the viewport so the clip never has a negative origin or extends
+	// past the page (CDP tolerates it, but the crop dimensions stay honest).
+	vw, vh := m.viewportSize(tabCtx)
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	if vw > 0 && x+w > vw {
+		w = vw - x
+	}
+	if vh > 0 && y+h > vh {
+		h = vh - y
+	}
+	if w <= 0 || h <= 0 {
+		return nil, fmt.Errorf("screenshot clip resolves to an empty region")
+	}
+	return &page.Viewport{X: x, Y: y, Width: w, Height: h, Scale: 1}, nil
+}
+
+// viewportSize reads the page's layout viewport dimensions; returns 0,0 on error
+// so callers treat it as "unknown" and skip the upper clamp.
+func (m *Manager) viewportSize(tabCtx context.Context) (float64, float64) {
+	var dims struct {
+		W float64 `json:"w"`
+		H float64 `json:"h"`
+	}
+	expr := `({w: window.innerWidth||document.documentElement.clientWidth||0, h: window.innerHeight||document.documentElement.clientHeight||0})`
+	if err := chromedp.Run(tabCtx, chromedp.Evaluate(expr, &dims)); err != nil {
+		return 0, 0
+	}
+	return dims.W, dims.H
+}
+
+// boxIntersectsClip reports whether an annotation box overlaps the clip rectangle
+// (both in top-level viewport space), used to prune the legend to the crop.
+func boxIntersectsClip(b snapshot.AnnotationBox, clip *page.Viewport) bool {
+	return b.X < clip.X+clip.Width && b.X+b.Width > clip.X &&
+		b.Y < clip.Y+clip.Height && b.Y+b.Height > clip.Y
 }
 
 func (m *Manager) ScreenshotElement(ctx context.Context, ref string) (Screenshot, error) {

@@ -37,11 +37,13 @@ func readTestContext(t *testing.T) (context.Context, context.CancelFunc) {
 
 func navigateRead(t *testing.T, ctx context.Context, html string) PageRead {
 	t.Helper()
-	var read PageRead
 	if err := chromedp.Run(ctx,
 		chromedp.Navigate("data:text/html,"+url.PathEscape(html)),
-		chromedp.Evaluate(ReadScript, &read),
 	); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	read, err := Evaluate(ctx)
+	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	return read
@@ -75,6 +77,38 @@ func TestReadLinkHeavyPageFallsBackToDocumentText(t *testing.T) {
 	}
 	if len(read.Links) == 0 {
 		t.Fatalf("expected links to populate (they already did before the fix)")
+	}
+}
+
+// TestReadCSRPageWaitsForDeferredContent proves SPEC 2: a heavy client-side
+// rendered page serves a near-empty shell on first paint and streams the real
+// content in milliseconds later. A single synchronous extract returns blank
+// .main; the brief CSR settle wait must observe the deferred DOM mutation and
+// return the populated content rather than empty.
+func TestReadCSRPageWaitsForDeferredContent(t *testing.T) {
+	// The body is empty at load; a microtask-delayed script injects the real
+	// article text after a short delay, simulating an SPA hydration/render.
+	html := `<!DOCTYPE html><html><head><title>CSR App</title></head><body>
+<div id="app"></div>
+<script>
+setTimeout(function(){
+  var a = document.getElementById('app');
+  a.innerHTML = '<main><h1>Hydrated Heading</h1>' +
+    '<p>This article body was rendered entirely on the client after initial paint, the way a single-page application hydrates its content into an empty shell element.</p>' +
+    '<p>A second client-rendered paragraph adds enough prose that the main extractor clears its usefulness threshold once the content actually exists in the DOM.</p></main>';
+}, 120);
+</script>
+</body></html>`
+
+	ctx, cancel := readTestContext(t)
+	defer cancel()
+	read := navigateRead(t, ctx, html)
+
+	if strings.TrimSpace(read.Main) == "" {
+		t.Fatalf("CSR page returned empty .main; the settle wait must capture deferred client-rendered content")
+	}
+	if !strings.Contains(read.Main, "rendered entirely on the client") {
+		t.Fatalf(".main did not capture the client-rendered content; got %q", read.Main)
 	}
 }
 

@@ -399,6 +399,36 @@ func TestServiceWorkerInvalidatesSnapshotCacheOnNavigation(t *testing.T) {
 	}
 }
 
+// TestServiceWorkerInvalidatesSnapshotCacheOnSPARouteChange guards the SPA fix:
+// client-side pushState/replaceState navigations do not fire onCommitted, so the
+// service worker must ALSO listen on onHistoryStateUpdated (main frame) and drop
+// the per-tab snapshot cache, otherwise an SPA route change serves stale content.
+func TestServiceWorkerInvalidatesSnapshotCacheOnSPARouteChange(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "extension", "service_worker.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	if !strings.Contains(src, "chrome.webNavigation.onHistoryStateUpdated.addListener") {
+		t.Fatal("service worker must listen on onHistoryStateUpdated to invalidate cache on SPA pushState navigations")
+	}
+	// The handler must scope to the main frame and bust the snapshot cache.
+	idx := strings.Index(src, "onHistoryStateUpdated.addListener")
+	if idx < 0 {
+		t.Fatal("onHistoryStateUpdated listener not found")
+	}
+	handler := src[idx:]
+	end := strings.Index(handler, "});")
+	if end > 0 {
+		handler = handler[:end]
+	}
+	for _, want := range []string{"details.frameId === 0", "state.snapshotCache.delete(details.tabId)"} {
+		if !strings.Contains(handler, want) {
+			t.Fatalf("onHistoryStateUpdated handler missing %q", want)
+		}
+	}
+}
+
 func TestServiceWorkerRefreshesListTabsAndExposesActiveTabQuery(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "extension", "service_worker.js"))
 	if err != nil {

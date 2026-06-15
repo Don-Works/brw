@@ -39,13 +39,21 @@ func newHeadlessSettleCtx(t *testing.T) (context.Context, context.CancelFunc) {
 	return ctx, cancel
 }
 
-// quiesceFixture mutates the DOM once shortly after load, then goes quiet — the
+// quiesceFixture mutates the DOM in a short early burst, then goes quiet — the
 // canonical "action caused a small reaction then the page settled" case. Settle
 // should resolve via the mutation-quiesce path well before the cap.
+//
+// The burst (a handful of mutations spread across the first ~70ms) rather than a
+// single +5ms mutation makes the test robust under parallel load: Settle is
+// invoked AFTER navigation returns, so a single very-early mutation could land and
+// quiesce before Settle attaches its observer, leaving no signal to catch and
+// forcing a (spurious) cap timeout. With a brief burst, at least one mutation
+// reliably lands after the observer is attached, then the page goes quiet and the
+// quiesce path fires well under the 150ms cap.
 const quiesceFixture = `data:text/html,` +
 	`<html><body><div id="x">start</div>` +
 	`<script>` +
-	`setTimeout(function(){document.getElementById('x').textContent='mutated';},5);` +
+	`var n=0;var iv=setInterval(function(){var e=document.getElementById('x');e.textContent='mutated '+(++n);if(n>=6){clearInterval(iv);}},8);` +
 	`</script>` +
 	`</body></html>`
 
