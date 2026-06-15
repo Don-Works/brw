@@ -1,5 +1,5 @@
 const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
-const PROTOCOL_VERSION = "0.1.9";
+const PROTOCOL_VERSION = "0.1.10";
 
 const state = {
   socket: null,
@@ -189,6 +189,19 @@ async function handle(message) {
       const cacheKey = String(message.params?.cacheKey || "");
       const cached = state.snapshotCache.get(tabId);
       if (cached && cached.cacheKey === cacheKey) {
+        // A full-document navigation can happen without our webNavigation.onCommitted
+        // hook clearing the cache (e.g. debugger/CDP-driven navigations don't always
+        // surface there). The snapshot cacheKey is URL-agnostic, so verify the tab is
+        // still on the URL the snapshot was captured at; if it moved, the cache is
+        // stale and must be re-evaluated against the new document.
+        let liveUrl = null;
+        try { liveUrl = (await chrome.tabs.get(tabId))?.url ?? null; } catch (_) {}
+        if (cached.url != null && liveUrl != null && liveUrl !== cached.url) {
+          state.snapshotCache.delete(tabId);
+          state.observerInjected.delete(tabId);
+          send({ id: message.id, ok: true, result: { cached: false } });
+          return;
+        }
         // Check if the page's MutationObserver flagged DOM changes
         let pageDirty = false;
         try {
@@ -219,8 +232,11 @@ async function handle(message) {
     }
     if (message.type === "snapshot_result") {
       const tabId = Number(message.params?.tabId || (await activeTabId()));
+      let snapUrl = null;
+      try { snapUrl = (await chrome.tabs.get(tabId))?.url ?? null; } catch (_) {}
       state.snapshotCache.set(tabId, {
         cacheKey: String(message.params?.cacheKey || ""),
+        url: snapUrl,
         dirty: false,
         snapshot: message.params?.snapshot
       });

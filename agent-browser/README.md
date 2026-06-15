@@ -71,16 +71,26 @@ curl -s localhost:17310/api/page/click \
 The MCP server currently exposes:
 
 - `browser_open`
+- `browser_open_incognito`
+- `browser_close_context`
 - `browser_list_tabs`
 - `browser_focus_tab`
 - `browser_close_tab`
 - `browser_read`
+- `browser_read_data`
 - `browser_snapshot`
 - `browser_find`
 - `browser_click`
+- `browser_drag`
+- `browser_mouse_down`
+- `browser_mouse_up`
 - `browser_click_text`
-- `browser_click_xy`
+- `browser_navigate`
 - `browser_hover`
+- `browser_evaluate`
+- `browser_network_requests`
+- `browser_network_capture`
+- `browser_replay_request`
 - `browser_type`
 - `browser_fill`
 - `browser_upload_file`
@@ -90,26 +100,39 @@ The MCP server currently exposes:
 - `browser_screenshot`
 - `browser_screenshot_element`
 - `browser_wait_for`
-- `browser_evaluate`
-- `browser_network_requests`
 - `browser_plan`
 - `browser_batch`
+- `browser_cancel`
 - `browser_observe`
 - `browser_group_tabs`
 - `browser_ungroup_tabs`
 - `browser_assert_visible`
-- `browser_assert_hidden`
 - `browser_assert_text`
 - `browser_assert_value`
+- `browser_assert_hidden`
 - `browser_commit`
+- `browser_notify`
+- `browser_click_xy`
 - `browser_console`
+- `browser_downloads`
 - `browser_trace`
 - `browser_clear_trace`
 
 Most page tools accept optional `tab_id` from `browser_list_tabs`; use it for
 multi-window flows where the OS-visible active tab can drift. `browser_click_text`
-is intended for visible actionable controls such as custom checkout buttons when
-semantic refs are stale or hidden inside custom components.
+finds visible actionable controls by accessible-name/text match when semantic refs
+are stale or hidden inside custom components. `browser_snapshot` and `browser_find`
+support `text_content` to match on prose, and `browser_snapshot` reports
+`visual_islands` so an agent can detect opaque visual content (canvas/iframe/media)
+that carries no semantic refs. `browser_screenshot` accepts `annotate:true` for a
+Set-of-Marks capture: each in-viewport frontier element is drawn with a labelled box
+whose label is the same ref returned by `browser_snapshot`, and the response carries
+a legend mapping each ref to its box — so a vision model can read a label off the
+image and act on it with `browser_click` using that exact ref. Incognito tools
+(`browser_open_incognito` / `browser_close_context`) and `browser_downloads` are
+direct-CDP only; on the extension bridge they return an explanatory note. Note that
+`browser_evaluate`'s `fetch()` runs under the current page's Content-Security-Policy,
+so cross-origin calls must originate from a tab whose origin permits them.
 
 For remote MCP over SSH, see [docs/mcp-client-config.md](docs/mcp-client-config.md) and [docs/remote-control.md](docs/remote-control.md).
 

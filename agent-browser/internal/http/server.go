@@ -9,65 +9,11 @@ import (
 	"time"
 
 	"github.com/revitt/agent-browser/internal/browser"
-	"github.com/revitt/agent-browser/internal/readability"
 	"github.com/revitt/agent-browser/internal/snapshot"
 )
 
-type Controller interface {
-	Open(context.Context, string) (browser.OpenResult, error)
-	OpenInGroup(context.Context, string, string) (browser.OpenResult, error)
-	OpenIncognito(context.Context, string) (browser.OpenResult, error)
-	CloseContext(context.Context, string) error
-	ListTabs(context.Context) ([]browser.Tab, error)
-	FocusTab(context.Context, string) error
-	CloseTab(context.Context, string) error
-	GroupTabs(context.Context, []string, string, string) error
-	UngroupTabs(context.Context, []string) error
-	Read(context.Context) (readability.PageRead, error)
-	ReadData(context.Context) (snapshot.StructuredData, error)
-	Snapshot(context.Context, snapshot.SnapshotOptions) (snapshot.PageSnapshot, error)
-	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
-	Click(context.Context, string) (browser.ActionResult, error)
-	ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error)
-	Navigate(context.Context, string) (browser.ActionResult, error)
-	ClickButton(context.Context, browser.ClickButtonOptions) (browser.ActionResult, error)
-	MouseDown(context.Context, browser.MouseButtonOptions) (browser.ActionResult, error)
-	MouseUp(context.Context, browser.MouseButtonOptions) (browser.ActionResult, error)
-	Drag(context.Context, browser.DragOptions) (browser.ActionResult, error)
-	Hover(context.Context, string) (browser.ActionResult, error)
-	Type(context.Context, string, string) (browser.ActionResult, error)
-	Fill(context.Context, snapshot.FillOptions) (browser.ActionResult, error)
-	UploadFile(context.Context, snapshot.UploadOptions) (browser.ActionResult, error)
-	Select(context.Context, string, string) (browser.ActionResult, error)
-	Press(context.Context, string) (browser.ActionResult, error)
-	Scroll(context.Context, string) (browser.ActionResult, error)
-	WaitFor(context.Context, string, time.Duration) error
-	Screenshot(context.Context) (browser.Screenshot, error)
-	ScreenshotAnnotated(context.Context, string) (browser.AnnotatedScreenshot, error)
-	ScreenshotElement(context.Context, string) (browser.Screenshot, error)
-	Evaluate(context.Context, string) (any, error)
-	NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error)
-	NetworkCapture(context.Context, string) ([]snapshot.CapturedRequest, error)
-	ReplayRequest(context.Context, browser.ReplayRequestParams) (snapshot.ReplayResult, error)
-	ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error)
-	ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error)
-	Cancel(context.Context, string) (browser.CancelResult, error)
-	Observe(context.Context) (browser.ObserveResult, error)
-	ConsoleMessages(context.Context) ([]browser.ConsoleMessage, error)
-	Downloads(context.Context) (browser.DownloadsResult, error)
-	ClickXY(context.Context, float64, float64) (snapshot.ClickXYResult, error)
-	GetTrace() browser.TraceResult
-	ClearTrace()
-	AssertVisible(context.Context, string, time.Duration) error
-	AssertText(context.Context, string, string, time.Duration) error
-	AssertValue(context.Context, string, string, time.Duration) error
-	AssertHidden(context.Context, string, time.Duration) error
-	CommitField(context.Context, string) error
-	Notify(context.Context, browser.NotifyOptions) (browser.NotifyResult, error)
-}
-
 type Server struct {
-	manager Controller
+	manager browser.Controller
 	server  *http.Server
 }
 
@@ -76,7 +22,7 @@ type snapshotRequest struct {
 	MaxBytes int
 }
 
-func New(addr string, manager Controller) *Server {
+func New(addr string, manager browser.Controller) *Server {
 	mux := http.NewServeMux()
 	s := &Server{manager: manager, server: &http.Server{Addr: addr, Handler: mux}}
 	s.routes(mux)
@@ -273,7 +219,7 @@ func (s *Server) click(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := contextWithTabID(r.Context(), req.TabID)
-	if isDefaultLeftSingleRefClick(req.Button, req.ClickCount, req.Ref, req.X, req.Y) {
+	if browser.IsDefaultLeftSingleRefClick(req.Button, req.ClickCount, req.Ref, req.X, req.Y) {
 		result, err := s.manager.Click(ctx, req.Ref)
 		writeResult(w, result, err)
 		return
@@ -284,20 +230,6 @@ func (s *Server) click(w http.ResponseWriter, r *http.Request) {
 		ClickCount: req.ClickCount,
 	})
 	writeResult(w, result, err)
-}
-
-// isDefaultLeftSingleRefClick reports whether a click is a plain left
-// single-click on a ref, which keeps the optimized in-page click path.
-func isDefaultLeftSingleRefClick(button string, clickCount int, ref string, x, y *float64) bool {
-	if x != nil || y != nil || ref == "" || clickCount > 1 {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(button)) {
-	case "", "left":
-		return true
-	default:
-		return false
-	}
 }
 
 func (s *Server) drag(w http.ResponseWriter, r *http.Request) {

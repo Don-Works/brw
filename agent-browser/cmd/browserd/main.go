@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -100,6 +101,9 @@ func main() {
 		} else if !profile.DirectCDPAllowed && cfg.RemoteURL == "" && !unsafeAllowDefaultProfileCDP {
 			log.Fatalf("profile %q is allowed only through extension bridge, not direct CDP launch; use --profile agent-revitt, --remote, or --unsafe-allow-default-profile-cdp for diagnostics", profile.Name)
 		}
+		if unsafeAllowDefaultProfileCDP {
+			log.Printf("WARNING: --unsafe-allow-default-profile-cdp is active; profile policy bypass is enabled for diagnostics")
+		}
 		cfg.UserDataDir = profile.UserDataDir
 		cfg.ProfileDirectory = profile.ProfileDirectory
 		log.Printf("using workspace profile %q (%s)", profile.Name, profile.Kind)
@@ -108,7 +112,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var controller httpapi.Controller
+	var controller browser.Controller
 	var bridge *extensionbridge.Bridge
 	var manager *browser.Manager
 
@@ -150,6 +154,9 @@ func main() {
 	var api *httpapi.Server
 	if httpAddr != "" && httpAddr != "off" {
 		api = httpapi.New(httpAddr, controller)
+		if !isLoopback(httpAddr) {
+			log.Printf("WARNING: HTTP API bound to non-loopback address %s; no authentication is enforced — ensure caller auth is in place (SSH/Tailscale)", httpAddr)
+		}
 		go func() {
 			log.Printf("HTTP API listening on %s", httpAddr)
 			if err := api.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -203,4 +210,23 @@ func envDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// isLoopback reports whether addr binds to a loopback address (127.0.0.1 or
+// localhost). Bare ":port" binds to all interfaces and is NOT loopback.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Try treating the whole string as a host.
+		host = addr
+	}
+	host = strings.TrimSpace(host)
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		return false
+	}
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

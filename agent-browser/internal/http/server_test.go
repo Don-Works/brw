@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -497,4 +499,60 @@ func (f *fakeController) CommitField(_ context.Context, ref string) error {
 func (f *fakeController) Notify(_ context.Context, opts browser.NotifyOptions) (browser.NotifyResult, error) {
 	f.notifyOpts = opts
 	return browser.NotifyResult{OK: true, Delivery: "extension"}, nil
+}
+
+func TestHealth(t *testing.T) {
+	srv := New(":", &fakeController{})
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	srv.server.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestUnknownPath_Returns404(t *testing.T) {
+	srv := New(":", &fakeController{})
+	req := httptest.NewRequest(http.MethodGet, "/api/nonexistent", nil)
+	w := httptest.NewRecorder()
+	srv.server.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestMalformedJSON_Returns400(t *testing.T) {
+	srv := New(":", &fakeController{})
+	req := httptest.NewRequest(http.MethodPost, "/api/page/click", strings.NewReader("{bad json"))
+	req.Header.Set("content-type", "application/json")
+	w := httptest.NewRecorder()
+	srv.server.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestControllerError_Returns400(t *testing.T) {
+	errCtrl := &errorController{}
+	srv := New(":", errCtrl)
+	req := httptest.NewRequest(http.MethodPost, "/api/browser/open", strings.NewReader(`{"url":"https://example.com"}`))
+	req.Header.Set("content-type", "application/json")
+	w := httptest.NewRecorder()
+	srv.server.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["error"] != "chrome crashed" {
+		t.Fatalf("expected error 'chrome crashed', got %v", resp["error"])
+	}
+}
+
+type errorController struct {
+	fakeController
+}
+
+func (e *errorController) Open(context.Context, string) (browser.OpenResult, error) {
+	return browser.OpenResult{}, fmt.Errorf("chrome crashed")
 }

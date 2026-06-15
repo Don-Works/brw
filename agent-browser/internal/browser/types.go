@@ -260,3 +260,24 @@ type TraceResult struct {
 	Entries []TraceEntry `json:"entries"`
 	Count   int          `json:"count"`
 }
+
+// IsDefaultLeftSingleRefClick reports whether a browser_click call is a plain
+// left single-click on a ref (no explicit button/count/coordinates), which can
+// keep the optimized in-page click path. Shared by MCP and HTTP servers.
+func IsDefaultLeftSingleRefClick(button string, clickCount int, ref string, x, y *float64) bool {
+	if x != nil || y != nil {
+		return false
+	}
+	if ref == "" {
+		return false
+	}
+	if clickCount > 1 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(button)) {
+	case "", "left":
+		return true
+	default:
+		return false
+	}
+}

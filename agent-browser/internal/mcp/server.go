@@ -13,65 +13,11 @@ import (
 	"time"
 
 	"github.com/revitt/agent-browser/internal/browser"
-	"github.com/revitt/agent-browser/internal/readability"
 	"github.com/revitt/agent-browser/internal/snapshot"
 )
 
-type Controller interface {
-	Open(context.Context, string) (browser.OpenResult, error)
-	OpenInGroup(context.Context, string, string) (browser.OpenResult, error)
-	OpenIncognito(context.Context, string) (browser.OpenResult, error)
-	CloseContext(context.Context, string) error
-	ListTabs(context.Context) ([]browser.Tab, error)
-	FocusTab(context.Context, string) error
-	CloseTab(context.Context, string) error
-	GroupTabs(context.Context, []string, string, string) error
-	UngroupTabs(context.Context, []string) error
-	Read(context.Context) (readability.PageRead, error)
-	ReadData(context.Context) (snapshot.StructuredData, error)
-	Snapshot(context.Context, snapshot.SnapshotOptions) (snapshot.PageSnapshot, error)
-	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
-	Click(context.Context, string) (browser.ActionResult, error)
-	ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error)
-	Navigate(context.Context, string) (browser.ActionResult, error)
-	ClickButton(context.Context, browser.ClickButtonOptions) (browser.ActionResult, error)
-	MouseDown(context.Context, browser.MouseButtonOptions) (browser.ActionResult, error)
-	MouseUp(context.Context, browser.MouseButtonOptions) (browser.ActionResult, error)
-	Drag(context.Context, browser.DragOptions) (browser.ActionResult, error)
-	Hover(context.Context, string) (browser.ActionResult, error)
-	Type(context.Context, string, string) (browser.ActionResult, error)
-	Fill(context.Context, snapshot.FillOptions) (browser.ActionResult, error)
-	UploadFile(context.Context, snapshot.UploadOptions) (browser.ActionResult, error)
-	Select(context.Context, string, string) (browser.ActionResult, error)
-	Press(context.Context, string) (browser.ActionResult, error)
-	Scroll(context.Context, string) (browser.ActionResult, error)
-	Screenshot(context.Context) (browser.Screenshot, error)
-	ScreenshotAnnotated(context.Context, string) (browser.AnnotatedScreenshot, error)
-	ScreenshotElement(context.Context, string) (browser.Screenshot, error)
-	WaitFor(context.Context, string, time.Duration) error
-	Evaluate(context.Context, string) (any, error)
-	NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error)
-	NetworkCapture(context.Context, string) ([]snapshot.CapturedRequest, error)
-	ReplayRequest(context.Context, browser.ReplayRequestParams) (snapshot.ReplayResult, error)
-	ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error)
-	ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error)
-	Cancel(context.Context, string) (browser.CancelResult, error)
-	Observe(context.Context) (browser.ObserveResult, error)
-	ConsoleMessages(context.Context) ([]browser.ConsoleMessage, error)
-	Downloads(context.Context) (browser.DownloadsResult, error)
-	ClickXY(context.Context, float64, float64) (snapshot.ClickXYResult, error)
-	GetTrace() browser.TraceResult
-	ClearTrace()
-	AssertVisible(context.Context, string, time.Duration) error
-	AssertText(context.Context, string, string, time.Duration) error
-	AssertValue(context.Context, string, string, time.Duration) error
-	AssertHidden(context.Context, string, time.Duration) error
-	CommitField(context.Context, string) error
-	Notify(context.Context, browser.NotifyOptions) (browser.NotifyResult, error)
-}
-
 type Server struct {
-	manager Controller
+	manager browser.Controller
 }
 
 const (
@@ -80,7 +26,7 @@ const (
 	defaultFindLimit     = 20
 )
 
-func New(manager Controller) *Server {
+func New(manager browser.Controller) *Server {
 	return &Server{manager: manager}
 }
 
@@ -366,7 +312,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		// Any non-default button/count, or a coordinate target, routes through
 		// the decomposed CDP click so right/double/triple/middle clicks and
 		// canvas coordinate clicks all share one tool.
-		if isDefaultLeftSingleRefClick(req.Button, req.ClickCount, req.Ref, req.X, req.Y) {
+		if browser.IsDefaultLeftSingleRefClick(req.Button, req.ClickCount, req.Ref, req.X, req.Y) {
 			return toolJSON(s.manager.Click(ctx, req.Ref))
 		}
 		return toolJSON(s.manager.ClickButton(ctx, browser.ClickButtonOptions{
@@ -693,27 +639,6 @@ func normalizeMCPFindOptions(opts snapshot.FindOptions) snapshot.FindOptions {
 	return opts
 }
 
-// isDefaultLeftSingleRefClick reports whether a browser_click call is a plain
-// left single-click on a ref (no explicit button/count/coordinates), which can
-// keep the optimized in-page click path.
-func isDefaultLeftSingleRefClick(button string, clickCount int, ref string, x, y *float64) bool {
-	if x != nil || y != nil {
-		return false
-	}
-	if ref == "" {
-		return false
-	}
-	if clickCount > 1 {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(button)) {
-	case "", "left":
-		return true
-	default:
-		return false
-	}
-}
-
 func parseMouseButtonArgs(args json.RawMessage) (browser.MouseButtonOptions, error) {
 	var req struct {
 		Ref    string   `json:"ref"`
@@ -743,6 +668,12 @@ func unmarshalArgs(args json.RawMessage, dst any) error {
 // were previously silently ignored, leaving an empty id that the extension
 // bridge coerced to tab 0. Prefer `tab_id`, fall back to `id` for backward
 // compatibility.
+// tabIDArg resolves the canonical tab id from the preferred tab_id field and its
+// deprecated id alias (browser_focus_tab / browser_close_tab). Precedence is
+// intentional graceful promotion: a non-empty tab_id always wins, and id is used
+// only as a fallback. If a caller supplies both with different values, tab_id is
+// used and id is silently ignored — documented in the tool schemas where id is
+// labelled "Deprecated alias for tab_id".
 func tabIDArg(tabID, id string) string {
 	if strings.TrimSpace(tabID) != "" {
 		return tabID
@@ -939,7 +870,7 @@ func tools() []map[string]any {
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
 		tool("browser_wait_for", "Wait for page readiness, URL/title/text substring, or ref availability. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"condition":  stringSchema("load, text:..., not_text:..., url:..., not_url:..., title:..., ref:..., or plain text."),
+			"condition":  stringSchema("ready (document interactive/complete), load (alias of ready), committed (interactive/complete AND a real navigated URL, not about:blank), text:..., not_text:..., url:..., not_url:..., title:..., ref:..., or plain text."),
 			"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds."},
 			"tab_id":     stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"condition"})),

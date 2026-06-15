@@ -123,7 +123,11 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		log.Printf("extension websocket accept: %v", err)
 		return
 	}
-	conn.SetReadLimit(64 << 20)
+	conn.SetReadLimit(4 << 20)
+
+	if b.allowedExtensionID == "" {
+		log.Printf("WARNING: extension bridge accepting connections from any Chrome extension (chrome-extension://*); set a profile policy with bridge_extension_id to restrict")
+	}
 
 	b.mu.Lock()
 	if b.conn != nil {
@@ -227,7 +231,7 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 			if resp.Error == "" {
 				resp.Error = "extension bridge request failed"
 			}
-			return nil, errors.New(resp.Error)
+			return nil, fmt.Errorf("extension bridge: %s", resp.Error)
 		}
 		return resp.Result, nil
 	case <-timeoutCtx.Done():
@@ -328,6 +332,9 @@ func (b *Bridge) FocusTab(ctx context.Context, id string) error {
 		b.setActiveTabID(strconv.Itoa(tab.ID))
 		return nil
 	}
+	// Unmarshal failed or returned zero ID; fall through to use the original
+	// id. The focus_tab call succeeded, so the focus did happen — we just
+	// cannot confirm the tab metadata.
 	if strings.TrimSpace(id) != "" {
 		b.setActiveTabID(id)
 	}
@@ -490,6 +497,7 @@ func (b *Bridge) ReadData(ctx context.Context) (snapshot.StructuredData, error) 
 const (
 	observedActionSettle = 75 * time.Millisecond
 	batchActionSettle    = 25 * time.Millisecond
+	waitForPollInterval  = 250 * time.Millisecond
 )
 
 func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
@@ -512,7 +520,7 @@ func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) 
 		if clicked.Error == "" {
 			clicked.Error = "click text failed"
 		}
-		return browser.ActionResult{}, errors.New(clicked.Error)
+		return browser.ActionResult{}, fmt.Errorf("click text: %s", clicked.Error)
 	}
 	time.Sleep(observedActionSettle)
 	label := opts.Text
@@ -544,7 +552,7 @@ func (b *Bridge) hoverRef(ctx context.Context, ref string) error {
 		if result.Error == "" {
 			result.Error = "hover failed"
 		}
-		return errors.New(result.Error)
+		return fmt.Errorf("hover: %s", result.Error)
 	}
 	return nil
 }
@@ -672,7 +680,7 @@ func (b *Bridge) activate(ctx context.Context, ref string) error {
 		if result.Error == "" {
 			result.Error = "ref activation failed"
 		}
-		return errors.New(result.Error)
+		return fmt.Errorf("activate: %s", result.Error)
 	}
 	return nil
 }
@@ -723,7 +731,7 @@ func (b *Bridge) fillOptions(ctx context.Context, opts snapshot.FillOptions) (st
 		if result.Error == "" {
 			result.Error = "fill failed"
 		}
-		return "", errors.New(result.Error)
+		return "", fmt.Errorf("fill: %s", result.Error)
 	}
 	return ref, nil
 }
@@ -846,7 +854,7 @@ func (b *Bridge) selectValue(ctx context.Context, ref, value string) (string, er
 			result.Error = "select failed"
 		}
 		if !strings.Contains(result.Error, "ref is not a select element") {
-			return "", errors.New(result.Error)
+			return "", fmt.Errorf("select: %s", result.Error)
 		}
 		return b.selectCustomOption(ctx, ref, value)
 	}
@@ -1035,7 +1043,7 @@ func (b *Bridge) scrollDirection(ctx context.Context, direction string) (string,
 		if scroll.Error == "" {
 			scroll.Error = "scroll failed"
 		}
-		return "", errors.New(scroll.Error)
+		return "", fmt.Errorf("scroll: %s", scroll.Error)
 	}
 	message := fmt.Sprintf("scrolled %s target:%s", direction, scroll.Target)
 	if scroll.Name != "" {
@@ -1206,7 +1214,11 @@ func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Dur
 			}
 			return fmt.Errorf("timed out waiting for %q", condition)
 		}
-		time.Sleep(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for %q cancelled", condition)
+		case <-time.After(waitForPollInterval):
+		}
 	}
 }
 
@@ -1322,13 +1334,14 @@ func (b *Bridge) observeActionWithBefore(ctx context.Context, message string, be
 	result := browser.ActionResult{OK: true, Message: message, TabID: b.contextTabID(ctx)}
 	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
+		result.OK = false
 		result.Message = message + "; observation failed: " + err.Error()
 		return result
 	}
 	result.URL = snap.URL
 	result.Title = snap.Title
 	if snap.Metadata != nil {
-		result.Version = metadataInt64(snap.Metadata["version"])
+		result.Version = browser.MetadataInt64(snap.Metadata["version"])
 		if focus, ok := snap.Metadata["focused_ref"].(string); ok {
 			result.Focus = focus
 		}
@@ -1337,7 +1350,7 @@ func (b *Bridge) observeActionWithBefore(ctx context.Context, message string, be
 	browser.ApplyStateDiff(&result, before, after)
 	frontier := browser.SelectFrontierElements(snap.Elements, result.Focus, 12)
 	result.Elements = frontier
-	result.Changed = summarizeElements(frontier, 12)
+	result.Changed = browser.SummarizeElements(frontier, 12)
 	if tabs, err := b.ListTabs(ctx); err == nil {
 		result.Targets = actionTargets(tabs, b.activeTabID(), 8)
 	}
@@ -1384,46 +1397,6 @@ func (b *Bridge) evaluate(ctx context.Context, expression, tabID string, dst any
 	return json.Unmarshal(payload.Result.Value, dst)
 }
 
-func summarizeElements(elements []snapshot.Element, limit int) []string {
-	if limit <= 0 || len(elements) == 0 {
-		return nil
-	}
-	if len(elements) < limit {
-		limit = len(elements)
-	}
-	out := make([]string, 0, limit)
-	for i, el := range elements {
-		if i >= limit {
-			break
-		}
-		summary := strings.TrimSpace(el.Role + " " + el.Ref + " " + strconv.Quote(el.Name))
-		if el.Value != "" {
-			summary += " value:" + strconv.Quote(el.Value)
-		}
-		if el.Disabled {
-			summary += " disabled"
-		}
-		out = append(out, summary)
-	}
-	return out
-}
-
-func metadataInt64(value any) int64 {
-	switch v := value.(type) {
-	case int64:
-		return v
-	case int:
-		return int64(v)
-	case float64:
-		return int64(v)
-	case json.Number:
-		n, _ := v.Int64()
-		return n
-	default:
-		return 0
-	}
-}
-
 func (b *Bridge) cdp(ctx context.Context, tabID, method string, params map[string]any) (json.RawMessage, error) {
 	if params == nil {
 		params = map[string]any{}
@@ -1450,6 +1423,16 @@ func (b *Bridge) cdp(ctx context.Context, tabID, method string, params map[strin
 	return raw, err
 }
 
+// contextTabID resolves the tab a page action targets.
+//
+// Latency profile: when no explicit tab_id is in the context, this makes one
+// synchronous get_active_tab_id RPC to the extension per call (every Snapshot,
+// Read, Click, etc.). That is a deliberate correctness-over-latency trade: the
+// cached b.active reference drifts when the user switches tabs manually in
+// Chrome, and acting on the wrong tab is worse than a sub-millisecond local-WS
+// round-trip. Callers issuing rapid-fire actions should pass an explicit tab_id
+// (which skips the query entirely) or use browser_batch / browser_plan, which
+// resolve the tab once for the whole sequence.
 func (b *Bridge) contextTabID(ctx context.Context) string {
 	if tabID := browser.TabIDFromContext(ctx); tabID != "" {
 		return tabID
@@ -1572,6 +1555,11 @@ func (b *Bridge) condition(ctx context.Context, condition string) (bool, error) 
 	    return roots().some(root => root.querySelector && root.querySelector(selector));
 	  }
 	  if (condition === "ready" || condition === "load") return document.readyState === "complete" || document.readyState === "interactive";
+	  // "committed" contract: BOTH the document must be interactive/complete AND the
+	  // URL must be a real navigation target — not the transient "about:blank" nor the
+	  // empty href that can appear during very early frame init. The && short-circuits,
+	  // so order is immaterial: an empty/blank href fails the condition regardless of
+	  // readyState.
 	  if (condition === "committed") return (document.readyState === "complete" || document.readyState === "interactive") && location.href !== "about:blank" && location.href !== "";
 	  if (condition.startsWith("url:")) return location.href.includes(condition.slice(4));
 	  if (condition.startsWith("not_url:")) return !location.href.includes(condition.slice(8));
@@ -1963,7 +1951,7 @@ func (b *Bridge) CommitField(ctx context.Context, ref string) error {
 		if result.Error == "" {
 			result.Error = "commit failed"
 		}
-		return errors.New(result.Error)
+		return fmt.Errorf("commit: %s", result.Error)
 	}
 	return nil
 }
@@ -2016,7 +2004,9 @@ func (b *Bridge) ConsoleMessages(ctx context.Context) ([]browser.ConsoleMessage,
 	}
 	var msgs []browser.ConsoleMessage
 	if len(evalResult.Result.Value) > 0 {
-		_ = json.Unmarshal(evalResult.Result.Value, &msgs)
+		if err := json.Unmarshal(evalResult.Result.Value, &msgs); err != nil {
+			return nil, fmt.Errorf("parse console messages: %w", err)
+		}
 	}
 	return msgs, nil
 }
@@ -2032,7 +2022,7 @@ func (b *Bridge) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYRes
 		if result.Error == "" {
 			result.Error = "click failed"
 		}
-		return result, errors.New(result.Error)
+		return result, fmt.Errorf("click xy: %s", result.Error)
 	}
 	return result, nil
 }

@@ -122,7 +122,7 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 	before := m.cachedBefore(tabID, tabCtx)
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return dispatchClick(ctx, x, y, button, clickCount)
-	}), chromedp.Sleep(150*time.Millisecond)); err != nil {
+	}), chromedp.Sleep(actionSettleDelay)); err != nil {
 		return ActionResult{}, err
 	}
 
@@ -188,7 +188,7 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 			WithButtons(buttons).
 			WithClickCount(1).
 			Do(ctx)
-	}), chromedp.Sleep(75*time.Millisecond)); err != nil {
+	}), chromedp.Sleep(mouseHalfSettleDelay)); err != nil {
 		return ActionResult{}, err
 	}
 
@@ -247,7 +247,7 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	before := m.cachedBefore(tabID, tabCtx)
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return dispatchDrag(ctx, fromX, fromY, toX, toY, steps, button)
-	}), chromedp.Sleep(150*time.Millisecond)); err != nil {
+	}), chromedp.Sleep(actionSettleDelay)); err != nil {
 		return ActionResult{}, err
 	}
 

@@ -890,3 +890,126 @@ func (fakeController) CommitField(context.Context, string) error                
 func (fakeController) Notify(context.Context, browser.NotifyOptions) (browser.NotifyResult, error) {
 	return browser.NotifyResult{OK: true, Delivery: "extension"}, nil
 }
+
+func TestServe_MalformedJSON(t *testing.T) {
+	input := "not valid json\n"
+	var output bytes.Buffer
+	err := New(fakeController{}).Serve(context.Background(), strings.NewReader(input), &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := parseLineResponse(t, output.Bytes())
+	if resp["error"] == nil {
+		t.Fatal("expected error for malformed JSON")
+	}
+}
+
+func TestServe_UnknownMethod(t *testing.T) {
+	input := lineJSON(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "bogus/method",
+	})
+	var output bytes.Buffer
+	err := New(fakeController{}).Serve(context.Background(), strings.NewReader(input), &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := parseLineResponse(t, output.Bytes())
+	errObj, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error object, got %v", resp["error"])
+	}
+	if errObj["code"].(float64) != -32601 {
+		t.Fatalf("expected method-not-found code -32601, got %v", errObj["code"])
+	}
+}
+
+func TestServe_UnknownTool(t *testing.T) {
+	input := lineJSON(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "bogus_tool",
+			"arguments": map[string]any{},
+		},
+	})
+	var output bytes.Buffer
+	err := New(fakeController{}).Serve(context.Background(), strings.NewReader(input), &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := parseLineResponse(t, output.Bytes())
+	errObj, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error object, got %v", resp["error"])
+	}
+	if errObj["code"].(float64) != -32602 {
+		t.Fatalf("expected invalid-params code -32602, got %v", errObj["code"])
+	}
+}
+
+// errorController returns errors for specific methods.
+type errorController struct {
+	fakeController
+}
+
+func (errorController) Open(context.Context, string) (browser.OpenResult, error) {
+	return browser.OpenResult{}, fmt.Errorf("chrome crashed")
+}
+
+func TestServe_ControllerError(t *testing.T) {
+	input := lineJSON(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "browser_open",
+			"arguments": map[string]any{"url": "https://example.com"},
+		},
+	})
+	var output bytes.Buffer
+	err := New(errorController{}).Serve(context.Background(), strings.NewReader(input), &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := parseLineResponse(t, output.Bytes())
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected result, got %v", resp)
+	}
+	content, ok := result["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("expected content array, got %v", result)
+	}
+	first, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected content item, got %v", content)
+	}
+	if first["text"] != "chrome crashed" {
+		t.Fatalf("expected error text 'chrome crashed', got %v", first["text"])
+	}
+}
+
+func lineJSON(t *testing.T, v any) string {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data) + "\n"
+}
+
+func parseLineResponse(t *testing.T, data []byte) map[string]any {
+	t.Helper()
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		t.Fatal("empty response")
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(trimmed, &resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	return resp
+}

@@ -59,13 +59,15 @@ func (m *Manager) ensureDownloadTracking(ctx context.Context) error {
 		m.downloadsMu.Unlock()
 		return nil
 	}
+	// Mark as enabled before releasing the lock so concurrent callers block on
+	// downloadsMu and see the flag as true. The actual setup runs below; if it
+	// fails, we clear the flag so a later retry can succeed.
 	dir, err := m.resolveDownloadDir()
 	if err != nil {
 		m.downloadsMu.Unlock()
 		return err
 	}
 	m.downloadDir = dir
-	m.downloadsEnabled = true
 	m.downloadsMu.Unlock()
 
 	// Browser-level fallback listener.
@@ -87,12 +89,22 @@ func (m *Manager) ensureDownloadTracking(ctx context.Context) error {
 	// Browser.setDownloadBehavior is a browser-domain command; run it against
 	// the browser executor like connect() does. allowAndName names completed
 	// files by their download guid, which is generic and site-independent.
-	return m.runBrowser(ctx, func(runCtx context.Context) error {
+	if err := m.runBrowser(ctx, func(runCtx context.Context) error {
 		return browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllowAndName).
 			WithDownloadPath(m.downloadDir).
 			WithEventsEnabled(true).
 			Do(runCtx)
-	})
+	}); err != nil {
+		// Setup failed — clear the flag so a later retry can succeed.
+		m.downloadsMu.Lock()
+		m.downloadsEnabled = false
+		m.downloadsMu.Unlock()
+		return err
+	}
+	m.downloadsMu.Lock()
+	m.downloadsEnabled = true
+	m.downloadsMu.Unlock()
+	return nil
 }
 
 // handleDownloadEvent is the shared listener body for both browser- and
@@ -109,12 +121,12 @@ func (m *Manager) handleDownloadEvent(ev any) {
 // attachDownloadListenersToOpenTabs registers the target-level download
 // listener on every currently-open tab context.
 func (m *Manager) attachDownloadListenersToOpenTabs() {
-	m.mu.Lock()
+	m.mu.RLock()
 	ctxs := make([]context.Context, 0, len(m.tabContexts))
 	for _, tc := range m.tabContexts {
 		ctxs = append(ctxs, tc.ctx)
 	}
-	m.mu.Unlock()
+	m.mu.RUnlock()
 	for _, c := range ctxs {
 		chromedp.ListenTarget(c, m.handleDownloadEvent)
 	}

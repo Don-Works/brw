@@ -25,8 +25,19 @@ import (
 	"github.com/revitt/agent-browser/internal/store"
 )
 
+// Action settle delays — the brief pause after an action (click, type, fill,
+// scroll, etc.) before the post-action observation snapshot. The delay lets
+// the page react (DOM mutation, focus change, navigation start) before we
+// read the result. Named here so every call site uses the same value and the
+// delay is easy to tune globally.
+const (
+	actionSettleDelay     = 150 * time.Millisecond // click, hover, press, drag, mouse half
+	actionSettleDelayFast = 100 * time.Millisecond // type, fill, select, scroll, upload
+	mouseHalfSettleDelay  = 75 * time.Millisecond  // mouse_down/mouse_up press/release
+)
+
 type Manager struct {
-	mu            sync.Mutex
+	mu            sync.RWMutex
 	launcher      *cdplaunch.Launcher
 	allocCancel   context.CancelFunc
 	browserCtx    context.Context
@@ -387,7 +398,7 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 	if err != nil {
 		return ActionResult{}, err
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Sleep(150*time.Millisecond)); err != nil {
+	if err := chromedp.Run(tabCtx, chromedp.Sleep(actionSettleDelay)); err != nil {
 		return ActionResult{}, err
 	}
 	label := opts.Text
@@ -433,7 +444,7 @@ func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
 		}
 		return ActionResult{}, errors.New(result.Error)
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Sleep(150*time.Millisecond)); err != nil {
+	if err := chromedp.Run(tabCtx, chromedp.Sleep(actionSettleDelay)); err != nil {
 		return ActionResult{}, err
 	}
 	return m.observeActionWithBefore(tabID, tabCtx, "hovered "+ref, before), nil
@@ -503,7 +514,7 @@ func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, err
 	before := m.cachedBefore(tabID, tabCtx)
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return input.InsertText(text).Do(ctx)
-	}), chromedp.Sleep(100*time.Millisecond)); err != nil {
+	}), chromedp.Sleep(actionSettleDelayFast)); err != nil {
 		return ActionResult{}, err
 	}
 	return m.observeActionWithBefore(tabID, tabCtx, "typed into "+ref, before), nil
@@ -539,7 +550,7 @@ func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionRe
 	if err := snapshot.Fill(tabCtx, ref, opts.Text, opts.Replace); err != nil {
 		return ActionResult{}, err
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Sleep(100*time.Millisecond)); err != nil {
+	if err := chromedp.Run(tabCtx, chromedp.Sleep(actionSettleDelayFast)); err != nil {
 		return ActionResult{}, err
 	}
 	return m.observeActionWithBefore(tabID, tabCtx, "filled "+ref, before), nil
@@ -587,7 +598,7 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 	if err := snapshot.SetFileInputFiles(tabCtx, ref, paths); err != nil {
 		return ActionResult{}, err
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Sleep(100*time.Millisecond)); err != nil {
+	if err := chromedp.Run(tabCtx, chromedp.Sleep(actionSettleDelayFast)); err != nil {
 		return ActionResult{}, err
 	}
 	return m.observeActionWithBefore(tabID, tabCtx, "uploaded file to "+ref, before), nil
@@ -606,7 +617,7 @@ func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, 
 		}
 		return m.selectCustomOption(tabID, tabCtx, ref, value, before)
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Sleep(100*time.Millisecond)); err != nil {
+	if err := chromedp.Run(tabCtx, chromedp.Sleep(actionSettleDelayFast)); err != nil {
 		return ActionResult{}, err
 	}
 	return m.observeActionWithBefore(tabID, tabCtx, "selected "+ref, before), nil
@@ -730,7 +741,7 @@ func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
 			WithWindowsVirtualKeyCode(desc.WindowsVirtualKeyCode).
 			WithNativeVirtualKeyCode(desc.WindowsVirtualKeyCode).
 			Do(ctx)
-	}), chromedp.Sleep(150*time.Millisecond)); err != nil {
+	}), chromedp.Sleep(actionSettleDelay)); err != nil {
 		return ActionResult{}, err
 	}
 	return m.observeActionWithBefore(tabID, tabCtx, "pressed "+key, before), nil
@@ -752,7 +763,7 @@ func (m *Manager) Scroll(ctx context.Context, direction string) (ActionResult, e
 	if err != nil {
 		return ActionResult{}, err
 	}
-	if err := chromedp.Run(tabCtx, chromedp.Sleep(100*time.Millisecond)); err != nil {
+	if err := chromedp.Run(tabCtx, chromedp.Sleep(actionSettleDelay)); err != nil {
 		return ActionResult{}, err
 	}
 	message := fmt.Sprintf("scrolled %s target:%s", direction, scroll.Target)
@@ -930,6 +941,13 @@ func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
 // or error) so the page the agent then acts on is never mutated. Labels are the
 // exact refs an agent passes to browser_click, so the vision-grounded marks and
 // the semantic action surface stay in lockstep.
+//
+// Edge case: if the page navigates between overlay injection and the deferred
+// removal, the removal runs against the new document and the injected nodes are
+// left in the now-discarded old document. They are harmless (the old document is
+// gone) and the next snapshot's pre-injection cleanup clears any residue, so
+// back-to-back annotated captures on a navigating page may briefly co-exist with
+// stale overlay nodes until the next snapshot.
 func (m *Manager) ScreenshotAnnotated(ctx context.Context, mode string) (AnnotatedScreenshot, error) {
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
@@ -1230,13 +1248,13 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 		result.URL = snap.URL
 		result.Title = snap.Title
 		if snap.Metadata != nil {
-			result.Version = metadataInt64(snap.Metadata["version"])
+			result.Version = MetadataInt64(snap.Metadata["version"])
 			if focus, ok := snap.Metadata["focused_ref"].(string); ok {
 				result.Focus = focus
 			}
 		}
 		frontier := SelectFrontierElements(snap.Elements, result.Focus, 12)
-		result.Changed = summarizeElements(frontier, 12)
+		result.Changed = SummarizeElements(frontier, 12)
 	}
 	return result, nil
 }
@@ -1373,6 +1391,7 @@ func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, 
 	result := ActionResult{OK: true, Message: message, TabID: tabID}
 	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
+		result.OK = false
 		result.Message = message + "; observation failed: " + err.Error()
 		return result
 	}
@@ -1380,7 +1399,7 @@ func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, 
 	result.URL = snap.URL
 	result.Title = snap.Title
 	if snap.Metadata != nil {
-		result.Version = metadataInt64(snap.Metadata["version"])
+		result.Version = MetadataInt64(snap.Metadata["version"])
 		if focus, ok := snap.Metadata["focused_ref"].(string); ok {
 			result.Focus = focus
 		}
@@ -1390,7 +1409,7 @@ func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, 
 	m.storeState(tabID, after)
 	frontier := SelectFrontierElements(snap.Elements, result.Focus, 12)
 	result.Elements = frontier
-	result.Changed = summarizeElements(frontier, 12)
+	result.Changed = SummarizeElements(frontier, 12)
 	return result
 }
 
@@ -1485,16 +1504,15 @@ func (m *Manager) Observe(ctx context.Context) (ObserveResult, error) {
 		}
 	}
 
+	after := NewSemanticState(snap)
+	m.storeState(tabID, after)
+
 	m.stateMu.Lock()
-	m.versions[tabID] = m.versions[tabID] + 1
 	version := m.versions[tabID]
 	prev := m.lastState[tabID]
 	m.stateMu.Unlock()
 
-	after := NewSemanticState(snap)
-	m.storeState(tabID, after)
-
-	changed := summarizeElements(SelectFrontierElements(snap.Elements, focus, 12), 12)
+	changed := SummarizeElements(SelectFrontierElements(snap.Elements, focus, 12), 12)
 
 	if prev != nil && prev.URL == after.URL && prev.Title == after.Title && prev.Focus == after.Focus && prev.Signature == after.Signature {
 		changed = nil
@@ -1509,7 +1527,9 @@ func (m *Manager) Observe(ctx context.Context) (ObserveResult, error) {
 	}, nil
 }
 
-func summarizeElements(elements []snapshot.Element, limit int) []string {
+// SummarizeElements returns compact one-line summaries of the given elements,
+// capped at limit entries. Used by both the Manager and the extension Bridge.
+func SummarizeElements(elements []snapshot.Element, limit int) []string {
 	if limit <= 0 || len(elements) == 0 {
 		return nil
 	}
@@ -1530,7 +1550,9 @@ func summarizeElements(elements []snapshot.Element, limit int) []string {
 	return out
 }
 
-func metadataInt64(value any) int64 {
+// MetadataInt64 extracts an int64 from a metadata value that may be int64, int,
+// float64, or json.Number. Returns 0 for unrecognized types.
+func MetadataInt64(value any) int64 {
 	switch v := value.(type) {
 	case int64:
 		return v
@@ -1598,22 +1620,32 @@ func (m *Manager) activeContextWithTimeout(ctx context.Context, timeout time.Dur
 }
 
 func (m *Manager) tabContext(tabID string) (context.Context, error) {
-	m.mu.Lock()
+	m.mu.RLock()
 	if tab, ok := m.tabContexts[tabID]; ok {
-		m.mu.Unlock()
+		m.mu.RUnlock()
 		return tab.ctx, nil
 	}
+	m.mu.RUnlock()
+	// Validate the context before publishing it to the map so concurrent callers
+	// never observe a half-initialized entry that gets cancelled on the error path.
 	ctx, cancel := chromedp.NewContext(m.browserCtx, chromedp.WithTargetID(target.ID(tabID)))
-	m.tabContexts[tabID] = tabContext{ctx: ctx, cancel: cancel}
-	m.mu.Unlock()
 
 	if err := chromedp.Run(ctx); err != nil {
 		cancel()
-		m.mu.Lock()
-		delete(m.tabContexts, tabID)
-		m.mu.Unlock()
 		return nil, err
 	}
+
+	m.mu.Lock()
+	// A concurrent call may have validated and inserted while we were unlocked;
+	// prefer the first-writer's context and discard ours.
+	if existing, ok := m.tabContexts[tabID]; ok {
+		m.mu.Unlock()
+		cancel()
+		return existing.ctx, nil
+	}
+	m.tabContexts[tabID] = tabContext{ctx: ctx, cancel: cancel}
+	m.mu.Unlock()
+
 	// If download tracking is already armed, attach the target-level listener to
 	// this newly created tab context so page-initiated downloads are observed.
 	m.attachDownloadListenerIfEnabled(ctx)
