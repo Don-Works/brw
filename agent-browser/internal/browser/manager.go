@@ -46,6 +46,11 @@ type Manager struct {
 
 	traceMu sync.Mutex
 	trace   []TraceEntry
+
+	// cancels tracks in-flight long-running operations (plan / batch / wait
+	// loops) keyed by an operation token so browser_cancel can stop a specific
+	// run cooperatively instead of killing the whole daemon.
+	cancels *cancelRegistry
 }
 
 type tabContext struct {
@@ -110,6 +115,7 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		lastState:     map[string]*SemanticState{},
 		versions:      map[string]int64{},
 		trace:         make([]TraceEntry, 0, 256),
+		cancels:       newCancelRegistry(),
 	}
 
 	if err := m.connect(); err != nil {
@@ -722,6 +728,12 @@ func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Du
 
 	deadline := time.Now().Add(timeout)
 	for {
+		// Cooperative cancellation: a browser_cancel on the surrounding plan/batch
+		// (or this tab) cancels the caller-supplied ctx, which unblocks a long
+		// wait promptly instead of running it out to the full timeout.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("wait for %q cancelled", condition)
+		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return fmt.Errorf("timed out waiting for %q", condition)
@@ -736,6 +748,9 @@ func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Du
 				return nil
 			}
 			return fmt.Errorf("timed out waiting for %q", condition)
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("wait for %q cancelled", condition)
 		}
 		if !isTransientNavigationError(err) {
 			return err
@@ -911,19 +926,50 @@ func (m *Manager) observeAction(tabID string, tabCtx context.Context, message st
 }
 
 func (m *Manager) ExecutePlan(ctx context.Context, steps []PlanStep) (PlanResult, error) {
+	entry, release := m.cancels.register(ctx, cancelToken(ctx, ""))
+	defer release()
+	return runPlanSteps(entry.ctx, entry, steps, m.executePlanStep), nil
+}
+
+// runPlanSteps drives the cooperative-cancellation plan loop. It is split out so
+// the cancellation control flow (stop cleanly between steps, report how far we
+// got, never crash) can be exercised without a live browser by injecting a fake
+// step runner. The production caller passes Manager.executePlanStep.
+func runPlanSteps(ctx context.Context, c interface{ Cancelled() bool }, steps []PlanStep, run func(context.Context, int, PlanStep) PlanStepResult) PlanResult {
 	result := PlanResult{OK: true, Steps: make([]PlanStepResult, 0, len(steps))}
 	for i, step := range steps {
-		stepResult := m.executePlanStep(ctx, i, step)
+		// Cooperative cancellation: stop cleanly between steps and report how far
+		// we got rather than crashing or surfacing a context error.
+		if c.Cancelled() {
+			result.Cancelled = true
+			result.OK = false
+			result.Error = "cancelled"
+			result.StepsCompleted = len(result.Steps)
+			return result
+		}
+		stepResult := run(ctx, i, step)
 		result.Steps = append(result.Steps, stepResult)
 		if !stepResult.OK {
+			// A cancel that landed mid-step surfaces as a step failure; report it
+			// as a cancellation rather than an opaque error.
+			if c.Cancelled() {
+				result.Cancelled = true
+				result.OK = false
+				result.Error = "cancelled"
+				result.Steps = result.Steps[:len(result.Steps)-1]
+				result.StepsCompleted = i
+				return result
+			}
 			result.OK = false
 			failedAt := i
 			result.FailedAt = &failedAt
 			result.Error = stepResult.Error
-			return result, nil
+			result.StepsCompleted = i
+			return result
 		}
 	}
-	return result, nil
+	result.StepsCompleted = len(result.Steps)
+	return result
 }
 
 func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep) PlanStepResult {
@@ -1028,6 +1074,12 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 // observations, then returns a single compact observation at the end. This is
 // much more token-efficient than calling individual tools or browser_plan.
 func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchResult, error) {
+	entry, release := m.cancels.register(ctx, cancelToken(ctx, ""))
+	defer release()
+	// Carry the tab id into the cancel-aware context so per-step tab resolution
+	// and the wait loops still target the right tab after we replace ctx.
+	ctx = entry.ctx
+
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return BatchResult{}, err
@@ -1036,9 +1088,26 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 
 	result := BatchResult{OK: true, Steps: make([]BatchStepResult, 0, len(steps)), TabID: tabID}
 	for i, step := range steps {
+		// Cooperative cancellation: stop cleanly between steps and report how far
+		// we got. The single end-of-batch observation below still runs so the
+		// caller gets current page state for where the run stopped.
+		if entry.Cancelled() {
+			result.Cancelled = true
+			result.OK = false
+			result.Error = "cancelled"
+			break
+		}
 		sr := m.executeBatchStep(tabCtx, i, step)
 		result.Steps = append(result.Steps, sr)
 		if !sr.OK {
+			if entry.Cancelled() {
+				result.Cancelled = true
+				result.OK = false
+				result.Error = "cancelled"
+				// A cancel mid-step does not count the interrupted step as complete.
+				result.Steps = result.Steps[:len(result.Steps)-1]
+				break
+			}
 			result.OK = false
 			result.Error = sr.Error
 			break
@@ -1053,6 +1122,7 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 			}
 		}
 	}
+	result.StepsCompleted = len(result.Steps)
 
 	// Single observation at the end
 	snap, snapErr := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})

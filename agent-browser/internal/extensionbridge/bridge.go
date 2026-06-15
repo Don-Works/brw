@@ -35,6 +35,12 @@ type Bridge struct {
 	pending map[string]chan response
 	writeMu sync.Mutex
 	nextID  atomic.Uint64
+
+	// cancels tracks in-flight long-running operations (plan / batch / wait
+	// loops) keyed by an operation token so Cancel can stop a specific run
+	// cooperatively. Mirrors the browser.Manager mechanism so cancellation
+	// behaves identically across the CDP and extension transports.
+	cancels *cancelRegistry
 }
 
 type hello struct {
@@ -69,6 +75,7 @@ func New(addr string, timeout time.Duration, allowedExtensionID string) *Bridge 
 		timeout:            timeout,
 		allowedExtensionID: strings.TrimSpace(allowedExtensionID),
 		pending:            map[string]chan response{},
+		cancels:            newCancelRegistry(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/extension", b.handleExtension)
@@ -925,18 +932,38 @@ func (b *Bridge) scrollDirection(ctx context.Context, direction string) (string,
 }
 
 func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {
+	entry, release := b.cancels.register(ctx, cancelToken(ctx, ""))
+	defer release()
+	ctx = entry.ctx
+
 	result := browser.PlanResult{OK: true, Steps: make([]browser.PlanStepResult, 0, len(steps))}
 	for i, step := range steps {
+		if entry.Cancelled() {
+			result.Cancelled = true
+			result.OK = false
+			result.Error = "cancelled"
+			result.StepsCompleted = len(result.Steps)
+			return result, nil
+		}
 		stepResult := b.executePlanStep(ctx, i, step)
 		result.Steps = append(result.Steps, stepResult)
 		if !stepResult.OK {
+			if entry.Cancelled() {
+				result.Cancelled = true
+				result.OK = false
+				result.Error = "cancelled"
+				result.StepsCompleted = i
+				return result, nil
+			}
 			result.OK = false
 			failedAt := i
 			result.FailedAt = &failedAt
 			result.Error = stepResult.Error
+			result.StepsCompleted = i
 			return result, nil
 		}
 	}
+	result.StepsCompleted = len(result.Steps)
 	return result, nil
 }
 
@@ -1051,6 +1078,11 @@ func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Dur
 	}
 	deadline := time.Now().Add(timeout)
 	for {
+		// Cooperative cancellation: a Cancel on the surrounding plan/batch (or
+		// this tab) cancels ctx, unblocking a long wait promptly.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("wait for %q cancelled", condition)
+		}
 		ok, err := b.condition(ctx, condition)
 		if err == nil && ok {
 			return nil
@@ -1435,17 +1467,38 @@ func screenshotFromRaw(raw json.RawMessage) (browser.Screenshot, error) {
 }
 
 func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
+	// Keep the caller context for the final observation so a cancelled run can
+	// still report current page state; step execution uses the cancel-aware ctx.
+	obsCtx := ctx
+	entry, release := b.cancels.register(ctx, cancelToken(ctx, ""))
+	defer release()
+	ctx = entry.ctx
+
 	result := browser.BatchResult{OK: true, Steps: make([]browser.BatchStepResult, 0, len(steps)), TabID: b.contextTabID(ctx)}
 	for i, step := range steps {
+		if entry.Cancelled() {
+			result.Cancelled = true
+			result.OK = false
+			result.Error = "cancelled"
+			break
+		}
 		sr := b.executeBatchStep(ctx, i, step)
 		result.Steps = append(result.Steps, sr)
 		if !sr.OK {
+			if entry.Cancelled() {
+				result.Cancelled = true
+				result.OK = false
+				result.Error = "cancelled"
+				result.Steps = result.Steps[:len(result.Steps)-1]
+				break
+			}
 			result.OK = false
 			result.Error = sr.Error
 			break
 		}
 	}
-	snap, snapErr := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
+	result.StepsCompleted = len(result.Steps)
+	snap, snapErr := b.Snapshot(obsCtx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if snapErr == nil {
 		result.URL = snap.URL
 		result.Title = snap.Title

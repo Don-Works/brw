@@ -117,6 +117,7 @@ func TestNewPageActionRoutes(t *testing.T) {
 		body   string
 	}{
 		{http.MethodPost, "/api/page/batch", `{"steps":[{"action":"click","ref":"e1"}]}`},
+		{http.MethodPost, "/api/page/cancel", `{"token":"op-9"}`},
 		{http.MethodPost, "/api/page/click_text", `{"text":"Submit"}`},
 		{http.MethodGet, "/api/page/observe", ``},
 		{http.MethodPost, "/api/page/commit", `{"ref":"e1"}`},
@@ -157,6 +158,9 @@ func TestNewPageActionRoutes(t *testing.T) {
 	if ctrl.clickX != 12 || ctrl.clickY != 34 {
 		t.Fatalf("click xy = %v,%v", ctrl.clickX, ctrl.clickY)
 	}
+	if ctrl.cancelToken != "op-9" {
+		t.Fatalf("cancel token = %q, want op-9", ctrl.cancelToken)
+	}
 }
 
 func sampleSnapshot() snapshot.PageSnapshot {
@@ -183,6 +187,7 @@ type fakeController struct {
 	commitRef    string
 	clickX       float64
 	clickY       float64
+	cancelToken  string
 }
 
 func (f *fakeController) Open(context.Context, string) (browser.OpenResult, error) {
@@ -287,6 +292,11 @@ func (f *fakeController) ExecutePlan(context.Context, []browser.PlanStep) (brows
 func (f *fakeController) ExecuteBatch(_ context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
 	f.batchSteps = steps
 	return browser.BatchResult{OK: true}, nil
+}
+
+func (f *fakeController) Cancel(_ context.Context, token string) (browser.CancelResult, error) {
+	f.cancelToken = token
+	return browser.CancelResult{OK: true, Token: token, Cancelled: 1}, nil
 }
 
 func (f *fakeController) Observe(context.Context) (browser.ObserveResult, error) {

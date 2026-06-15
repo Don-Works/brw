@@ -44,6 +44,7 @@ type Controller interface {
 	NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error)
 	ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error)
 	ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error)
+	Cancel(context.Context, string) (browser.CancelResult, error)
 	Observe(context.Context) (browser.ObserveResult, error)
 	ConsoleMessages(context.Context) ([]browser.ConsoleMessage, error)
 	ClickXY(context.Context, float64, float64) (snapshot.ClickXYResult, error)
@@ -448,6 +449,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(s.manager.ExecuteBatch(ctx, req.Steps))
+	case "browser_cancel":
+		var req struct {
+			Token string `json:"token"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.Cancel(ctx, req.Token))
 	case "browser_observe":
 		return toolJSON(s.manager.Observe(ctx))
 	case "browser_group_tabs":
@@ -749,6 +758,10 @@ func tools() []map[string]any {
 				},
 			},
 		}, []string{"steps"})),
+		tool("browser_cancel", "Cooperatively stop in-flight long-running operations (browser_plan, browser_batch, and their waits) for an operation token. Omit token (or pass \"*\") to stop everything; pass tab_id to stop work targeting that tab. The cancelled operation returns a normal result reporting steps_completed and cancelled=true rather than erroring. Returns how many operations were signalled.", object(map[string]any{
+			"token":  stringSchema("Operation token to cancel. Omit or use \"*\" to cancel all in-flight operations."),
+			"tab_id": stringSchema("Optional tab id. When set (and no explicit token), cancels operations targeting that tab."),
+		}, nil)),
 		tool("browser_observe", "Return compact page state: version, URL, title, focused ref, and frontier element changes since last observe. Use this to check what changed without a full snapshot. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, nil)),

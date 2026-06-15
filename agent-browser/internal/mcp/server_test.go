@@ -168,6 +168,51 @@ func TestBrowserFindDefaultsToBoundedResults(t *testing.T) {
 	}
 }
 
+func TestBrowserCancelDispatchesTokenAndReturnsStructured(t *testing.T) {
+	ctrl := &recordingController{}
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_cancel","arguments":{"token":"op-7"}}}` + "\n"
+	var output bytes.Buffer
+
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+
+	if ctrl.cancelToken != "op-7" {
+		t.Fatalf("cancel token = %q, want op-7", ctrl.cancelToken)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &resp); err != nil {
+		t.Fatal(err)
+	}
+	structured := resp["result"].(map[string]any)["structuredContent"].(map[string]any)
+	if structured["cancelled"].(float64) != 1 {
+		t.Fatalf("cancelled = %v, want 1", structured["cancelled"])
+	}
+	if structured["token"] != "op-7" {
+		t.Fatalf("token = %v, want op-7", structured["token"])
+	}
+}
+
+func TestBrowserCancelToolSchemaDocumentsTokenAndTab(t *testing.T) {
+	var cancelTool map[string]any
+	for _, tool := range tools() {
+		if tool["name"] == "browser_cancel" {
+			cancelTool = tool
+			break
+		}
+	}
+	if cancelTool == nil {
+		t.Fatal("browser_cancel tool not registered")
+	}
+	props := cancelTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	for _, prop := range []string{"token", "tab_id"} {
+		if _, ok := props[prop]; !ok {
+			t.Fatalf("browser_cancel schema missing %s: %#v", prop, props)
+		}
+	}
+}
+
 func TestToolSchemasExposeTabScopedErgonomics(t *testing.T) {
 	byName := map[string]map[string]any{}
 	for _, tool := range tools() {
@@ -253,6 +298,12 @@ type recordingController struct {
 	fakeController
 	snapshotOpts snapshot.SnapshotOptions
 	findOpts     snapshot.FindOptions
+	cancelToken  string
+}
+
+func (r *recordingController) Cancel(ctx context.Context, token string) (browser.CancelResult, error) {
+	r.cancelToken = token
+	return browser.CancelResult{OK: true, Token: token, Cancelled: 1}, nil
 }
 
 func (r *recordingController) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
@@ -335,6 +386,9 @@ func (fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.
 }
 func (fakeController) ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error) {
 	return browser.BatchResult{}, nil
+}
+func (fakeController) Cancel(context.Context, string) (browser.CancelResult, error) {
+	return browser.CancelResult{OK: true}, nil
 }
 func (fakeController) Observe(context.Context) (browser.ObserveResult, error) {
 	return browser.ObserveResult{}, nil

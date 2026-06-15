@@ -205,6 +205,12 @@ func (c *Controller) ExecuteBatch(ctx context.Context, steps []browser.BatchStep
 	return out, err
 }
 
+func (c *Controller) Cancel(ctx context.Context, token string) (browser.CancelResult, error) {
+	var out browser.CancelResult
+	err := c.post(ctx, "/api/page/cancel", map[string]any{"token": token}, &out)
+	return out, err
+}
+
 func (c *Controller) Observe(ctx context.Context) (browser.ObserveResult, error) {
 	var out browser.ObserveResult
 	err := c.get(ctx, "/api/page/observe", nil, &out)

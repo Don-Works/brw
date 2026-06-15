@@ -91,10 +91,12 @@ type PlanStepResult struct {
 }
 
 type PlanResult struct {
-	OK       bool             `json:"ok"`
-	Steps    []PlanStepResult `json:"steps"`
-	FailedAt *int             `json:"failed_at,omitempty"`
-	Error    string           `json:"error,omitempty"`
+	OK             bool             `json:"ok"`
+	Steps          []PlanStepResult `json:"steps"`
+	FailedAt       *int             `json:"failed_at,omitempty"`
+	Error          string           `json:"error,omitempty"`
+	Cancelled      bool             `json:"cancelled,omitempty"`
+	StepsCompleted int              `json:"steps_completed"`
 }
 
 type BatchStep struct {
@@ -123,15 +125,17 @@ type BatchStepResult struct {
 }
 
 type BatchResult struct {
-	OK      bool              `json:"ok"`
-	Steps   []BatchStepResult `json:"steps"`
-	Error   string            `json:"error,omitempty"`
-	TabID   string            `json:"tab_id,omitempty"`
-	URL     string            `json:"url,omitempty"`
-	Title   string            `json:"title,omitempty"`
-	Focus   string            `json:"focus,omitempty"`
-	Changed []string          `json:"changed,omitempty"`
-	Version int64             `json:"version,omitempty"`
+	OK             bool              `json:"ok"`
+	Steps          []BatchStepResult `json:"steps"`
+	Error          string            `json:"error,omitempty"`
+	TabID          string            `json:"tab_id,omitempty"`
+	URL            string            `json:"url,omitempty"`
+	Title          string            `json:"title,omitempty"`
+	Focus          string            `json:"focus,omitempty"`
+	Changed        []string          `json:"changed,omitempty"`
+	Version        int64             `json:"version,omitempty"`
+	Cancelled      bool              `json:"cancelled,omitempty"`
+	StepsCompleted int               `json:"steps_completed"`
 }
 
 type TraceEntry struct {

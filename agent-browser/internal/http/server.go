@@ -39,6 +39,7 @@ type Controller interface {
 	NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error)
 	ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error)
 	ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error)
+	Cancel(context.Context, string) (browser.CancelResult, error)
 	Observe(context.Context) (browser.ObserveResult, error)
 	ConsoleMessages(context.Context) ([]browser.ConsoleMessage, error)
 	ClickXY(context.Context, float64, float64) (snapshot.ClickXYResult, error)
@@ -101,6 +102,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/network_requests", s.networkRequests)
 	mux.HandleFunc("POST /api/page/execute_plan", s.executePlan)
 	mux.HandleFunc("POST /api/page/batch", s.executeBatch)
+	mux.HandleFunc("POST /api/page/cancel", s.cancel)
 	mux.HandleFunc("GET /api/page/observe", s.observe)
 	mux.HandleFunc("POST /api/page/commit", s.commitField)
 	mux.HandleFunc("POST /api/page/assert_visible", s.assertVisible)
@@ -367,6 +369,18 @@ func (s *Server) executeBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.manager.ExecuteBatch(contextWithTabID(r.Context(), req.TabID), req.Steps)
+	writeResult(w, result, err)
+}
+
+func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+		TabID string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.Cancel(contextWithTabID(r.Context(), req.TabID), req.Token)
 	writeResult(w, result, err)
 }
 
