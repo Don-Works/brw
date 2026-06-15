@@ -23,6 +23,16 @@ type SnapshotOptions struct {
 	// bloating normal ref-based output.
 	TextContent bool  `json:"text_content,omitempty"`
 	Since       int64 `json:"since,omitempty"`
+	// VisualIslands, when true, detects semantically-opaque visual content
+	// (canvas/svg/video/large image/background-image/custom-rendered widget) and
+	// emits them as first-class Element entries carrying source:["visual"], a
+	// visual_type, and a visual_hint. Off by default for backward compatibility;
+	// when on, islands compete with DOM elements in the merged element list up to
+	// the limit so dense pages stay token-efficient.
+	VisualIslands bool `json:"visual_islands,omitempty"`
+	// VisualIslandsLimit caps how many of the highest-scored islands are detected
+	// before they are merged into the element list. Defaults to 10.
+	VisualIslandsLimit int `json:"visual_islands_limit,omitempty"`
 }
 
 type FindOptions struct {
@@ -94,7 +104,14 @@ type Element struct {
 	Signals       []string `json:"signals,omitempty"`
 	MatchReasons  []string `json:"match_reasons,omitempty"`
 	Source        []string `json:"source"`
-	Key           string   `json:"-"`
+	// VisualType classifies a visual island when source includes "visual":
+	// "canvas"|"svg"|"video"|"image"|"bg_image"|"custom". Empty for DOM elements.
+	VisualType string `json:"visual_type,omitempty"`
+	// VisualHint carries an alt/aria-label/title/content hint for the visual
+	// (image alt text, canvas title, etc.) so the model has a textual anchor for
+	// otherwise-opaque painted content.
+	VisualHint string `json:"visual_hint,omitempty"`
+	Key        string `json:"-"`
 }
 
 type AccessibilitySummary struct {

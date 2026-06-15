@@ -154,6 +154,93 @@ func TestBrowserSnapshotSchemaDocumentsDebugEscalation(t *testing.T) {
 	}
 }
 
+func TestBrowserSnapshotSchemaDocumentsVisualIslands(t *testing.T) {
+	var snapshotTool map[string]any
+	for _, tool := range tools() {
+		if tool["name"] == "browser_snapshot" {
+			snapshotTool = tool
+			break
+		}
+	}
+	if snapshotTool == nil {
+		t.Fatal("browser_snapshot tool not found")
+	}
+	props := snapshotTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := props["visual_islands"]; !ok {
+		t.Fatalf("visual_islands missing from snapshot schema: %#v", props)
+	}
+	if _, ok := props["visual_islands_limit"]; !ok {
+		t.Fatalf("visual_islands_limit missing from snapshot schema: %#v", props)
+	}
+}
+
+func TestBrowserScreenshotSchemaDocumentsAnnotate(t *testing.T) {
+	var shotTool map[string]any
+	for _, tool := range tools() {
+		if tool["name"] == "browser_screenshot" {
+			shotTool = tool
+			break
+		}
+	}
+	if shotTool == nil {
+		t.Fatal("browser_screenshot tool not found")
+	}
+	desc := shotTool["description"].(string)
+	if !strings.Contains(desc, "annotate") || !strings.Contains(desc, "Set-of-Marks") {
+		t.Fatalf("browser_screenshot description does not document annotate/Set-of-Marks: %q", desc)
+	}
+	props := shotTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := props["annotate"]; !ok {
+		t.Fatalf("annotate missing from browser_screenshot schema: %#v", props)
+	}
+}
+
+func TestBrowserScreenshotAnnotateReturnsLegend(t *testing.T) {
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_screenshot","arguments":{"annotate":true}}}` + "\n"
+	var output bytes.Buffer
+	if err := New(fakeController{}).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := resp["result"].(map[string]any)
+	legend, ok := result["legend"].(map[string]any)
+	if !ok {
+		t.Fatalf("annotated screenshot result missing legend: %#v", result)
+	}
+	e1, ok := legend["e1"].(map[string]any)
+	if !ok {
+		t.Fatalf("legend missing e1: %#v", legend)
+	}
+	if e1["role"] != "button" || e1["name"] != "Submit" {
+		t.Fatalf("legend e1 = %#v", e1)
+	}
+	content := result["content"].([]any)
+	img := content[0].(map[string]any)
+	if img["type"] != "image" || img["mimeType"] != "image/png" {
+		t.Fatalf("annotated content[0] = %#v", img)
+	}
+}
+
+func TestBrowserScreenshotDefaultUnchanged(t *testing.T) {
+	// annotate omitted -> plain path, no legend.
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_screenshot","arguments":{}}}` + "\n"
+	var output bytes.Buffer
+	if err := New(fakeController{}).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := resp["result"].(map[string]any)
+	if _, ok := result["legend"]; ok {
+		t.Fatalf("plain screenshot must not include a legend: %#v", result)
+	}
+}
+
 func TestBrowserFindDefaultsToBoundedResults(t *testing.T) {
 	ctrl := &recordingController{}
 	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_find","arguments":{"query":"checkout"}}}` + "\n"
@@ -735,7 +822,16 @@ func (fakeController) Scroll(context.Context, string) (browser.ActionResult, err
 	return browser.ActionResult{OK: true}, nil
 }
 func (fakeController) Screenshot(context.Context) (browser.Screenshot, error) {
-	return browser.Screenshot{}, nil
+	return browser.Screenshot{MIMEType: "image/png", Base64: "UExBSU4="}, nil
+}
+func (fakeController) ScreenshotAnnotated(context.Context, string) (browser.AnnotatedScreenshot, error) {
+	return browser.AnnotatedScreenshot{
+		MIMEType: "image/png",
+		Base64:   "QU5OT1RBVEVE",
+		Legend: map[string]browser.LegendEntry{
+			"e1": {Ref: "e1", Name: "Submit", Role: "button", X: 10, Y: 20, Width: 100, Height: 40},
+		},
+	}, nil
 }
 func (fakeController) ScreenshotElement(context.Context, string) (browser.Screenshot, error) {
 	return browser.Screenshot{}, nil

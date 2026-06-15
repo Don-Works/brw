@@ -69,6 +69,32 @@ type Screenshot struct {
 	Base64   string `json:"base64,omitempty"`
 }
 
+// LegendEntry maps one Set-of-Marks label drawn on an annotated screenshot back
+// to the semantic ref agents pass to browser_click. X/Y/Width/Height are the
+// element's top-level viewport box (the same coordinate space the overlay label
+// is painted at and that the CDP mouse path operates in).
+type LegendEntry struct {
+	Ref    string  `json:"ref"`
+	Name   string  `json:"name,omitempty"`
+	Role   string  `json:"role,omitempty"`
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+// AnnotatedScreenshot is a Set-of-Marks (SoM) capture: a PNG with transient
+// numbered/labelled boxes drawn over the frontier elements, plus a legend mapping
+// each drawn ref to its box + role + name. The overlay is injected immediately
+// before capture and removed immediately after, so it never mutates the page the
+// agent then acts on. Labels are the SAME refs returned by browser_snapshot.
+type AnnotatedScreenshot struct {
+	MIMEType string                 `json:"mime_type"`
+	Data     []byte                 `json:"-"`
+	Base64   string                 `json:"base64,omitempty"`
+	Legend   map[string]LegendEntry `json:"legend"`
+}
+
 // NotifyOptions describes a desktop notification to surface to the human
 // operator when the agent reaches a hand-off point (needs_input), finishes
 // (done), or fails (error). It is transport-agnostic: the extension bridge

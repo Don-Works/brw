@@ -922,6 +922,81 @@ func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
 	return Screenshot{MIMEType: "image/png", Data: data, Base64: base64.StdEncoding.EncodeToString(data)}, nil
 }
 
+// ScreenshotAnnotated captures a Set-of-Marks (SoM) screenshot: it takes an
+// authoritative snapshot in the given mode (defaulting to "frontier"), draws a
+// transient labelled box over each frontier element using the SAME refs the
+// snapshot returned, captures the PNG via CDP, removes the overlay, and returns
+// the PNG plus a ref->box legend. The overlay is removed in every path (success
+// or error) so the page the agent then acts on is never mutated. Labels are the
+// exact refs an agent passes to browser_click, so the vision-grounded marks and
+// the semantic action surface stay in lockstep.
+func (m *Manager) ScreenshotAnnotated(ctx context.Context, mode string) (AnnotatedScreenshot, error) {
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return AnnotatedScreenshot{}, err
+	}
+	defer cancel()
+
+	if strings.TrimSpace(mode) == "" {
+		mode = snapshot.DefaultSnapshotMode
+	}
+	opts := snapshot.NormalizeOptions(snapshot.SnapshotOptions{Mode: mode})
+	snap, err := snapshot.EvaluateWithOptions(tabCtx, opts)
+	if err != nil {
+		return AnnotatedScreenshot{}, err
+	}
+	m.refs.Observe(tabID, snap.Elements)
+
+	// Build marks (and the role/name half of the legend) from the snapshot. Only
+	// in-viewport elements are worth labelling — a screenshot captures the current
+	// viewport, so an off-screen ref would draw nothing.
+	marks := make([]snapshot.AnnotationMark, 0, len(snap.Elements))
+	meta := make(map[string]snapshot.Element, len(snap.Elements))
+	for _, el := range snap.Elements {
+		if !el.InViewport {
+			continue
+		}
+		marks = append(marks, snapshot.AnnotationMark{Ref: el.Ref, Name: el.Name, Role: el.Role})
+		meta[el.Ref] = el
+	}
+
+	boxes, err := snapshot.InjectAnnotationOverlay(tabCtx, marks)
+	// Always tear the overlay down, even when injection itself errored partway.
+	defer func() { _, _ = snapshot.RemoveAnnotationOverlay(tabCtx) }()
+	if err != nil {
+		return AnnotatedScreenshot{}, err
+	}
+
+	var data []byte
+	if err := chromedp.Run(tabCtx, chromedp.CaptureScreenshot(&data)); err != nil {
+		return AnnotatedScreenshot{}, err
+	}
+
+	legend := make(map[string]LegendEntry, len(boxes))
+	for _, b := range boxes {
+		if !b.OK {
+			continue
+		}
+		el := meta[b.Ref]
+		legend[b.Ref] = LegendEntry{
+			Ref:    b.Ref,
+			Name:   el.Name,
+			Role:   el.Role,
+			X:      b.X,
+			Y:      b.Y,
+			Width:  b.Width,
+			Height: b.Height,
+		}
+	}
+
+	return AnnotatedScreenshot{
+		MIMEType: "image/png",
+		Data:     data,
+		Base64:   base64.StdEncoding.EncodeToString(data),
+		Legend:   legend,
+	}, nil
+}
+
 func (m *Manager) ScreenshotElement(ctx context.Context, ref string) (Screenshot, error) {
 	_, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {

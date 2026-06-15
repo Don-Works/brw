@@ -43,6 +43,7 @@ type Controller interface {
 	Scroll(context.Context, string) (browser.ActionResult, error)
 	WaitFor(context.Context, string, time.Duration) error
 	Screenshot(context.Context) (browser.Screenshot, error)
+	ScreenshotAnnotated(context.Context, string) (browser.AnnotatedScreenshot, error)
 	ScreenshotElement(context.Context, string) (browser.Screenshot, error)
 	Evaluate(context.Context, string) (any, error)
 	NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error)
@@ -715,12 +716,32 @@ func (s *Server) ungroupTabs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	// Set-of-Marks capture: draw ref-labelled boxes over frontier elements and
+	// return the PNG plus a ref->box legend. The legend is only representable in
+	// the JSON (base64) response; a raw response still returns the annotated PNG
+	// bytes but drops the legend.
+	if q.Get("annotate") == "1" {
+		shot, err := s.manager.ScreenshotAnnotated(requestContext(r), "frontier")
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if q.Get("base64") == "1" {
+			writeJSON(w, http.StatusOK, shot)
+			return
+		}
+		w.Header().Set("content-type", shot.MIMEType)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(shot.Data)
+		return
+	}
 	shot, err := s.manager.Screenshot(requestContext(r))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if r.URL.Query().Get("base64") == "1" {
+	if q.Get("base64") == "1" {
 		writeJSON(w, http.StatusOK, shot)
 		return
 	}

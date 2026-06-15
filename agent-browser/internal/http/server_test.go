@@ -235,6 +235,36 @@ func TestNotifyForwardsBodyAndReturnsDelivery(t *testing.T) {
 	}
 }
 
+// TestScreenshotAnnotateReturnsLegend verifies ?annotate=1&base64=1 routes to
+// the Set-of-Marks path and returns the ref->box legend as JSON, while a plain
+// request stays on the un-annotated path.
+func TestScreenshotAnnotateReturnsLegend(t *testing.T) {
+	ctrl := &fakeController{snap: sampleSnapshot()}
+	server := New("", ctrl)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/visual/screenshot?annotate=1&base64=1", nil)
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got browser.AnnotatedScreenshot
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := got.Legend["e1"]
+	if !ok {
+		t.Fatalf("legend missing e1: %#v", got.Legend)
+	}
+	if entry.Ref != "e1" || entry.Role != "button" || entry.Width != 100 {
+		t.Fatalf("legend entry = %#v", entry)
+	}
+	if got.Base64 == "" {
+		t.Fatal("annotated response has empty base64 PNG")
+	}
+}
+
 func sampleSnapshot() snapshot.PageSnapshot {
 	return snapshot.PageSnapshot{
 		URL:   "https://example.test/form",
@@ -378,6 +408,17 @@ func (f *fakeController) WaitFor(context.Context, string, time.Duration) error {
 
 func (f *fakeController) Screenshot(context.Context) (browser.Screenshot, error) {
 	return browser.Screenshot{}, nil
+}
+
+func (f *fakeController) ScreenshotAnnotated(context.Context, string) (browser.AnnotatedScreenshot, error) {
+	return browser.AnnotatedScreenshot{
+		MIMEType: "image/png",
+		Data:     []byte("ANNOTATEDPNG"),
+		Base64:   "QU5OT1RBVEVEUE5H",
+		Legend: map[string]browser.LegendEntry{
+			"e1": {Ref: "e1", Name: "Submit", Role: "button", X: 10, Y: 20, Width: 100, Height: 40},
+		},
+	}, nil
 }
 
 func (f *fakeController) ScreenshotElement(context.Context, string) (browser.Screenshot, error) {

@@ -257,6 +257,108 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     return Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true');
   }
 
+  // islandScore ranks a visual island by size and viewport intersection so the
+  // most significant painted regions surface first and small/offscreen ones drop
+  // out under the cap. Returns 0 when nothing intersects the viewport.
+  function islandScore(rect, area) {
+    if (area <= 0) return 0;
+    var visibleArea = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0)) *
+                      Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+    if (visibleArea === 0) return 0;
+    var score = Math.min(area / 10000, 500); // base score by size, normalized to 10kpx units
+    score += visibleArea / 5000;             // boost for viewport intersection
+    if (rect.left < window.innerWidth * 0.1 && rect.top < window.innerHeight * 0.2) {
+      score += 100; // boost above-fold, left-aligned (typical primary content)
+    }
+    return score;
+  }
+
+  // detectVisualIslands finds semantically-opaque visual content the DOM walker
+  // skips: canvas/svg/video tags, large images, large background-image boxes with
+  // no text/interactive children, and conservatively-detected custom-rendered
+  // widgets. Each island scores by islandScore(); the top N (default 10) survive.
+  // Returns [{ el, visualType, score, visualHint }] sorted by score desc.
+  function detectVisualIslands(opts) {
+    var islands = [];
+    var visualSelector = 'canvas, svg, video, img';
+    var seen = new Set();
+
+    // 1. tag-based visual elements (canvas / svg / video / large img)
+    for (var el of all(visualSelector)) {
+      if (!isElementLike(el) || seen.has(el)) continue;
+      if (!visible(el) || !inViewport(el)) continue;
+      var tag = el.tagName.toLowerCase();
+      var r = el.getBoundingClientRect();
+      var area = r.width * r.height;
+      var hint = clean(el.getAttribute('alt') || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+      var visualType = null;
+      var score = 0;
+      if (tag === 'canvas') { visualType = 'canvas'; score = islandScore(r, area); }
+      else if (tag === 'svg') { visualType = 'svg'; score = islandScore(r, area); }
+      else if (tag === 'video') { visualType = 'video'; score = islandScore(r, area); }
+      else if (tag === 'img') {
+        if (area > 50000) { visualType = 'image'; score = islandScore(r, area); }
+        else continue; // skip thumbnail bloat
+      }
+      if (visualType && score > 0) {
+        islands.push({ el: el, visualType: visualType, score: score, visualHint: hint });
+        seen.add(el);
+      }
+    }
+
+    // 2. background-image elements: large box, no text, no interactive children
+    for (var el2 of all('*')) {
+      if (seen.has(el2) || !isElementLike(el2) || !visible(el2) || !inViewport(el2)) continue;
+      var style = winFor(el2).getComputedStyle(el2);
+      if (!style) continue;
+      var bgImage = style.backgroundImage;
+      if (!bgImage || bgImage === 'none') continue;
+      var r2 = el2.getBoundingClientRect();
+      var area2 = r2.width * r2.height;
+      if (area2 < 50000) continue;
+      var hasText = clean(el2.innerText || '').length > 10;
+      var hasInteractive = el2.querySelector('button, a[href], input, [role=button]');
+      if (hasText || hasInteractive) continue;
+      var score2 = islandScore(r2, area2);
+      if (score2 > 0) {
+        var hint2 = clean(el2.getAttribute('aria-label') || el2.getAttribute('title') || '');
+        islands.push({ el: el2, visualType: 'bg_image', score: score2, visualHint: hint2 });
+        seen.add(el2);
+      }
+    }
+
+    // 3. custom-rendered widgets: large, styled, no semantic role, minimal
+    // children/text. Conservative — scoped to inline-styled boxes only.
+    for (var el3 of all('[style*="background"], [style*="border"], [style*="shadow"]')) {
+      if (seen.has(el3) || !isElementLike(el3) || !visible(el3) || !inViewport(el3)) continue;
+      var r3 = el3.getBoundingClientRect();
+      var area3 = r3.width * r3.height;
+      if (area3 < 20000) continue;
+      var roleAttr = el3.getAttribute('role');
+      var hasRole = roleAttr && roleAttr !== 'generic';
+      var hasChildren = el3.querySelector('*');
+      var hasText3 = clean(el3.innerText || '').length > 5;
+      if (!hasRole && (!hasChildren || !hasText3)) {
+        var style3 = winFor(el3).getComputedStyle(el3);
+        var isStyledBox = (style3.backgroundColor && style3.backgroundColor !== 'rgba(0, 0, 0, 0)') ||
+                          (style3.borderWidth && style3.borderWidth !== '0px') ||
+                          (style3.boxShadow && style3.boxShadow !== 'none');
+        if (isStyledBox) {
+          var score3 = islandScore(r3, area3) * 0.8; // less certain — reduce
+          if (score3 > 0) {
+            var hint3 = clean(el3.getAttribute('aria-label') || el3.getAttribute('title') || '');
+            islands.push({ el: el3, visualType: 'custom', score: score3, visualHint: hint3 });
+            seen.add(el3);
+          }
+        }
+      }
+    }
+
+    islands.sort(function(a, b) { return b.score - a.score; });
+    var ilimit = Number(opts.visual_islands_limit || 0) || 10;
+    return islands.slice(0, ilimit);
+  }
+
 	function structuralSignals(el, role, active) {
 		const signals = [];
 		const tag = el.tagName.toLowerCase();
@@ -433,7 +535,48 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       return String(a.ref || '').localeCompare(String(b.ref || ''));
     });
   }
-  const returned = limit > 0 ? elements.slice(0, limit) : elements;
+
+  // Optionally collect visual islands and merge them into the element list. They
+  // reuse the stable ref system (refFor) so a ref minted for a canvas survives
+  // re-renders exactly like a DOM-element ref, and carry source:["visual"] plus a
+  // visual_type/visual_hint so the model can reason about otherwise-opaque paint.
+  let visualElements = [];
+  if (Boolean(opts.visual_islands)) {
+    const islands = detectVisualIslands(opts);
+    for (const island of islands) {
+      const el = island.el;
+      const role = 'generic'; // visual islands are not interactive by definition
+      const name = island.visualHint || '';
+      const key = keyFor(el, role, name);
+      const stableKey = stableKeyFor(el, role);
+      const ref = refFor(el, key, stableKey);
+      visualElements.push({
+        ref,
+        role: 'generic',
+        name,
+        tag: el.tagName.toLowerCase(),
+        type: '',
+        href: '',
+        value: '',
+        visible: true,
+        in_viewport: true,
+        disabled: false,
+        required: false,
+        controls: '',
+        signals: ['visual-island'],
+        source: ['visual'],
+        visual_type: island.visualType,
+        visual_hint: island.visualHint || '',
+        key
+      });
+    }
+  }
+
+  // Merge: DOM elements first, then visual islands, then apply the cap. In
+  // frontier mode the merged limit is the frontier limit; in unbounded modes a
+  // limit of 0 means "return everything".
+  const allElements = visualElements.length ? elements.concat(visualElements) : elements;
+  const returned = limit > 0 ? allElements.slice(0, limit) : allElements;
   for (const item of returned) delete item._frontier_score;
 
   state.version = (state.version || 0) + 1;
@@ -446,7 +589,8 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       generated_at: new Date().toISOString(),
       element_count: returned.length,
       total_candidates: totalCandidates,
-      truncated: limit > 0 && totalCandidates > returned.length,
+      visual_island_count: visualElements.length,
+      truncated: limit > 0 && (totalCandidates + visualElements.length) > returned.length,
       mode: frontierMode ? 'frontier' : 'all',
       include_hidden: includeHidden,
       version: state.version,

@@ -46,6 +46,7 @@ type Controller interface {
 	Press(context.Context, string) (browser.ActionResult, error)
 	Scroll(context.Context, string) (browser.ActionResult, error)
 	Screenshot(context.Context) (browser.Screenshot, error)
+	ScreenshotAnnotated(context.Context, string) (browser.AnnotatedScreenshot, error)
 	ScreenshotElement(context.Context, string) (browser.Screenshot, error)
 	WaitFor(context.Context, string, time.Duration) error
 	Evaluate(context.Context, string) (any, error)
@@ -470,6 +471,22 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		}
 		return toolJSON(s.manager.Scroll(ctx, req.Direction))
 	case "browser_screenshot":
+		var req struct {
+			Annotate bool `json:"annotate"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		if req.Annotate {
+			shot, err := s.manager.ScreenshotAnnotated(ctx, "frontier")
+			if err != nil {
+				return toolError(err), nil
+			}
+			return map[string]any{
+				"content": []toolContent{{Type: "image", Data: shot.Base64, MIMEType: shot.MIMEType}},
+				"legend":  shot.Legend,
+			}, nil
+		}
 		shot, err := s.manager.Screenshot(ctx)
 		if err != nil {
 			return toolError(err), nil
@@ -793,16 +810,18 @@ func tools() []map[string]any {
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, nil)),
 		tool("browser_snapshot", "Return interactive controls with stable refs. Defaults to a bounded visible/actionable viewport frontier; use mode:\"all\" for full-page debugging (returns every matching element including offscreen/hidden controls — useful for comprehensive page analysis), and add include_hidden:true only when hidden inputs are needed. Metadata includes total_candidates for the full count before filtering. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"tab_id":         stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
-			"mode":           stringSchema("frontier (default, scored visible/actionable controls) or all (full matching list, including offscreen/currently invisible matching controls) or form_lens (form fields with validation state only)."),
-			"query":          stringSchema("Case-insensitive substring match across ref, role, name, tag, type, href, and value."),
-			"text":           stringSchema("Alias for query-style text filtering."),
-			"role":           stringSchema("ARIA/semantic role to include, for example button or textbox."),
-			"limit":          integerSchema("Maximum number of elements to return. Defaults to 40 in frontier mode."),
-			"viewport_only":  boolSchema("Only return elements intersecting the viewport. Forced true in default frontier mode."),
-			"include_hidden": boolSchema("Include input[type=hidden] fields as role hidden for explicit debugging. Defaults false."),
-			"include_ax":     boolSchema("Include full accessibility-tree enrichment. Expensive; defaults false."),
-			"since":          integerSchema("Reserved page-state version for future delta snapshots."),
+			"tab_id":               stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+			"mode":                 stringSchema("frontier (default, scored visible/actionable controls) or all (full matching list, including offscreen/currently invisible matching controls) or form_lens (form fields with validation state only)."),
+			"query":                stringSchema("Case-insensitive substring match across ref, role, name, tag, type, href, and value."),
+			"text":                 stringSchema("Alias for query-style text filtering."),
+			"role":                 stringSchema("ARIA/semantic role to include, for example button or textbox."),
+			"limit":                integerSchema("Maximum number of elements to return. Defaults to 40 in frontier mode."),
+			"viewport_only":        boolSchema("Only return elements intersecting the viewport. Forced true in default frontier mode."),
+			"include_hidden":       boolSchema("Include input[type=hidden] fields as role hidden for explicit debugging. Defaults false."),
+			"include_ax":           boolSchema("Include full accessibility-tree enrichment. Expensive; defaults false."),
+			"visual_islands":       boolSchema("Detect semantically-opaque visual content (canvas/svg/video/large image/background-image/custom-rendered widget) and emit each as an element with source:[\"visual\"], visual_type, and visual_hint. Off by default; islands compete with DOM elements in the merged list up to the limit, so dense pages stay token-efficient."),
+			"visual_islands_limit": integerSchema("Cap on detected visual islands before merging into the element list. Defaults to 10."),
+			"since":                integerSchema("Reserved page-state version for future delta snapshots."),
 		}, nil)),
 		tool("browser_find", "Find matching semantic element refs without dumping the full page. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id":         stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
@@ -911,8 +930,9 @@ func tools() []map[string]any {
 			"direction": stringSchema("up, down, left, or right."),
 			"tab_id":    stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"direction"})),
-		tool("browser_screenshot", "Capture a PNG screenshot for visual fallback/debugging. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		tool("browser_screenshot", "Capture a PNG screenshot for visual fallback/debugging. Pass optional tab_id to target a specific tab. Set annotate:true for a Set-of-Marks capture: each in-viewport frontier element is drawn with a labelled box whose label is the SAME ref returned by browser_snapshot (e.g. e17), and the response carries a legend mapping each ref to its box (x,y,width,height) plus role and name — so a vision model can read a label off the image and act on it with browser_click using that exact ref. The overlay is removed immediately after capture and never mutates the page. Default (annotate omitted/false) is byte-identical to the plain capture.", object(map[string]any{
+			"tab_id":   stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+			"annotate": boolSchema("Draw Set-of-Marks ref labels over frontier elements and return a ref->box legend. Defaults false (plain screenshot)."),
 		}, nil)),
 		tool("browser_screenshot_element", "Capture a PNG screenshot of a semantic element ref for visual fallback/debugging. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":    stringSchema("Element ref from browser_snapshot."),

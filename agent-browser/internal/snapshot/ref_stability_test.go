@@ -75,7 +75,7 @@ func TestRefStableAcrossReRenderWithTextChange(t *testing.T) {
 // TestRefDistinctSiblingsWithoutStableIdentityDoNotCollapse guards the collision
 // risk in the SPEC 4 fix: two genuinely distinct elements that share tag+role and
 // carry NO stable identity attribute (no id/name/href/aria-label) must still get
-// DISTINCT refs. For these, stableKeyFor returns '' and refFor falls back to the
+// DISTINCT refs. For these, stableKeyFor returns ” and refFor falls back to the
 // legacy text+path key, preserving today's behavior.
 func TestRefDistinctSiblingsWithoutStableIdentityDoNotCollapse(t *testing.T) {
 	html := `<!DOCTYPE html><html><body>

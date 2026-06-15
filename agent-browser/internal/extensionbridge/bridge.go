@@ -1239,6 +1239,81 @@ func (b *Bridge) ScreenshotElement(ctx context.Context, ref string) (browser.Scr
 	return screenshotFromRaw(raw)
 }
 
+// ScreenshotAnnotated draws a Set-of-Marks overlay (ref-labelled boxes over the
+// in-viewport frontier elements), captures the page, removes the overlay, and
+// returns the PNG plus a ref->box legend. It mirrors the direct-CDP manager path
+// but runs the overlay JS over the bridge's own Runtime.evaluate channel. The
+// overlay is removed in every path so the page the agent acts on is unmutated.
+func (b *Bridge) ScreenshotAnnotated(ctx context.Context, mode string) (browser.AnnotatedScreenshot, error) {
+	if strings.TrimSpace(mode) == "" {
+		mode = snapshot.DefaultSnapshotMode
+	}
+	opts := snapshot.NormalizeOptions(snapshot.SnapshotOptions{Mode: mode})
+	snap, err := b.Snapshot(ctx, opts)
+	if err != nil {
+		return browser.AnnotatedScreenshot{}, err
+	}
+
+	tabID := b.contextTabID(ctx)
+	marks := make([]snapshot.AnnotationMark, 0, len(snap.Elements))
+	meta := make(map[string]snapshot.Element, len(snap.Elements))
+	for _, el := range snap.Elements {
+		if !el.InViewport {
+			continue
+		}
+		marks = append(marks, snapshot.AnnotationMark{Ref: el.Ref, Name: el.Name, Role: el.Role})
+		meta[el.Ref] = el
+	}
+
+	injectExpr, err := snapshot.InjectAnnotationOverlayExpr(marks)
+	if err != nil {
+		return browser.AnnotatedScreenshot{}, err
+	}
+	var overlay snapshot.AnnotationOverlayResult
+	err = b.evaluate(ctx, injectExpr, tabID, &overlay)
+	// Always remove the overlay, even when injection errored partway.
+	defer func() {
+		var discard json.RawMessage
+		_ = b.evaluate(ctx, snapshot.RemoveAnnotationOverlayExpr(), tabID, &discard)
+	}()
+	if err != nil {
+		return browser.AnnotatedScreenshot{}, err
+	}
+
+	raw, err := b.cdp(ctx, tabID, "Page.captureScreenshot", map[string]any{"format": "png"})
+	if err != nil {
+		return browser.AnnotatedScreenshot{}, err
+	}
+	shot, err := screenshotFromRaw(raw)
+	if err != nil {
+		return browser.AnnotatedScreenshot{}, err
+	}
+
+	legend := make(map[string]browser.LegendEntry, len(overlay.Legend))
+	for _, box := range overlay.Legend {
+		if !box.OK {
+			continue
+		}
+		el := meta[box.Ref]
+		legend[box.Ref] = browser.LegendEntry{
+			Ref:    box.Ref,
+			Name:   el.Name,
+			Role:   el.Role,
+			X:      box.X,
+			Y:      box.Y,
+			Width:  box.Width,
+			Height: box.Height,
+		}
+	}
+
+	return browser.AnnotatedScreenshot{
+		MIMEType: shot.MIMEType,
+		Data:     shot.Data,
+		Base64:   shot.Base64,
+		Legend:   legend,
+	}, nil
+}
+
 func (b *Bridge) observeAction(ctx context.Context, message string) browser.ActionResult {
 	return b.observeActionWithBefore(ctx, message, nil)
 }
