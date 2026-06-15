@@ -84,11 +84,27 @@ func normalizeURLForGuard(url string) string {
 // recorded requests, optionally filtered by a case-insensitive URL substring.
 // In-page is the required baseline so capture works on both transports.
 func (m *Manager) NetworkCapture(ctx context.Context, filter string) ([]snapshot.CapturedRequest, error) {
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer cancel()
+	// Arm the interceptor to re-install on every future document for this tab so
+	// capture survives full navigations/reloads (direct-CDP transport). Done once
+	// per tab; best-effort — a failure here must not break same-page capture.
+	m.netCaptureMu.Lock()
+	armed := m.netCaptureTabs[tabID]
+	m.netCaptureMu.Unlock()
+	if !armed {
+		if regErr := snapshot.RegisterNetworkCaptureOnNewDocument(tabCtx); regErr == nil {
+			m.netCaptureMu.Lock()
+			if m.netCaptureTabs == nil {
+				m.netCaptureTabs = map[string]bool{}
+			}
+			m.netCaptureTabs[tabID] = true
+			m.netCaptureMu.Unlock()
+		}
+	}
 	requests, err := snapshot.CaptureNetwork(tabCtx)
 	if err != nil {
 		return nil, err

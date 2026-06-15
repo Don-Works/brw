@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
@@ -183,6 +184,19 @@ const ReplayRequestScript = `(function(opts) {
 func InstallNetworkCapture(ctx context.Context) error {
 	var ignored json.RawMessage
 	return chromedp.Run(ctx, chromedp.Evaluate(NetworkCaptureInstallScript, &ignored))
+}
+
+// RegisterNetworkCaptureOnNewDocument arms the interceptor to (re)install at
+// document-start on every subsequent navigation/reload via
+// Page.addScriptToEvaluateOnNewDocument, so capture survives full navigations
+// instead of being wiped with the page's JS context. Direct-CDP transport only
+// (the extension bridge has no CDP); the install script's window guard keeps it
+// idempotent even if a normal in-page install also runs. Call once per tab.
+func RegisterNetworkCaptureOnNewDocument(ctx context.Context) error {
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		_, err := page.AddScriptToEvaluateOnNewDocument(NetworkCaptureInstallScript).Do(ctx)
+		return err
+	}))
 }
 
 // CaptureNetwork installs the interceptor (idempotent) then drains and returns

@@ -66,6 +66,11 @@ type Manager struct {
 	// policy holds the opt-in consent/safety envelope (purchase gate +
 	// per-origin allow/deny). Default-empty preserves the open-web stance.
 	policy *PolicyStore
+
+	// netCaptureTabs records which tabs have had the network interceptor armed
+	// to re-install on every new document (so capture survives navigations).
+	netCaptureMu   sync.Mutex
+	netCaptureTabs map[string]bool
 }
 
 type tabContext struct {
@@ -130,10 +135,11 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		lastState:     map[string]*SemanticState{},
 		versions:      map[string]int64{},
 		trace:         make([]TraceEntry, 0, 256),
-		userDataDir:   cfg.UserDataDir,
-		downloadIndex: map[string]int{},
-		cancels:       newCancelRegistry(),
-		policy:        NewPolicyStore(),
+		userDataDir:    cfg.UserDataDir,
+		downloadIndex:  map[string]int{},
+		cancels:        newCancelRegistry(),
+		policy:         NewPolicyStore(),
+		netCaptureTabs: map[string]bool{},
 	}
 
 	if err := m.connect(); err != nil {

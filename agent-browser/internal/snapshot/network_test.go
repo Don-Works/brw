@@ -127,6 +127,46 @@ func TestNetworkCaptureRecordsFetch(t *testing.T) {
 	}
 }
 
+func TestNetworkCaptureSurvivesNavigation(t *testing.T) {
+	ctx, cancel := newHeadlessCtx(t)
+	defer cancel()
+
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+
+	if err := chromedp.Run(runCtx, chromedp.Navigate("about:blank")); err != nil {
+		t.Fatalf("navigate about:blank: %v", err)
+	}
+	// Arm the interceptor to re-install at document-start on every new document.
+	if err := RegisterNetworkCaptureOnNewDocument(runCtx); err != nil {
+		t.Fatalf("register on new document: %v", err)
+	}
+	// Navigate to a fresh page that fetches on load. Crucially we do NOT call
+	// InstallNetworkCapture after navigating — the armed script must have
+	// re-installed the interceptor at document-start and wrapped the page's own
+	// fetch.
+	if err := chromedp.Run(runCtx, chromedp.Navigate(networkFixture)); err != nil {
+		t.Fatalf("navigate fixture: %v", err)
+	}
+	if err := chromedp.Run(runCtx, chromedp.Sleep(300*time.Millisecond)); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	var requests []CapturedRequest
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(NetworkCaptureDrainScript, &requests)); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	found := false
+	for _, r := range requests {
+		if strings.Contains(r.URL, "data:application/json") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("interceptor did not survive navigation (no manual reinstall); captured: %+v", requests)
+	}
+}
+
 func TestReplaySafeGetReturnsStatus(t *testing.T) {
 	ctx, cancel := newHeadlessCtx(t)
 	defer cancel()
