@@ -17,7 +17,8 @@ import (
 // site-specific logic. Refs resolve through snapshot.ResolveOrRecoverBox so
 // iframe coordinate translation + scroll-into-view apply, exactly like the
 // normal click path, and every action emits a post-action observation and is
-// routed through the same PurchaseControlWarning policy guard.
+// routed through the same enforceable guardAction policy gate (the
+// purchase/payment gate blocks before actuating, exactly like Click).
 
 const defaultDragSteps = 12
 
@@ -138,6 +139,14 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
+	currentURL := ""
+	if before != nil {
+		currentURL = before.URL
+	}
+	policyWarning, blockErr := m.guardAction(currentURL, label, href)
+	if blockErr != nil {
+		return ActionResult{}, blockErr
+	}
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return dispatchClick(ctx, x, y, button, clickCount)
 	}), chromedp.Sleep(150*time.Millisecond)); err != nil {
@@ -150,8 +159,8 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 	}
 	result := m.observeActionWithBefore(tabID, tabCtx, desc, before)
 	result.DurationMS = time.Since(start).Milliseconds()
-	if warning := PurchaseControlWarning(label, href); warning != "" {
-		result.Warning = warning
+	if policyWarning != "" {
+		result.Warning = policyWarning
 	}
 	if recovery != "" && result.Warning == "" {
 		result.Warning = recovery
@@ -203,6 +212,14 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
+	currentURL := ""
+	if before != nil {
+		currentURL = before.URL
+	}
+	policyWarning, blockErr := m.guardAction(currentURL, label, href)
+	if blockErr != nil {
+		return ActionResult{}, blockErr
+	}
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return input.DispatchMouseEvent(eventType, x, y).
 			WithButton(button).
@@ -216,8 +233,8 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 	desc := fmt.Sprintf("%s %s at %s", action, buttonLabel(button), pointDescriptor(opts.MousePoint))
 	result := m.observeActionWithBefore(tabID, tabCtx, desc, before)
 	result.DurationMS = time.Since(start).Milliseconds()
-	if warning := PurchaseControlWarning(label, href); warning != "" {
-		result.Warning = warning
+	if policyWarning != "" {
+		result.Warning = policyWarning
 	}
 	if recovery != "" && result.Warning == "" {
 		result.Warning = recovery
@@ -269,6 +286,14 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
+	currentURL := ""
+	if before != nil {
+		currentURL = before.URL
+	}
+	policyWarning, blockErr := m.guardAction(currentURL, label, href)
+	if blockErr != nil {
+		return ActionResult{}, blockErr
+	}
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return dispatchDrag(ctx, fromX, fromY, toX, toY, steps, button)
 	}), chromedp.Sleep(150*time.Millisecond)); err != nil {
@@ -278,8 +303,8 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	desc := fmt.Sprintf("dragged %s -> %s", pointDescriptor(opts.From), pointDescriptor(opts.To))
 	result := m.observeActionWithBefore(tabID, tabCtx, desc, before)
 	result.DurationMS = time.Since(start).Milliseconds()
-	if warning := PurchaseControlWarning(label, href); warning != "" {
-		result.Warning = warning
+	if policyWarning != "" {
+		result.Warning = policyWarning
 	}
 	if recovery != "" && result.Warning == "" {
 		result.Warning = recovery
