@@ -37,6 +37,8 @@ type Controller interface {
 	ScreenshotElement(context.Context, string) (browser.Screenshot, error)
 	Evaluate(context.Context, string) (any, error)
 	NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error)
+	NetworkCapture(context.Context, string) ([]snapshot.CapturedRequest, error)
+	ReplayRequest(context.Context, browser.ReplayRequestParams) (snapshot.ReplayResult, error)
 	ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error)
 	ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error)
 	Observe(context.Context) (browser.ObserveResult, error)
@@ -99,6 +101,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/evaluate", s.evaluate)
 	mux.HandleFunc("GET /api/page/network_requests", s.networkRequests)
 	mux.HandleFunc("POST /api/page/network_requests", s.networkRequests)
+	mux.HandleFunc("GET /api/page/network_capture", s.networkCapture)
+	mux.HandleFunc("POST /api/page/network_capture", s.networkCapture)
+	mux.HandleFunc("POST /api/page/replay_request", s.replayRequest)
 	mux.HandleFunc("POST /api/page/execute_plan", s.executePlan)
 	mux.HandleFunc("POST /api/page/batch", s.executeBatch)
 	mux.HandleFunc("GET /api/page/observe", s.observe)
@@ -343,6 +348,44 @@ func (s *Server) networkRequests(w http.ResponseWriter, r *http.Request) {
 		ctx = contextWithTabID(r.Context(), req.TabID)
 	}
 	result, err := s.manager.NetworkRequests(ctx, filter)
+	writeResult(w, result, err)
+}
+
+func (s *Server) networkCapture(w http.ResponseWriter, r *http.Request) {
+	filter := r.URL.Query().Get("filter")
+	ctx := requestContext(r)
+	if r.Method == http.MethodPost {
+		var req struct {
+			Filter string `json:"filter"`
+			TabID  string `json:"tab_id"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		filter = req.Filter
+		ctx = contextWithTabID(r.Context(), req.TabID)
+	}
+	result, err := s.manager.NetworkCapture(ctx, filter)
+	writeResult(w, result, err)
+}
+
+func (s *Server) replayRequest(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Method  string            `json:"method"`
+		URL     string            `json:"url"`
+		Headers map[string]string `json:"headers"`
+		Body    string            `json:"body"`
+		TabID   string            `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.ReplayRequest(contextWithTabID(r.Context(), req.TabID), browser.ReplayRequestParams{
+		Method:  req.Method,
+		URL:     req.URL,
+		Headers: req.Headers,
+		Body:    req.Body,
+	})
 	writeResult(w, result, err)
 }
 

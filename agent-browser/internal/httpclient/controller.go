@@ -185,6 +185,23 @@ func (c *Controller) NetworkRequests(ctx context.Context, filter string) ([]brow
 	return out, err
 }
 
+func (c *Controller) NetworkCapture(ctx context.Context, filter string) ([]snapshot.CapturedRequest, error) {
+	var out []snapshot.CapturedRequest
+	err := c.post(ctx, "/api/page/network_capture", map[string]string{"filter": filter}, &out)
+	return out, err
+}
+
+func (c *Controller) ReplayRequest(ctx context.Context, params browser.ReplayRequestParams) (snapshot.ReplayResult, error) {
+	var out snapshot.ReplayResult
+	err := c.post(ctx, "/api/page/replay_request", map[string]any{
+		"method":  params.Method,
+		"url":     params.URL,
+		"headers": params.Headers,
+		"body":    params.Body,
+	}, &out)
+	return out, err
+}
+
 func (c *Controller) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {
 	var out browser.PlanResult
 	err := c.post(ctx, "/api/page/execute_plan", map[string]any{"steps": steps}, &out)

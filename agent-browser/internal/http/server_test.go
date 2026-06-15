@@ -280,6 +280,14 @@ func (f *fakeController) NetworkRequests(context.Context, string) ([]browser.Net
 	return nil, nil
 }
 
+func (f *fakeController) NetworkCapture(context.Context, string) ([]snapshot.CapturedRequest, error) {
+	return nil, nil
+}
+
+func (f *fakeController) ReplayRequest(context.Context, browser.ReplayRequestParams) (snapshot.ReplayResult, error) {
+	return snapshot.ReplayResult{}, nil
+}
+
 func (f *fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error) {
 	return browser.PlanResult{OK: true}, nil
 }
