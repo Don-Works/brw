@@ -342,6 +342,9 @@ func (fakeController) Observe(context.Context) (browser.ObserveResult, error) {
 func (fakeController) ConsoleMessages(context.Context) ([]browser.ConsoleMessage, error) {
 	return nil, nil
 }
+func (fakeController) Downloads(context.Context) (browser.DownloadsResult, error) {
+	return browser.DownloadsResult{Downloads: []browser.DownloadEntry{}}, nil
+}
 func (fakeController) ClickXY(context.Context, float64, float64) (snapshot.ClickXYResult, error) {
 	return snapshot.ClickXYResult{}, nil
 }

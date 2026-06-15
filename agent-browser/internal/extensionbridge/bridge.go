@@ -1711,6 +1711,18 @@ func (b *Bridge) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYRes
 	return result, nil
 }
 
+// Downloads is best-effort over the extension bridge. The bridge cannot
+// observe Browser.downloadWillBegin / downloadProgress events without extension
+// changes, so it returns an empty list plus an explanatory note rather than
+// faking results. The direct-CDP Manager path provides full download tracking.
+func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error) {
+	return browser.DownloadsResult{
+		Downloads: []browser.DownloadEntry{},
+		Count:     0,
+		Note:      "download tracking is not available over the extension bridge; use the direct-CDP backend for browser_downloads",
+	}, nil
+}
+
 func (b *Bridge) GetTrace() browser.TraceResult { return browser.TraceResult{} }
 func (b *Bridge) ClearTrace()                   {}
 

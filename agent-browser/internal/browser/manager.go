@@ -46,6 +46,17 @@ type Manager struct {
 
 	traceMu sync.Mutex
 	trace   []TraceEntry
+
+	// downloads tracks file downloads observed via the Browser.downloadWillBegin /
+	// Browser.downloadProgress CDP events. The listener is wired lazily on first
+	// access and writes into a bounded buffer that Downloads() drains, mirroring
+	// the console-drain pattern.
+	downloadsMu      sync.Mutex
+	downloads        []DownloadEntry
+	downloadIndex    map[string]int // guid -> index into downloads
+	downloadDir      string
+	userDataDir      string
+	downloadsEnabled bool
 }
 
 type tabContext struct {
@@ -110,6 +121,8 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		lastState:     map[string]*SemanticState{},
 		versions:      map[string]int64{},
 		trace:         make([]TraceEntry, 0, 256),
+		userDataDir:   cfg.UserDataDir,
+		downloadIndex: map[string]int{},
 	}
 
 	if err := m.connect(); err != nil {
@@ -1445,6 +1458,9 @@ func (m *Manager) tabContext(tabID string) (context.Context, error) {
 		m.mu.Unlock()
 		return nil, err
 	}
+	// If download tracking is already armed, attach the target-level listener to
+	// this newly created tab context so page-initiated downloads are observed.
+	m.attachDownloadListenerIfEnabled(ctx)
 	return ctx, nil
 }
 

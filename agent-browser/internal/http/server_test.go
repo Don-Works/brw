@@ -297,6 +297,10 @@ func (f *fakeController) ConsoleMessages(context.Context) ([]browser.ConsoleMess
 	return nil, nil
 }
 
+func (f *fakeController) Downloads(context.Context) (browser.DownloadsResult, error) {
+	return browser.DownloadsResult{Downloads: []browser.DownloadEntry{}}, nil
+}
+
 func (f *fakeController) ClickXY(_ context.Context, x float64, y float64) (snapshot.ClickXYResult, error) {
 	f.clickX = x
 	f.clickY = y
