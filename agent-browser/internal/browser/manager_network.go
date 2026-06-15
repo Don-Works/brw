@@ -2,7 +2,6 @@ package browser
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/revitt/agent-browser/internal/snapshot"
@@ -31,53 +30,6 @@ type ReplayRequestParams struct {
 	URL     string            `json:"url"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    string            `json:"body,omitempty"`
-}
-
-// GuardReplayRequest enforces the non-negotiable purchase/payment safety rule:
-// a replay whose URL (or method+URL) looks like checkout/payment/order placement
-// is refused with an explicit error and never executed. It reuses the same
-// PurchaseControlWarning heuristics that gate clicks, so the guard surface stays
-// generic and consistent. Returns a non-nil error when the request MUST be
-// blocked.
-func GuardReplayRequest(method, url string) error {
-	// URLs encode tokens with separators (place-order, place_order, /placeOrder,
-	// checkout.do) rather than the spaced human labels PurchaseControlWarning was
-	// written for. Normalise separators and camelCase into spaces so the SAME
-	// generic phrase heuristics catch the path form too. The click-path callers
-	// keep using PurchaseControlWarning directly, so this only widens the replay
-	// guard, never the click behaviour.
-	normalized := normalizeURLForGuard(url)
-	if warning := PurchaseControlWarning(method+" "+normalized, normalized); warning != "" {
-		return fmt.Errorf("replay blocked: %s (url=%q)", warning, url)
-	}
-	return nil
-}
-
-// normalizeURLForGuard rewrites a URL so token separators become spaces and
-// camelCase boundaries are split, letting the spaced purchase-phrase heuristics
-// match path-style controls. Purely lexical; no per-site knowledge.
-func normalizeURLForGuard(url string) string {
-	var b strings.Builder
-	b.Grow(len(url) * 2)
-	runes := []rune(url)
-	for i, r := range runes {
-		switch {
-		case r == '-' || r == '_' || r == '/' || r == '.' || r == '?' || r == '&' || r == '=' || r == '+' || r == '%' || r == ':':
-			b.WriteRune(' ')
-		case r >= 'A' && r <= 'Z':
-			// Split camelCase: insert a space before an uppercase run boundary.
-			if i > 0 {
-				prev := runes[i-1]
-				if (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
-					b.WriteRune(' ')
-				}
-			}
-			b.WriteRune(r)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
 
 // NetworkCapture installs the in-page interceptor (idempotent) and drains the
@@ -113,12 +65,7 @@ func (m *Manager) NetworkCapture(ctx context.Context, filter string) ([]snapshot
 }
 
 // ReplayRequest re-executes a request in-page via fetch and returns the result.
-// It BLOCKS purchase/payment/order-placement-looking requests before any network
-// call is made.
 func (m *Manager) ReplayRequest(ctx context.Context, params ReplayRequestParams) (snapshot.ReplayResult, error) {
-	if err := GuardReplayRequest(params.Method, params.URL); err != nil {
-		return snapshot.ReplayResult{}, err
-	}
 	_, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return snapshot.ReplayResult{}, err

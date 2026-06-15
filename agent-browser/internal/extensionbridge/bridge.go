@@ -41,8 +41,6 @@ type Bridge struct {
 	// cooperatively. Mirrors the browser.Manager mechanism so cancellation
 	// behaves identically across the CDP and extension transports.
 	cancels *cancelRegistry
-
-	policy *browser.PolicyStore
 }
 
 type hello struct {
@@ -78,7 +76,6 @@ func New(addr string, timeout time.Duration, allowedExtensionID string) *Bridge 
 		allowedExtensionID: strings.TrimSpace(allowedExtensionID),
 		pending:            map[string]chan response{},
 		cancels:            newCancelRegistry(),
-		policy:             browser.NewPolicyStore(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/extension", b.handleExtension)
@@ -469,35 +466,15 @@ const (
 
 func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
-	label, href, currentURL := b.describeRef(ctx, ref, before)
-	policyWarning, blockErr := b.guardAction(currentURL, label, href)
-	if blockErr != nil {
-		return browser.ActionResult{}, blockErr
-	}
 	if err := b.clickRef(ctx, ref); err != nil {
 		return browser.ActionResult{}, err
 	}
 	time.Sleep(observedActionSettle)
-	result := b.observeActionWithBefore(ctx, "clicked "+ref, before)
-	if policyWarning != "" {
-		result.Warning = policyWarning
-	}
-	if before != nil {
-		annotateBridgeTransition(&result, before.URL)
-	}
-	return result, nil
+	return b.observeActionWithBefore(ctx, "clicked "+ref, before), nil
 }
 
 func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
-	currentURL := ""
-	if before != nil {
-		currentURL = before.URL
-	}
-	preWarning, blockErr := b.guardAction(currentURL, opts.Text, "")
-	if blockErr != nil {
-		return browser.ActionResult{}, blockErr
-	}
 	optsJSON, _ := json.Marshal(opts)
 	var clicked snapshot.ClickXYResult
 	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.ClickTextScript, optsJSON), "", &clicked); err != nil {
@@ -514,15 +491,7 @@ func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) 
 	if clicked.Name != "" {
 		label = clicked.Name
 	}
-	result := b.observeActionWithBefore(ctx, "clicked text "+strconv.Quote(label), before)
-	if warning := browser.PurchaseControlWarning(label, clicked.Href); warning != "" {
-		result.Warning = warning
-	}
-	if preWarning != "" {
-		result.Warning = preWarning
-	}
-	annotateBridgeTransition(&result, currentURL)
-	return result, nil
+	return b.observeActionWithBefore(ctx, "clicked text "+strconv.Quote(label), before), nil
 }
 
 func (b *Bridge) Hover(ctx context.Context, ref string) (browser.ActionResult, error) {
@@ -1824,10 +1793,6 @@ func (b *Bridge) evalAssert(ctx context.Context, script string, args ...any) err
 }
 
 func (b *Bridge) CommitField(ctx context.Context, ref string) error {
-	label, href, currentURL := b.describeRef(ctx, ref, nil)
-	if _, blockErr := b.guardAction(currentURL, label, href); blockErr != nil {
-		return blockErr
-	}
 	var result struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`

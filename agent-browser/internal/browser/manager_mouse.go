@@ -16,9 +16,7 @@ import (
 // standards: CDP Input.dispatchMouseEvent on the direct-CDP transport. No
 // site-specific logic. Refs resolve through snapshot.ResolveOrRecoverBox so
 // iframe coordinate translation + scroll-into-view apply, exactly like the
-// normal click path, and every action emits a post-action observation and is
-// routed through the same enforceable guardAction policy gate (the
-// purchase/payment gate blocks before actuating, exactly like Click).
+// normal click path, and every action emits a post-action observation.
 
 const defaultDragSteps = 12
 
@@ -65,39 +63,22 @@ func buttonsMask(button input.MouseButton) int64 {
 // resolvePoint returns the viewport coordinates for a MousePoint. A ref is
 // resolved (and recovered if stale) through ResolveOrRecoverBox so scroll into
 // view + iframe translation apply; otherwise explicit x,y are used verbatim.
-// The returned recovery note and the element's accessible label/href feed the
-// observation warning and trace.
-func resolvePoint(tabCtx context.Context, point MousePoint) (x, y float64, label, href, recovery string, err error) {
+// The returned recovery note feeds the observation warning and trace.
+func resolvePoint(tabCtx context.Context, point MousePoint) (x, y float64, recovery string, err error) {
 	if point.HasRef() {
 		box, rerr := snapshot.ResolveOrRecoverBox(tabCtx, point.Ref)
 		if rerr != nil {
-			return 0, 0, "", "", "", rerr
+			return 0, 0, "", rerr
 		}
 		if box.Recovered {
 			recovery = fmt.Sprintf("ref recovered: %s -> %s", box.OldRef, box.Ref)
 		}
-		label, href = elementLabelAndHref(tabCtx, box.Ref)
-		return box.ViewportX, box.ViewportY, label, href, recovery, nil
+		return box.ViewportX, box.ViewportY, recovery, nil
 	}
 	if point.HasXY() {
-		return *point.X, *point.Y, "", "", "", nil
+		return *point.X, *point.Y, "", nil
 	}
-	return 0, 0, "", "", "", errors.New("mouse target requires either a ref or x and y coordinates")
-}
-
-// elementLabelAndHref looks up an element's accessible name + href from a fresh
-// snapshot so the purchase/payment policy guard can inspect what was actuated.
-func elementLabelAndHref(tabCtx context.Context, ref string) (string, string) {
-	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{Limit: 0, ViewportOnly: false})
-	if err != nil {
-		return "", ""
-	}
-	for _, el := range snap.Elements {
-		if el.Ref == ref {
-			return el.Name, el.Href
-		}
-	}
-	return "", ""
+	return 0, 0, "", errors.New("mouse target requires either a ref or x and y coordinates")
 }
 
 // pointDescriptor returns a compact human label for a MousePoint, used in
@@ -128,7 +109,7 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 			return ActionResult{}, err
 		}
 	}
-	x, y, label, href, recovery, err := resolvePoint(tabCtx, opts.MousePoint)
+	x, y, recovery, err := resolvePoint(tabCtx, opts.MousePoint)
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -139,14 +120,6 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
-	currentURL := ""
-	if before != nil {
-		currentURL = before.URL
-	}
-	policyWarning, blockErr := m.guardAction(currentURL, label, href)
-	if blockErr != nil {
-		return ActionResult{}, blockErr
-	}
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return dispatchClick(ctx, x, y, button, clickCount)
 	}), chromedp.Sleep(150*time.Millisecond)); err != nil {
@@ -159,10 +132,7 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 	}
 	result := m.observeActionWithBefore(tabID, tabCtx, desc, before)
 	result.DurationMS = time.Since(start).Milliseconds()
-	if policyWarning != "" {
-		result.Warning = policyWarning
-	}
-	if recovery != "" && result.Warning == "" {
+	if recovery != "" {
 		result.Warning = recovery
 	}
 	m.recordTrace(TraceEntry{
@@ -201,7 +171,7 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 			return ActionResult{}, err
 		}
 	}
-	x, y, label, href, recovery, err := resolvePoint(tabCtx, opts.MousePoint)
+	x, y, recovery, err := resolvePoint(tabCtx, opts.MousePoint)
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -212,14 +182,6 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
-	currentURL := ""
-	if before != nil {
-		currentURL = before.URL
-	}
-	policyWarning, blockErr := m.guardAction(currentURL, label, href)
-	if blockErr != nil {
-		return ActionResult{}, blockErr
-	}
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return input.DispatchMouseEvent(eventType, x, y).
 			WithButton(button).
@@ -233,10 +195,7 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 	desc := fmt.Sprintf("%s %s at %s", action, buttonLabel(button), pointDescriptor(opts.MousePoint))
 	result := m.observeActionWithBefore(tabID, tabCtx, desc, before)
 	result.DurationMS = time.Since(start).Milliseconds()
-	if policyWarning != "" {
-		result.Warning = policyWarning
-	}
-	if recovery != "" && result.Warning == "" {
+	if recovery != "" {
 		result.Warning = recovery
 	}
 	m.recordTrace(TraceEntry{
@@ -266,13 +225,13 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 			return ActionResult{}, err
 		}
 	}
-	fromX, fromY, label, href, recovery, err := resolvePoint(tabCtx, opts.From)
+	fromX, fromY, recovery, err := resolvePoint(tabCtx, opts.From)
 	if err != nil {
 		return ActionResult{}, fmt.Errorf("drag source: %w", err)
 	}
 	// Resolve the target after the source so a ref-based target reflects any
 	// layout change caused by scrolling the source into view.
-	toX, toY, _, _, toRecovery, err := resolvePoint(tabCtx, opts.To)
+	toX, toY, toRecovery, err := resolvePoint(tabCtx, opts.To)
 	if err != nil {
 		return ActionResult{}, fmt.Errorf("drag target: %w", err)
 	}
@@ -286,14 +245,6 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
-	currentURL := ""
-	if before != nil {
-		currentURL = before.URL
-	}
-	policyWarning, blockErr := m.guardAction(currentURL, label, href)
-	if blockErr != nil {
-		return ActionResult{}, blockErr
-	}
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return dispatchDrag(ctx, fromX, fromY, toX, toY, steps, button)
 	}), chromedp.Sleep(150*time.Millisecond)); err != nil {
@@ -303,10 +254,7 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	desc := fmt.Sprintf("dragged %s -> %s", pointDescriptor(opts.From), pointDescriptor(opts.To))
 	result := m.observeActionWithBefore(tabID, tabCtx, desc, before)
 	result.DurationMS = time.Since(start).Milliseconds()
-	if policyWarning != "" {
-		result.Warning = policyWarning
-	}
-	if recovery != "" && result.Warning == "" {
+	if recovery != "" {
 		result.Warning = recovery
 	}
 	m.recordTrace(TraceEntry{

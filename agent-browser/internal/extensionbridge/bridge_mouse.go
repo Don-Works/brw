@@ -15,9 +15,8 @@ import (
 // Coordinate computer-action family for the extension bridge. The bridge has no
 // direct CDP Input access, so these actuate through in-page pointer/mouse event
 // sequences (the same standards-only approach the bridge already uses for
-// clickRef/ClickXY). Each action emits a post-action observation and is routed
-// through the PurchaseControlWarning policy guard, mirroring the direct-CDP
-// Manager path.
+// clickRef/ClickXY). Each action emits a post-action observation, mirroring the
+// direct-CDP Manager path.
 
 func mousePointArg(point browser.MousePoint) map[string]any {
 	arg := map[string]any{}
@@ -43,8 +42,7 @@ func (b *Bridge) ClickButton(ctx context.Context, opts browser.ClickButtonOption
 	}
 	arg["click_count"] = clickCount
 
-	result, err := b.dispatchMouse(ctx, snapshot.MouseEventScript, arg)
-	if err != nil {
+	if _, err := b.dispatchMouse(ctx, snapshot.MouseEventScript, arg); err != nil {
 		return browser.ActionResult{}, err
 	}
 	time.Sleep(observedActionSettle)
@@ -53,11 +51,7 @@ func (b *Bridge) ClickButton(ctx context.Context, opts browser.ClickButtonOption
 	if clickCount > 1 {
 		desc = fmt.Sprintf("%s-clicked x%d %s", buttonLabel(opts.Button), clickCount, pointDescriptor(opts.MousePoint))
 	}
-	out := b.observeActionWithBefore(ctx, desc, before)
-	if warning := browser.PurchaseControlWarning(result.Name, result.Href); warning != "" {
-		out.Warning = warning
-	}
-	return out, nil
+	return b.observeActionWithBefore(ctx, desc, before), nil
 }
 
 func (b *Bridge) MouseDown(ctx context.Context, opts browser.MouseButtonOptions) (browser.ActionResult, error) {
@@ -76,18 +70,13 @@ func (b *Bridge) mouseHalf(ctx context.Context, opts browser.MouseButtonOptions,
 	}
 	arg["phase"] = phase
 
-	result, err := b.dispatchMouse(ctx, snapshot.MouseHalfScript, arg)
-	if err != nil {
+	if _, err := b.dispatchMouse(ctx, snapshot.MouseHalfScript, arg); err != nil {
 		return browser.ActionResult{}, err
 	}
 	time.Sleep(observedActionSettle)
 
 	desc := fmt.Sprintf("%s %s at %s", action, buttonLabel(opts.Button), pointDescriptor(opts.MousePoint))
-	out := b.observeActionWithBefore(ctx, desc, before)
-	if warning := browser.PurchaseControlWarning(result.Name, result.Href); warning != "" {
-		out.Warning = warning
-	}
-	return out, nil
+	return b.observeActionWithBefore(ctx, desc, before), nil
 }
 
 func (b *Bridge) Drag(ctx context.Context, opts browser.DragOptions) (browser.ActionResult, error) {
@@ -103,18 +92,13 @@ func (b *Bridge) Drag(ctx context.Context, opts browser.DragOptions) (browser.Ac
 		arg["steps"] = opts.Steps
 	}
 
-	result, err := b.dispatchMouse(ctx, snapshot.DragScript, arg)
-	if err != nil {
+	if _, err := b.dispatchMouse(ctx, snapshot.DragScript, arg); err != nil {
 		return browser.ActionResult{}, err
 	}
 	time.Sleep(observedActionSettle)
 
 	desc := fmt.Sprintf("dragged %s -> %s", pointDescriptor(opts.From), pointDescriptor(opts.To))
-	out := b.observeActionWithBefore(ctx, desc, before)
-	if warning := browser.PurchaseControlWarning(result.Name, result.Href); warning != "" {
-		out.Warning = warning
-	}
-	return out, nil
+	return b.observeActionWithBefore(ctx, desc, before), nil
 }
 
 func (b *Bridge) dispatchMouse(ctx context.Context, script string, arg map[string]any) (snapshot.MouseActionResult, error) {

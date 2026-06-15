@@ -149,8 +149,8 @@ func benchComboboxFlow(ctx context.Context, mgr *browser.Manager, fixtureURL, fi
 		}},
 		{"find", func() (any, error) {
 			return mgr.Find(ctx, snapshot.FindOptions{
-				Role: "combobox",
-				Text: "Release channel",
+				Role:  "combobox",
+				Text:  "Release channel",
 				Limit: 5,
 			})
 		}},

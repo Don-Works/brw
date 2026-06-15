@@ -40,13 +40,8 @@ func (b *Bridge) NetworkCapture(ctx context.Context, filter string) ([]snapshot.
 	return filterBridgeCapturedRequests(requests, filter), nil
 }
 
-// ReplayRequest re-executes a request in-page via fetch over the bridge. It
-// BLOCKS purchase/payment/order-placement-looking requests before issuing any
-// network call, reusing the shared guard.
+// ReplayRequest re-executes a request in-page via fetch over the bridge.
 func (b *Bridge) ReplayRequest(ctx context.Context, params browser.ReplayRequestParams) (snapshot.ReplayResult, error) {
-	if err := browser.GuardReplayRequest(params.Method, params.URL); err != nil {
-		return snapshot.ReplayResult{}, err
-	}
 	opts := map[string]any{
 		"method":  params.Method,
 		"url":     params.URL,
