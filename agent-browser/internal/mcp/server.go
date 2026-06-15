@@ -29,6 +29,7 @@ type Controller interface {
 	Snapshot(context.Context, snapshot.SnapshotOptions) (snapshot.PageSnapshot, error)
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
 	Click(context.Context, string) (browser.ActionResult, error)
+	ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error)
 	Hover(context.Context, string) (browser.ActionResult, error)
 	Type(context.Context, string, string) (browser.ActionResult, error)
 	Fill(context.Context, snapshot.FillOptions) (browser.ActionResult, error)
@@ -324,6 +325,12 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(s.manager.Click(ctx, req.Ref))
+	case "browser_click_text":
+		var req snapshot.ClickTextOptions
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.ClickText(ctx, req))
 	case "browser_hover":
 		var req struct {
 			Ref string `json:"ref"`
@@ -619,7 +626,8 @@ func tools() []map[string]any {
 			"include_ax":     boolSchema("Include full accessibility-tree enrichment. Expensive; defaults false."),
 			"since":          integerSchema("Reserved page-state version for future delta snapshots."),
 		}, nil)),
-		tool("browser_find", "Find matching semantic element refs without dumping the full page.", object(map[string]any{
+		tool("browser_find", "Find matching semantic element refs without dumping the full page. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"tab_id":         stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 			"query":          stringSchema("Case-insensitive substring match across ref, role, name, tag, type, href, and value."),
 			"text":           stringSchema("Alias for query-style text filtering."),
 			"role":           stringSchema("ARIA/semantic role to include, for example button or textbox."),
@@ -631,52 +639,69 @@ func tools() []map[string]any {
 			"ref":    stringSchema("Element ref, for example e18."),
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
+		tool("browser_click_text", "Click the best visible actionable element whose accessible name or visible text matches text. Useful for controls like \"Check out\" when refs are stale or custom components hide internals. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"text":   stringSchema("Visible text or accessible name to click."),
+			"role":   stringSchema("Optional role filter, for example button, link, option, or menuitem."),
+			"exact":  boolSchema("Require an exact normalized text/name match instead of allowing substring matches."),
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		}, []string{"text"})),
 		tool("browser_hover", "Hover over a semantic element ref to trigger mouseenter/mouseover/pointermove events. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":    stringSchema("Element ref, for example e18."),
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
-		tool("browser_evaluate", "Run arbitrary JavaScript in the page context and return the JSON-serializable result. Supports async expressions.", object(map[string]any{
+		tool("browser_evaluate", "Run arbitrary JavaScript in the page context and return the JSON-serializable result. Supports async expressions. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"expression": stringSchema("JavaScript expression to evaluate. May use await for async operations."),
+			"tab_id":     stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"expression"})),
-		tool("browser_network_requests", "Return network resource requests captured by the Performance API (performance.getEntriesByType).", object(map[string]any{
+		tool("browser_network_requests", "Return network resource requests captured by the Performance API (performance.getEntriesByType). Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"filter": stringSchema("Optional case-insensitive substring to filter request URLs."),
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, nil)),
 		tool("browser_type", "Type text into a semantic element ref. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":    stringSchema("Element ref, for example e17."),
 			"text":   stringSchema("Text to insert."),
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"ref", "text"})),
-		tool("browser_fill", "Replace or append text in a semantic text field by ref or query and return a post-action observation.", object(map[string]any{
+		tool("browser_fill", "Replace or append text in a semantic text field by ref or query and return a post-action observation. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":     stringSchema("Element ref, for example e17. Optional when query is supplied."),
 			"query":   stringSchema("Find a fillable target by semantic name when ref is not supplied."),
 			"role":    stringSchema("Optional role filter when using query, normally textbox or searchbox."),
 			"text":    stringSchema("Text to put in the field."),
 			"replace": boolSchema("Replace existing field content instead of appending. Defaults to true."),
+			"tab_id":  stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"text"})),
-		tool("browser_upload_file", "Set one or more local files on a semantic file input by ref or query and return a post-action observation.", object(map[string]any{
-			"ref":   stringSchema("Element ref for input[type=file]. Optional when query is supplied."),
-			"query": stringSchema("Find a file input by semantic name when ref is not supplied. Defaults to file."),
-			"role":  stringSchema("Optional role filter when using query."),
-			"path":  stringSchema("Single local file path on the browser host."),
-			"paths": map[string]any{"type": "array", "items": stringSchema("Local file path on the browser host."), "description": "One or more local file paths on the browser host."},
+		tool("browser_upload_file", "Set one or more local files on a semantic file input by ref or query and return a post-action observation. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"ref":    stringSchema("Element ref for input[type=file]. Optional when query is supplied."),
+			"query":  stringSchema("Find a file input by semantic name when ref is not supplied. Defaults to file."),
+			"role":   stringSchema("Optional role filter when using query."),
+			"path":   stringSchema("Single local file path on the browser host."),
+			"paths":  map[string]any{"type": "array", "items": stringSchema("Local file path on the browser host."), "description": "One or more local file paths on the browser host."},
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, nil)),
-		tool("browser_select", "Set a select/listbox value by semantic element ref.", object(map[string]any{
-			"ref":   stringSchema("Element ref for a select element."),
-			"value": stringSchema("Option value to select."),
+		tool("browser_select", "Set a native select or custom listbox/combobox value by semantic element ref. Value may be the option value/data-value or visible option label. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"ref":    stringSchema("Element ref for a select, combobox, or listbox trigger."),
+			"value":  stringSchema("Option value, data-value, or visible option label to select."),
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"ref", "value"})),
-		tool("browser_press", "Press a keyboard key in the active tab.", object(map[string]any{
-			"key": stringSchema("Key name or chord, for example Enter, Tab, Escape, ArrowDown, Meta+Enter."),
+		tool("browser_press", "Press a keyboard key in the active tab. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"key":    stringSchema("Key name or chord, for example Enter, Tab, Escape, ArrowDown, Meta+Enter."),
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"key"})),
-		tool("browser_scroll", "Scroll the active page or scroll container in a direction.", object(map[string]any{
+		tool("browser_scroll", "Scroll the active page or scroll container in a direction. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"direction": stringSchema("up, down, left, or right."),
+			"tab_id":    stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"direction"})),
-		tool("browser_screenshot", "Capture a PNG screenshot for visual fallback/debugging.", object(nil, nil)),
-		tool("browser_screenshot_element", "Capture a PNG screenshot of a semantic element ref for visual fallback/debugging.", object(map[string]any{
-			"ref": stringSchema("Element ref from browser_snapshot."),
+		tool("browser_screenshot", "Capture a PNG screenshot for visual fallback/debugging. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		}, nil)),
+		tool("browser_screenshot_element", "Capture a PNG screenshot of a semantic element ref for visual fallback/debugging. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"ref":    stringSchema("Element ref from browser_snapshot."),
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
-		tool("browser_wait_for", "Wait for page readiness, URL/title/text substring, or ref availability.", object(map[string]any{
+		tool("browser_wait_for", "Wait for page readiness, URL/title/text substring, or ref availability. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"condition":  stringSchema("load, text:..., not_text:..., url:..., not_url:..., title:..., ref:..., or plain text."),
 			"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds."},
+			"tab_id":     stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"condition"})),
 		tool("browser_plan", "Execute a sequence of browser operations in one round-trip. Steps run sequentially and stop on first failure.", object(map[string]any{
 			"steps": map[string]any{
@@ -756,11 +781,14 @@ func tools() []map[string]any {
 		tool("browser_commit", "Commit a form field: submits the enclosing form (via submit button or requestSubmit) or presses Enter if no form. Use after filling a field that requires explicit submission.", object(map[string]any{
 			"ref": stringSchema("Element ref from browser_snapshot."),
 		}, []string{"ref"})),
-		tool("browser_click_xy", "Click at specific viewport coordinates (x, y). Returns the element that was clicked. Use for canvas interactions or when semantic refs are not available.", object(map[string]any{
-			"x": map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
-			"y": map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
+		tool("browser_click_xy", "Click at specific viewport coordinates (x, y). Returns the element that was clicked. Use for canvas interactions or when semantic refs are not available. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"x":      map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
+			"y":      map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"x", "y"})),
-		tool("browser_console", "Return and drain buffered console messages (log, warn, error, info) from the page. Messages are captured by an injected console interceptor and cleared after reading.", object(nil, nil)),
+		tool("browser_console", "Return and drain buffered console messages (log, warn, error, info) from the page. Messages are captured by an injected console interceptor and cleared after reading. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		}, nil)),
 		tool("browser_trace", "Return the action trace: a compact log of recent actions with refs, timing, and outcomes. Use for debugging and performance analysis.", object(nil, nil)),
 		tool("browser_clear_trace", "Clear the action trace buffer.", object(nil, nil)),
 	}

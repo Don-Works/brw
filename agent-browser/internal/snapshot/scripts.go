@@ -259,7 +259,7 @@ const SnapshotFunctionScript = `(function(opts) {
     const expanded = el.getAttribute('aria-expanded') === 'true' ? true : (el.getAttribute('aria-expanded') === 'false' ? false : null);
     const signals = structuralSignals(el, role, active);
     const isSensitive = sensitive(el);
-    const rawValue = ('value' in el) ? clean(el.value) : '';
+    const rawValue = ('value' in el) ? clean(el.value) : clean(el.getAttribute('data-value') || el.getAttribute('value') || '');
     const item = {
       ref,
       role,
@@ -1637,6 +1637,142 @@ const ClickXYScript = `(function(x, y) {
   return { ok: true, x: x, y: y, tag: tag, role: role, name: name.trim() };
 })`
 
+const ClickTextScript = `(function(opts) {
+  opts = opts || {};
+  function clean(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
+  function roots() {
+    const out = [document];
+    for (let i = 0; i < out.length; i++) {
+      const root = out[i];
+      if (!root.querySelectorAll) continue;
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        if (el.shadowRoot) out.push(el.shadowRoot);
+      }
+    }
+    return out;
+  }
+  function all(selector) {
+    const out = [];
+    for (const root of roots()) {
+      if (root.querySelectorAll) out.push(...Array.from(root.querySelectorAll(selector)));
+    }
+    return out;
+  }
+  function visible(el) {
+    if (!el || !(el instanceof Element)) return false;
+    if (el.closest('[hidden],[aria-hidden="true"]')) return false;
+    const style = window.getComputedStyle(el);
+    if (!style || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+    const rects = el.getClientRects();
+    return rects && rects.length > 0 && Array.from(rects).some(r => r.width > 0 && r.height > 0);
+  }
+  function disabled(el) {
+    return Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true');
+  }
+  function labelText(el) {
+    if (!el) return '';
+    if (el.labels && el.labels.length) return clean(Array.from(el.labels).map(l => l.innerText || l.textContent).join(' '));
+    if (el.id) {
+      const root = el.getRootNode && el.getRootNode();
+      const labelRoot = root && root.querySelector ? root : document;
+      const label = labelRoot.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (label) return clean(label.innerText || label.textContent);
+    }
+    const parent = el.closest('label');
+    return parent ? clean(parent.innerText || parent.textContent) : '';
+  }
+  function roleFor(el) {
+    const explicit = clean(el.getAttribute('role'));
+    if (explicit) return explicit.split(/\s+/)[0];
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'a' && el.href) return 'link';
+    if (tag === 'button' || type === 'button' || type === 'submit' || type === 'reset' || type === 'image') return 'button';
+    if (tag === 'select') return el.multiple ? 'listbox' : 'combobox';
+    if (tag === 'input') return type === 'search' ? 'searchbox' : 'textbox';
+    if (tag === 'summary') return 'button';
+    return 'generic';
+  }
+  function textFor(el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input') return clean(el.value || el.getAttribute('value') || '');
+    return clean(el.innerText || el.textContent || '');
+  }
+  function nameFor(el) {
+    return clean(el.getAttribute('aria-label') || labelText(el) || el.getAttribute('alt') || el.getAttribute('title') || el.getAttribute('placeholder') || el.getAttribute('name') || textFor(el));
+  }
+  function clickableAncestor(el) {
+    let n = el;
+    while (n && n !== document.body && n.nodeType === Node.ELEMENT_NODE) {
+      const role = roleFor(n);
+      const tag = n.tagName.toLowerCase();
+      if (tag === 'button' || tag === 'a' || role === 'button' || role === 'link' || role === 'option' || role === 'menuitem' || n.onclick || n.tabIndex >= 0) return n;
+      n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null;
+    }
+    return el;
+  }
+  const want = clean(opts.text).toLowerCase();
+  if (!want) return { ok: false, error: 'text is required' };
+  const roleFilter = clean(opts.role).toLowerCase();
+  const exact = Boolean(opts.exact);
+  const selector = [
+    'button','a[href]','[role="button"]','[role="link"]','[role="option"]','[role="menuitem"]',
+    'input[type="button"]','input[type="submit"]','summary','label','[tabindex]','[onclick]'
+  ].join(',');
+  const candidates = [];
+  const seen = new Set();
+  for (const base of all(selector)) {
+    const el = clickableAncestor(base);
+    if (!el || seen.has(el) || !visible(el) || disabled(el)) continue;
+    seen.add(el);
+    const role = roleFor(el);
+    if (roleFilter && role !== roleFilter) continue;
+    const label = nameFor(el);
+    const text = textFor(el);
+    const hay = clean([label, text].filter(Boolean).join(' '));
+    const normalized = hay.toLowerCase();
+    if (!normalized) continue;
+    let score = -1;
+    if (normalized === want || label.toLowerCase() === want || text.toLowerCase() === want) score = 120;
+    else if (!exact && normalized.includes(want)) score = 80;
+    else continue;
+    if (['button','link','option','menuitem'].includes(role)) score += 20;
+    const r = el.getBoundingClientRect();
+    const inViewport = r.bottom >= 0 && r.right >= 0 && r.top <= window.innerHeight && r.left <= window.innerWidth;
+    if (inViewport) score += 10;
+    score -= Math.min(20, Math.round((r.width * r.height) / 50000));
+    candidates.push({ el, role, label, text, score });
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  const hit = candidates[0];
+  if (!hit) return { ok: false, error: 'no visible element found for text ' + JSON.stringify(opts.text) };
+  const el = hit.el;
+  el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2;
+  const y = r.top + r.height / 2;
+  let target = document.elementFromPoint(x, y) || el;
+  target = clickableAncestor(target) || el;
+  target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  target.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  if (typeof target.click === 'function') target.click();
+  else target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  const clickedRole = roleFor(target);
+  const clickedName = nameFor(target);
+  return {
+    ok: true,
+    x,
+    y,
+    tag: target.tagName.toLowerCase(),
+    role: clickedRole,
+    name: clickedName,
+    text: clean(target.innerText || target.textContent || hit.text || hit.label).slice(0, 200),
+    href: target.href || target.getAttribute('href') || ''
+  };
+})`
+
 const CommitFieldScript = `(function(ref) {
   function roots() {
     const out = [document];
@@ -1703,6 +1839,8 @@ type ClickXYResult struct {
 	Tag   string  `json:"tag,omitempty"`
 	Role  string  `json:"role,omitempty"`
 	Name  string  `json:"name,omitempty"`
+	Text  string  `json:"text,omitempty"`
+	Href  string  `json:"href,omitempty"`
 	Error string  `json:"error,omitempty"`
 }
 
@@ -1717,6 +1855,22 @@ func ClickXY(ctx context.Context, x, y float64) (ClickXYResult, error) {
 	if !result.OK {
 		if result.Error == "" {
 			result.Error = "click failed"
+		}
+		return result, errors.New(result.Error)
+	}
+	return result, nil
+}
+
+func ClickText(ctx context.Context, opts ClickTextOptions) (ClickXYResult, error) {
+	var result ClickXYResult
+	args, _ := json.Marshal(opts)
+	expr := fmt.Sprintf("%s(%s)", ClickTextScript, args)
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result)); err != nil {
+		return ClickXYResult{}, err
+	}
+	if !result.OK {
+		if result.Error == "" {
+			result.Error = "click text failed"
 		}
 		return result, errors.New(result.Error)
 	}

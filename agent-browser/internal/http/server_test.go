@@ -117,6 +117,7 @@ func TestNewPageActionRoutes(t *testing.T) {
 		body   string
 	}{
 		{http.MethodPost, "/api/page/batch", `{"steps":[{"action":"click","ref":"e1"}]}`},
+		{http.MethodPost, "/api/page/click_text", `{"text":"Submit"}`},
 		{http.MethodGet, "/api/page/observe", ``},
 		{http.MethodPost, "/api/page/commit", `{"ref":"e1"}`},
 		{http.MethodPost, "/api/page/assert_visible", `{"ref":"e1","timeout_ms":100}`},
@@ -222,6 +223,10 @@ func (f *fakeController) Read(context.Context) (readability.PageRead, error) {
 }
 
 func (f *fakeController) Click(context.Context, string) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+
+func (f *fakeController) ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error) {
 	return browser.ActionResult{OK: true}, nil
 }
 

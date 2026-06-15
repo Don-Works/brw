@@ -86,13 +86,19 @@ func (c *Controller) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions
 
 func (c *Controller) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
 	var out snapshot.FindResult
-	err := c.post(ctx, "/api/page/find", opts, &out)
+	err := c.get(ctx, "/api/page/find", findValues(opts), &out)
 	return out, err
 }
 
 func (c *Controller) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
 	var out browser.ActionResult
 	err := c.post(ctx, "/api/page/click", map[string]string{"ref": ref}, &out)
+	return out, err
+}
+
+func (c *Controller) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) (browser.ActionResult, error) {
+	var out browser.ActionResult
+	err := c.post(ctx, "/api/page/click_text", opts, &out)
 	return out, err
 }
 
@@ -249,6 +255,14 @@ func (c *Controller) CommitField(ctx context.Context, ref string) error {
 
 func (c *Controller) get(ctx context.Context, path string, values url.Values, out any) error {
 	reqURL := c.baseURL + path
+	if tabID := browser.TabIDFromContext(ctx); tabID != "" {
+		if values == nil {
+			values = url.Values{}
+		}
+		if values.Get("tab_id") == "" {
+			values.Set("tab_id", tabID)
+		}
+	}
 	if len(values) > 0 {
 		reqURL += "?" + values.Encode()
 	}
@@ -260,6 +274,7 @@ func (c *Controller) get(ctx context.Context, path string, values url.Values, ou
 }
 
 func (c *Controller) post(ctx context.Context, path string, body any, out any) error {
+	body = withTabID(ctx, body)
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -297,6 +312,27 @@ func (c *Controller) do(req *http.Request, out any) error {
 	return json.Unmarshal(data, out)
 }
 
+func withTabID(ctx context.Context, body any) any {
+	tabID := browser.TabIDFromContext(ctx)
+	if tabID == "" {
+		return body
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return body
+	}
+	payload := map[string]any{}
+	if len(data) > 0 && string(data) != "null" {
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return body
+		}
+	}
+	if _, ok := payload["tab_id"]; !ok {
+		payload["tab_id"] = tabID
+	}
+	return payload
+}
+
 func snapshotValues(opts snapshot.SnapshotOptions) url.Values {
 	values := url.Values{}
 	addString(values, "mode", opts.Mode)
@@ -310,6 +346,17 @@ func snapshotValues(opts snapshot.SnapshotOptions) url.Values {
 	if opts.Since > 0 {
 		values.Set("since", strconv.FormatInt(opts.Since, 10))
 	}
+	return values
+}
+
+func findValues(opts snapshot.FindOptions) url.Values {
+	values := url.Values{}
+	addString(values, "query", opts.Query)
+	addString(values, "text", opts.Text)
+	addString(values, "role", opts.Role)
+	addInt(values, "limit", opts.Limit)
+	addBool(values, "viewport_only", opts.ViewportOnly)
+	addBool(values, "include_hidden", opts.IncludeHidden)
 	return values
 }
 

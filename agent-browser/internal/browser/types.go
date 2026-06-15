@@ -39,6 +39,7 @@ type ActionResult struct {
 	OK           bool               `json:"ok"`
 	Message      string             `json:"message,omitempty"`
 	Warning      string             `json:"warning,omitempty"`
+	TabID        string             `json:"tab_id,omitempty"`
 	Version      int64              `json:"version,omitempty"`
 	URL          string             `json:"url,omitempty"`
 	Title        string             `json:"title,omitempty"`
@@ -97,21 +98,21 @@ type PlanResult struct {
 }
 
 type BatchStep struct {
-	Action    string `json:"action"`
-	Ref       string `json:"ref,omitempty"`
-	Text      string `json:"text,omitempty"`
-	Value     string `json:"value,omitempty"`
-	Direction string `json:"direction,omitempty"`
-	Condition string `json:"condition,omitempty"`
-	TimeoutMS int    `json:"timeout_ms,omitempty"`
-	URL       string `json:"url,omitempty"`
-	ID        string `json:"id,omitempty"`
-	Key       string `json:"key,omitempty"`
-	AssertRef string `json:"assert_ref,omitempty"`
-	AssertText string `json:"assert_text,omitempty"`
-	AssertValue string `json:"assert_value,omitempty"`
-	AssertVisible *bool `json:"assert_visible,omitempty"`
-	AssertHidden *bool `json:"assert_hidden,omitempty"`
+	Action        string `json:"action"`
+	Ref           string `json:"ref,omitempty"`
+	Text          string `json:"text,omitempty"`
+	Value         string `json:"value,omitempty"`
+	Direction     string `json:"direction,omitempty"`
+	Condition     string `json:"condition,omitempty"`
+	TimeoutMS     int    `json:"timeout_ms,omitempty"`
+	URL           string `json:"url,omitempty"`
+	ID            string `json:"id,omitempty"`
+	Key           string `json:"key,omitempty"`
+	AssertRef     string `json:"assert_ref,omitempty"`
+	AssertText    string `json:"assert_text,omitempty"`
+	AssertValue   string `json:"assert_value,omitempty"`
+	AssertVisible *bool  `json:"assert_visible,omitempty"`
+	AssertHidden  *bool  `json:"assert_hidden,omitempty"`
 }
 
 type BatchStepResult struct {
@@ -125,6 +126,7 @@ type BatchResult struct {
 	OK      bool              `json:"ok"`
 	Steps   []BatchStepResult `json:"steps"`
 	Error   string            `json:"error,omitempty"`
+	TabID   string            `json:"tab_id,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Title   string            `json:"title,omitempty"`
 	Focus   string            `json:"focus,omitempty"`
@@ -133,14 +135,14 @@ type BatchResult struct {
 }
 
 type TraceEntry struct {
-	Action    string `json:"action"`
-	Ref       string `json:"ref,omitempty"`
-	Text      string `json:"text,omitempty"`
-	Value     string `json:"value,omitempty"`
-	OK        bool   `json:"ok"`
-	Error     string `json:"error,omitempty"`
-	DurationMS int64 `json:"duration_ms"`
-	Timestamp string `json:"timestamp"`
+	Action     string `json:"action"`
+	Ref        string `json:"ref,omitempty"`
+	Text       string `json:"text,omitempty"`
+	Value      string `json:"value,omitempty"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
+	Timestamp  string `json:"timestamp"`
 }
 
 type TraceResult struct {

@@ -334,6 +334,42 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 	return result, nil
 }
 
+func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) (ActionResult, error) {
+	start := time.Now()
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	defer cancel()
+
+	before := m.cachedBefore(tabID, tabCtx)
+	clicked, err := snapshot.ClickText(tabCtx, opts)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	if err := chromedp.Run(tabCtx, chromedp.Sleep(150*time.Millisecond)); err != nil {
+		return ActionResult{}, err
+	}
+	label := opts.Text
+	if clicked.Name != "" {
+		label = clicked.Name
+	}
+	result := m.observeActionWithBefore(tabID, tabCtx, "clicked text "+strconv.Quote(label), before)
+	result.DurationMS = time.Since(start).Milliseconds()
+	if warning := PurchaseControlWarning(label, clicked.Href); warning != "" {
+		result.Warning = warning
+	}
+	m.recordTrace(TraceEntry{
+		Action:     "click_text",
+		Text:       opts.Text,
+		OK:         result.OK,
+		Error:      result.Warning,
+		DurationMS: result.DurationMS,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	})
+	return result, nil
+}
+
 func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
@@ -718,6 +754,31 @@ func isTransientNavigationError(err error) bool {
 		strings.Contains(msg, "frame was detached")
 }
 
+func PurchaseControlWarning(label, href string) string {
+	combined := strings.ToLower(strings.TrimSpace(label + " " + href))
+	if combined == "" {
+		return ""
+	}
+	risky := []string{
+		"place order",
+		"submit order",
+		"confirm order",
+		"pay now",
+		"complete purchase",
+		"buy now",
+		"purchase now",
+	}
+	for _, phrase := range risky {
+		if strings.Contains(combined, phrase) {
+			return "purchase/payment control clicked; require explicit user confirmation before placing an order or paying"
+		}
+	}
+	if strings.Contains(combined, "checkout") || strings.Contains(combined, "check out") {
+		return "checkout navigation clicked; stop before payment or place-order controls unless explicitly confirmed"
+	}
+	return ""
+}
+
 func (m *Manager) AssertVisible(ctx context.Context, ref string, timeout time.Duration) error {
 	if timeout == 0 {
 		timeout = 5 * time.Second
@@ -973,7 +1034,7 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 	}
 	defer func() { cancel() }()
 
-	result := BatchResult{OK: true, Steps: make([]BatchStepResult, 0, len(steps))}
+	result := BatchResult{OK: true, Steps: make([]BatchStepResult, 0, len(steps)), TabID: tabID}
 	for i, step := range steps {
 		sr := m.executeBatchStep(tabCtx, i, step)
 		result.Steps = append(result.Steps, sr)
@@ -988,6 +1049,7 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 				tabID = newTabID
 				tabCtx = newTabCtx
 				cancel = newCancel
+				result.TabID = tabID
 			}
 		}
 	}
@@ -1139,7 +1201,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step Batch
 }
 
 func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, message string, before *SemanticState) ActionResult {
-	result := ActionResult{OK: true, Message: message}
+	result := ActionResult{OK: true, Message: message, TabID: tabID}
 	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
 		result.Message = message + "; observation failed: " + err.Error()

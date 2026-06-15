@@ -460,6 +460,31 @@ func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, e
 	return b.observeActionWithBefore(ctx, "clicked "+ref, before), nil
 }
 
+func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) (browser.ActionResult, error) {
+	before := b.captureSemanticState(ctx)
+	optsJSON, _ := json.Marshal(opts)
+	var clicked snapshot.ClickXYResult
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.ClickTextScript, optsJSON), "", &clicked); err != nil {
+		return browser.ActionResult{}, err
+	}
+	if !clicked.OK {
+		if clicked.Error == "" {
+			clicked.Error = "click text failed"
+		}
+		return browser.ActionResult{}, errors.New(clicked.Error)
+	}
+	time.Sleep(observedActionSettle)
+	label := opts.Text
+	if clicked.Name != "" {
+		label = clicked.Name
+	}
+	result := b.observeActionWithBefore(ctx, "clicked text "+strconv.Quote(label), before)
+	if warning := browser.PurchaseControlWarning(label, clicked.Href); warning != "" {
+		result.Warning = warning
+	}
+	return result, nil
+}
+
 func (b *Bridge) Hover(ctx context.Context, ref string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
 	if err := b.hoverRef(ctx, ref); err != nil {
@@ -1074,7 +1099,7 @@ func (b *Bridge) observeAction(ctx context.Context, message string) browser.Acti
 }
 
 func (b *Bridge) observeActionWithBefore(ctx context.Context, message string, before *browser.SemanticState) browser.ActionResult {
-	result := browser.ActionResult{OK: true, Message: message}
+	result := browser.ActionResult{OK: true, Message: message, TabID: b.contextTabID(ctx)}
 	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
 		result.Message = message + "; observation failed: " + err.Error()
@@ -1410,7 +1435,7 @@ func screenshotFromRaw(raw json.RawMessage) (browser.Screenshot, error) {
 }
 
 func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
-	result := browser.BatchResult{OK: true, Steps: make([]browser.BatchStepResult, 0, len(steps))}
+	result := browser.BatchResult{OK: true, Steps: make([]browser.BatchStepResult, 0, len(steps)), TabID: b.contextTabID(ctx)}
 	for i, step := range steps {
 		sr := b.executeBatchStep(ctx, i, step)
 		result.Steps = append(result.Steps, sr)

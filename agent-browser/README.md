@@ -76,14 +76,40 @@ The MCP server currently exposes:
 - `browser_close_tab`
 - `browser_read`
 - `browser_snapshot`
+- `browser_find`
 - `browser_click`
+- `browser_click_text`
+- `browser_click_xy`
+- `browser_hover`
 - `browser_type`
+- `browser_fill`
+- `browser_upload_file`
 - `browser_select`
 - `browser_press`
 - `browser_scroll`
 - `browser_screenshot`
 - `browser_screenshot_element`
 - `browser_wait_for`
+- `browser_evaluate`
+- `browser_network_requests`
+- `browser_plan`
+- `browser_batch`
+- `browser_observe`
+- `browser_group_tabs`
+- `browser_ungroup_tabs`
+- `browser_assert_visible`
+- `browser_assert_hidden`
+- `browser_assert_text`
+- `browser_assert_value`
+- `browser_commit`
+- `browser_console`
+- `browser_trace`
+- `browser_clear_trace`
+
+Most page tools accept optional `tab_id` from `browser_list_tabs`; use it for
+multi-window flows where the OS-visible active tab can drift. `browser_click_text`
+is intended for visible actionable controls such as custom checkout buttons when
+semantic refs are stale or hidden inside custom components.
 
 For remote MCP over SSH, see [docs/mcp-client-config.md](docs/mcp-client-config.md) and [docs/remote-control.md](docs/remote-control.md).
 

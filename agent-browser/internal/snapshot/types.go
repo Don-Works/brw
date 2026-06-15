@@ -52,29 +52,35 @@ type UploadOptions struct {
 	Paths []string `json:"paths,omitempty"`
 }
 
+type ClickTextOptions struct {
+	Text  string `json:"text"`
+	Role  string `json:"role,omitempty"`
+	Exact bool   `json:"exact,omitempty"`
+}
+
 type Element struct {
-	Ref              string   `json:"ref"`
-	Role             string   `json:"role"`
-	Name             string   `json:"name"`
-	Tag              string   `json:"tag"`
-	Type             string   `json:"type,omitempty"`
-	Href             string   `json:"href,omitempty"`
-	Value            string   `json:"value,omitempty"`
-	Sensitive        bool     `json:"sensitive,omitempty"`
-	Visible          bool     `json:"visible"`
-	InViewport       bool     `json:"in_viewport"`
-	Disabled         bool     `json:"disabled"`
-	Required         bool     `json:"required,omitempty"`
-	Valid            *bool    `json:"valid,omitempty"`
-	ValidationMsg    string   `json:"validation_message,omitempty"`
-	Checked          *bool    `json:"checked,omitempty"`
-	Selected         *bool    `json:"selected,omitempty"`
-	Expanded         *bool    `json:"expanded,omitempty"`
-	Controls         string   `json:"controls,omitempty"`
-	Signals          []string `json:"signals,omitempty"`
-	MatchReasons     []string `json:"match_reasons,omitempty"`
-	Source           []string `json:"source"`
-	Key              string   `json:"-"`
+	Ref           string   `json:"ref"`
+	Role          string   `json:"role"`
+	Name          string   `json:"name"`
+	Tag           string   `json:"tag"`
+	Type          string   `json:"type,omitempty"`
+	Href          string   `json:"href,omitempty"`
+	Value         string   `json:"value,omitempty"`
+	Sensitive     bool     `json:"sensitive,omitempty"`
+	Visible       bool     `json:"visible"`
+	InViewport    bool     `json:"in_viewport"`
+	Disabled      bool     `json:"disabled"`
+	Required      bool     `json:"required,omitempty"`
+	Valid         *bool    `json:"valid,omitempty"`
+	ValidationMsg string   `json:"validation_message,omitempty"`
+	Checked       *bool    `json:"checked,omitempty"`
+	Selected      *bool    `json:"selected,omitempty"`
+	Expanded      *bool    `json:"expanded,omitempty"`
+	Controls      string   `json:"controls,omitempty"`
+	Signals       []string `json:"signals,omitempty"`
+	MatchReasons  []string `json:"match_reasons,omitempty"`
+	Source        []string `json:"source"`
+	Key           string   `json:"-"`
 }
 
 type AccessibilitySummary struct {

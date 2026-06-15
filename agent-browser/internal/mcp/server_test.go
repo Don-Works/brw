@@ -168,6 +168,43 @@ func TestBrowserFindDefaultsToBoundedResults(t *testing.T) {
 	}
 }
 
+func TestToolSchemasExposeTabScopedErgonomics(t *testing.T) {
+	byName := map[string]map[string]any{}
+	for _, tool := range tools() {
+		byName[tool["name"].(string)] = tool
+	}
+	for _, name := range []string{
+		"browser_find",
+		"browser_fill",
+		"browser_select",
+		"browser_press",
+		"browser_scroll",
+		"browser_wait_for",
+		"browser_evaluate",
+		"browser_click_xy",
+		"browser_console",
+	} {
+		tool := byName[name]
+		if tool == nil {
+			t.Fatalf("%s tool not found", name)
+		}
+		props := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+		if _, ok := props["tab_id"]; !ok {
+			t.Fatalf("%s schema missing tab_id: %#v", name, props)
+		}
+	}
+	clickText := byName["browser_click_text"]
+	if clickText == nil {
+		t.Fatal("browser_click_text tool not found")
+	}
+	props := clickText["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	for _, prop := range []string{"text", "role", "exact", "tab_id"} {
+		if _, ok := props[prop]; !ok {
+			t.Fatalf("browser_click_text missing %s: %#v", prop, props)
+		}
+	}
+}
+
 func framedJSON(t *testing.T, value any) string {
 	t.Helper()
 	data, err := json.Marshal(value)
@@ -256,6 +293,9 @@ func (fakeController) Find(context.Context, snapshot.FindOptions) (snapshot.Find
 	return snapshot.FindResult{}, nil
 }
 func (fakeController) Click(context.Context, string) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+func (fakeController) ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error) {
 	return browser.ActionResult{OK: true}, nil
 }
 func (fakeController) Type(context.Context, string, string) (browser.ActionResult, error) {
