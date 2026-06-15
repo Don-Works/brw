@@ -38,6 +38,13 @@ type Tab struct {
 
 type OpenResult struct {
 	Tab Tab `json:"tab"`
+	// Ready reports whether the page was confirmed usable (document committed /
+	// readyState settled) before Open returned. When true, callers can issue an
+	// immediate browser_evaluate / browser_read without racing the transient
+	// about:blank state Chrome reports mid-navigation. False means readiness
+	// could not be confirmed within the wait window — the tab still exists, but a
+	// caller may want to browser_wait before acting on it.
+	Ready bool `json:"ready"`
 }
 
 type ActionResult struct {

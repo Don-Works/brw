@@ -198,22 +198,34 @@ func (s *Server) tabs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) focus(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID string `json:"id"`
+		ID    string `json:"id"`
+		TabID string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.FocusTab(r.Context(), req.ID))
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.FocusTab(r.Context(), tabIDArg(req.TabID, req.ID)))
 }
 
 func (s *Server) closeTab(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID string `json:"id"`
+		ID    string `json:"id"`
+		TabID string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.CloseTab(r.Context(), req.ID))
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.CloseTab(r.Context(), tabIDArg(req.TabID, req.ID)))
+}
+
+// tabIDArg accepts either the legacy `id` field or the `tab_id` field used by
+// every other page tool, preferring `tab_id` for consistency. Mirrors the MCP
+// server's alias handling so callers get identical behaviour on both surfaces.
+func tabIDArg(tabID, id string) string {
+	if strings.TrimSpace(tabID) != "" {
+		return tabID
+	}
+	return id
 }
 
 func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {

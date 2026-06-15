@@ -1958,14 +1958,39 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
     score -= Math.min(20, Math.round((r.width * r.height) / 50000));
     candidates.push({ el, role, label, text, score });
   }
+  // Default-on auto-scroll: opts.auto_scroll === false opts out, undefined/true
+  // keeps it. When on, a below-fold match is scrolled into view before clicking
+  // so links beneath the fold work without a manual scrollIntoView. When off,
+  // an off-screen best candidate is rejected so only in-viewport matches click.
+  const autoScroll = opts.auto_scroll !== false;
+  function inViewportNow(el) {
+    const r = el.getBoundingClientRect();
+    return r.bottom >= 0 && r.right >= 0 && r.top <= (window.innerHeight || document.documentElement.clientHeight) && r.left <= (window.innerWidth || document.documentElement.clientWidth);
+  }
   candidates.sort((a, b) => b.score - a.score);
-  const hit = candidates[0];
+  let hit = candidates[0];
   if (!hit) return { ok: false, error: 'no visible element found for text ' + JSON.stringify(opts.text) };
+  if (!autoScroll) {
+    // Opt-out path: discard off-screen matches so only an in-viewport element is
+    // clicked. Pick the best candidate that is currently within the viewport.
+    hit = candidates.find(c => inViewportNow(c.el));
+    if (!hit) return { ok: false, error: 'no in-viewport element found for text ' + JSON.stringify(opts.text) + ' (auto_scroll disabled)' };
+  }
   const el = hit.el;
-  el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  if (autoScroll && !inViewportNow(el)) {
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  } else if (autoScroll) {
+    // Already in view: a cheap centering scroll keeps the click point hit-testable
+    // for elements partially clipped by sticky headers/footers.
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  }
   const r = el.getBoundingClientRect();
-  const x = r.left + r.width / 2;
-  const y = r.top + r.height / 2;
+  // Clamp the click point into the viewport so elementFromPoint resolves the
+  // element even when it is taller than the viewport after scrolling.
+  const vw = window.innerWidth || document.documentElement.clientWidth;
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  const x = Math.max(1, Math.min(vw - 1, r.left + r.width / 2));
+  const y = Math.max(1, Math.min(vh - 1, r.top + r.height / 2));
   let target = document.elementFromPoint(x, y) || el;
   target = clickableAncestor(target) || el;
   target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));

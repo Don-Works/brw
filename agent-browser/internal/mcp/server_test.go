@@ -339,6 +339,112 @@ func TestBrowserNavigateDispatch(t *testing.T) {
 	}
 }
 
+func TestFocusAndCloseTabAcceptTabIDAlias(t *testing.T) {
+	cases := []struct {
+		name     string
+		tool     string
+		args     string
+		wantID   string
+		focusTab bool
+	}{
+		{"focus_tab accepts tab_id", "browser_focus_tab", `{"tab_id":"42"}`, "42", true},
+		{"focus_tab accepts legacy id", "browser_focus_tab", `{"id":"7"}`, "7", true},
+		{"focus_tab prefers tab_id over id", "browser_focus_tab", `{"id":"7","tab_id":"42"}`, "42", true},
+		{"close_tab accepts tab_id", "browser_close_tab", `{"tab_id":"99"}`, "99", false},
+		{"close_tab accepts legacy id", "browser_close_tab", `{"id":"3"}`, "3", false},
+		{"close_tab prefers tab_id over id", "browser_close_tab", `{"id":"3","tab_id":"99"}`, "99", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := &recordingController{}
+			input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + tc.tool + `","arguments":` + tc.args + `}}` + "\n"
+			var output bytes.Buffer
+			if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+				t.Fatal(err)
+			}
+			got := ctrl.closeID
+			if tc.focusTab {
+				got = ctrl.focusID
+			}
+			if got != tc.wantID {
+				t.Fatalf("dispatched id = %q, want %q (args %s)", got, tc.wantID, tc.args)
+			}
+		})
+	}
+}
+
+func TestFocusAndCloseTabSchemasExposeTabIDAlias(t *testing.T) {
+	byName := map[string]map[string]any{}
+	for _, tool := range tools() {
+		byName[tool["name"].(string)] = tool
+	}
+	for _, name := range []string{"browser_focus_tab", "browser_close_tab"} {
+		tool := byName[name]
+		if tool == nil {
+			t.Fatalf("%s tool not registered", name)
+		}
+		props := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+		for _, prop := range []string{"tab_id", "id"} {
+			if _, ok := props[prop]; !ok {
+				t.Fatalf("%s schema missing %s: %#v", name, prop, props)
+			}
+		}
+	}
+}
+
+func TestBrowserClickTextPassesAutoScroll(t *testing.T) {
+	cases := []struct {
+		name string
+		args string
+		want *bool
+	}{
+		{"omitted leaves auto_scroll nil (script defaults true)", `{"text":"Alternative medicine"}`, nil},
+		{"explicit false opts out", `{"text":"Alternative medicine","auto_scroll":false}`, boolPtr(false)},
+		{"explicit true keeps it", `{"text":"Alternative medicine","auto_scroll":true}`, boolPtr(true)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := &recordingController{}
+			input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_click_text","arguments":` + tc.args + `}}` + "\n"
+			var output bytes.Buffer
+			if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+				t.Fatal(err)
+			}
+			got := ctrl.clickTextOpts.AutoScroll
+			switch {
+			case tc.want == nil && got != nil:
+				t.Fatalf("auto_scroll = %v, want nil", *got)
+			case tc.want != nil && got == nil:
+				t.Fatalf("auto_scroll = nil, want %v", *tc.want)
+			case tc.want != nil && got != nil && *got != *tc.want:
+				t.Fatalf("auto_scroll = %v, want %v", *got, *tc.want)
+			}
+		})
+	}
+}
+
+func TestBrowserEvaluateDescriptionDocumentsCSP(t *testing.T) {
+	var evalTool map[string]any
+	for _, tool := range tools() {
+		if tool["name"] == "browser_evaluate" {
+			evalTool = tool
+			break
+		}
+	}
+	if evalTool == nil {
+		t.Fatal("browser_evaluate tool not registered")
+	}
+	desc := evalTool["description"].(string)
+	if !strings.Contains(strings.ToLower(desc), "content-security-policy") && !strings.Contains(strings.ToUpper(desc), "CSP") {
+		t.Fatalf("browser_evaluate description does not mention CSP: %q", desc)
+	}
+	if !strings.Contains(strings.ToLower(desc), "cross-origin") {
+		t.Fatalf("browser_evaluate description does not mention cross-origin caveat: %q", desc)
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
 func TestBrowserClickRoutesByButtonAndCount(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -485,6 +591,24 @@ type recordingController struct {
 	dragOpts          browser.DragOptions
 	mouseDownOpt      browser.MouseButtonOptions
 	mouseUpOpt        browser.MouseButtonOptions
+	focusID           string
+	closeID           string
+	clickTextOpts     snapshot.ClickTextOptions
+}
+
+func (r *recordingController) FocusTab(ctx context.Context, id string) error {
+	r.focusID = id
+	return nil
+}
+
+func (r *recordingController) CloseTab(ctx context.Context, id string) error {
+	r.closeID = id
+	return nil
+}
+
+func (r *recordingController) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) (browser.ActionResult, error) {
+	r.clickTextOpts = opts
+	return browser.ActionResult{OK: true}, nil
 }
 
 func (r *recordingController) Navigate(ctx context.Context, direction string) (browser.ActionResult, error) {

@@ -1,5 +1,5 @@
 const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
-const PROTOCOL_VERSION = "0.1.7";
+const PROTOCOL_VERSION = "0.1.9";
 
 const state = {
   socket: null,
@@ -49,6 +49,18 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
 });
 chrome.debugger.onDetach.addListener((source) => {
   if (source.tabId) state.attachedTabs.delete(source.tabId);
+});
+// A full-page navigation replaces the document, so any snapshot cached for that
+// tab (and the MutationObserver / console hook injected into the old execution
+// context) is stale. Clear the per-tab cache + observer flag on main-frame
+// commits so the next Snapshot()/Find() re-evaluates against the new document
+// instead of serving pre-navigation content. frameId === 0 = main frame only;
+// subframe (iframe) navigations don't replace the top document.
+chrome.webNavigation.onCommitted.addListener((details) => {
+  if (typeof details.tabId === "number" && details.frameId === 0) {
+    state.snapshotCache.delete(details.tabId);
+    state.observerInjected.delete(details.tabId);
+  }
 });
 
 connect();
@@ -110,6 +122,15 @@ async function handle(message) {
     }
     if (message.type === "list_tabs") {
       send({ id: message.id, ok: true, result: await listTabSummaries() });
+      return;
+    }
+    if (message.type === "get_active_tab_id") {
+      // Resolve the browser's genuinely focused/active tab dynamically rather
+      // than letting the daemon trust a cached reference that drifts when the
+      // user switches tabs manually. activeTabId() prefers the focused window's
+      // active tab and self-heals the cached state.activeTabId.
+      const tabId = await activeTabId().catch(() => null);
+      send({ id: message.id, ok: true, result: { tabId: tabId || 0 } });
       return;
     }
     if (message.type === "open_tab") {
@@ -324,7 +345,20 @@ async function listTabSummaries() {
   });
   const out = [];
   for (const win of windows) {
-    for (const tab of win.tabs || []) out.push(tabSummaryFrom(tab, win));
+    for (const tab of win.tabs || []) {
+      // chrome.windows.getAll({populate:true}) can return tab.url / tab.title
+      // that lag a recent navigation by a few seconds. Re-fetch each tab with
+      // chrome.tabs.get(), which talks to the live tab record, so list_tabs
+      // reports the current URL/title rather than the populated snapshot. Fall
+      // back to the populated tab if the per-tab fetch fails (tab closed mid
+      // enumeration), preserving window metadata either way.
+      let fresh = tab;
+      if (typeof tab.id === "number") {
+        const got = await chrome.tabs.get(tab.id).catch(() => null);
+        if (got) fresh = got;
+      }
+      out.push(tabSummaryFrom(fresh, win));
+    }
   }
   return out;
 }

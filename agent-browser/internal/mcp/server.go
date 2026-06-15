@@ -316,20 +316,22 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return toolJSON(s.manager.ListTabs(ctx))
 	case "browser_focus_tab":
 		var req struct {
-			ID string `json:"id"`
+			ID    string `json:"id"`
+			TabID string `json:"tab_id"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		return toolOK(s.manager.FocusTab(ctx, req.ID))
+		return toolOK(s.manager.FocusTab(ctx, tabIDArg(req.TabID, req.ID)))
 	case "browser_close_tab":
 		var req struct {
-			ID string `json:"id"`
+			ID    string `json:"id"`
+			TabID string `json:"tab_id"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		return toolOK(s.manager.CloseTab(ctx, req.ID))
+		return toolOK(s.manager.CloseTab(ctx, tabIDArg(req.TabID, req.ID)))
 	case "browser_read":
 		return toolJSON(s.manager.Read(ctx))
 	case "browser_read_data":
@@ -718,6 +720,19 @@ func unmarshalArgs(args json.RawMessage, dst any) error {
 	return json.Unmarshal(args, dst)
 }
 
+// tabIDArg reconciles the historical `id` parameter of browser_focus_tab /
+// browser_close_tab with the `tab_id` parameter every other page tool uses.
+// Callers that pass {tab_id:"..."} (consistent with the rest of the surface)
+// were previously silently ignored, leaving an empty id that the extension
+// bridge coerced to tab 0. Prefer `tab_id`, fall back to `id` for backward
+// compatibility.
+func tabIDArg(tabID, id string) string {
+	if strings.TrimSpace(tabID) != "" {
+		return tabID
+	}
+	return id
+}
+
 func toolJSON[T any](value T, err error) (any, *rpcError) {
 	if err != nil {
 		return toolError(err), nil
@@ -763,12 +778,14 @@ func tools() []map[string]any {
 			"browser_context_id": stringSchema("The browser_context_id returned by browser_open_incognito."),
 		}, []string{"browser_context_id"})),
 		tool("browser_list_tabs", "List controllable Chrome/Chromium browser targets, including tabs and popup windows when the extension bridge reports them.", object(nil, nil)),
-		tool("browser_focus_tab", "Focus a controllable Chrome/Chromium target by id and make it the default target for following reads/actions.", object(map[string]any{
-			"id": stringSchema("Target id from browser_list_tabs."),
-		}, []string{"id"})),
-		tool("browser_close_tab", "Close a controllable Chrome/Chromium target by id.", object(map[string]any{
-			"id": stringSchema("Target id from browser_list_tabs."),
-		}, []string{"id"})),
+		tool("browser_focus_tab", "Focus a controllable Chrome/Chromium target and make it the default target for following reads/actions.", object(map[string]any{
+			"tab_id": stringSchema("Target id from browser_list_tabs (preferred, consistent with other tools)."),
+			"id":     stringSchema("Deprecated alias for tab_id."),
+		}, nil)),
+		tool("browser_close_tab", "Close a controllable Chrome/Chromium target.", object(map[string]any{
+			"tab_id": stringSchema("Target id from browser_list_tabs (preferred, consistent with other tools)."),
+			"id":     stringSchema("Deprecated alias for tab_id."),
+		}, nil)),
 		tool("browser_read", "Return semantic page content: main text, headings, links, forms, tables, and metadata. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, nil)),
@@ -826,11 +843,12 @@ func tools() []map[string]any {
 			"button": stringSchema("Mouse button: left (default), right, or middle."),
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, nil)),
-		tool("browser_click_text", "Click the best visible actionable element whose accessible name or visible text matches text. Useful for controls like \"Check out\" when refs are stale or custom components hide internals. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"text":   stringSchema("Visible text or accessible name to click."),
-			"role":   stringSchema("Optional role filter, for example button, link, option, or menuitem."),
-			"exact":  boolSchema("Require an exact normalized text/name match instead of allowing substring matches."),
-			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		tool("browser_click_text", "Click the best visible actionable element whose accessible name or visible text matches text. Useful for controls like \"Check out\" when refs are stale or custom components hide internals. Below-fold matches are scrolled into view before clicking by default. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"text":        stringSchema("Visible text or accessible name to click."),
+			"role":        stringSchema("Optional role filter, for example button, link, option, or menuitem."),
+			"exact":       boolSchema("Require an exact normalized text/name match instead of allowing substring matches."),
+			"auto_scroll": boolSchema("Scroll a below-fold match into view before clicking (default true). Set false to click only elements already in the viewport."),
+			"tab_id":      stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"text"})),
 		tool("browser_navigate", "Navigate the active tab's session history: back, forward, or reload. Uses the page navigation history (no URL needed); returns a post-navigation observation. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"direction": stringSchema("back (previous history entry), forward (next history entry), or reload (re-fetch the current document)."),
@@ -840,7 +858,7 @@ func tools() []map[string]any {
 			"ref":    stringSchema("Element ref, for example e18."),
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
-		tool("browser_evaluate", "Run arbitrary JavaScript in the page context and return the JSON-serializable result. Supports async expressions. Pass optional tab_id to target a specific tab.", object(map[string]any{
+		tool("browser_evaluate", "Run arbitrary JavaScript in the page context and return the JSON-serializable result. Supports async expressions. Pass optional tab_id to target a specific tab. Note: fetch() runs under the current page's Content-Security-Policy, so cross-origin calls must be made from a tab whose origin permits them (otherwise they fail with a CSP/'Failed to fetch' error).", object(map[string]any{
 			"expression": stringSchema("JavaScript expression to evaluate. May use await for async operations."),
 			"tab_id":     stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"expression"})),

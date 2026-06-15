@@ -258,6 +258,172 @@ func TestServiceWorkerHandlesNotifyCommand(t *testing.T) {
 	}
 }
 
+func TestRequireTabIDRejectsEmptyAndInvalid(t *testing.T) {
+	for _, bad := range []string{"", "   ", "0", "-5", "abc", "12x"} {
+		if _, err := requireTabID(bad); err == nil {
+			t.Fatalf("requireTabID(%q) = nil error, want error", bad)
+		}
+	}
+	got, err := requireTabID(" 42 ")
+	if err != nil {
+		t.Fatalf("requireTabID(\" 42 \") error = %v, want nil", err)
+	}
+	if got != 42 {
+		t.Fatalf("requireTabID(\" 42 \") = %d, want 42", got)
+	}
+}
+
+func TestFocusAndCloseTabRejectEmptyIDBeforeBridgeCall(t *testing.T) {
+	// No extension connected: a valid id would fail with "not connected", but an
+	// empty id must fail earlier with the clear validation error so a batched
+	// script does not produce the opaque "No tab with id: 0".
+	b := New("", time.Second, "")
+	if err := b.FocusTab(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "tab id is required") {
+		t.Fatalf("FocusTab(\"\") error = %v, want 'tab id is required'", err)
+	}
+	if err := b.CloseTab(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "tab id is required") {
+		t.Fatalf("CloseTab(\"\") error = %v, want 'tab id is required'", err)
+	}
+}
+
+func TestContextTabIDQueriesLiveActiveTab(t *testing.T) {
+	// The daemon's cached active tab (b.active) drifts when the user switches
+	// tabs manually. contextTabID must ask the extension for the genuinely active
+	// tab via get_active_tab_id rather than blindly returning the stale cache.
+	b := New("", 5*time.Second, "")
+	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/extension"
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dialCancel()
+	conn, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": []string{"chrome-extension://fake"}},
+	})
+	if err != nil {
+		t.Fatalf("dial bridge: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "test done")
+	waitUntil(t, func() bool {
+		b.mu.RLock()
+		defer b.mu.RUnlock()
+		return b.conn != nil
+	})
+
+	// Seed a stale cached value the way an old FocusTab would have.
+	b.setActiveTabID("11")
+
+	// Fake extension: reply to get_active_tab_id with the truly focused tab 77.
+	go func() {
+		ctx := context.Background()
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		var cmd struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(data, &cmd)
+		if cmd.Type != "get_active_tab_id" {
+			return
+		}
+		reply, _ := json.Marshal(map[string]any{
+			"id":     cmd.ID,
+			"ok":     true,
+			"result": map[string]any{"tabId": 77},
+		})
+		_ = conn.Write(ctx, websocket.MessageText, reply)
+	}()
+
+	got := b.contextTabID(context.Background())
+	if got != "77" {
+		t.Fatalf("contextTabID = %q, want 77 (live active tab, not stale cache)", got)
+	}
+	if b.activeTabID() != "77" {
+		t.Fatalf("cached active tab = %q, want healed to 77", b.activeTabID())
+	}
+}
+
+func TestContextTabIDPrefersExplicitContextTab(t *testing.T) {
+	// An explicit tab id in the context must win without any extension round-trip.
+	b := New("", time.Second, "")
+	ctx := browser.WithTabID(context.Background(), "tab-9")
+	if got := b.contextTabID(ctx); got != "tab-9" {
+		t.Fatalf("contextTabID with explicit tab = %q, want tab-9", got)
+	}
+}
+
+func TestBridgeConditionSupportsCommitted(t *testing.T) {
+	// The committed condition (used by Open for non-blank URLs) must be present
+	// in the bridge's in-page condition script so it is not silently ignored.
+	srcPath := filepath.Join("bridge.go")
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	if !strings.Contains(src, `condition === "committed"`) {
+		t.Fatal("bridge condition() must handle the 'committed' condition")
+	}
+	if !strings.Contains(src, `b.WaitFor(waitCtx, "committed"`) {
+		t.Fatal("bridge Open() must wait for 'committed' on non-blank URLs")
+	}
+	if !strings.Contains(src, `b.WaitFor(waitCtx, "ready"`) {
+		t.Fatal("bridge Open() must wait for 'ready' on about:blank")
+	}
+}
+
+func TestServiceWorkerInvalidatesSnapshotCacheOnNavigation(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "extension", "service_worker.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	for _, want := range []string{
+		"chrome.webNavigation.onCommitted.addListener",
+		"details.frameId === 0",
+		"state.snapshotCache.delete(details.tabId)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("service worker navigation cache invalidation missing %q", want)
+		}
+	}
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "extension", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), `"webNavigation"`) {
+		t.Fatal("manifest must request the webNavigation permission for onCommitted")
+	}
+}
+
+func TestServiceWorkerRefreshesListTabsAndExposesActiveTabQuery(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "extension", "service_worker.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	// list_tabs must re-fetch each tab to avoid stale populated url/title.
+	if !strings.Contains(src, "chrome.tabs.get(tab.id)") {
+		t.Fatal("listTabSummaries must refresh each tab via chrome.tabs.get for fresh url/title")
+	}
+	// get_active_tab_id handler backs the live active-tab query.
+	if !strings.Contains(src, `message.type === "get_active_tab_id"`) {
+		t.Fatal("service worker must handle get_active_tab_id for live active-tab resolution")
+	}
+}
+
+func TestServiceWorkerVersionBumped(t *testing.T) {
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "extension", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), `"version": "0.1.9"`) {
+		t.Fatal("manifest version must be bumped to 0.1.9 after service_worker changes")
+	}
+}
+
 func waitUntil(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

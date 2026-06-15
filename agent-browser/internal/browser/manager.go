@@ -200,10 +200,11 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	// about:blank that a freshly created target reports as "ready" before the
 	// real navigation lands — otherwise an immediate snapshot races to an empty
 	// about:blank page. Plain about:blank opens just wait for readiness.
+	var ready bool
 	if url == "about:blank" {
-		_ = m.WaitFor(ctx, "ready", 5*time.Second)
+		ready = m.WaitFor(ctx, "ready", 5*time.Second) == nil
 	} else {
-		_ = m.WaitFor(ctx, "committed", 10*time.Second)
+		ready = m.WaitFor(ctx, "committed", 10*time.Second) == nil
 	}
 	// Do NOT activate the new tab here. OS foreground focus is reserved for the
 	// explicit FocusTab/browser_focus_tab tool so automation never steals the
@@ -214,9 +215,9 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 
 	tab, err := m.tabByID(ctx, tabID)
 	if err != nil {
-		return OpenResult{Tab: Tab{ID: tabID, URL: url, Type: "page"}}, nil
+		return OpenResult{Tab: Tab{ID: tabID, URL: url, Type: "page"}, Ready: ready}, nil
 	}
-	return OpenResult{Tab: tab}, nil
+	return OpenResult{Tab: tab, Ready: ready}, nil
 }
 
 // OpenInGroup, GroupTabs, and UngroupTabs live in manager_tabgroups.go. Chrome

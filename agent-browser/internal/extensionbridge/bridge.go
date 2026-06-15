@@ -257,7 +257,26 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	if out.ID != "" {
 		b.setActiveTabID(out.ID)
 	}
-	return browser.OpenResult{Tab: out}, nil
+	ready := b.waitOpenReady(ctx, url, out.ID)
+	return browser.OpenResult{Tab: out, Ready: ready}, nil
+}
+
+// waitOpenReady blocks until the freshly opened tab is usable, matching the
+// direct-CDP Open() contract so an immediate browser_evaluate / browser_read on
+// the new tab doesn't race the transient about:blank Chrome reports before the
+// real navigation commits. Returns whether readiness was confirmed; a wait
+// timeout is not fatal (the tab still exists), it just reports ready=false. The
+// wait targets the specific new tab id (not the resolved active tab) because
+// open_tab creates the tab inactive, so the focused tab is still the old one.
+func (b *Bridge) waitOpenReady(ctx context.Context, url, tabID string) bool {
+	if tabID == "" {
+		return false
+	}
+	waitCtx := browser.WithTabID(ctx, tabID)
+	if url == "about:blank" {
+		return b.WaitFor(waitCtx, "ready", 5*time.Second) == nil
+	}
+	return b.WaitFor(waitCtx, "committed", 10*time.Second) == nil
 }
 
 func (b *Bridge) ListTabs(ctx context.Context) ([]browser.Tab, error) {
@@ -296,7 +315,11 @@ func (b *Bridge) ListTabs(ctx context.Context) ([]browser.Tab, error) {
 }
 
 func (b *Bridge) FocusTab(ctx context.Context, id string) error {
-	raw, err := b.call(ctx, "focus_tab", map[string]any{"tabId": parseTabID(id)})
+	tabID, err := requireTabID(id)
+	if err != nil {
+		return err
+	}
+	raw, err := b.call(ctx, "focus_tab", map[string]any{"tabId": tabID})
 	if err != nil {
 		return err
 	}
@@ -312,7 +335,11 @@ func (b *Bridge) FocusTab(ctx context.Context, id string) error {
 }
 
 func (b *Bridge) CloseTab(ctx context.Context, id string) error {
-	_, err := b.call(ctx, "close_tab", map[string]any{"tabId": parseTabID(id)})
+	tabID, err := requireTabID(id)
+	if err != nil {
+		return err
+	}
+	_, err = b.call(ctx, "close_tab", map[string]any{"tabId": tabID})
 	if err == nil && strings.TrimSpace(id) == b.activeTabID() {
 		b.setActiveTabID("")
 	}
@@ -366,7 +393,8 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, groupName string) 
 	if out.ID != "" {
 		b.setActiveTabID(out.ID)
 	}
-	return browser.OpenResult{Tab: out}, nil
+	ready := b.waitOpenReady(ctx, url, out.ID)
+	return browser.OpenResult{Tab: out, Ready: ready}, nil
 }
 
 func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
@@ -1351,7 +1379,44 @@ func (b *Bridge) contextTabID(ctx context.Context) string {
 	if tabID := browser.TabIDFromContext(ctx); tabID != "" {
 		return tabID
 	}
+	// No explicit tab in context: resolve the browser's genuinely focused tab
+	// from the extension rather than trusting the cached b.active reference,
+	// which drifts when the user switches tabs manually in Chrome (the daemon
+	// only updates b.active on explicit FocusTab/ListTabs/Open). Falls back to
+	// the cached value if the bridge isn't connected or the query fails, so
+	// behaviour never regresses below the previous cached-only path.
+	if live := b.resolveActiveTabID(ctx); live != "" {
+		return live
+	}
 	return b.activeTabID()
+}
+
+// resolveActiveTabID asks the extension for the truly active/focused tab and
+// updates the cached reference to match, healing drift. Returns "" when the
+// bridge is disconnected or the query fails so the caller can fall back to the
+// last-known cached value.
+func (b *Bridge) resolveActiveTabID(ctx context.Context) string {
+	b.mu.RLock()
+	connected := b.conn != nil
+	b.mu.RUnlock()
+	if !connected {
+		return ""
+	}
+	raw, err := b.call(ctx, "get_active_tab_id", nil)
+	if err != nil {
+		return ""
+	}
+	var resp struct {
+		TabID int `json:"tabId"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil || resp.TabID == 0 {
+		return ""
+	}
+	id := strconv.Itoa(resp.TabID)
+	if id != b.activeTabID() {
+		b.setActiveTabID(id)
+	}
+	return id
 }
 
 func isBridgeTabLostError(err error) bool {
@@ -1432,6 +1497,7 @@ func (b *Bridge) condition(ctx context.Context, condition string) (bool, error) 
 	    return roots().some(root => root.querySelector && root.querySelector(selector));
 	  }
 	  if (condition === "ready" || condition === "load") return document.readyState === "complete" || document.readyState === "interactive";
+	  if (condition === "committed") return (document.readyState === "complete" || document.readyState === "interactive") && location.href !== "about:blank" && location.href !== "";
 	  if (condition.startsWith("url:")) return location.href.includes(condition.slice(4));
 	  if (condition.startsWith("not_url:")) return !location.href.includes(condition.slice(8));
 	  if (condition.startsWith("title:")) return document.title.includes(condition.slice(6));
@@ -1535,6 +1601,23 @@ func actionTargets(tabs []browser.Tab, activeID string, limit int) []browser.Tab
 func parseTabID(id string) int {
 	n, _ := strconv.Atoi(id)
 	return n
+}
+
+// requireTabID validates a caller-supplied tab id for operations that target a
+// specific tab (focus/close). An empty or non-numeric id used to be silently
+// coerced to 0 by parseTabID, which the extension rejected with the opaque "No
+// tab with id: 0" — surfacing here as a clear, actionable error instead so a
+// batched script fails loudly at the offending step.
+func requireTabID(id string) (int, error) {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return 0, errors.New("tab id is required")
+	}
+	n, err := strconv.Atoi(trimmed)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid tab id %q", id)
+	}
+	return n, nil
 }
 
 func screenshotFromRaw(raw json.RawMessage) (browser.Screenshot, error) {

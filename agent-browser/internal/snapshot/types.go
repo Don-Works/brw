@@ -65,6 +65,11 @@ type ClickTextOptions struct {
 	Text  string `json:"text"`
 	Role  string `json:"role,omitempty"`
 	Exact bool   `json:"exact,omitempty"`
+	// AutoScroll controls whether a below-fold text match is scrolled into view
+	// before clicking. Defaults to true (omit the field) so a link beneath the
+	// fold is found and clicked without a manual scroll; set false to opt out and
+	// click only elements already in the viewport.
+	AutoScroll *bool `json:"auto_scroll,omitempty"`
 }
 
 type Element struct {

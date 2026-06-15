@@ -45,7 +45,7 @@ func (m *Manager) OpenIncognito(ctx context.Context, url string) (OpenResult, er
 
 	tabID := string(id)
 	m.refs.SetActive(tabID)
-	_ = m.WaitFor(ctx, "load", 10*time.Second)
+	ready := m.WaitFor(ctx, "load", 10*time.Second) == nil
 	// As with Open, do NOT OS-activate the tab; foreground focus stays reserved
 	// for the explicit FocusTab tool.
 	tab, err := m.tabByID(ctx, tabID)
@@ -53,7 +53,7 @@ func (m *Manager) OpenIncognito(ctx context.Context, url string) (OpenResult, er
 		tab = Tab{ID: tabID, URL: url, Type: "page"}
 	}
 	tab.BrowserContextID = string(ctxID)
-	return OpenResult{Tab: tab}, nil
+	return OpenResult{Tab: tab, Ready: ready}, nil
 }
 
 // CloseContext disposes an incognito browser context created by OpenIncognito,
