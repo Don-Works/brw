@@ -558,6 +558,18 @@ func (b *Bridge) clickRef(ctx context.Context, ref string) error {
 		}
 		return err
 	}
+	// Fast path: actuate the click with a single in-page round-trip. CDP
+	// Input.dispatchMouseEvent blocks on a renderer ack that can cost ~1.5s per
+	// call on heavy pages (≈5s for the three-event sequence below); the in-page
+	// pointer/mouse/click sequence fires the same handlers in one Runtime.evaluate
+	// (~tens of ms). Trusted CDP dispatch stays as the fallback when the point is
+	// not hit-testable in-page (e.g. element scrolled out of the layout viewport).
+	xJSON, _ := json.Marshal(box.ViewportX)
+	yJSON, _ := json.Marshal(box.ViewportY)
+	var inPage snapshot.ClickXYResult
+	if evalErr := b.evaluate(ctx, fmt.Sprintf("%s(%s,%s)", snapshot.ClickXYScript, xJSON, yJSON), "", &inPage); evalErr == nil && inPage.OK {
+		return nil
+	}
 	for _, typ := range []string{"mouseMoved", "mousePressed", "mouseReleased"} {
 		if _, err := b.cdp(ctx, "", "Input.dispatchMouseEvent", map[string]any{
 			"type":   typ,
@@ -1156,7 +1168,10 @@ func (b *Bridge) evaluate(ctx context.Context, expression, tabID string, dst any
 		return fmt.Errorf("runtime exception: %s", details)
 	}
 	if len(payload.Result.Value) == 0 {
-		return errors.New("runtime evaluation returned no by-value result")
+		// Void/undefined results (e.g. location.reload(), assignments, calls that
+		// return nothing) are a successful evaluation, not an error. Surface them
+		// as JSON null rather than failing the whole tool call.
+		return json.Unmarshal([]byte("null"), dst)
 	}
 	return json.Unmarshal(payload.Result.Value, dst)
 }

@@ -1626,11 +1626,20 @@ func DispatchFileInputEvents(ctx context.Context, ref string) error {
 const ClickXYScript = `(function(x, y) {
   var el = document.elementFromPoint(x, y);
   if (!el) return { ok: false, error: 'no element at coordinates' };
-  el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
-  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
-  el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
-  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
-  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  var opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
+  // Hover + focus first: many custom controls (hover-reveal menus, comboboxes,
+  // disclosure widgets) only wire up their click handler after pointerover/focus.
+  el.dispatchEvent(new PointerEvent('pointerover', opts));
+  el.dispatchEvent(new MouseEvent('mouseover', opts));
+  el.dispatchEvent(new PointerEvent('pointermove', opts));
+  el.dispatchEvent(new MouseEvent('mousemove', opts));
+  var focusTarget = (el.closest && el.closest('a[href],button,input,select,textarea,[tabindex],[contenteditable=""],[contenteditable="true"]')) || el;
+  if (focusTarget && typeof focusTarget.focus === 'function') { try { focusTarget.focus({ preventScroll: true }); } catch (e) {} }
+  el.dispatchEvent(new PointerEvent('pointerdown', opts));
+  el.dispatchEvent(new MouseEvent('mousedown', opts));
+  el.dispatchEvent(new PointerEvent('pointerup', opts));
+  el.dispatchEvent(new MouseEvent('mouseup', opts));
+  el.dispatchEvent(new MouseEvent('click', opts));
   var tag = el.tagName.toLowerCase();
   var role = el.getAttribute('role') || '';
   var name = (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || '').slice(0, 100);
