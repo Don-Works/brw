@@ -44,6 +44,8 @@ type Controller interface {
 	WaitFor(context.Context, string, time.Duration) error
 	Evaluate(context.Context, string) (any, error)
 	NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error)
+	NetworkCapture(context.Context, string) ([]snapshot.CapturedRequest, error)
+	ReplayRequest(context.Context, browser.ReplayRequestParams) (snapshot.ReplayResult, error)
 	ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error)
 	ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error)
 	Observe(context.Context) (browser.ObserveResult, error)
@@ -445,6 +447,30 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(s.manager.NetworkRequests(ctx, req.Filter))
+	case "browser_network_capture":
+		var req struct {
+			Filter string `json:"filter"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.NetworkCapture(ctx, req.Filter))
+	case "browser_replay_request":
+		var req struct {
+			Method  string            `json:"method"`
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+			Body    string            `json:"body"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.ReplayRequest(ctx, browser.ReplayRequestParams{
+			Method:  req.Method,
+			URL:     req.URL,
+			Headers: req.Headers,
+			Body:    req.Body,
+		}))
 	case "browser_plan":
 		var req struct {
 			Steps []browser.PlanStep `json:"steps"`
@@ -679,6 +705,17 @@ func tools() []map[string]any {
 			"filter": stringSchema("Optional case-insensitive substring to filter request URLs."),
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, nil)),
+		tool("browser_network_capture", "Install an idempotent in-page interceptor wrapping fetch and XMLHttpRequest, then drain and return recently captured requests (method, url, request headers/body, status, ok, response snippet, started_at, duration_ms). Works on both transports because capture is pure in-page JS (no CDP Network domain required). Bodies and response snippets are truncated. Call once to start capturing, then again after triggering page activity to read what was recorded. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"filter": stringSchema("Optional case-insensitive substring to filter captured request URLs."),
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		}, nil)),
+		tool("browser_replay_request", "Re-execute a request in-page via fetch(url, {method, headers, body}) and return {status, ok, body}. SAFETY: replay of requests whose URL or method looks like checkout, payment, purchase, or order placement is BLOCKED with an error and never executed. Use to re-run safe read/idempotent API calls (for example a GET) discovered via browser_network_capture. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"method":  stringSchema("HTTP method, for example GET or POST. Defaults to GET."),
+			"url":     stringSchema("Request URL. May be relative to the current page."),
+			"headers": map[string]any{"type": "object", "description": "Optional request headers as a string-to-string map.", "additionalProperties": stringSchema("Header value.")},
+			"body":    stringSchema("Optional request body. Ignored for GET/HEAD."),
+			"tab_id":  stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		}, []string{"url"})),
 		tool("browser_type", "Type text into a semantic element ref. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":    stringSchema("Element ref, for example e17."),
 			"text":   stringSchema("Text to insert."),

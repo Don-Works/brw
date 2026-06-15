@@ -388,6 +388,12 @@ func (fakeController) Evaluate(context.Context, string) (any, error) { return ni
 func (fakeController) NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error) {
 	return nil, nil
 }
+func (fakeController) NetworkCapture(context.Context, string) ([]snapshot.CapturedRequest, error) {
+	return nil, nil
+}
+func (fakeController) ReplayRequest(context.Context, browser.ReplayRequestParams) (snapshot.ReplayResult, error) {
+	return snapshot.ReplayResult{}, nil
+}
 func (fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error) {
 	return browser.PlanResult{}, nil
 }
