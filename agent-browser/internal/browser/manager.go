@@ -302,6 +302,15 @@ func (m *Manager) Read(ctx context.Context) (readability.PageRead, error) {
 	return readability.Evaluate(tabCtx)
 }
 
+func (m *Manager) ReadData(ctx context.Context) (snapshot.StructuredData, error) {
+	_, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return snapshot.StructuredData{}, err
+	}
+	defer cancel()
+	return snapshot.EvaluateStructured(tabCtx)
+}
+
 func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 	start := time.Now()
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)

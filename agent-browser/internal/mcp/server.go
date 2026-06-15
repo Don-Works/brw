@@ -26,6 +26,7 @@ type Controller interface {
 	GroupTabs(context.Context, []string, string, string) error
 	UngroupTabs(context.Context, []string) error
 	Read(context.Context) (readability.PageRead, error)
+	ReadData(context.Context) (snapshot.StructuredData, error)
 	Snapshot(context.Context, snapshot.SnapshotOptions) (snapshot.PageSnapshot, error)
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
 	Click(context.Context, string) (browser.ActionResult, error)
@@ -303,6 +304,8 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return toolOK(s.manager.CloseTab(ctx, req.ID))
 	case "browser_read":
 		return toolJSON(s.manager.Read(ctx))
+	case "browser_read_data":
+		return toolJSON(s.manager.ReadData(ctx))
 	case "browser_snapshot":
 		var req snapshot.SnapshotOptions
 		if err := unmarshalArgs(args, &req); err != nil {
@@ -612,6 +615,9 @@ func tools() []map[string]any {
 			"id": stringSchema("Target id from browser_list_tabs."),
 		}, []string{"id"})),
 		tool("browser_read", "Return semantic page content: main text, headings, links, forms, tables, and metadata. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		}, nil)),
+		tool("browser_read_data", "Extract embedded structured page data (Next.js __NEXT_DATA__, JSON-LD, microdata, Open Graph) as a compact normalized object without DOM rendering. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, nil)),
 		tool("browser_snapshot", "Return interactive controls with stable refs. Defaults to a bounded visible/actionable viewport frontier; use mode:\"all\" for full-page debugging (returns every matching element including offscreen/hidden controls — useful for comprehensive page analysis), and add include_hidden:true only when hidden inputs are needed. Metadata includes total_candidates for the full count before filtering. Pass optional tab_id to target a specific tab.", object(map[string]any{

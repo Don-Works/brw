@@ -21,6 +21,7 @@ type Controller interface {
 	GroupTabs(context.Context, []string, string, string) error
 	UngroupTabs(context.Context, []string) error
 	Read(context.Context) (readability.PageRead, error)
+	ReadData(context.Context) (snapshot.StructuredData, error)
 	Snapshot(context.Context, snapshot.SnapshotOptions) (snapshot.PageSnapshot, error)
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
 	Click(context.Context, string) (browser.ActionResult, error)
@@ -86,6 +87,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/page/find", s.find)
 	mux.HandleFunc("POST /api/page/find", s.find)
 	mux.HandleFunc("GET /api/page/read", s.read)
+	mux.HandleFunc("GET /api/page/read_data", s.readData)
 	mux.HandleFunc("POST /api/page/click", s.click)
 	mux.HandleFunc("POST /api/page/click_text", s.clickText)
 	mux.HandleFunc("POST /api/page/type", s.typeText)
@@ -192,6 +194,11 @@ func (s *Server) find(w http.ResponseWriter, r *http.Request) {
 func (s *Server) read(w http.ResponseWriter, r *http.Request) {
 	read, err := s.manager.Read(requestContext(r))
 	writeResult(w, read, err)
+}
+
+func (s *Server) readData(w http.ResponseWriter, r *http.Request) {
+	data, err := s.manager.ReadData(requestContext(r))
+	writeResult(w, data, err)
 }
 
 func (s *Server) click(w http.ResponseWriter, r *http.Request) {
