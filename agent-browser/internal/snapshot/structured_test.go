@@ -109,6 +109,44 @@ func TestEvaluateStructuredJSONLDFallback(t *testing.T) {
 	}
 }
 
+func TestEvaluateStructuredProductGroupRatingBackfill(t *testing.T) {
+	// Real-world pattern (e.g. Decathlon): the aggregateRating lives on the
+	// ProductGroup parent while price/name live on the specific variant Product.
+	// The picked Product must inherit the group's rating instead of dropping it.
+	html := `<!DOCTYPE html><html><head>
+<script type="application/ld+json">[
+{"@type":"ProductGroup","name":"Trail Shorts","aggregateRating":{"@type":"AggregateRating","ratingValue":"4.81","reviewCount":"13194"}},
+{"@type":"Product","name":"Trail Shorts - Black","offers":{"price":"12.99","priceCurrency":"GBP","availability":"https://schema.org/InStock"}}
+]</script>
+</head><body><h1>Trail</h1></body></html>`
+
+	ctx, cancel := structuredTestContext(t)
+	defer cancel()
+
+	var data StructuredData
+	if err := chromedp.Run(ctx,
+		chromedp.Navigate("data:text/html,"+url.PathEscape(html)),
+		chromedp.Evaluate(StructuredDataScript, &data),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if data.Source != "json_ld" {
+		t.Fatalf("source = %q, want json_ld", data.Source)
+	}
+	if data.Name != "Trail Shorts - Black" {
+		t.Fatalf("name = %q, want the variant Product", data.Name)
+	}
+	if data.Price != "12.99" || data.Currency != "GBP" {
+		t.Fatalf("price/currency = %q/%q", data.Price, data.Currency)
+	}
+	if data.Rating != "4.81" {
+		t.Fatalf("rating = %q, want 4.81 backfilled from ProductGroup", data.Rating)
+	}
+	if data.ReviewCount != "13194" {
+		t.Fatalf("reviewCount = %q, want 13194 backfilled from ProductGroup", data.ReviewCount)
+	}
+}
+
 func TestStructuredOutputSmallerThanSnapshotPlusRead(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {

@@ -105,7 +105,7 @@ const StructuredDataScript = `(function() {
     return out;
   }
   function pickEntity(items) {
-    var order = ['Product', 'Offer', 'Article', 'NewsArticle', 'WebPage', 'Organization'];
+    var order = ['Product', 'ProductGroup', 'Offer', 'Article', 'NewsArticle', 'WebPage', 'Organization'];
     for (var i = 0; i < order.length; i++) {
       var hit = items.find(function(it) {
         var t = it && it['@type'];
@@ -124,7 +124,22 @@ const StructuredDataScript = `(function() {
       if (parsed) blocks.push(parsed);
     });
     if (!blocks.length) return null;
-    return pickEntity(flattenJsonLd(blocks));
+    var items = flattenJsonLd(blocks);
+    var entity = pickEntity(items);
+    // Backfill aggregateRating from a sibling node (e.g. the ProductGroup parent
+    // of a variant Product) when the picked entity lacks one. Catalogs commonly
+    // put the rating on the group and price/offer on the specific variant, so a
+    // first-source-wins pick would otherwise drop the rating entirely.
+    if (entity && typeof entity === 'object' && !entity.aggregateRating) {
+      for (var i = 0; i < items.length; i++) {
+        if (items[i] && items[i].aggregateRating) {
+          try { entity = Object.assign({}, entity, { aggregateRating: items[i].aggregateRating }); }
+          catch (e) { entity.aggregateRating = items[i].aggregateRating; }
+          break;
+        }
+      }
+    }
+    return entity;
   }
   function microProp(scope, name) {
     var el = scope.querySelector('[itemprop="' + name + '"]');
