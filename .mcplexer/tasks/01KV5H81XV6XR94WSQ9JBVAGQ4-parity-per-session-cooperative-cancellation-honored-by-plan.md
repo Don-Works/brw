@@ -3,7 +3,7 @@ id: 01KV5H81XV6XR94WSQ9JBVAGQ4
 schema: task/v1
 workspace: agent-browser
 title: '[parity] Per-session cooperative cancellation honored by plan/batch/wait loops'
-status: open
+status: review
 priority: normal
 pinned: false
 assignee:
@@ -22,6 +22,11 @@ status_history:
     evt: created
     to: open
     by_session: eec9898e-0967-4c8d-a37f-bf0d3612b52d
+  - at: 2026-06-15T12:38:04.766506Z
+    evt: status_changed
+    from: open
+    to: review
+    by_session: eec9898e-0967-4c8d-a37f-bf0d3612b52d
 created_at: 2026-06-15T11:39:08Z
-updated_at: 2026-06-15T11:39:08Z
+updated_at: 2026-06-15T12:38:04Z
 ---

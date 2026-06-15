@@ -1572,6 +1572,228 @@ const ClickXYScript = `(function(x, y) {
   return { ok: true, x: x, y: y, tag: tag, role: role, name: name.trim() };
 })`
 
+// MouseEventScript resolves a target by ref or x,y, then dispatches a full
+// pointer + mouse event sequence with the requested button and click count.
+// Used by the extension bridge (which has no direct CDP Input access) for
+// right/double/triple/middle click. clickCount>1 fires the extra click events
+// (dblclick for 2) the way browsers do for repeated clicks.
+const MouseEventScript = `(function(opts) {
+  opts = opts || {};
+  function roots() {
+    const out = [document];
+    for (let i = 0; i < out.length; i++) {
+      const root = out[i];
+      if (!root.querySelectorAll) continue;
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        if (el.shadowRoot) out.push(el.shadowRoot);
+      }
+    }
+    return out;
+  }
+  function findByRef(ref) {
+    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
+    for (const root of roots()) {
+      const el = root.querySelector && root.querySelector(selector);
+      if (el) return el;
+    }
+    return null;
+  }
+  function buttonConsts(name) {
+    switch (String(name || 'left').toLowerCase()) {
+      case 'right': return { button: 2, buttons: 2 };
+      case 'middle': return { button: 1, buttons: 4 };
+      case 'back': return { button: 3, buttons: 8 };
+      case 'forward': return { button: 4, buttons: 16 };
+      case 'none': return { button: 0, buttons: 0 };
+      default: return { button: 0, buttons: 1 };
+    }
+  }
+  let x = opts.x;
+  let y = opts.y;
+  let target = null;
+  if (opts.ref) {
+    target = findByRef(opts.ref);
+    if (!target) return { ok: false, error: 'ref not found' };
+    if (target.closest('[hidden],[aria-hidden="true"]')) return { ok: false, error: 'ref hidden' };
+    target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const r = target.getBoundingClientRect();
+    x = r.left + r.width / 2;
+    y = r.top + r.height / 2;
+  } else if (typeof x !== 'number' || typeof y !== 'number') {
+    return { ok: false, error: 'mouse target requires either a ref or x and y coordinates' };
+  } else {
+    target = document.elementFromPoint(x, y);
+    if (!target) return { ok: false, error: 'no element at coordinates' };
+  }
+  const bc = buttonConsts(opts.button);
+  const clickCount = Math.max(1, Number(opts.click_count || 1));
+  function pe(type, opt) { return new PointerEvent(type, opt); }
+  function me(type, opt) { return new MouseEvent(type, opt); }
+  const down = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, button: bc.button, buttons: bc.buttons };
+  const up = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, button: bc.button, buttons: 0 };
+  target.dispatchEvent(pe('pointermove', up));
+  for (let i = 1; i <= clickCount; i++) {
+    const clickOpts = Object.assign({}, up, { detail: i });
+    target.dispatchEvent(pe('pointerdown', Object.assign({}, down, { detail: i })));
+    target.dispatchEvent(me('mousedown', Object.assign({}, down, { detail: i })));
+    target.dispatchEvent(pe('pointerup', clickOpts));
+    target.dispatchEvent(me('mouseup', clickOpts));
+    if (bc.button === 2) {
+      target.dispatchEvent(me('contextmenu', clickOpts));
+    } else if (bc.button === 0) {
+      if (i === clickCount && typeof target.click === 'function') target.click();
+      else target.dispatchEvent(me('click', clickOpts));
+      if (i === 2) target.dispatchEvent(me('dblclick', Object.assign({}, clickOpts, { detail: 2 })));
+    } else {
+      target.dispatchEvent(me('auxclick', clickOpts));
+    }
+  }
+  const tag = target.tagName.toLowerCase();
+  const role = target.getAttribute('role') || '';
+  const name = (target.getAttribute('aria-label') || target.getAttribute('title') || target.innerText || '').slice(0, 100);
+  return { ok: true, x: x, y: y, tag: tag, role: role, name: name.trim(), href: target.href || target.getAttribute('href') || '' };
+})`
+
+// MouseHalfScript dispatches a single pointerdown+mousedown (down) or
+// pointerup+mouseup (up) at a ref or x,y — the decomposed press-and-hold the
+// extension bridge uses for mouse_down / mouse_up.
+const MouseHalfScript = `(function(opts) {
+  opts = opts || {};
+  function roots() {
+    const out = [document];
+    for (let i = 0; i < out.length; i++) {
+      const root = out[i];
+      if (!root.querySelectorAll) continue;
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        if (el.shadowRoot) out.push(el.shadowRoot);
+      }
+    }
+    return out;
+  }
+  function findByRef(ref) {
+    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
+    for (const root of roots()) {
+      const el = root.querySelector && root.querySelector(selector);
+      if (el) return el;
+    }
+    return null;
+  }
+  function buttonConsts(name) {
+    switch (String(name || 'left').toLowerCase()) {
+      case 'right': return { button: 2, buttons: 2 };
+      case 'middle': return { button: 1, buttons: 4 };
+      case 'back': return { button: 3, buttons: 8 };
+      case 'forward': return { button: 4, buttons: 16 };
+      case 'none': return { button: 0, buttons: 0 };
+      default: return { button: 0, buttons: 1 };
+    }
+  }
+  let x = opts.x;
+  let y = opts.y;
+  let target = null;
+  if (opts.ref) {
+    target = findByRef(opts.ref);
+    if (!target) return { ok: false, error: 'ref not found' };
+    target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const r = target.getBoundingClientRect();
+    x = r.left + r.width / 2;
+    y = r.top + r.height / 2;
+  } else if (typeof x !== 'number' || typeof y !== 'number') {
+    return { ok: false, error: 'mouse target requires either a ref or x and y coordinates' };
+  } else {
+    target = document.elementFromPoint(x, y);
+    if (!target) return { ok: false, error: 'no element at coordinates' };
+  }
+  const bc = buttonConsts(opts.button);
+  const isDown = String(opts.phase) === 'down';
+  const opt = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, button: bc.button, buttons: isDown ? bc.buttons : 0 };
+  if (isDown) {
+    target.dispatchEvent(new PointerEvent('pointermove', Object.assign({}, opt, { buttons: 0 })));
+    target.dispatchEvent(new PointerEvent('pointerdown', opt));
+    target.dispatchEvent(new MouseEvent('mousedown', opt));
+  } else {
+    target.dispatchEvent(new PointerEvent('pointerup', opt));
+    target.dispatchEvent(new MouseEvent('mouseup', opt));
+  }
+  const name = (target.getAttribute('aria-label') || target.getAttribute('title') || target.innerText || '').slice(0, 100);
+  return { ok: true, x: x, y: y, tag: target.tagName.toLowerCase(), role: target.getAttribute('role') || '', name: name.trim(), href: target.href || target.getAttribute('href') || '' };
+})`
+
+// DragScript presses at a source (ref or x,y), emits interpolated pointermove +
+// mousemove events with the button held, then releases at the target. Generic
+// pointer-event drag the extension bridge uses for sliders/range inputs,
+// drag-and-drop reorder, and canvas/map panning.
+const DragScript = `(function(opts) {
+  opts = opts || {};
+  function roots() {
+    const out = [document];
+    for (let i = 0; i < out.length; i++) {
+      const root = out[i];
+      if (!root.querySelectorAll) continue;
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        if (el.shadowRoot) out.push(el.shadowRoot);
+      }
+    }
+    return out;
+  }
+  function findByRef(ref) {
+    const selector = '[data-agent-browser-ref="' + CSS.escape(ref) + '"]';
+    for (const root of roots()) {
+      const el = root.querySelector && root.querySelector(selector);
+      if (el) return el;
+    }
+    return null;
+  }
+  function buttonConsts(name) {
+    switch (String(name || 'left').toLowerCase()) {
+      case 'right': return { button: 2, buttons: 2 };
+      case 'middle': return { button: 1, buttons: 4 };
+      default: return { button: 0, buttons: 1 };
+    }
+  }
+  function point(p) {
+    if (p && p.ref) {
+      const el = findByRef(p.ref);
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }
+    if (p && typeof p.x === 'number' && typeof p.y === 'number') return { x: p.x, y: p.y };
+    return null;
+  }
+  const from = point(opts.from);
+  if (!from) return { ok: false, error: 'drag source requires either a ref or x and y coordinates' };
+  const to = point(opts.to);
+  if (!to) return { ok: false, error: 'drag target requires either a ref or x and y coordinates' };
+  const bc = buttonConsts(opts.button);
+  let steps = Math.max(1, Number(opts.steps || 12));
+  const src = document.elementFromPoint(from.x, from.y);
+  if (!src) return { ok: false, error: 'no element at drag source' };
+  function disp(el, type, x, y, buttons) {
+    const opt = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, button: bc.button, buttons: buttons };
+    if (type.startsWith('pointer')) el.dispatchEvent(new PointerEvent(type, opt));
+    else el.dispatchEvent(new MouseEvent(type, opt));
+  }
+  disp(src, 'pointermove', from.x, from.y, 0);
+  disp(src, 'pointerdown', from.x, from.y, bc.buttons);
+  disp(src, 'mousedown', from.x, from.y, bc.buttons);
+  let last = src;
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const mx = from.x + (to.x - from.x) * t;
+    const my = from.y + (to.y - from.y) * t;
+    const over = document.elementFromPoint(mx, my) || last;
+    disp(over, 'pointermove', mx, my, bc.buttons);
+    disp(over, 'mousemove', mx, my, bc.buttons);
+    last = over;
+  }
+  const dst = document.elementFromPoint(to.x, to.y) || last;
+  disp(dst, 'pointerup', to.x, to.y, 0);
+  disp(dst, 'mouseup', to.x, to.y, 0);
+  return { ok: true, from: from, to: to };
+})`
+
 const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
   opts = opts || {};
   function clean(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
@@ -1782,6 +2004,19 @@ func ClickXY(ctx context.Context, x, y float64) (ClickXYResult, error) {
 		return result, errors.New(result.Error)
 	}
 	return result, nil
+}
+
+// MouseActionResult is the by-value result of an in-page mouse action
+// (MouseEvent/MouseHalf/Drag) dispatched through the extension bridge.
+type MouseActionResult struct {
+	OK    bool    `json:"ok"`
+	X     float64 `json:"x,omitempty"`
+	Y     float64 `json:"y,omitempty"`
+	Tag   string  `json:"tag,omitempty"`
+	Role  string  `json:"role,omitempty"`
+	Name  string  `json:"name,omitempty"`
+	Href  string  `json:"href,omitempty"`
+	Error string  `json:"error,omitempty"`
 }
 
 func ClickText(ctx context.Context, opts ClickTextOptions) (ClickXYResult, error) {
