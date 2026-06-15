@@ -253,6 +253,18 @@ func (c *Controller) CommitField(ctx context.Context, ref string) error {
 	return c.post(ctx, "/api/page/commit", map[string]any{"ref": ref}, nil)
 }
 
+func (c *Controller) GetPolicy(ctx context.Context) (browser.PolicySettings, error) {
+	var out browser.PolicySettings
+	err := c.get(ctx, "/api/browser/policy", nil, &out)
+	return out, err
+}
+
+func (c *Controller) SetPolicy(ctx context.Context, settings browser.PolicySettings) (browser.PolicySettings, error) {
+	var out browser.PolicySettings
+	err := c.post(ctx, "/api/browser/policy", settings, &out)
+	return out, err
+}
+
 func (c *Controller) get(ctx context.Context, path string, values url.Values, out any) error {
 	reqURL := c.baseURL + path
 	if tabID := browser.TabIDFromContext(ctx); tabID != "" {

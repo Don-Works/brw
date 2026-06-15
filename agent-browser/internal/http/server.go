@@ -49,6 +49,8 @@ type Controller interface {
 	AssertValue(context.Context, string, string, time.Duration) error
 	AssertHidden(context.Context, string, time.Duration) error
 	CommitField(context.Context, string) error
+	GetPolicy(context.Context) (browser.PolicySettings, error)
+	SetPolicy(context.Context, browser.PolicySettings) (browser.PolicySettings, error)
 }
 
 type Server struct {
@@ -111,6 +113,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/page/console", s.consoleMessages)
 	mux.HandleFunc("GET /api/page/trace", s.trace)
 	mux.HandleFunc("POST /api/page/clear_trace", s.clearTrace)
+	mux.HandleFunc("GET /api/browser/policy", s.getPolicy)
+	mux.HandleFunc("POST /api/browser/policy", s.setPolicy)
 	mux.HandleFunc("POST /api/browser/group_tabs", s.groupTabs)
 	mux.HandleFunc("POST /api/browser/ungroup_tabs", s.ungroupTabs)
 	mux.HandleFunc("GET /api/visual/screenshot", s.screenshot)
@@ -461,6 +465,20 @@ func (s *Server) trace(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) clearTrace(w http.ResponseWriter, _ *http.Request) {
 	s.manager.ClearTrace()
 	writeJSON(w, http.StatusOK, browser.ActionResult{OK: true})
+}
+
+func (s *Server) getPolicy(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.manager.GetPolicy(r.Context())
+	writeResult(w, settings, err)
+}
+
+func (s *Server) setPolicy(w http.ResponseWriter, r *http.Request) {
+	var req browser.PolicySettings
+	if !decode(w, r, &req) {
+		return
+	}
+	settings, err := s.manager.SetPolicy(r.Context(), req)
+	writeResult(w, settings, err)
 }
 
 func (s *Server) groupTabs(w http.ResponseWriter, r *http.Request) {

@@ -159,6 +159,43 @@ func TestNewPageActionRoutes(t *testing.T) {
 	}
 }
 
+func TestPolicyEndpointsRoundtrip(t *testing.T) {
+	ctrl := &fakeController{snap: sampleSnapshot()}
+	server := New("", ctrl)
+
+	// POST set updates the policy.
+	body := bytes.NewBufferString(`{"purchase_gate":true,"purchase_authorized":true,"deny":["ads.example.com"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/browser/policy", body)
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var set browser.PolicySettings
+	if err := json.NewDecoder(rec.Body).Decode(&set); err != nil {
+		t.Fatal(err)
+	}
+	if !set.PurchaseAuthorized || len(set.Deny) != 1 || set.Deny[0] != "ads.example.com" {
+		t.Fatalf("set policy = %#v", set)
+	}
+
+	// GET returns the stored policy.
+	req = httptest.NewRequest(http.MethodGet, "/api/browser/policy", nil)
+	rec = httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got browser.PolicySettings
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.PurchaseAuthorized || len(got.Deny) != 1 {
+		t.Fatalf("get policy = %#v", got)
+	}
+}
+
 func sampleSnapshot() snapshot.PageSnapshot {
 	return snapshot.PageSnapshot{
 		URL:   "https://example.test/form",
@@ -183,6 +220,7 @@ type fakeController struct {
 	commitRef    string
 	clickX       float64
 	clickY       float64
+	policy       browser.PolicySettings
 }
 
 func (f *fakeController) Open(context.Context, string) (browser.OpenResult, error) {
@@ -318,4 +356,13 @@ func (f *fakeController) AssertHidden(context.Context, string, time.Duration) er
 func (f *fakeController) CommitField(_ context.Context, ref string) error {
 	f.commitRef = ref
 	return nil
+}
+
+func (f *fakeController) GetPolicy(context.Context) (browser.PolicySettings, error) {
+	return f.policy, nil
+}
+
+func (f *fakeController) SetPolicy(_ context.Context, settings browser.PolicySettings) (browser.PolicySettings, error) {
+	f.policy = settings
+	return settings, nil
 }
