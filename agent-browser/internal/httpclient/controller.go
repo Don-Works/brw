@@ -229,6 +229,12 @@ func (c *Controller) ConsoleMessages(ctx context.Context) ([]browser.ConsoleMess
 	return out, err
 }
 
+func (c *Controller) Downloads(ctx context.Context) (browser.DownloadsResult, error) {
+	var out browser.DownloadsResult
+	err := c.get(ctx, "/api/page/downloads", nil, &out)
+	return out, err
+}
+
 func (c *Controller) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYResult, error) {
 	var out snapshot.ClickXYResult
 	err := c.post(ctx, "/api/page/click_xy", map[string]any{"x": x, "y": y}, &out)

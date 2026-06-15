@@ -43,6 +43,7 @@ type Controller interface {
 	ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error)
 	Observe(context.Context) (browser.ObserveResult, error)
 	ConsoleMessages(context.Context) ([]browser.ConsoleMessage, error)
+	Downloads(context.Context) (browser.DownloadsResult, error)
 	ClickXY(context.Context, float64, float64) (snapshot.ClickXYResult, error)
 	GetTrace() browser.TraceResult
 	ClearTrace()
@@ -113,6 +114,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/assert_value", s.assertValue)
 	mux.HandleFunc("POST /api/page/click_xy", s.clickXY)
 	mux.HandleFunc("GET /api/page/console", s.consoleMessages)
+	mux.HandleFunc("GET /api/page/downloads", s.downloads)
 	mux.HandleFunc("GET /api/page/trace", s.trace)
 	mux.HandleFunc("POST /api/page/clear_trace", s.clearTrace)
 	mux.HandleFunc("POST /api/browser/group_tabs", s.groupTabs)
@@ -472,6 +474,11 @@ func (s *Server) clickXY(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) consoleMessages(w http.ResponseWriter, r *http.Request) {
 	result, err := s.manager.ConsoleMessages(requestContext(r))
+	writeResult(w, result, err)
+}
+
+func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
+	result, err := s.manager.Downloads(requestContext(r))
 	writeResult(w, result, err)
 }
 

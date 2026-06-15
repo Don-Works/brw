@@ -48,6 +48,7 @@ type Controller interface {
 	ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error)
 	Observe(context.Context) (browser.ObserveResult, error)
 	ConsoleMessages(context.Context) ([]browser.ConsoleMessage, error)
+	Downloads(context.Context) (browser.DownloadsResult, error)
 	ClickXY(context.Context, float64, float64) (snapshot.ClickXYResult, error)
 	GetTrace() browser.TraceResult
 	ClearTrace()
@@ -537,6 +538,8 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return toolJSON(s.manager.ClickXY(ctx, req.X, req.Y))
 	case "browser_console":
 		return toolJSON(s.manager.ConsoleMessages(ctx))
+	case "browser_downloads":
+		return toolJSON(s.manager.Downloads(ctx))
 	case "browser_trace":
 		trace := s.manager.GetTrace()
 		return toolJSON(trace, nil)
@@ -808,6 +811,7 @@ func tools() []map[string]any {
 		tool("browser_console", "Return and drain buffered console messages (log, warn, error, info) from the page. Messages are captured by an injected console interceptor and cleared after reading. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, nil)),
+		tool("browser_downloads", "Return and drain tracked file downloads. Download capture is enabled lazily on first call (Browser.setDownloadBehavior with events); subsequent triggered downloads are recorded via the Browser.downloadWillBegin/downloadProgress CDP events with url, suggested_filename, state (inProgress/completed/canceled), received_bytes, total_bytes, guid, and path. The buffer is cleared after reading. Over the extension bridge this returns an empty list plus an explanatory note.", object(nil, nil)),
 		tool("browser_trace", "Return the action trace: a compact log of recent actions with refs, timing, and outcomes. Use for debugging and performance analysis.", object(nil, nil)),
 		tool("browser_clear_trace", "Clear the action trace buffer.", object(nil, nil)),
 	}
