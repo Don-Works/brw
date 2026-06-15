@@ -55,6 +55,7 @@ type Controller interface {
 	AssertValue(context.Context, string, string, time.Duration) error
 	AssertHidden(context.Context, string, time.Duration) error
 	CommitField(context.Context, string) error
+	Notify(context.Context, browser.NotifyOptions) (browser.NotifyResult, error)
 }
 
 type Server struct {
@@ -115,6 +116,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/cancel", s.cancel)
 	mux.HandleFunc("GET /api/page/observe", s.observe)
 	mux.HandleFunc("POST /api/page/commit", s.commitField)
+	mux.HandleFunc("POST /api/page/notify", s.notify)
 	mux.HandleFunc("POST /api/page/assert_visible", s.assertVisible)
 	mux.HandleFunc("POST /api/page/assert_hidden", s.assertHidden)
 	mux.HandleFunc("POST /api/page/assert_text", s.assertText)
@@ -464,6 +466,20 @@ func (s *Server) commitField(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResult(w, browser.ActionResult{OK: true}, s.manager.CommitField(contextWithTabID(r.Context(), req.TabID), req.Ref))
+}
+
+func (s *Server) notify(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Kind    string `json:"kind"`
+		Title   string `json:"title"`
+		Message string `json:"message"`
+		TabID   string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.Notify(contextWithTabID(r.Context(), req.TabID), browser.NotifyOptions{Kind: req.Kind, Title: req.Title, Message: req.Message})
+	writeResult(w, result, err)
 }
 
 func (s *Server) assertVisible(w http.ResponseWriter, r *http.Request) {

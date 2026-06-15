@@ -213,6 +213,49 @@ func TestBrowserCancelToolSchemaDocumentsTokenAndTab(t *testing.T) {
 	}
 }
 
+func TestBrowserNotifyDispatchesToController(t *testing.T) {
+	ctrl := &recordingController{}
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_notify","arguments":{"kind":"needs_input","title":"MFA required","message":"Enter your one-time code"}}}` + "\n"
+	var output bytes.Buffer
+
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+
+	if ctrl.notifyOpts.Kind != "needs_input" || ctrl.notifyOpts.Title != "MFA required" || ctrl.notifyOpts.Message != "Enter your one-time code" {
+		t.Fatalf("notify options = %#v", ctrl.notifyOpts)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := resp["result"].(map[string]any)
+	structured := result["structuredContent"].(map[string]any)
+	if structured["ok"] != true || structured["delivery"] != "extension" {
+		t.Fatalf("structured notify result = %#v", structured)
+	}
+}
+
+func TestBrowserNotifyRegisteredInToolsList(t *testing.T) {
+	var notifyTool map[string]any
+	for _, tool := range tools() {
+		if tool["name"] == "browser_notify" {
+			notifyTool = tool
+			break
+		}
+	}
+	if notifyTool == nil {
+		t.Fatal("browser_notify tool not registered")
+	}
+	props := notifyTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	for _, prop := range []string{"kind", "title", "message"} {
+		if _, ok := props[prop]; !ok {
+			t.Fatalf("browser_notify schema missing %s: %#v", prop, props)
+		}
+	}
+}
+
 func TestToolSchemasExposeTabScopedErgonomics(t *testing.T) {
 	byName := map[string]map[string]any{}
 	for _, tool := range tools() {
@@ -346,6 +389,7 @@ type recordingController struct {
 	findOpts          snapshot.FindOptions
 	navigateDirection string
 	cancelToken       string
+	notifyOpts        browser.NotifyOptions
 }
 
 func (r *recordingController) Navigate(ctx context.Context, direction string) (browser.ActionResult, error) {
@@ -356,6 +400,11 @@ func (r *recordingController) Navigate(ctx context.Context, direction string) (b
 func (r *recordingController) Cancel(ctx context.Context, token string) (browser.CancelResult, error) {
 	r.cancelToken = token
 	return browser.CancelResult{OK: true, Token: token, Cancelled: 1}, nil
+}
+
+func (r *recordingController) Notify(ctx context.Context, opts browser.NotifyOptions) (browser.NotifyResult, error) {
+	r.notifyOpts = opts
+	return browser.NotifyResult{OK: true, Delivery: "extension"}, nil
 }
 
 func (r *recordingController) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
@@ -482,3 +531,6 @@ func (fakeController) AssertValue(context.Context, string, string, time.Duration
 }
 func (fakeController) AssertHidden(context.Context, string, time.Duration) error { return nil }
 func (fakeController) CommitField(context.Context, string) error                 { return nil }
+func (fakeController) Notify(context.Context, browser.NotifyOptions) (browser.NotifyResult, error) {
+	return browser.NotifyResult{OK: true, Delivery: "extension"}, nil
+}

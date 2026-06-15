@@ -1814,6 +1814,33 @@ func (b *Bridge) CommitField(ctx context.Context, ref string) error {
 	return nil
 }
 
+// Notify raises a desktop notification at a human hand-off point by sending a
+// "notify" command over the bridge. The extension turns it into a
+// chrome.notifications.create call, which surfaces even when the agent tab is
+// backgrounded. The result reports the honest delivery channel.
+func (b *Bridge) Notify(ctx context.Context, opts browser.NotifyOptions) (browser.NotifyResult, error) {
+	opts, err := browser.NormalizeNotifyOptions(opts)
+	if err != nil {
+		return browser.NotifyResult{}, err
+	}
+	raw, err := b.call(ctx, "notify", map[string]any{
+		"kind":    opts.Kind,
+		"title":   opts.Title,
+		"message": opts.Message,
+	})
+	if err != nil {
+		return browser.NotifyResult{}, err
+	}
+	var result browser.NotifyResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return browser.NotifyResult{}, err
+	}
+	if result.Delivery == "" {
+		result.Delivery = "extension"
+	}
+	return result, nil
+}
+
 func (b *Bridge) ConsoleMessages(ctx context.Context) ([]browser.ConsoleMessage, error) {
 	expr := `(function() {
 		if (!window.__agentBrowserConsole) return [];

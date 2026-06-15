@@ -57,6 +57,33 @@ type Screenshot struct {
 	Base64   string `json:"base64,omitempty"`
 }
 
+// NotifyOptions describes a desktop notification to surface to the human
+// operator when the agent reaches a hand-off point (needs_input), finishes
+// (done), or fails (error). It is transport-agnostic: the extension bridge
+// turns it into a chrome.notifications.create call, while a direct-CDP session
+// falls back to the in-page Notification API on a best-effort basis.
+type NotifyOptions struct {
+	// Kind classifies the notification: "needs_input", "done", or "error".
+	Kind string `json:"kind"`
+	// Title is the short heading line of the notification.
+	Title string `json:"title"`
+	// Message is the notification body.
+	Message string `json:"message"`
+}
+
+// NotifyResult reports how a notification request was satisfied so the caller
+// can tell whether a real desktop notification was raised or only a
+// best-effort/unavailable fallback occurred. It never fakes success.
+type NotifyResult struct {
+	OK bool `json:"ok"`
+	// Delivery is one of: "extension" (chrome.notifications), "page"
+	// (in-page Notification API best-effort), or "unavailable".
+	Delivery string `json:"delivery"`
+	// Note carries human-readable detail, e.g. why delivery is best-effort
+	// or why a real notification could not be raised.
+	Note string `json:"note,omitempty"`
+}
+
 type NetworkRequest struct {
 	URL           string `json:"url"`
 	InitiatorType string `json:"initiator_type,omitempty"`

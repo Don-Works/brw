@@ -60,6 +60,7 @@ type Controller interface {
 	AssertValue(context.Context, string, string, time.Duration) error
 	AssertHidden(context.Context, string, time.Duration) error
 	CommitField(context.Context, string) error
+	Notify(context.Context, browser.NotifyOptions) (browser.NotifyResult, error)
 }
 
 type Server struct {
@@ -562,6 +563,16 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolOK(s.manager.CommitField(ctx, req.Ref))
+	case "browser_notify":
+		var req struct {
+			Kind    string `json:"kind"`
+			Title   string `json:"title"`
+			Message string `json:"message"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.Notify(ctx, browser.NotifyOptions{Kind: req.Kind, Title: req.Title, Message: req.Message}))
 	case "browser_click_xy":
 		var req struct {
 			X float64 `json:"x"`
@@ -853,6 +864,11 @@ func tools() []map[string]any {
 		tool("browser_commit", "Commit a form field: submits the enclosing form (via submit button or requestSubmit) or presses Enter if no form. Use after filling a field that requires explicit submission.", object(map[string]any{
 			"ref": stringSchema("Element ref from browser_snapshot."),
 		}, []string{"ref"})),
+		tool("browser_notify", "Raise a desktop notification to pull the human operator back at a hand-off point (needs_input for MFA/CAPTCHA/purchase confirmation), on completion (done), or on failure (error) — useful when the user has tabbed away. With the Chrome extension bridge this uses chrome.notifications and surfaces even when the tab is backgrounded; on a direct-CDP session it falls back to the in-page Notification API (best-effort, subject to page focus/permission). The result reports the honest delivery channel (extension, page, or unavailable).", object(map[string]any{
+			"kind":    stringSchema("Hand-off classification: needs_input (default), done, or error."),
+			"title":   stringSchema("Short notification heading. Defaults to a kind-appropriate title."),
+			"message": stringSchema("Notification body text."),
+		}, nil)),
 		tool("browser_click_xy", "Click at specific viewport coordinates (x, y). Returns the element that was clicked. Use for canvas interactions or when semantic refs are not available. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"x":      map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
 			"y":      map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},

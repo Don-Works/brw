@@ -294,6 +294,16 @@ func (c *Controller) CommitField(ctx context.Context, ref string) error {
 	return c.post(ctx, "/api/page/commit", map[string]any{"ref": ref}, nil)
 }
 
+func (c *Controller) Notify(ctx context.Context, opts browser.NotifyOptions) (browser.NotifyResult, error) {
+	var out browser.NotifyResult
+	err := c.post(ctx, "/api/page/notify", map[string]any{
+		"kind":    opts.Kind,
+		"title":   opts.Title,
+		"message": opts.Message,
+	}, &out)
+	return out, err
+}
+
 func (c *Controller) get(ctx context.Context, path string, values url.Values, out any) error {
 	reqURL := c.baseURL + path
 	if tabID := browser.TabIDFromContext(ctx); tabID != "" {

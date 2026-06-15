@@ -17,6 +17,10 @@ should stay in the private repo.
 - Connects to `ws://127.0.0.1:17311/extension`.
 - Uses `chrome.debugger` as a CDP transport for visible tabs.
 - Sends tab summaries and CDP results to `agent-browserd --bridge`.
+- Raises desktop notifications (via `chrome.notifications`, requires the
+  `notifications` permission) when the daemon sends a `notify` command so the
+  user is pulled back at human-handoff points (MFA/CAPTCHA/purchase
+  confirmation), on completion, or on error — even when the tab is backgrounded.
 - Never reads or exports Chrome cookies, passwords, passkeys, or profile files.
 
 ## Install Modes
