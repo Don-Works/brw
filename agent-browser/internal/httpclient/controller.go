@@ -78,6 +78,12 @@ func (c *Controller) Read(ctx context.Context) (readability.PageRead, error) {
 	return out, err
 }
 
+func (c *Controller) ReadData(ctx context.Context) (snapshot.StructuredData, error) {
+	var out snapshot.StructuredData
+	err := c.get(ctx, "/api/page/read_data", nil, &out)
+	return out, err
+}
+
 func (c *Controller) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
 	var out snapshot.PageSnapshot
 	err := c.get(ctx, "/api/page/snapshot", snapshotValues(opts), &out)

@@ -446,6 +446,12 @@ func (b *Bridge) Read(ctx context.Context) (readability.PageRead, error) {
 	return read, err
 }
 
+func (b *Bridge) ReadData(ctx context.Context) (snapshot.StructuredData, error) {
+	var data snapshot.StructuredData
+	err := b.evaluate(ctx, snapshot.StructuredDataScript, "", &data)
+	return data, err
+}
+
 const (
 	observedActionSettle = 75 * time.Millisecond
 	batchActionSettle    = 25 * time.Millisecond

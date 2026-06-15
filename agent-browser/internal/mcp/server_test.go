@@ -274,6 +274,9 @@ func (fakeController) CloseTab(context.Context, string) error          { return 
 func (fakeController) Read(context.Context) (readability.PageRead, error) {
 	return readability.PageRead{}, nil
 }
+func (fakeController) ReadData(context.Context) (snapshot.StructuredData, error) {
+	return snapshot.StructuredData{}, nil
+}
 func (fakeController) Snapshot(context.Context, snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
 	return snapshot.PageSnapshot{
 		URL:   "https://example.com",

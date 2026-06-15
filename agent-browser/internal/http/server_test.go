@@ -222,6 +222,10 @@ func (f *fakeController) Read(context.Context) (readability.PageRead, error) {
 	return readability.PageRead{}, nil
 }
 
+func (f *fakeController) ReadData(context.Context) (snapshot.StructuredData, error) {
+	return snapshot.StructuredData{}, nil
+}
+
 func (f *fakeController) Click(context.Context, string) (browser.ActionResult, error) {
 	return browser.ActionResult{OK: true}, nil
 }
