@@ -102,6 +102,51 @@ func (c *Controller) ClickText(ctx context.Context, opts snapshot.ClickTextOptio
 	return out, err
 }
 
+func (c *Controller) ClickButton(ctx context.Context, opts browser.ClickButtonOptions) (browser.ActionResult, error) {
+	var out browser.ActionResult
+	body := map[string]any{"ref": opts.Ref, "button": opts.Button, "click_count": opts.ClickCount}
+	if opts.X != nil {
+		body["x"] = *opts.X
+	}
+	if opts.Y != nil {
+		body["y"] = *opts.Y
+	}
+	err := c.post(ctx, "/api/page/click", body, &out)
+	return out, err
+}
+
+func (c *Controller) MouseDown(ctx context.Context, opts browser.MouseButtonOptions) (browser.ActionResult, error) {
+	return c.mouseButton(ctx, "/api/page/mouse_down", opts)
+}
+
+func (c *Controller) MouseUp(ctx context.Context, opts browser.MouseButtonOptions) (browser.ActionResult, error) {
+	return c.mouseButton(ctx, "/api/page/mouse_up", opts)
+}
+
+func (c *Controller) mouseButton(ctx context.Context, path string, opts browser.MouseButtonOptions) (browser.ActionResult, error) {
+	var out browser.ActionResult
+	body := map[string]any{"ref": opts.Ref, "button": opts.Button}
+	if opts.X != nil {
+		body["x"] = *opts.X
+	}
+	if opts.Y != nil {
+		body["y"] = *opts.Y
+	}
+	err := c.post(ctx, path, body, &out)
+	return out, err
+}
+
+func (c *Controller) Drag(ctx context.Context, opts browser.DragOptions) (browser.ActionResult, error) {
+	var out browser.ActionResult
+	err := c.post(ctx, "/api/page/drag", map[string]any{
+		"from":   opts.From,
+		"to":     opts.To,
+		"steps":  opts.Steps,
+		"button": opts.Button,
+	}, &out)
+	return out, err
+}
+
 func (c *Controller) Type(ctx context.Context, ref, text string) (browser.ActionResult, error) {
 	var out browser.ActionResult
 	err := c.post(ctx, "/api/page/type", map[string]string{"ref": ref, "text": text}, &out)

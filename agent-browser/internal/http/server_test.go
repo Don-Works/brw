@@ -118,6 +118,10 @@ func TestNewPageActionRoutes(t *testing.T) {
 	}{
 		{http.MethodPost, "/api/page/batch", `{"steps":[{"action":"click","ref":"e1"}]}`},
 		{http.MethodPost, "/api/page/click_text", `{"text":"Submit"}`},
+		{http.MethodPost, "/api/page/drag", `{"from":{"ref":"e1"},"to":{"x":120,"y":40},"steps":8,"button":"left"}`},
+		{http.MethodPost, "/api/page/mouse_down", `{"ref":"e1","button":"left"}`},
+		{http.MethodPost, "/api/page/mouse_up", `{"x":12,"y":34,"button":"left"}`},
+		{http.MethodPost, "/api/page/click", `{"ref":"e1","button":"right","click_count":2}`},
 		{http.MethodGet, "/api/page/observe", ``},
 		{http.MethodPost, "/api/page/commit", `{"ref":"e1"}`},
 		{http.MethodPost, "/api/page/assert_visible", `{"ref":"e1","timeout_ms":100}`},
@@ -157,6 +161,19 @@ func TestNewPageActionRoutes(t *testing.T) {
 	if ctrl.clickX != 12 || ctrl.clickY != 34 {
 		t.Fatalf("click xy = %v,%v", ctrl.clickX, ctrl.clickY)
 	}
+	if ctrl.dragOpts.From.Ref != "e1" || ctrl.dragOpts.To.X == nil || *ctrl.dragOpts.To.X != 120 || ctrl.dragOpts.Steps != 8 {
+		t.Fatalf("drag opts = %#v", ctrl.dragOpts)
+	}
+	if ctrl.mouseDownOpt.Ref != "e1" || ctrl.mouseDownOpt.Button != "left" {
+		t.Fatalf("mouse_down opts = %#v", ctrl.mouseDownOpt)
+	}
+	if ctrl.mouseUpOpt.X == nil || *ctrl.mouseUpOpt.X != 12 || ctrl.mouseUpOpt.Y == nil || *ctrl.mouseUpOpt.Y != 34 {
+		t.Fatalf("mouse_up opts = %#v", ctrl.mouseUpOpt)
+	}
+	// A non-default click (right button, double) must route through ClickButton.
+	if ctrl.clickButton.Ref != "e1" || ctrl.clickButton.Button != "right" || ctrl.clickButton.ClickCount != 2 {
+		t.Fatalf("click button opts = %#v", ctrl.clickButton)
+	}
 }
 
 func sampleSnapshot() snapshot.PageSnapshot {
@@ -183,6 +200,10 @@ type fakeController struct {
 	commitRef    string
 	clickX       float64
 	clickY       float64
+	clickButton  browser.ClickButtonOptions
+	dragOpts     browser.DragOptions
+	mouseDownOpt browser.MouseButtonOptions
+	mouseUpOpt   browser.MouseButtonOptions
 }
 
 func (f *fakeController) Open(context.Context, string) (browser.OpenResult, error) {
@@ -227,6 +248,26 @@ func (f *fakeController) Click(context.Context, string) (browser.ActionResult, e
 }
 
 func (f *fakeController) ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+
+func (f *fakeController) ClickButton(_ context.Context, opts browser.ClickButtonOptions) (browser.ActionResult, error) {
+	f.clickButton = opts
+	return browser.ActionResult{OK: true}, nil
+}
+
+func (f *fakeController) MouseDown(_ context.Context, opts browser.MouseButtonOptions) (browser.ActionResult, error) {
+	f.mouseDownOpt = opts
+	return browser.ActionResult{OK: true}, nil
+}
+
+func (f *fakeController) MouseUp(_ context.Context, opts browser.MouseButtonOptions) (browser.ActionResult, error) {
+	f.mouseUpOpt = opts
+	return browser.ActionResult{OK: true}, nil
+}
+
+func (f *fakeController) Drag(_ context.Context, opts browser.DragOptions) (browser.ActionResult, error) {
+	f.dragOpts = opts
 	return browser.ActionResult{OK: true}, nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/revitt/agent-browser/internal/browser"
@@ -25,6 +26,10 @@ type Controller interface {
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
 	Click(context.Context, string) (browser.ActionResult, error)
 	ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error)
+	ClickButton(context.Context, browser.ClickButtonOptions) (browser.ActionResult, error)
+	MouseDown(context.Context, browser.MouseButtonOptions) (browser.ActionResult, error)
+	MouseUp(context.Context, browser.MouseButtonOptions) (browser.ActionResult, error)
+	Drag(context.Context, browser.DragOptions) (browser.ActionResult, error)
 	Hover(context.Context, string) (browser.ActionResult, error)
 	Type(context.Context, string, string) (browser.ActionResult, error)
 	Fill(context.Context, snapshot.FillOptions) (browser.ActionResult, error)
@@ -88,6 +93,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/page/read", s.read)
 	mux.HandleFunc("POST /api/page/click", s.click)
 	mux.HandleFunc("POST /api/page/click_text", s.clickText)
+	mux.HandleFunc("POST /api/page/drag", s.drag)
+	mux.HandleFunc("POST /api/page/mouse_down", s.mouseDown)
+	mux.HandleFunc("POST /api/page/mouse_up", s.mouseUp)
 	mux.HandleFunc("POST /api/page/type", s.typeText)
 	mux.HandleFunc("POST /api/page/fill", s.fill)
 	mux.HandleFunc("POST /api/page/upload_file", s.uploadFile)
@@ -196,14 +204,97 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) click(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Ref   string `json:"ref"`
-		TabID string `json:"tab_id"`
+		Ref        string   `json:"ref"`
+		X          *float64 `json:"x"`
+		Y          *float64 `json:"y"`
+		Button     string   `json:"button"`
+		ClickCount int      `json:"click_count"`
+		TabID      string   `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Click(contextWithTabID(r.Context(), req.TabID), req.Ref)
+	ctx := contextWithTabID(r.Context(), req.TabID)
+	if isDefaultLeftSingleRefClick(req.Button, req.ClickCount, req.Ref, req.X, req.Y) {
+		result, err := s.manager.Click(ctx, req.Ref)
+		writeResult(w, result, err)
+		return
+	}
+	result, err := s.manager.ClickButton(ctx, browser.ClickButtonOptions{
+		MousePoint: browser.MousePoint{Ref: req.Ref, X: req.X, Y: req.Y},
+		Button:     req.Button,
+		ClickCount: req.ClickCount,
+	})
 	writeResult(w, result, err)
+}
+
+// isDefaultLeftSingleRefClick reports whether a click is a plain left
+// single-click on a ref, which keeps the optimized in-page click path.
+func isDefaultLeftSingleRefClick(button string, clickCount int, ref string, x, y *float64) bool {
+	if x != nil || y != nil || ref == "" || clickCount > 1 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(button)) {
+	case "", "left":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) drag(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		From   browser.MousePoint `json:"from"`
+		To     browser.MousePoint `json:"to"`
+		Steps  int                `json:"steps"`
+		Button string             `json:"button"`
+		TabID  string             `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.Drag(contextWithTabID(r.Context(), req.TabID), browser.DragOptions{
+		From:   req.From,
+		To:     req.To,
+		Steps:  req.Steps,
+		Button: req.Button,
+	})
+	writeResult(w, result, err)
+}
+
+func (s *Server) mouseDown(w http.ResponseWriter, r *http.Request) {
+	opts, tabID, ok := decodeMouseButton(w, r)
+	if !ok {
+		return
+	}
+	result, err := s.manager.MouseDown(contextWithTabID(r.Context(), tabID), opts)
+	writeResult(w, result, err)
+}
+
+func (s *Server) mouseUp(w http.ResponseWriter, r *http.Request) {
+	opts, tabID, ok := decodeMouseButton(w, r)
+	if !ok {
+		return
+	}
+	result, err := s.manager.MouseUp(contextWithTabID(r.Context(), tabID), opts)
+	writeResult(w, result, err)
+}
+
+func decodeMouseButton(w http.ResponseWriter, r *http.Request) (browser.MouseButtonOptions, string, bool) {
+	var req struct {
+		Ref    string   `json:"ref"`
+		X      *float64 `json:"x"`
+		Y      *float64 `json:"y"`
+		Button string   `json:"button"`
+		TabID  string   `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return browser.MouseButtonOptions{}, "", false
+	}
+	return browser.MouseButtonOptions{
+		MousePoint: browser.MousePoint{Ref: req.Ref, X: req.X, Y: req.Y},
+		Button:     req.Button,
+	}, req.TabID, true
 }
 
 func (s *Server) clickText(w http.ResponseWriter, r *http.Request) {

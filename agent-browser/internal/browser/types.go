@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"strings"
 	"time"
 
 	"github.com/revitt/agent-browser/internal/snapshot"
@@ -132,6 +133,48 @@ type BatchResult struct {
 	Focus   string            `json:"focus,omitempty"`
 	Changed []string          `json:"changed,omitempty"`
 	Version int64             `json:"version,omitempty"`
+}
+
+// MousePoint identifies a mouse target either by a semantic element ref or by
+// explicit viewport coordinates. Exactly one form should be supplied; when both
+// are present the ref wins and is resolved (with scroll-into-view + iframe
+// translation) through the standard ResolveOrRecoverBox path.
+type MousePoint struct {
+	Ref string   `json:"ref,omitempty"`
+	X   *float64 `json:"x,omitempty"`
+	Y   *float64 `json:"y,omitempty"`
+}
+
+// HasRef reports whether a semantic ref was supplied.
+func (p MousePoint) HasRef() bool { return strings.TrimSpace(p.Ref) != "" }
+
+// HasXY reports whether explicit coordinates were supplied.
+func (p MousePoint) HasXY() bool { return p.X != nil && p.Y != nil }
+
+// ClickButtonOptions drives a single click with an explicit mouse button and
+// click count, covering left/right/middle button context menus and
+// single/double/triple click selection. The target is a ref or x,y point.
+type ClickButtonOptions struct {
+	MousePoint
+	Button     string `json:"button,omitempty"`
+	ClickCount int    `json:"click_count,omitempty"`
+}
+
+// MouseButtonOptions drives a decomposed press-and-hold (mouse_down) or release
+// (mouse_up) at a ref or x,y point with an explicit mouse button.
+type MouseButtonOptions struct {
+	MousePoint
+	Button string `json:"button,omitempty"`
+}
+
+// DragOptions presses at a source point, moves to a target point in a number of
+// intermediate steps, then releases — covering sliders/range inputs,
+// drag-and-drop reorder, and canvas/map panning. Each endpoint is a ref or x,y.
+type DragOptions struct {
+	From   MousePoint `json:"from"`
+	To     MousePoint `json:"to"`
+	Steps  int        `json:"steps,omitempty"`
+	Button string     `json:"button,omitempty"`
 }
 
 type TraceEntry struct {

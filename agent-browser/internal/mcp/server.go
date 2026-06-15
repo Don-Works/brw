@@ -30,6 +30,10 @@ type Controller interface {
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
 	Click(context.Context, string) (browser.ActionResult, error)
 	ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error)
+	ClickButton(context.Context, browser.ClickButtonOptions) (browser.ActionResult, error)
+	MouseDown(context.Context, browser.MouseButtonOptions) (browser.ActionResult, error)
+	MouseUp(context.Context, browser.MouseButtonOptions) (browser.ActionResult, error)
+	Drag(context.Context, browser.DragOptions) (browser.ActionResult, error)
 	Hover(context.Context, string) (browser.ActionResult, error)
 	Type(context.Context, string, string) (browser.ActionResult, error)
 	Fill(context.Context, snapshot.FillOptions) (browser.ActionResult, error)
@@ -319,12 +323,55 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return toolJSON(s.manager.Find(ctx, req))
 	case "browser_click":
 		var req struct {
-			Ref string `json:"ref"`
+			Ref        string   `json:"ref"`
+			X          *float64 `json:"x"`
+			Y          *float64 `json:"y"`
+			Button     string   `json:"button"`
+			ClickCount int      `json:"click_count"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		return toolJSON(s.manager.Click(ctx, req.Ref))
+		// Plain left single-click on a ref keeps the fast in-page click path.
+		// Any non-default button/count, or a coordinate target, routes through
+		// the decomposed CDP click so right/double/triple/middle clicks and
+		// canvas coordinate clicks all share one tool.
+		if isDefaultLeftSingleRefClick(req.Button, req.ClickCount, req.Ref, req.X, req.Y) {
+			return toolJSON(s.manager.Click(ctx, req.Ref))
+		}
+		return toolJSON(s.manager.ClickButton(ctx, browser.ClickButtonOptions{
+			MousePoint: browser.MousePoint{Ref: req.Ref, X: req.X, Y: req.Y},
+			Button:     req.Button,
+			ClickCount: req.ClickCount,
+		}))
+	case "browser_drag":
+		var req struct {
+			From   browser.MousePoint `json:"from"`
+			To     browser.MousePoint `json:"to"`
+			Steps  int                `json:"steps"`
+			Button string             `json:"button"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.Drag(ctx, browser.DragOptions{
+			From:   req.From,
+			To:     req.To,
+			Steps:  req.Steps,
+			Button: req.Button,
+		}))
+	case "browser_mouse_down":
+		opts, err := parseMouseButtonArgs(args)
+		if err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.MouseDown(ctx, opts))
+	case "browser_mouse_up":
+		opts, err := parseMouseButtonArgs(args)
+		if err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.MouseUp(ctx, opts))
 	case "browser_click_text":
 		var req snapshot.ClickTextOptions
 		if err := unmarshalArgs(args, &req); err != nil {
@@ -559,6 +606,43 @@ func normalizeMCPFindOptions(opts snapshot.FindOptions) snapshot.FindOptions {
 	return opts
 }
 
+// isDefaultLeftSingleRefClick reports whether a browser_click call is a plain
+// left single-click on a ref (no explicit button/count/coordinates), which can
+// keep the optimized in-page click path.
+func isDefaultLeftSingleRefClick(button string, clickCount int, ref string, x, y *float64) bool {
+	if x != nil || y != nil {
+		return false
+	}
+	if ref == "" {
+		return false
+	}
+	if clickCount > 1 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(button)) {
+	case "", "left":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseMouseButtonArgs(args json.RawMessage) (browser.MouseButtonOptions, error) {
+	var req struct {
+		Ref    string   `json:"ref"`
+		X      *float64 `json:"x"`
+		Y      *float64 `json:"y"`
+		Button string   `json:"button"`
+	}
+	if err := unmarshalArgs(args, &req); err != nil {
+		return browser.MouseButtonOptions{}, err
+	}
+	return browser.MouseButtonOptions{
+		MousePoint: browser.MousePoint{Ref: req.Ref, X: req.X, Y: req.Y},
+		Button:     req.Button,
+	}, nil
+}
+
 func unmarshalArgs(args json.RawMessage, dst any) error {
 	if len(args) == 0 || string(args) == "null" {
 		args = []byte("{}")
@@ -635,10 +719,35 @@ func tools() []map[string]any {
 			"viewport_only":  boolSchema("Only return elements intersecting the viewport."),
 			"include_hidden": boolSchema("Include input[type=hidden] fields as role hidden for explicit debugging. Defaults false."),
 		}, nil)),
-		tool("browser_click", "Click a semantic element ref from browser_snapshot. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"ref":    stringSchema("Element ref, for example e18."),
+		tool("browser_click", "Click a semantic element ref (or x,y coordinates) from browser_snapshot. Defaults to a left single-click; set button to right (opens context menus) or middle, and click_count to 2 (double-click) or 3 (triple-click selects a line). Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"ref":         stringSchema("Element ref, for example e18. Provide ref or x,y."),
+			"x":           map[string]any{"type": "number", "description": "X coordinate in viewport pixels. Use with y instead of ref for canvas/coordinate clicks."},
+			"y":           map[string]any{"type": "number", "description": "Y coordinate in viewport pixels. Use with x instead of ref for canvas/coordinate clicks."},
+			"button":      stringSchema("Mouse button: left (default), right, or middle."),
+			"click_count": integerSchema("Click count: 1 (default), 2 for double-click, 3 to triple-click (select a line)."),
+			"tab_id":      stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		}, nil)),
+		tool("browser_drag", "Press at a source (ref or x,y), move to a target (ref or x,y) over several steps, then release. Use for sliders/range inputs, drag-and-drop reorder, and canvas/map panning. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"from":   mousePointSchema("Drag source. Provide either ref or x and y."),
+			"to":     mousePointSchema("Drag target. Provide either ref or x and y."),
+			"steps":  integerSchema("Number of intermediate mouse-move steps between source and target. Defaults to 12."),
+			"button": stringSchema("Mouse button held during the drag: left (default), right, or middle."),
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
-		}, []string{"ref"})),
+		}, []string{"from", "to"})),
+		tool("browser_mouse_down", "Press and hold a mouse button at a ref or x,y without releasing (the press half of a press-and-hold). Pair with browser_mouse_up. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"ref":    stringSchema("Element ref to press at. Provide ref or x,y."),
+			"x":      map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
+			"y":      map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
+			"button": stringSchema("Mouse button: left (default), right, or middle."),
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		}, nil)),
+		tool("browser_mouse_up", "Release a held mouse button at a ref or x,y (the release half of a press-and-hold). Pair with browser_mouse_down. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"ref":    stringSchema("Element ref to release at. Provide ref or x,y."),
+			"x":      map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
+			"y":      map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
+			"button": stringSchema("Mouse button: left (default), right, or middle."),
+			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
+		}, nil)),
 		tool("browser_click_text", "Click the best visible actionable element whose accessible name or visible text matches text. Useful for controls like \"Check out\" when refs are stale or custom components hide internals. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"text":   stringSchema("Visible text or accessible name to click."),
 			"role":   stringSchema("Optional role filter, for example button, link, option, or menuitem."),
@@ -819,4 +928,17 @@ func boolSchema(description string) map[string]any {
 
 func integerSchema(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
+}
+
+// mousePointSchema describes a drag endpoint: a semantic ref OR x,y coordinates.
+func mousePointSchema(description string) map[string]any {
+	return map[string]any{
+		"type":        "object",
+		"description": description,
+		"properties": map[string]any{
+			"ref": stringSchema("Element ref, for example e18."),
+			"x":   map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
+			"y":   map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
+		},
+	}
 }

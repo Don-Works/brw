@@ -205,6 +205,96 @@ func TestToolSchemasExposeTabScopedErgonomics(t *testing.T) {
 	}
 }
 
+func TestBrowserClickRoutesByButtonAndCount(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       string
+		wantPlain  string
+		wantButton string
+		wantCount  int
+	}{
+		{"plain left ref click stays on fast path", `{"ref":"e5"}`, "e5", "", 0},
+		{"right click routes to ClickButton", `{"ref":"e5","button":"right"}`, "", "right", 0},
+		{"double click routes to ClickButton", `{"ref":"e5","click_count":2}`, "", "", 2},
+		{"coordinate click routes to ClickButton", `{"x":10,"y":20}`, "", "", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := &recordingController{}
+			input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_click","arguments":` + tc.args + `}}` + "\n"
+			var output bytes.Buffer
+			if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantPlain != "" {
+				if ctrl.clickRef != tc.wantPlain {
+					t.Fatalf("plain click ref = %q, want %q", ctrl.clickRef, tc.wantPlain)
+				}
+				if ctrl.clickButton.Ref != "" || ctrl.clickButton.X != nil {
+					t.Fatalf("expected fast path, but ClickButton called: %#v", ctrl.clickButton)
+				}
+				return
+			}
+			if ctrl.clickRef != "" {
+				t.Fatalf("expected ClickButton path, but fast Click called with %q", ctrl.clickRef)
+			}
+			if ctrl.clickButton.Button != tc.wantButton {
+				t.Fatalf("click button = %q, want %q", ctrl.clickButton.Button, tc.wantButton)
+			}
+			if ctrl.clickButton.ClickCount != tc.wantCount {
+				t.Fatalf("click count = %d, want %d", ctrl.clickButton.ClickCount, tc.wantCount)
+			}
+		})
+	}
+}
+
+func TestBrowserDragAndMousePrimitivesDispatch(t *testing.T) {
+	ctrl := &recordingController{}
+	calls := []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_drag","arguments":{"from":{"ref":"e1"},"to":{"x":200,"y":50},"steps":6,"button":"left"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"browser_mouse_down","arguments":{"ref":"e1","button":"left"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"browser_mouse_up","arguments":{"x":12,"y":34}}}`,
+	}
+	input := strings.Join(calls, "\n") + "\n"
+	var output bytes.Buffer
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	if ctrl.dragOpts.From.Ref != "e1" || ctrl.dragOpts.To.X == nil || *ctrl.dragOpts.To.X != 200 || ctrl.dragOpts.Steps != 6 {
+		t.Fatalf("drag opts = %#v", ctrl.dragOpts)
+	}
+	if ctrl.mouseDownOpt.Ref != "e1" || ctrl.mouseDownOpt.Button != "left" {
+		t.Fatalf("mouse_down opts = %#v", ctrl.mouseDownOpt)
+	}
+	if ctrl.mouseUpOpt.X == nil || *ctrl.mouseUpOpt.X != 12 || ctrl.mouseUpOpt.Y == nil || *ctrl.mouseUpOpt.Y != 34 {
+		t.Fatalf("mouse_up opts = %#v", ctrl.mouseUpOpt)
+	}
+}
+
+func TestMouseToolSchemasRegistered(t *testing.T) {
+	byName := map[string]map[string]any{}
+	for _, tool := range tools() {
+		byName[tool["name"].(string)] = tool
+	}
+	for _, name := range []string{"browser_drag", "browser_mouse_down", "browser_mouse_up"} {
+		if byName[name] == nil {
+			t.Fatalf("%s tool not registered", name)
+		}
+	}
+	clickProps := byName["browser_click"]["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	for _, prop := range []string{"button", "click_count", "x", "y"} {
+		if _, ok := clickProps[prop]; !ok {
+			t.Fatalf("browser_click schema missing %s: %#v", prop, clickProps)
+		}
+	}
+	dragProps := byName["browser_drag"]["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	for _, prop := range []string{"from", "to", "steps", "button"} {
+		if _, ok := dragProps[prop]; !ok {
+			t.Fatalf("browser_drag schema missing %s: %#v", prop, dragProps)
+		}
+	}
+}
+
 func framedJSON(t *testing.T, value any) string {
 	t.Helper()
 	data, err := json.Marshal(value)
@@ -253,6 +343,36 @@ type recordingController struct {
 	fakeController
 	snapshotOpts snapshot.SnapshotOptions
 	findOpts     snapshot.FindOptions
+	clickRef     string
+	clickButton  browser.ClickButtonOptions
+	dragOpts     browser.DragOptions
+	mouseDownOpt browser.MouseButtonOptions
+	mouseUpOpt   browser.MouseButtonOptions
+}
+
+func (r *recordingController) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
+	r.clickRef = ref
+	return r.fakeController.Click(ctx, ref)
+}
+
+func (r *recordingController) ClickButton(ctx context.Context, opts browser.ClickButtonOptions) (browser.ActionResult, error) {
+	r.clickButton = opts
+	return r.fakeController.ClickButton(ctx, opts)
+}
+
+func (r *recordingController) Drag(ctx context.Context, opts browser.DragOptions) (browser.ActionResult, error) {
+	r.dragOpts = opts
+	return r.fakeController.Drag(ctx, opts)
+}
+
+func (r *recordingController) MouseDown(ctx context.Context, opts browser.MouseButtonOptions) (browser.ActionResult, error) {
+	r.mouseDownOpt = opts
+	return r.fakeController.MouseDown(ctx, opts)
+}
+
+func (r *recordingController) MouseUp(ctx context.Context, opts browser.MouseButtonOptions) (browser.ActionResult, error) {
+	r.mouseUpOpt = opts
+	return r.fakeController.MouseUp(ctx, opts)
 }
 
 func (r *recordingController) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
@@ -296,6 +416,18 @@ func (fakeController) Click(context.Context, string) (browser.ActionResult, erro
 	return browser.ActionResult{OK: true}, nil
 }
 func (fakeController) ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+func (fakeController) ClickButton(context.Context, browser.ClickButtonOptions) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+func (fakeController) MouseDown(context.Context, browser.MouseButtonOptions) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+func (fakeController) MouseUp(context.Context, browser.MouseButtonOptions) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+func (fakeController) Drag(context.Context, browser.DragOptions) (browser.ActionResult, error) {
 	return browser.ActionResult{OK: true}, nil
 }
 func (fakeController) Type(context.Context, string, string) (browser.ActionResult, error) {
