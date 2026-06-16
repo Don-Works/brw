@@ -29,7 +29,9 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     '[contenteditable="true"]',
     '[tabindex]',
     'summary',
-    'label'
+    'label',
+    'img',
+    '[draggable="true"]'
   ];
   if (includeHidden) selectorParts.push('input[type="hidden"]');
   // When text_content matching is requested, also capture common prose-bearing
@@ -156,6 +158,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     }
     if (tag === 'summary') return 'button';
     if (tag === 'label') return 'label';
+    if (tag === 'img') return 'image';
     return 'generic';
   }
 
@@ -413,12 +416,24 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     if (seen.has(el)) continue;
     seen.add(el);
     const role = roleFor(el);
+    // Salient-image gate: <img> is surfaced as role "image" so agents can target
+    // it for hover/click/drag (e.g. hover-reveal avatars, product tiles, map pins)
+    // — a class a real accessibility tree exposes and we previously dropped. Bound
+    // the noise: keep only visible images with a meaningful box; a named (alt)
+    // image clears a lower bar than an unnamed one, so icons/spacers/tracking
+    // pixels don't flood the frontier on image-heavy pages.
+    if (role === 'image') {
+      const ir = el.getBoundingClientRect();
+      const iarea = ir.width * ir.height;
+      const inamed = !!clean(el.getAttribute('alt') || el.getAttribute('aria-label') || el.getAttribute('title'));
+      if (!visible(el) || iarea < (inamed ? 400 : 2500)) continue;
+    }
     const name = nameFor(el);
     const isFocusable = el.tabIndex >= 0;
     // textContent value for prose matching: only computed when requested, capped
     // so a huge container's innerText cannot explode the per-element cost.
     const proseText = textContent ? clean(el.innerText || el.textContent || '').slice(0, 2000) : '';
-    const isUseful = role !== 'generic' || isFocusable || typeof el.onclick === 'function' || (textContent && proseText.length > 0);
+    const isUseful = role !== 'generic' || isFocusable || typeof el.onclick === 'function' || el.draggable === true || (textContent && proseText.length > 0);
     if (!isUseful) continue;
     if (formLensMode && !formRoles.has(role)) continue;
     const key = keyFor(el, role, name);
@@ -1318,6 +1333,86 @@ func Fill(ctx context.Context, ref, text string, replace bool) error {
 	return nil
 }
 
+// DragHtml5Script simulates the native HTML5 drag-and-drop protocol between two
+// refs. CDP mouse events (mousedown/move/up) do NOT drive HTML5 DnD
+// (draggable=true elements that listen for dragstart/dragover/drop) — the browser
+// only synthesises drag events for a real OS drag loop — so a coordinate drag
+// silently no-ops on those widgets. This dispatches the real sequence
+// (dragstart → drag → dragenter → dragover → drop → dragend) carrying ONE shared
+// DataTransfer, which is exactly what a drop handler reads. Returns
+// {ok, dropped} where dropped reports whether the target's drop handler ran
+// (preventDefault) so the caller can fall back to a coordinate drag when false.
+const DragHtml5Script = `(function(fromRef, toRef){` + FrameWalkHelpers + `
+  function findByRef(ref){
+    var sel='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
+    for (var root of __abRootList()){ var el=root.querySelector&&root.querySelector(sel); if(el) return el; }
+    return null;
+  }
+  var source=findByRef(fromRef), target=findByRef(toRef);
+  if(!source) return {ok:false, error:'drag source ref not found'};
+  if(!target) return {ok:false, error:'drag target ref not found'};
+  var dt; try { dt=new DataTransfer(); } catch(e){ dt=null; }
+  function pt(el){ var r=el.getBoundingClientRect(); return {x:r.left+r.width/2, y:r.top+r.height/2}; }
+  function fire(el, type, p){
+    var ev;
+    try { ev=new DragEvent(type, {bubbles:true, cancelable:true, composed:true, dataTransfer:dt, clientX:p.x, clientY:p.y}); }
+    catch(e){
+      ev=new MouseEvent(type, {bubbles:true, cancelable:true, composed:true, clientX:p.x, clientY:p.y});
+      if(dt){ try { Object.defineProperty(ev,'dataTransfer',{value:dt}); } catch(_){} }
+    }
+    return el.dispatchEvent(ev);
+  }
+  var sp=pt(source), tp=pt(target);
+  fire(source,'dragstart',sp);
+  fire(source,'drag',sp);
+  fire(target,'dragenter',tp);
+  var overCancelled = !fire(target,'dragover',tp); // returns false when preventDefault'd
+  var dropCancelled = !fire(target,'drop',tp);
+  fire(source,'dragend',tp);
+  return {ok:true, dropped: overCancelled || dropCancelled};
+})`
+
+// DragHtml5 runs the HTML5 drag-and-drop simulation between two refs. It returns
+// (dropped, err): dropped is true when the target accepted the drop (its handler
+// called preventDefault), letting the caller fall back to a coordinate drag.
+func DragHtml5(ctx context.Context, fromRef, toRef string) (bool, error) {
+	fr, _ := json.Marshal(fromRef)
+	tr, _ := json.Marshal(toRef)
+	expr := fmt.Sprintf("%s(%s,%s)", DragHtml5Script, fr, tr)
+	var res struct {
+		OK      bool   `json:"ok"`
+		Dropped bool   `json:"dropped"`
+		Error   string `json:"error"`
+	}
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &res)); err != nil {
+		return false, err
+	}
+	if !res.OK {
+		if res.Error == "" {
+			res.Error = "html5 drag failed"
+		}
+		return false, errors.New(res.Error)
+	}
+	return res.Dropped, nil
+}
+
+// RefDraggable reports whether the element identified by ref has the native HTML5
+// draggable affordance (draggable=true), so the caller can pick the HTML5 drag
+// path over a coordinate drag.
+func RefDraggable(ctx context.Context, ref string) bool {
+	rj, _ := json.Marshal(ref)
+	expr := fmt.Sprintf(`(function(ref){`+FrameWalkHelpers+`
+  var sel='[data-agent-browser-ref="'+CSS.escape(ref)+'"]';
+  for (var root of __abRootList()){ var el=root.querySelector&&root.querySelector(sel); if(el) return !!el.draggable; }
+  return false;
+})(%s)`, rj)
+	var draggable bool
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &draggable)); err != nil {
+		return false
+	}
+	return draggable
+}
+
 // WaitConditionScript returns a Promise that resolves true as soon as the given
 // condition holds, or false after timeoutMs. It checks immediately, then re-checks
 // on DOM mutations (MutationObserver) and history events, with a 100ms safety
@@ -1620,17 +1715,23 @@ const WaitForActionableScript = `(function(ref, timeoutMs){` + FrameWalkHelpers 
     const r=el.getClientRects();
     return r&&r.length>0&&Array.from(r).some(function(x){return x.width>0&&x.height>0;});
   }
-  // cssRemoved() is the ONLY hard-disqualifier geometry actionability honours: a
-  // display:none / visibility:hidden / opacity:0 element (or descendant of one)
-  // genuinely cannot receive a pointer event, so it is never geometry-actionable.
-  // Unlike visible(), it ignores aria-hidden and getClientRects heuristics — a
-  // custom component can be aria-hidden yet fully painted and clickable.
+  // cssRemoved() is the hard-disqualifier geometry actionability honours: a
+  // display:none / visibility:hidden element (or descendant of one) genuinely
+  // cannot receive a pointer event, so it is never geometry-actionable. opacity:0
+  // is DELIBERATELY NOT disqualifying: an opacity:0 element still has layout and
+  // still receives pointer events (the canonical CSS-styled checkbox/radio pattern
+  // — e.g. TodoMVC's .toggle — hides the native control with opacity:0 and overlays
+  // a styled label, yet the control is fully clickable). The elementFromPoint hit
+  // test in geometryActionable() already rejects genuinely-occluded elements, so a
+  // transparent-but-topmost control is correctly actionable. Unlike visible(), this
+  // ignores aria-hidden and getClientRects heuristics — a custom component can be
+  // aria-hidden yet fully painted and clickable.
   function cssRemoved(el){
     var n=el;
     while(n&&n.nodeType===1){
       var w=(n.ownerDocument&&n.ownerDocument.defaultView)||window;
       var s=w.getComputedStyle(n);
-      if(s&&(s.display==='none'||s.visibility==='hidden'||Number(s.opacity)===0)) return true;
+      if(s&&(s.display==='none'||s.visibility==='hidden')) return true;
       n=n.parentElement||(n.getRootNode&&n.getRootNode().host)||null;
     }
     return false;

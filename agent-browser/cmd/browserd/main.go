@@ -53,9 +53,11 @@ func main() {
 	var unsafeAllowDefaultProfileCDP bool
 	var bridgeExtensionID string
 	var upstreamHTTP string
+	var mcpToolProfile string
 
 	flag.StringVar(&httpAddr, "http", envDefault("AGENT_BROWSER_HTTP_ADDR", "127.0.0.1:17310"), "HTTP listen address, or off. Defaults to loopback; bind a non-loopback address only behind SSH/Tailscale with caller auth.")
 	flag.BoolVar(&mcpMode, "mcp", false, "run MCP stdio server")
+	flag.StringVar(&mcpToolProfile, "mcp-tools", envDefault("AGENT_BROWSER_MCP_TOOLS", "all"), "MCP tool surface advertised in tools/list: 'all' (full) or 'core' (lean common-flow set that avoids harness tool-deferral). All tools remain callable regardless.")
 	flag.BoolVar(&bridgeMode, "bridge", false, "use installed Chrome extension bridge instead of direct CDP")
 	flag.StringVar(&bridgeAddr, "bridge-addr", envDefault("AGENT_BROWSER_BRIDGE_ADDR", "127.0.0.1:17311"), "extension bridge WebSocket listen address")
 	flag.StringVar(&upstreamHTTP, "upstream-http", os.Getenv("AGENT_BROWSER_UPSTREAM_HTTP"), "proxy MCP/HTTP control to an existing local agent-browser HTTP daemon")
@@ -169,8 +171,8 @@ func main() {
 	}
 
 	if mcpMode {
-		log.Printf("MCP stdio server ready")
-		if err := mcp.New(controller).Serve(ctx, os.Stdin, os.Stdout); err != nil && ctx.Err() == nil {
+		log.Printf("MCP stdio server ready (tool profile: %s)", mcpToolProfile)
+		if err := mcp.NewWithToolProfile(controller, mcpToolProfile).Serve(ctx, os.Stdin, os.Stdout); err != nil && ctx.Err() == nil {
 			log.Fatalf("mcp server: %v", err)
 		}
 		return

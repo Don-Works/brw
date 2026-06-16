@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mcplexer": {
+      "command": "/Users/max/.mcplexer/bin/mcplexer",
+      "args": ["connect", "--socket=/tmp/mcplexer.sock"]
+    }
+  }
+}

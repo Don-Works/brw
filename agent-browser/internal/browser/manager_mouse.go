@@ -227,6 +227,29 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 			return ActionResult{}, err
 		}
 	}
+	// Native HTML5 drag-and-drop (draggable=true source) is NOT driven by CDP
+	// mouse events — Chromium only synthesises drag events for a real OS drag, so a
+	// coordinate drag silently no-ops on these widgets. Dispatch the real HTML5
+	// drag-event sequence between the two refs first; if the target accepts the
+	// drop we are done, otherwise fall through to the coordinate drag (which covers
+	// pointer-based libraries like jQuery UI sortable that listen on mousedown).
+	if opts.From.HasRef() && opts.To.HasRef() && snapshot.RefDraggable(tabCtx, opts.From.Ref) {
+		before := m.cachedBefore(tabID, tabCtx)
+		dropped, dErr := snapshot.DragHtml5(tabCtx, opts.From.Ref, opts.To.Ref)
+		if dErr == nil && dropped {
+			m.settle(tabCtx, actionSettleDelay)
+			result := m.observeActionWithBefore(tabID, tabCtx, fmt.Sprintf("dragged %s -> %s (html5)", opts.From.Ref, opts.To.Ref), before)
+			result.DurationMS = time.Since(start).Milliseconds()
+			m.recordTrace(TraceEntry{
+				Action:     "drag",
+				Ref:        opts.From.Ref,
+				OK:         result.OK,
+				DurationMS: result.DurationMS,
+				Timestamp:  time.Now().Format(time.RFC3339),
+			})
+			return result, nil
+		}
+	}
 	fromX, fromY, recovery, err := resolvePoint(tabCtx, opts.From)
 	if err != nil {
 		return ActionResult{}, fmt.Errorf("drag source: %w", err)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
@@ -476,24 +477,30 @@ func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
 	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
 		return ActionResult{}, err
 	}
-	before := m.cachedBefore(tabID, tabCtx)
-	var result struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error,omitempty"`
-	}
-	refJSON, _ := json.Marshal(ref)
-	expr := fmt.Sprintf("%s(%s)", snapshot.HoverElementScript, refJSON)
-	if err := chromedp.Run(tabCtx, chromedp.Evaluate(expr, &result)); err != nil {
+	// Move the REAL cursor to the element center via CDP. Synthetic JS mouseover
+	// events (the old HoverElementScript path) do NOT trigger the CSS :hover
+	// pseudo-class — only the browser's true pointer position does — so
+	// :hover-gated reveals (caption overlays, dropdown/tooltip menus) never
+	// appeared and agents fell back to screenshots. dispatchMouseEvent(mouseMoved)
+	// updates Chromium's actual hover state, firing BOTH the native :hover styling
+	// and real mouseenter/mouseover/pointermove events. Focus emulation (enabled
+	// per target in tabContext) ensures delivery even when the window is backgrounded.
+	x, y, recovery, err := resolvePoint(tabCtx, MousePoint{Ref: ref})
+	if err != nil {
 		return ActionResult{}, err
 	}
-	if !result.OK {
-		if result.Error == "" {
-			result.Error = "hover failed"
-		}
-		return ActionResult{}, errors.New(result.Error)
+	before := m.cachedBefore(tabID, tabCtx)
+	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return input.DispatchMouseEvent(input.MouseMoved, x, y).Do(ctx)
+	})); err != nil {
+		return ActionResult{}, err
 	}
 	m.settle(tabCtx, actionSettleDelay)
-	return m.observeActionWithBefore(tabID, tabCtx, "hovered "+ref, before), nil
+	result := m.observeActionWithBefore(tabID, tabCtx, "hovered "+ref, before)
+	if recovery != "" {
+		result.Warning = recovery
+	}
+	return result, nil
 }
 
 func (m *Manager) Evaluate(ctx context.Context, expression string) (any, error) {
@@ -966,6 +973,28 @@ func (m *Manager) ConsoleMessages(ctx context.Context) ([]ConsoleMessage, error)
 	return msgs, nil
 }
 
+// screenshotMaxWidth caps the captured pixel width of plain (non-annotated)
+// screenshots. A retina/HiDPI viewport otherwise yields a multi-megabyte image
+// whose base64 dominates an agent's token budget. Capping the longest side and
+// encoding JPEG keeps a visual-fallback capture cheap; resolution is the lever
+// that survives the harness re-encoding the image to JPEG before the model sees
+// it. Annotated Set-of-Marks captures are unaffected (they need crisp PNG labels).
+const screenshotMaxWidth = 800
+
+// screenshotJPEGQuality balances legibility against bytes for plain captures.
+// Resolution is the only lever that survives the harness re-encoding every capture
+// to JPEG before the model sees it, so we cap dimensions aggressively and keep
+// quality modest — landing UNDER Claude-in-Chrome's ~40KB viewport captures while
+// staying legible for layout/verification reads.
+const screenshotJPEGQuality = 50
+
+// screenshotAnnotateMaxDim caps the longest side (device px) of a Set-of-Marks
+// annotated capture. The legend is ref-based (semantic), so resolution is purely
+// visual — and the harness re-encodes our PNG to JPEG anyway, so a smaller source
+// directly shrinks what the model receives. Kept a touch above the plain cap so
+// ref badges stay readable.
+const screenshotAnnotateMaxDim = 900
+
 func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
 	_, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
@@ -974,10 +1003,43 @@ func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
 	defer cancel()
 
 	var data []byte
-	if err := chromedp.Run(tabCtx, chromedp.CaptureScreenshot(&data)); err != nil {
+	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		// Read the CSS viewport so we can clip-capture it at a scale that caps the
+		// longest side at screenshotMaxWidth (scale<=1; never upscale).
+		var dims []float64
+		_ = chromedp.Evaluate(`[Math.round(window.innerWidth),Math.round(window.innerHeight)]`, &dims).Do(ctx)
+		var vw, vh float64
+		if len(dims) == 2 {
+			vw, vh = dims[0], dims[1]
+		}
+		if vw <= 0 || vh <= 0 {
+			// Fall back to a plain capture if viewport metrics are unavailable.
+			d, capErr := page.CaptureScreenshot().
+				WithFormat(page.CaptureScreenshotFormatJpeg).
+				WithQuality(screenshotJPEGQuality).Do(ctx)
+			if capErr != nil {
+				return capErr
+			}
+			data = d
+			return nil
+		}
+		scale := 1.0
+		if vw > screenshotMaxWidth {
+			scale = screenshotMaxWidth / vw
+		}
+		d, capErr := page.CaptureScreenshot().
+			WithFormat(page.CaptureScreenshotFormatJpeg).
+			WithQuality(screenshotJPEGQuality).
+			WithClip(&page.Viewport{X: 0, Y: 0, Width: vw, Height: vh, Scale: scale}).Do(ctx)
+		if capErr != nil {
+			return capErr
+		}
+		data = d
+		return nil
+	})); err != nil {
 		return Screenshot{}, err
 	}
-	return Screenshot{MIMEType: "image/png", Data: data, Base64: base64.StdEncoding.EncodeToString(data)}, nil
+	return Screenshot{MIMEType: "image/jpeg", Data: data, Base64: base64.StdEncoding.EncodeToString(data)}, nil
 }
 
 // ScreenshotAnnotated captures a Set-of-Marks (SoM) screenshot: it takes an
@@ -1048,18 +1110,36 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreen
 	}
 
 	var data []byte
-	if clip != nil {
-		if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		// Resolve the capture rect: the explicit crop clip, or the full CSS viewport.
+		capClip := clip
+		if capClip == nil {
+			var dims []float64
+			_ = chromedp.Evaluate(`[Math.round(window.innerWidth),Math.round(window.innerHeight)]`, &dims).Do(ctx)
+			if len(dims) == 2 && dims[0] > 0 && dims[1] > 0 {
+				capClip = &page.Viewport{X: 0, Y: 0, Width: dims[0], Height: dims[1], Scale: 1}
+			}
+		}
+		// Cap device pixels: on a HiDPI display a full-res Set-of-Marks PNG balloons
+		// to hundreds of KB and dominates the agent's token budget. The legend is
+		// ref-based (semantic), so the image is purely for reading labels — capping
+		// the longest side keeps labels legible while cutting bytes ~4x. PNG is kept
+		// so the drawn ref badges stay crisp (JPEG would ring around the text).
+		if capClip != nil {
+			longest := capClip.Width
+			if capClip.Height > longest {
+				longest = capClip.Height
+			}
+			if longest > screenshotAnnotateMaxDim {
+				capClip.Scale = screenshotAnnotateMaxDim / longest
+			}
 			var capErr error
-			data, capErr = page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatPng).WithClip(clip).Do(ctx)
+			data, capErr = page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatPng).WithClip(capClip).Do(ctx)
 			return capErr
-		})); err != nil {
-			return AnnotatedScreenshot{}, err
 		}
-	} else {
-		if err := chromedp.Run(tabCtx, chromedp.CaptureScreenshot(&data)); err != nil {
-			return AnnotatedScreenshot{}, err
-		}
+		return chromedp.CaptureScreenshot(&data).Do(ctx)
+	})); err != nil {
+		return AnnotatedScreenshot{}, err
 	}
 
 	legend := make(map[string]LegendEntry, len(boxes))
@@ -1774,7 +1854,16 @@ func (m *Manager) tabContext(tabID string) (context.Context, error) {
 	// never observe a half-initialized entry that gets cancelled on the error path.
 	ctx, cancel := chromedp.NewContext(m.browserCtx, chromedp.WithTargetID(target.ID(tabID)))
 
-	if err := chromedp.Run(ctx); err != nil {
+	// Validate the context and force focus emulation on this target. Without it,
+	// Chrome routes keyboard/mouse input through the OS-focused RenderWidgetHost,
+	// so CDP Input.dispatchKeyEvent presses are silently dropped whenever the
+	// daemon's Chrome window is not the frontmost OS window (the common case for a
+	// background automation browser). Input.insertText bypasses this, which is why
+	// typing worked but Enter/Tab/arrow presses did not submit React/SPA forms.
+	// setFocusEmulationEnabled makes the renderer treat the page as always focused.
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return emulation.SetFocusEmulationEnabled(true).Do(ctx)
+	})); err != nil {
 		cancel()
 		return nil, err
 	}

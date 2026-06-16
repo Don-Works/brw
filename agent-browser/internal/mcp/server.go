@@ -17,7 +17,8 @@ import (
 )
 
 type Server struct {
-	manager browser.Controller
+	manager     browser.Controller
+	toolProfile string // "all" (default) or "core"
 }
 
 const (
@@ -26,8 +27,71 @@ const (
 	defaultFindLimit     = 20
 )
 
+// coreToolNames is the lean, common-flow tool surface. It roughly halves the
+// advertised tool-definition context (~200k -> ~135k cached input tokens/turn in
+// the arena) by hiding the long tail (diagnostics, incognito, tab groups, asserts,
+// network capture/replay, trace, mouse-down/up, notify, …) behind the default
+// "all" profile while keeping every verb an agent needs for the overwhelming
+// majority of read/click/type/select/navigate/scroll/drag/upload/hover flows.
+//
+// NOTE: this does NOT eliminate Claude Code's tool-deferral (the ToolSearch
+// discovery tax). That deferral is structural — the harness special-cases its own
+// claude-in-chrome integration and defers ALL third-party MCP tools regardless of
+// count (even a 13-tool surface still defers). The profile is a token-efficiency
+// knob, not a deferral workaround. The deferral costs ~2 ToolSearch round-trips
+// per task and does not prevent agent-browser from winning on turns/tokens/wall/cost.
+var coreToolNames = map[string]bool{
+	"browser_open":        true,
+	"browser_list_tabs":   true,
+	"browser_focus_tab":   true,
+	"browser_read":        true,
+	"browser_snapshot":    true,
+	"browser_find":        true,
+	"browser_click":       true,
+	"browser_click_text":  true,
+	"browser_type":        true,
+	"browser_fill":        true,
+	"browser_select":      true,
+	"browser_press":       true,
+	"browser_scroll":      true,
+	"browser_hover":       true,
+	"browser_drag":        true,
+	"browser_upload_file": true,
+	"browser_navigate":    true,
+	"browser_wait_for":    true,
+	"browser_batch":       true,
+	"browser_screenshot":  true,
+}
+
 func New(manager browser.Controller) *Server {
-	return &Server{manager: manager}
+	return &Server{manager: manager, toolProfile: "all"}
+}
+
+// NewWithToolProfile builds a server exposing only the named tool profile in
+// tools/list ("core" for the lean surface, anything else for the full surface).
+// All tools remain callable regardless of profile; the profile only narrows what
+// tools/list advertises, which is what governs the harness's deferral behavior.
+func NewWithToolProfile(manager browser.Controller, profile string) *Server {
+	if profile == "" {
+		profile = "all"
+	}
+	return &Server{manager: manager, toolProfile: profile}
+}
+
+// advertisedTools returns the tool list for tools/list, narrowed to the active
+// profile. "core" filters to coreToolNames; any other value returns everything.
+func (s *Server) advertisedTools() []map[string]any {
+	all := tools()
+	if s.toolProfile != "core" {
+		return all
+	}
+	filtered := make([]map[string]any, 0, len(coreToolNames))
+	for _, t := range all {
+		if name, _ := t["name"].(string); coreToolNames[name] {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }
 
 type request struct {
@@ -204,7 +268,7 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 			},
 		}, nil
 	case "tools/list":
-		return map[string]any{"tools": tools()}, nil
+		return map[string]any{"tools": s.advertisedTools()}, nil
 	case "tools/call":
 		var call struct {
 			Name      string          `json:"name"`
@@ -702,10 +766,35 @@ func toolJSON[T any](value T, err error) (any, *rpcError) {
 	if err != nil {
 		return toolError(err), nil
 	}
-	return map[string]any{
-		"content":           []toolContent{{Type: "text", Text: string(data)}},
-		"structuredContent": value,
-	}, nil
+	result := map[string]any{
+		"content": []toolContent{{Type: "text", Text: string(data)}},
+	}
+	// Per MCP, structuredContent MUST be a JSON object. Tools whose payload can
+	// be an array or scalar — notably browser_evaluate returning a string/number,
+	// or list tools returning a top-level array — would otherwise emit a
+	// non-object structuredContent that strict clients (e.g. Claude Code) reject
+	// with an "expected record" schema error, forcing wasteful retries. Only
+	// attach structuredContent when the payload actually serializes to an object;
+	// the text content always carries the full result regardless.
+	if isJSONObject(data) {
+		result["structuredContent"] = value
+	}
+	return result, nil
+}
+
+// isJSONObject reports whether data is a JSON object (ignoring leading whitespace).
+func isJSONObject(data []byte) bool {
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func toolOK(err error) (any, *rpcError) {
@@ -845,7 +934,7 @@ func tools() []map[string]any {
 			"text":   stringSchema("Text to insert."),
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"ref", "text"})),
-		tool("browser_fill", "Replace or append text in a semantic text field by ref or query and return a post-action observation. Pass optional tab_id to target a specific tab.", object(map[string]any{
+		tool("browser_fill", "Replace or append text in a semantic text field by ref or query and return a post-action observation. Also sets a native range slider (<input type=range>), number, or date input to an exact value in ONE call (prefer this over repeated browser_press arrow keys for sliders). Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":     stringSchema("Element ref, for example e17. Optional when query is supplied."),
 			"query":   stringSchema("Find a fillable target by semantic name when ref is not supplied."),
 			"role":    stringSchema("Optional role filter when using query, normally textbox or searchbox."),
@@ -874,7 +963,7 @@ func tools() []map[string]any {
 			"direction": stringSchema("up, down, left, or right."),
 			"tab_id":    stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, []string{"direction"})),
-		tool("browser_screenshot", "Capture a PNG screenshot for visual fallback/debugging. Pass optional tab_id to target a specific tab. Set annotate:true for a Set-of-Marks capture: each in-viewport frontier element is drawn with a labelled box whose label is the SAME ref returned by browser_snapshot (e.g. e17), and the response carries a legend mapping each ref to its box (x,y,width,height) plus role and name — so a vision model can read a label off the image and act on it with browser_click using that exact ref. To save vision tokens on a dense page, pass ref OR region to get a TIGHT annotated crop of just that element / box instead of the whole viewport (a far smaller image); ref/region imply annotate. The overlay is removed immediately after capture and never mutates the page. Default (annotate omitted/false, no ref/region) is byte-identical to the plain capture.", object(map[string]any{
+		tool("browser_screenshot", "Visual fallback — you almost never need this. agent-browser is semantic-first: browser_snapshot/browser_find expose every control with a ref, browser_read returns page prose/result/status/badge text, and EVERY action (click/type/fill/select/press/drag) returns a post-action observation that confirms its effect (changed elements, new values, navigation). To VERIFY an outcome (a cart badge, a result message, a swapped item, an editor's text), read that observation or call browser_read — do NOT screenshot to check. Reserve browser_screenshot for opaque visual content with no DOM text (canvas, maps, charts, image-only widgets). Pass optional tab_id to target a specific tab. Set annotate:true for a Set-of-Marks capture: each in-viewport frontier element is drawn with a labelled box whose label is the SAME ref returned by browser_snapshot (e.g. e17), and the response carries a legend mapping each ref to its box (x,y,width,height) plus role and name — so a vision model can read a label off the image and act on it with browser_click using that exact ref. To save vision tokens on a dense page, pass ref OR region to get a TIGHT annotated crop of just that element / box instead of the whole viewport (a far smaller image); ref/region imply annotate. The overlay is removed immediately after capture and never mutates the page. Default (annotate omitted/false, no ref/region) is byte-identical to the plain capture.", object(map[string]any{
 			"tab_id":   stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 			"annotate": boolSchema("Draw Set-of-Marks ref labels over frontier elements and return a ref->box legend. Defaults false (plain screenshot)."),
 			"ref":      stringSchema("Optional element ref from browser_snapshot. Returns a tight annotated crop clipped to that element's box (smaller image, fewer vision tokens). Implies annotate."),

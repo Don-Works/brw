@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "notes": "Big action-variety ladder. Public, automation-tolerant sites. the-internet.herokuapp.com is the canonical hard-interaction playground (dropdown/checkbox/hover/drag/slider/iframe/new-window/dynamic-load). Each task targets a distinct action class so a loss pinpoints a specific primitive gap. Oracles are substring matches on the agent's final answer.",
+  "tasks": [
+    {
+      "id": "read-static", "tier": 1, "name": "Read a static page",
+      "prompt": "Use your browser tools to open https://example.com and report the page's main H1 heading text.",
+      "expect_any": ["Example Domain"], "skills": ["open", "read"]
+    },
+    {
+      "id": "wiki-extract", "tier": 2, "name": "Extract a fact from a content-heavy page",
+      "prompt": "Use your browser tools to open https://en.wikipedia.org/wiki/Firefox and report which organization develops the Firefox web browser.",
+      "expect_any": ["Mozilla"], "skills": ["open", "read", "extract"]
+    },
+    {
+      "id": "data-table", "tier": 2, "name": "Read a value from a data table",
+      "prompt": "Use your browser tools to open https://the-internet.herokuapp.com/tables . In the first data table (id 'table1'), find the row whose Last Name is 'Smith' and report that person's email address.",
+      "expect_any": ["jsmith@gmail.com"], "skills": ["open", "read", "table"]
+    },
+    {
+      "id": "native-dropdown", "tier": 3, "name": "Select an option from a native dropdown",
+      "prompt": "Use your browser tools to open https://the-internet.herokuapp.com/dropdown , select 'Option 2' in the dropdown, then report which option is currently selected.",
+      "expect_any": ["Option 2"], "skills": ["open", "select"]
+    },
+    {
+      "id": "checkboxes", "tier": 3, "name": "Toggle checkboxes to a target state",
+      "prompt": "Use your browser tools to open https://the-internet.herokuapp.com/checkboxes . Make sure BOTH checkboxes are checked, then report how many of the two checkboxes are now checked.",
+      "expect_any": ["2", "both", "two"], "skills": ["open", "click", "checkbox"]
+    },
+    {
+      "id": "key-press", "tier": 3, "name": "Send a keyboard key and read the result",
+      "prompt": "Use your browser tools to open https://the-internet.herokuapp.com/key_presses . Click the input box, press the Enter key, and report what the page says was the key pressed (it displays 'You entered: <KEY>').",
+      "expect_any": ["ENTER"], "skills": ["open", "click", "press"]
+    },
+    {
+      "id": "form-login", "tier": 3, "name": "Fill and submit a login form",
+      "prompt": "Use your browser tools to open https://the-internet.herokuapp.com/login . Enter username 'tomsmith' and password 'SuperSecretPassword!', submit the form, and report the green success message shown on the next page.",
+      "expect_any": ["secure area", "logged into"], "skills": ["open", "type", "submit"]
+    },
+    {
+      "id": "hover-reveal", "tier": 4, "name": "Hover to reveal hidden content",
+      "prompt": "Use your browser tools to open https://the-internet.herokuapp.com/hovers . Hover over the FIRST user avatar image to reveal its caption, and report the username shown in that caption (it looks like 'name: user1').",
+      "expect_any": ["user1"], "skills": ["open", "hover", "read"]
+    },
+    {
+      "id": "dynamic-load", "tier": 4, "name": "Trigger async load and wait for content",
+      "prompt": "Use your browser tools to open https://the-internet.herokuapp.com/dynamic_loading/1 . Click the 'Start' button, wait for the hidden element to finish loading, and report the text that appears.",
+      "expect_any": ["Hello World"], "skills": ["open", "click", "wait"]
+    },
+    {
+      "id": "add-remove", "tier": 4, "name": "Add and remove DOM elements, count",
+      "prompt": "Use your browser tools to open https://the-internet.herokuapp.com/add_remove_elements/ . Click 'Add Element' three times, then click exactly one 'Delete' button. Report how many 'Delete' buttons remain on the page.",
+      "expect_any": ["2", "two"], "skills": ["open", "click", "count"]
+    },
+    {
+      "id": "new-window", "tier": 4, "name": "Open a new window/tab and read it",
+      "prompt": "Use your browser tools to open https://the-internet.herokuapp.com/windows . Click the 'Click Here' link which opens a NEW browser window/tab, switch to that new tab, and report the heading text shown on it.",
+      "expect_any": ["New Window"], "skills": ["open", "click", "tabs", "switch"]
+    },
+    {
+      "id": "todomvc-spa", "tier": 5, "name": "Manipulate a JS SPA with rerendering DOM",
+      "prompt": "Use your browser tools to open https://todomvc.com/examples/react/dist/ , add two todo items 'buy milk' and 'walk dog', then mark the 'buy milk' item as completed by clicking its checkbox. Report how many active (uncompleted) items remain, as shown in the footer count.",
+      "expect_any": ["1 item left", "1 active", "one item", "1 item", " 1 "], "skills": ["open", "type", "enter", "click", "rerender"]
+    },
+    {
+      "id": "drag-drop", "tier": 5, "name": "HTML5 drag-and-drop to swap elements",
+      "prompt": "Use your browser tools to open https://the-internet.herokuapp.com/drag_and_drop . Drag box 'A' onto box 'B' so they swap positions. Then report the letter shown in the FIRST (leftmost) box.",
+      "expect_any": ["B"], "skills": ["open", "drag"]
+    },
+    {
+      "id": "slider", "tier": 5, "name": "Set a range slider to a target value",
+      "prompt": "Use your browser tools to open https://the-internet.herokuapp.com/horizontal_slider . Set the horizontal slider to the value 3 (you can focus it and use arrow keys, or drag it). Report the value currently displayed next to the slider.",
+      "expect_any": ["3"], "skills": ["open", "slider", "drag", "press"]
+    },
+    {
+      "id": "iframe-editor", "tier": 5, "name": "Type into a rich-text editor inside an iframe",
+      "prompt": "Use your browser tools to open https://the-internet.herokuapp.com/iframe . There is a TinyMCE rich-text editor inside an iframe. Clear its contents and type the text 'hello from agent browser', then report the editor's current text.",
+      "expect_any": ["hello from agent"], "skills": ["open", "iframe", "type"]
+    },
+    {
+      "id": "saucedemo-cart", "tier": 5, "name": "Login + add to cart on a real SPA store",
+      "prompt": "Use your browser tools to open https://www.saucedemo.com/ . Log in with username 'standard_user' and password 'secret_sauce'. Then add the 'Sauce Labs Backpack' to the cart and report the number shown on the shopping-cart badge in the top right.",
+      "expect_any": ["1"], "skills": ["open", "type", "submit", "click", "spa"]
+    }
+  ]
+}

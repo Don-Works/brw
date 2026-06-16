@@ -1,5 +1,6 @@
 const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
-const PROTOCOL_VERSION = "0.1.14";
+const PROTOCOL_VERSION = "0.1.15";
+let offscreenSetupPromise = null;
 
 const state = {
   socket: null,
@@ -23,15 +24,11 @@ chrome.runtime.onStartup.addListener(() => {
   ensureOffscreen();
   connect();
 });
-// Accept the long-lived keepalive port from the offscreen document. Holding this
-// port open continuously resets the MV3 service worker's idle timer so Chrome
-// does not terminate the worker — which keeps the daemon WebSocket connected and
-// active-tab resolution deterministic even while Chrome is idle (see offscreen.js
-// / ensureOffscreen).
-chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== "keepalive") return;
-  port.onMessage.addListener(() => {});
-  port.onDisconnect.addListener(() => {});
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== "SW_KEEPALIVE") return false;
+  connect();
+  sendResponse({ ok: true });
+  return false;
 });
 chrome.action.onClicked.addListener(async (tab) => {
   await connect();
@@ -92,8 +89,9 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
   }
 });
 
-connect();
 ensureConnectAlarm();
+ensureOffscreen();
+connect();
 
 async function connect() {
   if (state.socket && state.socket.readyState === WebSocket.OPEN) return;
@@ -527,18 +525,25 @@ function ensureConnectAlarm() {
 // resolution reliable while Chrome is idle in the background. Safe to call
 // repeatedly; a second create on an existing document is caught and ignored.
 async function ensureOffscreen() {
-  try {
-    if (!chrome.offscreen) return;
-    if (await chrome.offscreen.hasDocument()) return;
-    await chrome.offscreen.createDocument({
-      url: "offscreen.html",
-      reasons: ["BLOBS"],
-      justification:
-        "Maintain a persistent connection so the bridge service worker stays alive and the daemon WebSocket and active-tab resolution remain reliable while Chrome is idle."
-    });
-  } catch (_) {
-    // Document already exists (creation race) or the offscreen API is unavailable.
-  }
+  if (offscreenSetupPromise) return offscreenSetupPromise;
+  offscreenSetupPromise = (async () => {
+    try {
+      if (!chrome.offscreen) return;
+      if (await chrome.offscreen.hasDocument()) return;
+      const reason = chrome.offscreen.Reason || {};
+      await chrome.offscreen.createDocument({
+        url: "offscreen.html",
+        reasons: [reason.AUDIO_PLAYBACK || "AUDIO_PLAYBACK", reason.BLOBS || "BLOBS"],
+        justification:
+          "Keep the service worker alive so the bridge WebSocket and active-tab resolution remain reliable while Chrome is idle."
+      });
+    } catch (_) {
+      // Document already exists (creation race) or the offscreen API is unavailable.
+    }
+  })().finally(() => {
+    offscreenSetupPromise = null;
+  });
+  return offscreenSetupPromise;
 }
 
 function ensureObserver(tabId) {

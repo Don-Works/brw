@@ -121,6 +121,9 @@ func TestServiceWorkerReconnectCadence(t *testing.T) {
 		"periodInMinutes: 0.5",
 		"5 * 1000",
 		"ensureConnectAlarm();",
+		"SW_KEEPALIVE",
+		"offscreenSetupPromise",
+		"chrome.offscreen.Reason",
 		"sendDebuggerCommand(tabId",
 		"isDetachedDebuggerError",
 	} {

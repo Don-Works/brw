@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agent_browser": {
+      "command": "/Users/max/github/revitt/brw/agent-browser/bin/agent-browserd",
+      "args": ["--mcp", "--http", "off", "--upstream-http", "http://127.0.0.1:17320"]
+    }
+  }
+}
