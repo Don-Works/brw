@@ -2,7 +2,15 @@ BINDIR ?= $(HOME)/.local/bin
 DATADIR ?= $(HOME)/.local/share/agent-browser
 MAC_APPDIR ?= $(HOME)/Library/Application Support/agent-browser
 
-.PHONY: build test install install-mac package-darwin-arm64
+.PHONY: build test install install-mac install-target package-darwin-arm64
+
+# Build + deploy (daemon binary + bridge extension) to a target machine.
+#   make install-target TARGET=local
+#   make install-target TARGET=maxrevitt@max-air
+# Wraps scripts/install.sh; prints the one manual step (reload the Chrome
+# bridge extension) it cannot do headlessly.
+install-target:
+	scripts/install.sh "$(TARGET)"
 
 build:
 	go build -o bin/agent-browserd ./cmd/browserd
