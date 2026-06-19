@@ -9,3 +9,12 @@ bin/
 dist/
 coverage.out
 tmp/
+
+# Local agent/runtime state
+.mcplexer/
+.claude/
+.mimocode/
+.worktrees/
+.codex/
+.opencode/
+.gemini/
