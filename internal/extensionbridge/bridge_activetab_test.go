@@ -113,6 +113,16 @@ func (f *fakeExtension) serve(ctx context.Context, conn *websocket.Conn) {
 		switch msg.Type {
 		case "list_tabs":
 			result = f.listTabs()
+		case "list_tab_groups":
+			result = []map[string]any{{
+				"id":        9,
+				"title":     "workspace-2",
+				"color":     "cyan",
+				"collapsed": false,
+				"windowId":  2,
+				"tabIds":    []int{12, 13},
+				"tabCount":  2,
+			}}
 		case "get_active_tab_id":
 			result = map[string]any{"tabId": f.foregroundID()}
 		case "focus_tab":
@@ -285,6 +295,27 @@ func TestFocusTabAcceptsListTabsID(t *testing.T) {
 	}
 	if got := b.contextTabID(ctx); got != target {
 		t.Fatalf("after FocusTab(%q), contextTabID = %q, want %q (page tools must follow focus)", target, got, target)
+	}
+}
+
+func TestListTabGroupsUsesExtensionPayload(t *testing.T) {
+	b := New("", 5*time.Second, "")
+	_, cleanup := connectFakeExtension(t, b)
+	defer cleanup()
+
+	groups, err := b.ListTabGroups(context.Background())
+	if err != nil {
+		t.Fatalf("ListTabGroups: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("got %d groups, want 1: %+v", len(groups), groups)
+	}
+	group := groups[0]
+	if group.ID != "9" || group.Title != "workspace-2" || group.Color != "cyan" || group.WindowID != 2 || group.TabCount != 2 {
+		t.Fatalf("unexpected group: %+v", group)
+	}
+	if len(group.TabIDs) != 2 || group.TabIDs[0] != "12" || group.TabIDs[1] != "13" {
+		t.Fatalf("unexpected group tabs: %+v", group.TabIDs)
 	}
 }
 

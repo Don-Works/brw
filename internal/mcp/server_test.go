@@ -110,6 +110,99 @@ func TestBrowserSnapshotDefaultsToBoundedFrontier(t *testing.T) {
 	}
 }
 
+func TestBrowserOpenForwardsTabGroupOptions(t *testing.T) {
+	ctrl := &recordingController{}
+	input := lineJSON(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "browser_open",
+			"arguments": map[string]any{
+				"url":         "https://example.com",
+				"group":       "workspace-2",
+				"group_id":    "9",
+				"group_color": "cyan",
+			},
+		},
+	})
+	var output bytes.Buffer
+
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+
+	if ctrl.openURL != "https://example.com" {
+		t.Fatalf("openURL = %q", ctrl.openURL)
+	}
+	if ctrl.openGroupOpts != (browser.TabGroupOptions{GroupID: "9", Name: "workspace-2", Color: "cyan"}) {
+		t.Fatalf("openGroupOpts = %+v", ctrl.openGroupOpts)
+	}
+}
+
+func TestBrowserListTabGroupsReturnsGroups(t *testing.T) {
+	ctrl := &recordingController{}
+	input := lineJSON(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "browser_list_tab_groups",
+			"arguments": map[string]any{},
+		},
+	})
+	var output bytes.Buffer
+
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+
+	if !ctrl.listTabGroupsCalled {
+		t.Fatal("ListTabGroups was not called")
+	}
+	resp := parseLineResponse(t, output.Bytes())
+	result := resp["result"].(map[string]any)
+	content := result["content"].([]any)
+	text := content[0].(map[string]any)["text"].(string)
+	var groups []browser.TabGroup
+	if err := json.Unmarshal([]byte(text), &groups); err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].ID != "9" || groups[0].Title != "workspace-2" || groups[0].TabCount != 2 {
+		t.Fatalf("unexpected groups: %+v", groups)
+	}
+}
+
+func TestBrowserGroupTabsForwardsGroupID(t *testing.T) {
+	ctrl := &recordingController{}
+	input := lineJSON(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "browser_group_tabs",
+			"arguments": map[string]any{
+				"tab_ids":  []string{"41", "42"},
+				"group_id": "9",
+				"name":     "workspace-2",
+				"color":    "cyan",
+			},
+		},
+	})
+	var output bytes.Buffer
+
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(ctrl.groupTabIDs) != 2 || ctrl.groupTabIDs[0] != "41" || ctrl.groupTabIDs[1] != "42" {
+		t.Fatalf("groupTabIDs = %+v", ctrl.groupTabIDs)
+	}
+	if ctrl.groupTabsOpts != (browser.TabGroupOptions{GroupID: "9", Name: "workspace-2", Color: "cyan"}) {
+		t.Fatalf("groupTabsOpts = %+v", ctrl.groupTabsOpts)
+	}
+}
+
 func TestBrowserSnapshotModeAllPreservesExplicitFullInspection(t *testing.T) {
 	ctrl := &recordingController{}
 	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_snapshot","arguments":{"mode":"all","include_hidden":true}}}` + "\n"
@@ -668,19 +761,48 @@ type fakeController struct{}
 
 type recordingController struct {
 	fakeController
-	snapshotOpts      snapshot.SnapshotOptions
-	findOpts          snapshot.FindOptions
-	navigateDirection string
-	cancelToken       string
-	notifyOpts        browser.NotifyOptions
-	clickRef          string
-	clickButton       browser.ClickButtonOptions
-	dragOpts          browser.DragOptions
-	mouseDownOpt      browser.MouseButtonOptions
-	mouseUpOpt        browser.MouseButtonOptions
-	focusID           string
-	closeID           string
-	clickTextOpts     snapshot.ClickTextOptions
+	snapshotOpts        snapshot.SnapshotOptions
+	findOpts            snapshot.FindOptions
+	navigateDirection   string
+	cancelToken         string
+	notifyOpts          browser.NotifyOptions
+	clickRef            string
+	clickButton         browser.ClickButtonOptions
+	dragOpts            browser.DragOptions
+	mouseDownOpt        browser.MouseButtonOptions
+	mouseUpOpt          browser.MouseButtonOptions
+	focusID             string
+	closeID             string
+	clickTextOpts       snapshot.ClickTextOptions
+	openURL             string
+	openGroupOpts       browser.TabGroupOptions
+	listTabGroupsCalled bool
+	groupTabIDs         []string
+	groupTabsOpts       browser.TabGroupOptions
+}
+
+func (r *recordingController) OpenInGroup(ctx context.Context, targetURL string, opts browser.TabGroupOptions) (browser.OpenResult, error) {
+	r.openURL = targetURL
+	r.openGroupOpts = opts
+	return browser.OpenResult{Tab: browser.Tab{ID: "tab1", URL: targetURL, GroupID: opts.GroupID, GroupTitle: opts.Name, GroupColor: opts.Color}}, nil
+}
+
+func (r *recordingController) ListTabGroups(context.Context) ([]browser.TabGroup, error) {
+	r.listTabGroupsCalled = true
+	return []browser.TabGroup{{
+		ID:       "9",
+		Title:    "workspace-2",
+		Color:    "cyan",
+		WindowID: 7,
+		TabIDs:   []string{"41", "42"},
+		TabCount: 2,
+	}}, nil
+}
+
+func (r *recordingController) GroupTabs(ctx context.Context, tabIDs []string, opts browser.TabGroupOptions) error {
+	r.groupTabIDs = append([]string(nil), tabIDs...)
+	r.groupTabsOpts = opts
+	return nil
 }
 
 func (r *recordingController) FocusTab(ctx context.Context, id string) error {
@@ -756,8 +878,11 @@ func (fakeController) OpenIncognito(context.Context, string) (browser.OpenResult
 }
 func (fakeController) CloseContext(context.Context, string) error      { return nil }
 func (fakeController) ListTabs(context.Context) ([]browser.Tab, error) { return nil, nil }
-func (fakeController) FocusTab(context.Context, string) error          { return nil }
-func (fakeController) CloseTab(context.Context, string) error          { return nil }
+func (fakeController) ListTabGroups(context.Context) ([]browser.TabGroup, error) {
+	return nil, nil
+}
+func (fakeController) FocusTab(context.Context, string) error { return nil }
+func (fakeController) CloseTab(context.Context, string) error { return nil }
 func (fakeController) Read(context.Context) (readability.PageRead, error) {
 	return readability.PageRead{}, nil
 }
@@ -873,10 +998,12 @@ func (fakeController) ClickXY(context.Context, float64, float64) (snapshot.Click
 }
 func (fakeController) GetTrace() browser.TraceResult { return browser.TraceResult{} }
 func (fakeController) ClearTrace()                   {}
-func (fakeController) OpenInGroup(context.Context, string, string) (browser.OpenResult, error) {
+func (fakeController) OpenInGroup(context.Context, string, browser.TabGroupOptions) (browser.OpenResult, error) {
 	return browser.OpenResult{}, nil
 }
-func (fakeController) GroupTabs(context.Context, []string, string, string) error  { return nil }
+func (fakeController) GroupTabs(context.Context, []string, browser.TabGroupOptions) error {
+	return nil
+}
 func (fakeController) UngroupTabs(context.Context, []string) error                { return nil }
 func (fakeController) AssertVisible(context.Context, string, time.Duration) error { return nil }
 func (fakeController) AssertText(context.Context, string, string, time.Duration) error {

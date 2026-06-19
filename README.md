@@ -115,6 +115,7 @@ See [docs/install.md](docs/install.md) and [docs/auth-model.md](docs/auth-model.
 Core MCP tools include:
 
 - `browser_open`, `browser_list_tabs`, `browser_focus_tab`, `browser_close_tab`
+- `browser_list_tab_groups`, `browser_group_tabs`, `browser_ungroup_tabs`
 - `browser_read`, `browser_read_data`, `browser_snapshot`, `browser_find`
 - `browser_click`, `browser_click_text`, `browser_type`, `browser_fill`
 - `browser_select`, `browser_press`, `browser_scroll`, `browser_hover`
@@ -128,6 +129,16 @@ Core MCP tools include:
 
 Use `--mcp-tools core` to advertise only the common-flow tool set while keeping
 all tools callable.
+
+With the extension bridge, agents can organize visible Chrome work into named
+tab groups. Use `browser_list_tab_groups` to choose the next client-side run
+name (for example `brw-1`, `brw-2`, or a short task label), pass `group` to
+`browser_open` to create or reuse that titled group, then pass the
+returned/listed `group_id` on later `browser_open` or `browser_group_tabs` calls
+to keep the run's tabs together. Ungrouped/default tabs remain visible to
+`browser_list_tabs` and can still be targeted normally by `tab_id`. Tab groups
+are UI organization only; use profiles or incognito contexts for cookie/storage
+isolation.
 
 ## Safety
 

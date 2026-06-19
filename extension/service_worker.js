@@ -181,6 +181,10 @@ async function handle(message) {
       send({ id: message.id, ok: true, result: await listTabSummaries() });
       return;
     }
+    if (message.type === "list_tab_groups") {
+      send({ id: message.id, ok: true, result: await listTabGroups() });
+      return;
+    }
     if (message.type === "get_active_tab_id") {
       // Resolve the browser's genuinely focused/active tab dynamically rather
       // than letting the daemon trust a cached reference that drifts when the
@@ -201,14 +205,12 @@ async function handle(message) {
       // foreground).
       const tab = await chrome.tabs.create({ url: message.params?.url || "about:blank", active: true });
       state.activeTabId = tab.id || null;
-      const groupName = message.params?.groupName;
-      if (groupName && tab.id) {
-        try {
-          const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
-          await chrome.tabGroups.update(groupId, { title: groupName, color: message.params?.groupColor || "blue" });
-        } catch (_) {}
+      let resultTab = tab;
+      if (tab.id && hasGroupTarget(message.params)) {
+        await groupTabForParams(tab, message.params);
+        resultTab = await chrome.tabs.get(tab.id).catch(() => tab);
       }
-      send({ id: message.id, ok: true, result: await tabSummary(tab) });
+      send({ id: message.id, ok: true, result: await tabSummary(resultTab) });
       return;
     }
     if (message.type === "focus_tab") {
@@ -228,15 +230,34 @@ async function handle(message) {
     }
     if (message.type === "group_tabs") {
       const tabIds = (message.params?.tabIds || []).map(Number);
-      const name = message.params?.name || "brw";
-      const color = message.params?.color || "blue";
+      const requestedName = String(message.params?.name || "").trim();
+      const existingID = parseGroupId(message.params?.groupId);
+      const name = requestedName || (existingID == null ? "brw" : "");
+      const hasColor = message.params?.color !== undefined && message.params?.color !== null && message.params?.color !== "";
+      const color = normalizeGroupColor(message.params?.color, "blue");
       if (tabIds.length === 0) {
         send({ id: message.id, ok: false, error: "tabIds is required" });
         return;
       }
-      const groupId = await chrome.tabs.group({ tabIds });
-      await chrome.tabGroups.update(groupId, { title: name, color });
-      send({ id: message.id, ok: true, result: { groupId, tabIds, name, color } });
+      const firstTab = await chrome.tabs.get(tabIds[0]).catch(() => null);
+      const existing = existingID == null && name ? await findGroupByTitle(name, firstTab?.windowId) : null;
+      const groupArgs = { tabIds };
+      if (existingID != null) groupArgs.groupId = existingID;
+      else if (existing?.id != null) groupArgs.groupId = existing.id;
+      const groupId = await chrome.tabs.group(groupArgs);
+      const update = {};
+      if (name) update.title = name;
+      if (hasColor || existingID == null) update.color = color;
+      if (Object.keys(update).length > 0) await chrome.tabGroups.update(groupId, update);
+      const group = await chrome.tabGroups.get(groupId);
+      // Report the group's full membership, not just the tabs moved in this
+      // call. Otherwise adding tabs to an existing group (by group_id or by
+      // reusing a title) undercounts tab_ids/tab_count, diverging from
+      // list_tab_groups, which always reports every member.
+      const members = (await chrome.tabs.query({ groupId }).catch(() => []))
+        .map((t) => t.id)
+        .filter((id) => typeof id === "number");
+      send({ id: message.id, ok: true, result: tabGroupSummaryFrom(group, members.length ? members : tabIds) });
       return;
     }
     if (message.type === "ungroup_tabs") {
@@ -457,6 +478,7 @@ async function listTabSummaries() {
     populate: true,
     windowTypes: ["normal", "popup"]
   });
+  const groupsById = await tabGroupsById();
   // Resolve the authoritative foreground tab ONCE and mark exactly that tab as
   // active in the list. This guarantees list_tabs's active flag is identical to
   // what get_active_tab_id (and therefore every no-tab_id page tool) resolves —
@@ -478,7 +500,7 @@ async function listTabSummaries() {
         const got = await chrome.tabs.get(tab.id).catch(() => null);
         if (got) fresh = got;
       }
-      const summary = tabSummaryFrom(fresh, win);
+      const summary = await tabSummaryFrom(fresh, win, groupsById);
       // Override Chrome's per-window active flag with the single authoritative
       // foreground tab so only one tab in the whole list is reported active, and
       // it is the same tab page tools act on. windowFocused is also forced true
@@ -502,8 +524,12 @@ async function tabSummary(tab) {
   return tabSummaryFrom(tab, win);
 }
 
-function tabSummaryFrom(tab, win) {
+async function tabSummaryFrom(tab, win, groupsById = null) {
   if (!tab) return {};
+  const groupId = typeof tab.groupId === "number" ? tab.groupId : -1;
+  const group = groupId >= 0
+    ? (groupsById?.get(groupId) || await chrome.tabGroups.get(groupId).catch(() => null))
+    : null;
   return {
     id: tab.id,
     url: tab.url || "",
@@ -514,8 +540,92 @@ function tabSummaryFrom(tab, win) {
     windowId: tab.windowId || win?.id || 0,
     windowFocused: Boolean(win?.focused),
     windowType: win?.type || "",
+    groupId,
+    groupTitle: group?.title || "",
+    groupColor: group?.color || "",
+    groupCollapsed: Boolean(group?.collapsed),
     openerTabId: tab.openerTabId || 0
   };
+}
+
+async function listTabGroups() {
+  const [groups, tabs] = await Promise.all([
+    chrome.tabGroups.query({}).catch(() => []),
+    chrome.tabs.query({}).catch(() => [])
+  ]);
+  const tabIdsByGroup = new Map();
+  for (const tab of tabs || []) {
+    if (typeof tab.groupId !== "number" || tab.groupId < 0 || typeof tab.id !== "number") continue;
+    if (!tabIdsByGroup.has(tab.groupId)) tabIdsByGroup.set(tab.groupId, []);
+    tabIdsByGroup.get(tab.groupId).push(tab.id);
+  }
+  return (groups || []).map((group) => tabGroupSummaryFrom(group, tabIdsByGroup.get(group.id) || []));
+}
+
+function tabGroupSummaryFrom(group, tabIds = []) {
+  return {
+    id: group.id,
+    title: group.title || "",
+    color: group.color || "",
+    collapsed: Boolean(group.collapsed),
+    windowId: group.windowId || 0,
+    tabIds,
+    tabCount: tabIds.length
+  };
+}
+
+async function tabGroupsById() {
+  const groups = await chrome.tabGroups.query({}).catch(() => []);
+  return new Map((groups || []).map((group) => [group.id, group]));
+}
+
+async function groupTabForParams(tab, params = {}) {
+  if (typeof tab?.id !== "number") return null;
+  const explicitGroupId = parseGroupId(params?.groupId);
+  const groupName = String(params?.groupName || "").trim();
+  const hasColor = params?.groupColor !== undefined && params?.groupColor !== null && params?.groupColor !== "";
+  const color = normalizeGroupColor(params?.groupColor, "blue");
+  if (explicitGroupId != null) {
+    const groupId = await chrome.tabs.group({ tabIds: [tab.id], groupId: explicitGroupId });
+    const update = {};
+    if (groupName) update.title = groupName;
+    if (hasColor) update.color = color;
+    if (Object.keys(update).length > 0) await chrome.tabGroups.update(groupId, update);
+    return groupId;
+  }
+  if (!groupName) return null;
+  const existing = await findGroupByTitle(groupName, tab.windowId);
+  const groupArgs = { tabIds: [tab.id] };
+  if (existing?.id != null) groupArgs.groupId = existing.id;
+  const groupId = await chrome.tabs.group(groupArgs);
+  const update = { title: groupName };
+  if (hasColor || !existing) update.color = color;
+  await chrome.tabGroups.update(groupId, update);
+  return groupId;
+}
+
+async function findGroupByTitle(title, windowId = null) {
+  const query = {};
+  if (typeof windowId === "number") query.windowId = windowId;
+  const groups = await chrome.tabGroups.query(query).catch(() => []);
+  return (groups || []).find((group) => (group.title || "") === title) || null;
+}
+
+function parseGroupId(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) return null;
+  return n;
+}
+
+function hasGroupTarget(params = {}) {
+  return parseGroupId(params?.groupId) != null || String(params?.groupName || "").trim() !== "";
+}
+
+function normalizeGroupColor(value, fallback = "") {
+  const color = String(value || "").trim();
+  const allowed = new Set(["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"]);
+  return allowed.has(color) ? color : fallback;
 }
 
 async function publishActiveTab(tabId) {

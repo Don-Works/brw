@@ -50,9 +50,14 @@ func (c *Controller) Open(ctx context.Context, targetURL string) (browser.OpenRe
 	return out, err
 }
 
-func (c *Controller) OpenInGroup(ctx context.Context, targetURL string, groupName string) (browser.OpenResult, error) {
+func (c *Controller) OpenInGroup(ctx context.Context, targetURL string, opts browser.TabGroupOptions) (browser.OpenResult, error) {
 	var out browser.OpenResult
-	err := c.post(ctx, "/api/browser/open", map[string]string{"url": targetURL, "group": groupName}, &out)
+	err := c.post(ctx, "/api/browser/open", map[string]string{
+		"url":         targetURL,
+		"group":       opts.Name,
+		"group_id":    opts.GroupID,
+		"group_color": opts.Color,
+	}, &out)
 	return out, err
 }
 
@@ -70,6 +75,12 @@ func (c *Controller) CloseContext(ctx context.Context, contextID string) error {
 func (c *Controller) ListTabs(ctx context.Context) ([]browser.Tab, error) {
 	var out []browser.Tab
 	err := c.get(ctx, "/api/browser/tabs", nil, &out)
+	return out, err
+}
+
+func (c *Controller) ListTabGroups(ctx context.Context) ([]browser.TabGroup, error) {
+	var out []browser.TabGroup
+	err := c.get(ctx, "/api/browser/tab_groups", nil, &out)
 	return out, err
 }
 
@@ -304,8 +315,13 @@ func (c *Controller) ExecutePlan(ctx context.Context, steps []browser.PlanStep) 
 	return out, err
 }
 
-func (c *Controller) GroupTabs(ctx context.Context, tabIDs []string, name string, color string) error {
-	return c.post(ctx, "/api/browser/group_tabs", map[string]any{"tab_ids": tabIDs, "name": name, "color": color}, nil)
+func (c *Controller) GroupTabs(ctx context.Context, tabIDs []string, opts browser.TabGroupOptions) error {
+	return c.post(ctx, "/api/browser/group_tabs", map[string]any{
+		"tab_ids":  tabIDs,
+		"name":     opts.Name,
+		"color":    opts.Color,
+		"group_id": opts.GroupID,
+	}, nil)
 }
 
 func (c *Controller) UngroupTabs(ctx context.Context, tabIDs []string) error {

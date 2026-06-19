@@ -21,16 +21,21 @@ import (
 )
 
 func TestExtTabToBrowserTabIncludesPopupMetadata(t *testing.T) {
+	groupID := 9
 	tab := extTab{
-		ID:            42,
-		URL:           "https://example.test/auth",
-		Title:         "Authorize",
-		Active:        true,
-		Highlighted:   true,
-		WindowID:      7,
-		WindowFocused: true,
-		WindowType:    "popup",
-		OpenerTabID:   12,
+		ID:             42,
+		URL:            "https://example.test/auth",
+		Title:          "Authorize",
+		Active:         true,
+		Highlighted:    true,
+		WindowID:       7,
+		WindowFocused:  true,
+		WindowType:     "popup",
+		GroupID:        &groupID,
+		GroupTitle:     "workspace-1",
+		GroupColor:     "cyan",
+		GroupCollapsed: true,
+		OpenerTabID:    12,
 	}.toBrowserTab()
 
 	if tab.ID != "42" || tab.Type != "popup" || !tab.Popup {
@@ -41,6 +46,17 @@ func TestExtTabToBrowserTabIncludesPopupMetadata(t *testing.T) {
 	}
 	if tab.OpenerTabID != "12" {
 		t.Fatalf("missing opener id: %+v", tab)
+	}
+	if tab.GroupID != "9" || tab.GroupTitle != "workspace-1" || tab.GroupColor != "cyan" || !tab.GroupCollapsed {
+		t.Fatalf("missing group metadata: %+v", tab)
+	}
+}
+
+func TestExtTabToBrowserTabTreatsUngroupedTabsAsDefault(t *testing.T) {
+	none := -1
+	tab := extTab{ID: 42, GroupID: &none}.toBrowserTab()
+	if tab.GroupID != "" || tab.GroupTitle != "" || tab.GroupColor != "" || tab.GroupCollapsed {
+		t.Fatalf("ungrouped tab should not expose group metadata: %+v", tab)
 	}
 }
 
@@ -336,6 +352,14 @@ func TestFocusAndCloseTabRejectEmptyIDBeforeBridgeCall(t *testing.T) {
 	}
 }
 
+func TestOpenInGroupRejectsInvalidGroupIDBeforeBridgeCall(t *testing.T) {
+	b := New("", time.Second, "")
+	_, err := b.OpenInGroup(context.Background(), "https://example.com", browser.TabGroupOptions{GroupID: "not-a-number"})
+	if err == nil || !strings.Contains(err.Error(), "invalid group id") {
+		t.Fatalf("OpenInGroup invalid group id error = %v, want invalid group id", err)
+	}
+}
+
 func TestContextTabIDQueriesLiveActiveTab(t *testing.T) {
 	// The daemon's cached active tab (b.active) drifts when the user switches
 	// tabs manually. contextTabID must ask the extension for the genuinely active
@@ -491,6 +515,26 @@ func TestServiceWorkerRefreshesListTabsAndExposesActiveTabQuery(t *testing.T) {
 	// get_active_tab_id handler backs the live active-tab query.
 	if !strings.Contains(src, `message.type === "get_active_tab_id"`) {
 		t.Fatal("service worker must handle get_active_tab_id for live active-tab resolution")
+	}
+}
+
+func TestServiceWorkerExposesTabGroupControls(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "extension", "service_worker.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	for _, want := range []string{
+		`message.type === "list_tab_groups"`,
+		"async function listTabGroups()",
+		"groupId: explicitGroupId",
+		"groupTitle: group?.title",
+		"groupCollapsed: Boolean(group?.collapsed)",
+		"await findGroupByTitle(groupName, tab.windowId)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("service worker tab-group support missing %q", want)
+		}
 	}
 }
 

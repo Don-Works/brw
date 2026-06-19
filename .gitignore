@@ -1,14 +1,48 @@
+# macOS
 .DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Logs
 *.log
+
+# Go build artifacts
+bin/
+dist/
+
+# Go test / coverage / profiling artifacts
+*.test
+*.prof
+*.pprof
+coverage.out
+coverage.html
+
+# Go workspace (keep local-only)
+go.work
+go.work.sum
+
+# Chrome extension packaging artifacts and signing keys
 *.crx
 *.pem
+
+# Secrets / environment
 .env
 .env.*
 !.env.example
-bin/
-dist/
-coverage.out
+
+# Scratch
 tmp/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node tooling (extension is plain JS today; guard against added tooling)
+node_modules/
 
 # Local agent/runtime state
 .mcplexer/
@@ -18,3 +52,4 @@ tmp/
 .codex/
 .opencode/
 .gemini/
+.cursor/

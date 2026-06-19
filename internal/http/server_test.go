@@ -85,6 +85,46 @@ func TestFindForwardsQueryParams(t *testing.T) {
 	}
 }
 
+func TestOpenForwardsTabGroupOptions(t *testing.T) {
+	ctrl := &fakeController{}
+	server := New("", ctrl)
+	body := bytes.NewBufferString(`{"url":"https://example.com","group":"workspace-2","group_id":"9","group_color":"cyan"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/browser/open", body)
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if ctrl.openURL != "https://example.com" {
+		t.Fatalf("openURL = %q", ctrl.openURL)
+	}
+	if ctrl.openGroupOpts != (browser.TabGroupOptions{GroupID: "9", Name: "workspace-2", Color: "cyan"}) {
+		t.Fatalf("openGroupOpts = %+v", ctrl.openGroupOpts)
+	}
+}
+
+func TestGroupTabsForwardsGroupID(t *testing.T) {
+	ctrl := &fakeController{}
+	server := New("", ctrl)
+	body := bytes.NewBufferString(`{"tab_ids":["41","42"],"group_id":"9","name":"workspace-2","color":"cyan"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/browser/group_tabs", body)
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(ctrl.groupTabIDs) != 2 || ctrl.groupTabIDs[0] != "41" || ctrl.groupTabIDs[1] != "42" {
+		t.Fatalf("groupTabIDs = %+v", ctrl.groupTabIDs)
+	}
+	if ctrl.groupTabsOpts != (browser.TabGroupOptions{GroupID: "9", Name: "workspace-2", Color: "cyan"}) {
+		t.Fatalf("groupTabsOpts = %+v", ctrl.groupTabsOpts)
+	}
+}
+
 func TestFillForwardsBody(t *testing.T) {
 	ctrl := &fakeController{snap: sampleSnapshot()}
 	server := New("", ctrl)
@@ -282,29 +322,35 @@ func sampleSnapshot() snapshot.PageSnapshot {
 }
 
 type fakeController struct {
-	snap         snapshot.PageSnapshot
-	snapshotOpts snapshot.SnapshotOptions
-	findOpts     snapshot.FindOptions
-	fillOpts     snapshot.FillOptions
-	uploadOpts   snapshot.UploadOptions
-	batchSteps   []browser.BatchStep
-	commitRef    string
-	clickX       float64
-	clickY       float64
-	cancelToken  string
-	notifyOpts   browser.NotifyOptions
-	clickButton  browser.ClickButtonOptions
-	dragOpts     browser.DragOptions
-	mouseDownOpt browser.MouseButtonOptions
-	mouseUpOpt   browser.MouseButtonOptions
+	snap          snapshot.PageSnapshot
+	snapshotOpts  snapshot.SnapshotOptions
+	findOpts      snapshot.FindOptions
+	fillOpts      snapshot.FillOptions
+	uploadOpts    snapshot.UploadOptions
+	batchSteps    []browser.BatchStep
+	commitRef     string
+	clickX        float64
+	clickY        float64
+	cancelToken   string
+	notifyOpts    browser.NotifyOptions
+	clickButton   browser.ClickButtonOptions
+	dragOpts      browser.DragOptions
+	mouseDownOpt  browser.MouseButtonOptions
+	mouseUpOpt    browser.MouseButtonOptions
+	openURL       string
+	openGroupOpts browser.TabGroupOptions
+	groupTabIDs   []string
+	groupTabsOpts browser.TabGroupOptions
 }
 
 func (f *fakeController) Open(context.Context, string) (browser.OpenResult, error) {
 	return browser.OpenResult{}, nil
 }
 
-func (f *fakeController) OpenInGroup(context.Context, string, string) (browser.OpenResult, error) {
-	return browser.OpenResult{}, nil
+func (f *fakeController) OpenInGroup(_ context.Context, targetURL string, opts browser.TabGroupOptions) (browser.OpenResult, error) {
+	f.openURL = targetURL
+	f.openGroupOpts = opts
+	return browser.OpenResult{Tab: browser.Tab{ID: "tab1", URL: targetURL, GroupID: opts.GroupID, GroupTitle: opts.Name, GroupColor: opts.Color}}, nil
 }
 
 func (f *fakeController) OpenIncognito(context.Context, string) (browser.OpenResult, error) {
@@ -317,6 +363,10 @@ func (f *fakeController) ListTabs(context.Context) ([]browser.Tab, error) {
 	return nil, nil
 }
 
+func (f *fakeController) ListTabGroups(context.Context) ([]browser.TabGroup, error) {
+	return nil, nil
+}
+
 func (f *fakeController) FocusTab(context.Context, string) error {
 	return nil
 }
@@ -325,8 +375,12 @@ func (f *fakeController) CloseTab(context.Context, string) error {
 	return nil
 }
 
-func (f *fakeController) GroupTabs(context.Context, []string, string, string) error { return nil }
-func (f *fakeController) UngroupTabs(context.Context, []string) error               { return nil }
+func (f *fakeController) GroupTabs(_ context.Context, tabIDs []string, opts browser.TabGroupOptions) error {
+	f.groupTabIDs = append([]string(nil), tabIDs...)
+	f.groupTabsOpts = opts
+	return nil
+}
+func (f *fakeController) UngroupTabs(context.Context, []string) error { return nil }
 
 func (f *fakeController) Snapshot(_ context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
 	f.snapshotOpts = opts

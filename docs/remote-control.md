@@ -33,6 +33,15 @@ Policy separates the concerns:
 - `profile`: Chrome profile allowed for that workspace
 - `transport`: where `brwd` runs
 
+Chrome tab groups can be used as visible run workspaces on the extension-bridge
+transport. An agent can inspect `browser_list_tab_groups`, choose the next
+client-side run name such as `brw-1`, pass that unique `group` to
+`browser_open`, and then pass `group_id` on later opens or regrouping calls so
+each automation run keeps its tabs together. This is only tab strip
+organization: ungrouped tabs remain readable/targetable, and tab groups do not
+isolate cookies, storage, downloads, or authorization. Use separate profiles or
+incognito contexts for isolation.
+
 ## Installed-Profile Bridge
 
 For an already-authenticated Chrome profile, run `brwd --bridge --mcp` on the

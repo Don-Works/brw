@@ -19,21 +19,43 @@ type Config struct {
 }
 
 type Tab struct {
-	ID            string `json:"id"`
-	URL           string `json:"url"`
-	Title         string `json:"title"`
-	Type          string `json:"type"`
-	WindowID      int    `json:"window_id,omitempty"`
-	WindowType    string `json:"window_type,omitempty"`
-	Active        bool   `json:"active,omitempty"`
-	Highlighted   bool   `json:"highlighted,omitempty"`
-	WindowFocused bool   `json:"window_focused,omitempty"`
-	OpenerTabID   string `json:"opener_tab_id,omitempty"`
-	Popup         bool   `json:"popup,omitempty"`
+	ID             string `json:"id"`
+	URL            string `json:"url"`
+	Title          string `json:"title"`
+	Type           string `json:"type"`
+	WindowID       int    `json:"window_id,omitempty"`
+	WindowType     string `json:"window_type,omitempty"`
+	GroupID        string `json:"group_id,omitempty"`
+	GroupTitle     string `json:"group_title,omitempty"`
+	GroupColor     string `json:"group_color,omitempty"`
+	GroupCollapsed bool   `json:"group_collapsed,omitempty"`
+	Active         bool   `json:"active,omitempty"`
+	Highlighted    bool   `json:"highlighted,omitempty"`
+	WindowFocused  bool   `json:"window_focused,omitempty"`
+	OpenerTabID    string `json:"opener_tab_id,omitempty"`
+	Popup          bool   `json:"popup,omitempty"`
 	// BrowserContextID is set when the tab lives in a non-default (incognito)
 	// browser context created via browser_open_incognito. Pass it to
 	// browser_close_context to dispose that isolated context.
 	BrowserContextID string `json:"browser_context_id,omitempty"`
+}
+
+type TabGroup struct {
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Color     string   `json:"color"`
+	Collapsed bool     `json:"collapsed"`
+	WindowID  int      `json:"window_id,omitempty"`
+	TabIDs    []string `json:"tab_ids,omitempty"`
+	TabCount  int      `json:"tab_count"`
+}
+
+type TabGroupOptions struct {
+	// GroupID targets an existing Chrome tab group. Name creates or reuses a
+	// visible group with that title when GroupID is empty.
+	GroupID string `json:"group_id,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Color   string `json:"color,omitempty"`
 }
 
 type OpenResult struct {
