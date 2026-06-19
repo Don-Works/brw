@@ -85,6 +85,39 @@ func TestOpen_Success(t *testing.T) {
 	}
 }
 
+func TestOpenInGroup_ForwardsGroupOptions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/browser/open" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var req map[string]string
+		json.NewDecoder(r.Body).Decode(&req)
+		if req["url"] != "https://example.com" || req["group"] != "workspace-2" || req["group_id"] != "9" || req["group_color"] != "cyan" {
+			t.Errorf("unexpected request body: %+v", req)
+		}
+		json.NewEncoder(w).Encode(browser.OpenResult{
+			Tab: browser.Tab{ID: "tab1", URL: "https://example.com", GroupID: "9", GroupTitle: "workspace-2", GroupColor: "cyan"},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := c.OpenInGroup(context.Background(), "https://example.com", browser.TabGroupOptions{
+		GroupID: "9",
+		Name:    "workspace-2",
+		Color:   "cyan",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Tab.GroupID != "9" || result.Tab.GroupTitle != "workspace-2" || result.Tab.GroupColor != "cyan" {
+		t.Fatalf("unexpected grouped tab: %+v", result.Tab)
+	}
+}
+
 func TestListTabs_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/browser/tabs" {
@@ -104,6 +137,56 @@ func TestListTabs_Success(t *testing.T) {
 	}
 	if len(tabs) != 2 {
 		t.Fatalf("expected 2 tabs, got %d", len(tabs))
+	}
+}
+
+func TestListTabGroups_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/browser/tab_groups" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		json.NewEncoder(w).Encode([]browser.TabGroup{
+			{ID: "9", Title: "workspace-2", Color: "cyan", TabIDs: []string{"tab1", "tab2"}, TabCount: 2},
+		})
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL, 5*time.Second)
+	groups, err := c.ListTabGroups(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].ID != "9" || groups[0].TabCount != 2 {
+		t.Fatalf("unexpected groups: %+v", groups)
+	}
+}
+
+func TestGroupTabs_ForwardsGroupOptions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/browser/group_tabs" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var req struct {
+			TabIDs  []string `json:"tab_ids"`
+			GroupID string   `json:"group_id"`
+			Name    string   `json:"name"`
+			Color   string   `json:"color"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		if len(req.TabIDs) != 2 || req.TabIDs[0] != "41" || req.TabIDs[1] != "42" || req.GroupID != "9" || req.Name != "workspace-2" || req.Color != "cyan" {
+			t.Errorf("unexpected request body: %+v", req)
+		}
+		json.NewEncoder(w).Encode(browser.ActionResult{OK: true})
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL, 5*time.Second)
+	if err := c.GroupTabs(context.Background(), []string{"41", "42"}, browser.TabGroupOptions{
+		GroupID: "9",
+		Name:    "workspace-2",
+		Color:   "cyan",
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -14,13 +14,14 @@ import (
 // transport-agnostic.
 type Controller interface {
 	Open(context.Context, string) (OpenResult, error)
-	OpenInGroup(context.Context, string, string) (OpenResult, error)
+	OpenInGroup(context.Context, string, TabGroupOptions) (OpenResult, error)
 	OpenIncognito(context.Context, string) (OpenResult, error)
 	CloseContext(context.Context, string) error
 	ListTabs(context.Context) ([]Tab, error)
+	ListTabGroups(context.Context) ([]TabGroup, error)
 	FocusTab(context.Context, string) error
 	CloseTab(context.Context, string) error
-	GroupTabs(context.Context, []string, string, string) error
+	GroupTabs(context.Context, []string, TabGroupOptions) error
 	UngroupTabs(context.Context, []string) error
 	Read(context.Context) (readability.PageRead, error)
 	ReadData(context.Context) (snapshot.StructuredData, error)

@@ -356,6 +356,22 @@ func (b *Bridge) ListTabs(ctx context.Context) ([]browser.Tab, error) {
 	return out, nil
 }
 
+func (b *Bridge) ListTabGroups(ctx context.Context) ([]browser.TabGroup, error) {
+	raw, err := b.call(ctx, "list_tab_groups", nil)
+	if err != nil {
+		return nil, err
+	}
+	var groups []extTabGroup
+	if err := json.Unmarshal(raw, &groups); err != nil {
+		return nil, err
+	}
+	out := make([]browser.TabGroup, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, group.toBrowserTabGroup())
+	}
+	return out, nil
+}
+
 func (b *Bridge) FocusTab(ctx context.Context, id string) error {
 	tabID, err := requireTabID(id)
 	if err != nil {
@@ -391,19 +407,24 @@ func (b *Bridge) CloseTab(ctx context.Context, id string) error {
 	return err
 }
 
-func (b *Bridge) GroupTabs(ctx context.Context, tabIDs []string, name string, color string) error {
+func (b *Bridge) GroupTabs(ctx context.Context, tabIDs []string, opts browser.TabGroupOptions) error {
 	ids := make([]int, 0, len(tabIDs))
 	for _, id := range tabIDs {
 		ids = append(ids, parseTabID(id))
 	}
-	if color == "" {
-		color = "blue"
-	}
-	_, err := b.call(ctx, "group_tabs", map[string]any{
+	params := map[string]any{
 		"tabIds": ids,
-		"name":   name,
-		"color":  color,
-	})
+		"name":   opts.Name,
+		"color":  opts.Color,
+	}
+	if opts.GroupID != "" {
+		groupID, err := requireGroupID(opts.GroupID)
+		if err != nil {
+			return err
+		}
+		params["groupId"] = groupID
+	}
+	_, err := b.call(ctx, "group_tabs", params)
 	return err
 }
 
@@ -416,17 +437,28 @@ func (b *Bridge) UngroupTabs(ctx context.Context, tabIDs []string) error {
 	return err
 }
 
-func (b *Bridge) OpenInGroup(ctx context.Context, url string, groupName string) (browser.OpenResult, error) {
+func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGroupOptions) (browser.OpenResult, error) {
 	if strings.TrimSpace(url) == "" {
 		url = "about:blank"
 	}
 	if !strings.Contains(url, "://") && url != "about:blank" {
 		url = "https://" + url
 	}
-	raw, err := b.call(ctx, "open_tab", map[string]any{
-		"url":       url,
-		"groupName": groupName,
-	})
+	params := map[string]any{"url": url}
+	if opts.GroupID != "" {
+		groupID, err := requireGroupID(opts.GroupID)
+		if err != nil {
+			return browser.OpenResult{}, err
+		}
+		params["groupId"] = groupID
+	}
+	if opts.Name != "" {
+		params["groupName"] = opts.Name
+	}
+	if opts.Color != "" {
+		params["groupColor"] = opts.Color
+	}
+	raw, err := b.call(ctx, "open_tab", params)
 	if err != nil {
 		return browser.OpenResult{}, err
 	}
@@ -1722,15 +1754,19 @@ func (b *Bridge) condition(ctx context.Context, condition string) (bool, error) 
 }
 
 type extTab struct {
-	ID            int    `json:"id"`
-	URL           string `json:"url"`
-	Title         string `json:"title"`
-	Active        bool   `json:"active"`
-	Highlighted   bool   `json:"highlighted"`
-	WindowID      int    `json:"windowId"`
-	WindowFocused bool   `json:"windowFocused"`
-	WindowType    string `json:"windowType"`
-	OpenerTabID   int    `json:"openerTabId"`
+	ID             int    `json:"id"`
+	URL            string `json:"url"`
+	Title          string `json:"title"`
+	Active         bool   `json:"active"`
+	Highlighted    bool   `json:"highlighted"`
+	WindowID       int    `json:"windowId"`
+	WindowFocused  bool   `json:"windowFocused"`
+	WindowType     string `json:"windowType"`
+	GroupID        *int   `json:"groupId"`
+	GroupTitle     string `json:"groupTitle"`
+	GroupColor     string `json:"groupColor"`
+	GroupCollapsed bool   `json:"groupCollapsed"`
+	OpenerTabID    int    `json:"openerTabId"`
 }
 
 func (t extTab) toBrowserTab() browser.Tab {
@@ -1744,18 +1780,55 @@ func (t extTab) toBrowserTab() browser.Tab {
 		openerID = strconv.Itoa(t.OpenerTabID)
 	}
 	return browser.Tab{
-		ID:            strconv.Itoa(t.ID),
-		URL:           t.URL,
-		Title:         t.Title,
-		Type:          tabType,
-		WindowID:      t.WindowID,
-		WindowType:    windowType,
-		Active:        t.Active,
-		Highlighted:   t.Highlighted,
-		WindowFocused: t.WindowFocused,
-		OpenerTabID:   openerID,
-		Popup:         windowType == "popup" || t.OpenerTabID != 0,
+		ID:             strconv.Itoa(t.ID),
+		URL:            t.URL,
+		Title:          t.Title,
+		Type:           tabType,
+		WindowID:       t.WindowID,
+		WindowType:     windowType,
+		GroupID:        groupIDString(t.GroupID),
+		GroupTitle:     t.GroupTitle,
+		GroupColor:     t.GroupColor,
+		GroupCollapsed: t.GroupCollapsed,
+		Active:         t.Active,
+		Highlighted:    t.Highlighted,
+		WindowFocused:  t.WindowFocused,
+		OpenerTabID:    openerID,
+		Popup:          windowType == "popup" || t.OpenerTabID != 0,
 	}
+}
+
+type extTabGroup struct {
+	ID        int    `json:"id"`
+	Title     string `json:"title"`
+	Color     string `json:"color"`
+	Collapsed bool   `json:"collapsed"`
+	WindowID  int    `json:"windowId"`
+	TabIDs    []int  `json:"tabIds"`
+	TabCount  int    `json:"tabCount"`
+}
+
+func (g extTabGroup) toBrowserTabGroup() browser.TabGroup {
+	tabIDs := make([]string, 0, len(g.TabIDs))
+	for _, id := range g.TabIDs {
+		tabIDs = append(tabIDs, strconv.Itoa(id))
+	}
+	return browser.TabGroup{
+		ID:        strconv.Itoa(g.ID),
+		Title:     g.Title,
+		Color:     g.Color,
+		Collapsed: g.Collapsed,
+		WindowID:  g.WindowID,
+		TabIDs:    tabIDs,
+		TabCount:  g.TabCount,
+	}
+}
+
+func groupIDString(id *int) string {
+	if id == nil || *id < 0 {
+		return ""
+	}
+	return strconv.Itoa(*id)
 }
 
 func (b *Bridge) activeTabID() string {
@@ -1824,6 +1897,18 @@ func requireTabID(id string) (int, error) {
 	n, err := strconv.Atoi(trimmed)
 	if err != nil || n <= 0 {
 		return 0, fmt.Errorf("invalid tab id %q", id)
+	}
+	return n, nil
+}
+
+func requireGroupID(id string) (int, error) {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return 0, errors.New("group id is required")
+	}
+	n, err := strconv.Atoi(trimmed)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid group id %q", id)
 	}
 	return n, nil
 }

@@ -287,14 +287,20 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	switch name {
 	case "browser_open":
 		var req struct {
-			URL   string `json:"url"`
-			Group string `json:"group"`
+			URL        string `json:"url"`
+			Group      string `json:"group"`
+			GroupID    string `json:"group_id"`
+			GroupColor string `json:"group_color"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		if req.Group != "" {
-			return toolJSON(s.manager.OpenInGroup(ctx, req.URL, req.Group))
+		if req.Group != "" || req.GroupID != "" {
+			return toolJSON(s.manager.OpenInGroup(ctx, req.URL, browser.TabGroupOptions{
+				GroupID: req.GroupID,
+				Name:    req.Group,
+				Color:   req.GroupColor,
+			}))
 		}
 		return toolJSON(s.manager.Open(ctx, req.URL))
 	case "browser_open_incognito":
@@ -315,6 +321,8 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return toolOK(s.manager.CloseContext(ctx, req.BrowserContextID))
 	case "browser_list_tabs":
 		return toolJSON(s.manager.ListTabs(ctx))
+	case "browser_list_tab_groups":
+		return toolJSON(s.manager.ListTabGroups(ctx))
 	case "browser_focus_tab":
 		var req struct {
 			ID    string `json:"id"`
@@ -598,14 +606,19 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return toolJSON(s.manager.Observe(ctx))
 	case "browser_group_tabs":
 		var req struct {
-			TabIDs []string `json:"tab_ids"`
-			Name   string   `json:"name"`
-			Color  string   `json:"color"`
+			TabIDs  []string `json:"tab_ids"`
+			Name    string   `json:"name"`
+			Color   string   `json:"color"`
+			GroupID string   `json:"group_id"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		return toolOK(s.manager.GroupTabs(ctx, req.TabIDs, req.Name, req.Color))
+		return toolOK(s.manager.GroupTabs(ctx, req.TabIDs, browser.TabGroupOptions{
+			GroupID: req.GroupID,
+			Name:    req.Name,
+			Color:   req.Color,
+		}))
 	case "browser_ungroup_tabs":
 		var req struct {
 			TabIDs []string `json:"tab_ids"`
@@ -807,9 +820,11 @@ func invalid(err error) *rpcError {
 
 func tools() []map[string]any {
 	return []map[string]any{
-		tool("browser_open", "Open a URL in a visible Chrome/Chromium tab.", object(map[string]any{
-			"url":   stringSchema("URL to open. Scheme defaults to https."),
-			"group": stringSchema("Optional Chrome tab group name. When set, the new tab is added to a tab group with this title."),
+		tool("browser_open", "Open a URL in a visible Chrome/Chromium tab. To start a run-scoped tab group, pass a unique group name such as workspace-1; to add later tabs to that same visible group, pass its group_id from browser_list_tabs or browser_list_tab_groups.", object(map[string]any{
+			"url":         stringSchema("URL to open. Scheme defaults to https."),
+			"group":       stringSchema("Optional Chrome tab group title. When set without group_id, the extension reuses an existing same-title group in the target window or creates one."),
+			"group_id":    stringSchema("Optional existing Chrome tab group id from browser_list_tabs or browser_list_tab_groups. When set, the new tab is added to that group."),
+			"group_color": stringSchema("Optional group color: grey, blue, red, yellow, green, pink, purple, cyan, orange."),
 		}, []string{"url"})),
 		tool("browser_open_incognito", "Open a URL in a brand-new INCOGNITO browser context: a fully isolated session with its own cookies, storage, and cache that shares nothing with the normal profile or other contexts (the CDP equivalent of an incognito window). Returns the new tab including its browser_context_id. WHEN DONE, call browser_close_context with that browser_context_id to dispose the whole context (closes every tab in it and discards its data). DIRECT-CDP TRANSPORT ONLY: on the extension-bridge transport (driving the user's existing signed-in Chrome) this returns an error — use a dedicated direct-CDP profile for incognito. Ideal for clean-room / logged-out internal testing.", object(map[string]any{
 			"url": stringSchema("URL to open in the new incognito context. Scheme defaults to https."),
@@ -817,7 +832,8 @@ func tools() []map[string]any {
 		tool("browser_close_context", "Dispose an incognito browser context created by browser_open_incognito: closes every tab inside it and discards its isolated cookies/storage. Pass the browser_context_id returned by browser_open_incognito. Direct-CDP transport only.", object(map[string]any{
 			"browser_context_id": stringSchema("The browser_context_id returned by browser_open_incognito."),
 		}, []string{"browser_context_id"})),
-		tool("browser_list_tabs", "List controllable Chrome/Chromium browser targets, including tabs and popup windows when the extension bridge reports them.", object(nil, nil)),
+		tool("browser_list_tabs", "List controllable Chrome/Chromium browser targets, including tabs, popup windows, and Chrome tab-group metadata when the extension bridge reports it. Ungrouped/default tabs remain listed normally.", object(nil, nil)),
+		tool("browser_list_tab_groups", "List visible Chrome tab groups with ids, titles, colors, collapsed state, window ids, and member tab ids. Extension-bridge transport only; direct CDP cannot inspect Chrome tab groups.", object(nil, nil)),
 		tool("browser_focus_tab", "Focus a controllable Chrome/Chromium target and make it the default target for following reads/actions.", object(map[string]any{
 			"tab_id": stringSchema("Target id from browser_list_tabs (preferred, consistent with other tools)."),
 			"id":     stringSchema("Deprecated alias for tab_id."),
@@ -1030,11 +1046,12 @@ func tools() []map[string]any {
 		tool("browser_observe", "Return compact page state: version, URL, title, focused ref, and frontier element changes since last observe. Use this to check what changed without a full snapshot. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id": stringSchema("Optional tab id from browser_list_tabs. Omit to use the active tab."),
 		}, nil)),
-		tool("browser_group_tabs", "Group tabs into a named Chrome tab group with a color.", object(map[string]any{
-			"tab_ids": map[string]any{"type": "array", "items": stringSchema("Tab id."), "description": "Tab IDs to group."},
-			"name":    stringSchema("Group name shown in Chrome tab strip."),
-			"color":   stringSchema("Group color: grey, blue, red, yellow, green, pink, purple, cyan, orange."),
-		}, []string{"tab_ids", "name"})),
+		tool("browser_group_tabs", "Group tabs into a named Chrome tab group, or move them into an existing group_id.", object(map[string]any{
+			"tab_ids":  map[string]any{"type": "array", "items": stringSchema("Tab id."), "description": "Tab IDs to group."},
+			"name":     stringSchema("Group name shown in Chrome tab strip. Used when creating/reusing by title, or renaming a group_id target."),
+			"color":    stringSchema("Group color: grey, blue, red, yellow, green, pink, purple, cyan, orange."),
+			"group_id": stringSchema("Optional existing Chrome tab group id. When set, the tabs are moved into that group."),
+		}, []string{"tab_ids"})),
 		tool("browser_ungroup_tabs", "Remove tabs from their Chrome tab group.", object(map[string]any{
 			"tab_ids": map[string]any{"type": "array", "items": stringSchema("Tab id."), "description": "Tab IDs to ungroup."},
 		}, []string{"tab_ids"})),

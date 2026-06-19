@@ -44,6 +44,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/browser/open_incognito", s.openIncognito)
 	mux.HandleFunc("POST /api/browser/close_context", s.closeContext)
 	mux.HandleFunc("GET /api/browser/tabs", s.tabs)
+	mux.HandleFunc("GET /api/browser/tab_groups", s.tabGroups)
 	mux.HandleFunc("POST /api/browser/focus", s.focus)
 	mux.HandleFunc("POST /api/browser/close", s.closeTab)
 	mux.HandleFunc("GET /api/page/snapshot", s.snapshot)
@@ -109,12 +110,27 @@ func contextWithTabID(ctx context.Context, tabID string) context.Context {
 
 func (s *Server) open(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		URL string `json:"url"`
+		URL        string `json:"url"`
+		Group      string `json:"group"`
+		GroupID    string `json:"group_id"`
+		GroupColor string `json:"group_color"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Open(r.Context(), req.URL)
+	var (
+		result browser.OpenResult
+		err    error
+	)
+	if req.Group != "" || req.GroupID != "" {
+		result, err = s.manager.OpenInGroup(r.Context(), req.URL, browser.TabGroupOptions{
+			GroupID: req.GroupID,
+			Name:    req.Group,
+			Color:   req.GroupColor,
+		})
+	} else {
+		result, err = s.manager.Open(r.Context(), req.URL)
+	}
 	writeResult(w, result, err)
 }
 
@@ -142,6 +158,11 @@ func (s *Server) closeContext(w http.ResponseWriter, r *http.Request) {
 func (s *Server) tabs(w http.ResponseWriter, r *http.Request) {
 	tabs, err := s.manager.ListTabs(r.Context())
 	writeResult(w, tabs, err)
+}
+
+func (s *Server) tabGroups(w http.ResponseWriter, r *http.Request) {
+	groups, err := s.manager.ListTabGroups(r.Context())
+	writeResult(w, groups, err)
 }
 
 func (s *Server) focus(w http.ResponseWriter, r *http.Request) {
@@ -628,14 +649,19 @@ func (s *Server) clearTrace(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) groupTabs(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		TabIDs []string `json:"tab_ids"`
-		Name   string   `json:"name"`
-		Color  string   `json:"color"`
+		TabIDs  []string `json:"tab_ids"`
+		Name    string   `json:"name"`
+		Color   string   `json:"color"`
+		GroupID string   `json:"group_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.GroupTabs(r.Context(), req.TabIDs, req.Name, req.Color))
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.GroupTabs(r.Context(), req.TabIDs, browser.TabGroupOptions{
+		GroupID: req.GroupID,
+		Name:    req.Name,
+		Color:   req.Color,
+	}))
 }
 
 func (s *Server) ungroupTabs(w http.ResponseWriter, r *http.Request) {

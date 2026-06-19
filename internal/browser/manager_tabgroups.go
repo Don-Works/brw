@@ -21,12 +21,17 @@ var ErrTabGroupingUnsupported = errors.New("tab grouping is not supported on the
 // OpenInGroup opens the URL but cannot place the resulting tab into a named
 // Chrome tab group over direct CDP. Because the "in group" guarantee cannot be
 // honored, it reports ErrTabGroupingUnsupported instead of fabricating success.
-func (m *Manager) OpenInGroup(ctx context.Context, url string, groupName string) (OpenResult, error) {
+func (m *Manager) OpenInGroup(ctx context.Context, url string, opts TabGroupOptions) (OpenResult, error) {
 	return OpenResult{}, ErrTabGroupingUnsupported
 }
 
+// ListTabGroups cannot inspect Chrome tab groups over direct CDP.
+func (m *Manager) ListTabGroups(ctx context.Context) ([]TabGroup, error) {
+	return nil, ErrTabGroupingUnsupported
+}
+
 // GroupTabs cannot create or assign Chrome tab groups over direct CDP.
-func (m *Manager) GroupTabs(ctx context.Context, tabIDs []string, name string, color string) error {
+func (m *Manager) GroupTabs(ctx context.Context, tabIDs []string, opts TabGroupOptions) error {
 	return ErrTabGroupingUnsupported
 }
 
