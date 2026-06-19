@@ -1,0 +1,11 @@
+.DS_Store
+*.log
+*.crx
+*.pem
+.env
+.env.*
+!.env.example
+bin/
+dist/
+coverage.out
+tmp/

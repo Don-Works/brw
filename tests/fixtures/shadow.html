@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Shadow DOM Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 32px; max-width: 760px; }
+      semantic-card { display: block; margin-top: 20px; }
+      #outside-status { margin-top: 20px; padding: 10px; background: #eef6f1; min-height: 22px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Open Shadow DOM Fixture</h1>
+      <semantic-card></semantic-card>
+      <div id="outside-status" role="status"></div>
+    </main>
+    <script>
+      customElements.define('semantic-card', class extends HTMLElement {
+        connectedCallback() {
+          if (this.shadowRoot) return;
+          const root = this.attachShadow({ mode: 'open' });
+          root.innerHTML = `
+            <style>
+              .card { border: 1px solid #9aa7b3; padding: 16px; display: grid; gap: 10px; }
+              label { font-weight: 700; }
+              input, button { font: inherit; padding: 8px; }
+            </style>
+            <div class="card">
+              <label for="shadow-email">Shadow Email</label>
+              <input id="shadow-email" type="email" autocomplete="email">
+              <button id="shadow-save">Save shadow email</button>
+            </div>
+          `;
+          root.getElementById('shadow-save').addEventListener('click', () => {
+            const value = root.getElementById('shadow-email').value;
+            document.getElementById('outside-status').textContent = `Shadow saved: ${value}`;
+          });
+        }
+      });
+    </script>
+  </body>
+</html>

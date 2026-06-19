@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Dynamic Interaction Fixture</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 32px; max-width: 760px; }
+      button, input, textarea { font: inherit; padding: 8px; margin: 4px 0; }
+      section { margin-top: 24px; }
+      #dynamic-panel { border: 1px solid #cfd6dd; padding: 16px; min-height: 100px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Dynamic Interaction Fixture</h1>
+      <label for="search">Knowledge search</label>
+      <input id="search" type="search" name="q">
+      <button id="search-button">Search now</button>
+      <p id="search-result" role="status"></p>
+
+      <section>
+        <button id="load">Load delayed controls</button>
+        <div id="dynamic-panel" aria-live="polite"></div>
+      </section>
+    </main>
+    <script>
+      const submitSearch = () => {
+        const value = document.getElementById('search').value;
+        document.getElementById('search-result').textContent = `Search submitted: ${value}`;
+      };
+      document.getElementById('search-button').addEventListener('click', submitSearch);
+      document.getElementById('search').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') submitSearch();
+      });
+      document.getElementById('load').addEventListener('click', () => {
+        const panel = document.getElementById('dynamic-panel');
+        panel.textContent = 'Loading controls';
+        setTimeout(() => {
+          panel.innerHTML = `
+            <label for="delayed-notes">Delayed Notes</label>
+            <textarea id="delayed-notes" aria-label="Delayed Notes"></textarea>
+            <button id="save-delayed">Save delayed notes</button>
+            <p id="delayed-result" role="status"></p>
+          `;
+          document.getElementById('save-delayed').addEventListener('click', () => {
+            document.getElementById('delayed-result').textContent =
+              `Saved delayed note: ${document.getElementById('delayed-notes').value}`;
+          });
+        }, 800);
+      });
+    </script>
+  </body>
+</html>

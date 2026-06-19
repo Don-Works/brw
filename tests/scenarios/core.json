@@ -1,0 +1,1187 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "fixture-content-read",
+      "name": "Read structured article content",
+      "tags": [
+        "local",
+        "readability",
+        "tables",
+        "metadata"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/content.html"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Readable Content Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 4,
+            "require": [
+              {
+                "role": "link",
+                "name_contains": "Skip to main",
+                "save_as": "skip"
+              },
+              {
+                "role": "link",
+                "name_contains": "CDP architecture",
+                "save_as": "cdp_link"
+              }
+            ]
+          }
+        },
+        {
+          "read": {
+            "title_contains": "Readable Content Fixture",
+            "main_contains": [
+              "semantic browser coverage",
+              "Screenshots are useful only for visual fallback"
+            ],
+            "min_headings": 2,
+            "min_links": 4,
+            "min_tables": 1,
+            "metadata": {
+              "description_contains": "Deterministic content fixture",
+              "canonical_contains": "example.test/brw/content",
+              "lang": "en"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-form-actions",
+      "name": "Type, select, click, and submit accessible form controls",
+      "tags": [
+        "local",
+        "forms",
+        "actions",
+        "refs"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/forms.html"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Form Interaction Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 8,
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Email",
+                "save_as": "email"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Full name",
+                "save_as": "full_name"
+              },
+              {
+                "role": "combobox",
+                "name_contains": "Plan",
+                "save_as": "plan"
+              },
+              {
+                "role": "checkbox",
+                "name_contains": "Accept terms",
+                "save_as": "terms"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Project notes",
+                "save_as": "notes"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Attachment",
+                "type": "file",
+                "save_as": "attachment"
+              },
+              {
+                "role": "button",
+                "name_contains": "Submit request",
+                "save_as": "submit"
+              }
+            ]
+          }
+        },
+        {
+          "type": {
+            "target": "email",
+            "text": "form@example.invalid"
+          }
+        },
+        {
+          "type": {
+            "target": "full_name",
+            "text": "Ada Lovelace"
+          }
+        },
+        {
+          "select": {
+            "target": "plan",
+            "value": "pro"
+          }
+        },
+        {
+          "click": {
+            "target": "terms"
+          }
+        },
+        {
+          "type": {
+            "target": "notes",
+            "text": "Testing semantic refs"
+          }
+        },
+        {
+          "upload_file": {
+            "target": "attachment",
+            "path": "${FIXTURES}/upload.txt"
+          }
+        },
+        {
+          "click": {
+            "target": "submit"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:Submitted form@example.invalid Ada Lovelace pro accepted Testing semantic refs upload.txt",
+            "timeout_ms": 5000
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-custom-aria-combobox-commit",
+      "name": "Commit a custom ARIA combobox option before continuing",
+      "tags": [
+        "local",
+        "forms",
+        "combobox",
+        "listbox",
+        "actions"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/custom-combobox.html"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Custom ARIA Combobox Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              {
+                "role": "combobox",
+                "name_contains": "Release channel",
+                "save_as": "channel"
+              },
+              {
+                "role": "button",
+                "name_contains": "Continue with channel",
+                "save_as": "continue"
+              }
+            ]
+          }
+        },
+        {
+          "click": {
+            "target": "continue"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:Blocked: no committed channel",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "click": {
+            "target": "channel"
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 5,
+            "require": [
+              {
+                "role": "listbox",
+                "name_contains": "Draft channel",
+                "save_as": "channel_list"
+              },
+              {
+                "role": "option",
+                "name_contains": "Stable channel",
+                "save_as": "stable_channel"
+              }
+            ]
+          }
+        },
+        {
+          "click": {
+            "target": "channel"
+          }
+        },
+        {
+          "select": {
+            "target": "channel",
+            "value": "Stable channel"
+          }
+        },
+        {
+          "click": {
+            "target": "continue"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:Result: committed channel stable",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "read": {
+            "title_contains": "Custom ARIA Combobox Fixture",
+            "main_contains": [
+              "Result: committed channel stable"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-dynamic-keyboard",
+      "name": "Keyboard events and delayed dynamic controls",
+      "tags": [
+        "local",
+        "dynamic",
+        "keyboard",
+        "wait"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/dynamic.html"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Dynamic Interaction Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 3,
+            "require": [
+              {
+                "role": "searchbox",
+                "name_contains": "Knowledge search",
+                "save_as": "search"
+              },
+              {
+                "role": "button",
+                "name_contains": "Search now",
+                "save_as": "search_button"
+              },
+              {
+                "role": "button",
+                "name_contains": "Load delayed controls",
+                "save_as": "load"
+              }
+            ]
+          }
+        },
+        {
+          "type": {
+            "target": "search",
+            "text": "semantic search"
+          }
+        },
+        {
+          "press": {
+            "key": "Enter"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:Search submitted: semantic search",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "click": {
+            "target": "load"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:Delayed Notes",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 5,
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Delayed Notes",
+                "save_as": "delayed_notes"
+              },
+              {
+                "role": "button",
+                "name_contains": "Save delayed notes",
+                "save_as": "save_delayed"
+              }
+            ]
+          }
+        },
+        {
+          "type": {
+            "target": "delayed_notes",
+            "text": "async control works"
+          }
+        },
+        {
+          "click": {
+            "target": "save_delayed"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:Saved delayed note: async control works",
+            "timeout_ms": 5000
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-drawer-scroll-container",
+      "name": "Scroll the active nested drawer before the page",
+      "tags": [
+        "local",
+        "scroll",
+        "modal",
+        "drawer",
+        "actions"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/drawer-scroll.html"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Drawer Scroll Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              {
+                "role": "dialog",
+                "name_contains": "Scrollable task drawer",
+                "save_as": "drawer"
+              },
+              {
+                "role": "button",
+                "name_contains": "Confirm drawer item",
+                "save_as": "drawer_confirm"
+              }
+            ]
+          }
+        },
+        {
+          "scroll": {
+            "direction": "down"
+          }
+        },
+        {
+          "scroll": {
+            "direction": "down"
+          }
+        },
+        {
+          "click": {
+            "target": "drawer_confirm"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:Drawer confirmed at scroll",
+            "timeout_ms": 5000
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-visual-fallback",
+      "name": "Screenshots remain fallback for canvas and map-like content",
+      "tags": [
+        "local",
+        "visual",
+        "screenshots",
+        "canvas"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/visual.html"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Visual Fallback Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              {
+                "role": "img",
+                "name_contains": "Revenue chart",
+                "save_as": "chart"
+              },
+              {
+                "role": "img",
+                "name_contains": "Map tile preview",
+                "save_as": "map"
+              }
+            ]
+          }
+        },
+        {
+          "screenshot": {
+            "min_bytes": 1000
+          }
+        },
+        {
+          "screenshot_element": {
+            "target": "chart",
+            "min_bytes": 1000
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-open-shadow-dom",
+      "name": "Find and operate controls inside open Shadow DOM",
+      "tags": [
+        "local",
+        "shadow-dom",
+        "web-components",
+        "refs"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/shadow.html"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Shadow DOM Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Shadow Email",
+                "save_as": "shadow_email"
+              },
+              {
+                "role": "button",
+                "name_contains": "Save shadow email",
+                "save_as": "shadow_save"
+              }
+            ]
+          }
+        },
+        {
+          "type": {
+            "target": "shadow_email",
+            "text": "shadow@example.invalid"
+          }
+        },
+        {
+          "click": {
+            "target": "shadow_save"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:Shadow saved: shadow@example.invalid",
+            "timeout_ms": 5000
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-popup-target-routing",
+      "name": "Focus and operate a newly opened popup target",
+      "tags": [
+        "local",
+        "popup",
+        "targets",
+        "tab-scope"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/popup-opener.html",
+            "save_as": "popup_opener"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Popup Opener Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 1,
+            "require": [
+              {
+                "role": "button",
+                "name_contains": "Open synthetic popup",
+                "save_as": "open_popup"
+              }
+            ]
+          }
+        },
+        {
+          "click": {
+            "target": "open_popup"
+          }
+        },
+        {
+          "wait_for_tab": {
+            "url_contains": "popup-child.html",
+            "new_only": true,
+            "save_as": "popup_child",
+            "focus": true,
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Popup Child Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "read": {
+            "title_contains": "Popup Child Fixture",
+            "main_contains": [
+              "popup target content"
+            ]
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Popup note",
+                "save_as": "popup_note"
+              },
+              {
+                "role": "button",
+                "name_contains": "Save popup note",
+                "save_as": "save_popup"
+              }
+            ]
+          }
+        },
+        {
+          "fill": {
+            "target": "popup_note",
+            "text": "target scoped popup",
+            "replace": true
+          }
+        },
+        {
+          "click": {
+            "target": "save_popup"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:Popup saved: target scoped popup",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "read": {
+            "title_contains": "Popup Child Fixture",
+            "main_contains": [
+              "Popup saved: target scoped popup"
+            ]
+          }
+        },
+        {
+          "focus_tab": {
+            "target": "popup_opener"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Popup Opener Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "read": {
+            "title_contains": "Popup Opener Fixture",
+            "main_contains": [
+              "synthetic popup target"
+            ]
+          }
+        },
+        {
+          "focus_tab": {
+            "target": "popup_child"
+          }
+        },
+        {
+          "read": {
+            "title_contains": "Popup Child Fixture",
+            "main_contains": [
+              "Popup saved: target scoped popup"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "public-example-domain",
+      "name": "Read and click a stable public documentation page",
+      "requires": [
+        "network"
+      ],
+      "tags": [
+        "public",
+        "readability",
+        "links"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "https://example.com/"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Example Domain",
+            "timeout_ms": 10000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 1,
+            "require": [
+              {
+                "role": "link",
+                "name_contains": "Learn more",
+                "save_as": "learn_more"
+              }
+            ]
+          }
+        },
+        {
+          "click": {
+            "target": "learn_more"
+          }
+        },
+        {
+          "wait_for_tab": {
+            "url_contains": "iana.org/help/example-domains",
+            "focus": true,
+            "timeout_ms": 10000
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Example Domains",
+            "timeout_ms": 10000
+          }
+        },
+        {
+          "read": {
+            "title_contains": "Example Domains",
+            "main_contains": [
+              "As described in RFC",
+              "Further Reading"
+            ],
+            "min_headings": 2,
+            "min_links": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "public-login-form",
+      "name": "Operate a public non-auth login form safely",
+      "requires": [
+        "network"
+      ],
+      "tags": [
+        "public",
+        "forms",
+        "login-like"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "https://quotes.toscrape.com/login"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Quotes to Scrape",
+            "timeout_ms": 10000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 3,
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Username",
+                "save_as": "username"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Password",
+                "save_as": "password"
+              },
+              {
+                "role": "button",
+                "name_contains": "Login",
+                "save_as": "login"
+              }
+            ]
+          }
+        },
+        {
+          "type": {
+            "target": "username",
+            "text": "brw"
+          }
+        },
+        {
+          "type": {
+            "target": "password",
+            "text": "demo-value"
+          }
+        },
+        {
+          "click": {
+            "target": "login"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:Logout",
+            "timeout_ms": 10000
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-sensitive-redaction",
+      "name": "Sensitive form values are redacted in snapshots",
+      "tags": [
+        "local",
+        "forms",
+        "sensitive",
+        "security",
+        "privacy"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/sensitive-fields.html"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Sensitive Fields Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "mode": "all",
+            "min_elements": 8,
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Email",
+                "save_as": "email"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Password",
+                "type": "password",
+                "sensitive": true,
+                "value_empty": true,
+                "save_as": "password"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Card number",
+                "sensitive": true,
+                "value_empty": true,
+                "save_as": "card_number"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "CVV",
+                "sensitive": true,
+                "value_empty": true,
+                "save_as": "cvv"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Expiry",
+                "sensitive": true,
+                "value_empty": true,
+                "save_as": "expiry"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Full name",
+                "save_as": "name"
+              },
+              {
+                "role": "combobox",
+                "name_contains": "Country",
+                "save_as": "country"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Verification code",
+                "sensitive": true,
+                "value_empty": true,
+                "save_as": "otp"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Order notes",
+                "save_as": "notes"
+              },
+              {
+                "role": "button",
+                "name_contains": "Pay now",
+                "save_as": "submit"
+              }
+            ]
+          }
+        },
+        {
+          "read": {
+            "title_contains": "Sensitive Fields Fixture",
+            "min_forms": 1,
+            "forms": [
+              {
+                "name_contains": "Payment form",
+                "min_controls": 6,
+                "require_control": {
+                  "name_contains": "Password",
+                  "sensitive": true,
+                  "value_empty": true
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": {
+            "target": "email",
+            "text": "sample@example.invalid"
+          }
+        },
+        {
+          "type": {
+            "target": "password",
+            "text": "demo-value-123"
+          }
+        },
+        {
+          "type": {
+            "target": "card_number",
+            "text": "4111111111111111"
+          }
+        },
+        {
+          "type": {
+            "target": "cvv",
+            "text": "123"
+          }
+        },
+        {
+          "type": {
+            "target": "name",
+            "text": "Jane Doe"
+          }
+        },
+        {
+          "snapshot": {
+            "mode": "all",
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Password",
+                "type": "password",
+                "sensitive": true,
+                "value_empty": true
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Card number",
+                "sensitive": true,
+                "value_empty": true
+              },
+              {
+                "role": "textbox",
+                "name_contains": "CVV",
+                "sensitive": true,
+                "value_empty": true
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Full name",
+                "save_as": "name_after"
+              }
+            ]
+          }
+        },
+        {
+          "click": {
+            "target": "submit"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:Payment submitted",
+            "timeout_ms": 5000
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-form-lens",
+      "name": "Form lens mode returns only form fields with validation state",
+      "tags": [
+        "local",
+        "forms",
+        "form_lens",
+        "validation"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/forms.html"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Form Interaction Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "mode": "form_lens",
+            "min_elements": 4,
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Email",
+                "save_as": "email"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Full name",
+                "save_as": "full_name"
+              },
+              {
+                "role": "combobox",
+                "name_contains": "Plan",
+                "save_as": "plan"
+              },
+              {
+                "role": "button",
+                "name_contains": "Submit request",
+                "save_as": "submit"
+              }
+            ]
+          }
+        },
+        {
+          "click": {
+            "target": "submit"
+          }
+        },
+        {
+          "snapshot": {
+            "mode": "form_lens",
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Email"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-commit-field",
+      "name": "Commit a form field via browser_commit",
+      "tags": [
+        "local",
+        "forms",
+        "commit",
+        "actions"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/forms.html"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Form Interaction Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Email",
+                "save_as": "email"
+              }
+            ]
+          }
+        },
+        {
+          "type": {
+            "target": "email",
+            "text": "sample@example.invalid"
+          }
+        },
+        {
+          "commit": {
+            "target": "email"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:Submitted",
+            "timeout_ms": 5000
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-assert-tools",
+      "name": "Web-first assertions pass on visible elements",
+      "tags": [
+        "local",
+        "assertions",
+        "actions"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/forms.html"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Form Interaction Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Email",
+                "save_as": "email"
+              },
+              {
+                "role": "button",
+                "name_contains": "Submit request",
+                "save_as": "submit"
+              }
+            ]
+          }
+        },
+        {
+          "assert_visible": {
+            "target": "submit",
+            "timeout_ms": 3000
+          }
+        },
+        {
+          "type": {
+            "target": "email",
+            "text": "assert@example.invalid"
+          }
+        },
+        {
+          "assert_value": {
+            "target": "email",
+            "value": "assert@example.invalid",
+            "timeout_ms": 3000
+          }
+        }
+      ]
+    }
+  ]
+}

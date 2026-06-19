@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "brw Profile Bridge",
+  "short_name": "brw",
+  "version": "0.0.1",
+  "description": "Local, user-installed bridge for brwd to control this visible Chrome profile with explicit debugger permission.",
+  "minimum_chrome_version": "116",
+  "permissions": ["debugger", "tabs", "activeTab", "tabGroups", "alarms", "storage", "notifications", "webNavigation", "offscreen"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "ws://127.0.0.1/*",
+    "ws://localhost/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*"
+  },
+  "background": {
+    "service_worker": "service_worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "brw"
+  }
+}

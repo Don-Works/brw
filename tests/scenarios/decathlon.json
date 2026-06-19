@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "decathlon-basket-flow",
+      "name": "Search, choose size, add to basket, verify cart count",
+      "tags": ["local", "ecommerce", "basket", "cart-count", "decathlon-style"],
+      "actions": [
+        { "open": { "url": "${FIXTURES}/decathlon-shop.html" } },
+        { "wait_for": { "condition": "title:Decathlon-style Shop Fixture", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              { "role": "searchbox", "name_contains": "Search products", "save_as": "q" },
+              { "role": "button", "name_contains": "Search", "save_as": "searchbtn" },
+              { "role": "button", "name_contains": "View basket", "save_as": "viewbasket" }
+            ]
+          }
+        },
+        { "type": { "target": "q", "text": "running shoes" } },
+        { "click": { "target": "searchbtn" } },
+        { "wait_for": { "condition": "text:result(s) for", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "min_elements": 1,
+            "require": [
+              { "role": "button", "name_contains": "View Kalenji", "save_as": "viewprod" }
+            ]
+          }
+        },
+        { "click": { "target": "viewprod" } },
+        { "wait_for": { "condition": "text:Choose a size", "timeout_ms": 5000 } },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              { "role": "combobox", "name_contains": "Select size", "save_as": "size" },
+              { "role": "button", "name_contains": "Add to basket", "save_as": "add" }
+            ]
+          }
+        },
+        { "select": { "target": "size", "value": "UK 9" } },
+        { "click": { "target": "add" } },
+        { "wait_for": { "condition": "text:Added Kalenji", "timeout_ms": 5000 } },
+        { "click": { "target": "viewbasket" } },
+        { "wait_for": { "condition": "text:Basket has 1 item", "timeout_ms": 5000 } },
+        {
+          "read": {
+            "main_contains": ["Kalenji Run Support 100", "UK 9", "Total: £32.99", "Basket has 1 item"]
+          }
+        }
+      ]
+    }
+  ]
+}
