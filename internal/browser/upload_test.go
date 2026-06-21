@@ -205,3 +205,21 @@ func TestResolveUploadPaths_MultipleSourcesRejected(t *testing.T) {
 		t.Fatal("expected error when multiple sources provided")
 	}
 }
+
+func TestDecodeUploadBytes_SizeCap(t *testing.T) {
+	// Valid input under the cap decodes normally.
+	enc := base64.StdEncoding.EncodeToString([]byte("hello world"))
+	data, err := decodeUploadBytes(enc, 1024)
+	if err != nil {
+		t.Fatalf("small input under cap: %v", err)
+	}
+	if string(data) != "hello world" {
+		t.Fatalf("decoded = %q", data)
+	}
+	// Oversized input is rejected by the pre-decode length guard (matching the
+	// URL fetch cap) rather than allocating the full output.
+	big := base64.StdEncoding.EncodeToString(make([]byte, 4096))
+	if _, err := decodeUploadBytes(big, 1024); err == nil {
+		t.Fatal("expected error for input exceeding decoded cap")
+	}
+}

@@ -141,10 +141,29 @@ func uploadTempFile(filename string) (*os.File, error) {
 	return f, nil
 }
 
-func writeUploadTemp(b64, filename string) (string, error) {
-	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+// decodeUploadBytes decodes inline base64, rejecting input that would exceed max
+// decoded bytes BEFORE allocating the full output (base64 is 4 chars per 3
+// bytes), mirroring the remote-fetch cap so an inline upload can't exhaust host
+// memory/disk. max <= 0 disables the cap.
+func decodeUploadBytes(b64 string, max int) ([]byte, error) {
+	trimmed := strings.TrimSpace(b64)
+	if max > 0 && int64(len(trimmed)) > (int64(max)/3+1)*4 {
+		return nil, fmt.Errorf("bytes_base64 exceeds %d byte decoded limit", max)
+	}
+	data, err := base64.StdEncoding.DecodeString(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("decode bytes_base64: %w", err)
+		return nil, fmt.Errorf("decode bytes_base64: %w", err)
+	}
+	if max > 0 && len(data) > max {
+		return nil, fmt.Errorf("bytes_base64 exceeds %d byte limit", max)
+	}
+	return data, nil
+}
+
+func writeUploadTemp(b64, filename string) (string, error) {
+	data, err := decodeUploadBytes(b64, maxUploadFetchBytes)
+	if err != nil {
+		return "", err
 	}
 	f, err := uploadTempFile(filename)
 	if err != nil {
