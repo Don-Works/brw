@@ -2,6 +2,8 @@
 
 Semantic browser control for agents.
 
+Open source by [Revitt](https://revitt.co), via [Don Works](https://donworks.co.uk).
+
 `brw` runs a real, visible Chrome/Chromium browser and exposes it over MCP and
 HTTP. Agents use stable refs like `e17` instead of CSS selectors or screenshots
 for normal web work.
@@ -175,6 +177,16 @@ cookie extraction.
 
 Browser-control HTTP binds to loopback by default. For remote use, prefer stdio
 MCP over SSH.
+
+## Part of Don Works
+
+`brw` is part of [Don Works](https://donworks.co.uk), Revitt's open-source arm.
+
+Related:
+
+- [Don Works](https://donworks.co.uk) — the umbrella ([github.com/Don-Works](https://github.com/Don-Works)).
+- [MCPlexer](https://mcplexer.com) — MCP gateway and cross-harness AI runtime ([github.com/Don-Works/mcplexer](https://github.com/Don-Works/mcplexer)).
+- [Revitt](https://revitt.co) — the parent company.
 
 ## License
 
