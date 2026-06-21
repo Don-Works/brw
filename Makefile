@@ -23,6 +23,11 @@ install: build
 	cp bin/brw-devtools-mcp "$(BINDIR)/brw-devtools-mcp"
 	cp -R extension/. "$(DATADIR)/extension/"
 	cp -R tests/. "$(DATADIR)/tests/"
+	@# On Apple Silicon, copying a Go binary invalidates its ad-hoc code
+	@# signature and the OS then SIGKILLs it ("Killed: 9"); re-sign the copies.
+	@if [ "$$(uname)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then \
+		codesign --force --sign - "$(BINDIR)/brwd" "$(BINDIR)/brwcheck" "$(BINDIR)/brwctl" "$(BINDIR)/brw-devtools-mcp"; \
+	fi
 
 install-mac: build
 	mkdir -p "$(MAC_APPDIR)/bin" "$(MAC_APPDIR)/extension" "$(MAC_APPDIR)/tests" "$(MAC_APPDIR)/config"
@@ -33,6 +38,11 @@ install-mac: build
 	cp -R extension/. "$(MAC_APPDIR)/extension/"
 	cp -R tests/. "$(MAC_APPDIR)/tests/"
 	if [ -f "$(HOME)/.config/brw/browser-profiles.json" ]; then cp "$(HOME)/.config/brw/browser-profiles.json" "$(MAC_APPDIR)/config/browser-profiles.json"; fi
+	@# Re-sign: copying a Go binary on Apple Silicon breaks its ad-hoc signature
+	@# and the OS SIGKILLs it on launch ("Killed: 9").
+	@if command -v codesign >/dev/null 2>&1; then \
+		codesign --force --sign - "$(MAC_APPDIR)/bin/brwd" "$(MAC_APPDIR)/bin/brwcheck" "$(MAC_APPDIR)/bin/brwctl" "$(MAC_APPDIR)/bin/brw-devtools-mcp"; \
+	fi
 
 # Streamline the one-time load-unpacked install of the brw Chrome extension.
 # Prints the exact folder + stable id, then (best-effort on macOS) opens
