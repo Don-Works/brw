@@ -324,8 +324,9 @@ func remoteMCPWrapper(args []string) error {
 	}
 	// Validate the numeric SSH/log knobs so the generated POSIX script never
 	// emits a value that ssh rejects or that the log-rotation guard mishandles.
+	// 0 is a meaningful "disabled" value for keepalives and log rotation, but
+	// OpenSSH rejects ConnectionAttempts=0, so it must be strictly positive.
 	for _, nf := range []struct{ name, value string }{
-		{"connection-attempts", opts.ConnectionAttempts},
 		{"server-alive-interval", opts.ServerAliveInterval},
 		{"server-alive-count-max", opts.ServerAliveCountMax},
 		{"log-max-bytes", opts.LogMaxBytes},
@@ -333,6 +334,9 @@ func remoteMCPWrapper(args []string) error {
 		if n, err := strconv.Atoi(nf.value); err != nil || n < 0 {
 			return fmt.Errorf("--%s must be a non-negative integer", nf.name)
 		}
+	}
+	if n, err := strconv.Atoi(opts.ConnectionAttempts); err != nil || n < 1 {
+		return errors.New("--connection-attempts must be a positive integer")
 	}
 	if opts.RemoteBRWD == "" {
 		return errors.New("--remote-brwd is required")

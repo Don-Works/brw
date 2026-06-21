@@ -164,6 +164,7 @@ func TestRemoteMCPWrapperValidation(t *testing.T) {
 		{"negative keepalive", append(base(), "--server-alive-interval", "-1")},
 		{"non-numeric log-max-bytes", append(base(), "--log-max-bytes", "lots")},
 		{"non-numeric connection-attempts", append(base(), "--connection-attempts", "x")},
+		{"zero connection-attempts", append(base(), "--connection-attempts", "0")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
