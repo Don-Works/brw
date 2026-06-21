@@ -68,15 +68,108 @@ The generated wrapper is what MCP clients should run. It keeps browser-control
 HTTP bound to loopback on the browser machine and relies on SSH for transport
 security.
 
-## brw Chrome Extension
+## brw Extension
 
-The extension pins a public key in `extension/manifest.json`, so it always loads
-with the same stable id — `amocjcgddnoakjijfggdpnefdnboilpe` — whether loaded
-unpacked or installed from the Chrome Web Store. That id is the daemon's
+The extension is open source (AGPL-3.0). It pins a public key in
+`extension/manifest.json`, so it always loads with the same stable id —
+`amocjcgddnoakjijfggdpnefdnboilpe` — whether loaded unpacked, installed from the
+self-hosted CRX, or installed from the Chrome Web Store. That id is the daemon's
 `profilepolicy.DefaultBridgeExtensionID`, so an unconfigured bridge already
-trusts it; you only set `bridge_extension_id` for a different (re-signed) build.
+trusts the real extension; you only set `bridge_extension_id` for a different
+(re-signed) build.
 
-Development install (works today):
+The extension bridges the brw daemon to your real, signed-in browser over
+`ws://127.0.0.1` and drives visible tabs via the Chrome debugger protocol. It
+never reads cookies, passwords, or passkeys — it is a normal visible browser, no
+stealth / CAPTCHA / MFA bypass.
+
+### Chromium recommended (open source)
+
+Chromium is the browser brw champions. Because Chromium is open source and not
+gated by the Chrome Web Store, you can force-install **and** auto-update the
+extension from a single policy file — and on Linux you do not need any MDM.
+
+brw self-hosts the distribution on its own site:
+
+- Signed package (CRX): <https://brw.donworks.co.uk/brw.crx>
+- Auto-update manifest: <https://brw.donworks.co.uk/updates.xml> (gupdate / Omaha protocol)
+
+The force-install line referenced by every platform's policy is the stable id
+joined to the update manifest:
+
+```text
+amocjcgddnoakjijfggdpnefdnboilpe;https://brw.donworks.co.uk/updates.xml
+```
+
+Once that entry is present, Chromium installs from the update manifest and polls
+<https://brw.donworks.co.uk/updates.xml> for new versions automatically.
+
+Ready-made policy files:
+
+- Linux JSON: <https://brw.donworks.co.uk/policies/brw-chromium-policy.json>
+- macOS profile: <https://brw.donworks.co.uk/policies/brw-chromium.mobileconfig>
+- Windows reg: <https://brw.donworks.co.uk/policies/brw-chromium-policy.reg>
+
+**Linux (no MDM needed).** Drop the policy JSON into the managed-policy
+directory; Chromium picks it up on next launch, installs from the update
+manifest, and auto-updates:
+
+```sh
+# Chromium
+sudo cp brw-chromium-policy.json /etc/chromium/policies/managed/
+# Chrome
+sudo cp brw-chromium-policy.json /etc/opt/chrome/policies/managed/
+```
+
+**macOS (profile / MDM required).** Force-install on macOS is only settable
+through a managed configuration profile — it is *not* settable from user-domain
+defaults. Install the `.mobileconfig` manually or push it via MDM.
+
+**Windows.** Import the `.reg`, or set the equivalent GPO at
+`HKLM\SOFTWARE\Policies\Chromium\ExtensionInstallForcelist`.
+
+brw generates these artifacts for you. The private signing key lives outside the
+repo:
+
+```sh
+brwctl pack-extension --key /path/to/chrome-extension.pem   # builds brw.crx
+brwctl update-xml \
+  --workspace brw \
+  --profile work-profile \
+  --profile-policy ~/.config/brw/browser-profiles.json \
+  --crx-url https://brw.donworks.co.uk/brw.crx \
+  --output dist/extension/updates.xml                        # builds updates.xml
+brwctl macos-policy \
+  --workspace brw \
+  --profile work-profile \
+  --profile-policy ~/.config/brw/browser-profiles.json \
+  --update-url https://brw.donworks.co.uk/updates.xml \
+  --install-mode force_installed \
+  --output dist/brw-chromium.mobileconfig                    # builds the .mobileconfig
+```
+
+(Tested: Chromium 151 loads the extension with the correct id and bridges to
+`brwd` end-to-end; the auto-update endpoint serves a valid `updates.xml` + CRX
+with the correct content-types.)
+
+### Zero-policy (Chromium)
+
+If you don't want to install any policy, launch Chromium with the extension
+already loaded, then run the bridge — there is nothing to click:
+
+```sh
+chromium --load-extension=<path-to>/extension --user-data-dir=<path-to>/profile
+brwd --bridge
+```
+
+`brwd --extension <path-to>/extension` does the same when brwd launches its own
+Chromium in direct-CDP mode (it passes `--load-extension` through). This relies
+on `--load-extension`, which is reliable on Chromium; Chrome 137+ dropped
+reliable support for it, so use one of the Chrome paths below instead.
+
+### Chrome (also works)
+
+Load unpacked (works today):
 
 ```sh
 make install-extension   # prints the folder + opens chrome://extensions
@@ -88,27 +181,9 @@ make install-extension   # prints the folder + opens chrome://extensions
 4. Select the `extension/` directory.
 5. Keep the extension enabled.
 
-Chrome Web Store (one-click, coming soon): an unlisted listing is planned for
-one-click install and auto-updates, sharing the same id — no policy change when
-you switch from the unpacked build.
-
-Managed install:
-
-```sh
-brwctl pack-extension --key /path/to/chrome-extension.pem
-brwctl update-xml \
-  --workspace brw \
-  --profile work-profile \
-  --profile-policy ~/.config/brw/browser-profiles.json \
-  --crx-url <crx-url> \
-  --output dist/extension/updates.xml
-brwctl macos-policy \
-  --workspace brw \
-  --profile work-profile \
-  --profile-policy ~/.config/brw/browser-profiles.json \
-  --update-url <updates-url> \
-  --output dist/brw-chrome.mobileconfig
-```
+One-click Chrome Web Store install: an unlisted listing is **in review** (not
+live yet). It shares the same id, so switching to it later needs no policy
+change.
 
 Set `bridge_extension_id` in the profile policy only when you ship your own
 re-signed build with a different id; the default published id is built in.

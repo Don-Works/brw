@@ -119,30 +119,73 @@ brwctl remote-mcp-wrapper \
 
 See [docs/remote-control.md](docs/remote-control.md).
 
-## Installed Chrome Profile
+## Installed browser profile (Chromium recommended)
 
 Chrome 136+ blocks remote debugging against the default Chrome data directory.
-For auth that already exists in an installed Chrome profile, use the `brw`
-extension. It bridges the daemon to your real, signed-in Chrome over
-`ws://127.0.0.1` and never reads cookies, passwords, or passkeys.
+For auth that already exists in an installed browser profile, use the `brw`
+extension. It bridges the daemon to your real, signed-in browser over
+`ws://127.0.0.1`, drives visible tabs via the Chrome debugger protocol, and
+never reads cookies, passwords, or passkeys.
 
-The extension ships with a pinned public key, so it always loads with the same
-stable id:
+The extension is open source (AGPL-3.0) and ships with a pinned public key, so
+it always loads with the same stable id — identical for load-unpacked, the
+self-hosted CRX, and the Web Store build:
 
 ```
 amocjcgddnoakjijfggdpnefdnboilpe
 ```
 
 That id is the daemon's `DefaultBridgeExtensionID`, so an unconfigured bridge
-trusts the real extension with no policy edit. Install routes:
+trusts the real extension with no policy edit. Only set `bridge_extension_id`
+for a different re-signed build.
 
-- **Load unpacked (works today):** run `make install-extension` to print the
-  folder and open `chrome://extensions`, then enable Developer mode → Load
-  unpacked → select `extension/`.
-- **Chrome Web Store (one-click):** an unlisted listing is on the way for
-  one-click install + auto-updates, sharing the same id.
-- **Managed / MDM:** package a CRX with your own signing material and set
-  `bridge_extension_id` for a force-installed fleet.
+### Chromium recommended (open source)
+
+Chromium is open source and not gated by the Chrome Web Store, so you can
+**force-install + auto-update** the extension from a single policy file. `brw`
+self-hosts the signed package and an Omaha/`gupdate` auto-update manifest:
+
+- Signed package (CRX): <https://brw.donworks.co.uk/brw.crx>
+- Auto-update manifest: <https://brw.donworks.co.uk/updates.xml>
+- `ExtensionInstallForcelist` entry:
+  `amocjcgddnoakjijfggdpnefdnboilpe;https://brw.donworks.co.uk/updates.xml`
+
+Drop the ready-made policy for your platform:
+
+- **Linux (no MDM needed):** copy
+  [`brw-chromium-policy.json`](https://brw.donworks.co.uk/policies/brw-chromium-policy.json)
+  into `/etc/chromium/policies/managed/` (or `/etc/opt/chrome/policies/managed/`
+  for Chrome). Chromium installs from the manifest and auto-updates.
+- **macOS:** install the configuration profile
+  [`brw-chromium.mobileconfig`](https://brw.donworks.co.uk/policies/brw-chromium.mobileconfig)
+  manually or via MDM. macOS force-install requires a managed profile / MDM; it
+  is not settable from user-domain defaults.
+- **Windows:** import
+  [`brw-chromium-policy.reg`](https://brw.donworks.co.uk/policies/brw-chromium-policy.reg),
+  or set the equivalent GPO at
+  `HKLM\SOFTWARE\Policies\Chromium\ExtensionInstallForcelist`.
+
+`brwctl` generates these: `brwctl pack-extension --key <pem>` (CRX),
+`brwctl update-xml --crx-url <url>` (manifest), and
+`brwctl macos-policy --update-url <url> --install-mode force_installed`
+(`.mobileconfig`). The private signing key lives outside the repo.
+
+**Zero-click option:** `brwd --extension <dir>` launches Chromium with the
+extension already loaded (it passes Chrome's `--load-extension` through), so
+there is nothing to install or click. Chrome 137+ dropped reliable
+`--load-extension`, so this path is Chromium-only.
+
+Verified: Chromium 151 loads the extension with the correct id and bridges to
+`brwd` end-to-end, and the auto-update endpoint (`updates.xml` + CRX) is valid
+and served with the correct content-types.
+
+### Chrome (also works)
+
+- **Load unpacked:** run `make install-extension` to print the folder and open
+  `chrome://extensions`, then enable Developer mode → Load unpacked → select
+  `extension/`.
+- **Chrome Web Store (one-click):** an unlisted listing is in review for
+  one-click install + auto-updates, sharing the same id (not live yet).
 
 See the [Install page](https://brw.donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss#install),
 [docs/install.md](docs/install.md), and [docs/auth-model.md](docs/auth-model.md).
