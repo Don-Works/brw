@@ -13,12 +13,21 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
 type Server struct {
 	manager     browser.Controller
 	toolProfile string // "all" (default) or "core"
+	navPolicy   *navpolicy.Policy
+}
+
+// SetNavigationPolicy installs an opt-in allow/deny guardrail enforced on
+// URL-opening tools (brw_open, brw_open_incognito) and brw_replay_request. A nil
+// or empty policy is a no-op.
+func (s *Server) SetNavigationPolicy(p *navpolicy.Policy) {
+	s.navPolicy = p
 }
 
 const (
@@ -50,11 +59,22 @@ var coreToolNames = map[string]bool{
 	"brw_navigate":    true,
 	"brw_wait_for":    true,
 	"brw_batch":       true,
+	"brw_observe":     true,
 	"brw_screenshot":  true,
 }
 
 func New(manager browser.Controller) *Server {
 	return &Server{manager: manager, toolProfile: "all"}
+}
+
+// checkNavPolicy enforces the optional navigation guardrail. Returns nil when no
+// policy is set or the URL is permitted. A relative replay URL (no host) passes;
+// the policy only gates absolute network destinations.
+func (s *Server) checkNavPolicy(rawURL string) error {
+	if s.navPolicy.Empty() {
+		return nil
+	}
+	return s.navPolicy.Check(rawURL)
 }
 
 // NewWithToolProfile builds a server exposing only the named tool profile in
@@ -251,7 +271,7 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 			"protocolVersion": "2025-06-18",
 			"serverInfo": map[string]any{
 				"name":    "brw",
-				"version": "0.1.0",
+				"version": "0.2.0",
 			},
 			"capabilities": map[string]any{
 				"tools": map[string]any{"listChanged": false},
@@ -354,6 +374,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
+		if err := s.checkNavPolicy(req.URL); err != nil {
+			return toolError(err), nil
+		}
 		if req.Group != "" || req.GroupID != "" {
 			return toolJSON(s.manager.OpenInGroup(ctx, req.URL, browser.TabGroupOptions{
 				GroupID: req.GroupID,
@@ -368,6 +391,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		if err := s.checkNavPolicy(req.URL); err != nil {
+			return toolError(err), nil
 		}
 		return toolJSON(s.manager.OpenIncognito(ctx, req.URL))
 	case "brw_close_context":
@@ -411,7 +437,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		req = normalizeMCPSnapshotOptions(req)
-		return toolJSON(s.manager.Snapshot(ctx, req))
+		snap, err := s.manager.Snapshot(ctx, req)
+		if err != nil {
+			return toolError(err), nil
+		}
+		if strings.EqualFold(req.Format, "compact") {
+			return map[string]any{"content": []toolContent{{Type: "text", Text: snapshot.RenderCompact(snap)}}}, nil
+		}
+		return toolJSON(snap, nil)
 	case "brw_find":
 		var req snapshot.FindOptions
 		if err := unmarshalArgs(args, &req); err != nil {
@@ -635,6 +668,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
+		if err := s.checkNavPolicy(req.URL); err != nil {
+			return toolError(err), nil
+		}
 		return toolJSON(s.manager.ReplayRequest(ctx, browser.ReplayRequestParams{
 			Method:  req.Method,
 			URL:     req.URL,
@@ -667,6 +703,20 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return toolJSON(s.manager.Cancel(ctx, req.Token))
 	case "brw_observe":
 		return toolJSON(s.manager.Observe(ctx))
+	case "brw_page_tools":
+		return toolJSON(s.manager.Evaluate(ctx, snapshot.PageToolsScript))
+	case "brw_call_page_tool":
+		var req struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		if strings.TrimSpace(req.Name) == "" {
+			return toolError(errors.New("name is required; call brw_page_tools to list available page tools")), nil
+		}
+		return toolJSON(s.manager.Evaluate(ctx, snapshot.CallPageToolScript(req.Name, req.Arguments)))
 	case "brw_group_tabs":
 		var req struct {
 			TabIDs  []string `json:"tab_ids"`
@@ -1003,6 +1053,7 @@ func tools() []map[string]any {
 			"visual_islands":       boolSchema("Detect semantically-opaque visual content (canvas/svg/video/large image/background-image/custom-rendered widget) and emit each as an element with source:[\"visual\"], visual_type, and visual_hint. Off by default; islands compete with DOM elements in the merged list up to the limit, so dense pages stay token-efficient."),
 			"visual_islands_limit": integerSchema("Cap on detected visual islands before merging into the element list. Defaults to 10."),
 			"since":                integerSchema("Pass a prior snapshot's metadata.version to get a DELTA: when it matches the last snapshot taken with identical options, the response sets metadata.delta=true, 'elements' carries ONLY added+changed elements (a change set, not the full page), and a top-level 'delta' object lists {added, removed, changed} refs (removed = refs whose element left the DOM). On any mismatch (version, options, or after navigation) a normal full snapshot is returned. Omit for a full snapshot."),
+			"format":               stringSchema("Output shape: 'json' (default, structured object) or 'compact' (one terse text line per element: ref role \"name\" + key state). 'compact' uses markedly fewer tokens — prefer it for small models. Presentation only; element selection and deltas are unchanged."),
 		}, nil)),
 		tool("brw_find", "Find matching semantic element refs without dumping the full page. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id":         stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
@@ -1193,6 +1244,14 @@ func tools() []map[string]any {
 		tool("brw_observe", "Return compact page state: version, URL, title, focused ref, and frontier element changes since last observe. Use this to check what changed without a full snapshot. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
+		tool("brw_page_tools", "List WebMCP tools the current page exposes via navigator.modelContext (W3C Web Machine Context). When a site cooperates, calling its declared tools is far more reliable and token-efficient than driving the DOM — prefer them when present. Returns {supported, tools:[{name, description, inputSchema}]}; supported:false means the page exposes none (or brw's WebMCP runtime is not enabled with --enable-webmcp). Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
+		}, nil)),
+		tool("brw_call_page_tool", "Invoke a WebMCP page tool by name with arguments matching its inputSchema (discover them via brw_page_tools). Returns {ok, result} on success or {ok:false, error}. Use this instead of clicking through the UI when the page declares a tool for the task. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"name":      stringSchema("The page tool name from brw_page_tools."),
+			"arguments": map[string]any{"type": "object", "description": "Arguments object passed to the tool, matching its inputSchema.", "additionalProperties": true},
+			"tab_id":    stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
+		}, []string{"name"})),
 		tool("brw_group_tabs", "Group tabs into a named Chrome tab group, or move them into an existing group_id.", object(map[string]any{
 			"tab_ids":  map[string]any{"type": "array", "items": stringSchema("Tab id."), "description": "Tab IDs to group."},
 			"name":     stringSchema("Group name shown in Chrome tab strip. Used when creating/reusing by title, or renaming a group_id target."),

@@ -108,6 +108,17 @@ type Manager struct {
 	// to re-install on every new document (so capture survives navigations).
 	netCaptureMu   sync.Mutex
 	netCaptureTabs map[string]bool
+
+	// shadowPierceTabs records which tabs have had the closed-shadow piercer
+	// armed at document-start (direct-CDP only), so a tab is registered once.
+	shadowPierceMu   sync.Mutex
+	shadowPierceTabs map[string]bool
+
+	// webmcpEnabled gates the opt-in WebMCP runtime (navigator.modelContext); when
+	// true, webmcpTabs records which tabs have had its document-start shim armed.
+	webmcpEnabled bool
+	webmcpMu      sync.Mutex
+	webmcpTabs    map[string]bool
 }
 
 type tabContext struct {
@@ -162,20 +173,23 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, endpoint)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 	m := &Manager{
-		launcher:       launcher,
-		allocCancel:    allocCancel,
-		browserCtx:     browserCtx,
-		browserCancel:  browserCancel,
-		tabContexts:    map[string]tabContext{},
-		refs:           store.New(),
-		timeout:        timeout,
-		lastState:      map[string]*SemanticState{},
-		versions:       map[string]int64{},
-		trace:          make([]TraceEntry, 0, 256),
-		userDataDir:    cfg.UserDataDir,
-		downloadIndex:  map[string]int{},
-		cancels:        newCancelRegistry(),
-		netCaptureTabs: map[string]bool{},
+		launcher:         launcher,
+		allocCancel:      allocCancel,
+		browserCtx:       browserCtx,
+		browserCancel:    browserCancel,
+		tabContexts:      map[string]tabContext{},
+		refs:             store.New(),
+		timeout:          timeout,
+		lastState:        map[string]*SemanticState{},
+		versions:         map[string]int64{},
+		trace:            make([]TraceEntry, 0, 256),
+		userDataDir:      cfg.UserDataDir,
+		downloadIndex:    map[string]int{},
+		cancels:          newCancelRegistry(),
+		netCaptureTabs:   map[string]bool{},
+		shadowPierceTabs: map[string]bool{},
+		webmcpEnabled:    cfg.WebMCP,
+		webmcpTabs:       map[string]bool{},
 	}
 
 	if err := m.connect(); err != nil {
@@ -324,7 +338,62 @@ func (m *Manager) CloseTab(ctx context.Context, id string) error {
 	m.netCaptureMu.Lock()
 	delete(m.netCaptureTabs, id)
 	m.netCaptureMu.Unlock()
+	m.shadowPierceMu.Lock()
+	delete(m.shadowPierceTabs, id)
+	m.shadowPierceMu.Unlock()
+	m.webmcpMu.Lock()
+	delete(m.webmcpTabs, id)
+	m.webmcpMu.Unlock()
 	return nil
+}
+
+// ensureWebMCP arms the opt-in WebMCP runtime shim to install at document-start
+// for this tab so cooperating sites can register page tools before their own
+// scripts run. No-op unless --enable-webmcp is set. Best-effort and once per tab.
+func (m *Manager) ensureWebMCP(tabID string, tabCtx context.Context) {
+	if !m.webmcpEnabled {
+		return
+	}
+	m.webmcpMu.Lock()
+	armed := m.webmcpTabs[tabID]
+	m.webmcpMu.Unlock()
+	if armed {
+		return
+	}
+	// Document-start covers future navigations; an immediate (idempotent) install
+	// covers the current document so a site that already loaded can still register.
+	_ = snapshot.RegisterWebMCPOnNewDocument(tabCtx)
+	var ignored json.RawMessage
+	_ = chromedp.Run(tabCtx, chromedp.Evaluate(snapshot.WebMCPInstallScript, &ignored))
+	m.webmcpMu.Lock()
+	if m.webmcpTabs == nil {
+		m.webmcpTabs = map[string]bool{}
+	}
+	m.webmcpTabs[tabID] = true
+	m.webmcpMu.Unlock()
+}
+
+// ensureShadowPierce arms the closed-shadow piercer to (re)install at
+// document-start for this tab so later navigations capture closed roots before
+// the page's own scripts run. Done once per tab and best-effort: a failure here
+// (e.g. the extension-bridge transport, which has no CDP document-start hook)
+// must not break the snapshot, because the in-walker installer
+// (__abEnsureShadowPierce) still covers post-load roots on every transport.
+func (m *Manager) ensureShadowPierce(tabID string, tabCtx context.Context) {
+	m.shadowPierceMu.Lock()
+	armed := m.shadowPierceTabs[tabID]
+	m.shadowPierceMu.Unlock()
+	if armed {
+		return
+	}
+	if err := snapshot.RegisterShadowPierceOnNewDocument(tabCtx); err == nil {
+		m.shadowPierceMu.Lock()
+		if m.shadowPierceTabs == nil {
+			m.shadowPierceTabs = map[string]bool{}
+		}
+		m.shadowPierceTabs[tabID] = true
+		m.shadowPierceMu.Unlock()
+	}
 }
 
 func (m *Manager) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
@@ -334,6 +403,8 @@ func (m *Manager) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (
 	}
 	defer cancel()
 
+	m.ensureShadowPierce(tabID, tabCtx)
+	m.ensureWebMCP(tabID, tabCtx)
 	snap, err := snapshot.EvaluateWithOptions(tabCtx, opts)
 	if err != nil {
 		return snapshot.PageSnapshot{}, err
@@ -357,6 +428,8 @@ func (m *Manager) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot
 	}
 	defer cancel()
 
+	m.ensureShadowPierce(tabID, tabCtx)
+	m.ensureWebMCP(tabID, tabCtx)
 	result, err := snapshot.Find(tabCtx, opts)
 	if err != nil {
 		return snapshot.FindResult{}, err
@@ -407,7 +480,7 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 		return ActionResult{}, err
 	}
 	if !actionable.OK {
-		return ActionResult{}, fmt.Errorf("element ref %q not actionable within %dms", ref, 5000)
+		return ActionResult{}, fmt.Errorf("element ref %q not actionable within %dms — it may be hidden, disabled, or covered by an overlay; re-run brw_snapshot to refresh refs, or brw_screenshot with ref %q to inspect it", ref, 5000, ref)
 	}
 	before := m.cachedBefore(tabID, tabCtx)
 	// clickElementCenter already actuates by coordinate (in-page ClickXY at the

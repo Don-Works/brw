@@ -729,6 +729,10 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   if (coverage.low) {
     metadata.coverage_hint = 'Sparse semantic surface for a content-heavy page (likely custom web components or client-side rendering). Use brw_screenshot with annotate:true (Set-of-Marks) to read ref labels off the image, or click by coordinates; a region/ref-scoped annotated crop keeps the image small.';
   }
+  if (__abInaccessibleFrames && __abInaccessibleFrames.length) {
+    metadata.cross_origin_frames = __abInaccessibleFrames;
+    metadata.cross_origin_note = 'One or more cross-origin iframes are present; their DOM is isolated by the browser and cannot be read as semantic refs. To act inside a listed frame, brw_screenshot it and use brw_click_xy at its box, or open the frame URL directly.';
+  }
 
   return {
     url: location.href,
@@ -929,7 +933,7 @@ const SelectElementScript = `(function(ref, value) {` + FrameWalkHelpers + `
     return null;
   }
   const el = findByRef(ref);
-  if (!el) return { ok: false, error: 'ref not found' };
+  if (!el) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
   if (el.tagName.toLowerCase() !== 'select') return { ok: false, error: 'ref is not a select element' };
   el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   const requested = clean(value);
@@ -982,7 +986,7 @@ const FillElementScript = `(function(ref, text, replace) {` + FrameWalkHelpers +
     el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
   }
   const el = findByRef(ref);
-  if (!el) return { ok: false, error: 'ref not found' };
+  if (!el) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
   el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   if (typeof el.focus === 'function') el.focus({ preventScroll: true });
   const current = ('value' in el) ? String(el.value || '') : String(el.textContent || '');
@@ -1019,7 +1023,7 @@ const FileInputElementScript = `(function(ref) {` + FrameWalkHelpers + `
     return matches.length === 1 ? matches[0] : null;
   }
   const el = findByRef(ref) || onlyFileInput();
-  if (!el) throw new Error('ref not found');
+  if (!el) throw new Error('ref not found — the page likely changed; re-run brw_snapshot to get current refs');
   if (el.tagName.toLowerCase() !== 'input' || String(el.type || '').toLowerCase() !== 'file') {
     throw new Error('ref is not a file input');
   }
@@ -1048,7 +1052,7 @@ const FileInputEventsScript = `(function(ref) {` + FrameWalkHelpers + `
     return matches.length === 1 ? matches[0] : null;
   }
   const el = findByRef(ref) || onlyFileInput();
-  if (!el) return { ok: false, error: 'ref not found' };
+  if (!el) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
   if (el.tagName.toLowerCase() !== 'input' || String(el.type || '').toLowerCase() !== 'file') {
     return { ok: false, error: 'ref is not a file input' };
   }
@@ -1073,7 +1077,7 @@ const HoverElementScript = `(function(ref) {` + FrameWalkHelpers + `
     return null;
   }
   const el = findByRef(ref);
-  if (!el) return { ok: false, error: 'ref not found' };
+  if (!el) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
   if (el.closest('[hidden],[aria-hidden="true"]')) return { ok: false, error: 'ref hidden' };
   el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   const r = el.getBoundingClientRect();
@@ -1355,7 +1359,7 @@ func ResolveBox(ctx context.Context, ref string) (ElementBox, error) {
 		return ElementBox{}, err
 	}
 	if !box.OK {
-		return box, fmt.Errorf("element ref %q not found or not visible", ref)
+		return box, fmt.Errorf("element ref %q not found or not visible — the page likely changed; re-run brw_snapshot to get current refs", ref)
 	}
 	return box, nil
 }
@@ -1392,7 +1396,7 @@ func Focus(ctx context.Context, ref string) error {
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("element ref %q not found or could not be focused", ref)
+		return fmt.Errorf("element ref %q not found or could not be focused — the page likely changed; re-run brw_snapshot to get current refs", ref)
 	}
 	return nil
 }
@@ -1985,7 +1989,7 @@ func WaitForActionable(ctx context.Context, ref string, timeoutMs int64) error {
 		return err
 	}
 	if !res.OK {
-		return fmt.Errorf("element ref %q not actionable within %dms", ref, timeoutMs)
+		return fmt.Errorf("element ref %q not actionable within %dms — it may be hidden, disabled, or covered by an overlay; re-run brw_snapshot to refresh refs, or brw_screenshot with ref %q to inspect it", ref, timeoutMs, ref)
 	}
 	return nil
 }
@@ -2275,7 +2279,7 @@ const MouseEventScript = `(function(opts) {
   let target = null;
   if (opts.ref) {
     target = findByRef(opts.ref);
-    if (!target) return { ok: false, error: 'ref not found' };
+    if (!target) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
     if (target.closest('[hidden],[aria-hidden="true"]')) return { ok: false, error: 'ref hidden' };
     target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const r = target.getBoundingClientRect();
@@ -2355,7 +2359,7 @@ const MouseHalfScript = `(function(opts) {
   let target = null;
   if (opts.ref) {
     target = findByRef(opts.ref);
-    if (!target) return { ok: false, error: 'ref not found' };
+    if (!target) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
     target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const r = target.getBoundingClientRect();
     x = r.left + r.width / 2;
@@ -2626,7 +2630,7 @@ const CommitFieldScript = `(function(ref) {` + FrameWalkHelpers + `
     return null;
   }
   const el = findByRef(ref);
-  if (!el) return { ok: false, error: 'ref not found' };
+  if (!el) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
   el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   if (typeof el.focus === 'function') el.focus({ preventScroll: true });
   const form = el.closest('form');

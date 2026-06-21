@@ -16,6 +16,10 @@ type Config struct {
 	Extensions       []string
 	ChromeArgs       []string
 	Timeout          time.Duration
+	// WebMCP, when true, installs a WebMCP runtime (navigator.modelContext) at
+	// document-start so cooperating sites can register page tools that
+	// brw_page_tools / brw_call_page_tool surface. Direct-CDP transport only.
+	WebMCP bool
 }
 
 type Tab struct {

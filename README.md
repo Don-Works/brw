@@ -48,6 +48,11 @@ The full MCP surface is large. For lean agent contexts, run:
 brwd --mcp --mcp-tools core
 ```
 
+For a ready-to-paste agent system prompt that encodes the fast, token-efficient
+loop (act by ref, read the post-action observation instead of re-snapshotting,
+use deltas, screenshot only as a fallback), run `brwd --print-system-prompt`.
+See [docs/agent-guide.md](docs/agent-guide.md).
+
 Raw private benchmark transcripts are not shipped in this repository because
 they can contain prompts, machine paths, and session metadata. Treat the public
 benchmark note as directional until a reproducible public harness lands.
@@ -157,6 +162,7 @@ Core MCP tools include:
 - `brw_network_requests`, `brw_network_capture`, `brw_replay_request`
 - `brw_console`, `brw_downloads`, `brw_trace`
 - `brw_assert_visible`, `brw_assert_text`, `brw_assert_value`
+- `brw_page_tools`, `brw_call_page_tool` (WebMCP)
 - `brw_notify`, `brw_commit`
 
 Use `--mcp-tools core` to advertise only the common-flow tool set while keeping
@@ -177,6 +183,23 @@ Backend-specific notes:
   (`supported: true`). On the extension-bridge backend it returns an empty list
   with `supported: false` plus an explanatory `note`, because the bridge cannot
   observe CDP download events; branch on `supported` to detect this case.
+- Snapshots descend into **open and closed** shadow roots and same-origin
+  iframes. **Cross-origin** iframes cannot be read (the browser isolates them);
+  instead of failing silently, a snapshot surfaces them in
+  `metadata.cross_origin_frames` (box + origin) with a `cross_origin_note`, so an
+  agent can fall back to `brw_screenshot` + `brw_click_xy`.
+- `brw_snapshot` accepts `format:"compact"` for a one-line-per-element text
+  rendering (ref, role, name, key state) that costs markedly fewer tokens than
+  the default JSON — prefer it for small models.
+- **WebMCP**: with `--enable-webmcp`, brw acts as the agent-side runtime for the
+  W3C `navigator.modelContext` draft. Cooperating sites can register page tools
+  that `brw_page_tools` lists and `brw_call_page_tool` invokes — more reliable and
+  token-efficient than driving the DOM. Default off (it is observable to pages).
+- **Navigation guardrail**: `--blocked-domains` / `--allowed-domains` (or
+  `BRW_BLOCKED_DOMAINS` / `BRW_ALLOWED_DOMAINS`) gate `brw_open`,
+  `brw_open_incognito`, and `brw_replay_request` so a prompt-injected agent cannot
+  steer the browser to off-limits domains (subdomains included; block wins over
+  allow). Opt-in; off by default.
 
 With the extension bridge, agents can organize visible Chrome work into named
 tab groups. Use `brw_list_tab_groups` to choose the next client-side run

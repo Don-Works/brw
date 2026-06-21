@@ -190,6 +190,24 @@ func TestCrossOriginIframeIsSafelySkipped(t *testing.T) {
 	if findByName(snap.Elements, "Cross Origin Button") != nil {
 		t.Fatalf("cross-origin button should not be reachable but was surfaced")
 	}
+
+	// The agent must not be left blind: snapshot metadata must SIGNAL the
+	// unreachable cross-origin frame (box + origin) so it can fall back to
+	// brw_screenshot + brw_click_xy instead of silently missing the embed.
+	frames, ok := snap.Metadata["cross_origin_frames"].([]any)
+	if !ok || len(frames) == 0 {
+		t.Fatalf("expected cross_origin_frames metadata signalling the unreachable frame; got %v", snap.Metadata["cross_origin_frames"])
+	}
+	frame, _ := frames[0].(map[string]any)
+	if frame == nil {
+		t.Fatalf("cross_origin_frames[0] not an object: %v", frames[0])
+	}
+	if w, _ := frame["width"].(float64); w <= 0 {
+		t.Fatalf("cross-origin frame box has no positive width: %v", frame)
+	}
+	if _, ok := snap.Metadata["cross_origin_note"].(string); !ok {
+		t.Fatalf("expected a cross_origin_note explaining the fallback; metadata=%v", snap.Metadata)
+	}
 }
 
 func findByName(els []snapshot.Element, name string) *snapshot.Element {

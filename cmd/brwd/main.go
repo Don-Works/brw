@@ -19,6 +19,7 @@ import (
 	httpapi "github.com/Don-Works/brw/internal/http"
 	"github.com/Don-Works/brw/internal/httpclient"
 	"github.com/Don-Works/brw/internal/mcp"
+	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
@@ -54,6 +55,10 @@ func main() {
 	var bridgeExtensionID string
 	var upstreamHTTP string
 	var mcpToolProfile string
+	var printSystemPrompt bool
+	var blockedDomains string
+	var allowedDomains string
+	var enableWebMCP bool
 
 	flag.StringVar(&httpAddr, "http", envDefault("BRW_HTTP_ADDR", "127.0.0.1:17310"), "HTTP listen address, or off. Defaults to loopback; bind a non-loopback address only behind SSH/Tailscale with caller auth.")
 	flag.BoolVar(&mcpMode, "mcp", false, "run MCP stdio server")
@@ -73,11 +78,21 @@ func main() {
 	flag.Var(&extensions, "extension", "extension directory to load; repeatable")
 	flag.Var(&chromeArgs, "chrome-arg", "extra Chrome argument; repeatable")
 	flag.DurationVar(&timeout, "timeout", 20*time.Second, "default browser operation timeout")
+	flag.BoolVar(&printSystemPrompt, "print-system-prompt", false, "print the recommended agent system prompt to stdout and exit")
+	flag.StringVar(&blockedDomains, "blocked-domains", os.Getenv("BRW_BLOCKED_DOMAINS"), "comma-separated domains the agent may never open (subdomains included); guardrail enforced on brw_open and brw_replay_request")
+	flag.StringVar(&allowedDomains, "allowed-domains", os.Getenv("BRW_ALLOWED_DOMAINS"), "comma-separated allowlist; when set, the agent may ONLY open these domains (and subdomains)")
+	flag.BoolVar(&enableWebMCP, "enable-webmcp", envBool("BRW_ENABLE_WEBMCP"), "expose a WebMCP runtime (navigator.modelContext) so cooperating sites can register page tools brw_page_tools/brw_call_page_tool can use")
 	flag.Parse()
+
+	if printSystemPrompt {
+		fmt.Println(mcp.AgentSystemPrompt)
+		return
+	}
 
 	cfg.Extensions = extensions
 	cfg.ChromeArgs = chromeArgs
 	cfg.Timeout = timeout
+	cfg.WebMCP = enableWebMCP
 
 	if profileName != "" || workspaceName != "" {
 		policy, err := profilepolicy.Load(profilePolicyPath)
@@ -172,7 +187,12 @@ func main() {
 
 	if mcpMode {
 		log.Printf("MCP stdio server ready (tool profile: %s)", mcpToolProfile)
-		if err := mcp.NewWithToolProfile(controller, mcpToolProfile).Serve(ctx, os.Stdin, os.Stdout); err != nil && ctx.Err() == nil {
+		server := mcp.NewWithToolProfile(controller, mcpToolProfile)
+		if policy := navpolicy.Parse(allowedDomains, blockedDomains); !policy.Empty() {
+			server.SetNavigationPolicy(policy)
+			log.Printf("navigation guardrail active (allow=%d, block=%d domains)", len(policy.Allowed), len(policy.Blocked))
+		}
+		if err := server.Serve(ctx, os.Stdin, os.Stdout); err != nil && ctx.Err() == nil {
 			log.Fatalf("mcp server: %v", err)
 		}
 		return
@@ -212,6 +232,16 @@ func envDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// envBool reports whether an environment variable is set to a truthy value
+// (1/true/yes/on, case-insensitive). Unset or empty is false.
+func envBool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // isLoopback reports whether addr binds to a loopback address (127.0.0.1 or

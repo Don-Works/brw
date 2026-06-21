@@ -50,6 +50,11 @@ type SnapshotOptions struct {
 	// VisualIslandsLimit caps how many of the highest-scored islands are detected
 	// before they are merged into the element list. Defaults to 10.
 	VisualIslandsLimit int `json:"visual_islands_limit,omitempty"`
+	// Format selects the snapshot's wire shape at the agent surface. "" / "json"
+	// returns the structured object; "compact" returns one terse text line per
+	// element (ref role "name" + key state) — markedly fewer tokens for a small
+	// model. Presentation-only; it does not affect element selection or deltas.
+	Format string `json:"format,omitempty"`
 }
 
 type FindOptions struct {

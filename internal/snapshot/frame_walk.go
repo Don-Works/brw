@@ -32,6 +32,36 @@ const FrameWalkHelpers = `
   // discovered (a stale cache there would cause spurious wait/assert timeouts).
   var __abRootsCache = null;
   var __abRootsCacheArmed = false;
+  // __abInaccessibleFrames accumulates cross-origin / sandboxed <iframe> boxes
+  // seen during the last __abRootsCompute() (the browser isolates their DOM, so
+  // they cannot be read as semantic refs). The snapshot surfaces them in metadata
+  // so an agent can fall back to brw_screenshot + brw_click_xy. Reset every
+  // compute; only the snapshot reads it, so async pollers harmlessly clobber it.
+  var __abInaccessibleFrames = [];
+  // __abEnsureShadowPierce monkeypatches Element.prototype.attachShadow so CLOSED
+  // shadow roots keep a side reference (__brwShadow) on their host. The page's own
+  // el.shadowRoot stays null — encapsulation is intact for page scripts; only the
+  // brw walker reads __brwShadow. Idempotent and page-tamper-safe via a window
+  // guard, so it is cheap to call on every walk. It only captures roots attached
+  // AFTER it runs; direct-CDP additionally installs the same patch at
+  // document-start (ShadowPierceInstallScript) to catch earlier-mounted roots.
+  function __abEnsureShadowPierce() {
+    if (window.__brwShadowPierce) return;
+    window.__brwShadowPierce = true;
+    try {
+      var o = Element.prototype.attachShadow;
+      if (typeof o !== 'function') return;
+      Element.prototype.attachShadow = function(init) {
+        var r = o.call(this, init);
+        try {
+          if (init && init.mode === 'closed') {
+            Object.defineProperty(this, '__brwShadow', { value: r, configurable: true });
+          }
+        } catch (_) {}
+        return r;
+      };
+    } catch (_) {}
+  }
   function __abRoots() {
     if (__abRootsCacheArmed && __abRootsCache) return __abRootsCache;
     var computed = __abRootsCompute();
@@ -44,6 +74,8 @@ const FrameWalkHelpers = `
   // offsets of the frame chain containing that root (0,0 for the top document and
   // its shadow roots).
   function __abRootsCompute() {
+    __abEnsureShadowPierce();
+    __abInaccessibleFrames = [];
     var out = [{ root: document, ox: 0, oy: 0, depth: 0 }];
     for (var i = 0; i < out.length; i++) {
       var entry = out[i];
@@ -53,8 +85,9 @@ const FrameWalkHelpers = `
       try { all = Array.from(root.querySelectorAll('*')); } catch (_) { continue; }
       for (var j = 0; j < all.length; j++) {
         var el = all[j];
-        if (el.shadowRoot) {
-          out.push({ root: el.shadowRoot, ox: entry.ox, oy: entry.oy, depth: entry.depth });
+        var sr = el.shadowRoot || el.__brwShadow;
+        if (sr) {
+          out.push({ root: sr, ox: entry.ox, oy: entry.oy, depth: entry.depth });
         }
         if (el.tagName && el.tagName.toLowerCase() === 'iframe' && entry.depth < MAX_FRAME_DEPTH) {
           var doc = null;
@@ -69,6 +102,28 @@ const FrameWalkHelpers = `
               var bx = entry.ox + fr.left + (el.clientLeft || 0);
               var by = entry.oy + fr.top + (el.clientTop || 0);
               out.push({ root: doc, ox: bx, oy: by, depth: entry.depth + 1 });
+            }
+          } else {
+            // Cross-origin (or sandboxed) iframe with a real src: the browser
+            // isolates its document, so it cannot be walked for semantic refs.
+            // Record its top-level box + origin so the agent can fall back to
+            // brw_screenshot + brw_click_xy instead of going silently blind.
+            var xsrc = '';
+            try { xsrc = el.getAttribute('src') || ''; } catch (_) { xsrc = ''; }
+            if (xsrc && xsrc.indexOf('about:') !== 0 && xsrc.indexOf('javascript:') !== 0) {
+              var xfr = null;
+              try { xfr = el.getBoundingClientRect(); } catch (_) { xfr = null; }
+              if (xfr && xfr.width > 0 && xfr.height > 0) {
+                var xorigin = '';
+                try { xorigin = new URL(el.src, location.href).origin; } catch (_) { xorigin = ''; }
+                __abInaccessibleFrames.push({
+                  x: Math.round(entry.ox + xfr.left),
+                  y: Math.round(entry.oy + xfr.top),
+                  width: Math.round(xfr.width),
+                  height: Math.round(xfr.height),
+                  origin: xorigin
+                });
+              }
             }
           }
         }
