@@ -549,7 +549,7 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatalf("parse manifest: %v", err)
 	}
-	const want = "0.0.1"
+	const want = "0.1.0"
 	if m.Version != want {
 		t.Fatalf("manifest version = %q, want %q", m.Version, want)
 	}
@@ -558,8 +558,8 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(worker), `const PROTOCOL_VERSION = "0.0.1";`) {
-		t.Fatal("service worker protocol version must match the 0.0.1 extension release")
+	if !strings.Contains(string(worker), `const PROTOCOL_VERSION = "0.1.0";`) {
+		t.Fatal("service worker protocol version must match the 0.1.0 extension release")
 	}
 }
 

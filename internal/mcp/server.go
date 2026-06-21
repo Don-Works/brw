@@ -251,7 +251,7 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 			"protocolVersion": "2025-06-18",
 			"serverInfo": map[string]any{
 				"name":    "brw",
-				"version": "0.0.1",
+				"version": "0.1.0",
 			},
 			"capabilities": map[string]any{
 				"tools": map[string]any{"listChanged": false},

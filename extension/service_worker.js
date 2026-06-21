@@ -1,6 +1,6 @@
 const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
 const BRIDGE_STATUS_URL = "http://127.0.0.1:17311/status";
-const PROTOCOL_VERSION = "0.0.1";
+const PROTOCOL_VERSION = "0.1.0";
 const KEEPALIVE_INTERVAL_MS = 5 * 1000;
 const DAEMON_STATUS_INTERVAL_MS = 10 * 1000;
 const MAX_RECONNECT_DELAY_MS = 10 * 1000;

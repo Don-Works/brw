@@ -739,13 +739,13 @@ func xmlEscape(s string) string {
 func extensionVersion(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "0.0.1"
+		return "0.1.0"
 	}
 	var manifest struct {
 		Version string `json:"version"`
 	}
 	if err := json.Unmarshal(data, &manifest); err != nil || manifest.Version == "" {
-		return "0.0.1"
+		return "0.1.0"
 	}
 	return manifest.Version
 }
