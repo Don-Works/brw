@@ -141,6 +141,22 @@ Core MCP tools include:
 Use `--mcp-tools core` to advertise only the common-flow tool set while keeping
 all tools callable.
 
+Backend-specific notes:
+
+- `brw_upload_file` accepts the file from exactly one source: `path`/`paths`
+  (files already on the browser host), `bytes_base64` (inline base64 contents,
+  no host filesystem access needed), or `url` (the daemon fetches it over
+  http(s)). For `bytes_base64`/`url` the daemon materializes a temp file on the
+  browser host and removes it after the upload; use `filename` to control the
+  name the page sees.
+- `brw_evaluate` truncates oversized results with an explicit
+  `…[truncated: returned N of M bytes]` marker instead of ever returning an
+  empty result; page through large payloads with the `offset`/`max_bytes` params.
+- `brw_downloads` captures downloads on the direct-CDP backend
+  (`supported: true`). On the extension-bridge backend it returns an empty list
+  with `supported: false` plus an explanatory `note`, because the bridge cannot
+  observe CDP download events; branch on `supported` to detect this case.
+
 With the extension bridge, agents can organize visible Chrome work into named
 tab groups. Use `brw_list_tab_groups` to choose the next client-side run
 name (for example `brw-1`, `brw-2`, or a short task label), pass `group` to

@@ -69,6 +69,17 @@ type UploadOptions struct {
 	Role  string   `json:"role,omitempty"`
 	Path  string   `json:"path,omitempty"`
 	Paths []string `json:"paths,omitempty"`
+	// BytesBase64 carries the file contents inline as a standard base64 string.
+	// When set the daemon materializes it to a temp file on the browser host
+	// before uploading, so the caller does not need filesystem access there.
+	BytesBase64 string `json:"bytes_base64,omitempty"`
+	// Filename is an optional name to use for the temp file created from
+	// BytesBase64 or URL (when the URL carries no usable basename). The page
+	// only sees the basename; the directory is daemon-controlled.
+	Filename string `json:"filename,omitempty"`
+	// URL points at a file the daemon fetches to a temp file on the browser
+	// host before uploading.
+	URL string `json:"url,omitempty"`
 }
 
 type ClickTextOptions struct {
