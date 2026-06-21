@@ -552,8 +552,15 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
 	var snap snapshot.PageSnapshot
 	opts.IncludeAX = false
-	if cached, ok := b.tryCachedSnapshot(ctx, opts); ok {
-		return cached, nil
+	// A since-delta request must reach the in-page walker (which derives the delta
+	// from live per-document state) and must bypass the outer snapshot cache in
+	// BOTH directions: a cached full snapshot would defeat the delta, and caching a
+	// delta-shaped (partial) result under the key would corrupt later full reads.
+	sinceDelta := opts.Since > 0
+	if !sinceDelta {
+		if cached, ok := b.tryCachedSnapshot(ctx, opts); ok {
+			return cached, nil
+		}
 	}
 	optsJSON, _ := json.Marshal(opts)
 	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.SnapshotFunctionScript, optsJSON), "", &snap); err != nil {
@@ -563,7 +570,9 @@ func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (s
 		Available: false,
 		Error:     "accessibility tree is unavailable through the Chrome extension bridge; use direct CDP attach for AX enrichment",
 	}
-	b.storeCachedSnapshot(ctx, opts, snap)
+	if !sinceDelta {
+		b.storeCachedSnapshot(ctx, opts, snap)
+	}
 	return snap, nil
 }
 

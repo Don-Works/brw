@@ -23,11 +23,27 @@ package snapshot
 // shadow-only roots()/findByRef() locally.
 const FrameWalkHelpers = `
   var MAX_FRAME_DEPTH = 8;
-  // __abRoots returns an array of { root, ox, oy, depth } descriptors covering the
-  // top document, every open shadowRoot, and every reachable same-origin iframe
-  // document. ox/oy are the cumulative top-level viewport offsets of the frame
-  // chain containing that root (0,0 for the top document and its shadow roots).
+  // __abRoots memoizes its frame/shadow walk, but ONLY while armed. The
+  // synchronous snapshot walk (SnapshotFunctionScript) sets __abRootsCacheArmed so
+  // its many all()/__abFindDeep()/detectVisualIslands() calls share one
+  // querySelectorAll('*') frame walk instead of repeating it. The async
+  // wait/assert poll scripts never arm it, so every poll recomputes the root list
+  // — a shadow root or same-origin iframe attached DURING a wait is always
+  // discovered (a stale cache there would cause spurious wait/assert timeouts).
+  var __abRootsCache = null;
+  var __abRootsCacheArmed = false;
   function __abRoots() {
+    if (__abRootsCacheArmed && __abRootsCache) return __abRootsCache;
+    var computed = __abRootsCompute();
+    if (__abRootsCacheArmed) __abRootsCache = computed;
+    return computed;
+  }
+  // __abRootsCompute returns an array of { root, ox, oy, depth } descriptors
+  // covering the top document, every open shadowRoot, and every reachable
+  // same-origin iframe document. ox/oy are the cumulative top-level viewport
+  // offsets of the frame chain containing that root (0,0 for the top document and
+  // its shadow roots).
+  function __abRootsCompute() {
     var out = [{ root: document, ox: 0, oy: 0, depth: 0 }];
     for (var i = 0; i < out.length; i++) {
       var entry = out[i];

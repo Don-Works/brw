@@ -1002,7 +1002,7 @@ func tools() []map[string]any {
 			"include_ax":           boolSchema("Include full accessibility-tree enrichment. Expensive; defaults false."),
 			"visual_islands":       boolSchema("Detect semantically-opaque visual content (canvas/svg/video/large image/background-image/custom-rendered widget) and emit each as an element with source:[\"visual\"], visual_type, and visual_hint. Off by default; islands compete with DOM elements in the merged list up to the limit, so dense pages stay token-efficient."),
 			"visual_islands_limit": integerSchema("Cap on detected visual islands before merging into the element list. Defaults to 10."),
-			"since":                integerSchema("Reserved page-state version for future delta snapshots."),
+			"since":                integerSchema("Pass a prior snapshot's metadata.version to get a DELTA: when it matches the last snapshot taken with identical options, the response sets metadata.delta=true, 'elements' carries ONLY added+changed elements (a change set, not the full page), and a top-level 'delta' object lists {added, removed, changed} refs (removed = refs whose element left the DOM). On any mismatch (version, options, or after navigation) a normal full snapshot is returned. Omit for a full snapshot."),
 		}, nil)),
 		tool("brw_find", "Find matching semantic element refs without dumping the full page. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id":         stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
