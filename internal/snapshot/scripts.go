@@ -1193,9 +1193,19 @@ func Evaluate(ctx context.Context) (PageSnapshot, error) {
 func EvaluateWithOptions(ctx context.Context, opts SnapshotOptions) (PageSnapshot, error) {
 	var snap PageSnapshot
 	args, _ := json.Marshal(opts)
-	expr := fmt.Sprintf("%s(%s)", SnapshotFunctionScript, args)
-	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &snap)); err != nil {
-		return PageSnapshot{}, err
+	// Fast path: a prior call on this document already installed the walker on
+	// window, so ship only the tiny call expression instead of the ~30KB source.
+	hit := fmt.Sprintf("window.__brwSnapshot(%s)", args)
+	if err := chromedp.Run(ctx, chromedp.Evaluate(hit, &snap)); err != nil {
+		// Cold document (first call, or a navigation replaced the JS context):
+		// define the walker on window and call it in a single round-trip. Every
+		// later call on this document then takes the fast path above, so the full
+		// source ships once per document instead of once per snapshot/find/observe.
+		snap = PageSnapshot{}
+		cold := fmt.Sprintf("(function(){if(!window.__brwSnapshot){window.__brwSnapshot=%s;}return window.__brwSnapshot(%s);})()", SnapshotFunctionScript, args)
+		if err := chromedp.Run(ctx, chromedp.Evaluate(cold, &snap)); err != nil {
+			return PageSnapshot{}, err
+		}
 	}
 	for i := range snap.Elements {
 		if len(snap.Elements[i].Source) == 0 {
