@@ -273,6 +273,55 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 	}
 }
 
+// activeTabResolver is the optional capability a Controller may implement to
+// resolve the genuinely focused tab once per top-level tool call. Only the
+// extension Bridge implements it (its per-call active-tab resolution is the
+// multiplier we are collapsing); the direct-CDP Manager and the HTTP proxy do
+// not, so they are left entirely unchanged.
+type activeTabResolver interface {
+	ResolveActiveTabID(context.Context) string
+}
+
+// tabAgnosticTools lists tools that must NOT trigger a one-shot active-tab
+// resolution: tab-management verbs (which manage focus themselves) and the
+// batch/plan runners (which resolve once internally and re-pin per step after a
+// focus_tab/open). list_tabs in particular must stay free of the extra round
+// trip the task brief calls out.
+var tabAgnosticTools = map[string]bool{
+	"brw_list_tabs":       true,
+	"brw_list_tab_groups": true,
+	"brw_focus_tab":       true,
+	"brw_close_tab":       true,
+	"brw_open":            true,
+	"brw_open_incognito":  true,
+	"brw_close_context":   true,
+	"brw_group_tabs":      true,
+	"brw_ungroup_tabs":    true,
+	"brw_batch":           true,
+	"brw_plan":            true,
+	"brw_cancel":          true,
+	"brw_trace":           true,
+	"brw_clear_trace":     true,
+}
+
+// pinActiveTabForTool resolves the active tab once (when the controller supports
+// it and the tool acts on the active tab) and pins it into the context via
+// browser.WithTabID. A no-op when the controller does not implement
+// activeTabResolver, the tool is tab-management/batch, or resolution fails.
+func pinActiveTabForTool(ctx context.Context, manager browser.Controller, name string) context.Context {
+	if tabAgnosticTools[name] {
+		return ctx
+	}
+	resolver, ok := manager.(activeTabResolver)
+	if !ok {
+		return ctx
+	}
+	if tabID := resolver.ResolveActiveTabID(ctx); tabID != "" {
+		return browser.WithTabID(ctx, tabID)
+	}
+	return ctx
+}
+
 func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage) (any, *rpcError) {
 	name = canonicalToolName(name)
 
@@ -285,6 +334,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	}
 	if tabProbe.TabID != "" {
 		ctx = browser.WithTabID(ctx, tabProbe.TabID)
+	} else {
+		// No explicit tab_id: for tools that act on the active tab, resolve it
+		// ONCE here and pin it into the context so every downstream page call
+		// short-circuits instead of re-resolving the active tab per sub-call
+		// (the extension bridge otherwise issues get_active_tab_id 3-11x per
+		// logical tool call). Tab-management tools and the batch/plan runners are
+		// excluded: they manage focus themselves or pin internally per step.
+		ctx = pinActiveTabForTool(ctx, s.manager, name)
 	}
 	switch name {
 	case "brw_open":
