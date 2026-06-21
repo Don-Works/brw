@@ -6,6 +6,28 @@ type PageSnapshot struct {
 	Elements      []Element              `json:"elements"`
 	Accessibility AccessibilitySummary   `json:"accessibility"`
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+	// Delta, when non-nil, signals this snapshot is a since-delta: Elements then
+	// carries ONLY the added/changed elements relative to the prior version named
+	// in Delta.Since, and Delta.Removed lists refs that disappeared. It is omitted
+	// entirely (nil) on the full snapshot path so existing full-snapshot output is
+	// byte-identical for callers that never pass Since.
+	Delta *SnapshotDelta `json:"delta,omitempty"`
+}
+
+// SnapshotDelta describes the change set returned when a snapshot is requested
+// with SnapshotOptions.Since matching a cached prior version. Added and Changed
+// refs correspond to entries present in PageSnapshot.Elements; Removed refs were
+// in the prior version but are gone now and carry no element body.
+type SnapshotDelta struct {
+	// Since is the prior version this delta was computed against.
+	Since int64 `json:"since"`
+	// Version is the new (current) version, also mirrored in metadata.version.
+	Version int64 `json:"version"`
+	// Added/Changed/Removed are element refs. Added+Changed appear as full element
+	// objects in PageSnapshot.Elements; Removed are refs only.
+	Added   []string `json:"added"`
+	Changed []string `json:"changed"`
+	Removed []string `json:"removed"`
 }
 
 type SnapshotOptions struct {

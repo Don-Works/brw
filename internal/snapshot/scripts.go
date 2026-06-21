@@ -659,6 +659,100 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     metadata.coverage_hint = 'Sparse semantic surface for a content-heavy page (likely custom web components or client-side rendering). Use brw_screenshot with annotate:true (Set-of-Marks) to read ref labels off the image, or click by coordinates; a region/ref-scoped annotated crop keeps the image small.';
   }
 
+  // Since-delta support. The version cache lives on the per-document window state
+  // (window.__brw) so it survives across fast-path calls on the same document and
+  // is wiped automatically when navigation creates a fresh JS context. We always
+  // record the CURRENT returned set keyed by the new version so a later call can
+  // diff against it; we only RETURN a delta when opts.since names a version still
+  // in the cache. Otherwise (since=0/absent, or a cache miss e.g. after
+  // navigation) the response is byte-for-byte identical to the legacy full
+  // snapshot — no delta key is attached.
+  //
+  // serializeItem produces a stable per-element fingerprint for change detection.
+  // It excludes the internal positional 'key' (which embeds pathFor() and would
+  // flip "changed" on benign sibling reorders) and any leftover scratch fields, so
+  // a "changed" report reflects only differences in what the caller actually sees.
+  function serializeItem(item) {
+    var copy = {};
+    var keys = Object.keys(item).sort();
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (k === 'key' || k === '_frontier_score') continue;
+      copy[k] = item[k];
+    }
+    return JSON.stringify(copy);
+  }
+  var currentSerialized = {};
+  for (var ci = 0; ci < returned.length; ci++) {
+    currentSerialized[returned[ci].ref] = serializeItem(returned[ci]);
+  }
+
+  state.versionCache = state.versionCache || {};
+  state.versionCacheOrder = state.versionCacheOrder || [];
+
+  var sinceVer = Number(opts.since || 0);
+  var deltaInfo = null;
+  if (sinceVer > 0 && state.versionCache[sinceVer]) {
+    var prevSerialized = state.versionCache[sinceVer];
+    var added = [];
+    var changed = [];
+    var removed = [];
+    var changedItems = [];
+    for (var di = 0; di < returned.length; di++) {
+      var it = returned[di];
+      var ref = it.ref;
+      if (!(ref in prevSerialized)) {
+        added.push(ref);
+        changedItems.push(it);
+      } else if (prevSerialized[ref] !== currentSerialized[ref]) {
+        changed.push(ref);
+        changedItems.push(it);
+      }
+    }
+    var prevRefs = Object.keys(prevSerialized);
+    for (var ri = 0; ri < prevRefs.length; ri++) {
+      if (!(prevRefs[ri] in currentSerialized)) removed.push(prevRefs[ri]);
+    }
+    deltaInfo = {
+      since: sinceVer,
+      version: state.version,
+      added: added,
+      changed: changed,
+      removed: removed,
+      elements: changedItems
+    };
+  }
+
+  // Record the current set under the new version, then prune the cache to the
+  // most recent few versions so a long-lived SPA document cannot grow it without
+  // bound. Keeping a small window (not just the last version) tolerates a caller
+  // that diffs against a version a couple of snapshots back.
+  state.versionCache[state.version] = currentSerialized;
+  state.versionCacheOrder.push(state.version);
+  var MAX_VERSION_CACHE = 5;
+  while (state.versionCacheOrder.length > MAX_VERSION_CACHE) {
+    var evict = state.versionCacheOrder.shift();
+    delete state.versionCache[evict];
+  }
+
+  if (deltaInfo) {
+    metadata.element_count = deltaInfo.elements.length;
+    metadata.delta = true;
+    return {
+      url: location.href,
+      title: document.title || '',
+      elements: deltaInfo.elements,
+      metadata: metadata,
+      delta: {
+        since: deltaInfo.since,
+        version: deltaInfo.version,
+        added: deltaInfo.added,
+        changed: deltaInfo.changed,
+        removed: deltaInfo.removed
+      }
+    };
+  }
+
   return {
     url: location.href,
     title: document.title || '',
