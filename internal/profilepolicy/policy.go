@@ -9,7 +9,13 @@ import (
 	"strings"
 )
 
-const DefaultBridgeExtensionID = ""
+// DefaultBridgeExtensionID is the stable id of the published brw Chrome
+// extension. It is derived from the public key pinned in extension/manifest.json
+// (the "key" field), so a load-unpacked dev install and the Chrome Web Store
+// build share this one id. An unconfigured bridge pins to it rather than the
+// chrome-extension://* wildcard. An explicit profile bridge_extension_id still
+// overrides it.
+const DefaultBridgeExtensionID = "amocjcgddnoakjijfggdpnefdnboilpe"
 
 type Policy struct {
 	WorkspaceBindings []WorkspaceBinding `json:"workspace_bindings,omitempty"`

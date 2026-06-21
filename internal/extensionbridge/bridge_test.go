@@ -222,7 +222,7 @@ func TestBridgeNotifyEmitsNotifyCommandAndRoundTrips(t *testing.T) {
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
 	conn, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Origin": []string{"chrome-extension://fake"}},
+		HTTPHeader: http.Header{"Origin": []string{testDefaultOrigin}},
 	})
 	if err != nil {
 		t.Fatalf("dial bridge: %v", err)
@@ -372,7 +372,7 @@ func TestContextTabIDQueriesLiveActiveTab(t *testing.T) {
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
 	conn, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Origin": []string{"chrome-extension://fake"}},
+		HTTPHeader: http.Header{"Origin": []string{testDefaultOrigin}},
 	})
 	if err != nil {
 		t.Fatalf("dial bridge: %v", err)

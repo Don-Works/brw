@@ -158,7 +158,7 @@ func connectFakeExtension(t *testing.T, b *Bridge) (*fakeExtension, func()) {
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
 	conn, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Origin": []string{"chrome-extension://fake"}},
+		HTTPHeader: http.Header{"Origin": []string{testDefaultOrigin}},
 	})
 	if err != nil {
 		srv.Close()

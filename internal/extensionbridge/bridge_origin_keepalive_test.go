@@ -12,13 +12,18 @@ import (
 	"github.com/coder/websocket"
 )
 
-// TestEffectiveExtensionID locks the origin-resolution logic. NOTE: the
-// origin-hardening is WIRED but currently INERT — profilepolicy.
-// DefaultBridgeExtensionID is "" (no published id baked into the repo yet), so an
-// unconfigured bridge still falls back to the chrome-extension://* wildcard with
-// a loud warning. The hardening activates automatically the moment that const is
-// populated with the real published id. The valuable, active part of this change
-// is the ping keepalive (tested below), not the origin default.
+// testDefaultOrigin is the chrome-extension:// origin an unconfigured bridge
+// (New("", _, "")) now accepts, pinned to the published default id. Tests that
+// don't set an explicit bridge id dial with this so they stay coupled to the
+// real default and fail loudly if it ever changes.
+const testDefaultOrigin = "chrome-extension://" + profilepolicy.DefaultBridgeExtensionID
+
+// TestEffectiveExtensionID locks the origin-resolution logic. The
+// origin-hardening is now ACTIVE: profilepolicy.DefaultBridgeExtensionID is
+// populated with the published brw extension id, so an unconfigured bridge pins
+// to that id instead of the chrome-extension://* wildcard. An explicit profile
+// bridge_extension_id still overrides it. This test compares against the const
+// dynamically so it stays correct whatever the published default is.
 func TestEffectiveExtensionID(t *testing.T) {
 	// Explicitly configured: the profile id always wins (the meaningful guarantee).
 	explicit := New("", time.Second, "abcdefghijklmnopabcdefghijklmnop")
@@ -83,7 +88,7 @@ func TestKeepAliveStopsWhenConnCloses(t *testing.T) {
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
 	conn, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Origin": []string{"chrome-extension://fake"}},
+		HTTPHeader: http.Header{"Origin": []string{testDefaultOrigin}},
 	})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -126,7 +131,7 @@ func TestKeepAliveClosesConnOnDeadLink(t *testing.T) {
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
 	conn, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Origin": []string{"chrome-extension://fake"}},
+		HTTPHeader: http.Header{"Origin": []string{testDefaultOrigin}},
 	})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -171,7 +176,7 @@ func TestKeepAliveExitsWhenConnReplaced(t *testing.T) {
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer dialCancel()
 	conn, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Origin": []string{"chrome-extension://fake"}},
+		HTTPHeader: http.Header{"Origin": []string{testDefaultOrigin}},
 	})
 	if err != nil {
 		t.Fatalf("dial: %v", err)

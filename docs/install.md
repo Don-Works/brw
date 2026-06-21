@@ -70,13 +70,27 @@ security.
 
 ## brw Chrome Extension
 
-Development install:
+The extension pins a public key in `extension/manifest.json`, so it always loads
+with the same stable id — `amocjcgddnoakjijfggdpnefdnboilpe` — whether loaded
+unpacked or installed from the Chrome Web Store. That id is the daemon's
+`profilepolicy.DefaultBridgeExtensionID`, so an unconfigured bridge already
+trusts it; you only set `bridge_extension_id` for a different (re-signed) build.
+
+Development install (works today):
+
+```sh
+make install-extension   # prints the folder + opens chrome://extensions
+```
 
 1. Open `chrome://extensions` in the target Chrome profile.
 2. Enable Developer mode.
 3. Choose Load unpacked.
 4. Select the `extension/` directory.
 5. Keep the extension enabled.
+
+Chrome Web Store (one-click, coming soon): an unlisted listing is planned for
+one-click install and auto-updates, sharing the same id — no policy change when
+you switch from the unpacked build.
 
 Managed install:
 
@@ -96,8 +110,8 @@ brwctl macos-policy \
   --output dist/brw-chrome.mobileconfig
 ```
 
-Set `bridge_extension_id` in the profile policy to the ID produced by your own
-Chrome signing material.
+Set `bridge_extension_id` in the profile policy only when you ship your own
+re-signed build with a different id; the default published id is built in.
 
 ## Verify
 

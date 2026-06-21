@@ -2,7 +2,13 @@
 
 Semantic browser control for agents.
 
-Open source by [Revitt](https://revitt.co), via [Don Works](https://donworks.co.uk).
+Open source by [Revitt](https://revitt.co/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss), via [Don Works](https://donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss).
+
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-ff2ec4.svg)](LICENSE)
+[![Website](https://img.shields.io/badge/website-brw.donworks.co.uk-ff2ec4.svg)](https://brw.donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss)
+[![Part of Don Works](https://img.shields.io/badge/part%20of-Don%20Works-c6ff1a.svg)](https://donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss)
+
+**[Website](https://brw.donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss)** &middot; **[Install](https://brw.donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss#install)** &middot; **[MCPlexer](https://mcplexer.com/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss)** &middot; **[Issues](https://github.com/Don-Works/brw/issues)**
 
 `brw` runs a real, visible Chrome/Chromium browser and exposes it over MCP and
 HTTP. Agents use stable refs like `e17` instead of CSS selectors or screenshots
@@ -112,16 +118,29 @@ See [docs/remote-control.md](docs/remote-control.md).
 
 Chrome 136+ blocks remote debugging against the default Chrome data directory.
 For auth that already exists in an installed Chrome profile, use the `brw`
-extension:
+extension. It bridges the daemon to your real, signed-in Chrome over
+`ws://127.0.0.1` and never reads cookies, passwords, or passkeys.
 
-- development: load `extension/` once in `chrome://extensions`
-- managed repeatable install: package with your own Chrome signing material
-- policy: set the resulting extension ID as `bridge_extension_id`
+The extension ships with a pinned public key, so it always loads with the same
+stable id:
 
-The extension version is `0.0.1`. The public manifest does not embed a signing
-key or private extension ID.
+```
+amocjcgddnoakjijfggdpnefdnboilpe
+```
 
-See [docs/install.md](docs/install.md) and [docs/auth-model.md](docs/auth-model.md).
+That id is the daemon's `DefaultBridgeExtensionID`, so an unconfigured bridge
+trusts the real extension with no policy edit. Install routes:
+
+- **Load unpacked (works today):** run `make install-extension` to print the
+  folder and open `chrome://extensions`, then enable Developer mode → Load
+  unpacked → select `extension/`.
+- **Chrome Web Store (one-click):** an unlisted listing is on the way for
+  one-click install + auto-updates, sharing the same id.
+- **Managed / MDM:** package a CRX with your own signing material and set
+  `bridge_extension_id` for a force-installed fleet.
+
+See the [Install page](https://brw.donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss#install),
+[docs/install.md](docs/install.md), and [docs/auth-model.md](docs/auth-model.md).
 
 ## Tools
 
@@ -180,13 +199,13 @@ MCP over SSH.
 
 ## Part of Don Works
 
-`brw` is part of [Don Works](https://donworks.co.uk), Revitt's open-source arm.
+`brw` is part of [Don Works](https://donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss), Revitt's open-source arm.
 
 Related:
 
-- [Don Works](https://donworks.co.uk) — the umbrella ([github.com/Don-Works](https://github.com/Don-Works)).
-- [MCPlexer](https://mcplexer.com) — MCP gateway and cross-harness AI runtime ([github.com/Don-Works/mcplexer](https://github.com/Don-Works/mcplexer)).
-- [Revitt](https://revitt.co) — the parent company.
+- [Don Works](https://donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss) — the umbrella ([github.com/Don-Works](https://github.com/Don-Works)).
+- [MCPlexer](https://mcplexer.com/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss) — MCP gateway and cross-harness AI runtime ([github.com/Don-Works/mcplexer](https://github.com/Don-Works/mcplexer)).
+- [Revitt](https://revitt.co/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss) — the parent company.
 
 ## License
 

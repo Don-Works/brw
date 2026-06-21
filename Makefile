@@ -2,7 +2,9 @@ BINDIR ?= $(HOME)/.local/bin
 DATADIR ?= $(HOME)/.local/share/brw
 MAC_APPDIR ?= $(HOME)/Library/Application Support/brw
 
-.PHONY: build test install install-mac package-darwin-arm64
+EXTENSION_ID = amocjcgddnoakjijfggdpnefdnboilpe
+
+.PHONY: build test install install-mac install-extension package-darwin-arm64
 
 build:
 	go build -o bin/brwd ./cmd/brwd
@@ -31,6 +33,25 @@ install-mac: build
 	cp -R extension/. "$(MAC_APPDIR)/extension/"
 	cp -R tests/. "$(MAC_APPDIR)/tests/"
 	if [ -f "$(HOME)/.config/brw/browser-profiles.json" ]; then cp "$(HOME)/.config/brw/browser-profiles.json" "$(MAC_APPDIR)/config/browser-profiles.json"; fi
+
+# Streamline the one-time load-unpacked install of the brw Chrome extension.
+# Prints the exact folder + stable id, then (best-effort on macOS) opens
+# chrome://extensions and reveals the folder in Finder so you can pick it.
+install-extension:
+	@echo ""
+	@echo "  Load the brw Chrome extension (one-time, Developer Mode):"
+	@echo ""
+	@echo "    1. In chrome://extensions, enable Developer mode (top right)."
+	@echo "    2. Click 'Load unpacked'."
+	@echo "    3. Select this folder:"
+	@echo ""
+	@echo "         $(CURDIR)/extension"
+	@echo ""
+	@echo "    The extension id will be: $(EXTENSION_ID)"
+	@echo "    (matches DefaultBridgeExtensionID, so the bridge trusts it with no config)"
+	@echo ""
+	-@open -a "Google Chrome" "chrome://extensions" 2>/dev/null || true
+	-@open -R "$(CURDIR)/extension" 2>/dev/null || true
 
 package-darwin-arm64:
 	GOOS=darwin GOARCH=arm64 go build -o bin/brwd-darwin-arm64 ./cmd/brwd

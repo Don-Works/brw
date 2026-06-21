@@ -2,10 +2,12 @@
 
 This is the Chrome extension transport for installed-profile auth.
 
-For development installs, Chrome assigns the extension ID when you load the
-unpacked directory. For managed installs, package the extension with your own
-Chrome signing material and put the resulting ID in `bridge_extension_id` in
-your profile policy.
+The manifest pins a public `key`, so the extension always loads with the same
+stable id — `amocjcgddnoakjijfggdpnefdnboilpe` — for both unpacked and Chrome
+Web Store installs. That id is baked into the daemon as
+`DefaultBridgeExtensionID`, so an unconfigured bridge trusts it with no policy
+edit. Only set `bridge_extension_id` if you re-sign the extension with your own
+key (which produces a different id).
 
 ## What It Does
 
@@ -20,13 +22,15 @@ your profile policy.
 
 ## Install Modes
 
-For development, load this directory once through `chrome://extensions` in the
-target profile.
+For development, run `make install-extension` from the repo root (it prints the
+folder and opens `chrome://extensions`), then Developer mode → Load unpacked →
+select this directory.
 
-For repeatable deployment, publish it through a private Chrome Web Store channel
-or package it as a CRX for managed Chrome policy. Self-hosted CRX installs on
-macOS require managed Chrome/MDM/Chrome Enterprise; unmanaged personal Chrome
-should use the one-time Developer Mode install.
+A one-click, unlisted Chrome Web Store listing is on the way — same id, plus
+auto-updates. For managed fleets, package a CRX for managed Chrome policy.
+Self-hosted CRX installs on macOS require managed Chrome / MDM / Chrome
+Enterprise; unmanaged personal Chrome should use the Developer Mode install or
+the Web Store.
 
 ```sh
 brwctl pack-extension --key /path/to/chrome-extension.pem
