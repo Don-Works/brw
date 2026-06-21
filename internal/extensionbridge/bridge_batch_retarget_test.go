@@ -271,3 +271,38 @@ func TestBatchPinsActiveTabOnce(t *testing.T) {
 		t.Fatalf("active-tab resolved %d times across a 3-step batch; pin should collapse it to <=2", got)
 	}
 }
+
+// TestBatchExplicitTabIDStaysStickyAcrossFocusTab guards the explicit-tab_id
+// trap: when the caller pins a specific tab_id, a focus_tab step mid-batch must
+// NOT retarget subsequent steps (matching the pre-pin behaviour where
+// contextTabID short-circuits on the caller's tab regardless of focus_tab side
+// effects). The focus_tab still executes, but every page action stays on the
+// explicit tab. A naive retarget would override the explicit pin after focus_tab.
+func TestBatchExplicitTabIDStaysStickyAcrossFocusTab(t *testing.T) {
+	b := New("", 5*time.Second, "")
+	fe, cleanup := connectRetargetFake(t, b, 10)
+	defer cleanup()
+
+	// Caller pins tab 99 explicitly (as the MCP/HTTP entry does from a tab_id arg).
+	ctx := browser.WithTabID(context.Background(), "99")
+	res, err := b.ExecuteBatch(ctx, []browser.BatchStep{
+		{Action: "scroll", Direction: "down"},
+		{Action: "focus_tab", ID: "20"},
+		{Action: "scroll", Direction: "down"},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("batch not OK: %+v", res)
+	}
+	targets := fe.cdpTargets()
+	if len(targets) < 2 {
+		t.Fatalf("expected at least 2 cdp page actions, got %v", targets)
+	}
+	for i, target := range targets {
+		if target != 99 {
+			t.Fatalf("cdp action %d targeted tab %d, want the explicit tab 99 — a focus_tab step must not override an explicit tab_id", i, target)
+		}
+	}
+}

@@ -12,22 +12,29 @@ import (
 	"github.com/coder/websocket"
 )
 
-// TestEffectiveExtensionIDDefaultsToPublishedID proves the origin-hardening
-// wiring: with no profile bridge_extension_id configured, the bridge falls back
-// to profilepolicy.DefaultBridgeExtensionID (the published id) rather than the
-// chrome-extension://* wildcard. An explicit id always wins and is left intact.
-func TestEffectiveExtensionIDDefaultsToPublishedID(t *testing.T) {
-	// Unconfigured: must equal the published default id (not a hard-coded literal,
-	// so this stays correct whether or not the default is populated yet).
-	unset := New("", time.Second, "")
-	if got, want := unset.effectiveExtensionID(), strings.TrimSpace(profilepolicy.DefaultBridgeExtensionID); got != want {
-		t.Fatalf("unconfigured effectiveExtensionID = %q, want published default %q", got, want)
-	}
-
-	// Explicitly configured: the profile id wins, default is not consulted.
+// TestEffectiveExtensionID locks the origin-resolution logic. NOTE: the
+// origin-hardening is WIRED but currently INERT — profilepolicy.
+// DefaultBridgeExtensionID is "" (no published id baked into the repo yet), so an
+// unconfigured bridge still falls back to the chrome-extension://* wildcard with
+// a loud warning. The hardening activates automatically the moment that const is
+// populated with the real published id. The valuable, active part of this change
+// is the ping keepalive (tested below), not the origin default.
+func TestEffectiveExtensionID(t *testing.T) {
+	// Explicitly configured: the profile id always wins (the meaningful guarantee).
 	explicit := New("", time.Second, "abcdefghijklmnopabcdefghijklmnop")
 	if got := explicit.effectiveExtensionID(); got != "abcdefghijklmnopabcdefghijklmnop" {
 		t.Fatalf("configured effectiveExtensionID = %q, want the profile id", got)
+	}
+
+	// Unconfigured: mirrors the published default const (guards against anyone
+	// reintroducing a wildcard/hard-coded literal here). Today that is "", which
+	// the wildcard-fallback path in handleExtension keys off.
+	unset := New("", time.Second, "")
+	if got, want := unset.effectiveExtensionID(), strings.TrimSpace(profilepolicy.DefaultBridgeExtensionID); got != want {
+		t.Fatalf("unconfigured effectiveExtensionID = %q, want default %q", got, want)
+	}
+	if profilepolicy.DefaultBridgeExtensionID == "" && unset.effectiveExtensionID() != "" {
+		t.Fatal("with no published default, the effective id must be empty (wildcard fallback)")
 	}
 }
 

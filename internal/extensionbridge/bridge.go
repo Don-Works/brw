@@ -1842,13 +1842,22 @@ func (b *Bridge) pinActiveTab(ctx context.Context) context.Context {
 // retargetPinnedTab re-pins the active tab after a step that legitimately moves
 // the browser's focus (focus_tab, open). Without this, a focus_tab / open step
 // mid-batch/plan would leave subsequent steps pinned to the STALE pre-focus tab
-// for the rest of the sequence. base is the un-pinned cancel-aware context
-// (never carries a pinned tab); stepCtx is the currently-pinned context returned
-// unchanged for non-retargeting steps so we never pay an extra resolution round
-// trip. The bridge updates b.active inside FocusTab/Open, so re-resolving from
-// base picks up the new focused tab.
+// for the rest of the sequence. base is the caller's context: for an
+// auto-resolved sequence it carries NO tab (the MCP/HTTP entry excludes
+// batch/plan from one-shot pinning), but for a caller-supplied tab_id it carries
+// that explicit tab. stepCtx is the currently-pinned context, returned unchanged
+// for non-retargeting steps so we never pay an extra resolution round trip. The
+// bridge updates b.active inside FocusTab/Open, so re-resolving from base picks
+// up the new focused tab.
 func (b *Bridge) retargetPinnedTab(base, stepCtx context.Context, action string) context.Context {
 	if action != "focus_tab" && action != "open" {
+		return stepCtx
+	}
+	// An explicitly-supplied tab_id stays sticky for the whole sequence (matching
+	// the pre-pin behaviour where contextTabID short-circuits on the caller's tab
+	// regardless of focus_tab side effects): never let a focus_tab/open step
+	// retarget it. base carries a tab ONLY when the caller passed one explicitly.
+	if browser.TabIDFromContext(base) != "" {
 		return stepCtx
 	}
 	if newTab := b.activeTabID(); newTab != "" {
