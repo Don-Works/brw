@@ -427,6 +427,13 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   const mode = clean(opts.mode || '').toLowerCase();
   const frontierMode = mode === 'frontier';
   const formLensMode = mode === 'form_lens';
+  // modeTag is the full 3-way mode tag used in BOTH the since-options cache
+  // signature and the output metadata. It must not collapse form_lens into
+  // 'all': form_lens emits a different element set (form roles only) plus
+  // validity, so sharing a signature with 'all' would let the since-delta key
+  // treat an 'all' snapshot and a form_lens snapshot as identical options and
+  // return a stale delta.
+  const modeTag = frontierMode ? 'frontier' : (formLensMode ? 'form_lens' : 'all');
   const viewportOnly = Boolean(opts.viewport_only) || frontierMode;
   const limit = Math.max(0, Number(opts.limit || 0));
   const active = deepActive(document);
@@ -626,7 +633,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   // presence — every data-brw-ref node still in the tree — so an element merely
   // scrolled out of the viewport / past the limit is never falsely "removed".
   function __brwOptsSignature() {
-    return [frontierMode ? 'frontier' : 'all', opts.query || '', opts.text || '',
+    return [modeTag, opts.query || '', opts.text || '',
       opts.role || '', limit, Boolean(opts.viewport_only), includeHidden,
       textContent, Boolean(opts.visual_islands),
       (opts.visual_islands_limit === undefined ? '' : opts.visual_islands_limit)].join('');
@@ -712,7 +719,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     total_candidates: totalCandidates,
     visual_island_count: visualElements.length,
     truncated: limit > 0 && (totalCandidates + visualElements.length) > returned.length,
-    mode: frontierMode ? 'frontier' : 'all',
+    mode: modeTag,
     include_hidden: includeHidden,
     version: state.version,
     focused_ref: focusedRef,
