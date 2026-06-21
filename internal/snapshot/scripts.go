@@ -34,6 +34,9 @@ func randomToken() string {
 
 const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   opts = opts || {};
+  // Arm the __abRoots memo for this single synchronous walk: the DOM cannot mutate
+  // mid-call, so the many root lookups below safely share one frame walk.
+  __abRootsCacheArmed = true;
   const state = window.__brw || (window.__brw = { next: 1, byKey: {}, byRef: {} });
   const includeHidden = Boolean(opts.include_hidden);
   const textContent = Boolean(opts.text_content);
@@ -615,6 +618,66 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   for (const item of returned) delete item._frontier_score;
 
   state.version = (state.version || 0) + 1;
+
+  // --- since-delta (see snapshot.SnapshotDelta) ---------------------------------
+  // A delta is only emitted when opts.since matches the PRIOR snapshot's version
+  // AND the option envelope is identical (otherwise added/removed would reflect
+  // option changes, not page changes). 'removed' is computed from genuine DOM
+  // presence — every data-brw-ref node still in the tree — so an element merely
+  // scrolled out of the viewport / past the limit is never falsely "removed".
+  function __brwOptsSignature() {
+    return [frontierMode ? 'frontier' : 'all', opts.query || '', opts.text || '',
+      opts.role || '', limit, Boolean(opts.viewport_only), includeHidden,
+      textContent, Boolean(opts.visual_islands),
+      (opts.visual_islands_limit === undefined ? '' : opts.visual_islands_limit)].join('');
+  }
+  function __brwFingerprint(it) {
+    var __fp = {};
+    for (var __k in it) { if (__k !== 'key' && __k !== 'ref') __fp[__k] = it[__k]; }
+    return JSON.stringify(__fp);
+  }
+  function __brwDomRefs() {
+    var refs = {}, roots = __abRootList();
+    for (var i = 0; i < roots.length; i++) {
+      var nodes;
+      try { nodes = roots[i].querySelectorAll('[data-brw-ref]'); } catch (_) { continue; }
+      for (var j = 0; j < nodes.length; j++) {
+        var r = nodes[j].getAttribute('data-brw-ref');
+        if (r) refs[r] = 1;
+      }
+    }
+    return refs;
+  }
+  const __brwOptsKey = __brwOptsSignature();
+  const __brwReturnedFP = {};
+  for (const it of returned) __brwReturnedFP[it.ref] = __brwFingerprint(it);
+  const __brwDomRefSet = __brwDomRefs();
+  let __brwDelta = null;
+  const __brwPrev = state.delta;
+  if (opts.since && __brwPrev && __brwPrev.version === opts.since && __brwPrev.optsKey === __brwOptsKey) {
+    const added = [], changed = [], removed = [];
+    for (const ref in __brwReturnedFP) {
+      if (!(ref in __brwPrev.returnedFP)) added.push(ref);
+      else if (__brwReturnedFP[ref] !== __brwPrev.returnedFP[ref]) changed.push(ref);
+    }
+    for (const ref in __brwPrev.domRefs) {
+      if (!(ref in __brwDomRefSet)) removed.push(ref);
+    }
+    __brwDelta = { added: added, removed: removed, changed: changed };
+  }
+  // Persist this snapshot's state for the NEXT delta request (single generation).
+  state.delta = { version: state.version, optsKey: __brwOptsKey, returnedFP: __brwReturnedFP, domRefs: __brwDomRefSet };
+  // On a delta, elements carries ONLY the added+changed elements (a change set);
+  // removed refs travel in the delta object.
+  let __brwOutElements = returned;
+  if (__brwDelta) {
+    const __brwChangeSet = {};
+    for (const r of __brwDelta.added) __brwChangeSet[r] = 1;
+    for (const r of __brwDelta.changed) __brwChangeSet[r] = 1;
+    __brwOutElements = returned.filter(function(it) { return __brwChangeSet[it.ref]; });
+  }
+  // -----------------------------------------------------------------------------
+
   const focusedRef = active && active.getAttribute ? (active.getAttribute('data-brw-ref') || '') : '';
 
   // Coverage signal: detect "sparse semantic surface over a content-heavy
@@ -645,7 +708,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
 
   const metadata = {
     generated_at: new Date().toISOString(),
-    element_count: returned.length,
+    element_count: __brwOutElements.length,
     total_candidates: totalCandidates,
     visual_island_count: visualElements.length,
     truncated: limit > 0 && (totalCandidates + visualElements.length) > returned.length,
@@ -653,6 +716,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     include_hidden: includeHidden,
     version: state.version,
     focused_ref: focusedRef,
+    delta: Boolean(__brwDelta),
     low_semantic_coverage: coverage.low
   };
   if (coverage.low) {
@@ -662,8 +726,9 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   return {
     url: location.href,
     title: document.title || '',
-    elements: returned,
-    metadata: metadata
+    elements: __brwOutElements,
+    metadata: metadata,
+    delta: __brwDelta || undefined
   };
 })`
 

@@ -631,3 +631,72 @@ type errorController struct {
 func (e *errorController) Open(context.Context, string) (browser.OpenResult, error) {
 	return browser.OpenResult{}, fmt.Errorf("chrome crashed")
 }
+
+// resolverController is a fakeController that also implements activeTabResolver,
+// exercising the one-shot active-tab pin path that only the extension Bridge
+// triggers in production. It records whether the active tab was resolved and the
+// tab pinned into the context for batch/cancel.
+type resolverController struct {
+	fakeController
+	resolveCalls int
+	batchCtxTab  string
+	cancelCtxTab string
+}
+
+func (r *resolverController) ResolveActiveTabID(context.Context) string {
+	r.resolveCalls++
+	return "auto-active"
+}
+
+func (r *resolverController) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
+	r.batchCtxTab = browser.TabIDFromContext(ctx)
+	return r.fakeController.ExecuteBatch(ctx, steps)
+}
+
+func (r *resolverController) Cancel(ctx context.Context, token string) (browser.CancelResult, error) {
+	r.cancelCtxTab = browser.TabIDFromContext(ctx)
+	return r.fakeController.Cancel(ctx, token)
+}
+
+// TestBatchAndCancelStayTabAgnostic guards the HTTP surface against auto-pinning
+// the active tab for batch/cancel. Those manage focus themselves: batch/plan
+// re-pin per step after focus_tab/open (auto-pinning would make retargetPinnedTab
+// treat the pin as explicit and suppress retargeting), and a bare cancel must
+// stay the wildcard kill switch. A normal page tool (scroll) DOES auto-pin, so
+// the contrast proves the resolver is genuinely wired.
+func TestBatchAndCancelStayTabAgnostic(t *testing.T) {
+	ctrl := &resolverController{}
+	server := New("", ctrl)
+	post := func(path, body string) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		server.server.Handler.ServeHTTP(rec, req)
+	}
+
+	// A normal page tool auto-resolves the active tab (proves the mechanism works).
+	post("/api/page/scroll", `{"direction":"down"}`)
+	if ctrl.resolveCalls == 0 {
+		t.Fatal("scroll did not auto-resolve the active tab; resolver not wired, test would be vacuous")
+	}
+
+	ctrl.resolveCalls = 0
+	post("/api/page/batch", `{"steps":[]}`)
+	if ctrl.resolveCalls != 0 {
+		t.Fatalf("bare batch resolved the active tab %d time(s); must stay tab-agnostic so focus_tab/open can retarget", ctrl.resolveCalls)
+	}
+	if ctrl.batchCtxTab != "" {
+		t.Fatalf("bare batch pinned tab %q; want none", ctrl.batchCtxTab)
+	}
+
+	ctrl.resolveCalls = 0
+	post("/api/page/cancel", `{}`)
+	if ctrl.resolveCalls != 0 || ctrl.cancelCtxTab != "" {
+		t.Fatalf("bare cancel pinned tab %q (resolves=%d); must stay the wildcard kill switch", ctrl.cancelCtxTab, ctrl.resolveCalls)
+	}
+
+	// An explicit tab_id is still honored on batch.
+	post("/api/page/batch", `{"steps":[],"tab_id":"7"}`)
+	if ctrl.batchCtxTab != "7" {
+		t.Fatalf("explicit batch tab = %q, want 7", ctrl.batchCtxTab)
+	}
+}

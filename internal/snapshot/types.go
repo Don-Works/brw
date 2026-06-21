@@ -6,6 +6,23 @@ type PageSnapshot struct {
 	Elements      []Element              `json:"elements"`
 	Accessibility AccessibilitySummary   `json:"accessibility"`
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+	// Delta is set ONLY on a since-delta response — when opts.Since matched the
+	// prior snapshot's version AND the snapshot options were identical. When
+	// present, Elements carries just the added+changed elements (a change set, not
+	// the full page). Nil for a full snapshot, so callers that never pass Since are
+	// byte-for-byte unaffected.
+	Delta *SnapshotDelta `json:"delta,omitempty"`
+}
+
+// SnapshotDelta describes what changed since a prior snapshot version. Removed is
+// computed from actual DOM presence (refs whose data-brw-ref node is gone),
+// never from the filtered/limited returned set — so an element merely scrolled
+// out of the viewport or past the limit is NOT falsely reported as removed.
+// Added/Changed are over the returned (filtered) view.
+type SnapshotDelta struct {
+	Added   []string `json:"added"`
+	Removed []string `json:"removed"`
+	Changed []string `json:"changed"`
 }
 
 type SnapshotOptions struct {

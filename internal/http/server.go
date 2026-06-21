@@ -104,15 +104,47 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func requestContext(r *http.Request) context.Context {
-	return contextWithTabID(r.Context(), r.URL.Query().Get("tab_id"))
+func (s *Server) requestContext(r *http.Request) context.Context {
+	return s.contextWithTabID(r.Context(), r.URL.Query().Get("tab_id"))
 }
 
-func contextWithTabID(ctx context.Context, tabID string) context.Context {
-	if tabID == "" {
-		return ctx
+// contextWithTabID pins the target tab into the context. An explicit tab_id
+// always wins. When none is supplied and the controller can resolve the active
+// tab (only the extension Bridge implements activeTabResolver), it is resolved
+// ONCE here and pinned, so the page handler's downstream sub-calls short-circuit
+// instead of re-resolving the active tab repeatedly per logical request. The
+// direct-CDP Manager and HTTP proxy do not implement the capability, so they are
+// unchanged. Handlers that manage tabs themselves (open/focus/close/groups/list)
+// call r.Context() directly and never reach this path.
+func (s *Server) contextWithTabID(ctx context.Context, tabID string) context.Context {
+	if tabID != "" {
+		return browser.WithTabID(ctx, tabID)
 	}
-	return browser.WithTabID(ctx, tabID)
+	if resolver, ok := s.manager.(activeTabResolver); ok {
+		if resolved := resolver.ResolveActiveTabID(ctx); resolved != "" {
+			return browser.WithTabID(ctx, resolved)
+		}
+	}
+	return ctx
+}
+
+// contextWithExplicitTabID pins ONLY a caller-supplied tab_id and never
+// auto-resolves the active tab. The batch/plan runners and cancel use it because
+// they manage focus themselves: batch/plan re-pin per step after focus_tab/open
+// (auto-pinning here would make retargetPinnedTab treat the pin as an explicit
+// tab and suppress retargeting), and a bare cancel must stay the wildcard kill
+// switch. Mirrors the MCP server excluding these tools from one-shot pinning.
+func contextWithExplicitTabID(ctx context.Context, tabID string) context.Context {
+	if tabID != "" {
+		return browser.WithTabID(ctx, tabID)
+	}
+	return ctx
+}
+
+// activeTabResolver is the optional capability a Controller may implement to
+// resolve the genuinely focused tab once per request (see contextWithTabID).
+type activeTabResolver interface {
+	ResolveActiveTabID(context.Context) string
 }
 
 func (s *Server) open(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +249,7 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	snap, err := s.manager.Snapshot(requestContext(r), req.Options)
+	snap, err := s.manager.Snapshot(s.requestContext(r), req.Options)
 	if err == nil && req.MaxBytes > 0 {
 		snap = trimSnapshotToMaxBytes(snap, req.MaxBytes)
 	}
@@ -229,17 +261,17 @@ func (s *Server) find(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	result, err := s.manager.Find(requestContext(r), opts)
+	result, err := s.manager.Find(s.requestContext(r), opts)
 	writeResult(w, result, err)
 }
 
 func (s *Server) read(w http.ResponseWriter, r *http.Request) {
-	read, err := s.manager.Read(requestContext(r))
+	read, err := s.manager.Read(s.requestContext(r))
 	writeResult(w, read, err)
 }
 
 func (s *Server) readData(w http.ResponseWriter, r *http.Request) {
-	data, err := s.manager.ReadData(requestContext(r))
+	data, err := s.manager.ReadData(s.requestContext(r))
 	writeResult(w, data, err)
 }
 
@@ -255,7 +287,7 @@ func (s *Server) click(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	ctx := contextWithTabID(r.Context(), req.TabID)
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
 	if browser.IsDefaultLeftSingleRefClick(req.Button, req.ClickCount, req.Ref, req.X, req.Y) {
 		result, err := s.manager.Click(ctx, req.Ref)
 		writeResult(w, result, err)
@@ -280,7 +312,7 @@ func (s *Server) drag(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Drag(contextWithTabID(r.Context(), req.TabID), browser.DragOptions{
+	result, err := s.manager.Drag(s.contextWithTabID(r.Context(), req.TabID), browser.DragOptions{
 		From:   req.From,
 		To:     req.To,
 		Steps:  req.Steps,
@@ -294,7 +326,7 @@ func (s *Server) mouseDown(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	result, err := s.manager.MouseDown(contextWithTabID(r.Context(), tabID), opts)
+	result, err := s.manager.MouseDown(s.contextWithTabID(r.Context(), tabID), opts)
 	writeResult(w, result, err)
 }
 
@@ -303,7 +335,7 @@ func (s *Server) mouseUp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	result, err := s.manager.MouseUp(contextWithTabID(r.Context(), tabID), opts)
+	result, err := s.manager.MouseUp(s.contextWithTabID(r.Context(), tabID), opts)
 	writeResult(w, result, err)
 }
 
@@ -332,7 +364,7 @@ func (s *Server) clickText(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.ClickText(contextWithTabID(r.Context(), req.TabID), req.ClickTextOptions)
+	result, err := s.manager.ClickText(s.contextWithTabID(r.Context(), req.TabID), req.ClickTextOptions)
 	writeResult(w, result, err)
 }
 
@@ -344,7 +376,7 @@ func (s *Server) navigate(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Navigate(contextWithTabID(r.Context(), req.TabID), req.Direction)
+	result, err := s.manager.Navigate(s.contextWithTabID(r.Context(), req.TabID), req.Direction)
 	writeResult(w, result, err)
 }
 
@@ -357,7 +389,7 @@ func (s *Server) typeText(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Type(contextWithTabID(r.Context(), req.TabID), req.Ref, req.Text)
+	result, err := s.manager.Type(s.contextWithTabID(r.Context(), req.TabID), req.Ref, req.Text)
 	writeResult(w, result, err)
 }
 
@@ -369,7 +401,7 @@ func (s *Server) fill(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Fill(contextWithTabID(r.Context(), req.TabID), req.FillOptions)
+	result, err := s.manager.Fill(s.contextWithTabID(r.Context(), req.TabID), req.FillOptions)
 	writeResult(w, result, err)
 }
 
@@ -381,7 +413,7 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.UploadFile(contextWithTabID(r.Context(), req.TabID), req.UploadOptions)
+	result, err := s.manager.UploadFile(s.contextWithTabID(r.Context(), req.TabID), req.UploadOptions)
 	writeResult(w, result, err)
 }
 
@@ -394,7 +426,7 @@ func (s *Server) selectValue(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Select(contextWithTabID(r.Context(), req.TabID), req.Ref, req.Value)
+	result, err := s.manager.Select(s.contextWithTabID(r.Context(), req.TabID), req.Ref, req.Value)
 	writeResult(w, result, err)
 }
 
@@ -406,7 +438,7 @@ func (s *Server) press(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Press(contextWithTabID(r.Context(), req.TabID), req.Key)
+	result, err := s.manager.Press(s.contextWithTabID(r.Context(), req.TabID), req.Key)
 	writeResult(w, result, err)
 }
 
@@ -418,7 +450,7 @@ func (s *Server) scroll(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Scroll(contextWithTabID(r.Context(), req.TabID), req.Direction)
+	result, err := s.manager.Scroll(s.contextWithTabID(r.Context(), req.TabID), req.Direction)
 	writeResult(w, result, err)
 }
 
@@ -431,7 +463,7 @@ func (s *Server) waitFor(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.WaitFor(contextWithTabID(r.Context(), req.TabID), req.Condition, time.Duration(req.TimeoutMS)*time.Millisecond))
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.WaitFor(s.contextWithTabID(r.Context(), req.TabID), req.Condition, time.Duration(req.TimeoutMS)*time.Millisecond))
 }
 
 func (s *Server) hover(w http.ResponseWriter, r *http.Request) {
@@ -442,7 +474,7 @@ func (s *Server) hover(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Hover(contextWithTabID(r.Context(), req.TabID), req.Ref)
+	result, err := s.manager.Hover(s.contextWithTabID(r.Context(), req.TabID), req.Ref)
 	writeResult(w, result, err)
 }
 
@@ -454,13 +486,13 @@ func (s *Server) evaluate(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Evaluate(contextWithTabID(r.Context(), req.TabID), req.Expression)
+	result, err := s.manager.Evaluate(s.contextWithTabID(r.Context(), req.TabID), req.Expression)
 	writeResult(w, result, err)
 }
 
 func (s *Server) networkRequests(w http.ResponseWriter, r *http.Request) {
 	filter := r.URL.Query().Get("filter")
-	ctx := requestContext(r)
+	ctx := s.requestContext(r)
 	if r.Method == http.MethodPost {
 		var req struct {
 			Filter string `json:"filter"`
@@ -470,7 +502,7 @@ func (s *Server) networkRequests(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		filter = req.Filter
-		ctx = contextWithTabID(r.Context(), req.TabID)
+		ctx = s.contextWithTabID(r.Context(), req.TabID)
 	}
 	result, err := s.manager.NetworkRequests(ctx, filter)
 	writeResult(w, result, err)
@@ -478,7 +510,7 @@ func (s *Server) networkRequests(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) networkCapture(w http.ResponseWriter, r *http.Request) {
 	filter := r.URL.Query().Get("filter")
-	ctx := requestContext(r)
+	ctx := s.requestContext(r)
 	if r.Method == http.MethodPost {
 		var req struct {
 			Filter string `json:"filter"`
@@ -488,7 +520,7 @@ func (s *Server) networkCapture(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		filter = req.Filter
-		ctx = contextWithTabID(r.Context(), req.TabID)
+		ctx = s.contextWithTabID(r.Context(), req.TabID)
 	}
 	result, err := s.manager.NetworkCapture(ctx, filter)
 	writeResult(w, result, err)
@@ -505,7 +537,7 @@ func (s *Server) replayRequest(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.ReplayRequest(contextWithTabID(r.Context(), req.TabID), browser.ReplayRequestParams{
+	result, err := s.manager.ReplayRequest(s.contextWithTabID(r.Context(), req.TabID), browser.ReplayRequestParams{
 		Method:  req.Method,
 		URL:     req.URL,
 		Headers: req.Headers,
@@ -522,7 +554,7 @@ func (s *Server) executePlan(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.ExecutePlan(contextWithTabID(r.Context(), req.TabID), req.Steps)
+	result, err := s.manager.ExecutePlan(contextWithExplicitTabID(r.Context(), req.TabID), req.Steps)
 	writeResult(w, result, err)
 }
 
@@ -534,7 +566,7 @@ func (s *Server) executeBatch(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.ExecuteBatch(contextWithTabID(r.Context(), req.TabID), req.Steps)
+	result, err := s.manager.ExecuteBatch(contextWithExplicitTabID(r.Context(), req.TabID), req.Steps)
 	writeResult(w, result, err)
 }
 
@@ -546,12 +578,15 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Cancel(contextWithTabID(r.Context(), req.TabID), req.Token)
+	// A bare cancel (no tab_id) must stay the wildcard kill switch: only pin when
+	// the caller supplied an explicit tab_id, never auto-resolve the active tab
+	// (that would scope the cancel to one tab).
+	result, err := s.manager.Cancel(contextWithExplicitTabID(r.Context(), req.TabID), req.Token)
 	writeResult(w, result, err)
 }
 
 func (s *Server) observe(w http.ResponseWriter, r *http.Request) {
-	result, err := s.manager.Observe(requestContext(r))
+	result, err := s.manager.Observe(s.requestContext(r))
 	writeResult(w, result, err)
 }
 
@@ -563,7 +598,7 @@ func (s *Server) commitField(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.CommitField(contextWithTabID(r.Context(), req.TabID), req.Ref))
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.CommitField(s.contextWithTabID(r.Context(), req.TabID), req.Ref))
 }
 
 func (s *Server) notify(w http.ResponseWriter, r *http.Request) {
@@ -576,7 +611,7 @@ func (s *Server) notify(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Notify(contextWithTabID(r.Context(), req.TabID), browser.NotifyOptions{Kind: req.Kind, Title: req.Title, Message: req.Message})
+	result, err := s.manager.Notify(s.contextWithTabID(r.Context(), req.TabID), browser.NotifyOptions{Kind: req.Kind, Title: req.Title, Message: req.Message})
 	writeResult(w, result, err)
 }
 
@@ -589,7 +624,7 @@ func (s *Server) assertVisible(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertVisible(contextWithTabID(r.Context(), req.TabID), req.Ref, time.Duration(req.TimeoutMS)*time.Millisecond))
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertVisible(s.contextWithTabID(r.Context(), req.TabID), req.Ref, time.Duration(req.TimeoutMS)*time.Millisecond))
 }
 
 func (s *Server) assertHidden(w http.ResponseWriter, r *http.Request) {
@@ -601,7 +636,7 @@ func (s *Server) assertHidden(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertHidden(contextWithTabID(r.Context(), req.TabID), req.Ref, time.Duration(req.TimeoutMS)*time.Millisecond))
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertHidden(s.contextWithTabID(r.Context(), req.TabID), req.Ref, time.Duration(req.TimeoutMS)*time.Millisecond))
 }
 
 func (s *Server) assertText(w http.ResponseWriter, r *http.Request) {
@@ -614,7 +649,7 @@ func (s *Server) assertText(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertText(contextWithTabID(r.Context(), req.TabID), req.Ref, req.Text, time.Duration(req.TimeoutMS)*time.Millisecond))
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertText(s.contextWithTabID(r.Context(), req.TabID), req.Ref, req.Text, time.Duration(req.TimeoutMS)*time.Millisecond))
 }
 
 func (s *Server) assertValue(w http.ResponseWriter, r *http.Request) {
@@ -627,7 +662,7 @@ func (s *Server) assertValue(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertValue(contextWithTabID(r.Context(), req.TabID), req.Ref, req.Value, time.Duration(req.TimeoutMS)*time.Millisecond))
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertValue(s.contextWithTabID(r.Context(), req.TabID), req.Ref, req.Value, time.Duration(req.TimeoutMS)*time.Millisecond))
 }
 
 func (s *Server) clickXY(w http.ResponseWriter, r *http.Request) {
@@ -639,17 +674,17 @@ func (s *Server) clickXY(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.ClickXY(contextWithTabID(r.Context(), req.TabID), req.X, req.Y)
+	result, err := s.manager.ClickXY(s.contextWithTabID(r.Context(), req.TabID), req.X, req.Y)
 	writeResult(w, result, err)
 }
 
 func (s *Server) consoleMessages(w http.ResponseWriter, r *http.Request) {
-	result, err := s.manager.ConsoleMessages(requestContext(r))
+	result, err := s.manager.ConsoleMessages(s.requestContext(r))
 	writeResult(w, result, err)
 }
 
 func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
-	result, err := s.manager.Downloads(requestContext(r))
+	result, err := s.manager.Downloads(s.requestContext(r))
 	writeResult(w, result, err)
 }
 
@@ -704,7 +739,7 @@ func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
 		if hasRegion {
 			aopts.Region = region
 		}
-		shot, err := s.manager.ScreenshotAnnotated(requestContext(r), aopts)
+		shot, err := s.manager.ScreenshotAnnotated(s.requestContext(r), aopts)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -718,7 +753,7 @@ func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(shot.Data)
 		return
 	}
-	shot, err := s.manager.Screenshot(requestContext(r))
+	shot, err := s.manager.Screenshot(s.requestContext(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -734,7 +769,7 @@ func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) screenshotElement(w http.ResponseWriter, r *http.Request) {
 	ref := r.URL.Query().Get("ref")
-	shot, err := s.manager.ScreenshotElement(requestContext(r), ref)
+	shot, err := s.manager.ScreenshotElement(s.requestContext(r), ref)
 	if err != nil {
 		writeError(w, err)
 		return

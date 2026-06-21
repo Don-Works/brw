@@ -16,6 +16,7 @@ import (
 
 	"github.com/Don-Works/brw/internal/actions"
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/chromedp/cdproto/accessibility"
@@ -129,10 +130,25 @@ func (b *Bridge) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
-	originPatterns := []string{"chrome-extension://*"}
+// effectiveExtensionID returns the extension id whose chrome-extension:// origin
+// the bridge will accept. An explicit profile bridge_extension_id always wins;
+// otherwise we fall back to the published default id (profilepolicy.
+// DefaultBridgeExtensionID) rather than the chrome-extension://* wildcard, so an
+// unconfigured bridge still pins to the real extension instead of accepting ANY
+// installed extension. Returns "" only when neither is set, which is the sole
+// case that falls back to the wildcard (with a loud warning).
+func (b *Bridge) effectiveExtensionID() string {
 	if b.allowedExtensionID != "" {
-		originPatterns = []string{"chrome-extension://" + b.allowedExtensionID}
+		return b.allowedExtensionID
+	}
+	return strings.TrimSpace(profilepolicy.DefaultBridgeExtensionID)
+}
+
+func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
+	allowedID := b.effectiveExtensionID()
+	originPatterns := []string{"chrome-extension://*"}
+	if allowedID != "" {
+		originPatterns = []string{"chrome-extension://" + allowedID}
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		OriginPatterns: originPatterns,
@@ -143,7 +159,7 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	}
 	conn.SetReadLimit(4 << 20)
 
-	if b.allowedExtensionID == "" {
+	if allowedID == "" {
 		log.Printf("WARNING: extension bridge accepting connections from any Chrome extension (chrome-extension://*); set a profile policy with bridge_extension_id to restrict")
 	}
 
@@ -161,7 +177,17 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	b.mu.Unlock()
 
 	log.Printf("extension bridge connected")
+
+	// Keepalive: ping the extension periodically so a half-open link (laptop
+	// sleep, NAT timeout, dropped Wi-Fi) is detected promptly instead of hanging
+	// until a request times out. A failed ping closes the conn, which unblocks
+	// readLoop's conn.Read and drains b.pending. The pinger exits cleanly when the
+	// read loop returns (pingCancel) so it never leaks.
+	pingCtx, pingCancel := context.WithCancel(r.Context())
+	go b.keepAlive(pingCtx, conn, pingKeepaliveInterval)
+
 	readErr := b.readLoop(r.Context(), conn)
+	pingCancel()
 	reason := "closed"
 	if readErr != nil {
 		reason = readErr.Error()
@@ -180,6 +206,52 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		close(ch)
 	}
 	b.mu.Unlock()
+}
+
+// pingKeepaliveInterval is how often the bridge pings the connected extension to
+// detect a half-open link. Each ping is bounded by its own short deadline so a
+// dead link is surfaced well within the interval.
+const (
+	pingKeepaliveInterval = 30 * time.Second
+	pingTimeout           = 10 * time.Second
+)
+
+// keepAlive pings the extension every interval. A ping that fails (or times out)
+// means the link is dead/half-open: the conn is closed, which unblocks readLoop
+// and drains b.pending. The goroutine exits when ctx is cancelled (the read loop
+// returned) — no leak. It pings only while this conn is still the bridge's
+// active conn, so a replaced connection's pinger goes quiet on its next tick.
+// interval is a parameter (not the const directly) so tests can drive it fast.
+func (b *Bridge) keepAlive(ctx context.Context, conn *websocket.Conn, interval time.Duration) {
+	if interval <= 0 {
+		interval = pingKeepaliveInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.mu.RLock()
+			current := b.conn == conn
+			b.mu.RUnlock()
+			if !current {
+				return
+			}
+			pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+			err := conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("extension bridge keepalive ping failed: %v", err)
+				_ = conn.Close(websocket.StatusGoingAway, "keepalive ping failed")
+				return
+			}
+		}
+	}
 }
 
 func (b *Bridge) readLoop(ctx context.Context, conn *websocket.Conn) error {
@@ -480,8 +552,15 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
 	var snap snapshot.PageSnapshot
 	opts.IncludeAX = false
-	if cached, ok := b.tryCachedSnapshot(ctx, opts); ok {
-		return cached, nil
+	// A since-delta request must reach the in-page walker (which derives the delta
+	// from live per-document state) and must bypass the outer snapshot cache in
+	// BOTH directions: a cached full snapshot would defeat the delta, and caching a
+	// delta-shaped (partial) result under the key would corrupt later full reads.
+	sinceDelta := opts.Since > 0
+	if !sinceDelta {
+		if cached, ok := b.tryCachedSnapshot(ctx, opts); ok {
+			return cached, nil
+		}
 	}
 	optsJSON, _ := json.Marshal(opts)
 	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.SnapshotFunctionScript, optsJSON), "", &snap); err != nil {
@@ -491,7 +570,9 @@ func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (s
 		Available: false,
 		Error:     "accessibility tree is unavailable through the Chrome extension bridge; use direct CDP attach for AX enrichment",
 	}
-	b.storeCachedSnapshot(ctx, opts, snap)
+	if !sinceDelta {
+		b.storeCachedSnapshot(ctx, opts, snap)
+	}
 	return snap, nil
 }
 
@@ -568,9 +649,31 @@ func (b *Bridge) ReadData(ctx context.Context) (snapshot.StructuredData, error) 
 }
 
 const (
+	// observedActionSettle / batchActionSettle are the CAPS for the adaptive
+	// settle (b.settle): the page-change poll never blocks longer than this, so
+	// settling is never slower than the previous blind time.Sleep, only faster
+	// when the page stabilises early.
 	observedActionSettle = 75 * time.Millisecond
 	batchActionSettle    = 25 * time.Millisecond
 	waitForPollInterval  = 250 * time.Millisecond
+	// settlePollStart / settlePollMax bound the adaptive settle poll cadence:
+	// start tight so a quiescent page returns in ~one short interval, then back
+	// off so a busy page does not spin. settleStableReads is how many consecutive
+	// equal fingerprints count as "settled".
+	settlePollStart   = 12 * time.Millisecond
+	settlePollMax     = 40 * time.Millisecond
+	settleStableReads = 2
+	// settleMinFloor is the minimum settle duration: we never return "settled"
+	// before it even when the page already looks stable, so a handler's
+	// setTimeout(0) / framework render / rAF that lands a few ms after the action
+	// is still observed (preserving the debounce the old fixed sleep gave). Capped
+	// by capDur, so a batch step's 25ms cap is honoured.
+	settleMinFloor = 24 * time.Millisecond
+	// waitForPollStart / waitForPollMax tighten WaitFor: poll quickly at first so
+	// a condition that is already (or quickly) satisfied returns promptly, backing
+	// off to the original coarse interval for long waits.
+	waitForPollStart = 25 * time.Millisecond
+	waitForPollMax   = waitForPollInterval
 	// activeTabResolveAttempts/Backoff bound how hard contextTabID retries live
 	// active-tab resolution before falling back to the last-known cached tab. The
 	// MV3 service worker can be mid-reconnect when a call lands; a couple of quick
@@ -579,12 +682,110 @@ const (
 	activeTabResolveBackoff  = 150 * time.Millisecond
 )
 
+// settleFingerprintExpr is a cheap in-page snapshot of "has the page changed?"
+// signals: readyState, the DOM node count, the body text length, the active
+// element tag, and the current URL. It is intentionally O(1)-ish (no full DOM
+// serialization) so polling it a few times is far cheaper than a real snapshot.
+const settleFingerprintExpr = `(function(){try{
+  var ae=document.activeElement;
+  return document.readyState+'|'+(document.getElementsByTagName('*').length)+'|'+((document.body&&document.body.innerText)?document.body.innerText.length:0)+'|'+(ae?ae.tagName+'#'+(ae.id||''):'')+'|'+location.href;
+}catch(e){return 'err';}})()`
+
+// settle replaces the previous blind time.Sleep(capDur) before observing an
+// action. It polls a cheap in-page fingerprint and returns as soon as the page
+// is stable (two consecutive equal reads) and ready, or when capDur elapses — so
+// it is NEVER slower than the old fixed sleep, only faster on a quiescent page.
+// It is cancellation-aware (returns immediately if ctx is done) and degrades to
+// honouring the remaining cap if the fingerprint cannot be read (disconnected /
+// mid-navigation).
+func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
+	if capDur <= 0 {
+		return
+	}
+	start := time.Now()
+	deadline := start.Add(capDur)
+	floor := settleMinFloor
+	if floor > capDur {
+		floor = capDur
+	}
+	floorTime := start.Add(floor)
+	interval := settlePollStart
+	if interval > capDur {
+		interval = capDur
+	}
+	prev := ""
+	stable := 0
+	// Each fingerprint read is bounded by the settle deadline (not b.timeout), so a
+	// connected-but-unresponsive extension cannot turn a 25/75ms settle into a
+	// multi-second b.call wait. We bound the WAIT with a watchdog rather than
+	// passing a cap-short context to b.evaluate: a context cancelled mid-write
+	// makes coder/websocket drop the whole connection, so a slow-but-healthy write
+	// must not be force-cancelled. An abandoned read completes harmlessly in the
+	// background via the normal b.timeout.
+	read := func() (string, bool) {
+		type fpRes struct {
+			fp string
+			ok bool
+		}
+		resCh := make(chan fpRes, 1)
+		go func() {
+			var fp string
+			err := b.evaluate(ctx, settleFingerprintExpr, "", &fp)
+			resCh <- fpRes{fp: fp, ok: err == nil && fp != "" && fp != "err"}
+		}()
+		select {
+		case r := <-resCh:
+			return r.fp, r.ok
+		case <-ctx.Done():
+			return "", false
+		case <-time.After(time.Until(deadline)):
+			return "", false
+		}
+	}
+	if fp, ok := read(); ok {
+		prev = fp
+		stable = 1
+	}
+	for time.Now().Before(deadline) {
+		wait := interval
+		if remaining := time.Until(deadline); wait > remaining {
+			wait = remaining
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		fp, ok := read()
+		if !ok {
+			// Cannot read the page (navigating / disconnected): keep honouring
+			// the remaining cap as a plain wait, matching the old behaviour.
+			continue
+		}
+		if fp == prev {
+			stable++
+			if stable >= settleStableReads && time.Now().After(floorTime) && (strings.HasPrefix(fp, "complete") || strings.HasPrefix(fp, "interactive")) {
+				return
+			}
+		} else {
+			prev = fp
+			stable = 1
+		}
+		if interval < settlePollMax {
+			interval += interval / 2 // mild geometric backoff (12,18,27,40…)
+			if interval > settlePollMax {
+				interval = settlePollMax
+			}
+		}
+	}
+}
+
 func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
 	if err := b.clickRef(ctx, ref); err != nil {
 		return browser.ActionResult{}, err
 	}
-	time.Sleep(observedActionSettle)
+	b.settle(ctx, observedActionSettle)
 	return b.observeActionWithBefore(ctx, "clicked "+ref, before), nil
 }
 
@@ -601,7 +802,7 @@ func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) 
 		}
 		return browser.ActionResult{}, fmt.Errorf("click text: %s", clicked.Error)
 	}
-	time.Sleep(observedActionSettle)
+	b.settle(ctx, observedActionSettle)
 	label := opts.Text
 	if clicked.Name != "" {
 		label = clicked.Name
@@ -614,7 +815,7 @@ func (b *Bridge) Hover(ctx context.Context, ref string) (browser.ActionResult, e
 	if err := b.hoverRef(ctx, ref); err != nil {
 		return browser.ActionResult{}, err
 	}
-	time.Sleep(observedActionSettle)
+	b.settle(ctx, observedActionSettle)
 	return b.observeActionWithBefore(ctx, "hovered "+ref, before), nil
 }
 
@@ -769,7 +970,7 @@ func (b *Bridge) Type(ctx context.Context, ref, text string) (browser.ActionResu
 	if err := b.typeRef(ctx, ref, text); err != nil {
 		return browser.ActionResult{}, err
 	}
-	time.Sleep(observedActionSettle)
+	b.settle(ctx, observedActionSettle)
 	return b.observeActionWithBefore(ctx, "typed into "+ref, before), nil
 }
 
@@ -787,7 +988,7 @@ func (b *Bridge) Fill(ctx context.Context, opts snapshot.FillOptions) (browser.A
 	if err != nil {
 		return browser.ActionResult{}, err
 	}
-	time.Sleep(observedActionSettle)
+	b.settle(ctx, observedActionSettle)
 	return b.observeActionWithBefore(ctx, "filled "+ref, before), nil
 }
 
@@ -908,7 +1109,7 @@ func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (b
 	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.FileInputEventsScript, refJSON), "", &ignored); err != nil {
 		return browser.ActionResult{}, err
 	}
-	time.Sleep(observedActionSettle)
+	b.settle(ctx, observedActionSettle)
 	return b.observeActionWithBefore(ctx, "uploaded file to "+ref, before), nil
 }
 
@@ -918,7 +1119,7 @@ func (b *Bridge) Select(ctx context.Context, ref, value string) (browser.ActionR
 	if err != nil {
 		return browser.ActionResult{}, err
 	}
-	time.Sleep(observedActionSettle)
+	b.settle(ctx, observedActionSettle)
 	return b.observeActionWithBefore(ctx, message, before), nil
 }
 
@@ -953,7 +1154,7 @@ func (b *Bridge) selectCustomOption(ctx context.Context, ref, value string) (str
 		if err := b.clickRef(ctx, ref); err != nil {
 			return "", fmt.Errorf("open custom select %s: %w", ref, err)
 		}
-		time.Sleep(observedActionSettle)
+		b.settle(ctx, observedActionSettle)
 		option, err = b.findOptionCandidate(ctx, value)
 		if err != nil {
 			return "", err
@@ -999,7 +1200,7 @@ func (b *Bridge) Press(ctx context.Context, key string) (browser.ActionResult, e
 	if err := b.pressKey(ctx, key); err != nil {
 		return browser.ActionResult{}, err
 	}
-	time.Sleep(observedActionSettle)
+	b.settle(ctx, observedActionSettle)
 	return b.observeActionWithBefore(ctx, "pressed "+key, before), nil
 }
 
@@ -1037,7 +1238,7 @@ func (b *Bridge) Scroll(ctx context.Context, direction string) (browser.ActionRe
 	if err != nil {
 		return browser.ActionResult{}, err
 	}
-	time.Sleep(observedActionSettle)
+	b.settle(ctx, observedActionSettle)
 	return b.observeActionWithBefore(ctx, message, before), nil
 }
 
@@ -1056,7 +1257,7 @@ func (b *Bridge) Navigate(ctx context.Context, direction string) (browser.Action
 	}
 	// A history move / reload may tear down and rebuild the document; give it a
 	// moment to settle, then wait for readiness before observing.
-	time.Sleep(observedActionSettle)
+	b.settle(ctx, observedActionSettle)
 	_ = b.WaitFor(ctx, "load", 10*time.Second)
 	return b.observeActionWithBefore(ctx, "navigated "+dir, before), nil
 }
@@ -1140,6 +1341,11 @@ func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (bro
 	defer release()
 	ctx = entry.ctx
 
+	// Resolve the active tab once for the whole plan and pin it into the step
+	// context (re-pinned after focus_tab / open steps that move focus) so each
+	// step's contextTabID() short-circuits instead of re-resolving per step.
+	stepCtx := b.pinActiveTab(ctx)
+
 	result := browser.PlanResult{OK: true, Steps: make([]browser.PlanStepResult, 0, len(steps))}
 	for i, step := range steps {
 		if entry.Cancelled() {
@@ -1149,7 +1355,8 @@ func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (bro
 			result.StepsCompleted = len(result.Steps)
 			return result, nil
 		}
-		stepResult := b.executePlanStep(ctx, i, step)
+		stepResult, retargetTo := b.executePlanStep(stepCtx, i, step)
+		stepCtx = b.retargetPinnedTab(ctx, stepCtx, retargetTo)
 		result.Steps = append(result.Steps, stepResult)
 		if !stepResult.OK {
 			if entry.Cancelled() {
@@ -1171,25 +1378,29 @@ func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (bro
 	return result, nil
 }
 
-func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.PlanStep) browser.PlanStepResult {
+// executePlanStep runs one plan step and returns its result plus the retarget
+// target tab id — the KNOWN id a successful focus_tab/open moved focus to ("" for
+// any other step or on failure) — so the loop re-pins without the active cache.
+func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.PlanStep) (browser.PlanStepResult, string) {
 	sr := browser.PlanStepResult{Index: index, Action: step.Action, OK: true}
+	retargetTo := ""
 
 	if step.ExpectRef != "" {
 		findResult, err := b.Find(ctx, snapshot.FindOptions{Query: step.ExpectRef, Limit: 1})
 		if err != nil {
 			sr.OK = false
 			sr.Error = fmt.Sprintf("expect_ref %q lookup failed: %v", step.ExpectRef, err)
-			return sr
+			return sr, retargetTo
 		}
 		if len(findResult.Elements) == 0 {
 			sr.OK = false
 			sr.Error = fmt.Sprintf("expect_ref %q not found", step.ExpectRef)
-			return sr
+			return sr, retargetTo
 		}
 		if step.ExpectRole != "" && findResult.Elements[0].Role != step.ExpectRole {
 			sr.OK = false
 			sr.Error = fmt.Sprintf("expect_ref %q has role %q, expected %q", step.ExpectRef, findResult.Elements[0].Role, step.ExpectRole)
-			return sr
+			return sr, retargetTo
 		}
 	}
 
@@ -1201,41 +1412,41 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			break
 		}
 		actionErr = b.clickRef(ctx, step.Ref)
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "type":
 		if step.Ref == "" || step.Text == "" {
 			actionErr = errors.New("type requires ref and text")
 			break
 		}
 		actionErr = b.typeRef(ctx, step.Ref, step.Text)
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "fill":
 		_, actionErr = b.fillOptions(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "select":
 		if step.Ref == "" || step.Value == "" {
 			actionErr = errors.New("select requires ref and value")
 			break
 		}
 		_, actionErr = b.selectValue(ctx, step.Ref, step.Value)
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "press":
 		if step.Key == "" {
 			actionErr = errors.New("press requires key")
 			break
 		}
 		actionErr = b.pressKey(ctx, step.Key)
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "scroll":
 		_, actionErr = b.scrollDirection(ctx, step.Direction)
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "hover":
 		if step.Ref == "" {
 			actionErr = errors.New("hover requires ref")
 			break
 		}
 		actionErr = b.hoverRef(ctx, step.Ref)
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "wait":
 		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
 		if timeout == 0 {
@@ -1255,13 +1466,20 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			actionErr = errors.New("open requires url")
 			break
 		}
-		_, actionErr = b.Open(ctx, step.URL)
+		var openRes browser.OpenResult
+		openRes, actionErr = b.Open(ctx, step.URL)
+		if actionErr == nil {
+			retargetTo = openRes.Tab.ID
+		}
 	case "focus_tab":
 		if step.ID == "" {
 			actionErr = errors.New("focus_tab requires id")
 			break
 		}
 		actionErr = b.FocusTab(ctx, step.ID)
+		if actionErr == nil {
+			retargetTo = step.ID
+		}
 	default:
 		actionErr = fmt.Errorf("unknown action %q", step.Action)
 	}
@@ -1273,7 +1491,7 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 	if sr.Message == "" && sr.OK {
 		sr.Message = step.Action + " ok"
 	}
-	return sr
+	return sr, retargetTo
 }
 
 func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Duration) error {
@@ -1281,6 +1499,9 @@ func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Dur
 		timeout = b.timeout
 	}
 	deadline := time.Now().Add(timeout)
+	// Start with a tight poll so a quickly-satisfied condition returns promptly,
+	// then back off geometrically to the original coarse interval for long waits.
+	interval := waitForPollStart
 	for {
 		// Cooperative cancellation: a Cancel on the surrounding plan/batch (or
 		// this tab) cancels ctx, unblocking a long wait promptly.
@@ -1297,10 +1518,20 @@ func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Dur
 			}
 			return fmt.Errorf("timed out waiting for %q", condition)
 		}
+		wait := interval
+		if remaining := time.Until(deadline); wait > remaining {
+			wait = remaining
+		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("wait for %q cancelled", condition)
-		case <-time.After(waitForPollInterval):
+		case <-time.After(wait):
+		}
+		if interval < waitForPollMax {
+			interval += interval / 2 // 25,37,56,84,126,189,250…
+			if interval > waitForPollMax {
+				interval = waitForPollMax
+			}
 		}
 	}
 }
@@ -1633,6 +1864,56 @@ func (b *Bridge) contextTabID(ctx context.Context) string {
 	return b.activeTabID()
 }
 
+// ResolveActiveTabID resolves the genuinely focused tab ONCE for a top-level
+// tool call and returns it (or "" when it cannot be determined). The MCP / HTTP
+// entry points call this when no explicit tab_id is supplied and pin the result
+// into the request context via browser.WithTabID, so every downstream
+// contextTabID() short-circuits instead of re-issuing get_active_tab_id 3-11x
+// per logical tool call. It runs the same bounded retry as contextTabID so a
+// mid-reconnect MV3 service worker does not drop the call onto a stale tab.
+func (b *Bridge) ResolveActiveTabID(ctx context.Context) string {
+	return b.contextTabID(ctx)
+}
+
+// pinActiveTab resolves the active tab once and returns a context with that tab
+// pinned via browser.WithTabID. If an explicit tab is already in the context it
+// is left untouched (the caller asked for a specific tab). If resolution fails
+// (extension disconnected, mid-reconnect) the original context is returned so
+// downstream calls keep their existing per-call resolution behaviour rather than
+// pinning an empty tab.
+func (b *Bridge) pinActiveTab(ctx context.Context) context.Context {
+	if browser.TabIDFromContext(ctx) != "" {
+		return ctx
+	}
+	if tabID := b.contextTabID(ctx); tabID != "" {
+		return browser.WithTabID(ctx, tabID)
+	}
+	return ctx
+}
+
+// retargetPinnedTab re-pins the sequence onto the tab a step just moved focus to
+// (focus_tab, open). Without it, a focus_tab/open step mid-batch/plan would leave
+// subsequent steps pinned to the STALE pre-focus tab. targetTabID is the KNOWN id
+// from the just-completed step (focus_tab's target / open's new tab) — never the
+// mutable b.active cache, which async active_tab pushes or concurrent operations
+// can change out from under the sequence. base is the caller's context: it
+// carries a tab ONLY when the caller passed an explicit tab_id (the MCP/HTTP
+// entry excludes batch/plan from one-shot active-tab pinning). stepCtx is the
+// currently-pinned context, returned unchanged for non-retargeting steps.
+func (b *Bridge) retargetPinnedTab(base, stepCtx context.Context, targetTabID string) context.Context {
+	// Non-retargeting step (not focus_tab/open, or it failed): keep the pin.
+	if targetTabID == "" {
+		return stepCtx
+	}
+	// An explicitly-supplied tab_id stays sticky for the whole sequence (matching
+	// the pre-pin behaviour where contextTabID short-circuits on the caller's tab
+	// regardless of focus_tab side effects): never let a focus_tab/open override it.
+	if browser.TabIDFromContext(base) != "" {
+		return stepCtx
+	}
+	return browser.WithTabID(base, targetTabID)
+}
+
 // resolveActiveTabID asks the extension for the truly active/focused tab and
 // updates the cached reference to match, healing drift. Returns "" when the
 // bridge is disconnected or the query fails so the caller can fall back to the
@@ -1945,7 +2226,14 @@ func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (b
 	defer release()
 	ctx = entry.ctx
 
-	result := browser.BatchResult{OK: true, Steps: make([]browser.BatchStepResult, 0, len(steps)), TabID: b.contextTabID(ctx)}
+	// Resolve the active tab ONCE for the whole sequence and pin it into the
+	// step context, so each step's contextTabID() short-circuits instead of
+	// re-issuing get_active_tab_id per step (3-11x per step otherwise). A
+	// focus_tab / open step legitimately moves the active tab, so we re-pin after
+	// any retargeting step (see retargetPinnedTab).
+	stepCtx := b.pinActiveTab(ctx)
+
+	result := browser.BatchResult{OK: true, Steps: make([]browser.BatchStepResult, 0, len(steps)), TabID: browser.TabIDFromContext(stepCtx)}
 	for i, step := range steps {
 		if entry.Cancelled() {
 			result.Cancelled = true
@@ -1953,7 +2241,8 @@ func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (b
 			result.Error = "cancelled"
 			break
 		}
-		sr := b.executeBatchStep(ctx, i, step)
+		sr, retargetTo := b.executeBatchStep(stepCtx, i, step)
+		stepCtx = b.retargetPinnedTab(ctx, stepCtx, retargetTo)
 		result.Steps = append(result.Steps, sr)
 		if !sr.OK {
 			if entry.Cancelled() {
@@ -1969,6 +2258,23 @@ func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (b
 		}
 	}
 	result.StepsCompleted = len(result.Steps)
+	// Pin the observation to the tab the sequence ended on (the step pin, which
+	// already tracked focus_tab/open moves) so the closing snapshot resolves the
+	// active tab once via the pinned id instead of re-issuing get_active_tab_id
+	// across its tryCached/store/evaluate sub-calls. Falls back to obsCtx when no
+	// tab could be pinned, preserving the prior per-call behaviour.
+	if pinned := browser.TabIDFromContext(stepCtx); pinned != "" {
+		obsCtx = browser.WithTabID(obsCtx, pinned)
+		// Refresh the reported tab id to the tab the sequence actually ended on
+		// (focus_tab/open retargets), so a batch that moved focus does not return
+		// the initial tab_id alongside the new tab's URL/title.
+		result.TabID = pinned
+	} else {
+		obsCtx = b.pinActiveTab(obsCtx)
+		if p := browser.TabIDFromContext(obsCtx); p != "" {
+			result.TabID = p
+		}
+	}
 	snap, snapErr := b.Snapshot(obsCtx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if snapErr == nil {
 		result.URL = snap.URL
@@ -1985,9 +2291,14 @@ func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (b
 	return result, nil
 }
 
-func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.BatchStep) browser.BatchStepResult {
+// executeBatchStep runs one batch step and returns its result plus the retarget
+// target tab id — the KNOWN id of the tab a successful focus_tab/open moved focus
+// to ("" for any other step or on failure), used by the loop to re-pin without
+// reading the mutable active-tab cache.
+func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.BatchStep) (browser.BatchStepResult, string) {
 	sr := browser.BatchStepResult{Index: index, Action: step.Action, OK: true}
 	var actionErr error
+	retargetTo := ""
 	switch step.Action {
 	case "click":
 		if step.Ref == "" {
@@ -1995,41 +2306,41 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 			break
 		}
 		actionErr = b.clickRef(ctx, step.Ref)
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "type":
 		if step.Ref == "" || step.Text == "" {
 			actionErr = errors.New("type requires ref and text")
 			break
 		}
 		actionErr = b.typeRef(ctx, step.Ref, step.Text)
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "fill":
 		_, actionErr = b.fillOptions(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "select":
 		if step.Ref == "" || step.Value == "" {
 			actionErr = errors.New("select requires ref and value")
 			break
 		}
 		_, actionErr = b.selectValue(ctx, step.Ref, step.Value)
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "press":
 		if step.Key == "" {
 			actionErr = errors.New("press requires key")
 			break
 		}
 		actionErr = b.pressKey(ctx, step.Key)
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "scroll":
 		_, actionErr = b.scrollDirection(ctx, step.Direction)
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "hover":
 		if step.Ref == "" {
 			actionErr = errors.New("hover requires ref")
 			break
 		}
 		actionErr = b.hoverRef(ctx, step.Ref)
-		time.Sleep(batchActionSettle)
+		b.settle(ctx, batchActionSettle)
 	case "wait":
 		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
 		if timeout == 0 {
@@ -2041,13 +2352,20 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 			actionErr = errors.New("open requires url")
 			break
 		}
-		_, actionErr = b.Open(ctx, step.URL)
+		var openRes browser.OpenResult
+		openRes, actionErr = b.Open(ctx, step.URL)
+		if actionErr == nil {
+			retargetTo = openRes.Tab.ID
+		}
 	case "focus_tab":
 		if step.ID == "" {
 			actionErr = errors.New("focus_tab requires id")
 			break
 		}
 		actionErr = b.FocusTab(ctx, step.ID)
+		if actionErr == nil {
+			retargetTo = step.ID
+		}
 	case "assert_visible":
 		if step.Ref == "" {
 			actionErr = errors.New("assert_visible requires ref")
@@ -2095,7 +2413,7 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 		sr.OK = false
 		sr.Error = actionErr.Error()
 	}
-	return sr
+	return sr, retargetTo
 }
 
 func (b *Bridge) Observe(ctx context.Context) (browser.ObserveResult, error) {
