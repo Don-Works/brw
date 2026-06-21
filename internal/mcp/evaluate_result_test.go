@@ -82,6 +82,25 @@ func TestEvaluateResult_OffsetBeyondEnd(t *testing.T) {
 	}
 }
 
+func TestEvaluateResult_MaxBytesOverflowNoPanic(t *testing.T) {
+	// Regression (review #1): max_bytes near MaxInt with a non-zero offset must
+	// not overflow offset+maxBytes (which would wrap negative and panic the
+	// data[offset:end] slice). It should clamp to the end and return the rest.
+	big := strings.Repeat("z", 100)
+	const huge = int(^uint(0) >> 1) // platform max int
+	res, rpcErr := evaluateResult(big, nil, 1, huge)
+	if rpcErr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rpcErr)
+	}
+	text := textOf(t, res)
+	if text == "" {
+		t.Fatal("must not be empty")
+	}
+	if !strings.HasPrefix(text, "zzz") {
+		t.Fatalf("expected remainder from offset 1, got prefix: %q", text[:10])
+	}
+}
+
 // itoa avoids importing strconv just for the test's marker assertions.
 func itoa(n int) string {
 	if n == 0 {

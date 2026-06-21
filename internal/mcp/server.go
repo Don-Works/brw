@@ -808,9 +808,13 @@ func evaluateResult(value any, err error, offset, maxBytes int) (any, *rpcError)
 		return map[string]any{"content": []toolContent{{Type: "text", Text: text}}}, nil
 	}
 
-	end := offset + maxBytes
-	if end > total {
-		end = total
+	// Clamp the window WITHOUT overflowing offset+maxBytes: max_bytes is
+	// caller-controlled and could be near math.MaxInt, which would wrap
+	// negative and panic data[offset:end]. offset < total is guaranteed above,
+	// so total-offset is a safe positive bound.
+	end := total
+	if maxBytes < total-offset {
+		end = offset + maxBytes
 	}
 	window := string(data[offset:end])
 	truncated := offset > 0 || end < total
