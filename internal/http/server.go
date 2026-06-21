@@ -128,6 +128,19 @@ func (s *Server) contextWithTabID(ctx context.Context, tabID string) context.Con
 	return ctx
 }
 
+// contextWithExplicitTabID pins ONLY a caller-supplied tab_id and never
+// auto-resolves the active tab. The batch/plan runners and cancel use it because
+// they manage focus themselves: batch/plan re-pin per step after focus_tab/open
+// (auto-pinning here would make retargetPinnedTab treat the pin as an explicit
+// tab and suppress retargeting), and a bare cancel must stay the wildcard kill
+// switch. Mirrors the MCP server excluding these tools from one-shot pinning.
+func contextWithExplicitTabID(ctx context.Context, tabID string) context.Context {
+	if tabID != "" {
+		return browser.WithTabID(ctx, tabID)
+	}
+	return ctx
+}
+
 // activeTabResolver is the optional capability a Controller may implement to
 // resolve the genuinely focused tab once per request (see contextWithTabID).
 type activeTabResolver interface {
@@ -541,7 +554,7 @@ func (s *Server) executePlan(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.ExecutePlan(s.contextWithTabID(r.Context(), req.TabID), req.Steps)
+	result, err := s.manager.ExecutePlan(contextWithExplicitTabID(r.Context(), req.TabID), req.Steps)
 	writeResult(w, result, err)
 }
 
@@ -553,7 +566,7 @@ func (s *Server) executeBatch(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.ExecuteBatch(s.contextWithTabID(r.Context(), req.TabID), req.Steps)
+	result, err := s.manager.ExecuteBatch(contextWithExplicitTabID(r.Context(), req.TabID), req.Steps)
 	writeResult(w, result, err)
 }
 
@@ -565,15 +578,10 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	// A bare cancel (no tab_id) must stay the wildcard kill switch: do NOT
-	// auto-resolve the active tab here (that would scope the cancel to one tab).
-	// Only pin when the caller supplied an explicit tab_id. Mirrors the MCP server
-	// excluding brw_cancel from one-shot active-tab pinning.
-	ctx := r.Context()
-	if req.TabID != "" {
-		ctx = browser.WithTabID(ctx, req.TabID)
-	}
-	result, err := s.manager.Cancel(ctx, req.Token)
+	// A bare cancel (no tab_id) must stay the wildcard kill switch: only pin when
+	// the caller supplied an explicit tab_id, never auto-resolve the active tab
+	// (that would scope the cancel to one tab).
+	result, err := s.manager.Cancel(contextWithExplicitTabID(r.Context(), req.TabID), req.Token)
 	writeResult(w, result, err)
 }
 
