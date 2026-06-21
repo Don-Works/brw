@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/Don-Works/brw/internal/cdp"
@@ -265,9 +266,15 @@ type remoteMCPWrapperOptions struct {
 	MCPTools              string
 	SSH                   string
 	ConnectTimeout        string
+	ConnectionAttempts    string
+	ServerAliveInterval   string
+	ServerAliveCountMax   string
 	KnownHosts            string
 	StrictHostKeyChecking string
+	IdentityFile          string
+	Compression           bool
 	LogPath               string
+	LogMaxBytes           string
 	SSHOptions            []string
 }
 
@@ -284,9 +291,15 @@ func remoteMCPWrapper(args []string) error {
 	fs.StringVar(&opts.MCPTools, "mcp-tools", envDefault("BRW_MCP_TOOLS", "all"), "MCP tool surface: all or core")
 	fs.StringVar(&opts.SSH, "ssh", envDefault("BRW_SSH", "ssh"), "local SSH executable")
 	fs.StringVar(&opts.ConnectTimeout, "connect-timeout", envDefault("BRW_CONNECT_TIMEOUT", "5"), "SSH ConnectTimeout seconds")
+	fs.StringVar(&opts.ConnectionAttempts, "connection-attempts", envDefault("BRW_CONNECTION_ATTEMPTS", "1"), "SSH ConnectionAttempts for the initial connection; raise for flaky links")
+	fs.StringVar(&opts.ServerAliveInterval, "server-alive-interval", envDefault("BRW_SERVER_ALIVE_INTERVAL", "30"), "SSH ServerAliveInterval seconds; 0 disables keepalives. Detects a dropped link instead of hanging the MCP client")
+	fs.StringVar(&opts.ServerAliveCountMax, "server-alive-count-max", envDefault("BRW_SERVER_ALIVE_COUNT_MAX", "3"), "SSH ServerAliveCountMax: missed keepalives before the link is dropped")
 	fs.StringVar(&opts.KnownHosts, "known-hosts", filepath.Join(appDir, "ssh", "known_hosts"), "dedicated known_hosts path for this wrapper")
 	fs.StringVar(&opts.StrictHostKeyChecking, "strict-host-key-checking", envDefault("BRW_STRICT_HOST_KEY_CHECKING", "accept-new"), "SSH StrictHostKeyChecking value: yes, accept-new, or no")
+	fs.StringVar(&opts.IdentityFile, "identity-file", os.Getenv("BRW_IDENTITY_FILE"), "optional SSH identity file; when set, only this key is offered (IdentitiesOnly=yes) to avoid agent key churn / lockout")
+	fs.BoolVar(&opts.Compression, "compression", false, "enable SSH compression; helps text payloads on slow links, skip on fast links / PNG screenshots")
 	fs.StringVar(&opts.LogPath, "log", filepath.Join(appDir, "remote-mcp.log"), "stderr log path for SSH and remote brwd startup messages")
+	fs.StringVar(&opts.LogMaxBytes, "log-max-bytes", envDefault("BRW_LOG_MAX_BYTES", "5242880"), "rotate the stderr log at launch when it reaches this size in bytes; 0 disables rotation")
 	fs.Var(&sshOptions, "ssh-option", "extra ssh -o option; repeatable, for example ProxyJump=bastion")
 	fs.StringVar(&output, "output", "", "output wrapper path; stdout when empty")
 	if err := fs.Parse(args); err != nil {
@@ -308,6 +321,18 @@ func remoteMCPWrapper(args []string) error {
 	case "all", "core":
 	default:
 		return errors.New("--mcp-tools must be all or core")
+	}
+	// Validate the numeric SSH/log knobs so the generated POSIX script never
+	// emits a value that ssh rejects or that the log-rotation guard mishandles.
+	for _, nf := range []struct{ name, value string }{
+		{"connection-attempts", opts.ConnectionAttempts},
+		{"server-alive-interval", opts.ServerAliveInterval},
+		{"server-alive-count-max", opts.ServerAliveCountMax},
+		{"log-max-bytes", opts.LogMaxBytes},
+	} {
+		if n, err := strconv.Atoi(nf.value); err != nil || n < 0 {
+			return fmt.Errorf("--%s must be a non-negative integer", nf.name)
+		}
 	}
 	if opts.RemoteBRWD == "" {
 		return errors.New("--remote-brwd is required")
@@ -532,15 +557,42 @@ func remoteMCPWrapperScript(opts remoteMCPWrapperOptions) string {
 	fmt.Fprintf(&b, "BRW_SSH=${BRW_SSH:-%s}\n", quoteScript(opts.SSH))
 	fmt.Fprintf(&b, "BRW_REMOTE=${BRW_REMOTE:-%s}\n", quoteScript(target))
 	fmt.Fprintf(&b, "BRW_CONNECT_TIMEOUT=${BRW_CONNECT_TIMEOUT:-%s}\n", quoteScript(opts.ConnectTimeout))
+	fmt.Fprintf(&b, "BRW_CONNECTION_ATTEMPTS=${BRW_CONNECTION_ATTEMPTS:-%s}\n", quoteScript(opts.ConnectionAttempts))
+	fmt.Fprintf(&b, "BRW_SERVER_ALIVE_INTERVAL=${BRW_SERVER_ALIVE_INTERVAL:-%s}\n", quoteScript(opts.ServerAliveInterval))
+	fmt.Fprintf(&b, "BRW_SERVER_ALIVE_COUNT_MAX=${BRW_SERVER_ALIVE_COUNT_MAX:-%s}\n", quoteScript(opts.ServerAliveCountMax))
 	fmt.Fprintf(&b, "BRW_KNOWN_HOSTS=${BRW_KNOWN_HOSTS:-%s}\n", quoteScript(opts.KnownHosts))
 	fmt.Fprintf(&b, "BRW_STRICT_HOST_KEY_CHECKING=${BRW_STRICT_HOST_KEY_CHECKING:-%s}\n", quoteScript(opts.StrictHostKeyChecking))
-	fmt.Fprintf(&b, "BRW_LOG=${BRW_LOG:-%s}\n\n", quoteScript(opts.LogPath))
+	fmt.Fprintf(&b, "BRW_LOG=${BRW_LOG:-%s}\n", quoteScript(opts.LogPath))
+	fmt.Fprintf(&b, "BRW_LOG_MAX_BYTES=${BRW_LOG_MAX_BYTES:-%s}\n\n", quoteScript(opts.LogMaxBytes))
 	b.WriteString("mkdir -p \"$(dirname \"$BRW_KNOWN_HOSTS\")\" \"$(dirname \"$BRW_LOG\")\"\n\n")
+	// Rotate the stderr log at launch once it grows past the cap (single
+	// generation). Stops an unattended reconnect loop from filling the disk.
+	b.WriteString("if [ \"$BRW_LOG_MAX_BYTES\" -gt 0 ] && [ -f \"$BRW_LOG\" ]; then\n")
+	b.WriteString("  brw_log_size=$(wc -c < \"$BRW_LOG\" 2>/dev/null || echo 0)\n")
+	b.WriteString("  if [ \"$brw_log_size\" -ge \"$BRW_LOG_MAX_BYTES\" ]; then\n")
+	b.WriteString("    mv -f \"$BRW_LOG\" \"$BRW_LOG.1\" 2>/dev/null || :\n")
+	b.WriteString("  fi\n")
+	b.WriteString("fi\n\n")
 	b.WriteString("exec \"$BRW_SSH\" \\\n")
 	b.WriteString("  -o BatchMode=yes \\\n")
+	// No TTY: keeps the binary MCP stdio stream clean even if the operator's
+	// ssh_config forces RequestTTY.
+	b.WriteString("  -o RequestTTY=no \\\n")
 	b.WriteString("  -o ConnectTimeout=\"$BRW_CONNECT_TIMEOUT\" \\\n")
+	b.WriteString("  -o ConnectionAttempts=\"$BRW_CONNECTION_ATTEMPTS\" \\\n")
+	// Keepalives so a silently dropped link (sleep / NAT rebind / wifi switch)
+	// fails the wrapper promptly instead of hanging the MCP client forever.
+	b.WriteString("  -o ServerAliveInterval=\"$BRW_SERVER_ALIVE_INTERVAL\" \\\n")
+	b.WriteString("  -o ServerAliveCountMax=\"$BRW_SERVER_ALIVE_COUNT_MAX\" \\\n")
 	b.WriteString("  -o UserKnownHostsFile=\"$BRW_KNOWN_HOSTS\" \\\n")
 	b.WriteString("  -o StrictHostKeyChecking=\"$BRW_STRICT_HOST_KEY_CHECKING\" \\\n")
+	if opts.IdentityFile != "" {
+		fmt.Fprintf(&b, "  -o IdentityFile=%s \\\n", quoteScript(opts.IdentityFile))
+		b.WriteString("  -o IdentitiesOnly=yes \\\n")
+	}
+	if opts.Compression {
+		b.WriteString("  -o Compression=yes \\\n")
+	}
 	for _, opt := range opts.SSHOptions {
 		if opt == "" {
 			continue
