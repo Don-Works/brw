@@ -565,7 +565,15 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Cancel(s.contextWithTabID(r.Context(), req.TabID), req.Token)
+	// A bare cancel (no tab_id) must stay the wildcard kill switch: do NOT
+	// auto-resolve the active tab here (that would scope the cancel to one tab).
+	// Only pin when the caller supplied an explicit tab_id. Mirrors the MCP server
+	// excluding brw_cancel from one-shot active-tab pinning.
+	ctx := r.Context()
+	if req.TabID != "" {
+		ctx = browser.WithTabID(ctx, req.TabID)
+	}
+	result, err := s.manager.Cancel(ctx, req.Token)
 	writeResult(w, result, err)
 }
 

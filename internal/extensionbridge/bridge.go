@@ -654,6 +654,12 @@ const (
 	settlePollStart   = 12 * time.Millisecond
 	settlePollMax     = 40 * time.Millisecond
 	settleStableReads = 2
+	// settleMinFloor is the minimum settle duration: we never return "settled"
+	// before it even when the page already looks stable, so a handler's
+	// setTimeout(0) / framework render / rAF that lands a few ms after the action
+	// is still observed (preserving the debounce the old fixed sleep gave). Capped
+	// by capDur, so a batch step's 25ms cap is honoured.
+	settleMinFloor = 24 * time.Millisecond
 	// waitForPollStart / waitForPollMax tighten WaitFor: poll quickly at first so
 	// a condition that is already (or quickly) satisfied returns promptly, backing
 	// off to the original coarse interval for long waits.
@@ -687,19 +693,45 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 	if capDur <= 0 {
 		return
 	}
-	deadline := time.Now().Add(capDur)
+	start := time.Now()
+	deadline := start.Add(capDur)
+	floor := settleMinFloor
+	if floor > capDur {
+		floor = capDur
+	}
+	floorTime := start.Add(floor)
 	interval := settlePollStart
 	if interval > capDur {
 		interval = capDur
 	}
 	prev := ""
 	stable := 0
+	// Each fingerprint read is bounded by the settle deadline (not b.timeout), so a
+	// connected-but-unresponsive extension cannot turn a 25/75ms settle into a
+	// multi-second b.call wait. We bound the WAIT with a watchdog rather than
+	// passing a cap-short context to b.evaluate: a context cancelled mid-write
+	// makes coder/websocket drop the whole connection, so a slow-but-healthy write
+	// must not be force-cancelled. An abandoned read completes harmlessly in the
+	// background via the normal b.timeout.
 	read := func() (string, bool) {
-		var fp string
-		if err := b.evaluate(ctx, settleFingerprintExpr, "", &fp); err != nil || fp == "" || fp == "err" {
+		type fpRes struct {
+			fp string
+			ok bool
+		}
+		resCh := make(chan fpRes, 1)
+		go func() {
+			var fp string
+			err := b.evaluate(ctx, settleFingerprintExpr, "", &fp)
+			resCh <- fpRes{fp: fp, ok: err == nil && fp != "" && fp != "err"}
+		}()
+		select {
+		case r := <-resCh:
+			return r.fp, r.ok
+		case <-ctx.Done():
+			return "", false
+		case <-time.After(time.Until(deadline)):
 			return "", false
 		}
-		return fp, true
 	}
 	if fp, ok := read(); ok {
 		prev = fp
@@ -723,7 +755,7 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 		}
 		if fp == prev {
 			stable++
-			if stable >= settleStableReads && (strings.HasPrefix(fp, "complete") || strings.HasPrefix(fp, "interactive")) {
+			if stable >= settleStableReads && time.Now().After(floorTime) && (strings.HasPrefix(fp, "complete") || strings.HasPrefix(fp, "interactive")) {
 				return
 			}
 		} else {
@@ -1314,8 +1346,8 @@ func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (bro
 			result.StepsCompleted = len(result.Steps)
 			return result, nil
 		}
-		stepResult := b.executePlanStep(stepCtx, i, step)
-		stepCtx = b.retargetPinnedTab(ctx, stepCtx, step.Action)
+		stepResult, retargetTo := b.executePlanStep(stepCtx, i, step)
+		stepCtx = b.retargetPinnedTab(ctx, stepCtx, retargetTo)
 		result.Steps = append(result.Steps, stepResult)
 		if !stepResult.OK {
 			if entry.Cancelled() {
@@ -1337,25 +1369,29 @@ func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (bro
 	return result, nil
 }
 
-func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.PlanStep) browser.PlanStepResult {
+// executePlanStep runs one plan step and returns its result plus the retarget
+// target tab id — the KNOWN id a successful focus_tab/open moved focus to ("" for
+// any other step or on failure) — so the loop re-pins without the active cache.
+func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.PlanStep) (browser.PlanStepResult, string) {
 	sr := browser.PlanStepResult{Index: index, Action: step.Action, OK: true}
+	retargetTo := ""
 
 	if step.ExpectRef != "" {
 		findResult, err := b.Find(ctx, snapshot.FindOptions{Query: step.ExpectRef, Limit: 1})
 		if err != nil {
 			sr.OK = false
 			sr.Error = fmt.Sprintf("expect_ref %q lookup failed: %v", step.ExpectRef, err)
-			return sr
+			return sr, retargetTo
 		}
 		if len(findResult.Elements) == 0 {
 			sr.OK = false
 			sr.Error = fmt.Sprintf("expect_ref %q not found", step.ExpectRef)
-			return sr
+			return sr, retargetTo
 		}
 		if step.ExpectRole != "" && findResult.Elements[0].Role != step.ExpectRole {
 			sr.OK = false
 			sr.Error = fmt.Sprintf("expect_ref %q has role %q, expected %q", step.ExpectRef, findResult.Elements[0].Role, step.ExpectRole)
-			return sr
+			return sr, retargetTo
 		}
 	}
 
@@ -1421,13 +1457,20 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			actionErr = errors.New("open requires url")
 			break
 		}
-		_, actionErr = b.Open(ctx, step.URL)
+		var openRes browser.OpenResult
+		openRes, actionErr = b.Open(ctx, step.URL)
+		if actionErr == nil {
+			retargetTo = openRes.Tab.ID
+		}
 	case "focus_tab":
 		if step.ID == "" {
 			actionErr = errors.New("focus_tab requires id")
 			break
 		}
 		actionErr = b.FocusTab(ctx, step.ID)
+		if actionErr == nil {
+			retargetTo = step.ID
+		}
 	default:
 		actionErr = fmt.Errorf("unknown action %q", step.Action)
 	}
@@ -1439,7 +1482,7 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 	if sr.Message == "" && sr.OK {
 		sr.Message = step.Action + " ok"
 	}
-	return sr
+	return sr, retargetTo
 }
 
 func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Duration) error {
@@ -1839,31 +1882,27 @@ func (b *Bridge) pinActiveTab(ctx context.Context) context.Context {
 	return ctx
 }
 
-// retargetPinnedTab re-pins the active tab after a step that legitimately moves
-// the browser's focus (focus_tab, open). Without this, a focus_tab / open step
-// mid-batch/plan would leave subsequent steps pinned to the STALE pre-focus tab
-// for the rest of the sequence. base is the caller's context: for an
-// auto-resolved sequence it carries NO tab (the MCP/HTTP entry excludes
-// batch/plan from one-shot pinning), but for a caller-supplied tab_id it carries
-// that explicit tab. stepCtx is the currently-pinned context, returned unchanged
-// for non-retargeting steps so we never pay an extra resolution round trip. The
-// bridge updates b.active inside FocusTab/Open, so re-resolving from base picks
-// up the new focused tab.
-func (b *Bridge) retargetPinnedTab(base, stepCtx context.Context, action string) context.Context {
-	if action != "focus_tab" && action != "open" {
+// retargetPinnedTab re-pins the sequence onto the tab a step just moved focus to
+// (focus_tab, open). Without it, a focus_tab/open step mid-batch/plan would leave
+// subsequent steps pinned to the STALE pre-focus tab. targetTabID is the KNOWN id
+// from the just-completed step (focus_tab's target / open's new tab) — never the
+// mutable b.active cache, which async active_tab pushes or concurrent operations
+// can change out from under the sequence. base is the caller's context: it
+// carries a tab ONLY when the caller passed an explicit tab_id (the MCP/HTTP
+// entry excludes batch/plan from one-shot active-tab pinning). stepCtx is the
+// currently-pinned context, returned unchanged for non-retargeting steps.
+func (b *Bridge) retargetPinnedTab(base, stepCtx context.Context, targetTabID string) context.Context {
+	// Non-retargeting step (not focus_tab/open, or it failed): keep the pin.
+	if targetTabID == "" {
 		return stepCtx
 	}
 	// An explicitly-supplied tab_id stays sticky for the whole sequence (matching
 	// the pre-pin behaviour where contextTabID short-circuits on the caller's tab
-	// regardless of focus_tab side effects): never let a focus_tab/open step
-	// retarget it. base carries a tab ONLY when the caller passed one explicitly.
+	// regardless of focus_tab side effects): never let a focus_tab/open override it.
 	if browser.TabIDFromContext(base) != "" {
 		return stepCtx
 	}
-	if newTab := b.activeTabID(); newTab != "" {
-		return browser.WithTabID(base, newTab)
-	}
-	return base
+	return browser.WithTabID(base, targetTabID)
 }
 
 // resolveActiveTabID asks the extension for the truly active/focused tab and
@@ -2193,8 +2232,8 @@ func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (b
 			result.Error = "cancelled"
 			break
 		}
-		sr := b.executeBatchStep(stepCtx, i, step)
-		stepCtx = b.retargetPinnedTab(ctx, stepCtx, step.Action)
+		sr, retargetTo := b.executeBatchStep(stepCtx, i, step)
+		stepCtx = b.retargetPinnedTab(ctx, stepCtx, retargetTo)
 		result.Steps = append(result.Steps, sr)
 		if !sr.OK {
 			if entry.Cancelled() {
@@ -2217,8 +2256,15 @@ func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (b
 	// tab could be pinned, preserving the prior per-call behaviour.
 	if pinned := browser.TabIDFromContext(stepCtx); pinned != "" {
 		obsCtx = browser.WithTabID(obsCtx, pinned)
+		// Refresh the reported tab id to the tab the sequence actually ended on
+		// (focus_tab/open retargets), so a batch that moved focus does not return
+		// the initial tab_id alongside the new tab's URL/title.
+		result.TabID = pinned
 	} else {
 		obsCtx = b.pinActiveTab(obsCtx)
+		if p := browser.TabIDFromContext(obsCtx); p != "" {
+			result.TabID = p
+		}
 	}
 	snap, snapErr := b.Snapshot(obsCtx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if snapErr == nil {
@@ -2236,9 +2282,14 @@ func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (b
 	return result, nil
 }
 
-func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.BatchStep) browser.BatchStepResult {
+// executeBatchStep runs one batch step and returns its result plus the retarget
+// target tab id — the KNOWN id of the tab a successful focus_tab/open moved focus
+// to ("" for any other step or on failure), used by the loop to re-pin without
+// reading the mutable active-tab cache.
+func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.BatchStep) (browser.BatchStepResult, string) {
 	sr := browser.BatchStepResult{Index: index, Action: step.Action, OK: true}
 	var actionErr error
+	retargetTo := ""
 	switch step.Action {
 	case "click":
 		if step.Ref == "" {
@@ -2292,13 +2343,20 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 			actionErr = errors.New("open requires url")
 			break
 		}
-		_, actionErr = b.Open(ctx, step.URL)
+		var openRes browser.OpenResult
+		openRes, actionErr = b.Open(ctx, step.URL)
+		if actionErr == nil {
+			retargetTo = openRes.Tab.ID
+		}
 	case "focus_tab":
 		if step.ID == "" {
 			actionErr = errors.New("focus_tab requires id")
 			break
 		}
 		actionErr = b.FocusTab(ctx, step.ID)
+		if actionErr == nil {
+			retargetTo = step.ID
+		}
 	case "assert_visible":
 		if step.Ref == "" {
 			actionErr = errors.New("assert_visible requires ref")
@@ -2346,7 +2404,7 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 		sr.OK = false
 		sr.Error = actionErr.Error()
 	}
-	return sr
+	return sr, retargetTo
 }
 
 func (b *Bridge) Observe(ctx context.Context) (browser.ObserveResult, error) {

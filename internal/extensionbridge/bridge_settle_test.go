@@ -169,6 +169,27 @@ func TestSettleNeverExceedsCap(t *testing.T) {
 	}
 }
 
+// TestSettleHonoursMinimumFloor proves settle does not return instantly on a
+// page that already looks stable: it holds for at least settleMinFloor so a
+// delayed handler (setTimeout(0) / framework render / rAF landing a few ms after
+// the action) is still observed, preserving the debounce the old fixed sleep had.
+func TestSettleHonoursMinimumFloor(t *testing.T) {
+	b := New("", 5*time.Second, "")
+	cleanup := connectSettleFake(t, b, "complete|10|100|BODY#|https://x.test")
+	defer cleanup()
+
+	ctx := browser.WithTabID(context.Background(), "5")
+	start := time.Now()
+	b.settle(ctx, observedActionSettle)
+	elapsed := time.Since(start)
+	if elapsed < settleMinFloor-5*time.Millisecond {
+		t.Fatalf("settle returned in %v, below the %v floor; a delayed mutation could be missed", elapsed, settleMinFloor)
+	}
+	if elapsed >= observedActionSettle {
+		t.Fatalf("settle took %v; floor must not push it to the %v cap on a quiescent page", elapsed, observedActionSettle)
+	}
+}
+
 // TestWaitForReturnsPromptlyWhenSatisfied proves the tightened WaitFor returns
 // well under the old coarse 250ms poll when the condition is immediately true.
 func TestWaitForReturnsPromptlyWhenSatisfied(t *testing.T) {
