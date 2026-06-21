@@ -834,10 +834,14 @@ func (b *Bridge) resolveFillRef(ctx context.Context, opts snapshot.FillOptions) 
 }
 
 func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (browser.ActionResult, error) {
-	paths, err := browser.NormalizeUploadPaths(opts)
+	// Resolve the upload source (local path(s), inline bytes_base64, or remote
+	// URL). bytes/url sources are materialized to temp files on the daemon host
+	// and removed once DOM.setFileInputFiles has consumed them.
+	paths, cleanup, err := browser.ResolveUploadPaths(ctx, opts)
 	if err != nil {
 		return browser.ActionResult{}, err
 	}
+	defer cleanup()
 
 	ref := opts.Ref
 	if ref == "" {
@@ -2260,15 +2264,28 @@ func (b *Bridge) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYRes
 	return result, nil
 }
 
-// Downloads is best-effort over the extension bridge. The bridge cannot
-// observe Browser.downloadWillBegin / downloadProgress events without extension
-// changes, so it returns an empty list plus an explanatory note rather than
-// faking results. The direct-CDP Manager path provides full download tracking.
+// Downloads is best-effort over the extension bridge. The bridge cannot observe
+// Browser.downloadWillBegin / downloadProgress CDP events: those only fire on a
+// debugger-attached target, and the extension bridge drives the page via the
+// content/background scripts rather than a CDP debugger session, so no download
+// lifecycle events reach us.
+//
+// Real capture here would mean adding chrome.downloads support on the extension
+// side: declare the "downloads" permission in the manifest, register
+// chrome.downloads.onCreated / onChanged listeners in the background script,
+// forward those events over the bridge as a new message kind, and surface them
+// through a new bridge RPC. That is a sizable cross-language change (extension
+// JS + manifest + Go bridge plumbing), so it is intentionally NOT implemented
+// here — see GitHub issue #6. Instead we return an empty, explicitly-unsupported
+// result with Supported=false so callers can branch on the flag (rather than
+// pattern-matching the prose Note) and fall back to the direct-CDP backend,
+// which provides full download tracking via the Manager path.
 func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error) {
 	return browser.DownloadsResult{
 		Downloads: []browser.DownloadEntry{},
 		Count:     0,
-		Note:      "download tracking is not available over the extension bridge; use the direct-CDP backend for brw_downloads",
+		Supported: false,
+		Note:      "Download capture is unavailable on the extension-bridge backend (it cannot observe CDP download events). Restart brw with the direct-CDP backend to track downloads via brw_downloads, or check Supported=false to detect this case programmatically.",
 	}, nil
 }
 

@@ -635,10 +635,14 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 	}
 	defer cancel()
 
-	paths, err := NormalizeUploadPaths(opts)
+	// Resolve the upload source on the daemon host: local path(s), inline
+	// bytes_base64, or a remote URL. bytes/url sources are materialized to temp
+	// files here and removed once the file input has been set.
+	paths, cleanup, err := ResolveUploadPaths(ctx, opts)
 	if err != nil {
 		return ActionResult{}, err
 	}
+	defer cleanup()
 
 	ref := opts.Ref
 	if ref == "" {

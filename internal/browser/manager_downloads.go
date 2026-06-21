@@ -40,6 +40,12 @@ type DownloadsResult struct {
 	Downloads []DownloadEntry `json:"downloads"`
 	Count     int             `json:"count"`
 	Note      string          `json:"note,omitempty"`
+	// Supported reports whether the active backend can capture downloads. The
+	// direct-CDP Manager sets this true; the extension bridge sets it false (it
+	// cannot observe download events without extension-side chrome.downloads
+	// support — see Bridge.Downloads). Clients can branch on this flag instead
+	// of pattern-matching the human-readable Note.
+	Supported bool `json:"supported"`
 }
 
 // ensureDownloadTracking is idempotent: on first call it picks a download
@@ -241,5 +247,5 @@ func (m *Manager) Downloads(ctx context.Context) (DownloadsResult, error) {
 	if drained == nil {
 		drained = []DownloadEntry{}
 	}
-	return DownloadsResult{Downloads: drained, Count: len(drained)}, nil
+	return DownloadsResult{Downloads: drained, Count: len(drained), Supported: true}, nil
 }

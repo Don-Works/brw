@@ -544,11 +544,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	case "brw_evaluate":
 		var req struct {
 			Expression string `json:"expression"`
+			Offset     int    `json:"offset"`
+			MaxBytes   int    `json:"max_bytes"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		return toolJSON(s.manager.Evaluate(ctx, req.Expression))
+		value, err := s.manager.Evaluate(ctx, req.Expression)
+		return evaluateResult(value, err, req.Offset, req.MaxBytes)
 	case "brw_network_requests":
 		var req struct {
 			Filter string `json:"filter"`
@@ -771,6 +774,70 @@ func contextIDArg(contextID, legacyBrowserContextID string) string {
 	return legacyBrowserContextID
 }
 
+// defaultEvaluateMaxBytes bounds the serialized brw_evaluate result returned to
+// the client. Historically an oversized result came back EMPTY (the payload was
+// silently dropped past ~11KB by a downstream size limit); we now truncate with
+// an explicit marker so the caller always gets the leading bytes plus the total
+// length, and can page through the rest with offset/max_bytes.
+const defaultEvaluateMaxBytes = 64 * 1024
+
+// evaluateResult serializes a brw_evaluate value and applies offset/max_bytes
+// windowing. An oversized window is truncated with an explicit suffix marker
+// (never returned empty). offset/max_bytes are clamped to sane ranges; passing
+// neither yields the leading defaultEvaluateMaxBytes of the result.
+func evaluateResult(value any, err error, offset, maxBytes int) (any, *rpcError) {
+	if err != nil {
+		return toolError(err), nil
+	}
+	data, marshalErr := json.Marshal(value)
+	if marshalErr != nil {
+		return toolError(marshalErr), nil
+	}
+
+	total := len(data)
+	if offset < 0 {
+		offset = 0
+	}
+	if maxBytes <= 0 {
+		maxBytes = defaultEvaluateMaxBytes
+	}
+
+	// offset past the end yields an explicit empty window, not a confusing nil.
+	if offset >= total {
+		text := fmt.Sprintf("…[truncated: offset %d is at or beyond end; returned 0 of %d bytes]", offset, total)
+		return map[string]any{"content": []toolContent{{Type: "text", Text: text}}}, nil
+	}
+
+	// Clamp the window WITHOUT overflowing offset+maxBytes: max_bytes is
+	// caller-controlled and could be near math.MaxInt, which would wrap
+	// negative and panic data[offset:end]. offset < total is guaranteed above,
+	// so total-offset is a safe positive bound.
+	end := total
+	if maxBytes < total-offset {
+		end = offset + maxBytes
+	}
+	window := string(data[offset:end])
+	truncated := offset > 0 || end < total
+
+	if !truncated {
+		// Small (or fully-covered) result: behave exactly like toolJSON so
+		// structured clients still get structuredContent for object payloads.
+		result := map[string]any{
+			"content": []toolContent{{Type: "text", Text: window}},
+		}
+		if isJSONObject(data) {
+			result["structuredContent"] = value
+		}
+		return result, nil
+	}
+
+	marker := fmt.Sprintf("\n…[truncated: returned %d of %d bytes (offset %d); request more with offset=%d, max_bytes=N]",
+		end-offset, total, offset, end)
+	return map[string]any{
+		"content": []toolContent{{Type: "text", Text: window + marker}},
+	}, nil
+}
+
 func toolJSON[T any](value T, err error) (any, *rpcError) {
 	if err != nil {
 		return toolError(err), nil
@@ -934,8 +1001,10 @@ func tools() []map[string]any {
 			"ref":    stringSchema("Element ref, for example e18."),
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
-		tool("brw_evaluate", "Run arbitrary JavaScript in the page context and return the JSON-serializable result. Supports async expressions. Pass optional tab_id to target a specific tab. Note: fetch() runs under the current page's Content-Security-Policy, so cross-origin calls must be made from a tab whose origin permits them (otherwise they fail with a CSP/'Failed to fetch' error).", object(map[string]any{
+		tool("brw_evaluate", "Run arbitrary JavaScript in the page context and return the JSON-serializable result. Supports async expressions. Pass optional tab_id to target a specific tab. Large results are TRUNCATED with an explicit '…[truncated: returned N of M bytes]' marker (never silently empty); use offset/max_bytes to page through them. Note: fetch() runs under the current page's Content-Security-Policy, so cross-origin calls must be made from a tab whose origin permits them (otherwise they fail with a CSP/'Failed to fetch' error).", object(map[string]any{
 			"expression": stringSchema("JavaScript expression to evaluate. May use await for async operations."),
+			"offset":     map[string]any{"type": "integer", "description": "Byte offset into the serialized result to start returning from. Defaults to 0. Use with the marker on a truncated response to page forward."},
+			"max_bytes":  map[string]any{"type": "integer", "description": "Maximum bytes of the serialized result to return in this call. Defaults to 65536. The response is truncated (with a marker) rather than dropped when the result is larger."},
 			"tab_id":     stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"expression"})),
 		tool("brw_network_requests", "Return network resource requests captured by the Performance API (performance.getEntriesByType). Pass optional tab_id to target a specific tab.", object(map[string]any{
@@ -966,13 +1035,16 @@ func tools() []map[string]any {
 			"replace": boolSchema("Replace existing field content instead of appending. Defaults to true."),
 			"tab_id":  stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"text"})),
-		tool("brw_upload_file", "Set one or more local files on a semantic file input by ref or query and return a post-action observation. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"ref":    stringSchema("Element ref for input[type=file]. Optional when query is supplied."),
-			"query":  stringSchema("Find a file input by semantic name when ref is not supplied. Defaults to file."),
-			"role":   stringSchema("Optional role filter when using query."),
-			"path":   stringSchema("Single local file path on the browser host."),
-			"paths":  map[string]any{"type": "array", "items": stringSchema("Local file path on the browser host."), "description": "One or more local file paths on the browser host."},
-			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
+		tool("brw_upload_file", "Set a file on a semantic file input by ref or query and return a post-action observation. Provide the file from EXACTLY ONE source: path/paths (files already on the browser host), bytes_base64 (inline base64 contents — the daemon writes them to a temp file for you, no host filesystem access needed), or url (the daemon fetches it over http(s) to a temp file). Temp files created from bytes_base64/url are removed after the upload. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"ref":          stringSchema("Element ref for input[type=file]. Optional when query is supplied."),
+			"query":        stringSchema("Find a file input by semantic name when ref is not supplied. Defaults to file."),
+			"role":         stringSchema("Optional role filter when using query."),
+			"path":         stringSchema("Single local file path on the browser host. One of path/paths, bytes_base64, or url."),
+			"paths":        map[string]any{"type": "array", "items": stringSchema("Local file path on the browser host."), "description": "One or more local file paths on the browser host. One of path/paths, bytes_base64, or url."},
+			"bytes_base64": stringSchema("Inline file contents as a standard base64 string. The daemon decodes and writes them to a temp file on the browser host. Use filename to control the name the page sees. One of path/paths, bytes_base64, or url."),
+			"url":          stringSchema("http(s) URL the daemon fetches to a temp file on the browser host before uploading. One of path/paths, bytes_base64, or url."),
+			"filename":     stringSchema("Optional name for the temp file created from bytes_base64 or url (the page sees this basename). Defaults to the url basename or a generic name."),
+			"tab_id":       stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
 		tool("brw_select", "Set a native select or custom listbox/combobox value by semantic element ref. Value may be the option value/data-value or visible option label. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":    stringSchema("Element ref for a select, combobox, or listbox trigger."),
@@ -1107,7 +1179,7 @@ func tools() []map[string]any {
 		tool("brw_console", "Return and drain buffered console messages (log, warn, error, info) from the page. Messages are captured by an injected console interceptor and cleared after reading. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
-		tool("brw_downloads", "Return and drain tracked file downloads. Download capture is enabled lazily on first call (Browser.setDownloadBehavior with events); subsequent triggered downloads are recorded via the Browser.downloadWillBegin/downloadProgress CDP events with url, suggested_filename, state (inProgress/completed/canceled), received_bytes, total_bytes, guid, and path. The buffer is cleared after reading. Over the extension bridge this returns an empty list plus an explanatory note.", object(nil, nil)),
+		tool("brw_downloads", "Return and drain tracked file downloads. Download capture is enabled lazily on first call (Browser.setDownloadBehavior with events); subsequent triggered downloads are recorded via the Browser.downloadWillBegin/downloadProgress CDP events with url, suggested_filename, state (inProgress/completed/canceled), received_bytes, total_bytes, guid, and path. The buffer is cleared after reading. The result carries supported=true on the direct-CDP backend. Over the extension bridge it returns an empty list with supported=false plus an explanatory note (the bridge cannot observe CDP download events); branch on supported to detect this case.", object(nil, nil)),
 		tool("brw_trace", "Return the action trace: a compact log of recent actions with refs, timing, and outcomes. Use for debugging and performance analysis.", object(nil, nil)),
 		tool("brw_clear_trace", "Clear the action trace buffer.", object(nil, nil)),
 	}
