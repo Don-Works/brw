@@ -85,7 +85,10 @@ func New(addr string, timeout time.Duration, allowedExtensionID string) *Bridge 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/extension", b.handleExtension)
 	mux.HandleFunc("/status", b.handleStatus)
-	b.server = &http.Server{Addr: addr, Handler: mux}
+	// Bound the websocket-upgrade handshake against slow-header clients; the
+	// connection is hijacked into a long-lived WS afterward, so no read/write
+	// timeout that would sever the live bridge.
+	b.server = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	return b
 }
 

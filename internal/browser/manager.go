@@ -319,6 +319,11 @@ func (m *Manager) CloseTab(ctx context.Context, id string) error {
 	m.mu.Unlock()
 	m.refs.DropTab(id)
 	m.invalidateState(id)
+	// Symmetric with the other per-tab caches above: drop the network-capture
+	// arm marker so the map can't grow unbounded across a long open/close churn.
+	m.netCaptureMu.Lock()
+	delete(m.netCaptureTabs, id)
+	m.netCaptureMu.Unlock()
 	return nil
 }
 

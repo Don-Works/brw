@@ -155,9 +155,10 @@ const NetworkCaptureDrainScript = `(function() {
 })()`
 
 // ReplayRequestScript re-executes a single request in-page via fetch and
-// returns a bounded {status, ok, body} result. It does NOT enforce the purchase
-// guard; that is the caller's responsibility (Go-side) so the refusal is an
-// explicit error, never a network call.
+// returns a bounded {status, ok, body} result. The purchase guard is enforced
+// Go-side before this script ever runs (browser.ReplayRequestParams.
+// BlockedReplayReason, called by both transports) so a refusal is an explicit
+// error, never a network call.
 const ReplayRequestScript = `(function(opts) {
   opts = opts || {};
   var BODY_CAP = 4096;
