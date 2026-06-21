@@ -43,7 +43,7 @@ type FindOptions struct {
 	ViewportOnly  bool   `json:"viewport_only,omitempty"`
 	IncludeHidden bool   `json:"include_hidden,omitempty"`
 	// TextContent enables matching against full visible text content (innerText)
-	// in addition to element name/attributes — lets browser_find locate visible
+	// in addition to element name/attributes — lets brw_find locate visible
 	// prose, not just interactive-element metadata. Opt-in.
 	TextContent bool `json:"text_content,omitempty"`
 }

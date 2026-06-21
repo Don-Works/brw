@@ -601,7 +601,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   // viewport" — the custom-component / CSR case where the DOM walker finds few
   // useful interactive elements even though the page is visibly painted and
   // interactive. When that happens we emit low_semantic_coverage:true plus a
-  // hint steering the agent to a Set-of-Marks screenshot (browser_screenshot
+  // hint steering the agent to a Set-of-Marks screenshot (brw_screenshot
   // annotate:true) and coordinate clicks. Generic + conservative: it fires only
   // when the in-viewport semantic element count is low AND the viewport carries
   // substantial content (lots of DOM nodes or visible text), so well-populated
@@ -636,7 +636,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     low_semantic_coverage: coverage.low
   };
   if (coverage.low) {
-    metadata.coverage_hint = 'Sparse semantic surface for a content-heavy page (likely custom web components or client-side rendering). Use browser_screenshot with annotate:true (Set-of-Marks) to read ref labels off the image, or click by coordinates; a region/ref-scoped annotated crop keeps the image small.';
+    metadata.coverage_hint = 'Sparse semantic surface for a content-heavy page (likely custom web components or client-side rendering). Use brw_screenshot with annotate:true (Set-of-Marks) to read ref labels off the image, or click by coordinates; a region/ref-scoped annotated crop keeps the image small.';
   }
 
   return {

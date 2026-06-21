@@ -36,6 +36,8 @@ func main() {
 		err = doctor(os.Args[2:])
 	case "mcp-config":
 		err = mcpConfig(os.Args[2:])
+	case "remote-mcp-wrapper":
+		err = remoteMCPWrapper(os.Args[2:])
 	case "macos-policy":
 		err = macOSPolicy(os.Args[2:])
 	case "pack-extension":
@@ -55,10 +57,12 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage: brwctl <command> [options]
 
 commands:
-  doctor          verify profile policy, app install, and bridge extension state
+  doctor          verify profile policy, app install, and brw extension state
   mcp-config      print an MCP server config for a policy profile/transport
+  remote-mcp-wrapper
+                  write an SSH stdio wrapper for a remote brw bridge daemon
   macos-policy    write a Chrome ExtensionSettings .mobileconfig
-  pack-extension  pack the bridge extension as a CRX using installed Chrome
+  pack-extension  pack the brw Chrome extension as a CRX using installed Chrome
   update-xml      write a Chrome extension update manifest XML`)
 }
 
@@ -114,7 +118,7 @@ func doctor(args []string) error {
 		id := profile.BridgeExtensionID
 		report["bridge_extension_id"] = id
 		if id == "" {
-			failures = append(failures, "bridge_extension_id is required to verify an installed bridge extension")
+			failures = append(failures, "bridge_extension_id is required to verify an installed brw extension")
 		} else {
 			installed, source, err := chromeExtensionInstalled(profileDir, id)
 			report["bridge_extension_installed"] = installed
@@ -124,7 +128,7 @@ func doctor(args []string) error {
 			if err != nil {
 				failures = append(failures, err.Error())
 			} else if !installed {
-				failures = append(failures, "bridge extension "+id+" is not installed in "+profileDir)
+				failures = append(failures, "brw extension "+id+" is not installed in "+profileDir)
 			}
 		}
 	}
@@ -239,6 +243,87 @@ func mcpConfig(args []string) error {
 	return nil
 }
 
+type repeatFlag []string
+
+func (r *repeatFlag) String() string {
+	if r == nil {
+		return ""
+	}
+	return strings.Join(*r, ",")
+}
+
+func (r *repeatFlag) Set(value string) error {
+	*r = append(*r, value)
+	return nil
+}
+
+type remoteMCPWrapperOptions struct {
+	Host                  string
+	User                  string
+	RemoteBRWD            string
+	RemoteHTTP            string
+	MCPTools              string
+	SSH                   string
+	ConnectTimeout        string
+	KnownHosts            string
+	StrictHostKeyChecking string
+	LogPath               string
+	SSHOptions            []string
+}
+
+func remoteMCPWrapper(args []string) error {
+	fs := flag.NewFlagSet("remote-mcp-wrapper", flag.ContinueOnError)
+	var opts remoteMCPWrapperOptions
+	var output string
+	var sshOptions repeatFlag
+	appDir := defaultAppDir()
+	fs.StringVar(&opts.Host, "host", os.Getenv("BRW_REMOTE_HOST"), "SSH host where the browser daemon runs")
+	fs.StringVar(&opts.User, "user", os.Getenv("BRW_REMOTE_USER"), "optional SSH user; omit when --host already includes user@")
+	fs.StringVar(&opts.RemoteBRWD, "remote-brwd", envDefault("BRW_REMOTE_BRWD", "brwd"), "remote brwd path; ~/ is expanded by the remote shell")
+	fs.StringVar(&opts.RemoteHTTP, "remote-http", envDefault("BRW_REMOTE_HTTP", "http://127.0.0.1:17310"), "remote loopback HTTP API used by the stdio wrapper")
+	fs.StringVar(&opts.MCPTools, "mcp-tools", envDefault("BRW_MCP_TOOLS", "all"), "MCP tool surface: all or core")
+	fs.StringVar(&opts.SSH, "ssh", envDefault("BRW_SSH", "ssh"), "local SSH executable")
+	fs.StringVar(&opts.ConnectTimeout, "connect-timeout", envDefault("BRW_CONNECT_TIMEOUT", "5"), "SSH ConnectTimeout seconds")
+	fs.StringVar(&opts.KnownHosts, "known-hosts", filepath.Join(appDir, "ssh", "known_hosts"), "dedicated known_hosts path for this wrapper")
+	fs.StringVar(&opts.StrictHostKeyChecking, "strict-host-key-checking", envDefault("BRW_STRICT_HOST_KEY_CHECKING", "accept-new"), "SSH StrictHostKeyChecking value: yes, accept-new, or no")
+	fs.StringVar(&opts.LogPath, "log", filepath.Join(appDir, "remote-mcp.log"), "stderr log path for SSH and remote brwd startup messages")
+	fs.Var(&sshOptions, "ssh-option", "extra ssh -o option; repeatable, for example ProxyJump=bastion")
+	fs.StringVar(&output, "output", "", "output wrapper path; stdout when empty")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	opts.SSHOptions = sshOptions
+	if opts.Host == "" {
+		return errors.New("--host is required")
+	}
+	if opts.User != "" && strings.Contains(opts.Host, "@") {
+		return errors.New("--user cannot be used when --host already includes user@host")
+	}
+	switch opts.StrictHostKeyChecking {
+	case "yes", "accept-new", "no":
+	default:
+		return errors.New("--strict-host-key-checking must be yes, accept-new, or no")
+	}
+	switch opts.MCPTools {
+	case "all", "core":
+	default:
+		return errors.New("--mcp-tools must be all or core")
+	}
+	if opts.RemoteBRWD == "" {
+		return errors.New("--remote-brwd is required")
+	}
+	if opts.RemoteHTTP == "" {
+		return errors.New("--remote-http is required")
+	}
+	if opts.KnownHosts == "" {
+		return errors.New("--known-hosts is required")
+	}
+	if opts.LogPath == "" {
+		return errors.New("--log is required")
+	}
+	return writeOutput(output, []byte(remoteMCPWrapperScript(opts)), 0o755)
+}
+
 func macOSPolicy(args []string) error {
 	fs := flag.NewFlagSet("macos-policy", flag.ContinueOnError)
 	var profileName, workspaceName, policyPath, updateURL, installMode, output string
@@ -314,7 +399,7 @@ func packExtension(args []string) error {
 		return fmt.Errorf("pack extension: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	src := absExt + ".crx"
-	dst := filepath.Join(outDir, "brw-bridge.crx")
+	dst := filepath.Join(outDir, "brw.crx")
 	if err := copyFile(src, dst); err != nil {
 		return err
 	}
@@ -329,7 +414,7 @@ func updateXML(args []string) error {
 	fs.StringVar(&profileName, "profile", os.Getenv("BRW_PROFILE"), "workspace profile name")
 	fs.StringVar(&workspaceName, "workspace", os.Getenv("BRW_WORKSPACE"), "workspace binding name for default/restricted profiles")
 	fs.StringVar(&policyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path")
-	fs.StringVar(&crxURL, "crx-url", "", "absolute URL to brw-bridge.crx")
+	fs.StringVar(&crxURL, "crx-url", "", "absolute URL to brw.crx")
 	fs.StringVar(&version, "version", extensionVersion("extension/manifest.json"), "extension version")
 	fs.StringVar(&output, "output", "", "output XML path; stdout when empty")
 	if err := fs.Parse(args); err != nil {
@@ -428,6 +513,46 @@ func remotePolicyPath(t profilepolicy.Transport) string {
 	return filepath.Join(t.AppDir, "config", "browser-profiles.json")
 }
 
+func remoteMCPWrapperScript(opts remoteMCPWrapperOptions) string {
+	target := opts.Host
+	if opts.User != "" {
+		target = opts.User + "@" + target
+	}
+	remoteCommand := shellJoin([]string{
+		opts.RemoteBRWD,
+		"--upstream-http", opts.RemoteHTTP,
+		"--mcp",
+		"--http", "off",
+		"--mcp-tools", opts.MCPTools,
+	})
+
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\n")
+	b.WriteString("set -eu\n\n")
+	fmt.Fprintf(&b, "BRW_SSH=${BRW_SSH:-%s}\n", quoteScript(opts.SSH))
+	fmt.Fprintf(&b, "BRW_REMOTE=${BRW_REMOTE:-%s}\n", quoteScript(target))
+	fmt.Fprintf(&b, "BRW_CONNECT_TIMEOUT=${BRW_CONNECT_TIMEOUT:-%s}\n", quoteScript(opts.ConnectTimeout))
+	fmt.Fprintf(&b, "BRW_KNOWN_HOSTS=${BRW_KNOWN_HOSTS:-%s}\n", quoteScript(opts.KnownHosts))
+	fmt.Fprintf(&b, "BRW_STRICT_HOST_KEY_CHECKING=${BRW_STRICT_HOST_KEY_CHECKING:-%s}\n", quoteScript(opts.StrictHostKeyChecking))
+	fmt.Fprintf(&b, "BRW_LOG=${BRW_LOG:-%s}\n\n", quoteScript(opts.LogPath))
+	b.WriteString("mkdir -p \"$(dirname \"$BRW_KNOWN_HOSTS\")\" \"$(dirname \"$BRW_LOG\")\"\n\n")
+	b.WriteString("exec \"$BRW_SSH\" \\\n")
+	b.WriteString("  -o BatchMode=yes \\\n")
+	b.WriteString("  -o ConnectTimeout=\"$BRW_CONNECT_TIMEOUT\" \\\n")
+	b.WriteString("  -o UserKnownHostsFile=\"$BRW_KNOWN_HOSTS\" \\\n")
+	b.WriteString("  -o StrictHostKeyChecking=\"$BRW_STRICT_HOST_KEY_CHECKING\" \\\n")
+	for _, opt := range opts.SSHOptions {
+		if opt == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "  -o %s \\\n", quoteScript(opt))
+	}
+	b.WriteString("  \"$BRW_REMOTE\" \\\n")
+	fmt.Fprintf(&b, "  %s \\\n", quoteScript(remoteCommand))
+	b.WriteString("  2>>\"$BRW_LOG\"\n")
+	return b.String()
+}
+
 func defaultAppDir() string {
 	home, _ := os.UserHomeDir()
 	if runtime.GOOS == "darwin" {
@@ -477,6 +602,20 @@ func quoteRemote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+func quoteScript(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func envDefault(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
 func chromePolicyMobileconfig(extensionID, installMode, updateURL string) string {
 	identifier := "org.donworks.brw.chrome-extension"
 	uuid1 := randomHex()
@@ -494,9 +633,9 @@ func chromePolicyMobileconfig(extensionID, installMode, updateURL string) string
   <key>PayloadUUID</key>
   <string>%s</string>
   <key>PayloadDisplayName</key>
-  <string>brw Chrome bridge</string>
+  <string>brw</string>
   <key>PayloadDescription</key>
-  <string>Installs the brw Chrome bridge extension for approved browser profiles.</string>
+  <string>Installs brw for approved Chrome profiles.</string>
   <key>PayloadContent</key>
   <array>
     <dict>

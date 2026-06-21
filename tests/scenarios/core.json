@@ -1077,7 +1077,7 @@
     },
     {
       "id": "fixture-commit-field",
-      "name": "Commit a form field via browser_commit",
+      "name": "Commit a form field via brw_commit",
       "tags": [
         "local",
         "forms",

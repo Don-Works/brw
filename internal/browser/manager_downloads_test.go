@@ -122,7 +122,7 @@ func TestManagerDownloadsCapturesTriggeredDownload(t *testing.T) {
 		t.Fatalf("download never reached a terminal state with a filename; last observed: %+v", last)
 	}
 
-	// browser_downloads drains: the buffer is reported once and then cleared.
+	// brw_downloads drains: the buffer is reported once and then cleared.
 	res, err := m.Downloads(ctx)
 	if err != nil {
 		t.Fatalf("downloads: %v", err)
@@ -161,7 +161,7 @@ func assertTerminalDownload(t *testing.T, d DownloadEntry) {
 }
 
 // TestManagerDownloadsDrainAndBounds is a fast, browser-free unit test of the
-// record + drain + eviction logic behind browser_downloads.
+// record + drain + eviction logic behind brw_downloads.
 func TestManagerDownloadsDrainAndBounds(t *testing.T) {
 	// Pre-mark download tracking as enabled so Downloads() does not try to wire a
 	// real browser; this isolates the record + drain + eviction logic.

@@ -48,7 +48,27 @@ brwctl mcp-config \
   --mode bridge
 ```
 
-## Chrome Extension
+For an installed Chrome profile, the recommended production shape is a
+long-lived bridge daemon on the browser machine plus a generated SSH stdio
+wrapper on the agent machine:
+
+```sh
+# Browser machine
+brwd --bridge --http 127.0.0.1:17310 --bridge-addr 127.0.0.1:17311
+
+# Agent machine
+brwctl remote-mcp-wrapper \
+  --host max-air \
+  --user maxrevitt \
+  --remote-brwd ~/.local/bin/brwd \
+  --output ~/.local/bin/brw-max-air-mcp
+```
+
+The generated wrapper is what MCP clients should run. It keeps browser-control
+HTTP bound to loopback on the browser machine and relies on SSH for transport
+security.
+
+## brw Chrome Extension
 
 Development install:
 
@@ -89,4 +109,4 @@ brwctl doctor \
 ```
 
 `doctor` fails if app files are missing, the profile is not allowed, or the
-expected bridge extension is not installed.
+expected `brw` extension is not installed.

@@ -1,6 +1,6 @@
-# brw Profile Bridge Extension
+# brw Chrome Extension
 
-This is the minimal Chrome extension transport for installed-profile auth.
+This is the Chrome extension transport for installed-profile auth.
 
 For development installs, Chrome assigns the extension ID when you load the
 unpacked directory. For managed installs, package the extension with your own

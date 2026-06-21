@@ -62,7 +62,7 @@ func (m *Manager) OpenIncognito(ctx context.Context, url string) (OpenResult, er
 func (m *Manager) CloseContext(ctx context.Context, contextID string) error {
 	contextID = strings.TrimSpace(contextID)
 	if contextID == "" {
-		return errors.New("browser_context_id is required")
+		return errors.New("context_id is required")
 	}
 	return m.runBrowser(ctx, func(ctx context.Context) error {
 		return target.DisposeBrowserContext(cdp.BrowserContextID(contextID)).Do(ctx)

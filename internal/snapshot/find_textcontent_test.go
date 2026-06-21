@@ -7,7 +7,7 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// TestFindTextContentMatchesProse proves SPEC 2: browser_find with TextContent
+// TestFindTextContentMatchesProse proves SPEC 2: brw_find with TextContent
 // enabled matches visible prose text (not just interactive-element metadata),
 // while the default (TextContent off) does not surface prose-only elements.
 func TestFindTextContentMatchesProse(t *testing.T) {

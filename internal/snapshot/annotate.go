@@ -39,7 +39,7 @@ const annotationAttr = "data-brw-annotation"
 // label box per resolvable mark and returns the legend of painted boxes. It reuses
 // FrameWalkHelpers' __abFindDeep so iframe/shadow-root coordinates translate to
 // top-level viewport space EXACTLY like ResolveBoxScript — the labels line up with
-// the boxes browser_click would target. Overlay nodes are pointer-events:none and
+// the boxes brw_click would target. Overlay nodes are pointer-events:none and
 // carry the annotation data attribute for clean removal. Marks are NOT scrolled
 // into view (a screenshot captures the current viewport), so off-screen refs are
 // simply skipped and reported ok:false.

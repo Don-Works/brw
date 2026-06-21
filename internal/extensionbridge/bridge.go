@@ -304,7 +304,7 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 }
 
 // waitOpenReady blocks until the freshly opened tab is usable, matching the
-// direct-CDP Open() contract so an immediate browser_evaluate / browser_read on
+// direct-CDP Open() contract so an immediate brw_evaluate / brw_read on
 // the new tab doesn't race the transient about:blank Chrome reports before the
 // real navigation commits. Returns whether readiness was confirmed; a wait
 // timeout is not fatal (the tab still exists), it just reports ready=false. The
@@ -1593,7 +1593,7 @@ func (b *Bridge) cdp(ctx context.Context, tabID, method string, params map[strin
 // cached b.active reference drifts when the user switches tabs manually in
 // Chrome, and acting on the wrong tab is worse than a sub-millisecond local-WS
 // round-trip. Callers issuing rapid-fire actions should pass an explicit tab_id
-// (which skips the query entirely) or use browser_batch / browser_plan, which
+// (which skips the query entirely) or use brw_batch / brw_plan, which
 // resolve the tab once for the whole sequence.
 func (b *Bridge) contextTabID(ctx context.Context) string {
 	if tabID := browser.TabIDFromContext(ctx); tabID != "" {
@@ -2265,7 +2265,7 @@ func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error)
 	return browser.DownloadsResult{
 		Downloads: []browser.DownloadEntry{},
 		Count:     0,
-		Note:      "download tracking is not available over the extension bridge; use the direct-CDP backend for browser_downloads",
+		Note:      "download tracking is not available over the extension bridge; use the direct-CDP backend for brw_downloads",
 	}, nil
 }
 

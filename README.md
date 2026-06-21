@@ -30,7 +30,7 @@ agents act from refs and action observations instead of repeatedly interpreting
 screenshots.
 
 Claude-in-Chrome's durable advantage was installed-profile auth. `brw` answers
-that with the profile bridge extension and SSH-first remote runtime: keep Chrome,
+that with the `brw` Chrome extension and SSH-first remote runtime: keep Chrome,
 cookies, passkeys, downloads, and human takeover on the browser machine, while
 MCP runs over stdio through SSH.
 
@@ -93,13 +93,24 @@ brwctl mcp-config \
 ```
 
 The policy decides which browser profile and transport a workspace may use.
+For installed Chrome profiles, prefer a long-lived remote bridge daemon plus a
+generated SSH stdio wrapper:
+
+```sh
+brwctl remote-mcp-wrapper \
+  --host max-air \
+  --user maxrevitt \
+  --remote-brwd ~/.local/bin/brwd \
+  --output ~/.local/bin/brw-max-air-mcp
+```
+
 See [docs/remote-control.md](docs/remote-control.md).
 
-## Installed Chrome Profile Bridge
+## Installed Chrome Profile
 
 Chrome 136+ blocks remote debugging against the default Chrome data directory.
-For auth that already exists in an installed Chrome profile, use the extension
-bridge:
+For auth that already exists in an installed Chrome profile, use the `brw`
+extension:
 
 - development: load `extension/` once in `chrome://extensions`
 - managed repeatable install: package with your own Chrome signing material
@@ -114,29 +125,29 @@ See [docs/install.md](docs/install.md) and [docs/auth-model.md](docs/auth-model.
 
 Core MCP tools include:
 
-- `browser_open`, `browser_list_tabs`, `browser_focus_tab`, `browser_close_tab`
-- `browser_list_tab_groups`, `browser_group_tabs`, `browser_ungroup_tabs`
-- `browser_read`, `browser_read_data`, `browser_snapshot`, `browser_find`
-- `browser_click`, `browser_click_text`, `browser_type`, `browser_fill`
-- `browser_select`, `browser_press`, `browser_scroll`, `browser_hover`
-- `browser_drag`, `browser_upload_file`, `browser_wait_for`
-- `browser_batch`, `browser_cancel`, `browser_observe`
-- `browser_screenshot`, `browser_screenshot_element`
-- `browser_network_requests`, `browser_network_capture`, `browser_replay_request`
-- `browser_console`, `browser_downloads`, `browser_trace`
-- `browser_assert_visible`, `browser_assert_text`, `browser_assert_value`
-- `browser_notify`, `browser_commit`
+- `brw_open`, `brw_list_tabs`, `brw_focus_tab`, `brw_close_tab`
+- `brw_list_tab_groups`, `brw_group_tabs`, `brw_ungroup_tabs`
+- `brw_read`, `brw_read_data`, `brw_snapshot`, `brw_find`
+- `brw_click`, `brw_click_text`, `brw_type`, `brw_fill`
+- `brw_select`, `brw_press`, `brw_scroll`, `brw_hover`
+- `brw_drag`, `brw_upload_file`, `brw_wait_for`
+- `brw_batch`, `brw_cancel`, `brw_observe`
+- `brw_screenshot`, `brw_screenshot_element`
+- `brw_network_requests`, `brw_network_capture`, `brw_replay_request`
+- `brw_console`, `brw_downloads`, `brw_trace`
+- `brw_assert_visible`, `brw_assert_text`, `brw_assert_value`
+- `brw_notify`, `brw_commit`
 
 Use `--mcp-tools core` to advertise only the common-flow tool set while keeping
 all tools callable.
 
 With the extension bridge, agents can organize visible Chrome work into named
-tab groups. Use `browser_list_tab_groups` to choose the next client-side run
+tab groups. Use `brw_list_tab_groups` to choose the next client-side run
 name (for example `brw-1`, `brw-2`, or a short task label), pass `group` to
-`browser_open` to create or reuse that titled group, then pass the
-returned/listed `group_id` on later `browser_open` or `browser_group_tabs` calls
+`brw_open` to create or reuse that titled group, then pass the
+returned/listed `group_id` on later `brw_open` or `brw_group_tabs` calls
 to keep the run's tabs together. Ungrouped/default tabs remain visible to
-`browser_list_tabs` and can still be targeted normally by `tab_id`. Tab groups
+`brw_list_tabs` and can still be targeted normally by `tab_id`. Tab groups
 are UI organization only; use profiles or incognito contexts for cookie/storage
 isolation.
 

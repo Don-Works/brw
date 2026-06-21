@@ -22,13 +22,13 @@ debugging enabled:
 brwd --remote http://127.0.0.1:9222
 ```
 
-## Installed-Profile Bridge
+## Installed Chrome Profile
 
 Chrome 136+ does not allow remote debugging against the default Chrome data
 directory. To use an already-authenticated installed profile, load the `brw`
 Chrome extension in that profile.
 
-The extension uses `chrome.debugger` as the CDP transport and connects to the
+The `brw` extension uses `chrome.debugger` as the CDP transport and connects to the
 local daemon. The daemon exposes MCP/HTTP; the browser profile stays where it is.
 
 ## Non-Goals

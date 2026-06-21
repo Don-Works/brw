@@ -39,7 +39,7 @@ func TestServeSupportsFramedStdio(t *testing.T) {
 		t.Fatalf("first response id = %v", first["id"])
 	}
 	result := first["result"].(map[string]any)
-	if result["serverInfo"].(map[string]any)["name"] != "brwd" {
+	if result["serverInfo"].(map[string]any)["name"] != "brw" {
 		t.Fatalf("unexpected initialize result: %#v", result)
 	}
 
@@ -68,7 +68,7 @@ func TestServeSupportsLineDelimitedJSON(t *testing.T) {
 }
 
 func TestToolCallReturnsCompactTextAndStructuredContent(t *testing.T) {
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_snapshot","arguments":{"query":"Continue","limit":1}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_snapshot","arguments":{"query":"Continue","limit":1}}}` + "\n"
 	var output bytes.Buffer
 
 	if err := New(fakeController{}).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
@@ -90,9 +90,26 @@ func TestToolCallReturnsCompactTextAndStructuredContent(t *testing.T) {
 	}
 }
 
+func TestLegacyBrowserToolAliasStillCallsBRWTool(t *testing.T) {
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_snapshot","arguments":{"query":"Continue","limit":1}}}` + "\n"
+	var output bytes.Buffer
+
+	if err := New(fakeController{}).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["error"] != nil {
+		t.Fatalf("legacy browser_snapshot alias failed: %#v", resp["error"])
+	}
+}
+
 func TestBrowserSnapshotDefaultsToBoundedFrontier(t *testing.T) {
 	ctrl := &recordingController{}
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_snapshot","arguments":{}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_snapshot","arguments":{}}}` + "\n"
 	var output bytes.Buffer
 
 	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
@@ -117,7 +134,7 @@ func TestBrowserOpenForwardsTabGroupOptions(t *testing.T) {
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
-			"name": "browser_open",
+			"name": "brw_open",
 			"arguments": map[string]any{
 				"url":         "https://example.com",
 				"group":       "workspace-2",
@@ -147,7 +164,7 @@ func TestBrowserListTabGroupsReturnsGroups(t *testing.T) {
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
-			"name":      "browser_list_tab_groups",
+			"name":      "brw_list_tab_groups",
 			"arguments": map[string]any{},
 		},
 	})
@@ -180,7 +197,7 @@ func TestBrowserGroupTabsForwardsGroupID(t *testing.T) {
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
-			"name": "browser_group_tabs",
+			"name": "brw_group_tabs",
 			"arguments": map[string]any{
 				"tab_ids":  []string{"41", "42"},
 				"group_id": "9",
@@ -205,7 +222,7 @@ func TestBrowserGroupTabsForwardsGroupID(t *testing.T) {
 
 func TestBrowserSnapshotModeAllPreservesExplicitFullInspection(t *testing.T) {
 	ctrl := &recordingController{}
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_snapshot","arguments":{"mode":"all","include_hidden":true}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_snapshot","arguments":{"mode":"all","include_hidden":true}}}` + "\n"
 	var output bytes.Buffer
 
 	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
@@ -229,13 +246,13 @@ func TestBrowserSnapshotModeAllPreservesExplicitFullInspection(t *testing.T) {
 func TestBrowserSnapshotSchemaDocumentsDebugEscalation(t *testing.T) {
 	var snapshotTool map[string]any
 	for _, tool := range tools() {
-		if tool["name"] == "browser_snapshot" {
+		if tool["name"] == "brw_snapshot" {
 			snapshotTool = tool
 			break
 		}
 	}
 	if snapshotTool == nil {
-		t.Fatal("browser_snapshot tool not found")
+		t.Fatal("brw_snapshot tool not found")
 	}
 	description := snapshotTool["description"].(string)
 	if !strings.Contains(description, `mode:"all"`) || !strings.Contains(description, "include_hidden:true") {
@@ -250,13 +267,13 @@ func TestBrowserSnapshotSchemaDocumentsDebugEscalation(t *testing.T) {
 func TestBrowserSnapshotSchemaDocumentsVisualIslands(t *testing.T) {
 	var snapshotTool map[string]any
 	for _, tool := range tools() {
-		if tool["name"] == "browser_snapshot" {
+		if tool["name"] == "brw_snapshot" {
 			snapshotTool = tool
 			break
 		}
 	}
 	if snapshotTool == nil {
-		t.Fatal("browser_snapshot tool not found")
+		t.Fatal("brw_snapshot tool not found")
 	}
 	props := snapshotTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	if _, ok := props["visual_islands"]; !ok {
@@ -270,26 +287,26 @@ func TestBrowserSnapshotSchemaDocumentsVisualIslands(t *testing.T) {
 func TestBrowserScreenshotSchemaDocumentsAnnotate(t *testing.T) {
 	var shotTool map[string]any
 	for _, tool := range tools() {
-		if tool["name"] == "browser_screenshot" {
+		if tool["name"] == "brw_screenshot" {
 			shotTool = tool
 			break
 		}
 	}
 	if shotTool == nil {
-		t.Fatal("browser_screenshot tool not found")
+		t.Fatal("brw_screenshot tool not found")
 	}
 	desc := shotTool["description"].(string)
 	if !strings.Contains(desc, "annotate") || !strings.Contains(desc, "Set-of-Marks") {
-		t.Fatalf("browser_screenshot description does not document annotate/Set-of-Marks: %q", desc)
+		t.Fatalf("brw_screenshot description does not document annotate/Set-of-Marks: %q", desc)
 	}
 	props := shotTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	if _, ok := props["annotate"]; !ok {
-		t.Fatalf("annotate missing from browser_screenshot schema: %#v", props)
+		t.Fatalf("annotate missing from brw_screenshot schema: %#v", props)
 	}
 }
 
 func TestBrowserScreenshotAnnotateReturnsLegend(t *testing.T) {
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_screenshot","arguments":{"annotate":true}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_screenshot","arguments":{"annotate":true}}}` + "\n"
 	var output bytes.Buffer
 	if err := New(fakeController{}).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
 		t.Fatal(err)
@@ -319,7 +336,7 @@ func TestBrowserScreenshotAnnotateReturnsLegend(t *testing.T) {
 
 func TestBrowserScreenshotDefaultUnchanged(t *testing.T) {
 	// annotate omitted -> plain path, no legend.
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_screenshot","arguments":{}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_screenshot","arguments":{}}}` + "\n"
 	var output bytes.Buffer
 	if err := New(fakeController{}).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
 		t.Fatal(err)
@@ -336,7 +353,7 @@ func TestBrowserScreenshotDefaultUnchanged(t *testing.T) {
 
 func TestBrowserFindDefaultsToBoundedResults(t *testing.T) {
 	ctrl := &recordingController{}
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_find","arguments":{"query":"checkout"}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_find","arguments":{"query":"checkout"}}}` + "\n"
 	var output bytes.Buffer
 
 	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
@@ -350,7 +367,7 @@ func TestBrowserFindDefaultsToBoundedResults(t *testing.T) {
 
 func TestBrowserCancelDispatchesTokenAndReturnsStructured(t *testing.T) {
 	ctrl := &recordingController{}
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_cancel","arguments":{"token":"op-7"}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_cancel","arguments":{"token":"op-7"}}}` + "\n"
 	var output bytes.Buffer
 
 	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
@@ -377,25 +394,25 @@ func TestBrowserCancelDispatchesTokenAndReturnsStructured(t *testing.T) {
 func TestBrowserCancelToolSchemaDocumentsTokenAndTab(t *testing.T) {
 	var cancelTool map[string]any
 	for _, tool := range tools() {
-		if tool["name"] == "browser_cancel" {
+		if tool["name"] == "brw_cancel" {
 			cancelTool = tool
 			break
 		}
 	}
 	if cancelTool == nil {
-		t.Fatal("browser_cancel tool not registered")
+		t.Fatal("brw_cancel tool not registered")
 	}
 	props := cancelTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	for _, prop := range []string{"token", "tab_id"} {
 		if _, ok := props[prop]; !ok {
-			t.Fatalf("browser_cancel schema missing %s: %#v", prop, props)
+			t.Fatalf("brw_cancel schema missing %s: %#v", prop, props)
 		}
 	}
 }
 
 func TestBrowserNotifyDispatchesToController(t *testing.T) {
 	ctrl := &recordingController{}
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_notify","arguments":{"kind":"needs_input","title":"MFA required","message":"Enter your one-time code"}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_notify","arguments":{"kind":"needs_input","title":"MFA required","message":"Enter your one-time code"}}}` + "\n"
 	var output bytes.Buffer
 
 	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
@@ -420,18 +437,18 @@ func TestBrowserNotifyDispatchesToController(t *testing.T) {
 func TestBrowserNotifyRegisteredInToolsList(t *testing.T) {
 	var notifyTool map[string]any
 	for _, tool := range tools() {
-		if tool["name"] == "browser_notify" {
+		if tool["name"] == "brw_notify" {
 			notifyTool = tool
 			break
 		}
 	}
 	if notifyTool == nil {
-		t.Fatal("browser_notify tool not registered")
+		t.Fatal("brw_notify tool not registered")
 	}
 	props := notifyTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	for _, prop := range []string{"kind", "title", "message"} {
 		if _, ok := props[prop]; !ok {
-			t.Fatalf("browser_notify schema missing %s: %#v", prop, props)
+			t.Fatalf("brw_notify schema missing %s: %#v", prop, props)
 		}
 	}
 }
@@ -442,15 +459,15 @@ func TestToolSchemasExposeTabScopedErgonomics(t *testing.T) {
 		byName[tool["name"].(string)] = tool
 	}
 	for _, name := range []string{
-		"browser_find",
-		"browser_fill",
-		"browser_select",
-		"browser_press",
-		"browser_scroll",
-		"browser_wait_for",
-		"browser_evaluate",
-		"browser_click_xy",
-		"browser_console",
+		"brw_find",
+		"brw_fill",
+		"brw_select",
+		"brw_press",
+		"brw_scroll",
+		"brw_wait_for",
+		"brw_evaluate",
+		"brw_click_xy",
+		"brw_console",
 	} {
 		tool := byName[name]
 		if tool == nil {
@@ -461,14 +478,14 @@ func TestToolSchemasExposeTabScopedErgonomics(t *testing.T) {
 			t.Fatalf("%s schema missing tab_id: %#v", name, props)
 		}
 	}
-	clickText := byName["browser_click_text"]
+	clickText := byName["brw_click_text"]
 	if clickText == nil {
-		t.Fatal("browser_click_text tool not found")
+		t.Fatal("brw_click_text tool not found")
 	}
 	props := clickText["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	for _, prop := range []string{"text", "role", "exact", "tab_id"} {
 		if _, ok := props[prop]; !ok {
-			t.Fatalf("browser_click_text missing %s: %#v", prop, props)
+			t.Fatalf("brw_click_text missing %s: %#v", prop, props)
 		}
 	}
 }
@@ -476,31 +493,31 @@ func TestToolSchemasExposeTabScopedErgonomics(t *testing.T) {
 func TestBrowserNavigateToolRegistration(t *testing.T) {
 	var navTool map[string]any
 	for _, tool := range tools() {
-		if tool["name"] == "browser_navigate" {
+		if tool["name"] == "brw_navigate" {
 			navTool = tool
 			break
 		}
 	}
 	if navTool == nil {
-		t.Fatal("browser_navigate tool not found")
+		t.Fatal("brw_navigate tool not found")
 	}
 	schema := navTool["inputSchema"].(map[string]any)
 	props := schema["properties"].(map[string]any)
 	if _, ok := props["direction"]; !ok {
-		t.Fatalf("browser_navigate schema missing direction: %#v", props)
+		t.Fatalf("brw_navigate schema missing direction: %#v", props)
 	}
 	if _, ok := props["tab_id"]; !ok {
-		t.Fatalf("browser_navigate schema missing tab_id: %#v", props)
+		t.Fatalf("brw_navigate schema missing tab_id: %#v", props)
 	}
 	required, ok := schema["required"].([]string)
 	if !ok || len(required) != 1 || required[0] != "direction" {
-		t.Fatalf("browser_navigate required = %#v, want [direction]", schema["required"])
+		t.Fatalf("brw_navigate required = %#v, want [direction]", schema["required"])
 	}
 }
 
 func TestBrowserNavigateDispatch(t *testing.T) {
 	ctrl := &recordingController{}
-	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"direction":"back"}}}` + "\n"
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_navigate","arguments":{"direction":"back"}}}` + "\n"
 	var output bytes.Buffer
 
 	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
@@ -527,12 +544,12 @@ func TestFocusAndCloseTabAcceptTabIDAlias(t *testing.T) {
 		wantID   string
 		focusTab bool
 	}{
-		{"focus_tab accepts tab_id", "browser_focus_tab", `{"tab_id":"42"}`, "42", true},
-		{"focus_tab accepts legacy id", "browser_focus_tab", `{"id":"7"}`, "7", true},
-		{"focus_tab prefers tab_id over id", "browser_focus_tab", `{"id":"7","tab_id":"42"}`, "42", true},
-		{"close_tab accepts tab_id", "browser_close_tab", `{"tab_id":"99"}`, "99", false},
-		{"close_tab accepts legacy id", "browser_close_tab", `{"id":"3"}`, "3", false},
-		{"close_tab prefers tab_id over id", "browser_close_tab", `{"id":"3","tab_id":"99"}`, "99", false},
+		{"focus_tab accepts tab_id", "brw_focus_tab", `{"tab_id":"42"}`, "42", true},
+		{"focus_tab accepts legacy id", "brw_focus_tab", `{"id":"7"}`, "7", true},
+		{"focus_tab prefers tab_id over id", "brw_focus_tab", `{"id":"7","tab_id":"42"}`, "42", true},
+		{"close_tab accepts tab_id", "brw_close_tab", `{"tab_id":"99"}`, "99", false},
+		{"close_tab accepts legacy id", "brw_close_tab", `{"id":"3"}`, "3", false},
+		{"close_tab prefers tab_id over id", "brw_close_tab", `{"id":"3","tab_id":"99"}`, "99", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -553,12 +570,37 @@ func TestFocusAndCloseTabAcceptTabIDAlias(t *testing.T) {
 	}
 }
 
+func TestCloseContextAcceptsLegacyBrowserContextID(t *testing.T) {
+	cases := []struct {
+		name string
+		args string
+		want string
+	}{
+		{"accepts context_id", `{"context_id":"ctx-new"}`, "ctx-new"},
+		{"accepts legacy browser_context_id", `{"browser_context_id":"ctx-legacy"}`, "ctx-legacy"},
+		{"prefers context_id", `{"context_id":"ctx-new","browser_context_id":"ctx-legacy"}`, "ctx-new"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := &recordingController{}
+			input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_close_context","arguments":` + tc.args + `}}` + "\n"
+			var output bytes.Buffer
+			if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+				t.Fatal(err)
+			}
+			if ctrl.closeContextID != tc.want {
+				t.Fatalf("closeContextID = %q, want %q", ctrl.closeContextID, tc.want)
+			}
+		})
+	}
+}
+
 func TestFocusAndCloseTabSchemasExposeTabIDAlias(t *testing.T) {
 	byName := map[string]map[string]any{}
 	for _, tool := range tools() {
 		byName[tool["name"].(string)] = tool
 	}
-	for _, name := range []string{"browser_focus_tab", "browser_close_tab"} {
+	for _, name := range []string{"brw_focus_tab", "brw_close_tab"} {
 		tool := byName[name]
 		if tool == nil {
 			t.Fatalf("%s tool not registered", name)
@@ -585,7 +627,7 @@ func TestBrowserClickTextPassesAutoScroll(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := &recordingController{}
-			input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_click_text","arguments":` + tc.args + `}}` + "\n"
+			input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_click_text","arguments":` + tc.args + `}}` + "\n"
 			var output bytes.Buffer
 			if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
 				t.Fatal(err)
@@ -606,20 +648,20 @@ func TestBrowserClickTextPassesAutoScroll(t *testing.T) {
 func TestBrowserEvaluateDescriptionDocumentsCSP(t *testing.T) {
 	var evalTool map[string]any
 	for _, tool := range tools() {
-		if tool["name"] == "browser_evaluate" {
+		if tool["name"] == "brw_evaluate" {
 			evalTool = tool
 			break
 		}
 	}
 	if evalTool == nil {
-		t.Fatal("browser_evaluate tool not registered")
+		t.Fatal("brw_evaluate tool not registered")
 	}
 	desc := evalTool["description"].(string)
 	if !strings.Contains(strings.ToLower(desc), "content-security-policy") && !strings.Contains(strings.ToUpper(desc), "CSP") {
-		t.Fatalf("browser_evaluate description does not mention CSP: %q", desc)
+		t.Fatalf("brw_evaluate description does not mention CSP: %q", desc)
 	}
 	if !strings.Contains(strings.ToLower(desc), "cross-origin") {
-		t.Fatalf("browser_evaluate description does not mention cross-origin caveat: %q", desc)
+		t.Fatalf("brw_evaluate description does not mention cross-origin caveat: %q", desc)
 	}
 }
 
@@ -641,7 +683,7 @@ func TestBrowserClickRoutesByButtonAndCount(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := &recordingController{}
-			input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_click","arguments":` + tc.args + `}}` + "\n"
+			input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_click","arguments":` + tc.args + `}}` + "\n"
 			var output bytes.Buffer
 			if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
 				t.Fatal(err)
@@ -671,9 +713,9 @@ func TestBrowserClickRoutesByButtonAndCount(t *testing.T) {
 func TestBrowserDragAndMousePrimitivesDispatch(t *testing.T) {
 	ctrl := &recordingController{}
 	calls := []string{
-		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_drag","arguments":{"from":{"ref":"e1"},"to":{"x":200,"y":50},"steps":6,"button":"left"}}}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"browser_mouse_down","arguments":{"ref":"e1","button":"left"}}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"browser_mouse_up","arguments":{"x":12,"y":34}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_drag","arguments":{"from":{"ref":"e1"},"to":{"x":200,"y":50},"steps":6,"button":"left"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"brw_mouse_down","arguments":{"ref":"e1","button":"left"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"brw_mouse_up","arguments":{"x":12,"y":34}}}`,
 	}
 	input := strings.Join(calls, "\n") + "\n"
 	var output bytes.Buffer
@@ -696,21 +738,21 @@ func TestMouseToolSchemasRegistered(t *testing.T) {
 	for _, tool := range tools() {
 		byName[tool["name"].(string)] = tool
 	}
-	for _, name := range []string{"browser_drag", "browser_mouse_down", "browser_mouse_up"} {
+	for _, name := range []string{"brw_drag", "brw_mouse_down", "brw_mouse_up"} {
 		if byName[name] == nil {
 			t.Fatalf("%s tool not registered", name)
 		}
 	}
-	clickProps := byName["browser_click"]["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	clickProps := byName["brw_click"]["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	for _, prop := range []string{"button", "click_count", "x", "y"} {
 		if _, ok := clickProps[prop]; !ok {
-			t.Fatalf("browser_click schema missing %s: %#v", prop, clickProps)
+			t.Fatalf("brw_click schema missing %s: %#v", prop, clickProps)
 		}
 	}
-	dragProps := byName["browser_drag"]["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	dragProps := byName["brw_drag"]["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	for _, prop := range []string{"from", "to", "steps", "button"} {
 		if _, ok := dragProps[prop]; !ok {
-			t.Fatalf("browser_drag schema missing %s: %#v", prop, dragProps)
+			t.Fatalf("brw_drag schema missing %s: %#v", prop, dragProps)
 		}
 	}
 }
@@ -773,6 +815,7 @@ type recordingController struct {
 	mouseUpOpt          browser.MouseButtonOptions
 	focusID             string
 	closeID             string
+	closeContextID      string
 	clickTextOpts       snapshot.ClickTextOptions
 	openURL             string
 	openGroupOpts       browser.TabGroupOptions
@@ -812,6 +855,11 @@ func (r *recordingController) FocusTab(ctx context.Context, id string) error {
 
 func (r *recordingController) CloseTab(ctx context.Context, id string) error {
 	r.closeID = id
+	return nil
+}
+
+func (r *recordingController) CloseContext(ctx context.Context, contextID string) error {
+	r.closeContextID = contextID
 	return nil
 }
 
@@ -1092,7 +1140,7 @@ func TestServe_ControllerError(t *testing.T) {
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
-			"name":      "browser_open",
+			"name":      "brw_open",
 			"arguments": map[string]any{"url": "https://example.com"},
 		},
 	})

@@ -100,7 +100,7 @@ type Manager struct {
 	downloadsEnabled bool
 
 	// cancels tracks in-flight long-running operations (plan / batch / wait
-	// loops) keyed by an operation token so browser_cancel can stop a specific
+	// loops) keyed by an operation token so brw_cancel can stop a specific
 	// run cooperatively instead of killing the whole daemon.
 	cancels *cancelRegistry
 
@@ -248,7 +248,7 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		ready = m.WaitFor(ctx, "committed", 10*time.Second) == nil
 	}
 	// Do NOT activate the new tab here. OS foreground focus is reserved for the
-	// explicit FocusTab/browser_focus_tab tool so automation never steals the
+	// explicit FocusTab/brw_focus_tab tool so automation never steals the
 	// user's foreground, especially on a remote browser machine,
 	// where an implicit activate raises Chrome over whatever the human is doing.
 	// The tab is tracked as the active ref above; page tools bind to it via
@@ -856,7 +856,7 @@ func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Du
 
 	deadline := time.Now().Add(timeout)
 	for {
-		// Cooperative cancellation: a browser_cancel on the surrounding plan/batch
+		// Cooperative cancellation: a brw_cancel on the surrounding plan/batch
 		// (or this tab) cancels the caller-supplied ctx, which unblocks a long
 		// wait promptly instead of running it out to the full timeout.
 		if err := ctx.Err(); err != nil {
@@ -1062,7 +1062,7 @@ func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
 // snapshot returned, captures the PNG via CDP, removes the overlay, and returns
 // the PNG plus a ref->box legend. The overlay is removed in every path (success
 // or error) so the page the agent then acts on is never mutated. Labels are the
-// exact refs an agent passes to browser_click, so the vision-grounded marks and
+// exact refs an agent passes to brw_click, so the vision-grounded marks and
 // the semantic action surface stay in lockstep.
 //
 // Edge case: if the page navigates between overlay injection and the deferred
@@ -1427,7 +1427,7 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 
 // ExecuteBatch executes multiple actions sequentially without intermediate
 // observations, then returns a single compact observation at the end. This is
-// much more token-efficient than calling individual tools or browser_plan.
+// much more token-efficient than calling individual tools or brw_plan.
 func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchResult, error) {
 	entry, release := m.cancels.register(ctx, cancelToken(ctx, ""))
 	defer release()

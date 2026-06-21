@@ -125,6 +125,23 @@ func TestGroupTabsForwardsGroupID(t *testing.T) {
 	}
 }
 
+func TestCloseContextAcceptsLegacyBrowserContextID(t *testing.T) {
+	ctrl := &fakeController{}
+	server := New("", ctrl)
+	body := bytes.NewBufferString(`{"browser_context_id":"ctx-legacy"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/browser/close_context", body)
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if ctrl.closeCtxID != "ctx-legacy" {
+		t.Fatalf("closeCtxID = %q, want ctx-legacy", ctrl.closeCtxID)
+	}
+}
+
 func TestFillForwardsBody(t *testing.T) {
 	ctrl := &fakeController{snap: sampleSnapshot()}
 	server := New("", ctrl)
@@ -341,6 +358,7 @@ type fakeController struct {
 	openGroupOpts browser.TabGroupOptions
 	groupTabIDs   []string
 	groupTabsOpts browser.TabGroupOptions
+	closeCtxID    string
 }
 
 func (f *fakeController) Open(context.Context, string) (browser.OpenResult, error) {
@@ -357,7 +375,10 @@ func (f *fakeController) OpenIncognito(context.Context, string) (browser.OpenRes
 	return browser.OpenResult{}, nil
 }
 
-func (f *fakeController) CloseContext(context.Context, string) error { return nil }
+func (f *fakeController) CloseContext(_ context.Context, contextID string) error {
+	f.closeCtxID = contextID
+	return nil
+}
 
 func (f *fakeController) ListTabs(context.Context) ([]browser.Tab, error) {
 	return nil, nil

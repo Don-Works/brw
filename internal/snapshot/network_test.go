@@ -10,7 +10,7 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// fixturePage issues a fetch on load so browser_network_capture has something to
+// fixturePage issues a fetch on load so brw_network_capture has something to
 // record. The fetched URL is same-origin (a data: URL cannot fetch cross-origin
 // reliably under headless), so we fetch a data: URL that resolves immediately.
 const networkFixture = `data:text/html,` +

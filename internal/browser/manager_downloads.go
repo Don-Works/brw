@@ -35,7 +35,7 @@ type DownloadEntry struct {
 	Path              string `json:"path,omitempty"`
 }
 
-// DownloadsResult is the drained snapshot returned by browser_downloads.
+// DownloadsResult is the drained snapshot returned by brw_downloads.
 type DownloadsResult struct {
 	Downloads []DownloadEntry `json:"downloads"`
 	Count     int             `json:"count"`

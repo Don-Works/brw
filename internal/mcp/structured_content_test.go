@@ -27,7 +27,7 @@ func TestIsJSONObject(t *testing.T) {
 
 // toolJSON must only attach structuredContent when the payload is a JSON object;
 // strict MCP clients reject a non-object structuredContent ("expected record"),
-// which previously forced agents into wasteful browser_evaluate retries.
+// which previously forced agents into wasteful brw_evaluate retries.
 func TestToolJSONStructuredContentOnlyForObjects(t *testing.T) {
 	hasStructured := func(v any) bool {
 		m, ok := v.(map[string]any)
@@ -47,7 +47,7 @@ func TestToolJSONStructuredContentOnlyForObjects(t *testing.T) {
 		t.Error("object payload should carry structuredContent")
 	}
 
-	// Scalar result (browser_evaluate of `document.title`) → omitted.
+	// Scalar result (brw_evaluate of `document.title`) → omitted.
 	res, _ = toolJSON("Example Domain", nil)
 	if hasStructured(res) {
 		t.Error("string payload must NOT carry structuredContent")

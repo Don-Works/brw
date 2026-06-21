@@ -21,7 +21,7 @@ func TestManagerOpenIncognitoCreatesIsolatedContext(t *testing.T) {
 		t.Fatal("expected a tab id")
 	}
 	if res.Tab.BrowserContextID == "" {
-		t.Fatal("expected a non-empty browser_context_id (incognito context)")
+		t.Fatal("expected a non-empty context_id (incognito context)")
 	}
 
 	// The opened target must belong to the new incognito context, not the default.
@@ -52,7 +52,7 @@ func TestManagerOpenIncognitoCreatesIsolatedContext(t *testing.T) {
 
 	// An empty context id is an explicit error, never a silent no-op.
 	if err := m.CloseContext(ctx, ""); err == nil {
-		t.Fatal("expected error for empty browser_context_id")
+		t.Fatal("expected error for empty context_id")
 	}
 }
 

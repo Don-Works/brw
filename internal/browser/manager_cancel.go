@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// CancelResult reports the outcome of a browser_cancel request: how many
+// CancelResult reports the outcome of a brw_cancel request: how many
 // in-flight long-running operations (plan / batch / wait loops) were signalled
 // to stop for the given token. It is never an error to cancel a token with no
 // matching operation in flight — Cancelled is simply 0.
@@ -133,7 +133,7 @@ func cancelToken(ctx context.Context, explicit string) string {
 	return tabIDFromCtx(ctx)
 }
 
-// Cancel signals in-flight long-running operations (browser_plan, browser_batch,
+// Cancel signals in-flight long-running operations (brw_plan, brw_batch,
 // and their wait loops) to stop cooperatively. The token selects which
 // operations to stop: an explicit token, the tab id (via WithTabID / tab_id),
 // or "*" to stop everything. It is generic and never crashes a running op — the
@@ -143,7 +143,7 @@ func (m *Manager) Cancel(ctx context.Context, token string) (CancelResult, error
 	resolved := cancelToken(ctx, token)
 	if resolved == "" {
 		// No explicit token and no tab in context: fall back to the wildcard so
-		// a bare browser_cancel still acts as the universal stop switch.
+		// a bare brw_cancel still acts as the universal stop switch.
 		resolved = cancelAllToken
 	}
 	n := m.cancels.cancel(resolved)

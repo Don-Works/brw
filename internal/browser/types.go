@@ -35,9 +35,9 @@ type Tab struct {
 	OpenerTabID    string `json:"opener_tab_id,omitempty"`
 	Popup          bool   `json:"popup,omitempty"`
 	// BrowserContextID is set when the tab lives in a non-default (incognito)
-	// browser context created via browser_open_incognito. Pass it to
-	// browser_close_context to dispose that isolated context.
-	BrowserContextID string `json:"browser_context_id,omitempty"`
+	// browser context created via brw_open_incognito. Pass it to
+	// brw_close_context to dispose that isolated context.
+	BrowserContextID string `json:"context_id,omitempty"`
 }
 
 type TabGroup struct {
@@ -62,10 +62,10 @@ type OpenResult struct {
 	Tab Tab `json:"tab"`
 	// Ready reports whether the page was confirmed usable (document committed /
 	// readyState settled) before Open returned. When true, callers can issue an
-	// immediate browser_evaluate / browser_read without racing the transient
+	// immediate brw_evaluate / brw_read without racing the transient
 	// about:blank state Chrome reports mid-navigation. False means readiness
 	// could not be confirmed within the wait window — the tab still exists, but a
-	// caller may want to browser_wait before acting on it.
+	// caller may want to brw_wait before acting on it.
 	Ready bool `json:"ready"`
 }
 
@@ -92,7 +92,7 @@ type Screenshot struct {
 }
 
 // LegendEntry maps one Set-of-Marks label drawn on an annotated screenshot back
-// to the semantic ref agents pass to browser_click. X/Y/Width/Height are the
+// to the semantic ref agents pass to brw_click. X/Y/Width/Height are the
 // element's top-level viewport box (the same coordinate space the overlay label
 // is painted at and that the CDP mouse path operates in).
 type LegendEntry struct {
@@ -136,7 +136,7 @@ type AnnotatedScreenshotOptions struct {
 // numbered/labelled boxes drawn over the frontier elements, plus a legend mapping
 // each drawn ref to its box + role + name. The overlay is injected immediately
 // before capture and removed immediately after, so it never mutates the page the
-// agent then acts on. Labels are the SAME refs returned by browser_snapshot.
+// agent then acts on. Labels are the SAME refs returned by brw_snapshot.
 type AnnotatedScreenshot struct {
 	MIMEType string                 `json:"mime_type"`
 	Data     []byte                 `json:"-"`
@@ -310,7 +310,7 @@ type TraceResult struct {
 	Count   int          `json:"count"`
 }
 
-// IsDefaultLeftSingleRefClick reports whether a browser_click call is a plain
+// IsDefaultLeftSingleRefClick reports whether a brw_click call is a plain
 // left single-click on a ref (no explicit button/count/coordinates), which can
 // keep the optimized in-page click path. Shared by MCP and HTTP servers.
 func IsDefaultLeftSingleRefClick(button string, clickCount int, ref string, x, y *float64) bool {

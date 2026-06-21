@@ -69,7 +69,7 @@ func (c *Controller) OpenIncognito(ctx context.Context, targetURL string) (brows
 
 func (c *Controller) CloseContext(ctx context.Context, contextID string) error {
 	var out browser.ActionResult
-	return c.post(ctx, "/api/browser/close_context", map[string]string{"browser_context_id": contextID}, &out)
+	return c.post(ctx, "/api/browser/close_context", map[string]string{"context_id": contextID}, &out)
 }
 
 func (c *Controller) ListTabs(ctx context.Context) ([]browser.Tab, error) {

@@ -40,7 +40,7 @@ func TestBridgeCancelBareResolvesWildcard(t *testing.T) {
 
 // TestBridgeCancelTokenAlignsWithTabContext verifies the bridge derives its
 // cancel token from the same tab-id context key the browser package uses, so a
-// browser_cancel with a tab_id reaches a plan/batch targeting that tab.
+// brw_cancel with a tab_id reaches a plan/batch targeting that tab.
 func TestBridgeCancelTokenAlignsWithTabContext(t *testing.T) {
 	ctx := browser.WithTabID(context.Background(), "tab-99")
 	if got := cancelToken(ctx, ""); got != "tab-99" {

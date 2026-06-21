@@ -147,12 +147,13 @@ func (s *Server) openIncognito(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) closeContext(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BrowserContextID string `json:"browser_context_id"`
+		BrowserContextID       string `json:"context_id"`
+		LegacyBrowserContextID string `json:"browser_context_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.CloseContext(r.Context(), req.BrowserContextID))
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.CloseContext(r.Context(), contextIDArg(req.BrowserContextID, req.LegacyBrowserContextID)))
 }
 
 func (s *Server) tabs(w http.ResponseWriter, r *http.Request) {
@@ -195,6 +196,13 @@ func tabIDArg(tabID, id string) string {
 		return tabID
 	}
 	return id
+}
+
+func contextIDArg(contextID, legacyBrowserContextID string) string {
+	if strings.TrimSpace(contextID) != "" {
+		return contextID
+	}
+	return legacyBrowserContextID
 }
 
 func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {

@@ -12,7 +12,7 @@ import (
 
 // TestCheckoutClickProceeds is the end-to-end proof that asking the agent to
 // click a place-order button actuates it — there is no purchase/checkout gate.
-// It drives the same Manager.Click path the MCP browser_click tool uses.
+// It drives the same Manager.Click path the MCP brw_click tool uses.
 func TestCheckoutClickProceeds(t *testing.T) {
 	m := newHeadlessManager(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)

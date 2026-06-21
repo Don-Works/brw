@@ -38,20 +38,34 @@ The generated server still speaks stdio MCP to the client. Internally it starts
 
 ## Upstream Wrapper
 
-If a long-lived daemon already owns the bridge extension port on the browser
-machine, generate an upstream wrapper instead:
+If a long-lived daemon already owns the `brw` extension port on the browser
+machine, generate an SSH stdio wrapper:
 
 ```sh
-brwctl mcp-config \
-  --workspace brw \
-  --profile work-profile \
-  --transport remote \
-  --profile-policy ~/.config/brw/browser-profiles.json \
-  --mode upstream-http
+brwctl remote-mcp-wrapper \
+  --host max-air \
+  --user maxrevitt \
+  --remote-brwd ~/.local/bin/brwd \
+  --output ~/.local/bin/brw-max-air-mcp
+```
+
+Then configure the MCP client with the generated command:
+
+```json
+{
+  "mcpServers": {
+    "brw": {
+      "command": "/Users/me/.local/bin/brw-max-air-mcp",
+      "args": []
+    }
+  }
+}
 ```
 
 The wrapper speaks stdio MCP to the client and forwards to the local HTTP API on
-the browser machine.
+the browser machine over SSH. It is a generated per-install artifact; source
+control should contain the `brwctl` generator and docs, not host-specific
+wrappers.
 
 ## DevTools MCP Companion
 

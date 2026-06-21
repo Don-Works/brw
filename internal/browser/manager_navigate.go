@@ -12,7 +12,7 @@ import (
 )
 
 // NavigateDirection enumerates the history navigation directions supported by
-// the browser_navigate primitive. Generic, standards-based: it maps directly
+// the brw_navigate primitive. Generic, standards-based: it maps directly
 // to the CDP Page navigation-history API (and to history.back/forward and
 // location.reload on the extension bridge).
 const (

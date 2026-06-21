@@ -77,7 +77,7 @@ func TestCancelTokenResolution(t *testing.T) {
 	}
 }
 
-// TestManagerCancelResolvesWildcardWhenBare verifies a bare browser_cancel acts
+// TestManagerCancelResolvesWildcardWhenBare verifies a bare brw_cancel acts
 // as the universal stop switch and reports how many ops were signalled.
 func TestManagerCancelResolvesWildcardWhenBare(t *testing.T) {
 	m := &Manager{cancels: newCancelRegistry()}
@@ -117,7 +117,7 @@ func TestRunPlanStepsStopsEarlyOnCancel(t *testing.T) {
 	runner := func(ctx context.Context, i int, step PlanStep) PlanStepResult {
 		ran++
 		// Trigger the cancel hook partway through, exactly as a concurrent
-		// browser_cancel would: cancel the token while step `cancelAfter` runs.
+		// brw_cancel would: cancel the token while step `cancelAfter` runs.
 		if i == cancelAfter-1 {
 			if got := reg.cancel("tab-1"); got != 1 {
 				t.Fatalf("expected cancel to signal 1 op, got %d", got)
@@ -199,7 +199,7 @@ func TestWaitForLoopHonorsContextCancel(t *testing.T) {
 	entry, release := reg.register(context.Background(), "tab-1")
 	defer release()
 
-	// Cancel almost immediately, as a concurrent browser_cancel would.
+	// Cancel almost immediately, as a concurrent brw_cancel would.
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {

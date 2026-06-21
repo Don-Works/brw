@@ -23,7 +23,7 @@ func TestToolProfileFiltersAdvertisedTools(t *testing.T) {
 		}
 		got[name] = true
 	}
-	for _, essential := range []string{"browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_batch"} {
+	for _, essential := range []string{"brw_open", "brw_snapshot", "brw_click", "brw_type", "brw_press", "brw_batch"} {
 		if !got[essential] {
 			t.Errorf("core profile missing essential tool %q", essential)
 		}
