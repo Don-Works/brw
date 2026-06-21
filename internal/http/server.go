@@ -25,7 +25,14 @@ type snapshotRequest struct {
 
 func New(addr string, manager browser.Controller) *Server {
 	mux := http.NewServeMux()
-	s := &Server{manager: manager, server: &http.Server{Addr: addr, Handler: mux}}
+	s := &Server{manager: manager, server: &http.Server{
+		Addr:    addr,
+		Handler: mux,
+		// Bound slow-header clients (slowloris) without a blanket WriteTimeout,
+		// which would truncate long-poll endpoints like wait_for.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}}
 	s.routes(mux)
 	return s
 }
@@ -894,8 +901,13 @@ func parseInt64Param(w http.ResponseWriter, raw, name string) (int64, bool) {
 	return value, true
 }
 
+// maxRequestBodyBytes caps decoded request bodies so a single oversized payload
+// (forwarded into the browser by several endpoints) can't OOM the daemon.
+const maxRequestBodyBytes = 8 << 20 // 8 MiB
+
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return false

@@ -946,7 +946,7 @@ func tools() []map[string]any {
 			"filter": stringSchema("Optional case-insensitive substring to filter captured request URLs."),
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
-		tool("brw_replay_request", "Re-execute a request in-page via fetch(url, {method, headers, body}) and return {status, ok, body}. SAFETY: replay of requests whose URL or method looks like checkout, payment, purchase, or order placement is BLOCKED with an error and never executed. Use to re-run safe read/idempotent API calls (for example a GET) discovered via brw_network_capture. Pass optional tab_id to target a specific tab.", object(map[string]any{
+		tool("brw_replay_request", "Re-execute a request in-page via fetch(url, {method, headers, body}) and return {status, ok, body}. SAFETY: a MUTATING replay (POST/PUT/PATCH/DELETE) whose URL looks like checkout, payment, purchase, or order placement is BLOCKED with an error and never executed; idempotent GET/HEAD reads are always allowed. Use to re-run safe read/idempotent API calls (for example a GET) discovered via brw_network_capture. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"method":  stringSchema("HTTP method, for example GET or POST. Defaults to GET."),
 			"url":     stringSchema("Request URL. May be relative to the current page."),
 			"headers": map[string]any{"type": "object", "description": "Optional request headers as a string-to-string map.", "additionalProperties": stringSchema("Header value.")},

@@ -3,6 +3,7 @@ package extensionbridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -42,6 +43,9 @@ func (b *Bridge) NetworkCapture(ctx context.Context, filter string) ([]snapshot.
 
 // ReplayRequest re-executes a request in-page via fetch over the bridge.
 func (b *Bridge) ReplayRequest(ctx context.Context, params browser.ReplayRequestParams) (snapshot.ReplayResult, error) {
+	if reason := params.BlockedReplayReason(); reason != "" {
+		return snapshot.ReplayResult{}, errors.New(reason)
+	}
 	opts := map[string]any{
 		"method":  params.Method,
 		"url":     params.URL,

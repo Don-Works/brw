@@ -63,10 +63,32 @@ brwctl remote-mcp-wrapper \
   --output ~/.local/bin/brw-max-air-mcp
 ```
 
-Point the MCP client at the generated wrapper. The wrapper uses a dedicated
-`known_hosts` file under the local `brw` app directory and defaults to
-`StrictHostKeyChecking=accept-new`; set `--strict-host-key-checking yes` when
-pre-pinning host keys.
+Point the MCP client at the generated wrapper.
+
+The generated wrapper is hardened and resilient by default:
+
+- **Auth/host trust**: `BatchMode=yes` (never blocks on a prompt that would wedge
+  the MCP client), a dedicated `known_hosts` under the local `brw` app directory,
+  and `StrictHostKeyChecking=accept-new`. Set `--strict-host-key-checking yes`
+  when pre-pinning host keys. Pass `--identity-file ~/.ssh/id_brw` to offer only
+  that key (`IdentitiesOnly=yes`), avoiding agent key churn / server lockout.
+- **Clean stdio**: `RequestTTY=no` keeps the binary MCP stream intact even if the
+  operator's `ssh_config` forces a TTY.
+- **Connectivity resilience**: SSH keepalives
+  (`--server-alive-interval 30 --server-alive-count-max 3`) drop a silently dead
+  link (laptop sleep, NAT rebind, wifi switch) promptly instead of hanging the
+  MCP client; `0` disables them. `--connection-attempts` retries the initial
+  connect on flaky links.
+- **Log hygiene**: SSH/remote stderr is appended to `--log`, rotated once it
+  passes `--log-max-bytes` (default 5 MiB; `0` disables) so an unattended
+  reconnect loop cannot fill the disk.
+- **Performance**: `--compression` enables SSH compression — worth it for
+  text-heavy payloads (snapshots) on slow links, skip it on fast links and for
+  already-compressed PNG screenshots.
+
+Every baked-in value is overridable at runtime via the matching `BRW_*` env var
+(for example `BRW_SERVER_ALIVE_INTERVAL`), and `--ssh-option` appends any extra
+`ssh -o` setting.
 
 ## HTTP Tunnel
 
