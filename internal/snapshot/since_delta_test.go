@@ -163,6 +163,65 @@ func TestSinceDeltaOptionsMismatchReturnsFull(t *testing.T) {
 	}
 }
 
+// TestSinceDeltaDetectsCheckboxStateChange guards that the fingerprint covers the
+// COMPLETE emitted payload, not a hand-picked subset: toggling a checkbox changes
+// `checked` (and aria state), which must be reported as a changed element even
+// though role/name/value/href are unchanged.
+func TestSinceDeltaDetectsCheckboxStateChange(t *testing.T) {
+	ctx, cancel := structuredTestContext(t)
+	defer cancel()
+	sinceNavigate(t, ctx, `<!DOCTYPE html><html><body>
+<input type="checkbox" id="cb" aria-label="Agree">
+</body></html>`)
+
+	v1, err := EvaluateWithOptions(ctx, SnapshotOptions{Mode: "all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cbRef := refByName(v1.Elements, "Agree")
+	if cbRef == "" {
+		t.Fatalf("baseline missing checkbox: %+v", v1.Elements)
+	}
+
+	// Toggle checked (a state-only change: role/name/value/href all stay the same).
+	sinceMutate(t, ctx, `document.getElementById('cb').checked = true;`)
+
+	v2, err := EvaluateWithOptions(ctx, SnapshotOptions{Mode: "all", Since: sinceVersion(t, v1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v2.Delta == nil {
+		t.Fatalf("expected a delta")
+	}
+	if !sinceContains(v2.Delta.Changed, cbRef) {
+		t.Fatalf("checkbox state toggle not reported as changed: %+v (elements=%+v)", v2.Delta, v2.Elements)
+	}
+	if refByName(v2.Elements, "Agree") == "" {
+		t.Fatalf("changed checkbox missing from delta elements: %+v", v2.Elements)
+	}
+}
+
+// TestSinceDeltaVisualIslandsLimitMismatchReturnsFull guards that
+// visual_islands_limit is part of the option-envelope key, so changing it between
+// snapshots forces a full snapshot rather than a cross-envelope delta.
+func TestSinceDeltaVisualIslandsLimitMismatchReturnsFull(t *testing.T) {
+	ctx, cancel := structuredTestContext(t)
+	defer cancel()
+	sinceNavigate(t, ctx, `<!DOCTYPE html><html><body><button>Alpha</button></body></html>`)
+
+	v1, err := EvaluateWithOptions(ctx, SnapshotOptions{Mode: "all", VisualIslands: true, VisualIslandsLimit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2, err := EvaluateWithOptions(ctx, SnapshotOptions{Mode: "all", VisualIslands: true, VisualIslandsLimit: 10, Since: sinceVersion(t, v1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v2.Delta != nil {
+		t.Fatalf("changing visual_islands_limit must fall back to a full snapshot, got delta %+v", v2.Delta)
+	}
+}
+
 // TestSinceDeltaDoesNotFalselyReportFilteredOutRefAsRemoved guards finding #6:
 // 'removed' is computed from DOM presence, not the filtered returned set. A ref
 // that stops MATCHING the (unchanged) query but stays in the DOM must NOT be

@@ -628,11 +628,13 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   function __brwOptsSignature() {
     return [frontierMode ? 'frontier' : 'all', opts.query || '', opts.text || '',
       opts.role || '', limit, Boolean(opts.viewport_only), includeHidden,
-      textContent, Boolean(opts.visual_islands)].join('');
+      textContent, Boolean(opts.visual_islands),
+      (opts.visual_islands_limit === undefined ? '' : opts.visual_islands_limit)].join('');
   }
   function __brwFingerprint(it) {
-    return [it.role, it.name, it.value, it.visible, it.in_viewport, it.disabled,
-      it.required, it.href, it.type].join('');
+    var __fp = {};
+    for (var __k in it) { if (__k !== 'key' && __k !== 'ref') __fp[__k] = it[__k]; }
+    return JSON.stringify(__fp);
   }
   function __brwDomRefs() {
     var refs = {}, roots = __abRootList();
