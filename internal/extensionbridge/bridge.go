@@ -680,6 +680,11 @@ const (
 	// retries ride that out so we don't act on a stale tab.
 	activeTabResolveAttempts = 3
 	activeTabResolveBackoff  = 150 * time.Millisecond
+	// fileChooserPollTimeout/Interval bound how long file-chooser-interception
+	// upload mode waits for the Page.fileChooserOpened event after clicking the
+	// trigger before giving up, and how often it polls the extension for it.
+	fileChooserPollTimeout  = 5 * time.Second
+	fileChooserPollInterval = 200 * time.Millisecond
 )
 
 // settleFingerprintExpr is a cheap in-page snapshot of "has the page changed?"
@@ -1044,6 +1049,15 @@ func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (b
 	}
 	defer cleanup()
 
+	// File-chooser-interception mode: when a trigger is named, click it with the
+	// native chooser intercepted and set the file on whatever input the chooser
+	// reports. Handles SPAs that create the input on click (which would otherwise
+	// freeze the CDP session behind a native OS dialog) and inputs in cross-origin
+	// iframes (backendNodeId is frame-agnostic).
+	if opts.ClickRef != "" || opts.ClickText != "" {
+		return b.uploadViaFileChooser(ctx, opts, paths)
+	}
+
 	ref := opts.Ref
 	if ref == "" {
 		query := opts.Query
@@ -1111,6 +1125,93 @@ func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (b
 	}
 	b.settle(ctx, observedActionSettle)
 	return b.observeActionWithBefore(ctx, "uploaded file to "+ref, before), nil
+}
+
+// uploadViaFileChooser drives the file-chooser-interception upload path: enable
+// native-dialog interception, click the trigger, capture the chooser's
+// backendNodeId from the Page.fileChooserOpened event the extension stashes, and
+// set the file with DOM.setFileInputFiles. Interception is ALWAYS disabled on
+// exit so the user's manual uploads in this Chrome are unaffected.
+func (b *Bridge) uploadViaFileChooser(ctx context.Context, opts snapshot.UploadOptions, paths []string) (browser.ActionResult, error) {
+	// Pin the tab for the whole sequence so interception, click, poll, and set all
+	// target the same tab even if the user switches tabs mid-upload.
+	tabID := b.contextTabID(ctx)
+
+	if _, err := b.call(ctx, "set_intercept_file_chooser", map[string]any{
+		"tabId":   parseTabID(tabID),
+		"enabled": true,
+	}); err != nil {
+		return browser.ActionResult{}, fmt.Errorf("enable file chooser interception: %w", err)
+	}
+	defer func() {
+		// Always restore manual uploads, even on error. Use a fresh context so a
+		// cancelled/expired ctx cannot leave interception stuck on.
+		disableCtx, cancel := context.WithTimeout(context.Background(), b.timeout)
+		defer cancel()
+		_, _ = b.call(disableCtx, "set_intercept_file_chooser", map[string]any{
+			"tabId":   parseTabID(tabID),
+			"enabled": false,
+		})
+	}()
+
+	before := b.captureSemanticState(ctx)
+
+	// Click the trigger that opens the (now intercepted) native chooser.
+	if opts.ClickRef != "" {
+		if err := b.clickRef(ctx, opts.ClickRef); err != nil {
+			return browser.ActionResult{}, fmt.Errorf("click upload trigger %s: %w", opts.ClickRef, err)
+		}
+	} else {
+		optsJSON, _ := json.Marshal(snapshot.ClickTextOptions{Text: opts.ClickText, Role: opts.Role})
+		var clicked snapshot.ClickXYResult
+		if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.ClickTextScript, optsJSON), tabID, &clicked); err != nil {
+			return browser.ActionResult{}, fmt.Errorf("click upload trigger %q: %w", opts.ClickText, err)
+		}
+		if !clicked.OK {
+			msg := clicked.Error
+			if msg == "" {
+				msg = "click text failed"
+			}
+			return browser.ActionResult{}, fmt.Errorf("click upload trigger %q: %s", opts.ClickText, msg)
+		}
+	}
+
+	// Poll for the captured Page.fileChooserOpened event (up to ~5s).
+	var backendNodeID int64
+	deadline := time.Now().Add(fileChooserPollTimeout)
+	for {
+		var ev struct {
+			Captured      bool  `json:"captured"`
+			BackendNodeID int64 `json:"backendNodeId"`
+		}
+		raw, err := b.call(ctx, "get_file_chooser_event", map[string]any{"tabId": parseTabID(tabID)})
+		if err == nil {
+			if jsonErr := json.Unmarshal(raw, &ev); jsonErr == nil && ev.Captured {
+				if ev.BackendNodeID == 0 {
+					return browser.ActionResult{}, errors.New("file chooser opened but reported no backendNodeId")
+				}
+				backendNodeID = ev.BackendNodeID
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			return browser.ActionResult{}, fmt.Errorf("no file chooser opened within %s after clicking the trigger — confirm the trigger opens a file picker", fileChooserPollTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return browser.ActionResult{}, ctx.Err()
+		case <-time.After(fileChooserPollInterval):
+		}
+	}
+
+	if _, err := b.cdp(ctx, tabID, "DOM.setFileInputFiles", map[string]any{
+		"files":         paths,
+		"backendNodeId": backendNodeID,
+	}); err != nil {
+		return browser.ActionResult{}, err
+	}
+	b.settle(ctx, observedActionSettle)
+	return b.observeActionWithBefore(ctx, "uploaded file via intercepted file chooser", before), nil
 }
 
 func (b *Bridge) Select(ctx context.Context, ref, value string) (browser.ActionResult, error) {

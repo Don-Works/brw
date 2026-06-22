@@ -102,6 +102,16 @@ type UploadOptions struct {
 	// URL points at a file the daemon fetches to a temp file on the browser
 	// host before uploading.
 	URL string `json:"url,omitempty"`
+	// ClickRef names the trigger element (an element ref, e.g. e17) that opens
+	// the file dialog. When set, the daemon switches to file-chooser-interception
+	// mode: it clicks the trigger, intercepts the native chooser via CDP so no OS
+	// dialog appears, and sets the file on the input the chooser reports — which
+	// works even when the input only exists after the click or lives in a
+	// cross-origin iframe. Leave empty for the default in-DOM upload path.
+	ClickRef string `json:"click_ref,omitempty"`
+	// ClickText names the trigger by its visible/accessible text instead of a
+	// ref. Same file-chooser-interception behaviour as ClickRef.
+	ClickText string `json:"click_text,omitempty"`
 }
 
 type ClickTextOptions struct {

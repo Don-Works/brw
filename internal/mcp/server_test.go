@@ -490,6 +490,69 @@ func TestToolSchemasExposeTabScopedErgonomics(t *testing.T) {
 	}
 }
 
+func TestUploadFileSchemaExposesFileChooserParams(t *testing.T) {
+	var uploadTool map[string]any
+	for _, tool := range tools() {
+		if tool["name"] == "brw_upload_file" {
+			uploadTool = tool
+			break
+		}
+	}
+	if uploadTool == nil {
+		t.Fatal("brw_upload_file tool not found")
+	}
+	props := uploadTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	for _, prop := range []string{"click_ref", "click_text"} {
+		schema, ok := props[prop].(map[string]any)
+		if !ok {
+			t.Fatalf("brw_upload_file schema missing %s: %#v", prop, props)
+		}
+		desc, _ := schema["description"].(string)
+		if !strings.Contains(desc, "intercept") {
+			t.Fatalf("brw_upload_file %s description should explain dialog interception, got %q", prop, desc)
+		}
+		if !strings.Contains(desc, "iframe") {
+			t.Fatalf("brw_upload_file %s description should mention iframe support, got %q", prop, desc)
+		}
+	}
+}
+
+func TestUploadOptionsJSONRoundTripsFileChooserFields(t *testing.T) {
+	// The MCP, HTTP, and httpclient transports all (de)serialize the file-chooser
+	// trigger via these JSON tags, so the round-trip is the contract.
+	in := snapshot.UploadOptions{
+		Path:      "/tmp/cv.pdf",
+		ClickRef:  "e17",
+		ClickText: "Upload résumé",
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"click_ref":"e17"`) {
+		t.Fatalf("expected click_ref in JSON, got %s", data)
+	}
+	if !strings.Contains(string(data), `"click_text":"Upload résumé"`) {
+		t.Fatalf("expected click_text in JSON, got %s", data)
+	}
+	var out snapshot.UploadOptions
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.ClickRef != in.ClickRef || out.ClickText != in.ClickText {
+		t.Fatalf("round-trip mismatch: got %+v want click_ref=%q click_text=%q", out, in.ClickRef, in.ClickText)
+	}
+
+	// Backward compat: omitting both keeps them empty (default in-DOM path).
+	var bare snapshot.UploadOptions
+	if err := json.Unmarshal([]byte(`{"path":"/tmp/cv.pdf"}`), &bare); err != nil {
+		t.Fatalf("unmarshal bare: %v", err)
+	}
+	if bare.ClickRef != "" || bare.ClickText != "" {
+		t.Fatalf("expected empty chooser fields when omitted, got %+v", bare)
+	}
+}
+
 func TestBrowserNavigateToolRegistration(t *testing.T) {
 	var navTool map[string]any
 	for _, tool := range tools() {
