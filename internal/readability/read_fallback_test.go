@@ -72,6 +72,9 @@ func TestReadLinkHeavyPageFallsBackToDocumentText(t *testing.T) {
 	if strings.TrimSpace(read.Main) == "" {
 		t.Fatalf("link-heavy page returned empty .main despite visible text; links=%d", len(read.Links))
 	}
+	if read.Text != read.Main {
+		t.Fatalf("text alias = %q, want main %q", read.Text, read.Main)
+	}
 	if !strings.Contains(read.Main, "First story headline") {
 		t.Fatalf(".main fallback did not capture visible text; got %q", read.Main)
 	}

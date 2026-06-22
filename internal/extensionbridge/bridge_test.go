@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/coder/websocket"
 )
@@ -130,6 +131,30 @@ func TestBridgeStatusReportsConnectionLifecycle(t *testing.T) {
 	}
 }
 
+func TestBridgeStatusReportsIdentity(t *testing.T) {
+	b := NewWithIdentity("", time.Second, "fake", brwidentity.Identity{
+		Workspace:        "client-a",
+		Profile:          "client-a-chrome",
+		UserDataDir:      "/tmp/client-a",
+		ProfileDirectory: "Profile 1",
+		Mode:             "bridge",
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	b.handleStatus(rec, req)
+
+	var status struct {
+		Identity brwidentity.Identity `json:"identity"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("parse status: %v", err)
+	}
+	if status.Identity.Workspace != "client-a" || status.Identity.Profile != "client-a-chrome" || status.Identity.Mode != "bridge" {
+		t.Fatalf("identity = %+v", status.Identity)
+	}
+}
+
 func TestBatchAndPlanUseFastPrimitives(t *testing.T) {
 	srcPath := filepath.Join("bridge.go")
 	fset := token.NewFileSet()
@@ -177,6 +202,12 @@ func TestServiceWorkerReconnectCadence(t *testing.T) {
 		"periodInMinutes: 0.5",
 		"5 * 1000",
 		"BRIDGE_STATUS_URL",
+		"BRIDGE_CONFIG_KEY",
+		"BRW_CONFIGURE",
+		"BRW_GET_STATUS",
+		"assertDaemonIdentity",
+		"globalThis.brwConfigure",
+		"bridge-defaults.json",
 		"DAEMON_STATUS_INTERVAL_MS",
 		"ensureConnectAlarm();",
 		"SW_KEEPALIVE",
@@ -321,6 +352,25 @@ func TestServiceWorkerHandlesNotifyCommand(t *testing.T) {
 	}
 	if !strings.Contains(string(manifest), `"notifications"`) {
 		t.Fatal("manifest must request the notifications permission")
+	}
+}
+
+func TestExtensionHasBridgeOptionsPage(t *testing.T) {
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "extension", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), `"options_page": "options.html"`) {
+		t.Fatal("manifest must expose the bridge profile options page")
+	}
+	optionsJS, err := os.ReadFile(filepath.Join("..", "..", "extension", "options.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`BRW_CONFIGURE`, `BRW_GET_STATUS`, `ws://127.0.0.1:${port}/extension`} {
+		if !strings.Contains(string(optionsJS), want) {
+			t.Fatalf("options page missing %q", want)
+		}
 	}
 }
 

@@ -205,6 +205,7 @@ type PlanStepResult struct {
 	OK       bool                   `json:"ok"`
 	Message  string                 `json:"message,omitempty"`
 	Error    string                 `json:"error,omitempty"`
+	Result   any                    `json:"result,omitempty"`
 	Snapshot *snapshot.PageSnapshot `json:"snapshot,omitempty"`
 }
 

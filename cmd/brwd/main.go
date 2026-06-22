@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/brwidentity"
 	cdplaunch "github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/extensionbridge"
 	httpapi "github.com/Don-Works/brw/internal/http"
@@ -93,6 +94,9 @@ func main() {
 	cfg.ChromeArgs = chromeArgs
 	cfg.Timeout = timeout
 	cfg.WebMCP = enableWebMCP
+	runtimeIdentity := brwidentity.Identity{}
+	identityExpected := brwidentity.Identity{}
+	haveProfilePolicy := false
 
 	if profileName != "" || workspaceName != "" {
 		policy, err := profilepolicy.Load(profilePolicyPath)
@@ -102,6 +106,13 @@ func main() {
 		profile, err := policy.ResolveProfile(workspaceName, profileName)
 		if err != nil {
 			log.Fatalf("profile policy: %v", err)
+		}
+		haveProfilePolicy = true
+		if profile.BridgeHTTPAddr != "" && !flagWasSet("http") && os.Getenv("BRW_HTTP_ADDR") == "" {
+			httpAddr = profile.BridgeHTTPAddr
+		}
+		if profile.BridgeWSAddr != "" && !flagWasSet("bridge-addr") && os.Getenv("BRW_BRIDGE_ADDR") == "" {
+			bridgeAddr = profile.BridgeWSAddr
 		}
 		if upstreamHTTP != "" {
 			if !profile.ExtensionBridgeAllowed && !profile.DirectCDPAllowed {
@@ -123,6 +134,21 @@ func main() {
 		}
 		cfg.UserDataDir = profile.UserDataDir
 		cfg.ProfileDirectory = profile.ProfileDirectory
+		mode := "direct"
+		if upstreamHTTP != "" {
+			mode = "upstream-http"
+		} else if bridgeMode {
+			mode = "bridge"
+		}
+		runtimeIdentity = brwidentity.Identity{
+			Workspace:        workspaceName,
+			Profile:          profile.Name,
+			UserDataDir:      profile.UserDataDir,
+			ProfileDirectory: profile.ProfileDirectory,
+			Mode:             mode,
+		}
+		identityExpected = runtimeIdentity
+		identityExpected.Mode = ""
 		log.Printf("using workspace profile %q (%s)", profile.Name, profile.Kind)
 	}
 
@@ -138,10 +164,24 @@ func main() {
 		if err != nil {
 			log.Fatalf("upstream HTTP controller: %v", err)
 		}
+		if haveProfilePolicy {
+			verifyCtx, cancel := context.WithTimeout(context.Background(), timeout)
+			health, err := upstream.Health(verifyCtx)
+			cancel()
+			if err != nil {
+				log.Fatalf("verify upstream identity: %v", err)
+			}
+			if health.Identity.Empty() {
+				log.Fatalf("upstream HTTP controller %s does not expose workspace/profile identity; refusing to proxy workspace %q profile %q", upstreamHTTP, identityExpected.Workspace, identityExpected.Profile)
+			}
+			if mismatches := health.Identity.Mismatches(identityExpected); len(mismatches) > 0 {
+				log.Fatalf("upstream HTTP controller %s identity mismatch: %s", upstreamHTTP, strings.Join(mismatches, "; "))
+			}
+		}
 		controller = upstream
 		log.Printf("using upstream HTTP controller %s", upstreamHTTP)
 	} else if bridgeMode {
-		bridge = extensionbridge.New(bridgeAddr, timeout, bridgeExtensionID)
+		bridge = extensionbridge.NewWithIdentity(bridgeAddr, timeout, bridgeExtensionID, runtimeIdentity)
 		controller = bridge
 		go func() {
 			if bridgeExtensionID != "" {
@@ -170,7 +210,7 @@ func main() {
 
 	var api *httpapi.Server
 	if httpAddr != "" && httpAddr != "off" {
-		api = httpapi.New(httpAddr, controller)
+		api = httpapi.NewWithIdentity(httpAddr, controller, runtimeIdentity)
 		if !isLoopback(httpAddr) {
 			log.Printf("WARNING: HTTP API bound to non-loopback address %s; no authentication is enforced — ensure caller auth is in place (SSH/Tailscale)", httpAddr)
 		}
@@ -225,6 +265,16 @@ func normalizeAddr(addr string) string {
 		return strings.TrimPrefix(addr, "127.0.0.1")
 	}
 	return "/" + addr
+}
+
+func flagWasSet(name string) bool {
+	wasSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			wasSet = true
+		}
+	})
+	return wasSet
 }
 
 func envDefault(name, fallback string) string {

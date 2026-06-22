@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
 const testBridgeExtensionID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -43,8 +45,8 @@ func TestQuoteRemoteHomePathWithSpaces(t *testing.T) {
 
 func TestRemoteMCPWrapperScript(t *testing.T) {
 	script := remoteMCPWrapperScript(remoteMCPWrapperOptions{
-		Host:                  "max-air",
-		User:                  "maxrevitt",
+		Host:                  "browser-host",
+		User:                  "browser-user",
 		RemoteBRWD:            "~/.local/bin/brwd",
 		RemoteHTTP:            "http://127.0.0.1:17310",
 		MCPTools:              "core",
@@ -60,7 +62,7 @@ func TestRemoteMCPWrapperScript(t *testing.T) {
 		SSHOptions:            []string{"ProxyJump=bastion"},
 	})
 	for _, want := range []string{
-		"BRW_REMOTE=${BRW_REMOTE:-'maxrevitt@max-air'}",
+		"BRW_REMOTE=${BRW_REMOTE:-'browser-user@browser-host'}",
 		"BRW_KNOWN_HOSTS=${BRW_KNOWN_HOSTS:-'/tmp/brw known_hosts'}",
 		"-o BatchMode=yes",
 		"-o RequestTTY=no",
@@ -95,9 +97,26 @@ func TestRemoteMCPWrapperScript(t *testing.T) {
 	}
 }
 
+func TestRuntimeArgsUseProfileBridgeAddresses(t *testing.T) {
+	profile := profilepolicy.Profile{
+		BridgeHTTPAddr: "127.0.0.1:17410",
+		BridgeWSAddr:   "127.0.0.1:17411",
+	}
+	bridge := strings.Join(runtimeArgs("bridge", profile), " ")
+	for _, want := range []string{"--bridge", "--bridge-addr 127.0.0.1:17411"} {
+		if !strings.Contains(bridge, want) {
+			t.Fatalf("bridge args missing %q: %s", want, bridge)
+		}
+	}
+	upstream := strings.Join(runtimeArgs("upstream-http", profile), " ")
+	if !strings.Contains(upstream, "--upstream-http http://127.0.0.1:17410") {
+		t.Fatalf("upstream args did not use policy HTTP addr: %s", upstream)
+	}
+}
+
 func TestRemoteMCPWrapperIdentityAndCompression(t *testing.T) {
 	script := remoteMCPWrapperScript(remoteMCPWrapperOptions{
-		Host:                  "max-air",
+		Host:                  "browser-host",
 		RemoteBRWD:            "brwd",
 		RemoteHTTP:            "http://127.0.0.1:17310",
 		MCPTools:              "all",
@@ -133,12 +152,12 @@ func TestRemoteMCPWrapperRepeatedSSHOptions(t *testing.T) {
 		MCPTools: "all", SSH: "ssh", ConnectTimeout: "5", ConnectionAttempts: "1",
 		ServerAliveInterval: "30", ServerAliveCountMax: "3", KnownHosts: "/tmp/kh",
 		StrictHostKeyChecking: "accept-new", LogPath: "/tmp/l", LogMaxBytes: "1",
-		SSHOptions: []string{"ProxyJump=bastion", "Ciphers=aes256-gcm@openssh.com"},
+		SSHOptions: []string{"ProxyJump=bastion", "Compression=yes"},
 	})
 	if c := strings.Count(script, "-o 'ProxyJump=bastion'"); c != 1 {
 		t.Fatalf("ProxyJump option count = %d, want 1\n%s", c, script)
 	}
-	if !strings.Contains(script, "-o 'Ciphers=aes256-gcm@openssh.com'") {
+	if !strings.Contains(script, "-o 'Compression=yes'") {
 		t.Fatalf("second --ssh-option missing\n%s", script)
 	}
 }
@@ -146,7 +165,7 @@ func TestRemoteMCPWrapperRepeatedSSHOptions(t *testing.T) {
 func TestRemoteMCPWrapperValidation(t *testing.T) {
 	base := func() []string {
 		return []string{
-			"--host", "max-air",
+			"--host", "browser-host",
 			"--remote-brwd", "brwd",
 			"--known-hosts", filepath.Join(t.TempDir(), "kh"),
 			"--log", filepath.Join(t.TempDir(), "l.log"),
@@ -158,7 +177,7 @@ func TestRemoteMCPWrapperValidation(t *testing.T) {
 		args []string
 	}{
 		{"missing host", []string{"--remote-brwd", "brwd"}},
-		{"user with user@host", append(base(), "--host", "u@max-air", "--user", "u")},
+		{"user with user@host", append(base(), "--host", "u@browser-host", "--user", "u")},
 		{"bad strict-host-key-checking", append(base(), "--strict-host-key-checking", "maybe")},
 		{"bad mcp-tools", append(base(), "--mcp-tools", "some")},
 		{"negative keepalive", append(base(), "--server-alive-interval", "-1")},
@@ -178,7 +197,7 @@ func TestRemoteMCPWrapperValidation(t *testing.T) {
 func TestRemoteMCPWrapperWritesExecutableOutput(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "brw-remote")
 	if err := remoteMCPWrapper([]string{
-		"--host", "max-air",
+		"--host", "browser-host",
 		"--remote-brwd", "~/.local/bin/brwd",
 		"--known-hosts", filepath.Join(t.TempDir(), "known_hosts"),
 		"--log", filepath.Join(t.TempDir(), "remote.log"),
@@ -197,7 +216,7 @@ func TestRemoteMCPWrapperWritesExecutableOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "BRW_REMOTE=${BRW_REMOTE:-'max-air'}") {
+	if !strings.Contains(string(data), "BRW_REMOTE=${BRW_REMOTE:-'browser-host'}") {
 		t.Fatalf("generated wrapper missing host:\n%s", data)
 	}
 }

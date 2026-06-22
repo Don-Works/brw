@@ -23,6 +23,7 @@ type Controller interface {
 	CloseTab(context.Context, string) error
 	GroupTabs(context.Context, []string, TabGroupOptions) error
 	UngroupTabs(context.Context, []string) error
+	EmulateDevice(context.Context, DeviceEmulationOptions) (DeviceEmulationResult, error)
 	Read(context.Context) (readability.PageRead, error)
 	ReadData(context.Context) (snapshot.StructuredData, error)
 	Snapshot(context.Context, snapshot.SnapshotOptions) (snapshot.PageSnapshot, error)

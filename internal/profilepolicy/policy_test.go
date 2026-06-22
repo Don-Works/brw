@@ -11,7 +11,7 @@ func TestLoadAndFindProfile(t *testing.T) {
 	path := filepath.Join(dir, "profiles.json")
 	if err := os.WriteFile(path, []byte(`{
 		"profiles": [
-			{"name":"work-profile","user_data_dir":"~/Library/Application Support/Google/Chrome","profile_directory":"Profile 1","direct_cdp_allowed":false}
+			{"name":"work-profile","user_data_dir":"~/Library/Application Support/Google/Chrome","profile_directory":"Profile 1","direct_cdp_allowed":false,"bridge_http_addr":"127.0.0.1:17410","bridge_ws_addr":"127.0.0.1:17411"}
 		],
 		"transports": [
 			{"name":"remote","kind":"ssh-stdio","host":"remote","user":"remote-user","app_dir":"~/Library/Application Support/brw"}
@@ -36,6 +36,9 @@ func TestLoadAndFindProfile(t *testing.T) {
 	}
 	if profile.UserDataDir == "" || profile.UserDataDir[0] == '~' {
 		t.Fatalf("expected expanded user data dir, got %q", profile.UserDataDir)
+	}
+	if profile.BridgeHTTPAddr != "127.0.0.1:17410" || profile.BridgeWSAddr != "127.0.0.1:17411" {
+		t.Fatalf("bridge addrs = %q / %q", profile.BridgeHTTPAddr, profile.BridgeWSAddr)
 	}
 	transport, err := policy.FindTransport("remote")
 	if err != nil {

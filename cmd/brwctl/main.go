@@ -199,7 +199,7 @@ func mcpConfig(args []string) error {
 		envPolicyPath = remotePolicyPath(transport)
 	}
 	envOut := runtimeEnv(workspaceName, profile.Name, envPolicyPath)
-	runtimeOut := runtimeArgs(mode)
+	runtimeOut := runtimeArgs(mode, profile)
 	argsOut := append([]string{}, runtimeOut...)
 	command := ""
 	switch transport.Kind {
@@ -502,16 +502,34 @@ func chromeExtensionInstalled(profileDir, id string) (bool, string, error) {
 	return false, "", nil
 }
 
-func runtimeArgs(mode string) []string {
+func runtimeArgs(mode string, profile profilepolicy.Profile) []string {
 	args := []string{"--mcp", "--http", "off"}
 	if mode == "bridge" {
 		args = append([]string{"--bridge"}, args...)
-		args = append(args, "--bridge-addr", "127.0.0.1:17311")
+		args = append(args, "--bridge-addr", defaultBridgeWSAddr(profile))
 	}
 	if mode == "upstream-http" {
-		args = append(args, "--upstream-http", "http://127.0.0.1:17310")
+		args = append(args, "--upstream-http", defaultBridgeHTTPURL(profile))
 	}
 	return args
+}
+
+func defaultBridgeWSAddr(profile profilepolicy.Profile) string {
+	if strings.TrimSpace(profile.BridgeWSAddr) != "" {
+		return strings.TrimSpace(profile.BridgeWSAddr)
+	}
+	return "127.0.0.1:17311"
+}
+
+func defaultBridgeHTTPURL(profile profilepolicy.Profile) string {
+	addr := strings.TrimSpace(profile.BridgeHTTPAddr)
+	if addr == "" {
+		addr = "127.0.0.1:17310"
+	}
+	if strings.Contains(addr, "://") {
+		return addr
+	}
+	return "http://" + addr
 }
 
 func runtimeEnv(workspace, profile, policyPath string) map[string]string {

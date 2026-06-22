@@ -27,20 +27,53 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
   function clean(s) {
     return String(s || '').replace(/\s+/g, ' ').trim();
   }
+  function visibleTextFrom(root) {
+    if (!root) return '';
+    var out = [];
+    var skipped = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|HEAD)$/;
+    try {
+      var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode: function(node) {
+          var raw = clean(node.nodeValue || '');
+          if (!raw) return NodeFilter.FILTER_REJECT;
+          var parent = node.parentElement;
+          if (!parent || skipped.test(parent.tagName || '')) return NodeFilter.FILTER_REJECT;
+          if (parent.closest && parent.closest('[hidden],[aria-hidden="true"]')) return NodeFilter.FILTER_REJECT;
+          var style = getComputedStyle(parent);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return NodeFilter.FILTER_REJECT;
+          try {
+            var range = document.createRange();
+            range.selectNodeContents(node);
+            var rects = range.getClientRects();
+            if (range.detach) range.detach();
+            if (rects && rects.length) return NodeFilter.FILTER_ACCEPT;
+          } catch (_) {}
+          return visible(parent) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        }
+      });
+      var node;
+      while ((node = walker.nextNode()) && out.join(' ').length < 100000) {
+        out.push(clean(node.nodeValue || ''));
+      }
+    } catch (_) {}
+    return clean(out.join(' '));
+  }
   // deepBodyText gathers visible text from the document body AND any open shadow
   // roots, so a CSR page that renders its content inside web components (whose
   // innerText does NOT include shadow content) still yields a usable body-text
   // fallback. Bounded by the same 100k slice the primary path uses.
   function deepBodyText() {
     var fb = document.body || document.documentElement;
-    var base = fb ? clean(fb.innerText || fb.textContent || '') : '';
+    var base = fb ? clean(fb.innerText || '') : '';
+    var walked = visibleTextFrom(fb);
+    if (walked.length > base.length) base = walked;
     var parts = base ? [base] : [];
     try {
       var hosts = (fb || document).querySelectorAll('*');
       for (var i = 0; i < hosts.length; i++) {
         var sr = hosts[i].shadowRoot;
         if (sr) {
-          var st = clean(sr.textContent || '');
+          var st = visibleTextFrom(sr) || clean(sr.textContent || '');
           if (st) parts.push(st);
         }
       }
@@ -195,6 +228,7 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
   return {
     url: location.href,
     title: document.title || '',
+    text: main,
     main: main,
     headings,
     links,
@@ -250,6 +284,16 @@ func ReadExpr() string {
 	return fmt.Sprintf("(%s)(%d,%d)", ReadScript, readMinMainLen, readSettleCapMS)
 }
 
+func Normalize(read PageRead) PageRead {
+	if read.Text == "" {
+		read.Text = read.Main
+	}
+	if read.Main == "" {
+		read.Main = read.Text
+	}
+	return read
+}
+
 func Evaluate(ctx context.Context) (PageRead, error) {
 	var read PageRead
 	expr := ReadExpr()
@@ -272,5 +316,5 @@ func Evaluate(ctx context.Context) (PageRead, error) {
 	})); err != nil {
 		return PageRead{}, err
 	}
-	return read, nil
+	return Normalize(read), nil
 }

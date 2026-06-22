@@ -35,7 +35,8 @@ a tool returns `ref not found` or `not actionable`, the page changed — call
 
 ## Reading content without screenshots
 
-- **`brw_read`** — page prose, headings, links, forms, tables.
+- **`brw_read`** — page prose, headings, links, forms, tables. The primary
+  prose is returned as both `text` and `main`.
 - **`brw_read_data`** — embedded structured data (JSON-LD, `__NEXT_DATA__`,
   microdata, OpenGraph). The fast path for prices, product details, listings.
 - **`brw_network_capture`** then **`brw_replay_request`** — read the page's own
@@ -55,6 +56,16 @@ a tool returns `ref not found` or `not actionable`, the page changed — call
 - `brw_snapshot { format: "compact" }` returns one terse line per element
   (`e17 button "Submit"`) instead of JSON — markedly fewer tokens for small
   models, same refs.
+
+## Mobile and responsive testing
+
+Use `brw_emulate_device` for small-screen tests. It applies real Chrome DevTools
+emulation to the target tab — CSS viewport dimensions, DPR, mobile viewport meta
+handling, touch events, and mobile UA/platform overrides — rather than resizing
+the OS browser window. Presets include `iphone_se`, `iphone_14`,
+`iphone_14_pro_max`, `pixel_7`, `galaxy_s20`, and `ipad_mini`; pass
+`clear:true` to reset. Reload after applying emulation when the app only chooses
+mobile/desktop behavior at initial page load.
 
 ## WebMCP: use the page's own tools when it offers them
 

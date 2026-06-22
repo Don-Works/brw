@@ -33,6 +33,13 @@ Policy separates the concerns:
 - `profile`: Chrome profile allowed for that workspace
 - `transport`: where `brwd` runs
 
+For installed browser profiles, treat the workspace binding as the authority.
+Do not expose profile selection as an agent/tool argument. A long-lived daemon
+should start with `--workspace` and its resolved policy profile; its HTTP
+`/health` response includes that identity. Upstream MCP wrappers launched for a
+workspace verify the upstream daemon identity before exposing tools, and fail
+closed if the daemon is unlabelled or reports a different workspace/profile.
+
 Chrome tab groups can be used as visible run workspaces on the extension-bridge
 transport. An agent can inspect `brw_list_tab_groups`, choose the next
 client-side run name such as `brw-1`, pass that unique `group` to
@@ -51,16 +58,18 @@ the browser machine:
 brwd --bridge --http 127.0.0.1:17310 --bridge-addr 127.0.0.1:17311
 ```
 
-The `brw` extension connects locally to that daemon. On the agent machine,
+The `brw` extension connects locally to that daemon. Each Chrome profile can pin
+its own loopback bridge URL and expected workspace/profile in the extension's
+options page. On the agent machine,
 generate a stdio MCP wrapper that reaches the browser machine over SSH and
 talks to the daemon's loopback HTTP API:
 
 ```sh
 brwctl remote-mcp-wrapper \
-  --host max-air \
-  --user maxrevitt \
+  --host browser-host \
+  --user browser-user \
   --remote-brwd ~/.local/bin/brwd \
-  --output ~/.local/bin/brw-max-air-mcp
+  --output ~/.local/bin/brw-browser-mcp
 ```
 
 Point the MCP client at the generated wrapper.
@@ -84,7 +93,7 @@ The generated wrapper is hardened and resilient by default:
   reconnect loop cannot fill the disk.
 - **Performance**: `--compression` enables SSH compression — worth it for
   text-heavy payloads (snapshots) on slow links, skip it on fast links and for
-  already-compressed PNG screenshots.
+  already-compressed screenshot payloads.
 
 Every baked-in value is overridable at runtime via the matching `BRW_*` env var
 (for example `BRW_SERVER_ALIVE_INTERVAL`), and `--ssh-option` appends any extra

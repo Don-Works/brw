@@ -16,6 +16,7 @@ import (
 
 	"github.com/Don-Works/brw/internal/actions"
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
@@ -27,6 +28,7 @@ type Bridge struct {
 	addr               string
 	timeout            time.Duration
 	allowedExtensionID string
+	identity           brwidentity.Identity
 	server             *http.Server
 
 	mu      sync.RWMutex
@@ -47,13 +49,32 @@ type Bridge struct {
 	// cooperatively. Mirrors the browser.Manager mechanism so cancellation
 	// behaves identically across the CDP and extension transports.
 	cancels *cancelRegistry
+
+	// emulationStates tracks per-tab DevTools device emulation so clear can
+	// restore UA/platform overrides that CDP itself has no clear command for.
+	emulationMu     sync.Mutex
+	emulationStates map[string]bridgeDeviceEmulationState
+}
+
+type bridgeDeviceIdentity struct {
+	UserAgent string `json:"userAgent"`
+	Platform  string `json:"platform"`
+}
+
+type bridgeDeviceEmulationState struct {
+	Baseline    bridgeDeviceIdentity
+	HasBaseline bool
+	Config      browser.DeviceEmulationConfig
 }
 
 type hello struct {
-	Source   string `json:"source,omitempty"`
-	Version  string `json:"version,omitempty"`
-	Chrome   string `json:"chrome,omitempty"`
-	Platform string `json:"platform,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Chrome    string `json:"chrome,omitempty"`
+	Platform  string `json:"platform,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
+	Profile   string `json:"profile,omitempty"`
+	Label     string `json:"label,omitempty"`
 }
 
 type request struct {
@@ -73,6 +94,10 @@ type response struct {
 }
 
 func New(addr string, timeout time.Duration, allowedExtensionID string) *Bridge {
+	return NewWithIdentity(addr, timeout, allowedExtensionID, brwidentity.Identity{})
+}
+
+func NewWithIdentity(addr string, timeout time.Duration, allowedExtensionID string, identity brwidentity.Identity) *Bridge {
 	if timeout == 0 {
 		timeout = 20 * time.Second
 	}
@@ -80,8 +105,10 @@ func New(addr string, timeout time.Duration, allowedExtensionID string) *Bridge 
 		addr:               addr,
 		timeout:            timeout,
 		allowedExtensionID: strings.TrimSpace(allowedExtensionID),
+		identity:           identity,
 		pending:            map[string]chan response{},
 		cancels:            newCancelRegistry(),
+		emulationStates:    map[string]bridgeDeviceEmulationState{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/extension", b.handleExtension)
@@ -117,8 +144,9 @@ func (b *Bridge) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	disconnectedAt := b.disconnectedAt
 	disconnectReason := b.disconnectReason
 	pending := len(b.pending)
+	identity := b.identity
 	b.mu.RUnlock()
-	writeJSON(w, http.StatusOK, map[string]any{
+	status := map[string]any{
 		"connected":         connected,
 		"hello":             hello,
 		"active_tab_id":     active,
@@ -127,7 +155,11 @@ func (b *Bridge) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"disconnected_at":   formatStatusTime(disconnectedAt),
 		"disconnect_reason": disconnectReason,
 		"pending":           pending,
-	})
+	}
+	if !identity.Empty() {
+		status["identity"] = identity
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 // effectiveExtensionID returns the extension id whose chrome-extension:// origin
@@ -639,7 +671,10 @@ func (b *Bridge) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.
 func (b *Bridge) Read(ctx context.Context) (readability.PageRead, error) {
 	var read readability.PageRead
 	err := b.evaluate(ctx, readability.ReadExpr(), "", &read)
-	return read, err
+	if err != nil {
+		return readability.PageRead{}, err
+	}
+	return readability.Normalize(read), nil
 }
 
 func (b *Bridge) ReadData(ctx context.Context) (snapshot.StructuredData, error) {
@@ -825,19 +860,16 @@ func (b *Bridge) Hover(ctx context.Context, ref string) (browser.ActionResult, e
 }
 
 func (b *Bridge) hoverRef(ctx context.Context, ref string) error {
-	refJSON, _ := json.Marshal(ref)
-	var result struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error,omitempty"`
-	}
-	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.HoverElementScript, refJSON), "", &result); err != nil {
+	box, err := b.resolveBox(ctx, ref)
+	if err != nil {
 		return err
 	}
-	if !result.OK {
-		if result.Error == "" {
-			result.Error = "hover failed"
-		}
-		return fmt.Errorf("hover: %s", result.Error)
+	if _, err := b.cdp(ctx, "", "Input.dispatchMouseEvent", map[string]any{
+		"type": "mouseMoved",
+		"x":    box.ViewportX,
+		"y":    box.ViewportY,
+	}); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1513,6 +1545,9 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			break
 		}
 		actionErr = b.clickRef(ctx, step.Ref)
+		if actionErr == nil {
+			sr.Result = map[string]any{"ok": true, "message": "clicked " + step.Ref, "ref": step.Ref}
+		}
 		b.settle(ctx, batchActionSettle)
 	case "type":
 		if step.Ref == "" || step.Text == "" {
@@ -1520,16 +1555,27 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			break
 		}
 		actionErr = b.typeRef(ctx, step.Ref, step.Text)
+		if actionErr == nil {
+			sr.Result = map[string]any{"ok": true, "message": "typed into " + step.Ref, "ref": step.Ref}
+		}
 		b.settle(ctx, batchActionSettle)
 	case "fill":
-		_, actionErr = b.fillOptions(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+		var ref string
+		ref, actionErr = b.fillOptions(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+		if actionErr == nil {
+			sr.Result = map[string]any{"ok": true, "message": "filled " + ref, "ref": ref}
+		}
 		b.settle(ctx, batchActionSettle)
 	case "select":
 		if step.Ref == "" || step.Value == "" {
 			actionErr = errors.New("select requires ref and value")
 			break
 		}
-		_, actionErr = b.selectValue(ctx, step.Ref, step.Value)
+		var message string
+		message, actionErr = b.selectValue(ctx, step.Ref, step.Value)
+		if actionErr == nil {
+			sr.Result = map[string]any{"ok": true, "message": message, "ref": step.Ref, "value": step.Value}
+		}
 		b.settle(ctx, batchActionSettle)
 	case "press":
 		if step.Key == "" {
@@ -1537,9 +1583,16 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			break
 		}
 		actionErr = b.pressKey(ctx, step.Key)
+		if actionErr == nil {
+			sr.Result = map[string]any{"ok": true, "message": "pressed " + step.Key, "key": step.Key}
+		}
 		b.settle(ctx, batchActionSettle)
 	case "scroll":
-		_, actionErr = b.scrollDirection(ctx, step.Direction)
+		var message string
+		message, actionErr = b.scrollDirection(ctx, step.Direction)
+		if actionErr == nil {
+			sr.Result = map[string]any{"ok": true, "message": message, "direction": step.Direction}
+		}
 		b.settle(ctx, batchActionSettle)
 	case "hover":
 		if step.Ref == "" {
@@ -1547,6 +1600,9 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			break
 		}
 		actionErr = b.hoverRef(ctx, step.Ref)
+		if actionErr == nil {
+			sr.Result = map[string]any{"ok": true, "message": "hovered " + step.Ref, "ref": step.Ref}
+		}
 		b.settle(ctx, batchActionSettle)
 	case "wait":
 		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
@@ -1554,6 +1610,16 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			timeout = b.timeout
 		}
 		actionErr = b.WaitFor(ctx, step.Condition, timeout)
+		if actionErr == nil {
+			sr.Result = map[string]any{"ok": true, "message": "wait matched " + step.Condition, "condition": step.Condition}
+		}
+	case "read":
+		var read readability.PageRead
+		read, actionErr = b.Read(ctx)
+		sr.Result = read
+		if actionErr == nil {
+			sr.Message = "read captured"
+		}
 	case "snapshot":
 		snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
 		if err != nil {
@@ -1561,6 +1627,7 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			break
 		}
 		sr.Snapshot = &snap
+		sr.Result = snap
 		sr.Message = "snapshot captured"
 	case "open":
 		if step.URL == "" {
@@ -1571,6 +1638,7 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 		openRes, actionErr = b.Open(ctx, step.URL)
 		if actionErr == nil {
 			retargetTo = openRes.Tab.ID
+			sr.Result = openRes
 		}
 	case "focus_tab":
 		if step.ID == "" {
@@ -1580,6 +1648,7 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 		actionErr = b.FocusTab(ctx, step.ID)
 		if actionErr == nil {
 			retargetTo = step.ID
+			sr.Result = map[string]any{"ok": true, "message": "focused tab " + step.ID, "tab_id": step.ID}
 		}
 	default:
 		actionErr = fmt.Errorf("unknown action %q", step.Action)
@@ -1637,12 +1706,27 @@ func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Dur
 	}
 }
 
+const (
+	bridgeScreenshotMaxWidth       = 800
+	bridgeScreenshotJPEGQuality    = 50
+	bridgeScreenshotAnnotateMaxDim = 900
+)
+
 func (b *Bridge) Screenshot(ctx context.Context) (browser.Screenshot, error) {
-	raw, err := b.cdp(ctx, "", "Page.captureScreenshot", map[string]any{"format": "png"})
+	tabID := b.contextTabID(ctx)
+	params := map[string]any{"format": "jpeg", "quality": bridgeScreenshotJPEGQuality}
+	if vw, vh := b.viewportDimensions(ctx, tabID); vw > 0 && vh > 0 {
+		scale := 1.0
+		if vw > bridgeScreenshotMaxWidth {
+			scale = bridgeScreenshotMaxWidth / vw
+		}
+		params["clip"] = map[string]any{"x": 0, "y": 0, "width": vw, "height": vh, "scale": scale}
+	}
+	raw, err := b.cdp(ctx, tabID, "Page.captureScreenshot", params)
 	if err != nil {
 		return browser.Screenshot{}, err
 	}
-	return screenshotFromRaw(raw)
+	return screenshotFromRawMIME(raw, "image/jpeg")
 }
 
 func (b *Bridge) ScreenshotElement(ctx context.Context, ref string) (browser.Screenshot, error) {
@@ -1664,6 +1748,17 @@ func (b *Bridge) ScreenshotElement(ctx context.Context, ref string) (browser.Scr
 		return browser.Screenshot{}, err
 	}
 	return screenshotFromRaw(raw)
+}
+
+func (b *Bridge) viewportDimensions(ctx context.Context, tabID string) (float64, float64) {
+	var dims []float64
+	if err := b.evaluate(ctx, `[Math.round(window.innerWidth), Math.round(window.innerHeight)]`, tabID, &dims); err != nil {
+		return 0, 0
+	}
+	if len(dims) != 2 || dims[0] <= 0 || dims[1] <= 0 {
+		return 0, 0
+	}
+	return dims[0], dims[1]
 }
 
 // ScreenshotAnnotated draws a Set-of-Marks overlay (ref-labelled boxes over the
@@ -1719,9 +1814,25 @@ func (b *Bridge) ScreenshotAnnotated(ctx context.Context, aopts browser.Annotate
 
 	capParams := map[string]any{"format": "png"}
 	if clip != nil {
-		capParams["clip"] = map[string]any{
-			"x": clip.X, "y": clip.Y, "width": clip.Width, "height": clip.Height, "scale": 1,
+		scale := 1.0
+		longest := clip.Width
+		if clip.Height > longest {
+			longest = clip.Height
 		}
+		if longest > bridgeScreenshotAnnotateMaxDim {
+			scale = bridgeScreenshotAnnotateMaxDim / longest
+		}
+		capParams["clip"] = map[string]any{"x": clip.X, "y": clip.Y, "width": clip.Width, "height": clip.Height, "scale": scale}
+	} else if vw, vh := b.viewportDimensions(ctx, tabID); vw > 0 && vh > 0 {
+		scale := 1.0
+		longest := vw
+		if vh > longest {
+			longest = vh
+		}
+		if longest > bridgeScreenshotAnnotateMaxDim {
+			scale = bridgeScreenshotAnnotateMaxDim / longest
+		}
+		capParams["clip"] = map[string]any{"x": 0, "y": 0, "width": vw, "height": vh, "scale": scale}
 	}
 	raw, err := b.cdp(ctx, tabID, "Page.captureScreenshot", capParams)
 	if err != nil {
@@ -1776,14 +1887,9 @@ func (b *Bridge) resolveAnnotationClip(ctx context.Context, tabID string, aopts 
 	var x, y, w, h float64
 	switch {
 	case strings.TrimSpace(aopts.Ref) != "":
-		refJSON, _ := json.Marshal(aopts.Ref)
-		expr := fmt.Sprintf("%s(%s)", snapshot.ResolveBoxScript, refJSON)
-		var box snapshot.ElementBox
-		if err := b.evaluate(ctx, expr, tabID, &box); err != nil {
+		box, err := b.resolveBox(browser.WithTabID(ctx, tabID), aopts.Ref)
+		if err != nil {
 			return nil, err
-		}
-		if !box.OK {
-			return nil, fmt.Errorf("element ref %q not found or not visible", aopts.Ref)
 		}
 		x = box.ViewportX - box.Width/2 - annotationClipMargin
 		y = box.ViewportY - box.Height/2 - annotationClipMargin
@@ -2076,14 +2182,18 @@ func (b *Bridge) axNodes(ctx context.Context, tabID string) ([]*accessibility.No
 
 func (b *Bridge) resolveBox(ctx context.Context, ref string) (snapshot.ElementBox, error) {
 	refJSON, _ := json.Marshal(ref)
-	var box snapshot.ElementBox
-	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.ResolveBoxScript, refJSON), "", &box); err != nil {
-		return box, err
+	var box snapshot.RecoveredBox
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.ResolveOrRecoverBoxScript, refJSON), "", &box); err != nil {
+		return snapshot.ElementBox{}, err
 	}
 	if !box.OK {
-		return box, fmt.Errorf("element ref %q not found or not visible", ref)
+		reason := box.Reason
+		if reason == "" {
+			reason = "not_visible"
+		}
+		return snapshot.ElementBox{}, fmt.Errorf("element ref %q not recoverable: %s", ref, reason)
 	}
-	return box, nil
+	return box.ElementBox, nil
 }
 
 func (b *Bridge) focus(ctx context.Context, ref string) error {
@@ -2303,6 +2413,10 @@ func requireGroupID(id string) (int, error) {
 }
 
 func screenshotFromRaw(raw json.RawMessage) (browser.Screenshot, error) {
+	return screenshotFromRawMIME(raw, "image/png")
+}
+
+func screenshotFromRawMIME(raw json.RawMessage, mimeType string) (browser.Screenshot, error) {
 	var payload struct {
 		Data string `json:"data"`
 	}
@@ -2316,7 +2430,7 @@ func screenshotFromRaw(raw json.RawMessage) (browser.Screenshot, error) {
 	if err != nil {
 		return browser.Screenshot{}, err
 	}
-	return browser.Screenshot{MIMEType: "image/png", Data: data, Base64: payload.Data}, nil
+	return browser.Screenshot{MIMEType: mimeType, Data: data, Base64: payload.Data}, nil
 }
 
 func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {

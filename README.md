@@ -111,10 +111,10 @@ generated SSH stdio wrapper:
 
 ```sh
 brwctl remote-mcp-wrapper \
-  --host max-air \
-  --user maxrevitt \
+  --host browser-host \
+  --user browser-user \
   --remote-brwd ~/.local/bin/brwd \
-  --output ~/.local/bin/brw-max-air-mcp
+  --output ~/.local/bin/brw-browser-mcp
 ```
 
 See [docs/remote-control.md](docs/remote-control.md).
@@ -202,6 +202,7 @@ Core MCP tools include:
 - `brw_drag`, `brw_upload_file`, `brw_wait_for`
 - `brw_batch`, `brw_cancel`, `brw_observe`
 - `brw_screenshot`, `brw_screenshot_element`
+- `brw_emulate_device` for DevTools mobile/responsive emulation
 - `brw_network_requests`, `brw_network_capture`, `brw_replay_request`
 - `brw_console`, `brw_downloads`, `brw_trace`
 - `brw_assert_visible`, `brw_assert_text`, `brw_assert_value`
@@ -213,6 +214,11 @@ all tools callable.
 
 Backend-specific notes:
 
+- `brw_emulate_device` uses Chrome DevTools Protocol device emulation, not OS
+  window resizing. Presets such as `iphone_se`, `iphone_14`, `pixel_7`,
+  `galaxy_s20`, and `ipad_mini` apply CSS viewport size, DPR, mobile viewport
+  meta behavior, touch emulation, and mobile UA/platform overrides. Pass
+  `clear:true` to reset a tab.
 - `brw_upload_file` accepts the file from exactly one source: `path`/`paths`
   (files already on the browser host), `bytes_base64` (inline base64 contents,
   no host filesystem access needed), or `url` (the daemon fetches it over

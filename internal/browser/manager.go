@@ -123,6 +123,11 @@ type Manager struct {
 	webmcpEnabled bool
 	webmcpMu      sync.Mutex
 	webmcpTabs    map[string]bool
+
+	// emulationStates tracks per-target DevTools device emulation so clear can
+	// restore UA/platform overrides that CDP itself has no clear command for.
+	emulationMu     sync.Mutex
+	emulationStates map[string]deviceEmulationState
 }
 
 type tabContext struct {
@@ -194,6 +199,7 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		shadowPierceTabs: map[string]bool{},
 		webmcpEnabled:    cfg.WebMCP,
 		webmcpTabs:       map[string]bool{},
+		emulationStates:  map[string]deviceEmulationState{},
 	}
 
 	if err := m.connect(); err != nil {
@@ -1357,7 +1363,7 @@ func (m *Manager) resolveAnnotationClip(tabCtx context.Context, aopts AnnotatedS
 	var x, y, w, h float64
 	switch {
 	case strings.TrimSpace(aopts.Ref) != "":
-		box, err := snapshot.ResolveBox(tabCtx, aopts.Ref)
+		box, err := snapshot.ResolveOrRecoverBox(tabCtx, aopts.Ref)
 		if err != nil {
 			return nil, err
 		}
@@ -1422,7 +1428,7 @@ func (m *Manager) ScreenshotElement(ctx context.Context, ref string) (Screenshot
 	}
 	defer cancel()
 
-	box, err := snapshot.ResolveBox(tabCtx, ref)
+	box, err := snapshot.ResolveOrRecoverBox(tabCtx, ref)
 	if err != nil {
 		return Screenshot{}, err
 	}
@@ -1518,41 +1524,65 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 			actionErr = errors.New("click requires ref")
 			break
 		}
-		_, actionErr = m.Click(ctx, step.Ref)
+		var actionResult ActionResult
+		actionResult, actionErr = m.Click(ctx, step.Ref)
+		sr.Result = actionResult
 	case "type":
 		if step.Ref == "" || step.Text == "" {
 			actionErr = errors.New("type requires ref and text")
 			break
 		}
-		_, actionErr = m.Type(ctx, step.Ref, step.Text)
+		var actionResult ActionResult
+		actionResult, actionErr = m.Type(ctx, step.Ref, step.Text)
+		sr.Result = actionResult
 	case "fill":
-		_, actionErr = m.Fill(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+		var actionResult ActionResult
+		actionResult, actionErr = m.Fill(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+		sr.Result = actionResult
 	case "select":
 		if step.Ref == "" || step.Value == "" {
 			actionErr = errors.New("select requires ref and value")
 			break
 		}
-		_, actionErr = m.Select(ctx, step.Ref, step.Value)
+		var actionResult ActionResult
+		actionResult, actionErr = m.Select(ctx, step.Ref, step.Value)
+		sr.Result = actionResult
 	case "press":
 		if step.Key == "" {
 			actionErr = errors.New("press requires key")
 			break
 		}
-		_, actionErr = m.Press(ctx, step.Key)
+		var actionResult ActionResult
+		actionResult, actionErr = m.Press(ctx, step.Key)
+		sr.Result = actionResult
 	case "scroll":
-		_, actionErr = m.Scroll(ctx, step.Direction)
+		var actionResult ActionResult
+		actionResult, actionErr = m.Scroll(ctx, step.Direction)
+		sr.Result = actionResult
 	case "hover":
 		if step.Ref == "" {
 			actionErr = errors.New("hover requires ref")
 			break
 		}
-		_, actionErr = m.Hover(ctx, step.Ref)
+		var actionResult ActionResult
+		actionResult, actionErr = m.Hover(ctx, step.Ref)
+		sr.Result = actionResult
 	case "wait":
 		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
 		if timeout == 0 {
 			timeout = m.timeout
 		}
 		actionErr = m.WaitFor(ctx, step.Condition, timeout)
+		if actionErr == nil {
+			sr.Result = map[string]any{"ok": true, "message": "wait matched " + step.Condition, "condition": step.Condition}
+		}
+	case "read":
+		var read readability.PageRead
+		read, actionErr = m.Read(ctx)
+		sr.Result = read
+		if actionErr == nil {
+			sr.Message = "read captured"
+		}
 	case "snapshot":
 		snap, err := m.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
 		if err != nil {
@@ -1560,19 +1590,25 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 			break
 		}
 		sr.Snapshot = &snap
+		sr.Result = snap
 		sr.Message = "snapshot captured"
 	case "open":
 		if step.URL == "" {
 			actionErr = errors.New("open requires url")
 			break
 		}
-		_, actionErr = m.Open(ctx, step.URL)
+		var openRes OpenResult
+		openRes, actionErr = m.Open(ctx, step.URL)
+		sr.Result = openRes
 	case "focus_tab":
 		if step.ID == "" {
 			actionErr = errors.New("focus_tab requires id")
 			break
 		}
 		actionErr = m.FocusTab(ctx, step.ID)
+		if actionErr == nil {
+			sr.Result = map[string]any{"ok": true, "message": "focused tab " + step.ID, "tab_id": step.ID}
+		}
 	default:
 		actionErr = fmt.Errorf("unknown action %q", step.Action)
 	}

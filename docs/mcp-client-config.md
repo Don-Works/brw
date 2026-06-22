@@ -36,6 +36,12 @@ brwctl mcp-config \
 The generated server still speaks stdio MCP to the client. Internally it starts
 `brwd` on the browser machine through SSH.
 
+For profile isolation, generate config from `--workspace` and let policy resolve
+the profile and bridge addresses. The workspace route should expose one resolved
+profile, not a user-selectable profile argument. When the generated command uses
+`--upstream-http`, `brwd` checks `/health.identity` on the upstream daemon and
+refuses to start if it is not the workspace/profile resolved from policy.
+
 ## Upstream Wrapper
 
 If a long-lived daemon already owns the `brw` extension port on the browser
@@ -43,10 +49,10 @@ machine, generate an SSH stdio wrapper:
 
 ```sh
 brwctl remote-mcp-wrapper \
-  --host max-air \
-  --user maxrevitt \
+  --host browser-host \
+  --user browser-user \
   --remote-brwd ~/.local/bin/brwd \
-  --output ~/.local/bin/brw-max-air-mcp
+  --output ~/.local/bin/brw-browser-mcp
 ```
 
 Then configure the MCP client with the generated command:
@@ -55,7 +61,7 @@ Then configure the MCP client with the generated command:
 {
   "mcpServers": {
     "brw": {
-      "command": "/Users/me/.local/bin/brw-max-air-mcp",
+      "command": "/path/to/brw-browser-mcp",
       "args": []
     }
   }

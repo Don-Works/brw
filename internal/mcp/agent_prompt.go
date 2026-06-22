@@ -28,11 +28,17 @@ REFS: refs are stable across re-renders and self-heal. If a tool says
 to refresh refs, then retry. Never invent a ref; only use refs brw returned.
 
 READING CONTENT (no screenshots):
-- brw_read for page prose, headings, links, forms, tables.
+- brw_read for page prose, headings, links, forms, tables. Primary prose is in
+  both text and main.
 - brw_read_data for embedded structured data (JSON-LD, __NEXT_DATA__, OpenGraph)
   — the fast path for prices, product details, listings.
 - brw_network_capture then brw_replay_request to read a page's own JSON API
   instead of scraping the DOM, when that is the data you need.
+
+MOBILE/RESPONSIVE: use brw_emulate_device for small-screen testing. It is real
+Chrome DevTools device emulation (CSS viewport, DPR, mobile viewport-meta
+handling, touch, and mobile UA/platform), not OS window resizing. Use presets
+like iphone_se or pixel_7; pass clear:true to reset.
 
 TOKEN DISCIPLINE:
 - Prefer brw_find over brw_snapshot when targeting specific controls.

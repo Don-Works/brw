@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -22,6 +23,11 @@ import (
 type Controller struct {
 	baseURL string
 	client  *http.Client
+}
+
+type Health struct {
+	OK       bool                 `json:"ok"`
+	Identity brwidentity.Identity `json:"identity,omitempty"`
 }
 
 func New(baseURL string, timeout time.Duration) (*Controller, error) {
@@ -42,6 +48,12 @@ func New(baseURL string, timeout time.Duration) (*Controller, error) {
 		baseURL: baseURL,
 		client:  &http.Client{Timeout: timeout},
 	}, nil
+}
+
+func (c *Controller) Health(ctx context.Context) (Health, error) {
+	var out Health
+	err := c.get(ctx, "/health", nil, &out)
+	return out, err
 }
 
 func (c *Controller) Open(ctx context.Context, targetURL string) (browser.OpenResult, error) {
@@ -326,6 +338,12 @@ func (c *Controller) GroupTabs(ctx context.Context, tabIDs []string, opts browse
 
 func (c *Controller) UngroupTabs(ctx context.Context, tabIDs []string) error {
 	return c.post(ctx, "/api/browser/ungroup_tabs", map[string]any{"tab_ids": tabIDs}, nil)
+}
+
+func (c *Controller) EmulateDevice(ctx context.Context, opts browser.DeviceEmulationOptions) (browser.DeviceEmulationResult, error) {
+	var out browser.DeviceEmulationResult
+	err := c.post(ctx, "/api/browser/emulate_device", opts, &out)
+	return out, err
 }
 
 func (c *Controller) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {

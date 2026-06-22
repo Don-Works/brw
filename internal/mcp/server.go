@@ -40,27 +40,28 @@ const (
 // behind the default "all" profile while keeping the verbs an agent needs for
 // common read/click/type/select/navigate/scroll/drag/upload/hover flows.
 var coreToolNames = map[string]bool{
-	"brw_open":        true,
-	"brw_list_tabs":   true,
-	"brw_focus_tab":   true,
-	"brw_read":        true,
-	"brw_snapshot":    true,
-	"brw_find":        true,
-	"brw_click":       true,
-	"brw_click_text":  true,
-	"brw_type":        true,
-	"brw_fill":        true,
-	"brw_select":      true,
-	"brw_press":       true,
-	"brw_scroll":      true,
-	"brw_hover":       true,
-	"brw_drag":        true,
-	"brw_upload_file": true,
-	"brw_navigate":    true,
-	"brw_wait_for":    true,
-	"brw_batch":       true,
-	"brw_observe":     true,
-	"brw_screenshot":  true,
+	"brw_open":           true,
+	"brw_list_tabs":      true,
+	"brw_focus_tab":      true,
+	"brw_read":           true,
+	"brw_snapshot":       true,
+	"brw_find":           true,
+	"brw_click":          true,
+	"brw_click_text":     true,
+	"brw_type":           true,
+	"brw_fill":           true,
+	"brw_select":         true,
+	"brw_press":          true,
+	"brw_scroll":         true,
+	"brw_hover":          true,
+	"brw_drag":           true,
+	"brw_upload_file":    true,
+	"brw_navigate":       true,
+	"brw_wait_for":       true,
+	"brw_batch":          true,
+	"brw_observe":        true,
+	"brw_screenshot":     true,
+	"brw_emulate_device": true,
 }
 
 func New(manager browser.Controller) *Server {
@@ -271,7 +272,7 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 			"protocolVersion": "2025-06-18",
 			"serverInfo": map[string]any{
 				"name":    "brw",
-				"version": "0.2.0",
+				"version": "0.3.0",
 			},
 			"capabilities": map[string]any{
 				"tools": map[string]any{"listChanged": false},
@@ -427,6 +428,12 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolOK(s.manager.CloseTab(ctx, tabIDArg(req.TabID, req.ID)))
+	case "brw_emulate_device":
+		var req browser.DeviceEmulationOptions
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.EmulateDevice(ctx, req))
 	case "brw_read":
 		return toolJSON(s.manager.Read(ctx))
 	case "brw_read_data":
@@ -1034,6 +1041,20 @@ func tools() []map[string]any {
 			"tab_id": stringSchema("Target id from brw_list_tabs (preferred, consistent with other tools)."),
 			"id":     stringSchema("Deprecated alias for tab_id."),
 		}, nil)),
+		tool("brw_emulate_device", "Apply real Chrome DevTools device emulation to a tab for responsive/mobile testing. This is NOT OS window resizing: it uses CDP Emulation.setDeviceMetricsOverride so CSS media queries, viewport meta handling, DPR, mobile text autosizing/scrollbars, touch events, and optional mobile user-agent/platform overrides behave like DevTools mobile mode. Width/height are CSS viewport pixels. Use device presets such as iphone_se, iphone_14, iphone_14_pro_max, pixel_7, galaxy_s20, or ipad_mini, or pass explicit width/height. Pass clear:true to reset metrics/touch and restore the tab's original user agent when brw captured one. Pass optional tab_id to target a specific tab. Reload after applying if the app only chooses mobile/desktop behavior at initial page load.", object(map[string]any{
+			"device":              stringEnumSchema("Device preset: iphone_se (default when omitted), iphone_14, iphone_14_pro_max, pixel_7, galaxy_s20, ipad_mini, ipad, responsive/custom with width+height, or clear/reset/off/none/desktop to reset.", "iphone_se", "iphone_12", "iphone_13", "iphone_14", "iphone_14_pro_max", "pixel_5", "pixel_7", "galaxy_s20", "ipad_mini", "ipad", "responsive", "custom", "desktop", "clear", "reset", "off", "none"),
+			"width":               integerSchema("Custom CSS viewport width in pixels. Overrides preset width when supplied."),
+			"height":              integerSchema("Custom CSS viewport height in pixels. Overrides preset height when supplied."),
+			"device_scale_factor": map[string]any{"type": "number", "description": "Device pixel ratio / DPR. Defaults to the preset DPR or 2 for custom mobile emulation."},
+			"mobile":              boolSchema("Enable Chrome mobile emulation semantics: viewport meta, overlay scrollbars, text autosizing, and related behavior. Defaults true for presets/custom."),
+			"touch":               boolSchema("Enable touch emulation and mouse-to-touch forwarding. Defaults true when mobile is true."),
+			"user_agent":          stringSchema("Optional user-agent override. Presets supply a mobile UA; custom mobile uses a generic Android Chrome UA unless overridden."),
+			"platform":            stringSchema("Optional navigator.platform override. Presets supply iPhone/iPad/Linux armv8l values."),
+			"max_touch_points":    integerSchema("Maximum emulated touch points. Defaults to 5 when touch is enabled."),
+			"orientation":         stringEnumSchema("portrait or landscape. When set, preset dimensions are swapped as needed.", "portrait", "landscape"),
+			"clear":               boolSchema("Reset DevTools device metrics/touch emulation for this tab and restore original user agent/platform if brw captured them before applying emulation."),
+			"tab_id":              stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
+		}, nil)),
 		tool("brw_read", "Return semantic page content: main text, headings, links, forms, tables, and metadata. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
@@ -1042,7 +1063,7 @@ func tools() []map[string]any {
 		}, nil)),
 		tool("brw_snapshot", "Return interactive controls with stable refs. Defaults to a bounded visible/actionable viewport frontier; use mode:\"all\" for full-page debugging (returns every matching element including offscreen/hidden controls — useful for comprehensive page analysis), and add include_hidden:true only when hidden inputs are needed. Metadata includes total_candidates for the full count before filtering. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id":               stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
-			"mode":                 stringSchema("frontier (default, scored visible/actionable controls) or all (full matching list, including offscreen/currently invisible matching controls) or form_lens (form fields with validation state only)."),
+			"mode":                 stringEnumSchema("frontier (default, scored visible/actionable controls) or all (full matching list, including offscreen/currently invisible matching controls) or form_lens (form fields with validation state only).", "frontier", "all", "form_lens"),
 			"query":                stringSchema("Case-insensitive substring match across ref, role, name, tag, type, href, and value."),
 			"text":                 stringSchema("Alias for query-style text filtering."),
 			"role":                 stringSchema("ARIA/semantic role to include, for example button or textbox."),
@@ -1053,7 +1074,7 @@ func tools() []map[string]any {
 			"visual_islands":       boolSchema("Detect semantically-opaque visual content (canvas/svg/video/large image/background-image/custom-rendered widget) and emit each as an element with source:[\"visual\"], visual_type, and visual_hint. Off by default; islands compete with DOM elements in the merged list up to the limit, so dense pages stay token-efficient."),
 			"visual_islands_limit": integerSchema("Cap on detected visual islands before merging into the element list. Defaults to 10."),
 			"since":                integerSchema("Pass a prior snapshot's metadata.version to get a DELTA: when it matches the last snapshot taken with identical options, the response sets metadata.delta=true, 'elements' carries ONLY added+changed elements (a change set, not the full page), and a top-level 'delta' object lists {added, removed, changed} refs (removed = refs whose element left the DOM). On any mismatch (version, options, or after navigation) a normal full snapshot is returned. Omit for a full snapshot."),
-			"format":               stringSchema("Output shape: 'json' (default, structured object) or 'compact' (one terse text line per element: ref role \"name\" + key state). 'compact' uses markedly fewer tokens — prefer it for small models. Presentation only; element selection and deltas are unchanged."),
+			"format":               stringEnumSchema("Output shape: json (default, structured object) or compact (one terse text line per element: ref role \"name\" + key state). compact uses markedly fewer tokens — prefer it for small models. Presentation only; element selection and deltas are unchanged.", "json", "compact"),
 		}, nil)),
 		tool("brw_find", "Find matching semantic element refs without dumping the full page. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id":         stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
@@ -1069,7 +1090,7 @@ func tools() []map[string]any {
 			"ref":         stringSchema("Element ref, for example e18. Provide ref or x,y."),
 			"x":           map[string]any{"type": "number", "description": "X coordinate in viewport pixels. Use with y instead of ref for canvas/coordinate clicks."},
 			"y":           map[string]any{"type": "number", "description": "Y coordinate in viewport pixels. Use with x instead of ref for canvas/coordinate clicks."},
-			"button":      stringSchema("Mouse button: left (default), right, or middle."),
+			"button":      stringEnumSchema("Mouse button: left (default), right, or middle.", "left", "right", "middle"),
 			"click_count": integerSchema("Click count: 1 (default), 2 for double-click, 3 to triple-click (select a line)."),
 			"tab_id":      stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
@@ -1077,21 +1098,21 @@ func tools() []map[string]any {
 			"from":   mousePointSchema("Drag source. Provide either ref or x and y."),
 			"to":     mousePointSchema("Drag target. Provide either ref or x and y."),
 			"steps":  integerSchema("Number of intermediate mouse-move steps between source and target. Defaults to 12."),
-			"button": stringSchema("Mouse button held during the drag: left (default), right, or middle."),
+			"button": stringEnumSchema("Mouse button held during the drag: left (default), right, or middle.", "left", "right", "middle"),
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"from", "to"})),
 		tool("brw_mouse_down", "Press and hold a mouse button at a ref or x,y without releasing (the press half of a press-and-hold). Pair with brw_mouse_up. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":    stringSchema("Element ref to press at. Provide ref or x,y."),
 			"x":      map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
 			"y":      map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
-			"button": stringSchema("Mouse button: left (default), right, or middle."),
+			"button": stringEnumSchema("Mouse button: left (default), right, or middle.", "left", "right", "middle"),
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
 		tool("brw_mouse_up", "Release a held mouse button at a ref or x,y (the release half of a press-and-hold). Pair with brw_mouse_down. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":    stringSchema("Element ref to release at. Provide ref or x,y."),
 			"x":      map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
 			"y":      map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
-			"button": stringSchema("Mouse button: left (default), right, or middle."),
+			"button": stringEnumSchema("Mouse button: left (default), right, or middle.", "left", "right", "middle"),
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
 		tool("brw_click_text", "Click the best visible actionable element whose accessible name or visible text matches text. Useful for controls like \"Check out\" when refs are stale or custom components hide internals. Below-fold matches are scrolled into view before clicking by default. Pass optional tab_id to target a specific tab.", object(map[string]any{
@@ -1102,7 +1123,7 @@ func tools() []map[string]any {
 			"tab_id":      stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"text"})),
 		tool("brw_navigate", "Navigate the active tab's session history: back, forward, or reload. Uses the page navigation history (no URL needed); returns a post-navigation observation. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"direction": stringSchema("back (previous history entry), forward (next history entry), or reload (re-fetch the current document)."),
+			"direction": stringEnumSchema("back (previous history entry), forward (next history entry), or reload (re-fetch the current document).", "back", "forward", "reload"),
 			"tab_id":    stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"direction"})),
 		tool("brw_hover", "Hover over a semantic element ref to trigger mouseenter/mouseover/pointermove events. Pass optional tab_id to target a specific tab.", object(map[string]any{
@@ -1166,7 +1187,7 @@ func tools() []map[string]any {
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"key"})),
 		tool("brw_scroll", "Scroll the active page or scroll container in a direction. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"direction": stringSchema("up, down, left, or right."),
+			"direction": stringEnumSchema("up, down, left, or right.", "up", "down", "left", "right"),
 			"tab_id":    stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"direction"})),
 		tool("brw_screenshot", "Visual fallback — you almost never need this. brw is semantic-first: brw_snapshot/brw_find expose every control with a ref, brw_read returns page prose/result/status/badge text, and EVERY action (click/type/fill/select/press/drag) returns a post-action observation that confirms its effect (changed elements, new values, navigation). To VERIFY an outcome (a cart badge, a result message, a swapped item, an editor's text), read that observation or call brw_read — do NOT screenshot to check. Reserve brw_screenshot for opaque visual content with no DOM text (canvas, maps, charts, image-only widgets). Pass optional tab_id to target a specific tab. Set annotate:true for a Set-of-Marks capture: each in-viewport frontier element is drawn with a labelled box whose label is the SAME ref returned by brw_snapshot (e.g. e17), and the response carries a legend mapping each ref to its box (x,y,width,height) plus role and name — so a vision model can read a label off the image and act on it with brw_click using that exact ref. To save vision tokens on a dense page, pass ref OR region to get a TIGHT annotated crop of just that element / box instead of the whole viewport (a far smaller image); ref/region imply annotate. The overlay is removed immediately after capture and never mutates the page. Default (annotate omitted/false, no ref/region) is byte-identical to the plain capture.", object(map[string]any{
@@ -1193,18 +1214,18 @@ func tools() []map[string]any {
 			"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds."},
 			"tab_id":     stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"condition"})),
-		tool("brw_plan", "Execute a sequence of browser operations in one round-trip. Steps run sequentially and stop on first failure.", object(map[string]any{
+		tool("brw_plan", "Execute a sequence of browser operations in one round-trip. Steps run sequentially and stop on first failure. Each successful step includes a result payload when the action produces useful data; snapshot steps return the page snapshot under both result and snapshot, and read steps return brw_read-style page prose under result.", object(map[string]any{
 			"steps": map[string]any{
 				"type":        "array",
 				"description": "Ordered list of steps to execute.",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"action":      stringSchema("One of: click, type, fill, select, press, scroll, hover, wait, snapshot, open, focus_tab."),
+						"action":      stringEnumSchema("One of: click, type, fill, select, press, scroll, hover, wait, snapshot, read, open, focus_tab.", "click", "type", "fill", "select", "press", "scroll", "hover", "wait", "snapshot", "read", "open", "focus_tab"),
 						"ref":         stringSchema("Element ref for click, type, fill, select, hover."),
 						"text":        stringSchema("Text for type and fill actions."),
 						"value":       stringSchema("Option value for select action."),
-						"direction":   stringSchema("Scroll direction: up, down, left, right."),
+						"direction":   stringEnumSchema("Scroll direction: up, down, left, right.", "up", "down", "left", "right"),
 						"condition":   stringSchema("Wait condition (load, text:..., ref:..., url:..., etc)."),
 						"timeout_ms":  map[string]any{"type": "integer", "description": "Timeout for wait action in milliseconds."},
 						"url":         stringSchema("URL for open action."),
@@ -1224,11 +1245,11 @@ func tools() []map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"action":     stringSchema("One of: click, type, fill, select, press, scroll, hover, wait, open, focus_tab, assert_visible, assert_text, assert_value, assert_hidden."),
+						"action":     stringEnumSchema("One of: click, type, fill, select, press, scroll, hover, wait, open, focus_tab, assert_visible, assert_text, assert_value, assert_hidden.", "click", "type", "fill", "select", "press", "scroll", "hover", "wait", "open", "focus_tab", "assert_visible", "assert_text", "assert_value", "assert_hidden"),
 						"ref":        stringSchema("Element ref for click, type, fill, select, hover, and assert_* actions."),
 						"text":       stringSchema("Text for type and fill actions, or expected text for assert_text."),
 						"value":      stringSchema("Option value for select action, or expected value for assert_value."),
-						"direction":  stringSchema("Scroll direction: up, down, left, right."),
+						"direction":  stringEnumSchema("Scroll direction: up, down, left, right.", "up", "down", "left", "right"),
 						"condition":  stringSchema("Wait condition (load, text:..., ref:..., url:..., etc)."),
 						"timeout_ms": map[string]any{"type": "integer", "description": "Timeout for wait/assert actions in milliseconds."},
 						"url":        stringSchema("URL for open action."),
@@ -1320,6 +1341,10 @@ func object(properties map[string]any, required []string) map[string]any {
 
 func stringSchema(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description}
+}
+
+func stringEnumSchema(description string, values ...string) map[string]any {
+	return map[string]any{"type": "string", "description": description, "enum": values}
 }
 
 func boolSchema(description string) map[string]any {

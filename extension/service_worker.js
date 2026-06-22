@@ -1,10 +1,13 @@
 const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
 const BRIDGE_STATUS_URL = "http://127.0.0.1:17311/status";
+const BRIDGE_CONFIG_KEY = "brwBridgeConfig";
+const BRIDGE_STATUS_KEY = "brwBridge";
 const PROTOCOL_VERSION = "0.1.0";
 const KEEPALIVE_INTERVAL_MS = 5 * 1000;
 const DAEMON_STATUS_INTERVAL_MS = 10 * 1000;
 const MAX_RECONNECT_DELAY_MS = 10 * 1000;
 let offscreenSetupPromise = null;
+let packagedDefaultConfigPromise = null;
 
 const state = {
   socket: null,
@@ -16,6 +19,7 @@ const state = {
   activeTabId: null,
   reconnectAttempt: 0,
   lastError: "",
+  bridgeConfig: null,
   snapshotCache: new Map(),
   observerInjected: new Set(),
   // Per-tab capture of the most recent Page.fileChooserOpened CDP event, keyed
@@ -41,10 +45,40 @@ chrome.runtime.onStartup.addListener(() => {
   connect();
 });
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "BRW_GET_STATUS") {
+    bridgeDebugStatus().then((status) => sendResponse({ ok: true, status })).catch((error) => {
+      sendResponse({ ok: false, error: String(error?.message || error) });
+    });
+    return true;
+  }
+  if (message?.type === "BRW_CONFIGURE") {
+    configureBridge(message.config || {}).then((config) => {
+      sendResponse({ ok: true, config });
+    }).catch((error) => {
+      sendResponse({ ok: false, error: String(error?.message || error) });
+    });
+    return true;
+  }
   if (message?.type !== "SW_KEEPALIVE") return false;
   connect({ probe: true });
   sendResponse({ ok: true });
   return false;
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes[BRIDGE_CONFIG_KEY]) return;
+  try {
+    state.bridgeConfig = normalizeBridgeConfig(changes[BRIDGE_CONFIG_KEY].newValue || {});
+  } catch (error) {
+    state.lastError = `invalid bridge config: ${String(error?.message || error)}`;
+    markBridgeStatus("error", state.lastError).catch(() => {});
+    return;
+  }
+  state.lastError = "";
+  if (state.socket) {
+    try { state.socket.close(); } catch (_) {}
+    state.socket = null;
+  }
+  connect({ probe: true });
 });
 chrome.action.onClicked.addListener(async (tab) => {
   await connect({ probe: true });
@@ -150,9 +184,17 @@ async function connectOnce() {
   clearTimeout(state.reconnectTimer);
   state.reconnectTimer = null;
   stopKeepAlive();
+  let config;
+  try {
+    config = await loadBridgeConfig();
+  } catch (error) {
+    state.lastError = `invalid bridge config: ${String(error?.message || error)}`;
+    await markBridgeStatus("error", state.lastError);
+    return;
+  }
   await markBridgeStatus("connecting");
 
-  const socket = new WebSocket(BRIDGE_URL);
+  const socket = new WebSocket(config.bridgeUrl);
   state.socket = socket;
 
   socket.onopen = async () => {
@@ -168,7 +210,10 @@ async function connectOnce() {
         source: "brw-extension",
         version: PROTOCOL_VERSION,
         chrome: navigator.userAgent,
-        platform: platform.os || ""
+        platform: platform.os || "",
+        workspace: config.workspace || "",
+        profile: config.profile || "",
+        label: config.label || ""
       }
     });
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
@@ -196,6 +241,112 @@ async function connectOnce() {
     await handle(message);
   };
 }
+
+async function loadBridgeConfig() {
+  const defaults = await packagedDefaultBridgeConfig();
+  const data = await chrome.storage.local.get(BRIDGE_CONFIG_KEY).catch(() => ({}));
+  state.bridgeConfig = normalizeBridgeConfig({ ...defaults, ...(data[BRIDGE_CONFIG_KEY] || {}) });
+  return state.bridgeConfig;
+}
+
+async function packagedDefaultBridgeConfig() {
+  if (!packagedDefaultConfigPromise) {
+    packagedDefaultConfigPromise = fetch(chrome.runtime.getURL("bridge-defaults.json"), { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : {})
+      .catch(() => ({}));
+  }
+  return packagedDefaultConfigPromise;
+}
+
+async function configureBridge(config) {
+  const normalized = normalizeBridgeConfig(config || {});
+  state.bridgeConfig = normalized;
+  await chrome.storage.local.set({ [BRIDGE_CONFIG_KEY]: normalized });
+  state.lastError = "";
+  if (state.socket) {
+    try { state.socket.close(); } catch (_) {}
+    state.socket = null;
+  }
+  await markBridgeStatus("configured");
+  connect({ probe: true });
+  return normalized;
+}
+
+async function bridgeDebugStatus() {
+  const config = await loadBridgeConfig();
+  const data = await chrome.storage.local.get(BRIDGE_STATUS_KEY).catch(() => ({}));
+  return {
+    config,
+    bridge: data[BRIDGE_STATUS_KEY] || null,
+    socket: isSocketOpen() ? "open" : (isSocketConnecting() ? "connecting" : "closed")
+  };
+}
+
+function normalizeBridgeConfig(input) {
+  const config = input && typeof input === "object" ? input : {};
+  const bridgeUrl = normalizeBridgeURL(config.bridgeUrl || config.url || bridgeURLFromPort(config.bridgePort) || BRIDGE_URL);
+  const statusUrl = normalizeStatusURL(config.statusUrl || deriveStatusURL(bridgeUrl));
+  return {
+    bridgeUrl,
+    statusUrl,
+    workspace: cleanLabel(config.workspace),
+    profile: cleanLabel(config.profile),
+    label: cleanLabel(config.label)
+  };
+}
+
+function bridgeURLFromPort(value) {
+  if (value === undefined || value === null || value === "") return "";
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("bridgePort must be a TCP port number");
+  }
+  return `ws://127.0.0.1:${port}/extension`;
+}
+
+function normalizeBridgeURL(value) {
+  const url = new URL(String(value || BRIDGE_URL));
+  if (url.protocol !== "ws:") throw new Error("bridgeUrl must use ws://");
+  if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+    throw new Error("bridgeUrl must target localhost or 127.0.0.1");
+  }
+  if (!url.port) throw new Error("bridgeUrl must include a port");
+  if (url.pathname === "/" || url.pathname === "") url.pathname = "/extension";
+  if (url.pathname !== "/extension") throw new Error("bridgeUrl path must be /extension");
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function deriveStatusURL(bridgeUrl) {
+  const url = new URL(bridgeUrl);
+  url.protocol = "http:";
+  url.pathname = "/status";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function normalizeStatusURL(value) {
+  const url = new URL(String(value || BRIDGE_STATUS_URL));
+  if (url.protocol !== "http:") throw new Error("statusUrl must use http://");
+  if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+    throw new Error("statusUrl must target localhost or 127.0.0.1");
+  }
+  if (!url.port) throw new Error("statusUrl must include a port");
+  if (url.pathname === "/" || url.pathname === "") url.pathname = "/status";
+  if (url.pathname !== "/status") throw new Error("statusUrl path must be /status");
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function cleanLabel(value) {
+  return String(value || "").trim().slice(0, 120);
+}
+
+globalThis.brwStatus = bridgeDebugStatus;
+globalThis.brwConfigure = configureBridge;
 
 async function handle(message) {
   try {
@@ -354,6 +505,12 @@ async function handle(message) {
       });
       ensureObserver(tabId);
       send({ id: message.id, ok: true, result: { stored: true } });
+      return;
+    }
+    if (message.type === "clear_snapshot_cache") {
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      state.snapshotCache.delete(tabId);
+      send({ id: message.id, ok: true, result: { cleared: tabId || 0 } });
       return;
     }
     if (message.type === "cdp") {
@@ -841,10 +998,12 @@ function send(payload) {
 async function probeDaemonStatus() {
   if (!isSocketOpen()) return false;
   try {
-    const response = await fetch(BRIDGE_STATUS_URL, { cache: "no-store" });
+    const config = await loadBridgeConfig();
+    const response = await fetch(config.statusUrl, { cache: "no-store" });
     if (!response.ok) throw new Error(`status ${response.status}`);
     const status = await response.json().catch(() => ({}));
     if (!status.connected) throw new Error("daemon reports no extension connection");
+    assertDaemonIdentity(config, status.identity || {});
     return true;
   } catch (error) {
     const message = `daemon status probe failed: ${String(error?.message || error)}`;
@@ -856,6 +1015,16 @@ async function probeDaemonStatus() {
     state.socket = null;
     scheduleReconnect(message);
     return false;
+  }
+}
+
+function assertDaemonIdentity(config, identity) {
+  for (const field of ["workspace", "profile"]) {
+    if (!config[field]) continue;
+    if (!identity[field]) throw new Error(`daemon status does not report ${field}`);
+    if (identity[field] !== config[field]) {
+      throw new Error(`daemon ${field} mismatch: got ${identity[field]}, want ${config[field]}`);
+    }
   }
 }
 
@@ -897,14 +1066,18 @@ function setBridgeBadge(status) {
 
 async function markBridgeStatus(status, detail = "") {
   setBridgeBadge(status);
+  const config = state.bridgeConfig || normalizeBridgeConfig({});
   const value = {
     status,
-    bridgeUrl: BRIDGE_URL,
-    statusUrl: BRIDGE_STATUS_URL,
+    bridgeUrl: config.bridgeUrl,
+    statusUrl: config.statusUrl,
+    workspace: config.workspace,
+    profile: config.profile,
+    label: config.label,
     detail,
     attempt: state.reconnectAttempt,
     lastError: state.lastError,
     at: new Date().toISOString()
   };
-  await chrome.storage.local.set({ brwBridge: value });
+  await chrome.storage.local.set({ [BRIDGE_STATUS_KEY]: value });
 }

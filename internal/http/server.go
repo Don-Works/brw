@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
 type Server struct {
-	manager browser.Controller
-	server  *http.Server
+	manager  browser.Controller
+	identity brwidentity.Identity
+	server   *http.Server
 }
 
 type snapshotRequest struct {
@@ -24,8 +26,12 @@ type snapshotRequest struct {
 }
 
 func New(addr string, manager browser.Controller) *Server {
+	return NewWithIdentity(addr, manager, brwidentity.Identity{})
+}
+
+func NewWithIdentity(addr string, manager browser.Controller, identity brwidentity.Identity) *Server {
 	mux := http.NewServeMux()
-	s := &Server{manager: manager, server: &http.Server{
+	s := &Server{manager: manager, identity: identity, server: &http.Server{
 		Addr:    addr,
 		Handler: mux,
 		// Bound slow-header clients (slowloris) without a blanket WriteTimeout,
@@ -54,6 +60,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/browser/tab_groups", s.tabGroups)
 	mux.HandleFunc("POST /api/browser/focus", s.focus)
 	mux.HandleFunc("POST /api/browser/close", s.closeTab)
+	mux.HandleFunc("POST /api/browser/emulate_device", s.emulateDevice)
 	mux.HandleFunc("GET /api/page/snapshot", s.snapshot)
 	mux.HandleFunc("GET /api/page/find", s.find)
 	mux.HandleFunc("POST /api/page/find", s.find)
@@ -101,7 +108,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	payload := map[string]any{"ok": true}
+	if !s.identity.Empty() {
+		payload["identity"] = s.identity
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) requestContext(r *http.Request) context.Context {
@@ -225,6 +236,18 @@ func (s *Server) closeTab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResult(w, browser.ActionResult{OK: true}, s.manager.CloseTab(r.Context(), tabIDArg(req.TabID, req.ID)))
+}
+
+func (s *Server) emulateDevice(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		browser.DeviceEmulationOptions
+		TabID string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.EmulateDevice(s.contextWithTabID(r.Context(), req.TabID), req.DeviceEmulationOptions)
+	writeResult(w, result, err)
 }
 
 // tabIDArg accepts either the legacy `id` field or the `tab_id` field used by

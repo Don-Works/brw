@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -139,6 +140,30 @@ func TestCloseContextAcceptsLegacyBrowserContextID(t *testing.T) {
 	}
 	if ctrl.closeCtxID != "ctx-legacy" {
 		t.Fatalf("closeCtxID = %q, want ctx-legacy", ctrl.closeCtxID)
+	}
+}
+
+func TestEmulateDeviceForwardsBody(t *testing.T) {
+	ctrl := &fakeController{}
+	server := New("", ctrl)
+	body := bytes.NewBufferString(`{"device":"pixel_7","orientation":"landscape","tab_id":"42"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/browser/emulate_device", body)
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if ctrl.emulationOpts.Device != "pixel_7" || ctrl.emulationOpts.Orientation != "landscape" {
+		t.Fatalf("emulation opts = %+v", ctrl.emulationOpts)
+	}
+	var got browser.DeviceEmulationResult
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.OK || got.Emulation == nil || got.Emulation.Device != "pixel_7" {
+		t.Fatalf("emulation result = %+v", got)
 	}
 }
 
@@ -359,6 +384,7 @@ type fakeController struct {
 	groupTabIDs   []string
 	groupTabsOpts browser.TabGroupOptions
 	closeCtxID    string
+	emulationOpts browser.DeviceEmulationOptions
 }
 
 func (f *fakeController) Open(context.Context, string) (browser.OpenResult, error) {
@@ -394,6 +420,11 @@ func (f *fakeController) FocusTab(context.Context, string) error {
 
 func (f *fakeController) CloseTab(context.Context, string) error {
 	return nil
+}
+
+func (f *fakeController) EmulateDevice(_ context.Context, opts browser.DeviceEmulationOptions) (browser.DeviceEmulationResult, error) {
+	f.emulationOpts = opts
+	return browser.DeviceEmulationResult{OK: true, Emulation: &browser.DeviceEmulationConfig{Device: "pixel_7", Width: 915, Height: 412, DeviceScaleFactor: 2.625, Mobile: true, Touch: true, Orientation: "landscape"}}, nil
 }
 
 func (f *fakeController) GroupTabs(_ context.Context, tabIDs []string, opts browser.TabGroupOptions) error {
@@ -583,6 +614,32 @@ func TestHealth(t *testing.T) {
 	srv.server.Handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestHealthIncludesRuntimeIdentity(t *testing.T) {
+	srv := NewWithIdentity(":", &fakeController{}, brwidentity.Identity{
+		Workspace:        "client-a",
+		Profile:          "client-a-chrome",
+		UserDataDir:      "/tmp/client-a",
+		ProfileDirectory: "Profile 1",
+		Mode:             "bridge",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	srv.server.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp struct {
+		OK       bool                 `json:"ok"`
+		Identity brwidentity.Identity `json:"identity"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.Identity.Workspace != "client-a" || resp.Identity.Profile != "client-a-chrome" || resp.Identity.Mode != "bridge" {
+		t.Fatalf("health = %+v", resp)
 	}
 }
 

@@ -41,6 +41,8 @@ type Profile struct {
 	ExtensionBridgeAllowed bool   `json:"extension_bridge_allowed"`
 	BridgeExtensionID      string `json:"bridge_extension_id,omitempty"`
 	BridgeInstallMode      string `json:"bridge_install_mode,omitempty"`
+	BridgeHTTPAddr         string `json:"bridge_http_addr,omitempty"`
+	BridgeWSAddr           string `json:"bridge_ws_addr,omitempty"`
 	DevToolsMCPAllowed     bool   `json:"devtools_mcp_allowed,omitempty"`
 	DevToolsMCPMode        string `json:"devtools_mcp_mode,omitempty"`
 }

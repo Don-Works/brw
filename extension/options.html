@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>brw profile bridge</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+      max-width: 680px;
+    }
+    h1 {
+      font-size: 18px;
+      margin: 0 0 18px;
+    }
+    form {
+      display: grid;
+      gap: 14px;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      font-weight: 600;
+    }
+    input {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid CanvasText;
+      border-radius: 6px;
+      background: Canvas;
+      color: CanvasText;
+      font: inherit;
+      font-weight: 400;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    button {
+      border: 1px solid CanvasText;
+      border-radius: 6px;
+      padding: 7px 10px;
+      background: ButtonFace;
+      color: ButtonText;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary {
+      font-weight: 700;
+    }
+    pre {
+      margin: 8px 0 0;
+      padding: 10px;
+      border: 1px solid CanvasText;
+      border-radius: 6px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>brw profile bridge</h1>
+  <form id="config">
+    <label>
+      Bridge WebSocket URL
+      <input id="bridgeUrl" autocomplete="off" spellcheck="false">
+    </label>
+    <label>
+      Status URL
+      <input id="statusUrl" autocomplete="off" spellcheck="false">
+    </label>
+    <label>
+      Workspace
+      <input id="workspace" autocomplete="off" spellcheck="false">
+    </label>
+    <label>
+      Profile
+      <input id="profile" autocomplete="off" spellcheck="false">
+    </label>
+    <label>
+      Label
+      <input id="label" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="row">
+      <button type="button" data-port="17311">17311</button>
+      <button type="button" data-port="17411">17411</button>
+      <button type="button" data-port="17511">17511</button>
+      <button class="primary" type="submit">Save</button>
+    </div>
+  </form>
+  <pre id="status"></pre>
+  <script src="options.js"></script>
+</body>
+</html>

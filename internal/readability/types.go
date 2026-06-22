@@ -3,6 +3,7 @@ package readability
 type PageRead struct {
 	URL      string    `json:"url"`
 	Title    string    `json:"title"`
+	Text     string    `json:"text,omitempty"`
 	Main     string    `json:"main"`
 	Headings []Heading `json:"headings"`
 	Links    []Link    `json:"links"`

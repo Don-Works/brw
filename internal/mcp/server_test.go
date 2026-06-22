@@ -220,6 +220,37 @@ func TestBrowserGroupTabsForwardsGroupID(t *testing.T) {
 	}
 }
 
+func TestBrowserEmulateDeviceForwardsOptions(t *testing.T) {
+	ctrl := &recordingController{}
+	input := lineJSON(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "brw_emulate_device",
+			"arguments": map[string]any{
+				"device":      "pixel_7",
+				"orientation": "landscape",
+			},
+		},
+	})
+	var output bytes.Buffer
+
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+
+	if ctrl.emulationOpts.Device != "pixel_7" || ctrl.emulationOpts.Orientation != "landscape" {
+		t.Fatalf("emulation options = %+v", ctrl.emulationOpts)
+	}
+	resp := parseLineResponse(t, output.Bytes())
+	result := resp["result"].(map[string]any)
+	content := result["content"].([]any)
+	if !strings.Contains(content[0].(map[string]any)["text"].(string), `"ok":true`) {
+		t.Fatalf("unexpected emulation response: %#v", result)
+	}
+}
+
 func TestBrowserSnapshotModeAllPreservesExplicitFullInspection(t *testing.T) {
 	ctrl := &recordingController{}
 	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_snapshot","arguments":{"mode":"all","include_hidden":true}}}` + "\n"
@@ -262,6 +293,48 @@ func TestBrowserSnapshotSchemaDocumentsDebugEscalation(t *testing.T) {
 	if _, ok := props["include_hidden"]; !ok {
 		t.Fatalf("include_hidden missing from snapshot schema: %#v", props)
 	}
+	assertSchemaEnumIncludes(t, props["mode"].(map[string]any), "frontier", "all", "form_lens")
+	assertSchemaEnumIncludes(t, props["format"].(map[string]any), "json", "compact")
+}
+
+func TestBrowserEmulateDeviceSchemaExposesEnums(t *testing.T) {
+	var emulationTool map[string]any
+	for _, tool := range tools() {
+		if tool["name"] == "brw_emulate_device" {
+			emulationTool = tool
+			break
+		}
+	}
+	if emulationTool == nil {
+		t.Fatal("brw_emulate_device tool not found")
+	}
+	props := emulationTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	assertSchemaEnumIncludes(t, props["device"].(map[string]any), "iphone_se", "pixel_7", "ipad_mini", "custom", "clear")
+	assertSchemaEnumIncludes(t, props["orientation"].(map[string]any), "portrait", "landscape")
+}
+
+func TestPlanAndBatchActionSchemasExposeEnums(t *testing.T) {
+	var planTool, batchTool map[string]any
+	for _, tool := range tools() {
+		switch tool["name"] {
+		case "brw_plan":
+			planTool = tool
+		case "brw_batch":
+			batchTool = tool
+		}
+	}
+	if planTool == nil || batchTool == nil {
+		t.Fatalf("missing plan/batch tools: plan=%v batch=%v", planTool != nil, batchTool != nil)
+	}
+	planProps := planTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	planStepProps := planProps["steps"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	assertSchemaEnumIncludes(t, planStepProps["action"].(map[string]any), "click", "snapshot", "read", "focus_tab")
+	assertSchemaEnumIncludes(t, planStepProps["direction"].(map[string]any), "up", "down", "left", "right")
+
+	batchProps := batchTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	batchStepProps := batchProps["steps"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	assertSchemaEnumIncludes(t, batchStepProps["action"].(map[string]any), "click", "assert_visible", "assert_text", "assert_hidden")
+	assertSchemaEnumIncludes(t, batchStepProps["direction"].(map[string]any), "up", "down", "left", "right")
 }
 
 func TestBrowserSnapshotSchemaDocumentsVisualIslands(t *testing.T) {
@@ -348,6 +421,33 @@ func TestBrowserScreenshotDefaultUnchanged(t *testing.T) {
 	result := resp["result"].(map[string]any)
 	if _, ok := result["legend"]; ok {
 		t.Fatalf("plain screenshot must not include a legend: %#v", result)
+	}
+}
+
+func TestPlanSnapshotStepReturnsResultPayload(t *testing.T) {
+	input := lineJSON(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "brw_plan",
+			"arguments": map[string]any{
+				"steps": []map[string]any{{"action": "snapshot"}},
+			},
+		},
+	})
+	var output bytes.Buffer
+
+	if err := New(fakeController{}).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := parseLineResponse(t, output.Bytes())
+	result := resp["result"].(map[string]any)
+	content := result["content"].([]any)
+	text := content[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, `"result"`) || !strings.Contains(text, `"snapshot"`) {
+		t.Fatalf("plan step did not include result and snapshot payloads: %s", text)
 	}
 }
 
@@ -885,6 +985,7 @@ type recordingController struct {
 	listTabGroupsCalled bool
 	groupTabIDs         []string
 	groupTabsOpts       browser.TabGroupOptions
+	emulationOpts       browser.DeviceEmulationOptions
 }
 
 func (r *recordingController) OpenInGroup(ctx context.Context, targetURL string, opts browser.TabGroupOptions) (browser.OpenResult, error) {
@@ -981,6 +1082,11 @@ func (r *recordingController) Find(ctx context.Context, opts snapshot.FindOption
 	return r.fakeController.Find(ctx, opts)
 }
 
+func (r *recordingController) EmulateDevice(ctx context.Context, opts browser.DeviceEmulationOptions) (browser.DeviceEmulationResult, error) {
+	r.emulationOpts = opts
+	return browser.DeviceEmulationResult{OK: true, Emulation: &browser.DeviceEmulationConfig{Device: "iphone_se", Width: 375, Height: 667, DeviceScaleFactor: 2, Mobile: true, Touch: true, Orientation: "portrait"}}, nil
+}
+
 func (fakeController) Open(context.Context, string) (browser.OpenResult, error) {
 	return browser.OpenResult{}, nil
 }
@@ -994,6 +1100,9 @@ func (fakeController) ListTabGroups(context.Context) ([]browser.TabGroup, error)
 }
 func (fakeController) FocusTab(context.Context, string) error { return nil }
 func (fakeController) CloseTab(context.Context, string) error { return nil }
+func (fakeController) EmulateDevice(context.Context, browser.DeviceEmulationOptions) (browser.DeviceEmulationResult, error) {
+	return browser.DeviceEmulationResult{OK: true}, nil
+}
 func (fakeController) Read(context.Context) (readability.PageRead, error) {
 	return readability.PageRead{}, nil
 }
@@ -1087,7 +1196,19 @@ func (fakeController) ReplayRequest(context.Context, browser.ReplayRequestParams
 	return snapshot.ReplayResult{}, nil
 }
 func (fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error) {
-	return browser.PlanResult{}, nil
+	snap := snapshot.PageSnapshot{URL: "https://example.com", Title: "Example"}
+	return browser.PlanResult{
+		OK: true,
+		Steps: []browser.PlanStepResult{{
+			Index:    0,
+			Action:   "snapshot",
+			OK:       true,
+			Message:  "snapshot captured",
+			Result:   snap,
+			Snapshot: &snap,
+		}},
+		StepsCompleted: 1,
+	}, nil
 }
 func (fakeController) ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error) {
 	return browser.BatchResult{}, nil
@@ -1227,6 +1348,30 @@ func TestServe_ControllerError(t *testing.T) {
 	}
 	if first["text"] != "chrome crashed" {
 		t.Fatalf("expected error text 'chrome crashed', got %v", first["text"])
+	}
+}
+
+func assertSchemaEnumIncludes(t *testing.T, schema map[string]any, values ...string) {
+	t.Helper()
+	raw, ok := schema["enum"].([]string)
+	if !ok {
+		items, ok := schema["enum"].([]any)
+		if !ok {
+			t.Fatalf("schema has no enum: %#v", schema)
+		}
+		raw = make([]string, 0, len(items))
+		for _, item := range items {
+			raw = append(raw, item.(string))
+		}
+	}
+	seen := make(map[string]bool, len(raw))
+	for _, item := range raw {
+		seen[item] = true
+	}
+	for _, value := range values {
+		if !seen[value] {
+			t.Fatalf("enum %v does not include %q", raw, value)
+		}
 	}
 }
 

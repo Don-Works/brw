@@ -58,10 +58,10 @@ brwd --bridge --http 127.0.0.1:17310 --bridge-addr 127.0.0.1:17311
 
 # Agent machine
 brwctl remote-mcp-wrapper \
-  --host max-air \
-  --user maxrevitt \
+  --host browser-host \
+  --user browser-user \
   --remote-brwd ~/.local/bin/brwd \
-  --output ~/.local/bin/brw-max-air-mcp
+  --output ~/.local/bin/brw-browser-mcp
 ```
 
 The generated wrapper is what MCP clients should run. It keeps browser-control
