@@ -17,7 +17,14 @@ const state = {
   reconnectAttempt: 0,
   lastError: "",
   snapshotCache: new Map(),
-  observerInjected: new Set()
+  observerInjected: new Set(),
+  // Per-tab capture of the most recent Page.fileChooserOpened CDP event, keyed
+  // by tabId. File-chooser-interception upload mode enables interception, clicks
+  // the trigger, then reads the chooser's backendNodeId from here to set the file
+  // without the native OS dialog ever opening (which would freeze the CDP
+  // session). backendNodeId is frame-agnostic, so this also reaches inputs in
+  // cross-origin iframes.
+  fileChooserEvents: new Map()
 };
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -65,6 +72,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   state.attachedTabs.delete(tabId);
   state.snapshotCache.delete(tabId);
   state.observerInjected.delete(tabId);
+  state.fileChooserEvents.delete(tabId);
   if (state.activeTabId === tabId) state.activeTabId = null;
 });
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
@@ -73,7 +81,25 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (tabs[0]?.id) await publishActiveTab(tabs[0].id);
 });
 chrome.debugger.onDetach.addListener((source) => {
-  if (source.tabId) state.attachedTabs.delete(source.tabId);
+  if (source.tabId) {
+    state.attachedTabs.delete(source.tabId);
+    state.fileChooserEvents.delete(source.tabId);
+  }
+});
+// Capture CDP events the daemon needs to observe out-of-band. The only one today
+// is Page.fileChooserOpened: when file-chooser interception is enabled
+// (Page.setInterceptFileChooserDialog), clicking a file-picker trigger fires this
+// event with the chooser's backendNodeId instead of opening the native OS dialog.
+// We stash the latest per tab so the daemon can poll for it via
+// get_file_chooser_event and then set the file with DOM.setFileInputFiles.
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (method !== "Page.fileChooserOpened" || typeof source.tabId !== "number") return;
+  state.fileChooserEvents.set(source.tabId, {
+    backendNodeId: params?.backendNodeId ?? 0,
+    frameId: params?.frameId || "",
+    mode: params?.mode || "",
+    capturedAt: Date.now()
+  });
 });
 // A full-page navigation replaces the document, so any snapshot cached for that
 // tab (and the MutationObserver / console hook injected into the old execution
@@ -335,6 +361,30 @@ async function handle(message) {
       await attach(tabId);
       const result = await sendDebuggerCommand(tabId, message.params?.method, message.params?.params || {});
       send({ id: message.id, ok: true, result: result || {} });
+      return;
+    }
+    if (message.type === "set_intercept_file_chooser") {
+      // Toggle native-file-dialog interception for file-chooser-interception
+      // upload mode. When enabling we clear any stale captured chooser event so a
+      // subsequent poll only sees the chooser this upload actually triggers. The
+      // daemon ALWAYS disables on exit so the user's manual uploads are unaffected.
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      const enabled = message.params?.enabled === true;
+      await attach(tabId);
+      await sendDebuggerCommand(tabId, "Page.enable", {}).catch(() => {});
+      if (enabled) state.fileChooserEvents.delete(tabId);
+      await sendDebuggerCommand(tabId, "Page.setInterceptFileChooserDialog", { enabled });
+      send({ id: message.id, ok: true, result: { enabled } });
+      return;
+    }
+    if (message.type === "get_file_chooser_event") {
+      // Return (and consume) the most recent Page.fileChooserOpened event for the
+      // tab, captured by the chrome.debugger.onEvent listener. Returns
+      // captured:false until the click actually opens a chooser.
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      const ev = state.fileChooserEvents.get(tabId);
+      if (ev) state.fileChooserEvents.delete(tabId);
+      send({ id: message.id, ok: true, result: ev ? { captured: true, ...ev } : { captured: false } });
       return;
     }
     if (message.type === "show_indicator") {

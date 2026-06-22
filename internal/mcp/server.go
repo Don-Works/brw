@@ -1152,6 +1152,8 @@ func tools() []map[string]any {
 			"bytes_base64": stringSchema("Inline file contents as a standard base64 string. The daemon decodes and writes them to a temp file on the browser host. Use filename to control the name the page sees. One of path/paths, bytes_base64, or url."),
 			"url":          stringSchema("http(s) URL the daemon fetches to a temp file on the browser host before uploading. One of path/paths, bytes_base64, or url."),
 			"filename":     stringSchema("Optional name for the temp file created from bytes_base64 or url (the page sees this basename). Defaults to the url basename or a generic name."),
+			"click_ref":    stringSchema("If the file input only appears when a button is clicked (which would open a native file dialog), pass click_ref (an element ref, e.g. e17) of that button — brw intercepts the dialog and sets the file without it ever opening, and this also works for inputs inside iframes. Use this instead of ref/query when no static file input exists. Provide click_ref OR click_text, not both."),
+			"click_text":   stringSchema("Like click_ref, but identifies the trigger button by its visible/accessible text instead of a ref. brw intercepts the native file dialog and sets the file without it ever opening, and this also works for inputs inside iframes. Provide click_ref OR click_text, not both."),
 			"tab_id":       stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
 		tool("brw_select", "Set a native select or custom listbox/combobox value by semantic element ref. Value may be the option value/data-value or visible option label. Pass optional tab_id to target a specific tab.", object(map[string]any{

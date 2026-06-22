@@ -18,6 +18,7 @@ import (
 	"github.com/Don-Works/brw/internal/store"
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
@@ -41,6 +42,9 @@ const (
 	actionSettleDelay     = 150 * time.Millisecond // click, hover, press, drag, mouse half
 	actionSettleDelayFast = 100 * time.Millisecond // type, fill, select, scroll, upload
 	mouseHalfSettleDelay  = 75 * time.Millisecond  // mouse_down/mouse_up press/release
+	// fileChooserWaitTimeout bounds how long file-chooser-interception upload mode
+	// waits for the Page.fileChooserOpened event after clicking the trigger.
+	fileChooserWaitTimeout = 5 * time.Second
 )
 
 // settle waits for the page to settle after an action, bounded by cap. It
@@ -717,6 +721,15 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 	}
 	defer cleanup()
 
+	// File-chooser-interception mode: when a trigger is named, click it with the
+	// native chooser intercepted and set the file on whatever input the chooser
+	// reports. Handles SPAs that create the input on click (which would otherwise
+	// freeze the CDP session behind a native OS dialog) and inputs in cross-origin
+	// iframes (backendNodeId is frame-agnostic).
+	if opts.ClickRef != "" || opts.ClickText != "" {
+		return m.uploadFileViaChooser(tabID, tabCtx, opts, paths)
+	}
+
 	ref := opts.Ref
 	if ref == "" {
 		query := opts.Query
@@ -749,6 +762,73 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 	}
 	m.settle(tabCtx, actionSettleDelayFast)
 	return m.observeActionWithBefore(tabID, tabCtx, "uploaded file to "+ref, before), nil
+}
+
+// uploadFileViaChooser drives the file-chooser-interception upload path on the
+// direct-CDP transport: enable native-dialog interception, listen for the
+// Page.fileChooserOpened event, click the trigger, then set the file on the
+// chooser's backendNodeId (frame-agnostic, so it reaches cross-origin iframes).
+// Interception is ALWAYS disabled on exit so the user's manual uploads in this
+// Chrome are unaffected.
+func (m *Manager) uploadFileViaChooser(tabID string, tabCtx context.Context, opts snapshot.UploadOptions, paths []string) (ActionResult, error) {
+	if err := chromedp.Run(tabCtx, page.SetInterceptFileChooserDialog(true)); err != nil {
+		return ActionResult{}, fmt.Errorf("enable file chooser interception: %w", err)
+	}
+	defer func() {
+		// Always restore manual uploads, even on error/cancel. Use a fresh context
+		// so a cancelled tabCtx cannot leave interception stuck on.
+		disableCtx, cancel := context.WithTimeout(tabCtx, 2*time.Second)
+		defer cancel()
+		if errors.Is(disableCtx.Err(), context.Canceled) {
+			disableCtx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+		}
+		_ = chromedp.Run(disableCtx, page.SetInterceptFileChooserDialog(false))
+	}()
+
+	// Register the chooser listener BEFORE clicking so we never miss the event.
+	chooserCh := make(chan cdp.BackendNodeID, 1)
+	var once sync.Once
+	chromedp.ListenTarget(tabCtx, func(ev any) {
+		if e, ok := ev.(*page.EventFileChooserOpened); ok {
+			once.Do(func() { chooserCh <- e.BackendNodeID })
+		}
+	})
+
+	before := m.cachedBefore(tabID, tabCtx)
+
+	// Click the trigger that opens the (now intercepted) native chooser.
+	if opts.ClickRef != "" {
+		if err := snapshot.WaitForActionable(tabCtx, opts.ClickRef, 5000); err != nil {
+			return ActionResult{}, err
+		}
+		if _, err := clickElementCenter(tabCtx, opts.ClickRef, 150*time.Millisecond); err != nil {
+			return ActionResult{}, fmt.Errorf("click upload trigger %s: %w", opts.ClickRef, err)
+		}
+	} else {
+		if _, err := snapshot.ClickText(tabCtx, snapshot.ClickTextOptions{Text: opts.ClickText, Role: opts.Role}); err != nil {
+			return ActionResult{}, fmt.Errorf("click upload trigger %q: %w", opts.ClickText, err)
+		}
+	}
+
+	// Wait for the captured Page.fileChooserOpened event (up to ~5s).
+	var backendNodeID cdp.BackendNodeID
+	select {
+	case backendNodeID = <-chooserCh:
+	case <-tabCtx.Done():
+		return ActionResult{}, tabCtx.Err()
+	case <-time.After(fileChooserWaitTimeout):
+		return ActionResult{}, fmt.Errorf("no file chooser opened within %s after clicking the trigger — confirm the trigger opens a file picker", fileChooserWaitTimeout)
+	}
+	if backendNodeID == 0 {
+		return ActionResult{}, errors.New("file chooser opened but reported no backendNodeId")
+	}
+
+	if err := chromedp.Run(tabCtx, dom.SetFileInputFiles(paths).WithBackendNodeID(backendNodeID)); err != nil {
+		return ActionResult{}, err
+	}
+	m.settle(tabCtx, actionSettleDelayFast)
+	return m.observeActionWithBefore(tabID, tabCtx, "uploaded file via intercepted file chooser", before), nil
 }
 
 func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, error) {
