@@ -27,6 +27,9 @@ type groupAwareExtension struct {
 	groups        map[int]*gaGroup
 	focusedWindow int
 	nextTabID     int
+	// recorded for assertions
+	lastOpenGroupName    string
+	lastFocusRaiseWindow bool
 }
 
 type gaTab struct {
@@ -142,16 +145,22 @@ func (f *groupAwareExtension) serve(ctx context.Context, conn *websocket.Conn) {
 			result = f.handleOpen(msg.Params)
 		case "focus_tab":
 			id := paramInt(msg.Params, "tabId")
+			raise, _ := msg.Params["raiseWindow"].(bool)
+			f.lastFocusRaiseWindow = raise
 			t := f.tabByID(id)
 			if t == nil {
 				ok = false
 				result = map[string]any{}
 				break
 			}
-			// focus_tab focuses the window, EXPANDS the target's group (a real
-			// service worker must, else the activate cannot stick), and activates
-			// the tab — exactly the heal path ensureForegroundTab relies on.
-			f.focusedWindow = t.windowID
+			// focus_tab RAISES the window only when asked (raiseWindow), always
+			// EXPANDS the target's group (a real service worker must, else the
+			// activate cannot stick) and activates the tab — the heal path
+			// ensureForegroundTab relies on. In a single window, activation alone
+			// makes the tab foreground without a raise.
+			if raise {
+				f.focusedWindow = t.windowID
+			}
 			if t.groupID >= 0 {
 				if g := f.groups[t.groupID]; g != nil {
 					g.collapsed = false
@@ -181,6 +190,7 @@ func (f *groupAwareExtension) handleOpen(params map[string]any) map[string]any {
 	f.activateExclusive(t.windowID, t.id)
 
 	groupName, _ := params["groupName"].(string)
+	f.lastOpenGroupName = groupName
 	if strings.TrimSpace(groupName) != "" {
 		g := f.groupByTitle(t.windowID, groupName)
 		if g == nil {
@@ -303,6 +313,95 @@ func TestServiceWorkerOpenRehydratesForeground(t *testing.T) {
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("service worker open_tab must re-assert the opened tab as foreground; missing %q", want)
+		}
+	}
+}
+
+// TestBridgeOpenDefaultsToConfiguredGroup proves brw_open corrals the agent's
+// tabs into the configured default group when the caller passes no group of its
+// own — the tidy "act like a person" default — and the opened tab is still the
+// foreground tab.
+func TestBridgeOpenDefaultsToConfiguredGroup(t *testing.T) {
+	b := New("", 5*time.Second, "")
+	b.SetDefaultGroup("brw")
+	fe := &groupAwareExtension{
+		focusedWindow: 1,
+		nextTabID:     400,
+		groups:        map[int]*gaGroup{},
+		tabs: []*gaTab{
+			{id: 1, windowID: 1, groupID: -1, active: true, url: "https://x.test", title: "x"},
+		},
+	}
+	cleanup := connectGroupAwareExtension(t, b, fe)
+	defer cleanup()
+
+	ctx := context.Background()
+	res, err := b.Open(ctx, "http://127.0.0.1:13333/foo")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	fe.mu.Lock()
+	gotGroup := fe.lastOpenGroupName
+	fe.mu.Unlock()
+	if gotGroup != "brw" {
+		t.Fatalf("default Open landed in group %q, want \"brw\" (agent tabs must be corralled into the default group)", gotGroup)
+	}
+	if got := b.contextTabID(ctx); got != res.Tab.ID {
+		t.Fatalf("after default-group Open, contextTabID=%q want opened tab %q", got, res.Tab.ID)
+	}
+}
+
+// TestFocusTabThreadsRaiseWindowFlag proves the daemon controls whether focus
+// raises the Chrome window: the library default raises (back-compat), but once
+// the daemon disables it (SetRaiseWindowOnFocus(false)) focus_tab tells the
+// extension NOT to raise — so automation never steals OS focus.
+func TestFocusTabThreadsRaiseWindowFlag(t *testing.T) {
+	b := New("", 5*time.Second, "")
+	fe := &groupAwareExtension{
+		focusedWindow: 1,
+		nextTabID:     500,
+		groups:        map[int]*gaGroup{},
+		tabs: []*gaTab{
+			{id: 1, windowID: 1, groupID: -1, active: true},
+			{id: 2, windowID: 1, groupID: -1},
+		},
+	}
+	cleanup := connectGroupAwareExtension(t, b, fe)
+	defer cleanup()
+
+	ctx := context.Background()
+	if err := b.FocusTab(ctx, "2"); err != nil {
+		t.Fatalf("FocusTab: %v", err)
+	}
+	fe.mu.Lock()
+	raised := fe.lastFocusRaiseWindow
+	fe.mu.Unlock()
+	if !raised {
+		t.Fatal("library-default FocusTab should request raiseWindow=true (back-compat)")
+	}
+
+	b.SetRaiseWindowOnFocus(false)
+	if err := b.FocusTab(ctx, "1"); err != nil {
+		t.Fatalf("FocusTab: %v", err)
+	}
+	fe.mu.Lock()
+	raised = fe.lastFocusRaiseWindow
+	fe.mu.Unlock()
+	if raised {
+		t.Fatal("with SetRaiseWindowOnFocus(false), FocusTab must request raiseWindow=false so it never steals OS focus")
+	}
+}
+
+// TestServiceWorkerFocusTabHonoursRaiseWindow locks in the extension gate: the
+// window is only raised when the daemon explicitly asks (raiseWindow === true).
+func TestServiceWorkerFocusTabHonoursRaiseWindow(t *testing.T) {
+	src := readServiceWorker(t)
+	for _, want := range []string{
+		"const raiseWindow = message.params?.raiseWindow === true;",
+		"if (raiseWindow && before?.windowId) await chrome.windows.update(before.windowId, { focused: true });",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("service worker focus_tab must gate the window-raise on raiseWindow; missing %q", want)
 		}
 	}
 }

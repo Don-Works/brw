@@ -54,6 +54,21 @@ type Bridge struct {
 	// restore UA/platform overrides that CDP itself has no clear command for.
 	emulationMu     sync.Mutex
 	emulationStates map[string]bridgeDeviceEmulationState
+
+	// defaultGroup, when non-empty, is the tab-group title brw_open uses when the
+	// caller did not specify a group, so the agent's tabs are corralled into one
+	// labelled group in the user's window instead of scattered loose — the tidy,
+	// "act like a person" default. The daemon sets it (see cmd/brwd); the zero
+	// value keeps Open ungrouped for embedders/tests. Set once before serving.
+	defaultGroup string
+	// raiseWindowOnFocus controls whether focus_tab raises the Chrome WINDOW to
+	// the OS foreground (chrome.windows.update{focused:true}). The library default
+	// is true for back-compat, but the daemon defaults it to FALSE so automation
+	// never steals the user's OS focus while they work in another app/window. Tab
+	// activation within the window still happens regardless, so no-tab_id tools
+	// resolve the right tab in the common single-window case without a focus grab.
+	// Set once before serving.
+	raiseWindowOnFocus bool
 }
 
 type bridgeDeviceIdentity struct {
@@ -109,6 +124,9 @@ func NewWithIdentity(addr string, timeout time.Duration, allowedExtensionID stri
 		pending:            map[string]chan response{},
 		cancels:            newCancelRegistry(),
 		emulationStates:    map[string]bridgeDeviceEmulationState{},
+		// Library default preserves historical behaviour (focus raises the
+		// window); the daemon flips this to false for the seamless experience.
+		raiseWindowOnFocus: true,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/extension", b.handleExtension)
@@ -387,7 +405,23 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 	}
 }
 
+// SetDefaultGroup configures the tab-group title brw_open lands in when the
+// caller passes no group of its own (empty disables default grouping). Call
+// before serving.
+func (b *Bridge) SetDefaultGroup(name string) { b.defaultGroup = strings.TrimSpace(name) }
+
+// SetRaiseWindowOnFocus configures whether focus_tab raises the Chrome window to
+// the OS foreground. The daemon sets this to false so automation never steals
+// the user's focus. Call before serving.
+func (b *Bridge) SetRaiseWindowOnFocus(v bool) { b.raiseWindowOnFocus = v }
+
 func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, error) {
+	// Corral the agent's tabs into one labelled group by default so they don't
+	// scatter loose across the user's window. An explicit group from the caller
+	// (OpenInGroup) always wins; this only fills the no-group case.
+	if group := b.defaultGroup; group != "" {
+		return b.OpenInGroup(ctx, url, browser.TabGroupOptions{Name: group})
+	}
 	if strings.TrimSpace(url) == "" {
 		url = "about:blank"
 	}
@@ -488,7 +522,7 @@ func (b *Bridge) FocusTab(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	raw, err := b.call(ctx, "focus_tab", map[string]any{"tabId": tabID})
+	raw, err := b.call(ctx, "focus_tab", map[string]any{"tabId": tabID, "raiseWindow": b.raiseWindowOnFocus})
 	if err != nil {
 		return err
 	}

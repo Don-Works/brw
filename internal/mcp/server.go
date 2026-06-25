@@ -1018,7 +1018,7 @@ func canonicalToolName(name string) string {
 
 func tools() []map[string]any {
 	return []map[string]any{
-		tool("brw_open", "Open a URL in a visible Chrome/Chromium tab. To start a run-scoped tab group, pass a unique group name such as workspace-1; to add later tabs to that same visible group, pass its group_id from brw_list_tabs or brw_list_tab_groups.", object(map[string]any{
+		tool("brw_open", "Open a URL in a visible Chrome/Chromium tab. On the extension bridge the tab is corralled into a default agent tab group (configurable; \"brw\" by default) and the window is NOT raised to the foreground, so opening a tab never steals your focus. To use a different run-scoped group, pass a unique group name such as workspace-1; to add later tabs to that same visible group, pass its group_id from brw_list_tabs or brw_list_tab_groups.", object(map[string]any{
 			"url":         stringSchema("URL to open. Scheme defaults to https."),
 			"group":       stringSchema("Optional Chrome tab group title. When set without group_id, the extension reuses an existing same-title group in the target window or creates one."),
 			"group_id":    stringSchema("Optional existing Chrome tab group id from brw_list_tabs or brw_list_tab_groups. When set, the new tab is added to that group."),

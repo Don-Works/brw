@@ -401,8 +401,14 @@ async function handle(message) {
     }
     if (message.type === "focus_tab") {
       const tabId = Number(message.params?.tabId);
+      // Only RAISE the Chrome window to the OS foreground when the daemon
+      // explicitly asks (raiseWindow === true). The default is to NOT raise, so
+      // automation never steals the user's focus while they work in another app
+      // or window — we still activate the tab within its window below, which is
+      // all the no-tab_id resolver needs in the common single-window case.
+      const raiseWindow = message.params?.raiseWindow === true;
       const before = await chrome.tabs.get(tabId).catch(() => null);
-      if (before?.windowId) await chrome.windows.update(before.windowId, { focused: true });
+      if (raiseWindow && before?.windowId) await chrome.windows.update(before.windowId, { focused: true });
       // Expand the target's group first: a tab inside a collapsed group cannot
       // become (and stay) the active tab, so activating it without expanding
       // would let Chrome bounce focus back to a visible tab.
