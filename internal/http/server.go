@@ -11,13 +11,15 @@ import (
 
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
+	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
 type Server struct {
-	manager  browser.Controller
-	identity brwidentity.Identity
-	server   *http.Server
+	manager   browser.Controller
+	identity  brwidentity.Identity
+	navPolicy *navpolicy.Policy
+	server    *http.Server
 }
 
 type snapshotRequest struct {
@@ -41,6 +43,32 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	}}
 	s.routes(mux)
 	return s
+}
+
+// SetNavigationPolicy installs the same opt-in allow/deny navigation guardrail
+// the MCP surface enforces. Without it, the loopback HTTP control plane is a
+// silent bypass of --allowed-domains/--blocked-domains (it shares the same
+// controller as the MCP server), so the policy must be applied here too.
+func (s *Server) SetNavigationPolicy(p *navpolicy.Policy) {
+	s.navPolicy = p
+}
+
+// checkNavPolicy reports a policy violation for rawURL, or nil when allowed.
+func (s *Server) checkNavPolicy(rawURL string) error {
+	if s.navPolicy.Empty() {
+		return nil
+	}
+	return s.navPolicy.Check(rawURL)
+}
+
+// denyNav writes a 403 and returns true when rawURL is not permitted by the
+// navigation policy. Callers return early on true.
+func (s *Server) denyNav(w http.ResponseWriter, rawURL string) bool {
+	if err := s.checkNavPolicy(rawURL); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
+		return true
+	}
+	return false
 }
 
 func (s *Server) ListenAndServe() error {
@@ -169,6 +197,9 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	if s.denyNav(w, req.URL) {
+		return
+	}
 	var (
 		result browser.OpenResult
 		err    error
@@ -190,6 +221,9 @@ func (s *Server) openIncognito(w http.ResponseWriter, r *http.Request) {
 		URL string `json:"url"`
 	}
 	if !decode(w, r, &req) {
+		return
+	}
+	if s.denyNav(w, req.URL) {
 		return
 	}
 	result, err := s.manager.OpenIncognito(r.Context(), req.URL)
@@ -427,6 +461,9 @@ func (s *Server) navigateTo(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	if s.denyNav(w, req.URL) {
+		return
+	}
 	ctx := s.contextWithTabID(r.Context(), req.TabID)
 	if req.Snapshot {
 		ctx = browser.WithWantSnapshot(ctx)
@@ -476,6 +513,9 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 		TabID string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
+		return
+	}
+	if req.URL != "" && s.denyNav(w, req.URL) {
 		return
 	}
 	result, err := s.manager.UploadFile(s.contextWithTabID(r.Context(), req.TabID), req.UploadOptions)
@@ -620,6 +660,9 @@ func (s *Server) replayRequest(w http.ResponseWriter, r *http.Request) {
 		TabID   string            `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
+		return
+	}
+	if s.denyNav(w, req.URL) {
 		return
 	}
 	result, err := s.manager.ReplayRequest(s.contextWithTabID(r.Context(), req.TabID), browser.ReplayRequestParams{

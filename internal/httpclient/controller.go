@@ -450,6 +450,7 @@ func (c *Controller) get(ctx context.Context, path string, values url.Values, ou
 
 func (c *Controller) post(ctx context.Context, path string, body any, out any) error {
 	body = withTabID(ctx, body)
+	body = withSnapshot(ctx, body)
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -504,6 +505,33 @@ func withTabID(ctx context.Context, body any) any {
 	}
 	if _, ok := payload["tab_id"]; !ok {
 		payload["tab_id"] = tabID
+	}
+	return payload
+}
+
+// withSnapshot forwards the post-action snapshot request across the HTTP boundary.
+// The MCP server signals snapshot:true by stashing a flag in the context
+// (browser.WithWantSnapshot); a context value cannot cross to the bridge over
+// HTTP, so we re-materialize it as an explicit body field that the bridge's HTTP
+// handlers read back into WithWantSnapshot. Without this, snapshot:true is
+// silently dropped on the upstream-http topology (works only in single-process
+// direct-CDP mode).
+func withSnapshot(ctx context.Context, body any) any {
+	if !browser.WantSnapshotFromCtx(ctx) {
+		return body
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return body
+	}
+	payload := map[string]any{}
+	if len(data) > 0 && string(data) != "null" {
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return body
+		}
+	}
+	if _, ok := payload["snapshot"]; !ok {
+		payload["snapshot"] = true
 	}
 	return payload
 }

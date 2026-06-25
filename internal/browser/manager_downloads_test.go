@@ -39,17 +39,28 @@ func newHeadlessManager(t *testing.T) *Manager {
 		t.Skipf("headless Chrome did not start: %v", err)
 	}
 	m := &Manager{
-		allocCancel:   allocCancel,
-		browserCtx:    browserCtx,
-		browserCancel: browserCancel,
-		tabContexts:   map[string]tabContext{},
-		refs:          store.New(),
-		timeout:       20 * time.Second,
-		lastState:     map[string]*SemanticState{},
-		versions:      map[string]int64{},
-		trace:         make([]TraceEntry, 0, 16),
-		userDataDir:   t.TempDir(),
-		downloadIndex: map[string]int{},
+		allocCancel:       allocCancel,
+		browserCtx:        browserCtx,
+		browserCancel:     browserCancel,
+		tabContexts:       map[string]tabContext{},
+		refs:              store.New(),
+		timeout:           20 * time.Second,
+		lastState:         map[string]*SemanticState{},
+		versions:          map[string]int64{},
+		trace:             make([]TraceEntry, 0, 16),
+		userDataDir:       t.TempDir(),
+		downloadIndex:     map[string]int{},
+		cancels:           newCancelRegistry(),
+		netCaptureTabs:    map[string]bool{},
+		shadowPierceTabs:  map[string]bool{},
+		webmcpTabs:        map[string]bool{},
+		emulationStates:   map[string]deviceEmulationState{},
+		incognitoContexts: map[string]bool{},
+	}
+	// Mirror production New(): connect() verifies the browser and registers the
+	// target-lifecycle listener that reclaims externally-closed tabs.
+	if err := m.connect(); err != nil {
+		t.Skipf("headless Chrome connect failed: %v", err)
 	}
 	t.Cleanup(func() { m.Close() })
 	return m

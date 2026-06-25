@@ -37,42 +37,116 @@ func (p *Policy) Empty() bool {
 	return p == nil || (len(p.Allowed) == 0 && len(p.Blocked) == 0)
 }
 
-// Check returns a descriptive error when rawURL is not permitted. A nil/empty
-// policy, and non-network schemes (about:, data:, blob:, javascript:), are always
-// allowed — only http(s) destinations are gated. The scheme defaults to https to
-// match brw_open, so a bare "example.com/x" is treated as a network destination.
+// Check returns a descriptive error when rawURL is not permitted.
+//
+// Blocklist-only mode (no Allowed entries) gates only http(s) destinations
+// whose host matches a blocked domain; non-network schemes and bare blank pages
+// pass. Allowlist mode is a strict confinement boundary and fails CLOSED: ONLY
+// http(s) URLs whose host is on the allowlist are permitted. Non-http schemes
+// (file:, chrome:, data:, javascript:, blob:) — which can read local files,
+// reach browser internals, or execute attacker-controlled content — unparseable
+// URLs, and empty hosts are all rejected, so the allowlist cannot be escaped by
+// switching schemes or by feeding a URL Go rejects but Chrome accepts. (Bare
+// about:blank / about:newtab are allowed in both modes as benign.)
 func (p *Policy) Check(rawURL string) error {
 	if p.Empty() {
 		return nil
 	}
 	host := hostOf(rawURL)
-	if host == "" {
-		// Non-network or unparseable (about:blank, data:, blob:) — not gated.
-		return nil
-	}
-	for _, b := range p.Blocked {
-		if hostMatches(host, b) {
-			return fmt.Errorf("navigation to %q is blocked by brw policy (blocked domain %q); set or adjust --blocked-domains/--allowed-domains to change this", host, b)
-		}
-	}
-	if len(p.Allowed) > 0 {
-		for _, a := range p.Allowed {
-			if hostMatches(host, a) {
-				return nil
+	if host != "" {
+		for _, b := range p.Blocked {
+			if hostMatches(host, b) {
+				return fmt.Errorf("navigation to %q is blocked by brw policy (blocked domain %q); set or adjust --blocked-domains/--allowed-domains to change this", host, b)
 			}
 		}
-		return fmt.Errorf("navigation to %q is not permitted: it is not on the brw allowlist (--allowed-domains)", host)
 	}
-	return nil
+	if len(p.Allowed) == 0 {
+		// Blocklist-only mode: anything not explicitly blocked is allowed,
+		// including non-network schemes. This is a denylist, not confinement.
+		return nil
+	}
+	// Allowlist mode: fail closed on anything we cannot positively confirm is an
+	// allowed http(s) host.
+	if host == "" {
+		// A bare blank page or a scheme-less RELATIVE reference (e.g. "/api/x",
+		// "?q=1") is same-origin — it resolves against the current allowlisted
+		// page and cannot escape the allowlist, so it passes. Only a non-http
+		// SCHEME (file:, chrome:, data:, javascript:, blob:) or an unparseable
+		// absolute URL is blocked.
+		if isBenignBlank(rawURL) || !hasScheme(rawURL) {
+			return nil
+		}
+		return fmt.Errorf("navigation to %q is not permitted under the brw allowlist: only http(s) destinations on --allowed-domains are allowed (non-http schemes such as file:, chrome:, data:, javascript:, blob: and unparseable URLs are blocked)", clip(rawURL))
+	}
+	for _, a := range p.Allowed {
+		if hostMatches(host, a) {
+			return nil
+		}
+	}
+	return fmt.Errorf("navigation to %q is not permitted: it is not on the brw allowlist (--allowed-domains)", host)
 }
 
+// hasScheme reports whether raw begins with a URL scheme ("scheme:"), per
+// RFC 3986: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":". A string without one
+// is a relative reference (e.g. "/path", "?q", "app/x"), which cannot change
+// origin. Used to distinguish a same-origin relative URL from a non-http scheme
+// in allowlist mode.
+func hasScheme(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		switch {
+		case c == ':':
+			return i > 0
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+			// scheme char anywhere
+		case c >= '0' && c <= '9', c == '+', c == '-', c == '.':
+			if i == 0 {
+				return false // scheme must start with a letter
+			}
+		default:
+			return false // any other char before ':' => not a scheme
+		}
+	}
+	return false
+}
+
+// isBenignBlank reports whether raw is an empty target or a blank page that
+// navigates nowhere, so it need not be confined by the allowlist.
+func isBenignBlank(raw string) bool {
+	r := strings.ToLower(strings.TrimSpace(raw))
+	return r == "" || r == "about:blank" || r == "about:newtab"
+}
+
+// clip bounds an untrusted URL before it lands in an error string so a giant
+// data: URL cannot blow up logs/responses.
+func clip(s string) string {
+	const max = 120
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
+
+// hostOf returns the lowercased host of an http(s) destination, or "" for a
+// non-network scheme, a bare blank page, or anything that does not parse to an
+// http(s) URL with a host. It normalises the two transformations Chrome applies
+// that Go's net/url does not — backslashes act as forward slashes in the
+// authority of a special scheme, and tab/CR/LF are stripped — so a host like
+// "evil.com\@allowed.com" or "ev\til.com" cannot smuggle a different effective
+// host past the policy than the one the browser will navigate to.
 func hostOf(rawURL string) string {
 	raw := strings.TrimSpace(rawURL)
 	if raw == "" {
 		return ""
 	}
+	// Chrome strips ASCII tab/CR/LF from URLs entirely before parsing.
+	raw = strings.NewReplacer("\t", "", "\r", "", "\n", "").Replace(raw)
+	// In special-scheme URLs Chrome treats "\" as "/". Normalising here means
+	// Go's parser sees the same authority boundary the browser will.
+	raw = strings.ReplaceAll(raw, "\\", "/")
 	lower := strings.ToLower(raw)
-	for _, scheme := range []string{"about:", "data:", "blob:", "javascript:", "chrome:", "file:"} {
+	for _, scheme := range []string{"about:", "data:", "blob:", "javascript:", "chrome:", "chrome-extension:", "file:", "filesystem:", "view-source:", "ftp:", "ws:", "wss:"} {
 		if strings.HasPrefix(lower, scheme) {
 			return ""
 		}
@@ -82,6 +156,9 @@ func hostOf(rawURL string) string {
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
+		return ""
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
 		return ""
 	}
 	return strings.ToLower(u.Hostname())

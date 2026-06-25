@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -18,6 +20,14 @@ import (
 // maxUploadFetchBytes caps how much the daemon will pull from a remote URL into
 // a temp file, guarding against an unbounded download exhausting host disk.
 const maxUploadFetchBytes = 64 << 20 // 64 MiB
+
+// uploadFetchTimeout bounds the whole remote-fetch so a slow/hung server can't
+// pin the operation indefinitely.
+const uploadFetchTimeout = 60 * time.Second
+
+// errBlockedUploadHost is returned when an upload url resolves to an address the
+// daemon must never fetch from (SSRF guard).
+var errBlockedUploadHost = errors.New("upload url resolves to a private, loopback, or link-local address, which is blocked to prevent SSRF; use path/bytes_base64 for host-local files")
 
 func NormalizeUploadPaths(opts snapshot.UploadOptions) ([]string, error) {
 	paths := make([]string, 0, len(opts.Paths)+1)
@@ -181,6 +191,63 @@ func writeUploadTemp(b64, filename string) (string, error) {
 	return f.Name(), nil
 }
 
+// ssrfSafeClient returns an http.Client whose dialer rejects any connection
+// whose resolved IP is loopback, link-local, private (RFC1918/ULA), CGNAT, or
+// unspecified. Validating at dial time (rather than parsing the URL host) is
+// what makes this robust against DNS rebinding AND HTTP redirects: every hop,
+// including a 302 to http://169.254.169.254/, is re-resolved and re-checked, so
+// neither a redirect nor a hostname that resolves to an internal IP can reach
+// cloud metadata or internal services.
+func ssrfSafeClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	return &http.Client{
+		Timeout: uploadFetchTimeout,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				host, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+				ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+				if err != nil {
+					return nil, err
+				}
+				for _, ip := range ips {
+					if blockedFetchIP(ip.IP) {
+						return nil, errBlockedUploadHost
+					}
+				}
+				// Dial the already-resolved IP so the address can't change between
+				// our check and the connect (TOCTOU / rebinding).
+				return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+			},
+		},
+	}
+}
+
+// blockedFetchIP is the SSRF predicate the dialer consults; it is a variable
+// only so tests can relax it to exercise the download mechanics against a
+// loopback httptest server. Production always uses isBlockedFetchIP.
+var blockedFetchIP = isBlockedFetchIP
+
+// isBlockedFetchIP reports whether ip is in a range the daemon must never fetch
+// an upload from. Link-local (169.254.0.0/16, fe80::/10) is the cloud-metadata
+// range (169.254.169.254); the rest are internal/loopback targets.
+func isBlockedFetchIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() || ip.IsPrivate() {
+		return true
+	}
+	// Carrier-grade NAT 100.64.0.0/10 — not covered by IsPrivate but internal.
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return true
+	}
+	return false
+}
+
 func fetchUploadTemp(ctx context.Context, rawURL, filename string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
@@ -199,7 +266,7 @@ func fetchUploadTemp(ctx context.Context, rawURL, filename string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ssrfSafeClient().Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch url: %w", err)
 	}

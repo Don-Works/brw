@@ -53,7 +53,12 @@ func Launch(ctx context.Context, cfg LaunchConfig) (*Launcher, error) {
 	// Chrome — this is the guard that prevents the "WhatsApp logged out + Chrome
 	// won't reopen" failure when direct CDP is mistakenly pointed at the user's
 	// live Chrome profile.
-	if err := EnsureSafeUserDataDir(cfg.UserDataDir, cfg.AllowRealProfile); err != nil {
+	// Validate the EFFECTIVE user-data-dir — the one Chrome will actually use
+	// after the operator's passthrough args are applied — not just cfg.UserDataDir.
+	// Chrome keeps the LAST --user-data-dir, and cfg.Args is appended after the
+	// validated path below, so a --user-data-dir smuggled through cfg.Args would
+	// otherwise silently override the checked dir and defeat this guard.
+	if err := EnsureSafeUserDataDir(effectiveUserDataDir(cfg.UserDataDir, cfg.Args), cfg.AllowRealProfile); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(cfg.UserDataDir, 0o700); err != nil {
@@ -241,6 +246,14 @@ func knownBrowserProfileRoots() []string {
 		".config/chromium",
 		".config/microsoft-edge",
 		".config/BraveSoftware/Brave-Browser",
+		// Windows (%LOCALAPPDATA% is <home>\AppData\Local). brw builds
+		// cross-platform, so the real-profile guard must cover Windows too.
+		"AppData/Local/Google/Chrome/User Data",
+		"AppData/Local/Google/Chrome Beta/User Data",
+		"AppData/Local/Google/Chrome SxS/User Data",
+		"AppData/Local/Chromium/User Data",
+		"AppData/Local/Microsoft/Edge/User Data",
+		"AppData/Local/BraveSoftware/Brave-Browser/User Data",
 	}
 	out := make([]string, 0, len(rel))
 	for _, r := range rel {
@@ -249,14 +262,51 @@ func knownBrowserProfileRoots() []string {
 	return out
 }
 
+// effectiveUserDataDir returns the --user-data-dir Chrome will actually use:
+// the LAST occurrence among the base dir and the passthrough args (Chrome keeps
+// the last value of a repeated switch). Both --user-data-dir=X and the
+// space-separated --user-data-dir X forms are recognised.
+func effectiveUserDataDir(base string, args []string) string {
+	dir := base
+	for i := 0; i < len(args); i++ {
+		if v, ok := strings.CutPrefix(args[i], "--user-data-dir="); ok {
+			dir = v
+		} else if args[i] == "--user-data-dir" && i+1 < len(args) {
+			dir = args[i+1]
+			i++
+		}
+	}
+	return dir
+}
+
 func isKnownBrowserProfileRoot(dir string) bool {
-	clean := filepath.Clean(dir)
-	for _, root := range knownBrowserProfileRoots() {
-		if clean == root {
-			return true
+	for _, cand := range pathIdentities(dir) {
+		for _, root := range knownBrowserProfileRoots() {
+			for _, rootID := range pathIdentities(root) {
+				// EqualFold because macOS (APFS) and Windows are case-insensitive
+				// by default, so a case-variant path opens the SAME profile.
+				if strings.EqualFold(cand, rootID) {
+					return true
+				}
+			}
 		}
 	}
 	return false
+}
+
+// pathIdentities returns the cleaned path plus, when it exists, its
+// symlink-resolved form, so a symlink pointing at the real profile cannot slip
+// past an exact-string comparison.
+func pathIdentities(p string) []string {
+	if strings.TrimSpace(p) == "" {
+		return nil
+	}
+	clean := filepath.Clean(p)
+	ids := []string{clean}
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil && resolved != clean {
+		ids = append(ids, resolved)
+	}
+	return ids
 }
 
 // runningChromeOwns reports whether a LIVE Chrome currently owns dir, via the

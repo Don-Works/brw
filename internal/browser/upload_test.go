@@ -3,10 +3,13 @@ package browser
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Don-Works/brw/internal/snapshot"
@@ -147,6 +150,14 @@ func TestResolveUploadPaths_BytesBase64Invalid(t *testing.T) {
 }
 
 func TestResolveUploadPaths_URL(t *testing.T) {
+	// This test exercises the download/temp-file mechanics against a loopback
+	// httptest server, so relax the SSRF guard (which would otherwise correctly
+	// block loopback). The guard itself is covered by TestIsBlockedFetchIP and
+	// TestFetchUploadTempBlocksSSRFTargets.
+	orig := blockedFetchIP
+	blockedFetchIP = func(net.IP) bool { return false }
+	defer func() { blockedFetchIP = orig }()
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("downloaded body"))
 	}))
@@ -221,5 +232,54 @@ func TestDecodeUploadBytes_SizeCap(t *testing.T) {
 	big := base64.StdEncoding.EncodeToString(make([]byte, 4096))
 	if _, err := decodeUploadBytes(big, 1024); err == nil {
 		t.Fatal("expected error for input exceeding decoded cap")
+	}
+}
+
+func TestIsBlockedFetchIP(t *testing.T) {
+	blocked := []string{
+		"169.254.169.254", // cloud metadata (link-local)
+		"127.0.0.1",       // loopback
+		"::1",             // loopback v6
+		"10.1.2.3",        // RFC1918
+		"172.16.5.5",      // RFC1918
+		"192.168.0.1",     // RFC1918
+		"100.64.1.1",      // CGNAT
+		"0.0.0.0",         // unspecified
+		"fe80::1",         // link-local v6
+		"fc00::1",         // ULA (private v6)
+	}
+	for _, s := range blocked {
+		if !isBlockedFetchIP(net.ParseIP(s)) {
+			t.Errorf("%s should be blocked as an SSRF target", s)
+		}
+	}
+	allowed := []string{"1.1.1.1", "8.8.8.8", "93.184.216.34"}
+	for _, s := range allowed {
+		if isBlockedFetchIP(net.ParseIP(s)) {
+			t.Errorf("public IP %s should be allowed", s)
+		}
+	}
+	if !isBlockedFetchIP(nil) {
+		t.Error("nil IP must be treated as blocked (fail closed)")
+	}
+}
+
+// TestFetchUploadTempBlocksSSRFTargets proves the daemon refuses to fetch an
+// upload from a loopback/metadata address even with no navigation policy set —
+// the guard lives in the fetch path, validated at dial time so a redirect or a
+// DNS name resolving internally cannot bypass it.
+func TestFetchUploadTempBlocksSSRFTargets(t *testing.T) {
+	// A loopback httptest server stands in for any internal/metadata endpoint.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("secret-internal-data"))
+	}))
+	defer srv.Close()
+
+	_, err := fetchUploadTemp(context.Background(), srv.URL+"/file.txt", "")
+	if err == nil {
+		t.Fatal("fetchUploadTemp must refuse a loopback target (SSRF)")
+	}
+	if !errors.Is(err, errBlockedUploadHost) && !strings.Contains(err.Error(), "blocked") {
+		t.Fatalf("error should identify the SSRF block, got: %v", err)
 	}
 }

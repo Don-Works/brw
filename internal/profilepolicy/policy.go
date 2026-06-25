@@ -140,6 +140,13 @@ func (p Policy) Find(name string) (Profile, error) {
 
 func (p Policy) ResolveProfile(workspace, name string) (Profile, error) {
 	binding, bound := p.FindWorkspace(workspace)
+	if !bound && workspace != "" && len(p.WorkspaceBindings) > 0 {
+		// The policy declares workspace authority (it has bindings) but this
+		// non-empty workspace matches none of them. Fail CLOSED — otherwise an
+		// unrecognised workspace label silently bypasses every AllowedProfiles
+		// list and can select any profile (including another tenant's).
+		return Profile{}, fmt.Errorf("workspace %q is not defined in the profile policy; refusing to resolve a profile for an unrecognised workspace", workspace)
+	}
 	if name == "" && bound {
 		name = binding.DefaultProfile
 	}
@@ -163,6 +170,12 @@ func (p Policy) FindTransport(name string) (Transport, error) {
 
 func (p Policy) ResolveTransport(workspace, name string) (Transport, error) {
 	binding, bound := p.FindWorkspace(workspace)
+	if !bound && workspace != "" && len(p.WorkspaceBindings) > 0 {
+		// Fail closed for an unrecognised workspace when bindings exist — see
+		// ResolveProfile. An unknown workspace must not pick any transport
+		// (e.g. an SSH transport to an arbitrary host).
+		return Transport{}, fmt.Errorf("workspace %q is not defined in the profile policy; refusing to resolve a transport for an unrecognised workspace", workspace)
+	}
 	if name == "" && bound {
 		name = binding.DefaultTransport
 	}

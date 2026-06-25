@@ -13,6 +13,7 @@ import (
 
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
+	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -380,6 +381,7 @@ type fakeController struct {
 	mouseDownOpt  browser.MouseButtonOptions
 	mouseUpOpt    browser.MouseButtonOptions
 	openURL       string
+	navigateToURL string
 	openGroupOpts browser.TabGroupOptions
 	groupTabIDs   []string
 	groupTabsOpts browser.TabGroupOptions
@@ -461,6 +463,11 @@ func (f *fakeController) ClickText(context.Context, snapshot.ClickTextOptions) (
 }
 
 func (f *fakeController) Navigate(context.Context, string) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+
+func (f *fakeController) NavigateTo(_ context.Context, url string) (browser.ActionResult, error) {
+	f.navigateToURL = url
 	return browser.ActionResult{OK: true}, nil
 }
 
@@ -614,6 +621,55 @@ func TestHealth(t *testing.T) {
 	srv.server.Handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+// TestNavPolicyEnforcedOnHTTP guards against the bypass where the navigation
+// guardrail was installed only on the MCP server: the HTTP API shares the same
+// controller, so a malicious/confused caller reaching the loopback port could
+// open any domain. Every navigation entrypoint must honor the policy here too.
+func TestNavPolicyEnforcedOnHTTP(t *testing.T) {
+	post := func(t *testing.T, srv *Server, path, body string) int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+		w := httptest.NewRecorder()
+		srv.server.Handler.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	ctrl := &fakeController{}
+	srv := New(":", ctrl)
+	srv.SetNavigationPolicy(navpolicy.Parse("corp.example.com", "")) // allowlist mode
+
+	denied := []struct{ path, body string }{
+		{"/api/browser/open", `{"url":"https://evil.com"}`},
+		{"/api/browser/open_incognito", `{"url":"https://evil.com"}`},
+		{"/api/page/navigate_to", `{"url":"https://evil.com"}`},
+		{"/api/page/navigate_to", `{"url":"file:///etc/passwd"}`},
+		{"/api/page/replay_request", `{"method":"GET","url":"https://evil.com/x"}`},
+		{"/api/page/upload_file", `{"query":"f","url":"http://169.254.169.254/latest/meta-data/"}`},
+	}
+	for _, c := range denied {
+		if code := post(t, srv, c.path, c.body); code != http.StatusForbidden {
+			t.Errorf("%s %s: code = %d, want 403 (policy must deny)", c.path, c.body, code)
+		}
+	}
+	if ctrl.openURL == "https://evil.com" || ctrl.navigateToURL == "https://evil.com" {
+		t.Fatal("a denied navigation reached the controller — policy is not gating before dispatch")
+	}
+
+	// An allowlisted destination must still pass through to the controller.
+	if code := post(t, srv, "/api/page/navigate_to", `{"url":"https://corp.example.com/app"}`); code != http.StatusOK {
+		t.Fatalf("allowlisted navigate_to: code = %d, want 200", code)
+	}
+	if ctrl.navigateToURL != "https://corp.example.com/app" {
+		t.Fatalf("allowlisted navigate_to did not reach controller, got %q", ctrl.navigateToURL)
+	}
+
+	// With no policy installed, everything passes (back-compat).
+	open := New(":", &fakeController{})
+	if code := post(t, open, "/api/browser/open", `{"url":"https://anything.example"}`); code != http.StatusOK {
+		t.Fatalf("no-policy open: code = %d, want 200", code)
 	}
 }
 

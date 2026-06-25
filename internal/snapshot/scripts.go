@@ -562,6 +562,15 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
         if (!arr) { arr = []; byName.set(n, arr); }
         arr.push(idx);
       }
+      // usedSuffix tracks every suffix already assigned within this ref group so
+      // refs stay globally unique. Crucially, DISTINCT raw names can normalise to
+      // the SAME slug ("Edit" vs "edit", "Save A" vs "Save-A"); without this guard
+      // each lands in its own size-1 bucket, both get the bare "_slug" suffix, and
+      // the group emits the SAME ref twice — making findByRef silently resolve to
+      // the wrong element. The dedupe loop appends an incrementing index until the
+      // suffix is unused (same-name siblings already differ via their _N index, so
+      // their refs are unchanged).
+      const usedSuffix = new Set();
       for (const [n, indices] of byName) {
         const slug = n ? n.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 20) : '';
         const needsIndex = indices.length > 1;
@@ -571,7 +580,10 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
           if (slug && needsIndex) suffix = '_' + slug + '_' + (j + 1);
           else if (slug) suffix = '_' + slug;
           else suffix = '_' + (j + 1);
-          const newRef = r + suffix;
+          let unique = suffix;
+          for (let extra = 2; usedSuffix.has(unique); extra++) { unique = suffix + '_' + extra; }
+          usedSuffix.add(unique);
+          const newRef = r + unique;
           elements[idx].ref = newRef;
           const domEl = elByIndex.get(idx);
           if (domEl) { try { domEl.setAttribute('data-brw-ref', newRef); } catch (_) {} }

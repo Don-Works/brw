@@ -244,10 +244,24 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("extension bridge disconnected: %s", reason)
 
+	b.releaseConn(conn, reason)
+}
+
+// releaseConn tears down a connection that has stopped reading. It only acts
+// when conn is still the bridge's ACTIVE connection: an MV3 service worker
+// reconnects constantly, and handleExtension deliberately replaces an old conn
+// with a new one (b.conn = newConn). When the displaced (stale) conn's readLoop
+// finally returns it must NOT drain pending RPCs that now belong to the live
+// connection, nor stamp the bridge "disconnected" while b.conn points at a
+// healthy socket — doing so spuriously fails in-flight calls and reports a
+// disconnect reason alongside connected:true.
+func (b *Bridge) releaseConn(conn *websocket.Conn, reason string) {
 	b.mu.Lock()
-	if b.conn == conn {
-		b.conn = nil
+	defer b.mu.Unlock()
+	if b.conn != conn {
+		return
 	}
+	b.conn = nil
 	b.disconnectedAt = time.Now().UTC()
 	b.disconnectReason = reason
 	for id, ch := range b.pending {
@@ -255,7 +269,6 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		ch <- response{ID: id, Error: "extension disconnected"}
 		close(ch)
 	}
-	b.mu.Unlock()
 }
 
 // pingKeepaliveInterval is how often the bridge pings the connected extension to
@@ -378,9 +391,14 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 	if err != nil {
 		return nil, err
 	}
+	// Write under writeMu with an INDEPENDENT short deadline (not timeoutCtx): request
+	// cancellation must never tear down the shared socket mid-write. The response is
+	// still bounded by timeoutCtx in the select below.
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), bridgeWriteTimeout)
 	b.writeMu.Lock()
-	err = conn.Write(timeoutCtx, websocket.MessageText, msg)
+	err = conn.Write(writeCtx, websocket.MessageText, msg)
 	b.writeMu.Unlock()
+	writeCancel()
 	if err != nil {
 		b.mu.Lock()
 		delete(b.pending, id)
@@ -746,11 +764,13 @@ const (
 	// is still observed (preserving the debounce the old fixed sleep gave). Capped
 	// by capDur, so a batch step's 25ms cap is honoured.
 	settleMinFloor = 24 * time.Millisecond
-	// waitForPollStart / waitForPollMax tighten WaitFor: poll quickly at first so
-	// a condition that is already (or quickly) satisfied returns promptly, backing
-	// off to the original coarse interval for long waits.
-	waitForPollStart = 25 * time.Millisecond
-	waitForPollMax   = waitForPollInterval
+	// waitConditionChunk bounds a single in-page wait-promise await so one held
+	// Runtime.evaluate resolves (returning false at the chunk timeout) before the
+	// bridge request timeout (b.timeout) would cancel it; WaitFor re-arms the promise
+	// until its own deadline. waitForErrBackoff paces re-arming after a navigation
+	// destroys the in-page execution context mid-await, so WaitFor never hot-loops.
+	waitConditionChunk = 6 * time.Second
+	waitForErrBackoff  = 100 * time.Millisecond
 	// activeTabResolveAttempts/Backoff bound how hard contextTabID retries live
 	// active-tab resolution before falling back to the last-known cached tab. The
 	// MV3 service worker can be mid-reconnect when a call lands; a couple of quick
@@ -762,6 +782,16 @@ const (
 	// trigger before giving up, and how often it polls the extension for it.
 	fileChooserPollTimeout  = 5 * time.Second
 	fileChooserPollInterval = 200 * time.Millisecond
+	// bridgeWriteTimeout bounds a single WS frame write with a deadline INDEPENDENT of
+	// the request context. coder/websocket registers context.AfterFunc(writeCtx, close)
+	// for the duration of a write, so binding the write to the request ctx means a
+	// request that cancels (a long wait hitting b.timeout, the upstream 20s HTTP cap, or
+	// a caller giving up) while a frame is queued behind a busy extension tears down the
+	// WHOLE shared socket — every in-flight RPC then drains "extension disconnected" and
+	// the extension reconnects (~1s). That is the observed "10 concurrent heavy calls
+	// wedge the bridge, then it auto-recovers". A write completes in well under this cap;
+	// decoupling it stops one slow/cancelled request from wedging every concurrent call.
+	bridgeWriteTimeout = 10 * time.Second
 )
 
 // settleFingerprintExpr is a cheap in-page snapshot of "has the page changed?"
@@ -1746,41 +1776,79 @@ func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Dur
 		timeout = b.timeout
 	}
 	deadline := time.Now().Add(timeout)
-	// Start with a tight poll so a quickly-satisfied condition returns promptly,
-	// then back off geometrically to the original coarse interval for long waits.
-	interval := waitForPollStart
+	// Wait via a SINGLE in-page promise (WaitConditionScript) that resolves the
+	// instant the condition holds — a MutationObserver/history-driven check running
+	// inside the renderer — instead of re-evaluating a heavy condition script across
+	// the CDP boundary every 25-250ms. The old cross-process poll made each tick a
+	// full document.body.innerText / shadow-DOM walk; ten concurrent waits against a
+	// large (10k-row) page flooded the extension's debugger with hundreds of heavy
+	// evaluates a second and wedged the whole bridge until the waits expired. One
+	// awaited in-page promise per wait keeps bridge load flat no matter how many
+	// waits run concurrently. The await is chunked under b.timeout and re-armed, so a
+	// navigation that destroys the execution context simply continues against the new
+	// document.
 	for {
-		// Cooperative cancellation: a Cancel on the surrounding plan/batch (or
-		// this tab) cancels ctx, unblocking a long wait promptly.
+		// Cooperative cancellation: a Cancel on the surrounding plan/batch (or this
+		// tab) cancels ctx, unblocking a long wait promptly.
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("wait for %q cancelled", condition)
 		}
-		ok, err := b.condition(ctx, condition)
-		if err == nil && ok {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			if err != nil {
-				return fmt.Errorf("wait for %q failed: %w", condition, err)
-			}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			return fmt.Errorf("timed out waiting for %q after %s; the condition was never met — check that the page is loaded and the condition is correct (valid: ready, committed, text:..., url:..., title:..., ref:..., page_ready)", condition, timeout)
 		}
-		wait := interval
-		if remaining := time.Until(deadline); wait > remaining {
-			wait = remaining
+		chunk := remaining
+		if limit := b.waitChunkLimit(); chunk > limit {
+			chunk = limit
 		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("wait for %q cancelled", condition)
-		case <-time.After(wait):
+		matched, err := b.waitConditionOnce(ctx, condition, chunk)
+		if err == nil && matched {
+			return nil
 		}
-		if interval < waitForPollMax {
-			interval += interval / 2 // 25,37,56,84,126,189,250…
-			if interval > waitForPollMax {
-				interval = waitForPollMax
+		if err != nil {
+			// A navigation can destroy the in-page execution context mid-await; pause
+			// briefly, then re-arm the promise against the new document rather than
+			// hot-looping on the transient "context was destroyed" error.
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("wait for %q cancelled", condition)
+			case <-time.After(waitForErrBackoff):
 			}
 		}
 	}
+}
+
+// waitChunkLimit bounds a single in-page wait await so the held Runtime.evaluate
+// resolves (false at the chunk timeout) before the bridge request timeout would
+// cancel it, leaving headroom for the WS round-trip.
+func (b *Bridge) waitChunkLimit() time.Duration {
+	limit := waitConditionChunk
+	if budget := b.timeout - 2*time.Second; budget > 0 && budget < limit {
+		limit = budget
+	}
+	if limit <= 0 {
+		limit = time.Second
+	}
+	return limit
+}
+
+// waitConditionOnce arms the in-page WaitConditionScript promise once and awaits
+// its resolution: true the instant the condition holds, false at chunk. The heavy
+// condition check (innerText / shadow-DOM walk for text:/ref:) runs inside the
+// renderer on DOM mutations, NOT as repeated cross-process evaluates — so N
+// concurrent waits cost N held evaluates, not N*(rate) heavy round-trips.
+func (b *Bridge) waitConditionOnce(ctx context.Context, condition string, chunk time.Duration) (bool, error) {
+	chunkMs := chunk.Milliseconds()
+	if chunkMs < 0 {
+		chunkMs = 0
+	}
+	condJSON, _ := json.Marshal(condition)
+	expr := fmt.Sprintf("%s(%s,%d)", snapshot.WaitConditionScript, condJSON, chunkMs)
+	var matched bool
+	if err := b.evaluate(ctx, expr, "", &matched); err != nil {
+		return false, err
+	}
+	return matched, nil
 }
 
 const (

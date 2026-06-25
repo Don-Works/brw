@@ -244,6 +244,11 @@ func (m *Manager) Close() error {
 }
 
 func (m *Manager) connect() error {
+	// Reclaim per-tab state when a target is destroyed/crashes (tabs closed
+	// outside brw_close_tab), so contexts, goroutines, and per-tab maps don't
+	// leak over a long session. chromedp keeps target discovery enabled, so the
+	// browser connection delivers these events.
+	chromedp.ListenBrowser(m.browserCtx, m.handleTargetLifecycle)
 	return chromedp.Run(m.browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		c := chromedp.FromContext(ctx)
 		if c == nil || c.Browser == nil {
@@ -347,16 +352,56 @@ func (m *Manager) CloseTab(ctx context.Context, id string) error {
 	}); err != nil {
 		return err
 	}
+	m.forgetTab(id)
+	return nil
+}
+
+// forgetTab releases every resource brw holds for a tab: it cancels and removes
+// the chromedp tab context (and its target-handler goroutine + listeners),
+// drops the ref store entry, invalidates cached semantic state, and clears the
+// per-tab arm-markers. It is idempotent (safe to call twice — e.g. once from
+// CloseTab and again from the targetDestroyed listener for the same tab).
+//
+// This is the single cleanup path; without it, any tab closed OUTSIDE brw_close_tab
+// (the user clicking the X, window.close(), an OAuth popup, a tab crash) would
+// leak its context/goroutine and every per-tab map entry for the daemon's life.
+func (m *Manager) forgetTab(id string) {
+	if id == "" {
+		return
+	}
 	m.mu.Lock()
-	if tab := m.tabContexts[id]; tab.cancel != nil {
-		tab.cancel()
+	if tab, ok := m.tabContexts[id]; ok {
+		if tab.cancel != nil {
+			tab.cancel()
+		}
 		delete(m.tabContexts, id)
 	}
 	m.mu.Unlock()
 	m.refs.DropTab(id)
 	m.invalidateState(id)
 	m.forgetTabCaches(id)
-	return nil
+}
+
+// handleTargetLifecycle reclaims tab state when Chrome reports a target was
+// destroyed or crashed, so externally-closed tabs don't leak. Registered as a
+// browser-level listener in connect(); fires for every target, but forgetTab is
+// a no-op for ids brw isn't tracking.
+//
+// The cleanup runs on its OWN goroutine, never inline. chromedp invokes this
+// listener from the browser's single event-dispatch goroutine, and forgetTab
+// calls tab.cancel(), which blocks on chromedp's target teardown (a
+// WaitGroup.Wait plus a DetachFromTarget CDP round-trip). Detaching needs the
+// dispatch goroutine to process its response — so cancelling inline here would
+// deadlock that loop against itself (observed as a 10-minute hang during
+// incognito-context disposal). forgetTab is idempotent and self-locking, so an
+// async, possibly-concurrent call is safe.
+func (m *Manager) handleTargetLifecycle(ev any) {
+	switch e := ev.(type) {
+	case *target.EventTargetDestroyed:
+		go m.forgetTab(string(e.TargetID))
+	case *target.EventTargetCrashed:
+		go m.forgetTab(string(e.TargetID))
+	}
 }
 
 // forgetTabCaches drops every per-tab cache / arm-marker brw keeps for id, so the

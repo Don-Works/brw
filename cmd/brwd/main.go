@@ -165,6 +165,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// gracefulShutdown drains a server with a bounded timeout. Registered as a
+	// defer so it runs on EVERY exit path, including the MCP-mode early return —
+	// the previous trailing shutdown block was dead code in MCP mode (the most
+	// common mode), so --mcp --bridge dropped the extension connection abruptly.
+	gracefulShutdown := func(name string, fn func(context.Context) error) {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := fn(shutdownCtx); err != nil && err != http.ErrServerClosed {
+			log.Printf("%s shutdown: %v", name, err)
+		}
+	}
+
 	var controller browser.Controller
 	var bridge *extensionbridge.Bridge
 	var manager *browser.Manager
@@ -197,6 +209,7 @@ func main() {
 		bridge.SetRaiseWindowOnFocus(bridgeRaiseWindow)
 		bridge.SetDefaultGroup(bridgeTabGroup)
 		controller = bridge
+		defer gracefulShutdown("extension bridge", bridge.Shutdown)
 		go func() {
 			if bridgeExtensionID != "" {
 				log.Printf("extension bridge listening on %s for extension %s", bridgeAddr, bridgeExtensionID)
@@ -222,19 +235,32 @@ func main() {
 		}()
 	}
 
+	// Parse the navigation guardrail once and apply it to EVERY agent-facing
+	// surface. Both the MCP server and the HTTP API share the same controller,
+	// so a policy installed on only one of them is a silent bypass via the other.
+	navPolicy := navpolicy.Parse(allowedDomains, blockedDomains)
+	if !navPolicy.Empty() {
+		log.Printf("navigation guardrail active (allow=%d, block=%d domains)", len(navPolicy.Allowed), len(navPolicy.Blocked))
+	}
+
 	var api *httpapi.Server
 	if httpAddr != "" && httpAddr != "off" {
 		api = httpapi.NewWithIdentity(httpAddr, controller, runtimeIdentity)
+		api.SetNavigationPolicy(navPolicy)
+		defer gracefulShutdown("HTTP API", api.Shutdown)
 		if !isLoopback(httpAddr) {
 			log.Printf("WARNING: HTTP API bound to non-loopback address %s; no authentication is enforced — ensure caller auth is in place (SSH/Tailscale)", httpAddr)
 		}
 		go func() {
 			log.Printf("HTTP API listening on %s", httpAddr)
 			if err := api.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				// Fail loudly instead of limping on with a dead control plane.
-				// In MCP mode the stdin Serve loop would otherwise keep running
-				// with no HTTP listener (a zombie a port clash silently created).
-				log.Fatalf("HTTP API failed on %s: %v", httpAddr, err)
+				// Fail loudly, but via stop() (cancel the root ctx) rather than
+				// log.Fatalf: os.Exit would skip the deferred manager.Close(), which
+				// is the only thing that detaches the CDP debugger and tears Chrome
+				// down — a port clash would otherwise orphan the just-launched
+				// browser. Mirrors the extension-bridge goroutine below/above.
+				log.Printf("HTTP API failed on %s: %v", httpAddr, err)
+				stop()
 			}
 		}()
 	}
@@ -242,10 +268,7 @@ func main() {
 	if mcpMode {
 		log.Printf("MCP stdio server ready (tool profile: %s)", mcpToolProfile)
 		server := mcp.NewWithToolProfile(controller, mcpToolProfile)
-		if policy := navpolicy.Parse(allowedDomains, blockedDomains); !policy.Empty() {
-			server.SetNavigationPolicy(policy)
-			log.Printf("navigation guardrail active (allow=%d, block=%d domains)", len(policy.Allowed), len(policy.Blocked))
-		}
+		server.SetNavigationPolicy(navPolicy)
 		if err := server.Serve(ctx, os.Stdin, os.Stdout); err != nil && ctx.Err() == nil {
 			log.Fatalf("mcp server: %v", err)
 		}
@@ -258,17 +281,9 @@ func main() {
 	}
 	fmt.Fprintln(os.Stderr)
 	<-ctx.Done()
-
-	if api != nil {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = api.Shutdown(shutdownCtx)
-	}
-	if bridge != nil {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = bridge.Shutdown(shutdownCtx)
-	}
+	// HTTP API and extension-bridge graceful shutdown run via the deferred
+	// gracefulShutdown calls registered at construction, so they fire on every
+	// exit path (including the MCP-mode early return).
 }
 
 func normalizeAddr(addr string) string {

@@ -520,7 +520,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		var snapReq struct{ Snapshot bool `json:"snapshot"` }
+		var snapReq struct {
+			Snapshot bool `json:"snapshot"`
+		}
 		_ = json.Unmarshal(args, &snapReq)
 		if snapReq.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
@@ -583,7 +585,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		var snapReq struct{ Snapshot bool `json:"snapshot"` }
+		var snapReq struct {
+			Snapshot bool `json:"snapshot"`
+		}
 		_ = json.Unmarshal(args, &snapReq)
 		if snapReq.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
@@ -593,6 +597,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		var req snapshot.UploadOptions
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		// The url source makes the daemon fetch an arbitrary http(s) target on
+		// the browser host (SSRF reach). Gate it with the same navigation policy
+		// as brw_open so the allowlist/blocklist can't be sidestepped via upload.
+		if req.URL != "" {
+			if err := s.checkNavPolicy(req.URL); err != nil {
+				return toolError(err), nil
+			}
 		}
 		return toolJSON(s.manager.UploadFile(ctx, req))
 	case "brw_select":

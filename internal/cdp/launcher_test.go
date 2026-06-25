@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,6 +79,63 @@ func TestEnsureSafeUserDataDirAllowsCleanDir(t *testing.T) {
 	}
 	if err := EnsureSafeUserDataDir("", false); err != nil {
 		t.Fatalf("empty dir should be allowed (caller resolves later): %v", err)
+	}
+}
+
+// TestEffectiveUserDataDirHonorsArgsOverride proves the profile-corruption guard
+// validates the dir Chrome will ACTUALLY use, not the pre-args one: a
+// --user-data-dir smuggled through passthrough args (which Chrome, keeping the
+// last occurrence, would honor) must be the value checked.
+func TestEffectiveUserDataDirHonorsArgsOverride(t *testing.T) {
+	if got := effectiveUserDataDir("/safe/dir", nil); got != "/safe/dir" {
+		t.Fatalf("no args: got %q, want /safe/dir", got)
+	}
+	if got := effectiveUserDataDir("/safe/dir", []string{"--user-data-dir=/real/profile"}); got != "/real/profile" {
+		t.Fatalf("=form override: got %q, want /real/profile", got)
+	}
+	if got := effectiveUserDataDir("/safe/dir", []string{"--user-data-dir", "/real/profile"}); got != "/real/profile" {
+		t.Fatalf("space-form override: got %q, want /real/profile", got)
+	}
+	if got := effectiveUserDataDir("/safe/dir", []string{"--user-data-dir=/a", "--user-data-dir=/b"}); got != "/b" {
+		t.Fatalf("last-wins: got %q, want /b", got)
+	}
+}
+
+// TestKnownBrowserProfileRootIsCaseInsensitive proves a case-variant of a real
+// profile root is still recognised — macOS (APFS) and Windows are
+// case-insensitive, so an exact-string compare would let a case-variant dodge
+// the guard while opening the same profile.
+func TestKnownBrowserProfileRootIsCaseInsensitive(t *testing.T) {
+	roots := knownBrowserProfileRoots()
+	if len(roots) == 0 {
+		t.Skip("no known roots on this platform")
+	}
+	if !isKnownBrowserProfileRoot(strings.ToUpper(roots[0])) {
+		t.Errorf("case-variant of a known profile root should be recognised: %q", roots[0])
+	}
+	if isKnownBrowserProfileRoot(filepath.Join(t.TempDir(), "totally-unrelated")) {
+		t.Error("an unrelated dir must not be flagged as a browser profile root")
+	}
+}
+
+// TestPathIdentitiesResolvesSymlinks proves the symlink-resolution that stops a
+// symlink-to-the-real-profile from slipping past the exact-string comparison.
+func TestPathIdentitiesResolvesSymlinks(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "decoy")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	ids := pathIdentities(link)
+	resolvedReal, _ := filepath.EvalSymlinks(real)
+	found := false
+	for _, id := range ids {
+		if id == resolvedReal || id == real {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("pathIdentities(%q) = %v, expected to include resolved target %q", link, ids, resolvedReal)
 	}
 }
 

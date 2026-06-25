@@ -123,10 +123,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) return;
-  // Ignore PWA/app and devtool windows — only track normal and popup windows
-  // so the agent never accidentally targets a PWA.
+  // Ignore only genuine non-browser surfaces (PWA/app + devtools). Track every
+  // other window type — normal, popup, and clone/test-profile windows that may not
+  // classify as "normal" — so the agent can target them without landing on a PWA.
   const win = await chrome.windows.get(windowId).catch(() => null);
-  if (!win || (win.type !== "normal" && win.type !== "popup")) return;
+  if (win && (win.type === "app" || win.type === "devtools")) return;
   const tabs = await chrome.tabs.query({ windowId, active: true }).catch(() => []);
   if (tabs[0]?.id) await publishActiveTab(tabs[0].id);
 });
@@ -739,36 +740,51 @@ function isDetachedDebuggerError(error) {
 // existed, which drifted away from list_tabs (which scans focused windows) the
 // moment the cache pointed at a background tab — the root cause of read/observe/
 // list_tabs each resolving a different tab.
+// A window is controllable unless it is a PWA/app or devtools surface. Unknown or
+// undetermined window types default to controllable so tab resolution and
+// list_tabs never silently drop real browser tabs — e.g. a freshly launched
+// Chromium clone/test profile whose window has not yet classified as "normal".
+function isControllableWindowType(win) {
+  return !win || (win.type !== "app" && win.type !== "devtools");
+}
+
 async function resolveForegroundTabId() {
+  // 1. Active tab of the OS-focused controllable window. Enumerate ALL window types
+  //    (not just normal/popup) so a clone/test-profile window is seen, then drop
+  //    only PWA/devtools.
   const windows = await chrome.windows.getAll({
     populate: true,
-    windowTypes: ["normal", "popup"]
+    windowTypes: ["normal", "popup", "panel", "app", "devtools"]
   }).catch(() => []);
   for (const win of windows) {
-    if (!win.focused) continue;
+    if (!win.focused || !isControllableWindowType(win)) continue;
     const tab = (win.tabs || []).find((candidate) => candidate.active);
     if (tab?.id) return tab.id;
   }
-  // No window is OS-focused (Chrome is backgrounded behind another app — the
+  // 2. No window is OS-focused (Chrome is backgrounded behind another app — the
   // common case when an agent drives it while the human works elsewhere). Use the
-  // active tab of the LAST-focused window: deterministic and stable, unlike
-  // currentWindow (unreliable in a service worker, which has no window of its own)
-  // and unlike trusting the cache ahead of a live query. This is the single source
-  // of truth that list_tabs and every no-tab_id page tool share.
-  // Filter to normal/popup windows only — exclude PWAs ("app") and devtools
-  // so the agent never accidentally targets a PWA window.
-  const lastFocused = await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: "normal" }).catch(() => []);
-  if (lastFocused[0]?.id) return lastFocused[0].id;
-  const lastFocusedPopup = await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: "popup" }).catch(() => []);
-  if (lastFocusedPopup[0]?.id) return lastFocusedPopup[0].id;
-  // Honor the last-targeted tab if it is still alive (focus_tab/open set this).
+  // active tab of the LAST-focused window if it is controllable: deterministic and
+  // stable, unlike currentWindow (unreliable in a service worker, which has no
+  // window of its own) and unlike trusting the cache ahead of a live query. This is
+  // the single source of truth that list_tabs and every no-tab_id page tool share.
+  const lastFocused = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+  for (const tab of lastFocused) {
+    if (!tab?.id) continue;
+    const win = await chrome.windows.get(tab.windowId).catch(() => null);
+    if (isControllableWindowType(win)) return tab.id;
+  }
+  // 3. Honor the last-targeted tab if it is still alive (focus_tab/open set this).
   if (state.activeTabId) {
     const cached = await chrome.tabs.get(state.activeTabId).catch(() => null);
     if (cached?.id) return cached.id;
   }
-  // Last resort: any active tab in a normal window.
-  const any = await chrome.tabs.query({ active: true, windowType: "normal" }).catch(() => []);
-  if (any[0]?.id) return any[0].id;
+  // 4. Last resort: any active tab in a controllable window.
+  const any = await chrome.tabs.query({ active: true }).catch(() => []);
+  for (const tab of any) {
+    if (!tab?.id) continue;
+    const win = await chrome.windows.get(tab.windowId).catch(() => null);
+    if (isControllableWindowType(win)) return tab.id;
+  }
   return null;
 }
 
@@ -786,10 +802,22 @@ async function activeTabId() {
 }
 
 async function listTabSummaries() {
-  const windows = await chrome.windows.getAll({
-    populate: true,
-    windowTypes: ["normal", "popup"]
-  });
+  // Enumerate EVERY tab via chrome.tabs.query({}) — which returns tabs across all
+  // window types — then drop only PWA/app and devtools surfaces. The previous
+  // chrome.windows.getAll({windowTypes:["normal","popup"]}) allowlist silently
+  // returned 0 tabs whenever a window was not classified as normal/popup (e.g. a
+  // freshly launched Chromium clone/test profile), even though those tabs were fully
+  // controllable. The denylist preserves the PWA-exclusion intent without the false
+  // negatives.
+  const allTabs = await chrome.tabs.query({}).catch(() => []);
+  const winCache = new Map();
+  const getWin = async (windowId) => {
+    if (typeof windowId !== "number") return null;
+    if (winCache.has(windowId)) return winCache.get(windowId);
+    const win = await chrome.windows.get(windowId).catch(() => null);
+    winCache.set(windowId, win);
+    return win;
+  };
   const groupsById = await tabGroupsById();
   // Resolve the authoritative foreground tab ONCE and mark exactly that tab as
   // active in the list. This guarantees list_tabs's active flag is identical to
@@ -799,32 +827,32 @@ async function listTabSummaries() {
   // diverged whenever they disagreed about which window was foreground.
   const foregroundId = await resolveForegroundTabId().catch(() => null);
   const out = [];
-  for (const win of windows) {
-    for (const tab of win.tabs || []) {
-      // chrome.windows.getAll({populate:true}) can return tab.url / tab.title
-      // that lag a recent navigation by a few seconds. Re-fetch each tab with
-      // chrome.tabs.get(), which talks to the live tab record, so list_tabs
-      // reports the current URL/title rather than the populated snapshot. Fall
-      // back to the populated tab if the per-tab fetch fails (tab closed mid
-      // enumeration), preserving window metadata either way.
-      let fresh = tab;
-      if (typeof tab.id === "number") {
-        const got = await chrome.tabs.get(tab.id).catch(() => null);
-        if (got) fresh = got;
-      }
-      const summary = await tabSummaryFrom(fresh, win, groupsById);
-      // Override Chrome's per-window active flag with the single authoritative
-      // foreground tab so only one tab in the whole list is reported active, and
-      // it is the same tab page tools act on. windowFocused is also forced true
-      // for that tab so the daemon's (Active && WindowFocused) filter selects it
-      // even when Chrome briefly reports no focused window.
-      if (foregroundId != null && typeof fresh.id === "number") {
-        const isForeground = fresh.id === foregroundId;
-        summary.active = isForeground;
-        if (isForeground) summary.windowFocused = true;
-      }
-      out.push(summary);
+  for (const tab of allTabs) {
+    const win = await getWin(tab.windowId);
+    // Drop only PWA/app and devtools surfaces; include normal, popup, and any
+    // window whose type cannot be determined (default to controllable).
+    if (!isControllableWindowType(win)) continue;
+    // chrome.tabs can lag a recent navigation by a few seconds. Re-fetch each tab
+    // with chrome.tabs.get(), which talks to the live tab record, so list_tabs
+    // reports the current URL/title. Fall back to the queried tab if the per-tab
+    // fetch fails (tab closed mid enumeration), preserving metadata either way.
+    let fresh = tab;
+    if (typeof tab.id === "number") {
+      const got = await chrome.tabs.get(tab.id).catch(() => null);
+      if (got) fresh = got;
     }
+    const summary = await tabSummaryFrom(fresh, win, groupsById);
+    // Override Chrome's per-window active flag with the single authoritative
+    // foreground tab so only one tab in the whole list is reported active, and it
+    // is the same tab page tools act on. windowFocused is also forced true for that
+    // tab so the daemon's (Active && WindowFocused) filter selects it even when
+    // Chrome briefly reports no focused window.
+    if (foregroundId != null && typeof fresh.id === "number") {
+      const isForeground = fresh.id === foregroundId;
+      summary.active = isForeground;
+      if (isForeground) summary.windowFocused = true;
+    }
+    out.push(summary);
   }
   return out;
 }

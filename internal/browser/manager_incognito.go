@@ -79,26 +79,33 @@ func (m *Manager) CloseContext(ctx context.Context, contextID string) error {
 // for incognito BrowserContexts so Close can dispose any the caller forgot.
 // Kept as tiny helpers (no browser I/O) so the leak-cleanup logic is unit
 // testable independent of a live Chrome.
+// All three helpers unlock via defer so a panic inside the critical section
+// (e.g. a write to an uninitialised map) cannot leave incognitoMu permanently
+// locked. A poisoned mutex here would otherwise deadlock Manager.Close's
+// disposeIncognitoContexts during shutdown.
 func (m *Manager) trackIncognito(contextID string) {
 	m.incognitoMu.Lock()
+	defer m.incognitoMu.Unlock()
+	if m.incognitoContexts == nil {
+		m.incognitoContexts = map[string]bool{}
+	}
 	m.incognitoContexts[contextID] = true
-	m.incognitoMu.Unlock()
 }
 
 func (m *Manager) untrackIncognito(contextID string) {
 	m.incognitoMu.Lock()
+	defer m.incognitoMu.Unlock()
 	delete(m.incognitoContexts, contextID)
-	m.incognitoMu.Unlock()
 }
 
 func (m *Manager) takeIncognitoContexts() []string {
 	m.incognitoMu.Lock()
+	defer m.incognitoMu.Unlock()
 	ids := make([]string, 0, len(m.incognitoContexts))
 	for id := range m.incognitoContexts {
 		ids = append(ids, id)
 	}
 	m.incognitoContexts = map[string]bool{}
-	m.incognitoMu.Unlock()
 	return ids
 }
 

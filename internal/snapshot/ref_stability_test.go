@@ -110,3 +110,51 @@ func TestRefDistinctSiblingsWithoutStableIdentityDoNotCollapse(t *testing.T) {
 		t.Fatalf("expected 3 buttons, got %d", buttons)
 	}
 }
+
+// TestRefDisambiguationNeverDuplicatesAcrossSlugCollision guards the bug where
+// the collision-disambiguation pass emitted the SAME ref twice: links sharing a
+// stableKey (same href) whose DISTINCT raw names normalise to the SAME slug
+// ("Edit" vs "edit", "Save A" vs "Save-A") each landed in a size-1 name bucket
+// and both received the bare "_slug" suffix. A duplicate ref makes findByRef /
+// click silently resolve to the WRONG element — the worst failure for refs.
+func TestRefDisambiguationNeverDuplicatesAcrossSlugCollision(t *testing.T) {
+	html := `<!DOCTYPE html><html><body>
+<div id="list">
+  <a href="#row">Edit</a>
+  <a href="#row">edit</a>
+  <a href="#row">Save A</a>
+  <a href="#row">Save-A</a>
+  <a href="#row">Delete</a>
+</div>
+</body></html>`
+
+	ctx, cancel := structuredTestContext(t)
+	defer cancel()
+	if err := chromedp.Run(ctx, chromedp.Navigate("data:text/html,"+url.PathEscape(html))); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := EvaluateWithOptions(ctx, SnapshotOptions{Mode: "all"})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	seen := map[string]string{} // ref -> name of first element with that ref
+	links := 0
+	for _, el := range snap.Elements {
+		if el.Tag != "a" {
+			continue
+		}
+		links++
+		if el.Ref == "" {
+			t.Fatalf("link %q got an empty ref", el.Name)
+		}
+		if prev, dup := seen[el.Ref]; dup {
+			t.Fatalf("duplicate ref %q assigned to both %q and %q (an agent acting on %q would hit the wrong element)", el.Ref, prev, el.Name, el.Ref)
+		}
+		seen[el.Ref] = el.Name
+	}
+	if links != 5 {
+		t.Fatalf("expected 5 links, got %d; elements: %v", links, names(snap.Elements))
+	}
+}
