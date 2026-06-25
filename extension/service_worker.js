@@ -384,7 +384,16 @@ async function handle(message) {
       state.activeTabId = tab.id || null;
       let resultTab = tab;
       if (tab.id && hasGroupTarget(message.params)) {
-        await groupTabForParams(tab, message.params);
+        const groupId = await groupTabForParams(tab, message.params);
+        // Grouping can DEMOTE the freshly-opened active tab: a collapsed group
+        // cannot hold the active tab, so Chrome deactivates the newcomer and
+        // activates an adjacent visible tab. Re-expand the group and re-activate
+        // the opened tab so it stays the foreground tab the agent will act on —
+        // otherwise the next no-tab_id tool resolves the wrong tab.
+        if (typeof groupId === "number" && groupId >= 0) {
+          await chrome.tabGroups.update(groupId, { collapsed: false }).catch(() => {});
+        }
+        await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
         resultTab = await chrome.tabs.get(tab.id).catch(() => tab);
       }
       send({ id: message.id, ok: true, result: await tabSummary(resultTab) });
@@ -394,6 +403,12 @@ async function handle(message) {
       const tabId = Number(message.params?.tabId);
       const before = await chrome.tabs.get(tabId).catch(() => null);
       if (before?.windowId) await chrome.windows.update(before.windowId, { focused: true });
+      // Expand the target's group first: a tab inside a collapsed group cannot
+      // become (and stay) the active tab, so activating it without expanding
+      // would let Chrome bounce focus back to a visible tab.
+      if (typeof before?.groupId === "number" && before.groupId >= 0) {
+        await chrome.tabGroups.update(before.groupId, { collapsed: false }).catch(() => {});
+      }
       const tab = await chrome.tabs.update(tabId, { active: true });
       state.activeTabId = tabId;
       send({ id: message.id, ok: true, result: await tabSummary(tab) });

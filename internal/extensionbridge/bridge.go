@@ -403,10 +403,14 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 		return browser.OpenResult{}, err
 	}
 	out := tab.toBrowserTab()
-	if out.ID != "" {
-		b.setActiveTabID(out.ID)
+	if out.ID == "" {
+		return browser.OpenResult{}, errors.New("open_tab returned no tab id")
 	}
+	b.setActiveTabID(out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
+	if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
+		return browser.OpenResult{Tab: out, Ready: ready}, err
+	}
 	return browser.OpenResult{Tab: out, Ready: ready}, nil
 }
 
@@ -574,10 +578,14 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 		return browser.OpenResult{}, err
 	}
 	out := tab.toBrowserTab()
-	if out.ID != "" {
-		b.setActiveTabID(out.ID)
+	if out.ID == "" {
+		return browser.OpenResult{}, errors.New("open_tab returned no tab id")
 	}
+	b.setActiveTabID(out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
+	if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
+		return browser.OpenResult{Tab: out, Ready: ready}, err
+	}
 	return browser.OpenResult{Tab: out, Ready: ready}, nil
 }
 
@@ -2119,6 +2127,49 @@ func (b *Bridge) retargetPinnedTab(base, stepCtx context.Context, targetTabID st
 		return stepCtx
 	}
 	return browser.WithTabID(base, targetTabID)
+}
+
+// ensureForegroundTab makes the just-opened tab id the genuine foreground tab —
+// the one resolveActiveTabID/get_active_tab_id returns — so that every
+// SUBSEQUENT no-tab_id page tool (brw_find / brw_read / brw_click / snapshot)
+// targets the tab brw_open just opened rather than whatever tab Chrome left
+// focused.
+//
+// Why this is needed: open_tab creates the tab active WITHIN its window, but the
+// daemon's contextTabID deliberately distrusts the cached b.active and
+// re-resolves the live foreground tab every call (correct, because the user can
+// switch tabs manually in a shared Chrome). Two real-Chrome cases leave a
+// DIFFERENT tab foreground right after an open, so b.active and the live
+// resolver diverge — exactly the reported "brw_open then brw_find hit an
+// unrelated Google Chat tab" bug:
+//  1. The new tab lands in a window that is not the OS-focused one, so
+//     resolveForegroundTabId returns the focused window's active tab.
+//  2. Grouping the new tab into a COLLAPSED group deactivates it (a collapsed
+//     group cannot hold the active tab), so Chrome activates an adjacent tab.
+//
+// We detect the divergence and heal it with an explicit focus_tab (which focuses
+// the window, activates the tab, and expands its group), then re-verify. A tab
+// that still cannot be made foreground is a HARD error rather than a silent
+// fall-through onto a stale tab.
+func (b *Bridge) ensureForegroundTab(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("open returned no tab id; refusing to fall back to a stale active tab")
+	}
+	if live := b.resolveActiveTabID(ctx); live == id {
+		b.setActiveTabID(id)
+		return nil
+	}
+	// Diverged: the opened tab is not the live foreground tab. Focus it
+	// explicitly (window focus + activate + group expand) and re-verify.
+	if err := b.FocusTab(ctx, id); err != nil {
+		return fmt.Errorf("open: could not focus the opened tab %s: %w", id, err)
+	}
+	if live := b.resolveActiveTabID(ctx); live != id {
+		return fmt.Errorf("open: opened tab %s did not become the active tab (resolver reported %q); the open may have been blocked or the tab was immediately replaced", id, live)
+	}
+	b.setActiveTabID(id)
+	return nil
 }
 
 // resolveActiveTabID asks the extension for the truly active/focused tab and
