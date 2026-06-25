@@ -54,6 +54,21 @@ type Bridge struct {
 	// restore UA/platform overrides that CDP itself has no clear command for.
 	emulationMu     sync.Mutex
 	emulationStates map[string]bridgeDeviceEmulationState
+
+	// defaultGroup, when non-empty, is the tab-group title brw_open uses when the
+	// caller did not specify a group, so the agent's tabs are corralled into one
+	// labelled group in the user's window instead of scattered loose — the tidy,
+	// "act like a person" default. The daemon sets it (see cmd/brwd); the zero
+	// value keeps Open ungrouped for embedders/tests. Set once before serving.
+	defaultGroup string
+	// raiseWindowOnFocus controls whether focus_tab raises the Chrome WINDOW to
+	// the OS foreground (chrome.windows.update{focused:true}). The library default
+	// is true for back-compat, but the daemon defaults it to FALSE so automation
+	// never steals the user's OS focus while they work in another app/window. Tab
+	// activation within the window still happens regardless, so no-tab_id tools
+	// resolve the right tab in the common single-window case without a focus grab.
+	// Set once before serving.
+	raiseWindowOnFocus bool
 }
 
 type bridgeDeviceIdentity struct {
@@ -109,6 +124,9 @@ func NewWithIdentity(addr string, timeout time.Duration, allowedExtensionID stri
 		pending:            map[string]chan response{},
 		cancels:            newCancelRegistry(),
 		emulationStates:    map[string]bridgeDeviceEmulationState{},
+		// Library default preserves historical behaviour (focus raises the
+		// window); the daemon flips this to false for the seamless experience.
+		raiseWindowOnFocus: true,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/extension", b.handleExtension)
@@ -387,7 +405,23 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 	}
 }
 
+// SetDefaultGroup configures the tab-group title brw_open lands in when the
+// caller passes no group of its own (empty disables default grouping). Call
+// before serving.
+func (b *Bridge) SetDefaultGroup(name string) { b.defaultGroup = strings.TrimSpace(name) }
+
+// SetRaiseWindowOnFocus configures whether focus_tab raises the Chrome window to
+// the OS foreground. The daemon sets this to false so automation never steals
+// the user's focus. Call before serving.
+func (b *Bridge) SetRaiseWindowOnFocus(v bool) { b.raiseWindowOnFocus = v }
+
 func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, error) {
+	// Corral the agent's tabs into one labelled group by default so they don't
+	// scatter loose across the user's window. An explicit group from the caller
+	// (OpenInGroup) always wins; this only fills the no-group case.
+	if group := b.defaultGroup; group != "" {
+		return b.OpenInGroup(ctx, url, browser.TabGroupOptions{Name: group})
+	}
 	if strings.TrimSpace(url) == "" {
 		url = "about:blank"
 	}
@@ -403,10 +437,14 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 		return browser.OpenResult{}, err
 	}
 	out := tab.toBrowserTab()
-	if out.ID != "" {
-		b.setActiveTabID(out.ID)
+	if out.ID == "" {
+		return browser.OpenResult{}, errors.New("open_tab returned no tab id")
 	}
+	b.setActiveTabID(out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
+	if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
+		return browser.OpenResult{Tab: out, Ready: ready}, err
+	}
 	return browser.OpenResult{Tab: out, Ready: ready}, nil
 }
 
@@ -484,7 +522,7 @@ func (b *Bridge) FocusTab(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	raw, err := b.call(ctx, "focus_tab", map[string]any{"tabId": tabID})
+	raw, err := b.call(ctx, "focus_tab", map[string]any{"tabId": tabID, "raiseWindow": b.raiseWindowOnFocus})
 	if err != nil {
 		return err
 	}
@@ -574,10 +612,14 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 		return browser.OpenResult{}, err
 	}
 	out := tab.toBrowserTab()
-	if out.ID != "" {
-		b.setActiveTabID(out.ID)
+	if out.ID == "" {
+		return browser.OpenResult{}, errors.New("open_tab returned no tab id")
 	}
+	b.setActiveTabID(out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
+	if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
+		return browser.OpenResult{Tab: out, Ready: ready}, err
+	}
 	return browser.OpenResult{Tab: out, Ready: ready}, nil
 }
 
@@ -2119,6 +2161,49 @@ func (b *Bridge) retargetPinnedTab(base, stepCtx context.Context, targetTabID st
 		return stepCtx
 	}
 	return browser.WithTabID(base, targetTabID)
+}
+
+// ensureForegroundTab makes the just-opened tab id the genuine foreground tab —
+// the one resolveActiveTabID/get_active_tab_id returns — so that every
+// SUBSEQUENT no-tab_id page tool (brw_find / brw_read / brw_click / snapshot)
+// targets the tab brw_open just opened rather than whatever tab Chrome left
+// focused.
+//
+// Why this is needed: open_tab creates the tab active WITHIN its window, but the
+// daemon's contextTabID deliberately distrusts the cached b.active and
+// re-resolves the live foreground tab every call (correct, because the user can
+// switch tabs manually in a shared Chrome). Two real-Chrome cases leave a
+// DIFFERENT tab foreground right after an open, so b.active and the live
+// resolver diverge — exactly the reported "brw_open then brw_find hit an
+// unrelated Google Chat tab" bug:
+//  1. The new tab lands in a window that is not the OS-focused one, so
+//     resolveForegroundTabId returns the focused window's active tab.
+//  2. Grouping the new tab into a COLLAPSED group deactivates it (a collapsed
+//     group cannot hold the active tab), so Chrome activates an adjacent tab.
+//
+// We detect the divergence and heal it with an explicit focus_tab (which focuses
+// the window, activates the tab, and expands its group), then re-verify. A tab
+// that still cannot be made foreground is a HARD error rather than a silent
+// fall-through onto a stale tab.
+func (b *Bridge) ensureForegroundTab(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("open returned no tab id; refusing to fall back to a stale active tab")
+	}
+	if live := b.resolveActiveTabID(ctx); live == id {
+		b.setActiveTabID(id)
+		return nil
+	}
+	// Diverged: the opened tab is not the live foreground tab. Focus it
+	// explicitly (window focus + activate + group expand) and re-verify.
+	if err := b.FocusTab(ctx, id); err != nil {
+		return fmt.Errorf("open: could not focus the opened tab %s: %w", id, err)
+	}
+	if live := b.resolveActiveTabID(ctx); live != id {
+		return fmt.Errorf("open: opened tab %s did not become the active tab (resolver reported %q); the open may have been blocked or the tab was immediately replaced", id, live)
+	}
+	b.setActiveTabID(id)
+	return nil
 }
 
 // resolveActiveTabID asks the extension for the truly active/focused tab and
