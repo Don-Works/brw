@@ -57,6 +57,7 @@ var coreToolNames = map[string]bool{
 	"brw_drag":           true,
 	"brw_upload_file":    true,
 	"brw_navigate":       true,
+	"brw_navigate_to":    true,
 	"brw_wait_for":       true,
 	"brw_batch":          true,
 	"brw_observe":        true,
@@ -466,9 +467,13 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			Y          *float64 `json:"y"`
 			Button     string   `json:"button"`
 			ClickCount int      `json:"click_count"`
+			Snapshot   bool     `json:"snapshot"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		if req.Snapshot {
+			ctx = browser.WithWantSnapshot(ctx)
 		}
 		// Plain left single-click on a ref keeps the fast in-page click path.
 		// Any non-default button/count, or a coordinate target, routes through
@@ -515,36 +520,73 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
+		var snapReq struct{ Snapshot bool `json:"snapshot"` }
+		_ = json.Unmarshal(args, &snapReq)
+		if snapReq.Snapshot {
+			ctx = browser.WithWantSnapshot(ctx)
+		}
 		return toolJSON(s.manager.ClickText(ctx, req))
 	case "brw_navigate":
 		var req struct {
 			Direction string `json:"direction"`
+			Snapshot  bool   `json:"snapshot"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		if req.Snapshot {
+			ctx = browser.WithWantSnapshot(ctx)
 		}
 		return toolJSON(s.manager.Navigate(ctx, req.Direction))
-	case "brw_hover":
+	case "brw_navigate_to":
 		var req struct {
-			Ref string `json:"ref"`
+			URL      string `json:"url"`
+			Snapshot bool   `json:"snapshot"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		if err := s.checkNavPolicy(req.URL); err != nil {
+			return toolError(err), nil
+		}
+		if req.Snapshot {
+			ctx = browser.WithWantSnapshot(ctx)
+		}
+		return toolJSON(s.manager.NavigateTo(ctx, req.URL))
+	case "brw_hover":
+		var req struct {
+			Ref      string `json:"ref"`
+			Snapshot bool   `json:"snapshot"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		if req.Snapshot {
+			ctx = browser.WithWantSnapshot(ctx)
 		}
 		return toolJSON(s.manager.Hover(ctx, req.Ref))
 	case "brw_type":
 		var req struct {
-			Ref  string `json:"ref"`
-			Text string `json:"text"`
+			Ref      string `json:"ref"`
+			Text     string `json:"text"`
+			Snapshot bool   `json:"snapshot"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		if req.Snapshot {
+			ctx = browser.WithWantSnapshot(ctx)
 		}
 		return toolJSON(s.manager.Type(ctx, req.Ref, req.Text))
 	case "brw_fill":
 		req := snapshot.FillOptions{Replace: true}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		var snapReq struct{ Snapshot bool `json:"snapshot"` }
+		_ = json.Unmarshal(args, &snapReq)
+		if snapReq.Snapshot {
+			ctx = browser.WithWantSnapshot(ctx)
 		}
 		return toolJSON(s.manager.Fill(ctx, req))
 	case "brw_upload_file":
@@ -555,27 +597,39 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return toolJSON(s.manager.UploadFile(ctx, req))
 	case "brw_select":
 		var req struct {
-			Ref   string `json:"ref"`
-			Value string `json:"value"`
+			Ref      string `json:"ref"`
+			Value    string `json:"value"`
+			Snapshot bool   `json:"snapshot"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		if req.Snapshot {
+			ctx = browser.WithWantSnapshot(ctx)
 		}
 		return toolJSON(s.manager.Select(ctx, req.Ref, req.Value))
 	case "brw_press":
 		var req struct {
-			Key string `json:"key"`
+			Key      string `json:"key"`
+			Snapshot bool   `json:"snapshot"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		if req.Snapshot {
+			ctx = browser.WithWantSnapshot(ctx)
 		}
 		return toolJSON(s.manager.Press(ctx, req.Key))
 	case "brw_scroll":
 		var req struct {
 			Direction string `json:"direction"`
+			Snapshot  bool   `json:"snapshot"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		if req.Snapshot {
+			ctx = browser.WithWantSnapshot(ctx)
 		}
 		return toolJSON(s.manager.Scroll(ctx, req.Direction))
 	case "brw_screenshot":
@@ -1086,12 +1140,13 @@ func tools() []map[string]any {
 			"include_hidden": boolSchema("Include input[type=hidden] fields as role hidden for explicit debugging. Defaults false."),
 			"text_content":   boolSchema("Also match against full visible text content (innerText), surfacing prose-bearing elements like headings, paragraphs, and list items — not just interactive-element metadata. Opt-in; defaults false."),
 		}, nil)),
-		tool("brw_click", "Click a semantic element ref (or x,y coordinates) from brw_snapshot. Defaults to a left single-click; set button to right (opens context menus) or middle, and click_count to 2 (double-click) or 3 (triple-click selects a line). Pass optional tab_id to target a specific tab.", object(map[string]any{
+		tool("brw_click", "Click a semantic element ref (or x,y coordinates) from brw_snapshot. Defaults to a left single-click; set button to right (opens context menus) or middle, and click_count to 2 (double-click) or 3 (triple-click selects a line). When the click opens a new tab, the response includes new_tab_id with the freshly opened tab's id. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":         stringSchema("Element ref, for example e18. Provide ref or x,y."),
 			"x":           map[string]any{"type": "number", "description": "X coordinate in viewport pixels. Use with y instead of ref for canvas/coordinate clicks."},
 			"y":           map[string]any{"type": "number", "description": "Y coordinate in viewport pixels. Use with x instead of ref for canvas/coordinate clicks."},
 			"button":      stringEnumSchema("Mouse button: left (default), right, or middle.", "left", "right", "middle"),
 			"click_count": integerSchema("Click count: 1 (default), 2 for double-click, 3 to triple-click (select a line)."),
+			"snapshot":    boolSchema("Include a full page snapshot in the response. Use this to avoid a separate brw_snapshot call after the action — the response gains a 'snapshot' field with the same structure as brw_snapshot output."),
 			"tab_id":      stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
 		tool("brw_drag", "Press at a source (ref or x,y), move to a target (ref or x,y) over several steps, then release. Use for sliders/range inputs, drag-and-drop reorder, and canvas/map panning. Pass optional tab_id to target a specific tab.", object(map[string]any{
@@ -1115,20 +1170,28 @@ func tools() []map[string]any {
 			"button": stringEnumSchema("Mouse button: left (default), right, or middle.", "left", "right", "middle"),
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
-		tool("brw_click_text", "Click the best visible actionable element whose accessible name or visible text matches text. Useful for controls like \"Check out\" when refs are stale or custom components hide internals. Below-fold matches are scrolled into view before clicking by default. Pass optional tab_id to target a specific tab.", object(map[string]any{
+		tool("brw_click_text", "Click the best visible actionable element whose accessible name or visible text matches text. Useful for controls like \"Check out\" when refs are stale or custom components hide internals. Below-fold matches are scrolled into view before clicking by default. When the click opens a new tab, the response includes new_tab_id. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"text":        stringSchema("Visible text or accessible name to click."),
 			"role":        stringSchema("Optional role filter, for example button, link, option, or menuitem."),
 			"exact":       boolSchema("Require an exact normalized text/name match instead of allowing substring matches."),
 			"auto_scroll": boolSchema("Scroll a below-fold match into view before clicking (default true). Set false to click only elements already in the viewport."),
+			"snapshot":    boolSchema("Include a full page snapshot in the response."),
 			"tab_id":      stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"text"})),
 		tool("brw_navigate", "Navigate the active tab's session history: back, forward, or reload. Uses the page navigation history (no URL needed); returns a post-navigation observation. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"direction": stringEnumSchema("back (previous history entry), forward (next history entry), or reload (re-fetch the current document).", "back", "forward", "reload"),
+			"snapshot":  boolSchema("Include a full page snapshot in the response."),
 			"tab_id":    stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"direction"})),
+		tool("brw_navigate_to", "Navigate the active tab to a URL, wait for the page to load, and return a post-navigation observation. Unlike brw_open, this navigates the EXISTING tab instead of creating a new one. Use this when you need to change the URL of the current tab. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"url":      stringSchema("URL to navigate to. Scheme defaults to https."),
+			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"tab_id":   stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
+		}, []string{"url"})),
 		tool("brw_hover", "Hover over a semantic element ref to trigger mouseenter/mouseover/pointermove events. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"ref":    stringSchema("Element ref, for example e18."),
-			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
+			"ref":      stringSchema("Element ref, for example e18."),
+			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"tab_id":   stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
 		tool("brw_evaluate", "Run arbitrary JavaScript in the page context and return the JSON-serializable result. Supports async expressions. Pass optional tab_id to target a specific tab. Large results are TRUNCATED with an explicit '…[truncated: returned N of M bytes]' marker (never silently empty); use offset/max_bytes to page through them. Note: fetch() runs under the current page's Content-Security-Policy, so cross-origin calls must be made from a tab whose origin permits them (otherwise they fail with a CSP/'Failed to fetch' error).", object(map[string]any{
 			"expression": stringSchema("JavaScript expression to evaluate. May use await for async operations."),
@@ -1152,17 +1215,19 @@ func tools() []map[string]any {
 			"tab_id":  stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"url"})),
 		tool("brw_type", "Type text into a semantic element ref. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"ref":    stringSchema("Element ref, for example e17."),
-			"text":   stringSchema("Text to insert."),
-			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
+			"ref":      stringSchema("Element ref, for example e17."),
+			"text":     stringSchema("Text to insert."),
+			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"tab_id":   stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"ref", "text"})),
-		tool("brw_fill", "Replace or append text in a semantic text field by ref or query and return a post-action observation. Also sets a native range slider (<input type=range>), number, or date input to an exact value in ONE call (prefer this over repeated brw_press arrow keys for sliders). Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"ref":     stringSchema("Element ref, for example e17. Optional when query is supplied."),
-			"query":   stringSchema("Find a fillable target by semantic name when ref is not supplied."),
-			"role":    stringSchema("Optional role filter when using query, normally textbox or searchbox."),
-			"text":    stringSchema("Text to put in the field."),
-			"replace": boolSchema("Replace existing field content instead of appending. Defaults to true."),
-			"tab_id":  stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
+		tool("brw_fill", "Replace or append text in a semantic text field by ref or query and return a post-action observation. Also sets a native range slider (<input type=range>), number, or date input to an exact value in ONE call (prefer this over repeated brw_press arrow keys for sliders). If the ref exists but is not a text input, the error suggests using brw_type instead. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"ref":      stringSchema("Element ref, for example e17. Optional when query is supplied."),
+			"query":    stringSchema("Find a fillable target by semantic name when ref is not supplied."),
+			"role":     stringSchema("Optional role filter when using query, normally textbox or searchbox."),
+			"text":     stringSchema("Text to put in the field."),
+			"replace":  boolSchema("Replace existing field content instead of appending. Defaults to true."),
+			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"tab_id":   stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"text"})),
 		tool("brw_upload_file", "Set a file on a semantic file input by ref or query and return a post-action observation. Provide the file from EXACTLY ONE source: path/paths (files already on the browser host), bytes_base64 (inline base64 contents — the daemon writes them to a temp file for you, no host filesystem access needed), or url (the daemon fetches it over http(s) to a temp file). Temp files created from bytes_base64/url are removed after the upload. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":          stringSchema("Element ref for input[type=file]. Optional when query is supplied."),
@@ -1178,16 +1243,19 @@ func tools() []map[string]any {
 			"tab_id":       stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
 		tool("brw_select", "Set a native select or custom listbox/combobox value by semantic element ref. Value may be the option value/data-value or visible option label. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"ref":    stringSchema("Element ref for a select, combobox, or listbox trigger."),
-			"value":  stringSchema("Option value, data-value, or visible option label to select."),
-			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
+			"ref":      stringSchema("Element ref for a select, combobox, or listbox trigger."),
+			"value":    stringSchema("Option value, data-value, or visible option label to select."),
+			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"tab_id":   stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"ref", "value"})),
 		tool("brw_press", "Press a keyboard key in the active tab. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"key":    stringSchema("Key name or chord, for example Enter, Tab, Escape, ArrowDown, Meta+Enter."),
-			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
+			"key":      stringSchema("Key name or chord, for example Enter, Tab, Escape, ArrowDown, Meta+Enter."),
+			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"tab_id":   stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"key"})),
 		tool("brw_scroll", "Scroll the active page or scroll container in a direction. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"direction": stringEnumSchema("up, down, left, or right.", "up", "down", "left", "right"),
+			"snapshot":  boolSchema("Include a full page snapshot in the response."),
 			"tab_id":    stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"direction"})),
 		tool("brw_screenshot", "Visual fallback — you almost never need this. brw is semantic-first: brw_snapshot/brw_find expose every control with a ref, brw_read returns page prose/result/status/badge text, and EVERY action (click/type/fill/select/press/drag) returns a post-action observation that confirms its effect (changed elements, new values, navigation). To VERIFY an outcome (a cart badge, a result message, a swapped item, an editor's text), read that observation or call brw_read — do NOT screenshot to check. Reserve brw_screenshot for opaque visual content with no DOM text (canvas, maps, charts, image-only widgets). Pass optional tab_id to target a specific tab. Set annotate:true for a Set-of-Marks capture: each in-viewport frontier element is drawn with a labelled box whose label is the SAME ref returned by brw_snapshot (e.g. e17), and the response carries a legend mapping each ref to its box (x,y,width,height) plus role and name — so a vision model can read a label off the image and act on it with brw_click using that exact ref. To save vision tokens on a dense page, pass ref OR region to get a TIGHT annotated crop of just that element / box instead of the whole viewport (a far smaller image); ref/region imply annotate. The overlay is removed immediately after capture and never mutates the page. Default (annotate omitted/false, no ref/region) is byte-identical to the plain capture.", object(map[string]any{
@@ -1210,8 +1278,8 @@ func tools() []map[string]any {
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
 		tool("brw_wait_for", "Wait for page readiness, URL/title/text substring, or ref availability. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"condition":  stringSchema("ready (document interactive/complete), load (alias of ready), committed (interactive/complete AND a real navigated URL, not about:blank), text:..., not_text:..., url:..., not_url:..., title:..., ref:..., or plain text."),
-			"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds."},
+			"condition":  stringSchema("Condition to wait for: ready or page_ready (document interactive/complete), load (alias of ready), committed (interactive/complete AND a real navigated URL, not about:blank), text:<substring>, not_text:<substring>, url:<substring>, not_url:<substring>, title:<substring>, not_title:<substring>, ref:<brw-ref>, not_ref:<brw-ref>, or a plain text substring of body innerText."),
+			"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds. Defaults to the daemon timeout (typically 20s)."},
 			"tab_id":     stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"condition"})),
 		tool("brw_plan", "Execute a sequence of browser operations in one round-trip. Steps run sequentially and stop on first failure. Each successful step includes a result payload when the action produces useful data; snapshot steps return the page snapshot under both result and snapshot, and read steps return brw_read-style page prose under result.", object(map[string]any{
@@ -1238,7 +1306,7 @@ func tools() []map[string]any {
 				},
 			},
 		}, []string{"steps"})),
-		tool("brw_batch", "Execute multiple browser actions in one round-trip without intermediate observations. Returns a single compact observation at the end. Supports actions (click, type, fill, select, press, scroll, hover, wait, open, focus_tab) and inline assertions (assert_visible, assert_text, assert_value, assert_hidden).", object(map[string]any{
+		tool("brw_batch", "PREFERRED for multi-step flows: chain click, type, fill, select, press, scroll, hover, wait, open, focus_tab, and inline assertions (assert_visible, assert_text, assert_value, assert_hidden) in ONE round-trip. Returns a single observation at the end. Always use this instead of individual brw_click/brw_type/brw_fill calls when you need 2+ actions — it cuts latency and token cost dramatically. Steps run sequentially; assertions can be interleaved to fail-fast.", object(map[string]any{
 			"steps": map[string]any{
 				"type":        "array",
 				"description": "Ordered list of actions and assertions to execute.",
@@ -1264,7 +1332,7 @@ func tools() []map[string]any {
 			"token":  stringSchema("Operation token to cancel. Omit or use \"*\" to cancel all in-flight operations."),
 			"tab_id": stringSchema("Optional tab id. When set (and no explicit token), cancels operations targeting that tab."),
 		}, nil)),
-		tool("brw_observe", "Return compact page state: version, URL, title, focused ref, and frontier element changes since last observe. Use this to check what changed without a full snapshot. Pass optional tab_id to target a specific tab.", object(map[string]any{
+		tool("brw_observe", "Lightweight change detector: returns version, URL, title, focused ref, and frontier element changes since last observe. Use this INSTEAD of brw_snapshot to check whether a page action had an effect — it's faster and returns fewer tokens. Call brw_snapshot only when you need fresh refs to act on. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
 		tool("brw_page_tools", "List WebMCP tools the current page exposes via navigator.modelContext (W3C Web Machine Context). When a site cooperates, calling its declared tools is far more reliable and token-efficient than driving the DOM — prefer them when present. Returns {supported, tools:[{name, description, inputSchema}]}; supported:false means the page exposes none (or brw's WebMCP runtime is not enabled with --enable-webmcp). Pass optional tab_id to target a specific tab.", object(map[string]any{

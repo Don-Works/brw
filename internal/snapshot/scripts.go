@@ -53,7 +53,9 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     '[tabindex]',
     'summary',
     'label',
-    'img',
+    'img[alt]',
+    '[title]',
+    '[aria-label]',
     '[draggable="true"]'
   ];
   if (includeHidden) selectorParts.push('input[type="hidden"]');
@@ -441,6 +443,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   const formRoles = new Set(['textbox', 'searchbox', 'combobox', 'listbox', 'checkbox', 'radio', 'slider', 'spinbutton', 'button', 'switch', 'option', 'menuitem']);
   const seen = new Set();
   const elements = [];
+  const elByIndex = new Map();
   for (const el of all(selector)) {
     if (!isElementLike(el)) continue;
     if (seen.has(el)) continue;
@@ -463,7 +466,8 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     // textContent value for prose matching: only computed when requested, capped
     // so a huge container's innerText cannot explode the per-element cost.
     const proseText = textContent ? clean(el.innerText || el.textContent || '').slice(0, 2000) : '';
-    const isUseful = role !== 'generic' || isFocusable || typeof el.onclick === 'function' || el.draggable === true || (textContent && proseText.length > 0);
+    const hasImgAlt = el.tagName === 'IMG' && !!clean(el.getAttribute('alt'));
+    const isUseful = role !== 'generic' || isFocusable || typeof el.onclick === 'function' || el.draggable === true || hasImgAlt || (textContent && proseText.length > 0);
     if (!isUseful) continue;
     if (formLensMode && !formRoles.has(role)) continue;
     const key = keyFor(el, role, name);
@@ -530,8 +534,52 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       if (textContent && proseText.toLowerCase().indexOf(needle) !== -1) reasons.push('text');
       item.match_reasons = reasons;
     }
+    elByIndex.set(elements.length, el);
     elements.push(item);
     if (!frontierMode && limit > 0 && elements.length >= limit) break;
+  }
+
+  // Disambiguate ref collisions caused by stableKeyFor collapsing siblings.
+  // When multiple elements share a ref, append name-based suffixes when names
+  // differ (e.g. e6_edit, e6_delete) or numeric suffixes when names match
+  // (e.g. e6_edit_1, e6_edit_2). Collisions among same-name siblings are
+  // common on pages like challenging_dom where 10 "edit" links share the
+  // same stableKey.
+  {
+    const refGroups = new Map();
+    for (let i = 0; i < elements.length; i++) {
+      const r = elements[i].ref;
+      let g = refGroups.get(r);
+      if (!g) { g = []; refGroups.set(r, g); }
+      g.push(i);
+    }
+    for (const [r, group] of refGroups) {
+      if (group.length < 2) continue;
+      const byName = new Map();
+      for (const idx of group) {
+        const n = elements[idx].name || '';
+        let arr = byName.get(n);
+        if (!arr) { arr = []; byName.set(n, arr); }
+        arr.push(idx);
+      }
+      for (const [n, indices] of byName) {
+        const slug = n ? n.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 20) : '';
+        const needsIndex = indices.length > 1;
+        for (let j = 0; j < indices.length; j++) {
+          const idx = indices[j];
+          let suffix;
+          if (slug && needsIndex) suffix = '_' + slug + '_' + (j + 1);
+          else if (slug) suffix = '_' + slug;
+          else suffix = '_' + (j + 1);
+          const newRef = r + suffix;
+          elements[idx].ref = newRef;
+          const domEl = elByIndex.get(idx);
+          if (domEl) { try { domEl.setAttribute('data-brw-ref', newRef); } catch (_) {} }
+          const k = elements[idx].key;
+          if (k) { state.byKey[k] = newRef; state.byRef[newRef] = k; }
+        }
+      }
+    }
   }
 
   function hasSignal(signals, name) {
@@ -566,6 +614,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       tab: 100,
       slider: 90,
       spinbutton: 90,
+      image: 85,
       status: 80,
       alert: 80
     };
@@ -996,7 +1045,10 @@ const FillElementScript = `(function(ref, text, replace) {` + FrameWalkHelpers +
   } else if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
     el.textContent = next;
   } else {
-    return { ok: false, error: 'ref is not fillable' };
+    var desc = el.tagName.toLowerCase();
+    if (el.getAttribute('role')) desc += '[role=' + el.getAttribute('role') + ']';
+    else if (el.type) desc += '[type=' + el.type + ']';
+    return { ok: false, error: 'ref ' + ref + ' is not fillable (' + desc + ' has no value property and is not contenteditable; use brw_type to type into it, or re-run brw_snapshot to find the correct input ref)' };
   }
   emitInputEvents(el, text, replace);
   return { ok: true, ref, value: next };
@@ -1528,7 +1580,7 @@ func RefDraggable(ctx context.Context, ref string) bool {
 // interval for signals those miss (e.g. pushState URL changes) — replacing a
 // fixed-interval CDP poll loop with a single awaited in-page promise.
 const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelpers + `
-  if (!condition || condition === 'load') condition = 'ready';
+  if (!condition || condition === 'load' || condition === 'page_ready') condition = 'ready';
   function roots(){
     return __abRootList();
   }

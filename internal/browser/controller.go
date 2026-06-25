@@ -31,6 +31,7 @@ type Controller interface {
 	Click(context.Context, string) (ActionResult, error)
 	ClickText(context.Context, snapshot.ClickTextOptions) (ActionResult, error)
 	Navigate(context.Context, string) (ActionResult, error)
+	NavigateTo(context.Context, string) (ActionResult, error)
 	ClickButton(context.Context, ClickButtonOptions) (ActionResult, error)
 	MouseDown(context.Context, MouseButtonOptions) (ActionResult, error)
 	MouseUp(context.Context, MouseButtonOptions) (ActionResult, error)

@@ -123,6 +123,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+  // Ignore PWA/app and devtool windows — only track normal and popup windows
+  // so the agent never accidentally targets a PWA.
+  const win = await chrome.windows.get(windowId).catch(() => null);
+  if (!win || (win.type !== "normal" && win.type !== "popup")) return;
   const tabs = await chrome.tabs.query({ windowId, active: true }).catch(() => []);
   if (tabs[0]?.id) await publishActiveTab(tabs[0].id);
 });
@@ -140,6 +144,16 @@ chrome.debugger.onDetach.addListener((source) => {
 // We stash the latest per tab so the daemon can poll for it via
 // get_file_chooser_event and then set the file with DOM.setFileInputFiles.
 chrome.debugger.onEvent.addListener((source, method, params) => {
+  // Auto-dismiss JS dialogs (alert/confirm/prompt/beforeunload) so they
+  // don't freeze the CDP session and cause the bridge to time out.
+  if (method === "Page.javascriptDialogOpening" && typeof source.tabId === "number") {
+    chrome.debugger.sendCommand(
+      { tabId: source.tabId },
+      "Page.handleJavaScriptDialog",
+      { accept: true }
+    ).catch(() => {});
+    return;
+  }
   if (method !== "Page.fileChooserOpened" || typeof source.tabId !== "number") return;
   state.fileChooserEvents.set(source.tabId, {
     backendNodeId: params?.backendNodeId ?? 0,
@@ -644,6 +658,8 @@ async function attach(tabId) {
   }
   state.attachedTabs.add(tabId);
   state.attachUsedAt.set(tabId, Date.now());
+  // Enable Page events so we receive javascriptDialogOpening for auto-dismiss.
+  chrome.debugger.sendCommand({ tabId }, "Page.enable", {}).catch(() => {});
 }
 
 // detach releases the debugger brw holds on one tab and forgets its per-tab
@@ -739,15 +755,19 @@ async function resolveForegroundTabId() {
   // currentWindow (unreliable in a service worker, which has no window of its own)
   // and unlike trusting the cache ahead of a live query. This is the single source
   // of truth that list_tabs and every no-tab_id page tool share.
-  const lastFocused = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+  // Filter to normal/popup windows only — exclude PWAs ("app") and devtools
+  // so the agent never accidentally targets a PWA window.
+  const lastFocused = await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: "normal" }).catch(() => []);
   if (lastFocused[0]?.id) return lastFocused[0].id;
+  const lastFocusedPopup = await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: "popup" }).catch(() => []);
+  if (lastFocusedPopup[0]?.id) return lastFocusedPopup[0].id;
   // Honor the last-targeted tab if it is still alive (focus_tab/open set this).
   if (state.activeTabId) {
     const cached = await chrome.tabs.get(state.activeTabId).catch(() => null);
     if (cached?.id) return cached.id;
   }
-  // Last resort: any active tab.
-  const any = await chrome.tabs.query({ active: true }).catch(() => []);
+  // Last resort: any active tab in a normal window.
+  const any = await chrome.tabs.query({ active: true, windowType: "normal" }).catch(() => []);
   if (any[0]?.id) return any[0].id;
   return null;
 }

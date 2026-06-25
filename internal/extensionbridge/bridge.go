@@ -864,15 +864,17 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 
 func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
+	beforeTabs := b.captureTabIDs(ctx)
 	if err := b.clickRef(ctx, ref); err != nil {
 		return browser.ActionResult{}, err
 	}
 	b.settle(ctx, observedActionSettle)
-	return b.observeActionWithBefore(ctx, "clicked "+ref, before), nil
+	return b.observeActionWithBeforeAndTabs(ctx, "clicked "+ref, before, beforeTabs), nil
 }
 
 func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
+	beforeTabs := b.captureTabIDs(ctx)
 	optsJSON, _ := json.Marshal(opts)
 	var clicked snapshot.ClickXYResult
 	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.ClickTextScript, optsJSON), "", &clicked); err != nil {
@@ -889,7 +891,7 @@ func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) 
 	if clicked.Name != "" {
 		label = clicked.Name
 	}
-	return b.observeActionWithBefore(ctx, "clicked text "+strconv.Quote(label), before), nil
+	return b.observeActionWithBeforeAndTabs(ctx, "clicked text "+strconv.Quote(label), before, beforeTabs), nil
 }
 
 func (b *Bridge) Hover(ctx context.Context, ref string) (browser.ActionResult, error) {
@@ -1437,6 +1439,39 @@ func (b *Bridge) Navigate(ctx context.Context, direction string) (browser.Action
 	return b.observeActionWithBefore(ctx, "navigated "+dir, before), nil
 }
 
+// NavigateTo navigates the active tab to a URL, waits for the page to load,
+// and returns a post-navigation observation. Unlike Open, this does NOT create
+// a new tab — it navigates the existing active tab.
+func (b *Bridge) NavigateTo(ctx context.Context, url string) (browser.ActionResult, error) {
+	if strings.TrimSpace(url) == "" {
+		return browser.ActionResult{}, fmt.Errorf("navigate_to: url is required")
+	}
+	if !strings.Contains(url, "://") {
+		url = "https://" + url
+	}
+	before := b.captureSemanticState(ctx)
+	beforeTabs := b.captureTabIDs(ctx)
+	if err := b.navigateToURL(ctx, url); err != nil {
+		return browser.ActionResult{}, err
+	}
+	b.settle(ctx, observedActionSettle)
+	_ = b.WaitFor(ctx, "load", 10*time.Second)
+	return b.observeActionWithBeforeAndTabs(ctx, "navigated to "+url, before, beforeTabs), nil
+}
+
+func (b *Bridge) navigateToURL(ctx context.Context, url string) error {
+	urlJSON, _ := json.Marshal(url)
+	expr := fmt.Sprintf("(function(){location.href=%s;return true;})()", urlJSON)
+	var ok bool
+	if err := b.evaluate(ctx, expr, "", &ok); err != nil {
+		if isNavigationTeardownError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func (b *Bridge) navigateDirection(ctx context.Context, dir string) error {
 	var expr string
 	switch dir {
@@ -1726,9 +1761,9 @@ func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Dur
 		}
 		if time.Now().After(deadline) {
 			if err != nil {
-				return err
+				return fmt.Errorf("wait for %q failed: %w", condition, err)
 			}
-			return fmt.Errorf("timed out waiting for %q", condition)
+			return fmt.Errorf("timed out waiting for %q after %s; the condition was never met — check that the page is loaded and the condition is correct (valid: ready, committed, text:..., url:..., title:..., ref:..., page_ready)", condition, timeout)
 		}
 		wait := interval
 		if remaining := time.Until(deadline); wait > remaining {
@@ -1980,6 +2015,10 @@ func (b *Bridge) observeAction(ctx context.Context, message string) browser.Acti
 }
 
 func (b *Bridge) observeActionWithBefore(ctx context.Context, message string, before *browser.SemanticState) browser.ActionResult {
+	return b.observeActionWithBeforeAndTabs(ctx, message, before, nil)
+}
+
+func (b *Bridge) observeActionWithBeforeAndTabs(ctx context.Context, message string, before *browser.SemanticState, beforeTabIDs map[string]bool) browser.ActionResult {
 	result := browser.ActionResult{OK: true, Message: message, TabID: b.contextTabID(ctx)}
 	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
@@ -2002,6 +2041,18 @@ func (b *Bridge) observeActionWithBefore(ctx context.Context, message string, be
 	result.Changed = browser.SummarizeElements(frontier, 12)
 	if tabs, err := b.ListTabs(ctx); err == nil {
 		result.Targets = actionTargets(tabs, b.activeTabID(), 8)
+		// Detect if a new tab was opened by this action.
+		if beforeTabIDs != nil {
+			for _, t := range tabs {
+				if !beforeTabIDs[t.ID] && t.ID != result.TabID {
+					result.NewTabID = t.ID
+					break
+				}
+			}
+		}
+	}
+	if browser.WantSnapshotFromCtx(ctx) {
+		result.Snapshot = &snap
 	}
 	return result
 }
@@ -2013,6 +2064,20 @@ func (b *Bridge) captureSemanticState(ctx context.Context) *browser.SemanticStat
 	}
 	state := browser.NewSemanticState(snap)
 	return &state
+}
+
+// captureTabIDs returns the set of current tab IDs, used to detect new tabs
+// opened by an action. Returns nil on error (detection is best-effort).
+func (b *Bridge) captureTabIDs(ctx context.Context) map[string]bool {
+	tabs, err := b.ListTabs(ctx)
+	if err != nil {
+		return nil
+	}
+	ids := make(map[string]bool, len(tabs))
+	for _, t := range tabs {
+		ids[t.ID] = true
+	}
+	return ids
 }
 
 func (b *Bridge) evaluate(ctx context.Context, expression, tabID string, dst any) error {
@@ -2295,7 +2360,7 @@ func (b *Bridge) focus(ctx context.Context, ref string) error {
 
 func (b *Bridge) condition(ctx context.Context, condition string) (bool, error) {
 	condition = strings.TrimSpace(condition)
-	if condition == "" || condition == "load" {
+	if condition == "" || condition == "load" || condition == "page_ready" {
 		condition = "ready"
 	}
 	condJSON, _ := json.Marshal(condition)

@@ -1,11 +1,26 @@
 package browser
 
 import (
+	"context"
 	"strings"
 	"time"
 
 	"github.com/Don-Works/brw/internal/snapshot"
 )
+
+type ctxKeyWantSnapshot struct{}
+
+// WithWantSnapshot returns a context that signals observeActionWithBefore to
+// include the full PageSnapshot in the ActionResult.
+func WithWantSnapshot(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyWantSnapshot{}, true)
+}
+
+// WantSnapshotFromCtx reports whether the context requests a post-action snapshot.
+func WantSnapshotFromCtx(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyWantSnapshot{}).(bool)
+	return v
+}
 
 type Config struct {
 	ChromePath       string
@@ -78,19 +93,21 @@ type OpenResult struct {
 }
 
 type ActionResult struct {
-	OK           bool               `json:"ok"`
-	Message      string             `json:"message,omitempty"`
-	Warning      string             `json:"warning,omitempty"`
-	TabID        string             `json:"tab_id,omitempty"`
-	Version      int64              `json:"version,omitempty"`
-	URL          string             `json:"url,omitempty"`
-	Title        string             `json:"title,omitempty"`
-	Focus        string             `json:"focus,omitempty"`
-	ChangedState *bool              `json:"changed_state,omitempty"`
-	Targets      []Tab              `json:"targets,omitempty"`
-	Changed      []string           `json:"changed,omitempty"`
-	Elements     []snapshot.Element `json:"elements,omitempty"`
-	DurationMS   int64              `json:"duration_ms,omitempty"`
+	OK           bool                `json:"ok"`
+	Message      string              `json:"message,omitempty"`
+	Warning      string              `json:"warning,omitempty"`
+	TabID        string              `json:"tab_id,omitempty"`
+	NewTabID     string              `json:"new_tab_id,omitempty"`
+	Version      int64               `json:"version,omitempty"`
+	URL          string              `json:"url,omitempty"`
+	Title        string              `json:"title,omitempty"`
+	Focus        string              `json:"focus,omitempty"`
+	ChangedState *bool               `json:"changed_state,omitempty"`
+	Targets      []Tab               `json:"targets,omitempty"`
+	Changed      []string            `json:"changed,omitempty"`
+	Elements     []snapshot.Element  `json:"elements,omitempty"`
+	Snapshot     *snapshot.PageSnapshot `json:"snapshot,omitempty"`
+	DurationMS   int64               `json:"duration_ms,omitempty"`
 }
 
 type Screenshot struct {

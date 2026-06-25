@@ -1867,6 +1867,9 @@ func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, 
 	frontier := SelectFrontierElements(snap.Elements, result.Focus, 12)
 	result.Elements = frontier
 	result.Changed = SummarizeElements(frontier, 12)
+	if WantSnapshotFromCtx(tabCtx) {
+		result.Snapshot = &snap
+	}
 	return result
 }
 

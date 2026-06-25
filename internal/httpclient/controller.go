@@ -148,6 +148,12 @@ func (c *Controller) Navigate(ctx context.Context, direction string) (browser.Ac
 	return out, err
 }
 
+func (c *Controller) NavigateTo(ctx context.Context, url string) (browser.ActionResult, error) {
+	var out browser.ActionResult
+	err := c.post(ctx, "/api/page/navigate_to", map[string]string{"url": url}, &out)
+	return out, err
+}
+
 func (c *Controller) ClickButton(ctx context.Context, opts browser.ClickButtonOptions) (browser.ActionResult, error) {
 	var out browser.ActionResult
 	body := map[string]any{"ref": opts.Ref, "button": opts.Button, "click_count": opts.ClickCount}

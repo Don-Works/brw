@@ -69,6 +69,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/click", s.click)
 	mux.HandleFunc("POST /api/page/click_text", s.clickText)
 	mux.HandleFunc("POST /api/page/navigate", s.navigate)
+	mux.HandleFunc("POST /api/page/navigate_to", s.navigateTo)
 	mux.HandleFunc("POST /api/page/drag", s.drag)
 	mux.HandleFunc("POST /api/page/mouse_down", s.mouseDown)
 	mux.HandleFunc("POST /api/page/mouse_up", s.mouseUp)
@@ -305,12 +306,16 @@ func (s *Server) click(w http.ResponseWriter, r *http.Request) {
 		Y          *float64 `json:"y"`
 		Button     string   `json:"button"`
 		ClickCount int      `json:"click_count"`
+		Snapshot   bool     `json:"snapshot"`
 		TabID      string   `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
 	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if req.Snapshot {
+		ctx = browser.WithWantSnapshot(ctx)
+	}
 	if browser.IsDefaultLeftSingleRefClick(req.Button, req.ClickCount, req.Ref, req.X, req.Y) {
 		result, err := s.manager.Click(ctx, req.Ref)
 		writeResult(w, result, err)
@@ -382,49 +387,86 @@ func decodeMouseButton(w http.ResponseWriter, r *http.Request) (browser.MouseBut
 func (s *Server) clickText(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		snapshot.ClickTextOptions
-		TabID string `json:"tab_id"`
+		Snapshot bool   `json:"snapshot"`
+		TabID    string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.ClickText(s.contextWithTabID(r.Context(), req.TabID), req.ClickTextOptions)
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if req.Snapshot {
+		ctx = browser.WithWantSnapshot(ctx)
+	}
+	result, err := s.manager.ClickText(ctx, req.ClickTextOptions)
 	writeResult(w, result, err)
 }
 
 func (s *Server) navigate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Direction string `json:"direction"`
+		Snapshot  bool   `json:"snapshot"`
 		TabID     string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Navigate(s.contextWithTabID(r.Context(), req.TabID), req.Direction)
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if req.Snapshot {
+		ctx = browser.WithWantSnapshot(ctx)
+	}
+	result, err := s.manager.Navigate(ctx, req.Direction)
+	writeResult(w, result, err)
+}
+
+func (s *Server) navigateTo(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL      string `json:"url"`
+		Snapshot bool   `json:"snapshot"`
+		TabID    string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if req.Snapshot {
+		ctx = browser.WithWantSnapshot(ctx)
+	}
+	result, err := s.manager.NavigateTo(ctx, req.URL)
 	writeResult(w, result, err)
 }
 
 func (s *Server) typeText(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Ref   string `json:"ref"`
-		Text  string `json:"text"`
-		TabID string `json:"tab_id"`
+		Ref      string `json:"ref"`
+		Text     string `json:"text"`
+		Snapshot bool   `json:"snapshot"`
+		TabID    string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Type(s.contextWithTabID(r.Context(), req.TabID), req.Ref, req.Text)
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if req.Snapshot {
+		ctx = browser.WithWantSnapshot(ctx)
+	}
+	result, err := s.manager.Type(ctx, req.Ref, req.Text)
 	writeResult(w, result, err)
 }
 
 func (s *Server) fill(w http.ResponseWriter, r *http.Request) {
 	req := struct {
 		snapshot.FillOptions
-		TabID string `json:"tab_id"`
+		Snapshot bool   `json:"snapshot"`
+		TabID    string `json:"tab_id"`
 	}{FillOptions: snapshot.FillOptions{Replace: true}}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Fill(s.contextWithTabID(r.Context(), req.TabID), req.FillOptions)
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if req.Snapshot {
+		ctx = browser.WithWantSnapshot(ctx)
+	}
+	result, err := s.manager.Fill(ctx, req.FillOptions)
 	writeResult(w, result, err)
 }
 
@@ -442,38 +484,53 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) selectValue(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Ref   string `json:"ref"`
-		Value string `json:"value"`
-		TabID string `json:"tab_id"`
+		Ref      string `json:"ref"`
+		Value    string `json:"value"`
+		Snapshot bool   `json:"snapshot"`
+		TabID    string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Select(s.contextWithTabID(r.Context(), req.TabID), req.Ref, req.Value)
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if req.Snapshot {
+		ctx = browser.WithWantSnapshot(ctx)
+	}
+	result, err := s.manager.Select(ctx, req.Ref, req.Value)
 	writeResult(w, result, err)
 }
 
 func (s *Server) press(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Key   string `json:"key"`
-		TabID string `json:"tab_id"`
+		Key      string `json:"key"`
+		Snapshot bool   `json:"snapshot"`
+		TabID    string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Press(s.contextWithTabID(r.Context(), req.TabID), req.Key)
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if req.Snapshot {
+		ctx = browser.WithWantSnapshot(ctx)
+	}
+	result, err := s.manager.Press(ctx, req.Key)
 	writeResult(w, result, err)
 }
 
 func (s *Server) scroll(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Direction string `json:"direction"`
+		Snapshot  bool   `json:"snapshot"`
 		TabID     string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Scroll(s.contextWithTabID(r.Context(), req.TabID), req.Direction)
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if req.Snapshot {
+		ctx = browser.WithWantSnapshot(ctx)
+	}
+	result, err := s.manager.Scroll(ctx, req.Direction)
 	writeResult(w, result, err)
 }
 
@@ -491,13 +548,18 @@ func (s *Server) waitFor(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) hover(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Ref   string `json:"ref"`
-		TabID string `json:"tab_id"`
+		Ref      string `json:"ref"`
+		Snapshot bool   `json:"snapshot"`
+		TabID    string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Hover(s.contextWithTabID(r.Context(), req.TabID), req.Ref)
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if req.Snapshot {
+		ctx = browser.WithWantSnapshot(ctx)
+	}
+	result, err := s.manager.Hover(ctx, req.Ref)
 	writeResult(w, result, err)
 }
 

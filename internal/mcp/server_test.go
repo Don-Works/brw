@@ -1037,6 +1037,10 @@ func (r *recordingController) Navigate(ctx context.Context, direction string) (b
 	return r.fakeController.Navigate(ctx, direction)
 }
 
+func (r *recordingController) NavigateTo(ctx context.Context, url string) (browser.ActionResult, error) {
+	return r.fakeController.NavigateTo(ctx, url)
+}
+
 func (r *recordingController) Cancel(ctx context.Context, token string) (browser.CancelResult, error) {
 	r.cancelToken = token
 	return browser.CancelResult{OK: true, Token: token, Cancelled: 1}, nil
@@ -1134,6 +1138,9 @@ func (fakeController) ClickText(context.Context, snapshot.ClickTextOptions) (bro
 	return browser.ActionResult{OK: true}, nil
 }
 func (fakeController) Navigate(context.Context, string) (browser.ActionResult, error) {
+	return browser.ActionResult{OK: true}, nil
+}
+func (fakeController) NavigateTo(context.Context, string) (browser.ActionResult, error) {
 	return browser.ActionResult{OK: true}, nil
 }
 func (fakeController) ClickButton(context.Context, browser.ClickButtonOptions) (browser.ActionResult, error) {

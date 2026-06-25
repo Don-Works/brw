@@ -32,6 +32,7 @@ func mousePointArg(point browser.MousePoint) map[string]any {
 
 func (b *Bridge) ClickButton(ctx context.Context, opts browser.ClickButtonOptions) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
+	beforeTabs := b.captureTabIDs(ctx)
 	arg := mousePointArg(opts.MousePoint)
 	if opts.Button != "" {
 		arg["button"] = opts.Button
@@ -51,7 +52,7 @@ func (b *Bridge) ClickButton(ctx context.Context, opts browser.ClickButtonOption
 	if clickCount > 1 {
 		desc = fmt.Sprintf("%s-clicked x%d %s", buttonLabel(opts.Button), clickCount, pointDescriptor(opts.MousePoint))
 	}
-	return b.observeActionWithBefore(ctx, desc, before), nil
+	return b.observeActionWithBeforeAndTabs(ctx, desc, before, beforeTabs), nil
 }
 
 func (b *Bridge) MouseDown(ctx context.Context, opts browser.MouseButtonOptions) (browser.ActionResult, error) {
