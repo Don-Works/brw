@@ -6,6 +6,9 @@ const PROTOCOL_VERSION = "0.1.0";
 const KEEPALIVE_INTERVAL_MS = 5 * 1000;
 const DAEMON_STATUS_INTERVAL_MS = 10 * 1000;
 const MAX_RECONNECT_DELAY_MS = 10 * 1000;
+// Detach a tab's debugger after this long without a CDP command, so brw doesn't
+// hold debugger sessions on idle tabs of the user's real Chrome.
+const IDLE_DETACH_MS = 120 * 1000;
 let offscreenSetupPromise = null;
 let packagedDefaultConfigPromise = null;
 
@@ -16,6 +19,11 @@ const state = {
   keepAliveTimer: null,
   statusTimer: null,
   attachedTabs: new Set(),
+  // attachUsedAt records the last time each attached tab's debugger was used, so
+  // sweepIdleDebuggers can release debuggers that have gone idle within a long
+  // connection — bounding how many debugger sessions brw holds on the user's
+  // real Chrome at once (accumulating attachments destabilize renderers).
+  attachUsedAt: new Map(),
   activeTabId: null,
   reconnectAttempt: 0,
   lastError: "",
@@ -95,6 +103,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.runtime.onSuspend.addListener(() => {
   stopKeepAlive();
   setBridgeBadge("disconnected");
+  // Best-effort: release every debugger before the service worker is torn down,
+  // so a suspend never leaves the user's Chrome in a debugged state.
+  detachAll().catch(() => {});
 });
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   await publishActiveTab(activeInfo?.tabId);
@@ -104,6 +115,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   state.attachedTabs.delete(tabId);
+  state.attachUsedAt.delete(tabId);
   state.snapshotCache.delete(tabId);
   state.observerInjected.delete(tabId);
   state.fileChooserEvents.delete(tabId);
@@ -117,6 +129,7 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
 chrome.debugger.onDetach.addListener((source) => {
   if (source.tabId) {
     state.attachedTabs.delete(source.tabId);
+    state.attachUsedAt.delete(source.tabId);
     state.fileChooserEvents.delete(source.tabId);
   }
 });
@@ -223,6 +236,12 @@ async function connectOnce() {
   socket.onclose = (event) => {
     if (state.socket !== socket) return;
     state.socket = null;
+    // The daemon is gone — release every debugger so brw never keeps the user's
+    // real Chrome in a debugged state while disconnected (the next CDP call
+    // re-attaches lazily, so this is safe). This is the primary fix for
+    // debugger sessions accumulating and destabilizing Chrome / corrupting tab
+    // storage (e.g. WhatsApp Web logging out).
+    detachAll().catch(() => {});
     scheduleReconnect(`closed ${event?.code || ""}`.trim());
   };
   socket.onerror = (event) => {
@@ -401,6 +420,9 @@ async function handle(message) {
     }
     if (message.type === "close_tab") {
       const tabId = Number(message.params?.tabId);
+      // Detach our debugger before removing the tab so the session is released
+      // explicitly rather than relying solely on the onRemoved/onDetach events.
+      await detach(tabId);
       await chrome.tabs.remove(tabId);
       send({ id: message.id, ok: true, result: { closed: tabId } });
       return;
@@ -590,16 +612,58 @@ async function handle(message) {
 }
 
 async function attach(tabId) {
-  if (state.attachedTabs.has(tabId)) return;
+  if (state.attachedTabs.has(tabId)) {
+    state.attachUsedAt.set(tabId, Date.now());
+    return;
+  }
   try {
     await chrome.debugger.attach({ tabId }, "1.3");
   } catch (error) {
     if (!String(error?.message || error).includes("Another debugger is already attached")) throw error;
   }
   state.attachedTabs.add(tabId);
+  state.attachUsedAt.set(tabId, Date.now());
+}
+
+// detach releases the debugger brw holds on one tab and forgets its per-tab
+// caches. Safe to call when not attached (no-op). The next CDP call re-attaches
+// lazily via attach(), so detaching an idle tab never breaks a later action.
+async function detach(tabId) {
+  state.attachUsedAt.delete(tabId);
+  if (!state.attachedTabs.has(tabId)) return;
+  state.attachedTabs.delete(tabId);
+  state.observerInjected.delete(tabId);
+  state.fileChooserEvents.delete(tabId);
+  try {
+    await chrome.debugger.detach({ tabId });
+  } catch (_) {
+    // Already detached (tab closed / Chrome reclaimed it) — nothing to do.
+  }
+}
+
+// detachAll releases every debugger brw currently holds. Called when the daemon
+// disconnects or the service worker suspends so brw never leaves the user's
+// real Chrome in a debugged state.
+async function detachAll() {
+  for (const tabId of Array.from(state.attachedTabs)) {
+    await detach(tabId);
+  }
+}
+
+// sweepIdleDebuggers detaches any tab whose debugger has not been used within
+// IDLE_DETACH_MS, bounding how many debugger sessions pile up during a single
+// long-lived connection (one run can touch dozens of tabs). Runs on the
+// keepalive tick while connected.
+async function sweepIdleDebuggers() {
+  const now = Date.now();
+  for (const tabId of Array.from(state.attachedTabs)) {
+    const usedAt = state.attachUsedAt.get(tabId) || 0;
+    if (now - usedAt > IDLE_DETACH_MS) await detach(tabId);
+  }
 }
 
 async function sendDebuggerCommand(tabId, method, params) {
+  state.attachUsedAt.set(tabId, Date.now());
   try {
     return await chrome.debugger.sendCommand({ tabId }, method, params);
   } catch (error) {
@@ -854,6 +918,7 @@ function startKeepAlive() {
   stopKeepAlive();
   state.keepAliveTimer = setInterval(() => {
     send({ type: "keepalive", at: Date.now() });
+    sweepIdleDebuggers().catch(() => {});
   }, KEEPALIVE_INTERVAL_MS);
   state.statusTimer = setInterval(() => {
     probeDaemonStatus().catch(() => {});
