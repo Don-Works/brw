@@ -53,6 +53,7 @@ func main() {
 	var workspaceName string
 	var profilePolicyPath string
 	var unsafeAllowDefaultProfileCDP bool
+	var unsafeRealProfile bool
 	var bridgeExtensionID string
 	var upstreamHTTP string
 	var mcpToolProfile string
@@ -72,6 +73,7 @@ func main() {
 	flag.StringVar(&workspaceName, "workspace", os.Getenv("BRW_WORKSPACE"), "workspace binding name for default/restricted profiles")
 	flag.StringVar(&profilePolicyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path; defaults to standard brw config discovery")
 	flag.BoolVar(&unsafeAllowDefaultProfileCDP, "unsafe-allow-default-profile-cdp", false, "diagnostic override for profiles marked direct_cdp_allowed=false")
+	flag.BoolVar(&unsafeRealProfile, "unsafe-real-profile", envBool("BRW_UNSAFE_REAL_PROFILE"), "diagnostic override allowing a direct-CDP launch against the user's real browser profile dir. Dangerous: a second Chrome on a live profile corrupts it (lost logins, won't reopen).")
 	flag.StringVar(&cfg.ChromePath, "chrome-path", os.Getenv("BRW_CHROME_PATH"), "Chrome/Chromium executable path")
 	flag.StringVar(&cfg.UserDataDir, "user-data-dir", envDefault("BRW_USER_DATA_DIR", cdplaunch.DefaultProfileDir("")), "persistent Chrome user data directory")
 	flag.StringVar(&cfg.ProfileDirectory, "profile-directory", os.Getenv("BRW_PROFILE_DIRECTORY"), "Chrome profile directory within user data dir, for example 'Profile 1'")
@@ -94,6 +96,10 @@ func main() {
 	cfg.ChromeArgs = chromeArgs
 	cfg.Timeout = timeout
 	cfg.WebMCP = enableWebMCP
+	cfg.AllowRealProfile = unsafeRealProfile
+	if unsafeRealProfile {
+		log.Printf("WARNING: --unsafe-real-profile is active; brw may launch Chrome against your real browser profile, which can corrupt it (lost logins, won't reopen)")
+	}
 	runtimeIdentity := brwidentity.Identity{}
 	identityExpected := brwidentity.Identity{}
 	haveProfilePolicy := false

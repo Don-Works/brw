@@ -20,6 +20,10 @@ type Config struct {
 	// document-start so cooperating sites can register page tools that
 	// brw_page_tools / brw_call_page_tool surface. Direct-CDP transport only.
 	WebMCP bool
+	// AllowRealProfile overrides the safety refusal to direct-CDP launch Chrome
+	// against the user's real browser profile (which corrupts it). Diagnostics
+	// only; see cdp.EnsureSafeUserDataDir.
+	AllowRealProfile bool
 }
 
 type Tab struct {

@@ -43,6 +43,8 @@ func (m *Manager) OpenIncognito(ctx context.Context, url string) (OpenResult, er
 		return OpenResult{}, err
 	}
 
+	m.trackIncognito(string(ctxID))
+
 	tabID := string(id)
 	m.refs.SetActive(tabID)
 	ready := m.WaitFor(ctx, "load", 10*time.Second) == nil
@@ -64,7 +66,53 @@ func (m *Manager) CloseContext(ctx context.Context, contextID string) error {
 	if contextID == "" {
 		return errors.New("context_id is required")
 	}
-	return m.runBrowser(ctx, func(ctx context.Context) error {
+	err := m.runBrowser(ctx, func(ctx context.Context) error {
 		return target.DisposeBrowserContext(cdp.BrowserContextID(contextID)).Do(ctx)
 	})
+	if err == nil {
+		m.untrackIncognito(contextID)
+	}
+	return err
+}
+
+// trackIncognito / untrackIncognito / takeIncognitoContexts are the bookkeeping
+// for incognito BrowserContexts so Close can dispose any the caller forgot.
+// Kept as tiny helpers (no browser I/O) so the leak-cleanup logic is unit
+// testable independent of a live Chrome.
+func (m *Manager) trackIncognito(contextID string) {
+	m.incognitoMu.Lock()
+	m.incognitoContexts[contextID] = true
+	m.incognitoMu.Unlock()
+}
+
+func (m *Manager) untrackIncognito(contextID string) {
+	m.incognitoMu.Lock()
+	delete(m.incognitoContexts, contextID)
+	m.incognitoMu.Unlock()
+}
+
+func (m *Manager) takeIncognitoContexts() []string {
+	m.incognitoMu.Lock()
+	ids := make([]string, 0, len(m.incognitoContexts))
+	for id := range m.incognitoContexts {
+		ids = append(ids, id)
+	}
+	m.incognitoContexts = map[string]bool{}
+	m.incognitoMu.Unlock()
+	return ids
+}
+
+// disposeIncognitoContexts disposes every incognito BrowserContext still tracked
+// (i.e. opened via OpenIncognito but never CloseContext'd), best-effort, while
+// the browser is still alive. Called from Manager.Close so a forgetful caller
+// doesn't leak isolated contexts. Each disposal is bounded by its own timeout so
+// a wedged context cannot stall shutdown.
+func (m *Manager) disposeIncognitoContexts() {
+	for _, id := range m.takeIncognitoContexts() {
+		disposeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = m.runBrowser(disposeCtx, func(ctx context.Context) error {
+			return target.DisposeBrowserContext(cdp.BrowserContextID(id)).Do(ctx)
+		})
+		cancel()
+	}
 }

@@ -128,6 +128,12 @@ type Manager struct {
 	// restore UA/platform overrides that CDP itself has no clear command for.
 	emulationMu     sync.Mutex
 	emulationStates map[string]deviceEmulationState
+
+	// incognitoContexts tracks BrowserContextIDs created by OpenIncognito so
+	// Close can dispose any the caller never closed with CloseContext, instead of
+	// leaking the isolated context (and its tabs/storage) until Chrome exits.
+	incognitoMu       sync.Mutex
+	incognitoContexts map[string]bool
 }
 
 type tabContext struct {
@@ -172,6 +178,7 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 			Port:             cfg.Port,
 			Extensions:       cfg.Extensions,
 			Args:             cfg.ChromeArgs,
+			AllowRealProfile: cfg.AllowRealProfile,
 		})
 		if err != nil {
 			return nil, err
@@ -182,24 +189,25 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, endpoint)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 	m := &Manager{
-		launcher:         launcher,
-		allocCancel:      allocCancel,
-		browserCtx:       browserCtx,
-		browserCancel:    browserCancel,
-		tabContexts:      map[string]tabContext{},
-		refs:             store.New(),
-		timeout:          timeout,
-		lastState:        map[string]*SemanticState{},
-		versions:         map[string]int64{},
-		trace:            make([]TraceEntry, 0, 256),
-		userDataDir:      cfg.UserDataDir,
-		downloadIndex:    map[string]int{},
-		cancels:          newCancelRegistry(),
-		netCaptureTabs:   map[string]bool{},
-		shadowPierceTabs: map[string]bool{},
-		webmcpEnabled:    cfg.WebMCP,
-		webmcpTabs:       map[string]bool{},
-		emulationStates:  map[string]deviceEmulationState{},
+		launcher:          launcher,
+		allocCancel:       allocCancel,
+		browserCtx:        browserCtx,
+		browserCancel:     browserCancel,
+		tabContexts:       map[string]tabContext{},
+		refs:              store.New(),
+		timeout:           timeout,
+		lastState:         map[string]*SemanticState{},
+		versions:          map[string]int64{},
+		trace:             make([]TraceEntry, 0, 256),
+		userDataDir:       cfg.UserDataDir,
+		downloadIndex:     map[string]int{},
+		cancels:           newCancelRegistry(),
+		netCaptureTabs:    map[string]bool{},
+		shadowPierceTabs:  map[string]bool{},
+		webmcpEnabled:     cfg.WebMCP,
+		webmcpTabs:        map[string]bool{},
+		emulationStates:   map[string]deviceEmulationState{},
+		incognitoContexts: map[string]bool{},
 	}
 
 	if err := m.connect(); err != nil {
@@ -213,6 +221,10 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 }
 
 func (m *Manager) Close() error {
+	// Dispose any incognito contexts the caller never closed, while the browser
+	// is still alive, so a long-lived session that opened throwaway contexts and
+	// forgot to close them doesn't leak them.
+	m.disposeIncognitoContexts()
 	m.mu.Lock()
 	for id, tab := range m.tabContexts {
 		tab.cancel()
@@ -343,8 +355,15 @@ func (m *Manager) CloseTab(ctx context.Context, id string) error {
 	m.mu.Unlock()
 	m.refs.DropTab(id)
 	m.invalidateState(id)
-	// Symmetric with the other per-tab caches above: drop the network-capture
-	// arm marker so the map can't grow unbounded across a long open/close churn.
+	m.forgetTabCaches(id)
+	return nil
+}
+
+// forgetTabCaches drops every per-tab cache / arm-marker brw keeps for id, so the
+// maps cannot grow unbounded across a long open/close churn. Keep this in sync
+// when adding new per-tab state — a map left out here leaks one entry on every
+// closed tab (the emulationStates entry was exactly that bug).
+func (m *Manager) forgetTabCaches(id string) {
 	m.netCaptureMu.Lock()
 	delete(m.netCaptureTabs, id)
 	m.netCaptureMu.Unlock()
@@ -354,7 +373,9 @@ func (m *Manager) CloseTab(ctx context.Context, id string) error {
 	m.webmcpMu.Lock()
 	delete(m.webmcpTabs, id)
 	m.webmcpMu.Unlock()
-	return nil
+	m.emulationMu.Lock()
+	delete(m.emulationStates, id)
+	m.emulationMu.Unlock()
 }
 
 // ensureWebMCP arms the opt-in WebMCP runtime shim to install at document-start
