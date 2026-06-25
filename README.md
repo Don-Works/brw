@@ -269,6 +269,39 @@ cookie extraction.
 Browser-control HTTP binds to loopback by default. For remote use, prefer stdio
 MCP over SSH.
 
+### Loopback is treated as a trust boundary
+
+`brw` drives a real signed-in Chrome and is operated by a possibly
+prompt-injected agent, so the loopback surfaces are hardened against same-machine
+browser attackers rather than assumed safe:
+
+- **HTTP control plane (`127.0.0.1:17310`)** rejects cross-origin browser
+  requests (CSRF) and, on a loopback bind, enforces a `Host` allowlist
+  (DNS-rebinding). A non-loopback bind (e.g. a Tailscale/LAN address for the
+  documented "behind SSH/Tailscale with caller auth" path) skips the `Host`
+  allowlist — its legitimate `Host` may be a MagicDNS name — but still rejects
+  cross-origin browser requests. CLI/MCP clients send no browser `Origin`, so
+  they are unaffected.
+- **Extension bridge (`127.0.0.1:17311`)** authenticates the extension with a
+  per-launch token: the daemon mints it each start, persists it `0600` at
+  `~/.brw/bridge-token`, and serves it only over loopback to the extension (a web
+  page's cross-origin fetch gets an opaque response). The `0.2.0+` extension
+  presents it in its first frame. **This is non-breaking:** a *wrong* token is
+  always rejected, but a not-yet-reloaded older extension that sends *no* token
+  still connects (logged once), so upgrading the daemon never bricks an installed
+  extension. Set `BRW_BRIDGE_REQUIRE_TOKEN=1` to make the token mandatory once
+  every extension is on `0.2.0`. Empty-Origin (non-browser) websocket clients are
+  rejected regardless.
+- **Cookie/passkey promise is enforced, not just asserted.** The extension
+  refuses every cookie CDP method and the whole `Storage` domain, so even a rogue
+  server that answered the extension's socket cannot exfiltrate cookies (including
+  HttpOnly ones that page JS cannot reach) through `brw`.
+
+The extension-side protections (token, cookie denylist, dialog handling) take
+effect whenever the `0.2.0` extension next loads — reload it in
+`chrome://extensions`, or it loads automatically the next time Chromium is
+relaunched with `--load-extension`. Nothing breaks in the meantime.
+
 ## Part of Don Works
 
 `brw` is part of [Don Works](https://donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss), Revitt's open-source arm.

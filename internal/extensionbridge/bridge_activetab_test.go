@@ -341,7 +341,7 @@ func TestServiceWorkerActiveTabResolverIsAuthoritative(t *testing.T) {
 	// resolveForegroundTabId — that ordering was the divergence root cause. The
 	// focused-window loop must appear before the state.activeTabId fallback.
 	resolver := sliceBetween(src, "async function resolveForegroundTabId()", "async function activeTabId()")
-	focusIdx := strings.Index(resolver, "if (!win.focused) continue;")
+	focusIdx := strings.Index(resolver, "win.focused")
 	cacheIdx := strings.Index(resolver, "state.activeTabId")
 	if focusIdx < 0 || cacheIdx < 0 || focusIdx > cacheIdx {
 		t.Fatal("resolveForegroundTabId must scan the focused window BEFORE falling back to the cached tab id")

@@ -12,14 +12,37 @@ key (which produces a different id).
 
 ## What It Does
 
-- Connects to `ws://127.0.0.1:17311/extension`.
+- Connects to `ws://127.0.0.1:17311/extension` and authenticates with the
+  daemon's per-launch handshake token (read over loopback `/status`, which a web
+  page cannot read cross-origin) as the first frame (extension `0.2.0`+). The
+  daemon rejects a wrong token but, by default, still accepts an older extension
+  that sends none, so upgrades are non-breaking.
 - Uses `chrome.debugger` as a CDP transport for visible tabs.
 - Sends tab summaries and CDP results to `brwd --bridge`.
 - Raises desktop notifications (via `chrome.notifications`, requires the
   `notifications` permission) when the daemon sends a `notify` command so the
   user is pulled back at human-handoff points (MFA/CAPTCHA/purchase
   confirmation), on completion, or on error — even when the tab is backgrounded.
-- Never reads or exports Chrome cookies, passwords, passkeys, or profile files.
+- **Never reads or exports Chrome cookies, passwords, passkeys, or profile
+  files — enforced, not just promised.** The extension refuses every cookie CDP
+  method and the entire `Storage` CDP domain, so the privacy claim holds even if
+  a rogue local server answers its socket.
+- **Does not auto-confirm the user's own dialogs.** JS dialogs are auto-accepted
+  only while `brw` is actively driving the tab; otherwise `confirm`, `prompt`, and
+  `beforeunload` get the non-destructive answer (Cancel/Stay), so a background or
+  user-triggered "Delete?"/"unsaved changes" prompt is never silently OK'd.
+- **Reconciles leaked debugger sessions** on service-worker (re)start, releasing
+  any `brw` attachment Chrome still holds so no "being debugged" banner sticks.
+
+### Upgrading to 0.2.0
+
+`0.2.0` adds the authenticated handshake plus the enforced cookie/Storage
+denylist and safer dialog handling. The daemon stays compatible with an older
+extension (it accepts a tokenless hello), so nothing breaks if you don't reload
+immediately — but **reload the unpacked extension** in `chrome://extensions` (or
+relaunch Chromium with `--load-extension`) to actually pick up the new
+protections. To then *require* the token, run the daemon with
+`BRW_BRIDGE_REQUIRE_TOKEN=1`.
 
 ## Install Modes
 

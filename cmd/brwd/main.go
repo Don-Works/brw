@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -50,6 +52,7 @@ func main() {
 	var bridgeAddr string
 	var bridgeRaiseWindow bool
 	var bridgeTabGroup string
+	var bridgeMaxInflight int
 	var timeout time.Duration
 	var profileName string
 	var workspaceName string
@@ -71,6 +74,7 @@ func main() {
 	flag.StringVar(&bridgeAddr, "bridge-addr", envDefault("BRW_BRIDGE_ADDR", "127.0.0.1:17311"), "extension bridge WebSocket listen address")
 	flag.BoolVar(&bridgeRaiseWindow, "bridge-raise-window", envBool("BRW_BRIDGE_RAISE_WINDOW"), "bridge: raise the Chrome window to the OS foreground on focus_tab. Off by default so automation never steals your focus while you work elsewhere.")
 	flag.StringVar(&bridgeTabGroup, "bridge-tab-group", envDefault("BRW_BRIDGE_TAB_GROUP", "brw"), "bridge: tab-group title brw_open uses when no group is given, so the agent's tabs stay corralled in one labelled group. Set empty to disable default grouping.")
+	flag.IntVar(&bridgeMaxInflight, "bridge-max-inflight", envInt("BRW_BRIDGE_MAX_INFLIGHT", 6), "bridge: max concurrent operations on the shared extension socket. Excess calls queue and, past the deadline, fail fast with a busy signal. Caps load on the single Chrome extension worker so many parallel agents can't wedge it. 0 disables the cap.")
 	flag.StringVar(&upstreamHTTP, "upstream-http", os.Getenv("BRW_UPSTREAM_HTTP"), "proxy MCP/HTTP control to an existing local brw HTTP daemon")
 	flag.StringVar(&cfg.RemoteURL, "remote", os.Getenv("BRW_REMOTE_URL"), "attach to existing CDP endpoint, for example http://127.0.0.1:9222")
 	flag.StringVar(&profileName, "profile", os.Getenv("BRW_PROFILE"), "workspace-allowed browser profile name")
@@ -208,6 +212,31 @@ func main() {
 		// theft) and corral the agent's tabs into one labelled group.
 		bridge.SetRaiseWindowOnFocus(bridgeRaiseWindow)
 		bridge.SetDefaultGroup(bridgeTabGroup)
+		// Cap concurrent ops on the single shared extension socket so a fan-out of
+		// parallel agents queues cleanly instead of flooding the MV3 worker until it
+		// stops responding (the high-throughput "bridge becomes unresponsive" mode).
+		bridge.SetMaxInflight(bridgeMaxInflight)
+		// Provision a per-launch handshake secret so the real extension can prove
+		// itself: the daemon serves it over the loopback /status endpoint (a web
+		// page cannot read it cross-origin) and the 0.2.0+ extension presents it.
+		// This is NON-BREAKING by default — an older extension that sends no token
+		// still connects (logged once), so upgrading the daemon never bricks an
+		// already-installed extension; a WRONG token is always rejected. Once every
+		// extension is reloaded to 0.2.0, set BRW_BRIDGE_REQUIRE_TOKEN=1 to make the
+		// token mandatory.
+		token, err := extensionbridge.NewAuthToken()
+		if err != nil {
+			log.Fatalf("generate extension bridge auth token: %v", err)
+		}
+		bridge.SetAuthToken(token)
+		bridge.SetRequireToken(envBool("BRW_BRIDGE_REQUIRE_TOKEN"))
+		if path := bridgeTokenPath(); path != "" {
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				log.Printf("note: could not create bridge token dir %s: %v", filepath.Dir(path), err)
+			} else if err := os.WriteFile(path, []byte(token), 0o600); err != nil {
+				log.Printf("note: could not persist bridge token to %s: %v", path, err)
+			}
+		}
 		controller = bridge
 		defer gracefulShutdown("extension bridge", bridge.Shutdown)
 		go func() {
@@ -309,6 +338,32 @@ func flagWasSet(name string) bool {
 func envDefault(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value
+	}
+	return fallback
+}
+
+// bridgeTokenPath returns the 0600 file where the per-launch extension-bridge
+// handshake token is persisted (for operator inspection / future tooling), under
+// the brw state dir ~/.brw/. BRW_BRIDGE_TOKEN_FILE overrides it; an empty result
+// (no home dir resolvable) means "in-memory only".
+func bridgeTokenPath() string {
+	if override := strings.TrimSpace(os.Getenv("BRW_BRIDGE_TOKEN_FILE")); override != "" {
+		return override
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".brw", "bridge-token")
+}
+
+// envInt returns the integer value of an environment variable, or fallback when
+// it is unset, empty, or not a valid integer.
+func envInt(name string, fallback int) int {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"golang.org/x/net/idna"
 )
 
 // Policy holds optional allow/deny domain lists. An empty policy permits
@@ -164,14 +166,36 @@ func hostOf(rawURL string) string {
 	return strings.ToLower(u.Hostname())
 }
 
-// hostMatches reports whether host equals domain or is a subdomain of it.
+// hostMatches reports whether host equals domain or is a subdomain of it. Both
+// sides are normalised to ASCII/punycode first so a Unicode host and its xn--
+// equivalent compare equal: Chrome treats "münchen.de" and "xn--mnchen-3ya.de"
+// as the same site, so without this a blocklist entry in one form is bypassed by
+// the other. Allowlist mode is unaffected by the un-normalised path (it
+// over-blocks, which is safe); this closes the blocklist-evasion gap.
 func hostMatches(host, domain string) bool {
-	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
-	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	host = asciiHost(host)
+	domain = asciiHost(domain)
 	if host == "" || domain == "" {
 		return false
 	}
 	return host == domain || strings.HasSuffix(host, "."+domain)
+}
+
+// asciiHost lowercases, trims, and converts a host (or policy domain entry) to
+// its ASCII/punycode form via IDNA UTS-46 lookup mapping, so Unicode and
+// punycode spellings of the same name normalise to one comparable value. On any
+// error — a host Chrome would accept but IDNA rejects (e.g. an underscore label
+// or an over-long label) — it falls back to the lowercased input, so matching is
+// never weaker than the plain string compare it replaces.
+func asciiHost(h string) string {
+	h = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
+	if h == "" {
+		return ""
+	}
+	if ascii, err := idna.Lookup.ToASCII(h); err == nil {
+		return ascii
+	}
+	return h
 }
 
 func splitDomains(csv string) []string {

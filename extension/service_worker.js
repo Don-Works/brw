@@ -2,13 +2,28 @@ const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
 const BRIDGE_STATUS_URL = "http://127.0.0.1:17311/status";
 const BRIDGE_CONFIG_KEY = "brwBridgeConfig";
 const BRIDGE_STATUS_KEY = "brwBridge";
-const PROTOCOL_VERSION = "0.1.0";
+const PROTOCOL_VERSION = "0.2.0";
 const KEEPALIVE_INTERVAL_MS = 5 * 1000;
 const DAEMON_STATUS_INTERVAL_MS = 10 * 1000;
 const MAX_RECONNECT_DELAY_MS = 10 * 1000;
 // Detach a tab's debugger after this long without a CDP command, so brw doesn't
 // hold debugger sessions on idle tabs of the user's real Chrome.
 const IDLE_DETACH_MS = 120 * 1000;
+// How long after a brw-initiated CDP command a JS dialog on that tab is treated
+// as brw's own (auto-accepted to let the agent's flow proceed). Outside this
+// window a dialog is the user's / a background script's, and is answered with the
+// NON-destructive choice instead of blindly accepting.
+const BRW_ACTING_WINDOW_MS = 8 * 1000;
+// CDP methods brw refuses to forward, enforcing the README's promise that it
+// "never reads cookies/passwords/passkeys": all cookie read/write methods (which
+// can reach HttpOnly cookies that page JS cannot) and the entire Storage domain.
+// brw itself uses none of these, so denying them never breaks a feature — it
+// turns the privacy claim from a convention into an enforced boundary that holds
+// even against a rogue server that answered the extension's outbound socket.
+function isDeniedCdpMethod(method) {
+  const m = String(method || "");
+  return /cookie/i.test(m) || m.startsWith("Storage.");
+}
 let offscreenSetupPromise = null;
 let packagedDefaultConfigPromise = null;
 
@@ -36,12 +51,28 @@ const state = {
   // without the native OS dialog ever opening (which would freeze the CDP
   // session). backendNodeId is frame-agnostic, so this also reaches inputs in
   // cross-origin iframes.
-  fileChooserEvents: new Map()
+  fileChooserEvents: new Map(),
+  // Per-tab expiry timestamp marking that brw is actively driving the tab, so a
+  // JS dialog opening during the window is treated as brw's own (see
+  // BRW_ACTING_WINDOW_MS). Set on every brw-initiated CDP command.
+  actingUntil: new Map()
 };
+
+// markActing records that brw is driving tabId right now, so a dialog it triggers
+// (e.g. a beforeunload while navigating, or a confirm it clicked) is auto-handled.
+function markActing(tabId) {
+  if (typeof tabId === "number") state.actingUntil.set(tabId, Date.now() + BRW_ACTING_WINDOW_MS);
+}
+
+// isActing reports whether brw is within its acting window for tabId.
+function isActing(tabId) {
+  return Date.now() < (state.actingUntil.get(tabId) || 0);
+}
 
 chrome.runtime.onInstalled.addListener(() => {
   ensureConnectAlarm();
   ensureOffscreen();
+  reconcileDebuggerAttachments().catch(() => {});
   markBridgeStatus("starting").catch(() => {});
   connect();
 });
@@ -49,6 +80,7 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.runtime.onStartup.addListener(() => {
   ensureConnectAlarm();
   ensureOffscreen();
+  reconcileDebuggerAttachments().catch(() => {});
   markBridgeStatus("starting").catch(() => {});
   connect();
 });
@@ -119,6 +151,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   state.snapshotCache.delete(tabId);
   state.observerInjected.delete(tabId);
   state.fileChooserEvents.delete(tabId);
+  state.actingUntil.delete(tabId);
   if (state.activeTabId === tabId) state.activeTabId = null;
 });
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
@@ -136,6 +169,7 @@ chrome.debugger.onDetach.addListener((source) => {
     state.attachedTabs.delete(source.tabId);
     state.attachUsedAt.delete(source.tabId);
     state.fileChooserEvents.delete(source.tabId);
+    state.actingUntil.delete(source.tabId);
   }
 });
 // Capture CDP events the daemon needs to observe out-of-band. The only one today
@@ -145,13 +179,22 @@ chrome.debugger.onDetach.addListener((source) => {
 // We stash the latest per tab so the daemon can poll for it via
 // get_file_chooser_event and then set the file with DOM.setFileInputFiles.
 chrome.debugger.onEvent.addListener((source, method, params) => {
-  // Auto-dismiss JS dialogs (alert/confirm/prompt/beforeunload) so they
-  // don't freeze the CDP session and cause the bridge to time out.
+  // A JS dialog (alert/confirm/prompt/beforeunload) opening while Page is enabled
+  // is intercepted by CDP and MUST be answered or the renderer hangs. We answer,
+  // but the choice is no longer a blanket accept:
+  //   - If brw is actively driving this tab (isActing), the dialog is the agent's
+  //     own — accept it so its flow proceeds (e.g. confirm it just clicked, or a
+  //     beforeunload while brw navigates).
+  //   - Otherwise the dialog is the USER's (or a background script's): answer with
+  //     the NON-destructive choice — Cancel/Stay for confirm/prompt/beforeunload
+  //     (never auto-OK "Delete account?", never silently discard unsaved changes),
+  //     and OK only for alert, whose sole button is OK.
   if (method === "Page.javascriptDialogOpening" && typeof source.tabId === "number") {
+    const accept = isActing(source.tabId) || (params?.type || "") === "alert";
     chrome.debugger.sendCommand(
       { tabId: source.tabId },
       "Page.handleJavaScriptDialog",
-      { accept: true }
+      { accept }
     ).catch(() => {});
     return;
   }
@@ -192,6 +235,7 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
 
 ensureConnectAlarm();
 ensureOffscreen();
+reconcileDebuggerAttachments().catch(() => {});
 markBridgeStatus("starting").catch(() => {});
 connect();
 
@@ -230,8 +274,13 @@ async function connectOnce() {
     state.reconnectAttempt = 0;
     state.lastError = "";
     await markBridgeStatus("connected");
-    startKeepAlive();
     const platform = await chrome.runtime.getPlatformInfo().catch(() => ({}));
+    // Read the per-launch handshake token from the daemon's loopback /status
+    // (our host_permissions let us read the body; a web page's cross-origin fetch
+    // gets an opaque response) and present it as the FIRST frame. The daemon
+    // refuses any connection whose hello lacks the token, so a malicious page or a
+    // rogue local client that opened this socket cannot drive the bridge.
+    const token = await fetchBridgeToken(config);
     send({
       type: "hello",
       hello: {
@@ -241,9 +290,13 @@ async function connectOnce() {
         platform: platform.os || "",
         workspace: config.workspace || "",
         profile: config.profile || "",
-        label: config.label || ""
+        label: config.label || "",
+        token
       }
     });
+    // Start keepalive only AFTER the hello so hello is guaranteed to be the
+    // bridge's first frame — the authenticated handshake requires it.
+    startKeepAlive();
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
     if (tabs[0]?.id) await publishActiveTab(tabs[0].id);
     probeDaemonStatus().catch(() => {});
@@ -572,9 +625,20 @@ async function handle(message) {
       return;
     }
     if (message.type === "cdp") {
+      const method = message.params?.method;
+      // Enforce the cookie/storage denylist regardless of who sent this command —
+      // a rogue server that answered our outbound socket cannot exfiltrate cookies
+      // through brw, because brw simply will not run those methods.
+      if (isDeniedCdpMethod(method)) {
+        send({ id: message.id, ok: false, error: `cdp method ${method} is blocked by brw policy: cookie and storage access are not permitted` });
+        return;
+      }
       const tabId = Number(message.params?.tabId || (await activeTabId()));
+      // brw is now actively driving this tab: a dialog it triggers in the next few
+      // seconds is its own and may be auto-accepted (see the dialog handler).
+      markActing(tabId);
       await attach(tabId);
-      const result = await sendDebuggerCommand(tabId, message.params?.method, message.params?.params || {});
+      const result = await sendDebuggerCommand(tabId, method, message.params?.params || {});
       send({ id: message.id, ok: true, result: result || {} });
       return;
     }
@@ -656,11 +720,49 @@ async function attach(tabId) {
     await chrome.debugger.attach({ tabId }, "1.3");
   } catch (error) {
     if (!String(error?.message || error).includes("Another debugger is already attached")) throw error;
+    // A debugger is already attached. It is EITHER ours (a previous attach this
+    // service worker lost track of — e.g. across an SW restart) OR the user's
+    // DevTools. Probe with a trivial command: an extension can only drive a
+    // session it owns, so if this succeeds we hold the session and adopt it; if it
+    // fails, DevTools owns the tab and brw genuinely cannot control it. Previously
+    // we marked the tab attached unconditionally, so a DevTools conflict left brw
+    // believing it was attached while every subsequent command failed silently.
+    try {
+      await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: "0", returnByValue: true });
+    } catch (_) {
+      throw new Error(`cannot control tab ${tabId}: another debugger (likely DevTools) is already attached; close DevTools on that tab and retry`);
+    }
   }
   state.attachedTabs.add(tabId);
   state.attachUsedAt.set(tabId, Date.now());
   // Enable Page events so we receive javascriptDialogOpening for auto-dismiss.
   chrome.debugger.sendCommand({ tabId }, "Page.enable", {}).catch(() => {});
+}
+
+// reconcileDebuggerAttachments releases brw debugger sessions that leaked across
+// a service-worker restart or abrupt kill. After such an event state.attachedTabs
+// is empty, but Chrome may still hold attachments this extension made — which
+// show as a stuck "being debugged" banner and are never released by detachAll /
+// sweepIdleDebuggers (they only know about tracked tabs). We enumerate targets
+// and, for any attached one we are NOT currently tracking, attempt a detach: an
+// extension can only detach its OWN session, so this releases brw's leaks while a
+// DevTools/other-client attachment fails harmlessly and is left untouched.
+async function reconcileDebuggerAttachments() {
+  let targets;
+  try {
+    targets = await chrome.debugger.getTargets();
+  } catch (_) {
+    return;
+  }
+  for (const target of targets || []) {
+    if (!target?.attached || typeof target.tabId !== "number") continue;
+    if (state.attachedTabs.has(target.tabId)) continue;
+    try {
+      await chrome.debugger.detach({ tabId: target.tabId });
+    } catch (_) {
+      // Not our session (DevTools / another client) — detach refused; leave it.
+    }
+  }
 }
 
 // detach releases the debugger brw holds on one tab and forgets its per-tab
@@ -1062,12 +1164,17 @@ function ensureObserver(tabId) {
       };
     });
   })()`;
-  chrome.debugger.attach({ tabId }, "1.3").catch(() => {}).then(() => {
-    chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+  // Attach via the TRACKED attach() so this debugger session is recorded in
+  // state.attachedTabs and is therefore released by detachAll / sweepIdleDebuggers
+  // / detach. The previous raw chrome.debugger.attach() here was invisible to that
+  // bookkeeping, so the observer's attachment leaked and left a stuck "being
+  // debugged" banner. On failure, drop the flag so a later snapshot can retry.
+  attach(tabId)
+    .then(() => chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
       expression: observerScript,
       returnByValue: true
-    }).catch(() => {});
-  });
+    }))
+    .catch(() => { state.observerInjected.delete(tabId); });
 }
 
 // createNotification turns a bridge "notify" command into a basic desktop
@@ -1126,6 +1233,24 @@ function send(payload) {
       scheduleReconnect(state.lastError);
     }
     return false;
+  }
+}
+
+// fetchBridgeToken reads the per-launch handshake token from the daemon's
+// loopback /status endpoint. Returns "" when the daemon serves no token (an
+// older/no-auth daemon), so the extension stays compatible: such a daemon also
+// skips verification. The extension can read the response body because the
+// loopback origin is in host_permissions; a web page cannot.
+async function fetchBridgeToken(config) {
+  try {
+    // Bounded so a hung /status can never block hello indefinitely; the bridge's
+    // own handshake timeout would otherwise drop us and force a reconnect loop.
+    const response = await fetch(config.statusUrl, { cache: "no-store", signal: AbortSignal.timeout(2000) });
+    if (!response.ok) return "";
+    const status = await response.json().catch(() => ({}));
+    return typeof status?.token === "string" ? status.token : "";
+  } catch (_) {
+    return "";
   }
 }
 

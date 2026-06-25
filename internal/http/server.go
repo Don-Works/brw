@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -20,6 +21,14 @@ type Server struct {
 	identity  brwidentity.Identity
 	navPolicy *navpolicy.Policy
 	server    *http.Server
+
+	// allowedHosts is the set of Host header values accepted when host
+	// enforcement is on (loopback names plus the configured bind host).
+	// enforceHost is true only for a loopback bind, where DNS-rebinding is the
+	// threat; a non-loopback bind (Tailscale/LAN/wildcard) is the operator
+	// deliberately exposing the daemon, so the Host allowlist is not gated there.
+	allowedHosts map[string]bool
+	enforceHost  bool
 }
 
 type snapshotRequest struct {
@@ -34,15 +43,105 @@ func New(addr string, manager browser.Controller) *Server {
 func NewWithIdentity(addr string, manager browser.Controller, identity brwidentity.Identity) *Server {
 	mux := http.NewServeMux()
 	s := &Server{manager: manager, identity: identity, server: &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr: addr,
 		// Bound slow-header clients (slowloris) without a blanket WriteTimeout,
 		// which would truncate long-poll endpoints like wait_for.
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}}
+	s.allowedHosts, s.enforceHost = computeAllowedHosts(addr)
 	s.routes(mux)
+	// Wrap the router so every request first passes the same-machine browser
+	// guard (DNS-rebinding + cross-origin CSRF). A loopback CLI/MCP client sends
+	// a loopback Host and no browser Origin, so it is untouched.
+	s.server.Handler = s.hostGuard(mux)
 	return s
+}
+
+// computeAllowedHosts derives the Host allowlist and whether to enforce it from
+// the daemon's bind address. The Host check defends against DNS-rebinding — a
+// web page whose domain has been re-resolved to 127.0.0.1 carries its own Host
+// header — which is only a threat for a LOOPBACK bind. A non-loopback bind (a
+// specific Tailscale/LAN IP, a hostname, or a wildcard like ":17310") is the
+// operator intentionally exposing the daemon "behind SSH/Tailscale with caller
+// auth"; its legitimate Host may be a MagicDNS name or address we can't predict,
+// so Host is not gated there. The cross-origin/CSRF guard still applies in all
+// cases.
+func computeAllowedHosts(addr string) (map[string]bool, bool) {
+	allowed := map[string]bool{
+		"127.0.0.1": true,
+		"::1":       true,
+		"localhost": true,
+	}
+	host := bindHost(addr)
+	enforce := isLoopbackHost(host)
+	if host != "" {
+		allowed[host] = true
+	}
+	return allowed, enforce
+}
+
+// bindHost extracts the lowercased host from a listen address, tolerating a
+// bare host (no port) and stripping IPv6 brackets.
+func bindHost(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	return strings.ToLower(strings.TrimSpace(strings.Trim(host, "[]")))
+}
+
+// isLoopbackHost reports whether host is a loopback name/IP. An empty host (a
+// wildcard bind such as ":17310" or "0.0.0.0:17310") is NOT loopback — it
+// listens on every interface — so Host enforcement is off for it.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// hostGuard rejects the two same-machine browser attacks the loopback control
+// plane is otherwise open to: DNS-rebinding (caught by the Host allowlist) and
+// cross-origin CSRF (caught by the Origin check). The daemon's POST endpoints
+// are CORS "simple" requests, so no preflight fires and a visited web page could
+// otherwise drive POST /api/page/evaluate (arbitrary JS in the signed-in tab) by
+// side effect even though it cannot read the response. CLI/MCP clients send a
+// loopback Host and no browser Origin, so they pass straight through.
+func (s *Server) hostGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.enforceHost && !s.allowedHosts[bindHost(r.Host)] {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error": "request rejected: Host " + r.Host + " is not an allowed brw control-plane host (DNS-rebinding guard); use 127.0.0.1 or localhost",
+			})
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" && !s.allowedOrigin(origin, r.Host) {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error": "request rejected: cross-origin browser request to the brw control plane is not permitted (CSRF guard)",
+			})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// allowedOrigin reports whether a browser Origin may drive the control plane. A
+// loopback origin and a same-host origin (a UI served from the daemon's own
+// host, e.g. over Tailscale) are permitted; a genuinely cross-site origin is
+// rejected as CSRF. An unparseable/opaque ("null") Origin is rejected — a
+// non-browser client sends no Origin header at all and never reaches here.
+func (s *Server) allowedOrigin(origin, reqHost string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	oh := strings.ToLower(strings.Trim(u.Hostname(), "[]"))
+	if isLoopbackHost(oh) {
+		return true
+	}
+	return oh != "" && oh == bindHost(reqHost)
 }
 
 // SetNavigationPolicy installs the same opt-in allow/deny navigation guardrail

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "brw",
   "short_name": "brw",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local, user-installed Chrome control for brw with explicit debugger permission.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAi5Zeu3OfX2EDZlfIshIv59imH6G0Xe0YoOwwSQ/0GfDKR6dOEQFqZSpi02ENXsNuqoxlGik+ZkmyH/digi8hpGmPQS+owSUKtx2SCso961tF/OVTo7CHdXAOlGbQ7eRoKjpPI276A9ZlPiDyY+ZIGKFO66QtY3CivxdX2DzBimKx6k0r7mRjvrSsWB8TrfMDUAifpwfz43ry9x0QsYGuWtx9vTPYmMVW9Lonmk2f6nv7tVmTmNOtDem6hX9PPTZBnsiVs+HO4mc6CmwdBPNblCBQJTw5UtzGl5q7mT93yUmxNEXTGxATwl7MkZjgMdC6Na/IGDceRftlxyNqZ6debwIDAQAB",
   "minimum_chrome_version": "116",

@@ -2,11 +2,14 @@ package extensionbridge
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,6 +34,23 @@ type Bridge struct {
 	identity           brwidentity.Identity
 	server             *http.Server
 
+	// authToken, when non-empty, is a per-launch shared secret the extension may
+	// present in its hello. The daemon serves it over the loopback /status
+	// endpoint (which a browser web page cannot read cross-origin), so the real
+	// 0.2.0+ extension can prove itself. A WRONG token is always rejected; a
+	// MISSING token is accepted unless requireToken is set (graceful: upgrading
+	// the daemon never bricks an already-installed pre-0.2.0 extension). Empty
+	// disables the check entirely (library/test/embedder use); the empty-Origin
+	// rejection still applies in all cases.
+	authToken string
+	// requireToken, when true, rejects a hello that carries no token (strict
+	// mode). Default false keeps the bridge backward-compatible with an extension
+	// that has not yet been reloaded to 0.2.0.
+	requireToken bool
+	// compatWarnOnce logs the "no token, accepting for compatibility" notice at
+	// most once per daemon lifetime instead of on every MV3 reconnect.
+	compatWarnOnce sync.Once
+
 	mu      sync.RWMutex
 	conn    *websocket.Conn
 	hello   hello
@@ -38,6 +58,32 @@ type Bridge struct {
 	pending map[string]chan response
 	writeMu sync.Mutex
 	nextID  atomic.Uint64
+
+	// connReady is closed when a connection goes live and replaced with a fresh
+	// open channel on every (re)connect (guarded by mu). A call that arrives
+	// during the brief MV3 service-worker reconnect gap parks on it and proceeds
+	// the instant the socket comes back, instead of failing with "not connected".
+	connReady chan struct{}
+
+	// sema bounds how many RPCs are on the shared socket at once. The extension
+	// drives a single MV3 worker thread; without a cap, N agents firing together
+	// flood it until responses stop arriving within b.timeout (the "10 heavy calls
+	// wedge the bridge" failure). Excess calls queue (ctx-aware) and, past the
+	// deadline, fail fast with ErrBridgeBusy so a caller backs off. nil == no cap.
+	sema        chan struct{}
+	maxInflight int
+
+	// tabLocks serialize RPCs per target tab so two operations on the SAME tab
+	// never interleave their CDP frames / in-page ref state (a stale-ref source).
+	// Different tabs still run in parallel up to the sema cap. Keyed by tab id.
+	tabLocksMu sync.Mutex
+	tabLocks   map[string]chan struct{}
+
+	// Backpressure / resilience counters, surfaced over /status for operators.
+	inflight  atomic.Int64  // RPCs currently on the wire
+	queued    atomic.Int64  // callers blocked waiting for an in-flight slot
+	busyDrops atomic.Uint64 // calls rejected with ErrBridgeBusy (cap saturated)
+	retries   atomic.Uint64 // idempotent calls retried after a transient drop
 
 	connectedAt      time.Time
 	lastSeenAt       time.Time
@@ -90,6 +136,11 @@ type hello struct {
 	Workspace string `json:"workspace,omitempty"`
 	Profile   string `json:"profile,omitempty"`
 	Label     string `json:"label,omitempty"`
+	// Token is the per-launch handshake secret. It is read off the hello for
+	// verification and then ZEROED before the hello is stored or echoed in
+	// /status, so the secret is never reflected back over an endpoint a web page
+	// could observe.
+	Token string `json:"token,omitempty"`
 }
 
 type request struct {
@@ -124,6 +175,10 @@ func NewWithIdentity(addr string, timeout time.Duration, allowedExtensionID stri
 		pending:            map[string]chan response{},
 		cancels:            newCancelRegistry(),
 		emulationStates:    map[string]bridgeDeviceEmulationState{},
+		connReady:          make(chan struct{}),
+		tabLocks:           map[string]chan struct{}{},
+		maxInflight:        defaultBridgeMaxInflight,
+		sema:               make(chan struct{}, defaultBridgeMaxInflight),
 		// Library default preserves historical behaviour (focus raises the
 		// window); the daemon flips this to false for the seamless experience.
 		raiseWindowOnFocus: true,
@@ -136,6 +191,94 @@ func NewWithIdentity(addr string, timeout time.Duration, allowedExtensionID stri
 	// timeout that would sever the live bridge.
 	b.server = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	return b
+}
+
+// handshakeTimeout bounds how long the bridge waits for the extension's
+// authenticated hello after the WS upgrade before giving up on a connection.
+const handshakeTimeout = 5 * time.Second
+
+// SetAuthToken installs the per-launch handshake secret the extension may
+// present in its hello. Call once before ListenAndServe. An empty token leaves
+// the handshake check disabled (the empty-Origin rejection still applies).
+func (b *Bridge) SetAuthToken(token string) { b.authToken = strings.TrimSpace(token) }
+
+// SetRequireToken switches the bridge to strict mode, where a hello with no
+// token is rejected rather than accepted for backward-compatibility. Call once
+// before ListenAndServe. Default (false) keeps a not-yet-reloaded extension
+// working.
+func (b *Bridge) SetRequireToken(v bool) { b.requireToken = v }
+
+// NewAuthToken returns a fresh 256-bit URL-safe random token suitable for
+// SetAuthToken. The daemon generates one per launch.
+func NewAuthToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// defaultBridgeMaxInflight caps concurrent RPCs on the shared extension socket
+// by default. The extension processes commands on a single MV3 service-worker
+// thread, so beyond a handful of simultaneous heavy operations (a big snapshot,
+// an upload) responses stop returning within the op deadline and every in-flight
+// call times out together. Six keeps a healthy pipeline full without flooding
+// the worker; tune via SetMaxInflight / --bridge-max-inflight.
+const defaultBridgeMaxInflight = 6
+
+// bridgeReconnectGrace bounds how long a call parks waiting for the MV3 service
+// worker to reconnect after finding the socket down, before failing. The worker
+// reconnects in ~1s; a few seconds of grace rides out the gap without hanging a
+// caller indefinitely (the overall op deadline still applies on top).
+const bridgeReconnectGrace = 3 * time.Second
+
+// disconnectDrainReason is the error releaseConn stamps on pending RPCs when the
+// socket drops. It is recognised as a transient transport failure so an
+// idempotent read can be retried after the worker reconnects.
+const disconnectDrainReason = "extension disconnected"
+
+// ErrBridgeBusy signals that the bridge's in-flight cap is saturated and a call
+// could not get a slot before its deadline. It is backpressure, not a fault: a
+// caller should retry with backoff or reduce its concurrency rather than treat
+// it as a hard failure.
+var ErrBridgeBusy = errors.New("extension bridge busy: too many concurrent operations in flight, retry with backoff")
+
+// errBridgeNotConnected is the no-live-socket condition. Transient: the MV3
+// worker reconnects shortly, so an idempotent op may be retried.
+var errBridgeNotConnected = errors.New("extension bridge is not connected; load/click the Chrome extension first")
+
+// errBridgeTransport wraps a transient transport failure (write failed mid-frame,
+// socket dropped while a call was pending). Safe to retry for idempotent ops.
+var errBridgeTransport = errors.New("extension bridge transport error")
+
+// SetMaxInflight sets the cap on concurrent RPCs over the shared socket. n<=0
+// disables the cap (unbounded). Call once before serving; it rebuilds the
+// semaphore and is not safe to race with live calls.
+func (b *Bridge) SetMaxInflight(n int) {
+	if n <= 0 {
+		b.maxInflight = 0
+		b.sema = nil
+		return
+	}
+	b.maxInflight = n
+	b.sema = make(chan struct{}, n)
+}
+
+// idempotentBridgeTypes are read-only bridge RPCs that are safe to re-issue after
+// a transient transport drop. Mutating ops (open_tab, type, navigate, upload,
+// group/ungroup, and the generic "cdp" passthrough, which carries both reads and
+// writes) are deliberately excluded so a retry can never double-apply an action.
+var idempotentBridgeTypes = map[string]bool{
+	"list_tabs":         true,
+	"list_tab_groups":   true,
+	"get_active_tab_id": true,
+	"cached_snapshot":   true,
+}
+
+func isIdempotentType(typ string) bool { return idempotentBridgeTypes[typ] }
+
+func isTransientTransportErr(err error) bool {
+	return errors.Is(err, errBridgeTransport) || errors.Is(err, errBridgeNotConnected)
 }
 
 func (b *Bridge) ListenAndServe() error {
@@ -152,7 +295,7 @@ func (b *Bridge) Shutdown(ctx context.Context) error {
 	return b.server.Shutdown(ctx)
 }
 
-func (b *Bridge) handleStatus(w http.ResponseWriter, _ *http.Request) {
+func (b *Bridge) handleStatus(w http.ResponseWriter, r *http.Request) {
 	b.mu.RLock()
 	connected := b.conn != nil
 	hello := b.hello
@@ -163,6 +306,7 @@ func (b *Bridge) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	disconnectReason := b.disconnectReason
 	pending := len(b.pending)
 	identity := b.identity
+	token := b.authToken
 	b.mu.RUnlock()
 	status := map[string]any{
 		"connected":         connected,
@@ -173,11 +317,61 @@ func (b *Bridge) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"disconnected_at":   formatStatusTime(disconnectedAt),
 		"disconnect_reason": disconnectReason,
 		"pending":           pending,
+		// Backpressure / contention signal so operators can see saturation
+		// (inflight near max_inflight, queued > 0, busy_drops climbing) before it
+		// shows up as timeouts, and tune --bridge-max-inflight accordingly.
+		"max_inflight": b.maxInflight,
+		"inflight":     b.inflight.Load(),
+		"queued":       b.queued.Load(),
+		"busy_drops":   b.busyDrops.Load(),
+		"retries":      b.retries.Load(),
 	}
 	if !identity.Empty() {
 		status["identity"] = identity
 	}
+	// Hand the handshake token to the extension over loopback only, and never
+	// to a browser web origin. The extension's same-origin GET carries no Origin
+	// header and reads the body (it has host_permissions); a malicious page's
+	// cross-origin fetch gets an opaque response AND is omitted here, and a
+	// DNS-rebinding page (no Origin, attacker Host) is excluded by the loopback
+	// Host check.
+	if token != "" && tokenServable(r) {
+		status["token"] = token
+	}
 	writeJSON(w, http.StatusOK, status)
+}
+
+// tokenServable reports whether the handshake token may be included in a /status
+// response: only over a loopback Host and never to an http(s) browser Origin.
+func tokenServable(r *http.Request) bool {
+	if o := r.Header.Get("Origin"); o != "" && !strings.HasPrefix(o, "chrome-extension://") {
+		return false
+	}
+	return isLoopbackHostname(r.Host)
+}
+
+// isLoopbackHostname reports whether the Host header (with optional port) refers
+// to a loopback name/IP.
+func isLoopbackHostname(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSpace(strings.Trim(host, "[]")))
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// extensionOriginOK reports whether origin is a usable chrome-extension:// origin.
+// An empty Origin (a non-browser local client such as curl or a rogue script) or
+// any non-extension scheme is rejected here, closing the coder/websocket gap
+// where an absent Origin is treated as same-origin and allowed.
+func extensionOriginOK(origin string) bool {
+	const prefix = "chrome-extension://"
+	return strings.HasPrefix(origin, prefix) && len(origin) > len(prefix)
 }
 
 // effectiveExtensionID returns the extension id whose chrome-extension:// origin
@@ -195,6 +389,15 @@ func (b *Bridge) effectiveExtensionID() string {
 }
 
 func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
+	// Reject any connection that does not present a chrome-extension Origin. This
+	// closes the coder/websocket gap where an ABSENT Origin (a non-browser local
+	// client — curl, a rogue script) is treated as same-origin and accepted; only
+	// a real extension carries a chrome-extension:// Origin, and a browser web
+	// page cannot forge one.
+	if !extensionOriginOK(r.Header.Get("Origin")) {
+		http.Error(w, "forbidden: a chrome-extension origin is required", http.StatusForbidden)
+		return
+	}
 	allowedID := b.effectiveExtensionID()
 	originPatterns := []string{"chrome-extension://*"}
 	if allowedID != "" {
@@ -213,17 +416,37 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		log.Printf("WARNING: extension bridge accepting connections from any Chrome extension (chrome-extension://*); set a profile policy with bridge_extension_id to restrict")
 	}
 
+	// When a per-launch token is configured, authenticate the hello BEFORE this
+	// connection becomes the live bridge — so an unverified client can neither
+	// displace the real extension nor receive a single command. With no token
+	// (library/embedder/test) the connection goes live immediately, as before.
+	verifiedHello := hello{}
+	if b.authToken != "" {
+		h, herr := b.verifyHandshake(r.Context(), conn)
+		if herr != nil {
+			log.Printf("extension bridge handshake rejected: %v", herr)
+			_ = conn.Close(websocket.StatusPolicyViolation, "handshake failed")
+			return
+		}
+		verifiedHello = h
+	}
+
 	b.mu.Lock()
 	if b.conn != nil {
 		_ = b.conn.Close(websocket.StatusNormalClosure, "replaced by new extension connection")
 	}
 	now := time.Now().UTC()
 	b.conn = conn
-	b.hello = hello{}
+	b.hello = verifiedHello
 	b.connectedAt = now
 	b.lastSeenAt = now
 	b.disconnectedAt = time.Time{}
 	b.disconnectReason = ""
+	// Wake any calls parked in getConn waiting for the socket to come back, and
+	// arm a fresh gate for the next disconnect→reconnect cycle. Always
+	// close-then-replace under mu so the channel is closed exactly once.
+	close(b.connReady)
+	b.connReady = make(chan struct{})
 	b.mu.Unlock()
 
 	log.Printf("extension bridge connected")
@@ -266,7 +489,7 @@ func (b *Bridge) releaseConn(conn *websocket.Conn, reason string) {
 	b.disconnectReason = reason
 	for id, ch := range b.pending {
 		delete(b.pending, id)
-		ch <- response{ID: id, Error: "extension disconnected"}
+		ch <- response{ID: id, Error: disconnectDrainReason}
 		close(ch)
 	}
 }
@@ -317,6 +540,48 @@ func (b *Bridge) keepAlive(ctx context.Context, conn *websocket.Conn, interval t
 	}
 }
 
+// verifyHandshake reads the first frame of a freshly-accepted connection. It
+// must be a hello (any other first frame is refused). A token that is PRESENT
+// must match the configured one — a wrong token is always rejected. A MISSING
+// token is accepted by default (graceful: a pre-0.2.0 extension that hasn't been
+// reloaded still works, so upgrading the daemon never bricks it) unless
+// requireToken is set, which makes the token mandatory. Bounded by
+// handshakeTimeout so a silent client cannot hold the slot open. Only called
+// when b.authToken != "".
+func (b *Bridge) verifyHandshake(ctx context.Context, conn *websocket.Conn) (hello, error) {
+	verifyCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancel()
+	_, data, err := conn.Read(verifyCtx)
+	if err != nil {
+		return hello{}, fmt.Errorf("read hello: %w", err)
+	}
+	var resp response
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return hello{}, fmt.Errorf("invalid hello frame: %w", err)
+	}
+	if resp.Type != "hello" {
+		return hello{}, fmt.Errorf("expected hello as first frame, got %q", resp.Type)
+	}
+	switch {
+	case resp.Hello.Token == "":
+		// No token: a pre-0.2.0 extension (or one that could not read /status).
+		// Accept for compatibility unless strict mode requires it. The empty-Origin
+		// rejection already blocks browser web pages regardless of the token.
+		if b.requireToken {
+			return hello{}, errors.New("missing handshake token (BRW_BRIDGE_REQUIRE_TOKEN is set)")
+		}
+		b.compatWarnOnce.Do(func() {
+			log.Printf("NOTE: extension connected without a handshake token (pre-0.2.0 extension) — accepting for compatibility. Reload the brw extension to enable bridge authentication; set BRW_BRIDGE_REQUIRE_TOKEN=1 to require it.")
+		})
+	case subtle.ConstantTimeCompare([]byte(resp.Hello.Token), []byte(b.authToken)) != 1:
+		// A token was presented but does not match — tampering or a stale token.
+		return hello{}, errors.New("invalid handshake token")
+	}
+	h := resp.Hello
+	h.Token = "" // never store or echo the secret
+	return h, nil
+}
+
 func (b *Bridge) readLoop(ctx context.Context, conn *websocket.Conn) error {
 	for {
 		_, data, err := conn.Read(ctx)
@@ -335,8 +600,10 @@ func (b *Bridge) readLoop(ctx context.Context, conn *websocket.Conn) error {
 		}
 		b.mu.Unlock()
 		if resp.Type == "hello" {
+			h := resp.Hello
+			h.Token = "" // never store or echo the handshake secret
 			b.mu.Lock()
-			b.hello = resp.Hello
+			b.hello = h
 			b.mu.Unlock()
 			continue
 		}
@@ -367,6 +634,22 @@ func formatStatusTime(t time.Time) string {
 	return t.Format(time.RFC3339Nano)
 }
 
+// call is the single chokepoint every bridge RPC funnels through. It layers
+// three protections over the shared single-socket transport so many concurrent
+// agents cannot wedge it:
+//
+//  1. per-tab serialization — ops on the same tab never interleave their frames;
+//  2. backpressure — a bounded number of RPCs are on the wire at once, excess
+//     queues, and a call that cannot get a slot before the deadline fails fast
+//     with ErrBridgeBusy instead of hanging;
+//  3. reconnect resilience — a call arriving during the MV3 reconnect gap waits
+//     for the socket to return, and idempotent reads retry once on a transient
+//     transport drop.
+//
+// Acquisition order is per-tab lock THEN in-flight slot: a same-tab call queues
+// on the (cheap) tab lock before it consumes a scarce slot, so a burst on one
+// tab cannot starve other tabs of slots, and the consistent ordering keeps the
+// two gates deadlock-free.
 func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (json.RawMessage, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -374,11 +657,45 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 	timeoutCtx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 
-	b.mu.RLock()
-	conn := b.conn
-	b.mu.RUnlock()
-	if conn == nil {
-		return nil, errors.New("extension bridge is not connected; load/click the Chrome extension first")
+	unlockTab, err := b.lockTab(timeoutCtx, params)
+	if err != nil {
+		return nil, err
+	}
+	if unlockTab != nil {
+		defer unlockTab()
+	}
+
+	releaseSlot, err := b.acquireSlot(timeoutCtx)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseSlot()
+
+	raw, err := b.dispatch(timeoutCtx, typ, params)
+	if err == nil {
+		return raw, nil
+	}
+	// Retry once for an idempotent read whose only failure was a transient
+	// transport drop: the socket fell over mid-flight but the MV3 worker
+	// reconnects in ~1s, and re-issuing a side-effect-free read is safe. dispatch
+	// itself waits for the reconnect inside getConn. Mutating ops never retry.
+	if isIdempotentType(typ) && isTransientTransportErr(err) {
+		b.retries.Add(1)
+		if raw2, err2 := b.dispatch(timeoutCtx, typ, params); err2 == nil {
+			return raw2, nil
+		}
+	}
+	return raw, err
+}
+
+// dispatch performs one RPC round-trip: resolve a live connection (waiting out a
+// reconnect gap), register the pending response, write the frame, and wait for
+// the reply within ctx. A write failure or a disconnect-drained reply is wrapped
+// as errBridgeTransport so call() can decide whether to retry.
+func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any) (json.RawMessage, error) {
+	conn, err := b.getConn(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	id := strconv.FormatUint(b.nextID.Add(1), 10)
@@ -389,11 +706,14 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 
 	msg, err := json.Marshal(request{ID: id, Type: typ, Params: params})
 	if err != nil {
+		b.mu.Lock()
+		delete(b.pending, id)
+		b.mu.Unlock()
 		return nil, err
 	}
-	// Write under writeMu with an INDEPENDENT short deadline (not timeoutCtx): request
-	// cancellation must never tear down the shared socket mid-write. The response is
-	// still bounded by timeoutCtx in the select below.
+	// Write under writeMu with an INDEPENDENT short deadline (not ctx): request
+	// cancellation must never tear down the shared socket mid-write. The response
+	// is still bounded by ctx in the select below.
 	writeCtx, writeCancel := context.WithTimeout(context.Background(), bridgeWriteTimeout)
 	b.writeMu.Lock()
 	err = conn.Write(writeCtx, websocket.MessageText, msg)
@@ -403,7 +723,9 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 		b.mu.Lock()
 		delete(b.pending, id)
 		b.mu.Unlock()
-		return nil, err
+		// A failed write means the socket is broken (closed / broken pipe); mark
+		// it transient so an idempotent caller can retry after the worker returns.
+		return nil, fmt.Errorf("%w: %v", errBridgeTransport, err)
 	}
 
 	select {
@@ -412,14 +734,176 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 			if resp.Error == "" {
 				resp.Error = "extension bridge request failed"
 			}
+			if resp.Error == disconnectDrainReason {
+				// releaseConn drained this pending call because the socket dropped:
+				// transient, retryable for idempotent ops.
+				return nil, fmt.Errorf("%w: %s", errBridgeTransport, resp.Error)
+			}
 			return nil, fmt.Errorf("extension bridge: %s", resp.Error)
 		}
 		return resp.Result, nil
-	case <-timeoutCtx.Done():
+	case <-ctx.Done():
 		b.mu.Lock()
 		delete(b.pending, id)
 		b.mu.Unlock()
-		return nil, timeoutCtx.Err()
+		return nil, ctx.Err()
+	}
+}
+
+// getConn returns the live socket, parking briefly for the MV3 service worker to
+// reconnect if it is momentarily down rather than failing the call outright.
+// MV3 workers sleep and respawn constantly, so a transient conn==nil is normal,
+// not a real disconnect.
+func (b *Bridge) getConn(ctx context.Context) (*websocket.Conn, error) {
+	b.mu.RLock()
+	conn := b.conn
+	b.mu.RUnlock()
+	if conn != nil {
+		return conn, nil
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, bridgeReconnectGrace)
+	defer cancel()
+	for {
+		b.mu.RLock()
+		conn := b.conn
+		ready := b.connReady
+		b.mu.RUnlock()
+		if conn != nil {
+			return conn, nil
+		}
+		select {
+		case <-ready:
+			// A connection went live; re-read b.conn on the next loop iteration.
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, errBridgeNotConnected
+		}
+	}
+}
+
+// acquireSlot takes one in-flight slot from the backpressure semaphore, blocking
+// (ctx-aware) when the cap is saturated. If the deadline elapses before a slot
+// frees, it returns ErrBridgeBusy so the caller backs off instead of piling onto
+// a flooded socket. The returned release MUST be called. A nil sema disables the
+// cap and returns a no-op release immediately.
+func (b *Bridge) acquireSlot(ctx context.Context) (func(), error) {
+	sema := b.sema
+	if sema == nil {
+		return func() {}, nil
+	}
+	release := func() { <-sema; b.inflight.Add(-1) }
+	select {
+	case sema <- struct{}{}:
+		b.inflight.Add(1)
+		return release, nil
+	default:
+	}
+	// Saturated: queue for a slot, bounded by the op deadline.
+	b.queued.Add(1)
+	defer b.queued.Add(-1)
+	select {
+	case sema <- struct{}{}:
+		b.inflight.Add(1)
+		return release, nil
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			b.busyDrops.Add(1)
+			return nil, ErrBridgeBusy
+		}
+		return nil, ctx.Err()
+	}
+}
+
+// ctxKeySkipTabLock marks a context whose RPC must NOT take the per-tab lock.
+type ctxKeySkipTabLock struct{}
+
+// withoutTabLock marks ctx so call() skips per-tab serialization for this RPC.
+// It is for the abandonable settle fingerprint probe only: a read-only,
+// fire-and-forget background read that the settle watchdog may give up on while
+// it keeps running (cancelling it mid-write would drop the shared socket). If
+// such an orphan held the tab lock it would block the next foreground op on that
+// tab; exempting it keeps settle's "abandon and move on" semantics. The in-flight
+// cap still bounds it.
+func withoutTabLock(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeySkipTabLock{}, true)
+}
+
+func tabLockSkipped(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeySkipTabLock{}).(bool)
+	return v
+}
+
+// lockTab acquires the per-tab serialization lock for the tab named in params
+// (if any), so two RPCs targeting the same tab never overlap. Returns a nil
+// unlock when the op is not tab-scoped (e.g. list_tabs, open_tab) or is marked
+// skip via withoutTabLock. Ctx-aware: a call that cannot get the tab's turn
+// before the deadline returns ErrBridgeBusy.
+func (b *Bridge) lockTab(ctx context.Context, params map[string]any) (func(), error) {
+	if tabLockSkipped(ctx) {
+		return nil, nil
+	}
+	key := tabKeyFromParams(params)
+	if key == "" {
+		return nil, nil
+	}
+	lock := b.tabLock(key)
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, ErrBridgeBusy
+		}
+		return nil, ctx.Err()
+	}
+}
+
+// tabLock returns the (lazily created) 1-buffered channel used as the lock for a
+// tab id. A held lock == a token sitting in the channel.
+func (b *Bridge) tabLock(key string) chan struct{} {
+	b.tabLocksMu.Lock()
+	defer b.tabLocksMu.Unlock()
+	lock := b.tabLocks[key]
+	if lock == nil {
+		lock = make(chan struct{}, 1)
+		b.tabLocks[key] = lock
+	}
+	return lock
+}
+
+// tabKeyFromParams extracts a stable string lock key from a call's tabId param,
+// which is an int on the cdp/file-chooser paths and a string on focus/close.
+// A zero/absent id means "not tab-scoped" (no lock).
+func tabKeyFromParams(params map[string]any) string {
+	if params == nil {
+		return ""
+	}
+	v, ok := params["tabId"]
+	if !ok {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case int:
+		if t == 0 {
+			return ""
+		}
+		return strconv.Itoa(t)
+	case int64:
+		if t == 0 {
+			return ""
+		}
+		return strconv.FormatInt(t, 10)
+	case float64:
+		if t == 0 {
+			return ""
+		}
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
 	}
 }
 
@@ -842,7 +1326,10 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 		resCh := make(chan fpRes, 1)
 		go func() {
 			var fp string
-			err := b.evaluate(ctx, settleFingerprintExpr, "", &fp)
+			// withoutTabLock: this probe can be abandoned by the watchdog below
+			// while it keeps running, so it must not hold the tab's serialization
+			// lock and stall the next foreground action on that tab.
+			err := b.evaluate(withoutTabLock(ctx), settleFingerprintExpr, "", &fp)
 			resCh <- fpRes{fp: fp, ok: err == nil && fp != "" && fp != "err"}
 		}()
 		select {

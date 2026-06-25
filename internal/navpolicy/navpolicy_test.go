@@ -166,3 +166,40 @@ func TestSchemeDefaultsToHTTPS(t *testing.T) {
 		t.Fatalf("a bare host should be treated as a network destination and blocked")
 	}
 }
+
+// TestBlocklistIDNPunycodeEquivalence verifies a blocklist entry written in one
+// spelling (Unicode or punycode) also blocks the other, since Chrome treats them
+// as the same site. Without IDNA normalisation the xn-- form bypasses a Unicode
+// blocklist entry and vice-versa.
+func TestBlocklistIDNPunycodeEquivalence(t *testing.T) {
+	const (
+		unicodeHost = "münchen.de"        // Unicode spelling
+		asciiHost   = "xn--mnchen-3ya.de" // its punycode equivalent
+	)
+	// Blocklist in Unicode must block the punycode candidate (and subdomains).
+	uni := Parse("", unicodeHost)
+	for _, blocked := range []string{
+		"https://" + asciiHost,
+		"https://" + unicodeHost + "/path",
+		"https://shop." + asciiHost,
+	} {
+		if err := uni.Check(blocked); err == nil {
+			t.Errorf("unicode blocklist should block %q", blocked)
+		}
+	}
+	// Blocklist in punycode must block the Unicode candidate (and subdomains).
+	asc := Parse("", asciiHost)
+	for _, blocked := range []string{
+		"https://" + unicodeHost,
+		"https://shop." + unicodeHost,
+		"https://" + asciiHost,
+	} {
+		if err := asc.Check(blocked); err == nil {
+			t.Errorf("punycode blocklist should block %q", blocked)
+		}
+	}
+	// An unrelated IDN host must still pass.
+	if err := uni.Check("https://köln.de"); err != nil {
+		t.Errorf("unrelated IDN host should be allowed, got %v", err)
+	}
+}
