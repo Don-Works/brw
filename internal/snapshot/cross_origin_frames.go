@@ -141,3 +141,55 @@ func MergeCrossOriginFrames(snap *PageSnapshot, frames []CrossOriginFrame) int {
 	}
 	return appended
 }
+
+// PromoteCrossOriginFrames turns each cross-origin iframe the same-origin walker
+// recorded (snap.Metadata["cross_origin_frames"]) into a first-class CLICKABLE
+// element: ref f<i>, role "iframe", with CX/CY at the frame's top-level center.
+//
+// This is the reliable half of include_frames. Reading the INDIVIDUAL controls
+// inside an out-of-process (cross-origin) iframe is not achievable over the
+// extension bridge — chrome.debugger.getTargets() does not enumerate OOPIF
+// sub-targets and chrome.debugger has no sessionId routing to evaluate inside
+// them — so rather than leave the agent blind, we surface the frame itself as a
+// targetable element it can brw_click_xy into (optionally after a brw_screenshot).
+// alreadyRead frame indices (those MergeCrossOriginFrames did extract controls
+// for) are skipped to avoid a redundant box element. Returns the count promoted.
+func PromoteCrossOriginFrames(snap *PageSnapshot, alreadyRead map[int]bool) int {
+	if snap == nil {
+		return 0
+	}
+	boxes := crossOriginBoxesFromMetadata(snap.Metadata)
+	if len(boxes) == 0 {
+		return 0
+	}
+	promoted := 0
+	for i, b := range boxes {
+		if alreadyRead[i] {
+			continue
+		}
+		name := b.origin
+		if name == "" {
+			name = "cross-origin iframe"
+		}
+		snap.Elements = append(snap.Elements, Element{
+			Ref:        fmt.Sprintf("f%d", i),
+			Role:       "iframe",
+			Name:       name,
+			Tag:        "iframe",
+			Visible:    true,
+			InViewport: true,
+			Source:     []string{"frame"},
+			CX:         b.x + b.w/2,
+			CY:         b.y + b.h/2,
+		})
+		promoted++
+	}
+	if snap.Metadata == nil {
+		snap.Metadata = map[string]interface{}{}
+	}
+	snap.Metadata["cross_origin_frames_promoted"] = promoted
+	if promoted > 0 {
+		snap.Metadata["cross_origin_note"] = "Cross-origin iframes are surfaced as clickable elements (source:[\"frame\"], ref f<i>) with cx/cy at the frame center. Their isolated DOM cannot be read as individual control refs over the extension bridge, so interact by brw_click_xy at the frame's cx/cy (brw_screenshot first to see its contents); for uploads inside such a frame use brw_upload_file with click_ref/click_text, which works across frames."
+	}
+	return promoted
+}

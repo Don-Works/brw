@@ -1159,12 +1159,20 @@ func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (s
 		Error:     "accessibility tree is unavailable through the Chrome extension bridge; use direct CDP attach for AX enrichment",
 	}
 	if opts.IncludeFrames {
-		// Read interactive controls inside cross-origin iframes and merge them with
-		// frame-qualified refs + top-level click coordinates. Best-effort: a failure
-		// (old extension, no frames, attach refused) leaves the same-origin snapshot
-		// intact rather than failing the whole call.
+		// Best-effort: read interactive controls INSIDE cross-origin iframes and
+		// merge them with frame-qualified refs (f<i>:e<j>) + top-level click coords.
+		// This succeeds only when the frame's debugger sub-target is reachable; for
+		// out-of-process iframes over the extension bridge it usually is not (see
+		// readCrossOriginFrames / PromoteCrossOriginFrames).
+		read := 0
 		if frames, err := b.readCrossOriginFrames(ctx); err == nil && len(frames) > 0 {
-			snapshot.MergeCrossOriginFrames(&snap, frames)
+			read = snapshot.MergeCrossOriginFrames(&snap, frames)
+		}
+		if read == 0 {
+			// Inner-DOM read unavailable — surface each cross-origin frame as a
+			// CLICKABLE element (ref f<i>, cx/cy at its center) so the agent can act
+			// on it via brw_click_xy instead of being blind to it.
+			snapshot.PromoteCrossOriginFrames(&snap, nil)
 		}
 	}
 	if !bypassCache {

@@ -599,20 +599,25 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatalf("parse manifest: %v", err)
 	}
-	// 0.2.0 introduces the authenticated bridge handshake (a breaking wire-protocol
-	// change requiring a re-signed/re-installed extension), so the manifest +
-	// protocol versions were bumped together.
-	const want = "0.2.0"
-	if m.Version != want {
-		t.Fatalf("manifest version = %q, want %q", m.Version, want)
+	// The manifest VERSION is the extension's release marker (bumped to 0.3.0 for
+	// the downloads/include_frames/agent-tab-pin release). It is DECOUPLED from the
+	// wire PROTOCOL_VERSION below: the manifest moves with every feature release,
+	// while PROTOCOL_VERSION only moves on a breaking bridge-handshake change. 0.3.0
+	// added no wire-protocol change, so the protocol stays 0.2.0 (the daemon still
+	// accepts it — verified against the live bridge).
+	const wantManifest = "0.3.0"
+	if m.Version != wantManifest {
+		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}
 
 	worker, err := os.ReadFile(filepath.Join("..", "..", "extension", "service_worker.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Wire-protocol version: must stay in lockstep with what the daemon's handshake
+	// accepts. Do NOT bump this without a matching daemon-side protocol change.
 	if !strings.Contains(string(worker), `const PROTOCOL_VERSION = "0.2.0";`) {
-		t.Fatal("service worker protocol version must match the 0.2.0 extension release")
+		t.Fatal("service worker PROTOCOL_VERSION must remain 0.2.0 (no bridge-handshake change in this release)")
 	}
 }
 
