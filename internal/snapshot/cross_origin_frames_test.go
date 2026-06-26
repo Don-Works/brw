@@ -81,6 +81,52 @@ func TestMergeCrossOriginFramesEmptyIsNoOp(t *testing.T) {
 	}
 }
 
+func TestPromoteCrossOriginFramesSurfacesClickableFrameElements(t *testing.T) {
+	snap := &PageSnapshot{
+		Metadata: map[string]interface{}{
+			"cross_origin_frames": []interface{}{
+				map[string]interface{}{"x": 40.0, "y": 60.0, "width": 600.0, "height": 300.0, "origin": "https://example.com"},
+			},
+		},
+	}
+	n := PromoteCrossOriginFrames(snap, nil)
+	if n != 1 || len(snap.Elements) != 1 {
+		t.Fatalf("expected 1 promoted frame element, got n=%d len=%d", n, len(snap.Elements))
+	}
+	e := snap.Elements[0]
+	if e.Ref != "f0" || e.Role != "iframe" || e.Name != "https://example.com" {
+		t.Fatalf("unexpected promoted frame element: %+v", e)
+	}
+	// center = (40+300, 60+150) = (340, 210)
+	if e.CX != 340 || e.CY != 210 {
+		t.Fatalf("expected center (340,210), got (%v,%v)", e.CX, e.CY)
+	}
+	if len(e.Source) != 1 || e.Source[0] != "frame" {
+		t.Fatalf("expected source [frame], got %v", e.Source)
+	}
+	if snap.Metadata["cross_origin_frames_promoted"] != 1 {
+		t.Fatalf("expected metadata cross_origin_frames_promoted=1")
+	}
+}
+
+func TestPromoteCrossOriginFramesSkipsAlreadyRead(t *testing.T) {
+	snap := &PageSnapshot{
+		Metadata: map[string]interface{}{
+			"cross_origin_frames": []interface{}{
+				map[string]interface{}{"x": 0.0, "y": 0.0, "width": 100.0, "height": 100.0, "origin": "https://a.test"},
+				map[string]interface{}{"x": 0.0, "y": 0.0, "width": 100.0, "height": 100.0, "origin": "https://b.test"},
+			},
+		},
+	}
+	// Frame 0 already had its controls read; only frame 1 should be promoted.
+	if n := PromoteCrossOriginFrames(snap, map[int]bool{0: true}); n != 1 {
+		t.Fatalf("expected 1 promoted (skip already-read), got %d", n)
+	}
+	if snap.Elements[0].Ref != "f1" {
+		t.Fatalf("expected only f1 promoted, got %q", snap.Elements[0].Ref)
+	}
+}
+
 func TestMergeCrossOriginFramesMatchesBoxByOrigin(t *testing.T) {
 	// Two frames of different origins listed out of order vs the metadata boxes;
 	// each must pick the box of its OWN origin, not positional order.
