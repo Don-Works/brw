@@ -567,6 +567,7 @@ func TestToolSchemasExposeTabScopedErgonomics(t *testing.T) {
 		"brw_wait_for",
 		"brw_evaluate",
 		"brw_click_xy",
+		"brw_window_bounds",
 		"brw_console",
 	} {
 		tool := byName[name]
@@ -1234,6 +1235,9 @@ func (fakeController) Downloads(context.Context) (browser.DownloadsResult, error
 }
 func (fakeController) ClickXY(context.Context, float64, float64) (snapshot.ClickXYResult, error) {
 	return snapshot.ClickXYResult{}, nil
+}
+func (fakeController) WindowBounds(context.Context) (snapshot.WindowBoundsResult, error) {
+	return snapshot.WindowBoundsResult{DevicePixelRatio: 1}, nil
 }
 func (fakeController) GetTrace() browser.TraceResult { return browser.TraceResult{} }
 func (fakeController) ClearTrace()                   {}

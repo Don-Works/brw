@@ -225,6 +225,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/assert_text", s.assertText)
 	mux.HandleFunc("POST /api/page/assert_value", s.assertValue)
 	mux.HandleFunc("POST /api/page/click_xy", s.clickXY)
+	mux.HandleFunc("GET /api/page/window_bounds", s.windowBounds)
 	mux.HandleFunc("GET /api/page/console", s.consoleMessages)
 	mux.HandleFunc("GET /api/page/downloads", s.downloads)
 	mux.HandleFunc("GET /api/page/trace", s.trace)
@@ -905,6 +906,11 @@ func (s *Server) clickXY(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
+func (s *Server) windowBounds(w http.ResponseWriter, r *http.Request) {
+	result, err := s.manager.WindowBounds(s.requestContext(r))
+	writeResult(w, result, err)
+}
+
 func (s *Server) consoleMessages(w http.ResponseWriter, r *http.Request) {
 	result, err := s.manager.ConsoleMessages(s.requestContext(r))
 	writeResult(w, result, err)
@@ -1045,6 +1051,10 @@ func parseSnapshotOptions(w http.ResponseWriter, r *http.Request) (snapshotReque
 	if !ok {
 		return snapshotRequest{}, false
 	}
+	includeFrames, ok := parseBoolValue(w, q.Get("include_frames"), "include_frames")
+	if !ok {
+		return snapshotRequest{}, false
+	}
 	limit, ok := parseIntParam(w, q.Get("limit"), "limit")
 	if !ok {
 		return snapshotRequest{}, false
@@ -1070,6 +1080,7 @@ func parseSnapshotOptions(w http.ResponseWriter, r *http.Request) (snapshotReque
 			ViewportOnly:  viewportOnly,
 			IncludeHidden: includeHidden,
 			IncludeAX:     includeAX,
+			IncludeFrames: includeFrames,
 			Since:         since,
 		}),
 		MaxBytes: maxBytes,

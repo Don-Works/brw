@@ -878,6 +878,8 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(s.manager.ClickXY(ctx, req.X, req.Y))
+	case "brw_window_bounds":
+		return toolJSON(s.manager.WindowBounds(ctx))
 	case "brw_console":
 		return toolJSON(s.manager.ConsoleMessages(ctx))
 	case "brw_downloads":
@@ -1065,9 +1067,67 @@ func toolOK(err error) (any, *rpcError) {
 }
 
 func toolError(err error) any {
-	return map[string]any{
+	out := map[string]any{
 		"isError": true,
 		"content": []toolContent{{Type: "text", Text: err.Error()}},
+	}
+	// Attach a machine-readable code for the transport-level failure classes that
+	// used to cascade into "Multiple consecutive errors detected" connector wedges
+	// (issue #11 P1-5). A wedged/blocked tab now time-boxes to a deadline error;
+	// surfacing code:"timeout" with retryable:true lets the connector back off and
+	// retry the ONE call instead of poisoning the session. Genuine tool errors
+	// (bad ref, navpolicy denial) carry no code and are left as plain text.
+	if code := classifyToolError(err); code != "" {
+		out["structuredContent"] = map[string]any{
+			"error":     code,
+			"message":   err.Error(),
+			"retryable": toolErrorRetryable(code),
+		}
+	}
+	return out
+}
+
+// classifyToolError maps a transport/timeout failure to a stable code, or returns
+// "" for an ordinary tool error that callers should treat as a hard failure.
+func classifyToolError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "deadline exceeded"),
+		strings.Contains(msg, "timed out"),
+		strings.Contains(msg, "timeout"),
+		strings.Contains(msg, "no response from downstream"):
+		return "timeout"
+	case strings.Contains(msg, "bridge busy"),
+		strings.Contains(msg, "max inflight"),
+		strings.Contains(msg, "too many concurrent"):
+		return "busy"
+	case strings.Contains(msg, "not connected"),
+		strings.Contains(msg, "bridge transport"),
+		strings.Contains(msg, "websocket"),
+		strings.Contains(msg, "unexpected end of json"):
+		return "transport"
+	}
+	return ""
+}
+
+// toolErrorRetryable reports whether a classified error is worth re-issuing. A
+// caller-cancelled call is not (the caller went away); transient transport/load
+// failures are.
+func toolErrorRetryable(code string) bool {
+	switch code {
+	case "timeout", "busy", "transport":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1137,6 +1197,7 @@ func tools() []map[string]any {
 			"viewport_only":        boolSchema("Only return elements intersecting the viewport. Forced true in default frontier mode."),
 			"include_hidden":       boolSchema("Include input[type=hidden] fields as role hidden for explicit debugging. Defaults false."),
 			"include_ax":           boolSchema("Include full accessibility-tree enrichment. Expensive; defaults false."),
+			"include_frames":       boolSchema("Also read interactive controls inside CROSS-ORIGIN iframes (out-of-process frames the normal walk cannot reach, e.g. embedded editors/widgets) and merge them as elements with source:[\"frame\"] and frame-qualified refs f<i>:e<j>. Same-origin iframes are always read regardless. Because their DOM is isolated, act on these elements with brw_click_xy at their cx/cy (top-level viewport center), then type via the keyboard — do NOT pass an f<i>:e<j> ref to brw_click. Off by default (it briefly attaches a debugger to each frame); extension-bridge backend only."),
 			"visual_islands":       boolSchema("Detect semantically-opaque visual content (canvas/svg/video/large image/background-image/custom-rendered widget) and emit each as an element with source:[\"visual\"], visual_type, and visual_hint. Off by default; islands compete with DOM elements in the merged list up to the limit, so dense pages stay token-efficient."),
 			"visual_islands_limit": integerSchema("Cap on detected visual islands before merging into the element list. Defaults to 10."),
 			"since":                integerSchema("Pass a prior snapshot's metadata.version to get a DELTA: when it matches the last snapshot taken with identical options, the response sets metadata.delta=true, 'elements' carries ONLY added+changed elements (a change set, not the full page), and a top-level 'delta' object lists {added, removed, changed} refs (removed = refs whose element left the DOM). On any mismatch (version, options, or after navigation) a normal full snapshot is returned. Omit for a full snapshot."),
@@ -1395,10 +1456,13 @@ func tools() []map[string]any {
 			"y":      map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"x", "y"})),
+		tool("brw_window_bounds", "Return the tab window/viewport geometry for mapping a SCREEN pixel (from an OS/desktop screenshot) into viewport CSS pixels for brw_click_xy. Fields (CSS px unless noted): device_pixel_ratio, screen_x/screen_y (viewport top-left in screen coords), inner_width/inner_height (viewport), outer_width/outer_height (window), scroll_x/scroll_y, screen_width/screen_height. Map with: viewport_css_x = screen_device_x / device_pixel_ratio - screen_x (same for y). Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
+		}, nil)),
 		tool("brw_console", "Return and drain buffered console messages (log, warn, error, info) from the page. Messages are captured by an injected console interceptor and cleared after reading. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
-		tool("brw_downloads", "Return and drain tracked file downloads. Download capture is enabled lazily on first call (Browser.setDownloadBehavior with events); subsequent triggered downloads are recorded via the Browser.downloadWillBegin/downloadProgress CDP events with url, suggested_filename, state (inProgress/completed/canceled), received_bytes, total_bytes, guid, and path. The buffer is cleared after reading. The result carries supported=true on the direct-CDP backend. Over the extension bridge it returns an empty list with supported=false plus an explanatory note (the bridge cannot observe CDP download events); branch on supported to detect this case.", object(nil, nil)),
+		tool("brw_downloads", "Return and drain tracked file downloads with url, suggested_filename, state (inProgress/completed/canceled), received_bytes, total_bytes, guid, and path. The buffer is cleared after reading; result carries supported=true. On the direct-CDP backend capture is enabled lazily via Browser.setDownloadBehavior + downloadWillBegin/downloadProgress events. On the extension bridge it is captured via the extension's chrome.downloads API (issue #6). Only an extension build that predates that support returns supported=false with an explanatory note; branch on supported to detect it.", object(nil, nil)),
 		tool("brw_trace", "Return the action trace: a compact log of recent actions with refs, timing, and outcomes. Use for debugging and performance analysis.", object(nil, nil)),
 		tool("brw_clear_trace", "Clear the action trace buffer.", object(nil, nil)),
 	}

@@ -4,7 +4,7 @@ MAC_APPDIR ?= $(HOME)/Library/Application Support/brw
 
 EXTENSION_ID = amocjcgddnoakjijfggdpnefdnboilpe
 
-.PHONY: build test install install-mac install-extension package-darwin-arm64
+.PHONY: build test test-extension install install-mac install-extension package-darwin-arm64
 
 build:
 	go build -o bin/brwd ./cmd/brwd
@@ -12,8 +12,17 @@ build:
 	go build -o bin/brwctl ./cmd/brwctl
 	go build -o bin/brw-devtools-mcp ./cmd/brw-devtools-mcp
 
-test:
+test: test-extension
 	go test ./...
+
+# Extension service-worker regression tests (run the real service_worker.js in a
+# vm with a mocked chrome API). Skipped — not failed — when node is unavailable.
+test-extension:
+	@if command -v node >/dev/null 2>&1; then \
+		node extension/tab_resolution_test.mjs; \
+	else \
+		echo "node not found; skipping extension tests"; \
+	fi
 
 install: build
 	mkdir -p "$(BINDIR)" "$(DATADIR)/extension" "$(DATADIR)/tests"
