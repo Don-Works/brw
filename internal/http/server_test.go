@@ -242,6 +242,7 @@ func TestNewPageActionRoutes(t *testing.T) {
 		{http.MethodPost, "/api/page/assert_text", `{"ref":"e1","text":"Email","timeout_ms":100}`},
 		{http.MethodPost, "/api/page/assert_value", `{"ref":"e1","value":"x","timeout_ms":100}`},
 		{http.MethodPost, "/api/page/click_xy", `{"x":12,"y":34}`},
+		{http.MethodGet, "/api/page/window_bounds", ``},
 		{http.MethodGet, "/api/page/console", ``},
 		{http.MethodGet, "/api/page/trace", ``},
 		{http.MethodPost, "/api/page/clear_trace", `{}`},
@@ -584,6 +585,10 @@ func (f *fakeController) ConsoleMessages(context.Context) ([]browser.ConsoleMess
 
 func (f *fakeController) Downloads(context.Context) (browser.DownloadsResult, error) {
 	return browser.DownloadsResult{Downloads: []browser.DownloadEntry{}}, nil
+}
+
+func (f *fakeController) WindowBounds(context.Context) (snapshot.WindowBoundsResult, error) {
+	return snapshot.WindowBoundsResult{DevicePixelRatio: 1}, nil
 }
 
 func (f *fakeController) ClickXY(_ context.Context, x float64, y float64) (snapshot.ClickXYResult, error) {

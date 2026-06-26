@@ -388,6 +388,12 @@ func (c *Controller) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickX
 	return out, err
 }
 
+func (c *Controller) WindowBounds(ctx context.Context) (snapshot.WindowBoundsResult, error) {
+	var out snapshot.WindowBoundsResult
+	err := c.get(ctx, "/api/page/window_bounds", nil, &out)
+	return out, err
+}
+
 func (c *Controller) GetTrace() browser.TraceResult {
 	var out browser.TraceResult
 	_ = c.get(context.Background(), "/api/page/trace", nil, &out)
@@ -546,6 +552,7 @@ func snapshotValues(opts snapshot.SnapshotOptions) url.Values {
 	addBool(values, "viewport_only", opts.ViewportOnly)
 	addBool(values, "include_hidden", opts.IncludeHidden)
 	addBool(values, "include_ax", opts.IncludeAX)
+	addBool(values, "include_frames", opts.IncludeFrames)
 	if opts.Since > 0 {
 		values.Set("since", strconv.FormatInt(opts.Since, 10))
 	}

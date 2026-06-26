@@ -1198,6 +1198,15 @@ func (m *Manager) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYRe
 	return snapshot.ClickXY(tabCtx, x, y)
 }
 
+func (m *Manager) WindowBounds(ctx context.Context) (snapshot.WindowBoundsResult, error) {
+	_, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return snapshot.WindowBoundsResult{}, err
+	}
+	defer cancel()
+	return snapshot.WindowBounds(tabCtx)
+}
+
 type ConsoleMessage struct {
 	Level string `json:"level"`
 	Text  string `json:"text"`

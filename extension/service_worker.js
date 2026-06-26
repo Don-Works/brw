@@ -39,7 +39,16 @@ const state = {
   // connection — bounding how many debugger sessions brw holds on the user's
   // real Chrome at once (accumulating attachments destabilize renderers).
   attachUsedAt: new Map(),
+  // activeTabId is the USER-foreground hint, refreshed from tab/window activation
+  // events. It is only a fallback for resolving the target tab.
   activeTabId: null,
+  // agentTabId is the agent's PINNED working tab — the tab it opened or explicitly
+  // focused. It is the HIGHEST-precedence target for no-tab_id tools and is NEVER
+  // moved by the user clicking around their own tabs/windows, which is what stops
+  // the "user selected another tab" bug class on a Chrome the human drives at the
+  // same time. Set only by agent intent (open_tab / focus_tab); cleared when that
+  // tab closes or stops being controllable.
+  agentTabId: null,
   reconnectAttempt: 0,
   lastError: "",
   bridgeConfig: null,
@@ -55,8 +64,83 @@ const state = {
   // Per-tab expiry timestamp marking that brw is actively driving the tab, so a
   // JS dialog opening during the window is treated as brw's own (see
   // BRW_ACTING_WINDOW_MS). Set on every brw-initiated CDP command.
-  actingUntil: new Map()
+  actingUntil: new Map(),
+  // Downloads that started during this brw session, keyed by chrome.downloads id.
+  // Populated by the chrome.downloads.onCreated/onChanged listeners and drained
+  // by the get_downloads message (issue #6 — the extension bridge cannot observe
+  // CDP Browser.downloadWillBegin events, so we capture via chrome.downloads).
+  // Insertion order is preserved by Map, so trimming evicts the oldest first.
+  downloads: new Map()
 };
+
+// MAX_TRACKED_DOWNLOADS bounds the download buffer so a long-lived session that
+// triggers many downloads cannot grow it without limit. Mirrors the direct-CDP
+// Manager's maxTrackedDownloads cap (internal/browser/manager_downloads.go).
+const MAX_TRACKED_DOWNLOADS = 200;
+
+// mapDownloadState translates a chrome.downloads state to the wire vocabulary the
+// Go side expects (inProgress | completed | canceled), matching the direct-CDP
+// backend's DownloadEntry.State so brw_downloads reads identically on both.
+function mapDownloadState(state) {
+  switch (state) {
+    case "complete": return "completed";
+    case "interrupted": return "canceled";
+    case "in_progress": return "inProgress";
+    default: return state || "inProgress";
+  }
+}
+
+// recordDownload upserts a chrome.downloads item into the session buffer in the
+// Go DownloadEntry wire shape. filename is the full local path; suggested_filename
+// is its basename. Only fields present on the item/delta are overwritten so a
+// later onChanged delta never clobbers a value an earlier event already set.
+function recordDownload(item) {
+  if (!item || typeof item.id !== "number") return;
+  const guid = String(item.id);
+  const prev = state.downloads.get(guid) || { guid };
+  const path = (typeof item.filename === "string" && item.filename) ? item.filename : prev.path;
+  const next = {
+    guid,
+    url: item.url || prev.url || "",
+    suggested_filename: path ? path.split(/[\\/]/).pop() : (prev.suggested_filename || ""),
+    state: item.state ? mapDownloadState(item.state) : (prev.state || "inProgress"),
+    received_bytes: typeof item.bytesReceived === "number" ? item.bytesReceived : (prev.received_bytes || 0),
+    total_bytes: typeof item.totalBytes === "number" && item.totalBytes > 0 ? item.totalBytes : (prev.total_bytes || (typeof item.fileSize === "number" && item.fileSize > 0 ? item.fileSize : 0)),
+    path: path || ""
+  };
+  // Re-insert at the end so the most-recently-touched download is freshest and
+  // trimming drops the stalest. Map.set on an existing key keeps original order,
+  // so delete first to move it to the tail.
+  state.downloads.delete(guid);
+  state.downloads.set(guid, next);
+  while (state.downloads.size > MAX_TRACKED_DOWNLOADS) {
+    const oldest = state.downloads.keys().next().value;
+    state.downloads.delete(oldest);
+  }
+}
+
+// flattenDownloadDelta turns a chrome.downloads.onChanged delta ({id, state:{current}})
+// into the flat item shape recordDownload consumes.
+function flattenDownloadDelta(delta) {
+  if (!delta || typeof delta.id !== "number") return null;
+  const item = { id: delta.id };
+  if (delta.url && delta.url.current != null) item.url = delta.url.current;
+  if (delta.filename && delta.filename.current != null) item.filename = delta.filename.current;
+  if (delta.state && delta.state.current != null) item.state = delta.state.current;
+  if (delta.totalBytes && delta.totalBytes.current != null) item.totalBytes = delta.totalBytes.current;
+  if (delta.fileSize && delta.fileSize.current != null) item.fileSize = delta.fileSize.current;
+  return item;
+}
+
+// chrome.downloads is gated on the "downloads" manifest permission and absent on
+// very old Chrome; guard so the service worker still loads if it is unavailable.
+if (chrome.downloads && chrome.downloads.onCreated) {
+  chrome.downloads.onCreated.addListener((item) => recordDownload(item));
+  chrome.downloads.onChanged.addListener((delta) => {
+    const item = flattenDownloadDelta(delta);
+    if (item) recordDownload(item);
+  });
+}
 
 // markActing records that brw is driving tabId right now, so a dialog it triggers
 // (e.g. a beforeunload while navigating, or a confirm it clicked) is auto-handled.
@@ -153,6 +237,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   state.fileChooserEvents.delete(tabId);
   state.actingUntil.delete(tabId);
   if (state.activeTabId === tabId) state.activeTabId = null;
+  // The agent's pinned tab was closed — drop the pin so resolution falls back to a
+  // live tab instead of repeatedly probing a dead one.
+  if (state.agentTabId === tabId) state.agentTabId = null;
 });
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) return;
@@ -469,6 +556,9 @@ async function handle(message) {
       // foreground).
       const tab = await chrome.tabs.create({ url: message.params?.url || "about:blank", active: true });
       state.activeTabId = tab.id || null;
+      // Pin the agent's own tab as its working target so subsequent no-tab_id tools
+      // stay on it no matter which tab/window the human selects next.
+      state.agentTabId = tab.id || null;
       let resultTab = tab;
       if (tab.id && hasGroupTarget(message.params)) {
         const groupId = await groupTabForParams(tab, message.params);
@@ -504,6 +594,9 @@ async function handle(message) {
       }
       const tab = await chrome.tabs.update(tabId, { active: true });
       state.activeTabId = tabId;
+      // The agent explicitly chose this tab — pin it as the working target so
+      // no-tab_id tools follow the agent's intent, not the user's later clicks.
+      state.agentTabId = tabId;
       send({ id: message.id, ok: true, result: await tabSummary(tab) });
       return;
     }
@@ -666,6 +759,38 @@ async function handle(message) {
       send({ id: message.id, ok: true, result: ev ? { captured: true, ...ev } : { captured: false } });
       return;
     }
+    if (message.type === "get_downloads") {
+      // Drain the session download buffer (issue #6). chrome.downloads is gated on
+      // the manifest "downloads" permission; if unavailable, report supported:false
+      // so the daemon surfaces the same graceful note the old stub returned.
+      if (!chrome.downloads || !chrome.downloads.search) {
+        send({ id: message.id, ok: true, result: { downloads: [], count: 0, supported: false, note: "chrome.downloads API unavailable in this Chrome/extension build" } });
+        return;
+      }
+      // Best-effort refresh each buffered download from chrome.downloads.search so
+      // one that completed between onChanged events reports its final filename and
+      // state, then drain (matching the direct-CDP Downloads() drain semantics).
+      const ids = Array.from(state.downloads.keys());
+      await Promise.all(ids.map(async (guid) => {
+        try {
+          const found = await chrome.downloads.search({ id: Number(guid) });
+          if (found && found[0]) recordDownload(found[0]);
+        } catch (_) {}
+      }));
+      const downloads = Array.from(state.downloads.values());
+      state.downloads.clear();
+      send({ id: message.id, ok: true, result: { downloads, count: downloads.length, supported: true } });
+      return;
+    }
+    if (message.type === "read_cross_origin_frames") {
+      // Read interactive controls inside cross-origin (out-of-process) iframes of
+      // the tab (issue #11 P0-2). Best-effort: any failure yields an empty list so
+      // the daemon keeps the same-origin snapshot.
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      const frames = await readCrossOriginFrames(tabId).catch(() => []);
+      send({ id: message.id, ok: true, result: { frames } });
+      return;
+    }
     if (message.type === "show_indicator") {
       const tabId = Number(message.params?.tabId || (await activeTabId()));
       await attach(tabId);
@@ -708,6 +833,122 @@ async function handle(message) {
     state.lastError = `request failed: ${String(error?.message || error)}`;
     markBridgeStatus("error", state.lastError).catch(() => {});
     send({ id: message.id, ok: false, error: String(error?.message || error) });
+  }
+}
+
+// FRAME_EXTRACT_SCRIPT runs inside a cross-origin iframe's own document (via a
+// short-lived debugger attach to that frame's target) and returns its visible
+// interactive controls with FRAME-LOCAL viewport boxes. The daemon translates
+// those boxes to top-level coordinates using the iframe's position recorded by
+// the same-origin walker, so the merged elements are clickable via brw_click_xy.
+const FRAME_EXTRACT_SCRIPT = `(function(){
+  var SEL = 'a[href],button,input,select,textarea,[role=button],[role=link],[role=textbox],[role=checkbox],[role=radio],[role=combobox],[role=switch],[role=menuitem],[role=tab],[contenteditable=""],[contenteditable=true],[onclick]';
+  function vis(el){ try { var s=getComputedStyle(el); if(s.display==='none'||s.visibility==='hidden'||parseFloat(s.opacity||'1')===0) return false; var r=el.getBoundingClientRect(); return r.width>0&&r.height>0; } catch(_){ return false; } }
+  function nm(el){
+    try {
+      var n = el.getAttribute && (el.getAttribute('aria-label')||el.getAttribute('placeholder')||el.getAttribute('title')||el.getAttribute('alt')||el.getAttribute('name'));
+      if(n) return String(n).trim();
+      var t = (el.innerText||el.value||el.textContent||'').replace(/\\s+/g,' ').trim();
+      return t.slice(0,120);
+    } catch(_){ return ''; }
+  }
+  function rl(el){
+    var r = el.getAttribute && el.getAttribute('role'); if(r) return r;
+    var tag = el.tagName.toLowerCase();
+    if(tag==='a') return 'link';
+    if(tag==='button') return 'button';
+    if(tag==='select') return 'combobox';
+    if(tag==='textarea') return 'textbox';
+    if(tag==='input'){ var ty=(el.getAttribute('type')||'text').toLowerCase(); if(ty==='checkbox')return 'checkbox'; if(ty==='radio')return 'radio'; if(ty==='button'||ty==='submit'||ty==='reset')return 'button'; return 'textbox'; }
+    return tag;
+  }
+  var els = [];
+  try { els = Array.prototype.slice.call(document.querySelectorAll(SEL)); } catch(_){ els = []; }
+  var out = [];
+  for (var i=0;i<els.length && out.length<200;i++){
+    var el = els[i];
+    if(!vis(el)) continue;
+    var r = el.getBoundingClientRect();
+    out.push({ role: rl(el), name: nm(el), tag: el.tagName.toLowerCase(), type: (el.getAttribute&&el.getAttribute('type'))||'', x: r.left, y: r.top, w: r.width, h: r.height });
+  }
+  return out;
+})()`;
+
+// readCrossOriginFrames enumerates the tab's cross-origin child frames (from
+// Page.getFrameTree on the tab's own session, so we only ever read frames that
+// belong to THIS tab), matches each to its debugger iframe target by URL, and
+// extracts its controls. Same-origin frames are skipped — the in-page walker
+// already reads those. Never throws; returns [] on any failure.
+async function readCrossOriginFrames(tabId) {
+  await attach(tabId);
+  let tree;
+  try {
+    tree = await sendDebuggerCommand(tabId, "Page.getFrameTree", {});
+  } catch (_) {
+    return [];
+  }
+  const topURL = tree?.frameTree?.frame?.url || "";
+  let topOrigin = "";
+  try { topOrigin = new URL(topURL).origin; } catch (_) {}
+  const wanted = [];
+  (function walk(node) {
+    if (!node) return;
+    for (const child of node.childFrames || []) {
+      const url = child.frame?.url || "";
+      let origin = "";
+      try { origin = new URL(url).origin; } catch (_) {}
+      if (url && /^https?:/i.test(url) && origin && origin !== topOrigin) {
+        wanted.push({ url, origin });
+      }
+      walk(child);
+    }
+  })(tree.frameTree);
+  if (!wanted.length) return [];
+
+  let targets = [];
+  try { targets = await chrome.debugger.getTargets(); } catch (_) { return []; }
+  const iframeTargets = targets.filter((t) => t.type === "iframe" && t.url);
+  const usedTargets = new Set();
+  const out = [];
+  for (const w of wanted) {
+    const tgt = iframeTargets.find((t) => !usedTargets.has(t.id) && t.url === w.url);
+    if (!tgt) {
+      out.push({ url: w.url, origin: w.origin, elements: [] });
+      continue;
+    }
+    usedTargets.add(tgt.id);
+    const elements = await extractFrameElements(tgt.id).catch(() => []);
+    out.push({ url: w.url, origin: w.origin, elements });
+  }
+  return out;
+}
+
+// extractFrameElements briefly attaches a debugger to ONE cross-origin frame
+// target, runs FRAME_EXTRACT_SCRIPT in it, and ALWAYS detaches (even on error) so
+// no extra debugger session lingers on the user's Chrome. If another debugger
+// already owns the target, it is left untouched and an empty list is returned.
+async function extractFrameElements(targetId) {
+  let owned = false;
+  try {
+    try {
+      await chrome.debugger.attach({ targetId }, "1.3");
+      owned = true;
+    } catch (error) {
+      if (!String(error?.message || error).includes("Another debugger is already attached")) throw error;
+      // Someone else (or a leaked session) owns it; do not detach what we did not
+      // attach. Try to use the existing session opportunistically.
+      owned = false;
+    }
+    const res = await chrome.debugger.sendCommand({ targetId }, "Runtime.evaluate", {
+      expression: FRAME_EXTRACT_SCRIPT,
+      returnByValue: true
+    });
+    const value = res?.result?.value;
+    return Array.isArray(value) ? value : [];
+  } finally {
+    if (owned) {
+      try { await chrome.debugger.detach({ targetId }); } catch (_) {}
+    }
   }
 }
 
@@ -851,6 +1092,21 @@ function isControllableWindowType(win) {
 }
 
 async function resolveForegroundTabId() {
+  // 0. The agent's PINNED working tab wins over the OS foreground. Set when the
+  //    agent opens or focuses a tab (open_tab / focus_tab), and never moved by the
+  //    user clicking around their own tabs/windows. This is the general fix for the
+  //    "user selected another tab" bug class on a shared Chrome: once the agent owns
+  //    a tab, every no-tab_id tool stays on it until the agent explicitly focuses
+  //    elsewhere. Falls through only when that tab is gone or no longer controllable
+  //    (e.g. it somehow became a PWA/app surface).
+  if (state.agentTabId) {
+    const pinned = await chrome.tabs.get(state.agentTabId).catch(() => null);
+    if (pinned?.id) {
+      const win = await chrome.windows.get(pinned.windowId).catch(() => null);
+      if (isControllableWindowType(win)) return pinned.id;
+    }
+    state.agentTabId = null;
+  }
   // 1. Active tab of the OS-focused controllable window. Enumerate ALL window types
   //    (not just normal/popup) so a clone/test-profile window is seen, then drop
   //    only PWA/devtools.
@@ -875,10 +1131,19 @@ async function resolveForegroundTabId() {
     const win = await chrome.windows.get(tab.windowId).catch(() => null);
     if (isControllableWindowType(win)) return tab.id;
   }
-  // 3. Honor the last-targeted tab if it is still alive (focus_tab/open set this).
+  // 3. Honor the last-targeted tab if it is still alive (focus_tab/open set this)
+  //    AND its window is still controllable — re-validate the type here so a stale
+  //    cache (or a window that became a PWA/app surface) can NEVER leak a Google
+  //    Chat / installed-PWA tab to the agent, even though publishActiveTab already
+  //    refuses to cache one. Defense in depth on the exact path that drove Chat.
   if (state.activeTabId) {
     const cached = await chrome.tabs.get(state.activeTabId).catch(() => null);
-    if (cached?.id) return cached.id;
+    if (cached?.id) {
+      const win = await chrome.windows.get(cached.windowId).catch(() => null);
+      if (isControllableWindowType(win)) return cached.id;
+      // Cached tab is no longer controllable; drop it so we don't keep retrying it.
+      state.activeTabId = null;
+    }
   }
   // 4. Last resort: any active tab in a controllable window.
   const any = await chrome.tabs.query({ active: true }).catch(() => []);
@@ -1072,10 +1337,20 @@ function normalizeGroupColor(value, fallback = "") {
 
 async function publishActiveTab(tabId) {
   if (!tabId) return;
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab) return;
+  // CHOKE POINT: never let a PWA/app or devtools surface become the cached active
+  // tab. chrome.tabs.onActivated / onCreated fire for EVERY window — including the
+  // Google Chat (and any installed-PWA) app window — so without this guard a user
+  // clicking into Google Chat would stash that tab in state.activeTabId, and
+  // resolveForegroundTabId's cache fallback would then hand the agent the Chat PWA.
+  // The agent must NEVER drive those windows. onFocusChanged already filters them;
+  // this closes the onActivated/onCreated path too.
+  const win = await chrome.windows.get(tab.windowId).catch(() => null);
+  if (!isControllableWindowType(win)) return;
   state.activeTabId = tabId;
   await connect();
-  const tab = await chrome.tabs.get(tabId).catch(() => null);
-  const summary = tab ? await tabSummary(tab) : { id: tabId };
+  const summary = await tabSummary(tab);
   send({
     type: "active_tab",
     tabId,

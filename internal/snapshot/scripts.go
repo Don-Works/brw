@@ -2789,3 +2789,53 @@ func ClickText(ctx context.Context, opts ClickTextOptions) (ClickXYResult, error
 	}
 	return result, nil
 }
+
+// WindowBoundsScript reads the tab's window/viewport geometry in one in-page
+// evaluation. window.screenX/screenY give the viewport's top-left in SCREEN CSS
+// pixels, and device_pixel_ratio converts CSS px <-> device px — together they
+// let a caller map a screen pixel from an OS/desktop screenshot into viewport CSS
+// pixels for brw_click_xy (issue #11 P2-6 / P1-4d):
+//
+//	viewport_css_x = screen_device_x / device_pixel_ratio - screen_x
+//	viewport_css_y = screen_device_y / device_pixel_ratio - screen_y
+const WindowBoundsScript = `(function(){
+  var s = window.screen || {};
+  return {
+    device_pixel_ratio: window.devicePixelRatio || 1,
+    screen_x: window.screenX || window.screenLeft || 0,
+    screen_y: window.screenY || window.screenTop || 0,
+    inner_width: window.innerWidth || 0,
+    inner_height: window.innerHeight || 0,
+    outer_width: window.outerWidth || 0,
+    outer_height: window.outerHeight || 0,
+    scroll_x: window.scrollX || window.pageXOffset || 0,
+    scroll_y: window.scrollY || window.pageYOffset || 0,
+    screen_width: s.width || 0,
+    screen_height: s.height || 0
+  };
+})()`
+
+// WindowBoundsResult is the tab window/viewport geometry returned by
+// brw_window_bounds. All distances are in CSS pixels except device_pixel_ratio.
+type WindowBoundsResult struct {
+	DevicePixelRatio float64 `json:"device_pixel_ratio"`
+	ScreenX          float64 `json:"screen_x"`
+	ScreenY          float64 `json:"screen_y"`
+	InnerWidth       float64 `json:"inner_width"`
+	InnerHeight      float64 `json:"inner_height"`
+	OuterWidth       float64 `json:"outer_width"`
+	OuterHeight      float64 `json:"outer_height"`
+	ScrollX          float64 `json:"scroll_x"`
+	ScrollY          float64 `json:"scroll_y"`
+	ScreenWidth      float64 `json:"screen_width"`
+	ScreenHeight     float64 `json:"screen_height"`
+}
+
+// WindowBounds evaluates WindowBoundsScript against the active tab context.
+func WindowBounds(ctx context.Context) (WindowBoundsResult, error) {
+	var result WindowBoundsResult
+	if err := chromedp.Run(ctx, chromedp.Evaluate(WindowBoundsScript, &result)); err != nil {
+		return WindowBoundsResult{}, err
+	}
+	return result, nil
+}

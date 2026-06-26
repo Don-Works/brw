@@ -55,6 +55,14 @@ type SnapshotOptions struct {
 	// element (ref role "name" + key state) — markedly fewer tokens for a small
 	// model. Presentation-only; it does not affect element selection or deltas.
 	Format string `json:"format,omitempty"`
+	// IncludeFrames, when true, reads interactive controls inside CROSS-ORIGIN
+	// iframes (out-of-process frames the same-origin DOM walk cannot reach) and
+	// merges them into Elements with frame-qualified refs (f<i>:e<j>) and
+	// top-level viewport click coordinates (cx/cy). Off by default and only
+	// honored on the extension-bridge backend (it briefly attaches a debugger to
+	// each frame target, so it is opt-in to avoid that cost/churn on every
+	// snapshot). Same-origin iframes are always walked regardless of this flag.
+	IncludeFrames bool `json:"include_frames,omitempty"`
 }
 
 type FindOptions struct {
@@ -154,7 +162,36 @@ type Element struct {
 	// (image alt text, canvas title, etc.) so the model has a textual anchor for
 	// otherwise-opaque painted content.
 	VisualHint string `json:"visual_hint,omitempty"`
-	Key        string `json:"-"`
+	// CX/CY are the element's top-level viewport CENTER in CSS pixels. Set ONLY on
+	// cross-origin-frame elements (source includes "frame", ref f<i>:e<j>), whose
+	// DOM is isolated so they cannot be resolved by ref the normal way — act on
+	// them with brw_click_xy at (cx, cy), then type via the keyboard. Zero/omitted
+	// for ordinary same-document elements (resolve those by ref as usual).
+	CX  float64 `json:"cx,omitempty"`
+	CY  float64 `json:"cy,omitempty"`
+	Key string  `json:"-"`
+}
+
+// CrossOriginFrameElement is one interactive control extracted from inside a
+// cross-origin iframe by the extension bridge. X/Y/W/H are FRAME-LOCAL viewport
+// CSS pixels; MergeCrossOriginFrames translates them to top-level coordinates.
+type CrossOriginFrameElement struct {
+	Role string  `json:"role"`
+	Name string  `json:"name"`
+	Tag  string  `json:"tag"`
+	Type string  `json:"type,omitempty"`
+	X    float64 `json:"x"`
+	Y    float64 `json:"y"`
+	W    float64 `json:"w"`
+	H    float64 `json:"h"`
+}
+
+// CrossOriginFrame is the per-frame extraction result the extension returns for a
+// single out-of-process iframe belonging to the active tab.
+type CrossOriginFrame struct {
+	URL      string                    `json:"url"`
+	Origin   string                    `json:"origin"`
+	Elements []CrossOriginFrameElement `json:"elements"`
 }
 
 type AccessibilitySummary struct {

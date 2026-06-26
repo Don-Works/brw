@@ -273,12 +273,21 @@ var idempotentBridgeTypes = map[string]bool{
 	"list_tab_groups":   true,
 	"get_active_tab_id": true,
 	"cached_snapshot":   true,
+	"get_downloads":     true,
 }
 
 func isIdempotentType(typ string) bool { return idempotentBridgeTypes[typ] }
 
 func isTransientTransportErr(err error) bool {
 	return errors.Is(err, errBridgeTransport) || errors.Is(err, errBridgeNotConnected)
+}
+
+// isUnknownMessageTypeErr reports whether err is the extension's "unknown message
+// type" rejection, surfaced when the connected extension predates a bridge RPC
+// (e.g. an old build that lacks get_downloads). Callers use it to degrade
+// gracefully to an unsupported result rather than erroring.
+func isUnknownMessageTypeErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "unknown message type")
 }
 
 func (b *Bridge) ListenAndServe() error {
@@ -1132,8 +1141,11 @@ func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (s
 	// from live per-document state) and must bypass the outer snapshot cache in
 	// BOTH directions: a cached full snapshot would defeat the delta, and caching a
 	// delta-shaped (partial) result under the key would corrupt later full reads.
+	// include_frames also bypasses the cache so the dynamic cross-origin-frame read
+	// is never served stale.
 	sinceDelta := opts.Since > 0
-	if !sinceDelta {
+	bypassCache := sinceDelta || opts.IncludeFrames
+	if !bypassCache {
 		if cached, ok := b.tryCachedSnapshot(ctx, opts); ok {
 			return cached, nil
 		}
@@ -1146,10 +1158,45 @@ func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (s
 		Available: false,
 		Error:     "accessibility tree is unavailable through the Chrome extension bridge; use direct CDP attach for AX enrichment",
 	}
-	if !sinceDelta {
+	if opts.IncludeFrames {
+		// Read interactive controls inside cross-origin iframes and merge them with
+		// frame-qualified refs + top-level click coordinates. Best-effort: a failure
+		// (old extension, no frames, attach refused) leaves the same-origin snapshot
+		// intact rather than failing the whole call.
+		if frames, err := b.readCrossOriginFrames(ctx); err == nil && len(frames) > 0 {
+			snapshot.MergeCrossOriginFrames(&snap, frames)
+		}
+	}
+	if !bypassCache {
 		b.storeCachedSnapshot(ctx, opts, snap)
 	}
 	return snap, nil
+}
+
+// readCrossOriginFrames asks the extension to read the interactive controls of
+// each cross-origin (out-of-process) iframe in the active tab. The extension
+// matches the tab's frame tree against the debugger target list, briefly attaches
+// to each frame target to extract its controls, and detaches. Returns an empty
+// slice (no error) when the extension predates the command so callers degrade to
+// the same-origin-only snapshot.
+func (b *Bridge) readCrossOriginFrames(ctx context.Context) ([]snapshot.CrossOriginFrame, error) {
+	tabID := b.contextTabID(ctx)
+	raw, err := b.call(ctx, "read_cross_origin_frames", map[string]any{"tabId": parseTabID(tabID)})
+	if err != nil {
+		if isUnknownMessageTypeErr(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var payload struct {
+		Frames []snapshot.CrossOriginFrame `json:"frames"`
+	}
+	if len(raw) > 0 {
+		if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
+			return nil, fmt.Errorf("parse cross-origin frames: %w", jsonErr)
+		}
+	}
+	return payload.Frames, nil
 }
 
 func (b *Bridge) tryCachedSnapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, bool) {
@@ -3486,6 +3533,14 @@ func (b *Bridge) ConsoleMessages(ctx context.Context) ([]browser.ConsoleMessage,
 	return msgs, nil
 }
 
+func (b *Bridge) WindowBounds(ctx context.Context) (snapshot.WindowBoundsResult, error) {
+	var result snapshot.WindowBoundsResult
+	if err := b.evaluate(ctx, snapshot.WindowBoundsScript, "", &result); err != nil {
+		return snapshot.WindowBoundsResult{}, err
+	}
+	return result, nil
+}
+
 func (b *Bridge) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYResult, error) {
 	var result snapshot.ClickXYResult
 	xJSON, _ := json.Marshal(x)
@@ -3502,28 +3557,50 @@ func (b *Bridge) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYRes
 	return result, nil
 }
 
-// Downloads is best-effort over the extension bridge. The bridge cannot observe
-// Browser.downloadWillBegin / downloadProgress CDP events: those only fire on a
-// debugger-attached target, and the extension bridge drives the page via the
-// content/background scripts rather than a CDP debugger session, so no download
-// lifecycle events reach us.
-//
-// Real capture here would mean adding chrome.downloads support on the extension
-// side: declare the "downloads" permission in the manifest, register
-// chrome.downloads.onCreated / onChanged listeners in the background script,
-// forward those events over the bridge as a new message kind, and surface them
-// through a new bridge RPC. That is a sizable cross-language change (extension
-// JS + manifest + Go bridge plumbing), so it is intentionally NOT implemented
-// here — see GitHub issue #6. Instead we return an empty, explicitly-unsupported
-// result with Supported=false so callers can branch on the flag (rather than
-// pattern-matching the prose Note) and fall back to the direct-CDP backend,
-// which provides full download tracking via the Manager path.
+// downloadsUnsupportedNote is returned when the connected extension is too old to
+// answer get_downloads (pre-issue-#6 builds) so callers still get the graceful
+// Supported=false contract instead of a hard error.
+const downloadsUnsupportedNote = "Download capture is unavailable: the connected brw extension predates chrome.downloads support (issue #6). Reload the brw extension, or restart brw with the direct-CDP backend. Check Supported=false to detect this programmatically."
+
+// Downloads captures downloads over the extension bridge via the extension's
+// chrome.downloads API (issue #6). The bridge cannot observe CDP
+// Browser.downloadWillBegin / downloadProgress events — those only fire on a
+// debugger-attached target — so the extension's service worker registers
+// chrome.downloads.onCreated / onChanged listeners and buffers entries, which we
+// drain here through the get_downloads RPC. The wire shape already matches
+// browser.DownloadEntry, so it unmarshals directly. An extension too old to know
+// the message returns the legacy Supported=false note rather than erroring.
 func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error) {
+	raw, err := b.call(ctx, "get_downloads", nil)
+	if err != nil {
+		if isUnknownMessageTypeErr(err) {
+			return browser.DownloadsResult{
+				Downloads: []browser.DownloadEntry{},
+				Count:     0,
+				Supported: false,
+				Note:      downloadsUnsupportedNote,
+			}, nil
+		}
+		return browser.DownloadsResult{}, err
+	}
+	var payload struct {
+		Downloads []browser.DownloadEntry `json:"downloads"`
+		Supported bool                    `json:"supported"`
+		Note      string                  `json:"note"`
+	}
+	if len(raw) > 0 {
+		if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
+			return browser.DownloadsResult{}, fmt.Errorf("parse downloads: %w", jsonErr)
+		}
+	}
+	if payload.Downloads == nil {
+		payload.Downloads = []browser.DownloadEntry{}
+	}
 	return browser.DownloadsResult{
-		Downloads: []browser.DownloadEntry{},
-		Count:     0,
-		Supported: false,
-		Note:      "Download capture is unavailable on the extension-bridge backend (it cannot observe CDP download events). Restart brw with the direct-CDP backend to track downloads via brw_downloads, or check Supported=false to detect this case programmatically.",
+		Downloads: payload.Downloads,
+		Count:     len(payload.Downloads),
+		Supported: payload.Supported,
+		Note:      payload.Note,
 	}, nil
 }
 

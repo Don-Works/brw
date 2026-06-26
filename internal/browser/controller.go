@@ -58,6 +58,7 @@ type Controller interface {
 	ConsoleMessages(context.Context) ([]ConsoleMessage, error)
 	Downloads(context.Context) (DownloadsResult, error)
 	ClickXY(context.Context, float64, float64) (snapshot.ClickXYResult, error)
+	WindowBounds(context.Context) (snapshot.WindowBoundsResult, error)
 	GetTrace() TraceResult
 	ClearTrace()
 	AssertVisible(context.Context, string, time.Duration) error
