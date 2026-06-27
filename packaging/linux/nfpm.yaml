@@ -1,0 +1,38 @@
+name: brw
+arch: "@NFPM_ARCH@"
+platform: linux
+version: "@BRW_VERSION@"
+section: utils
+priority: optional
+maintainer: Don Works <hello@donworks.co.uk>
+description: |-
+  Semantic browser control for agents.
+vendor: Don Works
+homepage: https://brw.donworks.co.uk/
+license: AGPL-3.0
+contents:
+  - src: "@BRW_PACKAGE_ROOT@/usr/bin/brwd"
+    dst: /usr/bin/brwd
+    file_info:
+      mode: 0755
+  - src: "@BRW_PACKAGE_ROOT@/usr/bin/brwctl"
+    dst: /usr/bin/brwctl
+    file_info:
+      mode: 0755
+  - src: "@BRW_PACKAGE_ROOT@/usr/bin/brwcheck"
+    dst: /usr/bin/brwcheck
+    file_info:
+      mode: 0755
+  - src: "@BRW_PACKAGE_ROOT@/usr/bin/brw-devtools-mcp"
+    dst: /usr/bin/brw-devtools-mcp
+    file_info:
+      mode: 0755
+  - src: "@BRW_PACKAGE_ROOT@/usr/share/brw/extension"
+    dst: /usr/share/brw/extension
+    type: tree
+  - src: "@BRW_PACKAGE_ROOT@/usr/share/brw/tests"
+    dst: /usr/share/brw/tests
+    type: tree
+  - src: "@BRW_PACKAGE_ROOT@/usr/share/brw/doc"
+    dst: /usr/share/doc/brw
+    type: tree

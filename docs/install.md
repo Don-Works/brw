@@ -1,6 +1,24 @@
 # Install
 
-## Build
+## Native Installers
+
+GitHub releases ship platform-native installers:
+
+- Windows: `brw_<version>_windows_amd64.msi` and `brw_<version>_windows_arm64.msi`
+- macOS: `brw_<version>_macos_universal.pkg`
+- Debian/Ubuntu Linux: `brw_<version>_linux_amd64.deb` and `brw_<version>_linux_arm64.deb`
+- Fedora/RHEL Linux: `brw_<version>_linux_amd64.rpm` and `brw_<version>_linux_arm64.rpm`
+
+The installers put the brw commands on the platform PATH and install the
+extension, tests, README, and license into the platform share directory:
+
+- Windows: `C:\Program Files\brw\share\`
+- macOS: `/usr/local/share/brw/`
+- Linux: `/usr/share/brw/`
+
+Download them from <https://github.com/Don-Works/brw/releases>.
+
+## Build From Source
 
 ```sh
 make test

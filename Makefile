@@ -4,7 +4,10 @@ MAC_APPDIR ?= $(HOME)/Library/Application Support/brw
 
 EXTENSION_ID = amocjcgddnoakjijfggdpnefdnboilpe
 
-.PHONY: build test test-extension install install-mac install-extension package-darwin-arm64
+VERSION ?= $(shell git describe --tags --always --dirty | sed 's/^v//')
+GOARCH ?= $(shell go env GOARCH)
+
+.PHONY: build test test-extension install install-mac install-extension package-darwin-arm64 package-linux package-macos
 
 build:
 	go build -o bin/brwd ./cmd/brwd
@@ -77,3 +80,9 @@ package-darwin-arm64:
 	GOOS=darwin GOARCH=arm64 go build -o bin/brwcheck-darwin-arm64 ./cmd/brwcheck
 	GOOS=darwin GOARCH=arm64 go build -o bin/brwctl-darwin-arm64 ./cmd/brwctl
 	GOOS=darwin GOARCH=arm64 go build -o bin/brw-devtools-mcp-darwin-arm64 ./cmd/brw-devtools-mcp
+
+package-linux:
+	scripts/package-linux.sh "$(VERSION)" "$(GOARCH)" dist/release
+
+package-macos:
+	scripts/package-macos.sh "$(VERSION)" dist/release

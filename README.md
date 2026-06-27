@@ -61,6 +61,17 @@ See [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Quick Start
 
+Download a native installer from the
+[GitHub releases page](https://github.com/Don-Works/brw/releases):
+
+- Windows: `.msi`
+- macOS: `.pkg`
+- Linux: `.deb` or `.rpm`
+
+After installing, run `brwd` directly from your terminal or MCP client.
+
+## Build From Source
+
 ```sh
 git clone https://github.com/Don-Works/brw.git
 cd brw

@@ -1,0 +1,184 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish, for example v0.4.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: make test
+
+  linux-packages:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          version="${tag#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "Tag must be vX.Y.Z, got $tag" >&2
+            exit 2
+          fi
+          echo "BRW_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "BRW_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Install nFPM
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+      - name: Build Linux packages
+        run: scripts/package-linux.sh "$BRW_VERSION" "${{ matrix.arch }}" dist/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brw-linux-${{ matrix.arch }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  macos-package:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          version="${tag#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "Tag must be vX.Y.Z, got $tag" >&2
+            exit 2
+          fi
+          echo "BRW_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "BRW_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build macOS package
+        run: scripts/package-macos.sh "$BRW_VERSION" dist/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brw-macos-universal
+          path: dist/release/*
+          if-no-files-found: error
+
+  windows-packages:
+    needs: test
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install WiX
+        shell: pwsh
+        run: dotnet tool install --global wix --version 7.0.0
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag }}"
+          } else {
+            $tag = "${env:GITHUB_REF_NAME}"
+          }
+          $version = $tag -replace "^v", ""
+          if ($version -notmatch "^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$") {
+            throw "Tag must be vX.Y.Z, got $tag"
+          }
+          "BRW_RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "BRW_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Build Windows package
+        shell: pwsh
+        run: scripts/package-windows.ps1 -Version "$env:BRW_VERSION" -Arch "${{ matrix.arch }}" -OutDir dist/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brw-windows-${{ matrix.arch }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  publish-release:
+    needs:
+      - linux-packages
+      - macos-package
+      - windows-packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          echo "BRW_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+      - name: Checksums
+        shell: bash
+        run: |
+          cd artifacts
+          shasum -a 256 * > SHA256SUMS.txt
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="$BRW_RELEASE_TAG"
+          title="brw $tag"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" artifacts/* --clobber
+          else
+            gh release create "$tag" artifacts/* --title "$title" --generate-notes
+          fi

@@ -1,0 +1,39 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="brw"
+    Manufacturer="Don Works"
+    Version="$(var.Version)"
+    UpgradeCode="{878349A0-5169-4A67-AFA1-64206C463A7C}"
+    Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of brw is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <StandardDirectory Id="ProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="brw">
+        <Directory Id="BinDir" Name="bin">
+          <Component Id="PathEnvironment" Guid="{85633A3C-62C7-4F56-AD93-05BADA431C2E}">
+            <RegistryValue
+              Root="HKLM"
+              Key="Software\Don Works\brw"
+              Name="InstallDir"
+              Type="string"
+              Value="[INSTALLFOLDER]"
+              KeyPath="yes" />
+            <Environment
+              Id="UpdatePath"
+              Name="PATH"
+              Value="[BinDir]"
+              Action="set"
+              Part="last"
+              System="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="brw" Level="1">
+      <Files Directory="INSTALLFOLDER" Include="$(var.SourceDir)\**" />
+      <ComponentRef Id="PathEnvironment" />
+    </Feature>
+  </Package>
+</Wix>
