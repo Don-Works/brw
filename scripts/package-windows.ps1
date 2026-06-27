@@ -64,3 +64,5 @@ $MsiPath = Join-Path $OutAbs "brw_${Version}_windows_${Arch}.msi"
   -d "Version=$MsiVersion" `
   -d "SourceDir=$StageDir" `
   -out $MsiPath
+
+Remove-Item -Force (Join-Path $OutAbs "brw_${Version}_windows_${Arch}.wixpdb") -ErrorAction SilentlyContinue
