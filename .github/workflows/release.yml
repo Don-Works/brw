@@ -130,7 +130,7 @@ jobs:
           dotnet-version: 8.0.x
       - name: Install WiX
         shell: pwsh
-        run: dotnet tool install --global wix --version 7.0.0
+        run: dotnet tool install --global wix --version 5.0.2
       - name: Resolve version
         shell: pwsh
         run: |
