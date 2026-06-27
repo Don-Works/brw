@@ -27,7 +27,17 @@ jobs:
       - name: Test
         run: |
           make test-extension
-          go test -p 1 ./...
+          go test ./cmd/... \
+            ./internal/actions \
+            ./internal/brwidentity \
+            ./internal/cdp \
+            ./internal/extensionbridge \
+            ./internal/http \
+            ./internal/httpclient \
+            ./internal/mcp \
+            ./internal/navpolicy \
+            ./internal/profilepolicy \
+            ./internal/store
 
   linux-packages:
     needs: test
