@@ -25,7 +25,9 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Test
-        run: make test
+        run: |
+          make test-extension
+          go test -p 1 ./...
 
   linux-packages:
     needs: test
