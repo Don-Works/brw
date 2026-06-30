@@ -52,6 +52,7 @@ func main() {
 	var bridgeAddr string
 	var bridgeRaiseWindow bool
 	var bridgeTabGroup string
+	var bridgeFollowFocus bool
 	var bridgeMaxInflight int
 	var timeout time.Duration
 	var profileName string
@@ -74,6 +75,7 @@ func main() {
 	flag.StringVar(&bridgeAddr, "bridge-addr", envDefault("BRW_BRIDGE_ADDR", "127.0.0.1:17311"), "extension bridge WebSocket listen address")
 	flag.BoolVar(&bridgeRaiseWindow, "bridge-raise-window", envBool("BRW_BRIDGE_RAISE_WINDOW"), "bridge: raise the Chrome window to the OS foreground on focus_tab. Off by default so automation never steals your focus while you work elsewhere.")
 	flag.StringVar(&bridgeTabGroup, "bridge-tab-group", envDefault("BRW_BRIDGE_TAB_GROUP", "brw"), "bridge: tab-group title brw_open uses when no group is given, so the agent's tabs stay corralled in one labelled group. Set empty to disable default grouping.")
+	flag.BoolVar(&bridgeFollowFocus, "bridge-follow-focus", envBool("BRW_BRIDGE_FOLLOW_FOCUS"), "bridge: follow the user's manually-focused Chrome tab for no-tab_id actions (legacy behavior). OFF by default: brw works in its own tab group on tabs it opened (opening a fresh one when needed) and never touches your existing tabs unless you pass tab_id. Turn on for an interactive session where you want brw to act on whatever tab you have selected.")
 	flag.IntVar(&bridgeMaxInflight, "bridge-max-inflight", envInt("BRW_BRIDGE_MAX_INFLIGHT", 6), "bridge: max concurrent operations on the shared extension socket. Excess calls queue and, past the deadline, fail fast with a busy signal. Caps load on the single Chrome extension worker so many parallel agents can't wedge it. 0 disables the cap.")
 	flag.StringVar(&upstreamHTTP, "upstream-http", os.Getenv("BRW_UPSTREAM_HTTP"), "proxy MCP/HTTP control to an existing local brw HTTP daemon")
 	flag.StringVar(&cfg.RemoteURL, "remote", os.Getenv("BRW_REMOTE_URL"), "attach to existing CDP endpoint, for example http://127.0.0.1:9222")
@@ -212,6 +214,10 @@ func main() {
 		// theft) and corral the agent's tabs into one labelled group.
 		bridge.SetRaiseWindowOnFocus(bridgeRaiseWindow)
 		bridge.SetDefaultGroup(bridgeTabGroup)
+		// Isolation by default: work in brw's own tab group on tabs it opened,
+		// never the user's focused/existing tabs. --bridge-follow-focus restores
+		// the legacy follow-the-user's-tab behavior.
+		bridge.SetFollowFocus(bridgeFollowFocus)
 		// Cap concurrent ops on the single shared extension socket so a fan-out of
 		// parallel agents queues cleanly instead of flooding the MV3 worker until it
 		// stops responding (the high-throughput "bridge becomes unresponsive" mode).

@@ -29,6 +29,7 @@ type groupAwareExtension struct {
 	nextTabID     int
 	// recorded for assertions
 	lastOpenGroupName    string
+	lastOpenBackground   bool
 	lastFocusRaiseWindow bool
 }
 
@@ -184,10 +185,20 @@ func (f *groupAwareExtension) handleOpen(params map[string]any) map[string]any {
 	id := f.nextTabID
 	f.nextTabID++
 	url, _ := params["url"].(string)
-	t := &gaTab{id: id, windowID: f.focusedWindow, groupID: -1, active: true, url: url, title: url}
+	// Honor the daemon's foreground intent: active defaults to true, and the
+	// isolation daemon passes active:false for a background open that must not
+	// switch the user's current tab.
+	active := true
+	if v, ok := params["active"].(bool); ok {
+		active = v
+	}
+	f.lastOpenBackground = !active
+	t := &gaTab{id: id, windowID: f.focusedWindow, groupID: -1, active: active, url: url, title: url}
 	f.tabs = append(f.tabs, t)
-	// active:true within its window.
-	f.activateExclusive(t.windowID, t.id)
+	if active {
+		// active:true within its window.
+		f.activateExclusive(t.windowID, t.id)
+	}
 
 	groupName, _ := params["groupName"].(string)
 	f.lastOpenGroupName = groupName
@@ -198,9 +209,10 @@ func (f *groupAwareExtension) handleOpen(params map[string]any) map[string]any {
 			f.groups[g.id] = g
 		}
 		t.groupID = g.id
-		if g.collapsed {
+		if active && g.collapsed {
 			// A collapsed group cannot show the active tab: Chrome deactivates the
-			// newcomer and activates an adjacent visible tab instead.
+			// newcomer and activates an adjacent visible tab instead. (A background
+			// open is already inactive, so it leaves the user's active tab alone.)
 			t.active = false
 			if other := f.firstVisibleOther(t.windowID, t.id); other != nil {
 				other.active = true

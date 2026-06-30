@@ -546,31 +546,37 @@ async function handle(message) {
       return;
     }
     if (message.type === "open_tab") {
-      // Create the tab ACTIVE within its window so it becomes the authoritative
-      // foreground tab (resolveForegroundTabId returns it) and subsequent
-      // no-tab_id page tools — read, observe, snapshot — follow to the new tab,
-      // matching what list_tabs now reports as active. active:true only changes
-      // which tab is active inside the window; it does NOT raise Chrome over
-      // other OS apps (that needs chrome.windows.update({focused:true}), which we
-      // intentionally do not call here so automation never steals the user's OS
-      // foreground).
-      const tab = await chrome.tabs.create({ url: message.params?.url || "about:blank", active: true });
-      state.activeTabId = tab.id || null;
+      // Foreground vs background. By default (active !== false) the tab is created
+      // ACTIVE within its window so it becomes the authoritative foreground tab
+      // (resolveForegroundTabId returns it) and subsequent no-tab_id page tools —
+      // read, observe, snapshot — follow it, matching what list_tabs reports as
+      // active. The daemon passes active:false in isolation mode: the tab opens in
+      // the BACKGROUND so it never switches the tab the user is looking at, while
+      // still being pinned as the agent's working target below (the daemon resolves
+      // it by id, so it does not need to be the foreground tab). Either way we
+      // never call chrome.windows.update({focused:true}), so automation never
+      // raises Chrome over the user's other OS apps.
+      const makeActive = message.params?.active !== false;
+      const tab = await chrome.tabs.create({ url: message.params?.url || "about:blank", active: makeActive });
+      if (makeActive) state.activeTabId = tab.id || null;
       // Pin the agent's own tab as its working target so subsequent no-tab_id tools
-      // stay on it no matter which tab/window the human selects next.
+      // stay on it no matter which tab/window the human selects next. This holds for
+      // background opens too — the pin, not the foreground state, is what no-tab_id
+      // resolution follows.
       state.agentTabId = tab.id || null;
       let resultTab = tab;
       if (tab.id && hasGroupTarget(message.params)) {
         const groupId = await groupTabForParams(tab, message.params);
-        // Grouping can DEMOTE the freshly-opened active tab: a collapsed group
-        // cannot hold the active tab, so Chrome deactivates the newcomer and
-        // activates an adjacent visible tab. Re-expand the group and re-activate
-        // the opened tab so it stays the foreground tab the agent will act on —
-        // otherwise the next no-tab_id tool resolves the wrong tab.
-        if (typeof groupId === "number" && groupId >= 0) {
+        if (typeof groupId === "number" && groupId >= 0 && makeActive) {
+          // Grouping can DEMOTE the freshly-opened active tab: a collapsed group
+          // cannot hold the active tab, so Chrome deactivates the newcomer and
+          // activates an adjacent visible tab. Re-expand the group and re-activate
+          // the opened tab so it stays the foreground tab the agent will act on —
+          // otherwise the next no-tab_id tool resolves the wrong tab. Skipped for a
+          // background open, which intentionally stays inactive.
           await chrome.tabGroups.update(groupId, { collapsed: false }).catch(() => {});
+          await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
         }
-        await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
         resultTab = await chrome.tabs.get(tab.id).catch(() => tab);
       }
       send({ id: message.id, ok: true, result: await tabSummary(resultTab) });

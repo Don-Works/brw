@@ -271,6 +271,17 @@ to keep the run's tabs together. Ungrouped/default tabs remain visible to
 are UI organization only; use profiles or incognito contexts for cookie/storage
 isolation.
 
+**Tab isolation (default).** When driving your real Chrome over the bridge, the
+daemon defaults to *isolation*: brw acts only on tabs it owns. It opens its tabs
+in its own group (`--bridge-tab-group`, `brw` by default), in the **background**,
+and a no-`tab_id` action targets brw's own working tab — never the tab you have
+focused. If brw owns no tab yet, the first page action opens a fresh one instead
+of hijacking whatever you are looking at. To act on one of *your* existing tabs,
+pass its `tab_id` (from `brw_list_tabs`). This keeps automation (and parallel
+agent runs) from stomping your open tabs. To restore the legacy behavior where
+brw follows your manually-focused tab, run with `--bridge-follow-focus` (or
+`BRW_BRIDGE_FOLLOW_FOCUS=1`).
+
 ## Safety
 
 `brw` uses a normal visible browser and persistent user profile. It does not add

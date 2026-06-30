@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -17,8 +18,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/cdp"
+	"github.com/Don-Works/brw/internal/httpclient"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
@@ -45,6 +49,8 @@ func main() {
 		err = packExtension(os.Args[2:])
 	case "update-xml":
 		err = updateXML(os.Args[2:])
+	case "daemons":
+		err = daemons(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -64,7 +70,97 @@ commands:
                   write an SSH stdio wrapper for a remote brw bridge daemon
   macos-policy    write a Chrome ExtensionSettings .mobileconfig
   pack-extension  pack the brw Chrome extension as a CRX using installed Chrome
-  update-xml      write a Chrome extension update manifest XML`)
+  update-xml      write a Chrome extension update manifest XML
+  daemons         list configured bridge profile-daemons + probe each /health (JSON)`)
+}
+
+// daemonRecord is one configured browser-profile bridge daemon, as emitted by
+// `brwctl daemons`. It is the discovery contract a gateway (e.g. mcplexer)
+// consumes to register one namespace per brw profile-daemon. http_addr/ws_addr
+// are the daemon's loopback control + extension-bridge addresses; identity is the
+// live /health identity when the daemon is reachable.
+type daemonRecord struct {
+	Name        string                `json:"name"`
+	Kind        string                `json:"kind,omitempty"`
+	Workspace   string                `json:"workspace,omitempty"`
+	Profile     string                `json:"profile"`
+	HTTPAddr    string                `json:"http_addr"`
+	WSAddr      string                `json:"ws_addr"`
+	ExtensionID string                `json:"extension_id,omitempty"`
+	Reachable   bool                  `json:"reachable"`
+	Identity    *brwidentity.Identity `json:"identity,omitempty"`
+	Error       string                `json:"error,omitempty"`
+}
+
+// daemons enumerates every extension-bridge profile in the profile policy and
+// probes each profile's daemon /health, emitting a JSON array of daemonRecord.
+// It iterates policy.Profiles directly (not ResolveProfile) because the point is
+// to list ALL configured daemons, not resolve one for a workspace.
+func daemons(args []string) error {
+	fs := flag.NewFlagSet("daemons", flag.ContinueOnError)
+	var policyPath string
+	var timeout time.Duration
+	fs.StringVar(&policyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path")
+	fs.DurationVar(&timeout, "timeout", 3*time.Second, "per-daemon /health probe timeout")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	policy, err := profilepolicy.Load(policyPath)
+	if err != nil {
+		return err
+	}
+
+	records := make([]daemonRecord, 0, len(policy.Profiles))
+	for _, profile := range policy.Profiles {
+		if !profile.ExtensionBridgeAllowed {
+			continue
+		}
+		records = append(records, probeDaemon(profile, timeout))
+	}
+
+	writeJSON(os.Stdout, records)
+	return nil
+}
+
+// probeDaemon builds the discovery record for one bridge profile: it derives the
+// daemon's loopback addresses and extension id from the profile, then GETs the
+// daemon's /health to fill in reachability and live identity. A probe failure is
+// recorded (reachable=false + error), never fatal — an offline daemon must still
+// appear in the listing so a consumer can decide whether to register it.
+func probeDaemon(profile profilepolicy.Profile, timeout time.Duration) daemonRecord {
+	extID := profile.BridgeExtensionID
+	if extID == "" {
+		extID = profilepolicy.DefaultBridgeExtensionID
+	}
+	httpURL := defaultBridgeHTTPURL(profile)
+	rec := daemonRecord{
+		Name:        profile.Name,
+		Kind:        profile.Kind,
+		Profile:     profile.Name,
+		HTTPAddr:    httpURL,
+		WSAddr:      defaultBridgeWSAddr(profile),
+		ExtensionID: extID,
+	}
+	ctrl, cerr := httpclient.New(httpURL, timeout)
+	if cerr != nil {
+		rec.Error = cerr.Error()
+		return rec
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	health, herr := ctrl.Health(ctx)
+	if herr != nil {
+		rec.Error = herr.Error()
+		return rec
+	}
+	rec.Reachable = true
+	if !health.Identity.Empty() {
+		id := health.Identity
+		rec.Identity = &id
+		rec.Workspace = health.Identity.Workspace
+	}
+	return rec
 }
 
 func doctor(args []string) error {

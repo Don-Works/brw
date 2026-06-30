@@ -63,6 +63,14 @@ refs (e17) you click with; pass ref or region for a small cropped image. If a
 snapshot's metadata reports low_semantic_coverage or cross_origin_frames, that
 is your cue to screenshot the named box and act with brw_click_xy.
 
+TABS: by default brw works in its OWN tab group on tabs it opened, in the
+background, and never touches the human's existing tabs. Just brw_open and work;
+your first action opens a fresh tab if you have none. To act on one of the
+human's existing tabs, you must pass its tab_id (from brw_list_tabs) to the tool
+— no tab_id means "my own working tab", never "whatever the human is looking at".
+When several runs share one browser, capture the tab id brw_open returns and pass
+it as tab_id on later calls to stay on your own tab.
+
 HANDING BACK TO THE HUMAN: for MFA, CAPTCHA, payment confirmation, or anything
 you are not authorized to complete, call brw_notify { kind: "needs_input" } and
 stop. Never attempt to bypass logins, CAPTCHAs, MFA, or fraud checks.

@@ -115,7 +115,28 @@ type Bridge struct {
 	// resolve the right tab in the common single-window case without a focus grab.
 	// Set once before serving.
 	raiseWindowOnFocus bool
+	// followFocus controls how a no-tab_id action resolves its target tab.
+	//
+	// false ("isolation", the daemon default): brw acts only on the tab it OWNS
+	// — the one it opened, or one named explicitly via tab_id — and never on the
+	// user's genuinely-focused Chrome tab. When brw owns no tab yet, the first
+	// page-acting tool opens a fresh tab (in the default group, in the
+	// background) instead of hijacking whatever the user is looking at. This is
+	// what stops a worker from stomping the user's existing tabs.
+	//
+	// true (the library default, and restorable on the daemon with
+	// --bridge-follow-focus / BRW_BRIDGE_FOLLOW_FOCUS): the legacy behavior — a
+	// no-tab_id action follows the user's live-focused tab. Suits an interactive
+	// single-operator session that wants brw to act on whatever tab is selected.
+	//
+	// Set once before serving.
+	followFocus bool
 }
+
+// isolationSeedURL is the placeholder brw opens to claim its own working tab when
+// a worker's first page action arrives before any explicit brw_open (isolation
+// mode). The tool that triggered the open then navigates/reads this tab.
+const isolationSeedURL = "about:blank"
 
 type bridgeDeviceIdentity struct {
 	UserAgent string `json:"userAgent"`
@@ -182,6 +203,10 @@ func NewWithIdentity(addr string, timeout time.Duration, allowedExtensionID stri
 		// Library default preserves historical behaviour (focus raises the
 		// window); the daemon flips this to false for the seamless experience.
 		raiseWindowOnFocus: true,
+		// Library default preserves historical behaviour (no-tab_id actions follow
+		// the user's focused tab); the daemon flips this to false (isolation) so a
+		// worker works in its own tabs and never stomps the user's existing ones.
+		followFocus: true,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/extension", b.handleExtension)
@@ -617,7 +642,11 @@ func (b *Bridge) readLoop(ctx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 		if resp.Type == "active_tab" {
-			if resp.TabID != 0 {
+			// active_tab is the USER's live-focus hint, pushed when they switch
+			// tabs. Honor it only in follow-focus mode; in isolation the cached
+			// active id must track the tab brw OWNS, so a user tab-switch must not
+			// repoint it onto the user's tab (that is the stomping we prevent).
+			if resp.TabID != 0 && b.followFocus {
 				b.setActiveTabID(strconv.Itoa(resp.TabID))
 			}
 			continue
@@ -926,6 +955,28 @@ func (b *Bridge) SetDefaultGroup(name string) { b.defaultGroup = strings.TrimSpa
 // the user's focus. Call before serving.
 func (b *Bridge) SetRaiseWindowOnFocus(v bool) { b.raiseWindowOnFocus = v }
 
+// SetFollowFocus selects how a no-tab_id action resolves its target tab. Pass
+// false (the daemon default) for isolation — brw works on tabs it owns and opens
+// a fresh background tab rather than touching the user's focused tab. Pass true
+// for the legacy behavior where brw follows the user's manually-focused tab. Call
+// before serving. See the followFocus field for the full contract.
+func (b *Bridge) SetFollowFocus(v bool) { b.followFocus = v }
+
+// openTabParams stamps the foreground/background intent onto an open_tab request.
+// In isolation (followFocus=false) brw opens its tab in the BACKGROUND
+// (active:false) so it never switches the tab the user is looking at; the
+// extension still pins the new tab as brw's working target and the daemon
+// resolves it by id. In follow-focus mode the tab opens active so the user's view
+// follows the agent — the legacy behavior. An extension that predates the active
+// flag treats a missing/true value as active, so this is backward compatible.
+func (b *Bridge) openTabParams(params map[string]any) map[string]any {
+	if params == nil {
+		params = map[string]any{}
+	}
+	params["active"] = b.followFocus
+	return params
+}
+
 func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, error) {
 	// Corral the agent's tabs into one labelled group by default so they don't
 	// scatter loose across the user's window. An explicit group from the caller
@@ -939,7 +990,7 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	if !strings.Contains(url, "://") && url != "about:blank" {
 		url = "https://" + url
 	}
-	raw, err := b.call(ctx, "open_tab", map[string]any{"url": url})
+	raw, err := b.call(ctx, "open_tab", b.openTabParams(map[string]any{"url": url}))
 	if err != nil {
 		return browser.OpenResult{}, err
 	}
@@ -953,8 +1004,14 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	}
 	b.setActiveTabID(out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
-	if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
-		return browser.OpenResult{Tab: out, Ready: ready}, err
+	// In isolation we resolve no-tab_id actions by the owned id (b.active), so the
+	// opened tab need not be foregrounded — keeping it in the background means the
+	// open never disturbs the tab the user is on. Only follow-focus mode, where
+	// later actions chase the live foreground tab, must make the new tab current.
+	if b.followFocus {
+		if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
+			return browser.OpenResult{Tab: out, Ready: ready}, err
+		}
 	}
 	return browser.OpenResult{Tab: out, Ready: ready}, nil
 }
@@ -1006,7 +1063,11 @@ func (b *Bridge) ListTabs(ctx context.Context) ([]browser.Tab, error) {
 	if activeID == "" && !hasFocusedWindow && b.activeTabID() == "" {
 		activeID = fallbackActiveID
 	}
-	if activeID != "" {
+	// Only let a list refresh repoint the cached active id in follow-focus mode.
+	// In isolation that cache is brw's OWNED tab; the user's focused tab (what
+	// activeID reflects here) must not overwrite it, or the next no-tab_id action
+	// would land on the user's tab.
+	if activeID != "" && b.followFocus {
 		b.setActiveTabID(activeID)
 	}
 	return out, nil
@@ -1114,7 +1175,7 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 	if opts.Color != "" {
 		params["groupColor"] = opts.Color
 	}
-	raw, err := b.call(ctx, "open_tab", params)
+	raw, err := b.call(ctx, "open_tab", b.openTabParams(params))
 	if err != nil {
 		return browser.OpenResult{}, err
 	}
@@ -1128,8 +1189,13 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 	}
 	b.setActiveTabID(out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
-	if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
-		return browser.OpenResult{Tab: out, Ready: ready}, err
+	// See Open: in isolation the owned id drives resolution, so we leave the tab in
+	// the background and never steal the user's current tab; only follow-focus mode
+	// foregrounds it.
+	if b.followFocus {
+		if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
+			return browser.OpenResult{Tab: out, Ready: ready}, err
+		}
 	}
 	return browser.OpenResult{Tab: out, Ready: ready}, nil
 }
@@ -2761,6 +2827,13 @@ func (b *Bridge) contextTabID(ctx context.Context) string {
 	if tabID := browser.TabIDFromContext(ctx); tabID != "" {
 		return tabID
 	}
+	if !b.followFocus {
+		// Isolation: target the tab brw OWNS. b.active is set only by brw's own
+		// Open/FocusTab (never by user-focus signals — those writes are guarded),
+		// so this never chases the user's manual tab switches. Returns "" when brw
+		// owns no tab yet; the top-level entry (ensureOwnedTabID) opens one then.
+		return b.activeTabID()
+	}
 	// No explicit tab in context: resolve the browser's genuinely focused tab
 	// from the extension rather than trusting the cached b.active reference,
 	// which drifts when the user switches tabs manually in Chrome (the daemon
@@ -2788,15 +2861,44 @@ func (b *Bridge) contextTabID(ctx context.Context) string {
 	return b.activeTabID()
 }
 
-// ResolveActiveTabID resolves the genuinely focused tab ONCE for a top-level
-// tool call and returns it (or "" when it cannot be determined). The MCP / HTTP
-// entry points call this when no explicit tab_id is supplied and pin the result
-// into the request context via browser.WithTabID, so every downstream
-// contextTabID() short-circuits instead of re-issuing get_active_tab_id 3-11x
-// per logical tool call. It runs the same bounded retry as contextTabID so a
-// mid-reconnect MV3 service worker does not drop the call onto a stale tab.
+// ensureOwnedTabID resolves the tab a top-level no-tab_id tool call must target,
+// opening one if necessary. An explicit tab_id in ctx always wins (the agent
+// chose to work with that existing tab). In isolation (the daemon default) it
+// returns the tab brw owns, opening a fresh tab in the default group when brw
+// owns none yet — so a worker's first action lands on its own new tab instead of
+// the user's focused tab. In follow-focus mode it defers to the live resolver.
+func (b *Bridge) ensureOwnedTabID(ctx context.Context) string {
+	if tabID := browser.TabIDFromContext(ctx); tabID != "" {
+		return tabID
+	}
+	if b.followFocus {
+		return b.contextTabID(ctx)
+	}
+	if owned := b.activeTabID(); owned != "" {
+		return owned
+	}
+	// No owned tab yet: open one (default group, background) so the call never
+	// acts on the user's existing tab. The triggering tool then drives this tab.
+	res, err := b.Open(ctx, isolationSeedURL)
+	if err != nil {
+		// Open failed (extension mid-reconnect): fall back to whatever we last
+		// owned, which may be "" — the caller leaves the tab unpinned rather than
+		// guessing the user's tab.
+		return b.activeTabID()
+	}
+	return res.Tab.ID
+}
+
+// ResolveActiveTabID resolves the tab a top-level no-tab_id tool call targets and
+// returns it (or "" when it cannot be determined / opened). The MCP / HTTP entry
+// points call this when no explicit tab_id is supplied and pin the result into the
+// request context via browser.WithTabID, so every downstream contextTabID()
+// short-circuits instead of re-resolving per sub-call. In isolation it returns
+// (and, on first use, opens) brw's owned tab; in follow-focus mode it runs the
+// same bounded retry as contextTabID so a mid-reconnect MV3 service worker does
+// not drop the call onto a stale tab.
 func (b *Bridge) ResolveActiveTabID(ctx context.Context) string {
-	return b.contextTabID(ctx)
+	return b.ensureOwnedTabID(ctx)
 }
 
 // pinActiveTab resolves the active tab once and returns a context with that tab
@@ -2809,7 +2911,9 @@ func (b *Bridge) pinActiveTab(ctx context.Context) context.Context {
 	if browser.TabIDFromContext(ctx) != "" {
 		return ctx
 	}
-	if tabID := b.contextTabID(ctx); tabID != "" {
+	// ensureOwnedTabID (not contextTabID) so a batch/plan that starts before any
+	// brw_open also opens its own tab in isolation instead of resolving the user's.
+	if tabID := b.ensureOwnedTabID(ctx); tabID != "" {
 		return browser.WithTabID(ctx, tabID)
 	}
 	return ctx
@@ -2903,7 +3007,11 @@ func (b *Bridge) resolveActiveTabID(ctx context.Context) string {
 		return ""
 	}
 	id := strconv.Itoa(resp.TabID)
-	if id != b.activeTabID() {
+	// This is the user's live-focused tab. Only heal the cache toward it in
+	// follow-focus mode; in isolation the cache is brw's owned tab and must not be
+	// repointed at the user's tab. (In isolation this resolver isn't used for
+	// targeting, but guard the write so no path can clobber the owned id.)
+	if id != b.activeTabID() && b.followFocus {
 		b.setActiveTabID(id)
 	}
 	return id

@@ -1144,7 +1144,7 @@ func canonicalToolName(name string) string {
 
 func tools() []map[string]any {
 	return []map[string]any{
-		tool("brw_open", "Open a URL in a visible Chrome/Chromium tab. On the extension bridge the tab is corralled into a default agent tab group (configurable; \"brw\" by default) and the window is NOT raised to the foreground, so opening a tab never steals your focus. To use a different run-scoped group, pass a unique group name such as workspace-1; to add later tabs to that same visible group, pass its group_id from brw_list_tabs or brw_list_tab_groups.", object(map[string]any{
+		tool("brw_open", "Open a URL in a visible Chrome/Chromium tab. On the extension bridge the tab is corralled into a default agent tab group (configurable; \"brw\" by default) and, in the default isolation mode, opened in the BACKGROUND — so brw works in its own group and never switches or stomps the tab you are on. brw acts only on tabs it owns; to work with one of YOUR existing tabs, pass that tab's tab_id to a tool. To use a different run-scoped group, pass a unique group name such as workspace-1; to add later tabs to that same visible group, pass its group_id from brw_list_tabs or brw_list_tab_groups.", object(map[string]any{
 			"url":         stringSchema("URL to open. Scheme defaults to https."),
 			"group":       stringSchema("Optional Chrome tab group title. When set without group_id, the extension reuses an existing same-title group in the target window or creates one."),
 			"group_id":    stringSchema("Optional existing Chrome tab group id from brw_list_tabs or brw_list_tab_groups. When set, the new tab is added to that group."),
@@ -1256,7 +1256,7 @@ func tools() []map[string]any {
 			"snapshot":  boolSchema("Include a full page snapshot in the response."),
 			"tab_id":    stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"direction"})),
-		tool("brw_navigate_to", "Navigate the active tab to a URL, wait for the page to load, and return a post-navigation observation. Unlike brw_open, this navigates the EXISTING tab instead of creating a new one. Use this when you need to change the URL of the current tab. Pass optional tab_id to target a specific tab.", object(map[string]any{
+		tool("brw_navigate_to", "Navigate brw's current working tab to a URL, wait for the page to load, and return a post-navigation observation. Unlike brw_open, this reuses the working tab instead of creating another. In the default isolation mode brw operates in its OWN tab(s): if it has not opened one yet, this opens a fresh tab rather than navigating whatever tab you are on. To navigate one of YOUR existing tabs, pass its tab_id (from brw_list_tabs).", object(map[string]any{
 			"url":      stringSchema("URL to navigate to. Scheme defaults to https."),
 			"snapshot": boolSchema("Include a full page snapshot in the response."),
 			"tab_id":   stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),

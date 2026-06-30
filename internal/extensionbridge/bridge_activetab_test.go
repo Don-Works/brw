@@ -28,6 +28,12 @@ type fakeExtension struct {
 	tabs []fakeTab
 	// focusedWindow is the id of the OS-focused window.
 	focusedWindow int
+	// agentTabId mirrors the service worker's pinned agent tab: set by open_tab /
+	// focus_tab, it wins over the OS-focused tab in foregroundID() and is never
+	// moved by the user. 0 means unset.
+	agentTabId int
+	// nextID hands out ids for tabs created via open_tab.
+	nextID int
 }
 
 type fakeTab struct {
@@ -38,9 +44,17 @@ type fakeTab struct {
 	title    string
 }
 
-// foregroundID mirrors service_worker resolveForegroundTabId(): the active tab
-// of the focused window. This is the single source of truth.
+// foregroundID mirrors service_worker resolveForegroundTabId(): the pinned agent
+// tab wins (set by open_tab/focus_tab, never moved by the user); otherwise the
+// active tab of the focused window. This is the single source of truth.
 func (f *fakeExtension) foregroundID() int {
+	if f.agentTabId != 0 {
+		for _, t := range f.tabs {
+			if t.id == f.agentTabId {
+				return f.agentTabId
+			}
+		}
+	}
 	for _, t := range f.tabs {
 		if t.windowID == f.focusedWindow && t.active {
 			return t.id
@@ -88,7 +102,30 @@ func (f *fakeExtension) focus(tabID int) bool {
 		}
 	}
 	f.focusedWindow = win
+	// Explicit focus pins the agent's working tab, like the service worker.
+	f.agentTabId = tabID
 	return true
+}
+
+// openTab models service_worker open_tab: it creates a tab, pins it as the agent
+// tab, and (unless active:false) makes it the active tab of the focused window.
+func (f *fakeExtension) openTab(url string, active bool) fakeTab {
+	if f.nextID == 0 {
+		f.nextID = 1000
+	}
+	f.nextID++
+	nt := fakeTab{id: f.nextID, windowID: f.focusedWindow, active: false, url: url, title: "new tab"}
+	if active {
+		for i := range f.tabs {
+			if f.tabs[i].windowID == f.focusedWindow {
+				f.tabs[i].active = false
+			}
+		}
+		nt.active = true
+	}
+	f.tabs = append(f.tabs, nt)
+	f.agentTabId = nt.id
+	return nt
 }
 
 // serve runs the fake extension against the bridge's websocket until ctx is
@@ -322,16 +359,19 @@ func TestListTabGroupsUsesExtensionPayload(t *testing.T) {
 // TestServiceWorkerActiveTabResolverIsAuthoritative guards the service_worker
 // contract that backs the fix: get_active_tab_id and list_tabs derive their
 // active tab from the SAME resolveForegroundTabId(), the cache is not trusted
-// ahead of the focused-window scan, and open_tab creates the tab active so the
-// agent follows it.
+// ahead of the focused-window scan, and open_tab honors the daemon's foreground
+// intent (active by default, background when the daemon asks) while always
+// pinning the new tab as the agent's working target.
 func TestServiceWorkerActiveTabResolverIsAuthoritative(t *testing.T) {
 	src := readServiceWorker(t)
 	for _, want := range []string{
 		"function resolveForegroundTabId(",
-		"const foregroundId = await resolveForegroundTabId()",                             // list_tabs uses the shared resolver
-		"summary.active = isForeground",                                                   // list_tabs marks exactly the foreground tab
-		"const id = await resolveForegroundTabId();",                                      // activeTabId() / get_active_tab_id uses it
-		`chrome.tabs.create({ url: message.params?.url || "about:blank", active: true })`, // open follows
+		"const foregroundId = await resolveForegroundTabId()",                                   // list_tabs uses the shared resolver
+		"summary.active = isForeground",                                                         // list_tabs marks exactly the foreground tab
+		"const id = await resolveForegroundTabId();",                                            // activeTabId() / get_active_tab_id uses it
+		"const makeActive = message.params?.active !== false;",                                  // open honors the foreground/background intent
+		`chrome.tabs.create({ url: message.params?.url || "about:blank", active: makeActive })`, // open follows that intent
+		"state.agentTabId = tab.id || null;",                                                    // and always pins the agent's working tab
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("service worker authoritative active-tab resolver missing %q", want)

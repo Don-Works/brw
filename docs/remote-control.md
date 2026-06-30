@@ -49,6 +49,22 @@ organization: ungrouped tabs remain readable/targetable, and tab groups do not
 isolate cookies, storage, downloads, or authorization. Use separate profiles or
 incognito contexts for isolation.
 
+By default the bridge daemon runs in **tab isolation**: a no-`tab_id` action
+targets the tab brw owns (opened in its own group, in the background), never the
+user's focused tab, and the first page action opens a fresh tab rather than
+reusing whatever is on screen. Acting on an existing tab is explicit — pass its
+`tab_id`. This is what stops a headless worker from navigating the tabs a human
+(or another run) has open. Pass `--bridge-follow-focus` /
+`BRW_BRIDGE_FOLLOW_FOCUS=1` to fall back to the legacy follow-the-focused-tab
+behavior for an interactive single-operator session.
+
+Note on concurrency: all bridge clients share one Chrome through one daemon, so
+brw's "owned tab" is a single per-daemon pointer. For several runs that act at the
+same instant, have each run pass the `tab_id` it got back from `brw_open` so it
+stays pinned to its own tab; for full parallel isolation (separate cookies and
+windows) give each run its own browser via a direct-CDP profile rather than the
+shared bridge.
+
 ## Installed Chrome Profile
 
 For an already-authenticated Chrome profile, run a long-lived bridge daemon on
@@ -98,6 +114,36 @@ The generated wrapper is hardened and resilient by default:
 Every baked-in value is overridable at runtime via the matching `BRW_*` env var
 (for example `BRW_SERVER_ALIVE_INTERVAL`), and `--ssh-option` appends any extra
 `ssh -o` setting.
+
+## Discovering Profile Daemons
+
+When you run several profile daemons (e.g. one per Chrome/Chromium profile, each
+on its own ports), `brwctl daemons` enumerates every extension-bridge profile in
+the policy and probes each daemon's `/health`, emitting a JSON array a gateway
+can consume to register one namespace per browser:
+
+```sh
+brwctl daemons
+```
+
+```json
+[
+  { "name": "work-profile", "profile": "work-profile", "workspace": "brw",
+    "http_addr": "http://127.0.0.1:17310", "ws_addr": "127.0.0.1:17311",
+    "extension_id": "amocjcgddnoakjijfggdpnefdnboilpe", "reachable": true,
+    "identity": { "workspace": "brw", "profile": "work-profile",
+                  "profile_directory": "Profile 1", "mode": "bridge" } }
+]
+```
+
+Each entry is one MCP server's worth of wiring: the `http_addr` is the
+`--upstream-http` a stdio `brwd --mcp` child proxies to. An offline daemon still
+appears with `"reachable": false` so a consumer can decide whether to register
+it. This is the discovery contract behind the gateway-side sync — for
+[MCPlexer](https://mcplexer.com), `mcplexer brw sync` turns this roster into one
+namespace + route per browser, so an agent can pick which browser to drive by
+namespace (`brw__*`, `brw_chromium__*`, …) and existing tabs are never stomped
+(see the tab-isolation note above; pass `tab_id` to act on a specific tab).
 
 ## HTTP Tunnel
 
