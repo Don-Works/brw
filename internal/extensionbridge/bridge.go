@@ -137,6 +137,16 @@ type Bridge struct {
 	// action re-triggering a full-timeout open. Without it a single stuck open
 	// cascades into "brw_evaluate 20003ms x N", one 20s hang per call.
 	autoOpenFailedAt time.Time
+	// recentReplaces timestamps recent extension-connection replacements (guarded
+	// by b.mu). Two browser profiles running brw against ONE bridge endlessly
+	// displace each other ("replaced by new extension connection" churn = the
+	// flashing extension icon); a burst here trips flapHoldUntil.
+	recentReplaces []time.Time
+	// flapHoldUntil, while in the future, makes handleExtension REJECT a new
+	// extension connection instead of replacing the live one, breaking the flap so
+	// the current connection stays stable. Extended on each rejected intruder, and
+	// naturally bypassed once the live connection actually dies (b.conn == nil).
+	flapHoldUntil time.Time
 }
 
 // isolationSeedURL is the placeholder brw opens to claim its own working tab when
@@ -153,6 +163,18 @@ const (
 	// burst of no-tab_id calls against a wedged browser fast-fails instead of each
 	// paying autoOpenTimeout — this is what breaks the per-call hang cascade.
 	autoOpenCooldown = 15 * time.Second
+)
+
+const (
+	// flapWindow + flapThreshold detect extension-connection churn: this many
+	// replacements within the window means two extensions are colliding on one
+	// bridge (a flashing icon), not a normal single reconnect.
+	flapWindow    = 10 * time.Second
+	flapThreshold = 5
+	// flapHoldDuration is how long, after a detected flap, the bridge holds the
+	// current connection and rejects intruders. Extended on each rejected attempt
+	// so a persistently colliding profile can't resume the churn.
+	flapHoldDuration = 30 * time.Second
 )
 
 type bridgeDeviceIdentity struct {
@@ -483,10 +505,41 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	}
 
 	b.mu.Lock()
+	now := time.Now().UTC()
+	// Flap guard: two browser profiles running brw against one bridge otherwise
+	// displace each other forever (the flashing icon). While holding after a
+	// detected flap and the current connection is still live, reject the newcomer
+	// and extend the hold so the live connection stays put. Once the live
+	// connection actually dies, b.conn is nil and the next connection is accepted
+	// normally — so a legitimate reconnect after a real drop still works.
+	if b.conn != nil && now.Before(b.flapHoldUntil) {
+		b.flapHoldUntil = now.Add(flapHoldDuration)
+		b.mu.Unlock()
+		_ = conn.Close(websocket.StatusTryAgainLater, "another extension already holds this bridge (flap-hold active)")
+		return
+	}
 	if b.conn != nil {
+		// A live connection is being replaced. Track the churn rate; a burst within
+		// flapWindow means two extensions are colliding, not a single reconnect.
+		cutoff := now.Add(-flapWindow)
+		kept := b.recentReplaces[:0]
+		for _, t := range b.recentReplaces {
+			if t.After(cutoff) {
+				kept = append(kept, t)
+			}
+		}
+		b.recentReplaces = append(kept, now)
+		if len(b.recentReplaces) >= flapThreshold {
+			// Collision: keep the CURRENT connection, reject this newcomer, hold.
+			b.flapHoldUntil = now.Add(flapHoldDuration)
+			b.recentReplaces = b.recentReplaces[:0]
+			b.mu.Unlock()
+			log.Printf("brw: extension connection flap detected (%d+ replacements in %s) on bridge %s — two browser profiles likely have brw enabled on the same bridge. Holding the current connection and rejecting extras; disable brw in the other profile, or give it its own --bridge-addr.", flapThreshold, flapWindow, b.addr)
+			_ = conn.Close(websocket.StatusTryAgainLater, "extension flap: holding current connection")
+			return
+		}
 		_ = b.conn.Close(websocket.StatusNormalClosure, "replaced by new extension connection")
 	}
-	now := time.Now().UTC()
 	b.conn = conn
 	b.hello = verifiedHello
 	b.connectedAt = now
