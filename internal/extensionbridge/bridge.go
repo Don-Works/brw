@@ -131,12 +131,29 @@ type Bridge struct {
 	//
 	// Set once before serving.
 	followFocus bool
+	// autoOpenFailedAt records when an isolation auto-open last failed (guarded by
+	// b.mu). It powers a cooldown so a wedged browser — one whose extension stops
+	// answering open_tab — yields ONE bounded failure instead of every no-tab_id
+	// action re-triggering a full-timeout open. Without it a single stuck open
+	// cascades into "brw_evaluate 20003ms x N", one 20s hang per call.
+	autoOpenFailedAt time.Time
 }
 
 // isolationSeedURL is the placeholder brw opens to claim its own working tab when
 // a worker's first page action arrives before any explicit brw_open (isolation
 // mode). The tool that triggered the open then navigates/reads this tab.
 const isolationSeedURL = "about:blank"
+
+const (
+	// autoOpenTimeout bounds a single isolation auto-open so an unresponsive
+	// extension fails in seconds instead of holding the caller for the full bridge
+	// timeout (the 20s that surfaced as the brw_evaluate latency spike).
+	autoOpenTimeout = 8 * time.Second
+	// autoOpenCooldown suppresses re-opening for a window after a failure, so a
+	// burst of no-tab_id calls against a wedged browser fast-fails instead of each
+	// paying autoOpenTimeout — this is what breaks the per-call hang cascade.
+	autoOpenCooldown = 15 * time.Second
+)
 
 type bridgeDeviceIdentity struct {
 	UserAgent string `json:"userAgent"`
@@ -2878,14 +2895,31 @@ func (b *Bridge) ensureOwnedTabID(ctx context.Context) string {
 		return owned
 	}
 	// No owned tab yet: open one (default group, background) so the call never
-	// acts on the user's existing tab. The triggering tool then drives this tab.
-	res, err := b.Open(ctx, isolationSeedURL)
-	if err != nil {
-		// Open failed (extension mid-reconnect): fall back to whatever we last
-		// owned, which may be "" — the caller leaves the tab unpinned rather than
-		// guessing the user's tab.
+	// acts on the user's existing tab. Two guards keep a wedged browser from
+	// turning one slow open into a per-call 20s hang (the brw_evaluate cascade):
+	//   1. cooldown — after a recent failure, fast-fail instead of re-opening.
+	//   2. bounded timeout — a single attempt cannot exceed autoOpenTimeout.
+	b.mu.RLock()
+	failedAt := b.autoOpenFailedAt
+	b.mu.RUnlock()
+	if !failedAt.IsZero() && time.Since(failedAt) < autoOpenCooldown {
 		return b.activeTabID()
 	}
+
+	openCtx, cancel := context.WithTimeout(ctx, autoOpenTimeout)
+	defer cancel()
+	res, err := b.Open(openCtx, isolationSeedURL)
+	if err != nil || res.Tab.ID == "" {
+		b.mu.Lock()
+		b.autoOpenFailedAt = time.Now()
+		b.mu.Unlock()
+		log.Printf("brw: isolation auto-open failed (%v); no-tab_id actions fast-fail for %s — reload the brw extension in chrome://extensions, or pass an explicit tab_id", err, autoOpenCooldown)
+		return b.activeTabID()
+	}
+	// Success clears any prior failure so normal isolation resumes immediately.
+	b.mu.Lock()
+	b.autoOpenFailedAt = time.Time{}
+	b.mu.Unlock()
 	return res.Tab.ID
 }
 

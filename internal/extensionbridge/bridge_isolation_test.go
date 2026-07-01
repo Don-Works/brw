@@ -116,6 +116,39 @@ func TestIsolationExplicitTabIDWins(t *testing.T) {
 	}
 }
 
+// TestIsolationAutoOpenCooldownPreventsCascade is the regression for the reported
+// "brw_evaluate 20003ms x 35 calls" spike: when a browser is wedged and open_tab
+// never succeeds, the isolation auto-open must NOT be re-attempted on every
+// no-tab_id call (each paying the full timeout). A cooldown limits it to one
+// attempt per window.
+func TestIsolationAutoOpenCooldownPreventsCascade(t *testing.T) {
+	b := New("", 5*time.Second, "")
+	b.SetDefaultGroup("brw")
+	b.SetFollowFocus(false)
+	fe := &groupAwareExtension{
+		focusedWindow: 1,
+		nextTabID:     700,
+		groups:        map[int]*gaGroup{},
+		failOpen:      true, // model a wedged extension: open_tab always fails
+		tabs:          []*gaTab{{id: 1, windowID: 1, groupID: -1, active: true, url: "https://user.test"}},
+	}
+	cleanup := connectGroupAwareExtension(t, b, fe)
+	defer cleanup()
+
+	ctx := context.Background()
+	// Several back-to-back no-tab_id resolutions (what a worker's rapid calls do).
+	for i := 0; i < 5; i++ {
+		b.ResolveActiveTabID(ctx)
+	}
+
+	fe.mu.Lock()
+	attempts := fe.openCalls
+	fe.mu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("open_tab attempted %d times across 5 no-tab_id resolves; the cooldown must limit a wedged browser to 1 attempt per window (else every call cascades to the full timeout)", attempts)
+	}
+}
+
 // TestFollowFocusModeResolvesUsersTabWithoutOpening proves the escape hatch:
 // --bridge-follow-focus (SetFollowFocus(true)) restores the legacy behavior where
 // a no-tab_id action acts on the user's focused tab and never auto-opens.

@@ -31,6 +31,10 @@ type groupAwareExtension struct {
 	lastOpenGroupName    string
 	lastOpenBackground   bool
 	lastFocusRaiseWindow bool
+	// failOpen makes open_tab return a failure and counts attempts, to model a
+	// wedged extension for the auto-open cooldown regression test.
+	failOpen  bool
+	openCalls int
 }
 
 type gaTab struct {
@@ -143,6 +147,12 @@ func (f *groupAwareExtension) serve(ctx context.Context, conn *websocket.Conn) {
 			// Runtime.evaluate (condition "committed"); report it satisfied.
 			result = map[string]any{"result": map[string]any{"value": true}}
 		case "open_tab":
+			f.openCalls++
+			if f.failOpen {
+				ok = false
+				result = map[string]any{}
+				break
+			}
 			result = f.handleOpen(msg.Params)
 		case "focus_tab":
 			id := paramInt(msg.Params, "tabId")
