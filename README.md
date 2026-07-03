@@ -223,6 +223,14 @@ Core MCP tools include:
 Use `--mcp-tools core` to advertise only the common-flow tool set while keeping
 all tools callable.
 
+MCP stdio lifecycle: `brwd --mcp` exits cleanly on SIGTERM/SIGINT (including
+while blocked waiting for input), when its stdin closes, and when it is orphaned
+by its parent. For supervisors that spawn one `brwd --mcp --upstream-http`
+proxy per session and may abandon it without closing stdin, add
+`--mcp-idle-exit 90m` (or `BRW_MCP_IDLE_EXIT`): the proxy is a disposable
+stateless shim, so it exits 0 after the idle window and the supervisor respawns
+it on the next call instead of accumulating zombie children.
+
 Backend-specific notes:
 
 - `brw_emulate_device` uses Chrome DevTools Protocol device emulation, not OS

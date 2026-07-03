@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -63,6 +64,7 @@ func main() {
 	var bridgeExtensionID string
 	var upstreamHTTP string
 	var mcpToolProfile string
+	var mcpIdleExit time.Duration
 	var printSystemPrompt bool
 	var blockedDomains string
 	var allowedDomains string
@@ -71,6 +73,7 @@ func main() {
 	flag.StringVar(&httpAddr, "http", envDefault("BRW_HTTP_ADDR", "127.0.0.1:17310"), "HTTP listen address, or off. Defaults to loopback; bind a non-loopback address only behind SSH/Tailscale with caller auth.")
 	flag.BoolVar(&mcpMode, "mcp", false, "run MCP stdio server")
 	flag.StringVar(&mcpToolProfile, "mcp-tools", envDefault("BRW_MCP_TOOLS", "all"), "MCP tool surface advertised in tools/list: 'all' (full) or 'core' (lean common-flow set). All tools remain callable regardless.")
+	flag.DurationVar(&mcpIdleExit, "mcp-idle-exit", envDuration("BRW_MCP_IDLE_EXIT", 0), "exit the --mcp stdio server cleanly after this long with no requests (e.g. 90m); 0 disables. Recommended with --upstream-http, where the process is a disposable stateless proxy respawned on demand: a supervisor that abandons a session without closing the child's stdin would otherwise pin the process alive forever.")
 	flag.BoolVar(&bridgeMode, "bridge", false, "use installed Chrome extension bridge instead of direct CDP")
 	flag.StringVar(&bridgeAddr, "bridge-addr", envDefault("BRW_BRIDGE_ADDR", "127.0.0.1:17311"), "extension bridge WebSocket listen address")
 	flag.BoolVar(&bridgeRaiseWindow, "bridge-raise-window", envBool("BRW_BRIDGE_RAISE_WINDOW"), "bridge: raise the Chrome window to the OS foreground on focus_tab. Off by default so automation never steals your focus while you work elsewhere.")
@@ -236,7 +239,7 @@ func main() {
 		}
 		bridge.SetAuthToken(token)
 		bridge.SetRequireToken(envBool("BRW_BRIDGE_REQUIRE_TOKEN"))
-		if path := bridgeTokenPath(); path != "" {
+		if path := bridgeTokenPath(workspaceName); path != "" {
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				log.Printf("note: could not create bridge token dir %s: %v", filepath.Dir(path), err)
 			} else if err := os.WriteFile(path, []byte(token), 0o600); err != nil {
@@ -302,9 +305,21 @@ func main() {
 
 	if mcpMode {
 		log.Printf("MCP stdio server ready (tool profile: %s)", mcpToolProfile)
+		// A stdio MCP child's lifetime is its session's lifetime. Watch for
+		// orphaning (parent died without closing our stdin) so we never
+		// outlive an abandoned session.
+		go watchParentExit(stop)
 		server := mcp.NewWithToolProfile(controller, mcpToolProfile)
 		server.SetNavigationPolicy(navPolicy)
-		if err := server.Serve(ctx, os.Stdin, os.Stdout); err != nil && ctx.Err() == nil {
+		if mcpIdleExit > 0 {
+			server.SetIdleExit(mcpIdleExit)
+			log.Printf("MCP idle-exit armed: exiting after %s without requests", mcpIdleExit)
+		}
+		err := server.Serve(ctx, os.Stdin, os.Stdout)
+		switch {
+		case errors.Is(err, mcp.ErrIdleExit):
+			log.Printf("mcp server: %v", err)
+		case err != nil && ctx.Err() == nil:
 			log.Fatalf("mcp server: %v", err)
 		}
 		return
@@ -351,8 +366,11 @@ func envDefault(name, fallback string) string {
 // bridgeTokenPath returns the 0600 file where the per-launch extension-bridge
 // handshake token is persisted (for operator inspection / future tooling), under
 // the brw state dir ~/.brw/. BRW_BRIDGE_TOKEN_FILE overrides it; an empty result
-// (no home dir resolvable) means "in-memory only".
-func bridgeTokenPath() string {
+// (no home dir resolvable) means "in-memory only". Workspace-bound daemons get a
+// per-workspace file (bridge-token-<workspace>) — multiple bridge daemons on one
+// machine previously clobbered a single shared file, last writer wins, so the
+// persisted token matched only one of the running daemons.
+func bridgeTokenPath(workspace string) string {
 	if override := strings.TrimSpace(os.Getenv("BRW_BRIDGE_TOKEN_FILE")); override != "" {
 		return override
 	}
@@ -360,7 +378,49 @@ func bridgeTokenPath() string {
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".brw", "bridge-token")
+	name := "bridge-token"
+	if workspace != "" {
+		name += "-" + strings.Map(func(r rune) rune {
+			switch r {
+			case '/', '\\', ':':
+				return '-'
+			}
+			return r
+		}, workspace)
+	}
+	return filepath.Join(home, ".brw", name)
+}
+
+// watchParentExit polls the parent pid and calls stop when this process is
+// reparented (orphaned): the session that spawned us is gone, so a stdio MCP
+// child has nothing left to serve. Normally the parent's death also closes our
+// stdin and Serve exits on EOF; this covers parents that leak the pipe to
+// other processes or otherwise die without it closing.
+func watchParentExit(stop func()) {
+	parent := os.Getppid()
+	if parent <= 1 {
+		return
+	}
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		if os.Getppid() != parent {
+			log.Printf("parent process %d exited; shutting down orphaned MCP stdio server", parent)
+			stop()
+			return
+		}
+	}
+}
+
+// envDuration returns the duration value of an environment variable, or
+// fallback when it is unset, empty, or not a valid Go duration string.
+func envDuration(name string, fallback time.Duration) time.Duration {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return fallback
 }
 
 // envInt returns the integer value of an environment variable, or fallback when

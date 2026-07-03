@@ -21,6 +21,16 @@ type Server struct {
 	manager     browser.Controller
 	toolProfile string // "all" (default) or "core"
 	navPolicy   *navpolicy.Policy
+	idleExit    time.Duration
+}
+
+// SetIdleExit makes Serve return cleanly after no request has arrived for d.
+// Zero (the default) disables it. Intended for the stateless --upstream-http
+// proxy mode where the process is disposable and a supervisor (or the next
+// session) respawns it on demand: a parent that abandons the process without
+// closing its stdin would otherwise pin it alive forever.
+func (s *Server) SetIdleExit(d time.Duration) {
+	s.idleExit = d
 }
 
 // SetNavigationPolicy installs an opt-in allow/deny guardrail enforced on
@@ -132,44 +142,111 @@ type toolContent struct {
 	MIMEType string `json:"mimeType,omitempty"`
 }
 
+// inbound carries one stdin message (or terminal read error) from the reader
+// goroutine to the Serve loop, along with the stdio framing mode in effect
+// when it was read.
+type inbound struct {
+	body []byte
+	mode stdioMode
+	err  error
+}
+
+// ErrIdleExit is returned by Serve when the idle-exit deadline (SetIdleExit)
+// elapses with no incoming request. Callers should treat it as a clean,
+// intentional shutdown, not a failure.
+var ErrIdleExit = errors.New("mcp: idle-exit deadline reached with no requests")
+
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	reader := bufio.NewReader(in)
+	// Stdin is read on its own goroutine so the loop can react to ctx
+	// cancellation (SIGTERM/SIGINT, parent death) while a read is blocked.
+	// Before this, a supervisor's polite SIGTERM was swallowed: NotifyContext
+	// cancelled ctx, but Serve sat in a blocking read forever and the process
+	// leaked — one zombie per abandoned session. The goroutine reads at most
+	// one message ahead (unbuffered channel) so request/response stays
+	// sequential; it is deliberately left blocked on read at shutdown, since
+	// process exit reclaims it.
+	msgs := make(chan inbound)
+	go func() {
+		reader := bufio.NewReader(in)
+		mode := stdioModeUnknown
+		for {
+			body, nextMode, err := readMessage(reader, mode)
+			if nextMode != stdioModeUnknown {
+				mode = nextMode
+			}
+			select {
+			case msgs <- inbound{body: body, mode: mode, err: err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Idle-exit timer: fires only when enabled AND no message has arrived for
+	// s.idleExit. The deadline check re-arms on wakeup so a fire queued while a
+	// request was being handled cannot cause a premature exit.
+	var idleTimer *time.Timer
+	var idleC <-chan time.Time
+	lastActivity := time.Now()
+	if s.idleExit > 0 {
+		idleTimer = time.NewTimer(s.idleExit)
+		defer idleTimer.Stop()
+		idleC = idleTimer.C
+	}
+
 	mode := stdioModeUnknown
 	for {
+		var msg inbound
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
+		case <-idleC:
+			// The tick may have been queued while a request was being handled
+			// (lastActivity moved since the timer was armed) — re-arm for the
+			// remainder instead of exiting under an active client.
+			if remaining := s.idleExit - time.Since(lastActivity); remaining > 0 {
+				idleTimer.Reset(remaining)
+				continue
+			}
+			return ErrIdleExit
+		case msg = <-msgs:
 		}
-		body, nextMode, err := readMessage(reader, mode)
-		if err != nil {
-			if err == io.EOF {
+		if msg.err != nil {
+			if msg.err == io.EOF {
 				return nil
 			}
+			return msg.err
+		}
+		mode = msg.mode
+		if err := s.respond(ctx, out, mode, msg.body); err != nil {
 			return err
 		}
-		if nextMode != stdioModeUnknown {
-			mode = nextMode
-		}
-		if len(bytes.TrimSpace(body)) == 0 {
-			continue
-		}
-		var req request
-		if err := json.Unmarshal(body, &req); err != nil {
-			if err := writeMessage(out, mode, response{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: err.Error()}}); err != nil {
-				return err
-			}
-			continue
-		}
-		if len(req.ID) == 0 {
-			continue
-		}
-		result, rpcErr := s.handle(ctx, req.Method, req.Params)
-		resp := response{JSONRPC: "2.0", ID: req.ID, Result: result, Error: rpcErr}
-		if err := writeMessage(out, mode, resp); err != nil {
-			return err
-		}
+		// Idle time is measured from the moment the message was FULLY
+		// processed, so a tool call that itself outlives the idle deadline
+		// never triggers an exit right after doing work.
+		lastActivity = time.Now()
 	}
+}
+
+// respond parses one raw stdio message and writes its JSON-RPC response.
+// A nil return means "keep serving" (including protocol-level parse errors,
+// which are answered in-band); a non-nil return is a fatal transport error.
+func (s *Server) respond(ctx context.Context, out io.Writer, mode stdioMode, body []byte) error {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	var req request
+	if err := json.Unmarshal(body, &req); err != nil {
+		return writeMessage(out, mode, response{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: err.Error()}})
+	}
+	if len(req.ID) == 0 {
+		return nil
+	}
+	result, rpcErr := s.handle(ctx, req.Method, req.Params)
+	return writeMessage(out, mode, response{JSONRPC: "2.0", ID: req.ID, Result: result, Error: rpcErr})
 }
 
 type stdioMode int
