@@ -101,7 +101,8 @@ src += `
   get state() { return state; },
   resolveForegroundTabId,
   publishActiveTab,
-  isControllableWindowType
+  isControllableWindowType,
+  listTabSummaries
 };`;
 
 vm.createContext(sandbox);
@@ -184,12 +185,46 @@ async function scenarioBootstrapFallback() {
   check("with no pin, falls back to OS-foreground tab", got === 2);
 }
 
+async function scenarioListTabsErrorAndRetry() {
+  await reset();
+  // The harness's default setTimeout never fires its callback, which would hang
+  // listTabSummaries' warm-up retry; fire immediately for this scenario only.
+  const origTimeout = sandbox.setTimeout;
+  const origQuery = overrides["tabs.query"];
+  sandbox.setTimeout = (fn) => { if (typeof fn === "function") queueMicrotask(fn); return 0; };
+
+  // A rejected tabs.query must surface as an ERROR to the daemon (handle()
+  // replies ok:false), never as an empty-but-ok tab list the agent trusts.
+  overrides["tabs.query"] = async () => { throw new Error("tabs API unavailable"); };
+  let threw = false;
+  try { await T.listTabSummaries(); } catch { threw = true; }
+  check("rejected tabs.query propagates as error, not silent empty list", threw);
+
+  // A just-woken service worker can answer [] before tab state is warm: one
+  // retry must see the real tabs.
+  setWin({ id: 1, type: "normal", focused: true });
+  setTab({ id: 11, windowId: 1, active: true, url: "https://a.test/", title: "A" });
+  let calls = 0;
+  overrides["tabs.query"] = async (q = {}) => {
+    calls += 1;
+    if (calls === 1) return [];
+    return origQuery(q);
+  };
+  const tabs = await T.listTabSummaries();
+  check("empty first answer is retried once", calls === 2);
+  check("retry returns the real tabs", tabs.length === 1 && tabs[0].id === 11);
+
+  overrides["tabs.query"] = origQuery;
+  sandbox.setTimeout = origTimeout;
+}
+
 (async () => {
   await scenarioPinBeatsForeground();
   await scenarioUserClicksChatPWA();
   await scenarioPoisonedCacheNoPin();
   await scenarioUserSwitchesNormalTab();
   await scenarioBootstrapFallback();
+  await scenarioListTabsErrorAndRetry();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })();

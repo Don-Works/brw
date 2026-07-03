@@ -1182,7 +1182,18 @@ async function listTabSummaries() {
   // freshly launched Chromium clone/test profile), even though those tabs were fully
   // controllable. The denylist preserves the PWA-exclusion intent without the false
   // negatives.
-  const allTabs = await chrome.tabs.query({}).catch(() => []);
+  //
+  // A REJECTED query must propagate (handle() answers ok:false) instead of being
+  // swallowed into an empty-but-ok list: the daemon cannot tell "no tabs" from
+  // "tabs API failed" and agents then act on a fake-empty world — the
+  // "list_tabs suddenly returns []" flake. An empty RESULT gets one brief retry
+  // (a just-woken service worker can answer before tab state is warm); empty
+  // after the retry is trusted, since macOS Chrome can genuinely run windowless.
+  let allTabs = await chrome.tabs.query({});
+  if (!allTabs?.length) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    allTabs = await chrome.tabs.query({});
+  }
   const winCache = new Map();
   const getWin = async (windowId) => {
     if (typeof windowId !== "number") return null;
