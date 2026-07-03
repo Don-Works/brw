@@ -373,6 +373,12 @@ async function connectOnce() {
       hello: {
         source: "brw-extension",
         version: PROTOCOL_VERSION,
+        // The actual manifest version of the LOADED code, distinct from the
+        // wire-protocol version above. This is what lets an operator confirm
+        // an unpacked-extension reload really picked up a new build — the
+        // browsers on this pattern have been caught running months-stale code
+        // while the on-disk extension directory was current.
+        build: (chrome.runtime.getManifest?.() || {}).version || "",
         chrome: navigator.userAgent,
         platform: platform.os || "",
         workspace: config.workspace || "",

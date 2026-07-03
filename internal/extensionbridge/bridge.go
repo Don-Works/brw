@@ -189,8 +189,13 @@ type bridgeDeviceEmulationState struct {
 }
 
 type hello struct {
-	Source    string `json:"source,omitempty"`
-	Version   string `json:"version,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Version string `json:"version,omitempty"`
+	// Build is the manifest version of the LOADED extension code (as opposed
+	// to Version, the wire-protocol version). Surfaced in /status and the
+	// connect log line so an operator can tell whether an unpacked-extension
+	// reload actually picked up the current on-disk build.
+	Build     string `json:"build,omitempty"`
 	Chrome    string `json:"chrome,omitempty"`
 	Platform  string `json:"platform,omitempty"`
 	Workspace string `json:"workspace,omitempty"`
@@ -553,7 +558,11 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	b.connReady = make(chan struct{})
 	b.mu.Unlock()
 
-	log.Printf("extension bridge connected")
+	if verifiedHello.Build != "" || verifiedHello.Label != "" {
+		log.Printf("extension bridge connected (build %s, label %q)", verifiedHello.Build, verifiedHello.Label)
+	} else {
+		log.Printf("extension bridge connected")
+	}
 
 	// Keepalive: ping the extension periodically so a half-open link (laptop
 	// sleep, NAT timeout, dropped Wi-Fi) is detected promptly instead of hanging
