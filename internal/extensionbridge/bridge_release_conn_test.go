@@ -2,6 +2,7 @@ package extensionbridge
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -86,5 +87,111 @@ func TestStaleConnTeardownPreservesLiveState(t *testing.T) {
 	}
 	if b.disconnectReason != "closed" {
 		t.Fatalf("disconnectReason = %q, want \"closed\"", b.disconnectReason)
+	}
+}
+
+// sendIdentityHello sends a full hello frame carrying a configured identity, so
+// replace-time identity comparison has something to compare.
+func sendIdentityHello(t *testing.T, conn *websocket.Conn, token, workspace, profile, label string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	msg, _ := json.Marshal(map[string]any{
+		"type": "hello",
+		"hello": map[string]any{
+			"source":    "brw-extension",
+			"token":     token,
+			"workspace": workspace,
+			"profile":   profile,
+			"label":     label,
+		},
+	})
+	if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
+		t.Fatalf("write hello: %v", err)
+	}
+}
+
+// TestReplaceByDifferentExtensionDrainsPending proves the two sides of the
+// replace-time pending contract:
+//   - a replacement by a DIFFERENT extension identity (another browser profile
+//     colliding onto this bridge) fails in-flight RPCs immediately with
+//     replacedDrainReason — the displaced extension can never answer them, and
+//     without the drain each call would hang for its full timeout;
+//   - a replacement by the SAME identity (an MV3 service worker reconnecting
+//     mid-call) preserves pending, because the same worker can still answer
+//     over the new socket.
+func TestReplaceByDifferentExtensionDrainsPending(t *testing.T) {
+	const token = "replace-test-token"
+	b := New("", time.Second, "")
+	b.SetAuthToken(token)
+	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/extension"
+
+	// CloseNow throughout: displaced conns are already dead server-side, and a
+	// graceful Close would park ~5s each waiting for a close frame that never comes.
+	connA, err := dialExtension(t, wsURL, testDefaultOrigin)
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	defer connA.CloseNow()
+	sendIdentityHello(t, connA, token, "w1", "p1", "browser A")
+	waitUntil(t, b.liveConn)
+
+	chDrained := make(chan response, 1)
+	b.mu.Lock()
+	b.pending["replace-1"] = chDrained
+	b.mu.Unlock()
+
+	// A DIFFERENT identity takes over: pending must drain with replacedDrainReason.
+	connB, err := dialExtension(t, wsURL, testDefaultOrigin)
+	if err != nil {
+		t.Fatalf("dial B: %v", err)
+	}
+	defer connB.CloseNow()
+	sendIdentityHello(t, connB, token, "w2", "p2", "browser B")
+	waitUntil(t, func() bool {
+		b.mu.RLock()
+		defer b.mu.RUnlock()
+		return b.conn != nil && b.hello.Workspace == "w2"
+	})
+	select {
+	case r := <-chDrained:
+		if r.Error != replacedDrainReason {
+			t.Fatalf("drained RPC error = %q, want %q", r.Error, replacedDrainReason)
+		}
+	default:
+		t.Fatal("identity-changing replace did not drain the in-flight RPC")
+	}
+
+	liveB := b.serverConn()
+	chKept := make(chan response, 1)
+	b.mu.Lock()
+	b.pending["replace-2"] = chKept
+	b.mu.Unlock()
+
+	// The SAME identity reconnects (MV3 worker churn): pending must survive.
+	connC, err := dialExtension(t, wsURL, testDefaultOrigin)
+	if err != nil {
+		t.Fatalf("dial C: %v", err)
+	}
+	defer connC.CloseNow()
+	sendIdentityHello(t, connC, token, "w2", "p2", "browser B")
+	waitUntil(t, func() bool {
+		b.mu.RLock()
+		defer b.mu.RUnlock()
+		return b.conn != nil && b.conn != liveB
+	})
+	select {
+	case r := <-chKept:
+		t.Fatalf("same-identity replace drained the in-flight RPC (error %q)", r.Error)
+	default:
+		// still pending — same worker may answer on the new socket
+	}
+	b.mu.RLock()
+	_, stillPending := b.pending["replace-2"]
+	b.mu.RUnlock()
+	if !stillPending {
+		t.Fatal("same-identity replace removed the pending RPC")
 	}
 }

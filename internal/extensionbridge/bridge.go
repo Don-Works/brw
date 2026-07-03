@@ -301,6 +301,13 @@ const defaultBridgeMaxInflight = 6
 // caller indefinitely (the overall op deadline still applies on top).
 const bridgeReconnectGrace = 3 * time.Second
 
+// replacedDrainReason is the error stamped on pending RPCs when a NEW extension
+// with a DIFFERENT identity takes over the bridge: the displaced extension can
+// never answer them, so they fail immediately instead of hanging for the full
+// call timeout. Deliberately NOT retryable-transparent — a retry would be
+// answered by the other browser.
+const replacedDrainReason = "extension connection replaced by a different extension"
+
 // disconnectDrainReason is the error releaseConn stamps on pending RPCs when the
 // socket drops. It is recognised as a transient transport failure so an
 // idempotent read can be retried after the worker reconnects.
@@ -543,7 +550,22 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 			_ = conn.Close(websocket.StatusTryAgainLater, "extension flap: holding current connection")
 			return
 		}
-		_ = b.conn.Close(websocket.StatusNormalClosure, "replaced by new extension connection")
+		// CloseNow, not Close: a graceful close performs a close handshake and
+		// waits up to 5s for the displaced peer's ack — while this whole block
+		// holds b.mu, so an unresponsive displaced connection froze every
+		// dispatch and /status probe on the bridge for those 5 seconds. The
+		// socket is being force-discarded either way; tear it down immediately
+		// (its readLoop unblocks at once and releaseConn no-ops as stale).
+		_ = b.conn.CloseNow()
+		// Pending RPCs survive a SAME-extension replace on purpose: an MV3
+		// service worker reconnecting mid-call can still answer them over the
+		// new socket. But when the newcomer presents a DIFFERENT identity
+		// (another browser profile colliding onto this bridge), the displaced
+		// extension will never answer — fail those calls now rather than
+		// letting each one hang for its full timeout.
+		if !sameExtensionIdentity(b.hello, verifiedHello) {
+			b.drainPendingLocked(replacedDrainReason)
+		}
 	}
 	b.conn = conn
 	b.hello = verifiedHello
@@ -600,11 +622,30 @@ func (b *Bridge) releaseConn(conn *websocket.Conn, reason string) {
 	b.conn = nil
 	b.disconnectedAt = time.Now().UTC()
 	b.disconnectReason = reason
+	b.drainPendingLocked(disconnectDrainReason)
+}
+
+// drainPendingLocked fails every in-flight RPC with the given reason. Callers
+// must hold b.mu.
+func (b *Bridge) drainPendingLocked(reason string) {
 	for id, ch := range b.pending {
 		delete(b.pending, id)
-		ch <- response{ID: id, Error: disconnectDrainReason}
+		ch <- response{ID: id, Error: reason}
 		close(ch)
 	}
+}
+
+// sameExtensionIdentity reports whether two hellos describe the same configured
+// extension instance (source + workspace/profile/label). Build, browser UA, and
+// protocol version are deliberately ignored: the same extension reconnecting
+// after a code upgrade is still the same identity. Two token-less or
+// identically-configured extensions compare equal — the flap guard, not this
+// check, handles that pathological case.
+func sameExtensionIdentity(a, b hello) bool {
+	return a.Source == b.Source &&
+		a.Workspace == b.Workspace &&
+		a.Profile == b.Profile &&
+		a.Label == b.Label
 }
 
 // pingKeepaliveInterval is how often the bridge pings the connected extension to
