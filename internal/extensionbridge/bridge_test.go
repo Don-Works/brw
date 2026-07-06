@@ -599,14 +599,14 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatalf("parse manifest: %v", err)
 	}
-	// The manifest VERSION is the extension's release marker (bumped to 0.3.1 for
-	// the list_tabs error-propagation + hello build-observability release). It is
-	// DECOUPLED from the wire PROTOCOL_VERSION below: the manifest moves with every
-	// feature release, while PROTOCOL_VERSION only moves on a breaking
-	// bridge-handshake change. 0.3.1 adds only an optional hello field (build), so
-	// the protocol stays 0.2.0 (the daemon still accepts it — verified against the
-	// live bridge).
-	const wantManifest = "0.3.1"
+	// The manifest VERSION is the extension's release marker (bumped to 0.3.2 for
+	// the CDP storage-denylist expansion — DOMStorage/IndexedDB/CacheStorage/
+	// Database — in the v0.5.5 hardening release). It is DECOUPLED from the wire
+	// PROTOCOL_VERSION below: the manifest moves with every feature release, while
+	// PROTOCOL_VERSION only moves on a breaking bridge-handshake change. 0.3.2
+	// changes only in-extension policy, so the protocol stays 0.2.0 (the daemon
+	// still accepts it — verified against the live bridge).
+	const wantManifest = "0.3.2"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

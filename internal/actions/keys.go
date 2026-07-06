@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -12,6 +13,22 @@ type KeyDescriptor struct {
 	Text                  string
 	WindowsVirtualKeyCode int64
 	Modifiers             int64
+}
+
+// functionKey maps "f1".."f24" (case-insensitive) to its descriptor, or returns
+// nil when raw is not a function-key name. VK_F1 is 0x70 and the codes run
+// contiguously, so F<n> => 0x70 + (n-1).
+func functionKey(raw string) *KeyDescriptor {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if len(s) < 2 || s[0] != 'f' {
+		return nil
+	}
+	n, err := strconv.Atoi(s[1:])
+	if err != nil || n < 1 || n > 24 {
+		return nil
+	}
+	name := "F" + strconv.Itoa(n)
+	return &KeyDescriptor{Key: name, Code: name, WindowsVirtualKeyCode: int64(0x70 + n - 1)}
 }
 
 func DescribeKey(raw string) KeyDescriptor {
@@ -59,6 +76,24 @@ func DescribeKey(raw string) KeyDescriptor {
 		return KeyDescriptor{Key: "ArrowLeft", Code: "ArrowLeft", WindowsVirtualKeyCode: 37}
 	case "arrowright":
 		return KeyDescriptor{Key: "ArrowRight", Code: "ArrowRight", WindowsVirtualKeyCode: 39}
+	case "home":
+		return KeyDescriptor{Key: "Home", Code: "Home", WindowsVirtualKeyCode: 36}
+	case "end":
+		return KeyDescriptor{Key: "End", Code: "End", WindowsVirtualKeyCode: 35}
+	case "pageup":
+		return KeyDescriptor{Key: "PageUp", Code: "PageUp", WindowsVirtualKeyCode: 33}
+	case "pagedown":
+		return KeyDescriptor{Key: "PageDown", Code: "PageDown", WindowsVirtualKeyCode: 34}
+	case "insert":
+		return KeyDescriptor{Key: "Insert", Code: "Insert", WindowsVirtualKeyCode: 45}
+	}
+
+	// Function keys F1–F24. event.key and code are both "F<n>", and the Windows
+	// virtual-key codes are contiguous from VK_F1 = 0x70 (112). Handled here rather
+	// than as 24 switch cases so a page listening on keyCode/which sees the right
+	// value instead of the raw-string fallback (VK 0), which silently no-ops.
+	if fk := functionKey(raw); fk != nil {
+		return *fk
 	}
 
 	raw = strings.TrimSpace(raw)

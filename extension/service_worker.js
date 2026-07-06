@@ -14,15 +14,28 @@ const IDLE_DETACH_MS = 120 * 1000;
 // window a dialog is the user's / a background script's, and is answered with the
 // NON-destructive choice instead of blindly accepting.
 const BRW_ACTING_WINDOW_MS = 8 * 1000;
-// CDP methods brw refuses to forward, enforcing the README's promise that it
-// "never reads cookies/passwords/passkeys": all cookie read/write methods (which
-// can reach HttpOnly cookies that page JS cannot) and the entire Storage domain.
+// CDP methods brw refuses to forward, enforcing its promise not to read or export
+// cookies and site storage: every cookie read/write method (which can reach
+// HttpOnly cookies page JS cannot) plus the whole family of storage domains that
+// can bulk-export a site's local/session/indexed/cache/SQL storage —
+// Storage.*, DOMStorage.*, IndexedDB.*, CacheStorage.*, and Database.* (Web SQL).
 // brw itself uses none of these, so denying them never breaks a feature — it
 // turns the privacy claim from a convention into an enforced boundary that holds
 // even against a rogue server that answered the extension's outbound socket.
+// (Runtime.evaluate is NOT on this list — brw needs it to drive the page — so a
+// caller can still read non-HttpOnly document.cookie or an input .value through
+// it; the enforced boundary is "no HttpOnly cookies, no bulk storage export".)
+const STORAGE_DOMAIN_PREFIXES = [
+  "Storage.",
+  "DOMStorage.",
+  "IndexedDB.",
+  "CacheStorage.",
+  "Database."
+];
 function isDeniedCdpMethod(method) {
   const m = String(method || "");
-  return /cookie/i.test(m) || m.startsWith("Storage.");
+  if (/cookie/i.test(m)) return true;
+  return STORAGE_DOMAIN_PREFIXES.some((prefix) => m.startsWith(prefix));
 }
 let offscreenSetupPromise = null;
 let packagedDefaultConfigPromise = null;

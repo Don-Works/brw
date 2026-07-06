@@ -137,6 +137,29 @@ func TestParserDifferentialDoesNotBypass(t *testing.T) {
 	}
 }
 
+// A protocol-relative reference ("//evil.com") has no scheme, so it once slipped
+// through as a same-origin relative reference — but brw's Open prepends "https://"
+// to any scheme-less input, so Chrome actually navigates to https://evil.com.
+// hostOf must resolve its real host and gate it in BOTH allow and block modes.
+func TestProtocolRelativeIsGated(t *testing.T) {
+	allow := Parse("allowed.com", "")
+	for _, u := range []string{"//evil.com", "//evil.com/path", "///evil.com", `/\evil.com`} {
+		if err := allow.Check(u); err == nil {
+			t.Errorf("allowlist must fail closed on protocol-relative %q", u)
+		}
+	}
+	// A protocol-relative reference to an allowlisted host must still pass.
+	if err := allow.Check("//allowed.com/app"); err != nil {
+		t.Errorf("protocol-relative to an allowlisted host must pass, got %v", err)
+	}
+	block := Parse("", "evil.com")
+	for _, u := range []string{"//evil.com", "//sub.evil.com/x", "///evil.com"} {
+		if err := block.Check(u); err == nil {
+			t.Errorf("blocklist must catch protocol-relative %q", u)
+		}
+	}
+}
+
 // Relative references (no scheme) are same-origin — they resolve against the
 // current allowlisted page and cannot escape it — so they must pass even in
 // allowlist mode (e.g. a relative brw_replay_request target). This guards

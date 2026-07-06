@@ -7,13 +7,17 @@ EXTENSION_ID = amocjcgddnoakjijfggdpnefdnboilpe
 VERSION ?= $(shell git describe --tags --always --dirty | sed 's/^v//')
 GOARCH ?= $(shell go env GOARCH)
 
+# Inject the resolved version into the MCP serverInfo.version so the version an
+# agent sees over MCP always matches the binary, instead of a hand-edited constant.
+GO_LDFLAGS ?= -X github.com/Don-Works/brw/internal/mcp.Version=$(VERSION)
+
 .PHONY: build test test-extension install install-mac install-extension package-darwin-arm64 package-linux package-macos
 
 build:
-	go build -o bin/brwd ./cmd/brwd
-	go build -o bin/brwcheck ./cmd/brwcheck
-	go build -o bin/brwctl ./cmd/brwctl
-	go build -o bin/brw-devtools-mcp ./cmd/brw-devtools-mcp
+	go build -ldflags "$(GO_LDFLAGS)" -o bin/brwd ./cmd/brwd
+	go build -ldflags "$(GO_LDFLAGS)" -o bin/brwcheck ./cmd/brwcheck
+	go build -ldflags "$(GO_LDFLAGS)" -o bin/brwctl ./cmd/brwctl
+	go build -ldflags "$(GO_LDFLAGS)" -o bin/brw-devtools-mcp ./cmd/brw-devtools-mcp
 
 test: test-extension
 	go test ./...
@@ -76,10 +80,10 @@ install-extension:
 	-@open -R "$(CURDIR)/extension" 2>/dev/null || true
 
 package-darwin-arm64:
-	GOOS=darwin GOARCH=arm64 go build -o bin/brwd-darwin-arm64 ./cmd/brwd
-	GOOS=darwin GOARCH=arm64 go build -o bin/brwcheck-darwin-arm64 ./cmd/brwcheck
-	GOOS=darwin GOARCH=arm64 go build -o bin/brwctl-darwin-arm64 ./cmd/brwctl
-	GOOS=darwin GOARCH=arm64 go build -o bin/brw-devtools-mcp-darwin-arm64 ./cmd/brw-devtools-mcp
+	GOOS=darwin GOARCH=arm64 go build -ldflags "$(GO_LDFLAGS)" -o bin/brwd-darwin-arm64 ./cmd/brwd
+	GOOS=darwin GOARCH=arm64 go build -ldflags "$(GO_LDFLAGS)" -o bin/brwcheck-darwin-arm64 ./cmd/brwcheck
+	GOOS=darwin GOARCH=arm64 go build -ldflags "$(GO_LDFLAGS)" -o bin/brwctl-darwin-arm64 ./cmd/brwctl
+	GOOS=darwin GOARCH=arm64 go build -ldflags "$(GO_LDFLAGS)" -o bin/brw-devtools-mcp-darwin-arm64 ./cmd/brw-devtools-mcp
 
 package-linux:
 	scripts/package-linux.sh "$(VERSION)" "$(GOARCH)" dist/release

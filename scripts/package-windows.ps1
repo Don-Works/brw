@@ -41,7 +41,7 @@ $env:GOARCH = $Arch
 Push-Location $RepoRoot
 foreach ($CommandName in @("brwd", "brwctl", "brwcheck", "brw-devtools-mcp")) {
   $Output = Join-Path $StageDir "bin/$CommandName.exe"
-  & go build -trimpath -ldflags="-s -w" -o $Output "./cmd/$CommandName"
+  & go build -trimpath -ldflags="-s -w -X github.com/Don-Works/brw/internal/mcp.Version=$Version" -o $Output "./cmd/$CommandName"
 }
 Pop-Location
 

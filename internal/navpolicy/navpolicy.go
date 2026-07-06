@@ -147,6 +147,16 @@ func hostOf(rawURL string) string {
 	// In special-scheme URLs Chrome treats "\" as "/". Normalising here means
 	// Go's parser sees the same authority boundary the browser will.
 	raw = strings.ReplaceAll(raw, "\\", "/")
+	// A protocol-relative reference ("//evil.com") has no scheme, so the checks
+	// below would treat it as same-origin and let it through — but brw's Open
+	// prepends "https://" to any scheme-less input, so Chrome actually navigates
+	// to https://evil.com. Give it a concrete scheme HERE so its real host is
+	// parsed and gated, matching what the browser will load. Collapse the run of
+	// leading slashes first so "///evil.com" and "//evil.com" both resolve to the
+	// same host rather than an empty-authority "https:///…".
+	if strings.HasPrefix(raw, "//") {
+		raw = "https://" + strings.TrimLeft(raw, "/")
+	}
 	lower := strings.ToLower(raw)
 	for _, scheme := range []string{"about:", "data:", "blob:", "javascript:", "chrome:", "chrome-extension:", "file:", "filesystem:", "view-source:", "ftp:", "ws:", "wss:"} {
 		if strings.HasPrefix(lower, scheme) {

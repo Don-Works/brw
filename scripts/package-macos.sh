@@ -50,7 +50,7 @@ for cmd in brwd brwctl brwcheck brw-devtools-mcp; do
   for arch in amd64 arm64; do
     mkdir -p "$work_dir/build/$arch"
     CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
-      go build -trimpath -ldflags="-s -w" -o "$work_dir/build/$arch/$cmd" "./cmd/$cmd"
+      go build -trimpath -ldflags="-s -w -X github.com/Don-Works/brw/internal/mcp.Version=$version" -o "$work_dir/build/$arch/$cmd" "./cmd/$cmd"
   done
   lipo -create \
     "$work_dir/build/amd64/$cmd" \

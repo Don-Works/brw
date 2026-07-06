@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
@@ -144,6 +145,47 @@ const NetworkCaptureInstallScript = `(function() {
   }
   return { installed: true, already: false };
 })()`
+
+// sensitiveHeaderNames are request-header names whose VALUE is a bare credential
+// with no debugging value beyond its presence. brw_network_capture is a debugging
+// view of a page's own traffic, so it must not become a side-door that hands the
+// agent (or a prompt injection steering it) a live bearer token or session cookie
+// that the snapshot/read redaction and the cookie CDP denylist otherwise keep out
+// of reach. Compared case-insensitively.
+var sensitiveHeaderNames = map[string]bool{
+	"authorization":        true,
+	"proxy-authorization":  true,
+	"cookie":               true,
+	"set-cookie":           true,
+	"x-api-key":            true,
+	"api-key":              true,
+	"x-auth-token":         true,
+	"x-amz-security-token": true,
+	"x-goog-api-key":       true,
+}
+
+// RedactCapturedCredentials blanks the VALUE of any sensitive request header in
+// place while keeping the header NAME, so a captured request still shows that it
+// carried e.g. an Authorization header (useful for debugging) without exposing the
+// credential itself. Applied by both transports before captured requests leave the
+// process. The request body is intentionally left untouched — it is the payload
+// the caller explicitly asked to inspect, and field-level body redaction cannot be
+// done safely without a schema.
+func RedactCapturedCredentials(requests []CapturedRequest) []CapturedRequest {
+	const placeholder = "[redacted]"
+	for i := range requests {
+		h := requests[i].RequestHeaders
+		if h == nil {
+			continue
+		}
+		for name := range h {
+			if sensitiveHeaderNames[strings.ToLower(strings.TrimSpace(name))] {
+				h[name] = placeholder
+			}
+		}
+	}
+	return requests
+}
 
 // NetworkCaptureDrainScript returns the recorded requests and clears the ring
 // buffer, mirroring the console drain pattern (slice() then length = 0).

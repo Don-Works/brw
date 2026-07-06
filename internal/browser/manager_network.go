@@ -12,6 +12,7 @@ import (
 // filterCapturedRequests applies a case-insensitive URL substring filter
 // Go-side so both transports share identical filtering semantics.
 func filterCapturedRequests(requests []snapshot.CapturedRequest, filter string) []snapshot.CapturedRequest {
+	requests = snapshot.RedactCapturedCredentials(requests)
 	filter = strings.ToLower(strings.TrimSpace(filter))
 	if filter == "" {
 		return requests

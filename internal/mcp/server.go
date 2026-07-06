@@ -17,6 +17,14 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
+// Version is the build version reported over MCP initialize (serverInfo.version).
+// It is injected at build time via -ldflags "-X .../internal/mcp.Version=<v>"
+// (see the Makefile and scripts/package-*), so the version an agent sees always
+// matches the binary it is talking to instead of a hand-edited constant that
+// silently drifts from the released build. Defaults to "dev" for a plain
+// `go build` / `go test`.
+var Version = "dev"
+
 type Server struct {
 	manager     browser.Controller
 	toolProfile string // "all" (default) or "core"
@@ -350,7 +358,7 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 			"protocolVersion": "2025-06-18",
 			"serverInfo": map[string]any{
 				"name":    "brw",
-				"version": "0.3.0",
+				"version": Version,
 			},
 			"capabilities": map[string]any{
 				"tools": map[string]any{"listChanged": false},
@@ -834,6 +842,17 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
+		// The navigation guardrail must gate every path that can open a URL, not
+		// just brw_open — otherwise a blocked/off-allowlist domain is reachable by
+		// wrapping it in an "open" plan step. Check up front so a blocked
+		// destination fails the whole plan before any step runs.
+		for _, st := range req.Steps {
+			if strings.EqualFold(st.Action, "open") && st.URL != "" {
+				if err := s.checkNavPolicy(st.URL); err != nil {
+					return toolError(err), nil
+				}
+			}
+		}
 		return toolJSON(s.manager.ExecutePlan(ctx, req.Steps))
 	case "brw_batch":
 		var req struct {
@@ -841,6 +860,15 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		// Same guardrail as brw_plan: gate "open" steps so brw_batch cannot be
+		// used to sidestep the navigation policy that brw_open enforces.
+		for _, st := range req.Steps {
+			if strings.EqualFold(st.Action, "open") && st.URL != "" {
+				if err := s.checkNavPolicy(st.URL); err != nil {
+					return toolError(err), nil
+				}
+			}
 		}
 		return toolJSON(s.manager.ExecuteBatch(ctx, req.Steps))
 	case "brw_cancel":

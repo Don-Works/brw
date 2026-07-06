@@ -115,6 +115,29 @@ func TestNavPolicyGatesEveryNavEntrypoint(t *testing.T) {
 	}
 }
 
+// TestNavPolicyGatesPlanAndBatchOpenSteps proves brw_plan and brw_batch cannot be
+// used to sidestep the navigation guardrail by wrapping a blocked destination in
+// an "open" step — the bypass that let a plainly-blocked domain through a
+// different tool. A blocked step must fail the call before any step runs; a step
+// to an allowlisted domain must pass.
+func TestNavPolicyGatesPlanAndBatchOpenSteps(t *testing.T) {
+	policy := navpolicy.Parse("corp.example.com", "")
+	for _, tool := range []string{"brw_plan", "brw_batch"} {
+		blocked := callNavTool(t, policy, tool, map[string]any{
+			"steps": []any{map[string]any{"action": "open", "url": "https://evil.com/x"}},
+		})
+		if !strings.Contains(blocked, `"isError":true`) {
+			t.Errorf("%s open-step to a denied domain must be blocked, got: %s", tool, blocked)
+		}
+		allowed := callNavTool(t, policy, tool, map[string]any{
+			"steps": []any{map[string]any{"action": "open", "url": "https://corp.example.com/app"}},
+		})
+		if strings.Contains(allowed, `"isError":true`) {
+			t.Errorf("%s open-step to an allowlisted domain must pass, got: %s", tool, allowed)
+		}
+	}
+}
+
 // TestWebMCPToolsAdvertised confirms the WebMCP tools are present in tools/list so
 // agents can discover them.
 func TestWebMCPToolsAdvertised(t *testing.T) {

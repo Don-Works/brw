@@ -12,6 +12,7 @@ import (
 )
 
 func filterBridgeCapturedRequests(requests []snapshot.CapturedRequest, filter string) []snapshot.CapturedRequest {
+	requests = snapshot.RedactCapturedCredentials(requests)
 	filter = strings.ToLower(strings.TrimSpace(filter))
 	if filter == "" {
 		return requests

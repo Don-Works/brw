@@ -194,3 +194,40 @@ func TestReplaySafeGetReturnsStatus(t *testing.T) {
 func awaitPromise(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 	return p.WithAwaitPromise(true)
 }
+
+// TestRedactCapturedCredentials proves credential header VALUES are blanked while
+// the header NAME and all non-credential fields survive, so brw_network_capture
+// cannot hand back a live token/session cookie but still shows the header existed.
+func TestRedactCapturedCredentials(t *testing.T) {
+	reqs := []CapturedRequest{{
+		Method: "POST",
+		URL:    "https://api.example.com/login",
+		RequestHeaders: map[string]string{
+			"Authorization": "Bearer sk-secret-token",
+			"COOKIE":        "session=abc123", // case-insensitive match
+			"X-Api-Key":     "key-live-123",
+			"Content-Type":  "application/json",
+			"Accept":        "*/*",
+		},
+		RequestBody: `{"user":"a","password":"p"}`,
+	}}
+	out := RedactCapturedCredentials(reqs)
+	h := out[0].RequestHeaders
+	for _, k := range []string{"Authorization", "COOKIE", "X-Api-Key"} {
+		if h[k] != "[redacted]" {
+			t.Errorf("header %q value = %q, want [redacted]", k, h[k])
+		}
+	}
+	if h["Content-Type"] != "application/json" {
+		t.Errorf("non-credential header Content-Type was altered: %q", h["Content-Type"])
+	}
+	if h["Accept"] != "*/*" {
+		t.Errorf("non-credential header Accept was altered: %q", h["Accept"])
+	}
+	// The body is intentionally left untouched (documented behavior).
+	if out[0].RequestBody == "" {
+		t.Errorf("request body must not be blanked by header redaction")
+	}
+	// A nil-headers request must not panic.
+	_ = RedactCapturedCredentials([]CapturedRequest{{URL: "https://x/"}})
+}

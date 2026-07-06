@@ -136,7 +136,9 @@ Chrome 136+ blocks remote debugging against the default Chrome data directory.
 For auth that already exists in an installed browser profile, use the `brw`
 extension. It bridges the daemon to your real, signed-in browser over
 `ws://127.0.0.1`, drives visible tabs via the Chrome debugger protocol, and
-never reads cookies, passwords, or passkeys.
+refuses every cookie CDP method and the site-storage domains — so it never reads
+HttpOnly cookies or bulk-exports a site's stored credentials, and sensitive form
+fields are redacted from snapshots, reads, and captured network headers.
 
 The extension is open source (AGPL-3.0) and ships with a pinned public key, so
 it always loads with the same stable id — identical for load-unpacked, the
@@ -322,10 +324,16 @@ browser attackers rather than assumed safe:
   extension. Set `BRW_BRIDGE_REQUIRE_TOKEN=1` to make the token mandatory once
   every extension is on `0.2.0`. Empty-Origin (non-browser) websocket clients are
   rejected regardless.
-- **Cookie/passkey promise is enforced, not just asserted.** The extension
-  refuses every cookie CDP method and the whole `Storage` domain, so even a rogue
-  server that answered the extension's socket cannot exfiltrate cookies (including
-  HttpOnly ones that page JS cannot reach) through `brw`.
+- **Cookie/storage promise is enforced, not just asserted.** The extension
+  refuses every cookie CDP method and the whole family of site-storage domains
+  (`Storage`, `DOMStorage`, `IndexedDB`, `CacheStorage`, `Database`), so even a
+  rogue server that answered the extension's socket cannot read HttpOnly cookies
+  (which page JS cannot reach) or bulk-export a site's stored data through `brw`.
+  Credential request headers (`Authorization`, `Cookie`, …) are redacted from
+  captured network traffic for the same reason. `Runtime.evaluate` stays available
+  because `brw` needs it to drive the page, so a caller can still read a
+  non-HttpOnly `document.cookie` or an input value — the enforced line is "no
+  HttpOnly cookies, no bulk storage export," not "no script access at all."
 
 The extension-side protections (token, cookie denylist, dialog handling) take
 effect whenever the `0.2.0` extension next loads — reload it in
