@@ -27,12 +27,6 @@ type retargetFakeExtension struct {
 	focusedTabs []int
 }
 
-func (f *retargetFakeExtension) recordCDP(tabID int) {
-	f.mu.Lock()
-	f.cdpTabIDs = append(f.cdpTabIDs, tabID)
-	f.mu.Unlock()
-}
-
 func (f *retargetFakeExtension) cdpTargets() []int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

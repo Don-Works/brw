@@ -194,8 +194,8 @@ func TestSettleHonoursMinimumFloor(t *testing.T) {
 // well under the old coarse 250ms poll when the condition is immediately true.
 func TestWaitForReturnsPromptlyWhenSatisfied(t *testing.T) {
 	b := New("", 5*time.Second, "")
-	// condition() evaluates an in-page boolean; serve true so the first poll
-	// satisfies the wait.
+	// WaitConditionScript resolves an in-page boolean; serve true so the first
+	// promise satisfies the wait.
 	cleanup := connectSettleFake(t, b, true)
 	defer cleanup()
 

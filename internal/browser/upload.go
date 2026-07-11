@@ -25,6 +25,14 @@ const maxUploadFetchBytes = 64 << 20 // 64 MiB
 // pin the operation indefinitely.
 const uploadFetchTimeout = 60 * time.Second
 
+// uploadTempRetention keeps materialized bytes/url files alive after
+// DOM.setFileInputFiles. Chromium reads the file contents when the page later
+// submits the form, not necessarily when the input is populated; deleting the
+// path at the end of brw_upload_file makes that later multipart request silently
+// fail. Five minutes comfortably covers an agent's next-step submit while still
+// bounding temp-file lifetime.
+var uploadTempRetention = 5 * time.Minute
+
 // errBlockedUploadHost is returned when an upload url resolves to an address the
 // daemon must never fetch from (SSRF guard).
 var errBlockedUploadHost = errors.New("upload url resolves to a private, loopback, or link-local address, which is blocked to prevent SSRF; use path/bytes_base64 for host-local files")
@@ -105,7 +113,7 @@ func ResolveUploadPaths(ctx context.Context, opts snapshot.UploadOptions) (paths
 	var temps []string
 	cleanup = func() {
 		for _, t := range temps {
-			_ = os.Remove(t)
+			removeUploadTemp(t)
 		}
 	}
 
@@ -130,6 +138,35 @@ func ResolveUploadPaths(ctx context.Context, opts snapshot.UploadOptions) (paths
 }
 
 func noopCleanup() {}
+
+// RetainUploadCleanup schedules successful materialized uploads for bounded
+// delayed cleanup. Call cleanup immediately on any pre-population error instead.
+func RetainUploadCleanup(cleanup func()) {
+	scheduleUploadCleanup(cleanup, uploadTempRetention)
+}
+
+func scheduleUploadCleanup(cleanup func(), after time.Duration) {
+	if cleanup == nil {
+		return
+	}
+	if after <= 0 {
+		cleanup()
+		return
+	}
+	time.AfterFunc(after, cleanup)
+}
+
+// removeUploadTemp removes the whole private brw-upload-* directory, not only
+// the materialized file. Leaving the directory behind on every upload caused an
+// unbounded accumulation of empty folders in the host temp directory.
+func removeUploadTemp(path string) {
+	dir := filepath.Dir(path)
+	if strings.HasPrefix(filepath.Base(dir), "brw-upload-") {
+		_ = os.RemoveAll(dir)
+		return
+	}
+	_ = os.Remove(path)
+}
 
 // uploadTempFile creates a temp file in the daemon's temp dir whose basename
 // preserves filename (so the page sees a sensible name), falling back to a
@@ -181,11 +218,11 @@ func writeUploadTemp(b64, filename string) (string, error) {
 	}
 	if _, err := f.Write(data); err != nil {
 		f.Close()
-		_ = os.Remove(f.Name())
+		removeUploadTemp(f.Name())
 		return "", err
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(f.Name())
+		removeUploadTemp(f.Name())
 		return "", err
 	}
 	return f.Name(), nil
@@ -284,16 +321,16 @@ func fetchUploadTemp(ctx context.Context, rawURL, filename string) (string, erro
 	n, err := io.Copy(f, io.LimitReader(resp.Body, maxUploadFetchBytes+1))
 	if err != nil {
 		f.Close()
-		_ = os.Remove(f.Name())
+		removeUploadTemp(f.Name())
 		return "", err
 	}
 	if n > maxUploadFetchBytes {
 		f.Close()
-		_ = os.Remove(f.Name())
+		removeUploadTemp(f.Name())
 		return "", fmt.Errorf("fetch url: file exceeds %d byte limit", maxUploadFetchBytes)
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(f.Name())
+		removeUploadTemp(f.Name())
 		return "", err
 	}
 	return f.Name(), nil

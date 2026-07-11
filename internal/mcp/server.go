@@ -10,6 +10,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
@@ -97,6 +98,12 @@ func (s *Server) checkNavPolicy(rawURL string) error {
 	return s.navPolicy.Check(rawURL)
 }
 
+// prepareNavigation canonicalizes the exact URL that will be handed to the
+// controller, then applies the navigation policy to that same value.
+func (s *Server) prepareNavigation(rawURL string) (string, error) {
+	return s.navPolicy.CheckNavigation(rawURL)
+}
+
 // NewWithToolProfile builds a server exposing only the named tool profile in
 // tools/list ("core" for the lean surface, anything else for the full surface).
 // All tools remain callable regardless of profile; the profile only narrows what
@@ -165,14 +172,21 @@ type inbound struct {
 var ErrIdleExit = errors.New("mcp: idle-exit deadline reached with no requests")
 
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
+	serveCtx, stop := context.WithCancel(ctx)
+	var workers sync.WaitGroup
+	defer func() {
+		stop()
+		workers.Wait()
+	}()
+
 	// Stdin is read on its own goroutine so the loop can react to ctx
 	// cancellation (SIGTERM/SIGINT, parent death) while a read is blocked.
 	// Before this, a supervisor's polite SIGTERM was swallowed: NotifyContext
 	// cancelled ctx, but Serve sat in a blocking read forever and the process
 	// leaked — one zombie per abandoned session. The goroutine reads at most
-	// one message ahead (unbuffered channel) so request/response stays
-	// sequential; it is deliberately left blocked on read at shutdown, since
-	// process exit reclaims it.
+	// one message ahead (unbuffered channel). Requests are dispatched concurrently
+	// after framing so a brw_cancel (or MCP cancellation notification) arriving on
+	// this same stdio stream can interrupt a long plan instead of waiting behind it.
 	msgs := make(chan inbound)
 	go func() {
 		reader := bufio.NewReader(in)
@@ -184,7 +198,7 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			}
 			select {
 			case msgs <- inbound{body: body, mode: mode, err: err}:
-			case <-ctx.Done():
+			case <-serveCtx.Done():
 				return
 			}
 			if err != nil {
@@ -192,6 +206,24 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			}
 		}
 	}()
+
+	// Multiple request goroutines may finish out of order (legal JSON-RPC), but a
+	// frame itself must remain atomic. This lock prevents interleaved JSON or
+	// Content-Length headers on the shared writer.
+	var writeMu sync.Mutex
+	write := func(mode stdioMode, value any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return writeMessage(out, mode, value)
+	}
+
+	type activeRequest struct {
+		cancel context.CancelFunc
+	}
+	var inflightMu sync.Mutex
+	inflight := map[string]*activeRequest{}
+	type completion struct{ err error }
+	completed := make(chan completion)
 
 	// Idle-exit timer: fires only when enabled AND no message has arrived for
 	// s.idleExit. The deadline check re-arms on wakeup so a fire queued while a
@@ -205,13 +237,37 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		idleC = idleTimer.C
 	}
 
-	mode := stdioModeUnknown
+	active := 0
+	inputClosed := false
+	input := (<-chan inbound)(msgs)
 	for {
+		if inputClosed && active == 0 {
+			return nil
+		}
 		var msg inbound
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case done := <-completed:
+			active--
+			lastActivity = time.Now()
+			if done.err != nil {
+				return done.err
+			}
+			if idleTimer != nil {
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(s.idleExit)
+			}
 		case <-idleC:
+			if active > 0 {
+				idleTimer.Reset(s.idleExit)
+				continue
+			}
 			// The tick may have been queued while a request was being handled
 			// (lastActivity moved since the timer was armed) — re-arm for the
 			// remainder instead of exiting under an active client.
@@ -220,41 +276,92 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 				continue
 			}
 			return ErrIdleExit
-		case msg = <-msgs:
+		case msg = <-input:
 		}
 		if msg.err != nil {
 			if msg.err == io.EOF {
-				return nil
+				inputClosed = true
+				input = nil
+				continue
 			}
 			return msg.err
 		}
-		mode = msg.mode
-		if err := s.respond(ctx, out, mode, msg.body); err != nil {
-			return err
+		if len(bytes.TrimSpace(msg.body)) == 0 {
+			continue
 		}
-		// Idle time is measured from the moment the message was FULLY
-		// processed, so a tool call that itself outlives the idle deadline
-		// never triggers an exit right after doing work.
-		lastActivity = time.Now()
+		var req request
+		if err := json.Unmarshal(msg.body, &req); err != nil {
+			if err := write(msg.mode, response{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: err.Error()}}); err != nil {
+				return err
+			}
+			lastActivity = time.Now()
+			continue
+		}
+
+		// Notifications have no response. MCP's cancellation notification targets
+		// the JSON-RPC request id, so cancel its derived context immediately.
+		if len(req.ID) == 0 {
+			if key := cancelledRequestKey(req); key != "" {
+				inflightMu.Lock()
+				entry := inflight[key]
+				inflightMu.Unlock()
+				if entry != nil {
+					entry.cancel()
+				}
+			}
+			lastActivity = time.Now()
+			continue
+		}
+
+		requestCtx, cancelRequest := context.WithCancel(serveCtx)
+		key := requestIDKey(req.ID)
+		entry := &activeRequest{cancel: cancelRequest}
+		inflightMu.Lock()
+		if previous := inflight[key]; previous != nil {
+			previous.cancel()
+		}
+		inflight[key] = entry
+		inflightMu.Unlock()
+
+		active++
+		workers.Add(1)
+		go func(req request, mode stdioMode, key string, entry *activeRequest) {
+			defer workers.Done()
+			defer cancelRequest()
+			result, rpcErr := s.handle(requestCtx, req.Method, req.Params)
+			err := write(mode, response{JSONRPC: "2.0", ID: req.ID, Result: result, Error: rpcErr})
+			inflightMu.Lock()
+			if inflight[key] == entry {
+				delete(inflight, key)
+			}
+			inflightMu.Unlock()
+			select {
+			case completed <- completion{err: err}:
+			case <-serveCtx.Done():
+			}
+		}(req, msg.mode, key, entry)
 	}
 }
 
-// respond parses one raw stdio message and writes its JSON-RPC response.
-// A nil return means "keep serving" (including protocol-level parse errors,
-// which are answered in-band); a non-nil return is a fatal transport error.
-func (s *Server) respond(ctx context.Context, out io.Writer, mode stdioMode, body []byte) error {
-	if len(bytes.TrimSpace(body)) == 0 {
-		return nil
+func requestIDKey(raw json.RawMessage) string {
+	return string(bytes.TrimSpace(raw))
+}
+
+func cancelledRequestKey(req request) string {
+	if req.Method != "notifications/cancelled" && req.Method != "$/cancelRequest" {
+		return ""
 	}
-	var req request
-	if err := json.Unmarshal(body, &req); err != nil {
-		return writeMessage(out, mode, response{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: err.Error()}})
+	var params struct {
+		RequestID json.RawMessage `json:"requestId"`
+		ID        json.RawMessage `json:"id"`
 	}
-	if len(req.ID) == 0 {
-		return nil
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return ""
 	}
-	result, rpcErr := s.handle(ctx, req.Method, req.Params)
-	return writeMessage(out, mode, response{JSONRPC: "2.0", ID: req.ID, Result: result, Error: rpcErr})
+	if len(params.RequestID) != 0 {
+		return requestIDKey(params.RequestID)
+	}
+	return requestIDKey(params.ID)
 }
 
 type stdioMode int
@@ -461,9 +568,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		if err := s.checkNavPolicy(req.URL); err != nil {
+		normalizedURL, err := s.prepareNavigation(req.URL)
+		if err != nil {
 			return toolError(err), nil
 		}
+		req.URL = normalizedURL
 		if req.Group != "" || req.GroupID != "" {
 			return toolJSON(s.manager.OpenInGroup(ctx, req.URL, browser.TabGroupOptions{
 				GroupID: req.GroupID,
@@ -479,9 +588,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		if err := s.checkNavPolicy(req.URL); err != nil {
+		normalizedURL, err := s.prepareNavigation(req.URL)
+		if err != nil {
 			return toolError(err), nil
 		}
+		req.URL = normalizedURL
 		return toolJSON(s.manager.OpenIncognito(ctx, req.URL))
 	case "brw_close_context":
 		var req struct {
@@ -633,9 +744,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		if err := s.checkNavPolicy(req.URL); err != nil {
+		normalizedURL, err := s.prepareNavigation(req.URL)
+		if err != nil {
 			return toolError(err), nil
 		}
+		req.URL = normalizedURL
 		if req.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
 		}
@@ -846,11 +959,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		// just brw_open — otherwise a blocked/off-allowlist domain is reachable by
 		// wrapping it in an "open" plan step. Check up front so a blocked
 		// destination fails the whole plan before any step runs.
-		for _, st := range req.Steps {
+		for i := range req.Steps {
+			st := &req.Steps[i]
 			if strings.EqualFold(st.Action, "open") && st.URL != "" {
-				if err := s.checkNavPolicy(st.URL); err != nil {
+				normalizedURL, err := s.prepareNavigation(st.URL)
+				if err != nil {
 					return toolError(err), nil
 				}
+				st.URL = normalizedURL
 			}
 		}
 		return toolJSON(s.manager.ExecutePlan(ctx, req.Steps))
@@ -863,11 +979,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		}
 		// Same guardrail as brw_plan: gate "open" steps so brw_batch cannot be
 		// used to sidestep the navigation policy that brw_open enforces.
-		for _, st := range req.Steps {
+		for i := range req.Steps {
+			st := &req.Steps[i]
 			if strings.EqualFold(st.Action, "open") && st.URL != "" {
-				if err := s.checkNavPolicy(st.URL); err != nil {
+				normalizedURL, err := s.prepareNavigation(st.URL)
+				if err != nil {
 					return toolError(err), nil
 				}
+				st.URL = normalizedURL
 			}
 		}
 		return toolJSON(s.manager.ExecuteBatch(ctx, req.Steps))
@@ -1303,6 +1422,7 @@ func tools() []map[string]any {
 			"include_hidden":       boolSchema("Include input[type=hidden] fields as role hidden for explicit debugging. Defaults false."),
 			"include_ax":           boolSchema("Include full accessibility-tree enrichment. Expensive; defaults false."),
 			"include_frames":       boolSchema("Surface CROSS-ORIGIN iframes (out-of-process frames the normal walk cannot reach, e.g. embedded editors/widgets) as actionable elements with source:[\"frame\"] and a cx/cy click point. Same-origin iframes are always read regardless. By default each cross-origin frame is surfaced as one clickable element (ref f<i>) at its center — interact with brw_click_xy at cx/cy (brw_screenshot first to see contents; for uploads use brw_upload_file with click_ref/click_text, which crosses frames). When a frame's inner controls are individually reachable they are also merged as f<i>:e<j> elements. Off by default."),
+			"text_content":         boolSchema("Also match against full visible text content (innerText), surfacing prose-bearing elements like headings, paragraphs, and list items — not just interactive-element metadata. Opt-in; defaults false."),
 			"visual_islands":       boolSchema("Detect semantically-opaque visual content (canvas/svg/video/large image/background-image/custom-rendered widget) and emit each as an element with source:[\"visual\"], visual_type, and visual_hint. Off by default; islands compete with DOM elements in the merged list up to the limit, so dense pages stay token-efficient."),
 			"visual_islands_limit": integerSchema("Cap on detected visual islands before merging into the element list. Defaults to 10."),
 			"since":                integerSchema("Pass a prior snapshot's metadata.version to get a DELTA: when it matches the last snapshot taken with identical options, the response sets metadata.delta=true, 'elements' carries ONLY added+changed elements (a change set, not the full page), and a top-level 'delta' object lists {added, removed, changed} refs (removed = refs whose element left the DOM). On any mismatch (version, options, or after navigation) a normal full snapshot is returned. Omit for a full snapshot."),
@@ -1407,7 +1527,7 @@ func tools() []map[string]any {
 			"snapshot": boolSchema("Include a full page snapshot in the response."),
 			"tab_id":   stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"text"})),
-		tool("brw_upload_file", "Set a file on a semantic file input by ref or query and return a post-action observation. Provide the file from EXACTLY ONE source: path/paths (files already on the browser host), bytes_base64 (inline base64 contents — the daemon writes them to a temp file for you, no host filesystem access needed), or url (the daemon fetches it over http(s) to a temp file). Temp files created from bytes_base64/url are removed after the upload. Pass optional tab_id to target a specific tab.", object(map[string]any{
+		tool("brw_upload_file", "Set a file on a semantic file input by ref or query and return a post-action observation. Provide the file from EXACTLY ONE source: path/paths (files already on the browser host), bytes_base64 (inline base64 contents — the daemon writes them to a temp file for you, no host filesystem access needed), or url (the daemon fetches it over http(s) to a temp file). Temp files created from bytes_base64/url are retained briefly so a later form submission can still read them, then removed automatically. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":          stringSchema("Element ref for input[type=file]. Optional when query is supplied."),
 			"query":        stringSchema("Find a file input by semantic name when ref is not supplied. Defaults to file."),
 			"role":         stringSchema("Optional role filter when using query."),
@@ -1530,26 +1650,31 @@ func tools() []map[string]any {
 		tool("brw_ungroup_tabs", "Remove tabs from their Chrome tab group.", object(map[string]any{
 			"tab_ids": map[string]any{"type": "array", "items": stringSchema("Tab id."), "description": "Tab IDs to ungroup."},
 		}, []string{"tab_ids"})),
-		tool("brw_assert_visible", "Assert that an element ref is visible. Retries until visible or timeout (web-first assertion).", object(map[string]any{
+		tool("brw_assert_visible", "Assert that an element ref is visible. Retries until visible or timeout (web-first assertion). Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":        stringSchema("Element ref from brw_snapshot."),
 			"timeout_ms": integerSchema("Timeout in milliseconds. Defaults to 5000."),
+			"tab_id":     stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
-		tool("brw_assert_text", "Assert that an element ref contains the expected text (case-insensitive substring). Retries until matched or timeout.", object(map[string]any{
+		tool("brw_assert_text", "Assert that an element ref contains the expected text (case-insensitive substring). Retries until matched or timeout. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":        stringSchema("Element ref from brw_snapshot."),
 			"text":       stringSchema("Expected text substring (case-insensitive)."),
 			"timeout_ms": integerSchema("Timeout in milliseconds. Defaults to 5000."),
+			"tab_id":     stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"ref", "text"})),
-		tool("brw_assert_value", "Assert that an element ref has the expected value (exact match). Retries until matched or timeout.", object(map[string]any{
+		tool("brw_assert_value", "Assert that an element ref has the expected value (exact match). Retries until matched or timeout. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":        stringSchema("Element ref from brw_snapshot."),
 			"value":      stringSchema("Expected value (exact match)."),
 			"timeout_ms": integerSchema("Timeout in milliseconds. Defaults to 5000."),
+			"tab_id":     stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"ref", "value"})),
-		tool("brw_assert_hidden", "Assert that an element ref is hidden or absent from the DOM. Retries until hidden or timeout.", object(map[string]any{
+		tool("brw_assert_hidden", "Assert that an element ref is hidden or absent from the DOM. Retries until hidden or timeout. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":        stringSchema("Element ref from brw_snapshot."),
 			"timeout_ms": integerSchema("Timeout in milliseconds. Defaults to 5000."),
+			"tab_id":     stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
-		tool("brw_commit", "Commit a form field: submits the enclosing form (via submit button or requestSubmit) or presses Enter if no form. Use after filling a field that requires explicit submission.", object(map[string]any{
-			"ref": stringSchema("Element ref from brw_snapshot."),
+		tool("brw_commit", "Commit a form field: submits the enclosing form (via submit button or requestSubmit) or presses Enter if no form. Use after filling a field that requires explicit submission. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"ref":    stringSchema("Element ref from brw_snapshot."),
+			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"ref"})),
 		tool("brw_notify", "Raise a desktop notification to pull the human operator back at a hand-off point (needs_input for MFA/CAPTCHA/purchase confirmation), on completion (done), or on failure (error) — useful when the user has tabbed away. With the Chrome extension bridge this uses chrome.notifications and surfaces even when the tab is backgrounded; on a direct-CDP session it falls back to the in-page Notification API (best-effort, subject to page focus/permission). The result reports the honest delivery channel (extension, page, or unavailable).", object(map[string]any{
 			"kind":    stringSchema("Hand-off classification: needs_input (default), done, or error."),
@@ -1564,7 +1689,7 @@ func tools() []map[string]any {
 		tool("brw_window_bounds", "Return the tab window/viewport geometry for mapping a SCREEN pixel (from an OS/desktop screenshot) into viewport CSS pixels for brw_click_xy. Fields (CSS px unless noted): device_pixel_ratio, screen_x/screen_y (viewport top-left in screen coords), inner_width/inner_height (viewport), outer_width/outer_height (window), scroll_x/scroll_y, screen_width/screen_height. Map with: viewport_css_x = screen_device_x / device_pixel_ratio - screen_x (same for y). Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
-		tool("brw_console", "Return and drain buffered console messages (log, warn, error, info) from the page. Messages are captured by an injected console interceptor and cleared after reading. Pass optional tab_id to target a specific tab.", object(map[string]any{
+		tool("brw_console", "Return and drain buffered console messages (log, warn, error, info) from the page. Native Runtime events capture object arguments and uncaught load-time exceptions; messages are cleared after reading. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
 		tool("brw_downloads", "Return and drain tracked file downloads with url, suggested_filename, state (inProgress/completed/canceled), received_bytes, total_bytes, guid, and path. The buffer is cleared after reading; result carries supported=true. On the direct-CDP backend capture is enabled lazily via Browser.setDownloadBehavior + downloadWillBegin/downloadProgress events. On the extension bridge it is captured via the extension's chrome.downloads API (issue #6). Only an extension build that predates that support returns supported=false with an explanatory note; branch on supported to detect it.", object(nil, nil)),

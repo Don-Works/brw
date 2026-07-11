@@ -22,7 +22,7 @@ func TestSnapshotAppliesQueryParams(t *testing.T) {
 	ctrl := &fakeController{snap: sampleSnapshot()}
 	server := New("", ctrl)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/page/snapshot?mode=frontier&query=email&limit=7&viewport_only=true&include_hidden=true&include_ax=true&since=42&max_bytes=2000", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/page/snapshot?mode=frontier&query=email&limit=7&viewport_only=true&include_hidden=true&include_ax=true&text_content=true&visual_islands=true&visual_islands_limit=3&since=42&max_bytes=2000", nil)
 	rec := httptest.NewRecorder()
 	server.server.Handler.ServeHTTP(rec, req)
 
@@ -33,7 +33,7 @@ func TestSnapshotAppliesQueryParams(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if ctrl.snapshotOpts.Mode != "frontier" || ctrl.snapshotOpts.Query != "email" || ctrl.snapshotOpts.Limit != 7 || !ctrl.snapshotOpts.ViewportOnly || !ctrl.snapshotOpts.IncludeHidden || !ctrl.snapshotOpts.IncludeAX || ctrl.snapshotOpts.Since != 42 {
+	if ctrl.snapshotOpts.Mode != "frontier" || ctrl.snapshotOpts.Query != "email" || ctrl.snapshotOpts.Limit != 7 || !ctrl.snapshotOpts.ViewportOnly || !ctrl.snapshotOpts.IncludeHidden || !ctrl.snapshotOpts.IncludeAX || !ctrl.snapshotOpts.TextContent || !ctrl.snapshotOpts.VisualIslands || ctrl.snapshotOpts.VisualIslandsLimit != 3 || ctrl.snapshotOpts.Since != 42 {
 		t.Fatalf("snapshot options = %#v", ctrl.snapshotOpts)
 	}
 }
@@ -372,6 +372,7 @@ type fakeController struct {
 	fillOpts      snapshot.FillOptions
 	uploadOpts    snapshot.UploadOptions
 	batchSteps    []browser.BatchStep
+	planSteps     []browser.PlanStep
 	commitRef     string
 	clickX        float64
 	clickY        float64
@@ -390,8 +391,9 @@ type fakeController struct {
 	emulationOpts browser.DeviceEmulationOptions
 }
 
-func (f *fakeController) Open(context.Context, string) (browser.OpenResult, error) {
-	return browser.OpenResult{}, nil
+func (f *fakeController) Open(_ context.Context, targetURL string) (browser.OpenResult, error) {
+	f.openURL = targetURL
+	return browser.OpenResult{Tab: browser.Tab{ID: "tab1", URL: targetURL}}, nil
 }
 
 func (f *fakeController) OpenInGroup(_ context.Context, targetURL string, opts browser.TabGroupOptions) (browser.OpenResult, error) {
@@ -400,8 +402,9 @@ func (f *fakeController) OpenInGroup(_ context.Context, targetURL string, opts b
 	return browser.OpenResult{Tab: browser.Tab{ID: "tab1", URL: targetURL, GroupID: opts.GroupID, GroupTitle: opts.Name, GroupColor: opts.Color}}, nil
 }
 
-func (f *fakeController) OpenIncognito(context.Context, string) (browser.OpenResult, error) {
-	return browser.OpenResult{}, nil
+func (f *fakeController) OpenIncognito(_ context.Context, targetURL string) (browser.OpenResult, error) {
+	f.openURL = targetURL
+	return browser.OpenResult{Tab: browser.Tab{ID: "tab1", URL: targetURL}}, nil
 }
 
 func (f *fakeController) CloseContext(_ context.Context, contextID string) error {
@@ -561,7 +564,8 @@ func (f *fakeController) ReplayRequest(context.Context, browser.ReplayRequestPar
 	return snapshot.ReplayResult{}, nil
 }
 
-func (f *fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error) {
+func (f *fakeController) ExecutePlan(_ context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {
+	f.planSteps = steps
 	return browser.PlanResult{OK: true}, nil
 }
 
@@ -675,6 +679,53 @@ func TestNavPolicyEnforcedOnHTTP(t *testing.T) {
 	open := New(":", &fakeController{})
 	if code := post(t, open, "/api/browser/open", `{"url":"https://anything.example"}`); code != http.StatusOK {
 		t.Fatalf("no-policy open: code = %d, want 200", code)
+	}
+}
+
+// Plans and batches are navigation entrypoints too. Guarding only the standalone
+// open handlers would let an HTTP caller smuggle a denied URL through a step.
+// This also proves bare-host convenience input is canonicalized before dispatch.
+func TestNavPolicyGatesAndCanonicalizesHTTPPlanBatch(t *testing.T) {
+	ctrl := &fakeController{}
+	srv := New(":", ctrl)
+	srv.SetNavigationPolicy(navpolicy.Parse("corp.example.com", ""))
+
+	post := func(path, body string) int {
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+		w := httptest.NewRecorder()
+		srv.server.Handler.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for _, tc := range []struct {
+		path string
+		body string
+	}{
+		{"/api/page/execute_plan", "{\"steps\":[{\"action\":\"open\",\"url\":\"https://evil.com/x\"}]}"},
+		{"/api/page/batch", "{\"steps\":[{\"action\":\"open\",\"url\":\"https://evil.com/x\"}]}"},
+		{"/api/page/execute_plan", "{\"steps\":[{\"action\":\"open\",\"url\":\"/evil.com\"}]}"},
+		{"/api/page/batch", "{\"steps\":[{\"action\":\"open\",\"url\":\"/evil.com\"}]}"},
+	} {
+		if code := post(tc.path, tc.body); code != http.StatusForbidden {
+			t.Errorf("%s %s: code = %d, want 403", tc.path, tc.body, code)
+		}
+	}
+	if len(ctrl.planSteps) != 0 || len(ctrl.batchSteps) != 0 {
+		t.Fatalf("denied steps reached controller: plan=%+v batch=%+v", ctrl.planSteps, ctrl.batchSteps)
+	}
+
+	if code := post("/api/page/execute_plan", "{\"steps\":[{\"action\":\"open\",\"url\":\"corp.example.com/app\"}]}"); code != http.StatusOK {
+		t.Fatalf("allowlisted bare-host plan: code = %d, want 200", code)
+	}
+	if len(ctrl.planSteps) != 1 || ctrl.planSteps[0].URL != "https://corp.example.com/app" {
+		t.Fatalf("canonical plan steps = %+v", ctrl.planSteps)
+	}
+
+	if code := post("/api/page/batch", "{\"steps\":[{\"action\":\"open\",\"url\":\"corp.example.com/app\"}]}"); code != http.StatusOK {
+		t.Fatalf("allowlisted bare-host batch: code = %d, want 200", code)
+	}
+	if len(ctrl.batchSteps) != 1 || ctrl.batchSteps[0].URL != "https://corp.example.com/app" {
+		t.Fatalf("canonical batch steps = %+v", ctrl.batchSteps)
 	}
 }
 

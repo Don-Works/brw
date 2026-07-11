@@ -32,8 +32,6 @@ type fakeExtension struct {
 	// focus_tab, it wins over the OS-focused tab in foregroundID() and is never
 	// moved by the user. 0 means unset.
 	agentTabId int
-	// nextID hands out ids for tabs created via open_tab.
-	nextID int
 }
 
 type fakeTab struct {
@@ -105,27 +103,6 @@ func (f *fakeExtension) focus(tabID int) bool {
 	// Explicit focus pins the agent's working tab, like the service worker.
 	f.agentTabId = tabID
 	return true
-}
-
-// openTab models service_worker open_tab: it creates a tab, pins it as the agent
-// tab, and (unless active:false) makes it the active tab of the focused window.
-func (f *fakeExtension) openTab(url string, active bool) fakeTab {
-	if f.nextID == 0 {
-		f.nextID = 1000
-	}
-	f.nextID++
-	nt := fakeTab{id: f.nextID, windowID: f.focusedWindow, active: false, url: url, title: "new tab"}
-	if active {
-		for i := range f.tabs {
-			if f.tabs[i].windowID == f.focusedWindow {
-				f.tabs[i].active = false
-			}
-		}
-		nt.active = true
-	}
-	f.tabs = append(f.tabs, nt)
-	f.agentTabId = nt.id
-	return nt
 }
 
 // serve runs the fake extension against the bridge's websocket until ctx is
@@ -366,12 +343,13 @@ func TestServiceWorkerActiveTabResolverIsAuthoritative(t *testing.T) {
 	src := readServiceWorker(t)
 	for _, want := range []string{
 		"function resolveForegroundTabId(",
-		"const foregroundId = await resolveForegroundTabId()",                                   // list_tabs uses the shared resolver
-		"summary.active = isForeground",                                                         // list_tabs marks exactly the foreground tab
-		"const id = await resolveForegroundTabId();",                                            // activeTabId() / get_active_tab_id uses it
-		"const makeActive = message.params?.active !== false;",                                  // open honors the foreground/background intent
-		`chrome.tabs.create({ url: message.params?.url || "about:blank", active: makeActive })`, // open follows that intent
-		"state.agentTabId = tab.id || null;",                                                    // and always pins the agent's working tab
+		"const foregroundId = await resolveForegroundTabId()",     // list_tabs uses the shared resolver
+		"summary.active = isForeground",                           // list_tabs marks exactly the foreground tab
+		"const id = await resolveForegroundTabId();",              // activeTabId() / get_active_tab_id uses it
+		"const makeActive = message.params?.active !== false;",    // open honors the foreground/background intent
+		"const normalWindowId = await preferredNormalWindowId();", // avoid popup/app windows
+		"const tab = await chrome.tabs.create(createParams);",     // open follows that intent
+		"state.agentTabId = tab.id || null;",                      // and always pins the agent's working tab
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("service worker authoritative active-tab resolver missing %q", want)

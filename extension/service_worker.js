@@ -39,6 +39,10 @@ function isDeniedCdpMethod(method) {
 }
 let offscreenSetupPromise = null;
 let packagedDefaultConfigPromise = null;
+// Screenshot capture is serialized per extension profile because each capture
+// may briefly activate its background tab and then restore the previously active
+// tab. Overlapping captures would race those restorations.
+let screenshotCaptureQueue = Promise.resolve();
 
 const state = {
   socket: null,
@@ -78,6 +82,16 @@ const state = {
   // JS dialog opening during the window is treated as brw's own (see
   // BRW_ACTING_WINDOW_MS). Set on every brw-initiated CDP command.
   actingUntil: new Map(),
+	// Native CDP console/exception events, captured from Runtime.enable before
+	// page scripts run and drained by get_console_messages. This catches load-time
+	// errors that an in-page console monkeypatch installed after navigation misses.
+	consoleMessages: new Map(),
+  // CSS.forcePseudoState nodes/timers bridge the short interval where Chrome has
+  // accepted a pointer move for a locked/background tab but has not yet applied
+  // its compositor :hover state. Cleared on the next hover, after five seconds,
+  // or when the debugger/tab detaches.
+  forcedHoverNodes: new Map(),
+  forcedHoverTimers: new Map(),
   // Downloads that started during this brw session, keyed by chrome.downloads id.
   // Populated by the chrome.downloads.onCreated/onChanged listeners and drained
   // by the get_downloads message (issue #6 — the extension bridge cannot observe
@@ -90,6 +104,24 @@ const state = {
 // triggers many downloads cannot grow it without limit. Mirrors the direct-CDP
 // Manager's maxTrackedDownloads cap (internal/browser/manager_downloads.go).
 const MAX_TRACKED_DOWNLOADS = 200;
+const MAX_CONSOLE_MESSAGES = 200;
+
+function remoteObjectText(arg) {
+  if (!arg) return "undefined";
+  if (Object.prototype.hasOwnProperty.call(arg, "value")) {
+    try { return typeof arg.value === "string" ? arg.value : JSON.stringify(arg.value); } catch (_) {}
+  }
+  if (arg.unserializableValue) return String(arg.unserializableValue);
+  return String(arg.description || arg.type || "undefined");
+}
+
+function recordConsoleMessage(tabId, level, text) {
+  if (typeof tabId !== "number") return;
+  const messages = state.consoleMessages.get(tabId) || [];
+  messages.push({ level: level === "warning" ? "warn" : (level || "log"), text: String(text || "").slice(0, 1000), timestamp: new Date().toISOString() });
+  if (messages.length > MAX_CONSOLE_MESSAGES) messages.splice(0, messages.length - MAX_CONSOLE_MESSAGES);
+  state.consoleMessages.set(tabId, messages);
+}
 
 // mapDownloadState translates a chrome.downloads state to the wire vocabulary the
 // Go side expects (inProgress | completed | canceled), matching the direct-CDP
@@ -249,6 +281,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   state.observerInjected.delete(tabId);
   state.fileChooserEvents.delete(tabId);
   state.actingUntil.delete(tabId);
+	state.consoleMessages.delete(tabId);
+  state.forcedHoverNodes.delete(tabId);
+  if (state.forcedHoverTimers.has(tabId)) clearTimeout(state.forcedHoverTimers.get(tabId));
+  state.forcedHoverTimers.delete(tabId);
   if (state.activeTabId === tabId) state.activeTabId = null;
   // The agent's pinned tab was closed — drop the pin so resolution falls back to a
   // live tab instead of repeatedly probing a dead one.
@@ -270,6 +306,9 @@ chrome.debugger.onDetach.addListener((source) => {
     state.attachUsedAt.delete(source.tabId);
     state.fileChooserEvents.delete(source.tabId);
     state.actingUntil.delete(source.tabId);
+    state.forcedHoverNodes.delete(source.tabId);
+    if (state.forcedHoverTimers.has(source.tabId)) clearTimeout(state.forcedHoverTimers.get(source.tabId));
+    state.forcedHoverTimers.delete(source.tabId);
   }
 });
 // Capture CDP events the daemon needs to observe out-of-band. The only one today
@@ -279,6 +318,17 @@ chrome.debugger.onDetach.addListener((source) => {
 // We stash the latest per tab so the daemon can poll for it via
 // get_file_chooser_event and then set the file with DOM.setFileInputFiles.
 chrome.debugger.onEvent.addListener((source, method, params) => {
+	if (method === "Runtime.consoleAPICalled" && typeof source.tabId === "number") {
+	  const text = (params?.args || []).map(remoteObjectText).join(" ");
+	  recordConsoleMessage(source.tabId, params?.type || "log", text);
+	  return;
+	}
+	if (method === "Runtime.exceptionThrown" && typeof source.tabId === "number") {
+	  const details = params?.exceptionDetails || {};
+	  const text = details?.exception?.description || details?.exception?.value || details?.text || "Uncaught exception";
+	  recordConsoleMessage(source.tabId, "error", text);
+	  return;
+	}
   // A JS dialog (alert/confirm/prompt/beforeunload) opening while Page is enabled
   // is intercepted by CDP and MUST be answered or the renderer hangs. We answer,
   // but the choice is no longer a blanket accept:
@@ -468,11 +518,44 @@ async function configureBridge(config) {
 async function bridgeDebugStatus() {
   const config = await loadBridgeConfig();
   const data = await chrome.storage.local.get(BRIDGE_STATUS_KEY).catch(() => ({}));
+  const daemon = await fetchDaemonSummary(config);
   return {
     config,
     bridge: data[BRIDGE_STATUS_KEY] || null,
-    socket: isSocketOpen() ? "open" : (isSocketConnecting() ? "connecting" : "closed")
+    socket: isSocketOpen() ? "open" : (isSocketConnecting() ? "connecting" : "closed"),
+    daemon,
+    extensionVersion: (chrome.runtime.getManifest?.() || {}).version || ""
   };
+}
+
+async function fetchDaemonSummary(config) {
+  try {
+    const response = await fetch(config.statusUrl, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(1500)
+    });
+    if (!response.ok) throw new Error(`status ${response.status}`);
+    const status = await response.json().catch(() => ({}));
+    return {
+      reachable: true,
+      connected: Boolean(status.connected),
+      identity: status.identity || null,
+      extensionBuild: status.hello?.build || "",
+      connectedAt: status.connected_at || "",
+      lastSeenAt: status.last_seen_at || "",
+      pending: Number(status.pending || 0),
+      inflight: Number(status.inflight || 0),
+      queued: Number(status.queued || 0),
+      retries: Number(status.retries || 0),
+      disconnectReason: status.disconnect_reason || ""
+    };
+  } catch (error) {
+    return {
+      reachable: false,
+      connected: false,
+      error: String(error?.message || error)
+    };
+  }
 }
 
 function normalizeBridgeConfig(input) {
@@ -576,7 +659,16 @@ async function handle(message) {
       // never call chrome.windows.update({focused:true}), so automation never
       // raises Chrome over the user's other OS apps.
       const makeActive = message.params?.active !== false;
-      const tab = await chrome.tabs.create({ url: message.params?.url || "about:blank", active: makeActive });
+      const createParams = { url: message.params?.url || "about:blank", active: makeActive };
+      // chrome.tabs.create without windowId inherits Chrome's last-focused
+      // window — including a popup created by the previous automation step.
+      // Popup windows cannot host tab groups, so the new tab would be created
+      // successfully and then open_tab would fail while grouping it. Prefer a
+      // normal browser window explicitly; omit windowId only when none exists so
+      // Chrome can create its normal fallback window.
+      const normalWindowId = await preferredNormalWindowId();
+      if (typeof normalWindowId === "number") createParams.windowId = normalWindowId;
+      const tab = await chrome.tabs.create(createParams);
       if (makeActive) state.activeTabId = tab.id || null;
       // Pin the agent's own tab as its working target so subsequent no-tab_id tools
       // stay on it no matter which tab/window the human selects next. This holds for
@@ -584,21 +676,33 @@ async function handle(message) {
       // resolution follows.
       state.agentTabId = tab.id || null;
       let resultTab = tab;
+      let groupWarning = "";
       if (tab.id && hasGroupTarget(message.params)) {
-        const groupId = await groupTabForParams(tab, message.params);
-        if (typeof groupId === "number" && groupId >= 0 && makeActive) {
-          // Grouping can DEMOTE the freshly-opened active tab: a collapsed group
-          // cannot hold the active tab, so Chrome deactivates the newcomer and
-          // activates an adjacent visible tab. Re-expand the group and re-activate
-          // the opened tab so it stays the foreground tab the agent will act on —
-          // otherwise the next no-tab_id tool resolves the wrong tab. Skipped for a
-          // background open, which intentionally stays inactive.
-          await chrome.tabGroups.update(groupId, { collapsed: false }).catch(() => {});
-          await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+        try {
+          const groupId = await groupTabForParams(tab, message.params);
+          if (typeof groupId === "number" && groupId >= 0 && makeActive) {
+            // Grouping can DEMOTE the freshly-opened active tab: a collapsed group
+            // cannot hold the active tab, so Chrome deactivates the newcomer and
+            // activates an adjacent visible tab. Re-expand the group and re-activate
+            // the opened tab so it stays the foreground tab the agent will act on —
+            // otherwise the next no-tab_id tool resolves the wrong tab. Skipped for a
+            // background open, which intentionally stays inactive.
+            await chrome.tabGroups.update(groupId, { collapsed: false }).catch(() => {});
+            await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+          }
+          resultTab = await chrome.tabs.get(tab.id).catch(() => tab);
+        } catch (error) {
+          // Grouping is organizational, not required for tab isolation (the
+          // agentTabId pin above is the actual safety boundary). Chrome can refuse
+          // grouping for special/transient window states. Do not turn a successfully
+          // created, controllable tab into a failed open or leak an orphan; surface a
+          // candid warning and continue ungrouped.
+          groupWarning = `tab opened ungrouped: ${String(error?.message || error)}`;
         }
-        resultTab = await chrome.tabs.get(tab.id).catch(() => tab);
       }
-      send({ id: message.id, ok: true, result: await tabSummary(resultTab) });
+      const summary = await tabSummary(resultTab);
+      if (groupWarning) summary.groupWarning = groupWarning;
+      send({ id: message.id, ok: true, result: summary });
       return;
     }
     if (message.type === "focus_tab") {
@@ -742,7 +846,62 @@ async function handle(message) {
       send({ id: message.id, ok: true, result: { cleared: tabId || 0 } });
       return;
     }
-    if (message.type === "cdp") {
+    if (message.type === "move_pointer") {
+	  const tabId = Number(message.params?.tabId || (await activeTabId()));
+	  const x = Number(message.params?.x);
+	  const y = Number(message.params?.y);
+	  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+	    send({ id: message.id, ok: false, error: "move_pointer requires finite x and y" });
+	    return;
+	  }
+	  await attach(tabId);
+	  markActing(tabId);
+	  // A locked/fully occluded Chrome can delay applying real :hover even after
+	  // accepting the pointer event. Force the hit-tested node + ancestors FIRST
+	  // so its CDP commands are not queued behind Chrome's slow mouse-event ACK;
+	  // the short bounded window makes CSS menus/tooltips immediately deterministic.
+	  // synthetic JS hover listeners were already fired by the daemon.
+	  const forced = await forceHoverAt(tabId, x, y).catch(() => 0);
+	  // Only queue native input when Chrome can actually route it now. On an
+	  // inactive/unfocused/locked tab the ACK stalls for seconds and blocks every
+	  // later debugger command (breaking nested hover menus). The daemon already
+	  // dispatched the standard JS hover events and forced CSS state above covers
+	  // :hover; a foreground target additionally gets the trusted pointer event.
+	  const tab = await chrome.tabs.get(tabId).catch(() => null);
+	  const win = tab ? await chrome.windows.get(tab.windowId).catch(() => null) : null;
+	  const trustedQueued = Boolean(tab?.active && win?.focused);
+	  if (trustedQueued) {
+	    sendDebuggerCommand(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y }).catch(() => {});
+	  }
+	  send({ id: message.id, ok: true, result: { queued: trustedQueued, forced, x, y } });
+	  return;
+	}
+	if (message.type === "get_console_messages") {
+	  const tabId = Number(message.params?.tabId || (await activeTabId()));
+	  await attach(tabId);
+	  const messages = state.consoleMessages.get(tabId) || [];
+	  state.consoleMessages.set(tabId, []);
+	  send({ id: message.id, ok: true, result: { messages } });
+	  return;
+	}
+	if (message.type === "get_tab_input_state") {
+	  const tabId = Number(message.params?.tabId || (await activeTabId()));
+	  const tab = await chrome.tabs.get(tabId);
+	  const win = await chrome.windows.get(tab.windowId).catch(() => null);
+	  send({ id: message.id, ok: true, result: {
+	    active: Boolean(tab.active),
+	    windowFocused: Boolean(win?.focused)
+	  }});
+	  return;
+	}
+	if (message.type === "capture_screenshot") {
+	  const tabId = Number(message.params?.tabId || (await activeTabId()));
+	  const params = { ...(message.params?.params || {}), fromSurface: true };
+	  const result = await captureScreenshotForTab(tabId, params);
+	  send({ id: message.id, ok: true, result });
+	  return;
+	}
+	if (message.type === "cdp") {
       const method = message.params?.method;
       // Enforce the cookie/storage denylist regardless of who sent this command —
       // a rogue server that answered our outbound socket cannot exfiltrate cookies
@@ -1001,8 +1160,14 @@ async function attach(tabId) {
   }
   state.attachedTabs.add(tabId);
   state.attachUsedAt.set(tabId, Date.now());
-  // Enable Page events so we receive javascriptDialogOpening for auto-dismiss.
-  chrome.debugger.sendCommand({ tabId }, "Page.enable", {}).catch(() => {});
+	// Enable Page events for dialogs, Runtime events for console/load-time
+	// exceptions, and focus emulation so trusted pointer/key input reaches a
+	// background automation tab without stealing the user's OS focus.
+	await Promise.all([
+	  chrome.debugger.sendCommand({ tabId }, "Page.enable", {}).catch(() => {}),
+	  chrome.debugger.sendCommand({ tabId }, "Runtime.enable", {}).catch(() => {}),
+	  chrome.debugger.sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {})
+	]);
 }
 
 // reconcileDebuggerAttachments releases brw debugger sessions that leaked across
@@ -1035,6 +1200,7 @@ async function reconcileDebuggerAttachments() {
 // caches. Safe to call when not attached (no-op). The next CDP call re-attaches
 // lazily via attach(), so detaching an idle tab never breaks a later action.
 async function detach(tabId) {
+  await clearForcedHover(tabId).catch(() => {});
   state.attachUsedAt.delete(tabId);
   if (!state.attachedTabs.has(tabId)) return;
   state.attachedTabs.delete(tabId);
@@ -1045,6 +1211,21 @@ async function detach(tabId) {
   } catch (_) {
     // Already detached (tab closed / Chrome reclaimed it) — nothing to do.
   }
+}
+
+// forceDetach is used to cancel a CDP command that itself is stuck (notably
+// captureScreenshot on a locked/fully occluded Chrome Stable). Do not trust the
+// in-memory set here: onDetach can clear bookkeeping before the browser has fully
+// released the session, so always ask Chrome to detach.
+async function forceDetach(tabId) {
+  if (state.forcedHoverTimers.has(tabId)) clearTimeout(state.forcedHoverTimers.get(tabId));
+  state.forcedHoverTimers.delete(tabId);
+  state.forcedHoverNodes.delete(tabId);
+  state.attachedTabs.delete(tabId);
+  state.attachUsedAt.delete(tabId);
+  state.observerInjected.delete(tabId);
+  state.fileChooserEvents.delete(tabId);
+  try { await chrome.debugger.detach({ tabId }); } catch (_) {}
 }
 
 // detachAll releases every debugger brw currently holds. Called when the daemon
@@ -1077,6 +1258,187 @@ async function sendDebuggerCommand(tabId, method, params) {
     state.attachedTabs.delete(tabId);
     await attach(tabId);
     return await chrome.debugger.sendCommand({ tabId }, method, params);
+  }
+}
+
+async function clearForcedHover(tabId) {
+  const timer = state.forcedHoverTimers.get(tabId);
+  if (timer) clearTimeout(timer);
+  state.forcedHoverTimers.delete(tabId);
+  const nodeIds = state.forcedHoverNodes.get(tabId) || [];
+  state.forcedHoverNodes.delete(tabId);
+  if (!state.attachedTabs.has(tabId)) return;
+  await Promise.all(nodeIds.map((nodeId) =>
+    sendDebuggerCommand(tabId, "CSS.forcePseudoState", { nodeId, forcedPseudoClasses: [] }).catch(() => {})
+  ));
+}
+
+// forceHoverAt walks from the deepest painted element at x/y through its DOM,
+// shadow-host, and same-origin iframe ancestors, then briefly forces :hover on
+// each node. This makes ancestor selectors such as `.figure:hover .caption` and
+// nested menus deterministic while Chrome catches up with the trusted pointer
+// move on a locked/background desktop.
+async function forceHoverAt(tabId, x, y) {
+  await clearForcedHover(tabId);
+  await Promise.all([
+    sendDebuggerCommand(tabId, "DOM.enable", {}).catch(() => {}),
+    sendDebuggerCommand(tabId, "CSS.enable", {}).catch(() => {})
+  ]);
+  // DOM.requestNode returns nodeId:0 until the frontend document has been
+  // requested at least once. A depth-0 request is cheap and unlocks stable IDs.
+  await sendDebuggerCommand(tabId, "DOM.getDocument", { depth: 0, pierce: true });
+  const objectGroup = `brw-hover-${tabId}-${Date.now()}`;
+  const expression = `(function(x,y){
+    function deepest(doc, px, py) {
+      var el = null;
+      try { el = doc.elementFromPoint(px, py); } catch (_) { return null; }
+      if (!el) return null;
+      try {
+        if (el.shadowRoot && el.shadowRoot.elementFromPoint) {
+          var shadowHit = el.shadowRoot.elementFromPoint(px, py);
+          if (shadowHit && shadowHit !== el) return shadowHit;
+        }
+      } catch (_) {}
+      if (String(el.tagName || '').toLowerCase() === 'iframe') {
+        try {
+          var rect = el.getBoundingClientRect();
+          var frameHit = deepest(el.contentDocument, px - rect.left - (el.clientLeft || 0), py - rect.top - (el.clientTop || 0));
+          if (frameHit) return frameHit;
+        } catch (_) {}
+      }
+      return el;
+    }
+    var nodes = [], node = deepest(document, x, y);
+    while (node && nodes.length < 8) {
+      nodes.push(node);
+      if (node.parentElement) { node = node.parentElement; continue; }
+      var root = null;
+      try { root = node.getRootNode && node.getRootNode(); } catch (_) {}
+      if (root && root.host) { node = root.host; continue; }
+      try { node = node.ownerDocument && node.ownerDocument.defaultView && node.ownerDocument.defaultView.frameElement; }
+      catch (_) { node = null; }
+    }
+    window.__brwForcedHoverNodes = nodes;
+    return nodes;
+  })(${JSON.stringify(x)},${JSON.stringify(y)})`;
+  try {
+    const evaluated = await sendDebuggerCommand(tabId, "Runtime.evaluate", {
+      expression,
+      returnByValue: false,
+      objectGroup
+    });
+    const arrayID = evaluated?.result?.objectId;
+    if (!arrayID) return 0;
+    const properties = await sendDebuggerCommand(tabId, "Runtime.getProperties", {
+      objectId: arrayID,
+      ownProperties: true
+    });
+    const objectIDs = (properties?.result || [])
+      .filter((property) => /^\d+$/.test(String(property?.name || '')) && property?.value?.objectId)
+      .map((property) => property.value.objectId);
+    const requested = await Promise.all(objectIDs.map((objectId) =>
+      sendDebuggerCommand(tabId, "DOM.requestNode", { objectId }).catch(() => null)
+    ));
+    const nodeIds = requested.map((item) => item?.nodeId).filter(Boolean);
+    await Promise.all(nodeIds.map((nodeId) =>
+      sendDebuggerCommand(tabId, "CSS.forcePseudoState", { nodeId, forcedPseudoClasses: ["hover"] })
+    ));
+    state.forcedHoverNodes.set(tabId, nodeIds);
+    state.forcedHoverTimers.set(tabId, setTimeout(() => {
+      clearForcedHover(tabId).catch(() => {});
+    }, 5000));
+    return nodeIds.length;
+  } finally {
+    await sendDebuggerCommand(tabId, "Runtime.evaluate", {
+      expression: "delete window.__brwForcedHoverNodes",
+      returnByValue: true
+    }).catch(() => {});
+    await sendDebuggerCommand(tabId, "Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+  }
+}
+
+// captureScreenshotForTab obtains a real compositor surface without leaving the
+// user's selected tab changed. Chrome's extension debugger only allows surface
+// screenshots, and Page.captureScreenshot can remain pending indefinitely when
+// its target tab is inactive. Activate inside the existing window (never raise
+// the OS window), give the compositor one frame, capture with a hard deadline,
+// then restore the prior tab in a finally block. The queue prevents concurrent
+// captures from restoring each other's target.
+async function captureScreenshotForTab(tabId, params) {
+  const previous = screenshotCaptureQueue;
+  let release;
+  screenshotCaptureQueue = new Promise((resolve) => { release = resolve; });
+  await previous.catch(() => {});
+  let restoreTabId = null;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab.active) {
+      const active = await chrome.tabs.query({ windowId: tab.windowId, active: true });
+      restoreTabId = active?.[0]?.id || null;
+      await chrome.tabs.update(tabId, { active: true });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const captureParams = { ...params };
+    const fallbackViewport = captureParams.fallbackViewport || null;
+    delete captureParams.fallbackViewport;
+    await attach(tabId);
+    markActing(tabId);
+    let timer = null;
+    try {
+      return await Promise.race([
+        sendDebuggerCommand(tabId, "Page.captureScreenshot", captureParams),
+        new Promise((_, reject) => {
+          // Capped 800–900px captures normally complete in well under 250ms.
+          // One second leaves generous load headroom while keeping the locked-
+          // session print fallback responsive instead of burning the daemon's
+          // whole request deadline on a compositor that cannot produce a frame.
+          timer = setTimeout(() => reject(new Error("screenshot compositor capture timed out")), 1000);
+        })
+      ]);
+    } catch (error) {
+      // Chrome Stable can suspend every compositor surface while the macOS user
+      // session is locked. Page.captureScreenshot then never resolves, even for
+      // an active tab. Cancel that command and use Chrome's print renderer, which
+      // remains available without a surface. The daemon rasterizes page 1 and
+      // applies the original viewport clip, preserving the screenshot contract.
+      await forceDetach(tabId);
+      await attach(tabId);
+      const width = Math.max(1, Number(fallbackViewport?.width || captureParams?.clip?.width || 1280));
+      const height = Math.max(1, Number(fallbackViewport?.height || captureParams?.clip?.height || 720));
+      await sendDebuggerCommand(tabId, "Emulation.setEmulatedMedia", { media: "screen" }).catch(() => {});
+      let printTimer = null;
+      try {
+        const printed = await Promise.race([
+          sendDebuggerCommand(tabId, "Page.printToPDF", {
+            printBackground: true,
+            displayHeaderFooter: false,
+            preferCSSPageSize: false,
+            paperWidth: width / 96,
+            paperHeight: height / 96,
+            marginTop: 0,
+            marginBottom: 0,
+            marginLeft: 0,
+            marginRight: 0,
+            pageRanges: "1",
+            transferMode: "ReturnAsBase64"
+          }),
+          new Promise((_, reject) => {
+            printTimer = setTimeout(() => reject(new Error("screenshot print fallback timed out after 5000ms")), 5000);
+          })
+        ]);
+        return { data: printed?.data || "", fallback: "pdf", viewport: { width, height }, captureError: String(error?.message || error) };
+      } finally {
+        if (printTimer) clearTimeout(printTimer);
+        await sendDebuggerCommand(tabId, "Emulation.setEmulatedMedia", {}).catch(() => {});
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  } finally {
+    if (restoreTabId && restoreTabId !== tabId) {
+      await chrome.tabs.update(restoreTabId, { active: true }).catch(() => {});
+    }
+    release();
   }
 }
 
@@ -1114,6 +1476,26 @@ function isDetachedDebuggerError(error) {
 // Chromium clone/test profile whose window has not yet classified as "normal".
 function isControllableWindowType(win) {
   return !win || (win.type !== "app" && win.type !== "devtools");
+}
+
+// preferredNormalWindowId returns the safest window for a newly-created agent
+// tab. A still-live agent tab wins when it already lives in a normal window;
+// otherwise prefer the focused normal window, then any normal window. Popup/app
+// windows are deliberately excluded because popup windows cannot be grouped and
+// app/PWA windows must never become agent workspaces.
+async function preferredNormalWindowId() {
+  if (state.agentTabId) {
+    const pinned = await chrome.tabs.get(state.agentTabId).catch(() => null);
+    if (pinned?.windowId != null) {
+      const win = await chrome.windows.get(pinned.windowId).catch(() => null);
+      if (win?.type === "normal") return win.id;
+    }
+  }
+  const windows = await chrome.windows.getAll({ windowTypes: ["normal"] }).catch(() => []);
+  const normals = (windows || []).filter((win) => win?.type === "normal");
+  const focused = normals.find((win) => win.focused);
+  if (focused?.id != null) return focused.id;
+  return normals[0]?.id ?? null;
 }
 
 async function resolveForegroundTabId() {
@@ -1463,13 +1845,22 @@ function ensureObserver(tabId) {
       attributes: true,
       characterData: true
     });
-    ['log','warn','error','info'].forEach(function(level) {
+    function stringify(value) {
+      try {
+        if (value instanceof Error) return value.stack || value.message || String(value);
+        if (typeof value === 'object' && value !== null) return JSON.stringify(value, function(_key, item) {
+          return typeof item === 'bigint' ? String(item) : item;
+        });
+        return String(value);
+      } catch (_err) {
+        try { return String(value); } catch (_ignored) { return '[unprintable]'; }
+      }
+    }
+    ['log','warn','error','info','debug'].forEach(function(level) {
       const orig = console[level];
       console[level] = function() {
-        var text = Array.from(arguments).map(function(a) {
-          try { return typeof a === 'object' ? JSON.stringify(a) : String(a); } catch(e) { return String(a); }
-        }).join(' ');
-        window.__brwConsole.push({level: level, text: text.slice(0, 500)});
+        var text = Array.from(arguments).map(stringify).join(' ');
+        window.__brwConsole.push({level: level, text: text.slice(0, 1000), timestamp: new Date().toISOString()});
         if (window.__brwConsole.length > 200) window.__brwConsole.shift();
         if (orig.apply) orig.apply(console, arguments); else orig(arguments);
       };
@@ -1498,7 +1889,7 @@ function createNotification(params) {
   const messageText = String(params.message || "");
   const options = {
     type: "basic",
-    iconUrl: chrome.runtime.getURL("icon.png"),
+    iconUrl: chrome.runtime.getURL("icons/icon-128.png"),
     title,
     message: messageText,
     priority: params.kind === "needs_input" || params.kind === "error" ? 2 : 0,

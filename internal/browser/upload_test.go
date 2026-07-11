@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -135,9 +136,40 @@ func TestResolveUploadPaths_BytesBase64(t *testing.T) {
 	if string(got) != string(content) {
 		t.Fatalf("temp file contents = %q, want %q", got, content)
 	}
+	parent := filepath.Dir(paths[0])
 	cleanup()
 	if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
 		t.Fatalf("expected temp file removed after cleanup, stat err = %v", err)
+	}
+	if _, err := os.Stat(parent); !os.IsNotExist(err) {
+		t.Fatalf("expected private temp directory removed after cleanup, stat err = %v", err)
+	}
+}
+
+func TestSuccessfulUploadTempRetentionKeepsFileForSubmitThenCleans(t *testing.T) {
+	paths, cleanup, err := ResolveUploadPaths(context.Background(), snapshot.UploadOptions{
+		BytesBase64: base64.StdEncoding.EncodeToString([]byte("submit me later")),
+		Filename:    "retained.txt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := paths[0]
+	parent := filepath.Dir(path)
+	scheduleUploadCleanup(cleanup, 40*time.Millisecond)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("temp file was removed before the page could submit it: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, err := os.Stat(parent)
+		if os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("retained upload temp directory was not eventually removed: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -178,9 +210,36 @@ func TestResolveUploadPaths_URL(t *testing.T) {
 	if string(got) != "downloaded body" {
 		t.Fatalf("temp file contents = %q", got)
 	}
+	parent := filepath.Dir(paths[0])
 	cleanup()
 	if _, err := os.Stat(paths[0]); !os.IsNotExist(err) {
 		t.Fatalf("expected temp file removed after cleanup")
+	}
+	if _, err := os.Stat(parent); !os.IsNotExist(err) {
+		t.Fatalf("expected private temp directory removed after cleanup, stat err = %v", err)
+	}
+}
+
+func TestFetchUploadTempRemovesDirectoryOnOversizeError(t *testing.T) {
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+	orig := blockedFetchIP
+	blockedFetchIP = func(net.IP) bool { return false }
+	defer func() { blockedFetchIP = orig }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, maxUploadFetchBytes+1))
+	}))
+	defer srv.Close()
+	if _, err := fetchUploadTemp(context.Background(), srv.URL+"/too-large.bin", ""); err == nil {
+		t.Fatal("expected oversized upload fetch to fail")
+	}
+	entries, err := os.ReadDir(tempRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("oversize failure leaked temp entries: %+v", entries)
 	}
 }
 

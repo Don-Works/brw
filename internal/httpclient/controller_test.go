@@ -205,7 +205,7 @@ func TestClick_ForwardsTabID(t *testing.T) {
 	defer srv.Close()
 
 	c, _ := New(srv.URL, 5*time.Second)
-	result, err := c.Click(context.WithValue(context.Background(), struct{}{}, "test"), "e17")
+	result, err := c.Click(context.Background(), "e17")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,6 +222,15 @@ func TestSnapshot_ForwardsOptions(t *testing.T) {
 		if r.URL.Query().Get("mode") != "all" {
 			t.Errorf("expected mode=all, got %q", r.URL.Query().Get("mode"))
 		}
+		for name, want := range map[string]string{
+			"text_content":         "true",
+			"visual_islands":       "true",
+			"visual_islands_limit": "6",
+		} {
+			if got := r.URL.Query().Get(name); got != want {
+				t.Errorf("%s = %q, want %q", name, got, want)
+			}
+		}
 		json.NewEncoder(w).Encode(snapshot.PageSnapshot{
 			URL:   "https://example.com",
 			Title: "Example",
@@ -230,7 +239,7 @@ func TestSnapshot_ForwardsOptions(t *testing.T) {
 	defer srv.Close()
 
 	c, _ := New(srv.URL, 5*time.Second)
-	_, err := c.Snapshot(context.Background(), snapshot.SnapshotOptions{Mode: "all"})
+	_, err := c.Snapshot(context.Background(), snapshot.SnapshotOptions{Mode: "all", TextContent: true, VisualIslands: true, VisualIslandsLimit: 6})
 	if err != nil {
 		t.Fatal(err)
 	}

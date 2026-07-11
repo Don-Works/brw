@@ -553,6 +553,9 @@ func snapshotValues(opts snapshot.SnapshotOptions) url.Values {
 	addBool(values, "include_hidden", opts.IncludeHidden)
 	addBool(values, "include_ax", opts.IncludeAX)
 	addBool(values, "include_frames", opts.IncludeFrames)
+	addBool(values, "text_content", opts.TextContent)
+	addBool(values, "visual_islands", opts.VisualIslands)
+	addInt(values, "visual_islands_limit", opts.VisualIslandsLimit)
 	if opts.Since > 0 {
 		values.Set("since", strconv.FormatInt(opts.Since, 10))
 	}

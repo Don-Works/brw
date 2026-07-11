@@ -92,6 +92,14 @@ image-only widgets. Set `annotate:true` for a Set-of-Marks image whose labels ar
 the **same refs** (`e17`) you click with; pass `ref` or `region` for a small
 cropped image and fewer vision tokens.
 
+On the installed-profile extension transport, an explicit screenshot may briefly
+activate its target tab inside the existing Chrome window so Chrome can expose a
+compositor surface; the extension restores the previously active tab and never
+raises the browser's OS window. If Chrome has suspended all surfaces (notably a
+locked macOS session), `brw` falls back to Chrome's print renderer and preserves
+the requested viewport crop. That fallback is slower but keeps unattended/SSH
+visual checks reliable.
+
 Two snapshot metadata signals tell you when to do this:
 
 - **`low_semantic_coverage: true`** with a `coverage_hint` — a content-heavy page
@@ -118,8 +126,12 @@ money-moving actions: purchases, sends, deletions.
 
 Operators can harden this with a navigation guardrail: `brwd --blocked-domains
 a.com,b.com` or `--allowed-domains corp.example.com` (subdomains included) makes
-`brw_open` / `brw_open_incognito` / `brw_replay_request` refuse off-limits
-destinations, so an injected instruction to "go to evil.com" fails closed.
+`brw_open`, `brw_open_incognito`, `brw_navigate_to`, plan/batch `open` steps,
+`brw_replay_request`, and URL uploads refuse off-limits destinations. Redirects
+and link clicks are checked again after commit and a denied tab is closed or
+reset to `about:blank`. This is an agent guardrail rather than a network firewall;
+pair it with DNS/firewall controls if even the initial redirected request must be
+prevented from leaving the machine.
 
 ## Lean tool surface for small models
 

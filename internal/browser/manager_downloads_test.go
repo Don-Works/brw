@@ -39,30 +39,42 @@ func newHeadlessManager(t *testing.T) *Manager {
 		t.Skipf("headless Chrome did not start: %v", err)
 	}
 	m := &Manager{
-		allocCancel:       allocCancel,
-		browserCtx:        browserCtx,
-		browserCancel:     browserCancel,
-		tabContexts:       map[string]tabContext{},
-		refs:              store.New(),
-		timeout:           20 * time.Second,
-		lastState:         map[string]*SemanticState{},
-		versions:          map[string]int64{},
-		trace:             make([]TraceEntry, 0, 16),
-		userDataDir:       t.TempDir(),
-		downloadIndex:     map[string]int{},
-		cancels:           newCancelRegistry(),
-		netCaptureTabs:    map[string]bool{},
-		shadowPierceTabs:  map[string]bool{},
-		webmcpTabs:        map[string]bool{},
-		emulationStates:   map[string]deviceEmulationState{},
-		incognitoContexts: map[string]bool{},
+		allocCancel:        allocCancel,
+		browserCtx:         browserCtx,
+		browserCancel:      browserCancel,
+		tabContexts:        map[string]tabContext{},
+		refs:               store.New(),
+		timeout:            20 * time.Second,
+		lastState:          map[string]*SemanticState{},
+		observedState:      map[string]*SemanticState{},
+		versions:           map[string]int64{},
+		trace:              make([]TraceEntry, 0, 16),
+		consoleCaptureTabs: map[string]bool{},
+		consoleMessages:    map[string][]ConsoleMessage{},
+		userDataDir:        t.TempDir(),
+		downloadIndex:      map[string]int{},
+		cancels:            newCancelRegistry(),
+		netCaptureTabs:     map[string]bool{},
+		shadowPierceTabs:   map[string]bool{},
+		webmcpTabs:         map[string]bool{},
+		emulationStates:    map[string]deviceEmulationState{},
+		incognitoContexts:  map[string]bool{},
 	}
 	// Mirror production New(): connect() verifies the browser and registers the
 	// target-lifecycle listener that reclaims externally-closed tabs.
 	if err := m.connect(); err != nil {
 		t.Skipf("headless Chrome connect failed: %v", err)
 	}
-	t.Cleanup(func() { m.Close() })
+	t.Cleanup(func() {
+		// chromedp's context cancel is asynchronous with respect to the Chrome
+		// process. Wait for the allocator's process-exit signal before testing's
+		// TempDir cleanup runs; otherwise Chrome can still be writing Cache_Data and
+		// make RemoveAll fail intermittently under -race / slower toolchains.
+		shutdownCtx, shutdownCancel := context.WithTimeout(m.browserCtx, 10*time.Second)
+		defer shutdownCancel()
+		_ = chromedp.Cancel(shutdownCtx)
+		_ = m.Close()
+	})
 	return m
 }
 

@@ -87,11 +87,10 @@ func (m *Manager) Navigate(ctx context.Context, direction string) (ActionResult,
 // a new tab — it navigates the existing active tab.
 func (m *Manager) NavigateTo(ctx context.Context, url string) (ActionResult, error) {
 	start := time.Now()
-	if strings.TrimSpace(url) == "" {
-		return ActionResult{}, fmt.Errorf("navigate_to: url is required")
-	}
-	if !strings.Contains(url, "://") {
-		url = "https://" + url
+	var err error
+	url, err = m.prepareNavigationURL(url)
+	if err != nil {
+		return ActionResult{}, fmt.Errorf("navigate_to: %w", err)
 	}
 
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)

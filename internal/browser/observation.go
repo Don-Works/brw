@@ -17,6 +17,21 @@ type SemanticState struct {
 	Signature string
 }
 
+func (s SemanticState) Equal(other SemanticState) bool {
+	return s.URL == other.URL && s.Title == other.Title && s.Focus == other.Focus && s.Signature == other.Signature
+}
+
+// AdvanceObservationState returns the state/version for a change detector. The
+// version advances only when semantic state changes, so clients can compare it
+// cheaply; the first observation establishes version 1.
+func AdvanceObservationState(previous *SemanticState, version int64, after SemanticState) (*SemanticState, int64, bool) {
+	if previous != nil && previous.Equal(after) {
+		return previous, version, false
+	}
+	next := after
+	return &next, version + 1, true
+}
+
 func NewSemanticState(snap snapshot.PageSnapshot) SemanticState {
 	focus := ""
 	if snap.Metadata != nil {
@@ -64,10 +79,7 @@ func ApplyStateDiff(result *ActionResult, before *SemanticState, after SemanticS
 	if before == nil {
 		return
 	}
-	changed := before.URL != after.URL ||
-		before.Title != after.Title ||
-		before.Focus != after.Focus ||
-		before.Signature != after.Signature
+	changed := !before.Equal(after)
 	result.ChangedState = &changed
 	if !changed {
 		appendWarning(result, noSemanticStateChangeWarning)

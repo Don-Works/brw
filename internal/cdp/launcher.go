@@ -162,7 +162,7 @@ func (l *Launcher) waitReady(ctx context.Context, timeout time.Duration) error {
 		}
 		select {
 		case <-deadline.Done():
-			return fmt.Errorf("Chrome CDP endpoint did not become ready at %s: %w", l.endpoint, deadline.Err())
+			return fmt.Errorf("chrome CDP endpoint did not become ready at %s: %w", l.endpoint, deadline.Err())
 		case <-ticker.C:
 		}
 	}

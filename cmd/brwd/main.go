@@ -280,6 +280,12 @@ func main() {
 	if !navPolicy.Empty() {
 		log.Printf("navigation guardrail active (allow=%d, block=%d domains)", len(navPolicy.Allowed), len(navPolicy.Blocked))
 	}
+	if manager != nil {
+		manager.SetNavigationPolicy(navPolicy)
+	}
+	if bridge != nil {
+		bridge.SetNavigationPolicy(navPolicy)
+	}
 
 	var api *httpapi.Server
 	if httpAddr != "" && httpAddr != "off" {

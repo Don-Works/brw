@@ -36,6 +36,7 @@ func TestExtTabToBrowserTabIncludesPopupMetadata(t *testing.T) {
 		GroupTitle:     "workspace-1",
 		GroupColor:     "cyan",
 		GroupCollapsed: true,
+		GroupWarning:   "tab opened ungrouped: unavailable",
 		OpenerTabID:    12,
 	}.toBrowserTab()
 
@@ -50,6 +51,9 @@ func TestExtTabToBrowserTabIncludesPopupMetadata(t *testing.T) {
 	}
 	if tab.GroupID != "9" || tab.GroupTitle != "workspace-1" || tab.GroupColor != "cyan" || !tab.GroupCollapsed {
 		t.Fatalf("missing group metadata: %+v", tab)
+	}
+	if tab.GroupWarning != "tab opened ungrouped: unavailable" {
+		t.Fatalf("missing group warning: %+v", tab)
 	}
 }
 
@@ -74,6 +78,46 @@ func TestActionTargetsPrioritizesActiveThenPopups(t *testing.T) {
 	}
 	if targets[0].ID != "1" || targets[1].ID != "2" {
 		t.Fatalf("unexpected target order: %+v", targets)
+	}
+}
+
+func TestBridgeObservationStateIsVersionedPerTab(t *testing.T) {
+	b := New("", time.Second, "fake")
+	one := browser.SemanticState{URL: "https://example.test", Signature: "one"}
+	if version, changed := b.advanceObservation("41", one); version != 1 || !changed {
+		t.Fatalf("first observation: version=%d changed=%v", version, changed)
+	}
+	if version, changed := b.advanceObservation("41", one); version != 1 || changed {
+		t.Fatalf("unchanged observation: version=%d changed=%v", version, changed)
+	}
+	two := one
+	two.Signature = "two"
+	if version, changed := b.advanceObservation("41", two); version != 2 || !changed {
+		t.Fatalf("changed observation: version=%d changed=%v", version, changed)
+	}
+	if version, changed := b.advanceObservation("42", one); version != 1 || !changed {
+		t.Fatalf("second tab did not get independent state: version=%d changed=%v", version, changed)
+	}
+}
+
+func TestBridgeTraceRecordsObservedActionsAndClears(t *testing.T) {
+	b := New("", time.Second, "fake")
+	result := browser.ActionResult{OK: true}
+	b.finishObservedTrace(bridgeActionBaseline{Started: time.Now().Add(-25 * time.Millisecond)}, "clicked e7", &result)
+	trace := b.GetTrace()
+	if trace.Count != 1 || len(trace.Entries) != 1 {
+		t.Fatalf("trace = %+v", trace)
+	}
+	entry := trace.Entries[0]
+	if entry.Action != "click" || entry.Ref != "e7" || !entry.OK || entry.DurationMS < 20 || entry.Timestamp == "" {
+		t.Fatalf("trace entry = %+v", entry)
+	}
+	if result.DurationMS < 20 {
+		t.Fatalf("action result duration was not populated: %+v", result)
+	}
+	b.ClearTrace()
+	if cleared := b.GetTrace(); cleared.Count != 0 || len(cleared.Entries) != 0 {
+		t.Fatalf("cleared trace = %+v", cleared)
 	}
 }
 
@@ -341,6 +385,7 @@ func TestServiceWorkerHandlesNotifyCommand(t *testing.T) {
 		"createNotification(",
 		"chrome.notifications.create",
 		`delivery: "extension"`,
+		`chrome.runtime.getURL("icons/icon-128.png")`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("service worker notify handler missing %q", want)
@@ -363,11 +408,29 @@ func TestExtensionHasBridgeOptionsPage(t *testing.T) {
 	if !strings.Contains(string(manifest), `"options_page": "options.html"`) {
 		t.Fatal("manifest must expose the bridge profile options page")
 	}
+	optionsHTML, err := os.ReadFile(filepath.Join("..", "..", "extension", "options.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`href="options.css"`, `id="statusBlock"`, `aria-live="polite"`, `id="advancedConfig"`, `id="rawStatus"`} {
+		if !strings.Contains(string(optionsHTML), want) {
+			t.Fatalf("options page missing %q", want)
+		}
+	}
+	optionsCSS, err := os.ReadFile(filepath.Join("..", "..", "extension", "options.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"prefers-color-scheme: dark", "prefers-reduced-motion: reduce", ":focus-visible", "min-height: 44px"} {
+		if !strings.Contains(string(optionsCSS), want) {
+			t.Fatalf("options styles missing %q", want)
+		}
+	}
 	optionsJS, err := os.ReadFile(filepath.Join("..", "..", "extension", "options.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`BRW_CONFIGURE`, `BRW_GET_STATUS`, `ws://127.0.0.1:${port}/extension`} {
+	for _, want := range []string{`BRW_CONFIGURE`, `BRW_GET_STATUS`, `ws://127.0.0.1:${port}/extension`, "validateEndpoints", "setInterval", "actionableFailure"} {
 		if !strings.Contains(string(optionsJS), want) {
 			t.Fatalf("options page missing %q", want)
 		}
@@ -480,15 +543,15 @@ func TestContextTabIDPrefersExplicitContextTab(t *testing.T) {
 
 func TestBridgeConditionSupportsCommitted(t *testing.T) {
 	// The committed condition (used by Open for non-blank URLs) must be present
-	// in the bridge's in-page condition script so it is not silently ignored.
+	// in the shared in-page wait script so it is not silently ignored.
 	srcPath := filepath.Join("bridge.go")
 	data, err := os.ReadFile(srcPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(data)
-	if !strings.Contains(src, `condition === "committed"`) {
-		t.Fatal("bridge condition() must handle the 'committed' condition")
+	if !strings.Contains(snapshot.WaitConditionScript, `condition==='committed'`) {
+		t.Fatal("shared wait script must handle the 'committed' condition")
 	}
 	if !strings.Contains(src, `b.WaitFor(waitCtx, "committed"`) {
 		t.Fatal("bridge Open() must wait for 'committed' on non-blank URLs")
@@ -581,9 +644,41 @@ func TestServiceWorkerExposesTabGroupControls(t *testing.T) {
 		"groupTitle: group?.title",
 		"groupCollapsed: Boolean(group?.collapsed)",
 		"await findGroupByTitle(groupName, tab.windowId)",
+		"preferredNormalWindowId()",
+		"tab opened ungrouped:",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("service worker tab-group support missing %q", want)
+		}
+	}
+}
+
+func TestServiceWorkerUsesNativePointerAndConsoleEvents(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "extension", "service_worker.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	for _, want := range []string{
+		`message.type === "move_pointer"`,
+		`"Input.dispatchMouseEvent"`,
+		`forceHoverAt(tabId, x, y)`,
+		`"CSS.forcePseudoState"`,
+		`message.type === "get_console_messages"`,
+		`message.type === "get_tab_input_state"`,
+		`message.type === "capture_screenshot"`,
+		`captureScreenshotForTab(tabId, params)`,
+		`"Page.captureScreenshot"`,
+		`"Page.printToPDF"`,
+		`fallback: "pdf"`,
+		`forceDetach(tabId)`,
+		`method === "Runtime.consoleAPICalled"`,
+		`method === "Runtime.exceptionThrown"`,
+		`"Runtime.enable"`,
+		`"Emulation.setFocusEmulationEnabled"`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("service worker native input/console support missing %q", want)
 		}
 	}
 }
@@ -599,14 +694,15 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatalf("parse manifest: %v", err)
 	}
-	// The manifest VERSION is the extension's release marker (bumped to 0.3.2 for
-	// the CDP storage-denylist expansion — DOMStorage/IndexedDB/CacheStorage/
-	// Database — in the v0.5.5 hardening release). It is DECOUPLED from the wire
+	// The manifest VERSION is the extension's release marker (bumped to 0.3.8 for
+	// deterministic locked/background CSS hover and reliable bounded screenshots,
+	// alongside background-safe keys and native console capture).
+	// It is DECOUPLED from the wire
 	// PROTOCOL_VERSION below: the manifest moves with every feature release, while
-	// PROTOCOL_VERSION only moves on a breaking bridge-handshake change. 0.3.2
-	// changes only in-extension policy, so the protocol stays 0.2.0 (the daemon
+	// PROTOCOL_VERSION only moves on a breaking bridge-handshake change. 0.3.8
+	// changes only in-extension behaviour, so the protocol stays 0.2.0 (the daemon
 	// still accepts it — verified against the live bridge).
-	const wantManifest = "0.3.2"
+	const wantManifest = "0.3.8"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -134,6 +135,58 @@ func TestNavPolicyGatesPlanAndBatchOpenSteps(t *testing.T) {
 		})
 		if strings.Contains(allowed, `"isError":true`) {
 			t.Errorf("%s open-step to an allowlisted domain must pass, got: %s", tool, allowed)
+		}
+	}
+}
+
+func TestNavPolicyCanonicalizesExactMCPNavigationTarget(t *testing.T) {
+	policy := navpolicy.Parse("corp.example.com", "")
+	call := func(tool string, args map[string]any) (*recordingController, string) {
+		t.Helper()
+		ctrl := &recordingController{}
+		srv := New(ctrl)
+		srv.SetNavigationPolicy(policy)
+		raw, err := json.Marshal(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, rpcErr := srv.callTool(context.Background(), tool, raw)
+		if rpcErr != nil {
+			t.Fatalf("%s rpc error: %+v", tool, rpcErr)
+		}
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ctrl, string(encoded)
+	}
+
+	ctrl, response := call("brw_open", map[string]any{"url": "corp.example.com/app"})
+	if strings.Contains(response, `"isError":true`) || ctrl.openURL != "https://corp.example.com/app" {
+		t.Fatalf("canonical open: response=%s url=%q", response, ctrl.openURL)
+	}
+
+	ctrl, response = call("brw_plan", map[string]any{"steps": []any{map[string]any{"action": "open", "url": "corp.example.com/app"}}})
+	if strings.Contains(response, `"isError":true`) || len(ctrl.planSteps) != 1 || ctrl.planSteps[0].URL != "https://corp.example.com/app" {
+		t.Fatalf("canonical plan: response=%s steps=%+v", response, ctrl.planSteps)
+	}
+
+	ctrl, response = call("brw_batch", map[string]any{"steps": []any{map[string]any{"action": "open", "url": "corp.example.com/app"}}})
+	if strings.Contains(response, `"isError":true`) || len(ctrl.batchSteps) != 1 || ctrl.batchSteps[0].URL != "https://corp.example.com/app" {
+		t.Fatalf("canonical batch: response=%s steps=%+v", response, ctrl.batchSteps)
+	}
+
+	for _, tool := range []string{"brw_open", "brw_plan", "brw_batch"} {
+		args := map[string]any{"url": "/evil.com"}
+		if tool != "brw_open" {
+			args = map[string]any{"steps": []any{map[string]any{"action": "open", "url": "/evil.com"}}}
+		}
+		ctrl, response = call(tool, args)
+		if !strings.Contains(response, `"isError":true`) {
+			t.Errorf("%s parser-differential target was not rejected: %s", tool, response)
+		}
+		if ctrl.openURL != "" || len(ctrl.planSteps) != 0 || len(ctrl.batchSteps) != 0 {
+			t.Errorf("%s dispatched denied target: open=%q plan=%+v batch=%+v", tool, ctrl.openURL, ctrl.planSteps, ctrl.batchSteps)
 		}
 	}
 }

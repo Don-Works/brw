@@ -52,6 +52,7 @@ type Tab struct {
 	GroupTitle     string `json:"group_title,omitempty"`
 	GroupColor     string `json:"group_color,omitempty"`
 	GroupCollapsed bool   `json:"group_collapsed,omitempty"`
+	GroupWarning   string `json:"group_warning,omitempty"`
 	Active         bool   `json:"active,omitempty"`
 	Highlighted    bool   `json:"highlighted,omitempty"`
 	WindowFocused  bool   `json:"window_focused,omitempty"`
@@ -93,21 +94,21 @@ type OpenResult struct {
 }
 
 type ActionResult struct {
-	OK           bool                `json:"ok"`
-	Message      string              `json:"message,omitempty"`
-	Warning      string              `json:"warning,omitempty"`
-	TabID        string              `json:"tab_id,omitempty"`
-	NewTabID     string              `json:"new_tab_id,omitempty"`
-	Version      int64               `json:"version,omitempty"`
-	URL          string              `json:"url,omitempty"`
-	Title        string              `json:"title,omitempty"`
-	Focus        string              `json:"focus,omitempty"`
-	ChangedState *bool               `json:"changed_state,omitempty"`
-	Targets      []Tab               `json:"targets,omitempty"`
-	Changed      []string            `json:"changed,omitempty"`
-	Elements     []snapshot.Element  `json:"elements,omitempty"`
+	OK           bool                   `json:"ok"`
+	Message      string                 `json:"message,omitempty"`
+	Warning      string                 `json:"warning,omitempty"`
+	TabID        string                 `json:"tab_id,omitempty"`
+	NewTabID     string                 `json:"new_tab_id,omitempty"`
+	Version      int64                  `json:"version,omitempty"`
+	URL          string                 `json:"url,omitempty"`
+	Title        string                 `json:"title,omitempty"`
+	Focus        string                 `json:"focus,omitempty"`
+	ChangedState *bool                  `json:"changed_state,omitempty"`
+	Targets      []Tab                  `json:"targets,omitempty"`
+	Changed      []string               `json:"changed,omitempty"`
+	Elements     []snapshot.Element     `json:"elements,omitempty"`
 	Snapshot     *snapshot.PageSnapshot `json:"snapshot,omitempty"`
-	DurationMS   int64               `json:"duration_ms,omitempty"`
+	DurationMS   int64                  `json:"duration_ms,omitempty"`
 }
 
 type Screenshot struct {

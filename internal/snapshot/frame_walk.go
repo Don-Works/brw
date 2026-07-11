@@ -151,4 +151,29 @@ const FrameWalkHelpers = `
     }
     return null;
   }
+  // Security-gated browser actions (new windows, downloads, fullscreen, native
+  // pickers) reject synthetic JS MouseEvents because event.isTrusted is false.
+  // Flag the common declarative/inline shapes so click paths can use real CDP
+  // input selectively, preserving fast in-page clicks for ordinary controls.
+  function __abRequiresTrustedClick(el) {
+    if (!el || !el.getAttribute) return false;
+    var popup = String(el.getAttribute('aria-haspopup') || '').toLowerCase();
+    if (popup === 'dialog') return true;
+    var tag = String(el.tagName || '').toLowerCase();
+    if (tag === 'a' && String(el.getAttribute('target') || '').toLowerCase() === '_blank') return true;
+    if (el.hasAttribute && el.hasAttribute('download')) return true;
+    var source = String(el.getAttribute('onclick') || '') + ' ' + String(el.getAttribute('href') || '');
+    return /window\s*\.\s*open|showOpenFilePicker|showSaveFilePicker|requestFullscreen|clipboard\s*\.\s*(write|read)/i.test(source);
+  }
+  // ARIA menus commonly defer opening/closing submenus for roughly 300ms so a
+  // pointer can cross small gaps without collapsing the menu tree. Most hover
+  // targets should remain instant; flag only menu descendants so callers can
+  // selectively wait for that deliberate UI delay before taking a snapshot or
+  // attempting the next nested hover.
+  function __abNeedsDelayedHover(el) {
+    if (!el || !el.closest || !el.getAttribute) return false;
+    var popup = String(el.getAttribute('aria-haspopup') || '').toLowerCase();
+    if (popup === 'menu' || popup === 'true') return true;
+    return Boolean(el.closest('[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="menu"]'));
+  }
 `

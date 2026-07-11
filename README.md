@@ -23,11 +23,18 @@ for normal web work.
 - Reads page prose, links, headings, forms, tables, and structured product data.
 - Clicks, types, fills, selects, scrolls, drags, uploads, waits, and asserts by ref.
 - Returns a post-action observation after every action.
-- Uses screenshots only as visual fallback, with optional Set-of-Marks overlays.
+- Uses screenshots only as visual fallback, with optional Set-of-Marks overlays and a locked-session print-renderer fallback.
 - Supports tabs, downloads, console, network capture, request replay, and cancellation.
 - Reuses a persistent non-default Chrome profile for signed-in flows.
 - Bridges to an already-authenticated installed Chrome profile through a Chrome extension.
 - Runs cleanly over SSH so the browser profile stays on the machine that owns it.
+
+The extension screenshot path is bounded and background-safe. Chrome may suspend
+its compositor while a desktop session is locked; when that happens, `brw`
+automatically uses Chrome's still-available print renderer and rasterizes the
+requested viewport/crop. macOS uses the built-in `sips`; Linux/other installs can
+provide `pdftoppm`, ImageMagick `magick`, or `convert`. This fallback runs only
+after the normal fast screenshot path stalls.
 
 ## Bench Signal
 
@@ -232,6 +239,9 @@ proxy per session and may abandon it without closing stdin, add
 `--mcp-idle-exit 90m` (or `BRW_MCP_IDLE_EXIT`): the proxy is a disposable
 stateless shim, so it exits 0 after the idle window and the supervisor respawns
 it on the next call instead of accumulating zombie children.
+Requests on one stdio connection may complete out of order, as JSON-RPC allows;
+this is what lets `brw_cancel` and MCP `notifications/cancelled` interrupt a
+running plan or batch on that same connection instead of waiting behind it.
 
 Backend-specific notes:
 
@@ -249,10 +259,13 @@ Backend-specific notes:
 - `brw_evaluate` truncates oversized results with an explicit
   `…[truncated: returned N of M bytes]` marker instead of ever returning an
   empty result; page through large payloads with the `offset`/`max_bytes` params.
-- `brw_downloads` captures downloads on the direct-CDP backend
-  (`supported: true`). On the extension-bridge backend it returns an empty list
-  with `supported: false` plus an explanatory `note`, because the bridge cannot
-  observe CDP download events; branch on `supported` to detect this case.
+- `brw_downloads` works on both backends: direct CDP consumes Browser download
+  events, while the extension bridge uses `chrome.downloads` and returns the same
+  normalized entries. A pre-download-support extension reports
+  `supported:false` with an upgrade note instead of pretending the list is empty.
+- `brw_console` is a bounded drain: direct CDP captures native console events
+  without changing page globals; the extension installs a bounded interceptor.
+  `brw_trace` records timed action outcomes on both backends.
 - Snapshots descend into **open and closed** shadow roots and same-origin
   iframes. **Cross-origin** iframes cannot be read (the browser isolates them);
   instead of failing silently, a snapshot surfaces them in
@@ -267,9 +280,14 @@ Backend-specific notes:
   token-efficient than driving the DOM. Default off (it is observable to pages).
 - **Navigation guardrail**: `--blocked-domains` / `--allowed-domains` (or
   `BRW_BLOCKED_DOMAINS` / `BRW_ALLOWED_DOMAINS`) gate `brw_open`,
-  `brw_open_incognito`, and `brw_replay_request` so a prompt-injected agent cannot
-  steer the browser to off-limits domains (subdomains included; block wins over
-  allow). Opt-in; off by default.
+  `brw_open_incognito`, `brw_navigate_to`, plan/batch `open` steps,
+  `brw_replay_request`, and URL-backed uploads. Inputs are canonicalized before
+  checking, and committed destinations reached by redirects or link clicks are
+  checked again; a denied final tab is closed or reset to `about:blank`
+  (subdomains included; block wins over allow). Opt-in; off by default. This is an
+  agent guardrail, not a network firewall: the final-destination check happens
+  after Chrome commits, so use DNS/firewall controls when the request itself must
+  never leave the machine.
 
 With the extension bridge, agents can organize visible Chrome work into named
 tab groups. Use `brw_list_tab_groups` to choose the next client-side run

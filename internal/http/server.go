@@ -160,6 +160,19 @@ func (s *Server) checkNavPolicy(rawURL string) error {
 	return s.navPolicy.Check(rawURL)
 }
 
+func (s *Server) prepareNavigation(rawURL string) (string, error) {
+	return s.navPolicy.CheckNavigation(rawURL)
+}
+
+func (s *Server) normalizeNav(w http.ResponseWriter, rawURL string) (string, bool) {
+	normalized, err := s.prepareNavigation(rawURL)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
+		return "", false
+	}
+	return normalized, true
+}
+
 // denyNav writes a 403 and returns true when rawURL is not permitted by the
 // navigation policy. Callers return early on true.
 func (s *Server) denyNav(w http.ResponseWriter, rawURL string) bool {
@@ -297,9 +310,11 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if s.denyNav(w, req.URL) {
+	normalizedURL, ok := s.normalizeNav(w, req.URL)
+	if !ok {
 		return
 	}
+	req.URL = normalizedURL
 	var (
 		result browser.OpenResult
 		err    error
@@ -323,9 +338,11 @@ func (s *Server) openIncognito(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if s.denyNav(w, req.URL) {
+	normalizedURL, ok := s.normalizeNav(w, req.URL)
+	if !ok {
 		return
 	}
+	req.URL = normalizedURL
 	result, err := s.manager.OpenIncognito(r.Context(), req.URL)
 	writeResult(w, result, err)
 }
@@ -561,9 +578,11 @@ func (s *Server) navigateTo(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if s.denyNav(w, req.URL) {
+	normalizedURL, ok := s.normalizeNav(w, req.URL)
+	if !ok {
 		return
 	}
+	req.URL = normalizedURL
 	ctx := s.contextWithTabID(r.Context(), req.TabID)
 	if req.Snapshot {
 		ctx = browser.WithWantSnapshot(ctx)
@@ -782,6 +801,16 @@ func (s *Server) executePlan(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	for i := range req.Steps {
+		if !strings.EqualFold(req.Steps[i].Action, "open") || req.Steps[i].URL == "" {
+			continue
+		}
+		normalizedURL, ok := s.normalizeNav(w, req.Steps[i].URL)
+		if !ok {
+			return
+		}
+		req.Steps[i].URL = normalizedURL
+	}
 	result, err := s.manager.ExecutePlan(contextWithExplicitTabID(r.Context(), req.TabID), req.Steps)
 	writeResult(w, result, err)
 }
@@ -793,6 +822,16 @@ func (s *Server) executeBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if !decode(w, r, &req) {
 		return
+	}
+	for i := range req.Steps {
+		if !strings.EqualFold(req.Steps[i].Action, "open") || req.Steps[i].URL == "" {
+			continue
+		}
+		normalizedURL, ok := s.normalizeNav(w, req.Steps[i].URL)
+		if !ok {
+			return
+		}
+		req.Steps[i].URL = normalizedURL
 	}
 	result, err := s.manager.ExecuteBatch(contextWithExplicitTabID(r.Context(), req.TabID), req.Steps)
 	writeResult(w, result, err)
@@ -1055,7 +1094,19 @@ func parseSnapshotOptions(w http.ResponseWriter, r *http.Request) (snapshotReque
 	if !ok {
 		return snapshotRequest{}, false
 	}
+	textContent, ok := parseBoolValue(w, q.Get("text_content"), "text_content")
+	if !ok {
+		return snapshotRequest{}, false
+	}
+	visualIslands, ok := parseBoolValue(w, q.Get("visual_islands"), "visual_islands")
+	if !ok {
+		return snapshotRequest{}, false
+	}
 	limit, ok := parseIntParam(w, q.Get("limit"), "limit")
+	if !ok {
+		return snapshotRequest{}, false
+	}
+	visualIslandsLimit, ok := parseIntParam(w, q.Get("visual_islands_limit"), "visual_islands_limit")
 	if !ok {
 		return snapshotRequest{}, false
 	}
@@ -1072,16 +1123,19 @@ func parseSnapshotOptions(w http.ResponseWriter, r *http.Request) (snapshotReque
 		// to the bounded frontier so HTTP callers don't get unbounded multi-thousand
 		// element dumps on dense pages.
 		Options: snapshot.NormalizeOptions(snapshot.SnapshotOptions{
-			Mode:          q.Get("mode"),
-			Query:         q.Get("query"),
-			Role:          q.Get("role"),
-			Text:          q.Get("text"),
-			Limit:         limit,
-			ViewportOnly:  viewportOnly,
-			IncludeHidden: includeHidden,
-			IncludeAX:     includeAX,
-			IncludeFrames: includeFrames,
-			Since:         since,
+			Mode:               q.Get("mode"),
+			Query:              q.Get("query"),
+			Role:               q.Get("role"),
+			Text:               q.Get("text"),
+			Limit:              limit,
+			ViewportOnly:       viewportOnly,
+			IncludeHidden:      includeHidden,
+			IncludeAX:          includeAX,
+			IncludeFrames:      includeFrames,
+			TextContent:        textContent,
+			VisualIslands:      visualIslands,
+			VisualIslandsLimit: visualIslandsLimit,
+			Since:              since,
 		}),
 		MaxBytes: maxBytes,
 	}, true

@@ -20,10 +20,10 @@ import (
 	"github.com/Don-Works/brw/internal/actions"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
+	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
-	"github.com/chromedp/cdproto/accessibility"
 	"github.com/coder/websocket"
 )
 
@@ -32,6 +32,7 @@ type Bridge struct {
 	timeout            time.Duration
 	allowedExtensionID string
 	identity           brwidentity.Identity
+	navPolicy          *navpolicy.Policy
 	server             *http.Server
 
 	// authToken, when non-empty, is a per-launch shared secret the extension may
@@ -96,6 +97,16 @@ type Bridge struct {
 	// behaves identically across the CDP and extension transports.
 	cancels *cancelRegistry
 
+	// observeState is deliberately separate from action observations: brw_observe
+	// promises changes since the previous brw_observe call, not since an action's
+	// internal post-condition snapshot.
+	observeMu       sync.Mutex
+	observedState   map[string]*browser.SemanticState
+	observeVersions map[string]int64
+
+	traceMu sync.Mutex
+	trace   []browser.TraceEntry
+
 	// emulationStates tracks per-tab DevTools device emulation so clear can
 	// restore UA/platform overrides that CDP itself has no clear command for.
 	emulationMu     sync.Mutex
@@ -147,6 +158,75 @@ type Bridge struct {
 	// the current connection stays stable. Extended on each rejected intruder, and
 	// naturally bypassed once the live connection actually dies (b.conn == nil).
 	flapHoldUntil time.Time
+}
+
+// SetNavigationPolicy installs controller-level navigation checks. Call before
+// serving requests.
+func (b *Bridge) SetNavigationPolicy(p *navpolicy.Policy) { b.navPolicy = p }
+
+func (b *Bridge) prepareNavigationURL(rawURL string) (string, error) {
+	return b.navPolicy.CheckNavigation(rawURL)
+}
+
+func (b *Bridge) enforceFinalURL(ctx context.Context, rawURL string) error {
+	if b.navPolicy.Empty() {
+		return nil
+	}
+	if err := b.navPolicy.Check(rawURL); err != nil {
+		blankJSON, _ := json.Marshal("about:blank")
+		_, _ = b.cdp(ctx, "", "Runtime.evaluate", map[string]any{
+			"expression":    fmt.Sprintf("location.replace(%s)", blankJSON),
+			"returnByValue": true,
+		})
+		return fmt.Errorf("final browser destination rejected by navigation policy and reset to about:blank: %w", err)
+	}
+	return nil
+}
+
+func (b *Bridge) guardCurrentURL(ctx context.Context) error {
+	if b.navPolicy.Empty() {
+		return nil
+	}
+	raw, err := b.cdp(ctx, "", "Runtime.evaluate", map[string]any{
+		"expression":    "location.href",
+		"returnByValue": true,
+	})
+	if err != nil {
+		return fmt.Errorf("verify current navigation destination: %w", err)
+	}
+	var payload struct {
+		Result struct {
+			Value string
+		}
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return fmt.Errorf("parse current navigation destination: %w", err)
+	}
+	return b.enforceFinalURL(ctx, payload.Result.Value)
+}
+
+func (b *Bridge) verifyOpenedTabURL(ctx context.Context, tabID string) error {
+	tabs, err := b.ListTabs(ctx)
+	if err != nil {
+		if b.navPolicy.Empty() {
+			return nil
+		}
+		return fmt.Errorf("verify open final destination: %w", err)
+	}
+	for _, tab := range tabs {
+		if tab.ID != tabID {
+			continue
+		}
+		if err := b.navPolicy.Check(tab.URL); err != nil {
+			_ = b.CloseTab(ctx, tabID)
+			return fmt.Errorf("open redirected to a disallowed final destination: %w", err)
+		}
+		return nil
+	}
+	if !b.navPolicy.Empty() {
+		return fmt.Errorf("verify open final destination: tab %s disappeared", tabID)
+	}
+	return nil
 }
 
 // isolationSeedURL is the placeholder brw opens to claim its own working tab when
@@ -239,6 +319,9 @@ func NewWithIdentity(addr string, timeout time.Duration, allowedExtensionID stri
 		identity:           identity,
 		pending:            map[string]chan response{},
 		cancels:            newCancelRegistry(),
+		observedState:      map[string]*browser.SemanticState{},
+		observeVersions:    map[string]int64{},
+		trace:              make([]browser.TraceEntry, 0, 256),
 		emulationStates:    map[string]bridgeDeviceEmulationState{},
 		connReady:          make(chan struct{}),
 		tabLocks:           map[string]chan struct{}{},
@@ -1104,11 +1187,10 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	if group := b.defaultGroup; group != "" {
 		return b.OpenInGroup(ctx, url, browser.TabGroupOptions{Name: group})
 	}
-	if strings.TrimSpace(url) == "" {
-		url = "about:blank"
-	}
-	if !strings.Contains(url, "://") && url != "about:blank" {
-		url = "https://" + url
+	var err error
+	url, err = b.prepareNavigationURL(url)
+	if err != nil {
+		return browser.OpenResult{}, err
 	}
 	raw, err := b.call(ctx, "open_tab", b.openTabParams(map[string]any{"url": url}))
 	if err != nil {
@@ -1132,6 +1214,9 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 		if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
 			return browser.OpenResult{Tab: out, Ready: ready}, err
 		}
+	}
+	if err := b.verifyOpenedTabURL(ctx, out.ID); err != nil {
+		return browser.OpenResult{}, err
 	}
 	return browser.OpenResult{Tab: out, Ready: ready}, nil
 }
@@ -1241,6 +1326,12 @@ func (b *Bridge) CloseTab(ctx context.Context, id string) error {
 	if err == nil && strings.TrimSpace(id) == b.activeTabID() {
 		b.setActiveTabID("")
 	}
+	if err == nil {
+		b.observeMu.Lock()
+		delete(b.observedState, strings.TrimSpace(id))
+		delete(b.observeVersions, strings.TrimSpace(id))
+		b.observeMu.Unlock()
+	}
 	return err
 }
 
@@ -1275,11 +1366,10 @@ func (b *Bridge) UngroupTabs(ctx context.Context, tabIDs []string) error {
 }
 
 func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGroupOptions) (browser.OpenResult, error) {
-	if strings.TrimSpace(url) == "" {
-		url = "about:blank"
-	}
-	if !strings.Contains(url, "://") && url != "about:blank" {
-		url = "https://" + url
+	var err error
+	url, err = b.prepareNavigationURL(url)
+	if err != nil {
+		return browser.OpenResult{}, err
 	}
 	params := map[string]any{"url": url}
 	if opts.GroupID != "" {
@@ -1317,6 +1407,9 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 			return browser.OpenResult{Tab: out, Ready: ready}, err
 		}
 	}
+	if err := b.verifyOpenedTabURL(ctx, out.ID); err != nil {
+		return browser.OpenResult{}, err
+	}
 	return browser.OpenResult{Tab: out, Ready: ready}, nil
 }
 
@@ -1337,8 +1430,11 @@ func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (s
 		}
 	}
 	optsJSON, _ := json.Marshal(opts)
-	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.SnapshotFunctionScript, optsJSON), "", &snap); err != nil {
+	if err := b.evaluateReadOnly(ctx, fmt.Sprintf("%s(%s)", snapshot.SnapshotFunctionScript, optsJSON), "", &snap); err != nil {
 		return snap, err
+	}
+	if err := b.enforceFinalURL(ctx, snap.URL); err != nil {
+		return snapshot.PageSnapshot{}, err
 	}
 	snap.Accessibility = snapshot.AccessibilitySummary{
 		Available: false,
@@ -1455,7 +1551,7 @@ func (b *Bridge) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.
 
 func (b *Bridge) Read(ctx context.Context) (readability.PageRead, error) {
 	var read readability.PageRead
-	err := b.evaluate(ctx, readability.ReadExpr(), "", &read)
+	err := b.evaluateReadOnly(ctx, readability.ReadExpr(), "", &read)
 	if err != nil {
 		return readability.PageRead{}, err
 	}
@@ -1464,7 +1560,7 @@ func (b *Bridge) Read(ctx context.Context) (readability.PageRead, error) {
 
 func (b *Bridge) ReadData(ctx context.Context) (snapshot.StructuredData, error) {
 	var data snapshot.StructuredData
-	err := b.evaluate(ctx, snapshot.StructuredDataScript, "", &data)
+	err := b.evaluateReadOnly(ctx, snapshot.StructuredDataScript, "", &data)
 	return data, err
 }
 
@@ -1474,6 +1570,7 @@ const (
 	// settling is never slower than the previous blind time.Sleep, only faster
 	// when the page stabilises early.
 	observedActionSettle = 75 * time.Millisecond
+	menuHoverSettleDelay = 325 * time.Millisecond
 	batchActionSettle    = 25 * time.Millisecond
 	waitForPollInterval  = 250 * time.Millisecond
 	// settlePollStart / settlePollMax bound the adaptive settle poll cadence:
@@ -1666,19 +1763,55 @@ func (b *Bridge) hoverRef(ctx context.Context, ref string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := b.cdp(ctx, "", "Input.dispatchMouseEvent", map[string]any{
-		"type": "mouseMoved",
-		"x":    box.ViewportX,
-		"y":    box.ViewportY,
-	}); err != nil {
+	// Fire JS hover listeners synchronously in one fast evaluate, then let the
+	// extension apply deterministic CSS :hover to the hit-tested ancestor chain.
+	// A genuinely foreground tab also gets trusted CDP pointer input; background
+	// or locked tabs avoid the multi-second Input ACK that would block nested menu
+	// work. Old extensions fall back to the blocking CDP command for compatibility.
+	refJSON, _ := json.Marshal(box.Ref)
+	var hovered struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.HoverElementScript, refJSON), "", &hovered); err != nil {
 		return err
+	}
+	if !hovered.OK {
+		if hovered.Error == "" {
+			hovered.Error = "hover event dispatch failed"
+		}
+		return errors.New(hovered.Error)
+	}
+	_, err = b.call(ctx, "move_pointer", map[string]any{
+		"tabId": parseTabID(b.contextTabID(ctx)),
+		"x":     box.ViewportX,
+		"y":     box.ViewportY,
+	})
+	if err != nil && isUnknownMessageTypeErr(err) {
+		_, err = b.cdp(ctx, "", "Input.dispatchMouseEvent", map[string]any{
+			"type": "mouseMoved",
+			"x":    box.ViewportX,
+			"y":    box.ViewportY,
+		})
+	}
+	if err != nil {
+		return err
+	}
+	if box.DelayedHover {
+		timer := time.NewTimer(menuHoverSettleDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 	return nil
 }
 
 func (b *Bridge) Evaluate(ctx context.Context, expression string) (any, error) {
 	var result json.RawMessage
-	if err := b.evaluate(ctx, expression, "", &result); err != nil {
+	if err := b.evaluateUserExpression(ctx, expression, "", &result); err != nil {
 		return nil, err
 	}
 	var value any
@@ -1731,7 +1864,18 @@ func (b *Bridge) clickRef(ctx context.Context, ref string) error {
 	xJSON, _ := json.Marshal(box.ViewportX)
 	yJSON, _ := json.Marshal(box.ViewportY)
 	var inPage snapshot.ClickXYResult
-	if evalErr := b.evaluate(ctx, fmt.Sprintf("%s(%s,%s)", snapshot.ClickXYScript, xJSON, yJSON), "", &inPage); evalErr == nil && inPage.OK {
+	expression := fmt.Sprintf("%s(%s,%s)", snapshot.ClickXYScript, xJSON, yJSON)
+	var evalErr error
+	if box.RequiresTrusted {
+		// Runtime.evaluate's userGesture flag grants the transient activation that
+		// window.open/download/fullscreen controls require, while retaining the
+		// one-round-trip in-page click path. Ordinary controls stay on the cheaper
+		// default evaluation below.
+		evalErr = b.evaluateWithUserGesture(ctx, expression, "", &inPage)
+	} else {
+		evalErr = b.evaluate(ctx, expression, "", &inPage)
+	}
+	if evalErr == nil && inPage.OK {
 		return nil
 	}
 	for _, typ := range []string{"mouseMoved", "mousePressed", "mouseReleased"} {
@@ -1876,12 +2020,18 @@ func (b *Bridge) resolveFillRef(ctx context.Context, opts snapshot.FillOptions) 
 func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (browser.ActionResult, error) {
 	// Resolve the upload source (local path(s), inline bytes_base64, or remote
 	// URL). bytes/url sources are materialized to temp files on the daemon host
-	// and removed once DOM.setFileInputFiles has consumed them.
+	// and retained briefly after DOM.setFileInputFiles so a later form submission
+	// can still read their contents.
 	paths, cleanup, err := browser.ResolveUploadPaths(ctx, opts)
 	if err != nil {
 		return browser.ActionResult{}, err
 	}
-	defer cleanup()
+	cleanupNow := true
+	defer func() {
+		if cleanupNow {
+			cleanup()
+		}
+	}()
 
 	// File-chooser-interception mode: when a trigger is named, click it with the
 	// native chooser intercepted and set the file on whatever input the chooser
@@ -1889,7 +2039,13 @@ func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (b
 	// freeze the CDP session behind a native OS dialog) and inputs in cross-origin
 	// iframes (backendNodeId is frame-agnostic).
 	if opts.ClickRef != "" || opts.ClickText != "" {
-		return b.uploadViaFileChooser(ctx, opts, paths)
+		result, err := b.uploadViaFileChooser(ctx, opts, paths)
+		if err != nil {
+			return browser.ActionResult{}, err
+		}
+		browser.RetainUploadCleanup(cleanup)
+		cleanupNow = false
+		return result, nil
 	}
 
 	ref := opts.Ref
@@ -1958,7 +2114,10 @@ func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (b
 		return browser.ActionResult{}, err
 	}
 	b.settle(ctx, observedActionSettle)
-	return b.observeActionWithBefore(ctx, "uploaded file to "+ref, before), nil
+	result := b.observeActionWithBefore(ctx, "uploaded file to "+ref, before)
+	browser.RetainUploadCleanup(cleanup)
+	cleanupNow = false
+	return result, nil
 }
 
 // uploadViaFileChooser drives the file-chooser-interception upload path: enable
@@ -2147,7 +2306,51 @@ func (b *Bridge) pressKey(ctx context.Context, key string) error {
 	if desc.Key == "" {
 		return errors.New("key is required")
 	}
+	// Chrome silently discards Input.dispatchKeyEvent for an inactive tab. Do not
+	// activate it (which would flash-switch the user's current tab); use a bounded
+	// standards-DOM fallback there. Foreground tabs keep the trusted CDP path.
+	rawState, stateErr := b.call(ctx, "get_tab_input_state", map[string]any{
+		"tabId": parseTabID(b.contextTabID(ctx)),
+	})
+	if stateErr == nil {
+		var state struct {
+			Active bool `json:"active"`
+		}
+		if err := json.Unmarshal(rawState, &state); err != nil {
+			return err
+		}
+		if !state.Active {
+			descJSON, _ := json.Marshal(map[string]any{
+				"key":       desc.Key,
+				"code":      desc.Code,
+				"text":      desc.Text,
+				"keyCode":   desc.WindowsVirtualKeyCode,
+				"modifiers": desc.Modifiers,
+			})
+			var result struct {
+				OK    bool   `json:"ok"`
+				Error string `json:"error"`
+			}
+			if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.PressKeyFallbackScript, descJSON), "", &result); err != nil {
+				return err
+			}
+			if !result.OK {
+				if result.Error == "" {
+					result.Error = "background key fallback failed"
+				}
+				return errors.New(result.Error)
+			}
+			return nil
+		}
+	} else if !isUnknownMessageTypeErr(stateErr) {
+		return stateErr
+	}
 	for _, typ := range []string{"keyDown", "keyUp"} {
+		if typ == "keyDown" && desc.Text == "" {
+			// rawKeyDown is required for Chrome's native non-text default actions
+			// (ArrowUp on number inputs, navigation keys, and similar controls).
+			typ = "rawKeyDown"
+		}
 		params := map[string]any{
 			"type":                  typ,
 			"modifiers":             desc.Modifiers,
@@ -2201,11 +2404,10 @@ func (b *Bridge) Navigate(ctx context.Context, direction string) (browser.Action
 // and returns a post-navigation observation. Unlike Open, this does NOT create
 // a new tab — it navigates the existing active tab.
 func (b *Bridge) NavigateTo(ctx context.Context, url string) (browser.ActionResult, error) {
-	if strings.TrimSpace(url) == "" {
-		return browser.ActionResult{}, fmt.Errorf("navigate_to: url is required")
-	}
-	if !strings.Contains(url, "://") {
-		url = "https://" + url
+	var err error
+	url, err = b.prepareNavigationURL(url)
+	if err != nil {
+		return browser.ActionResult{}, fmt.Errorf("navigate_to: %w", err)
 	}
 	before := b.captureSemanticState(ctx)
 	beforeTabs := b.captureTabIDs(ctx)
@@ -2587,19 +2789,16 @@ const (
 
 func (b *Bridge) Screenshot(ctx context.Context) (browser.Screenshot, error) {
 	tabID := b.contextTabID(ctx)
-	params := map[string]any{"format": "jpeg", "quality": bridgeScreenshotJPEGQuality}
+	params := map[string]any{"format": "jpeg", "quality": bridgeScreenshotJPEGQuality, "optimizeForSpeed": true}
 	if vw, vh := b.viewportDimensions(ctx, tabID); vw > 0 && vh > 0 {
 		scale := 1.0
 		if vw > bridgeScreenshotMaxWidth {
 			scale = bridgeScreenshotMaxWidth / vw
 		}
 		params["clip"] = map[string]any{"x": 0, "y": 0, "width": vw, "height": vh, "scale": scale}
+		params["fallbackViewport"] = map[string]any{"width": vw, "height": vh}
 	}
-	raw, err := b.cdp(ctx, tabID, "Page.captureScreenshot", params)
-	if err != nil {
-		return browser.Screenshot{}, err
-	}
-	return screenshotFromRawMIME(raw, "image/jpeg")
+	return b.captureScreenshot(ctx, tabID, params)
 }
 
 func (b *Bridge) ScreenshotElement(ctx context.Context, ref string) (browser.Screenshot, error) {
@@ -2607,8 +2806,10 @@ func (b *Bridge) ScreenshotElement(ctx context.Context, ref string) (browser.Scr
 	if err != nil {
 		return browser.Screenshot{}, err
 	}
-	raw, err := b.cdp(ctx, "", "Page.captureScreenshot", map[string]any{
-		"format": "png",
+	tabID := b.contextTabID(ctx)
+	params := map[string]any{
+		"format":           "png",
+		"optimizeForSpeed": true,
 		"clip": map[string]any{
 			"x":      box.X,
 			"y":      box.Y,
@@ -2616,11 +2817,11 @@ func (b *Bridge) ScreenshotElement(ctx context.Context, ref string) (browser.Scr
 			"height": box.Height,
 			"scale":  1,
 		},
-	})
-	if err != nil {
-		return browser.Screenshot{}, err
 	}
-	return screenshotFromRaw(raw)
+	if vw, vh := b.viewportDimensions(ctx, tabID); vw > 0 && vh > 0 {
+		params["fallbackViewport"] = map[string]any{"width": vw, "height": vh}
+	}
+	return b.captureScreenshot(ctx, tabID, params)
 }
 
 func (b *Bridge) viewportDimensions(ctx context.Context, tabID string) (float64, float64) {
@@ -2685,7 +2886,7 @@ func (b *Bridge) ScreenshotAnnotated(ctx context.Context, aopts browser.Annotate
 		return browser.AnnotatedScreenshot{}, err
 	}
 
-	capParams := map[string]any{"format": "png"}
+	capParams := map[string]any{"format": "png", "optimizeForSpeed": true}
 	if clip != nil {
 		scale := 1.0
 		longest := clip.Width
@@ -2706,12 +2907,14 @@ func (b *Bridge) ScreenshotAnnotated(ctx context.Context, aopts browser.Annotate
 			scale = bridgeScreenshotAnnotateMaxDim / longest
 		}
 		capParams["clip"] = map[string]any{"x": 0, "y": 0, "width": vw, "height": vh, "scale": scale}
+		capParams["fallbackViewport"] = map[string]any{"width": vw, "height": vh}
 	}
-	raw, err := b.cdp(ctx, tabID, "Page.captureScreenshot", capParams)
-	if err != nil {
-		return browser.AnnotatedScreenshot{}, err
+	if _, ok := capParams["fallbackViewport"]; !ok {
+		if vw, vh := b.viewportDimensions(ctx, tabID); vw > 0 && vh > 0 {
+			capParams["fallbackViewport"] = map[string]any{"width": vw, "height": vh}
+		}
 	}
-	shot, err := screenshotFromRaw(raw)
+	shot, err := b.captureScreenshot(ctx, tabID, capParams)
 	if err != nil {
 		return browser.AnnotatedScreenshot{}, err
 	}
@@ -2741,6 +2944,58 @@ func (b *Bridge) ScreenshotAnnotated(ctx context.Context, aopts browser.Annotate
 		Data:     shot.Data,
 		Base64:   shot.Base64,
 		Legend:   legend,
+	}, nil
+}
+
+// captureScreenshot asks the extension to make a background target briefly
+// active inside its existing Chrome window, capture its compositor surface, and
+// restore the previously active tab. Chrome's debugger API only permits surface
+// screenshots and can leave Page.captureScreenshot pending forever for an
+// inactive tab. The dedicated RPC bounds that command and restores user state.
+// Older extensions fall back to the legacy direct command.
+func (b *Bridge) captureScreenshot(ctx context.Context, tabID string, params map[string]any) (browser.Screenshot, error) {
+	raw, err := b.call(ctx, "capture_screenshot", map[string]any{
+		"tabId":  parseTabID(tabID),
+		"params": params,
+	})
+	if err != nil && isUnknownMessageTypeErr(err) {
+		legacyParams := make(map[string]any, len(params))
+		for key, value := range params {
+			if key != "fallbackViewport" {
+				legacyParams[key] = value
+			}
+		}
+		raw, err = b.cdp(ctx, tabID, "Page.captureScreenshot", legacyParams)
+	}
+	if err != nil {
+		return browser.Screenshot{}, err
+	}
+	var payload struct {
+		Data     string `json:"data"`
+		Fallback string `json:"fallback"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return browser.Screenshot{}, err
+	}
+	if payload.Fallback != "pdf" {
+		mimeType := "image/png"
+		if format, _ := params["format"].(string); format == "jpeg" {
+			mimeType = "image/jpeg"
+		}
+		return screenshotFromRawMIME(raw, mimeType)
+	}
+	pdf, err := base64.StdEncoding.DecodeString(payload.Data)
+	if err != nil {
+		return browser.Screenshot{}, fmt.Errorf("decode screenshot PDF fallback: %w", err)
+	}
+	pngData, err := rasterizeBridgePDF(ctx, pdf, params)
+	if err != nil {
+		return browser.Screenshot{}, err
+	}
+	return browser.Screenshot{
+		MIMEType: "image/png",
+		Data:     pngData,
+		Base64:   base64.StdEncoding.EncodeToString(pngData),
 	}, nil
 }
 
@@ -2806,20 +3061,22 @@ func annotationBoxIntersects(box snapshot.AnnotationBox, clip *annotationClip) b
 		box.Y < clip.Y+clip.Height && box.Y+box.Height > clip.Y
 }
 
-func (b *Bridge) observeAction(ctx context.Context, message string) browser.ActionResult {
-	return b.observeActionWithBefore(ctx, message, nil)
+type bridgeActionBaseline struct {
+	State   *browser.SemanticState
+	Started time.Time
 }
 
-func (b *Bridge) observeActionWithBefore(ctx context.Context, message string, before *browser.SemanticState) browser.ActionResult {
+func (b *Bridge) observeActionWithBefore(ctx context.Context, message string, before bridgeActionBaseline) browser.ActionResult {
 	return b.observeActionWithBeforeAndTabs(ctx, message, before, nil)
 }
 
-func (b *Bridge) observeActionWithBeforeAndTabs(ctx context.Context, message string, before *browser.SemanticState, beforeTabIDs map[string]bool) browser.ActionResult {
+func (b *Bridge) observeActionWithBeforeAndTabs(ctx context.Context, message string, before bridgeActionBaseline, beforeTabIDs map[string]bool) browser.ActionResult {
 	result := browser.ActionResult{OK: true, Message: message, TabID: b.contextTabID(ctx)}
 	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
 		result.OK = false
 		result.Message = message + "; observation failed: " + err.Error()
+		b.finishObservedTrace(before, message, &result)
 		return result
 	}
 	result.URL = snap.URL
@@ -2831,7 +3088,7 @@ func (b *Bridge) observeActionWithBeforeAndTabs(ctx context.Context, message str
 		}
 	}
 	after := browser.NewSemanticState(snap)
-	browser.ApplyStateDiff(&result, before, after)
+	browser.ApplyStateDiff(&result, before.State, after)
 	frontier := browser.SelectFrontierElements(snap.Elements, result.Focus, 12)
 	result.Elements = frontier
 	result.Changed = browser.SummarizeElements(frontier, 12)
@@ -2850,16 +3107,18 @@ func (b *Bridge) observeActionWithBeforeAndTabs(ctx context.Context, message str
 	if browser.WantSnapshotFromCtx(ctx) {
 		result.Snapshot = &snap
 	}
+	b.finishObservedTrace(before, message, &result)
 	return result
 }
 
-func (b *Bridge) captureSemanticState(ctx context.Context) *browser.SemanticState {
+func (b *Bridge) captureSemanticState(ctx context.Context) bridgeActionBaseline {
+	started := time.Now()
 	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
-		return nil
+		return bridgeActionBaseline{Started: started}
 	}
 	state := browser.NewSemanticState(snap)
-	return &state
+	return bridgeActionBaseline{State: &state, Started: started}
 }
 
 // captureTabIDs returns the set of current tab IDs, used to detect new tabs
@@ -2877,11 +3136,71 @@ func (b *Bridge) captureTabIDs(ctx context.Context) map[string]bool {
 }
 
 func (b *Bridge) evaluate(ctx context.Context, expression, tabID string, dst any) error {
-	raw, err := b.cdp(ctx, tabID, "Runtime.evaluate", map[string]any{
+	return b.evaluateRuntime(ctx, expression, tabID, false, false, dst)
+}
+
+func (b *Bridge) evaluateWithUserGesture(ctx context.Context, expression, tabID string, dst any) error {
+	return b.evaluateRuntime(ctx, expression, tabID, true, false, dst)
+}
+
+func (b *Bridge) evaluateUserExpression(ctx context.Context, expression, tabID string, dst any) error {
+	err := b.evaluate(ctx, expression, tabID, dst)
+	if err == nil || !isTopLevelAwaitSyntaxError(err) {
+		return err
+	}
+	// Runtime.evaluate's normal mode correctly awaits returned Promises, but raw
+	// top-level await is a syntax error. Retry only that parse failure in REPL
+	// mode; using REPL mode for every internal evaluation would turn an IIFE that
+	// returns a Promise into an unserializable Promise object instead of awaiting
+	// it (breaking wait_for and adaptive settle).
+	return b.evaluateRuntime(ctx, expression, tabID, false, true, dst)
+}
+
+func isTopLevelAwaitSyntaxError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "await is only valid") ||
+		strings.Contains(message, "unexpected reserved word") ||
+		strings.Contains(message, "await is not defined")
+}
+
+// evaluateReadOnly retries a renderer-context rollover for idempotent reads.
+// A freshly opened popup can commit between target discovery and Runtime.evaluate;
+// surfacing that harmless race forces agents to add arbitrary sleeps. Mutating
+// evaluations deliberately do not use this helper because replaying them could
+// duplicate an action.
+func (b *Bridge) evaluateReadOnly(ctx context.Context, expression, tabID string, dst any) error {
+	var err error
+	for attempt := 0; attempt < 4; attempt++ {
+		err = b.evaluate(ctx, expression, tabID, dst)
+		if err == nil || !isNavigationTeardownError(err) {
+			return err
+		}
+		backoff := time.Duration(attempt+1) * 75 * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
+	return err
+}
+
+func (b *Bridge) evaluateRuntime(ctx context.Context, expression, tabID string, userGesture, replMode bool, dst any) error {
+	params := map[string]any{
 		"expression":    expression,
 		"returnByValue": true,
 		"awaitPromise":  true,
-	})
+	}
+	if userGesture {
+		params["userGesture"] = true
+	}
+	if replMode {
+		params["replMode"] = true
+	}
+	raw, err := b.cdp(ctx, tabID, "Runtime.evaluate", params)
 	if err != nil {
 		return err
 	}
@@ -2902,9 +3221,13 @@ func (b *Bridge) evaluate(ctx context.Context, expression, tabID string, dst any
 		// Void/undefined results (e.g. location.reload(), assignments, calls that
 		// return nothing) are a successful evaluation, not an error. Surface them
 		// as JSON null rather than failing the whole tool call.
-		return json.Unmarshal([]byte("null"), dst)
+		if err := json.Unmarshal([]byte("null"), dst); err != nil {
+			return err
+		}
+	} else if err := json.Unmarshal(payload.Result.Value, dst); err != nil {
+		return err
 	}
-	return json.Unmarshal(payload.Result.Value, dst)
+	return b.guardCurrentURL(ctx)
 }
 
 func (b *Bridge) cdp(ctx context.Context, tabID, method string, params map[string]any) (json.RawMessage, error) {
@@ -3171,20 +3494,6 @@ func isBridgeDebuggerDetachedError(err error) bool {
 		strings.Contains(msg, "target closed")
 }
 
-func (b *Bridge) axNodes(ctx context.Context, tabID string) ([]*accessibility.Node, error) {
-	raw, err := b.cdp(ctx, tabID, "Accessibility.getFullAXTree", nil)
-	if err != nil {
-		return nil, err
-	}
-	var payload struct {
-		Nodes []*accessibility.Node `json:"nodes"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil, err
-	}
-	return payload.Nodes, nil
-}
-
 func (b *Bridge) resolveBox(ctx context.Context, ref string) (snapshot.ElementBox, error) {
 	refJSON, _ := json.Marshal(ref)
 	var box snapshot.RecoveredBox
@@ -3213,50 +3522,6 @@ func (b *Bridge) focus(ctx context.Context, ref string) error {
 	return nil
 }
 
-func (b *Bridge) condition(ctx context.Context, condition string) (bool, error) {
-	condition = strings.TrimSpace(condition)
-	if condition == "" || condition == "load" || condition == "page_ready" {
-		condition = "ready"
-	}
-	condJSON, _ := json.Marshal(condition)
-	expr := fmt.Sprintf(`(function(condition) {
-	  function roots() {
-	    const out = [document];
-	    for (let i = 0; i < out.length; i++) {
-	      const root = out[i];
-	      if (!root.querySelectorAll) continue;
-	      for (const el of Array.from(root.querySelectorAll('*'))) {
-	        if (el.shadowRoot) out.push(el.shadowRoot);
-	      }
-	    }
-	    return out;
-	  }
-	  function hasRef(ref) {
-	    const selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
-	    return roots().some(root => root.querySelector && root.querySelector(selector));
-	  }
-	  if (condition === "ready" || condition === "load") return document.readyState === "complete" || document.readyState === "interactive";
-	  // "committed" contract: BOTH the document must be interactive/complete AND the
-	  // URL must be a real navigation target — not the transient "about:blank" nor the
-	  // empty href that can appear during very early frame init. The && short-circuits,
-	  // so order is immaterial: an empty/blank href fails the condition regardless of
-	  // readyState.
-	  if (condition === "committed") return (document.readyState === "complete" || document.readyState === "interactive") && location.href !== "about:blank" && location.href !== "";
-	  if (condition.startsWith("url:")) return location.href.includes(condition.slice(4));
-	  if (condition.startsWith("not_url:")) return !location.href.includes(condition.slice(8));
-	  if (condition.startsWith("title:")) return document.title.includes(condition.slice(6));
-	  if (condition.startsWith("not_title:")) return !document.title.includes(condition.slice(10));
-	  if (condition.startsWith("text:")) return document.body && document.body.innerText.includes(condition.slice(5));
-	  if (condition.startsWith("not_text:")) return !document.body || !document.body.innerText.includes(condition.slice(9));
-	  if (condition.startsWith("ref:")) return hasRef(condition.slice(4));
-	  if (condition.startsWith("not_ref:")) return !hasRef(condition.slice(8));
-	  return document.body && document.body.innerText.includes(condition);
-	})(%s)`, condJSON)
-	var ok bool
-	err := b.evaluate(ctx, expr, "", &ok)
-	return ok, err
-}
-
 type extTab struct {
 	ID             int    `json:"id"`
 	URL            string `json:"url"`
@@ -3270,6 +3535,7 @@ type extTab struct {
 	GroupTitle     string `json:"groupTitle"`
 	GroupColor     string `json:"groupColor"`
 	GroupCollapsed bool   `json:"groupCollapsed"`
+	GroupWarning   string `json:"groupWarning"`
 	OpenerTabID    int    `json:"openerTabId"`
 }
 
@@ -3294,6 +3560,7 @@ func (t extTab) toBrowserTab() browser.Tab {
 		GroupTitle:     t.GroupTitle,
 		GroupColor:     t.GroupColor,
 		GroupCollapsed: t.GroupCollapsed,
+		GroupWarning:   t.GroupWarning,
 		Active:         t.Active,
 		Highlighted:    t.Highlighted,
 		WindowFocused:  t.WindowFocused,
@@ -3417,10 +3684,6 @@ func requireGroupID(id string) (int, error) {
 	return n, nil
 }
 
-func screenshotFromRaw(raw json.RawMessage) (browser.Screenshot, error) {
-	return screenshotFromRawMIME(raw, "image/png")
-}
-
 func screenshotFromRawMIME(raw json.RawMessage, mimeType string) (browser.Screenshot, error) {
 	var payload struct {
 		Data string `json:"data"`
@@ -3507,6 +3770,11 @@ func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (b
 				result.Focus = focus
 			}
 		}
+		frontier := browser.SelectFrontierElements(snap.Elements, result.Focus, 12)
+		result.Changed = browser.SummarizeElements(frontier, 12)
+	} else if !b.navPolicy.Empty() && result.Error == "" {
+		result.OK = false
+		result.Error = "final policy observation failed closed: " + snapErr.Error()
 	}
 	return result, nil
 }
@@ -3637,9 +3905,19 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 }
 
 func (b *Bridge) Observe(ctx context.Context) (browser.ObserveResult, error) {
+	tabID := browser.TabIDFromContext(ctx)
+	if tabID == "" {
+		tabID = b.ResolveActiveTabID(ctx)
+		if tabID != "" {
+			ctx = browser.WithTabID(ctx, tabID)
+		}
+	}
 	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
 		return browser.ObserveResult{}, err
+	}
+	if tabID == "" {
+		tabID = b.activeTabID()
 	}
 	focus := ""
 	if snap.Metadata != nil {
@@ -3647,26 +3925,29 @@ func (b *Bridge) Observe(ctx context.Context) (browser.ObserveResult, error) {
 			focus = f
 		}
 	}
-	changed := make([]string, 0)
-	for _, el := range snap.Elements {
-		if el.Visible {
-			summary := el.Role + " " + el.Ref + " " + el.Name
-			if el.Value != "" {
-				summary += " value:" + el.Value
-			}
-			changed = append(changed, summary)
-		}
-	}
-	if len(changed) > 12 {
-		changed = changed[:12]
+	after := browser.NewSemanticState(snap)
+	version, stateChanged := b.advanceObservation(tabID, after)
+
+	var changed []string
+	if stateChanged {
+		changed = browser.SummarizeElements(browser.SelectFrontierElements(snap.Elements, focus, 12), 12)
 	}
 	return browser.ObserveResult{
-		Version: 1,
+		Version: version,
 		URL:     snap.URL,
 		Title:   snap.Title,
 		Focus:   focus,
 		Changed: changed,
 	}, nil
+}
+
+func (b *Bridge) advanceObservation(tabID string, after browser.SemanticState) (int64, bool) {
+	b.observeMu.Lock()
+	next, version, stateChanged := browser.AdvanceObservationState(b.observedState[tabID], b.observeVersions[tabID], after)
+	b.observedState[tabID] = next
+	b.observeVersions[tabID] = version
+	b.observeMu.Unlock()
+	return version, stateChanged
 }
 
 func (b *Bridge) AssertVisible(ctx context.Context, ref string, timeout time.Duration) error {
@@ -3759,29 +4040,33 @@ func (b *Bridge) Notify(ctx context.Context, opts browser.NotifyOptions) (browse
 }
 
 func (b *Bridge) ConsoleMessages(ctx context.Context) ([]browser.ConsoleMessage, error) {
-	expr := `(function() {
-		if (!window.__brwConsole) return [];
-		var msgs = window.__brwConsole.slice();
-		window.__brwConsole.length = 0;
-		return msgs;
-	})()`
-	raw, err := b.call(ctx, "cdp", map[string]any{"method": "Runtime.evaluate", "params": map[string]any{"expression": expr, "returnByValue": true}})
-	if err != nil {
+	tabID := b.contextTabID(ctx)
+	raw, err := b.call(ctx, "get_console_messages", map[string]any{"tabId": parseTabID(tabID)})
+	if err == nil {
+		var payload struct {
+			Messages []browser.ConsoleMessage `json:"messages"`
+		}
+		if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
+			return nil, jsonErr
+		}
+		if payload.Messages == nil {
+			payload.Messages = []browser.ConsoleMessage{}
+		}
+		return payload.Messages, nil
+	}
+	if !isUnknownMessageTypeErr(err) {
 		return nil, err
 	}
-	var evalResult struct {
-		Result struct {
-			Value json.RawMessage `json:"value"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(raw, &evalResult); err != nil {
+	// Backward-compatible fallback for an extension predating native Runtime
+	// event capture. It cannot see load-time exceptions, but still drains console
+	// calls emitted after installation.
+	var ignored json.RawMessage
+	if err := b.evaluate(ctx, snapshot.ConsoleCaptureInstallScript, tabID, &ignored); err != nil {
 		return nil, err
 	}
 	var msgs []browser.ConsoleMessage
-	if len(evalResult.Result.Value) > 0 {
-		if err := json.Unmarshal(evalResult.Result.Value, &msgs); err != nil {
-			return nil, fmt.Errorf("parse console messages: %w", err)
-		}
+	if err := b.evaluate(ctx, snapshot.ConsoleCaptureDrainScript, tabID, &msgs); err != nil {
+		return nil, err
 	}
 	return msgs, nil
 }
@@ -3857,8 +4142,94 @@ func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error)
 	}, nil
 }
 
-func (b *Bridge) GetTrace() browser.TraceResult { return browser.TraceResult{} }
-func (b *Bridge) ClearTrace()                   {}
+func (b *Bridge) finishObservedTrace(before bridgeActionBaseline, message string, result *browser.ActionResult) {
+	if result == nil {
+		return
+	}
+	if before.Started.IsZero() {
+		before.Started = time.Now()
+	}
+	result.DurationMS = time.Since(before.Started).Milliseconds()
+	entry := bridgeTraceEntry(message)
+	entry.OK = result.OK
+	entry.DurationMS = result.DurationMS
+	entry.Timestamp = time.Now().Format(time.RFC3339Nano)
+	if result.OK {
+		entry.Error = result.Warning
+	} else {
+		entry.Error = result.Message
+	}
+	b.traceMu.Lock()
+	b.trace = append(b.trace, entry)
+	if len(b.trace) > 500 {
+		b.trace = b.trace[len(b.trace)-500:]
+	}
+	b.traceMu.Unlock()
+}
+
+func bridgeTraceEntry(message string) browser.TraceEntry {
+	message = strings.TrimSpace(message)
+	lower := strings.ToLower(message)
+	entry := browser.TraceEntry{Action: "action", Text: message}
+	setRef := func(action, value string) {
+		entry.Action = action
+		if fields := strings.Fields(strings.TrimSpace(value)); len(fields) > 0 {
+			entry.Ref = fields[0]
+			entry.Text = ""
+		}
+	}
+	switch {
+	case strings.HasPrefix(lower, "clicked text "):
+		entry.Action = "click_text"
+		entry.Text = strings.TrimSpace(message[len("clicked text "):])
+	case strings.HasPrefix(lower, "clicked "):
+		setRef("click", message[len("clicked "):])
+	case strings.HasPrefix(lower, "hovered "):
+		setRef("hover", message[len("hovered "):])
+	case strings.HasPrefix(lower, "typed into "):
+		setRef("type", message[len("typed into "):])
+	case strings.HasPrefix(lower, "filled "):
+		setRef("fill", message[len("filled "):])
+	case strings.HasPrefix(lower, "selected "):
+		setRef("select", message[len("selected "):])
+	case strings.HasPrefix(lower, "pressed "):
+		entry.Action = "press"
+		entry.Text = strings.TrimSpace(message[len("pressed "):])
+	case strings.HasPrefix(lower, "scrolled "):
+		entry.Action = "scroll"
+		entry.Text = strings.TrimSpace(message[len("scrolled "):])
+	case strings.HasPrefix(lower, "navigated to "):
+		entry.Action = "navigate_to"
+		entry.Text = strings.TrimSpace(message[len("navigated to "):])
+	case strings.HasPrefix(lower, "navigated "):
+		entry.Action = "navigate"
+		entry.Text = strings.TrimSpace(message[len("navigated "):])
+	case strings.HasPrefix(lower, "uploaded "):
+		entry.Action = "upload_file"
+	case strings.HasPrefix(lower, "dragged "):
+		entry.Action = "drag"
+	case strings.HasPrefix(lower, "mouse_down "):
+		entry.Action = "mouse_down"
+	case strings.HasPrefix(lower, "mouse_up "):
+		entry.Action = "mouse_up"
+	case strings.Contains(lower, "-clicked"):
+		entry.Action = "click_button"
+	}
+	return entry
+}
+
+func (b *Bridge) GetTrace() browser.TraceResult {
+	b.traceMu.Lock()
+	entries := append([]browser.TraceEntry(nil), b.trace...)
+	b.traceMu.Unlock()
+	return browser.TraceResult{Entries: entries, Count: len(entries)}
+}
+
+func (b *Bridge) ClearTrace() {
+	b.traceMu.Lock()
+	b.trace = b.trace[:0]
+	b.traceMu.Unlock()
+}
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("content-type", "application/json")

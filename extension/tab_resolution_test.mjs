@@ -102,6 +102,7 @@ src += `
   resolveForegroundTabId,
   publishActiveTab,
   isControllableWindowType,
+  preferredNormalWindowId,
   listTabSummaries
 };`;
 
@@ -185,6 +186,20 @@ async function scenarioBootstrapFallback() {
   check("with no pin, falls back to OS-foreground tab", got === 2);
 }
 
+async function scenarioPopupFocusStillCreatesInNormalWindow() {
+  await reset();
+  setWin({ id: 1, type: "normal", focused: false });
+  setWin({ id: 8, type: "popup", focused: true });
+  setTab({ id: 18, windowId: 8, active: true, url: "https://popup.test/", title: "popup" });
+  T.state.agentTabId = 18;
+  const got = await T.preferredNormalWindowId();
+  check("popup-focused state still chooses a normal window for new tabs", got === 1);
+
+  model.windows.delete(1);
+  const none = await T.preferredNormalWindowId();
+  check("no normal window cleanly falls back to Chrome default creation", none === null);
+}
+
 async function scenarioListTabsErrorAndRetry() {
   await reset();
   // The harness's default setTimeout never fires its callback, which would hang
@@ -224,6 +239,7 @@ async function scenarioListTabsErrorAndRetry() {
   await scenarioPoisonedCacheNoPin();
   await scenarioUserSwitchesNormalTab();
   await scenarioBootstrapFallback();
+  await scenarioPopupFocusStillCreatesInNormalWindow();
   await scenarioListTabsErrorAndRetry();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

@@ -440,6 +440,38 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   const limit = Math.max(0, Number(opts.limit || 0));
   const active = deepActive(document);
 
+  // A modal/dialog is a bounded task surface. Its actionable descendants remain
+  // useful even when they sit below the dialog's own scroll fold: without their
+  // refs an agent cannot discover the control first and then scroll to it. Keep
+  // this exception scoped to frontier mode and to the active/visible modal so a
+  // normal long page stays strictly viewport-bounded and compact.
+  function parentOrHost(node) {
+    if (!node) return null;
+    if (node.parentElement) return node.parentElement;
+    var root = node.getRootNode && node.getRootNode();
+    return root && root.host ? root.host : null;
+  }
+  function taskRootFor(node) {
+    for (var cur = node; cur; cur = parentOrHost(cur)) {
+      if (cur.matches && cur.matches('[aria-modal="true"],[role="dialog"],[role="alertdialog"]')) return cur;
+    }
+    return null;
+  }
+  let activeTaskRoot = taskRootFor(active);
+  if (!activeTaskRoot && frontierMode) {
+    const modalCandidates = all('[aria-modal="true"]');
+    for (let i = modalCandidates.length - 1; i >= 0; i--) {
+      if (visible(modalCandidates[i])) { activeTaskRoot = modalCandidates[i]; break; }
+    }
+  }
+  function belongsToActiveTask(el) {
+    if (!activeTaskRoot) return false;
+    for (var cur = el; cur; cur = parentOrHost(cur)) {
+      if (cur === activeTaskRoot) return true;
+    }
+    return false;
+  }
+
   const formRoles = new Set(['textbox', 'searchbox', 'combobox', 'listbox', 'checkbox', 'radio', 'slider', 'spinbutton', 'button', 'switch', 'option', 'menuitem']);
   const seen = new Set();
   const elements = [];
@@ -477,6 +509,8 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     const selected = ('selected' in el) ? Boolean(el.selected) : (el.getAttribute('aria-selected') === 'true' ? true : (el.getAttribute('aria-selected') === 'false' ? false : null));
     const expanded = el.getAttribute('aria-expanded') === 'true' ? true : (el.getAttribute('aria-expanded') === 'false' ? false : null);
     const signals = structuralSignals(el, role, active);
+    const taskScoped = frontierMode && belongsToActiveTask(el);
+    if (taskScoped && !inViewport(el)) signals.push('task-scope');
     const isSensitive = sensitive(el);
     const rawValue = ('value' in el) ? clean(el.value) : clean(el.getAttribute('data-value') || el.getAttribute('value') || '');
     const item = {
@@ -517,7 +551,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       item.value,
       proseText
     ].join(' ').toLowerCase();
-    if (viewportOnly && !item.in_viewport) continue;
+    if (viewportOnly && !item.in_viewport && !taskScoped) continue;
     if (roleFilter && item.role !== roleFilter) continue;
     if (textFilter && !haystack.includes(textFilter)) continue;
     if (query && !haystack.includes(query)) continue;
@@ -605,6 +639,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     if (hasSignal(signals, 'invalid')) score += 850;
     if (hasSignal(signals, 'expanded')) score += 760;
     if (hasSignal(signals, 'has-popup')) score += 720;
+    if (hasSignal(signals, 'task-scope')) score += 700;
     if (hasSignal(signals, 'active-descendant') || hasSignal(signals, 'active-descendant-owner')) score += 680;
     if (hasSignal(signals, 'live')) score += 620;
     if (hasSignal(signals, 'frontier-role')) score += 580;
@@ -697,7 +732,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     return [modeTag, opts.query || '', opts.text || '',
       opts.role || '', limit, Boolean(opts.viewport_only), includeHidden,
       textContent, Boolean(opts.visual_islands),
-      (opts.visual_islands_limit === undefined ? '' : opts.visual_islands_limit)].join('');
+      (opts.visual_islands_limit === undefined ? '' : opts.visual_islands_limit)].join('\u0001');
   }
   function __brwFingerprint(it) {
     var __fp = {};
@@ -823,7 +858,9 @@ const ResolveBoxScript = `(function(ref) {` + FrameWalkHelpers + `
     width: r.width,
     height: r.height,
     viewport_x: r.left + hit.ox + r.width / 2,
-    viewport_y: r.top + hit.oy + r.height / 2
+    viewport_y: r.top + hit.oy + r.height / 2,
+    requires_trusted: __abRequiresTrustedClick(el),
+    delayed_hover: __abNeedsDelayedHover(el)
   };
 })`
 
@@ -927,7 +964,7 @@ const ResolveOrRecoverBoxScript = `(function(ref) {` + FrameWalkHelpers + `
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     var r = el.getBoundingClientRect();
     var o = offsetFor(el);
-    return { ok: r.width > 0 && r.height > 0, ref: ref, recovered: false, x: r.left + o.ox + window.scrollX, y: r.top + o.oy + window.scrollY, width: r.width, height: r.height, viewport_x: r.left + o.ox + r.width / 2, viewport_y: r.top + o.oy + r.height / 2 };
+    return { ok: r.width > 0 && r.height > 0, ref: ref, recovered: false, x: r.left + o.ox + window.scrollX, y: r.top + o.oy + window.scrollY, width: r.width, height: r.height, viewport_x: r.left + o.ox + r.width / 2, viewport_y: r.top + o.oy + r.height / 2, requires_trusted: __abRequiresTrustedClick(el), delayed_hover: __abNeedsDelayedHover(el) };
   }
   var key = state.byRef[ref];
   if (!key) return { ok: false, ref: ref, recovered: false, reason: 'no_key' };
@@ -943,7 +980,7 @@ const ResolveOrRecoverBoxScript = `(function(ref) {` + FrameWalkHelpers + `
   recovered.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   var r2 = recovered.getBoundingClientRect();
   var o2 = offsetFor(recovered);
-  return { ok: r2.width > 0 && r2.height > 0, ref: newRef, recovered: true, old_ref: ref, x: r2.left + o2.ox + window.scrollX, y: r2.top + o2.oy + window.scrollY, width: r2.width, height: r2.height, viewport_x: r2.left + o2.ox + r2.width / 2, viewport_y: r2.top + o2.oy + r2.height / 2 };
+  return { ok: r2.width > 0 && r2.height > 0, ref: newRef, recovered: true, old_ref: ref, x: r2.left + o2.ox + window.scrollX, y: r2.top + o2.oy + window.scrollY, width: r2.width, height: r2.height, viewport_x: r2.left + o2.ox + r2.width / 2, viewport_y: r2.top + o2.oy + r2.height / 2, requires_trusted: __abRequiresTrustedClick(recovered), delayed_hover: __abNeedsDelayedHover(recovered) };
 })`
 
 const FocusElementScript = `(function(ref) {` + FrameWalkHelpers + `
@@ -1034,11 +1071,14 @@ const FillElementScript = `(function(ref, text, replace) {` + FrameWalkHelpers +
     }
     el.value = value;
   }
-  function emitInputEvents(el, text, replace) {
+  function emitBeforeInput(el, text, replace) {
     const inputType = replace ? 'insertReplacementText' : 'insertText';
     try {
-      el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, composed: true, inputType, data: String(text || '') }));
-    } catch (_) {}
+      return el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, composed: true, inputType, data: String(text || '') }));
+    } catch (_) { return true; }
+  }
+  function emitInputEvents(el, text, replace) {
+    const inputType = replace ? 'insertReplacementText' : 'insertText';
     try {
       el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType, data: String(text || '') }));
     } catch (_) {
@@ -1052,6 +1092,10 @@ const FillElementScript = `(function(ref, text, replace) {` + FrameWalkHelpers +
   if (typeof el.focus === 'function') el.focus({ preventScroll: true });
   const current = ('value' in el) ? String(el.value || '') : String(el.textContent || '');
   const next = replace ? String(text || '') : current + String(text || '');
+  // beforeinput describes the mutation that is ABOUT to happen. Dispatching it
+  // after assignment makes rich editors (TinyMCE/ProseMirror/contenteditable
+  // controllers) interpret the event as a second edit and restore stale state.
+  if (!emitBeforeInput(el, text, replace)) return { ok: false, error: 'fill was cancelled by the page beforeinput handler' };
   if ('value' in el) {
     setNativeValue(el, next);
   } else if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
@@ -1144,14 +1188,173 @@ const HoverElementScript = `(function(ref) {` + FrameWalkHelpers + `
   if (!el) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
   if (el.closest('[hidden],[aria-hidden="true"]')) return { ok: false, error: 'ref hidden' };
   el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  const state = window.__brw || (window.__brw = { next: 1, byKey: {}, byRef: {} });
+  let prior = state.hoveredElement;
+  if (!prior || prior === el || !prior.isConnected) {
+    const root = el.getRootNode && el.getRootNode();
+    prior = root && root.querySelector ? root.querySelector('.ui-state-focus') : null;
+  }
+  if (prior === el) prior = null;
   const r = el.getBoundingClientRect();
   const cx = r.left + r.width / 2;
   const cy = r.top + r.height / 2;
-  const opts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy };
-  el.dispatchEvent(new PointerEvent('pointermove', opts));
-  el.dispatchEvent(new MouseEvent('mouseenter', opts));
+  const related = prior || (document.body === el ? null : document.body);
+  const opts = { bubbles: true, cancelable: true, composed: true, view: window, clientX: cx, clientY: cy, relatedTarget: related };
+  const pointerOpts = Object.assign({ pointerId: 1, pointerType: 'mouse', isPrimary: true }, opts);
+  if (prior) {
+    const outOpts = Object.assign({}, opts, { relatedTarget: el });
+    const pointerOutOpts = Object.assign({}, pointerOpts, { relatedTarget: el });
+    prior.dispatchEvent(new PointerEvent('pointerout', pointerOutOpts));
+    prior.dispatchEvent(new MouseEvent('mouseout', outOpts));
+    if (!prior.contains(el)) {
+      prior.dispatchEvent(new PointerEvent('pointerleave', Object.assign({}, pointerOutOpts, { bubbles: false })));
+      prior.dispatchEvent(new MouseEvent('mouseleave', Object.assign({}, outOpts, { bubbles: false })));
+    }
+  }
+  // Mirror the browser's transition order closely. Delegated hover libraries
+  // (notably jQuery UI menus) derive mouseenter from mouseover + relatedTarget
+  // and do nothing when only a bare mouseenter/pointermove is synthesized. The
+  // previous target is essential for nested menus: using body every time makes
+  // both the child and its parent look newly entered, leaving the parent active.
+  el.dispatchEvent(new PointerEvent('pointerover', pointerOpts));
+  el.dispatchEvent(new PointerEvent('pointerenter', Object.assign({}, pointerOpts, { bubbles: false })));
   el.dispatchEvent(new MouseEvent('mouseover', opts));
-  return { ok: true, ref: ref };
+  el.dispatchEvent(new MouseEvent('mouseenter', Object.assign({}, opts, { bubbles: false })));
+  el.dispatchEvent(new PointerEvent('pointermove', pointerOpts));
+  el.dispatchEvent(new MouseEvent('mousemove', opts));
+  state.hoveredElement = el;
+  return { ok: true, ref: ref, delayed_hover: __abNeedsDelayedHover(el) };
+})`
+
+// PressKeyFallbackScript provides keyboard semantics on an inactive extension-
+// bridge tab. Chrome accepts Input.dispatchKeyEvent for such a tab but drops it
+// before the renderer, so no DOM event or native default occurs. The extension
+// cannot activate that tab without visibly switching what the user is viewing.
+// This bounded fallback dispatches the expected DOM events and implements the
+// browser defaults automation most often needs. Foreground tabs still use trusted
+// CDP key input; this script is never used there.
+const PressKeyFallbackScript = `(function(desc) {
+  desc = desc || {};
+  const key = String(desc.key || '');
+  const code = String(desc.code || key);
+  const text = String(desc.text || '');
+  const keyCode = Number(desc.keyCode || 0);
+  const modifiers = Number(desc.modifiers || 0);
+
+  function deepActive(root) {
+    let active = (root || document).activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return active || document.body || document.documentElement;
+  }
+  const el = deepActive(document);
+  if (!el) return { ok: false, error: 'no active element' };
+  const init = {
+    key, code, bubbles: true, cancelable: true, composed: true,
+    altKey: Boolean(modifiers & 1), ctrlKey: Boolean(modifiers & 2),
+    metaKey: Boolean(modifiers & 4), shiftKey: Boolean(modifiers & 8)
+  };
+  function keyEvent(type) {
+    const event = new KeyboardEvent(type, init);
+    // Chromium ignores keyCode/which in some KeyboardEvent constructors. Legacy
+    // sites still read them, so expose the descriptor values when configurable.
+    for (const prop of ['keyCode', 'which', 'charCode']) {
+      try { Object.defineProperty(event, prop, { configurable: true, get: () => prop === 'charCode' && !text ? 0 : keyCode }); } catch (_) {}
+    }
+    return event;
+  }
+  const proceed = el.dispatchEvent(keyEvent('keydown'));
+  let changed = false;
+
+  function emitInput(target) {
+    try { target.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: text || null })); }
+    catch (_) { target.dispatchEvent(new Event('input', { bubbles: true, composed: true })); }
+  }
+  function emitChange(target) {
+    target.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+  }
+  function setTextRange(replacement, start, end) {
+    if (typeof el.setRangeText !== 'function') return false;
+    const value = String(el.value == null ? '' : el.value);
+    const from = Math.max(0, start == null ? (el.selectionStart == null ? value.length : el.selectionStart) : start);
+    const to = Math.max(from, end == null ? (el.selectionEnd == null ? from : el.selectionEnd) : end);
+    el.setRangeText(replacement, from, to, 'end');
+    emitInput(el);
+    changed = true;
+    return true;
+  }
+  function visible(node) {
+    if (!node || node.disabled || node.getAttribute('aria-hidden') === 'true') return false;
+    const style = getComputedStyle(node);
+    return style.display !== 'none' && style.visibility !== 'hidden' && node.getClientRects().length > 0;
+  }
+  function tabForward() {
+    const selector = 'a[href],button,input,select,textarea,[contenteditable="true"],[tabindex]';
+    const nodes = Array.from(document.querySelectorAll(selector)).filter(node => visible(node) && Number(node.getAttribute('tabindex') || 0) >= 0);
+    if (!nodes.length) return false;
+    const index = nodes.indexOf(el);
+    const delta = modifiers & 8 ? -1 : 1;
+    nodes[(index + delta + nodes.length) % nodes.length].focus();
+    return true;
+  }
+
+  if (proceed) {
+    const tag = String(el.tagName || '').toLowerCase();
+    const type = String(el.type || '').toLowerCase();
+    const isTextField = tag === 'textarea' || (tag === 'input' && !['button','submit','reset','checkbox','radio','range','number','file','color','date','time','month','week'].includes(type));
+
+    if ((type === 'number' || type === 'range') && (key === 'ArrowUp' || key === 'ArrowDown')) {
+      try {
+        if (key === 'ArrowUp') el.stepUp(); else el.stepDown();
+        emitInput(el); emitChange(el); changed = true;
+      } catch (_) {}
+    } else if (tag === 'select' && (key === 'ArrowUp' || key === 'ArrowDown')) {
+      const delta = key === 'ArrowUp' ? -1 : 1;
+      const next = Math.max(0, Math.min(el.options.length - 1, el.selectedIndex + delta));
+      if (next !== el.selectedIndex) { el.selectedIndex = next; emitInput(el); emitChange(el); changed = true; }
+    } else if (isTextField && text) {
+      el.dispatchEvent(keyEvent('keypress'));
+      setTextRange(text);
+    } else if (isTextField && (key === 'Backspace' || key === 'Delete')) {
+      const value = String(el.value || '');
+      let start = el.selectionStart == null ? value.length : el.selectionStart;
+      let end = el.selectionEnd == null ? start : el.selectionEnd;
+      if (start === end) {
+        if (key === 'Backspace' && start > 0) start--;
+        if (key === 'Delete' && end < value.length) end++;
+      }
+      setTextRange('', start, end);
+    } else if (isTextField && ['ArrowLeft','ArrowRight','Home','End'].includes(key) && typeof el.setSelectionRange === 'function') {
+      const value = String(el.value || '');
+      let pos = el.selectionStart == null ? value.length : el.selectionStart;
+      if (key === 'ArrowLeft') pos = Math.max(0, pos - 1);
+      if (key === 'ArrowRight') pos = Math.min(value.length, pos + 1);
+      if (key === 'Home') pos = 0;
+      if (key === 'End') pos = value.length;
+      el.setSelectionRange(pos, pos);
+    } else if (key === 'Enter') {
+      el.dispatchEvent(keyEvent('keypress'));
+      if (tag === 'textarea') setTextRange('\n');
+      else if (el.isContentEditable) { try { changed = document.execCommand('insertLineBreak'); } catch (_) {} }
+      else if (tag === 'button' || (tag === 'input' && ['button','submit','reset'].includes(type))) { el.click(); changed = true; }
+      else if (el.form) { if (typeof el.form.requestSubmit === 'function') el.form.requestSubmit(); else el.form.submit(); changed = true; }
+    } else if ((key === ' ' || key === 'Spacebar') && (tag === 'button' || tag === 'summary' || (tag === 'input' && ['button','submit','reset','checkbox','radio'].includes(type)))) {
+      el.dispatchEvent(keyEvent('keypress')); el.click(); changed = true;
+    } else if (key === 'Tab') {
+      changed = tabForward();
+    } else if (el.isContentEditable && text) {
+      el.dispatchEvent(keyEvent('keypress'));
+      try { changed = document.execCommand('insertText', false, text); } catch (_) {}
+      if (changed) emitInput(el);
+    } else if (['ArrowUp','ArrowDown','PageUp','PageDown','Home','End'].includes(key) && (el === document.body || el === document.documentElement)) {
+      const amount = key === 'PageUp' || key === 'PageDown' ? Math.max(1, innerHeight * 0.85) : 40;
+      if (key === 'Home') scrollTo({ top: 0, behavior: 'instant' });
+      else if (key === 'End') scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' });
+      else scrollBy({ top: (key === 'ArrowUp' || key === 'PageUp') ? -amount : amount, behavior: 'instant' });
+      changed = true;
+    }
+  }
+  el.dispatchEvent(keyEvent('keyup'));
+  return { ok: true, trusted: false, fallback: true, changed };
 })`
 
 const ScrollPageScript = `(function(direction) {
@@ -1318,13 +1521,15 @@ const ScrollPageScript = `(function(direction) {
     const beforeTop = best.scrollTop;
     const beforeLeft = best.scrollLeft;
     best.scrollBy({ left: delta.left, top: delta.top, behavior: 'instant' });
+	const changed = beforeTop !== best.scrollTop || beforeLeft !== best.scrollLeft;
+	if (changed) best.dispatchEvent(new Event('scroll', { bubbles: false }));
     return {
       ok: true,
       target: 'element',
       tag: best.tagName.toLowerCase(),
       role: best.getAttribute('role') || '',
       name: nameFor(best),
-      changed: beforeTop !== best.scrollTop || beforeLeft !== best.scrollLeft,
+	  changed,
       scroll_top: best.scrollTop,
       scroll_left: best.scrollLeft
     };
@@ -1334,10 +1539,12 @@ const ScrollPageScript = `(function(direction) {
     const beforeTop = window.scrollY;
     const beforeLeft = window.scrollX;
     window.scrollBy({ left: delta.left, top: delta.top, behavior: 'instant' });
+	const changed = beforeTop !== window.scrollY || beforeLeft !== window.scrollX;
+	if (changed) window.dispatchEvent(new Event('scroll'));
     return {
       ok: true,
       target: 'window',
-      changed: beforeTop !== window.scrollY || beforeLeft !== window.scrollX,
+	  changed,
       scroll_top: window.scrollY,
       scroll_left: window.scrollX
     };
@@ -2280,9 +2487,21 @@ func DispatchFileInputEvents(ctx context.Context, ref string) error {
 }
 
 const ClickXYScript = `(function(x, y) {
-  var el = document.elementFromPoint(x, y);
+  function deepElementFromPoint(root, px, py) {
+    var el = root && root.elementFromPoint ? root.elementFromPoint(px, py) : null;
+    // document.elementFromPoint stops at an open-shadow host. Descend until the
+    // actual painted leaf so handlers attached inside a web component receive
+    // the click instead of a synthetic event being dispatched to its host.
+    while (el && el.shadowRoot && el.shadowRoot.elementFromPoint) {
+      var inner = el.shadowRoot.elementFromPoint(px, py);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
+  var el = deepElementFromPoint(document, x, y);
   if (!el) return { ok: false, error: 'no element at coordinates' };
-  var opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window };
+  var opts = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window };
   // Hover + focus first: many custom controls (hover-reveal menus, comboboxes,
   // disclosure widgets) only wire up their click handler after pointerover/focus.
   el.dispatchEvent(new PointerEvent('pointerover', opts));
@@ -2500,6 +2719,7 @@ const DragScript = `(function(opts) {
   let steps = Math.max(1, Number(opts.steps || 12));
   const src = document.elementFromPoint(from.x, from.y);
   if (!src) return { ok: false, error: 'no element at drag source' };
+	const dragSrc = (src.closest && src.closest('[draggable="true"]')) || src;
   function disp(el, type, x, y, buttons) {
     const opt = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, button: bc.button, buttons: buttons };
     if (type.startsWith('pointer')) el.dispatchEvent(new PointerEvent(type, opt));
@@ -2508,7 +2728,20 @@ const DragScript = `(function(opts) {
   disp(src, 'pointermove', from.x, from.y, 0);
   disp(src, 'pointerdown', from.x, from.y, bc.buttons);
   disp(src, 'mousedown', from.x, from.y, bc.buttons);
+	// HTML5 drag-and-drop is a separate event protocol from pointer movement.
+	// Emit it with one shared DataTransfer so native draggable widgets, sortable
+	// libraries, and drop zones can exchange payloads. Pointer/mouse events remain
+	// in place for sliders, canvas panning, and custom gesture handlers.
+	let transfer = null;
+	try { transfer = new DataTransfer(); } catch (_) {}
+	function dragEvent(el, type, x, y) {
+	  if (!el || typeof DragEvent !== 'function') return;
+	  const ev = new DragEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, dataTransfer: transfer });
+	  el.dispatchEvent(ev);
+	}
+	dragEvent(dragSrc, 'dragstart', from.x, from.y);
   let last = src;
+	let lastDragTarget = null;
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
     const mx = from.x + (to.x - from.x) * t;
@@ -2516,12 +2749,22 @@ const DragScript = `(function(opts) {
     const over = document.elementFromPoint(mx, my) || last;
     disp(over, 'pointermove', mx, my, bc.buttons);
     disp(over, 'mousemove', mx, my, bc.buttons);
+	  const dragTarget = (over.closest && over.closest('[draggable="true"], [ondrop], [role="listbox"], [role="tree"]')) || over;
+	  if (dragTarget !== lastDragTarget) {
+	    if (lastDragTarget) dragEvent(lastDragTarget, 'dragleave', mx, my);
+	    dragEvent(dragTarget, 'dragenter', mx, my);
+	    lastDragTarget = dragTarget;
+	  }
+	  dragEvent(dragTarget, 'dragover', mx, my);
     last = over;
   }
   const dst = document.elementFromPoint(to.x, to.y) || last;
+	const dropTarget = (dst.closest && dst.closest('[draggable="true"], [ondrop], [role="listbox"], [role="tree"]')) || dst;
+	dragEvent(dropTarget, 'drop', to.x, to.y);
   disp(dst, 'pointerup', to.x, to.y, 0);
   disp(dst, 'mouseup', to.x, to.y, 0);
-  return { ok: true, from: from, to: to };
+	dragEvent(dragSrc, 'dragend', to.x, to.y);
+	return { ok: true, from: from, to: to, html5: Boolean(transfer) };
 })`
 
 const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
@@ -2626,6 +2869,28 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
     score -= Math.min(20, Math.round((r.width * r.height) / 50000));
     candidates.push({ el, role, label, text, score });
   }
+	// Frameworks frequently attach click listeners to a visually obvious text
+	// leaf without giving it a role, tabindex, or inline onclick (modal footers
+	// and dismiss affordances are common). If the semantic/actionable pass found
+	// nothing, try a tightly-bounded visible text-leaf fallback. Clicking the leaf
+	// still bubbles to delegated parent listeners, while exact/short-text gating
+	// avoids turning arbitrary prose containers into click targets.
+	if (candidates.length === 0 && !roleFilter && (exact || want.length <= 80)) {
+	  for (const base of all('body *')) {
+	    if (!base || !visible(base) || disabled(base)) continue;
+	    const text = textFor(base);
+	    const normalized = text.toLowerCase();
+	    if (!normalized || (exact ? normalized !== want : !normalized.includes(want))) continue;
+	    const childRepeats = Array.from(base.children || []).some(child => textFor(child).toLowerCase() === normalized);
+	    if (childRepeats) continue;
+	    const r = base.getBoundingClientRect();
+	    const inViewport = r.bottom >= 0 && r.right >= 0 && r.top <= window.innerHeight && r.left <= window.innerWidth;
+	    let score = exact ? 105 : 65;
+	    if (inViewport) score += 10;
+	    score -= Math.min(25, Math.round((r.width * r.height) / 20000));
+	    candidates.push({ el: base, role: roleFor(base), label: nameFor(base), text, score });
+	  }
+	}
   // Default-on auto-scroll: opts.auto_scroll === false opts out, undefined/true
   // keeps it. When on, a below-fold match is scrolled into view before clicking
   // so links beneath the fold work without a manual scrollIntoView. When off,

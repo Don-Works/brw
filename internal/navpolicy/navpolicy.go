@@ -5,6 +5,7 @@
 package navpolicy
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -20,6 +21,60 @@ type Policy struct {
 	Allowed []string
 	// Blocked domains (and their subdomains) may never be opened.
 	Blocked []string
+}
+
+// NormalizeNavigationURL canonicalizes a browser-navigation target before it is
+// checked or handed to Chrome. The returned string is the exact value callers
+// must execute after policy approval; checking one spelling and navigating with
+// another is how parser-differential bypasses happen.
+//
+// Bare hosts keep brw's ergonomic https default ("example.com/x" becomes
+// "https://example.com/x"). Protocol-relative targets are pinned to https.
+// Path/query/fragment-only references are rejected because Open/NavigateTo have
+// historically prepended https:// rather than resolving them against a base;
+// Chrome then interprets "https:///evil.com" as "https://evil.com". Request
+// APIs such as replay may still use relative references through Policy.Check.
+func NormalizeNavigationURL(rawURL string) (string, error) {
+	raw := strings.TrimSpace(rawURL)
+	if raw == "" {
+		return "about:blank", nil
+	}
+	raw = strings.NewReplacer("\t", "", "\r", "", "\n", "").Replace(raw)
+	raw = strings.ReplaceAll(raw, "\\", "/")
+
+	if strings.HasPrefix(raw, "//") {
+		raw = "https://" + strings.TrimLeft(raw, "/")
+	} else if strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "?") || strings.HasPrefix(raw, "#") {
+		return "", errors.New("relative browser navigation requires an absolute URL or bare host; path/query/fragment-only targets are not accepted")
+	} else if !hasScheme(raw) {
+		raw = "https://" + raw
+	}
+
+	lower := strings.ToLower(raw)
+	if lower == "about:blank" || lower == "about:newtab" {
+		return lower, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid navigation URL %q: %w", clip(rawURL), err)
+	}
+	if (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() == "" {
+		return "", fmt.Errorf("invalid navigation URL %q: http(s) target has no host", clip(rawURL))
+	}
+	return u.String(), nil
+}
+
+// CheckNavigation canonicalizes and checks a browser navigation target. The
+// normalized return value is the only value the caller should execute.
+func (p *Policy) CheckNavigation(rawURL string) (string, error) {
+	normalized, err := NormalizeNavigationURL(rawURL)
+	if err != nil {
+		return "", err
+	}
+	if err := p.Check(normalized); err != nil {
+		return "", err
+	}
+	return normalized, nil
 }
 
 // Parse builds a Policy from comma/space-separated allow and block lists. Entries
@@ -39,7 +94,10 @@ func (p *Policy) Empty() bool {
 	return p == nil || (len(p.Allowed) == 0 && len(p.Blocked) == 0)
 }
 
-// Check returns a descriptive error when rawURL is not permitted.
+// Check returns a descriptive error when rawURL is not permitted. It accepts
+// same-origin relative references for request-style APIs such as replay. Browser
+// navigation entry points must use CheckNavigation so the checked URL is first
+// canonicalized to the exact absolute value Chrome will receive.
 //
 // Blocklist-only mode (no Allowed entries) gates only http(s) destinations
 // whose host matches a blocked domain; non-network schemes and bare blank pages

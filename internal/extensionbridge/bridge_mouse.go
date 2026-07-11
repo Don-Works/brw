@@ -12,11 +12,10 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// Coordinate computer-action family for the extension bridge. The bridge has no
-// direct CDP Input access, so these actuate through in-page pointer/mouse event
-// sequences (the same standards-only approach the bridge already uses for
-// clickRef/ClickXY). Each action emits a post-action observation, mirroring the
-// direct-CDP Manager path.
+// Coordinate computer-action family for the extension bridge. These actuate
+// through in-page pointer/mouse/HTML5 drag event sequences, with CDP-backed page
+// evaluation supplied by the extension. Each action emits a post-action
+// observation, mirroring the direct-CDP Manager path.
 
 func mousePointArg(point browser.MousePoint) map[string]any {
 	arg := map[string]any{}
@@ -82,6 +81,25 @@ func (b *Bridge) mouseHalf(ctx context.Context, opts browser.MouseButtonOptions,
 
 func (b *Bridge) Drag(ctx context.Context, opts browser.DragOptions) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
+	// HTML5 drag-and-drop is its own protocol: pointermove/mousemove alone does
+	// not fire dragstart/dragover/drop or carry a DataTransfer. Prefer the shared
+	// ref-to-ref HTML5 sequence and fall back to the generic pointer drag for
+	// sliders, canvas panning, coordinate targets, and libraries that reject it.
+	if opts.From.HasRef() && opts.To.HasRef() {
+		fromJSON, _ := json.Marshal(opts.From.Ref)
+		toJSON, _ := json.Marshal(opts.To.Ref)
+		var html5 struct {
+			OK      bool   `json:"ok"`
+			Dropped bool   `json:"dropped"`
+			Error   string `json:"error"`
+		}
+		expr := fmt.Sprintf("%s(%s,%s)", snapshot.DragHtml5Script, fromJSON, toJSON)
+		if err := b.evaluate(ctx, expr, "", &html5); err == nil && html5.OK && html5.Dropped {
+			b.settle(ctx, observedActionSettle)
+			desc := fmt.Sprintf("dragged %s -> %s (html5)", pointDescriptor(opts.From), pointDescriptor(opts.To))
+			return b.observeActionWithBefore(ctx, desc, before), nil
+		}
+	}
 	arg := map[string]any{
 		"from": mousePointArg(opts.From),
 		"to":   mousePointArg(opts.To),

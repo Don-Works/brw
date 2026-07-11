@@ -209,14 +209,16 @@ type AccessibilitySummary struct {
 }
 
 type ElementBox struct {
-	OK        bool    `json:"ok"`
-	Ref       string  `json:"ref"`
-	X         float64 `json:"x"`
-	Y         float64 `json:"y"`
-	Width     float64 `json:"width"`
-	Height    float64 `json:"height"`
-	ViewportX float64 `json:"viewport_x"`
-	ViewportY float64 `json:"viewport_y"`
+	OK              bool    `json:"ok"`
+	Ref             string  `json:"ref"`
+	X               float64 `json:"x"`
+	Y               float64 `json:"y"`
+	Width           float64 `json:"width"`
+	Height          float64 `json:"height"`
+	ViewportX       float64 `json:"viewport_x"`
+	ViewportY       float64 `json:"viewport_y"`
+	RequiresTrusted bool    `json:"requires_trusted,omitempty"`
+	DelayedHover    bool    `json:"delayed_hover,omitempty"`
 }
 
 type ScrollResult struct {

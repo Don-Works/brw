@@ -3,101 +3,136 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>brw profile bridge</title>
-  <style>
-    :root {
-      color-scheme: light dark;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-size: 14px;
-    }
-    body {
-      margin: 0;
-      padding: 24px;
-      max-width: 680px;
-    }
-    h1 {
-      font-size: 18px;
-      margin: 0 0 18px;
-    }
-    form {
-      display: grid;
-      gap: 14px;
-    }
-    label {
-      display: grid;
-      gap: 6px;
-      font-weight: 600;
-    }
-    input {
-      box-sizing: border-box;
-      width: 100%;
-      padding: 8px 10px;
-      border: 1px solid CanvasText;
-      border-radius: 6px;
-      background: Canvas;
-      color: CanvasText;
-      font: inherit;
-      font-weight: 400;
-    }
-    .row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-    }
-    button {
-      border: 1px solid CanvasText;
-      border-radius: 6px;
-      padding: 7px 10px;
-      background: ButtonFace;
-      color: ButtonText;
-      font: inherit;
-      cursor: pointer;
-    }
-    button.primary {
-      font-weight: 700;
-    }
-    pre {
-      margin: 8px 0 0;
-      padding: 10px;
-      border: 1px solid CanvasText;
-      border-radius: 6px;
-      overflow: auto;
-      white-space: pre-wrap;
-    }
-  </style>
+  <link rel="stylesheet" href="options.css">
 </head>
 <body>
-  <h1>brw profile bridge</h1>
-  <form id="config">
-    <label>
-      Bridge WebSocket URL
-      <input id="bridgeUrl" autocomplete="off" spellcheck="false">
-    </label>
-    <label>
-      Status URL
-      <input id="statusUrl" autocomplete="off" spellcheck="false">
-    </label>
-    <label>
-      Workspace
-      <input id="workspace" autocomplete="off" spellcheck="false">
-    </label>
-    <label>
-      Profile
-      <input id="profile" autocomplete="off" spellcheck="false">
-    </label>
-    <label>
-      Label
-      <input id="label" autocomplete="off" spellcheck="false">
-    </label>
-    <div class="row">
-      <button type="button" data-port="17311">17311</button>
-      <button type="button" data-port="17411">17411</button>
-      <button type="button" data-port="17511">17511</button>
-      <button class="primary" type="submit">Save</button>
-    </div>
-  </form>
-  <pre id="status"></pre>
+  <main class="shell">
+    <header class="masthead">
+      <div class="brand">
+        <img src="icons/icon-48.png" width="40" height="40" alt="">
+        <div>
+          <div class="wordmark">brw</div>
+          <p>Profile bridge</p>
+        </div>
+      </div>
+      <span class="version" id="extensionVersion" aria-label="Extension version"></span>
+    </header>
+
+    <section class="surface" aria-labelledby="connectionHeading">
+      <div class="status-block" id="statusBlock" data-state="loading" aria-live="polite" aria-busy="true">
+        <div class="status-mark" aria-hidden="true"></div>
+        <div class="status-copy">
+          <p class="status-label" id="statusLabel">Checking connection</p>
+          <h1 id="connectionHeading">Connecting this profile…</h1>
+          <p id="statusSummary">Confirming the extension, local daemon, and profile identity.</p>
+        </div>
+        <button class="button secondary refresh" id="refreshStatus" type="button">Refresh</button>
+      </div>
+
+      <dl class="facts" id="statusFacts" aria-label="Connection details">
+        <div>
+          <dt>Browser socket</dt>
+          <dd id="socketFact">Checking…</dd>
+        </div>
+        <div>
+          <dt>Daemon</dt>
+          <dd id="daemonFact">Checking…</dd>
+        </div>
+        <div>
+          <dt>Workspace</dt>
+          <dd id="workspaceFact">Not bound</dd>
+        </div>
+        <div>
+          <dt>Profile</dt>
+          <dd id="profileFact">Not bound</dd>
+        </div>
+      </dl>
+
+      <div class="divider"></div>
+
+      <div class="section-heading">
+        <div>
+          <h2>Bridge configuration</h2>
+          <p>Choose the local daemon this browser profile belongs to.</p>
+        </div>
+      </div>
+
+      <form id="config" novalidate>
+        <fieldset class="presets">
+          <legend>Common bridge ports</legend>
+          <div class="preset-row">
+            <button class="preset" type="button" data-port="17311" aria-pressed="false">
+              <span>Default</span><strong>17311</strong>
+            </button>
+            <button class="preset" type="button" data-port="17411" aria-pressed="false">
+              <span>Alternate</span><strong>17411</strong>
+            </button>
+            <button class="preset" type="button" data-port="17511" aria-pressed="false">
+              <span>Third profile</span><strong>17511</strong>
+            </button>
+          </div>
+        </fieldset>
+
+        <details class="advanced" id="advancedConfig">
+          <summary>
+            <span>Advanced configuration</span>
+            <span class="summary-note">Endpoints and identity binding</span>
+          </summary>
+          <div class="advanced-body">
+            <div class="field-grid endpoints">
+              <label for="bridgeUrl">
+                <span>WebSocket endpoint</span>
+                <input id="bridgeUrl" inputmode="url" autocomplete="off" spellcheck="false" required aria-describedby="bridgeHelp">
+                <small class="field-help" id="bridgeHelp">Must use <code>ws://</code> and point to localhost.</small>
+              </label>
+              <label for="statusUrl">
+                <span>Status endpoint</span>
+                <input id="statusUrl" inputmode="url" autocomplete="off" spellcheck="false" required aria-describedby="statusHelp">
+                <small class="field-help" id="statusHelp">Used to authenticate and verify the daemon before control begins.</small>
+              </label>
+            </div>
+
+            <div class="identity-heading">
+              <h3>Identity binding</h3>
+              <p>Optional, but recommended when several profiles or workspaces run on this machine.</p>
+            </div>
+            <div class="field-grid identity">
+              <label for="workspace">
+                <span>Workspace</span>
+                <input id="workspace" autocomplete="off" spellcheck="false" placeholder="e.g. revitt">
+              </label>
+              <label for="profile">
+                <span>Browser profile</span>
+                <input id="profile" autocomplete="off" spellcheck="false" placeholder="e.g. work-chromium">
+              </label>
+              <label for="label">
+                <span>Human label</span>
+                <input id="label" autocomplete="off" spellcheck="false" placeholder="e.g. Work browser">
+              </label>
+            </div>
+          </div>
+        </details>
+
+        <div class="form-message" id="formMessage" role="status" aria-live="polite"></div>
+        <div class="actions">
+          <button class="button primary" id="saveConfig" type="submit">Save and reconnect</button>
+          <p>Changes affect only this browser profile.</p>
+        </div>
+      </form>
+
+      <details class="diagnostics">
+        <summary>Diagnostic details</summary>
+        <pre id="rawStatus" tabindex="0">Waiting for status…</pre>
+      </details>
+    </section>
+
+    <footer>
+      <p>Local only. brw refuses cookie and bulk-storage CDP methods.</p>
+      <a href="https://github.com/Don-Works/brw" target="_blank" rel="noreferrer">Documentation</a>
+    </footer>
+  </main>
   <script src="options.js"></script>
 </body>
 </html>

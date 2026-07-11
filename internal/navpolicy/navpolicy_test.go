@@ -190,6 +190,49 @@ func TestSchemeDefaultsToHTTPS(t *testing.T) {
 	}
 }
 
+func TestNormalizeNavigationURLRejectsSingleSlashParserDifferential(t *testing.T) {
+	for _, raw := range []string{"/evil.com", `/evil.com/path`, `\evil.com`, "?next=evil.com", "#evil.com"} {
+		if _, err := NormalizeNavigationURL(raw); err == nil {
+			t.Errorf("NormalizeNavigationURL(%q) must reject a relative target with no base", raw)
+		}
+	}
+}
+
+func TestNormalizeNavigationURLCanonicalizesTheExecutedTarget(t *testing.T) {
+	cases := map[string]string{
+		"example.com/path":        "https://example.com/path",
+		"//example.com/path":      "https://example.com/path",
+		"about:blank":             "about:blank",
+		" HTTPS://EXAMPLE.COM/x ": "https://EXAMPLE.COM/x",
+	}
+	for raw, want := range cases {
+		got, err := NormalizeNavigationURL(raw)
+		if err != nil {
+			t.Errorf("NormalizeNavigationURL(%q): %v", raw, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("NormalizeNavigationURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestCheckNavigationReturnsOnlyApprovedCanonicalURL(t *testing.T) {
+	p := Parse("allowed.com", "")
+	got, err := p.CheckNavigation("allowed.com/app")
+	if err != nil {
+		t.Fatalf("allowlisted bare host: %v", err)
+	}
+	if got != "https://allowed.com/app" {
+		t.Fatalf("canonical URL = %q", got)
+	}
+	for _, raw := range []string{"/evil.com", "//evil.com", "evil.com"} {
+		if _, err := p.CheckNavigation(raw); err == nil {
+			t.Errorf("CheckNavigation(%q) must fail", raw)
+		}
+	}
+}
+
 // TestBlocklistIDNPunycodeEquivalence verifies a blocklist entry written in one
 // spelling (Unicode or punycode) also blocks the other, since Chrome treats them
 // as the same site. Without IDNA normalisation the xn-- form bypasses a Unicode

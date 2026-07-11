@@ -337,7 +337,7 @@ func TestPlanAndBatchActionSchemasExposeEnums(t *testing.T) {
 	assertSchemaEnumIncludes(t, batchStepProps["direction"].(map[string]any), "up", "down", "left", "right")
 }
 
-func TestBrowserSnapshotSchemaDocumentsVisualIslands(t *testing.T) {
+func TestBrowserSnapshotSchemaDocumentsContentAndVisualOptions(t *testing.T) {
 	var snapshotTool map[string]any
 	for _, tool := range tools() {
 		if tool["name"] == "brw_snapshot" {
@@ -349,6 +349,9 @@ func TestBrowserSnapshotSchemaDocumentsVisualIslands(t *testing.T) {
 		t.Fatal("brw_snapshot tool not found")
 	}
 	props := snapshotTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := props["text_content"]; !ok {
+		t.Fatalf("text_content missing from snapshot schema: %#v", props)
+	}
 	if _, ok := props["visual_islands"]; !ok {
 		t.Fatalf("visual_islands missing from snapshot schema: %#v", props)
 	}
@@ -569,6 +572,11 @@ func TestToolSchemasExposeTabScopedErgonomics(t *testing.T) {
 		"brw_click_xy",
 		"brw_window_bounds",
 		"brw_console",
+		"brw_assert_visible",
+		"brw_assert_text",
+		"brw_assert_value",
+		"brw_assert_hidden",
+		"brw_commit",
 	} {
 		tool := byName[name]
 		if tool == nil {
@@ -983,16 +991,33 @@ type recordingController struct {
 	clickTextOpts       snapshot.ClickTextOptions
 	openURL             string
 	openGroupOpts       browser.TabGroupOptions
+	planSteps           []browser.PlanStep
+	batchSteps          []browser.BatchStep
 	listTabGroupsCalled bool
 	groupTabIDs         []string
 	groupTabsOpts       browser.TabGroupOptions
 	emulationOpts       browser.DeviceEmulationOptions
 }
 
+func (r *recordingController) Open(ctx context.Context, targetURL string) (browser.OpenResult, error) {
+	r.openURL = targetURL
+	return browser.OpenResult{Tab: browser.Tab{ID: "tab1", URL: targetURL}}, nil
+}
+
 func (r *recordingController) OpenInGroup(ctx context.Context, targetURL string, opts browser.TabGroupOptions) (browser.OpenResult, error) {
 	r.openURL = targetURL
 	r.openGroupOpts = opts
 	return browser.OpenResult{Tab: browser.Tab{ID: "tab1", URL: targetURL, GroupID: opts.GroupID, GroupTitle: opts.Name, GroupColor: opts.Color}}, nil
+}
+
+func (r *recordingController) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {
+	r.planSteps = append([]browser.PlanStep(nil), steps...)
+	return r.fakeController.ExecutePlan(ctx, steps)
+}
+
+func (r *recordingController) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
+	r.batchSteps = append([]browser.BatchStep(nil), steps...)
+	return r.fakeController.ExecuteBatch(ctx, steps)
 }
 
 func (r *recordingController) ListTabGroups(context.Context) ([]browser.TabGroup, error) {

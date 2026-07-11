@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -19,11 +20,10 @@ import (
 // (closing every tab in it and discarding its data) when the throwaway session
 // is done.
 func (m *Manager) OpenIncognito(ctx context.Context, url string) (OpenResult, error) {
-	if strings.TrimSpace(url) == "" {
-		url = "about:blank"
-	}
-	if !strings.Contains(url, "://") && url != "about:blank" {
-		url = "https://" + url
+	var err error
+	url, err = m.prepareNavigationURL(url)
+	if err != nil {
+		return OpenResult{}, err
 	}
 
 	var ctxID cdp.BrowserContextID
@@ -52,7 +52,15 @@ func (m *Manager) OpenIncognito(ctx context.Context, url string) (OpenResult, er
 	// for the explicit FocusTab tool.
 	tab, err := m.tabByID(ctx, tabID)
 	if err != nil {
+		if !m.navPolicy.Empty() {
+			_ = m.CloseContext(ctx, string(ctxID))
+			return OpenResult{}, fmt.Errorf("verify incognito final destination: %w", err)
+		}
 		tab = Tab{ID: tabID, URL: url, Type: "page"}
+	}
+	if err := m.navPolicy.Check(tab.URL); err != nil {
+		_ = m.CloseContext(ctx, string(ctxID))
+		return OpenResult{}, fmt.Errorf("incognito open redirected to a disallowed final destination: %w", err)
 	}
 	tab.BrowserContextID = string(ctxID)
 	return OpenResult{Tab: tab, Ready: ready}, nil
