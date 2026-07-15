@@ -85,12 +85,29 @@ function automock(path) {
   });
 }
 
+class MockWebSocket {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSED = 3;
+  constructor() {
+    this.readyState = MockWebSocket.CONNECTING;
+    this.closeCalls = 0;
+  }
+  send() {}
+  close() {
+    this.closeCalls += 1;
+    this.readyState = MockWebSocket.CLOSED;
+    if (typeof this.onclose === "function") this.onclose({ code: 1000 });
+  }
+  addEventListener() {}
+}
+
 const sandbox = {
   chrome: automock(""),
-  WebSocket: class { constructor() {} send() {} close() {} addEventListener() {} },
+  WebSocket: MockWebSocket,
   fetch: async () => ({ ok: true, json: async () => ({}), text: async () => "" }),
   setInterval: () => 0, clearInterval: () => {}, setTimeout: () => 0, clearTimeout: () => {},
-  URL, console,
+  AbortSignal, URL, console,
 };
 sandbox.globalThis = sandbox;
 sandbox.self = sandbox;
@@ -103,7 +120,9 @@ src += `
   publishActiveTab,
   isControllableWindowType,
   preferredNormalWindowId,
-  listTabSummaries
+  groupTabForParams,
+  listTabSummaries,
+  probeDaemonStatus
 };`;
 
 vm.createContext(sandbox);
@@ -119,6 +138,8 @@ function check(name, cond) {
 async function reset() {
   model.tabs.clear(); model.windows.clear();
   T.state.activeTabId = null; T.state.agentTabId = null;
+  T.state.statusProbeFailures = 0;
+  T.state.statusProbeInFlight = null;
 }
 
 async function scenarioPinBeatsForeground() {
@@ -200,6 +221,41 @@ async function scenarioPopupFocusStillCreatesInNormalWindow() {
   check("no normal window cleanly falls back to Chrome default creation", none === null);
 }
 
+async function scenarioNewGroupsTargetTheTabsRealWindow() {
+  await reset();
+  setWin({ id: 41, type: "normal", focused: false });
+  setWin({ id: 99, type: "normal", focused: true });
+  const tab = { id: 7, windowId: 41, active: false, url: "https://agent.test/", title: "agent" };
+  setTab(tab);
+
+  const originalGroup = overrides["tabs.group"];
+  const originalQuery = overrides["tabGroups.query"];
+  const originalUpdate = overrides["tabGroups.update"];
+  let newGroupArgs = null;
+  overrides["tabGroups.query"] = async () => [];
+  overrides["tabs.group"] = async (args) => { newGroupArgs = args; return 71; };
+  overrides["tabGroups.update"] = async () => ({});
+
+  const newID = await T.groupTabForParams(tab, { groupName: "agent-brw-vertical", groupColor: "cyan" });
+  check("new group is created successfully", newID === 71);
+  check("new group explicitly targets the tab's real window",
+    newGroupArgs?.createProperties?.windowId === 41 && newGroupArgs?.groupId === undefined);
+
+  let existingGroupArgs = null;
+  overrides["tabGroups.query"] = async () => [{ id: 72, title: "agent-brw-vertical", windowId: 41 }];
+  overrides["tabs.group"] = async (args) => { existingGroupArgs = args; return 72; };
+  const existingID = await T.groupTabForParams(tab, { groupName: "agent-brw-vertical" });
+  check("existing group is reused", existingID === 72 && existingGroupArgs?.groupId === 72);
+  check("existing group never mixes groupId with createProperties",
+    existingGroupArgs?.createProperties === undefined);
+
+  if (originalGroup === undefined) delete overrides["tabs.group"];
+  else overrides["tabs.group"] = originalGroup;
+  overrides["tabGroups.query"] = originalQuery;
+  if (originalUpdate === undefined) delete overrides["tabGroups.update"];
+  else overrides["tabGroups.update"] = originalUpdate;
+}
+
 async function scenarioListTabsErrorAndRetry() {
   await reset();
   // The harness's default setTimeout never fires its callback, which would hang
@@ -233,6 +289,36 @@ async function scenarioListTabsErrorAndRetry() {
   sandbox.setTimeout = origTimeout;
 }
 
+async function scenarioStatusProbeToleratesTransientFailure() {
+  await reset();
+  const originalFetch = sandbox.fetch;
+  const socket = new MockWebSocket();
+  socket.readyState = MockWebSocket.OPEN;
+  T.state.socket = socket;
+
+  sandbox.fetch = async () => { throw new Error("temporary loopback failure"); };
+  await T.probeDaemonStatus();
+  await T.probeDaemonStatus();
+  check("two transient status failures keep the healthy WebSocket", T.state.socket === socket && socket.closeCalls === 0);
+  check("transient status failures are counted", T.state.statusProbeFailures === 2);
+
+  sandbox.fetch = async () => ({
+    ok: true,
+    json: async () => ({ connected: true, identity: {} })
+  });
+  await T.probeDaemonStatus();
+  check("a successful status probe resets the failure streak", T.state.statusProbeFailures === 0 && T.state.socket === socket);
+
+  sandbox.fetch = async () => { throw new Error("persistent loopback failure"); };
+  await T.probeDaemonStatus();
+  await T.probeDaemonStatus();
+  check("persistent failure still waits for the third strike", T.state.socket === socket && socket.closeCalls === 0);
+  await T.probeDaemonStatus();
+  check("third consecutive failure closes and schedules recovery", T.state.socket === null && socket.closeCalls === 1);
+
+  sandbox.fetch = originalFetch;
+}
+
 (async () => {
   await scenarioPinBeatsForeground();
   await scenarioUserClicksChatPWA();
@@ -240,7 +326,9 @@ async function scenarioListTabsErrorAndRetry() {
   await scenarioUserSwitchesNormalTab();
   await scenarioBootstrapFallback();
   await scenarioPopupFocusStillCreatesInNormalWindow();
+  await scenarioNewGroupsTargetTheTabsRealWindow();
   await scenarioListTabsErrorAndRetry();
+  await scenarioStatusProbeToleratesTransientFailure();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })();

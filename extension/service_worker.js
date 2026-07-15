@@ -5,6 +5,12 @@ const BRIDGE_STATUS_KEY = "brwBridge";
 const PROTOCOL_VERSION = "0.2.0";
 const KEEPALIVE_INTERVAL_MS = 5 * 1000;
 const DAEMON_STATUS_INTERVAL_MS = 10 * 1000;
+const DAEMON_STATUS_TIMEOUT_MS = 2 * 1000;
+// A single loopback /status fetch can fail while macOS wakes, the daemon is
+// briefly busy, or Chromium is resuming its network service. The WebSocket is
+// the authoritative transport, so do not tear a healthy one down on one noisy
+// HTTP probe. Three consecutive failures still recover a genuinely stale link.
+const MAX_DAEMON_STATUS_FAILURES = 3;
 const MAX_RECONNECT_DELAY_MS = 10 * 1000;
 // Detach a tab's debugger after this long without a CDP command, so brw doesn't
 // hold debugger sessions on idle tabs of the user's real Chrome.
@@ -50,6 +56,8 @@ const state = {
   reconnectTimer: null,
   keepAliveTimer: null,
   statusTimer: null,
+  statusProbeInFlight: null,
+  statusProbeFailures: 0,
   attachedTabs: new Set(),
   // attachUsedAt records the last time each attached tab's debugger was used, so
   // sweepIdleDebuggers can release debuggers that have gone idle within a long
@@ -422,6 +430,7 @@ async function connectOnce() {
   socket.onopen = async () => {
     if (state.socket !== socket) return;
     state.reconnectAttempt = 0;
+    state.statusProbeFailures = 0;
     state.lastError = "";
     await markBridgeStatus("connected");
     const platform = await chrome.runtime.getPlatformInfo().catch(() => ({}));
@@ -697,7 +706,7 @@ async function handle(message) {
           // grouping for special/transient window states. Do not turn a successfully
           // created, controllable tab into a failed open or leak an orphan; surface a
           // candid warning and continue ungrouped.
-          groupWarning = `tab opened ungrouped: ${String(error?.message || error)}`;
+          groupWarning = `tab opened ungrouped: ${tabGroupingFailureMessage(error)}`;
         }
       }
       const summary = await tabSummary(resultTab);
@@ -754,7 +763,21 @@ async function handle(message) {
       const groupArgs = { tabIds };
       if (existingID != null) groupArgs.groupId = existingID;
       else if (existing?.id != null) groupArgs.groupId = existing.id;
-      const groupId = await chrome.tabs.group(groupArgs);
+      else if (typeof firstTab?.windowId === "number") {
+        // In an MV3 service worker Chrome's implicit "current window" is not
+        // necessarily the tab's window. This matters especially with native
+        // vertical tabs: tabs.group() can otherwise resolve an unrelated tab
+        // strip and reject a perfectly groupable normal window. Pin new-group
+        // creation to the first requested tab's real window. Do not combine
+        // createProperties with groupId; Chromium rejects that parameter pair.
+        groupArgs.createProperties = { windowId: firstTab.windowId };
+      }
+      let groupId;
+      try {
+        groupId = await chrome.tabs.group(groupArgs);
+      } catch (error) {
+        throw new Error(tabGroupingFailureMessage(error));
+      }
       const update = {};
       if (name) update.title = name;
       if (hasColor || existingID == null) update.color = color;
@@ -1722,6 +1745,12 @@ async function groupTabForParams(tab, params = {}) {
   const existing = await findGroupByTitle(groupName, tab.windowId);
   const groupArgs = { tabIds: [tab.id] };
   if (existing?.id != null) groupArgs.groupId = existing.id;
+  else if (typeof tab.windowId === "number") {
+    // See group_tabs: service workers have no stable implicit current window.
+    // Explicit window targeting is required for reliable native vertical-tab
+    // group creation and is also safer when Chrome has several windows.
+    groupArgs.createProperties = { windowId: tab.windowId };
+  }
   const groupId = await chrome.tabs.group(groupArgs);
   const update = { title: groupName };
   if (hasColor || !existing) update.color = color;
@@ -1741,6 +1770,14 @@ function parseGroupId(value) {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 0) return null;
   return n;
+}
+
+function tabGroupingFailureMessage(error) {
+  const message = String(error?.message || error || "tab grouping failed");
+  if (message.includes("Grouping is not supported by tabs in this window")) {
+    return "tab grouping unavailable: Chromium rejected grouping in the target window; keep tracking and closing the owned tab by id";
+  }
+  return message;
 }
 
 function hasGroupTarget(params = {}) {
@@ -1947,7 +1984,7 @@ async function fetchBridgeToken(config) {
   try {
     // Bounded so a hung /status can never block hello indefinitely; the bridge's
     // own handshake timeout would otherwise drop us and force a reconnect loop.
-    const response = await fetch(config.statusUrl, { cache: "no-store", signal: AbortSignal.timeout(2000) });
+    const response = await fetch(config.statusUrl, { cache: "no-store", signal: AbortSignal.timeout(DAEMON_STATUS_TIMEOUT_MS) });
     if (!response.ok) return "";
     const status = await response.json().catch(() => ({}));
     return typeof status?.token === "string" ? status.token : "";
@@ -1958,24 +1995,49 @@ async function fetchBridgeToken(config) {
 
 async function probeDaemonStatus() {
   if (!isSocketOpen()) return false;
-  try {
-    const config = await loadBridgeConfig();
-    const response = await fetch(config.statusUrl, { cache: "no-store" });
-    if (!response.ok) throw new Error(`status ${response.status}`);
-    const status = await response.json().catch(() => ({}));
-    if (!status.connected) throw new Error("daemon reports no extension connection");
-    assertDaemonIdentity(config, status.identity || {});
-    return true;
-  } catch (error) {
-    const message = `daemon status probe failed: ${String(error?.message || error)}`;
-    state.lastError = message;
-    const socket = state.socket;
-    if (socket && socket.readyState === WebSocket.OPEN) {
+  // Alarms, the keepalive interval, and connect({probe:true}) can land at the
+  // same moment. Coalesce them so one slow /status response cannot create a
+  // burst of probes that all count as independent failures.
+  if (state.statusProbeInFlight) return state.statusProbeInFlight;
+  const socket = state.socket;
+  const probe = (async () => {
+    try {
+      const config = await loadBridgeConfig();
+      const response = await fetch(config.statusUrl, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(DAEMON_STATUS_TIMEOUT_MS)
+      });
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      const status = await response.json().catch(() => ({}));
+      if (!status.connected) throw new Error("daemon reports no extension connection");
+      assertDaemonIdentity(config, status.identity || {});
+      if (state.socket === socket) {
+        state.statusProbeFailures = 0;
+        if (state.lastError.startsWith("daemon status probe failed:")) state.lastError = "";
+      }
+      return true;
+    } catch (error) {
+      // A probe belonging to an old socket must never close or downgrade the
+      // replacement connection that won the race while the fetch was pending.
+      if (state.socket !== socket || socket?.readyState !== WebSocket.OPEN) return false;
+      state.statusProbeFailures += 1;
+      const message = `daemon status probe failed: ${String(error?.message || error)}`;
+      state.lastError = `${message} (${state.statusProbeFailures}/${MAX_DAEMON_STATUS_FAILURES})`;
+      if (state.statusProbeFailures < MAX_DAEMON_STATUS_FAILURES) return false;
+
+      state.statusProbeFailures = 0;
+      state.socket = null;
       try { socket.close(); } catch (_) {}
+      detachAll().catch(() => {});
+      scheduleReconnect(message);
+      return false;
     }
-    state.socket = null;
-    scheduleReconnect(message);
-    return false;
+  })();
+  state.statusProbeInFlight = probe;
+  try {
+    return await probe;
+  } finally {
+    if (state.statusProbeInFlight === probe) state.statusProbeInFlight = null;
   }
 }
 

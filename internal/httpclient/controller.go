@@ -12,17 +12,21 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
+	"github.com/Don-Works/brw/internal/usagelog"
 )
 
 type Controller struct {
-	baseURL string
-	client  *http.Client
+	baseURL     string
+	client      *http.Client
+	sessionID   string
+	nextRequest atomic.Uint64
 }
 
 type Health struct {
@@ -45,10 +49,16 @@ func New(baseURL string, timeout time.Duration) (*Controller, error) {
 		timeout = 20 * time.Second
 	}
 	return &Controller{
-		baseURL: baseURL,
-		client:  &http.Client{Timeout: timeout},
+		baseURL:   baseURL,
+		client:    &http.Client{Timeout: timeout},
+		sessionID: usagelog.NewID(),
 	}, nil
 }
+
+// SessionID is the non-secret correlation id forwarded to the long-lived brw
+// daemon. It lets usage logs group calls made by one disposable MCP proxy
+// without recording prompts, arguments, URLs, or browser content.
+func (c *Controller) SessionID() string { return c.sessionID }
 
 func (c *Controller) Health(ctx context.Context) (Health, error) {
 	var out Health
@@ -319,10 +329,12 @@ func (c *Controller) NetworkCapture(ctx context.Context, filter string) ([]snaps
 func (c *Controller) ReplayRequest(ctx context.Context, params browser.ReplayRequestParams) (snapshot.ReplayResult, error) {
 	var out snapshot.ReplayResult
 	err := c.post(ctx, "/api/page/replay_request", map[string]any{
-		"method":  params.Method,
-		"url":     params.URL,
-		"headers": params.Headers,
-		"body":    params.Body,
+		"method":    params.Method,
+		"url":       params.URL,
+		"headers":   params.Headers,
+		"body":      params.Body,
+		"offset":    params.Offset,
+		"max_bytes": params.MaxBytes,
 	}, &out)
 	return out, err
 }
@@ -470,6 +482,9 @@ func (c *Controller) post(ctx context.Context, path string, body any, out any) e
 }
 
 func (c *Controller) do(req *http.Request, out any) error {
+	req.Header.Set(usagelog.HeaderSessionID, c.sessionID)
+	req.Header.Set(usagelog.HeaderRequestID, fmt.Sprintf("%s:%d", c.sessionID, c.nextRequest.Add(1)))
+	req.Header.Set(usagelog.HeaderClient, "brw-httpclient")
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return err

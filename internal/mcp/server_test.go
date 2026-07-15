@@ -7,14 +7,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
+	"github.com/Don-Works/brw/internal/usagelog"
 )
 
 func TestServeSupportsFramedStdio(t *testing.T) {
@@ -87,6 +91,51 @@ func TestToolCallReturnsCompactTextAndStructuredContent(t *testing.T) {
 	}
 	if _, ok := result["structuredContent"].(map[string]any); !ok {
 		t.Fatalf("missing structuredContent: %#v", result)
+	}
+}
+
+func TestUsageLogNeverRetainsToolArgumentsOrResults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.ndjson")
+	recorder, err := usagelog.New(usagelog.Config{
+		Path: path, MaxBytes: 1 << 20, Backups: 1,
+		Identity: brwidentity.Identity{Workspace: "brw-test", Profile: "test", Mode: "direct"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(fakeController{})
+	server.SetUsageRecorder(recorder)
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_fill","arguments":{"ref":"sensitive-field","text":"SENSITIVE_SENTINEL_A","value":"TOKEN_SENTINEL_B"}}}` + "\n"
+	var output bytes.Buffer
+	if err := server.Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"SENSITIVE_SENTINEL_A", "TOKEN_SENTINEL_B", "sensitive-field", `"arguments"`, `"result"`} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("usage log retained %q: %s", forbidden, data)
+		}
+	}
+	if !strings.Contains(string(data), `"operation":"brw_fill"`) || !strings.Contains(string(data), `"outcome":"ok"`) {
+		t.Fatalf("missing safe usage metadata: %s", data)
+	}
+}
+
+func TestReplayRequestForwardsBodyWindow(t *testing.T) {
+	ctrl := &recordingController{}
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_replay_request","arguments":{"url":"https://example.test/data","offset":19000,"max_bytes":32000}}}` + "\n"
+	var output bytes.Buffer
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	if ctrl.replayParams.Offset != 19_000 || ctrl.replayParams.MaxBytes != 32_000 {
+		t.Fatalf("replay window = %+v", ctrl.replayParams)
 	}
 }
 
@@ -977,6 +1026,7 @@ type recordingController struct {
 	fakeController
 	snapshotOpts        snapshot.SnapshotOptions
 	findOpts            snapshot.FindOptions
+	replayParams        browser.ReplayRequestParams
 	navigateDirection   string
 	cancelToken         string
 	notifyOpts          browser.NotifyOptions
@@ -1110,6 +1160,11 @@ func (r *recordingController) Snapshot(ctx context.Context, opts snapshot.Snapsh
 func (r *recordingController) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
 	r.findOpts = opts
 	return r.fakeController.Find(ctx, opts)
+}
+
+func (r *recordingController) ReplayRequest(_ context.Context, params browser.ReplayRequestParams) (snapshot.ReplayResult, error) {
+	r.replayParams = params
+	return snapshot.ReplayResult{OK: true, BodyOffset: params.Offset}, nil
 }
 
 func (r *recordingController) EmulateDevice(ctx context.Context, opts browser.DeviceEmulationOptions) (browser.DeviceEmulationResult, error) {

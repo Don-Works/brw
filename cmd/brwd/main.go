@@ -25,7 +25,10 @@ import (
 	"github.com/Don-Works/brw/internal/mcp"
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/profilepolicy"
+	"github.com/Don-Works/brw/internal/usagelog"
 )
+
+const defaultProxyIdleExit = 90 * time.Minute
 
 type stringList []string
 
@@ -69,11 +72,14 @@ func main() {
 	var blockedDomains string
 	var allowedDomains string
 	var enableWebMCP bool
+	var usageLog string
+	var usageLogMaxMB int
+	var usageLogBackups int
 
 	flag.StringVar(&httpAddr, "http", envDefault("BRW_HTTP_ADDR", "127.0.0.1:17310"), "HTTP listen address, or off. Defaults to loopback; bind a non-loopback address only behind SSH/Tailscale with caller auth.")
 	flag.BoolVar(&mcpMode, "mcp", false, "run MCP stdio server")
 	flag.StringVar(&mcpToolProfile, "mcp-tools", envDefault("BRW_MCP_TOOLS", "all"), "MCP tool surface advertised in tools/list: 'all' (full) or 'core' (lean common-flow set). All tools remain callable regardless.")
-	flag.DurationVar(&mcpIdleExit, "mcp-idle-exit", envDuration("BRW_MCP_IDLE_EXIT", 0), "exit the --mcp stdio server cleanly after this long with no requests (e.g. 90m); 0 disables. Recommended with --upstream-http, where the process is a disposable stateless proxy respawned on demand: a supervisor that abandons a session without closing the child's stdin would otherwise pin the process alive forever.")
+	flag.DurationVar(&mcpIdleExit, "mcp-idle-exit", envDuration("BRW_MCP_IDLE_EXIT", 0), "exit the --mcp stdio server cleanly after this long with no requests; upstream HTTP proxies default to 90m unless this flag or BRW_MCP_IDLE_EXIT is explicitly set (0 disables). Prevents abandoned clients from accumulating disposable proxy processes.")
 	flag.BoolVar(&bridgeMode, "bridge", false, "use installed Chrome extension bridge instead of direct CDP")
 	flag.StringVar(&bridgeAddr, "bridge-addr", envDefault("BRW_BRIDGE_ADDR", "127.0.0.1:17311"), "extension bridge WebSocket listen address")
 	flag.BoolVar(&bridgeRaiseWindow, "bridge-raise-window", envBool("BRW_BRIDGE_RAISE_WINDOW"), "bridge: raise the Chrome window to the OS foreground on focus_tab. Off by default so automation never steals your focus while you work elsewhere.")
@@ -98,7 +104,17 @@ func main() {
 	flag.StringVar(&blockedDomains, "blocked-domains", os.Getenv("BRW_BLOCKED_DOMAINS"), "comma-separated domains the agent may never open (subdomains included); guardrail enforced on brw_open and brw_replay_request")
 	flag.StringVar(&allowedDomains, "allowed-domains", os.Getenv("BRW_ALLOWED_DOMAINS"), "comma-separated allowlist; when set, the agent may ONLY open these domains (and subdomains)")
 	flag.BoolVar(&enableWebMCP, "enable-webmcp", envBool("BRW_ENABLE_WEBMCP"), "expose a WebMCP runtime (navigator.modelContext) so cooperating sites can register page tools brw_page_tools/brw_call_page_tool can use")
+	flag.StringVar(&usageLog, "usage-log", envDefault("BRW_USAGE_LOG", "auto"), "privacy-safe metadata usage ledger path; auto writes under the user config directory, off disables. Never records tool arguments, typed text, page content, URLs, headers, or response bodies.")
+	flag.IntVar(&usageLogMaxMB, "usage-log-max-mb", envInt("BRW_USAGE_LOG_MAX_MB", 20), "rotate the usage ledger at this many MiB; 0 disables size rotation")
+	flag.IntVar(&usageLogBackups, "usage-log-backups", envInt("BRW_USAGE_LOG_BACKUPS", 7), "number of rotated usage-ledger files to retain")
 	flag.Parse()
+
+	mcpIdleExit = effectiveMCPIdleExit(
+		mcpIdleExit,
+		mcpMode,
+		upstreamHTTP,
+		flagWasSet("mcp-idle-exit") || strings.TrimSpace(os.Getenv("BRW_MCP_IDLE_EXIT")) != "",
+	)
 
 	if printSystemPrompt {
 		fmt.Println(mcp.AgentSystemPrompt)
@@ -170,9 +186,57 @@ func main() {
 		identityExpected.Mode = ""
 		log.Printf("using workspace profile %q (%s)", profile.Name, profile.Kind)
 	}
+	usageIdentity := runtimeIdentity
+	if usageIdentity.Mode == "" {
+		switch {
+		case upstreamHTTP != "":
+			usageIdentity.Mode = "upstream-http"
+		case bridgeMode:
+			usageIdentity.Mode = "bridge"
+		default:
+			usageIdentity.Mode = "direct"
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// The long-lived daemon is the canonical usage-ledger writer. Disposable
+	// --upstream-http MCP proxies forward correlation headers and are deliberately
+	// not additional writers, avoiding duplicate records and cross-process
+	// rotation races. The upstream daemon records every browser operation it
+	// actually receives.
+	var usage *usagelog.Recorder
+	if upstreamHTTP == "" {
+		maxBytes, err := usageLogMaxBytes(usageLogMaxMB)
+		if err != nil {
+			log.Fatalf("usage log: %v", err)
+		}
+		if usageLogBackups < 0 {
+			log.Fatalf("usage log: usage-log-backups must be non-negative")
+		}
+		usagePath, pathErr := resolveUsageLogPath(usageLog, usageIdentity)
+		if pathErr != nil {
+			// Observability must never become a new browser-control outage.
+			log.Printf("WARNING: usage ledger disabled: %v", pathErr)
+		} else if usagePath != "" {
+			usage, err = usagelog.New(usagelog.Config{
+				Path: usagePath, MaxBytes: maxBytes, Backups: usageLogBackups,
+				Version: mcp.Version, Identity: usageIdentity,
+			})
+			if err != nil {
+				log.Printf("WARNING: usage ledger disabled: %v", err)
+			}
+		}
+		if usage != nil {
+			defer func() {
+				if err := usage.Close(); err != nil {
+					log.Printf("close usage log: %v", err)
+				}
+			}()
+			log.Printf("privacy-safe usage ledger enabled at %s (metadata only; no arguments, content, or URLs)", usage.Path())
+		}
+	}
 
 	// gracefulShutdown drains a server with a bounded timeout. Registered as a
 	// defer so it runs on EVERY exit path, including the MCP-mode early return —
@@ -213,6 +277,7 @@ func main() {
 		log.Printf("using upstream HTTP controller %s", upstreamHTTP)
 	} else if bridgeMode {
 		bridge = extensionbridge.NewWithIdentity(bridgeAddr, timeout, bridgeExtensionID, runtimeIdentity)
+		bridge.SetUsageRecorder(usage)
 		// Seamless defaults: never raise the Chrome window on focus (no focus
 		// theft) and corral the agent's tabs into one labelled group.
 		bridge.SetRaiseWindowOnFocus(bridgeRaiseWindow)
@@ -291,6 +356,7 @@ func main() {
 	if httpAddr != "" && httpAddr != "off" {
 		api = httpapi.NewWithIdentity(httpAddr, controller, runtimeIdentity)
 		api.SetNavigationPolicy(navPolicy)
+		api.SetUsageRecorder(usage)
 		defer gracefulShutdown("HTTP API", api.Shutdown)
 		if !isLoopback(httpAddr) {
 			log.Printf("WARNING: HTTP API bound to non-loopback address %s; no authentication is enforced — ensure caller auth is in place (SSH/Tailscale)", httpAddr)
@@ -317,6 +383,12 @@ func main() {
 		go watchParentExit(stop)
 		server := mcp.NewWithToolProfile(controller, mcpToolProfile)
 		server.SetNavigationPolicy(navPolicy)
+		// A direct/bridge MCP process has no upstream HTTP middleware to record its
+		// calls, so record them here. Upstream proxies intentionally rely on the
+		// canonical daemon ledger and do not create duplicate local records.
+		if upstreamHTTP == "" {
+			server.SetUsageRecorder(usage)
+		}
 		if mcpIdleExit > 0 {
 			server.SetIdleExit(mcpIdleExit)
 			log.Printf("MCP idle-exit armed: exiting after %s without requests", mcpIdleExit)
@@ -340,6 +412,83 @@ func main() {
 	// HTTP API and extension-bridge graceful shutdown run via the deferred
 	// gracefulShutdown calls registered at construction, so they fire on every
 	// exit path (including the MCP-mode early return).
+}
+
+func effectiveMCPIdleExit(configured time.Duration, mcpMode bool, upstreamHTTP string, explicitlyConfigured bool) time.Duration {
+	if !mcpMode || strings.TrimSpace(upstreamHTTP) == "" || explicitlyConfigured || configured != 0 {
+		return configured
+	}
+	return defaultProxyIdleExit
+}
+
+func resolveUsageLogPath(configured string, identity brwidentity.Identity) (string, error) {
+	configured = strings.TrimSpace(configured)
+	switch strings.ToLower(configured) {
+	case "off", "disabled", "none":
+		return "", nil
+	case "", "auto":
+		configDir, err := os.UserConfigDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user config directory: %w", err)
+		}
+		return filepath.Join(configDir, "brw", "usage", usageLogFileName(identity)), nil
+	default:
+		if configured == "~" || strings.HasPrefix(configured, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", fmt.Errorf("resolve home directory: %w", err)
+			}
+			configured = filepath.Join(home, strings.TrimPrefix(configured, "~/"))
+		}
+		return filepath.Clean(configured), nil
+	}
+}
+
+func usageLogFileName(identity brwidentity.Identity) string {
+	parts := make([]string, 0, 3)
+	for _, value := range []string{identity.Workspace, identity.Profile, identity.Mode} {
+		if part := safeFilenamePart(value); part != "" {
+			parts = append(parts, part)
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "brw")
+	}
+	return strings.Join(parts, "-") + ".ndjson"
+}
+
+func safeFilenamePart(value string) string {
+	value = strings.TrimSpace(value)
+	var out strings.Builder
+	lastDash := false
+	for _, r := range value {
+		allowed := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_'
+		if allowed {
+			out.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if out.Len() > 0 && !lastDash {
+			out.WriteByte('-')
+			lastDash = true
+		}
+		if out.Len() >= 64 {
+			break
+		}
+	}
+	return strings.Trim(out.String(), "-.")
+}
+
+func usageLogMaxBytes(megabytes int) (int64, error) {
+	if megabytes < 0 {
+		return 0, errors.New("usage-log-max-mb must be non-negative")
+	}
+	const mib = int64(1024 * 1024)
+	maxInt64 := int64(^uint64(0) >> 1)
+	if int64(megabytes) > maxInt64/mib {
+		return 0, errors.New("usage-log-max-mb is too large")
+	}
+	return int64(megabytes) * mib, nil
 }
 
 func normalizeAddr(addr string) string {

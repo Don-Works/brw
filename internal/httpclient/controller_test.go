@@ -10,6 +10,7 @@ import (
 
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/snapshot"
+	"github.com/Don-Works/brw/internal/usagelog"
 )
 
 func TestNew_EmptyURL(t *testing.T) {
@@ -53,6 +54,70 @@ func TestNew_DefaultTimeout(t *testing.T) {
 	}
 	if c.client.Timeout != 20*time.Second {
 		t.Fatalf("expected 20s timeout, got %v", c.client.Timeout)
+	}
+}
+
+func TestRequestsCarryOnlyNonSecretCorrelationMetadata(t *testing.T) {
+	var session, firstRequest, secondRequest, client string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if session == "" {
+			session = r.Header.Get(usagelog.HeaderSessionID)
+			firstRequest = r.Header.Get(usagelog.HeaderRequestID)
+			client = r.Header.Get(usagelog.HeaderClient)
+		} else {
+			if got := r.Header.Get(usagelog.HeaderSessionID); got != session {
+				t.Errorf("session changed: %q != %q", got, session)
+			}
+			secondRequest = r.Header.Get(usagelog.HeaderRequestID)
+		}
+		json.NewEncoder(w).Encode([]browser.Tab{})
+	}))
+	defer srv.Close()
+	c, err := New(srv.URL, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ListTabs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ListTabs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if usagelog.SafeID(session) == "" || firstRequest == "" || secondRequest == "" || firstRequest == secondRequest {
+		t.Fatalf("bad correlation metadata: session=%q first=%q second=%q", session, firstRequest, secondRequest)
+	}
+	if client != "brw-httpclient" {
+		t.Fatalf("client = %q", client)
+	}
+}
+
+func TestReplayRequestForwardsBodyWindowAcrossHTTP(t *testing.T) {
+	var got struct {
+		Offset   int `json:"offset"`
+		MaxBytes int `json:"max_bytes"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/page/replay_request" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Error(err)
+		}
+		_ = json.NewEncoder(w).Encode(snapshot.ReplayResult{OK: true, Body: "chunk", BodyOffset: got.Offset})
+	}))
+	defer srv.Close()
+	c, err := New(srv.URL, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := c.ReplayRequest(context.Background(), browser.ReplayRequestParams{
+		Method: "GET", URL: "https://example.test/data", Offset: 19_000, MaxBytes: 32_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Offset != 19_000 || got.MaxBytes != 32_000 || result.BodyOffset != 19_000 {
+		t.Fatalf("window lost across HTTP: request=%+v result=%+v", got, result)
 	}
 }
 

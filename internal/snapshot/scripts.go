@@ -56,7 +56,13 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     'img[alt]',
     '[title]',
     '[aria-label]',
-    '[draggable="true"]'
+    '[draggable="true"]',
+    // Element UI / Element Plus render Vue click handlers on plain <li>
+    // elements with no role/tabindex/onclick attribute. Treat their documented
+    // option classes as semantic options so snapshots, click_text, annotated
+    // screenshots, and brw_select can all see the open dropdown.
+    '.el-select-dropdown__item',
+    '.el-select-v2__option'
   ];
   if (includeHidden) selectorParts.push('input[type="hidden"]');
   // When text_content matching is requested, also capture common prose-bearing
@@ -168,11 +174,13 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     if (explicit) return explicit.split(/\s+/)[0];
     const tag = el.tagName.toLowerCase();
     const type = (el.getAttribute('type') || '').toLowerCase();
+    if (el.matches && el.matches('.el-select-dropdown__item,.el-select-v2__option')) return 'option';
     if (tag === 'a' && el.href) return 'link';
     if (tag === 'button' || type === 'button' || type === 'submit' || type === 'reset' || type === 'image') return 'button';
     if (tag === 'textarea' || el.isContentEditable) return 'textbox';
     if (tag === 'select') return el.multiple ? 'listbox' : 'combobox';
     if (tag === 'input') {
+      if (el.closest && el.closest('.el-select,.el-select-v2')) return 'combobox';
       if (type === 'hidden') return 'hidden';
       if (type === 'checkbox') return 'checkbox';
       if (type === 'radio') return 'radio';
@@ -282,7 +290,8 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   }
 
   function disabled(el) {
-    return Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true');
+    return Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true' ||
+      (el.classList && el.classList.contains('is-disabled')));
   }
 
   // islandScore ranks a visual island by size and viewport intersection so the
@@ -506,7 +515,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     const stableKey = stableKeyFor(el, role);
     const ref = refFor(el, key, stableKey);
     const checked = ('checked' in el) ? Boolean(el.checked) : null;
-    const selected = ('selected' in el) ? Boolean(el.selected) : (el.getAttribute('aria-selected') === 'true' ? true : (el.getAttribute('aria-selected') === 'false' ? false : null));
+    const selected = ('selected' in el) ? Boolean(el.selected) : (el.getAttribute('aria-selected') === 'true' ? true : (el.getAttribute('aria-selected') === 'false' ? false : (el.classList && (el.classList.contains('selected') || el.classList.contains('is-selected')) ? true : null)));
     const expanded = el.getAttribute('aria-expanded') === 'true' ? true : (el.getAttribute('aria-expanded') === 'false' ? false : null);
     const signals = structuralSignals(el, role, active);
     const taskScoped = frontierMode && belongsToActiveTask(el);
@@ -905,11 +914,13 @@ const ResolveOrRecoverBoxScript = `(function(ref) {` + FrameWalkHelpers + `
     if (explicit) return explicit.split(/\s+/)[0];
     var tag = el.tagName.toLowerCase();
     var type = (el.getAttribute('type') || '').toLowerCase();
+    if (el.matches && el.matches('.el-select-dropdown__item,.el-select-v2__option')) return 'option';
     if (tag === 'a' && el.href) return 'link';
     if (tag === 'button' || type === 'button' || type === 'submit' || type === 'reset') return 'button';
     if (tag === 'textarea' || el.isContentEditable) return 'textbox';
     if (tag === 'select') return el.multiple ? 'listbox' : 'combobox';
     if (tag === 'input') {
+      if (el.closest && el.closest('.el-select,.el-select-v2')) return 'combobox';
       if (type === 'checkbox') return 'checkbox';
       if (type === 'radio') return 'radio';
       if (type === 'range') return 'slider';
@@ -2019,11 +2030,13 @@ const WaitForActionableScript = `(function(ref, timeoutMs){` + FrameWalkHelpers 
     if(explicit) return explicit.split(/\s+/)[0];
     var tag=el.tagName.toLowerCase();
     var type=(el.getAttribute('type')||'').toLowerCase();
+    if(el.matches&&el.matches('.el-select-dropdown__item,.el-select-v2__option')) return 'option';
     if(tag==='a'&&el.href) return 'link';
     if(tag==='button'||type==='button'||type==='submit'||type==='reset'||type==='image') return 'button';
     if(tag==='textarea'||el.isContentEditable) return 'textbox';
     if(tag==='select') return el.multiple?'listbox':'combobox';
     if(tag==='input'){
+      if(el.closest&&el.closest('.el-select,.el-select-v2')) return 'combobox';
       if(type==='checkbox') return 'checkbox';
       if(type==='radio') return 'radio';
       if(type==='range') return 'slider';
@@ -2161,7 +2174,7 @@ const WaitForActionableScript = `(function(ref, timeoutMs){` + FrameWalkHelpers 
   function check(){
     var el=findByRef(ref);
     if(!el) return {ok:false,reason:'not_found'};
-    if(el.disabled||el.getAttribute('aria-disabled')==='true') return {ok:false,reason:'disabled'};
+    if(el.disabled||el.getAttribute('aria-disabled')==='true'||(el.classList&&el.classList.contains('is-disabled'))) return {ok:false,reason:'disabled'};
     if(visible(el)) return {ok:true,mode:'ax_visible'};
     if(geometryActionable(el)) return {ok:true,mode:'hit_test'};
     return {ok:false,reason:'not_visible'};
@@ -2793,7 +2806,8 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
     return rects && rects.length > 0 && Array.from(rects).some(r => r.width > 0 && r.height > 0);
   }
   function disabled(el) {
-    return Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true');
+    return Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true' ||
+      (el.classList && el.classList.contains('is-disabled')));
   }
   function labelText(el) {
     if (!el) return '';
@@ -2812,10 +2826,14 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
     if (explicit) return explicit.split(/\s+/)[0];
     const tag = el.tagName.toLowerCase();
     const type = (el.getAttribute('type') || '').toLowerCase();
+    if (el.matches && el.matches('.el-select-dropdown__item,.el-select-v2__option')) return 'option';
     if (tag === 'a' && el.href) return 'link';
     if (tag === 'button' || type === 'button' || type === 'submit' || type === 'reset' || type === 'image') return 'button';
     if (tag === 'select') return el.multiple ? 'listbox' : 'combobox';
-    if (tag === 'input') return type === 'search' ? 'searchbox' : 'textbox';
+    if (tag === 'input') {
+      if (el.closest && el.closest('.el-select,.el-select-v2')) return 'combobox';
+      return type === 'search' ? 'searchbox' : 'textbox';
+    }
     if (tag === 'summary') return 'button';
     return 'generic';
   }
@@ -2843,7 +2861,8 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
   const exact = Boolean(opts.exact);
   const selector = [
     'button','a[href]','[role="button"]','[role="link"]','[role="option"]','[role="menuitem"]',
-    'input[type="button"]','input[type="submit"]','summary','label','[tabindex]','[onclick]'
+    'input[type="button"]','input[type="submit"]','summary','label','[tabindex]','[onclick]',
+    '.el-select-dropdown__item','.el-select-v2__option'
   ].join(',');
   const candidates = [];
   const seen = new Set();

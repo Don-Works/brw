@@ -235,10 +235,11 @@ all tools callable.
 MCP stdio lifecycle: `brwd --mcp` exits cleanly on SIGTERM/SIGINT (including
 while blocked waiting for input), when its stdin closes, and when it is orphaned
 by its parent. For supervisors that spawn one `brwd --mcp --upstream-http`
-proxy per session and may abandon it without closing stdin, add
-`--mcp-idle-exit 90m` (or `BRW_MCP_IDLE_EXIT`): the proxy is a disposable
-stateless shim, so it exits 0 after the idle window and the supervisor respawns
-it on the next call instead of accumulating zombie children.
+proxy per session and may abandon it without closing stdin, the proxy defaults
+to a 90-minute idle exit. Override it with `--mcp-idle-exit` or
+`BRW_MCP_IDLE_EXIT` (`0` explicitly disables): the proxy is a disposable
+stateless shim, so the supervisor respawns it on the next call instead of
+accumulating zombie children.
 Requests on one stdio connection may complete out of order, as JSON-RPC allows;
 this is what lets `brw_cancel` and MCP `notifications/cancelled` interrupt a
 running plan or batch on that same connection instead of waiting behind it.
@@ -289,15 +290,20 @@ Backend-specific notes:
   after Chrome commits, so use DNS/firewall controls when the request itself must
   never leave the machine.
 
-With the extension bridge, agents can organize visible Chrome work into named
-tab groups. Use `brw_list_tab_groups` to choose the next client-side run
-name (for example `brw-1`, `brw-2`, or a short task label), pass `group` to
-`brw_open` to create or reuse that titled group, then pass the
-returned/listed `group_id` on later `brw_open` or `brw_group_tabs` calls
-to keep the run's tabs together. Ungrouped/default tabs remain visible to
-`brw_list_tabs` and can still be targeted normally by `tab_id`. Tab groups
-are UI organization only; use profiles or incognito contexts for cookie/storage
-isolation.
+With the extension bridge, every agent run should organize visible Chrome work
+into one short, non-sensitive group named from whoami/agent identity, workspace
+or repo, and purpose (for example `agent-brw-reconnect`). Call
+`brw_list_tab_groups`, pass `group` on the first `brw_open`, then reuse its
+`group_id` on later opens or `brw_group_tabs` calls. Track every returned tab id,
+including `new_tab_id` from clicks; close scratch tabs promptly and close every
+run-owned tab before finishing unless deliberately handing it to the human.
+Never close pre-existing tabs, and never put secrets or customer data in group
+titles. Tab groups are UI organization only; use profiles or incognito contexts
+for cookie/storage isolation. Native horizontal and vertical tab strips are
+supported: new groups explicitly target the opened tab's real window instead of
+an MV3 service worker's ambiguous “current window”. A rare rejected assignment
+returns `group_warning`, leaves the tab safely owned, and records a privacy-safe
+degraded event rather than retrying forever.
 
 **Tab isolation (default).** When driving your real Chrome over the bridge, the
 daemon defaults to *isolation*: brw acts only on tabs it owns. It opens its tabs
@@ -309,6 +315,17 @@ pass its `tab_id` (from `brw_list_tabs`). This keeps automation (and parallel
 agent runs) from stomping your open tabs. To restore the legacy behavior where
 brw follows your manually-focused tab, run with `--bridge-follow-focus` (or
 `BRW_BRIDGE_FOLLOW_FOCUS=1`).
+
+### Privacy-safe usage ledger
+
+`brwd` records a bounded, owner-only NDJSON operations ledger by default so
+timeouts, retries, bridge reconnects, latency, and tab cleanup can be analysed
+after agent runs. It stores operation metadata and random correlation ids only:
+never prompts, tool arguments, typed values, page content, URLs, headers,
+response bodies, screenshots, paths, cookies, or credentials. Raw error text is
+also excluded. The default is 20 MiB with seven rotated backups; configure it
+with `--usage-log`, `--usage-log-max-mb`, and `--usage-log-backups`, or disable it
+with `--usage-log off`. See [docs/usage-logs.md](docs/usage-logs.md).
 
 ## Safety
 

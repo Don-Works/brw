@@ -16,6 +16,7 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/snapshot"
+	"github.com/Don-Works/brw/internal/usagelog"
 )
 
 // Version is the build version reported over MCP initialize (serverInfo.version).
@@ -31,6 +32,8 @@ type Server struct {
 	toolProfile string // "all" (default) or "core"
 	navPolicy   *navpolicy.Policy
 	idleExit    time.Duration
+	usage       *usagelog.Recorder
+	sessionID   string
 }
 
 // SetIdleExit makes Serve return cleanly after no request has arrived for d.
@@ -40,6 +43,13 @@ type Server struct {
 // closing its stdin would otherwise pin it alive forever.
 func (s *Server) SetIdleExit(d time.Duration) {
 	s.idleExit = d
+}
+
+// SetUsageRecorder installs the metadata-only operational ledger. Tool
+// arguments and result content are never passed to it; errors are reduced to a
+// stable category and one-way fingerprint.
+func (s *Server) SetUsageRecorder(recorder *usagelog.Recorder) {
+	s.usage = recorder
 }
 
 // SetNavigationPolicy installs an opt-in allow/deny guardrail enforced on
@@ -85,7 +95,7 @@ var coreToolNames = map[string]bool{
 }
 
 func New(manager browser.Controller) *Server {
-	return &Server{manager: manager, toolProfile: "all"}
+	return &Server{manager: manager, toolProfile: "all", sessionID: usagelog.NewID()}
 }
 
 // checkNavPolicy enforces the optional navigation guardrail. Returns nil when no
@@ -112,7 +122,7 @@ func NewWithToolProfile(manager browser.Controller, profile string) *Server {
 	if profile == "" {
 		profile = "all"
 	}
-	return &Server{manager: manager, toolProfile: profile}
+	return &Server{manager: manager, toolProfile: profile, sessionID: usagelog.NewID()}
 }
 
 // advertisedTools returns the tool list for tools/list, narrowed to the active
@@ -481,7 +491,10 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 		if err := json.Unmarshal(params, &call); err != nil {
 			return nil, invalid(err)
 		}
-		return s.callTool(ctx, call.Name, call.Arguments)
+		started := time.Now()
+		result, rpcErr := s.callTool(ctx, call.Name, call.Arguments)
+		s.recordToolUsage(call.Name, started, result, rpcErr)
+		return result, rpcErr
 	default:
 		return nil, &rpcError{Code: -32601, Message: "method not found"}
 	}
@@ -931,10 +944,12 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return toolJSON(s.manager.NetworkCapture(ctx, req.Filter))
 	case "brw_replay_request":
 		var req struct {
-			Method  string            `json:"method"`
-			URL     string            `json:"url"`
-			Headers map[string]string `json:"headers"`
-			Body    string            `json:"body"`
+			Method   string            `json:"method"`
+			URL      string            `json:"url"`
+			Headers  map[string]string `json:"headers"`
+			Body     string            `json:"body"`
+			Offset   int               `json:"offset"`
+			MaxBytes int               `json:"max_bytes"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
@@ -943,10 +958,12 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return toolError(err), nil
 		}
 		return toolJSON(s.manager.ReplayRequest(ctx, browser.ReplayRequestParams{
-			Method:  req.Method,
-			URL:     req.URL,
-			Headers: req.Headers,
-			Body:    req.Body,
+			Method:   req.Method,
+			URL:      req.URL,
+			Headers:  req.Headers,
+			Body:     req.Body,
+			Offset:   req.Offset,
+			MaxBytes: req.MaxBytes,
 		}))
 	case "brw_plan":
 		var req struct {
@@ -1314,45 +1331,18 @@ func toolError(err error) any {
 // classifyToolError maps a transport/timeout failure to a stable code, or returns
 // "" for an ordinary tool error that callers should treat as a hard failure.
 func classifyToolError(err error) string {
-	if err == nil {
+	class := usagelog.ClassifyError(err)
+	if class == "tool" {
 		return ""
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "timeout"
-	}
-	if errors.Is(err, context.Canceled) {
-		return "canceled"
-	}
-	msg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(msg, "deadline exceeded"),
-		strings.Contains(msg, "timed out"),
-		strings.Contains(msg, "timeout"),
-		strings.Contains(msg, "no response from downstream"):
-		return "timeout"
-	case strings.Contains(msg, "bridge busy"),
-		strings.Contains(msg, "max inflight"),
-		strings.Contains(msg, "too many concurrent"):
-		return "busy"
-	case strings.Contains(msg, "not connected"),
-		strings.Contains(msg, "bridge transport"),
-		strings.Contains(msg, "websocket"),
-		strings.Contains(msg, "unexpected end of json"):
-		return "transport"
-	}
-	return ""
+	return class
 }
 
 // toolErrorRetryable reports whether a classified error is worth re-issuing. A
 // caller-cancelled call is not (the caller went away); transient transport/load
 // failures are.
 func toolErrorRetryable(code string) bool {
-	switch code {
-	case "timeout", "busy", "transport":
-		return true
-	default:
-		return false
-	}
+	return usagelog.Retryable(code)
 }
 
 func invalid(err error) *rpcError {
@@ -1368,9 +1358,9 @@ func canonicalToolName(name string) string {
 
 func tools() []map[string]any {
 	return []map[string]any{
-		tool("brw_open", "Open a URL in a visible Chrome/Chromium tab. On the extension bridge the tab is corralled into a default agent tab group (configurable; \"brw\" by default) and, in the default isolation mode, opened in the BACKGROUND — so brw works in its own group and never switches or stomps the tab you are on. brw acts only on tabs it owns; to work with one of YOUR existing tabs, pass that tab's tab_id to a tool. To use a different run-scoped group, pass a unique group name such as workspace-1; to add later tabs to that same visible group, pass its group_id from brw_list_tabs or brw_list_tab_groups.", object(map[string]any{
+		tool("brw_open", "Open a URL in a visible Chrome/Chromium tab. Create one short, non-sensitive run group from whoami/agent identity + workspace/repo + purpose (for example agent-brw-reconnect), then reuse its group_id for later tabs. Track the returned tab id and close every tab you opened before finishing unless intentionally handing it to the human; never close pre-existing tabs. The configurable default \"brw\" group is only a fallback. On the extension bridge owned tabs open in the BACKGROUND, so brw never switches or stomps the human's current tab. To work with a human-owned existing tab, pass that tab's tab_id explicitly.", object(map[string]any{
 			"url":         stringSchema("URL to open. Scheme defaults to https."),
-			"group":       stringSchema("Optional Chrome tab group title. When set without group_id, the extension reuses an existing same-title group in the target window or creates one."),
+			"group":       stringSchema("Chrome tab group title. Prefer a short run-scoped whoami-workspace-purpose name with no secrets; when set without group_id, the extension reuses an existing same-title group or creates one."),
 			"group_id":    stringSchema("Optional existing Chrome tab group id from brw_list_tabs or brw_list_tab_groups. When set, the new tab is added to that group."),
 			"group_color": stringSchema("Optional group color: grey, blue, red, yellow, green, pink, purple, cyan, orange."),
 		}, []string{"url"})),
@@ -1387,7 +1377,7 @@ func tools() []map[string]any {
 			"tab_id": stringSchema("Target id from brw_list_tabs (preferred, consistent with other tools)."),
 			"id":     stringSchema("Deprecated alias for tab_id."),
 		}, nil)),
-		tool("brw_close_tab", "Close a controllable Chrome/Chromium target.", object(map[string]any{
+		tool("brw_close_tab", "Close a controllable Chrome/Chromium target. Use it to clean up tabs opened by this run; never close a tab that existed before the run unless the user explicitly asked.", object(map[string]any{
 			"tab_id": stringSchema("Target id from brw_list_tabs (preferred, consistent with other tools)."),
 			"id":     stringSchema("Deprecated alias for tab_id."),
 		}, nil)),
@@ -1505,12 +1495,14 @@ func tools() []map[string]any {
 			"filter": stringSchema("Optional case-insensitive substring to filter captured request URLs."),
 			"tab_id": stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, nil)),
-		tool("brw_replay_request", "Re-execute a request in-page via fetch(url, {method, headers, body}) and return {status, ok, body}. SAFETY: a MUTATING replay (POST/PUT/PATCH/DELETE) whose URL looks like checkout, payment, purchase, or order placement is BLOCKED with an error and never executed; idempotent GET/HEAD reads are always allowed. Use to re-run safe read/idempotent API calls (for example a GET) discovered via brw_network_capture. Pass optional tab_id to target a specific tab.", object(map[string]any{
-			"method":  stringSchema("HTTP method, for example GET or POST. Defaults to GET."),
-			"url":     stringSchema("Request URL. May be relative to the current page."),
-			"headers": map[string]any{"type": "object", "description": "Optional request headers as a string-to-string map.", "additionalProperties": stringSchema("Header value.")},
-			"body":    stringSchema("Optional request body. Ignored for GET/HEAD."),
-			"tab_id":  stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
+		tool("brw_replay_request", "Re-execute a request in-page via fetch(url, {method, headers, body}) and return a byte-windowed response body plus body_total_bytes/body_truncated/next_offset. The default window is 64 KiB (not the old lossy 4 KiB clip); use offset/max_bytes to page larger bodies. When using MCPlexer execute_code, parse/filter body inside the script and print only compact findings so output-preview compression cannot break your analysis. SAFETY: a MUTATING replay (POST/PUT/PATCH/DELETE) whose URL looks like checkout, payment, purchase, or order placement is BLOCKED and never executed; idempotent GET/HEAD reads are always allowed. Pass optional tab_id to target a specific tab.", object(map[string]any{
+			"method":    stringSchema("HTTP method, for example GET or POST. Defaults to GET."),
+			"url":       stringSchema("Request URL. May be relative to the current page."),
+			"headers":   map[string]any{"type": "object", "description": "Optional request headers as a string-to-string map.", "additionalProperties": stringSchema("Header value.")},
+			"body":      stringSchema("Optional request body. Ignored for GET/HEAD."),
+			"offset":    integerSchema("UTF-8 byte offset into the response body. Defaults to 0; use next_offset from a truncated result for the following window."),
+			"max_bytes": integerSchema("Maximum response-body bytes to return. Defaults to 65536 and is capped at 1048576."),
+			"tab_id":    stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
 		}, []string{"url"})),
 		tool("brw_type", "Type text into a semantic element ref. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":      stringSchema("Element ref, for example e17."),

@@ -48,10 +48,12 @@ func (b *Bridge) ReplayRequest(ctx context.Context, params browser.ReplayRequest
 		return snapshot.ReplayResult{}, errors.New(reason)
 	}
 	opts := map[string]any{
-		"method":  params.Method,
-		"url":     params.URL,
-		"headers": params.Headers,
-		"body":    params.Body,
+		"method":   params.Method,
+		"url":      params.URL,
+		"headers":  params.Headers,
+		"body":     params.Body,
+		"offset":   params.Offset,
+		"maxBytes": params.MaxBytes,
 	}
 	args, _ := json.Marshal(opts)
 	expr := fmt.Sprintf("%s(%s)", snapshot.ReplayRequestScript, args)

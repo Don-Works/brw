@@ -30,12 +30,18 @@ type CapturedRequest struct {
 
 // ReplayResult is the outcome of re-executing a single request in-page.
 type ReplayResult struct {
-	Status int    `json:"status"`
-	OK     bool   `json:"ok"`
-	Body   string `json:"body,omitempty"`
-	URL    string `json:"url,omitempty"`
-	Method string `json:"method,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Status         int    `json:"status"`
+	OK             bool   `json:"ok"`
+	Body           string `json:"body,omitempty"`
+	BodyOffset     int    `json:"body_offset,omitempty"`
+	BodyBytes      int    `json:"body_bytes,omitempty"`
+	BodyTotalBytes int    `json:"body_total_bytes,omitempty"`
+	BodyTruncated  bool   `json:"body_truncated,omitempty"`
+	NextOffset     int    `json:"next_offset,omitempty"`
+	ContentType    string `json:"content_type,omitempty"`
+	URL            string `json:"url,omitempty"`
+	Method         string `json:"method,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // NetworkCaptureInstallScript injects an idempotent in-page interceptor that
@@ -197,16 +203,46 @@ const NetworkCaptureDrainScript = `(function() {
 })()`
 
 // ReplayRequestScript re-executes a single request in-page via fetch and
-// returns a bounded {status, ok, body} result. The purchase guard is enforced
+// returns a bounded, byte-windowed {status, ok, body} result. The default 64 KiB
+// window is large enough for normal JSON APIs (the old hard 4 KiB clipping broke
+// parsing of larger JSON lists), while offset/maxBytes allow deterministic
+// paging without ever returning a silently clipped body. The purchase guard is enforced
 // Go-side before this script ever runs (browser.ReplayRequestParams.
 // BlockedReplayReason, called by both transports) so a refusal is an explicit
 // error, never a network call.
 const ReplayRequestScript = `(function(opts) {
   opts = opts || {};
-  var BODY_CAP = 4096;
-  function clip(s) {
+  var DEFAULT_BODY_BYTES = 65536;
+  var MAX_BODY_BYTES = 1048576;
+  function bodyWindow(s) {
     s = (s === undefined || s === null) ? '' : String(s);
-    return s.length > BODY_CAP ? s.slice(0, BODY_CAP) + '…[truncated]' : s;
+    var bytes = new TextEncoder().encode(s);
+    var requestedOffset = Math.max(0, Math.floor(Number(opts.offset || 0)) || 0);
+    var maxBytes = Math.floor(Number(opts.maxBytes || 0)) || DEFAULT_BODY_BYTES;
+    maxBytes = Math.max(1, Math.min(MAX_BODY_BYTES, maxBytes));
+    var start = Math.min(requestedOffset, bytes.length);
+    // If a caller supplied an arbitrary byte offset inside a UTF-8 continuation
+    // sequence, advance to the next complete code point and report the actual
+    // body_offset used.
+    while (start < bytes.length && (bytes[start] & 0xC0) === 0x80) start++;
+    var end = Math.min(bytes.length, start + maxBytes);
+    // Do not end midway through a UTF-8 code point. next_offset is this adjusted
+    // boundary, so subsequent windows concatenate without replacement glyphs.
+    if (end < bytes.length) {
+      while (end > start && (bytes[end] & 0xC0) === 0x80) end--;
+      if (end === start) {
+        end = Math.min(bytes.length, start + maxBytes);
+        while (end < bytes.length && (bytes[end] & 0xC0) === 0x80) end++;
+      }
+    }
+    return {
+      body: new TextDecoder().decode(bytes.slice(start, end)),
+      body_offset: start,
+      body_bytes: end - start,
+      body_total_bytes: bytes.length,
+      body_truncated: start > 0 || end < bytes.length,
+      next_offset: end < bytes.length ? end : 0
+    };
   }
   var url = String(opts.url || '');
   var init = { method: String(opts.method || 'GET').toUpperCase() };
@@ -214,9 +250,16 @@ const ReplayRequestScript = `(function(opts) {
   if (typeof opts.body === 'string' && opts.body.length && init.method !== 'GET' && init.method !== 'HEAD') init.body = opts.body;
   return fetch(url, init).then(function(resp) {
     return resp.text().then(function(t) {
-      return { status: resp.status, ok: resp.ok, body: clip(t), url: url, method: init.method, error: '' };
+      var result = bodyWindow(t);
+      result.status = resp.status;
+      result.ok = resp.ok;
+      result.url = url;
+      result.method = init.method;
+      result.content_type = resp.headers.get('content-type') || '';
+      result.error = '';
+      return result;
     }).catch(function() {
-      return { status: resp.status, ok: resp.ok, body: '', url: url, method: init.method, error: '' };
+      return { status: resp.status, ok: resp.ok, body: '', body_bytes: 0, body_total_bytes: 0, url: url, method: init.method, content_type: resp.headers.get('content-type') || '', error: '' };
     });
   }).catch(function(err) {
     return { status: 0, ok: false, body: '', url: url, method: init.method, error: String(err && err.message || err) };
@@ -258,8 +301,8 @@ func CaptureNetwork(ctx context.Context) ([]CapturedRequest, error) {
 
 // ReplayRequest re-executes the given request in-page and returns the result.
 // The async fetch promise is awaited via runtime.Evaluate with WithAwaitPromise.
-func ReplayRequest(ctx context.Context, method, url string, headers map[string]string, body string) (ReplayResult, error) {
-	opts := map[string]any{"method": method, "url": url, "headers": headers, "body": body}
+func ReplayRequest(ctx context.Context, method, url string, headers map[string]string, body string, offset, maxBytes int) (ReplayResult, error) {
+	opts := map[string]any{"method": method, "url": url, "headers": headers, "body": body, "offset": offset, "maxBytes": maxBytes}
 	args, _ := json.Marshal(opts)
 	expr := fmt.Sprintf("%s(%s)", ReplayRequestScript, args)
 	var result ReplayResult

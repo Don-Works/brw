@@ -107,6 +107,21 @@ func TestOpenForwardsTabGroupOptions(t *testing.T) {
 	}
 }
 
+func TestReplayRequestDecodesBodyWindow(t *testing.T) {
+	ctrl := &fakeController{}
+	server := New("", ctrl)
+	body := bytes.NewBufferString(`{"url":"https://example.test/data","method":"GET","offset":19000,"max_bytes":32000}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/page/replay_request", body)
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if ctrl.replayParams.Offset != 19_000 || ctrl.replayParams.MaxBytes != 32_000 {
+		t.Fatalf("replay window = %+v", ctrl.replayParams)
+	}
+}
+
 func TestGroupTabsForwardsGroupID(t *testing.T) {
 	ctrl := &fakeController{}
 	server := New("", ctrl)
@@ -389,6 +404,7 @@ type fakeController struct {
 	groupTabsOpts browser.TabGroupOptions
 	closeCtxID    string
 	emulationOpts browser.DeviceEmulationOptions
+	replayParams  browser.ReplayRequestParams
 }
 
 func (f *fakeController) Open(_ context.Context, targetURL string) (browser.OpenResult, error) {
@@ -560,8 +576,9 @@ func (f *fakeController) NetworkCapture(context.Context, string) ([]snapshot.Cap
 	return nil, nil
 }
 
-func (f *fakeController) ReplayRequest(context.Context, browser.ReplayRequestParams) (snapshot.ReplayResult, error) {
-	return snapshot.ReplayResult{}, nil
+func (f *fakeController) ReplayRequest(_ context.Context, params browser.ReplayRequestParams) (snapshot.ReplayResult, error) {
+	f.replayParams = params
+	return snapshot.ReplayResult{OK: true, BodyOffset: params.Offset}, nil
 }
 
 func (f *fakeController) ExecutePlan(_ context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {

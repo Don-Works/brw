@@ -14,12 +14,14 @@ import (
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/snapshot"
+	"github.com/Don-Works/brw/internal/usagelog"
 )
 
 type Server struct {
 	manager   browser.Controller
 	identity  brwidentity.Identity
 	navPolicy *navpolicy.Policy
+	usage     *usagelog.Recorder
 	server    *http.Server
 
 	// allowedHosts is the set of Host header values accepted when host
@@ -54,8 +56,14 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	// Wrap the router so every request first passes the same-machine browser
 	// guard (DNS-rebinding + cross-origin CSRF). A loopback CLI/MCP client sends
 	// a loopback Host and no browser Origin, so it is untouched.
-	s.server.Handler = s.hostGuard(mux)
+	s.server.Handler = s.usageMiddleware(s.hostGuard(mux))
 	return s
+}
+
+// SetUsageRecorder installs the metadata-only operational ledger. The recorder
+// never sees request bodies, query values, page content, or response bodies.
+func (s *Server) SetUsageRecorder(recorder *usagelog.Recorder) {
+	s.usage = recorder
 }
 
 // computeAllowedHosts derives the Host allowlist and whether to enforce it from
@@ -772,11 +780,13 @@ func (s *Server) networkCapture(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) replayRequest(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Method  string            `json:"method"`
-		URL     string            `json:"url"`
-		Headers map[string]string `json:"headers"`
-		Body    string            `json:"body"`
-		TabID   string            `json:"tab_id"`
+		Method   string            `json:"method"`
+		URL      string            `json:"url"`
+		Headers  map[string]string `json:"headers"`
+		Body     string            `json:"body"`
+		Offset   int               `json:"offset"`
+		MaxBytes int               `json:"max_bytes"`
+		TabID    string            `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -785,10 +795,12 @@ func (s *Server) replayRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.manager.ReplayRequest(s.contextWithTabID(r.Context(), req.TabID), browser.ReplayRequestParams{
-		Method:  req.Method,
-		URL:     req.URL,
-		Headers: req.Headers,
-		Body:    req.Body,
+		Method:   req.Method,
+		URL:      req.URL,
+		Headers:  req.Headers,
+		Body:     req.Body,
+		Offset:   req.Offset,
+		MaxBytes: req.MaxBytes,
 	})
 	writeResult(w, result, err)
 }
@@ -1251,6 +1263,8 @@ func writeResult(w http.ResponseWriter, value any, err error) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
+	w.Header().Set(usagelog.HeaderErrorClass, usagelog.ClassifyError(err))
+	w.Header().Set(usagelog.HeaderErrorFingerprint, usagelog.Fingerprint(err.Error()))
 	writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 }
 

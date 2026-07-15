@@ -694,15 +694,15 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatalf("parse manifest: %v", err)
 	}
-	// The manifest VERSION is the extension's release marker (bumped to 0.3.8 for
-	// deterministic locked/background CSS hover and reliable bounded screenshots,
-	// alongside background-safe keys and native console capture).
+	// The manifest VERSION is the extension's release marker (0.3.9 added
+	// coalesced, time-bounded status probes; 0.3.10 adds a precise, actionable
+	// vertical-tab/grouping capability fallback).
 	// It is DECOUPLED from the wire
 	// PROTOCOL_VERSION below: the manifest moves with every feature release, while
-	// PROTOCOL_VERSION only moves on a breaking bridge-handshake change. 0.3.8
+	// PROTOCOL_VERSION only moves on a breaking bridge-handshake change. 0.3.10
 	// changes only in-extension behaviour, so the protocol stays 0.2.0 (the daemon
 	// still accepts it — verified against the live bridge).
-	const wantManifest = "0.3.8"
+	const wantManifest = "0.3.10"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

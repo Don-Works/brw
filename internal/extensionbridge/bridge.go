@@ -24,6 +24,7 @@ import (
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
+	"github.com/Don-Works/brw/internal/usagelog"
 	"github.com/coder/websocket"
 )
 
@@ -33,6 +34,7 @@ type Bridge struct {
 	allowedExtensionID string
 	identity           brwidentity.Identity
 	navPolicy          *navpolicy.Policy
+	usage              *usagelog.Recorder
 	server             *http.Server
 
 	// authToken, when non-empty, is a per-launch shared secret the extension may
@@ -163,6 +165,10 @@ type Bridge struct {
 // SetNavigationPolicy installs controller-level navigation checks. Call before
 // serving requests.
 func (b *Bridge) SetNavigationPolicy(p *navpolicy.Policy) { b.navPolicy = p }
+
+// SetUsageRecorder installs the privacy-safe lifecycle ledger. Connection
+// reasons are fingerprinted rather than stored verbatim.
+func (b *Bridge) SetUsageRecorder(recorder *usagelog.Recorder) { b.usage = recorder }
 
 func (b *Bridge) prepareNavigationURL(rawURL string) (string, error) {
 	return b.navPolicy.CheckNavigation(rawURL)
@@ -668,6 +674,7 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	} else {
 		log.Printf("extension bridge connected")
 	}
+	b.recordBridgeUsage("bridge_connect", "ok", "", "", verifiedHello.Build)
 
 	// Keepalive: ping the extension periodically so a half-open link (laptop
 	// sleep, NAT timeout, dropped Wi-Fi) is detected promptly instead of hanging
@@ -685,7 +692,9 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("extension bridge disconnected: %s", reason)
 
-	b.releaseConn(conn, reason)
+	if b.releaseConn(conn, reason) {
+		b.recordBridgeUsage("bridge_disconnect", "error", "transport", reason, verifiedHello.Build)
+	}
 }
 
 // releaseConn tears down a connection that has stopped reading. It only acts
@@ -696,16 +705,48 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 // connection, nor stamp the bridge "disconnected" while b.conn points at a
 // healthy socket — doing so spuriously fails in-flight calls and reports a
 // disconnect reason alongside connected:true.
-func (b *Bridge) releaseConn(conn *websocket.Conn, reason string) {
+func (b *Bridge) releaseConn(conn *websocket.Conn, reason string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.conn != conn {
-		return
+		return false
 	}
 	b.conn = nil
 	b.disconnectedAt = time.Now().UTC()
 	b.disconnectReason = reason
 	b.drainPendingLocked(disconnectDrainReason)
+	return true
+}
+
+func (b *Bridge) recordBridgeUsage(operation, outcome, errorClass, errorMessage, extensionBuild string) {
+	if b.usage == nil {
+		return
+	}
+	fingerprint := ""
+	if errorMessage != "" {
+		fingerprint = usagelog.Fingerprint(errorMessage)
+	}
+	_ = b.usage.Record(usagelog.Event{
+		Layer: "bridge", Operation: operation, Outcome: outcome,
+		ErrorClass: errorClass, ErrorFingerprint: fingerprint,
+		Retryable: usagelog.Retryable(errorClass), ExtensionBuild: extensionBuild,
+	})
+}
+
+// recordTabGroupDegradation captures the important middle state where opening
+// the tab succeeded but Chromium refused the organizational group assignment.
+// This happens with tab-strip implementations that report a normal window yet
+// reject extension grouping, or when Chromium itself regresses the capability.
+// Only the fixed capability class/failure shape reaches the metadata ledger;
+// the group title, URL, and raw warning never do.
+func (b *Bridge) recordTabGroupDegradation(warning string) {
+	if strings.TrimSpace(warning) == "" {
+		return
+	}
+	b.mu.RLock()
+	build := b.hello.Build
+	b.mu.RUnlock()
+	b.recordBridgeUsage("tab_group_assignment", "degraded", "capability", warning, build)
 }
 
 // drainPendingLocked fails every in-flight RPC with the given reason. Callers
@@ -1399,6 +1440,7 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 	}
 	b.setActiveTabID(out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
+	b.recordTabGroupDegradation(out.GroupWarning)
 	// See Open: in isolation the owned id drives resolution, so we leave the tab in
 	// the background and never steal the user's current tab; only follow-focus mode
 	// foregrounds it.

@@ -2,6 +2,8 @@ package snapshot
 
 import (
 	"context"
+	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -178,7 +180,7 @@ func TestReplaySafeGetReturnsStatus(t *testing.T) {
 		t.Fatalf("navigate: %v", err)
 	}
 
-	result, err := ReplayRequest(runCtx, "GET", `data:application/json,{"ok":true}`, nil, "")
+	result, err := ReplayRequest(runCtx, "GET", `data:application/json,{"ok":true}`, nil, "", 0, 0)
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -187,6 +189,57 @@ func TestReplaySafeGetReturnsStatus(t *testing.T) {
 	}
 	if !strings.Contains(result.Body, "ok") {
 		t.Fatalf("replay body = %q, want it to contain the response", result.Body)
+	}
+}
+
+func TestReplayReturnsParseableNineteenKilobyteJSONByDefault(t *testing.T) {
+	ctx, cancel := newHeadlessCtx(t)
+	defer cancel()
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.Navigate(networkFixture)); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+
+	payload := `{"clients":[{"name":"` + strings.Repeat("x", 19*1024) + `"}]}`
+	target := "data:application/json," + url.PathEscape(payload)
+	result, err := ReplayRequest(runCtx, "GET", target, nil, "", 0, 0)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if result.BodyTruncated || result.NextOffset != 0 || result.BodyTotalBytes != len(payload) {
+		t.Fatalf("unexpected window metadata: %+v", result)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(result.Body), &decoded); err != nil {
+		t.Fatalf("default replay body is not parseable JSON: %v (bytes=%d total=%d)", err, result.BodyBytes, result.BodyTotalBytes)
+	}
+}
+
+func TestReplayLargeBodyExposesDeterministicByteWindows(t *testing.T) {
+	ctx, cancel := newHeadlessCtx(t)
+	defer cancel()
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.Navigate(networkFixture)); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+
+	payload := strings.Repeat("abcdef", 20_000)
+	target := "data:text/plain," + payload
+	first, err := ReplayRequest(runCtx, "GET", target, nil, "", 0, 10_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.BodyTruncated || first.NextOffset != 10_000 || first.BodyBytes != 10_000 || first.BodyTotalBytes != len(payload) {
+		t.Fatalf("first window = %+v", first)
+	}
+	second, err := ReplayRequest(runCtx, "GET", target, nil, "", first.NextOffset, 10_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.BodyOffset != first.NextOffset || second.Body != payload[10_000:20_000] {
+		t.Fatalf("second window mismatch: offset=%d bytes=%d", second.BodyOffset, second.BodyBytes)
 	}
 }
 

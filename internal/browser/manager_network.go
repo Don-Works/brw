@@ -29,10 +29,12 @@ func filterCapturedRequests(requests []snapshot.CapturedRequest, filter string) 
 // ReplayRequestParams is the shared request shape for guarded replay across both
 // transports (direct-CDP Manager and extension Bridge).
 type ReplayRequestParams struct {
-	Method  string            `json:"method"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Body    string            `json:"body,omitempty"`
+	Method   string            `json:"method"`
+	URL      string            `json:"url"`
+	Headers  map[string]string `json:"headers,omitempty"`
+	Body     string            `json:"body,omitempty"`
+	Offset   int               `json:"offset,omitempty"`
+	MaxBytes int               `json:"max_bytes,omitempty"`
 }
 
 // nonIdempotentReplayMethods can cause server-side state changes when replayed,
@@ -114,5 +116,5 @@ func (m *Manager) ReplayRequest(ctx context.Context, params ReplayRequestParams)
 		return snapshot.ReplayResult{}, err
 	}
 	defer cancel()
-	return snapshot.ReplayRequest(tabCtx, params.Method, params.URL, params.Headers, params.Body)
+	return snapshot.ReplayRequest(tabCtx, params.Method, params.URL, params.Headers, params.Body, params.Offset, params.MaxBytes)
 }

@@ -52,6 +52,18 @@ TOKEN DISCIPLINE:
 - If brw_page_tools reports the page offers WebMCP tools, prefer
   brw_call_page_tool over clicking — it is more reliable and cheaper.
 
+MCPLEXER/HARNESS EXECUTION (when brw is routed through execute_code):
+- If interactive per-call approval is enabled, put only ONE approval-gated brw
+  call in each execute_code script and wait for approval before the next. An
+  approval wait can consume the outer script's deadline and invalidate later
+  calls in the same batch.
+- Large values may be collapsed to a short output preview. Inspect, parse,
+  filter, and aggregate the returned value INSIDE execute_code, then print only
+  compact one-line findings. Do not print a whole snapshot/read/replay response.
+- brw_replay_request returns up to 64 KiB by default. Parse result.body inside
+  the script; if body_truncated is true, continue from next_offset with
+  offset/max_bytes.
+
 WAITING: use brw_wait_for {condition} (ready, text:..., url:..., ref:...) and
 the brw_assert_* tools — they retry until the condition holds or time out. Do
 not poll with manual sleep/snapshot loops.
@@ -63,13 +75,28 @@ refs (e17) you click with; pass ref or region for a small cropped image. If a
 snapshot's metadata reports low_semantic_coverage or cross_origin_frames, that
 is your cue to screenshot the named box and act with brw_click_xy.
 
-TABS: by default brw works in its OWN tab group on tabs it opened, in the
-background, and never touches the human's existing tabs. Just brw_open and work;
-your first action opens a fresh tab if you have none. To act on one of the
-human's existing tabs, you must pass its tab_id (from brw_list_tabs) to the tool
-— no tab_id means "my own working tab", never "whatever the human is looking at".
-When several runs share one browser, capture the tab id brw_open returns and pass
-it as tab_id on later calls to stay on your own tab.
+TABS AND CLEANUP: treat browser tabs as resources you own. At the start of a run,
+derive one short, non-sensitive group name from your whoami/agent identity, the
+workspace or repo, and the purpose (for example agent-brw-reconnect). Call
+brw_list_tab_groups, then brw_open with group:<name>; use the returned group_id
+for every later tab in that run. If a click returns new_tab_id, immediately move
+that tab into the same group with brw_group_tabs. Track every tab id you open.
+Native horizontal AND vertical tab layouts are supported. If Chromium still
+returns group_warning or tab_grouping_unsupported for a particular window, keep
+the tab isolated by its explicit tab_id and continue the same cleanup discipline;
+do not retry grouping in a loop or change the human's tab-layout preference.
+Close scratch tabs as soon as they are no longer useful and, before finishing,
+call brw_close_tab for every tab you opened unless you are intentionally leaving
+it for the human; close incognito work with brw_close_context. Never close a tab
+that existed before your run. The default "brw" group is only a fallback when
+identity/workspace context is unavailable. Group names must never contain
+passwords, customer data, tokens, or other secrets.
+
+By default brw opens owned tabs in the background and never touches the human's
+existing tabs. To act on a human-owned tab, pass its tab_id from brw_list_tabs —
+no tab_id means "my own working tab", never "whatever the human is looking at".
+Always capture brw_open's tab id and pass tab_id on later calls when parallel
+runs share one browser.
 
 HANDING BACK TO THE HUMAN: for MFA, CAPTCHA, payment confirmation, or anything
 you are not authorized to complete, call brw_notify { kind: "needs_input" } and

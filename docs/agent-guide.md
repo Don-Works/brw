@@ -57,6 +57,22 @@ a tool returns `ref not found` or `not actionable`, the page changed — call
   (`e17 button "Submit"`) instead of JSON — markedly fewer tokens for small
   models, same refs.
 
+### MCPlexer and approval-bound harnesses
+
+When `brw` is routed through `mcpx__execute_code`, an interactive per-call
+approval can consume the same outer script deadline. Until approval is already
+settled, place only one approval-gated `brw` call in each script, let it return,
+then issue the next call. Batching several calls behind the first approval can
+leave every later call with no usable time budget.
+
+Large values can be rendered as a short preview even though the complete value
+is available to code inside the script. Parse, filter, group, or select fields
+inside `execute_code`, then print compact one-line records. For example, parse a
+`brw_replay_request` JSON `body` before printing the few records you need;
+do not print the whole body and try to parse the preview. Replay returns a 64 KiB
+body window by default and supplies `body_truncated` plus `next_offset` for
+larger responses.
+
 ## Mobile and responsive testing
 
 Use `brw_emulate_device` for small-screen tests. It applies real Chrome DevTools
@@ -83,6 +99,41 @@ under `--enable-webmcp`:
 Use `brw_wait_for {condition}` (`ready`, `text:…`, `url:…`, `ref:…`) and the
 `brw_assert_*` tools. They retry until the condition holds or time out — no
 manual sleep/snapshot polling.
+
+## Tabs, groups, and cleanup
+
+Treat tabs as resources owned by one automation run, not as permanent browser
+state.
+
+1. Derive a short, non-sensitive group name from the available `whoami` or
+   agent identity, the workspace/repository, and the purpose, such as
+   `agent-brw-reconnect`.
+2. Call `brw_list_tab_groups`, then make the first `brw_open` with
+   `{group: "agent-brw-reconnect"}`. Reuse its `group_id` for every later open in
+   that run. The default `brw` group is only a fallback when no identity or
+   workspace context is available.
+3. Record every `tab_id` returned by `brw_open`. If a click returns
+   `new_tab_id`, immediately place it in the run group with `brw_group_tabs`.
+4. Close scratch tabs as soon as they stop being useful. Before finishing, call
+   `brw_close_tab` for every tab the run opened unless the tab is deliberately
+   being handed to the human. Close incognito work with `brw_close_context`.
+
+Native horizontal and vertical tab layouts are both supported. brw explicitly
+targets the opened tab's real window when it creates a group; an MV3 service
+worker's implicit “current window” is not reliable when several browser
+surfaces exist. If Chromium nevertheless returns `group_warning` or
+`tab_grouping_unsupported` for a particular window, keep using the owned tab's
+explicit `tab_id`, clean it up normally, and do not retry in a loop or change
+the human's layout preference.
+
+Never close a tab that existed before the run, and never put passwords, tokens,
+customer names/data, or other secrets in a group title. Passing an existing
+human-owned tab to a tool by explicit `tab_id` permits using it; it does not make
+the agent its owner.
+
+On the extension bridge, owned tabs open in the background. A no-`tab_id`
+action targets the agent's pinned working tab, not whatever the human happens to
+be viewing, but explicit `tab_id` is still the safest choice when runs overlap.
 
 ## When semantics run out: screenshots and coordinates
 
