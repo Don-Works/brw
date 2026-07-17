@@ -3,6 +3,7 @@ package httpclient
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -26,6 +28,8 @@ type Controller struct {
 	baseURL     string
 	client      *http.Client
 	sessionID   string
+	ownerID     string
+	agentName   atomic.Value // string; display name for the daemon's per-agent tab group
 	nextRequest atomic.Uint64
 }
 
@@ -48,17 +52,72 @@ func New(baseURL string, timeout time.Duration) (*Controller, error) {
 	if timeout == 0 {
 		timeout = 20 * time.Second
 	}
-	return &Controller{
+	sessionID := usagelog.NewID()
+	c := &Controller{
 		baseURL:   baseURL,
 		client:    &http.Client{Timeout: timeout},
-		sessionID: usagelog.NewID(),
-	}, nil
+		sessionID: sessionID,
+		ownerID:   stableOwnerID(sessionID),
+	}
+	c.agentName.Store(sanitizeAgentName(os.Getenv("BRW_AGENT_NAME")))
+	return c, nil
+}
+
+// SetAgentName installs the MCP client's display name (whoami) as this
+// session's tab-group label, unless the operator already pinned one via
+// BRW_AGENT_NAME. The daemon appends a per-owner suffix, so two agents with
+// the same display name still get separate tab groups.
+func (c *Controller) SetAgentName(name string) {
+	if current, _ := c.agentName.Load().(string); current != "" {
+		return
+	}
+	if name = sanitizeAgentName(name); name != "" {
+		c.agentName.Store(name)
+	}
+}
+
+// sanitizeAgentName keeps the header value header-safe and title-shaped. The
+// daemon applies its own (stricter) sanitization before showing it in Chrome.
+func sanitizeAgentName(name string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(name) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		case r == ' ':
+			b.WriteRune('-')
+		}
+		if b.Len() >= 64 {
+			break
+		}
+	}
+	return b.String()
+}
+
+// stableOwnerID converts the gateway's logical browser-session id into a
+// privacy-safe fixed-width lease owner. The fallback remains this proxy's
+// correlation session, so direct brwd --upstream-http users are isolated too.
+func stableOwnerID(fallback string) string {
+	raw := strings.TrimSpace(os.Getenv("BRW_OWNER_ID"))
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv("MCPLEXER_BROWSER_SESSION_ID"))
+	}
+	if raw == "" {
+		return fallback
+	}
+	sum := sha256.Sum256([]byte("brw-tab-owner-v1\x00" + raw))
+	return fmt.Sprintf("owner-%x", sum[:12])
 }
 
 // SessionID is the non-secret correlation id forwarded to the long-lived brw
 // daemon. It lets usage logs group calls made by one disposable MCP proxy
 // without recording prompts, arguments, URLs, or browser content.
 func (c *Controller) SessionID() string { return c.sessionID }
+
+// OwnerID is the stable, non-secret tab-lease identity sent to the shared
+// daemon. It can outlive a disposable upstream proxy for the same agent session.
+func (c *Controller) OwnerID() string { return c.ownerID }
 
 func (c *Controller) Health(ctx context.Context) (Health, error) {
 	var out Health
@@ -483,8 +542,12 @@ func (c *Controller) post(ctx context.Context, path string, body any, out any) e
 
 func (c *Controller) do(req *http.Request, out any) error {
 	req.Header.Set(usagelog.HeaderSessionID, c.sessionID)
+	req.Header.Set(usagelog.HeaderOwnerID, c.ownerID)
 	req.Header.Set(usagelog.HeaderRequestID, fmt.Sprintf("%s:%d", c.sessionID, c.nextRequest.Add(1)))
 	req.Header.Set(usagelog.HeaderClient, "brw-httpclient")
+	if name, _ := c.agentName.Load().(string); name != "" {
+		req.Header.Set(usagelog.HeaderAgentName, name)
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return err

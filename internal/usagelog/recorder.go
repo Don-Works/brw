@@ -27,10 +27,15 @@ import (
 
 const (
 	HeaderSessionID        = "X-Brw-Session"
+	HeaderOwnerID          = "X-Brw-Owner"
 	HeaderRequestID        = "X-Brw-Request-Id"
 	HeaderClient           = "X-Brw-Client"
 	HeaderErrorClass       = "X-Brw-Error-Class"
 	HeaderErrorFingerprint = "X-Brw-Error-Fingerprint"
+	// HeaderAgentName carries an optional human-readable agent display name used
+	// only to title the session's Chrome tab group. It must never carry secrets;
+	// the daemon re-sanitizes it before use and it is not written to the ledger.
+	HeaderAgentName = "X-Brw-Agent-Name"
 )
 
 // Event is one privacy-safe operational record. Keep this schema metadata-only:
@@ -287,6 +292,10 @@ func Fingerprint(message string) string {
 func failureShape(message string) string {
 	message = strings.ToLower(message)
 	switch {
+	case strings.Contains(message, "tab is leased by another browser session"):
+		return "tab_contended"
+	case strings.Contains(message, "no tab"), strings.Contains(message, "tab not found"), strings.Contains(message, "cannot find tab"), strings.Contains(message, "target closed"):
+		return "tab_lost"
 	case strings.Contains(message, "no response from downstream"):
 		return "no_response_from_downstream"
 	case strings.Contains(message, "deadline exceeded"):
@@ -316,6 +325,10 @@ func failureShape(message string) string {
 	case strings.Contains(message, "grouping is not supported by tabs in this window"),
 		strings.Contains(message, "tab grouping unavailable"):
 		return "tab_grouping_unsupported"
+	case strings.Contains(message, "frozen by chrome"):
+		return "tab_frozen"
+	case strings.Contains(message, "discarded by chrome"):
+		return "tab_discarded"
 	case strings.Contains(message, "navigation") && (strings.Contains(message, "blocked") || strings.Contains(message, "denied")):
 		return "navigation_denied"
 	case strings.Contains(message, "identity mismatch"):
@@ -340,6 +353,10 @@ func ClassifyError(err error) string {
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(msg, "tab is leased by another browser session"):
+		return "tab_contended"
+	case strings.Contains(msg, "no tab"), strings.Contains(msg, "tab not found"), strings.Contains(msg, "cannot find tab"), strings.Contains(msg, "target closed"):
+		return "tab_lost"
 	case strings.Contains(msg, "deadline exceeded"),
 		strings.Contains(msg, "timed out"),
 		strings.Contains(msg, "timeout"),
@@ -359,6 +376,10 @@ func ClassifyError(err error) string {
 	case strings.Contains(msg, "grouping is not supported by tabs in this window"),
 		strings.Contains(msg, "tab grouping unavailable"):
 		return "capability"
+	case strings.Contains(msg, "frozen by chrome"):
+		return "tab_frozen"
+	case strings.Contains(msg, "discarded by chrome"):
+		return "tab_discarded"
 	default:
 		return "tool"
 	}

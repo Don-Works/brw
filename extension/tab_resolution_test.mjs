@@ -122,7 +122,8 @@ src += `
   preferredNormalWindowId,
   groupTabForParams,
   listTabSummaries,
-  probeDaemonStatus
+  probeDaemonStatus,
+  ensureTabDrivable
 };`;
 
 vm.createContext(sandbox);
@@ -289,6 +290,80 @@ async function scenarioListTabsErrorAndRetry() {
   sandbox.setTimeout = origTimeout;
 }
 
+async function scenarioFrozenDiscardedRevival() {
+  await reset();
+  // ensureTabDrivable sleeps 150ms mid-juggle and waitForTabLoad polls with
+  // setTimeout; fire timers immediately for this scenario only.
+  const origTimeout = sandbox.setTimeout;
+  sandbox.setTimeout = (fn) => { if (typeof fn === "function") queueMicrotask(fn); return 0; };
+  const origUpdate = overrides["tabs.update"];
+  const origReload = overrides["tabs.reload"];
+  const origGroupsUpdate = overrides["tabGroups.update"];
+
+  setWin({ id: 1, type: "normal", focused: true });
+  setTab({ id: 5, windowId: 1, active: false, url: "https://agent.test/", title: "agent" });
+  setTab({ id: 6, windowId: 1, active: true, url: "https://user.test/", title: "user" });
+
+  const updates = [];
+  let reloads = 0;
+  overrides["tabs.update"] = async (id, props) => {
+    updates.push({ id, ...props });
+    const t = model.tabs.get(id);
+    if (t && props.active === true) {
+      for (const other of model.tabs.values()) {
+        if (other.windowId === t.windowId) other.active = other.id === id;
+      }
+      if (t.frozen) t.frozen = false; // visibility unfreezes
+    }
+    return { ...model.tabs.get(id) };
+  };
+  overrides["tabs.reload"] = async (id) => {
+    reloads += 1;
+    const t = model.tabs.get(id);
+    if (t) { t.discarded = false; t.status = "complete"; }
+  };
+  overrides["tabGroups.update"] = async (groupId, props) => ({ id: groupId, ...props });
+
+  // 1. Healthy tab: driving must add zero side effects.
+  await T.ensureTabDrivable(5);
+  check("healthy tab needs no revival side effects", reloads === 0 && updates.length === 0);
+
+  // 2. Discarded (Memory Saver) tab: reload revives, autoDiscardable pinned off,
+  //    and the user's foreground tab is never touched.
+  Object.assign(model.tabs.get(5), { discarded: true, status: "unloaded" });
+  await T.ensureTabDrivable(5);
+  check("discarded tab is reloaded", reloads === 1 && model.tabs.get(5).discarded === false);
+  check("revived tab is pinned autoDiscardable:false", updates.some((u) => u.id === 5 && u.autoDiscardable === false));
+  check("discard revival never activates the tab", !updates.some((u) => u.id === 5 && u.active === true));
+
+  // 3. Frozen background tab in a collapsed group: expand group, flash active
+  //    inside its window, restore the user's tab.
+  updates.length = 0;
+  const groupCalls = [];
+  overrides["tabGroups.update"] = async (groupId, props) => { groupCalls.push({ groupId, ...props }); return { id: groupId }; };
+  Object.assign(model.tabs.get(5), { frozen: true, groupId: 71 });
+  await T.ensureTabDrivable(5);
+  check("frozen tab's collapsed group is expanded", groupCalls.some((c) => c.groupId === 71 && c.collapsed === false));
+  check("frozen tab is flashed active to unfreeze", updates.some((u) => u.id === 5 && u.active === true));
+  const last = updates[updates.length - 1];
+  check("the user's previously active tab is restored", last?.id === 6 && last?.active === true && model.tabs.get(6).active === true);
+  check("frozen flag is cleared by the revival", model.tabs.get(5).frozen === false);
+
+  // 4. Unrevivable frozen tab (activation does not stick): one classified error
+  //    instead of a silent daemon-deadline hang.
+  updates.length = 0;
+  overrides["tabs.update"] = async (id, props) => { updates.push({ id, ...props }); return { ...model.tabs.get(id) }; };
+  Object.assign(model.tabs.get(5), { frozen: true, active: false });
+  let message = "";
+  try { await T.ensureTabDrivable(5); } catch (e) { message = String(e?.message || e); }
+  check("unrevivable frozen tab throws the classified error", message.includes("frozen by Chrome"));
+
+  if (origUpdate === undefined) delete overrides["tabs.update"]; else overrides["tabs.update"] = origUpdate;
+  if (origReload === undefined) delete overrides["tabs.reload"]; else overrides["tabs.reload"] = origReload;
+  if (origGroupsUpdate === undefined) delete overrides["tabGroups.update"]; else overrides["tabGroups.update"] = origGroupsUpdate;
+  sandbox.setTimeout = origTimeout;
+}
+
 async function scenarioStatusProbeToleratesTransientFailure() {
   await reset();
   const originalFetch = sandbox.fetch;
@@ -328,6 +403,7 @@ async function scenarioStatusProbeToleratesTransientFailure() {
   await scenarioPopupFocusStillCreatesInNormalWindow();
   await scenarioNewGroupsTargetTheTabsRealWindow();
   await scenarioListTabsErrorAndRetry();
+  await scenarioFrozenDiscardedRevival();
   await scenarioStatusProbeToleratesTransientFailure();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

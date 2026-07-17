@@ -80,6 +80,9 @@ func (b *Bridge) mouseHalf(ctx context.Context, opts browser.MouseButtonOptions,
 }
 
 func (b *Bridge) Drag(ctx context.Context, opts browser.DragOptions) (browser.ActionResult, error) {
+	if err := opts.Validate(); err != nil {
+		return browser.ActionResult{}, err
+	}
 	before := b.captureSemanticState(ctx)
 	// HTML5 drag-and-drop is its own protocol: pointermove/mousemove alone does
 	// not fire dragstart/dragover/drop or carry a DataTransfer. Prefer the shared

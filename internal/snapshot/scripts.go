@@ -438,6 +438,10 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   const mode = clean(opts.mode || '').toLowerCase();
   const frontierMode = mode === 'frontier';
   const formLensMode = mode === 'form_lens';
+  // rankingFind: a query/text filter is active, so collect every match, score
+  // fillable controls above labels, then slice to limit. Without this, Limit:1
+  // returns the first DOM hit (often a <label>) and agents fill the wrong ref.
+  const rankingFind = Boolean(query || textFilter);
   // modeTag is the full 3-way mode tag used in BOTH the since-options cache
   // signature and the output metadata. It must not collapse form_lens into
   // 'all': form_lens emits a different element set (form roles only) plus
@@ -579,7 +583,10 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     }
     elByIndex.set(elements.length, el);
     elements.push(item);
-    if (!frontierMode && limit > 0 && elements.length >= limit) break;
+    // When ranking a query/text find we must collect ALL matches before slicing
+    // so a <label> earlier in DOM order does not win Limit:1 over the associated
+    // textbox. Unfiltered walks still early-break for token efficiency.
+    if (!frontierMode && !rankingFind && limit > 0 && elements.length >= limit) break;
   }
 
   // Disambiguate ref collisions caused by stableKeyFor collapsing siblings.
@@ -684,6 +691,39 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       if (diff !== 0) return diff;
       return String(a.ref || '').localeCompare(String(b.ref || ''));
     });
+  } else if (rankingFind) {
+    // Prefer actionable/fillable roles over labels for the same query string so
+    // brw_find {query:"username"} and fill-by-query resolve the textbox, not the
+    // associated <label>.
+    function findMatchScore(item) {
+      var score = 0;
+      var reasons = item.match_reasons || [];
+      if (reasons.indexOf('name') !== -1) score += 100;
+      if (reasons.indexOf('role') !== -1) score += 40;
+      if (reasons.indexOf('type') !== -1) score += 30;
+      if (reasons.indexOf('value') !== -1) score += 20;
+      if (reasons.indexOf('href') !== -1) score += 10;
+      if (reasons.indexOf('text') !== -1) score += 15;
+      var roleBoost = {
+        textbox: 90, searchbox: 90, combobox: 85, spinbutton: 85, slider: 80,
+        checkbox: 75, radio: 75, listbox: 70, button: 60, link: 50,
+        menuitem: 55, option: 55, tab: 45, switch: 70
+      };
+      score += roleBoost[item.role] || 0;
+      // Labels match by name often but are rarely the intended action target.
+      if (item.role === 'label' || item.tag === 'label') score -= 60;
+      if (item.in_viewport) score += 15;
+      if (!item.disabled) score += 10;
+      return score;
+    }
+    elements.sort(function(a, b) {
+      var diff = findMatchScore(b) - findMatchScore(a);
+      if (diff !== 0) return diff;
+      return String(a.ref || '').localeCompare(String(b.ref || ''));
+    });
+    if (limit > 0 && elements.length > limit) {
+      elements.length = limit;
+    }
   }
 
   // Optionally collect visual islands and merge them into the element list. They
@@ -800,8 +840,12 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   // annotate:true) and coordinate clicks. Generic + conservative: it fires only
   // when the in-viewport semantic element count is low AND the viewport carries
   // substantial content (lots of DOM nodes or visible text), so well-populated
-  // pages never trip it.
+  // pages never trip it. Filtered finds (query/role/text) are excluded — a
+  // single-match find on a rich page is not "low coverage", it is a narrow query.
   function coverageSignal() {
+    if (query || textFilter || roleFilter) {
+      return { low: false, in_viewport_count: 0, dom_node_count: 0 };
+    }
     var inViewportCount = 0;
     for (var i = 0; i < elements.length; i++) {
       if (elements[i].in_viewport) inViewportCount++;
@@ -2725,9 +2769,9 @@ const DragScript = `(function(opts) {
     return null;
   }
   const from = point(opts.from);
-  if (!from) return { ok: false, error: 'drag source requires either a ref or x and y coordinates' };
+  if (!from) return { ok: false, error: 'drag from requires {"ref":"eN"} or {"x":N,"y":N} (example: brw_drag({from:{ref:"e3"},to:{ref:"e4"}}))' };
   const to = point(opts.to);
-  if (!to) return { ok: false, error: 'drag target requires either a ref or x and y coordinates' };
+  if (!to) return { ok: false, error: 'drag to requires {"ref":"eN"} or {"x":N,"y":N} (example: brw_drag({from:{ref:"e3"},to:{ref:"e4"}}))' };
   const bc = buttonConsts(opts.button);
   let steps = Math.max(1, Number(opts.steps || 12));
   const src = document.elementFromPoint(from.x, from.y);

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,6 +23,7 @@ type Server struct {
 	identity  brwidentity.Identity
 	navPolicy *navpolicy.Policy
 	usage     *usagelog.Recorder
+	leases    *tabLeaseManager
 	server    *http.Server
 
 	// allowedHosts is the set of Host header values accepted when host
@@ -44,7 +46,7 @@ func New(addr string, manager browser.Controller) *Server {
 
 func NewWithIdentity(addr string, manager browser.Controller, identity brwidentity.Identity) *Server {
 	mux := http.NewServeMux()
-	s := &Server{manager: manager, identity: identity, server: &http.Server{
+	s := &Server{manager: manager, identity: identity, leases: newTabLeaseManager(defaultTabLeaseTTL), server: &http.Server{
 		Addr: addr,
 		// Bound slow-header clients (slowloris) without a blanket WriteTimeout,
 		// which would truncate long-poll endpoints like wait_for.
@@ -56,7 +58,7 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	// Wrap the router so every request first passes the same-machine browser
 	// guard (DNS-rebinding + cross-origin CSRF). A loopback CLI/MCP client sends
 	// a loopback Host and no browser Origin, so it is untouched.
-	s.server.Handler = s.usageMiddleware(s.hostGuard(mux))
+	s.server.Handler = s.usageMiddleware(s.hostGuard(s.leaseMiddleware(mux)))
 	return s
 }
 
@@ -258,7 +260,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	payload := map[string]any{"ok": true}
+	payload := map[string]any{"ok": true, "tab_leases": s.leases.stats()}
 	if !s.identity.Empty() {
 		payload["identity"] = s.identity
 	}
@@ -278,12 +280,17 @@ func (s *Server) requestContext(r *http.Request) context.Context {
 // unchanged. Handlers that manage tabs themselves (open/focus/close/groups/list)
 // call r.Context() directly and never reach this path.
 func (s *Server) contextWithTabID(ctx context.Context, tabID string) context.Context {
+	if pinned := browser.TabIDFromContext(ctx); pinned != "" {
+		if strings.TrimSpace(tabID) == "" || strings.TrimSpace(tabID) == pinned {
+			return ctx
+		}
+	}
 	if tabID != "" {
 		return browser.WithTabID(ctx, tabID)
 	}
 	if resolver, ok := s.manager.(activeTabResolver); ok {
 		if resolved := resolver.ResolveActiveTabID(ctx); resolved != "" {
-			return browser.WithTabID(ctx, resolved)
+			return browser.WithImplicitTabID(ctx, resolved)
 		}
 	}
 	return ctx
@@ -327,14 +334,29 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request) {
 		result browser.OpenResult
 		err    error
 	)
-	if req.Group != "" || req.GroupID != "" {
+	owner := leaseOwner(r.Context())
+	daemonGrouped := false
+	switch {
+	case req.Group != "" || req.GroupID != "":
 		result, err = s.manager.OpenInGroup(r.Context(), req.URL, browser.TabGroupOptions{
 			GroupID: req.GroupID,
 			Name:    req.Group,
 			Color:   req.GroupColor,
 		})
-	} else {
+	case owner != "":
+		// No group requested: default the new tab into this session's per-agent
+		// group so agent tabs never scatter loose (or pile into one shared group)
+		// across the user's tab strip.
+		daemonGrouped = true
+		result, err = s.openInOwnerGroup(r.Context(), req.URL, owner)
+	default:
 		result, err = s.manager.Open(r.Context(), req.URL)
+	}
+	if err == nil {
+		err = s.leases.bind(owner, result.Tab.ID, true)
+	}
+	if err == nil && daemonGrouped {
+		s.leases.noteGroup(owner, result.Tab.ID, result.Tab.GroupID)
 	}
 	writeResult(w, result, err)
 }
@@ -352,6 +374,9 @@ func (s *Server) openIncognito(w http.ResponseWriter, r *http.Request) {
 	}
 	req.URL = normalizedURL
 	result, err := s.manager.OpenIncognito(r.Context(), req.URL)
+	if err == nil {
+		err = s.leases.bind(leaseOwner(r.Context()), result.Tab.ID, true)
+	}
 	writeResult(w, result, err)
 }
 
@@ -363,11 +388,46 @@ func (s *Server) closeContext(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.CloseContext(r.Context(), contextIDArg(req.BrowserContextID, req.LegacyBrowserContextID)))
+	contextID := contextIDArg(req.BrowserContextID, req.LegacyBrowserContextID)
+	owner := leaseOwner(r.Context())
+	var ownedTabs []string
+	var newClaims []string
+	if owner != "" {
+		tabs, err := s.manager.ListTabs(r.Context())
+		if err != nil {
+			writeResult(w, browser.ActionResult{}, err)
+			return
+		}
+		for _, tab := range tabs {
+			if tab.BrowserContextID != contextID {
+				continue
+			}
+			ownedTabs = append(ownedTabs, tab.ID)
+		}
+		newClaims, err = s.leases.claimAll(owner, ownedTabs)
+		if err != nil {
+			writeLeaseError(w, err)
+			return
+		}
+	}
+	err := s.manager.CloseContext(r.Context(), contextID)
+	if err == nil {
+		for _, tabID := range ownedTabs {
+			s.leases.release(owner, tabID)
+		}
+	} else {
+		for _, tabID := range newClaims {
+			s.leases.release(owner, tabID)
+		}
+	}
+	writeResult(w, browser.ActionResult{OK: err == nil}, err)
 }
 
 func (s *Server) tabs(w http.ResponseWriter, r *http.Request) {
 	tabs, err := s.manager.ListTabs(r.Context())
+	if err == nil {
+		tabs = s.leases.annotate(leaseOwner(r.Context()), tabs)
+	}
 	writeResult(w, tabs, err)
 }
 
@@ -384,7 +444,19 @@ func (s *Server) focus(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.FocusTab(r.Context(), tabIDArg(req.TabID, req.ID)))
+	tabID := tabIDArg(req.TabID, req.ID)
+	owner := leaseOwner(r.Context())
+	release, err := s.leases.acquire(owner, tabID, true)
+	if err != nil {
+		writeLeaseError(w, err)
+		return
+	}
+	defer release()
+	err = s.manager.FocusTab(r.Context(), tabID)
+	if err != nil && usagelog.ClassifyError(err) == "tab_lost" {
+		s.leases.release(owner, tabID)
+	}
+	writeResult(w, browser.ActionResult{OK: err == nil, TabID: tabID}, err)
 }
 
 func (s *Server) closeTab(w http.ResponseWriter, r *http.Request) {
@@ -395,7 +467,19 @@ func (s *Server) closeTab(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.CloseTab(r.Context(), tabIDArg(req.TabID, req.ID)))
+	tabID := tabIDArg(req.TabID, req.ID)
+	owner := leaseOwner(r.Context())
+	release, err := s.leases.acquire(owner, tabID, false)
+	if err != nil {
+		writeLeaseError(w, err)
+		return
+	}
+	defer release()
+	err = s.manager.CloseTab(r.Context(), tabID)
+	if err == nil || usagelog.ClassifyError(err) == "tab_lost" {
+		s.leases.release(owner, tabID)
+	}
+	writeResult(w, browser.ActionResult{OK: err == nil, TabID: tabID}, err)
 }
 
 func (s *Server) emulateDevice(w http.ResponseWriter, r *http.Request) {
@@ -477,7 +561,7 @@ func (s *Server) click(w http.ResponseWriter, r *http.Request) {
 	}
 	if browser.IsDefaultLeftSingleRefClick(req.Button, req.ClickCount, req.Ref, req.X, req.Y) {
 		result, err := s.manager.Click(ctx, req.Ref)
-		writeResult(w, result, err)
+		s.writeActionResult(w, r, result, err)
 		return
 	}
 	result, err := s.manager.ClickButton(ctx, browser.ClickButtonOptions{
@@ -485,7 +569,7 @@ func (s *Server) click(w http.ResponseWriter, r *http.Request) {
 		Button:     req.Button,
 		ClickCount: req.ClickCount,
 	})
-	writeResult(w, result, err)
+	s.writeActionResult(w, r, result, err)
 }
 
 func (s *Server) drag(w http.ResponseWriter, r *http.Request) {
@@ -499,12 +583,17 @@ func (s *Server) drag(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Drag(s.contextWithTabID(r.Context(), req.TabID), browser.DragOptions{
+	opts := browser.DragOptions{
 		From:   req.From,
 		To:     req.To,
 		Steps:  req.Steps,
 		Button: req.Button,
-	})
+	}
+	if err := opts.Validate(); err != nil {
+		writeResult(w, browser.ActionResult{}, err)
+		return
+	}
+	result, err := s.manager.Drag(s.contextWithTabID(r.Context(), req.TabID), opts)
 	writeResult(w, result, err)
 }
 
@@ -557,6 +646,19 @@ func (s *Server) clickText(w http.ResponseWriter, r *http.Request) {
 		ctx = browser.WithWantSnapshot(ctx)
 	}
 	result, err := s.manager.ClickText(ctx, req.ClickTextOptions)
+	s.writeActionResult(w, r, result, err)
+}
+
+func (s *Server) writeActionResult(w http.ResponseWriter, r *http.Request, result browser.ActionResult, err error) {
+	if err == nil && result.NewTabID != "" {
+		err = s.leases.bind(leaseOwner(r.Context()), result.NewTabID, true)
+	}
+	if err != nil {
+		if _, ok := err.(*tabLeaseConflictError); ok {
+			writeLeaseError(w, err)
+			return
+		}
+	}
 	writeResult(w, result, err)
 }
 
@@ -626,6 +728,8 @@ func (s *Server) fill(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	// Playwright-style value alias → text (same contract as the MCP surface).
+	req.Text = req.EffectiveText()
 	ctx := s.contextWithTabID(r.Context(), req.TabID)
 	if req.Snapshot {
 		ctx = browser.WithWantSnapshot(ctx)
@@ -823,7 +927,59 @@ func (s *Server) executePlan(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Steps[i].URL = normalizedURL
 	}
+	owner := leaseOwner(r.Context())
+	var focusTabs []string
+	for _, step := range req.Steps {
+		if owner != "" && strings.EqualFold(step.Action, "focus_tab") {
+			focusTabs = append(focusTabs, step.ID)
+		}
+	}
+	reservedTabs, err := s.leases.claimAll(owner, focusTabs)
+	if err != nil {
+		writeLeaseError(w, err)
+		return
+	}
 	result, err := s.manager.ExecutePlan(contextWithExplicitTabID(r.Context(), req.TabID), req.Steps)
+	usedTabs := make(map[string]bool)
+	if err == nil {
+		for _, stepResult := range result.Steps {
+			if stepResult.Index < 0 || stepResult.Index >= len(req.Steps) {
+				continue
+			}
+			step := req.Steps[stepResult.Index]
+			if !stepResult.OK {
+				if strings.EqualFold(step.Action, "focus_tab") && usagelog.ClassifyError(errors.New(stepResult.Error)) == "tab_lost" {
+					s.leases.release(owner, step.ID)
+				}
+				continue
+			}
+			if newTabID := planActionNewTabID(stepResult.Result); newTabID != "" {
+				err = s.leases.bind(owner, newTabID, true)
+				if err != nil {
+					break
+				}
+			}
+			switch {
+			case strings.EqualFold(step.Action, "focus_tab"):
+				err = s.leases.bind(owner, step.ID, true)
+				usedTabs[step.ID] = true
+			case strings.EqualFold(step.Action, "open"):
+				err = s.leases.bind(owner, planOpenTabID(stepResult.Result), true)
+			}
+			if err != nil {
+				break
+			}
+		}
+	}
+	for _, tabID := range reservedTabs {
+		if !usedTabs[tabID] {
+			s.leases.release(owner, tabID)
+		}
+	}
+	if _, ok := err.(*tabLeaseConflictError); ok {
+		writeLeaseError(w, err)
+		return
+	}
 	writeResult(w, result, err)
 }
 
@@ -845,8 +1001,79 @@ func (s *Server) executeBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Steps[i].URL = normalizedURL
 	}
+	owner := leaseOwner(r.Context())
+	var focusTabs []string
+	for _, step := range req.Steps {
+		if owner != "" && strings.EqualFold(step.Action, "focus_tab") {
+			focusTabs = append(focusTabs, step.ID)
+		}
+	}
+	reservedTabs, err := s.leases.claimAll(owner, focusTabs)
+	if err != nil {
+		writeLeaseError(w, err)
+		return
+	}
 	result, err := s.manager.ExecuteBatch(contextWithExplicitTabID(r.Context(), req.TabID), req.Steps)
+	usedTabs := make(map[string]bool)
+	if err == nil {
+		for _, step := range result.Steps {
+			if !step.OK {
+				if step.Index >= 0 && step.Index < len(req.Steps) && strings.EqualFold(step.Action, "focus_tab") && usagelog.ClassifyError(errors.New(step.Error)) == "tab_lost" {
+					s.leases.release(owner, req.Steps[step.Index].ID)
+				}
+				continue
+			}
+			if step.NewTabID != "" {
+				err = s.leases.bind(owner, step.NewTabID, true)
+			} else if strings.EqualFold(step.Action, "focus_tab") && step.TabID != "" {
+				err = s.leases.bind(owner, step.TabID, true)
+				usedTabs[step.TabID] = true
+			}
+			if err != nil {
+				break
+			}
+		}
+	}
+	for _, tabID := range reservedTabs {
+		if !usedTabs[tabID] {
+			s.leases.release(owner, tabID)
+		}
+	}
+	if _, ok := err.(*tabLeaseConflictError); ok {
+		writeLeaseError(w, err)
+		return
+	}
 	writeResult(w, result, err)
+}
+
+func planOpenTabID(value any) string {
+	if result, ok := value.(browser.OpenResult); ok {
+		return result.Tab.ID
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	var result browser.OpenResult
+	if json.Unmarshal(data, &result) != nil {
+		return ""
+	}
+	return result.Tab.ID
+}
+
+func planActionNewTabID(value any) string {
+	if result, ok := value.(browser.ActionResult); ok {
+		return result.NewTabID
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	var result browser.ActionResult
+	if json.Unmarshal(data, &result) != nil {
+		return ""
+	}
+	return result.NewTabID
 }
 
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
@@ -991,11 +1218,23 @@ func (s *Server) groupTabs(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.GroupTabs(r.Context(), req.TabIDs, browser.TabGroupOptions{
+	owner := leaseOwner(r.Context())
+	newClaims, err := s.leases.claimAll(owner, req.TabIDs)
+	if err != nil {
+		writeLeaseError(w, err)
+		return
+	}
+	err = s.manager.GroupTabs(r.Context(), req.TabIDs, browser.TabGroupOptions{
 		GroupID: req.GroupID,
 		Name:    req.Name,
 		Color:   req.Color,
-	}))
+	})
+	if err != nil {
+		for _, tabID := range newClaims {
+			s.leases.release(owner, tabID)
+		}
+	}
+	writeResult(w, browser.ActionResult{OK: err == nil}, err)
 }
 
 func (s *Server) ungroupTabs(w http.ResponseWriter, r *http.Request) {
@@ -1005,7 +1244,19 @@ func (s *Server) ungroupTabs(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.UngroupTabs(r.Context(), req.TabIDs))
+	owner := leaseOwner(r.Context())
+	newClaims, err := s.leases.claimAll(owner, req.TabIDs)
+	if err != nil {
+		writeLeaseError(w, err)
+		return
+	}
+	err = s.manager.UngroupTabs(r.Context(), req.TabIDs)
+	if err != nil {
+		for _, tabID := range newClaims {
+			s.leases.release(owner, tabID)
+		}
+	}
+	writeResult(w, browser.ActionResult{OK: err == nil}, err)
 }
 
 func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {

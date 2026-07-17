@@ -58,10 +58,11 @@ func TestNew_DefaultTimeout(t *testing.T) {
 }
 
 func TestRequestsCarryOnlyNonSecretCorrelationMetadata(t *testing.T) {
-	var session, firstRequest, secondRequest, client string
+	var session, owner, firstRequest, secondRequest, client string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if session == "" {
 			session = r.Header.Get(usagelog.HeaderSessionID)
+			owner = r.Header.Get(usagelog.HeaderOwnerID)
 			firstRequest = r.Header.Get(usagelog.HeaderRequestID)
 			client = r.Header.Get(usagelog.HeaderClient)
 		} else {
@@ -83,11 +84,86 @@ func TestRequestsCarryOnlyNonSecretCorrelationMetadata(t *testing.T) {
 	if _, err := c.ListTabs(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if usagelog.SafeID(session) == "" || firstRequest == "" || secondRequest == "" || firstRequest == secondRequest {
-		t.Fatalf("bad correlation metadata: session=%q first=%q second=%q", session, firstRequest, secondRequest)
+	if usagelog.SafeID(session) == "" || usagelog.SafeID(owner) == "" || firstRequest == "" || secondRequest == "" || firstRequest == secondRequest {
+		t.Fatalf("bad correlation metadata: session=%q owner=%q first=%q second=%q", session, owner, firstRequest, secondRequest)
 	}
 	if client != "brw-httpclient" {
 		t.Fatalf("client = %q", client)
+	}
+}
+
+func TestAgentNameHeaderForwarding(t *testing.T) {
+	var gotName string
+	var sawHeader bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotName = r.Header.Get(usagelog.HeaderAgentName)
+		_, sawHeader = r.Header[usagelog.HeaderAgentName]
+		json.NewEncoder(w).Encode([]browser.Tab{})
+	}))
+	defer srv.Close()
+
+	t.Setenv("BRW_AGENT_NAME", "")
+	c, err := New(srv.URL, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ListTabs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sawHeader {
+		t.Fatalf("agent-name header sent with no name configured: %q", gotName)
+	}
+
+	c.SetAgentName("Claude Code\r\nX-Evil: 1")
+	if _, err := c.ListTabs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "Claude-CodeX-Evil-1" {
+		t.Fatalf("sanitized agent name = %q", gotName)
+	}
+
+	// The first installed name wins; a later MCP initialize cannot rename the
+	// session's group mid-run.
+	c.SetAgentName("other")
+	if _, err := c.ListTabs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "Claude-CodeX-Evil-1" {
+		t.Fatalf("agent name changed after first install: %q", gotName)
+	}
+}
+
+func TestAgentNameEnvOverridesClientInfo(t *testing.T) {
+	t.Setenv("BRW_AGENT_NAME", "ops-agent")
+	c, err := New("http://localhost:1234", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetAgentName("claude-code")
+	if got, _ := c.agentName.Load().(string); got != "ops-agent" {
+		t.Fatalf("agent name = %q, want the operator's BRW_AGENT_NAME to win", got)
+	}
+}
+
+func TestLogicalOwnerIsStableAcrossDisposableProxyRestarts(t *testing.T) {
+	t.Setenv("BRW_OWNER_ID", "")
+	t.Setenv("MCPLEXER_BROWSER_SESSION_ID", "worker:agent-42")
+	first, err := New("http://localhost:1234", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New("http://localhost:1234", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SessionID() == second.SessionID() {
+		t.Fatal("disposable proxies unexpectedly share a correlation session")
+	}
+	if first.OwnerID() == "" || first.OwnerID() != second.OwnerID() {
+		t.Fatalf("logical owner changed across proxy restart: %q != %q", first.OwnerID(), second.OwnerID())
+	}
+	if first.OwnerID() == "worker:agent-42" {
+		t.Fatal("raw gateway session id must not be forwarded as the lease owner")
 	}
 }
 

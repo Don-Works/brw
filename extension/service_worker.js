@@ -45,10 +45,27 @@ function isDeniedCdpMethod(method) {
 }
 let offscreenSetupPromise = null;
 let packagedDefaultConfigPromise = null;
-// Screenshot capture is serialized per extension profile because each capture
-// may briefly activate its background tab and then restore the previously active
-// tab. Overlapping captures would race those restorations.
-let screenshotCaptureQueue = Promise.resolve();
+// Activate→work→restore "juggles" (screenshot capture, frozen-tab revival) are
+// serialized per extension profile because each one may briefly activate its
+// background tab and then restore the previously active tab. Overlapping
+// juggles would race those restorations.
+let tabJuggleQueue = Promise.resolve();
+
+// enqueueTabJuggle runs fn once every earlier juggle has finished. fn's
+// rejection propagates to its caller but never wedges the queue. Never call
+// this from code already running inside a juggle — that deadlocks; pass
+// skipRevive to attach() instead (see captureScreenshotForTab).
+async function enqueueTabJuggle(fn) {
+  const previous = tabJuggleQueue;
+  let release;
+  tabJuggleQueue = new Promise((resolve) => { release = resolve; });
+  await previous.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
 
 const state = {
   socket: null,
@@ -678,6 +695,11 @@ async function handle(message) {
       const normalWindowId = await preferredNormalWindowId();
       if (typeof normalWindowId === "number") createParams.windowId = normalWindowId;
       const tab = await chrome.tabs.create(createParams);
+      // brw drives this tab for the rest of the agent session, usually in the
+      // background. Memory Saver would see an idle background tab and discard
+      // it — killing the renderer so every later CDP call hangs. Opt the tab
+      // out of automatic discard for its lifetime.
+      if (tab.id) await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
       if (makeActive) state.activeTabId = tab.id || null;
       // Pin the agent's own tab as its working target so subsequent no-tab_id tools
       // stay on it no matter which tab/window the human selects next. This holds for
@@ -1159,7 +1181,78 @@ async function extractFrameElements(targetId) {
   }
 }
 
-async function attach(tabId) {
+// ensureTabDrivable revives a tab whose renderer cannot execute work before we
+// try to drive it. A DISCARDED tab (Memory Saver) has no renderer at all — any
+// CDP command hangs until the daemon's deadline. A FROZEN tab (collapsed tab
+// group ≥5 min, or Energy Saver since Chrome 133) has its event loop paused —
+// injected work never runs. An attached debugger is NOT exempt from either, so
+// detect-and-revive here converts silent multi-second hangs into fast recovery
+// (or one candid, classified error the agent can act on).
+async function ensureTabDrivable(tabId) {
+  let tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab) throw new Error(`cannot find tab ${tabId}`);
+  if (tab.discarded) {
+    // Reload recreates the renderer at the tab's committed URL. Pin
+    // autoDiscardable off so Memory Saver does not immediately re-discard the
+    // tab brw is actively driving.
+    await chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
+    await chrome.tabs.reload(tabId).catch(() => {});
+    await waitForTabLoad(tabId, 10000);
+    tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab || tab.discarded) {
+      throw new Error(`tab ${tabId} was discarded by Chrome (Memory Saver) and could not be revived by reload; reopen the page with brw_open`);
+    }
+    return;
+  }
+  if (tab.frozen && !tab.active) {
+    // Unfreezing needs visibility, not a reload (which would lose page state):
+    // expand a collapsed group, flash the tab active inside its own window —
+    // never raising the window over other OS apps — then restore the user's
+    // tab. Serialized on the juggle queue so concurrent revivals/screenshots
+    // cannot restore each other's target.
+    await enqueueTabJuggle(async () => {
+      // Re-read once at the front of the queue: an earlier juggle (or the
+      // user) may have unfrozen or moved the tab while this one waited.
+      const fresh = await chrome.tabs.get(tabId).catch(() => null);
+      if (!fresh || !fresh.frozen || fresh.active) return;
+      if (typeof fresh.groupId === "number" && fresh.groupId >= 0) {
+        await chrome.tabGroups.update(fresh.groupId, { collapsed: false }).catch(() => {});
+      }
+      const previous = await chrome.tabs.query({ windowId: fresh.windowId, active: true }).catch(() => []);
+      const restoreTabId = previous?.[0]?.id || null;
+      await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      if (restoreTabId && restoreTabId !== tabId) {
+        await chrome.tabs.update(restoreTabId, { active: true }).catch(() => {});
+      }
+    });
+    tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (tab?.frozen && !tab?.active) {
+      throw new Error(`tab ${tabId} is frozen by Chrome (collapsed tab group or Energy Saver) and could not be revived; expand its tab group or focus it once, then retry`);
+    }
+  }
+}
+
+// waitForTabLoad polls until the tab's renderer reports a settled load or the
+// deadline passes. Deliberately non-fatal on deadline: a slow page that is
+// still loading already has a live renderer, which is all driving requires —
+// the subsequent CDP call surfaces any real failure.
+async function waitForTabLoad(tabId, deadlineMs) {
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab) throw new Error(`cannot find tab ${tabId}`);
+    if (!tab.discarded && tab.status === "complete") return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+async function attach(tabId, opts = {}) {
+  // Revive frozen/discarded tabs before every drive, including on an existing
+  // attachment — a tab can freeze WHILE attached. The screenshot juggle skips
+  // this (skipRevive): it already activates the tab itself, and re-entering
+  // the juggle queue from inside it would deadlock.
+  if (!opts.skipRevive) await ensureTabDrivable(tabId);
   if (state.attachedTabs.has(tabId)) {
     state.attachUsedAt.set(tabId, Date.now());
     return;
@@ -1388,10 +1481,10 @@ async function forceHoverAt(tabId, x, y) {
 // then restore the prior tab in a finally block. The queue prevents concurrent
 // captures from restoring each other's target.
 async function captureScreenshotForTab(tabId, params) {
-  const previous = screenshotCaptureQueue;
-  let release;
-  screenshotCaptureQueue = new Promise((resolve) => { release = resolve; });
-  await previous.catch(() => {});
+  return enqueueTabJuggle(() => captureScreenshotJuggled(tabId, params));
+}
+
+async function captureScreenshotJuggled(tabId, params) {
   let restoreTabId = null;
   try {
     const tab = await chrome.tabs.get(tabId);
@@ -1404,7 +1497,7 @@ async function captureScreenshotForTab(tabId, params) {
     const captureParams = { ...params };
     const fallbackViewport = captureParams.fallbackViewport || null;
     delete captureParams.fallbackViewport;
-    await attach(tabId);
+    await attach(tabId, { skipRevive: true });
     markActing(tabId);
     let timer = null;
     try {
@@ -1425,7 +1518,7 @@ async function captureScreenshotForTab(tabId, params) {
       // remains available without a surface. The daemon rasterizes page 1 and
       // applies the original viewport clip, preserving the screenshot contract.
       await forceDetach(tabId);
-      await attach(tabId);
+      await attach(tabId, { skipRevive: true });
       const width = Math.max(1, Number(fallbackViewport?.width || captureParams?.clip?.width || 1280));
       const height = Math.max(1, Number(fallbackViewport?.height || captureParams?.clip?.height || 720));
       await sendDebuggerCommand(tabId, "Emulation.setEmulatedMedia", { media: "screen" }).catch(() => {});
@@ -1461,7 +1554,6 @@ async function captureScreenshotForTab(tabId, params) {
     if (restoreTabId && restoreTabId !== tabId) {
       await chrome.tabs.update(restoreTabId, { active: true }).catch(() => {});
     }
-    release();
   }
 }
 
@@ -1692,7 +1784,12 @@ async function tabSummaryFrom(tab, win, groupsById = null) {
     groupTitle: group?.title || "",
     groupColor: group?.color || "",
     groupCollapsed: Boolean(group?.collapsed),
-    openerTabId: tab.openerTabId || 0
+    openerTabId: tab.openerTabId || 0,
+    // Renderer-health flags: a discarded (Memory Saver) or frozen (Energy
+    // Saver / collapsed group) tab cannot run work until revived. tab.frozen
+    // requires Chrome 132+; earlier Chrome simply reports false.
+    discarded: Boolean(tab.discarded),
+    frozen: Boolean(tab.frozen)
   };
 }
 

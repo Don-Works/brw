@@ -185,9 +185,20 @@ type tabContext struct {
 }
 
 type ctxKeyTabID struct{}
+type ctxKeyTabIDExplicit struct{}
 
 func WithTabID(ctx context.Context, tabID string) context.Context {
-	return context.WithValue(ctx, ctxKeyTabID{}, tabID)
+	ctx = context.WithValue(ctx, ctxKeyTabID{}, tabID)
+	return context.WithValue(ctx, ctxKeyTabIDExplicit{}, true)
+}
+
+// WithImplicitTabID pins a server-selected working tab without pretending the
+// caller explicitly supplied it. Sequence runners may retarget an implicit pin
+// after a successful open/focus step, while a caller-supplied WithTabID remains
+// sticky for the whole operation.
+func WithImplicitTabID(ctx context.Context, tabID string) context.Context {
+	ctx = context.WithValue(ctx, ctxKeyTabID{}, tabID)
+	return context.WithValue(ctx, ctxKeyTabIDExplicit{}, false)
 }
 
 func TabIDFromContext(ctx context.Context) string {
@@ -198,6 +209,16 @@ func TabIDFromContext(ctx context.Context) string {
 		return strings.TrimSpace(v)
 	}
 	return ""
+}
+
+// TabIDIsExplicit reports whether the current pin came from a caller-supplied
+// tab_id rather than server-side tab selection (for example a session lease).
+func TabIDIsExplicit(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(ctxKeyTabIDExplicit{}).(bool)
+	return v
 }
 
 func tabIDFromCtx(ctx context.Context) string {
@@ -884,7 +905,7 @@ func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionRe
 		m.refs.Observe(tabID, result.Elements)
 	}
 	before := m.cachedBefore(tabID, tabCtx)
-	if err := m.fillRef(tabCtx, ref, opts.Text, opts.Replace); err != nil {
+	if err := m.fillRef(tabCtx, ref, opts.EffectiveText(), opts.Replace); err != nil {
 		return ActionResult{}, err
 	}
 	m.settle(tabCtx, actionSettleDelayFast)
@@ -1899,7 +1920,7 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 		sr.Result = actionResult
 	case "fill":
 		var actionResult ActionResult
-		actionResult, actionErr = m.Fill(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+		actionResult, actionErr = m.Fill(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Value: step.Value, Replace: true})
 		sr.Result = actionResult
 	case "select":
 		if step.Ref == "" || step.Value == "" {
@@ -2034,6 +2055,10 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 				tabCtx = newTabCtx
 				cancel = newCancel
 				result.TabID = tabID
+				result.Steps[len(result.Steps)-1].TabID = tabID
+				if step.Action == "open" {
+					result.Steps[len(result.Steps)-1].NewTabID = tabID
+				}
 			}
 		}
 		if err := m.guardCurrentURL(tabID, tabCtx); err != nil {

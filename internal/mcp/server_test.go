@@ -54,6 +54,32 @@ func TestServeSupportsFramedStdio(t *testing.T) {
 	}
 }
 
+type agentNameRecorder struct {
+	fakeController
+	name string
+}
+
+func (r *agentNameRecorder) SetAgentName(name string) { r.name = name }
+
+func TestInitializeForwardsClientInfoAgentName(t *testing.T) {
+	rec := &agentNameRecorder{}
+	input := framedJSON(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"clientInfo": map[string]any{"name": "claude-code", "version": "1.2.3"},
+		},
+	})
+	var output bytes.Buffer
+	if err := New(rec).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	if rec.name != "claude-code" {
+		t.Fatalf("forwarded agent name = %q, want claude-code", rec.name)
+	}
+}
+
 func TestServeSupportsLineDelimitedJSON(t *testing.T) {
 	input := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
 	var output bytes.Buffer
@@ -954,6 +980,86 @@ func TestBrowserDragAndMousePrimitivesDispatch(t *testing.T) {
 	}
 }
 
+func TestFillAcceptsValueAliasForText(t *testing.T) {
+	ctrl := &recordingController{}
+	// Playwright-style {value:"…"} must be promoted to Text so the field is
+	// filled instead of silently cleared (empty text + replace:true).
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_fill","arguments":{"ref":"e4","value":"tomsmith"}}}` + "\n"
+	var output bytes.Buffer
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	if ctrl.fillOpts.Ref != "e4" || ctrl.fillOpts.Text != "tomsmith" {
+		t.Fatalf("fill opts = %#v, want ref=e4 text=tomsmith (value alias)", ctrl.fillOpts)
+	}
+	// Explicit text still wins when both are present.
+	ctrl2 := &recordingController{}
+	input2 := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"brw_fill","arguments":{"ref":"e4","text":"via_text","value":"via_value"}}}` + "\n"
+	var output2 bytes.Buffer
+	if err := New(ctrl2).Serve(context.Background(), strings.NewReader(input2), &output2); err != nil {
+		t.Fatal(err)
+	}
+	if ctrl2.fillOpts.Text != "via_text" {
+		t.Fatalf("fill with both keys: got text=%q, want via_text", ctrl2.fillOpts.Text)
+	}
+}
+
+func TestFillRejectsMissingTextAndValue(t *testing.T) {
+	ctrl := &recordingController{}
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_fill","arguments":{"ref":"e4"}}}` + "\n"
+	var output bytes.Buffer
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	out := output.String()
+	if !strings.Contains(out, "fill requires text") {
+		t.Fatalf("expected missing-text error in response, got %s", out)
+	}
+	if ctrl.fillOpts.Ref != "" {
+		t.Fatalf("Fill should not have been called; got %#v", ctrl.fillOpts)
+	}
+}
+
+func TestDragRejectsFlatRefShapeWithActionableError(t *testing.T) {
+	ctrl := &recordingController{}
+	// Agents commonly pass flat ref/to_ref instead of nested from/to.
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_drag","arguments":{"ref":"e3","to_ref":"e4"}}}` + "\n"
+	var output bytes.Buffer
+	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	out := output.String()
+	if !strings.Contains(out, "from:{ref:") && !strings.Contains(out, `from:{ref:`) {
+		// Message should show the expected nested shape.
+		if !strings.Contains(out, "brw_drag({from:") {
+			t.Fatalf("expected drag error to show nested from/to example, got %s", out)
+		}
+	}
+	if ctrl.dragOpts.From.Ref != "" || ctrl.dragOpts.To.Ref != "" {
+		t.Fatalf("Drag should not have been called with empty points; got %#v", ctrl.dragOpts)
+	}
+}
+
+func TestFillSchemaExposesValueAlias(t *testing.T) {
+	var fillTool map[string]any
+	for _, tool := range tools() {
+		if tool["name"] == "brw_fill" {
+			fillTool = tool
+			break
+		}
+	}
+	if fillTool == nil {
+		t.Fatal("brw_fill not registered")
+	}
+	props := fillTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := props["value"]; !ok {
+		t.Fatalf("brw_fill schema missing value alias: %#v", props)
+	}
+	if _, ok := props["text"]; !ok {
+		t.Fatalf("brw_fill schema missing text: %#v", props)
+	}
+}
+
 func TestMouseToolSchemasRegistered(t *testing.T) {
 	byName := map[string]map[string]any{}
 	for _, tool := range tools() {
@@ -1026,6 +1132,7 @@ type recordingController struct {
 	fakeController
 	snapshotOpts        snapshot.SnapshotOptions
 	findOpts            snapshot.FindOptions
+	fillOpts            snapshot.FillOptions
 	replayParams        browser.ReplayRequestParams
 	navigateDirection   string
 	cancelToken         string
@@ -1160,6 +1267,11 @@ func (r *recordingController) Snapshot(ctx context.Context, opts snapshot.Snapsh
 func (r *recordingController) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
 	r.findOpts = opts
 	return r.fakeController.Find(ctx, opts)
+}
+
+func (r *recordingController) Fill(ctx context.Context, opts snapshot.FillOptions) (browser.ActionResult, error) {
+	r.fillOpts = opts
+	return r.fakeController.Fill(ctx, opts)
 }
 
 func (r *recordingController) ReplayRequest(_ context.Context, params browser.ReplayRequestParams) (snapshot.ReplayResult, error) {

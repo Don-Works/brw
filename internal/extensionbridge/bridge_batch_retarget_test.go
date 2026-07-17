@@ -35,6 +35,38 @@ func (f *retargetFakeExtension) cdpTargets() []int {
 	return out
 }
 
+func TestRetargetPinnedTabDistinguishesImplicitLeaseFromExplicitCallerPin(t *testing.T) {
+	b := &Bridge{}
+	implicit := browser.WithImplicitTabID(context.Background(), "41")
+	got := b.retargetPinnedTab(implicit, implicit, "42")
+	if tabID := browser.TabIDFromContext(got); tabID != "42" {
+		t.Fatalf("implicit lease retarget = %q, want 42", tabID)
+	}
+	if browser.TabIDIsExplicit(got) {
+		t.Fatal("retargeted implicit lease became an explicit caller pin")
+	}
+
+	explicit := browser.WithTabID(context.Background(), "51")
+	got = b.retargetPinnedTab(explicit, explicit, "52")
+	if tabID := browser.TabIDFromContext(got); tabID != "51" {
+		t.Fatalf("explicit pin retarget = %q, want sticky 51", tabID)
+	}
+}
+
+func TestOpenedChildTabIDIgnoresConcurrentUnrelatedOpen(t *testing.T) {
+	tabs := []browser.Tab{
+		{ID: "41"},
+		{ID: "60", OpenerTabID: "59"}, // another agent opened this concurrently
+		{ID: "42", OpenerTabID: "41"},
+	}
+	if got := openedChildTabID(tabs, map[string]bool{"41": true}, "41"); got != "42" {
+		t.Fatalf("opened child = %q, want 42", got)
+	}
+	if got := openedChildTabID([]browser.Tab{{ID: "60", OpenerTabID: "59"}}, map[string]bool{}, "41"); got != "" {
+		t.Fatalf("unrelated new tab was attributed to source: %q", got)
+	}
+}
+
 func (f *retargetFakeExtension) serve(ctx context.Context, conn *websocket.Conn) {
 	for {
 		_, data, err := conn.Read(ctx)

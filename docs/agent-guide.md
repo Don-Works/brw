@@ -22,6 +22,9 @@ the why.
    only want one or a few specific controls — it is cheaper than a full snapshot.
 3. **Act by ref** — `brw_click`, `brw_type`, `brw_fill`, `brw_select`,
    `brw_press`, `brw_hover`, `brw_drag`, `brw_upload_file`.
+   Use `brw_fill { ref, text }` (Playwright-style `value` is also accepted as an
+   alias for `text`). Prefer `brw_find { role: "textbox", query }` over bare
+   name queries so you hit inputs, not labels.
 4. **Read the observation the action returns** — `url`, `title`, `focus`,
    changed elements, `changed_state`. It already says what happened. Do **not**
    snapshot or screenshot again just to confirm. Re-snapshot only to get refs for
@@ -105,18 +108,29 @@ manual sleep/snapshot polling.
 Treat tabs as resources owned by one automation run, not as permanent browser
 state.
 
-1. Derive a short, non-sensitive group name from the available `whoami` or
-   agent identity, the workspace/repository, and the purpose, such as
-   `agent-brw-reconnect`.
-2. Call `brw_list_tab_groups`, then make the first `brw_open` with
-   `{group: "agent-brw-reconnect"}`. Reuse its `group_id` for every later open in
-   that run. The default `brw` group is only a fallback when no identity or
-   workspace context is available.
+1. Tabs opened without an explicit group land automatically in this session's
+   **per-agent tab group**: the daemon derives a stable title from the MCP
+   client's display name (or `BRW_AGENT_NAME`) plus a short per-session suffix,
+   and a stable color, so each concurrent agent gets its own named lane in the
+   tab strip. Two agents reporting the same client name still get separate
+   groups. No grouping calls are needed for the common case.
+2. Pass `{group: "<name>"}` on `brw_open` only when a run deliberately wants a
+   differently-scoped group; reuse its `group_id` for every later open in that
+   run.
 3. Record every `tab_id` returned by `brw_open`. If a click returns
-   `new_tab_id`, immediately place it in the run group with `brw_group_tabs`.
+   `new_tab_id`, immediately place it in the run group with `brw_group_tabs`
+   (page-spawned tabs otherwise inherit the opener's group in Chromium).
 4. Close scratch tabs as soon as they stop being useful. Before finishing, call
    `brw_close_tab` for every tab the run opened unless the tab is deliberately
    being handed to the human. Close incognito work with `brw_close_context`.
+
+The per-agent group is a visual mirror of the lease table, **not** the
+enforcement boundary — leases stay authoritative. If a human drags a tab out of
+the agent's group, `brw_list_tabs` reports `lease.group_drift: true` with
+`expected_group_id` on that tab; ownership is unchanged, and regrouping is an
+optional tidiness action, never something to fight the human over. Explicitly
+claimed pre-existing tabs are never moved into an agent group: rearranging the
+human's own tab layout is not brw's call.
 
 Native horizontal and vertical tab layouts are both supported. brw explicitly
 targets the opened tab's real window when it creates a group; an MV3 service
@@ -128,12 +142,33 @@ the human's layout preference.
 
 Never close a tab that existed before the run, and never put passwords, tokens,
 customer names/data, or other secrets in a group title. Passing an existing
-human-owned tab to a tool by explicit `tab_id` permits using it; it does not make
-the agent its owner.
+`available` human tab by explicit `tab_id` claims its lease for this session; a
+tab already marked `leased` remains off-limits.
 
 On the extension bridge, owned tabs open in the background. A no-`tab_id`
 action targets the agent's pinned working tab, not whatever the human happens to
 be viewing, but explicit `tab_id` is still the safest choice when runs overlap.
+
+Background tabs are exposed to Chrome's power features: Memory Saver can
+**discard** an idle tab (renderer killed — any CDP call would hang forever) and
+Energy Saver or a collapsed tab group can **freeze** one (event loop paused —
+injected work never runs). brw defends automatically: tabs it opens are opted
+out of automatic discard, and before driving any tab it revives a discarded one
+by reloading it and a frozen one by expanding its group and briefly flashing it
+active in its own window. `brw_list_tabs` surfaces `discarded`/`frozen` flags,
+and an unrevivable tab fails fast with the `tab_discarded` or `tab_frozen`
+error class instead of burning the request deadline. Keep agent groups
+expanded — never collapse them mid-run.
+
+When several agents share the HTTP daemon, tab leases make that ownership
+exclusive for reads as well as writes. `brw_list_tabs` reports each target as
+`lease.status: mine`, `leased`, or `available` without revealing another
+session's identity. Never operate on `leased`; a `tab_contended` response is a
+hard, non-retryable signal to use `brw_open` for a fresh leased tab. With no
+`tab_id`, the daemon renews the session's current lease or opens a fresh
+background working tab. Closing a tab through brw releases its lease; otherwise
+an idle lease expires after 30 minutes, and an operation already in flight is
+never expired out from under the caller.
 
 ## When semantics run out: screenshots and coordinates
 

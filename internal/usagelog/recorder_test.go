@@ -84,6 +84,9 @@ func TestRecorderRotatesBoundedFiles(t *testing.T) {
 				t.Fatalf("invalid rotated JSON in %s: %v", name, err)
 			}
 		}
+		if err := s.Err(); err != nil {
+			t.Fatalf("scan %s: %v", name, err)
+		}
 		_ = f.Close()
 	}
 	if _, err := os.Stat(path + ".3"); !os.IsNotExist(err) {
@@ -110,6 +113,27 @@ func TestSafeMetadataRejectsInjection(t *testing.T) {
 	}
 	if got, want := Fingerprint(groupingErr.Error()), Fingerprint("tab grouping unavailable"); got != want {
 		t.Fatalf("grouping fingerprint = %q, want stable capability fingerprint %q", got, want)
+	}
+	leaseErr := errors.New("tab is leased by another browser session until 2026-07-16T12:00:00Z")
+	if got := ClassifyError(leaseErr); got != "tab_contended" {
+		t.Fatalf("lease ClassifyError = %q, want tab_contended", got)
+	}
+	if Retryable(ClassifyError(leaseErr)) {
+		t.Fatal("tab contention must not be marked retryable")
+	}
+	frozenErr := errors.New("tab 41 is frozen by Chrome (collapsed tab group or Energy Saver) and could not be revived; expand its tab group or focus it once, then retry")
+	if got := ClassifyError(frozenErr); got != "tab_frozen" {
+		t.Fatalf("frozen ClassifyError = %q, want tab_frozen", got)
+	}
+	if got, want := Fingerprint(frozenErr.Error()), Fingerprint("tab 7 is frozen by Chrome"); got != want {
+		t.Fatalf("frozen fingerprint = %q, want stable %q", got, want)
+	}
+	discardedErr := errors.New("tab 41 was discarded by Chrome (Memory Saver) and could not be revived by reload; reopen the page with brw_open")
+	if got := ClassifyError(discardedErr); got != "tab_discarded" {
+		t.Fatalf("discarded ClassifyError = %q, want tab_discarded", got)
+	}
+	if Retryable(ClassifyError(frozenErr)) || Retryable(ClassifyError(discardedErr)) {
+		t.Fatal("unrevivable frozen/discarded tabs must not be marked retryable")
 	}
 }
 

@@ -471,6 +471,19 @@ func writeMessage(w io.Writer, mode stdioMode, value any) error {
 func (s *Server) handle(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
 	switch method {
 	case "initialize":
+		// Forward the MCP client's display name to the shared daemon (when the
+		// manager is the HTTP proxy), where it titles this session's per-agent
+		// Chrome tab group. Best-effort identity garnish — never fails initialize.
+		var init struct {
+			ClientInfo struct {
+				Name string `json:"name"`
+			} `json:"clientInfo"`
+		}
+		if len(params) > 0 && json.Unmarshal(params, &init) == nil && init.ClientInfo.Name != "" {
+			if namer, ok := s.manager.(interface{ SetAgentName(string) }); ok {
+				namer.SetAgentName(init.ClientInfo.Name)
+			}
+		}
 		return map[string]any{
 			"protocolVersion": "2025-06-18",
 			"serverInfo": map[string]any{
@@ -706,12 +719,16 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		return toolJSON(s.manager.Drag(ctx, browser.DragOptions{
+		opts := browser.DragOptions{
 			From:   req.From,
 			To:     req.To,
 			Steps:  req.Steps,
 			Button: req.Button,
-		}))
+		}
+		if err := opts.Validate(); err != nil {
+			return toolError(err), nil
+		}
+		return toolJSON(s.manager.Drag(ctx, opts))
 	case "brw_mouse_down":
 		opts, err := parseMouseButtonArgs(args)
 		if err != nil {
@@ -795,6 +812,16 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		req := snapshot.FillOptions{Replace: true}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		// Accept Playwright-style {value:"…"} as an alias for text so agents
+		// don't silently clear the field (empty text + replace:true).
+		req.Text = req.EffectiveText()
+		var raw map[string]json.RawMessage
+		_ = json.Unmarshal(args, &raw)
+		if _, hasText := raw["text"]; !hasText {
+			if _, hasValue := raw["value"]; !hasValue {
+				return toolError(errors.New("fill requires text (or value as a Playwright-style alias for text)")), nil
+			}
 		}
 		var snapReq struct {
 			Snapshot bool `json:"snapshot"`
@@ -1358,9 +1385,9 @@ func canonicalToolName(name string) string {
 
 func tools() []map[string]any {
 	return []map[string]any{
-		tool("brw_open", "Open a URL in a visible Chrome/Chromium tab. Create one short, non-sensitive run group from whoami/agent identity + workspace/repo + purpose (for example agent-brw-reconnect), then reuse its group_id for later tabs. Track the returned tab id and close every tab you opened before finishing unless intentionally handing it to the human; never close pre-existing tabs. The configurable default \"brw\" group is only a fallback. On the extension bridge owned tabs open in the BACKGROUND, so brw never switches or stomps the human's current tab. To work with a human-owned existing tab, pass that tab's tab_id explicitly.", object(map[string]any{
+		tool("brw_open", "Open a URL in a visible Chrome/Chromium tab and exclusively lease the new tab to this logical agent session. With no group/group_id the tab lands automatically in this session's per-agent Chrome tab group (a stable name+color derived from your client identity), so grouping needs no management; pass group only for a deliberately different run-scoped group. Track the returned tab id and close every tab you opened before finishing unless intentionally handing it to the human; never close pre-existing tabs. On the extension bridge owned tabs open in the BACKGROUND, so brw never switches or stomps the human's current tab. To work with an existing tab, choose one marked available by brw_list_tabs and pass its tab_id explicitly; never use a tab marked leased.", object(map[string]any{
 			"url":         stringSchema("URL to open. Scheme defaults to https."),
-			"group":       stringSchema("Chrome tab group title. Prefer a short run-scoped whoami-workspace-purpose name with no secrets; when set without group_id, the extension reuses an existing same-title group or creates one."),
+			"group":       stringSchema("Optional Chrome tab group title overriding the automatic per-agent group. Keep it short, run-scoped, and free of secrets; when set without group_id, the extension reuses an existing same-title group or creates one."),
 			"group_id":    stringSchema("Optional existing Chrome tab group id from brw_list_tabs or brw_list_tab_groups. When set, the new tab is added to that group."),
 			"group_color": stringSchema("Optional group color: grey, blue, red, yellow, green, pink, purple, cyan, orange."),
 		}, []string{"url"})),
@@ -1371,9 +1398,9 @@ func tools() []map[string]any {
 			"context_id":         stringSchema("The context_id returned by brw_open_incognito."),
 			"browser_context_id": stringSchema("Deprecated alias for context_id."),
 		}, []string{"context_id"})),
-		tool("brw_list_tabs", "List controllable Chrome/Chromium browser targets, including tabs, popup windows, and Chrome tab-group metadata when the extension bridge reports it. Ungrouped/default tabs remain listed normally.", object(nil, nil)),
+		tool("brw_list_tabs", "List controllable Chrome/Chromium browser targets, including owner-redacted lease metadata. lease.status is mine for this session's tabs, leased for a tab under another session's control, or available for an unclaimed tab. Never operate on leased tabs; call brw_open for a fresh tab instead. lease.group_drift on your own tab means a human moved it out of your per-agent tab group (ownership unchanged; regroup with brw_group_tabs + expected_group_id only if tidiness matters). discarded/frozen flag tabs whose renderer Chrome has reclaimed or paused; brw auto-revives them before driving. Popup windows and Chrome tab-group metadata are included when the extension bridge reports them.", object(nil, nil)),
 		tool("brw_list_tab_groups", "List visible Chrome tab groups with ids, titles, colors, collapsed state, window ids, and member tab ids. Extension-bridge transport only; direct CDP cannot inspect Chrome tab groups.", object(nil, nil)),
-		tool("brw_focus_tab", "Focus a controllable Chrome/Chromium target and make it the default target for following reads/actions.", object(map[string]any{
+		tool("brw_focus_tab", "Claim and focus an available or already-mine Chrome/Chromium target, then make it this session's default for following reads/actions. A target marked leased by brw_list_tabs belongs to another session and is rejected with non-retryable tab_contended; open a new tab instead.", object(map[string]any{
 			"tab_id": stringSchema("Target id from brw_list_tabs (preferred, consistent with other tools)."),
 			"id":     stringSchema("Deprecated alias for tab_id."),
 		}, nil)),
@@ -1514,11 +1541,12 @@ func tools() []map[string]any {
 			"ref":      stringSchema("Element ref, for example e17. Optional when query is supplied."),
 			"query":    stringSchema("Find a fillable target by semantic name when ref is not supplied."),
 			"role":     stringSchema("Optional role filter when using query, normally textbox or searchbox."),
-			"text":     stringSchema("Text to put in the field."),
+			"text":     stringSchema("Text to put in the field. Prefer this over value."),
+			"value":    stringSchema("Playwright-style alias for text. Accepted so {value:\"…\"} fills the field instead of silently clearing it."),
 			"replace":  boolSchema("Replace existing field content instead of appending. Defaults to true."),
 			"snapshot": boolSchema("Include a full page snapshot in the response."),
 			"tab_id":   stringSchema("Optional tab id from brw_list_tabs. Omit to use the active tab."),
-		}, []string{"text"})),
+		}, nil)),
 		tool("brw_upload_file", "Set a file on a semantic file input by ref or query and return a post-action observation. Provide the file from EXACTLY ONE source: path/paths (files already on the browser host), bytes_base64 (inline base64 contents — the daemon writes them to a temp file for you, no host filesystem access needed), or url (the daemon fetches it over http(s) to a temp file). Temp files created from bytes_base64/url are retained briefly so a later form submission can still read them, then removed automatically. Pass optional tab_id to target a specific tab.", object(map[string]any{
 			"ref":          stringSchema("Element ref for input[type=file]. Optional when query is supplied."),
 			"query":        stringSchema("Find a file input by semantic name when ref is not supplied. Defaults to file."),
@@ -1582,7 +1610,7 @@ func tools() []map[string]any {
 						"action":      stringEnumSchema("One of: click, type, fill, select, press, scroll, hover, wait, snapshot, read, open, focus_tab.", "click", "type", "fill", "select", "press", "scroll", "hover", "wait", "snapshot", "read", "open", "focus_tab"),
 						"ref":         stringSchema("Element ref for click, type, fill, select, hover."),
 						"text":        stringSchema("Text for type and fill actions."),
-						"value":       stringSchema("Option value for select action."),
+						"value":       stringSchema("Option value for select. For fill, also accepted as a Playwright-style alias for text."),
 						"direction":   stringEnumSchema("Scroll direction: up, down, left, right.", "up", "down", "left", "right"),
 						"condition":   stringSchema("Wait condition (load, text:..., ref:..., url:..., etc)."),
 						"timeout_ms":  map[string]any{"type": "integer", "description": "Timeout for wait action in milliseconds."},
@@ -1606,7 +1634,7 @@ func tools() []map[string]any {
 						"action":     stringEnumSchema("One of: click, type, fill, select, press, scroll, hover, wait, open, focus_tab, assert_visible, assert_text, assert_value, assert_hidden.", "click", "type", "fill", "select", "press", "scroll", "hover", "wait", "open", "focus_tab", "assert_visible", "assert_text", "assert_value", "assert_hidden"),
 						"ref":        stringSchema("Element ref for click, type, fill, select, hover, and assert_* actions."),
 						"text":       stringSchema("Text for type and fill actions, or expected text for assert_text."),
-						"value":      stringSchema("Option value for select action, or expected value for assert_value."),
+						"value":      stringSchema("Option value for select / assert_value. For fill, also accepted as a Playwright-style alias for text."),
 						"direction":  stringEnumSchema("Scroll direction: up, down, left, right.", "up", "down", "left", "right"),
 						"condition":  stringSchema("Wait condition (load, text:..., ref:..., url:..., etc)."),
 						"timeout_ms": map[string]any{"type": "integer", "description": "Timeout for wait/assert actions in milliseconds."},

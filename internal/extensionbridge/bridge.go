@@ -1247,6 +1247,9 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	}
 	b.setActiveTabID(out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
+	// Re-read the tab after commit so the agent gets a real url/title instead of
+	// the empty fields chrome.tabs.create often returns mid-navigation.
+	out = b.refreshOpenedTab(ctx, out, url)
 	// In isolation we resolve no-tab_id actions by the owned id (b.active), so the
 	// opened tab need not be foregrounded — keeping it in the background means the
 	// open never disturbs the tab the user is on. Only follow-focus mode, where
@@ -1440,6 +1443,8 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 	}
 	b.setActiveTabID(out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
+	// Same rehydrate as Open — agents need url/title on the open observation.
+	out = b.refreshOpenedTab(ctx, out, url)
 	b.recordTabGroupDegradation(out.GroupWarning)
 	// See Open: in isolation the owned id drives resolution, so we leave the tab in
 	// the background and never steal the user's current tab; only follow-focus mode
@@ -1453,6 +1458,51 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 		return browser.OpenResult{}, err
 	}
 	return browser.OpenResult{Tab: out, Ready: ready}, nil
+}
+
+// refreshOpenedTab re-lists tabs after open readiness so the returned Tab carries
+// the committed URL/title (chrome.tabs.create often reports empty strings). Falls
+// back to the requested URL when the live tab record is still blank.
+func (b *Bridge) refreshOpenedTab(ctx context.Context, tab browser.Tab, requestedURL string) browser.Tab {
+	tabs, err := b.ListTabs(ctx)
+	if err == nil {
+		for _, live := range tabs {
+			if live.ID != tab.ID {
+				continue
+			}
+			// Prefer live url/title; keep group metadata from either side.
+			if live.URL != "" {
+				tab.URL = live.URL
+			}
+			if live.Title != "" {
+				tab.Title = live.Title
+			}
+			if live.GroupID != "" {
+				tab.GroupID = live.GroupID
+			}
+			if live.GroupTitle != "" {
+				tab.GroupTitle = live.GroupTitle
+			}
+			if live.GroupColor != "" {
+				tab.GroupColor = live.GroupColor
+			}
+			tab.GroupCollapsed = live.GroupCollapsed
+			tab.Active = live.Active
+			tab.Highlighted = live.Highlighted
+			tab.WindowFocused = live.WindowFocused
+			if live.WindowID != 0 {
+				tab.WindowID = live.WindowID
+			}
+			if live.WindowType != "" {
+				tab.WindowType = live.WindowType
+			}
+			break
+		}
+	}
+	if tab.URL == "" && requestedURL != "" && requestedURL != "about:blank" {
+		tab.URL = requestedURL
+	}
+	return tab
 }
 
 func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
@@ -2023,7 +2073,7 @@ func (b *Bridge) fillOptions(ctx context.Context, opts snapshot.FillOptions) (st
 		return "", err
 	}
 	refJSON, _ := json.Marshal(ref)
-	textJSON, _ := json.Marshal(opts.Text)
+	textJSON, _ := json.Marshal(opts.EffectiveText())
 	replaceJSON, _ := json.Marshal(opts.Replace)
 	var result struct {
 		OK    bool   `json:"ok"`
@@ -2640,7 +2690,7 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 		b.settle(ctx, batchActionSettle)
 	case "fill":
 		var ref string
-		ref, actionErr = b.fillOptions(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+		ref, actionErr = b.fillOptions(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Value: step.Value, Replace: true})
 		if actionErr == nil {
 			sr.Result = map[string]any{"ok": true, "message": "filled " + ref, "ref": ref}
 		}
@@ -3138,12 +3188,7 @@ func (b *Bridge) observeActionWithBeforeAndTabs(ctx context.Context, message str
 		result.Targets = actionTargets(tabs, b.activeTabID(), 8)
 		// Detect if a new tab was opened by this action.
 		if beforeTabIDs != nil {
-			for _, t := range tabs {
-				if !beforeTabIDs[t.ID] && t.ID != result.TabID {
-					result.NewTabID = t.ID
-					break
-				}
-			}
+			result.NewTabID = openedChildTabID(tabs, beforeTabIDs, result.TabID)
 		}
 	}
 	if browser.WantSnapshotFromCtx(ctx) {
@@ -3151,6 +3196,19 @@ func (b *Bridge) observeActionWithBeforeAndTabs(ctx context.Context, message str
 	}
 	b.finishObservedTrace(before, message, &result)
 	return result
+}
+
+// openedChildTabID attributes a newly observed target only when Chrome reports
+// that the acted-on tab opened it. A raw before/after set difference is unsafe
+// in the shared daemon: another agent may legitimately open a tab during this
+// action, and claiming that unrelated tab would violate its lease boundary.
+func openedChildTabID(tabs []browser.Tab, before map[string]bool, sourceTabID string) string {
+	for _, tab := range tabs {
+		if !before[tab.ID] && tab.ID != sourceTabID && tab.OpenerTabID == sourceTabID {
+			return tab.ID
+		}
+	}
+	return ""
 }
 
 func (b *Bridge) captureSemanticState(ctx context.Context) bridgeActionBaseline {
@@ -3285,6 +3343,13 @@ func (b *Bridge) cdp(ctx context.Context, tabID, method string, params map[strin
 	}
 	raw, err := b.call(ctx, "cdp", req)
 	if err != nil && tabID != "" && isBridgeTabLostError(err) {
+		// A context pin is authoritative (explicit caller tab_id or an HTTP
+		// session lease). Never strip it and fall through to the extension's
+		// mutable active tab: in a shared daemon that would turn a closed leased
+		// tab into an operation on another agent's or the human's tab.
+		if browser.TabIDFromContext(ctx) != "" {
+			return raw, err
+		}
 		b.setActiveTabID("")
 		delete(req, "tabId")
 		return b.call(ctx, "cdp", req)
@@ -3438,10 +3503,10 @@ func (b *Bridge) retargetPinnedTab(base, stepCtx context.Context, targetTabID st
 	// An explicitly-supplied tab_id stays sticky for the whole sequence (matching
 	// the pre-pin behaviour where contextTabID short-circuits on the caller's tab
 	// regardless of focus_tab side effects): never let a focus_tab/open override it.
-	if browser.TabIDFromContext(base) != "" {
+	if browser.TabIDIsExplicit(base) {
 		return stepCtx
 	}
-	return browser.WithTabID(base, targetTabID)
+	return browser.WithImplicitTabID(base, targetTabID)
 }
 
 // ensureForegroundTab makes the just-opened tab id the genuine foreground tab —
@@ -3579,6 +3644,8 @@ type extTab struct {
 	GroupCollapsed bool   `json:"groupCollapsed"`
 	GroupWarning   string `json:"groupWarning"`
 	OpenerTabID    int    `json:"openerTabId"`
+	Discarded      bool   `json:"discarded"`
+	Frozen         bool   `json:"frozen"`
 }
 
 func (t extTab) toBrowserTab() browser.Tab {
@@ -3608,6 +3675,8 @@ func (t extTab) toBrowserTab() browser.Tab {
 		WindowFocused:  t.WindowFocused,
 		OpenerTabID:    openerID,
 		Popup:          windowType == "popup" || t.OpenerTabID != 0,
+		Discarded:      t.Discarded,
+		Frozen:         t.Frozen,
 	}
 }
 
@@ -3835,8 +3904,15 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 			actionErr = errors.New("click requires ref")
 			break
 		}
+		beforeTabs := b.captureTabIDs(ctx)
+		sourceTabID := b.contextTabID(ctx)
 		actionErr = b.clickRef(ctx, step.Ref)
 		b.settle(ctx, batchActionSettle)
+		if actionErr == nil && beforeTabs != nil {
+			if tabs, err := b.ListTabs(ctx); err == nil {
+				sr.NewTabID = openedChildTabID(tabs, beforeTabs, sourceTabID)
+			}
+		}
 	case "type":
 		if step.Ref == "" || step.Text == "" {
 			actionErr = errors.New("type requires ref and text")
@@ -3845,7 +3921,7 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 		actionErr = b.typeRef(ctx, step.Ref, step.Text)
 		b.settle(ctx, batchActionSettle)
 	case "fill":
-		_, actionErr = b.fillOptions(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Replace: true})
+		_, actionErr = b.fillOptions(ctx, snapshot.FillOptions{Ref: step.Ref, Text: step.Text, Value: step.Value, Replace: true})
 		b.settle(ctx, batchActionSettle)
 	case "select":
 		if step.Ref == "" || step.Value == "" {
@@ -3942,6 +4018,12 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 	if actionErr != nil {
 		sr.OK = false
 		sr.Error = actionErr.Error()
+	}
+	if sr.OK && retargetTo != "" {
+		sr.TabID = retargetTo
+		if step.Action == "open" {
+			sr.NewTabID = retargetTo
+		}
 	}
 	return sr, retargetTo
 }

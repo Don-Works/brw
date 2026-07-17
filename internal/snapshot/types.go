@@ -90,7 +90,21 @@ type FillOptions struct {
 	Query   string `json:"query,omitempty"`
 	Role    string `json:"role,omitempty"`
 	Text    string `json:"text"`
+	// Value is a Playwright-style alias for Text. When Text is empty, fill
+	// uses Value so agents that pass {value:"…"} (common muscle memory) do not
+	// silently clear the field.
+	Value   string `json:"value,omitempty"`
 	Replace bool   `json:"replace"`
+}
+
+// EffectiveText returns the string to write into the field: Text when set,
+// otherwise Value (Playwright-style alias). Empty Text with a non-empty Value
+// is the common agent footgun this covers.
+func (o FillOptions) EffectiveText() string {
+	if o.Text != "" {
+		return o.Text
+	}
+	return o.Value
 }
 
 type UploadOptions struct {

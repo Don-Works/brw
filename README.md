@@ -290,24 +290,39 @@ Backend-specific notes:
   after Chrome commits, so use DNS/firewall controls when the request itself must
   never leave the machine.
 
-With the extension bridge, every agent run should organize visible Chrome work
-into one short, non-sensitive group named from whoami/agent identity, workspace
-or repo, and purpose (for example `agent-brw-reconnect`). Call
-`brw_list_tab_groups`, pass `group` on the first `brw_open`, then reuse its
-`group_id` on later opens or `brw_group_tabs` calls. Track every returned tab id,
-including `new_tab_id` from clicks; close scratch tabs promptly and close every
-run-owned tab before finishing unless deliberately handing it to the human.
-Never close pre-existing tabs, and never put secrets or customer data in group
-titles. Tab groups are UI organization only; use profiles or incognito contexts
-for cookie/storage isolation. Native horizontal and vertical tab strips are
-supported: new groups explicitly target the opened tab's real window instead of
-an MV3 service worker's ambiguous “current window”. A rare rejected assignment
-returns `group_warning`, leaves the tab safely owned, and records a privacy-safe
+With the extension bridge, each agent session automatically gets its own
+**per-agent tab group**: tabs opened without an explicit `group` land in a
+group titled from the MCP client's display name (or `BRW_AGENT_NAME`) plus a
+short per-session suffix, with a stable per-session color — so concurrent
+agents each get a visible, named lane in the tab strip with no grouping calls
+required. Pass `group` on `brw_open` only for a deliberately different
+run-scoped group, then reuse its `group_id` on later opens or `brw_group_tabs`
+calls. Track every returned tab id, including `new_tab_id` from clicks; close
+scratch tabs promptly and close every run-owned tab before finishing unless
+deliberately handing it to the human. Never close pre-existing tabs, and never
+put secrets or customer data in custom group titles. Tab groups are UI
+organization only — a visual mirror of the lease table, never the enforcement
+boundary; use profiles or incognito contexts for cookie/storage isolation. If a
+human drags a tab out of an agent's group, `brw_list_tabs` flags it with
+`lease.group_drift` (ownership unchanged). Explicitly claimed pre-existing tabs
+are never regrouped. Native horizontal and vertical tab strips are supported:
+new groups explicitly target the opened tab's real window instead of an MV3
+service worker's ambiguous “current window”. A rare rejected assignment returns
+`group_warning`, leaves the tab safely owned, and records a privacy-safe
 degraded event rather than retrying forever.
+
+brw also defends its background tabs against Chrome's power features: tabs it
+opens are opted out of Memory Saver's automatic discard, and before driving any
+tab it revives a **discarded** one (renderer killed — CDP would hang) by
+reloading it and a **frozen** one (collapsed group / Energy Saver — event loop
+paused) by expanding its group and briefly flashing it active inside its own
+window. `brw_list_tabs` reports `discarded`/`frozen` per tab, and an
+unrevivable tab fails fast with the `tab_discarded`/`tab_frozen` error class.
 
 **Tab isolation (default).** When driving your real Chrome over the bridge, the
 daemon defaults to *isolation*: brw acts only on tabs it owns. It opens its tabs
-in its own group (`--bridge-tab-group`, `brw` by default), in the **background**,
+in the session's per-agent group (falling back to `--bridge-tab-group`, `brw` by
+default, when no session identity is present), in the **background**,
 and a no-`tab_id` action targets brw's own working tab — never the tab you have
 focused. If brw owns no tab yet, the first page action opens a fresh one instead
 of hijacking whatever you are looking at. To act on one of *your* existing tabs,
@@ -315,6 +330,14 @@ pass its `tab_id` (from `brw_list_tabs`). This keeps automation (and parallel
 agent runs) from stomping your open tabs. To restore the legacy behavior where
 brw follows your manually-focused tab, run with `--bridge-follow-focus` (or
 `BRW_BRIDGE_FOLLOW_FOCUS=1`).
+
+When MCP proxies share that daemon, brw additionally enforces exclusive tab
+leases per logical agent session. `brw_list_tabs` labels targets `mine`,
+`leased`, or `available`; page reads and writes, focus, close, grouping, plans,
+and batches all reject a tab leased by another session with HTTP 409 /
+`tab_contended`. A no-`tab_id` call reuses the caller's leased working tab or
+opens a new background tab. Leases renew on use, cannot expire during an active
+operation, release on brw-driven close, and expire after 30 idle minutes.
 
 ### Privacy-safe usage ledger
 

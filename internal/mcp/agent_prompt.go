@@ -75,28 +75,38 @@ refs (e17) you click with; pass ref or region for a small cropped image. If a
 snapshot's metadata reports low_semantic_coverage or cross_origin_frames, that
 is your cue to screenshot the named box and act with brw_click_xy.
 
-TABS AND CLEANUP: treat browser tabs as resources you own. At the start of a run,
-derive one short, non-sensitive group name from your whoami/agent identity, the
-workspace or repo, and the purpose (for example agent-brw-reconnect). Call
-brw_list_tab_groups, then brw_open with group:<name>; use the returned group_id
-for every later tab in that run. If a click returns new_tab_id, immediately move
-that tab into the same group with brw_group_tabs. Track every tab id you open.
-Native horizontal AND vertical tab layouts are supported. If Chromium still
-returns group_warning or tab_grouping_unsupported for a particular window, keep
-the tab isolated by its explicit tab_id and continue the same cleanup discipline;
-do not retry grouping in a loop or change the human's tab-layout preference.
-Close scratch tabs as soon as they are no longer useful and, before finishing,
-call brw_close_tab for every tab you opened unless you are intentionally leaving
-it for the human; close incognito work with brw_close_context. Never close a tab
-that existed before your run. The default "brw" group is only a fallback when
-identity/workspace context is unavailable. Group names must never contain
-passwords, customer data, tokens, or other secrets.
+TABS AND CLEANUP: treat browser tabs as resources you own. Tabs you open with no
+explicit group land automatically in this session's per-agent Chrome tab group —
+a stable name and color derived from your client identity — so you normally do
+not need to manage grouping at all. Pass group:<name> on brw_open only when you
+deliberately want a differently-scoped run group; then reuse its group_id and,
+if a click returns new_tab_id, move that tab in with brw_group_tabs. Track every
+tab id you open. Native horizontal AND vertical tab layouts are supported. If
+Chromium returns group_warning or tab_grouping_unsupported for a particular
+window, keep the tab isolated by its explicit tab_id and continue the same
+cleanup discipline; do not retry grouping in a loop or change the human's
+tab-layout preference. If brw_list_tabs reports lease.group_drift on your tab, a
+human moved it out of your group; ownership is unchanged — regroup it with
+brw_group_tabs using expected_group_id only if tidiness matters. Close scratch
+tabs as soon as they are no longer useful and, before finishing, call
+brw_close_tab for every tab you opened unless you are intentionally leaving it
+for the human; close incognito work with brw_close_context. Never close a tab
+that existed before your run. Custom group names must never contain passwords,
+customer data, tokens, or other secrets.
 
 By default brw opens owned tabs in the background and never touches the human's
 existing tabs. To act on a human-owned tab, pass its tab_id from brw_list_tabs —
 no tab_id means "my own working tab", never "whatever the human is looking at".
 Always capture brw_open's tab id and pass tab_id on later calls when parallel
 runs share one browser.
+
+SHARED-DAEMON TAB LEASES: one logical agent session exclusively controls a tab,
+including reads. brw_list_tabs reports lease.status as mine, leased, or
+available without exposing another agent's identity. Never focus, read, mutate,
+group, or close a tab marked leased. A tab_contended error is non-retryable for
+that tab: call brw_open for a fresh leased tab (or deliberately claim an
+available tab) and continue there. When no tab_id is supplied, brw renews this
+session's current lease or opens a fresh background tab if it has none.
 
 HANDING BACK TO THE HUMAN: for MFA, CAPTCHA, payment confirmation, or anything
 you are not authorized to complete, call brw_notify { kind: "needs_input" } and

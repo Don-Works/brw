@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -58,10 +59,32 @@ type Tab struct {
 	WindowFocused  bool   `json:"window_focused,omitempty"`
 	OpenerTabID    string `json:"opener_tab_id,omitempty"`
 	Popup          bool   `json:"popup,omitempty"`
+	// Discarded/Frozen surface Chrome's Memory Saver / Energy Saver + collapsed-
+	// group states: such a tab has no running renderer (or a paused one) and is
+	// auto-revived by the extension before it is driven.
+	Discarded bool `json:"discarded,omitempty"`
+	Frozen    bool `json:"frozen,omitempty"`
 	// BrowserContextID is set when the tab lives in a non-default (incognito)
 	// browser context created via brw_open_incognito. Pass it to
 	// brw_close_context to dispose that isolated context.
 	BrowserContextID string `json:"context_id,omitempty"`
+	// Lease is populated by the shared HTTP daemon. It lets concurrent agents
+	// distinguish their own tabs from tabs currently controlled by another
+	// browser session without exposing the other session's identity.
+	Lease *TabLeaseInfo `json:"lease,omitempty"`
+}
+
+// TabLeaseInfo is safe, owner-redacted tab coordination metadata.
+type TabLeaseInfo struct {
+	Status    string `json:"status"`
+	Mine      bool   `json:"mine,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	// GroupDrift is set on this session's own tabs when the daemon placed the
+	// tab in the session's per-agent Chrome tab group but it has since left it
+	// (e.g. the human dragged it out). Informational only — the lease still
+	// holds; re-group with brw_group_tabs using ExpectedGroupID if desired.
+	GroupDrift      bool   `json:"group_drift,omitempty"`
+	ExpectedGroupID string `json:"expected_group_id,omitempty"`
 }
 
 type TabGroup struct {
@@ -259,10 +282,12 @@ type BatchStep struct {
 }
 
 type BatchStepResult struct {
-	Index  int    `json:"index"`
-	Action string `json:"action"`
-	OK     bool   `json:"ok"`
-	Error  string `json:"error,omitempty"`
+	Index    int    `json:"index"`
+	Action   string `json:"action"`
+	OK       bool   `json:"ok"`
+	Error    string `json:"error,omitempty"`
+	TabID    string `json:"tab_id,omitempty"`
+	NewTabID string `json:"new_tab_id,omitempty"`
 }
 
 type BatchResult struct {
@@ -295,6 +320,20 @@ func (p MousePoint) HasRef() bool { return strings.TrimSpace(p.Ref) != "" }
 // HasXY reports whether explicit coordinates were supplied.
 func (p MousePoint) HasXY() bool { return p.X != nil && p.Y != nil }
 
+// Validate reports a clear error when neither a ref nor x,y coordinates were
+// supplied. label names the endpoint (e.g. "drag from", "drag to") so agents
+// that pass a flat ref/to_ref shape get an actionable fix-up instead of a
+// opaque downstream failure.
+func (p MousePoint) Validate(label string) error {
+	if p.HasRef() || p.HasXY() {
+		return nil
+	}
+	if label == "" {
+		label = "mouse point"
+	}
+	return fmt.Errorf("%s requires {\"ref\":\"eN\"} or {\"x\":N,\"y\":N} (example: brw_drag({from:{ref:\"e3\"},to:{ref:\"e4\"}}))", label)
+}
+
 // ClickButtonOptions drives a single click with an explicit mouse button and
 // click count, covering left/right/middle button context menus and
 // single/double/triple click selection. The target is a ref or x,y point.
@@ -319,6 +358,14 @@ type DragOptions struct {
 	To     MousePoint `json:"to"`
 	Steps  int        `json:"steps,omitempty"`
 	Button string     `json:"button,omitempty"`
+}
+
+// Validate checks both drag endpoints are specified as nested from/to points.
+func (o DragOptions) Validate() error {
+	if err := o.From.Validate("drag from"); err != nil {
+		return err
+	}
+	return o.To.Validate("drag to")
 }
 
 type TraceEntry struct {

@@ -694,15 +694,16 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatalf("parse manifest: %v", err)
 	}
-	// The manifest VERSION is the extension's release marker (0.3.9 added
-	// coalesced, time-bounded status probes; 0.3.10 adds a precise, actionable
-	// vertical-tab/grouping capability fallback).
-	// It is DECOUPLED from the wire
-	// PROTOCOL_VERSION below: the manifest moves with every feature release, while
-	// PROTOCOL_VERSION only moves on a breaking bridge-handshake change. 0.3.10
-	// changes only in-extension behaviour, so the protocol stays 0.2.0 (the daemon
-	// still accepts it — verified against the live bridge).
-	const wantManifest = "0.3.10"
+	// The manifest VERSION is the extension's release marker (0.3.10 added a
+	// precise vertical-tab/grouping capability fallback; 0.4.0 adds frozen/
+	// discarded tab revival before every drive, opts brw-opened tabs out of
+	// Memory Saver discard, reports discarded/frozen in tab summaries, and
+	// serializes all activate→restore juggles on one queue).
+	// It is DECOUPLED from the wire PROTOCOL_VERSION below: the manifest moves
+	// with every feature release, while PROTOCOL_VERSION only moves on a breaking
+	// bridge-handshake change. 0.4.0 adds fields and in-extension behaviour only,
+	// so the protocol stays 0.2.0 (the daemon still accepts it).
+	const wantManifest = "0.4.0"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}
