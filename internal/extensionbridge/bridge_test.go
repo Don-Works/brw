@@ -698,12 +698,13 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// precise vertical-tab/grouping capability fallback; 0.4.0 adds frozen/
 	// discarded tab revival before every drive, opts brw-opened tabs out of
 	// Memory Saver discard, reports discarded/frozen in tab summaries, and
-	// serializes all activate→restore juggles on one queue).
+	// serializes all activate→restore juggles on one queue; 0.4.1 recovers from
+	// a zero-window browser by creating the window tabs.create refuses to).
 	// It is DECOUPLED from the wire PROTOCOL_VERSION below: the manifest moves
 	// with every feature release, while PROTOCOL_VERSION only moves on a breaking
-	// bridge-handshake change. 0.4.0 adds fields and in-extension behaviour only,
-	// so the protocol stays 0.2.0 (the daemon still accepts it).
-	const wantManifest = "0.4.0"
+	// bridge-handshake change. 0.4.0 and 0.4.1 add fields and in-extension
+	// behaviour only, so the protocol stays 0.2.0 (the daemon still accepts it).
+	const wantManifest = "0.4.1"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}
