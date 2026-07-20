@@ -81,10 +81,13 @@ larger responses.
 Use `brw_emulate_device` for small-screen tests. It applies real Chrome DevTools
 emulation to the target tab — CSS viewport dimensions, DPR, mobile viewport meta
 handling, touch events, and mobile UA/platform overrides — rather than resizing
-the OS browser window. Presets include `iphone_se`, `iphone_14`,
-`iphone_14_pro_max`, `pixel_7`, `galaxy_s20`, and `ipad_mini`; pass
-`clear:true` to reset. Reload after applying emulation when the app only chooses
-mobile/desktop behavior at initial page load.
+the OS browser window. The presets are exactly `iphone_se`, `iphone_12`,
+`iphone_13`, `iphone_14`, `iphone_14_pro_max`, `pixel_5`, `pixel_7`,
+`galaxy_s20`, `ipad_mini`, and `ipad` — no other model names resolve, so for
+any other device pass `responsive` (or `custom`) with explicit `width` and
+`height` rather than guessing a name. Pass `clear:true` to reset. Reload after
+applying emulation when the app only chooses mobile/desktop behavior at initial
+page load.
 
 ## WebMCP: use the page's own tools when it offers them
 

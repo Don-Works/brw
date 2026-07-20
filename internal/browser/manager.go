@@ -790,6 +790,9 @@ func (m *Manager) Evaluate(ctx context.Context, expression string) (any, error) 
 				return err
 			}
 			if exception != nil {
+				if msg := FormatRuntimeException(exception); msg != "" {
+					return fmt.Errorf("runtime exception: %s", msg)
+				}
 				details, _ := json.Marshal(exception)
 				return fmt.Errorf("runtime exception: %s", details)
 			}

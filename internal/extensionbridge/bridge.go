@@ -3314,6 +3314,9 @@ func (b *Bridge) evaluateRuntime(ctx context.Context, expression, tabID string, 
 		return err
 	}
 	if payload.ExceptionDetails != nil {
+		if msg := browser.FormatRuntimeException(payload.ExceptionDetails); msg != "" {
+			return fmt.Errorf("runtime exception: %s", msg)
+		}
 		details, _ := json.Marshal(payload.ExceptionDetails)
 		return fmt.Errorf("runtime exception: %s", details)
 	}

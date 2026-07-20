@@ -348,8 +348,14 @@ func TestServiceWorkerActiveTabResolverIsAuthoritative(t *testing.T) {
 		"const id = await resolveForegroundTabId();",              // activeTabId() / get_active_tab_id uses it
 		"const makeActive = message.params?.active !== false;",    // open honors the foreground/background intent
 		"const normalWindowId = await preferredNormalWindowId();", // avoid popup/app windows
-		"const tab = await chrome.tabs.create(createParams);",     // open follows that intent
+		"tab = await chrome.tabs.create(createParams);",           // open follows that intent
 		"state.agentTabId = tab.id || null;",                      // and always pins the agent's working tab
+		// A browser running with zero windows (routine on macOS) makes
+		// tabs.create reject with "No current window". An agent cannot open a
+		// window itself, so open_tab recovers by creating one rather than
+		// dead-ending on a trivially recoverable state.
+		"if (!/no current window/i.test(String(err?.message || err))) throw err;",
+		"const win = await chrome.windows.create({",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("service worker authoritative active-tab resolver missing %q", want)
