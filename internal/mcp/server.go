@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/usagelog"
@@ -34,6 +35,17 @@ type Server struct {
 	idleExit    time.Duration
 	usage       *usagelog.Recorder
 	sessionID   string
+	identity    brwidentity.Identity
+}
+
+// SetIdentity records which workspace/profile/browser this server drives, so the
+// brw_identity tool can answer "which browser am I controlling?" over MCP. An
+// agent enumerates the brw_* namespaces (one per browser profile) and calls
+// brw_identity on each to map a namespace to a concrete profile instead of
+// guessing from the namespace label. Empty (the default) means the daemon was
+// launched without a profile policy; brw_identity still answers, just sparsely.
+func (s *Server) SetIdentity(identity brwidentity.Identity) {
+	s.identity = identity
 }
 
 // SetIdleExit makes Serve return cleanly after no request has arrived for d.
@@ -69,6 +81,7 @@ const (
 // behind the default "all" profile while keeping the verbs an agent needs for
 // common read/click/type/select/navigate/scroll/drag/upload/hover flows.
 var coreToolNames = map[string]bool{
+	"brw_identity":       true,
 	"brw_open":           true,
 	"brw_list_tabs":      true,
 	"brw_focus_tab":      true,
@@ -528,6 +541,7 @@ type activeTabResolver interface {
 // focus_tab/open). list_tabs in particular must stay free of the extra round
 // trip the task brief calls out.
 var tabAgnosticTools = map[string]bool{
+	"brw_identity":        true,
 	"brw_list_tabs":       true,
 	"brw_list_tab_groups": true,
 	"brw_focus_tab":       true,
@@ -584,6 +598,17 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		ctx = pinActiveTabForTool(ctx, s.manager, name)
 	}
 	switch name {
+	case "brw_identity":
+		// Process-level config, deliberately independent of the browser: it
+		// answers even when no bridge is connected or the browser has zero
+		// windows, because its whole job is to tell an agent which profile this
+		// namespace drives before it touches a tab. tabAgnosticTools keeps it
+		// off the active-tab resolution path so it never blocks on the bridge.
+		return toolJSON(map[string]any{
+			"identity":  s.identity,
+			"version":   Version,
+			"connected": !s.identity.Empty(),
+		}, nil)
 	case "brw_open":
 		var req struct {
 			URL        string `json:"url"`
@@ -1398,6 +1423,7 @@ func tools() []map[string]any {
 			"context_id":         stringSchema("The context_id returned by brw_open_incognito."),
 			"browser_context_id": stringSchema("Deprecated alias for context_id."),
 		}, []string{"context_id"})),
+		tool("brw_identity", "Report which browser profile THIS brw namespace drives, so you can pick the right one instead of guessing from the namespace label. brw exposes one namespace per browser profile (brw, brw_chromium, brw_chromium_work, …) and that set grows — enumerate them, then call brw_identity on each to map a namespace to a concrete browser+profile. Returns {identity:{workspace, profile, user_data_dir, profile_directory, mode}, version, connected}. Needs no tab and no connected bridge — safe to call first, even when the browser has no windows open. When the user's request implies a specific browser (their work Chrome, their personal Chromium, …), use this to confirm the match before you open or touch a tab.", object(nil, nil)),
 		tool("brw_list_tabs", "List controllable Chrome/Chromium browser targets, including owner-redacted lease metadata. lease.status is mine for this session's tabs, leased for a tab under another session's control, or available for an unclaimed tab. Never operate on leased tabs; call brw_open for a fresh tab instead. lease.group_drift on your own tab means a human moved it out of your per-agent tab group (ownership unchanged; regroup with brw_group_tabs + expected_group_id only if tidiness matters). discarded/frozen flag tabs whose renderer Chrome has reclaimed or paused; brw auto-revives them before driving. Popup windows and Chrome tab-group metadata are included when the extension bridge reports them.", object(nil, nil)),
 		tool("brw_list_tab_groups", "List visible Chrome tab groups with ids, titles, colors, collapsed state, window ids, and member tab ids. Extension-bridge transport only; direct CDP cannot inspect Chrome tab groups.", object(nil, nil)),
 		tool("brw_focus_tab", "Claim and focus an available or already-mine Chrome/Chromium target, then make it this session's default for following reads/actions. A target marked leased by brw_list_tabs belongs to another session and is rejected with non-retryable tab_contended; open a new tab instead.", object(map[string]any{

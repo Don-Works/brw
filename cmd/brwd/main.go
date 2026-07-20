@@ -383,6 +383,12 @@ func main() {
 		go watchParentExit(stop)
 		server := mcp.NewWithToolProfile(controller, mcpToolProfile)
 		server.SetNavigationPolicy(navPolicy)
+		// usageIdentity is the fully-resolved workspace/profile/mode for this
+		// process, cross-checked against the upstream daemon's /health at startup
+		// when a profile policy is set. Handing it to the MCP server lets
+		// brw_identity answer "which browser does this namespace drive?" without a
+		// live HTTP round-trip.
+		server.SetIdentity(usageIdentity)
 		// A direct/bridge MCP process has no upstream HTTP middleware to record its
 		// calls, so record them here. Upstream proxies intentionally rely on the
 		// canonical daemon ledger and do not create duplicate local records.

@@ -214,6 +214,8 @@ See the [Install page](https://brw.donworks.co.uk/?utm_source=brw&utm_medium=rea
 
 Core MCP tools include:
 
+- `brw_identity` — which browser profile this namespace drives (needs no tab
+  or connected bridge; call it first when several `brw_*` namespaces exist)
 - `brw_open`, `brw_list_tabs`, `brw_focus_tab`, `brw_close_tab`
 - `brw_list_tab_groups`, `brw_group_tabs`, `brw_ungroup_tabs`
 - `brw_read`, `brw_read_data`, `brw_snapshot`, `brw_find`

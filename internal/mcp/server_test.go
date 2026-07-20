@@ -37,21 +37,43 @@ func TestServeSupportsFramedStdio(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Serve dispatches requests concurrently on purpose (so a brw_cancel can
+	// jump a long plan), so responses may arrive in either order — that is legal
+	// JSON-RPC and the server documents it. Match responses by id rather than
+	// assuming the first frame is id 1; asserting order here was a latent flake
+	// that surfaced under -race when tools/list finished before initialize.
 	responses := bufio.NewReader(bytes.NewReader(output.Bytes()))
-	first := readFramedResponse(t, responses)
-	if first["id"].(float64) != 1 {
-		t.Fatalf("first response id = %v", first["id"])
+	byID := map[float64]map[string]any{}
+	for i := 0; i < 2; i++ {
+		resp := readFramedResponse(t, responses)
+		byID[resp["id"].(float64)] = resp
 	}
-	result := first["result"].(map[string]any)
+
+	init, ok := byID[1]
+	if !ok {
+		t.Fatalf("no response for initialize (id 1); got ids %v", mapKeys(byID))
+	}
+	result := init["result"].(map[string]any)
 	if result["serverInfo"].(map[string]any)["name"] != "brw" {
 		t.Fatalf("unexpected initialize result: %#v", result)
 	}
 
-	second := readFramedResponse(t, responses)
-	tools := second["result"].(map[string]any)["tools"].([]any)
+	list, ok := byID[2]
+	if !ok {
+		t.Fatalf("no response for tools/list (id 2); got ids %v", mapKeys(byID))
+	}
+	tools := list["result"].(map[string]any)["tools"].([]any)
 	if len(tools) == 0 {
 		t.Fatal("tools/list returned no tools")
 	}
+}
+
+func mapKeys(m map[float64]map[string]any) []float64 {
+	out := make([]float64, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 type agentNameRecorder struct {
