@@ -106,7 +106,24 @@ func (e *concExtension) serve(ctx context.Context, conn *websocket.Conn) {
 func (e *concExtension) handle(ctx context.Context, conn *websocket.Conn, id, typ string, params map[string]any) {
 	tab := tabKeyFromParams(params)
 	e.enter(tab)
-	defer e.exit(tab)
+	// The in-flight window MUST close before the reply is written, not after.
+	// The bridge frees a semaphore slot the instant it READS a reply and
+	// immediately dispatches the next queued request — so if this handler
+	// decremented after replying (e.g. via a plain `defer e.exit`), the next
+	// request's enter() could race ahead of this one's exit() and the counter
+	// would transiently read cap+1. That is a measurement artifact, not a cap
+	// violation: the bridge's [write, reply-read] window is correctly bounded,
+	// but [enter, exit] overran it. Closing the window here, right before the
+	// reply, makes the measured window a subset of the bridge's and removes the
+	// flake. exited guards the ctx.Done() early-return path below.
+	exited := false
+	exitOnce := func() {
+		if !exited {
+			exited = true
+			e.exit(tab)
+		}
+	}
+	defer exitOnce()
 
 	e.mu.Lock()
 	failNow := e.failFirst[typ] && !e.failedOnce[typ]
@@ -117,6 +134,7 @@ func (e *concExtension) handle(ctx context.Context, conn *websocket.Conn, id, ty
 	if failNow {
 		// Model a socket drop: reply with the disconnect-drain marker the bridge
 		// treats as a transient transport failure.
+		exitOnce()
 		e.reply(ctx, conn, id, false, disconnectDrainReason, nil)
 		return
 	}
@@ -128,6 +146,7 @@ func (e *concExtension) handle(ctx context.Context, conn *websocket.Conn, id, ty
 			return
 		}
 	}
+	exitOnce()
 	e.reply(ctx, conn, id, true, "", map[string]any{})
 }
 
