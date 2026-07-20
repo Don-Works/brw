@@ -694,7 +694,24 @@ async function handle(message) {
       // Chrome can create its normal fallback window.
       const normalWindowId = await preferredNormalWindowId();
       if (typeof normalWindowId === "number") createParams.windowId = normalWindowId;
-      const tab = await chrome.tabs.create(createParams);
+      let tab;
+      try {
+        tab = await chrome.tabs.create(createParams);
+      } catch (err) {
+        // Chrome rejects tabs.create with "No current window" when the browser
+        // process is alive with zero windows — routine on macOS, where closing
+        // the last window leaves the app running. Chrome does not create the
+        // fallback window here, and an agent cannot open one itself, so the
+        // call used to dead-end on a state that is trivially recoverable.
+        // Create the window brw needs and carry on.
+        if (!/no current window/i.test(String(err?.message || err))) throw err;
+        const win = await chrome.windows.create({
+          url: createParams.url,
+          focused: false,
+        });
+        tab = win?.tabs?.[0];
+        if (!tab) throw err;
+      }
       // brw drives this tab for the rest of the agent session, usually in the
       // background. Memory Saver would see an idle background tab and discard
       // it — killing the renderer so every later CDP call hangs. Opt the tab

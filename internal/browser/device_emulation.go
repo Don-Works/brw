@@ -2,9 +2,24 @@ package browser
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 )
+
+// SupportedDevicePresets returns every registered preset's caller-facing name,
+// sorted. Error messages and docs derive their list from this rather than
+// hard-coding one: the previous hard-coded string had drifted and advertised 7
+// of the 10 presets, so agents were told iphone_12, iphone_13, pixel_5, and
+// ipad did not exist and retried with names that were never valid.
+func SupportedDevicePresets() []string {
+	names := make([]string, 0, len(deviceEmulationPresets))
+	for _, preset := range deviceEmulationPresets {
+		names = append(names, preset.Device)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // DeviceEmulationOptions describes a DevTools Protocol device emulation target.
 // Width/height are CSS viewport pixels, not OS window bounds. Mobile=true uses
@@ -57,10 +72,26 @@ type devicePreset struct {
 }
 
 const (
-	iphoneMobileUA  = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-	ipadMobileUA    = "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-	androidChromeUA = "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+	iphoneMobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+	ipadMobileUA   = "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 )
+
+// androidChromeUA is the generic Android UA used for custom mobile emulation
+// when the caller supplies no user_agent of their own.
+//
+// Android user agents carry the device model, so each preset needs its own —
+// sharing this one constant made pixel_5 and galaxy_s20 both report "Pixel 7",
+// silently defeating any server-side device sniffing the caller was testing.
+// (iOS UAs carry no model: every iPhone reports "iPhone", so the iPhone/iPad
+// presets legitimately share one string.)
+var androidChromeUA = androidChromeUAFor("Pixel 7")
+
+// androidChromeUAFor builds a mobile Chrome user agent for an Android device
+// model as it appears in the UA string (for example "Pixel 5", "SM-G981B").
+func androidChromeUAFor(model string) string {
+	return "Mozilla/5.0 (Linux; Android 14; " + model +
+		") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+}
 
 var deviceEmulationPresets = map[string]devicePreset{
 	"iphonese": {
@@ -85,7 +116,7 @@ var deviceEmulationPresets = map[string]devicePreset{
 	},
 	"pixel5": {
 		Device: "pixel_5", Width: 393, Height: 851, DeviceScaleFactor: 2.75,
-		UserAgent: androidChromeUA, Platform: "Linux armv8l", MaxTouchPoints: 5,
+		UserAgent: androidChromeUAFor("Pixel 5"), Platform: "Linux armv8l", MaxTouchPoints: 5,
 	},
 	"pixel7": {
 		Device: "pixel_7", Width: 412, Height: 915, DeviceScaleFactor: 2.625,
@@ -93,7 +124,7 @@ var deviceEmulationPresets = map[string]devicePreset{
 	},
 	"galaxys20": {
 		Device: "galaxy_s20", Width: 360, Height: 800, DeviceScaleFactor: 3,
-		UserAgent: androidChromeUA, Platform: "Linux armv8l", MaxTouchPoints: 5,
+		UserAgent: androidChromeUAFor("SM-G981B"), Platform: "Linux armv8l", MaxTouchPoints: 5,
 	},
 	"ipadmini": {
 		Device: "ipad_mini", Width: 768, Height: 1024, DeviceScaleFactor: 2,
@@ -124,7 +155,7 @@ func NormalizeDeviceEmulationOptions(opts DeviceEmulationOptions) (DeviceEmulati
 	case deviceKey != "":
 		preset, ok := deviceEmulationPresets[deviceKey]
 		if !ok {
-			return DeviceEmulationConfig{}, false, fmt.Errorf("unknown device preset %q; use iphone_se, iphone_14, iphone_14_pro_max, pixel_7, galaxy_s20, ipad_mini, responsive, or explicit width/height", opts.Device)
+			return DeviceEmulationConfig{}, false, fmt.Errorf("unknown device preset %q; use one of %s, or responsive/custom with explicit width+height", opts.Device, strings.Join(SupportedDevicePresets(), ", "))
 		}
 		cfg = DeviceEmulationConfig{
 			Device:            preset.Device,

@@ -247,10 +247,13 @@ running plan or batch on that same connection instead of waiting behind it.
 Backend-specific notes:
 
 - `brw_emulate_device` uses Chrome DevTools Protocol device emulation, not OS
-  window resizing. Presets such as `iphone_se`, `iphone_14`, `pixel_7`,
-  `galaxy_s20`, and `ipad_mini` apply CSS viewport size, DPR, mobile viewport
-  meta behavior, touch emulation, and mobile UA/platform overrides. Pass
-  `clear:true` to reset a tab.
+  window resizing. The presets are exactly `iphone_se`, `iphone_12`,
+  `iphone_13`, `iphone_14`, `iphone_14_pro_max`, `pixel_5`, `pixel_7`,
+  `galaxy_s20`, `ipad_mini`, and `ipad`; each applies CSS viewport size, DPR,
+  mobile viewport meta behavior, touch emulation, and mobile UA/platform
+  overrides. For any other device pass `responsive`/`custom` with explicit
+  `width` and `height` instead of guessing a model name. Pass `clear:true` to
+  reset a tab.
 - `brw_upload_file` accepts the file from exactly one source: `path`/`paths`
   (files already on the browser host), `bytes_base64` (inline base64 contents,
   no host filesystem access needed), or `url` (the daemon fetches it over

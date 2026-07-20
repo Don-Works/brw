@@ -318,10 +318,23 @@ func failureShape(message string) string {
 		return "broken_pipe"
 	case strings.Contains(message, "unexpected end of json"):
 		return "unexpected_json_eof"
-	case strings.Contains(message, "ref not found"):
+	case strings.Contains(message, "ref not found"),
+		// snapshot/scripts.go and extensionbridge/bridge.go raise a stale ref as
+		// `element ref %q not recoverable: %s`, which the "ref not found" arm above
+		// never matched — the single most common agent mistake was landing in
+		// "other" and so was invisible in the ledger.
+		strings.Contains(message, "not recoverable"):
 		return "ref_not_found"
 	case strings.Contains(message, "not actionable"):
 		return "not_actionable"
+	case strings.Contains(message, "no visible element found for text"):
+		return "text_not_found"
+	case strings.Contains(message, "runtime exception"):
+		return "runtime_exception"
+	case strings.Contains(message, "unknown device preset"):
+		return "invalid_argument"
+	case strings.Contains(message, "no current window"):
+		return "no_current_window"
 	case strings.Contains(message, "grouping is not supported by tabs in this window"),
 		strings.Contains(message, "tab grouping unavailable"):
 		return "tab_grouping_unsupported"
