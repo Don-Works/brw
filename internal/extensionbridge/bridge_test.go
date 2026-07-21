@@ -699,12 +699,15 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// discarded tab revival before every drive, opts brw-opened tabs out of
 	// Memory Saver discard, reports discarded/frozen in tab summaries, and
 	// serializes all activate→restore juggles on one queue; 0.4.1 recovers from
-	// a zero-window browser by creating the window tabs.create refuses to).
+	// a zero-window browser by creating the window tabs.create refuses to; 0.4.2
+	// hardens the offscreen keepalive — genuine silent-audio playback plus a
+	// long-lived worker port — so the MV3 service worker stops idling out and
+	// severing the bridge with StatusGoingAway).
 	// It is DECOUPLED from the wire PROTOCOL_VERSION below: the manifest moves
 	// with every feature release, while PROTOCOL_VERSION only moves on a breaking
-	// bridge-handshake change. 0.4.0 and 0.4.1 add fields and in-extension
+	// bridge-handshake change. 0.4.0-0.4.2 add fields and in-extension
 	// behaviour only, so the protocol stays 0.2.0 (the daemon still accepts it).
-	const wantManifest = "0.4.1"
+	const wantManifest = "0.4.2"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

@@ -11,7 +11,10 @@ const DAEMON_STATUS_TIMEOUT_MS = 2 * 1000;
 // the authoritative transport, so do not tear a healthy one down on one noisy
 // HTTP probe. Three consecutive failures still recover a genuinely stale link.
 const MAX_DAEMON_STATUS_FAILURES = 3;
-const MAX_RECONNECT_DELAY_MS = 10 * 1000;
+// The MV3 worker respawn is sub-second, so a long backoff just widens the
+// window where an agent call hits a dead bridge. Keep reconnects fast; the
+// offscreen keepalive port re-pins the worker the instant it comes back.
+const MAX_RECONNECT_DELAY_MS = 3 * 1000;
 // Detach a tab's debugger after this long without a CDP command, so brw doesn't
 // hold debugger sessions on idle tabs of the user's real Chrome.
 const IDLE_DETACH_MS = 120 * 1000;
@@ -257,6 +260,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   connect({ probe: true });
   sendResponse({ ok: true });
   return false;
+});
+// The offscreen keepalive holds a long-lived port here. An open runtime port
+// keeps this worker non-idle for as long as it stays connected, so the worker
+// does not idle out and sever the daemon bridge. Touch the bridge on (re)connect
+// so a worker that just respawned reconnects immediately instead of waiting for
+// the 30s alarm. The port reference is retained so it is never GC'd out from
+// under the connection.
+let keepAlivePort = null;
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "brw-keepalive") return;
+  keepAlivePort = port;
+  ensureOffscreen();
+  connect({ probe: true });
+  port.onDisconnect.addListener(() => {
+    if (keepAlivePort === port) keepAlivePort = null;
+  });
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || !changes[BRIDGE_CONFIG_KEY]) return;

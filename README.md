@@ -159,6 +159,10 @@ That id is the daemon's `DefaultBridgeExtensionID`, so an unconfigured bridge
 trusts the real extension with no policy edit. Only set `bridge_extension_id`
 for a different re-signed build.
 
+The extension keeps its service worker alive so the bridge does not drop while
+Chrome idles in the background — see [docs/reliability.md](docs/reliability.md)
+for how brw stays connected, the one-time macOS App Nap setup, and how to verify.
+
 ### Chromium recommended (open source)
 
 Chromium is open source and not gated by the Chrome Web Store, so you can

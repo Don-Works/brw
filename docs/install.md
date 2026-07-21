@@ -206,6 +206,20 @@ change.
 Set `bridge_extension_id` in the profile policy only when you ship your own
 re-signed build with a different id; the default published id is built in.
 
+## Keep the browser awake (macOS)
+
+macOS App Nap can freeze a backgrounded browser's extension, which drops the
+bridge until the browser is focused again. Disable it per browser (takes effect
+on next launch) so brw stays connected while it runs in the background:
+
+```sh
+defaults write org.chromium.Chromium NSAppSleepDisabled -bool YES
+defaults write com.google.Chrome     NSAppSleepDisabled -bool YES   # only if you drive Chrome
+```
+
+See [reliability.md](reliability.md) for the full "staying connected" story
+(the extension's service-worker keepalive and an optional watchdog).
+
 ## Verify
 
 ```sh
