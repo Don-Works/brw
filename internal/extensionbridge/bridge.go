@@ -385,10 +385,14 @@ func NewAuthToken() (string, error) {
 const defaultBridgeMaxInflight = 6
 
 // bridgeReconnectGrace bounds how long a call parks waiting for the MV3 service
-// worker to reconnect after finding the socket down, before failing. The worker
-// reconnects in ~1s; a few seconds of grace rides out the gap without hanging a
-// caller indefinitely (the overall op deadline still applies on top).
-const bridgeReconnectGrace = 3 * time.Second
+// worker to reconnect after finding the socket down, before failing. Observed
+// worker respawns after a StatusGoingAway close take 3-11s, so a 3s grace failed
+// even the typical case with "extension bridge is not connected" while the
+// worker was on its way back. 12s rides out the reconnect for essentially every
+// routine going-away event without hanging a caller indefinitely — the overall
+// op deadline (b.timeout, 20s default) still applies on top, and idempotent
+// reads additionally retry once after a transient drop.
+const bridgeReconnectGrace = 12 * time.Second
 
 // replacedDrainReason is the error stamped on pending RPCs when a NEW extension
 // with a DIFFERENT identity takes over the bridge: the displaced extension can
