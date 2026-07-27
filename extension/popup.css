@@ -1,0 +1,401 @@
+:root {
+  color-scheme: light dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  /* Brand-tinted neutrals (magenta hue), restrained product palette */
+  --bg: #f6f2f5;
+  --surface: #fffbfe;
+  --surface-2: #f3eef2;
+  --ink: #1d1520;
+  --muted: #6a5a66;
+  --line: #ddd0d9;
+  --accent: #9f006f;
+  --accent-hover: #7e0058;
+  --accent-soft: #fae7f4;
+  --success: #11643b;
+  --success-soft: #e4f5eb;
+  --warning: #765400;
+  --warning-soft: #fff2ca;
+  --danger: #a42c32;
+  --danger-soft: #fdebed;
+  --agent: #9f006f;
+  --agent-soft: #fae7f4;
+  --focus: #9f006f;
+  --radius: 12px;
+  --ease: cubic-bezier(.22, 1, .36, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1418;
+    --surface: #241c22;
+    --surface-2: #2e242c;
+    --ink: #f6eef4;
+    --muted: #b5a4b0;
+    --line: #3f333c;
+    --accent: #ff6ec7;
+    --accent-hover: #ff8ad3;
+    --accent-soft: #3a2033;
+    --success: #5ddea0;
+    --success-soft: #163526;
+    --warning: #f0c14b;
+    --warning-soft: #3a2e10;
+    --danger: #ff8a90;
+    --danger-soft: #3a1a1c;
+    --agent: #ff6ec7;
+    --agent-soft: #3a2033;
+    --focus: #ff6ec7;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 300px;
+  max-width: 340px;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.popup {
+  padding: 14px 14px 12px;
+}
+
+.head,
+.brand,
+.status,
+.actions {
+  display: flex;
+  align-items: center;
+}
+
+.head {
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.brand {
+  gap: 9px;
+  min-width: 0;
+}
+
+.brand img {
+  display: block;
+  border-radius: 7px;
+}
+
+.wordmark {
+  font-size: 1.125rem;
+  font-weight: 780;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+
+.brand p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: .75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 190px;
+}
+
+.version {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font: 650 .7rem/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.status {
+  gap: 12px;
+  padding: 14px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.status-mark {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border: 3px solid var(--muted);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.status-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.status-label {
+  margin: 0 0 3px;
+  color: var(--muted);
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.2rem;
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+  font-weight: 750;
+}
+
+#statusSummary {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: .82rem;
+  line-height: 1.4;
+  max-width: 42ch;
+}
+
+/* —— state colours —— */
+.popup[data-state="loading"] .status-mark {
+  border-color: var(--muted);
+  animation: pulse 1.2s var(--ease) infinite;
+}
+
+.popup[data-state="connected"] .status { background: var(--success-soft); border-color: color-mix(in srgb, var(--success) 28%, var(--line)); }
+.popup[data-state="connected"] .status-mark {
+  border-color: var(--success);
+  background: var(--success);
+}
+.popup[data-state="connected"] .status-label { color: var(--success); }
+
+.popup[data-state="used"] .status { background: var(--agent-soft); border-color: color-mix(in srgb, var(--agent) 30%, var(--line)); }
+.popup[data-state="used"] .status-mark {
+  border-color: var(--agent);
+  background: var(--agent);
+  animation: pulse 1s var(--ease) infinite;
+}
+.popup[data-state="used"] .status-label { color: var(--agent); }
+
+.popup[data-state="connecting"] .status { background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 30%, var(--line)); }
+.popup[data-state="connecting"] .status-mark {
+  border-color: var(--warning);
+  animation: pulse 1s var(--ease) infinite;
+}
+.popup[data-state="connecting"] .status-label { color: var(--warning); }
+
+.popup[data-state="disconnected"] .status,
+.popup[data-state="error"] .status { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); }
+.popup[data-state="disconnected"] .status-mark,
+.popup[data-state="error"] .status-mark {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+.popup[data-state="disconnected"] .status-label,
+.popup[data-state="error"] .status-label { color: var(--danger); }
+
+@keyframes pulse {
+  50% { transform: scale(.72); opacity: .55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .popup[data-state="used"] .status-mark,
+  .popup[data-state="connecting"] .status-mark,
+  .popup[data-state="loading"] .status-mark {
+    animation: none;
+  }
+}
+
+/* —— progressive disclosure —— */
+.details {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 11px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--ink);
+  font-size: .8rem;
+  font-weight: 650;
+}
+
+.details > summary::-webkit-details-marker { display: none; }
+
+.details > summary::before {
+  content: "›";
+  margin-right: 6px;
+  color: var(--muted);
+  transition: transform 140ms var(--ease);
+}
+
+.details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.summary-meta {
+  color: var(--muted);
+  font-size: .72rem;
+  font-weight: 500;
+}
+
+.details-body {
+  padding: 0 11px 11px;
+  border-top: 1px solid var(--line);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px 12px;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.facts div { min-width: 0; }
+
+.facts dt {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: .68rem;
+}
+
+.facts dd {
+  margin: 0;
+  overflow: hidden;
+  font-size: .82rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legend {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px 10px;
+  margin: 10px 0 0;
+  padding: 8px 9px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: .72rem;
+}
+
+.legend span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.dot.connected { background: var(--success); }
+.dot.used { background: var(--agent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--agent) 30%, transparent); }
+.dot.connecting { background: var(--warning); }
+.dot.disconnected { background: var(--danger); }
+
+.message {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: .78rem;
+  line-height: 1.35;
+}
+.message[hidden] { display: none; }
+.message[data-kind="error"] { color: var(--danger); }
+.message[data-kind="success"] { color: var(--success); }
+
+.actions {
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.button {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+  transition: background-color 140ms var(--ease), border-color 140ms var(--ease), filter 140ms var(--ease);
+}
+
+.button:hover { background: var(--surface-2); }
+.button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 30%, transparent);
+}
+.button:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.button.primary {
+  flex: 1;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.button.primary:hover {
+  filter: brightness(1.05);
+  background: var(--accent);
+}
+
+.button.secondary {
+  flex: 1;
+}
+
+/* When healthy, Options is primary and Reconnect is quiet */
+.popup[data-state="connected"] #openOptions,
+.popup[data-state="used"] #openOptions {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.popup[data-state="connected"] #openOptions:hover,
+.popup[data-state="used"] #openOptions:hover {
+  filter: brightness(1.05);
+}
+
+.popup[data-state="disconnected"] #reconnect,
+.popup[data-state="error"] #reconnect,
+.popup[data-state="connecting"] #reconnect,
+.popup[data-state="loading"] #reconnect {
+  flex: 1;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.popup[data-state="disconnected"] #reconnect:hover,
+.popup[data-state="error"] #reconnect:hover,
+.popup[data-state="connecting"] #reconnect:hover {
+  filter: brightness(1.05);
+}
+
+@media (prefers-color-scheme: dark) {
+  .button.primary,
+  .popup[data-state="connected"] #openOptions,
+  .popup[data-state="used"] #openOptions,
+  .popup[data-state="disconnected"] #reconnect,
+  .popup[data-state="error"] #reconnect,
+  .popup[data-state="connecting"] #reconnect,
+  .popup[data-state="loading"] #reconnect {
+    color: #1a1016;
+  }
+}

@@ -32,6 +32,11 @@ type fakeExtension struct {
 	// focus_tab, it wins over the OS-focused tab in foregroundID() and is never
 	// moved by the user. 0 means unset.
 	agentTabId int
+	// noDrivableReason, when set, makes get_active_tab_id answer tabId 0 WITH a
+	// reason — the real service worker's behaviour when every candidate tab is one
+	// Chrome refuses to let brw drive (a foreign extension's popout, chrome://).
+	// Distinct from answering 0 with no reason, which means a transient failure.
+	noDrivableReason string
 }
 
 type fakeTab struct {
@@ -138,7 +143,11 @@ func (f *fakeExtension) serve(ctx context.Context, conn *websocket.Conn) {
 				"tabCount":  2,
 			}}
 		case "get_active_tab_id":
-			result = map[string]any{"tabId": f.foregroundID()}
+			if f.noDrivableReason != "" {
+				result = map[string]any{"tabId": 0, "error": f.noDrivableReason}
+			} else {
+				result = map[string]any{"tabId": f.foregroundID()}
+			}
 		case "focus_tab":
 			id := 0
 			if v, found := msg.Params["tabId"]; found {
@@ -206,6 +215,65 @@ func connectFakeExtension(t *testing.T, b *Bridge) (*fakeExtension, func()) {
 		srv.Close()
 	}
 	return fe, cleanup
+}
+
+// TestNoDrivableTabDoesNotFallBackToTheCachedTab is the daemon half of the
+// "Bitwarden popups break evaluate" fix. Teaching the extension to skip a tab it
+// cannot drive is not enough on its own: when resolution then yields nothing,
+// contextTabID used to fall through to its cached tab id — which is typically
+// the very tab that just became undrivable — so every no-tab_id call still died
+// on Chrome's raw "Cannot access a chrome-extension:// URL of different
+// extension". A DEFINITIVE no-drivable-tab answer must suppress that fallback,
+// while a TRANSIENT resolution failure (MV3 worker mid-reconnect) must still use
+// the cache, which is the behaviour this sits next to and must not regress.
+func TestNoDrivableTabDoesNotFallBackToTheCachedTab(t *testing.T) {
+	b := New("", 5*time.Second, "")
+	fe, cleanup := connectFakeExtension(t, b)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Warm the cache the way a normal session does.
+	if got := b.contextTabID(ctx); got != "12" {
+		t.Fatalf("contextTabID = %q, want 12", got)
+	}
+	if cached := b.activeTabID(); cached != "12" {
+		t.Fatalf("cached active tab = %q, want 12", cached)
+	}
+
+	// The human's password manager pops its vault out into the focused window.
+	fe.mu.Lock()
+	fe.noDrivableReason = "no drivable tab: the active tab is " +
+		"chrome-extension://nngceckbapebfimnlniiiahkandclblb/popup/index.html, " +
+		"which Chrome does not allow brw to control. Switch to a normal page tab, or pass an explicit tab_id."
+	fe.mu.Unlock()
+
+	if got := b.contextTabID(ctx); got != "" {
+		t.Fatalf("contextTabID = %q after a definitive no-drivable-tab answer, want \"\" so the call surfaces the real reason instead of retargeting the stale cached tab", got)
+	}
+	// The cache itself is untouched: the tab is still the right one to return to
+	// once the popout closes.
+	if cached := b.activeTabID(); cached != "12" {
+		t.Fatalf("cached active tab = %q, want it preserved as 12", cached)
+	}
+
+	// A TRANSIENT failure (tabId 0, no reason) must still fall back to the cache.
+	fe.mu.Lock()
+	fe.noDrivableReason = ""
+	fe.focusedWindow = 999 // no window matches -> foregroundID() == 0, no reason
+	fe.agentTabId = 0
+	fe.mu.Unlock()
+
+	if got := b.contextTabID(ctx); got != "12" {
+		t.Fatalf("contextTabID = %q on a transient resolution failure, want the cached 12", got)
+	}
+
+	// And once a drivable tab is focused again, resolution recovers on its own.
+	fe.mu.Lock()
+	fe.focusedWindow = 2
+	fe.mu.Unlock()
+	if got := b.contextTabID(ctx); got != "12" {
+		t.Fatalf("contextTabID = %q after recovery, want 12", got)
+	}
 }
 
 // TestActiveTabResolutionIsConsistentAcrossPageTools is the regression test for

@@ -157,6 +157,11 @@ func TestFingerprintCoversCommonAgentFailures(t *testing.T) {
 		"bad device preset":           `unknown device preset "iPhone 15"; use iphone_se, iphone_14, responsive, or explicit width/height`,
 		"runtime exception":           `runtime exception: Error: boom`,
 		"no current window":           `extension bridge: No current window`,
+		// Verbatim from Chrome when brw resolves a foreign extension's page as the
+		// foreground tab — a password-manager popout holding focus. This recurred
+		// all day in the real ledger while sitting in the "other" bucket.
+		"foreign extension page": `extension bridge: Cannot access a chrome-extension:// URL of different extension`,
+		"devtools owns the tab":  `cannot control tab 42: another debugger (likely DevTools) is already attached; close DevTools on that tab and retry`,
 	}
 	seen := map[string]string{}
 	for name, msg := range cases {
@@ -184,5 +189,71 @@ func TestFingerprintCoversCommonAgentFailures(t *testing.T) {
 	b := Fingerprint(`element ref "SENTINEL_B" not recoverable: no_key`)
 	if a != b {
 		t.Errorf("fingerprint varies with caller-controlled ref: %q != %q", a, b)
+	}
+
+	// Every phrasing of "brw pointed at a tab it cannot drive" must aggregate, so
+	// the ledger counts the outage once instead of splitting it three ways.
+	drivable := []string{
+		`extension bridge: Cannot access a chrome-extension:// URL of different extension`,
+		`extension bridge: Cannot access contents of the page`,
+		`extension bridge: Cannot attach to this target`,
+		`no drivable tab: the active tab is chrome://settings/, which Chrome does not allow brw to control. Switch to a normal page tab, or pass an explicit tab_id.`,
+	}
+	want := Fingerprint(drivable[0])
+	for _, msg := range drivable[1:] {
+		if got := Fingerprint(msg); got != want {
+			t.Errorf("not-drivable phrasing fingerprints differently: %q -> %q, want %q", msg, got, want)
+		}
+	}
+}
+
+func TestClassifyErrorSeparatesNonDrivableTabsFromToolFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			// The Bitwarden foreground-hijack failure. It must NOT be "tool" (an
+			// agent mistake) and must NOT be "transport" (a bridge fault) — it is a
+			// tab brw was never allowed to drive.
+			name: "foreign extension page",
+			err:  errors.New("extension bridge: Cannot access a chrome-extension:// URL of different extension"),
+			want: "tab_not_drivable",
+		},
+		{
+			name: "no drivable tab surfaced by the extension",
+			err:  errors.New("no drivable tab: the active tab is chrome://settings/, which Chrome does not allow brw to control."),
+			want: "tab_not_drivable",
+		},
+		{
+			name: "devtools owns the debugger session",
+			err:  errors.New("cannot control tab 42: another debugger (likely DevTools) is already attached"),
+			want: "debugger_conflict",
+		},
+		{
+			name: "a genuine tool failure still classifies as tool",
+			err:  errors.New("click text: no visible element found for text \"Sign in\""),
+			want: "tool",
+		},
+		{
+			name: "a real transport drop is unaffected",
+			err:  errors.New("extension bridge is not connected; load/click the Chrome extension first"),
+			want: "transport",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyError(tc.err); got != tc.want {
+				t.Errorf("ClassifyError(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+			// Neither new class is retryable: retrying re-fails until the human
+			// closes the popout or DevTools, so retrying only burns the deadline.
+			if tc.want == "tab_not_drivable" || tc.want == "debugger_conflict" {
+				if Retryable(tc.want) {
+					t.Errorf("Retryable(%q) = true, want false", tc.want)
+				}
+			}
+		})
 	}
 }

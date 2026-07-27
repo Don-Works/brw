@@ -109,6 +109,80 @@ the current keepalive code is live. The daemon log
 `extension bridge connected (build X, label "...")` and every `StatusGoingAway`
 close — grep it to audit disconnect frequency.
 
+## Toolbar badge and popup (extension 0.4.5+)
+
+The toolbar icon is the live operator signal — no need to open Options to know
+whether the bridge is healthy. One lexicon everywhere (badge tooltip, popup,
+Details panel):
+
+| Badge | Lexicon | Meaning |
+|-------|---------|---------|
+| solid green **`on`** | **Idle** | Connected, ready, no agent driving |
+| magenta pulse **`act`** | **Agent active** | Agent driving a real page (last ~10s) |
+| amber flash **`…`** | **Reconnecting** | Connecting / reconnecting |
+| solid red **`off`** | **Down** | Disconnected or error |
+
+Green is reserved for verified Idle only — Agent active is brand magenta so the
+two states never collide. Click the icon for a compact status popup: healthy
+views stay collapsed (status + profile + Options); Details (socket/daemon/port +
+badge key) expand when Down or Reconnecting. Reconnect polls until the bridge is
+verified up (or 12s). After a prior successful connection, a drop that lasts
+>12s also raises a desktop notification (rate-limited to once per 5 minutes).
+
+## Tabs brw cannot drive (extension 0.4.6+)
+
+Chrome refuses `chrome.debugger` access to **another extension's** pages, to
+`chrome://` / `devtools://` surfaces, and to the Web Store. The refusal reads:
+
+```
+extension bridge: Cannot access a chrome-extension:// URL of different extension
+```
+
+This was reported as "brw is degraded" or "Bitwarden popups intermittently break
+evaluate", and it is neither degradation nor intermittent. A password manager
+that pops its vault out into its own **focused** window (Bitwarden's unlock and
+passkey prompts do this on their own) becomes the authoritative foreground tab.
+Every no-`tab_id` tool — evaluate, read, snapshot, click — then fails with that
+error for as long as the popout is up. The bridge is perfectly healthy
+throughout, which is what makes it read as random flakiness.
+
+Three layers now keep brw off those tabs:
+
+1. **`isAgentDrivableUrl` gates foreground resolution.** `resolveForegroundTabId`
+   skips a candidate it cannot drive at every step (agent pin, focused window,
+   last-focused window, cache, any-active) and falls through to a usable tab.
+   brw's OWN extension pages stay drivable — that is how a new build is made live
+   (below). `publishActiveTab` applies the same guard so a focus event cannot
+   poison the cache fallback.
+2. **`list_tabs` reports no active tab when none is drivable.** It previously fell
+   back to Chrome's raw per-window active flag, and the daemon caches
+   `Active && WindowFocused` as its active tab — so the popout came straight back
+   through that path even after resolution learned to skip it.
+3. **`get_active_tab_id` returns the reason.** The daemon distinguishes a
+   transient failure (MV3 worker mid-reconnect → retry, then trust the cache)
+   from a definitive "nothing is drivable" (never fall back — the cached id is
+   very likely that same tab). See `isNoDrivableTabReason` in `bridge.go`.
+
+The agent-facing error is now actionable rather than Chrome's raw refusal:
+
+```
+no drivable tab: the active tab is chrome-extension://<id>/popup/index.html,
+which Chrome does not allow brw to control. Switch to a normal page tab, or
+pass an explicit tab_id.
+```
+
+An explicit `tab_id` still targets these tabs, and `list_tabs` still lists them —
+nothing became unreachable, brw just stopped *choosing* them.
+
+In the usage ledger this class is `tab_not_drivable` (DevTools contention is
+`debugger_conflict`). Both previously landed in the catch-all `other` bucket,
+which is why a recurring, very fixable outage was invisible:
+
+```
+grep '"error_class":"tab_not_drivable"' \
+  ~/Library/"Application Support"/brw/usage/*-bridge.ndjson | wc -l
+```
+
 ## Making a new extension build live
 
 `chrome.runtime.reload()` reloads an unpacked extension from disk without
