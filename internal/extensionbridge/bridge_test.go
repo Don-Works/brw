@@ -408,6 +408,45 @@ func TestExtensionHasBridgeOptionsPage(t *testing.T) {
 	if !strings.Contains(string(manifest), `"options_page": "options.html"`) {
 		t.Fatal("manifest must expose the bridge profile options page")
 	}
+	if !strings.Contains(string(manifest), `"default_popup": "popup.html"`) {
+		t.Fatal("manifest must expose the toolbar status popup")
+	}
+	popupHTML, err := os.ReadFile(filepath.Join("..", "..", "extension", "popup.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`href="popup.css"`, `id="statusBlock"`, `id="reconnect"`, `id="openOptions"`, `id="detailsPanel"`, `aria-live="polite"`} {
+		if !strings.Contains(string(popupHTML), want) {
+			t.Fatalf("popup page missing %q", want)
+		}
+	}
+	popupJS, err := os.ReadFile(filepath.Join("..", "..", "extension", "popup.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`BRW_GET_STATUS`, `BRW_RECONNECT`, `openOptionsPage`, `isVerifiedUp`, `LEXICON`, `Agent active`} {
+		if !strings.Contains(string(popupJS), want) {
+			t.Fatalf("popup script missing %q", want)
+		}
+	}
+	worker, err := os.ReadFile(filepath.Join("..", "..", "extension", "service_worker.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`BADGE_DOWN_BG`,
+		`BADGE_AGENT_BG`,
+		`resolveBadgeMode`,
+		`notifyBridgeDisconnected`,
+		`BRW_RECONNECT`,
+		`touchAgentActivity`,
+		`brw · Idle`,
+		`brw · Agent active`,
+	} {
+		if !strings.Contains(string(worker), want) {
+			t.Fatalf("service worker missing badge/popup wiring %q", want)
+		}
+	}
 	optionsHTML, err := os.ReadFile(filepath.Join("..", "..", "extension", "options.html"))
 	if err != nil {
 		t.Fatal(err)
@@ -702,12 +741,24 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// a zero-window browser by creating the window tabs.create refuses to; 0.4.2
 	// hardens the offscreen keepalive — genuine silent-audio playback plus a
 	// long-lived worker port — so the MV3 service worker stops idling out and
-	// severing the bridge with StatusGoingAway).
+	// severing the bridge with StatusGoingAway; 0.4.3 adds the toolbar status
+	// popup, coloured badge modes (green idle / green pulse used / amber flash
+	// connecting / red off), and a debounced disconnect desktop notification;
+	// 0.4.4 keeps the badge honest: per-request CDP faults no longer paint red
+	// while the socket is up, and chrome-extension pages don't light "used";
+	// 0.4.5 distills the popup (progressive disclosure), one lexicon
+	// (Idle / Agent active / Reconnecting / Down), magenta agent-active badge,
+	// verified reconnect, and state-dependent primary actions; 0.4.6 stops
+	// foreground resolution from ever landing on a tab Chrome refuses to let brw
+	// drive — a foreign extension's page (a password manager popping its vault
+	// out into a focused window), chrome://, devtools:// or the Web Store — and
+	// reports the reason on get_active_tab_id so the daemon does not fall back
+	// onto that same tab from its cache).
 	// It is DECOUPLED from the wire PROTOCOL_VERSION below: the manifest moves
 	// with every feature release, while PROTOCOL_VERSION only moves on a breaking
-	// bridge-handshake change. 0.4.0-0.4.2 add fields and in-extension
+	// bridge-handshake change. 0.4.0-0.4.6 add fields and in-extension
 	// behaviour only, so the protocol stays 0.2.0 (the daemon still accepts it).
-	const wantManifest = "0.4.2"
+	const wantManifest = "0.4.6"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

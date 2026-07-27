@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>brw</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="popup" id="popup" data-state="loading" aria-live="polite">
+    <header class="head">
+      <div class="brand">
+        <img src="icons/icon-32.png" width="28" height="28" alt="">
+        <div>
+          <div class="wordmark">brw</div>
+          <p id="profileLine">Checking…</p>
+        </div>
+      </div>
+      <span class="version" id="extensionVersion"></span>
+    </header>
+
+    <section class="status" id="statusBlock">
+      <div class="status-mark" aria-hidden="true"></div>
+      <div class="status-copy">
+        <p class="status-label" id="statusLabel">Checking</p>
+        <h1 id="statusHeading">Bridge status</h1>
+        <p id="statusSummary">Reading connection state…</p>
+      </div>
+    </section>
+
+    <details class="details" id="detailsPanel">
+      <summary>
+        <span>Details</span>
+        <span class="summary-meta" id="detailsMeta">socket · daemon · port</span>
+      </summary>
+      <div class="details-body">
+        <dl class="facts" aria-label="Connection details">
+          <div>
+            <dt>Socket</dt>
+            <dd id="socketFact">—</dd>
+          </div>
+          <div>
+            <dt>Daemon</dt>
+            <dd id="daemonFact">—</dd>
+          </div>
+          <div>
+            <dt>Port</dt>
+            <dd id="portFact">—</dd>
+          </div>
+          <div>
+            <dt>State</dt>
+            <dd id="badgeFact">—</dd>
+          </div>
+        </dl>
+        <div class="legend" aria-label="Toolbar badge key">
+          <span><i class="dot connected"></i>Idle</span>
+          <span><i class="dot used"></i>Agent active</span>
+          <span><i class="dot connecting"></i>Reconnecting</span>
+          <span><i class="dot disconnected"></i>Down</span>
+        </div>
+      </div>
+    </details>
+
+    <div class="message" id="formMessage" role="status" hidden></div>
+
+    <div class="actions">
+      <button class="button" id="reconnect" type="button">Reconnect</button>
+      <button class="button" id="openOptions" type="button">Options</button>
+    </div>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

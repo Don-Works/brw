@@ -23,6 +23,11 @@ key (which produces a different id).
   `notifications` permission) when the daemon sends a `notify` command so the
   user is pulled back at human-handoff points (MFA/CAPTCHA/purchase
   confirmation), on completion, or on error — even when the tab is backgrounded.
+- Toolbar badge uses one lexicon: green `on` = **Idle**, magenta pulse `act` =
+  **Agent active**, amber flash = **Reconnecting**, red `off` = **Down**. Click
+  opens a distilled status popup (Details collapsed when healthy; Reconnect
+  verifies until the bridge is up). Sustained disconnect after a prior
+  connection also notifies the operator.
 - **Never reads or exports Chrome cookies, passwords, passkeys, or profile
   files — enforced, not just promised.** The extension refuses every cookie CDP
   method and the entire `Storage` CDP domain, so the privacy claim holds even if

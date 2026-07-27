@@ -31,6 +31,7 @@ function makeEvent(path) {
 const overrides = {
   "runtime.lastError": undefined,
   "runtime.getURL": (p) => "mock://" + p,
+  "runtime.id": "amocjcgddnoakjijfggdpnefdnboilpe",
   "runtime.getPlatformInfo": async () => ({ os: "mac" }),
   "windows.WINDOW_ID_NONE": -1,
   "offscreen.Reason": { BLOBS: "BLOBS" },
@@ -40,6 +41,7 @@ const overrides = {
   "alarms.create": async () => {},
   "action.setBadgeText": async () => {},
   "action.setBadgeBackgroundColor": async () => {},
+  "action.setBadgeTextColor": async () => {},
   "action.setTitle": async () => {},
   "tabs.get": async (id) => {
     const t = model.tabs.get(typeof id === "object" ? id.tabId : id);
@@ -119,6 +121,7 @@ src += `
   resolveForegroundTabId,
   publishActiveTab,
   isControllableWindowType,
+  isAgentDrivableUrl,
   preferredNormalWindowId,
   groupTabForParams,
   listTabSummaries,
@@ -394,6 +397,91 @@ async function scenarioStatusProbeToleratesTransientFailure() {
   sandbox.fetch = originalFetch;
 }
 
+// Regression for "Bitwarden popups intermittently break evaluate": a password
+// manager pops its vault out into its own FOCUSED window. Chrome refuses
+// chrome.debugger access to another extension's pages, so if brw resolves that
+// tab as the foreground tab, every no-tab_id tool fails with
+// "Cannot access a chrome-extension:// URL of different extension" until the
+// human closes the popout. brw must skip it and keep working on a real page.
+const BITWARDEN_POPOUT = "chrome-extension://nngceckbapebfimnlniiiahkandclblb/popup/index.html";
+
+async function scenarioForeignExtensionPopoutNeverStealsForeground() {
+  await reset();
+
+  // The predicate itself: foreign + own extension pages and browser chrome are
+  // not drivable; real pages and brw's own about:blank scratch target are.
+  check("foreign extension page is not drivable", T.isAgentDrivableUrl(BITWARDEN_POPOUT) === false);
+  // brw CAN debug its own pages, and the documented "make a new build live" flow
+  // opens options.html and calls chrome.runtime.reload() on it — so own-extension
+  // pages must stay drivable. Only foreign extensions are refused by Chrome.
+  check("brw's own extension page stays drivable", T.isAgentDrivableUrl("chrome-extension://amocjcgddnoakjijfggdpnefdnboilpe/options.html") === true);
+  check("own-extension check is id-scoped, not prefix-loose", T.isAgentDrivableUrl("chrome-extension://amocjcgddnoakjijfggdpnefdnboilpeEVIL/x.html") === false);
+  check("chrome:// settings is not drivable", T.isAgentDrivableUrl("chrome://settings/") === false);
+  check("devtools:// is not drivable", T.isAgentDrivableUrl("devtools://devtools/bundled/inspector.html") === false);
+  check("the Web Store is not drivable", T.isAgentDrivableUrl("https://chromewebstore.google.com/detail/abc") === false);
+  check("a real page is drivable", T.isAgentDrivableUrl("https://example.test/x") === true);
+  check("about:blank is drivable", T.isAgentDrivableUrl("about:blank") === true);
+  check("a URL-less (mid-creation) tab is drivable", T.isAgentDrivableUrl("") === true);
+
+  // 1. The popout is a FOCUSED popup window; the user's real page sits in an
+  //    unfocused normal window. Resolution must land on the real page.
+  setWin({ id: 1, type: "normal", focused: false });
+  setTab({ id: 11, windowId: 1, active: true, url: "https://app.test/invoices", title: "app" });
+  setWin({ id: 2, type: "popup", focused: true });
+  setTab({ id: 22, windowId: 2, active: true, url: BITWARDEN_POPOUT, title: "Bitwarden" });
+  check("focused foreign-extension popout does not become the foreground tab",
+    (await T.resolveForegroundTabId()) === 11);
+
+  // 2. The focus event for that popout must not poison the cache either — that
+  //    would re-break resolution through step 3's cache fallback.
+  await T.publishActiveTab(22);
+  check("a foreign-extension tab is never cached as active", T.state.activeTabId !== 22);
+
+  // 3. With an agent pin on a real tab, the pin still wins outright.
+  T.state.agentTabId = 11;
+  check("agent pin still wins over a focused popout", (await T.resolveForegroundTabId()) === 11);
+
+  // 4. If the agent's OWN pinned tab is showing a non-drivable page, fall through
+  //    to a usable tab but KEEP the pin so it resumes after navigating back.
+  await reset();
+  setWin({ id: 1, type: "normal", focused: true });
+  setTab({ id: 5, windowId: 1, active: false, url: BITWARDEN_POPOUT, title: "vault" });
+  setTab({ id: 6, windowId: 1, active: true, url: "https://real.test/", title: "real" });
+  T.state.agentTabId = 5;
+  check("non-drivable pinned tab falls through to a usable tab", (await T.resolveForegroundTabId()) === 6);
+  check("the agent pin is retained, not cleared", T.state.agentTabId === 5);
+  model.tabs.get(5).url = "https://back.test/";
+  check("the pin resumes once it navigates back to a real page", (await T.resolveForegroundTabId()) === 5);
+
+  // 5. Degenerate case: the ONLY tab is a foreign extension page. Resolution must
+  //    return null (surfacing "no active tab") rather than a tab that cannot be
+  //    driven — a clear failure beats a confusing CDP error on every call.
+  await reset();
+  setWin({ id: 1, type: "normal", focused: true });
+  setTab({ id: 9, windowId: 1, active: true, url: BITWARDEN_POPOUT, title: "Bitwarden" });
+  check("no drivable tab resolves to null, not the extension page",
+    (await T.resolveForegroundTabId()) === null);
+  // ...and list_tabs must agree. Falling back to Chrome's raw per-window active
+  // flag here is what let the daemon re-cache the undrivable tab as active and
+  // keep targeting it, defeating the resolver fix entirely.
+  const nothingDrivable = await T.listTabSummaries();
+  check("list_tabs reports the undrivable tab", nothingDrivable.some((t) => t.id === 9));
+  check("list_tabs marks NO tab active when none is drivable",
+    nothingDrivable.every((t) => t.active === false));
+
+  // 6. list_tabs must still REPORT the extension tab (it is a real target an
+  //    agent can address explicitly by tab_id) — it just must not be marked active.
+  await reset();
+  setWin({ id: 1, type: "normal", focused: true });
+  setTab({ id: 11, windowId: 1, active: true, url: "https://app.test/", title: "app" });
+  setWin({ id: 2, type: "popup", focused: false });
+  setTab({ id: 22, windowId: 2, active: true, url: BITWARDEN_POPOUT, title: "Bitwarden" });
+  const listed = await T.listTabSummaries();
+  check("list_tabs still reports the extension tab", listed.some((t) => t.id === 22));
+  check("the extension tab is not reported active", listed.find((t) => t.id === 22)?.active === false);
+  check("the real page is reported active", listed.find((t) => t.id === 11)?.active === true);
+}
+
 (async () => {
   await scenarioPinBeatsForeground();
   await scenarioUserClicksChatPWA();
@@ -405,6 +493,7 @@ async function scenarioStatusProbeToleratesTransientFailure() {
   await scenarioListTabsErrorAndRetry();
   await scenarioFrozenDiscardedRevival();
   await scenarioStatusProbeToleratesTransientFailure();
+  await scenarioForeignExtensionPopoutNeverStealsForeground();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })();

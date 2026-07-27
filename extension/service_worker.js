@@ -18,6 +18,25 @@ const MAX_RECONNECT_DELAY_MS = 3 * 1000;
 // Detach a tab's debugger after this long without a CDP command, so brw doesn't
 // hold debugger sessions on idle tabs of the user's real Chrome.
 const IDLE_DETACH_MS = 120 * 1000;
+// Toolbar badge colours / animation. Chrome only allows solid badge colours, so
+// "flashing" and "pulsing" are phase toggles on a short interval.
+// Canonical lexicon (same words in popup + tooltip): Idle / Agent active /
+// Reconnecting / Down. Green is reserved for verified Idle only — agent-active
+// is brand magenta so the two "good" states never collide.
+const BADGE_IDLE_BG = "#1a7f37";
+const BADGE_AGENT_BG = "#9f006f";
+const BADGE_AGENT_PULSE_BG = "#d1008f";
+const BADGE_CONNECTING_BG = "#bf8700";
+const BADGE_CONNECTING_DIM_BG = "#8a6200";
+const BADGE_DOWN_BG = "#c5221f";
+// How long after agent activity the badge stays in Agent active.
+const BADGE_USED_WINDOW_MS = 10 * 1000;
+const BADGE_ANIM_MS = 450;
+// Debounce disconnect notifications so brief reconnect flaps (MV3 respawn) do
+// not spam the operator. Only fire after we have been connected at least once
+// this worker lifetime.
+const DISCONNECT_NOTIFY_MS = 12 * 1000;
+const DISCONNECT_NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
 // How long after a brw-initiated CDP command a JS dialog on that tab is treated
 // as brw's own (auto-accepted to let the agent's flow proceed). Outside this
 // window a dialog is the user's / a background script's, and is answered with the
@@ -96,6 +115,12 @@ const state = {
   agentTabId: null,
   reconnectAttempt: 0,
   lastError: "",
+  // lastAgentActivityAt is the wall-clock of the most recent agent-driven work
+  // (CDP / tab ops). Drives the green "used" badge pulse while the bridge is up.
+  lastAgentActivityAt: 0,
+  // reportedStatus is the last markBridgeStatus value; the badge animator re-
+  // resolves connected→used from it without rewriting storage on every pulse.
+  reportedStatus: "starting",
   bridgeConfig: null,
   snapshotCache: new Map(),
   observerInjected: new Set(),
@@ -219,11 +244,44 @@ if (chrome.downloads && chrome.downloads.onCreated) {
 // (e.g. a beforeunload while navigating, or a confirm it clicked) is auto-handled.
 function markActing(tabId) {
   if (typeof tabId === "number") state.actingUntil.set(tabId, Date.now() + BRW_ACTING_WINDOW_MS);
+  queueAgentActivity(tabId);
 }
 
 // isActing reports whether brw is within its acting window for tabId.
 function isActing(tabId) {
   return Date.now() < (state.actingUntil.get(tabId) || 0);
+}
+
+// isOperatorChromeUrl is chrome/extension/devtools chrome the human (or the
+// status popup itself) uses — driving those must NOT light the "agent used" pulse.
+function isOperatorChromeUrl(url) {
+  return /^(chrome|chrome-extension|devtools|edge|about|brave|chrome-search):/i.test(String(url || ""));
+}
+
+// queueAgentActivity promotes the green "used" pulse when the agent drives a
+// real page. Fire-and-forget: tab URL lookup is async, and badge work must never
+// block a CDP command.
+function queueAgentActivity(tabId) {
+  Promise.resolve().then(async () => {
+    if (typeof tabId === "number") {
+      const tab = await chrome.tabs.get(tabId).catch(() => null);
+      if (isOperatorChromeUrl(tab?.url)) return;
+    }
+    touchAgentActivity();
+  }).catch(() => {});
+}
+
+// touchAgentActivity records that the agent is currently driving this browser
+// and promotes the toolbar badge into the green "used" pulse while connected.
+// Never forces a connected badge when the bridge is already down — only re-
+// resolves the connected→used pulse.
+function touchAgentActivity() {
+  state.lastAgentActivityAt = Date.now();
+  if (isSocketOpen() || state.reportedStatus === "connected") {
+    // Prefer socket: per-request faults used to stamp reportedStatus "error"
+    // while the bridge stayed up; isSocketOpen keeps the badge honest.
+    setBridgeBadge(isSocketOpen() ? "connected" : state.reportedStatus);
+  }
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -254,6 +312,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }).catch((error) => {
       sendResponse({ ok: false, error: String(error?.message || error) });
     });
+    return true;
+  }
+  if (message?.type === "BRW_RECONNECT") {
+    connect({ probe: true }).then(() => bridgeDebugStatus())
+      .then((status) => sendResponse({ ok: true, status }))
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;
   }
   if (message?.type !== "SW_KEEPALIVE") return false;
@@ -293,12 +357,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   connect({ probe: true });
 });
-chrome.action.onClicked.addListener(async (tab) => {
-  await connect({ probe: true });
-  if (tab?.id) {
-    send({ type: "active_tab", tabId: tab.id, url: tab.url, title: tab.title });
-  }
-});
+// Toolbar click is handled by default_popup (popup.html). With a popup set,
+// chrome.action.onClicked does not fire — reconnect lives in the popup actions.
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "brw-connect") {
     ensureOffscreen();
@@ -564,11 +624,17 @@ async function bridgeDebugStatus() {
   const config = await loadBridgeConfig();
   const data = await chrome.storage.local.get(BRIDGE_STATUS_KEY).catch(() => ({}));
   const daemon = await fetchDaemonSummary(config);
+  const badge = resolveBadgeMode(state.reportedStatus || "disconnected");
   return {
     config,
     bridge: data[BRIDGE_STATUS_KEY] || null,
     socket: isSocketOpen() ? "open" : (isSocketConnecting() ? "connecting" : "closed"),
     daemon,
+    badge,
+    agentActive: isAgentActive(),
+    lastAgentActivityAt: state.lastAgentActivityAt
+      ? new Date(state.lastAgentActivityAt).toISOString()
+      : "",
     extensionVersion: (chrome.runtime.getManifest?.() || {}).version || ""
   };
 }
@@ -671,6 +737,9 @@ globalThis.brwConfigure = configureBridge;
 
 async function handle(message) {
   try {
+    // "Used" pulse is lit only from markActing / sendDebuggerCommand on real
+    // page tabs (see queueAgentActivity). Bookkeeping + extension-page CDP must
+    // not keep the badge permanently pulsing.
     if (message.type === "ping") {
       send({ id: message.id, ok: true, result: { pong: true } });
       return;
@@ -688,8 +757,20 @@ async function handle(message) {
       // than letting the daemon trust a cached reference that drifts when the
       // user switches tabs manually. activeTabId() prefers the focused window's
       // active tab and self-heals the cached state.activeTabId.
-      const tabId = await activeTabId().catch(() => null);
-      send({ id: message.id, ok: true, result: { tabId: tabId || 0 } });
+      let tabId = null;
+      let resolveError = "";
+      try {
+        tabId = await activeTabId();
+      } catch (error) {
+        resolveError = String(error?.message || error);
+      }
+      // Report WHY resolution found nothing. Without this the daemon cannot tell
+      // "the worker was mid-reconnect" (retry, then trust the cached tab) from
+      // "every candidate is a tab Chrome will not let brw drive" (never fall back
+      // — the cached id is very likely that same undrivable tab). Swallowing the
+      // reason is what let a Bitwarden popout keep breaking every no-tab_id call
+      // even after tab resolution itself learned to skip it.
+      send({ id: message.id, ok: true, result: { tabId: tabId || 0, error: resolveError } });
       return;
     }
     if (message.type === "open_tab") {
@@ -1096,7 +1177,14 @@ async function handle(message) {
     send({ id: message.id, ok: false, error: `unknown message type ${message.type}` });
   } catch (error) {
     state.lastError = `request failed: ${String(error?.message || error)}`;
-    markBridgeStatus("error", state.lastError).catch(() => {});
+    // A single CDP/tab fault is not a bridge drop. Demoting the badge to red
+    // "off" while the socket is still open is what made the toolbar lie during
+    // routine evaluate failures (e.g. extension pages / missing contexts).
+    if (isSocketOpen()) {
+      noteRequestFault(state.lastError).catch(() => {});
+    } else {
+      markBridgeStatus("error", state.lastError).catch(() => {});
+    }
     send({ id: message.id, ok: false, error: String(error?.message || error) });
   }
 }
@@ -1403,6 +1491,7 @@ async function sweepIdleDebuggers() {
 
 async function sendDebuggerCommand(tabId, method, params) {
   state.attachUsedAt.set(tabId, Date.now());
+  queueAgentActivity(tabId);
   try {
     return await chrome.debugger.sendCommand({ tabId }, method, params);
   } catch (error) {
@@ -1629,6 +1718,49 @@ function isControllableWindowType(win) {
   return !win || (win.type !== "app" && win.type !== "devtools");
 }
 
+// isAgentDrivableUrl reports whether brw can actually run CDP against a tab
+// showing this URL. Chrome REFUSES chrome.debugger access to another extension's
+// pages — "Cannot access a chrome-extension:// URL of different extension" — and
+// to browser-internal surfaces (chrome://, devtools://) and the Web Store.
+//
+// This is load-bearing for tab RESOLUTION, not just for actions, because such a
+// page can become the foreground tab. A password manager that pops its vault out
+// into its own focused window (Bitwarden's unlock / passkey prompt is the common
+// one, and it steals focus on its own) otherwise becomes the authoritative active
+// tab, and then EVERY no-tab_id tool — evaluate, read, snapshot, click — fails
+// with that Chrome error until the human happens to close it. That is the
+// "Bitwarden popups intermittently break evaluate" failure: nothing is wrong with
+// the bridge, brw has simply pointed itself at a tab it can never drive.
+//
+// Only IMPLICIT resolution is filtered. An explicit tab_id still reaches these
+// pages (brw can drive its OWN extension pages — that is how the options/popup
+// surfaces are exercised), so this removes no capability; it only stops brw from
+// silently CHOOSING a tab it cannot drive. navpolicy already refuses to navigate
+// to these schemes — this applies the same rule to resolution.
+function isAgentDrivableUrl(url) {
+  const raw = String(url || "").trim();
+  // A tab mid-creation reports no URL yet. Treat it as drivable so a freshly
+  // opened agent tab is never skipped before its first commit.
+  if (!raw) return true;
+  const lower = raw.toLowerCase();
+  // about:blank is brw's own scratch target (open_tab defaults to it).
+  if (lower === "about:blank" || lower.startsWith("about:blank?") || lower.startsWith("about:blank#")) return true;
+  if (/^(chrome|chrome-search|chrome-untrusted|chrome-native|devtools|edge|brave|vivaldi|opera|about|view-source):/.test(lower)) return false;
+  if (lower.startsWith("chrome-extension://")) {
+    // Chrome lets an extension debug its OWN pages but refuses every other
+    // extension's — that exact refusal is the error we are fixing. brw's own
+    // options page is a SUPPORTED target (opening it and calling
+    // chrome.runtime.reload() is the documented way to make a new build live, see
+    // docs/reliability.md), so only FOREIGN extension pages are excluded.
+    const ownID = String(chrome.runtime?.id || "").toLowerCase();
+    return Boolean(ownID) && lower.startsWith(`chrome-extension://${ownID}/`);
+  }
+  // The Web Store blocks extension scripting and debugger access outright.
+  if (/^https?:\/\/chromewebstore\.google\.com(\/|$)/.test(lower)) return false;
+  if (/^https?:\/\/chrome\.google\.com\/webstore(\/|$)/.test(lower)) return false;
+  return true;
+}
+
 // preferredNormalWindowId returns the safest window for a newly-created agent
 // tab. A still-live agent tab wins when it already lives in a normal window;
 // otherwise prefer the focused normal window, then any normal window. Popup/app
@@ -1661,9 +1793,18 @@ async function resolveForegroundTabId() {
     const pinned = await chrome.tabs.get(state.agentTabId).catch(() => null);
     if (pinned?.id) {
       const win = await chrome.windows.get(pinned.windowId).catch(() => null);
-      if (isControllableWindowType(win)) return pinned.id;
+      if (!isControllableWindowType(win)) {
+        state.agentTabId = null;
+      } else if (isAgentDrivableUrl(pinned.url)) {
+        return pinned.id;
+      }
+      // Window is fine but the tab currently shows a page brw cannot drive (the
+      // human opened a vault/settings page in the agent's own tab). KEEP the pin
+      // — fall through to a usable tab now, and the pin resumes the moment that
+      // tab navigates back to a real page.
+    } else {
+      state.agentTabId = null;
     }
-    state.agentTabId = null;
   }
   // 1. Active tab of the OS-focused controllable window. Enumerate ALL window types
   //    (not just normal/popup) so a clone/test-profile window is seen, then drop
@@ -1675,7 +1816,11 @@ async function resolveForegroundTabId() {
   for (const win of windows) {
     if (!win.focused || !isControllableWindowType(win)) continue;
     const tab = (win.tabs || []).find((candidate) => candidate.active);
-    if (tab?.id) return tab.id;
+    // A focused window whose active tab brw cannot drive (a password manager's
+    // popout, a chrome:// settings tab) must NOT become the answer. Fall through
+    // to the last-focused / cached / any-active candidates below rather than
+    // handing back a tab every subsequent CDP call would fail on.
+    if (tab?.id && isAgentDrivableUrl(tab.url)) return tab.id;
   }
   // 2. No window is OS-focused (Chrome is backgrounded behind another app — the
   // common case when an agent drives it while the human works elsewhere). Use the
@@ -1685,7 +1830,7 @@ async function resolveForegroundTabId() {
   // the single source of truth that list_tabs and every no-tab_id page tool share.
   const lastFocused = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
   for (const tab of lastFocused) {
-    if (!tab?.id) continue;
+    if (!tab?.id || !isAgentDrivableUrl(tab.url)) continue;
     const win = await chrome.windows.get(tab.windowId).catch(() => null);
     if (isControllableWindowType(win)) return tab.id;
   }
@@ -1698,15 +1843,20 @@ async function resolveForegroundTabId() {
     const cached = await chrome.tabs.get(state.activeTabId).catch(() => null);
     if (cached?.id) {
       const win = await chrome.windows.get(cached.windowId).catch(() => null);
-      if (isControllableWindowType(win)) return cached.id;
-      // Cached tab is no longer controllable; drop it so we don't keep retrying it.
-      state.activeTabId = null;
+      if (!isControllableWindowType(win)) {
+        // Cached tab is no longer controllable; drop it so we don't keep retrying it.
+        state.activeTabId = null;
+      } else if (isAgentDrivableUrl(cached.url)) {
+        return cached.id;
+      }
+      // Cached tab is temporarily showing a non-drivable page — keep the cache
+      // (it is still the right tab) and fall through to a usable one for now.
     }
   }
-  // 4. Last resort: any active tab in a controllable window.
+  // 4. Last resort: any active tab in a controllable window that brw can drive.
   const any = await chrome.tabs.query({ active: true }).catch(() => []);
   for (const tab of any) {
-    if (!tab?.id) continue;
+    if (!tab?.id || !isAgentDrivableUrl(tab.url)) continue;
     const win = await chrome.windows.get(tab.windowId).catch(() => null);
     if (isControllableWindowType(win)) return tab.id;
   }
@@ -1723,6 +1873,20 @@ async function activeTabId() {
     return id;
   }
   state.activeTabId = null;
+  // Distinguish "no tabs at all" from "every candidate is a page brw cannot
+  // drive" (a password-manager popout or a chrome:// tab holding the foreground).
+  // Without this the operator gets a bare "no active tab" while looking at a
+  // browser full of tabs, which reads as a bridge fault rather than the fixable
+  // situation it is.
+  const blocked = (await chrome.tabs.query({ active: true }).catch(() => []))
+    .filter((tab) => !isAgentDrivableUrl(tab?.url));
+  if (blocked.length) {
+    const where = String(blocked[0].url || "").split("?")[0] || "a browser-internal page";
+    throw new Error(
+      `no drivable tab: the active tab is ${where}, which Chrome does not allow brw to control. ` +
+      "Switch to a normal page tab, or pass an explicit tab_id."
+    );
+  }
   throw new Error("no active tab");
 }
 
@@ -1783,8 +1947,15 @@ async function listTabSummaries() {
     // is the same tab page tools act on. windowFocused is also forced true for that
     // tab so the daemon's (Active && WindowFocused) filter selects it even when
     // Chrome briefly reports no focused window.
-    if (foregroundId != null && typeof fresh.id === "number") {
-      const isForeground = fresh.id === foregroundId;
+    if (typeof fresh.id === "number") {
+      // NOTE the deliberate absence of a `foregroundId != null` guard. When
+      // resolution finds NO drivable tab, falling back to Chrome's raw per-window
+      // active flag re-reports the very tab brw just refused to target — and the
+      // daemon's ListTabs caches (Active && WindowFocused) as its active tab, so
+      // a Bitwarden popout came straight back through this path even after the
+      // resolver learned to skip it. No resolvable foreground means no tab is
+      // reported active, which is what get_active_tab_id says too.
+      const isForeground = foregroundId != null && fresh.id === foregroundId;
       summary.active = isForeground;
       if (isForeground) summary.windowFocused = true;
     }
@@ -1936,6 +2107,12 @@ async function publishActiveTab(tabId) {
   // this closes the onActivated/onCreated path too.
   const win = await chrome.windows.get(tab.windowId).catch(() => null);
   if (!isControllableWindowType(win)) return;
+  // Same choke point for pages brw cannot drive. onActivated / onFocusChanged fire
+  // when the human opens a password-manager popout or a chrome:// tab; caching that
+  // here would poison resolveForegroundTabId's step-3 cache fallback with the exact
+  // tab every CDP call fails on — re-breaking no-tab_id tools through the back door
+  // even though the resolver itself now skips it.
+  if (!isAgentDrivableUrl(tab.url)) return;
   state.activeTabId = tabId;
   await connect();
   const summary = await tabSummary(tab);
@@ -2203,28 +2380,179 @@ function isSocketConnecting() {
   return Boolean(state.socket && state.socket.readyState === WebSocket.CONNECTING);
 }
 
+// Badge mode is derived from connection status + recent agent activity:
+//   connected    → Idle          solid green "on"
+//   used         → Agent active  magenta pulse "act"
+//   connecting   → Reconnecting  amber flash "…"
+//   disconnected → Down          solid red "off"
+let badgeMode = "disconnected";
+let badgeAnimTimer = null;
+let badgeAnimPhase = 0;
+let everConnectedThisWorker = false;
+let disconnectNotifyTimer = null;
+let lastDisconnectNotifyAt = 0;
+
+function isAgentActive() {
+  // lastAgentActivityAt is the sole source of truth for Agent active. It is only
+  // written by touchAgentActivity after queueAgentActivity filters out
+  // chrome-extension / chrome:// pages — so attachUsedAt alone (debugger on the
+  // popup) must not keep the badge pulsing after operator inspection.
+  return Date.now() - (state.lastAgentActivityAt || 0) < BADGE_USED_WINDOW_MS;
+}
+
+function resolveBadgeMode(status) {
+  // Transport socket wins over last markBridgeStatus stamp. Per-request faults
+  // briefly set status "error" while the WS stayed open; the badge must stay
+  // Idle (or Agent active) in that case, never Down.
+  if (isSocketOpen()) return isAgentActive() ? "used" : "connected";
+  if (status === "connected") return isAgentActive() ? "used" : "connected";
+  if (status === "connecting" || status === "starting" || status === "configured") {
+    return "connecting";
+  }
+  // "error", "disconnected", empty — Down.
+  return "disconnected";
+}
+
+// noteRequestFault records lastError without demoting the connection badge.
+async function noteRequestFault(detail = "") {
+  const config = state.bridgeConfig || normalizeBridgeConfig({});
+  const status = isSocketOpen() ? "connected" : (state.reportedStatus || "error");
+  if (isSocketOpen()) state.reportedStatus = "connected";
+  const value = {
+    status,
+    badge: resolveBadgeMode(status),
+    bridgeUrl: config.bridgeUrl,
+    statusUrl: config.statusUrl,
+    workspace: config.workspace,
+    profile: config.profile,
+    label: config.label,
+    detail,
+    attempt: state.reconnectAttempt,
+    lastError: state.lastError,
+    at: new Date().toISOString()
+  };
+  await chrome.storage.local.set({ [BRIDGE_STATUS_KEY]: value });
+}
+
+function setBadgeVisual(text, color, title) {
+  chrome.action.setBadgeText({ text }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
+  chrome.action.setTitle({ title }).catch(() => {});
+  // White label on coloured badge for contrast (Chrome 110+).
+  if (typeof chrome.action.setBadgeTextColor === "function") {
+    chrome.action.setBadgeTextColor({ color: "#ffffff" }).catch(() => {});
+  }
+}
+
+function applyBadgeFrame(mode, phase) {
+  if (mode === "connected") {
+    setBadgeVisual("on", BADGE_IDLE_BG, "brw · Idle");
+    return;
+  }
+  if (mode === "used") {
+    // Magenta pulse: brand colour, never a second green.
+    if (phase % 2 === 0) {
+      setBadgeVisual("act", BADGE_AGENT_PULSE_BG, "brw · Agent active");
+    } else {
+      setBadgeVisual("act", BADGE_AGENT_BG, "brw · Agent active");
+    }
+    return;
+  }
+  if (mode === "connecting") {
+    if (phase % 2 === 0) {
+      setBadgeVisual("…", BADGE_CONNECTING_BG, "brw · Reconnecting");
+    } else {
+      setBadgeVisual("···", BADGE_CONNECTING_DIM_BG, "brw · Reconnecting");
+    }
+    return;
+  }
+  setBadgeVisual("off", BADGE_DOWN_BG, "brw · Down — click for status");
+}
+
+function ensureBadgeAnim(mode) {
+  const needsAnim = mode === "connecting" || mode === "used";
+  if (!needsAnim) {
+    if (badgeAnimTimer) {
+      clearInterval(badgeAnimTimer);
+      badgeAnimTimer = null;
+    }
+    return;
+  }
+  if (badgeAnimTimer) return;
+  badgeAnimTimer = setInterval(() => {
+    // Re-resolve every tick so Agent active drops back to Idle when activity
+    // ends, and Reconnecting settles when the socket opens.
+    const next = resolveBadgeMode(state.reportedStatus || "disconnected");
+    if (next !== badgeMode) {
+      badgeMode = next;
+      badgeAnimPhase = 0;
+      applyBadgeFrame(next, 0);
+      if (next !== "connecting" && next !== "used") {
+        clearInterval(badgeAnimTimer);
+        badgeAnimTimer = null;
+      }
+      return;
+    }
+    badgeAnimPhase += 1;
+    applyBadgeFrame(badgeMode, badgeAnimPhase);
+  }, BADGE_ANIM_MS);
+}
+
 function setBridgeBadge(status) {
+  state.reportedStatus = status;
+  const mode = resolveBadgeMode(status);
+  if (mode !== badgeMode) {
+    badgeMode = mode;
+    badgeAnimPhase = 0;
+    applyBadgeFrame(mode, 0);
+  } else if (!badgeAnimTimer) {
+    // Steady state refresh (e.g. reconnect while already connected).
+    applyBadgeFrame(mode, badgeAnimPhase);
+  }
+  ensureBadgeAnim(mode);
+}
+
+function noteConnectionLifecycle(status) {
   if (status === "connected") {
-    chrome.action.setBadgeText({ text: "on" }).catch(() => {});
-    chrome.action.setBadgeBackgroundColor({ color: "#1a7f37" }).catch(() => {});
-    chrome.action.setTitle({ title: "brw connected" }).catch(() => {});
+    everConnectedThisWorker = true;
+    if (disconnectNotifyTimer) {
+      clearTimeout(disconnectNotifyTimer);
+      disconnectNotifyTimer = null;
+    }
     return;
   }
-  if (status === "connecting" || status === "starting") {
-    chrome.action.setBadgeText({ text: "..." }).catch(() => {});
-    chrome.action.setBadgeBackgroundColor({ color: "#bf8700" }).catch(() => {});
-    chrome.action.setTitle({ title: "brw connecting" }).catch(() => {});
-    return;
-  }
-  chrome.action.setBadgeText({ text: "" }).catch(() => {});
-  chrome.action.setTitle({ title: "brw disconnected" }).catch(() => {});
+  // Only notify after a real prior connection — not on cold start before the
+  // first hello. Debounce so a 3–11s MV3 respawn never pops a toast.
+  if (!everConnectedThisWorker) return;
+  if (disconnectNotifyTimer) return;
+  disconnectNotifyTimer = setTimeout(() => {
+    disconnectNotifyTimer = null;
+    if (isSocketOpen() || state.reportedStatus === "connected") return;
+    const now = Date.now();
+    if (now - lastDisconnectNotifyAt < DISCONNECT_NOTIFY_COOLDOWN_MS) return;
+    lastDisconnectNotifyAt = now;
+    notifyBridgeDisconnected().catch(() => {});
+  }, DISCONNECT_NOTIFY_MS);
+}
+
+async function notifyBridgeDisconnected() {
+  const config = state.bridgeConfig || normalizeBridgeConfig({});
+  const label = config.label || config.profile || "this browser";
+  const detail = state.lastError || "The local daemon bridge dropped.";
+  await createNotification({
+    kind: "error",
+    title: "brw · Down",
+    message: `${label}: ${detail} Click the brw icon to reconnect.`
+  });
 }
 
 async function markBridgeStatus(status, detail = "") {
   setBridgeBadge(status);
+  noteConnectionLifecycle(status);
   const config = state.bridgeConfig || normalizeBridgeConfig({});
   const value = {
     status,
+    badge: resolveBadgeMode(status),
     bridgeUrl: config.bridgeUrl,
     statusUrl: config.statusUrl,
     workspace: config.workspace,

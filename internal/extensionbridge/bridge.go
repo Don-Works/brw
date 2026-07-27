@@ -3404,8 +3404,18 @@ func (b *Bridge) contextTabID(ctx context.Context) string {
 	// quick attempts ride out a reconnect hiccup; only a genuinely unreachable
 	// extension falls through to the last-known tab.
 	for attempt := 0; attempt < activeTabResolveAttempts; attempt++ {
-		if live := b.resolveActiveTabID(ctx); live != "" {
+		live, reason := b.resolveActiveTabIDWithReason(ctx)
+		if live != "" {
 			return live
+		}
+		// A definitive "nothing here is drivable" is not a reconnect hiccup.
+		// Retrying it and then falling through to b.activeTabID() re-targets the
+		// stale cached tab — which is typically the very tab that is undrivable —
+		// so the caller kept getting Chrome's raw refusal instead of the real
+		// reason. Return "" instead: the extension re-resolves on the far side and
+		// the call fails with the actionable message.
+		if isNoDrivableTabReason(reason) {
+			return ""
 		}
 		if attempt < activeTabResolveAttempts-1 {
 			select {
@@ -3564,21 +3574,32 @@ func (b *Bridge) ensureForegroundTab(ctx context.Context, id string) error {
 // bridge is disconnected or the query fails so the caller can fall back to the
 // last-known cached value.
 func (b *Bridge) resolveActiveTabID(ctx context.Context) string {
+	id, _ := b.resolveActiveTabIDWithReason(ctx)
+	return id
+}
+
+// resolveActiveTabIDWithReason also returns the extension's explanation when it
+// resolved nothing. An empty reason means the failure was transient (worker
+// asleep, mid-reconnect) and the caller may retry or fall back; a populated one
+// means the extension positively determined there is no drivable tab, which no
+// amount of retrying will change.
+func (b *Bridge) resolveActiveTabIDWithReason(ctx context.Context) (string, string) {
 	b.mu.RLock()
 	connected := b.conn != nil
 	b.mu.RUnlock()
 	if !connected {
-		return ""
+		return "", ""
 	}
 	raw, err := b.call(ctx, "get_active_tab_id", nil)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	var resp struct {
-		TabID int `json:"tabId"`
+		TabID int    `json:"tabId"`
+		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil || resp.TabID == 0 {
-		return ""
+		return "", resp.Error
 	}
 	id := strconv.Itoa(resp.TabID)
 	// This is the user's live-focused tab. Only heal the cache toward it in
@@ -3588,7 +3609,17 @@ func (b *Bridge) resolveActiveTabID(ctx context.Context) string {
 	if id != b.activeTabID() && b.followFocus {
 		b.setActiveTabID(id)
 	}
-	return id
+	return id, ""
+}
+
+// isNoDrivableTabReason reports whether the extension positively determined that
+// every candidate tab is one Chrome will not let brw drive (a foreign
+// extension's page — Bitwarden's popout is the common one — or a chrome://
+// surface). Distinct from a transient resolution failure: retrying cannot help,
+// and falling back to the cached tab is actively wrong because that cached id is
+// very likely the same undrivable tab.
+func isNoDrivableTabReason(reason string) bool {
+	return strings.Contains(strings.ToLower(reason), "no drivable tab")
 }
 
 func isBridgeTabLostError(err error) bool {

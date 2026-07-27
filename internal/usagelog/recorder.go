@@ -294,6 +294,21 @@ func failureShape(message string) string {
 	switch {
 	case strings.Contains(message, "tab is leased by another browser session"):
 		return "tab_contended"
+	// brw resolved a tab Chrome will not let it drive. The common cause is a
+	// password manager (Bitwarden's unlock/passkey prompt) popping its vault out
+	// into a focused window, which then holds the foreground until the human
+	// closes it — every no-tab_id tool fails for as long as it is up. This landed
+	// in "other" and so was invisible in the ledger, exactly like ref_not_found
+	// before it, which is why a recurring, very fixable outage read as random
+	// "brw is degraded" noise.
+	case strings.Contains(message, "cannot access a chrome-extension"),
+		strings.Contains(message, "cannot access contents of the page"),
+		strings.Contains(message, "cannot attach to this target"),
+		strings.Contains(message, "no drivable tab"):
+		return "tab_not_drivable"
+	// DevTools (or another extension) owns the debugger session for that tab.
+	case strings.Contains(message, "another debugger"):
+		return "debugger_conflict"
 	case strings.Contains(message, "no tab"), strings.Contains(message, "tab not found"), strings.Contains(message, "cannot find tab"), strings.Contains(message, "target closed"):
 		return "tab_lost"
 	case strings.Contains(message, "no response from downstream"):
@@ -368,6 +383,15 @@ func ClassifyError(err error) string {
 	switch {
 	case strings.Contains(msg, "tab is leased by another browser session"):
 		return "tab_contended"
+	// Not retryable and not a bridge fault: the tab itself cannot be driven.
+	// Kept distinct from "tool" so a recurring foreground hijack is countable.
+	case strings.Contains(msg, "cannot access a chrome-extension"),
+		strings.Contains(msg, "cannot access contents of the page"),
+		strings.Contains(msg, "cannot attach to this target"),
+		strings.Contains(msg, "no drivable tab"):
+		return "tab_not_drivable"
+	case strings.Contains(msg, "another debugger"):
+		return "debugger_conflict"
 	case strings.Contains(msg, "no tab"), strings.Contains(msg, "tab not found"), strings.Contains(msg, "cannot find tab"), strings.Contains(msg, "target closed"):
 		return "tab_lost"
 	case strings.Contains(msg, "deadline exceeded"),
