@@ -20,8 +20,9 @@ Interpretation:
   screenshot interpretation.
 - For auth-heavy tasks, installed-profile access matters. `brw` addresses that
   with the Chrome extension bridge and SSH runtime.
-- The full MCP tool surface is intentionally broad. Use `--mcp-tools core` for
-  a lean advertised tool set.
+- The full MCP tool surface is intentionally broad. Use `--mcp-tools core` or
+  `--mcp-tools minimal` for a lean advertised tool set; the catalogue is re-sent
+  on every request, so its size is a per-turn cost rather than a one-off.
 
 Raw transcripts are not shipped. They can contain prompts, paths, local machine
 metadata, and third-party page state.

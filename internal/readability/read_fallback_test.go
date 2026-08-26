@@ -2,6 +2,7 @@ package readability
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
@@ -72,8 +73,19 @@ func TestReadLinkHeavyPageFallsBackToDocumentText(t *testing.T) {
 	if strings.TrimSpace(read.Main) == "" {
 		t.Fatalf("link-heavy page returned empty .main despite visible text; links=%d", len(read.Links))
 	}
-	if read.Text != read.Main {
-		t.Fatalf("text alias = %q, want main %q", read.Text, read.Main)
+	// The prose used to ship twice, as "text" and "main" carrying the identical
+	// string, so every read paid for its content two times over. Lock the alias
+	// out at the wire level, not just the struct level.
+	encoded, err := json.Marshal(read)
+	if err != nil {
+		t.Fatalf("marshal read: %v", err)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatalf("unmarshal read: %v", err)
+	}
+	if _, ok := wire["text"]; ok {
+		t.Fatalf("page read still carries a duplicate top-level \"text\" field: %s", encoded)
 	}
 	if !strings.Contains(read.Main, "First story headline") {
 		t.Fatalf(".main fallback did not capture visible text; got %q", read.Main)

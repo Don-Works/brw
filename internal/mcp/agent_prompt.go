@@ -28,8 +28,10 @@ REFS: refs are stable across re-renders and self-heal. If a tool says
 to refresh refs, then retry. Never invent a ref; only use refs brw returned.
 
 READING CONTENT (no screenshots):
-- brw_read for page prose, headings, links, forms, tables. Primary prose is in
-  both text and main.
+- brw_read for page prose, headings, links, forms, tables. Prose is in main,
+  bounded by default: when main_truncated is set, read the next page with
+  { offset: <next_offset> } rather than raising max_chars. Pass
+  { include: ["headings","links"] } for a cheap page map with no prose at all.
 - brw_read_data for embedded structured data (JSON-LD, __NEXT_DATA__, OpenGraph)
   — the fast path for prices, product details, listings.
 - brw_network_capture then brw_replay_request to read a page's own JSON API
@@ -51,6 +53,13 @@ TOKEN DISCIPLINE:
   (e17 button "Submit") instead of JSON — fewer tokens, same refs.
 - If brw_page_tools reports the page offers WebMCP tools, prefer
   brw_call_page_tool over clicking — it is more reliable and cheaper.
+- brw_console { only_errors: true } or { pattern: "..." } instead of reading
+  every log line. Messages a filter skips stay buffered, so a later wider read
+  still sees them.
+- brw_network_requests / brw_network_capture take { pattern, limit } — narrow to
+  the requests you care about instead of paging through a busy page's hundreds.
+- brw_press / brw_scroll take { repeat: n } to do the same thing n times in one
+  call, instead of n calls each returning its own observation.
 
 MCPLEXER/HARNESS EXECUTION (when brw is routed through execute_code):
 - If interactive per-call approval is enabled, put only ONE approval-gated brw

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/navpolicy"
+	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
@@ -533,8 +535,63 @@ func (s *Server) find(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) read(w http.ResponseWriter, r *http.Request) {
+	opts, ok := parseReadOptions(w, r)
+	if !ok {
+		return
+	}
 	read, err := s.manager.Read(s.requestContext(r))
-	writeResult(w, read, err)
+	if err != nil {
+		writeResult(w, read, err)
+		return
+	}
+	writeResult(w, readability.Window(read, opts), nil)
+}
+
+// parseReadOptions reads the page-read bounds from the query string. The bounds
+// mirror the brw_read tool so an HTTP client and an MCP client page a long
+// document the same way.
+func parseReadOptions(w http.ResponseWriter, r *http.Request) (readability.ReadOptions, bool) {
+	q := r.URL.Query()
+	opts := readability.ReadOptions{}
+
+	for _, field := range []struct {
+		name string
+		dst  *int
+	}{
+		{"max_chars", &opts.MaxChars},
+		{"offset", &opts.Offset},
+		{"max_links", &opts.MaxLinks},
+		{"max_headings", &opts.MaxHeadings},
+	} {
+		value, ok := parseBoundParam(w, q.Get(field.name), field.name)
+		if !ok {
+			return opts, false
+		}
+		*field.dst = value
+	}
+
+	if raw := q.Get("include"); raw != "" {
+		opts.Include = readability.NormalizeSections(strings.Split(raw, ","))
+	}
+	if err := opts.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return opts, false
+	}
+	return opts, true
+}
+
+// parseBoundParam accepts -1 as the explicit "no cap" sentinel, which
+// parseIntParam rejects along with genuinely negative values.
+func parseBoundParam(w http.ResponseWriter, raw, name string) (int, bool) {
+	if raw == "" {
+		return 0, true
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < readability.UnboundedReadChars {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": name + " must be a non-negative integer, or -1 for no cap"})
+		return 0, false
+	}
+	return value, true
 }
 
 func (s *Server) readData(w http.ResponseWriter, r *http.Request) {
@@ -1190,8 +1247,68 @@ func (s *Server) windowBounds(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) consoleMessages(w http.ResponseWriter, r *http.Request) {
-	result, err := s.manager.ConsoleMessages(s.requestContext(r))
-	writeResult(w, result, err)
+	q := r.URL.Query()
+	limit, ok := parseBoundParam(w, q.Get("limit"), "limit")
+	if !ok {
+		return
+	}
+	var match *regexp.Regexp
+	if pattern := q.Get("pattern"); pattern != "" {
+		compiled, err := regexp.Compile(pattern)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid pattern: " + err.Error()})
+			return
+		}
+		match = compiled
+	}
+
+	messages, err := s.manager.ConsoleMessages(s.requestContext(r))
+	if err != nil {
+		writeResult(w, messages, err)
+		return
+	}
+	writeResult(w, filterConsoleMessages(messages, q.Get("only_errors") == "true", q.Get("level"), match, limit), nil)
+}
+
+// defaultHTTPConsoleLimit mirrors the cap the brw_console tool applies.
+const defaultHTTPConsoleLimit = 100
+
+// filterConsoleMessages narrows a console read the same way brw_console does,
+// and returns a bare slice: the --upstream-http proxy decodes this endpoint
+// into []ConsoleMessage, so an added response envelope would silently empty the
+// console in proxy mode. This endpoint has no retention buffer behind it —
+// each request filters only what its own drain returned — so a caller that
+// needs to keep unmatched messages should read unfiltered.
+func filterConsoleMessages(messages []browser.ConsoleMessage, onlyErrors bool, level string, match *regexp.Regexp, limit int) []browser.ConsoleMessage {
+	kept := make([]browser.ConsoleMessage, 0, len(messages))
+	for _, msg := range messages {
+		if onlyErrors && !isErrorConsoleLevel(msg.Level) {
+			continue
+		}
+		if level != "" && !strings.EqualFold(level, msg.Level) {
+			continue
+		}
+		if match != nil && !match.MatchString(msg.Text) {
+			continue
+		}
+		kept = append(kept, msg)
+	}
+	if limit == 0 {
+		limit = defaultHTTPConsoleLimit
+	}
+	if limit > 0 && len(kept) > limit {
+		kept = kept[len(kept)-limit:]
+	}
+	return kept
+}
+
+func isErrorConsoleLevel(level string) bool {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "error", "assert", "exception", "severe":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {

@@ -228,7 +228,6 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
   return {
     url: location.href,
     title: document.title || '',
-    text: main,
     main: main,
     headings,
     links,
@@ -284,12 +283,22 @@ func ReadExpr() string {
 	return fmt.Sprintf("(%s)(%d,%d)", ReadScript, readMinMainLen, readSettleCapMS)
 }
 
+// Normalize is the shared post-decode hook both transports run on a raw page
+// read. It exists so the direct-CDP path and the extension bridge cannot drift;
+// today it only guarantees non-nil collections, so a caller ranging over
+// Headings/Links/Forms/Tables never has to nil-check first.
 func Normalize(read PageRead) PageRead {
-	if read.Text == "" {
-		read.Text = read.Main
+	if read.Headings == nil {
+		read.Headings = []Heading{}
 	}
-	if read.Main == "" {
-		read.Main = read.Text
+	if read.Links == nil {
+		read.Links = []Link{}
+	}
+	if read.Forms == nil {
+		read.Forms = []Form{}
+	}
+	if read.Tables == nil {
+		read.Tables = []Table{}
 	}
 	return read
 }

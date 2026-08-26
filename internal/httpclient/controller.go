@@ -175,9 +175,17 @@ func (c *Controller) CloseTab(ctx context.Context, id string) error {
 	return c.post(ctx, "/api/browser/close", map[string]string{"id": id}, &out)
 }
 
+// Read fetches the page unbounded. In proxy mode the MCP server applies the
+// caller's own max_chars/offset window to what comes back, so letting the
+// upstream apply its default bound too would silently cap an explicitly
+// unbounded read at the upstream default.
 func (c *Controller) Read(ctx context.Context) (readability.PageRead, error) {
 	var out readability.PageRead
-	err := c.get(ctx, "/api/page/read", nil, &out)
+	values := url.Values{}
+	values.Set("max_chars", strconv.Itoa(readability.UnboundedReadChars))
+	values.Set("max_links", strconv.Itoa(readability.UnboundedReadChars))
+	values.Set("max_headings", strconv.Itoa(readability.UnboundedReadChars))
+	err := c.get(ctx, "/api/page/read", values, &out)
 	return out, err
 }
 
@@ -441,9 +449,14 @@ func (c *Controller) Observe(ctx context.Context) (browser.ObserveResult, error)
 	return out, err
 }
 
+// ConsoleMessages drains the upstream console unfiltered. The MCP server keeps
+// its own retention buffer and applies the caller's filter to that, so an
+// upstream limit here would truncate messages before brw ever buffered them.
 func (c *Controller) ConsoleMessages(ctx context.Context) ([]browser.ConsoleMessage, error) {
 	var out []browser.ConsoleMessage
-	err := c.get(ctx, "/api/page/console", nil, &out)
+	values := url.Values{}
+	values.Set("limit", "-1")
+	err := c.get(ctx, "/api/page/console", values, &out)
 	return out, err
 }
 

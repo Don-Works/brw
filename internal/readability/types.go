@@ -1,15 +1,25 @@
 package readability
 
+// PageRead is one semantic read of a page. The prose lives in Main only: the
+// wire payload used to carry the identical string in both "text" and "main",
+// which doubled the cost of every read for no added information.
 type PageRead struct {
 	URL      string    `json:"url"`
 	Title    string    `json:"title"`
-	Text     string    `json:"text,omitempty"`
 	Main     string    `json:"main"`
 	Headings []Heading `json:"headings"`
 	Links    []Link    `json:"links"`
 	Forms    []Form    `json:"forms"`
 	Tables   []Table   `json:"tables"`
 	Metadata Metadata  `json:"metadata"`
+
+	// Paging metadata, set by Window when a read is bounded. Absent on an
+	// unbounded read that returned the whole document.
+	MainTotalChars    int  `json:"main_total_chars,omitempty"`
+	MainTruncated     bool `json:"main_truncated,omitempty"`
+	NextOffset        int  `json:"next_offset,omitempty"`
+	HeadingsTruncated bool `json:"headings_truncated,omitempty"`
+	LinksTruncated    bool `json:"links_truncated,omitempty"`
 }
 
 type Heading struct {

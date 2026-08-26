@@ -1,0 +1,177 @@
+package readability
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
+
+// Defaults for a bounded page read. A read used to be unbounded up to the
+// in-page 100k-character clip, which lands ~25k tokens of prose in an agent's
+// context from a single call. Bounding by default with explicit paging metadata
+// keeps the common case cheap while leaving the whole document reachable.
+const (
+	DefaultReadMaxChars    = 20000
+	DefaultReadMaxLinks    = 300
+	DefaultReadMaxHeadings = 100
+)
+
+// UnboundedReadChars is the sentinel for "return the whole document", for
+// callers that genuinely want every character in one response.
+const UnboundedReadChars = -1
+
+// ReadSections are the selectable parts of a page read. An agent that only
+// wants navigation can ask for headings+links and skip the prose entirely.
+var ReadSections = []string{"main", "headings", "links", "forms", "tables", "metadata"}
+
+// ReadOptions bounds what Window keeps from a full page read.
+type ReadOptions struct {
+	// MaxChars caps the returned prose. Zero selects DefaultReadMaxChars;
+	// UnboundedReadChars returns everything.
+	MaxChars int `json:"max_chars,omitempty"`
+	// Offset is the rune offset into the prose, for paging with NextOffset.
+	Offset int `json:"offset,omitempty"`
+	// Include selects sections by name. Empty means every section.
+	Include []string `json:"include,omitempty"`
+	// MaxLinks and MaxHeadings cap their lists. Zero selects the defaults.
+	MaxLinks    int `json:"max_links,omitempty"`
+	MaxHeadings int `json:"max_headings,omitempty"`
+}
+
+// Validate reports unknown section names rather than silently dropping them, so
+// a typo surfaces as an error instead of a quietly empty read.
+func (o ReadOptions) Validate() error {
+	for _, name := range o.Include {
+		if !validSection(name) {
+			return fmt.Errorf("unknown include section %q (valid: %s)", name, strings.Join(ReadSections, ", "))
+		}
+	}
+	return nil
+}
+
+func validSection(name string) bool {
+	for _, known := range ReadSections {
+		if strings.EqualFold(strings.TrimSpace(name), known) {
+			return true
+		}
+	}
+	return false
+}
+
+func (o ReadOptions) wants(section string) bool {
+	if len(o.Include) == 0 {
+		return true
+	}
+	for _, name := range o.Include {
+		if strings.EqualFold(strings.TrimSpace(name), section) {
+			return true
+		}
+	}
+	return false
+}
+
+// Window returns a bounded copy of read. It never mutates the input.
+func Window(read PageRead, opts ReadOptions) PageRead {
+	out := read
+
+	if opts.wants("main") {
+		out.Main, out.MainTotalChars, out.MainTruncated, out.NextOffset = windowText(read.Main, opts)
+	} else {
+		out.Main = ""
+		out.MainTotalChars = len([]rune(read.Main))
+	}
+
+	if !opts.wants("headings") {
+		out.Headings = nil
+	} else {
+		out.Headings, out.HeadingsTruncated = capHeadings(read.Headings, limitOr(opts.MaxHeadings, DefaultReadMaxHeadings))
+	}
+	if !opts.wants("links") {
+		out.Links = nil
+	} else {
+		out.Links, out.LinksTruncated = capLinks(read.Links, limitOr(opts.MaxLinks, DefaultReadMaxLinks))
+	}
+	if !opts.wants("forms") {
+		out.Forms = nil
+	}
+	if !opts.wants("tables") {
+		out.Tables = nil
+	}
+	if !opts.wants("metadata") {
+		out.Metadata = Metadata{}
+	}
+	return out
+}
+
+// windowText slices prose on rune boundaries so a multi-byte character is never
+// split across the cut, and reports what was left behind.
+func windowText(text string, opts ReadOptions) (windowed string, total int, truncated bool, nextOffset int) {
+	runes := []rune(text)
+	total = len(runes)
+
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return "", total, false, 0
+	}
+
+	limit := opts.MaxChars
+	switch {
+	case limit == UnboundedReadChars:
+		return string(runes[offset:]), total, false, 0
+	case limit <= 0:
+		limit = DefaultReadMaxChars
+	}
+
+	end := offset + limit
+	if end >= total {
+		return string(runes[offset:]), total, false, 0
+	}
+	return string(runes[offset:end]), total, true, end
+}
+
+func limitOr(value, fallback int) int {
+	if value == UnboundedReadChars {
+		return UnboundedReadChars
+	}
+	if value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func capHeadings(items []Heading, limit int) ([]Heading, bool) {
+	if limit == UnboundedReadChars || len(items) <= limit {
+		return items, false
+	}
+	return items[:limit], true
+}
+
+func capLinks(items []Link, limit int) ([]Link, bool) {
+	if limit == UnboundedReadChars || len(items) <= limit {
+		return items, false
+	}
+	return items[:limit], true
+}
+
+// NormalizeSections lowercases and de-duplicates section names, preserving a
+// stable order so identical requests produce identical responses.
+func NormalizeSections(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		clean := strings.ToLower(strings.TrimSpace(name))
+		if clean == "" || seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		out = append(out, clean)
+	}
+	sort.Strings(out)
+	return out
+}

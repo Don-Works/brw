@@ -327,6 +327,11 @@ func (m *Manager) connect() error {
 	}))
 }
 
+// openNavigateTimeout bounds the navigation brw drives after attaching to a
+// freshly created blank target. Exceeding it is not an error — readiness is
+// reported separately — it only stops a hung load from holding the open call.
+const openNavigateTimeout = 10 * time.Second
+
 func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	var err error
 	url, err = m.prepareNavigationURL(url)
@@ -334,15 +339,46 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		return OpenResult{}, err
 	}
 
+	// Create the target blank rather than navigating on creation. CreateTarget
+	// with a real URL starts loading immediately, so everything the page logged
+	// while booting — console output and uncaught exceptions alike — was emitted
+	// before brw attached Runtime to the new target, and "open the page and check
+	// the console" came back empty. Attaching first costs one CDP round trip and
+	// makes load-time output observable.
+	//
+	// If attaching fails, fall back to the original create-with-URL so an open
+	// still succeeds; only load-time console output is lost.
 	var id target.ID
 	if err := m.runBrowser(ctx, func(ctx context.Context) error {
 		var err error
-		id, err = target.CreateTarget(url).Do(ctx)
+		id, err = target.CreateTarget("about:blank").Do(ctx)
 		return err
 	}); err != nil {
 		return OpenResult{}, err
 	}
 	tabID := string(id)
+
+	if url != "about:blank" {
+		// tabContext publishes the target's context and arms console capture on it.
+		if tabCtx, ctxErr := m.tabContext(tabID); ctxErr == nil {
+			navCtx, cancelNav := context.WithTimeout(tabCtx, openNavigateTimeout)
+			// A navigation error is deliberately not fatal: the pre-existing path
+			// never reported one either, and readiness is decided by the WaitFor
+			// below. Failing here would turn a slow page into a hard error.
+			_ = chromedp.Run(navCtx, chromedp.Navigate(url))
+			cancelNav()
+		} else {
+			_ = m.CloseTab(ctx, tabID)
+			if err := m.runBrowser(ctx, func(ctx context.Context) error {
+				var err error
+				id, err = target.CreateTarget(url).Do(ctx)
+				return err
+			}); err != nil {
+				return OpenResult{}, err
+			}
+			tabID = string(id)
+		}
+	}
 	m.refs.SetActive(tabID)
 	// Wait for the target document to actually commit, not the transient
 	// about:blank that a freshly created target reports as "ready" before the

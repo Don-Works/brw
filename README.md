@@ -52,7 +52,8 @@ MCP runs over stdio through SSH.
 The full MCP surface is large. For lean agent contexts, run:
 
 ```sh
-brwd --mcp --mcp-tools core
+brwd --mcp --mcp-tools core     # 24 tools, ~6.9k tokens of catalogue
+brwd --mcp --mcp-tools minimal  # 12 tools, ~3.7k tokens of catalogue
 ```
 
 For a ready-to-paste agent system prompt that encodes the fast, token-efficient
@@ -235,8 +236,10 @@ Core MCP tools include:
 - `brw_page_tools`, `brw_call_page_tool` (WebMCP)
 - `brw_notify`, `brw_commit`
 
-Use `--mcp-tools core` to advertise only the common-flow tool set while keeping
-all tools callable.
+Use `--mcp-tools core` (24 tools) or `--mcp-tools minimal` (12 tools) to shrink
+the advertised catalogue while keeping every tool callable. The catalogue is
+re-sent on every request, so a narrower profile saves tokens on every turn:
+`all` costs ~11.4k tokens, `core` ~6.9k, `minimal` ~3.7k.
 
 MCP stdio lifecycle: `brwd --mcp` exits cleanly on SIGTERM/SIGINT (including
 while blocked waiting for input), when its stdin closes, and when it is orphaned
@@ -275,6 +278,12 @@ Backend-specific notes:
   `supported:false` with an upgrade note instead of pretending the list is empty.
 - `brw_console` is a bounded drain: direct CDP captures native console events
   without changing page globals; the extension installs a bounded interceptor.
+  On the direct-CDP backend `brw_open` attaches to a blank target before
+  navigating, so console output and uncaught exceptions from the page's own
+  load are captured — "open the page and check the console for errors" works on
+  the first read, not only after a reload. Narrow a noisy page with
+  `only_errors`, `level`, `pattern`, and `limit`; messages a filter skips stay
+  buffered, so a later wider read still sees them.
   `brw_trace` records timed action outcomes on both backends.
 - Snapshots descend into **open and closed** shadow roots and same-origin
   iframes. **Cross-origin** iframes cannot be read (the browser isolates them);

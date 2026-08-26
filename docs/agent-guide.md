@@ -224,7 +224,43 @@ prevented from leaving the machine.
 
 ## Lean tool surface for small models
 
-Run `brwd --mcp --mcp-tools core` to advertise only the common-flow tools
-(open/snapshot/find/click/type/fill/select/press/scroll/hover/drag/upload/
-navigate/wait/batch/observe/screenshot). Every other tool stays callable; the
-profile just keeps `tools/list` small so a small model is not distracted.
+The tool catalogue is re-sent on every request, so its size is a fixed cost on
+every turn — not a one-off. Three profiles trade breadth against that cost:
+
+| `--mcp-tools` | Tools | Catalogue cost |
+| --- | --- | --- |
+| `all` (default) | 54 | ~11.4k tokens |
+| `core` | 24 | ~6.9k tokens |
+| `minimal` | 12 | ~3.7k tokens |
+
+`core` advertises the common-flow tools (open/snapshot/find/click/type/fill/
+select/press/scroll/hover/drag/upload/navigate/wait/batch/observe/screenshot).
+
+`minimal` advertises only what ordinary web work needs — reach a page, see its
+controls, act on them, confirm the result: `brw_open`, `brw_navigate_to`,
+`brw_read`, `brw_snapshot`, `brw_find`, `brw_click`, `brw_fill`, `brw_select`,
+`brw_press`, `brw_wait_for`, `brw_observe`, `brw_batch`.
+
+Every other tool stays callable under every profile; the profile only narrows
+what `tools/list` advertises. An unrecognised profile advertises the full
+surface and logs a warning, so a typo degrades rather than muting the server.
+
+## Bounded reads and filtered logs
+
+`brw_read` bounds prose at 20,000 characters by default and reports
+`main_total_chars`, `main_truncated`, and `next_offset`. Page a long document
+with `{ offset: <next_offset> }` instead of raising `max_chars`; pass
+`max_chars: -1` when you genuinely want the whole thing in one response. Narrow
+further with `include`, for example `{ include: ["headings", "links"] }` for a
+page map with no prose at all.
+
+`brw_console` takes `only_errors`, `level`, `pattern` (a regular expression),
+`limit`, and `clear`. Messages a filter skips stay buffered inside brw, so a
+later, wider read still sees them — filtering never destroys logs. Set
+`clear: false` to re-read the same messages.
+
+`brw_network_requests` and `brw_network_capture` take `pattern` and `limit`
+alongside the existing substring `filter`.
+
+`brw_press` and `brw_scroll` take `repeat` (1-100), which performs the action n
+times in one round-trip and returns only the final observation.
