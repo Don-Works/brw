@@ -380,6 +380,15 @@ type TraceEntry struct {
 	Name  string `json:"name,omitempty"`
 	Role  string `json:"role,omitempty"`
 	TabID string `json:"tab_id,omitempty"`
+	// NameIsVisibleText reports that the acted element's own text contained its
+	// accessible name at the time of the action. Only then can a replay guard
+	// assert on that name and pass.
+	NameIsVisibleText bool `json:"name_is_visible_text,omitempty"`
+	// Redacted marks an action whose value was withheld because the field it
+	// targeted is credential-bearing. The action is still recorded — knowing a
+	// password field was filled is useful — but the value never enters the
+	// trace, which is readable over the HTTP control plane.
+	Redacted bool `json:"redacted,omitempty"`
 
 	OK         bool   `json:"ok"`
 	Error      string `json:"error,omitempty"`
@@ -390,6 +399,12 @@ type TraceEntry struct {
 type TraceResult struct {
 	Entries []TraceEntry `json:"entries"`
 	Count   int          `json:"count"`
+	// Withheld counts entries belonging to tabs this caller does not hold. A
+	// shared daemon serves several agent sessions, and one session's recorded
+	// URLs are another session's private browsing, so they are filtered out
+	// rather than returned — but the count is reported, so a filtered trace is
+	// distinguishable from an empty one.
+	Withheld int `json:"withheld,omitempty"`
 }
 
 // IsDefaultLeftSingleRefClick reports whether a brw_click call is a plain

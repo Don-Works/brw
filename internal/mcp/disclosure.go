@@ -78,6 +78,18 @@ func (u *unlockedTools) count() int {
 	return len(u.names)
 }
 
+// snapshot copies the unlocked set under one lock, so a catalogue built from it
+// reflects a single consistent moment rather than a set that moved mid-scan.
+func (u *unlockedTools) snapshot() map[string]bool {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	out := make(map[string]bool, len(u.names))
+	for name := range u.names {
+		out[name] = true
+	}
+	return out
+}
+
 // discoveryMatch is one search hit: enough to decide whether this is the tool,
 // without paying for the full definition until it is unlocked.
 type discoveryMatch struct {

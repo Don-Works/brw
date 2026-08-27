@@ -1815,6 +1815,7 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 
 func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
+	before.Trace = b.traceOperands(before, browser.TraceEntry{Action: "click", Ref: ref})
 	beforeTabs := b.captureTabIDs(ctx)
 	if err := b.clickRef(ctx, ref); err != nil {
 		return browser.ActionResult{}, err
@@ -1825,6 +1826,7 @@ func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, e
 
 func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
+	before.Trace = browser.TraceEntry{Action: "click_text", Text: opts.Text}
 	beforeTabs := b.captureTabIDs(ctx)
 	optsJSON, _ := json.Marshal(opts)
 	var clicked snapshot.ClickXYResult
@@ -1847,6 +1849,7 @@ func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) 
 
 func (b *Bridge) Hover(ctx context.Context, ref string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
+	before.Trace = b.traceOperands(before, browser.TraceEntry{Action: "hover", Ref: ref})
 	if err := b.hoverRef(ctx, ref); err != nil {
 		return browser.ActionResult{}, err
 	}
@@ -2046,6 +2049,7 @@ func (b *Bridge) activate(ctx context.Context, ref string) error {
 
 func (b *Bridge) Type(ctx context.Context, ref, text string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
+	before.Trace = b.traceOperands(before, browser.TraceEntry{Action: "type", Ref: ref, Text: text})
 	if err := b.typeRef(ctx, ref, text); err != nil {
 		return browser.ActionResult{}, err
 	}
@@ -2063,6 +2067,7 @@ func (b *Bridge) typeRef(ctx context.Context, ref, text string) error {
 
 func (b *Bridge) Fill(ctx context.Context, opts snapshot.FillOptions) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
+	before.Trace = b.traceOperands(before, browser.TraceEntry{Action: "fill", Ref: opts.Ref, Text: opts.EffectiveText()})
 	ref, err := b.fillOptions(ctx, opts)
 	if err != nil {
 		return browser.ActionResult{}, err
@@ -2305,6 +2310,7 @@ func (b *Bridge) uploadViaFileChooser(ctx context.Context, opts snapshot.UploadO
 
 func (b *Bridge) Select(ctx context.Context, ref, value string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
+	before.Trace = b.traceOperands(before, browser.TraceEntry{Action: "select", Ref: ref, Value: value})
 	message, err := b.selectValue(ctx, ref, value)
 	if err != nil {
 		return browser.ActionResult{}, err
@@ -2387,6 +2393,7 @@ func (b *Bridge) findOptionCandidate(ctx context.Context, value string) (snapsho
 
 func (b *Bridge) Press(ctx context.Context, key string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
+	before.Trace = browser.TraceEntry{Action: "press", Value: key}
 	if err := b.pressKey(ctx, key); err != nil {
 		return browser.ActionResult{}, err
 	}
@@ -2468,6 +2475,7 @@ func (b *Bridge) pressKey(ctx context.Context, key string) error {
 
 func (b *Bridge) Scroll(ctx context.Context, direction string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
+	before.Trace = browser.TraceEntry{Action: "scroll", Value: direction}
 	message, err := b.scrollDirection(ctx, direction)
 	if err != nil {
 		return browser.ActionResult{}, err
@@ -2506,6 +2514,7 @@ func (b *Bridge) NavigateTo(ctx context.Context, url string) (browser.ActionResu
 		return browser.ActionResult{}, fmt.Errorf("navigate_to: %w", err)
 	}
 	before := b.captureSemanticState(ctx)
+	before.Trace = browser.TraceEntry{Action: "navigate_to", Text: url}
 	beforeTabs := b.captureTabIDs(ctx)
 	if err := b.navigateToURL(ctx, url); err != nil {
 		return browser.ActionResult{}, err
@@ -2773,6 +2782,22 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			retargetTo = openRes.Tab.ID
 			sr.Result = openRes
 		}
+	case "navigate_to":
+		// Distinct from "open": this drives the batch's existing working tab to a
+		// new URL where open spawns a new one. Both backends must accept every
+		// advertised action, or an exported replay runs on direct CDP and fails
+		// on the extension with "unknown action".
+		if step.URL == "" {
+			actionErr = errors.New("navigate_to requires url")
+			break
+		}
+		_, actionErr = b.NavigateTo(ctx, step.URL)
+	case "click_text":
+		if step.Text == "" {
+			actionErr = errors.New("click_text requires text")
+			break
+		}
+		_, actionErr = b.ClickText(ctx, snapshot.ClickTextOptions{Text: step.Text})
 	case "focus_tab":
 		if step.ID == "" {
 			actionErr = errors.New("focus_tab requires id")
@@ -3160,6 +3185,15 @@ func annotationBoxIntersects(box snapshot.AnnotationBox, clip *annotationClip) b
 type bridgeActionBaseline struct {
 	State   *browser.SemanticState
 	Started time.Time
+	// Trace carries the action's structured operands (ref, text, value) from the
+	// call site to the recorder. Without it the recorder can only parse them back
+	// out of a display message, which loses every operand it did not print.
+	Trace browser.TraceEntry
+	// Elements is the pre-action element list, kept so an action can resolve what
+	// its ref pointed at BEFORE it acted. Resolving afterwards would record what
+	// the element became — a button whose label flips on click would be recorded
+	// under its new label, and a replay guard built from it could never pass.
+	Elements []snapshot.Element
 }
 
 func (b *Bridge) observeActionWithBefore(ctx context.Context, message string, before bridgeActionBaseline) browser.ActionResult {
@@ -3215,6 +3249,31 @@ func openedChildTabID(tabs []browser.Tab, before map[string]bool, sourceTabID st
 	return ""
 }
 
+// traceOperands enriches a trace entry with the semantic identity of the ref it
+// acts on, and withholds the value when that ref is a credential-bearing field.
+// The trace is readable over the HTTP control plane and is not scoped to the
+// lease that produced it, so a typed password must never reach it.
+func (b *Bridge) traceOperands(before bridgeActionBaseline, entry browser.TraceEntry) browser.TraceEntry {
+	if entry.Ref == "" {
+		return entry
+	}
+	for _, el := range before.Elements {
+		if el.Ref != entry.Ref {
+			continue
+		}
+		entry.Name = el.Name
+		entry.Role = el.Role
+		entry.NameIsVisibleText = el.NameIsVisibleText
+		if el.Sensitive {
+			entry.Text = ""
+			entry.Value = ""
+			entry.Redacted = true
+		}
+		break
+	}
+	return entry
+}
+
 func (b *Bridge) captureSemanticState(ctx context.Context) bridgeActionBaseline {
 	started := time.Now()
 	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
@@ -3222,7 +3281,7 @@ func (b *Bridge) captureSemanticState(ctx context.Context) bridgeActionBaseline 
 		return bridgeActionBaseline{Started: started}
 	}
 	state := browser.NewSemanticState(snap)
-	return bridgeActionBaseline{State: &state, Started: started}
+	return bridgeActionBaseline{State: &state, Started: started, Elements: snap.Elements}
 }
 
 // captureTabIDs returns the set of current tab IDs, used to detect new tabs
@@ -4313,6 +4372,19 @@ func (b *Bridge) finishObservedTrace(before bridgeActionBaseline, message string
 	}
 	result.DurationMS = time.Since(before.Started).Milliseconds()
 	entry := bridgeTraceEntry(message)
+	// Structured operands from the call site win over anything parsed out of the
+	// display message; the parse remains the fallback for actions supplying none.
+	if before.Trace.Action != "" {
+		entry.Action = before.Trace.Action
+		entry.Ref = before.Trace.Ref
+		entry.Text = before.Trace.Text
+		entry.Value = before.Trace.Value
+		entry.Name = before.Trace.Name
+		entry.Role = before.Trace.Role
+		entry.NameIsVisibleText = before.Trace.NameIsVisibleText
+		entry.Redacted = before.Trace.Redacted
+	}
+	entry.TabID = result.TabID
 	entry.OK = result.OK
 	entry.DurationMS = result.DurationMS
 	entry.Timestamp = time.Now().Format(time.RFC3339Nano)

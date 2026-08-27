@@ -53,3 +53,7 @@ node_modules/
 .opencode/
 .gemini/
 .cursor/
+
+# Codex review artifacts: transcripts of a local review run, which quote local
+# paths and are not part of the project.
+.review/

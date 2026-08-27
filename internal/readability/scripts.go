@@ -230,8 +230,24 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
   // come from the same whitespace-collapsing text() helper, so a heading appears
   // verbatim in main. Scanning forward from the previous match keeps repeated
   // heading texts (common in long docs) in document order.
+  // Offsets are counted in CODE POINTS, not UTF-16 code units. Go slices this
+  // prose by rune, so a JavaScript string index would drift by one for every
+  // astral character (any emoji) that appears before the heading, and every
+  // later section would start mid-word.
+  const codePointsBefore = (haystack, index) => {
+    let count = 0;
+    for (let i = 0; i < index; ) {
+      const code = haystack.codePointAt(i);
+      i += code > 0xffff ? 2 : 1;
+      count++;
+    }
+    return count;
+  };
   let scanFrom = 0;
   for (const heading of headings) {
+    // Scanning forward from the previous heading's end keeps repeated heading
+    // texts in document order, and stops prose that merely mentions a heading
+    // ("see Install below") from anchoring that heading's section to itself.
     const at = main.indexOf(heading.text, scanFrom);
     if (at === -1) {
       // A heading outside the scored main element, or one whose text was
@@ -240,7 +256,7 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
       heading.offset = -1;
       continue;
     }
-    heading.offset = at;
+    heading.offset = codePointsBefore(main, at);
     scanFrom = at + heading.text.length;
   }
 

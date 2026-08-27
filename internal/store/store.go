@@ -8,14 +8,22 @@ import (
 )
 
 type ElementRef struct {
-	TabID     string
-	Ref       string
-	Role      string
-	Name      string
-	Tag       string
-	Type      string
-	Key       string
-	UpdatedAt time.Time
+	TabID string
+	Ref   string
+	Role  string
+	Name  string
+	Tag   string
+	Type  string
+	Key   string
+	// Sensitive marks a credential-bearing field (password, one-time code,
+	// payment details), as classified in-page where the autocomplete hints are
+	// visible. Carried here so anything recording what was typed can withhold
+	// the value instead of storing it.
+	Sensitive bool
+	// NameIsVisibleText reports that the element's own text contains its
+	// accessible name, which is what makes an assert_text guard on it possible.
+	NameIsVisibleText bool
+	UpdatedAt         time.Time
 }
 
 type RefStore struct {
@@ -41,14 +49,16 @@ func (s *RefStore) Observe(tabID string, elements []snapshot.Element) {
 			continue
 		}
 		s.byTab[tabID][el.Ref] = ElementRef{
-			TabID:     tabID,
-			Ref:       el.Ref,
-			Role:      el.Role,
-			Name:      el.Name,
-			Tag:       el.Tag,
-			Type:      el.Type,
-			Key:       el.Key,
-			UpdatedAt: now,
+			TabID:             tabID,
+			Ref:               el.Ref,
+			Role:              el.Role,
+			Name:              el.Name,
+			Tag:               el.Tag,
+			Type:              el.Type,
+			Key:               el.Key,
+			Sensitive:         el.Sensitive,
+			NameIsVisibleText: el.NameIsVisibleText,
+			UpdatedAt:         now,
 		}
 	}
 }

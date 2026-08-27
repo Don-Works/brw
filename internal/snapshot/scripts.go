@@ -545,6 +545,14 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       _frontier_score: frontierScore(role, name, signals, visible(el), inViewport(el), disabled(el))
     };
     if (isSensitive) item.sensitive = true;
+    // Does the element's own text carry its accessible name? assert_text reads
+    // innerText, then textContent, then value, so this is computed the same way
+    // and predicts exactly whether such an assertion would hold. A guard built
+    // on a name that lives only in aria-label could never pass.
+    if (name) {
+      const assertable = String(el.innerText || el.textContent || rawValue || '').toLowerCase();
+      if (assertable.indexOf(String(name).toLowerCase()) !== -1) item.name_is_visible_text = true;
+    }
     if (checked !== null) item.checked = checked;
     if (selected !== null) item.selected = selected;
     if (expanded !== null) item.expanded = expanded;

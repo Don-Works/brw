@@ -103,11 +103,25 @@ func (m *Manager) ResizeWindow(ctx context.Context, opts WindowResizeOptions) (W
 		// window that is currently minimized/maximized ignores bounds entirely.
 		// Restore to normal first when geometry was requested, then apply it.
 		wantsGeometry := opts.Width > 0 || opts.Height > 0 || opts.Left != nil || opts.Top != nil
-		if wantsGeometry && current != nil && current.WindowState != browser.WindowStateNormal {
+		priorState := browser.WindowStateNormal
+		if current != nil {
+			priorState = current.WindowState
+		}
+		if wantsGeometry && priorState != browser.WindowStateNormal {
 			if err := browser.SetWindowBounds(windowID, &browser.Bounds{
 				WindowState: browser.WindowStateNormal,
 			}).Do(ctx); err != nil {
 				return fmt.Errorf("restore window to normal: %w", err)
+			}
+			// Asking for a width is not asking to be shown. Unless the caller
+			// named a state, the window goes back to the one it was in, so a
+			// size-only request cannot unminimize and expose a window.
+			if state == "" {
+				defer func() {
+					_ = browser.SetWindowBounds(windowID, &browser.Bounds{
+						WindowState: priorState,
+					}).Do(ctx)
+				}()
 			}
 		}
 
@@ -143,6 +157,18 @@ func (m *Manager) ResizeWindow(ctx context.Context, opts WindowResizeOptions) (W
 				WindowState: browser.WindowStateNormal,
 			}).Do(ctx); err != nil {
 				return fmt.Errorf("set window state: %w", err)
+			}
+		}
+
+		// Asking for a width is not asking to be shown. When the caller named no
+		// state, put the window back the way it was, so a size-only request
+		// cannot unminimize and expose a window. This runs BEFORE the read-back,
+		// so the reported state is the one the window actually ends in.
+		if wantsGeometry && state == "" && priorState != browser.WindowStateNormal {
+			if err := browser.SetWindowBounds(windowID, &browser.Bounds{
+				WindowState: priorState,
+			}).Do(ctx); err != nil {
+				return fmt.Errorf("restore prior window state: %w", err)
 			}
 		}
 
@@ -185,7 +211,10 @@ func windowResultFrom(windowID int, bounds *browser.Bounds) WindowResizeResult {
 // requested. Only meaningful for a plain geometry change: a maximize is
 // expected to land on a different size and is not a clamp.
 func resizeWasClamped(opts WindowResizeOptions, applied WindowResizeResult) bool {
-	if opts.State != "" && strings.ToLower(opts.State) != "normal" {
+	// Compare the NORMALIZED state: " Normal " and "normal" mean the same thing
+	// to the validator, so they must mean the same thing here, or the two
+	// backends disagree about whether a request was clamped.
+	if state, err := NormalizeWindowState(opts.State); err == nil && state != "" && state != "normal" {
 		return false
 	}
 	if opts.Width > 0 && applied.Width != opts.Width {

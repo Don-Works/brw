@@ -310,6 +310,19 @@ func (m *tabLeaseManager) annotate(owner string, tabs []browser.Tab) []browser.T
 	return out
 }
 
+// ownsTab reports whether owner currently holds the lease on tabID. Used to keep
+// one session's recorded actions out of another session's trace.
+func (m *tabLeaseManager) ownsTab(owner, tabID string) bool {
+	if owner == "" || tabID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sweepLocked(m.now())
+	lease := m.byTab[tabID]
+	return lease != nil && lease.owner == owner
+}
+
 func (m *tabLeaseManager) stats() map[string]any {
 	now := m.now()
 	m.mu.Lock()

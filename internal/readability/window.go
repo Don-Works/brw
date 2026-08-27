@@ -136,17 +136,20 @@ func FindSectionSpan(headings []Heading, totalRunes int, name string) (SectionSp
 		return SectionSpan{}, false
 	}
 
+	// The section ends at the NEAREST following sibling-or-shallower heading,
+	// chosen by offset rather than by position in the slice. A headings payload
+	// that arrives out of document order would otherwise produce a span that
+	// overruns its neighbour.
 	end := totalRunes
-	for _, later := range headings[best+1:] {
+	for _, later := range headings {
 		offset, ok := addressableOffset(later)
-		if !ok || offset <= bestStart {
+		if !ok || offset <= bestStart || offset >= end {
 			continue
 		}
-		// A deeper heading is part of this section; the section ends at the next
-		// heading that is a sibling or an ancestor.
+		// A deeper heading is part of this section; only a sibling or an
+		// ancestor ends it.
 		if later.Level <= headings[best].Level {
 			end = offset
-			break
 		}
 	}
 	if end > totalRunes {
@@ -237,10 +240,14 @@ func windowText(text string, opts ReadOptions) (windowed string, total int, trun
 		limit = DefaultReadMaxChars
 	}
 
-	end := offset + limit
-	if end >= total {
+	// Compare against the remaining length rather than computing offset+limit
+	// first: a caller-supplied max_chars near MaxInt overflows that addition to a
+	// negative number, and the slice that follows panics the daemon. offset is
+	// already known to be < total here, so total-offset cannot underflow.
+	if limit >= total-offset {
 		return string(runes[offset:]), total, false, 0
 	}
+	end := offset + limit
 	return string(runes[offset:end]), total, true, end
 }
 

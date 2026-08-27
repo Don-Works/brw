@@ -545,6 +545,24 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, read, err)
 		return
 	}
+	// Window falls back to the whole document when a section cannot be resolved,
+	// so an unresolvable section has to be rejected here. Without this the
+	// endpoint answered ?section=NoSuchHeading with 200 and the entire page.
+	if opts.Section != "" {
+		if !readability.SectionsAddressable(read.Headings) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "section addressing is unavailable on this backend (the page read carried no heading offsets); page with offset/max_chars instead",
+			})
+			return
+		}
+		if _, ok := readability.FindSectionSpan(read.Headings, len([]rune(read.Main)), opts.Section); !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error":              "no section matching " + strconv.Quote(opts.Section),
+				"available_sections": readability.SectionNames(read.Headings),
+			})
+			return
+		}
+	}
 	writeResult(w, readability.Window(read, opts), nil)
 }
 
@@ -555,6 +573,7 @@ func parseReadOptions(w http.ResponseWriter, r *http.Request) (readability.ReadO
 	q := r.URL.Query()
 	opts := readability.ReadOptions{}
 
+	bounded := false
 	for _, field := range []struct {
 		name string
 		dst  *int
@@ -564,11 +583,26 @@ func parseReadOptions(w http.ResponseWriter, r *http.Request) (readability.ReadO
 		{"max_links", &opts.MaxLinks},
 		{"max_headings", &opts.MaxHeadings},
 	} {
-		value, ok := parseBoundParam(w, q.Get(field.name), field.name)
+		raw := q.Get(field.name)
+		value, ok := parseBoundParam(w, raw, field.name)
 		if !ok {
 			return opts, false
 		}
+		if raw != "" {
+			bounded = true
+		}
 		*field.dst = value
+	}
+
+	// This endpoint bounds a read only when asked to. Bounding belongs at the
+	// model boundary — the MCP layer applies its own window to whatever comes
+	// back — and defaulting here silently truncated any client written against
+	// the older unbounded contract, including an older brw proxy, which then had
+	// no way to ask for the remainder.
+	if !bounded {
+		opts.MaxChars = readability.UnboundedReadChars
+		opts.MaxLinks = readability.UnboundedReadChars
+		opts.MaxHeadings = readability.UnboundedReadChars
 	}
 
 	if raw := q.Get("include"); raw != "" {
@@ -1269,6 +1303,12 @@ func (s *Server) consoleMessages(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The console drains on read, so a client that asked for no limit must get
+	// everything: capping it would discard messages it can never fetch again.
+	// Only a caller that named a filter opts into the default cap.
+	if q.Get("limit") == "" && q.Get("only_errors") == "" && q.Get("level") == "" && q.Get("pattern") == "" {
+		limit = -1
+	}
 	var match *regexp.Regexp
 	if pattern := q.Get("pattern"); pattern != "" {
 		compiled, err := regexp.Compile(pattern)
@@ -1333,8 +1373,40 @@ func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
-func (s *Server) trace(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.manager.GetTrace())
+func (s *Server) trace(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.scopedTrace(r))
+}
+
+// scopedTrace returns only the actions this caller is entitled to see. The
+// daemon is shared, so an unscoped trace hands one agent session another's
+// browsing — on a signed-in profile that means authenticated URLs. Entries for a
+// tab leased by somebody else are withheld and counted, so a caller can tell a
+// filtered trace from an empty one.
+func (s *Server) scopedTrace(r *http.Request) browser.TraceResult {
+	full := s.manager.GetTrace()
+	owner := leaseOwner(r.Context())
+	if owner == "" {
+		// No lease identity on this request: return only tab-less entries rather
+		// than everything, since there is no way to establish entitlement.
+		return filterTrace(full, func(entry browser.TraceEntry) bool {
+			return entry.TabID == ""
+		})
+	}
+	return filterTrace(full, func(entry browser.TraceEntry) bool {
+		return entry.TabID == "" || s.leases.ownsTab(owner, entry.TabID)
+	})
+}
+
+func filterTrace(full browser.TraceResult, keep func(browser.TraceEntry) bool) browser.TraceResult {
+	out := browser.TraceResult{Entries: make([]browser.TraceEntry, 0, len(full.Entries))}
+	for _, entry := range full.Entries {
+		if keep(entry) {
+			out.Entries = append(out.Entries, entry)
+		}
+	}
+	out.Count = len(out.Entries)
+	out.Withheld = len(full.Entries) - len(out.Entries)
+	return out
 }
 
 func (s *Server) clearTrace(w http.ResponseWriter, _ *http.Request) {

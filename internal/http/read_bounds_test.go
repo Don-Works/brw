@@ -47,18 +47,33 @@ func longRead() readability.PageRead {
 	}
 }
 
-func TestHTTPReadBoundsProseByDefault(t *testing.T) {
+// The raw control plane bounds a read only when asked to. Defaulting here
+// truncated any client written against the older unbounded contract — an older
+// brw proxy among them — which then had no way to fetch the remainder. The
+// bound that protects a model's context is applied by the MCP layer instead.
+func TestHTTPReadIsUnboundedUnlessAsked(t *testing.T) {
 	server := New("", &boundsController{read: longRead()})
 
 	var got readability.PageRead
 	if code := getJSON(t, server, "/api/page/read", &got); code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
-	if len(got.Main) != readability.DefaultReadMaxChars {
-		t.Fatalf("prose = %d chars, want the %d-char default bound", len(got.Main), readability.DefaultReadMaxChars)
+	if len(got.Main) != 60000 {
+		t.Fatalf("prose = %d chars, want the whole document when no bound was requested", len(got.Main))
 	}
-	if !got.MainTruncated || got.NextOffset != readability.DefaultReadMaxChars {
-		t.Fatalf("paging metadata missing: truncated=%v next_offset=%d", got.MainTruncated, got.NextOffset)
+	if got.MainTruncated {
+		t.Fatal("an unrequested bound truncated the read")
+	}
+
+	var bounded readability.PageRead
+	if code := getJSON(t, server, "/api/page/read?max_chars=1000", &bounded); code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if len(bounded.Main) != 1000 {
+		t.Fatalf("explicit bound returned %d chars, want 1000", len(bounded.Main))
+	}
+	if !bounded.MainTruncated || bounded.NextOffset != 1000 {
+		t.Fatalf("paging metadata missing: truncated=%v next_offset=%d", bounded.MainTruncated, bounded.NextOffset)
 	}
 }
 
@@ -94,6 +109,13 @@ func TestHTTPReadIncludeAndBadInput(t *testing.T) {
 
 	if code := getJSON(t, server, "/api/page/read?include=linkz", nil); code != http.StatusBadRequest {
 		t.Fatalf("unknown section status = %d, want 400", code)
+	}
+
+	// Window falls back to the whole document when a section cannot be resolved,
+	// so the handler has to reject one first. Without that, ?section=NoSuch
+	// answered 200 with the entire page — an answer that looks like a hit.
+	if code := getJSON(t, server, "/api/page/read?section=NoSuchHeading", nil); code != http.StatusBadRequest {
+		t.Fatalf("unresolvable section status = %d, want 400 rather than the whole document", code)
 	}
 	if code := getJSON(t, server, "/api/page/read?max_chars=-9", nil); code != http.StatusBadRequest {
 		t.Fatalf("max_chars=-9 status = %d, want 400", code)

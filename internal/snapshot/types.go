@@ -86,10 +86,10 @@ type FindResult struct {
 }
 
 type FillOptions struct {
-	Ref     string `json:"ref,omitempty"`
-	Query   string `json:"query,omitempty"`
-	Role    string `json:"role,omitempty"`
-	Text    string `json:"text"`
+	Ref   string `json:"ref,omitempty"`
+	Query string `json:"query,omitempty"`
+	Role  string `json:"role,omitempty"`
+	Text  string `json:"text"`
 	// Value is a Playwright-style alias for Text. When Text is empty, fill
 	// uses Value so agents that pass {value:"…"} (common muscle memory) do not
 	// silently clear the field.
@@ -148,27 +148,31 @@ type ClickTextOptions struct {
 }
 
 type Element struct {
-	Ref           string   `json:"ref"`
-	Role          string   `json:"role"`
-	Name          string   `json:"name"`
-	Tag           string   `json:"tag"`
-	Type          string   `json:"type,omitempty"`
-	Href          string   `json:"href,omitempty"`
-	Value         string   `json:"value,omitempty"`
-	Sensitive     bool     `json:"sensitive,omitempty"`
-	Visible       bool     `json:"visible"`
-	InViewport    bool     `json:"in_viewport"`
-	Disabled      bool     `json:"disabled"`
-	Required      bool     `json:"required,omitempty"`
-	Valid         *bool    `json:"valid,omitempty"`
-	ValidationMsg string   `json:"validation_message,omitempty"`
-	Checked       *bool    `json:"checked,omitempty"`
-	Selected      *bool    `json:"selected,omitempty"`
-	Expanded      *bool    `json:"expanded,omitempty"`
-	Controls      string   `json:"controls,omitempty"`
-	Signals       []string `json:"signals,omitempty"`
-	MatchReasons  []string `json:"match_reasons,omitempty"`
-	Source        []string `json:"source"`
+	Ref       string `json:"ref"`
+	Role      string `json:"role"`
+	Name      string `json:"name"`
+	Tag       string `json:"tag"`
+	Type      string `json:"type,omitempty"`
+	Href      string `json:"href,omitempty"`
+	Value     string `json:"value,omitempty"`
+	Sensitive bool   `json:"sensitive,omitempty"`
+	// NameIsVisibleText reports that the element's own text contains its
+	// accessible name, computed the way assert_text compares. It is what lets a
+	// replay guard be emitted only when it could actually pass.
+	NameIsVisibleText bool     `json:"name_is_visible_text,omitempty"`
+	Visible           bool     `json:"visible"`
+	InViewport        bool     `json:"in_viewport"`
+	Disabled          bool     `json:"disabled"`
+	Required          bool     `json:"required,omitempty"`
+	Valid             *bool    `json:"valid,omitempty"`
+	ValidationMsg     string   `json:"validation_message,omitempty"`
+	Checked           *bool    `json:"checked,omitempty"`
+	Selected          *bool    `json:"selected,omitempty"`
+	Expanded          *bool    `json:"expanded,omitempty"`
+	Controls          string   `json:"controls,omitempty"`
+	Signals           []string `json:"signals,omitempty"`
+	MatchReasons      []string `json:"match_reasons,omitempty"`
+	Source            []string `json:"source"`
 	// VisualType classifies a visual island when source includes "visual":
 	// "canvas"|"svg"|"video"|"image"|"bg_image"|"custom". Empty for DOM elements.
 	VisualType string `json:"visual_type,omitempty"`

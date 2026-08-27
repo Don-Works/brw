@@ -12,7 +12,7 @@ func recordedFlow() TraceResult {
 		{Action: "navigate_to", Text: "https://example.com/form", OK: true},
 		{Action: "fill", Ref: "e1", Text: "ada@example.com", Name: "Email", Role: "textbox", OK: true},
 		{Action: "select", Ref: "e3", Value: "uk", Name: "Country", Role: "combobox", OK: true},
-		{Action: "click", Ref: "e4", Name: "Submit", Role: "button", OK: true},
+		{Action: "click", Ref: "e4", Name: "Submit", Role: "button", NameIsVisibleText: true, OK: true},
 	}}
 }
 
@@ -86,7 +86,7 @@ func TestTraceToBatchReportsUnguardableActions(t *testing.T) {
 // Exporting them as if they were replayable would be worse than skipping them.
 func TestTraceToBatchSkipsCoordinateActionsAndSaysWhy(t *testing.T) {
 	trace := TraceResult{Entries: []TraceEntry{
-		{Action: "click", Ref: "e1", Name: "Go", Role: "button", OK: true},
+		{Action: "click", Ref: "e1", Name: "Go", Role: "button", NameIsVisibleText: true, OK: true},
 		{Action: "drag", OK: true},
 		{Action: "click_button", OK: true},
 		{Action: "navigate", Text: "back", OK: true},
@@ -115,8 +115,8 @@ func TestTraceToBatchSkipsCoordinateActionsAndSaysWhy(t *testing.T) {
 
 func TestTraceToBatchFailedStepHandling(t *testing.T) {
 	trace := TraceResult{Entries: []TraceEntry{
-		{Action: "click", Ref: "e1", Name: "Works", Role: "button", OK: true},
-		{Action: "click", Ref: "e2", Name: "Broken", Role: "button", OK: false},
+		{Action: "click", Ref: "e1", Name: "Works", Role: "button", NameIsVisibleText: true, OK: true},
+		{Action: "click", Ref: "e2", Name: "Broken", Role: "button", NameIsVisibleText: true, OK: false},
 	}}
 
 	// Faithful by default: the export is what the agent did, with a warning.

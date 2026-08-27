@@ -905,7 +905,8 @@ async function handle(message) {
       // "size it, then maximize" works in a single request.
       const wantsGeometry = Object.keys(geometry).length > 0;
       const current = await chrome.windows.get(tab.windowId);
-      if (wantsGeometry && current.state !== "normal") {
+      const priorState = current.state;
+      if (wantsGeometry && priorState !== "normal") {
         await chrome.windows.update(tab.windowId, { state: "normal" });
       }
       if (wantsGeometry) {
@@ -913,6 +914,11 @@ async function handle(message) {
       }
       if (state && (state !== "normal" || !wantsGeometry)) {
         await chrome.windows.update(tab.windowId, { state });
+      } else if (wantsGeometry && !state && priorState !== "normal") {
+        // Asking for a width is not asking to be shown. With no state named,
+        // put the window back the way it was so a size-only request cannot
+        // unminimize and expose it.
+        await chrome.windows.update(tab.windowId, { state: priorState });
       }
       // Report what Chrome settled on, not what was asked for: Chrome clamps to
       // the display, so the two legitimately differ.

@@ -27,6 +27,10 @@ type ReplayResult struct {
 	// because the recorded role does not carry its accessible name as visible
 	// text. Those steps replay on ref alone.
 	Unguarded []string `json:"unguarded,omitempty"`
+	// TabSwitches counts the focus_tab steps inserted because the recorded flow
+	// crossed tabs. Without them every step would run in whichever tab the batch
+	// started in.
+	TabSwitches int `json:"tab_switches,omitempty"`
 	// Skipped counts trace entries that are not replayable, with the reasons.
 	// Dropping them silently would make a partial replay look complete.
 	Skipped int            `json:"skipped"`
@@ -97,6 +101,7 @@ func TraceToBatch(trace TraceResult, opts ReplayOptions) ReplayResult {
 		Reasons: map[string]int{},
 	}
 	unguarded := map[string]bool{}
+	currentTab := ""
 
 	for _, entry := range trace.Entries {
 		verb, ok := replayableActions[entry.Action]
@@ -113,8 +118,20 @@ func TraceToBatch(trace TraceResult, opts ReplayOptions) ReplayResult {
 		step, ok := batchStepFor(verb, entry)
 		if !ok {
 			out.Skipped++
-			out.Reasons["recorded action had no replayable target"]++
+			out.Reasons[missingOperandReason(verb, entry)]++
 			continue
+		}
+
+		// A ref only means something within the tab that issued it. Without an
+		// explicit focus_tab, a flow recorded across two tabs replays entirely
+		// in whichever tab the batch happens to start in — and since a textbox
+		// carries no guard, it does so silently.
+		if entry.TabID != "" && entry.TabID != currentTab {
+			if currentTab != "" {
+				out.Steps = append(out.Steps, BatchStep{Action: "focus_tab", ID: entry.TabID})
+				out.TabSwitches++
+			}
+			currentTab = entry.TabID
 		}
 
 		if guard, ok := guardStepFor(entry); opts.guards() && ok {
@@ -142,14 +159,24 @@ func TraceToBatch(trace TraceResult, opts ReplayOptions) ReplayResult {
 
 // guardStepFor builds the assert step that checks a ref still points at the
 // element the recording acted on, or reports that no meaningful check exists.
+//
+// assert_text compares against innerText, then textContent, then value. A guard
+// is therefore only emitted when the element's accessible name is actually
+// present as text: an icon-only <button aria-label="Save"> has the name "Save"
+// and the role button, but no text at all, so a guard on it could never pass and
+// would fail every replay of an unchanged page.
 func guardStepFor(entry TraceEntry) (BatchStep, bool) {
-	if entry.Ref == "" || strings.TrimSpace(entry.Name) == "" {
+	name := strings.TrimSpace(entry.Name)
+	if entry.Ref == "" || name == "" {
 		return BatchStep{}, false
 	}
 	if !textBearingRoles[strings.ToLower(strings.TrimSpace(entry.Role))] {
 		return BatchStep{}, false
 	}
-	return BatchStep{Action: "assert_text", Ref: entry.Ref, Text: entry.Name}, true
+	if !entry.NameIsVisibleText {
+		return BatchStep{}, false
+	}
+	return BatchStep{Action: "assert_text", Ref: entry.Ref, Text: name}, true
 }
 
 func describeUnguarded(entry TraceEntry) string {
@@ -178,13 +205,19 @@ func batchStepFor(verb string, entry TraceEntry) (BatchStep, bool) {
 		}
 		step.Text = entry.Text
 	case "type", "fill":
-		if entry.Ref == "" {
+		// An empty value is never exported. Both executors accept a fill with no
+		// text and CLEAR the field, so guessing here would make a replay
+		// destructive rather than merely incomplete.
+		if entry.Ref == "" || entry.Text == "" {
 			return BatchStep{}, false
 		}
 		step.Ref = entry.Ref
 		step.Text = entry.Text
 	case "select":
-		if entry.Ref == "" {
+		// Selecting a placeholder option with an empty value is legitimate, but
+		// both batch executors reject a select without one, so it cannot be
+		// replayed as a batch step.
+		if entry.Ref == "" || entry.Value == "" {
 			return BatchStep{}, false
 		}
 		step.Ref = entry.Ref
@@ -253,4 +286,23 @@ func sortedKeys(set map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// missingOperandReason says which operand was absent, so an agent can tell a
+// backend that did not record the value from an action that never had one.
+func missingOperandReason(verb string, entry TraceEntry) string {
+	if entry.Redacted {
+		return "value withheld: the field was credential-bearing, so it was never recorded"
+	}
+	switch verb {
+	case "type", "fill":
+		if entry.Ref != "" && entry.Text == "" {
+			return "recorded action did not capture the value that was entered"
+		}
+	case "select":
+		if entry.Ref != "" && entry.Value == "" {
+			return "recorded action did not capture the option that was selected"
+		}
+	}
+	return "recorded action had no replayable target"
 }

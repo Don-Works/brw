@@ -358,6 +358,11 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	}
 	tabID := string(id)
 
+	// navErr records a navigation that never started. It does not fail the open
+	// — the previous path could not report one either — but it is carried into
+	// the result so a tab still sitting on about:blank is not reported as a page
+	// that loaded.
+	var navErr error
 	if url != "about:blank" {
 		// tabContext publishes the target's context and arms console capture on it.
 		if tabCtx, ctxErr := m.tabContext(tabID); ctxErr == nil {
@@ -366,10 +371,12 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 			// what CreateTarget(url) did. chromedp.Navigate blocks until load,
 			// which never arrives when the navigation policy aborts a
 			// disallowed destination — turning a fast policy rejection into a
-			// ten-second stall. Readiness is decided by the WaitFor below, and a
-			// navigation error stays non-fatal because the previous path never
-			// reported one either.
-			_ = chromedp.Run(navCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			// ten-second stall. Readiness is decided by the WaitFor below.
+			//
+			// A navigation error is not fatal (the previous path never reported
+			// one either) but it is not silent: without it, a tab that never
+			// left about:blank came back as a successful open.
+			navErr = chromedp.Run(navCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 				_, _, _, _, err := page.Navigate(url).Do(ctx)
 				return err
 			}))
@@ -415,6 +422,12 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	if err := m.navPolicy.Check(tab.URL); err != nil {
 		_ = m.CloseTab(ctx, tabID)
 		return OpenResult{}, fmt.Errorf("open redirected to a disallowed final destination: %w", err)
+	}
+	// A tab that never left about:blank is not a page that loaded, whatever the
+	// readiness wait concluded. Report it rather than let a caller act on a
+	// blank tab believing it holds the requested URL.
+	if navErr != nil && strings.HasPrefix(tab.URL, "about:") {
+		return OpenResult{Tab: tab, Ready: false}, fmt.Errorf("navigate new tab to %s: %w", url, navErr)
 	}
 	return OpenResult{Tab: tab, Ready: ready}, nil
 }
@@ -692,6 +705,7 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 		return ActionResult{}, fmt.Errorf("element ref %q not actionable within %dms — it may be hidden, disabled, or covered by an overlay; re-run brw_snapshot to refresh refs, or brw_screenshot with ref %q to inspect it", ref, 5000, ref)
 	}
 	before := m.cachedBefore(tabID, tabCtx)
+	traceName, traceRole, traceNameIsText := m.refIdentity(tabID, ref)
 	// clickElementCenter already actuates by coordinate (in-page ClickXY at the
 	// element box, CDP MouseClickXY fallback), which is the correct path for an
 	// AX-invisible custom component resolved by hit-test.
@@ -713,12 +727,15 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 	}
 	result.DurationMS = time.Since(start).Milliseconds()
 	m.recordTrace(tabID, TraceEntry{
-		Action:     "click",
-		Ref:        ref,
-		OK:         result.OK,
-		Error:      result.Warning,
-		DurationMS: result.DurationMS,
-		Timestamp:  time.Now().Format(time.RFC3339),
+		Action:            "click",
+		Ref:               ref,
+		Name:              traceName,
+		Role:              traceRole,
+		NameIsVisibleText: traceNameIsText,
+		OK:                result.OK,
+		Error:             result.Warning,
+		DurationMS:        result.DurationMS,
+		Timestamp:         time.Now().Format(time.RFC3339),
 	})
 	return result, nil
 }
@@ -770,6 +787,7 @@ func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
 	// and real mouseenter/mouseover/pointermove events. Focus emulation (enabled
 	// per target in tabContext) ensures delivery even when the window is backgrounded.
 	before := m.cachedBefore(tabID, tabCtx)
+	traceName, traceRole, traceNameIsText := m.refIdentity(tabID, ref)
 	recovery, err := m.hoverRef(tabCtx, ref)
 	if err != nil {
 		return ActionResult{}, err
@@ -780,12 +798,15 @@ func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
 		appendWarning(&result, recovery)
 	}
 	m.recordTrace(tabID, TraceEntry{
-		Action:     "hover",
-		Ref:        ref,
-		OK:         result.OK,
-		Error:      result.Warning,
-		DurationMS: result.DurationMS,
-		Timestamp:  time.Now().Format(time.RFC3339),
+		Action:            "hover",
+		Ref:               ref,
+		Name:              traceName,
+		Role:              traceRole,
+		NameIsVisibleText: traceNameIsText,
+		OK:                result.OK,
+		Error:             result.Warning,
+		DurationMS:        result.DurationMS,
+		Timestamp:         time.Now().Format(time.RFC3339),
 	})
 	return result, nil
 }
@@ -916,19 +937,23 @@ func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, err
 	defer cancel()
 
 	before := m.cachedBefore(tabID, tabCtx)
+	traceName, traceRole, traceNameIsText := m.refIdentity(tabID, ref)
 	if err := m.typeRef(tabCtx, ref, text); err != nil {
 		return ActionResult{}, err
 	}
 	m.settle(tabCtx, actionSettleDelayFast)
 	result := m.observeActionWithBefore(tabID, tabCtx, "typed into "+ref, before)
 	m.recordTrace(tabID, TraceEntry{
-		Action:     "type",
-		Ref:        ref,
-		Text:       text,
-		OK:         result.OK,
-		Error:      result.Warning,
-		DurationMS: result.DurationMS,
-		Timestamp:  time.Now().Format(time.RFC3339),
+		Action:            "type",
+		Ref:               ref,
+		Name:              traceName,
+		Role:              traceRole,
+		NameIsVisibleText: traceNameIsText,
+		Text:              text,
+		OK:                result.OK,
+		Error:             result.Warning,
+		DurationMS:        result.DurationMS,
+		Timestamp:         time.Now().Format(time.RFC3339),
 	})
 	return result, nil
 }
@@ -969,19 +994,23 @@ func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionRe
 		m.refs.Observe(tabID, result.Elements)
 	}
 	before := m.cachedBefore(tabID, tabCtx)
+	traceName, traceRole, traceNameIsText := m.refIdentity(tabID, ref)
 	if err := m.fillRef(tabCtx, ref, opts.EffectiveText(), opts.Replace); err != nil {
 		return ActionResult{}, err
 	}
 	m.settle(tabCtx, actionSettleDelayFast)
 	result := m.observeActionWithBefore(tabID, tabCtx, "filled "+ref, before)
 	m.recordTrace(tabID, TraceEntry{
-		Action:     "fill",
-		Ref:        ref,
-		Text:       opts.EffectiveText(),
-		OK:         result.OK,
-		Error:      result.Warning,
-		DurationMS: result.DurationMS,
-		Timestamp:  time.Now().Format(time.RFC3339),
+		Action:            "fill",
+		Ref:               ref,
+		Name:              traceName,
+		Role:              traceRole,
+		NameIsVisibleText: traceNameIsText,
+		Text:              opts.EffectiveText(),
+		OK:                result.OK,
+		Error:             result.Warning,
+		DurationMS:        result.DurationMS,
+		Timestamp:         time.Now().Format(time.RFC3339),
 	})
 	return result, nil
 }
@@ -1141,19 +1170,23 @@ func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, 
 	}
 	defer cancel()
 	before := m.cachedBefore(tabID, tabCtx)
+	traceName, traceRole, traceNameIsText := m.refIdentity(tabID, ref)
 	message, err := m.selectValue(tabCtx, ref, value)
 	if err != nil {
 		return ActionResult{}, err
 	}
 	result := m.observeActionWithBefore(tabID, tabCtx, message, before)
 	m.recordTrace(tabID, TraceEntry{
-		Action:     "select",
-		Ref:        ref,
-		Value:      value,
-		OK:         result.OK,
-		Error:      result.Warning,
-		DurationMS: result.DurationMS,
-		Timestamp:  time.Now().Format(time.RFC3339),
+		Action:            "select",
+		Ref:               ref,
+		Name:              traceName,
+		Role:              traceRole,
+		NameIsVisibleText: traceNameIsText,
+		Value:             value,
+		OK:                result.OK,
+		Error:             result.Warning,
+		DurationMS:        result.DurationMS,
+		Timestamp:         time.Now().Format(time.RFC3339),
 	})
 	return result, nil
 }
@@ -2430,12 +2463,36 @@ func (m *Manager) invalidateState(tabID string) {
 // that produced it, so a recorded flow needs the element's role and accessible
 // name to be replayed safely — without them a replay cannot tell that a ref now
 // points at a different element.
+// refIdentity resolves what a ref points at right now. Call it BEFORE acting:
+// the post-action observation refreshes the ref store, so resolving afterwards
+// records what the element became rather than what was acted on.
+func (m *Manager) refIdentity(tabID, ref string) (name, role string, nameIsText bool) {
+	if ref == "" {
+		return "", "", false
+	}
+	if el, ok := m.refs.Get(tabID, ref); ok {
+		return el.Name, el.Role, el.NameIsVisibleText
+	}
+	return "", "", false
+}
+
 func (m *Manager) recordTrace(tabID string, entry TraceEntry) {
 	entry.TabID = tabID
-	if entry.Ref != "" && entry.Name == "" {
+	if entry.Ref != "" {
 		if el, ok := m.refs.Get(tabID, entry.Ref); ok {
-			entry.Name = el.Name
-			entry.Role = el.Role
+			if entry.Name == "" {
+				entry.Name = el.Name
+				entry.Role = el.Role
+				entry.NameIsVisibleText = el.NameIsVisibleText
+			}
+			// The trace is readable over the HTTP control plane and is not
+			// scoped to the lease that produced it, so a typed password must
+			// never reach it. The action is still recorded; only the value goes.
+			if el.Sensitive {
+				entry.Text = ""
+				entry.Value = ""
+				entry.Redacted = true
+			}
 		}
 	}
 	m.traceMu.Lock()

@@ -755,15 +755,17 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// reports the reason on get_active_tab_id so the daemon does not fall back
 	// onto that same tab from its cache); 0.4.7 adds the resize_window handler
 	// behind brw_window_resize, moving the real OS window via chrome.windows
-	// rather than overriding renderer viewport metrics.
+	// rather than overriding renderer viewport metrics; 0.4.8 stops a size-only
+	// resize from leaving a minimized or maximized window in the normal state it
+	// was temporarily put into to apply the size.
 	// It is DECOUPLED from the wire PROTOCOL_VERSION below: the manifest moves
 	// with every feature release, while PROTOCOL_VERSION only moves on a breaking
-	// bridge-handshake change. 0.4.0-0.4.7 add fields, message types and
+	// bridge-handshake change. 0.4.0-0.4.8 add fields, message types and
 	// in-extension behaviour only. A new message type is additive in both
 	// directions: an older extension answers resize_window with "unknown message
 	// type", which the daemon reports as an upgrade note rather than a failure.
 	// So the protocol stays 0.2.0 (the daemon still accepts it).
-	const wantManifest = "0.4.7"
+	const wantManifest = "0.4.8"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

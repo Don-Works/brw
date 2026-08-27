@@ -275,6 +275,16 @@ page map with no prose at all.
 later, wider read still sees them — filtering never destroys logs. Set
 `clear: false` to re-read the same messages.
 
+A typed value that lands in a credential-bearing field (a password, a one-time
+code, payment details) is never recorded in the action trace. The action still
+is, marked `redacted`; only the value is withheld, because the trace is readable
+over the HTTP control plane and is not scoped to the session that produced it.
+
+The HTTP API bounds a read only when asked to: `/api/page/read` with no bounding
+parameter returns the whole document. The default bound exists to protect a
+model's context, so it is applied by the MCP layer rather than by the raw
+control plane, where it would silently truncate clients that cannot page.
+
 `brw_network_requests` and `brw_network_capture` take `pattern` and `limit`
 alongside the existing substring `filter`.
 
@@ -309,11 +319,20 @@ brw_batch { steps: [...] }              # the same flow, one round trip
 ```
 
 Each ref action is preceded by an `assert_text` guard built from the element
-identity captured when the action ran, so replaying against a page that has
-changed fails loudly instead of acting on whatever inherited the ref. Pass
-`guards: false` to drop them. Coordinate-driven actions (drag, click_xy) and
-history navigation cannot be replayed and are reported under `skipped_reasons`
-rather than dropped silently.
+identity captured *before* the action ran, so replaying against a page that has
+changed fails loudly instead of acting on whatever inherited the ref. A guard is
+emitted only where it could actually pass — `assert_text` compares visible text,
+so an icon-only button labelled solely by `aria-label` is reported under
+`unguarded` instead of getting a check that would fail every time. Pass
+`guards: false` to drop guards entirely.
+
+A flow that crossed tabs exports explicit `focus_tab` steps, since a ref only
+means something inside the tab that issued it. Anything that cannot be replayed
+faithfully is reported under `skipped_reasons` rather than dropped silently or
+guessed at: coordinate-driven actions (drag, click_xy), history navigation, and
+any action whose value was not recorded — including one withheld because the
+field held a credential. A fill is never exported without its text, because an
+empty fill clears the field rather than filling it.
 
 ## Resizing the real window
 

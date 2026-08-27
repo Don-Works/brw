@@ -209,13 +209,21 @@ func (s *Server) advertisedTools() []map[string]any {
 		return all
 	}
 	auto := s.toolProfile == autoProfile
-	filtered := make([]map[string]any, 0, len(allowed)+s.unlocked.count()+1)
+	// Snapshot the unlocked set once. Taking the lock per tool let an unlock
+	// landing mid-iteration produce a catalogue that omitted a tool unlocked
+	// before the scan reached it while including one unlocked after — a
+	// self-inconsistent list, and one the client has no reason to refetch.
+	unlocked := map[string]bool{}
+	if auto {
+		unlocked = s.unlocked.snapshot()
+	}
+	filtered := make([]map[string]any, 0, len(allowed)+len(unlocked)+1)
 	if auto {
 		filtered = append(filtered, discoveryTool())
 	}
 	for _, t := range all {
 		name, _ := t["name"].(string)
-		if allowed[name] || (auto && s.unlocked.has(name)) {
+		if allowed[name] || unlocked[name] {
 			filtered = append(filtered, t)
 		}
 	}

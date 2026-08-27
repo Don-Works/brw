@@ -32,14 +32,21 @@ PATTERNS = [
 ]
 
 
+def git(args, what):
+    """Run a git command, failing loudly. A gate that reports clean because its
+    own scan errored is worse than no gate: a clone without origin/main would
+    print "clean: 0 added lines" and exit 0 with a secret in the diff."""
+    proc = subprocess.run(["git"] + args, capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.exit(f"hygiene scan could not {what}: git {' '.join(args)}\n{proc.stderr.strip()}")
+    return proc.stdout
+
+
 def added_lines(base):
     """Yield (path, line) for every line this branch adds over base."""
-    diff = subprocess.run(
-        ["git", "diff", "-U0", f"{base}...HEAD"], capture_output=True, text=True).stdout
-    staged = subprocess.run(
-        ["git", "diff", "-U0", "HEAD"], capture_output=True, text=True).stdout
-    untracked = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"], capture_output=True, text=True).stdout
+    diff = git(["diff", "-U0", f"{base}...HEAD"], f"diff against {base}")
+    staged = git(["diff", "-U0", "HEAD"], "diff the working tree")
+    untracked = git(["ls-files", "--others", "--exclude-standard"], "list untracked files")
 
     path = "?"
     for chunk in (diff, staged):
