@@ -32,12 +32,14 @@ func toolProperties(t *testing.T, name string) map[string]any {
 // token efficiency to its advertised schema.
 func TestAdvertisedSchemasCoverHandlerParameters(t *testing.T) {
 	want := map[string][]string{
-		"brw_read":             {"include", "max_chars", "offset", "max_links", "max_headings"},
+		"brw_read":             {"include", "max_chars", "offset", "max_links", "max_headings", "section"},
 		"brw_console":          {"only_errors", "level", "pattern", "limit", "clear"},
 		"brw_network_requests": {"filter", "pattern", "limit"},
 		"brw_network_capture":  {"filter", "pattern", "limit"},
 		"brw_press":            {"repeat"},
 		"brw_scroll":           {"repeat"},
+		"brw_trace":            {"format", "guards", "include_failed"},
+		"brw_window_resize":    {"width", "height", "left", "top", "state"},
 	}
 	for tool, params := range want {
 		props := toolProperties(t, tool)
@@ -108,13 +110,13 @@ func TestUnknownProfileFallsBackToFullSurface(t *testing.T) {
 	if ValidToolProfile("minimial") {
 		t.Fatal("ValidToolProfile accepted a typo, so nothing would warn the operator")
 	}
-	for _, name := range []string{"all", "core", "minimal"} {
+	for _, name := range []string{"all", "core", "minimal", "auto"} {
 		if !ValidToolProfile(name) {
 			t.Errorf("ValidToolProfile(%q) = false", name)
 		}
 	}
-	if got := strings.Join(ToolProfileNames(), ","); got != "all,core,minimal" {
-		t.Fatalf("ToolProfileNames() = %q, want a sorted all,core,minimal", got)
+	if got := strings.Join(ToolProfileNames(), ","); got != "all,auto,core,minimal" {
+		t.Fatalf("ToolProfileNames() = %q, want a sorted all,auto,core,minimal", got)
 	}
 }
 

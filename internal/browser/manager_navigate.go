@@ -71,7 +71,7 @@ func (m *Manager) Navigate(ctx context.Context, direction string) (ActionResult,
 
 	result := m.observeActionWithBefore(tabID, tabCtx, "navigated "+dir, before)
 	result.DurationMS = time.Since(start).Milliseconds()
-	m.recordTrace(TraceEntry{
+	m.recordTrace(tabID, TraceEntry{
 		Action:     "navigate",
 		Text:       dir,
 		OK:         result.OK,
@@ -109,7 +109,7 @@ func (m *Manager) NavigateTo(ctx context.Context, url string) (ActionResult, err
 
 	result := m.observeActionWithBefore(tabID, tabCtx, "navigated to "+url, before)
 	result.DurationMS = time.Since(start).Milliseconds()
-	m.recordTrace(TraceEntry{
+	m.recordTrace(tabID, TraceEntry{
 		Action:     "navigate_to",
 		Text:       url,
 		OK:         result.OK,

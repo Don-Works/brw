@@ -1453,6 +1453,9 @@ func (fakeController) ClickXY(context.Context, float64, float64) (snapshot.Click
 func (fakeController) WindowBounds(context.Context) (snapshot.WindowBoundsResult, error) {
 	return snapshot.WindowBoundsResult{DevicePixelRatio: 1}, nil
 }
+func (fakeController) ResizeWindow(_ context.Context, opts browser.WindowResizeOptions) (browser.WindowResizeResult, error) {
+	return browser.WindowResizeResult{OK: true, Width: opts.Width, Height: opts.Height, State: opts.State}, nil
+}
 func (fakeController) GetTrace() browser.TraceResult { return browser.TraceResult{} }
 func (fakeController) ClearTrace()                   {}
 func (fakeController) OpenInGroup(context.Context, string, browser.TabGroupOptions) (browser.OpenResult, error) {

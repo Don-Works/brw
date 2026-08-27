@@ -25,6 +25,8 @@ for normal web work.
 - Returns a post-action observation after every action.
 - Uses screenshots only as visual fallback, with optional Set-of-Marks overlays and a locked-session print-renderer fallback.
 - Supports tabs, downloads, console, network capture, request replay, and cancellation.
+- Turns a completed flow into a replayable `brw_batch` script, with identity guards.
+- Grows its advertised tool catalogue on demand instead of shipping all of it every turn.
 - Reuses a persistent non-default Chrome profile for signed-in flows.
 - Bridges to an already-authenticated installed Chrome profile through a Chrome extension.
 - Runs cleanly over SSH so the browser profile stays on the machine that owns it.
@@ -52,8 +54,9 @@ MCP runs over stdio through SSH.
 The full MCP surface is large. For lean agent contexts, run:
 
 ```sh
-brwd --mcp --mcp-tools core     # 24 tools, ~6.9k tokens of catalogue
-brwd --mcp --mcp-tools minimal  # 12 tools, ~3.7k tokens of catalogue
+brwd --mcp --mcp-tools auto     # 13 tools to start, grows on demand
+brwd --mcp --mcp-tools core     # 24 tools, ~7.0k tokens of catalogue
+brwd --mcp --mcp-tools minimal  # 12 tools, ~3.8k tokens of catalogue
 ```
 
 For a ready-to-paste agent system prompt that encodes the fast, token-efficient
@@ -235,11 +238,14 @@ Core MCP tools include:
 - `brw_assert_visible`, `brw_assert_text`, `brw_assert_value`
 - `brw_page_tools`, `brw_call_page_tool` (WebMCP)
 - `brw_notify`, `brw_commit`
+- `brw_window_resize` (real OS window, unlike `brw_emulate_device`)
+- `brw_tools` (find and disclose a tool by describing the task)
 
-Use `--mcp-tools core` (24 tools) or `--mcp-tools minimal` (12 tools) to shrink
-the advertised catalogue while keeping every tool callable. The catalogue is
-re-sent on every request, so a narrower profile saves tokens on every turn:
-`all` costs ~11.4k tokens, `core` ~6.9k, `minimal` ~3.7k.
+Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
+callable. The catalogue is re-sent on every request, so a narrower profile saves
+tokens on every turn: `all` costs ~12.1k tokens, `core` ~7.0k, `minimal` ~3.8k,
+and `auto` starts at ~4.1k and grows only as the agent discovers tools it needs
+via `brw_tools`.
 
 MCP stdio lifecycle: `brwd --mcp` exits cleanly on SIGTERM/SIGINT (including
 while blocked waiting for input), when its stdin closes, and when it is orphaned

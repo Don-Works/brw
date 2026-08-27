@@ -362,10 +362,17 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		// tabContext publishes the target's context and arms console capture on it.
 		if tabCtx, ctxErr := m.tabContext(tabID); ctxErr == nil {
 			navCtx, cancelNav := context.WithTimeout(tabCtx, openNavigateTimeout)
-			// A navigation error is deliberately not fatal: the pre-existing path
-			// never reported one either, and readiness is decided by the WaitFor
-			// below. Failing here would turn a slow page into a hard error.
-			_ = chromedp.Run(navCtx, chromedp.Navigate(url))
+			// Start the navigation without waiting for the load event, matching
+			// what CreateTarget(url) did. chromedp.Navigate blocks until load,
+			// which never arrives when the navigation policy aborts a
+			// disallowed destination — turning a fast policy rejection into a
+			// ten-second stall. Readiness is decided by the WaitFor below, and a
+			// navigation error stays non-fatal because the previous path never
+			// reported one either.
+			_ = chromedp.Run(navCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+				_, _, _, _, err := page.Navigate(url).Do(ctx)
+				return err
+			}))
 			cancelNav()
 		} else {
 			_ = m.CloseTab(ctx, tabID)
@@ -705,7 +712,7 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 		appendWarning(&result, warning)
 	}
 	result.DurationMS = time.Since(start).Milliseconds()
-	m.recordTrace(TraceEntry{
+	m.recordTrace(tabID, TraceEntry{
 		Action:     "click",
 		Ref:        ref,
 		OK:         result.OK,
@@ -736,7 +743,7 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 	}
 	result := m.observeActionWithBefore(tabID, tabCtx, "clicked text "+strconv.Quote(label), before)
 	result.DurationMS = time.Since(start).Milliseconds()
-	m.recordTrace(TraceEntry{
+	m.recordTrace(tabID, TraceEntry{
 		Action:     "click_text",
 		Text:       opts.Text,
 		OK:         result.OK,
@@ -772,6 +779,14 @@ func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
 	if recovery != "" {
 		appendWarning(&result, recovery)
 	}
+	m.recordTrace(tabID, TraceEntry{
+		Action:     "hover",
+		Ref:        ref,
+		OK:         result.OK,
+		Error:      result.Warning,
+		DurationMS: result.DurationMS,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	})
 	return result, nil
 }
 
@@ -905,7 +920,17 @@ func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, err
 		return ActionResult{}, err
 	}
 	m.settle(tabCtx, actionSettleDelayFast)
-	return m.observeActionWithBefore(tabID, tabCtx, "typed into "+ref, before), nil
+	result := m.observeActionWithBefore(tabID, tabCtx, "typed into "+ref, before)
+	m.recordTrace(tabID, TraceEntry{
+		Action:     "type",
+		Ref:        ref,
+		Text:       text,
+		OK:         result.OK,
+		Error:      result.Warning,
+		DurationMS: result.DurationMS,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	})
+	return result, nil
 }
 
 func (m *Manager) typeRef(tabCtx context.Context, ref, text string) error {
@@ -948,7 +973,17 @@ func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionRe
 		return ActionResult{}, err
 	}
 	m.settle(tabCtx, actionSettleDelayFast)
-	return m.observeActionWithBefore(tabID, tabCtx, "filled "+ref, before), nil
+	result := m.observeActionWithBefore(tabID, tabCtx, "filled "+ref, before)
+	m.recordTrace(tabID, TraceEntry{
+		Action:     "fill",
+		Ref:        ref,
+		Text:       opts.EffectiveText(),
+		OK:         result.OK,
+		Error:      result.Warning,
+		DurationMS: result.DurationMS,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	})
+	return result, nil
 }
 
 func (m *Manager) fillRef(tabCtx context.Context, ref, text string, replace bool) error {
@@ -1110,7 +1145,17 @@ func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, 
 	if err != nil {
 		return ActionResult{}, err
 	}
-	return m.observeActionWithBefore(tabID, tabCtx, message, before), nil
+	result := m.observeActionWithBefore(tabID, tabCtx, message, before)
+	m.recordTrace(tabID, TraceEntry{
+		Action:     "select",
+		Ref:        ref,
+		Value:      value,
+		OK:         result.OK,
+		Error:      result.Warning,
+		DurationMS: result.DurationMS,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	})
+	return result, nil
 }
 
 func (m *Manager) selectValue(tabCtx context.Context, ref, value string) (string, error) {
@@ -1236,7 +1281,16 @@ func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
 		return ActionResult{}, err
 	}
 	m.settle(tabCtx, actionSettleDelay)
-	return m.observeActionWithBefore(tabID, tabCtx, "pressed "+key, before), nil
+	result := m.observeActionWithBefore(tabID, tabCtx, "pressed "+key, before)
+	m.recordTrace(tabID, TraceEntry{
+		Action:     "press",
+		Value:      key,
+		OK:         result.OK,
+		Error:      result.Warning,
+		DurationMS: result.DurationMS,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	})
+	return result, nil
 }
 
 func (m *Manager) pressKey(tabCtx context.Context, key string) error {
@@ -1287,7 +1341,16 @@ func (m *Manager) Scroll(ctx context.Context, direction string) (ActionResult, e
 		return ActionResult{}, err
 	}
 	m.settle(tabCtx, actionSettleDelay)
-	return m.observeActionWithBefore(tabID, tabCtx, message, before), nil
+	result := m.observeActionWithBefore(tabID, tabCtx, message, before)
+	m.recordTrace(tabID, TraceEntry{
+		Action:     "scroll",
+		Value:      direction,
+		OK:         result.OK,
+		Error:      result.Warning,
+		DurationMS: result.DurationMS,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	})
+	return result, nil
 }
 
 func (m *Manager) scrollDirection(tabCtx context.Context, direction string) (string, error) {
@@ -2149,6 +2212,18 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step Batch
 		if actionErr == nil {
 			_, actionErr = clickElementCenter(tabCtx, step.Ref, actionSettleDelay)
 		}
+	case "click_text":
+		// Clicking by visible/accessible text survives a page whose refs have
+		// been reassigned, which is what a replayed flow needs when the target
+		// page has changed shape since the flow was recorded.
+		if step.Text == "" {
+			actionErr = errors.New("click_text requires text")
+			break
+		}
+		_, actionErr = snapshot.ClickText(tabCtx, snapshot.ClickTextOptions{Text: step.Text})
+		if actionErr == nil {
+			m.settle(tabCtx, actionSettleDelay)
+		}
 	case "type":
 		if step.Ref == "" || step.Text == "" {
 			actionErr = errors.New("type requires ref and text")
@@ -2208,6 +2283,15 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step Batch
 			break
 		}
 		_, actionErr = m.Open(tabCtx, step.URL)
+	case "navigate_to":
+		// Distinct from "open": this drives the batch's existing working tab to
+		// a new URL, where open spawns a new one. A multi-step flow that crosses
+		// pages needs the former and previously had no way to say so.
+		if step.URL == "" {
+			actionErr = errors.New("navigate_to requires url")
+			break
+		}
+		_, actionErr = m.NavigateTo(tabCtx, step.URL)
 	case "focus_tab":
 		if step.ID == "" {
 			actionErr = errors.New("focus_tab requires id")
@@ -2341,7 +2425,19 @@ func (m *Manager) invalidateState(tabID string) {
 	m.stateMu.Unlock()
 }
 
-func (m *Manager) recordTrace(entry TraceEntry) {
+// recordTrace appends one action to the trace, enriching it with the semantic
+// identity of the ref it acted on. A ref is only meaningful against the page
+// that produced it, so a recorded flow needs the element's role and accessible
+// name to be replayed safely — without them a replay cannot tell that a ref now
+// points at a different element.
+func (m *Manager) recordTrace(tabID string, entry TraceEntry) {
+	entry.TabID = tabID
+	if entry.Ref != "" && entry.Name == "" {
+		if el, ok := m.refs.Get(tabID, entry.Ref); ok {
+			entry.Name = el.Name
+			entry.Role = el.Role
+		}
+	}
 	m.traceMu.Lock()
 	m.trace = append(m.trace, entry)
 	if len(m.trace) > 500 {

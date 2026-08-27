@@ -60,6 +60,16 @@ TOKEN DISCIPLINE:
   the requests you care about instead of paging through a busy page's hundreds.
 - brw_press / brw_scroll take { repeat: n } to do the same thing n times in one
   call, instead of n calls each returning its own observation.
+- On a long document, read { include: ["headings"] } for the outline and then
+  { section: "<heading>" } for the part you need, instead of paging the prose.
+- If brw_tools is in your tool list, this session starts with a small catalogue
+  and grows on demand: search brw_tools { query: "..." } for anything you need
+  that is not listed. Every brw tool is callable whether or not it is listed.
+
+REPEATING A FLOW: after completing a multi-step flow, brw_trace { format:
+"batch" } returns it as a brw_batch steps array you can run again verbatim — no
+re-planning, one round trip. It inserts assert steps so a replay against a
+changed page fails instead of acting on the wrong element.
 
 MCPLEXER/HARNESS EXECUTION (when brw is routed through execute_code):
 - If interactive per-call approval is enabled, put only ONE approval-gated brw

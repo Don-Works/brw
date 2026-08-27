@@ -185,6 +185,8 @@ func (c *Controller) Read(ctx context.Context) (readability.PageRead, error) {
 	values.Set("max_chars", strconv.Itoa(readability.UnboundedReadChars))
 	values.Set("max_links", strconv.Itoa(readability.UnboundedReadChars))
 	values.Set("max_headings", strconv.Itoa(readability.UnboundedReadChars))
+	// Section selection is applied by the MCP layer on the full document, so the
+	// proxy deliberately does not forward it here.
 	err := c.get(ctx, "/api/page/read", values, &out)
 	return out, err
 }
@@ -469,6 +471,14 @@ func (c *Controller) Downloads(ctx context.Context) (browser.DownloadsResult, er
 func (c *Controller) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYResult, error) {
 	var out snapshot.ClickXYResult
 	err := c.post(ctx, "/api/page/click_xy", map[string]any{"x": x, "y": y}, &out)
+	return out, err
+}
+
+// ResizeWindow proxies a real OS window change to the upstream daemon, which
+// owns the browser and therefore the window.
+func (c *Controller) ResizeWindow(ctx context.Context, opts browser.WindowResizeOptions) (browser.WindowResizeResult, error) {
+	var out browser.WindowResizeResult
+	err := c.post(ctx, "/api/browser/resize_window", opts, &out)
 	return out, err
 }
 

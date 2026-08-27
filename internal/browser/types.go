@@ -369,10 +369,18 @@ func (o DragOptions) Validate() error {
 }
 
 type TraceEntry struct {
-	Action     string `json:"action"`
-	Ref        string `json:"ref,omitempty"`
-	Text       string `json:"text,omitempty"`
-	Value      string `json:"value,omitempty"`
+	Action string `json:"action"`
+	Ref    string `json:"ref,omitempty"`
+	Text   string `json:"text,omitempty"`
+	Value  string `json:"value,omitempty"`
+	// Name and Role record what the ref pointed at when the action ran. A ref is
+	// only meaningful against the page that produced it, so replaying a recorded
+	// flow needs the element's semantic identity to guard against acting on a
+	// different element that inherited the same ref.
+	Name  string `json:"name,omitempty"`
+	Role  string `json:"role,omitempty"`
+	TabID string `json:"tab_id,omitempty"`
+
 	OK         bool   `json:"ok"`
 	Error      string `json:"error,omitempty"`
 	DurationMS int64  `json:"duration_ms"`

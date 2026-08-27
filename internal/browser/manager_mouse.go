@@ -136,7 +136,7 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 	if recovery != "" {
 		appendWarning(&result, recovery)
 	}
-	m.recordTrace(TraceEntry{
+	m.recordTrace(tabID, TraceEntry{
 		Action:     "click_button",
 		Ref:        opts.Ref,
 		OK:         result.OK,
@@ -200,7 +200,7 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 	if recovery != "" {
 		appendWarning(&result, recovery)
 	}
-	m.recordTrace(TraceEntry{
+	m.recordTrace(tabID, TraceEntry{
 		Action:     action,
 		Ref:        opts.Ref,
 		OK:         result.OK,
@@ -243,7 +243,7 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 			m.settle(tabCtx, actionSettleDelay)
 			result := m.observeActionWithBefore(tabID, tabCtx, fmt.Sprintf("dragged %s -> %s (html5)", opts.From.Ref, opts.To.Ref), before)
 			result.DurationMS = time.Since(start).Milliseconds()
-			m.recordTrace(TraceEntry{
+			m.recordTrace(tabID, TraceEntry{
 				Action:     "drag",
 				Ref:        opts.From.Ref,
 				OK:         result.OK,
@@ -286,7 +286,7 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	if recovery != "" {
 		appendWarning(&result, recovery)
 	}
-	m.recordTrace(TraceEntry{
+	m.recordTrace(tabID, TraceEntry{
 		Action:     "drag",
 		Ref:        opts.From.Ref,
 		OK:         result.OK,

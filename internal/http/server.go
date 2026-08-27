@@ -251,6 +251,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/assert_value", s.assertValue)
 	mux.HandleFunc("POST /api/page/click_xy", s.clickXY)
 	mux.HandleFunc("GET /api/page/window_bounds", s.windowBounds)
+	mux.HandleFunc("POST /api/browser/resize_window", s.resizeWindow)
 	mux.HandleFunc("GET /api/page/console", s.consoleMessages)
 	mux.HandleFunc("GET /api/page/downloads", s.downloads)
 	mux.HandleFunc("GET /api/page/trace", s.trace)
@@ -573,6 +574,7 @@ func parseReadOptions(w http.ResponseWriter, r *http.Request) (readability.ReadO
 	if raw := q.Get("include"); raw != "" {
 		opts.Include = readability.NormalizeSections(strings.Split(raw, ","))
 	}
+	opts.Section = strings.TrimSpace(q.Get("section"))
 	if err := opts.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return opts, false
@@ -1243,6 +1245,21 @@ func (s *Server) clickXY(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) windowBounds(w http.ResponseWriter, r *http.Request) {
 	result, err := s.manager.WindowBounds(s.requestContext(r))
+	writeResult(w, result, err)
+}
+
+func (s *Server) resizeWindow(w http.ResponseWriter, r *http.Request) {
+	// tab_id is transport routing rather than a resize parameter, so it is
+	// decoded alongside the options instead of living on the options type.
+	var req struct {
+		browser.WindowResizeOptions
+		TabID string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	result, err := s.manager.ResizeWindow(ctx, req.WindowResizeOptions)
 	writeResult(w, result, err)
 }
 

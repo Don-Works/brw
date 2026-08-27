@@ -39,6 +39,12 @@ type Server struct {
 	sessionID   string
 	identity    brwidentity.Identity
 	console     consoleBuffer
+	unlocked    unlockedTools
+
+	// notify pushes a JSON-RPC notification to the client. Serve installs it;
+	// it is nil before Serve runs and on transports that cannot push.
+	notifyMu sync.Mutex
+	notify   func(method string, params any)
 }
 
 // SetIdentity records which workspace/profile/browser this server drives, so the
@@ -141,6 +147,8 @@ var toolProfiles = map[string]map[string]bool{
 	"all":     nil,
 	"core":    coreToolNames,
 	"minimal": minimalToolNames,
+	// auto starts from the minimal set and grows as brw_tools discloses more.
+	autoProfile: minimalToolNames,
 }
 
 // ToolProfileNames lists the selectable profiles, for CLI help and validation.
@@ -200,13 +208,44 @@ func (s *Server) advertisedTools() []map[string]any {
 	if !known || allowed == nil {
 		return all
 	}
-	filtered := make([]map[string]any, 0, len(allowed))
+	auto := s.toolProfile == autoProfile
+	filtered := make([]map[string]any, 0, len(allowed)+s.unlocked.count()+1)
+	if auto {
+		filtered = append(filtered, discoveryTool())
+	}
 	for _, t := range all {
-		if name, _ := t["name"].(string); allowed[name] {
+		name, _ := t["name"].(string)
+		if allowed[name] || (auto && s.unlocked.has(name)) {
 			filtered = append(filtered, t)
 		}
 	}
 	return filtered
+}
+
+// supportsListChanged reports whether this server can grow its catalogue mid
+// session. Only auto mode does, and advertising the capability otherwise would
+// promise a notification that never comes.
+func (s *Server) supportsListChanged() bool {
+	return s.toolProfile == autoProfile
+}
+
+// setNotifier installs the push channel Serve owns.
+func (s *Server) setNotifier(fn func(method string, params any)) {
+	s.notifyMu.Lock()
+	s.notify = fn
+	s.notifyMu.Unlock()
+}
+
+// announceToolsChanged tells the client its catalogue is stale. Best effort: a
+// client that never refetches still works, because unadvertised tools remain
+// callable.
+func (s *Server) announceToolsChanged() {
+	s.notifyMu.Lock()
+	fn := s.notify
+	s.notifyMu.Unlock()
+	if fn != nil {
+		fn("notifications/tools/list_changed", nil)
+	}
 }
 
 type request struct {
@@ -214,6 +253,14 @@ type request struct {
 	ID      json.RawMessage `json:"id,omitempty"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
+}
+
+// notification is a JSON-RPC message with no id, which the client must not
+// answer. Params is omitted when nil so a bare notification stays bare.
+type notification struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
 }
 
 type response struct {
@@ -295,6 +342,20 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		return writeMessage(out, mode, value)
 	}
 
+	// Notifications are written on the same framed stream as responses, so they
+	// have to follow whatever framing the client established. Track the mode of
+	// the last message read; before the first one, line framing is the safe
+	// default because it is what a bare-JSON client sends.
+	var modeMu sync.Mutex
+	notifyMode := stdioModeLine
+	s.setNotifier(func(method string, params any) {
+		modeMu.Lock()
+		mode := notifyMode
+		modeMu.Unlock()
+		_ = write(mode, notification{JSONRPC: "2.0", Method: method, Params: params})
+	})
+	defer s.setNotifier(nil)
+
 	type activeRequest struct {
 		cancel context.CancelFunc
 	}
@@ -363,6 +424,11 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 				continue
 			}
 			return msg.err
+		}
+		if msg.mode != stdioModeUnknown {
+			modeMu.Lock()
+			notifyMode = msg.mode
+			modeMu.Unlock()
 		}
 		if len(bytes.TrimSpace(msg.body)) == 0 {
 			continue
@@ -559,7 +625,7 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 				"version": Version,
 			},
 			"capabilities": map[string]any{
-				"tools": map[string]any{"listChanged": false},
+				"tools": map[string]any{"listChanged": s.supportsListChanged()},
 			},
 		}, nil
 	case "tools/list":
@@ -653,6 +719,23 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		ctx = pinActiveTabForTool(ctx, s.manager, name)
 	}
 	switch name {
+	case discoveryToolName:
+		var req struct {
+			Query string `json:"query"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		result, err := s.discoverTools(req.Query)
+		if err != nil {
+			return nil, invalid(err)
+		}
+		// Tell the client its catalogue moved, but only when it actually did:
+		// a notification per search would churn a client that refetches on it.
+		if result.Unlocked > 0 && s.supportsListChanged() {
+			s.announceToolsChanged()
+		}
+		return toolJSON(result, nil)
 	case "brw_identity":
 		// Process-level config, deliberately independent of the browser: it
 		// answers even when no bridge is connected or the browser has zero
@@ -748,6 +831,23 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		read, err := s.manager.Read(ctx)
 		if err != nil {
 			return toolError(err), nil
+		}
+		// An unmatched section is an argument error, not a silently empty read:
+		// the agent asked for a part of the page that is not there, and needs to
+		// know which parts are.
+		if req.Section != "" {
+			// Distinguish "that section is not on this page" from "this browser
+			// backend cannot address sections at all". An older upstream daemon
+			// in proxy mode returns headings without offsets; treating that as a
+			// miss would send the agent hunting for a name that is right there.
+			if !readability.SectionsAddressable(read.Headings) {
+				return nil, invalid(fmt.Errorf(
+					"section addressing is unavailable on this backend (the page read carried no heading offsets); page with offset/max_chars instead, or update the brw daemon this session proxies to"))
+			}
+			if _, ok := readability.FindSectionSpan(read.Headings, len([]rune(read.Main)), req.Section); !ok {
+				return nil, invalid(fmt.Errorf("no section matching %q; available sections: %s",
+					req.Section, strings.Join(readability.SectionNames(read.Headings), ", ")))
+			}
 		}
 		return toolJSON(readability.Window(read, req), nil)
 	case "brw_read_data":
@@ -1271,6 +1371,18 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(s.manager.ClickXY(ctx, req.X, req.Y))
+	case "brw_window_resize":
+		var req browser.WindowResizeOptions
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		if err := browser.ValidateWindowResize(req); err != nil {
+			return nil, invalid(err)
+		}
+		if _, err := browser.NormalizeWindowState(req.State); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.ResizeWindow(ctx, req))
 	case "brw_window_bounds":
 		return toolJSON(s.manager.WindowBounds(ctx))
 	case "brw_console":
@@ -1301,8 +1413,26 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	case "brw_downloads":
 		return toolJSON(s.manager.Downloads(ctx))
 	case "brw_trace":
+		var req struct {
+			Format        string `json:"format"`
+			Guards        *bool  `json:"guards"`
+			IncludeFailed *bool  `json:"include_failed"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
 		trace := s.manager.GetTrace()
-		return toolJSON(trace, nil)
+		switch strings.ToLower(strings.TrimSpace(req.Format)) {
+		case "", "entries":
+			return toolJSON(trace, nil)
+		case "batch":
+			return toolJSON(browser.TraceToBatch(trace, browser.ReplayOptions{
+				Guards:        req.Guards,
+				IncludeFailed: req.IncludeFailed,
+			}), nil)
+		default:
+			return nil, invalid(fmt.Errorf("unknown format %q (valid: entries, batch)", req.Format))
+		}
 	case "brw_clear_trace":
 		s.manager.ClearTrace()
 		return toolOK(nil)
@@ -1578,7 +1708,8 @@ func tools() []map[string]any {
 				"items":       stringEnumSchema("Section name.", "main", "headings", "links", "forms", "tables", "metadata"),
 				"description": "Sections to return. Omit for all of them.",
 			},
-			"max_chars":    integerSchema("Cap on returned prose characters. Defaults to 20000; -1 returns the whole document. When it truncates, main_truncated is set and next_offset gives the offset for the following page."),
+			"section":      stringSchema("Return only this heading's span, ending at the next heading of the same or higher level. Matches a heading name case-insensitively, exact match preferred over substring. The cheap pattern for a long document: read include:[\"headings\"] for the outline, then fetch the one section you need instead of paging the whole page. An unmatched name is an error listing the available sections."),
+			"max_chars":    integerSchema("Cap on returned prose characters. Defaults to 20000; -1 returns the whole document. When it truncates, main_truncated is set and next_offset gives the offset for the following page. Applied within section when one is given."),
 			"offset":       integerSchema("Character offset into the prose, for paging with next_offset."),
 			"max_links":    integerSchema("Cap on returned links. Defaults to 300; -1 for no cap."),
 			"max_headings": integerSchema("Cap on returned headings. Defaults to 100; -1 for no cap."),
@@ -1795,7 +1926,7 @@ func tools() []map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"action":     stringEnumSchema("One of: click, type, fill, select, press, scroll, hover, wait, open, focus_tab, assert_visible, assert_text, assert_value, assert_hidden.", "click", "type", "fill", "select", "press", "scroll", "hover", "wait", "open", "focus_tab", "assert_visible", "assert_text", "assert_value", "assert_hidden"),
+						"action":     stringEnumSchema("One of: click, click_text, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, assert_visible, assert_text, assert_value, assert_hidden. open spawns a new tab; navigate_to drives the batch's existing working tab.", "click", "click_text", "type", "fill", "select", "press", "scroll", "hover", "wait", "open", "navigate_to", "focus_tab", "assert_visible", "assert_text", "assert_value", "assert_hidden"),
 						"ref":        stringSchema("Element ref for click, type, fill, select, hover, and assert_* actions."),
 						"text":       stringSchema("Text for type and fill actions, or expected text for assert_text."),
 						"value":      stringSchema("Option value for select / assert_value. For fill, also accepted as a Playwright-style alias for text."),
@@ -1870,6 +2001,14 @@ func tools() []map[string]any {
 			"y":      map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"x", "y"})),
+		tool("brw_window_resize", "Move or resize the REAL OS browser window. Not the same as brw_emulate_device, which overrides viewport metrics inside the renderer for responsive testing — this changes the window a human sees, which is what desktop-aware layouts and window-manager-sensitive apps key off. Returns the geometry Chrome settled on, so no follow-up read is needed; Chrome clamps to the display, so clamped:true means the applied size differs from the one requested.", object(map[string]any{
+			"width":  integerSchema("Window width in pixels."),
+			"height": integerSchema("Window height in pixels."),
+			"left":   integerSchema("Window left edge in screen pixels."),
+			"top":    integerSchema("Window top edge in screen pixels."),
+			"state":  stringEnumSchema("Window state. Passing width/height together with maximized or fullscreen sizes the window first, then applies the state.", "normal", "minimized", "maximized", "fullscreen"),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, nil)),
 		tool("brw_window_bounds", "Return the tab window/viewport geometry for mapping a SCREEN pixel (from an OS/desktop screenshot) into viewport CSS pixels for brw_click_xy. Fields (CSS px unless noted): device_pixel_ratio, screen_x/screen_y (viewport top-left in screen coords), inner_width/inner_height (viewport), outer_width/outer_height (window), scroll_x/scroll_y, screen_width/screen_height. Map with: viewport_css_x = screen_device_x / device_pixel_ratio - screen_x (same for y).", object(map[string]any{
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
@@ -1882,7 +2021,11 @@ func tools() []map[string]any {
 			"clear":       boolSchema("Drop the returned messages from the buffer. Defaults true. Set false to re-read them later."),
 		}, nil)),
 		tool("brw_downloads", "Return and drain tracked file downloads with url, suggested_filename, state (inProgress/completed/canceled), received_bytes, total_bytes, guid, and path. The buffer clears after reading. Branch on supported=false, which only an extension build predating download support returns.", object(nil, nil)),
-		tool("brw_trace", "Return the action trace: a compact log of recent actions with refs, timing, and outcomes. Use for debugging and performance analysis.", object(nil, nil)),
+		tool("brw_trace", "Return the action trace: recent actions with their refs, the element each one acted on, timing, and outcomes. format:\"batch\" instead returns the same flow as a ready-to-run brw_batch steps array — do a flow once, get a deterministic replay script with no model in the loop. Each ref action is preceded by an assert step checking the ref still points at the element that was recorded, so a replay against a changed page fails loudly instead of acting on the wrong element. Coordinate-driven actions (drag, click_xy) and history navigation are not replayable and are reported under skipped_reasons rather than dropped silently.", object(map[string]any{
+			"format":         stringEnumSchema("entries (default, the raw log) or batch (a brw_batch steps array that reproduces the flow).", "entries", "batch"),
+			"guards":         boolSchema("format:batch only. Insert an assert step before each action to verify its ref still points at the recorded element. Defaults true; a replay that clicks the wrong element in silence is worse than one that fails."),
+			"include_failed": boolSchema("format:batch only. Keep steps whose action failed when recorded. Defaults true so the export is a faithful record; set false to export only what worked."),
+		}, nil)),
 		tool("brw_clear_trace", "Clear the action trace buffer.", object(nil, nil)),
 	}
 }

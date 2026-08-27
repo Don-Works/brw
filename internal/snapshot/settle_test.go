@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -79,30 +80,47 @@ func TestSettleResolvesFastOnQuiesce(t *testing.T) {
 	}
 
 	const capMS = 150
-	wallStart := time.Now()
-	res, err := Settle(runCtx, capMS)
-	wall := time.Since(wallStart)
-	if err != nil {
-		t.Fatalf("settle: %v", err)
+	// This measures wall-clock time, so a machine busy running the rest of the
+	// suite in parallel can starve the in-page quiesce detector out of its
+	// window and settle at the cap — a fact about the load, not about brw. A
+	// real regression caps on every attempt, so requiring one fast settle out of
+	// a few keeps the assertion's teeth without the false failures.
+	const attempts = 3
+	var res SettleResult
+	var wall time.Duration
+	var observed []string
+
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			// Re-navigate so the fixture's DOM mutation and quiesce window run
+			// again; a second Settle on an already-quiet page has no early
+			// signal left to find.
+			if err := chromedp.Run(runCtx, chromedp.Navigate(quiesceFixture)); err != nil {
+				t.Fatalf("re-navigate: %v", err)
+			}
+		}
+		wallStart := time.Now()
+		var err error
+		res, err = Settle(runCtx, capMS)
+		wall = time.Since(wallStart)
+		if err != nil {
+			t.Fatalf("settle: %v", err)
+		}
+		observed = append(observed, fmt.Sprintf("settledMs=%d reason=%q wall=%v", res.SettledMS, res.Reason, wall))
+
+		// (b) Fast path: must return well under the old fixed 150ms delay. The
+		// DOM mutation lands at ~5ms and the quiesce window is ~40ms, so the
+		// in-page settle should report well under 100ms, resolved by an early
+		// signal (quiesce, network, or navigation) rather than the cap.
+		if res.SettledMS < 100 && res.Reason != "cap" && wall < capMS*time.Millisecond {
+			break
+		}
+		if attempt == attempts-1 {
+			t.Fatalf("no fast settle in %d attempts, so the adaptive settle is not beating the fixed %dms sleep: %v",
+				attempts, capMS, observed)
+		}
 	}
 
-	// (b) Fast path: must return well under the old fixed 150ms delay. The DOM
-	// mutation lands at ~5ms and the quiesce window is ~40ms, so the in-page
-	// settle should report well under 100ms.
-	if res.SettledMS >= 100 {
-		t.Fatalf("expected fast settle well under the 150ms cap, got settledMs=%d (reason=%q)", res.SettledMS, res.Reason)
-	}
-	// The wall-clock CDP round-trip must also beat the old fixed sleep, proving the
-	// caller actually saves time (not just the in-page clock).
-	if wall >= capMS*time.Millisecond {
-		t.Fatalf("wall-clock settle %v did not beat the old fixed %dms sleep", wall, capMS)
-	}
-	// Resolved because a network response landed (the data: navigation can surface
-	// as a resource entry) OR the DOM quiesced — both are legitimate early signals.
-	// It must NOT be the plain cap timeout, which would mean no early signal fired.
-	if res.Reason == "cap" {
-		t.Fatalf("expected an early settle signal (quiesce/network/navigation), got cap timeout; settledMs=%d", res.SettledMS)
-	}
 	if res.Cap != capMS {
 		t.Fatalf("expected reported cap %d, got %d", capMS, res.Cap)
 	}

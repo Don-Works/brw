@@ -225,6 +225,25 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
     if (fallback.length > main.length) main = fallback.slice(0, 100000);
   }
 
+  // Locate each heading inside the extracted prose so a caller can address a
+  // section by name instead of paging blindly by character offset. Both strings
+  // come from the same whitespace-collapsing text() helper, so a heading appears
+  // verbatim in main. Scanning forward from the previous match keeps repeated
+  // heading texts (common in long docs) in document order.
+  let scanFrom = 0;
+  for (const heading of headings) {
+    const at = main.indexOf(heading.text, scanFrom);
+    if (at === -1) {
+      // A heading outside the scored main element, or one whose text was
+      // rewritten between extractions. Leave it unaddressable rather than
+      // guessing an offset that would slice the wrong span.
+      heading.offset = -1;
+      continue;
+    }
+    heading.offset = at;
+    scanFrom = at + heading.text.length;
+  }
+
   return {
     url: location.href,
     title: document.title || '',

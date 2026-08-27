@@ -229,9 +229,10 @@ every turn — not a one-off. Three profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` (default) | 54 | ~11.4k tokens |
-| `core` | 24 | ~6.9k tokens |
-| `minimal` | 12 | ~3.7k tokens |
+| `all` (default) | 55 | ~12.1k tokens |
+| `core` | 24 | ~7.0k tokens |
+| `minimal` | 12 | ~3.8k tokens |
+| `auto` | 13, growing | ~4.1k tokens to start |
 
 `core` advertises the common-flow tools (open/snapshot/find/click/type/fill/
 select/press/scroll/hover/drag/upload/navigate/wait/batch/observe/screenshot).
@@ -241,9 +242,24 @@ controls, act on them, confirm the result: `brw_open`, `brw_navigate_to`,
 `brw_read`, `brw_snapshot`, `brw_find`, `brw_click`, `brw_fill`, `brw_select`,
 `brw_press`, `brw_wait_for`, `brw_observe`, `brw_batch`.
 
+`auto` starts from the minimal set plus `brw_tools` and grows as the agent
+discovers what it needs:
+
+```
+brw_tools { query: "record the network requests" }
+```
+
+The matches are added to the catalogue, `notifications/tools/list_changed` is
+emitted, and the client's next `tools/list` carries their full definitions. One
+search adds at most four tools, so the surface tracks the task instead of being
+paid for up front. `capabilities.tools.listChanged` is advertised only in this
+mode, because it is the only mode where the catalogue changes.
+
 Every other tool stays callable under every profile; the profile only narrows
-what `tools/list` advertises. An unrecognised profile advertises the full
-surface and logs a warning, so a typo degrades rather than muting the server.
+what `tools/list` advertises. A client that ignores `list_changed` is never
+blocked — it can call an undiscovered tool directly and it works. An
+unrecognised profile advertises the full surface and logs a warning, so a typo
+degrades rather than muting the server.
 
 ## Bounded reads and filtered logs
 
@@ -264,3 +280,45 @@ alongside the existing substring `filter`.
 
 `brw_press` and `brw_scroll` take `repeat` (1-100), which performs the action n
 times in one round-trip and returns only the final observation.
+
+## Addressing a section instead of paging
+
+Each heading in a read carries its offset into the prose, so a long document can
+be read by name rather than by character offset:
+
+```
+brw_read { include: ["headings"] }      # the outline, no prose
+brw_read { section: "Install" }         # just that heading's span
+```
+
+A section ends at the next heading of the same or higher level, so subsections
+come with their parent. Bounds still apply inside a section, so a long one pages
+like anything else. A name that matches nothing is an error listing the
+available sections, and a backend that cannot compute offsets says so rather
+than quietly returning the whole page.
+
+## Replaying a flow
+
+`brw_trace { format: "batch" }` returns the actions just performed as a
+`brw_batch` steps array. Run a flow once, get a deterministic replay script with
+no model in the loop:
+
+```
+brw_trace { format: "batch" }
+brw_batch { steps: [...] }              # the same flow, one round trip
+```
+
+Each ref action is preceded by an `assert_text` guard built from the element
+identity captured when the action ran, so replaying against a page that has
+changed fails loudly instead of acting on whatever inherited the ref. Pass
+`guards: false` to drop them. Coordinate-driven actions (drag, click_xy) and
+history navigation cannot be replayed and are reported under `skipped_reasons`
+rather than dropped silently.
+
+## Resizing the real window
+
+`brw_window_resize` moves and resizes the OS browser window, which is what
+desktop-aware layouts key off. It is not `brw_emulate_device`, which overrides
+viewport metrics inside the renderer for responsive testing. The result carries
+the geometry Chrome settled on, with `clamped: true` when that differs from what
+was asked for.

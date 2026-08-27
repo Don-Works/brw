@@ -401,6 +401,7 @@ type fakeController struct {
 	navigateToURL string
 	openGroupOpts browser.TabGroupOptions
 	groupTabIDs   []string
+	resizeOpts    browser.WindowResizeOptions
 	groupTabsOpts browser.TabGroupOptions
 	closeCtxID    string
 	emulationOpts browser.DeviceEmulationOptions
@@ -610,6 +611,11 @@ func (f *fakeController) Downloads(context.Context) (browser.DownloadsResult, er
 
 func (f *fakeController) WindowBounds(context.Context) (snapshot.WindowBoundsResult, error) {
 	return snapshot.WindowBoundsResult{DevicePixelRatio: 1}, nil
+}
+
+func (f *fakeController) ResizeWindow(_ context.Context, opts browser.WindowResizeOptions) (browser.WindowResizeResult, error) {
+	f.resizeOpts = opts
+	return browser.WindowResizeResult{OK: true, Width: opts.Width, Height: opts.Height, State: opts.State}, nil
 }
 
 func (f *fakeController) ClickXY(_ context.Context, x float64, y float64) (snapshot.ClickXYResult, error) {

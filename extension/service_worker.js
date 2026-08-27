@@ -886,6 +886,51 @@ async function handle(message) {
       send({ id: message.id, ok: true, result: { closed: tabId } });
       return;
     }
+    if (message.type === "resize_window") {
+      const tabId = Number(message.params?.tabId);
+      const tab = await chrome.tabs.get(tabId).catch(() => null);
+      if (!tab || typeof tab.windowId !== "number") {
+        send({ id: message.id, ok: false, error: "could not resolve a window for the tab" });
+        return;
+      }
+      const state = String(message.params?.state || "").trim().toLowerCase();
+      const geometry = {};
+      for (const key of ["width", "height", "left", "top"]) {
+        const value = message.params?.[key];
+        if (value !== undefined && value !== null) geometry[key] = Math.round(Number(value));
+      }
+      // chrome.windows.update rejects bounds sent alongside a non-normal state,
+      // and a minimized or maximized window ignores bounds outright. Restore to
+      // normal first when geometry was asked for, then apply state last so
+      // "size it, then maximize" works in a single request.
+      const wantsGeometry = Object.keys(geometry).length > 0;
+      const current = await chrome.windows.get(tab.windowId);
+      if (wantsGeometry && current.state !== "normal") {
+        await chrome.windows.update(tab.windowId, { state: "normal" });
+      }
+      if (wantsGeometry) {
+        await chrome.windows.update(tab.windowId, geometry);
+      }
+      if (state && (state !== "normal" || !wantsGeometry)) {
+        await chrome.windows.update(tab.windowId, { state });
+      }
+      // Report what Chrome settled on, not what was asked for: Chrome clamps to
+      // the display, so the two legitimately differ.
+      const applied = await chrome.windows.get(tab.windowId);
+      send({
+        id: message.id,
+        ok: true,
+        result: {
+          window_id: applied.id,
+          width: applied.width,
+          height: applied.height,
+          left: applied.left,
+          top: applied.top,
+          state: applied.state,
+        },
+      });
+      return;
+    }
     if (message.type === "group_tabs") {
       const tabIds = (message.params?.tabIds || []).map(Number);
       const requestedName = String(message.params?.name || "").trim();

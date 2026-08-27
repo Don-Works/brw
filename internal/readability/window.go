@@ -33,6 +33,10 @@ type ReadOptions struct {
 	Offset int `json:"offset,omitempty"`
 	// Include selects sections by name. Empty means every section.
 	Include []string `json:"include,omitempty"`
+	// Section names a heading; the prose returned is that heading's span, ending
+	// at the next heading of the same or higher level. Applied before MaxChars
+	// and Offset, which then page within the section.
+	Section string `json:"section,omitempty"`
 	// MaxLinks and MaxHeadings cap their lists. Zero selects the defaults.
 	MaxLinks    int `json:"max_links,omitempty"`
 	MaxHeadings int `json:"max_headings,omitempty"`
@@ -70,12 +74,120 @@ func (o ReadOptions) wants(section string) bool {
 	return false
 }
 
+// SectionSpan is the character range one heading owns within a document's prose.
+type SectionSpan struct {
+	Heading string
+	Level   int
+	Start   int
+	End     int
+}
+
+// addressableOffset returns a heading's position within the prose, and whether
+// it can be addressed at all. A nil offset means the read came from a source
+// that does not compute them; a negative one means the heading sits outside the
+// extracted prose. Neither can be sliced from.
+func addressableOffset(heading Heading) (int, bool) {
+	if heading.Offset == nil || *heading.Offset < 0 {
+		return 0, false
+	}
+	return *heading.Offset, true
+}
+
+// SectionsAddressable reports whether a read carries the heading offsets that
+// section selection needs. False means the caller should say so rather than
+// return a span it cannot compute.
+func SectionsAddressable(headings []Heading) bool {
+	for _, heading := range headings {
+		if _, ok := addressableOffset(heading); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// FindSectionSpan locates the span a heading owns: from the heading itself to
+// the next heading of the same or higher level, or the end of the prose. A
+// heading with no addressable offset is skipped. Matching is case-insensitive
+// on the trimmed heading text, and prefers an exact match over a substring one
+// so "Install" does not silently select "Installation" when both exist.
+func FindSectionSpan(headings []Heading, totalRunes int, name string) (SectionSpan, bool) {
+	want := strings.ToLower(strings.TrimSpace(name))
+	if want == "" || totalRunes == 0 {
+		return SectionSpan{}, false
+	}
+
+	best := -1
+	bestStart := 0
+	for i, heading := range headings {
+		offset, ok := addressableOffset(heading)
+		if !ok {
+			continue
+		}
+		text := strings.ToLower(strings.TrimSpace(heading.Text))
+		if text == want {
+			best, bestStart = i, offset
+			break
+		}
+		if best == -1 && strings.Contains(text, want) {
+			best, bestStart = i, offset
+		}
+	}
+	if best == -1 {
+		return SectionSpan{}, false
+	}
+
+	end := totalRunes
+	for _, later := range headings[best+1:] {
+		offset, ok := addressableOffset(later)
+		if !ok || offset <= bestStart {
+			continue
+		}
+		// A deeper heading is part of this section; the section ends at the next
+		// heading that is a sibling or an ancestor.
+		if later.Level <= headings[best].Level {
+			end = offset
+			break
+		}
+	}
+	if end > totalRunes {
+		end = totalRunes
+	}
+	if bestStart > end {
+		return SectionSpan{}, false
+	}
+	return SectionSpan{Heading: headings[best].Text, Level: headings[best].Level, Start: bestStart, End: end}, true
+}
+
+// SectionNames lists the addressable headings, for an error that tells a caller
+// what it could have asked for instead.
+func SectionNames(headings []Heading) []string {
+	out := make([]string, 0, len(headings))
+	for _, heading := range headings {
+		if _, ok := addressableOffset(heading); ok && strings.TrimSpace(heading.Text) != "" {
+			out = append(out, heading.Text)
+		}
+	}
+	return out
+}
+
 // Window returns a bounded copy of read. It never mutates the input.
 func Window(read PageRead, opts ReadOptions) PageRead {
 	out := read
 
 	if opts.wants("main") {
-		out.Main, out.MainTotalChars, out.MainTruncated, out.NextOffset = windowText(read.Main, opts)
+		prose := read.Main
+		if opts.Section != "" {
+			// A section that cannot be found is reported by the caller as an
+			// argument error; Window falls back to the whole document rather
+			// than inventing an empty one.
+			if span, ok := FindSectionSpan(read.Headings, len([]rune(read.Main)), opts.Section); ok {
+				runes := []rune(read.Main)
+				prose = string(runes[span.Start:span.End])
+				out.Section = span.Heading
+				out.SectionLevel = span.Level
+			}
+		}
+		out.Main, out.MainTotalChars, out.MainTruncated, out.NextOffset = windowText(prose, opts)
 	} else {
 		out.Main = ""
 		out.MainTotalChars = len([]rune(read.Main))

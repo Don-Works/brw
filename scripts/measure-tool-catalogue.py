@@ -11,6 +11,10 @@ description or a profile so the docs do not drift.
 
 --detail also ranks the individual tools by size, which is where to look first
 when the total moves.
+
+The "auto" figure is the starting catalogue only. It grows as an agent discovers
+tools with brw_tools, which is the point: the surface fits the task instead of
+being paid for up front.
 """
 import json
 import os
@@ -18,7 +22,7 @@ import subprocess
 import sys
 
 BRWD = os.environ.get("BRWD", "bin/brwd")
-PROFILES = ("all", "core", "minimal")
+PROFILES = ("all", "core", "minimal", "auto")
 INIT = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n'
 LIST = '{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'
 
