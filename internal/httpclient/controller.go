@@ -362,7 +362,7 @@ func (c *Controller) Screenshot(ctx context.Context) (browser.Screenshot, error)
 	var out browser.Screenshot
 	err := c.get(ctx, "/api/visual/screenshot", url.Values{"base64": []string{"1"}}, &out)
 	if err == nil && len(out.Data) == 0 && out.Base64 != "" {
-		out.Data, _ = base64.StdEncoding.DecodeString(out.Base64)
+		out.Data, err = base64.StdEncoding.DecodeString(out.Base64)
 	}
 	return out, err
 }
@@ -390,7 +390,7 @@ func (c *Controller) ScreenshotAnnotated(ctx context.Context, aopts browser.Anno
 	}
 	err := c.get(ctx, "/api/visual/screenshot", vals, &out)
 	if err == nil && len(out.Data) == 0 && out.Base64 != "" {
-		out.Data, _ = base64.StdEncoding.DecodeString(out.Base64)
+		out.Data, err = base64.StdEncoding.DecodeString(out.Base64)
 	}
 	return out, err
 }
@@ -402,7 +402,7 @@ func (c *Controller) ScreenshotElement(ctx context.Context, ref string) (browser
 		"ref":    []string{ref},
 	}, &out)
 	if err == nil && len(out.Data) == 0 && out.Base64 != "" {
-		out.Data, _ = base64.StdEncoding.DecodeString(out.Base64)
+		out.Data, err = base64.StdEncoding.DecodeString(out.Base64)
 	}
 	return out, err
 }
