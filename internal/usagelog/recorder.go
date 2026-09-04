@@ -344,9 +344,42 @@ func failureShape(message string) string {
 		return "not_actionable"
 	case strings.Contains(message, "no visible element found for text"):
 		return "text_not_found"
+	case strings.Contains(message, "no fill target found"),
+		strings.Contains(message, "no file input found"),
+		strings.Contains(message, "no visible option found"),
+		strings.Contains(message, "select option not found"):
+		return "target_not_found"
+	case strings.Contains(message, "ref hidden"):
+		return "not_actionable"
 	case strings.Contains(message, "runtime exception"):
 		return "runtime_exception"
-	case strings.Contains(message, "unknown device preset"):
+	case isDeviceArgumentError(message):
+		return "invalid_device_argument"
+	case strings.Contains(message, "one of path/paths, bytes_base64, or url is required"),
+		strings.Contains(message, "path or paths is required"):
+		return "upload_source_required"
+	case strings.Contains(message, "provide exactly one of path/paths, bytes_base64, or url"):
+		return "upload_source_conflict"
+	case strings.Contains(message, "upload file") && (strings.Contains(message, "no such file") || strings.Contains(message, "not exist")):
+		return "upload_file_not_found"
+	case strings.Contains(message, "upload file") && strings.Contains(message, "is a directory"):
+		return "upload_file_is_directory"
+	case strings.Contains(message, "upload url resolves to a private"),
+		strings.Contains(message, "blocked to prevent ssrf"):
+		return "upload_url_blocked"
+	case strings.Contains(message, "bytes_base64 exceeds"),
+		strings.Contains(message, "decode bytes_base64"):
+		return "invalid_upload_payload"
+	case strings.Contains(message, "parse url"),
+		strings.Contains(message, "url scheme") && strings.Contains(message, "not supported"):
+		return "invalid_upload_url"
+	case strings.Contains(message, "artifact not found"):
+		return "artifact_not_found"
+	case strings.Contains(message, "invalid artifact request"):
+		return "invalid_artifact_request"
+	case strings.Contains(message, "artifact operation failed"):
+		return "artifact_operation_failed"
+	case isInvalidArgumentError(message):
 		return "invalid_argument"
 	case strings.Contains(message, "no current window"):
 		return "no_current_window"
@@ -368,6 +401,52 @@ func failureShape(message string) string {
 	}
 }
 
+// These predicates intentionally match only error strings brw itself emits.
+// Broad patterns such as "must be" would risk deriving fingerprints from page-
+// controlled messages and would also misclassify internal invariant failures.
+func isDeviceArgumentError(message string) bool {
+	return strings.Contains(message, "unknown device preset") ||
+		strings.Contains(message, "width and height are required for") ||
+		strings.Contains(message, "width and height must be <=") ||
+		strings.Contains(message, "device_scale_factor must be <=") ||
+		strings.Contains(message, "max_touch_points must be <=") ||
+		strings.Contains(message, "orientation must be portrait, landscape, or omitted")
+}
+
+func isInvalidArgumentError(message string) bool {
+	return isDeviceArgumentError(message) ||
+		strings.Contains(message, "one of path/paths, bytes_base64, or url is required") ||
+		strings.Contains(message, "provide exactly one of path/paths, bytes_base64, or url") ||
+		strings.Contains(message, "path or paths is required") ||
+		strings.Contains(message, "invalid artifact request") ||
+		strings.Contains(message, "invalid artifact read window") ||
+		strings.Contains(message, "invalid artifact search") ||
+		strings.Contains(message, "invalid artifact id") ||
+		strings.Contains(message, "direction must be one of back, forward, reload") ||
+		strings.Contains(message, "tab id is required") ||
+		strings.Contains(message, "group id is required") ||
+		strings.Contains(message, "invalid tab id") ||
+		strings.Contains(message, "invalid group id") ||
+		strings.Contains(message, "click requires ref") ||
+		strings.Contains(message, "click_text requires text") ||
+		strings.Contains(message, "type requires ref and text") ||
+		strings.Contains(message, "select requires ref and value") ||
+		strings.Contains(message, "press requires key") ||
+		strings.Contains(message, "hover requires ref") ||
+		strings.Contains(message, "open requires url") ||
+		strings.Contains(message, "navigate_to requires url") ||
+		strings.Contains(message, "focus_tab requires id") ||
+		strings.Contains(message, "ref is required") ||
+		strings.Contains(message, "at least one file path is required") ||
+		strings.Contains(message, "text is required") ||
+		strings.Contains(message, "unsupported scroll direction") ||
+		strings.Contains(message, "bytes_base64 exceeds") ||
+		strings.Contains(message, "decode bytes_base64") ||
+		strings.Contains(message, "parse url") ||
+		(strings.Contains(message, "url scheme") && strings.Contains(message, "not supported")) ||
+		strings.Contains(message, "unknown action")
+}
+
 // ClassifyError returns only a stable, non-sensitive category.
 func ClassifyError(err error) string {
 	if err == nil {
@@ -378,6 +457,9 @@ func ClassifyError(err error) string {
 	}
 	if errors.Is(err, context.Canceled) {
 		return "canceled"
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return "not_found"
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
@@ -419,6 +501,25 @@ func ClassifyError(err error) string {
 		return "document_identity_unavailable"
 	case strings.Contains(msg, "crossed a main-document boundary"):
 		return "document_changed"
+	case strings.Contains(msg, "upload url resolves to a private"),
+		strings.Contains(msg, "blocked to prevent ssrf"):
+		return "policy_denied"
+	case strings.Contains(msg, "ref not found"), strings.Contains(msg, "not recoverable"):
+		return "stale_reference"
+	case strings.Contains(msg, "no visible element found for text"),
+		strings.Contains(msg, "no fill target found"),
+		strings.Contains(msg, "no file input found"),
+		strings.Contains(msg, "no visible option found"),
+		strings.Contains(msg, "select option not found"):
+		return "target_not_found"
+	case strings.Contains(msg, "not actionable"), strings.Contains(msg, "ref hidden"):
+		return "target_not_actionable"
+	case strings.Contains(msg, "runtime exception"):
+		return "page_script_error"
+	case strings.Contains(msg, "artifact operation failed"):
+		return "artifact_error"
+	case isInvalidArgumentError(msg):
+		return "invalid_argument"
 	case strings.Contains(msg, "frozen by chrome"):
 		return "tab_frozen"
 	case strings.Contains(msg, "discarded by chrome"):

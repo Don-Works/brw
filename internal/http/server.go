@@ -1994,6 +1994,8 @@ func decodeArtifactRequest(w http.ResponseWriter, r *http.Request, dst any) bool
 }
 
 func writeArtifactRequestError(w http.ResponseWriter) {
+	w.Header().Set(usagelog.HeaderErrorClass, "invalid_argument")
+	w.Header().Set(usagelog.HeaderErrorFingerprint, usagelog.Fingerprint("invalid artifact request"))
 	writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid artifact request"})
 }
 
@@ -2003,12 +2005,30 @@ func writeArtifactResult(w http.ResponseWriter, value any, err error) {
 		// message: some backing-store errors may incorporate an artifact handle
 		// or literal search term and the operational ledger must not depend on it.
 		const publicMessage = "artifact operation failed"
-		w.Header().Set(usagelog.HeaderErrorClass, usagelog.ClassifyError(err))
-		w.Header().Set(usagelog.HeaderErrorFingerprint, usagelog.Fingerprint(publicMessage))
+		errorClass, fingerprintMessage := artifactFailureUsage(err)
+		w.Header().Set(usagelog.HeaderErrorClass, errorClass)
+		w.Header().Set(usagelog.HeaderErrorFingerprint, usagelog.Fingerprint(fingerprintMessage))
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": publicMessage})
 		return
 	}
 	writeJSON(w, http.StatusOK, value)
+}
+
+// artifactFailureUsage derives only privacy-safe operational metadata. The
+// caller still receives the same constant public error, and neither an artifact
+// handle nor a search query is copied or hashed into the ledger.
+func artifactFailureUsage(err error) (errorClass, fingerprintMessage string) {
+	errorClass = usagelog.ClassifyError(err)
+	switch errorClass {
+	case "not_found":
+		return "artifact_not_found", "artifact not found"
+	case "invalid_argument":
+		return errorClass, "invalid artifact request"
+	case "tool", "":
+		return "artifact_error", "artifact operation failed"
+	default:
+		return errorClass, "artifact operation failed"
+	}
 }
 
 func writeResult(w http.ResponseWriter, value any, err error) {

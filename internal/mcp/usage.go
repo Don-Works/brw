@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -47,6 +48,14 @@ func mcpUsageOutcome(result any, rpcErr *rpcError) (outcome, errorClass, fingerp
 		message = content[0].Text
 	} else if content, ok := m["content"].([]any); ok && len(content) > 0 {
 		message = fmt.Sprint(content[0])
+	}
+	if errorClass == "tool" {
+		// Infer richer metadata-only categories even when the ordinary tool error
+		// deliberately has no structuredContent. This changes the private usage
+		// ledger, not the result an MCP client receives.
+		if inferred := usagelog.ClassifyError(errors.New(message)); inferred != "" {
+			errorClass = inferred
+		}
 	}
 	return "error", errorClass, usagelog.Fingerprint(message)
 }

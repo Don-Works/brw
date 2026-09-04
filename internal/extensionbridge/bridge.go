@@ -797,16 +797,56 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	// readLoop's conn.Read and drains b.pending. The pinger exits cleanly when the
 	// read loop returns (pingCancel) so it never leaks.
 	pingCtx, pingCancel := context.WithCancel(r.Context())
-	go b.keepAlive(pingCtx, conn, pingKeepaliveInterval)
+	pingFailure := make(chan struct{}, 1)
+	go b.keepAliveWithFailure(pingCtx, conn, pingKeepaliveInterval, pingFailure)
 
 	readErr := b.readLoop(r.Context(), conn)
 	pingCancel()
-	reason := readErr.Error()
-	log.Printf("extension bridge disconnected: %s", reason)
-
-	if b.releaseConn(conn, reason) {
-		b.recordBridgeUsage("bridge_disconnect", "error", "transport", reason, verifiedHello.Build)
+	reason, expected := bridgeDisconnectReason(readErr)
+	select {
+	case <-pingFailure:
+		// The close frame used to unblock readLoop is intentionally routine, but
+		// the ping failure that caused it is not. Preserve that classification for
+		// the single unexpected-disconnect record below.
+		reason, expected = "keepalive ping failed", false
+	default:
 	}
+	// A replaced connection is stale by definition. Its read loop normally ends
+	// with "use of closed network connection" after the new socket is already
+	// live; do not emit a false disconnect log or ledger error for that routine
+	// MV3 lifecycle event.
+	if !b.releaseConn(conn, reason) {
+		return
+	}
+	if expected {
+		log.Printf("extension bridge disconnected cleanly: %s", reason)
+		b.recordBridgeUsage("bridge_disconnect", "ok", "", "", verifiedHello.Build)
+		return
+	}
+	log.Printf("extension bridge disconnected unexpectedly: %s", reason)
+	b.recordBridgeUsage("bridge_disconnect", "error", "transport", reason, verifiedHello.Build)
+}
+
+// bridgeDisconnectReason separates routine WebSocket lifecycle from a real
+// transport failure. WebSocket close reasons are canonical rather than copied
+// from the peer, keeping arbitrary close-frame text out of logs and status.
+func bridgeDisconnectReason(err error) (reason string, expected bool) {
+	if err == nil {
+		return "connection closed", true
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context canceled", true
+	}
+	switch websocket.CloseStatus(err) {
+	case websocket.StatusNormalClosure:
+		return "normal closure", true
+	case websocket.StatusGoingAway:
+		return "peer going away", true
+	}
+	if status := websocket.CloseStatus(err); status != -1 {
+		return fmt.Sprintf("websocket close status %d", status), false
+	}
+	return err.Error(), false
 }
 
 // releaseConn tears down a connection that has stopped reading. It only acts
@@ -1290,6 +1330,14 @@ const (
 // active conn, so a replaced connection's pinger goes quiet on its next tick.
 // interval is a parameter (not the const directly) so tests can drive it fast.
 func (b *Bridge) keepAlive(ctx context.Context, conn *websocket.Conn, interval time.Duration) {
+	b.keepAliveWithFailure(ctx, conn, interval, nil)
+}
+
+// keepAliveWithFailure is keepAlive with an optional one-shot failure report
+// for handleExtension. Reporting before closing the socket lets the read-loop
+// teardown distinguish a peer's normal StatusGoingAway from a StatusGoingAway
+// sent locally to unblock a dead connection.
+func (b *Bridge) keepAliveWithFailure(ctx context.Context, conn *websocket.Conn, interval time.Duration, failures chan<- struct{}) {
 	if interval <= 0 {
 		interval = pingKeepaliveInterval
 	}
@@ -1313,7 +1361,12 @@ func (b *Bridge) keepAlive(ctx context.Context, conn *websocket.Conn, interval t
 				if ctx.Err() != nil {
 					return
 				}
-				log.Printf("extension bridge keepalive ping failed: %v", err)
+				if failures != nil {
+					select {
+					case failures <- struct{}{}:
+					default:
+					}
+				}
 				_ = conn.Close(websocket.StatusGoingAway, "keepalive ping failed")
 				return
 			}
@@ -1367,7 +1420,6 @@ func (b *Bridge) readLoop(ctx context.Context, conn *websocket.Conn) error {
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
-			log.Printf("extension bridge read: %v", err)
 			return err
 		}
 		var resp response

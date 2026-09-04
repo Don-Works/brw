@@ -86,4 +86,8 @@ func TestArtifactUsageLogNeverContainsHandleQueryOrBackingError(t *testing.T) {
 	if !strings.Contains(string(data), `"operation":"brw_artifact_search"`) || !strings.Contains(string(data), `"outcome":"error"`) {
 		t.Fatalf("missing safe artifact usage metadata: %s", data)
 	}
+	if !strings.Contains(string(data), `"error_class":"artifact_error"`) ||
+		!strings.Contains(string(data), `"error_fingerprint":"`+usagelog.Fingerprint("artifact operation failed")+`"`) {
+		t.Fatalf("artifact failure telemetry is not specific and stable: %s", data)
+	}
 }

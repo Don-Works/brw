@@ -207,6 +207,67 @@ func TestFingerprintCoversCommonAgentFailures(t *testing.T) {
 	}
 }
 
+// TestRejectedCallTelemetryStaysSpecific pins the three controlled failures used
+// by the v0.10.1 -> v0.10.2 before/after probe. They previously all produced
+// class "tool" and the same "other" fingerprint, making unrelated caller fixes
+// indistinguishable in the operational ledger.
+func TestRejectedCallTelemetryStaysSpecific(t *testing.T) {
+	cases := []struct {
+		name      string
+		message   string
+		wantClass string
+		wantShape string
+	}{
+		{
+			name: "device dimensions", message: "width and height are required for responsive emulation",
+			wantClass: "invalid_argument", wantShape: "invalid_device_argument",
+		},
+		{
+			name: "upload source", message: "one of path/paths, bytes_base64, or url is required",
+			wantClass: "invalid_argument", wantShape: "upload_source_required",
+		},
+		{
+			name: "public artifact failure", message: "artifact operation failed",
+			wantClass: "artifact_error", wantShape: "artifact_operation_failed",
+		},
+		{
+			name: "stale reference", message: `element ref "PRIVATE_REF" not recoverable: no_key`,
+			wantClass: "stale_reference", wantShape: "ref_not_found",
+		},
+		{
+			name: "missing target", message: `no file input found for query "PRIVATE_QUERY"`,
+			wantClass: "target_not_found", wantShape: "target_not_found",
+		},
+		{
+			name: "page script", message: "runtime exception: PRIVATE_PAGE_MESSAGE",
+			wantClass: "page_script_error", wantShape: "runtime_exception",
+		},
+	}
+	seen := map[string]string{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyError(errors.New(tc.message)); got != tc.wantClass {
+				t.Errorf("ClassifyError = %q, want %q", got, tc.wantClass)
+			}
+			if got := failureShape(tc.message); got != tc.wantShape {
+				t.Errorf("failureShape = %q, want %q", got, tc.wantShape)
+			}
+			fingerprint := Fingerprint(tc.message)
+			if previous, duplicate := seen[fingerprint]; duplicate && tc.wantShape != "other" {
+				t.Errorf("fingerprint unexpectedly shared with %s", previous)
+			}
+			seen[fingerprint] = tc.name
+		})
+	}
+	if got := len(map[string]struct{}{
+		Fingerprint(cases[0].message): {},
+		Fingerprint(cases[1].message): {},
+		Fingerprint(cases[2].message): {},
+	}); got != 3 {
+		t.Fatalf("the three release probes collapse to %d fingerprints, want 3", got)
+	}
+}
+
 func TestClassifyErrorSeparatesNonDrivableTabsFromToolFailures(t *testing.T) {
 	cases := []struct {
 		name string
@@ -232,9 +293,9 @@ func TestClassifyErrorSeparatesNonDrivableTabsFromToolFailures(t *testing.T) {
 			want: "debugger_conflict",
 		},
 		{
-			name: "a genuine tool failure still classifies as tool",
+			name: "missing visible-text target is actionable telemetry",
 			err:  errors.New("click text: no visible element found for text \"Sign in\""),
-			want: "tool",
+			want: "target_not_found",
 		},
 		{
 			name: "recipe transport lacks document identity",

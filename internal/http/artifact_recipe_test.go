@@ -7,12 +7,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/recipe"
+	"github.com/Don-Works/brw/internal/usagelog"
 )
 
 type artifactAPIFake struct {
@@ -141,6 +143,12 @@ func TestArtifactPOSTRequestsAreStrictBoundedAndMethodRestricted(t *testing.T) {
 					t.Fatalf("error reflected private request data: %s", rec.Body.String())
 				}
 			}
+			if got := rec.Header().Get(usagelog.HeaderErrorClass); got != "invalid_argument" {
+				t.Fatalf("error class = %q, want invalid_argument", got)
+			}
+			if got, want := rec.Header().Get(usagelog.HeaderErrorFingerprint), usagelog.Fingerprint("invalid artifact request"); got != want {
+				t.Fatalf("error fingerprint = %q, want %q", got, want)
+			}
 		})
 	}
 	for _, invalid := range []struct {
@@ -181,6 +189,22 @@ func TestArtifactPOSTErrorsAndCancellationDoNotExposePrivateValues(t *testing.T)
 	}
 	if strings.Contains(rec.Body.String(), "PRIVATE_QUERY_SENTINEL") || strings.Contains(rec.Body.String(), "art_0123456789abcdef0123456789abcdef") {
 		t.Fatalf("artifact error exposed private request values: %s", rec.Body.String())
+	}
+	if got := rec.Header().Get(usagelog.HeaderErrorClass); got != "artifact_error" {
+		t.Fatalf("generic artifact error class = %q, want artifact_error", got)
+	}
+	if got, want := rec.Header().Get(usagelog.HeaderErrorFingerprint), usagelog.Fingerprint("artifact operation failed"); got != want {
+		t.Fatalf("generic artifact fingerprint = %q, want %q", got, want)
+	}
+
+	api.operationErr = os.ErrNotExist
+	notFound := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(notFound, httptest.NewRequest(http.MethodPost, "/api/artifacts/info", strings.NewReader(`{"artifact_id":"art_0123456789abcdef0123456789abcdef"}`)))
+	if got := notFound.Header().Get(usagelog.HeaderErrorClass); got != "artifact_not_found" {
+		t.Fatalf("missing artifact error class = %q, want artifact_not_found", got)
+	}
+	if got, want := notFound.Header().Get(usagelog.HeaderErrorFingerprint), usagelog.Fingerprint("artifact not found"); got != want {
+		t.Fatalf("missing artifact fingerprint = %q, want %q", got, want)
 	}
 
 	api.operationErr = nil

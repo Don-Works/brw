@@ -20,6 +20,7 @@ func TestClassifyToolError(t *testing.T) {
 		{"busy", errors.New("bridge busy: max inflight reached"), "busy"},
 		{"transport", errors.New("extension bridge transport: socket closed"), "transport"},
 		{"json-eof", errors.New("unmarshal response: unexpected end of JSON input"), "transport"},
+		{"invalid-argument stays an ordinary result", errors.New("width and height are required for responsive emulation"), ""},
 		{"ordinary", errors.New("no element matches ref e17"), ""},
 		{"nil", nil, ""},
 	}
@@ -29,6 +30,28 @@ func TestClassifyToolError(t *testing.T) {
 				t.Fatalf("classifyToolError(%v) = %q, want %q", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUsageClassifiesOrdinaryFailuresWithoutChangingToolResult(t *testing.T) {
+	cases := []struct {
+		message   string
+		wantClass string
+	}{
+		{"width and height are required for responsive emulation", "invalid_argument"},
+		{"one of path/paths, bytes_base64, or url is required", "invalid_argument"},
+		{"artifact operation failed", "artifact_error"},
+		{`element ref "e9" not recoverable: no_key`, "stale_reference"},
+	}
+	for _, tc := range cases {
+		result := toolError(errors.New(tc.message))
+		if _, ok := result.(map[string]any)["structuredContent"]; ok {
+			t.Fatalf("ordinary failure %q unexpectedly changed its MCP result contract: %#v", tc.message, result)
+		}
+		outcome, class, fingerprint := mcpUsageOutcome(result, nil)
+		if outcome != "error" || class != tc.wantClass || fingerprint == "" {
+			t.Errorf("mcpUsageOutcome(%q) = (%q, %q, %q), want error/%s/non-empty", tc.message, outcome, class, fingerprint, tc.wantClass)
+		}
 	}
 }
 

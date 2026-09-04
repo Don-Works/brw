@@ -1810,14 +1810,19 @@ func toolError(err error) any {
 	return out
 }
 
-// classifyToolError maps a transport/timeout failure to a stable code, or returns
-// "" for an ordinary tool error that callers should treat as a hard failure.
+// classifyToolError maps operational failures to stable caller-facing codes.
+// Usage-only categories stay out of structuredContent so richer telemetry does
+// not silently change the MCP result contract for ordinary hard failures.
 func classifyToolError(err error) string {
 	class := usagelog.ClassifyError(err)
-	if class == "tool" {
+	switch class {
+	case "tool", "invalid_argument", "not_found", "stale_reference",
+		"target_not_found", "target_not_actionable", "page_script_error",
+		"artifact_error", "policy_denied":
 		return ""
+	default:
+		return class
 	}
-	return class
 }
 
 // toolErrorRetryable reports whether a classified error is worth re-issuing. A
