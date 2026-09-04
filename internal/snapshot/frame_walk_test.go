@@ -39,6 +39,7 @@ func newHeadlessChrome(t *testing.T) (context.Context, context.CancelFunc) {
 		chromedp.NoSandbox,
 		chromedp.DisableGPU,
 		chromedp.WindowSize(1280, 900),
+		chromedp.WSURLReadTimeout(45*time.Second),
 	)
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)

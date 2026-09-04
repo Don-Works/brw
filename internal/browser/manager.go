@@ -1551,7 +1551,48 @@ func isTransientNavigationError(err error) bool {
 		strings.Contains(msg, "inspected target navigated or closed")
 }
 
-func (m *Manager) AssertVisible(ctx context.Context, ref string, timeout time.Duration) error {
+func retryAssertAfterNavigation(ctx context.Context, timeout time.Duration, operation func(time.Duration) error) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return errors.New("assertion did not pass within timeout")
+		}
+		err := operation(remaining)
+		if err == nil || !isTransientNavigationError(err) {
+			return err
+		}
+
+		// A navigation replaces the page's JavaScript execution context. Give the
+		// replacement document a brief chance to attach, then evaluate the same
+		// assertion again inside the original caller-supplied deadline.
+		remaining = time.Until(deadline)
+		if remaining <= 0 {
+			return errors.New("assertion did not pass within timeout")
+		}
+		delay := 100 * time.Millisecond
+		if remaining < delay {
+			delay = remaining
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (m *Manager) evalAssert(ctx context.Context, timeout time.Duration, script string, args ...any) error {
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
@@ -1560,55 +1601,32 @@ func (m *Manager) AssertVisible(ctx context.Context, ref string, timeout time.Du
 		return err
 	}
 	defer cancel()
-	return snapshot.EvalAssert(tabCtx, snapshot.AssertVisibleScript, ref, timeout.Milliseconds())
+	return retryAssertAfterNavigation(tabCtx, timeout, func(remaining time.Duration) error {
+		evalArgs := make([]any, len(args)+1)
+		copy(evalArgs, args)
+		evalArgs[len(args)] = remaining.Milliseconds()
+		return snapshot.EvalAssert(tabCtx, script, evalArgs...)
+	})
+}
+
+func (m *Manager) AssertVisible(ctx context.Context, ref string, timeout time.Duration) error {
+	return m.evalAssert(ctx, timeout, snapshot.AssertVisibleScript, ref)
 }
 
 func (m *Manager) AssertText(ctx context.Context, ref, expected string, timeout time.Duration) error {
-	if timeout == 0 {
-		timeout = 5 * time.Second
-	}
-	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
-	if err != nil {
-		return err
-	}
-	defer cancel()
-	return snapshot.EvalAssert(tabCtx, snapshot.AssertTextScript, ref, expected, timeout.Milliseconds())
+	return m.evalAssert(ctx, timeout, snapshot.AssertTextScript, ref, expected)
 }
 
 func (m *Manager) AssertValue(ctx context.Context, ref, expected string, timeout time.Duration) error {
-	if timeout == 0 {
-		timeout = 5 * time.Second
-	}
-	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
-	if err != nil {
-		return err
-	}
-	defer cancel()
-	return snapshot.EvalAssert(tabCtx, snapshot.AssertValueScript, ref, expected, timeout.Milliseconds())
+	return m.evalAssert(ctx, timeout, snapshot.AssertValueScript, ref, expected)
 }
 
 func (m *Manager) AssertValueContains(ctx context.Context, ref, expected string, timeout time.Duration) error {
-	if timeout == 0 {
-		timeout = 5 * time.Second
-	}
-	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
-	if err != nil {
-		return err
-	}
-	defer cancel()
-	return snapshot.EvalAssert(tabCtx, snapshot.AssertValueContainsScript, ref, expected, timeout.Milliseconds())
+	return m.evalAssert(ctx, timeout, snapshot.AssertValueContainsScript, ref, expected)
 }
 
 func (m *Manager) AssertHidden(ctx context.Context, ref string, timeout time.Duration) error {
-	if timeout == 0 {
-		timeout = 5 * time.Second
-	}
-	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
-	if err != nil {
-		return err
-	}
-	defer cancel()
-	return snapshot.EvalAssert(tabCtx, snapshot.AssertHiddenScript, ref, timeout.Milliseconds())
+	return m.evalAssert(ctx, timeout, snapshot.AssertHiddenScript, ref)
 }
 
 func (m *Manager) CommitField(ctx context.Context, ref string) error {

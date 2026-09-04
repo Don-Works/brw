@@ -20,13 +20,16 @@ func structuredTestContext(t *testing.T) (context.Context, context.CancelFunc) {
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
+		chromedp.WSURLReadTimeout(45*time.Second),
 	)
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	ctx, cancel := chromedp.NewContext(allocCtx)
-	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 30*time.Second)
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 60*time.Second)
 	return timeoutCtx, func() {
 		timeoutCancel()
 		cancel()
+		// NewExecAllocator's cancel function waits for Chrome's process-exit
+		// signal, so the next test cannot accumulate a half-torn-down browser.
 		allocCancel()
 	}
 }

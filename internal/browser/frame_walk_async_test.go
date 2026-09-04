@@ -2,6 +2,8 @@ package browser
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -30,5 +32,44 @@ setTimeout(function(){
 
 	if err := m.AssertVisible(ctx, "e999", 5*time.Second); err != nil {
 		t.Fatalf("AssertVisible for a ref in a late-attached shadow root failed: %v (a frozen __abRoots cache in the poll loop would never find it)", err)
+	}
+}
+
+func TestAssertVisibleRetriesAcrossNavigation(t *testing.T) {
+	m := newHeadlessManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/html; charset=utf-8")
+		if r.URL.Path == "/final" {
+			_, _ = w.Write([]byte(`<button data-brw-ref="e999" style="position:fixed;left:10px;top:10px;width:90px;height:30px">Ready</button>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<main>initial document</main>`))
+	}))
+	defer site.Close()
+
+	opened, err := m.Open(ctx, site.URL+"/initial")
+	if err != nil {
+		t.Fatalf("open initial document: %v", err)
+	}
+	tabCtx := WithTabID(ctx, opened.Tab.ID)
+	// Trigger a replacement navigation only after the assertion has installed
+	// its observer. That deterministically destroys the first evaluation context;
+	// the retry must bind to the replacement document and find the target there.
+	if _, err := m.Evaluate(tabCtx, `(() => {
+  const NativeMutationObserver = window.MutationObserver;
+  window.MutationObserver = function(callback) {
+    const observer = new NativeMutationObserver(callback);
+    setTimeout(() => location.replace('/final'), 0);
+    return observer;
+  };
+  return true;
+})()`); err != nil {
+		t.Fatalf("arm replacement navigation: %v", err)
+	}
+	if err := m.AssertVisible(tabCtx, "e999", 5*time.Second); err != nil {
+		t.Fatalf("assert visible across replacement navigation: %v", err)
 	}
 }

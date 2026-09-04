@@ -27,6 +27,7 @@ func newHeadlessSettleCtx(t *testing.T) (context.Context, context.CancelFunc) {
 		chromedp.Flag("disable-background-timer-throttling", true),
 		chromedp.Flag("disable-backgrounding-occluded-windows", true),
 		chromedp.Flag("disable-renderer-backgrounding", true),
+		chromedp.WSURLReadTimeout(45*time.Second),
 	)
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)

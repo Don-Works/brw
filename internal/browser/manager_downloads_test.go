@@ -33,6 +33,7 @@ func newHeadlessManager(t *testing.T) *Manager {
 		chromedp.Flag("headless", "new"),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.UserDataDir(t.TempDir()),
+		chromedp.WSURLReadTimeout(45*time.Second),
 	)
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"testing"
+	"time"
 
 	cdplaunch "github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/snapshot"
@@ -31,6 +32,7 @@ func newHeadlessTab(t *testing.T, html string) (context.Context, func()) {
 		chromedp.NoSandbox,
 		chromedp.Flag("hide-scrollbars", true),
 		chromedp.Flag("disable-extensions", true),
+		chromedp.WSURLReadTimeout(45*time.Second),
 	)
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
 	tabCtx, tabCancel := chromedp.NewContext(allocCtx)

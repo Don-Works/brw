@@ -36,6 +36,7 @@ func newHeadlessCtx(t *testing.T) (context.Context, context.CancelFunc) {
 		chromedp.Headless,
 		chromedp.DisableGPU,
 		chromedp.NoSandbox,
+		chromedp.WSURLReadTimeout(45*time.Second),
 	)
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
