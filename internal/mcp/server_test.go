@@ -68,6 +68,20 @@ func TestServeSupportsFramedStdio(t *testing.T) {
 	}
 }
 
+func TestReadMessageRejectsOversizedFramesBeforeBodyAllocation(t *testing.T) {
+	input := fmt.Sprintf("Content-Length: %d\r\n\r\n", maxMCPMessageBytes+1)
+	if _, _, err := readMessage(bufio.NewReader(strings.NewReader(input)), stdioModeUnknown); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized framed message error = %v", err)
+	}
+}
+
+func TestReadMessageRejectsOversizedLineFraming(t *testing.T) {
+	input := strings.Repeat("x", maxMCPMessageBytes+1) + "\n"
+	if _, _, err := readMessage(bufio.NewReader(strings.NewReader(input)), stdioModeUnknown); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized line message error = %v", err)
+	}
+}
+
 func mapKeys(m map[float64]map[string]any) []float64 {
 	out := make([]float64, 0, len(m))
 	for k := range m {
@@ -425,8 +439,12 @@ func TestPlanAndBatchActionSchemasExposeEnums(t *testing.T) {
 	}
 	planProps := planTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	planStepProps := planProps["steps"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
-	assertSchemaEnumIncludes(t, planStepProps["action"].(map[string]any), "click", "snapshot", "read", "focus_tab")
+	assertSchemaEnumIncludes(t, planStepProps["action"].(map[string]any), "click", "snapshot", "read", "navigate_to", "focus_tab")
 	assertSchemaEnumIncludes(t, planStepProps["direction"].(map[string]any), "up", "down", "left", "right")
+	urlDescription := planStepProps["url"].(map[string]any)["description"].(string)
+	if !strings.Contains(urlDescription, "navigate_to") {
+		t.Fatalf("plan URL schema does not document navigate_to: %q", urlDescription)
+	}
 
 	batchProps := batchTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	batchStepProps := batchProps["steps"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
@@ -1149,6 +1167,20 @@ func readFramedResponse(t *testing.T, reader *bufio.Reader) map[string]any {
 }
 
 type fakeController struct{}
+
+type resolvingFakeController struct{ fakeController }
+
+func (resolvingFakeController) ResolveActiveTabID(context.Context) string { return "auto-active" }
+
+func TestPinActiveTabForToolMarksServerSelectionForOwnershipValidation(t *testing.T) {
+	ctx := pinActiveTabForTool(context.Background(), resolvingFakeController{}, "brw_read")
+	if got := browser.TabIDFromContext(ctx); got != "auto-active" {
+		t.Fatalf("resolved tab id = %q, want auto-active", got)
+	}
+	if browser.TabIDIsExplicit(ctx) || !browser.TabIDRequiresCurrentOwnership(ctx) {
+		t.Fatalf("resolved MCP pin flags: explicit=%t requires_ownership=%t", browser.TabIDIsExplicit(ctx), browser.TabIDRequiresCurrentOwnership(ctx))
+	}
+}
 
 type recordingController struct {
 	fakeController

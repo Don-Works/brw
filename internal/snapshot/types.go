@@ -148,11 +148,15 @@ type ClickTextOptions struct {
 }
 
 type Element struct {
-	Ref       string `json:"ref"`
-	Role      string `json:"role"`
-	Name      string `json:"name"`
-	Tag       string `json:"tag"`
-	Type      string `json:"type,omitempty"`
+	Ref  string `json:"ref"`
+	Role string `json:"role"`
+	Name string `json:"name"`
+	Tag  string `json:"tag"`
+	Type string `json:"type,omitempty"`
+	// TestID carries an explicit application-authored test identifier. It is
+	// omitted unless present and gives deterministic recipes a stable selector
+	// that survives observation-ref churn without exposing arbitrary attributes.
+	TestID    string `json:"test_id,omitempty"`
 	Href      string `json:"href,omitempty"`
 	Value     string `json:"value,omitempty"`
 	Sensitive bool   `json:"sensitive,omitempty"`

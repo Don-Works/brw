@@ -36,7 +36,7 @@ case "$arch" in
 esac
 
 if ! command -v nfpm >/dev/null 2>&1; then
-  echo "nfpm is required. Install with: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest" >&2
+  echo "nfpm is required. Install with: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0" >&2
   exit 127
 fi
 
@@ -60,6 +60,7 @@ done
 
 cp -R "$repo_root/extension" "$root_dir/usr/share/brw/extension"
 cp -R "$repo_root/tests" "$root_dir/usr/share/brw/tests"
+cp -R "$repo_root/skills" "$root_dir/usr/share/brw/skills"
 cp "$repo_root/LICENSE" "$root_dir/usr/share/brw/doc/LICENSE"
 cp "$repo_root/README.md" "$root_dir/usr/share/brw/doc/README.md"
 find "$root_dir" -name '._*' -delete

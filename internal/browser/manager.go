@@ -33,8 +33,8 @@ import (
 // settle lets the page react (DOM mutation, focus change, navigation start)
 // before we read the result.
 //
-// These are now CAPS, not fixed sleeps: settle (below) runs an in-page,
-// event-driven SettleScript that returns the moment the page demonstrably
+// These are now CAPS, not fixed sleeps: runWithPrearmedSettle (below) installs
+// an in-page observer before actuation and returns when the page demonstrably
 // settles (DOM mutations quiesce ~2 frames, OR a navigation/popstate/hashchange/
 // pagehide fires, OR a network response lands) and is hard-bounded by the cap so
 // the worst case is exactly today's fixed delay — never slower. Named here so
@@ -49,27 +49,34 @@ const (
 	fileChooserWaitTimeout = 5 * time.Second
 )
 
-// settle waits for the page to settle after an action, bounded by cap. It
-// replaces the old unconditional chromedp.Sleep(cap): event-driven so a page that
-// settles fast returns in a few milliseconds, but hard-capped at cap so a page
-// that never quiesces degrades to exactly the old fixed behavior.
-//
-// It returns the actually-observed settle duration (for trace/latency reporting).
-// Like the chromedp.Sleep it replaces, it never fails the action on a settle
-// error: a navigation can tear down the execution context mid-settle (the action
-// itself succeeded), so an eval error degrades to "settled, duration unknown"
-// rather than surfacing — matching the previous fixed-sleep semantics where a
-// nav-during-sleep was invisible to the caller.
-func (m *Manager) settle(tabCtx context.Context, cap time.Duration) time.Duration {
-	res, err := snapshot.Settle(tabCtx, cap.Milliseconds())
-	if err != nil {
-		// Treat a settle eval error (commonly execution-context-destroyed during a
-		// navigation the action triggered) as a non-fatal full-cap wait: the action
-		// already happened, and the post-action snapshot will retry against the new
-		// document. This preserves the old chromedp.Sleep contract (never errors).
-		return cap
+// runWithPrearmedSettle installs the page observer immediately before
+// actuation, then waits on that exact observer afterward. If arming is
+// unavailable, it falls back to the legacy post-action settle. Settle errors
+// remain non-fatal because navigation commonly destroys the old context after
+// the browser action has already succeeded.
+func runWithPrearmedSettle(tabCtx context.Context, cap time.Duration, action func() error) error {
+	// Never actuate after the owning tab/request has already been cancelled. In
+	// particular, an ArmSettle failure caused by cancellation must not be treated
+	// like an ordinary "observer unavailable" fallback.
+	if err := tabCtx.Err(); err != nil {
+		return err
 	}
-	return time.Duration(res.SettledMS) * time.Millisecond
+	if cap <= 0 {
+		return action()
+	}
+	handle, armErr := snapshot.ArmSettle(tabCtx, cap.Milliseconds())
+	if err := tabCtx.Err(); err != nil {
+		return err
+	}
+	if err := action(); err != nil {
+		return err
+	}
+	if armErr != nil {
+		_, _ = snapshot.Settle(tabCtx, cap.Milliseconds())
+		return nil
+	}
+	_, _ = snapshot.AwaitSettle(tabCtx, handle)
+	return nil
 }
 
 type Manager struct {
@@ -102,12 +109,17 @@ type Manager struct {
 
 	// downloads tracks file downloads observed via the Browser.downloadWillBegin /
 	// Browser.downloadProgress CDP events. The listener is wired lazily on first
-	// access and writes into a bounded buffer that Downloads() drains, mirroring
-	// the console-drain pattern.
+	// access and writes into a bounded registry. Ordinary Downloads() calls are
+	// snapshots; recipe-scoped calls use per-tab change cursors so their pre-arm
+	// baseline cannot consume lifecycle state needed by a later capture.
 	downloadsMu      sync.Mutex
 	downloads        []DownloadEntry
 	downloadIndex    map[string]int // guid -> index into downloads
+	downloadVersions map[string]uint64
+	downloadCursors  map[string]uint64 // recipe tab id -> last observed change
+	downloadSequence uint64
 	downloadDir      string
+	downloadDirOwned bool
 	userDataDir      string
 	downloadsEnabled bool
 
@@ -125,6 +137,16 @@ type Manager struct {
 	// armed at document-start (direct-CDP only), so a tab is registered once.
 	shadowPierceMu   sync.Mutex
 	shadowPierceTabs map[string]bool
+
+	// documentEpoch is a monotonic per-tab count of committed replacement
+	// documents observed after document tracking is armed. Pairing it with CDP's
+	// loaderId catches A -> B -> back-to-A/BFCache transitions that comparing the
+	// current loader alone could miss. Same-document SPA history changes do not
+	// emit Page.frameNavigated and intentionally leave the epoch unchanged.
+	documentMu      sync.Mutex
+	documentTracked map[string]bool
+	documentReady   map[string]bool
+	documentEpoch   map[string]uint64
 
 	// webmcpEnabled gates the opt-in WebMCP runtime (navigator.modelContext); when
 	// true, webmcpTabs records which tabs have had its document-start shim armed.
@@ -186,10 +208,13 @@ type tabContext struct {
 
 type ctxKeyTabID struct{}
 type ctxKeyTabIDExplicit struct{}
+type ctxKeyTabIDRequiresCurrentOwnership struct{}
 
 func WithTabID(ctx context.Context, tabID string) context.Context {
 	ctx = context.WithValue(ctx, ctxKeyTabID{}, tabID)
-	return context.WithValue(ctx, ctxKeyTabIDExplicit{}, true)
+	ctx = context.WithValue(ctx, ctxKeyTabIDExplicit{}, true)
+	// An explicit caller selection overrides any inherited server-owned pin.
+	return context.WithValue(ctx, ctxKeyTabIDRequiresCurrentOwnership{}, false)
 }
 
 // WithImplicitTabID pins a server-selected working tab without pretending the
@@ -199,6 +224,16 @@ func WithTabID(ctx context.Context, tabID string) context.Context {
 func WithImplicitTabID(ctx context.Context, tabID string) context.Context {
 	ctx = context.WithValue(ctx, ctxKeyTabID{}, tabID)
 	return context.WithValue(ctx, ctxKeyTabIDExplicit{}, false)
+}
+
+// WithCurrentOwnedTabID pins a server-resolved working tab and marks it for
+// connection-generation ownership checks. This is intentionally distinct from
+// WithImplicitTabID: a session lease may validly target one of several agent
+// tabs even when it is not the bridge's current global pin, while a one-shot
+// active-tab resolution must be revoked if reconnect says that pin was lost.
+func WithCurrentOwnedTabID(ctx context.Context, tabID string) context.Context {
+	ctx = WithImplicitTabID(ctx, tabID)
+	return context.WithValue(ctx, ctxKeyTabIDRequiresCurrentOwnership{}, true)
 }
 
 func TabIDFromContext(ctx context.Context) string {
@@ -218,6 +253,16 @@ func TabIDIsExplicit(ctx context.Context) bool {
 		return false
 	}
 	v, _ := ctx.Value(ctxKeyTabIDExplicit{}).(bool)
+	return v
+}
+
+// TabIDRequiresCurrentOwnership reports whether a server-resolved pin must
+// still match the browser bridge's authoritative owned tab at dispatch time.
+func TabIDRequiresCurrentOwnership(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(ctxKeyTabIDRequiresCurrentOwnership{}).(bool)
 	return v
 }
 
@@ -268,9 +313,14 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		consoleMessages:    map[string][]ConsoleMessage{},
 		userDataDir:        cfg.UserDataDir,
 		downloadIndex:      map[string]int{},
+		downloadVersions:   map[string]uint64{},
+		downloadCursors:    map[string]uint64{},
 		cancels:            newCancelRegistry(),
 		netCaptureTabs:     map[string]bool{},
 		shadowPierceTabs:   map[string]bool{},
+		documentTracked:    map[string]bool{},
+		documentReady:      map[string]bool{},
+		documentEpoch:      map[string]uint64{},
 		webmcpEnabled:      cfg.WebMCP,
 		webmcpTabs:         map[string]bool{},
 		emulationStates:    map[string]deviceEmulationState{},
@@ -304,10 +354,14 @@ func (m *Manager) Close() error {
 	if m.allocCancel != nil {
 		m.allocCancel()
 	}
+	var closeErr error
 	if m.launcher != nil {
-		return m.launcher.Close()
+		closeErr = m.launcher.Close()
 	}
-	return nil
+	if cleanupErr := m.cleanupDownloadStaging(); cleanupErr != nil {
+		closeErr = errors.Join(closeErr, cleanupErr)
+	}
+	return closeErr
 }
 
 func (m *Manager) connect() error {
@@ -539,12 +593,20 @@ func (m *Manager) handleTargetLifecycle(ev any) {
 // when adding new per-tab state — a map left out here leaks one entry on every
 // closed tab (the emulationStates entry was exactly that bug).
 func (m *Manager) forgetTabCaches(id string) {
+	m.downloadsMu.Lock()
+	delete(m.downloadCursors, id)
+	m.downloadsMu.Unlock()
 	m.netCaptureMu.Lock()
 	delete(m.netCaptureTabs, id)
 	m.netCaptureMu.Unlock()
 	m.shadowPierceMu.Lock()
 	delete(m.shadowPierceTabs, id)
 	m.shadowPierceMu.Unlock()
+	m.documentMu.Lock()
+	delete(m.documentTracked, id)
+	delete(m.documentReady, id)
+	delete(m.documentEpoch, id)
+	m.documentMu.Unlock()
 	m.consoleCaptureMu.Lock()
 	delete(m.consoleCaptureTabs, id)
 	delete(m.consoleMessages, id)
@@ -749,11 +811,14 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 	defer cancel()
 
 	before := m.cachedBefore(tabID, tabCtx)
-	clicked, err := snapshot.ClickText(tabCtx, opts)
-	if err != nil {
+	var clicked snapshot.ClickXYResult
+	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+		var clickErr error
+		clicked, clickErr = snapshot.ClickText(tabCtx, opts)
+		return clickErr
+	}); err != nil {
 		return ActionResult{}, err
 	}
-	m.settle(tabCtx, actionSettleDelay)
 	label := opts.Text
 	if clicked.Name != "" {
 		label = clicked.Name
@@ -792,7 +857,6 @@ func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
 	if err != nil {
 		return ActionResult{}, err
 	}
-	m.settle(tabCtx, actionSettleDelay)
 	result := m.observeActionWithBefore(tabID, tabCtx, "hovered "+ref, before)
 	if recovery != "" {
 		appendWarning(&result, recovery)
@@ -823,19 +887,29 @@ func (m *Manager) hoverRef(tabCtx context.Context, ref string) (string, error) {
 	if box.Recovered {
 		recovery = fmt.Sprintf("ref recovered: %s -> %s", box.OldRef, box.Ref)
 	}
-	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return input.DispatchMouseEvent(input.MouseMoved, box.ViewportX, box.ViewportY).Do(ctx)
-	})); err != nil {
-		return "", err
-	}
+	settleCap := actionSettleDelay
 	if box.DelayedHover {
+		settleCap += menuHoverSettleDelay
+	}
+	if err := runWithPrearmedSettle(tabCtx, settleCap, func() error {
+		if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return input.DispatchMouseEvent(input.MouseMoved, box.ViewportX, box.ViewportY).Do(ctx)
+		})); err != nil {
+			return err
+		}
+		if !box.DelayedHover {
+			return nil
+		}
 		timer := time.NewTimer(menuHoverSettleDelay)
 		defer timer.Stop()
 		select {
 		case <-tabCtx.Done():
-			return "", tabCtx.Err()
+			return tabCtx.Err()
 		case <-timer.C:
+			return nil
 		}
+	}); err != nil {
+		return "", err
 	}
 	return recovery, nil
 }
@@ -941,9 +1015,8 @@ func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, err
 	if err := m.typeRef(tabCtx, ref, text); err != nil {
 		return ActionResult{}, err
 	}
-	m.settle(tabCtx, actionSettleDelayFast)
 	result := m.observeActionWithBefore(tabID, tabCtx, "typed into "+ref, before)
-	m.recordTrace(tabID, TraceEntry{
+	m.recordTrace(tabID, RedactTraceEntry(ctx, TraceEntry{
 		Action:            "type",
 		Ref:               ref,
 		Name:              traceName,
@@ -954,7 +1027,7 @@ func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, err
 		Error:             result.Warning,
 		DurationMS:        result.DurationMS,
 		Timestamp:         time.Now().Format(time.RFC3339),
-	})
+	}))
 	return result, nil
 }
 
@@ -965,9 +1038,26 @@ func (m *Manager) typeRef(tabCtx context.Context, ref, text string) error {
 	if err := snapshot.Focus(tabCtx, ref); err != nil {
 		return err
 	}
-	return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return input.InsertText(text).Do(ctx)
-	}))
+	return runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return input.InsertText(text).Do(ctx)
+		}))
+	})
+}
+
+// FocusRef is the narrow transport capability deterministic recipes use before
+// a key press. It avoids relying on whichever element happened to retain focus
+// from a previous browser action.
+func (m *Manager) FocusRef(ctx context.Context, ref string) error {
+	_, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
+		return err
+	}
+	return snapshot.Focus(tabCtx, ref)
 }
 
 func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionResult, error) {
@@ -998,9 +1088,8 @@ func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionRe
 	if err := m.fillRef(tabCtx, ref, opts.EffectiveText(), opts.Replace); err != nil {
 		return ActionResult{}, err
 	}
-	m.settle(tabCtx, actionSettleDelayFast)
 	result := m.observeActionWithBefore(tabID, tabCtx, "filled "+ref, before)
-	m.recordTrace(tabID, TraceEntry{
+	m.recordTrace(tabID, RedactTraceEntry(ctx, TraceEntry{
 		Action:            "fill",
 		Ref:               ref,
 		Name:              traceName,
@@ -1011,7 +1100,7 @@ func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionRe
 		Error:             result.Warning,
 		DurationMS:        result.DurationMS,
 		Timestamp:         time.Now().Format(time.RFC3339),
-	})
+	}))
 	return result, nil
 }
 
@@ -1019,7 +1108,9 @@ func (m *Manager) fillRef(tabCtx context.Context, ref, text string, replace bool
 	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
 		return err
 	}
-	return snapshot.Fill(tabCtx, ref, text, replace)
+	return runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+		return snapshot.Fill(tabCtx, ref, text, replace)
+	})
 }
 
 func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (ActionResult, error) {
@@ -1086,10 +1177,11 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
-	if err := snapshot.SetFileInputFiles(tabCtx, ref, paths); err != nil {
+	if err := runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+		return snapshot.SetFileInputFiles(tabCtx, ref, paths)
+	}); err != nil {
 		return ActionResult{}, err
 	}
-	m.settle(tabCtx, actionSettleDelayFast)
 	result := m.observeActionWithBefore(tabID, tabCtx, "uploaded file to "+ref, before)
 	RetainUploadCleanup(cleanup)
 	cleanupNow = false
@@ -1156,10 +1248,11 @@ func (m *Manager) uploadFileViaChooser(tabID string, tabCtx context.Context, opt
 		return ActionResult{}, errors.New("file chooser opened but reported no backendNodeId")
 	}
 
-	if err := chromedp.Run(tabCtx, dom.SetFileInputFiles(paths).WithBackendNodeID(backendNodeID)); err != nil {
+	if err := runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+		return chromedp.Run(tabCtx, dom.SetFileInputFiles(paths).WithBackendNodeID(backendNodeID))
+	}); err != nil {
 		return ActionResult{}, err
 	}
-	m.settle(tabCtx, actionSettleDelayFast)
 	return m.observeActionWithBefore(tabID, tabCtx, "uploaded file via intercepted file chooser", before), nil
 }
 
@@ -1176,7 +1269,7 @@ func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, 
 		return ActionResult{}, err
 	}
 	result := m.observeActionWithBefore(tabID, tabCtx, message, before)
-	m.recordTrace(tabID, TraceEntry{
+	m.recordTrace(tabID, RedactTraceEntry(ctx, TraceEntry{
 		Action:            "select",
 		Ref:               ref,
 		Name:              traceName,
@@ -1187,7 +1280,7 @@ func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, 
 		Error:             result.Warning,
 		DurationMS:        result.DurationMS,
 		Timestamp:         time.Now().Format(time.RFC3339),
-	})
+	}))
 	return result, nil
 }
 
@@ -1195,12 +1288,13 @@ func (m *Manager) selectValue(tabCtx context.Context, ref, value string) (string
 	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
 		return "", err
 	}
-	if err := snapshot.Select(tabCtx, ref, value); err == nil {
+	if err := runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+		return snapshot.Select(tabCtx, ref, value)
+	}); err == nil {
 		// Native selects do not pass through clickElementCenter, so settle here.
 		// Custom selects already settle as part of their click actuation below;
 		// settling again in the caller added a measurable 100 ms to every custom
 		// option selection without improving stability.
-		m.settle(tabCtx, actionSettleDelayFast)
 		return "selected " + ref, nil
 	} else if !strings.Contains(err.Error(), "ref is not a select element") {
 		return "", err
@@ -1255,33 +1349,28 @@ func clickElementCenter(tabCtx context.Context, ref string, delay time.Duration)
 	// dispatch stays as the fallback when the point is not hit-testable in-page
 	// (e.g. element scrolled out of the layout viewport, elementFromPoint null).
 	if !box.RequiresTrusted {
-		if inPage, evalErr := snapshot.ClickXY(tabCtx, box.ViewportX, box.ViewportY); evalErr == nil && inPage.OK {
-			settleAfterClick(tabCtx, delay)
+		if err := runWithPrearmedSettle(tabCtx, delay, func() error {
+			inPage, evalErr := snapshot.ClickXY(tabCtx, box.ViewportX, box.ViewportY)
+			if evalErr != nil {
+				return evalErr
+			}
+			if !inPage.OK {
+				return errors.New("in-page click point was not hit-testable")
+			}
+			return nil
+		}); err == nil {
 			return warning, nil
 		}
 	}
 	// Popup/download/fullscreen-style controls need a genuine browser input
 	// gesture. ResolveOrRecoverBox marks only those uncommon shapes, keeping the
 	// fast single-evaluate path for ordinary clicks.
-	if err := chromedp.Run(tabCtx, chromedp.MouseClickXY(box.ViewportX, box.ViewportY)); err != nil {
+	if err := runWithPrearmedSettle(tabCtx, delay, func() error {
+		return chromedp.Run(tabCtx, chromedp.MouseClickXY(box.ViewportX, box.ViewportY))
+	}); err != nil {
 		return "", err
 	}
-	settleAfterClick(tabCtx, delay)
 	return warning, nil
-}
-
-// settleAfterClick runs the event-driven in-page settle bounded by cap after a
-// click actuation, degrading to a no-op on a zero cap and to a non-fatal full-cap
-// wait on a settle error (e.g. a navigation the click triggered tore down the
-// execution context — the click already happened). It mirrors the old
-// chromedp.Sleep(cap) the click paths used, but returns early when the page
-// settles fast. It is a free function (clickElementCenter is not a Manager method)
-// so it cannot reuse Manager.settle, but shares snapshot.Settle.
-func settleAfterClick(tabCtx context.Context, cap time.Duration) {
-	if cap <= 0 {
-		return
-	}
-	_, _ = snapshot.Settle(tabCtx, cap.Milliseconds())
 }
 
 func findOptionCandidate(tabCtx context.Context, value string) (snapshot.Element, error) {
@@ -1310,10 +1399,11 @@ func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
 	}
 	defer cancel()
 	before := m.cachedBefore(tabID, tabCtx)
-	if err := m.pressKey(tabCtx, key); err != nil {
+	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+		return m.pressKey(tabCtx, key)
+	}); err != nil {
 		return ActionResult{}, err
 	}
-	m.settle(tabCtx, actionSettleDelay)
 	result := m.observeActionWithBefore(tabID, tabCtx, "pressed "+key, before)
 	m.recordTrace(tabID, TraceEntry{
 		Action:     "press",
@@ -1369,11 +1459,14 @@ func (m *Manager) Scroll(ctx context.Context, direction string) (ActionResult, e
 	defer cancel()
 
 	before := m.cachedBefore(tabID, tabCtx)
-	message, err := m.scrollDirection(tabCtx, direction)
-	if err != nil {
+	var message string
+	if err := runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+		var scrollErr error
+		message, scrollErr = m.scrollDirection(tabCtx, direction)
+		return scrollErr
+	}); err != nil {
 		return ActionResult{}, err
 	}
-	m.settle(tabCtx, actionSettleDelay)
 	result := m.observeActionWithBefore(tabID, tabCtx, message, before)
 	m.recordTrace(tabID, TraceEntry{
 		Action:     "scroll",
@@ -1492,6 +1585,18 @@ func (m *Manager) AssertValue(ctx context.Context, ref, expected string, timeout
 	}
 	defer cancel()
 	return snapshot.EvalAssert(tabCtx, snapshot.AssertValueScript, ref, expected, timeout.Milliseconds())
+}
+
+func (m *Manager) AssertValueContains(ctx context.Context, ref, expected string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return snapshot.EvalAssert(tabCtx, snapshot.AssertValueContainsScript, ref, expected, timeout.Milliseconds())
 }
 
 func (m *Manager) AssertHidden(ctx context.Context, ref string, timeout time.Duration) error {
@@ -1700,11 +1805,40 @@ const screenshotJPEGQuality = 50
 const screenshotAnnotateMaxDim = 900
 
 func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
+	shot, err := m.CaptureArtifactScreenshot(ctx, "")
+	if err != nil {
+		return Screenshot{}, err
+	}
+	shot.Base64 = base64.StdEncoding.EncodeToString(shot.Data)
+	return shot, nil
+}
+
+// CaptureArtifactScreenshot returns raw screenshot bytes without allocating a
+// duplicate base64 string. Artifact and video capture use this path because the
+// bytes are staying on the browser host; model-facing screenshot calls keep the
+// normal Screenshot method above.
+func (m *Manager) CaptureArtifactScreenshot(ctx context.Context, ref string) (Screenshot, error) {
 	_, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return Screenshot{}, err
 	}
 	defer cancel()
+	if strings.TrimSpace(ref) != "" {
+		box, err := snapshot.ResolveOrRecoverBox(tabCtx, ref)
+		if err != nil {
+			return Screenshot{}, err
+		}
+		clip := &page.Viewport{X: box.X, Y: box.Y, Width: box.Width, Height: box.Height, Scale: 1}
+		var data []byte
+		if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			var captureErr error
+			data, captureErr = page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatPng).WithClip(clip).Do(ctx)
+			return captureErr
+		})); err != nil {
+			return Screenshot{}, err
+		}
+		return Screenshot{MIMEType: "image/png", Data: data}, nil
+	}
 
 	var data []byte
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
@@ -1743,7 +1877,28 @@ func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
 	})); err != nil {
 		return Screenshot{}, err
 	}
-	return Screenshot{MIMEType: "image/jpeg", Data: data, Base64: base64.StdEncoding.EncodeToString(data)}, nil
+	return Screenshot{MIMEType: "image/jpeg", Data: data}, nil
+}
+
+// CapturePDF renders the active page as a PDF on the browser host. The raw
+// bytes are intentionally returned through the narrow internal capability;
+// artifact.Service persists them before any MCP response is constructed.
+func (m *Manager) CapturePDF(ctx context.Context) ([]byte, error) {
+	_, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+
+	var data []byte
+	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		var printErr error
+		data, _, printErr = page.PrintToPDF().WithPrintBackground(true).Do(ctx)
+		return printErr
+	})); err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 // ScreenshotAnnotated captures a Set-of-Marks (SoM) screenshot: it takes an
@@ -1944,26 +2099,12 @@ func boxIntersectsClip(b snapshot.AnnotationBox, clip *page.Viewport) bool {
 }
 
 func (m *Manager) ScreenshotElement(ctx context.Context, ref string) (Screenshot, error) {
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	shot, err := m.CaptureArtifactScreenshot(ctx, ref)
 	if err != nil {
 		return Screenshot{}, err
 	}
-	defer cancel()
-
-	box, err := snapshot.ResolveOrRecoverBox(tabCtx, ref)
-	if err != nil {
-		return Screenshot{}, err
-	}
-	clip := &page.Viewport{X: box.X, Y: box.Y, Width: box.Width, Height: box.Height, Scale: 1}
-	var data []byte
-	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		var err error
-		data, err = page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatPng).WithClip(clip).Do(ctx)
-		return err
-	})); err != nil {
-		return Screenshot{}, err
-	}
-	return Screenshot{MIMEType: "image/png", Data: data, Base64: base64.StdEncoding.EncodeToString(data)}, nil
+	shot.Base64 = base64.StdEncoding.EncodeToString(shot.Data)
+	return shot, nil
 }
 
 func (m *Manager) ExecutePlan(ctx context.Context, steps []PlanStep) (PlanResult, error) {
@@ -2118,6 +2259,18 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 		var openRes OpenResult
 		openRes, actionErr = m.Open(ctx, step.URL)
 		sr.Result = openRes
+	case "navigate_to":
+		// Distinct from "open": navigate the plan's current working tab and
+		// wait for the destination document before the following step runs.
+		// Reuse the standalone primitive so URL policy, target-bound chromedp
+		// navigation, readiness, observation, and trace behavior stay identical.
+		if step.URL == "" {
+			actionErr = errors.New("navigate_to requires url")
+			break
+		}
+		var actionResult ActionResult
+		actionResult, actionErr = m.NavigateTo(ctx, step.URL)
+		sr.Result = actionResult
 	case "focus_tab":
 		if step.ID == "" {
 			actionErr = errors.New("focus_tab requires id")
@@ -2227,6 +2380,9 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 		}
 		frontier := SelectFrontierElements(snap.Elements, result.Focus, 12)
 		result.Changed = SummarizeElements(frontier, 12)
+	} else if result.Error == "" {
+		result.OK = false
+		result.Error = "final batch observation failed: " + snapErr.Error()
 	}
 	return result, nil
 }
@@ -2253,28 +2409,22 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step Batch
 			actionErr = errors.New("click_text requires text")
 			break
 		}
-		_, actionErr = snapshot.ClickText(tabCtx, snapshot.ClickTextOptions{Text: step.Text})
-		if actionErr == nil {
-			m.settle(tabCtx, actionSettleDelay)
-		}
+		actionErr = runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+			_, clickErr := snapshot.ClickText(tabCtx, snapshot.ClickTextOptions{Text: step.Text})
+			return clickErr
+		})
 	case "type":
 		if step.Ref == "" || step.Text == "" {
 			actionErr = errors.New("type requires ref and text")
 			break
 		}
 		actionErr = m.typeRef(tabCtx, step.Ref, step.Text)
-		if actionErr == nil {
-			m.settle(tabCtx, actionSettleDelayFast)
-		}
 	case "fill":
 		if step.Ref == "" {
 			actionErr = errors.New("fill requires ref")
 			break
 		}
 		actionErr = m.fillRef(tabCtx, step.Ref, step.Text, true)
-		if actionErr == nil {
-			m.settle(tabCtx, actionSettleDelayFast)
-		}
 	case "select":
 		if step.Ref == "" || step.Value == "" {
 			actionErr = errors.New("select requires ref and value")
@@ -2286,24 +2436,20 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step Batch
 			actionErr = errors.New("press requires key")
 			break
 		}
-		actionErr = m.pressKey(tabCtx, step.Key)
-		if actionErr == nil {
-			m.settle(tabCtx, actionSettleDelay)
-		}
+		actionErr = runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+			return m.pressKey(tabCtx, step.Key)
+		})
 	case "scroll":
-		_, actionErr = m.scrollDirection(tabCtx, step.Direction)
-		if actionErr == nil {
-			m.settle(tabCtx, actionSettleDelayFast)
-		}
+		actionErr = runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+			_, scrollErr := m.scrollDirection(tabCtx, step.Direction)
+			return scrollErr
+		})
 	case "hover":
 		if step.Ref == "" {
 			actionErr = errors.New("hover requires ref")
 			break
 		}
 		_, actionErr = m.hoverRef(tabCtx, step.Ref)
-		if actionErr == nil {
-			m.settle(tabCtx, actionSettleDelay)
-		}
 	case "wait":
 		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
 		if timeout == 0 {
@@ -2324,7 +2470,11 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step Batch
 			actionErr = errors.New("navigate_to requires url")
 			break
 		}
-		_, actionErr = m.NavigateTo(tabCtx, step.URL)
+		var url string
+		url, actionErr = m.prepareNavigationURL(step.URL)
+		if actionErr == nil {
+			actionErr = chromedp.Run(tabCtx, chromedp.Navigate(url))
+		}
 	case "focus_tab":
 		if step.ID == "" {
 			actionErr = errors.New("focus_tab requires id")
@@ -2699,7 +2849,7 @@ func (m *Manager) tabContext(tabID string) (context.Context, error) {
 
 	// If download tracking is already armed, attach the target-level listener to
 	// this newly created tab context so page-initiated downloads are observed.
-	m.attachDownloadListenerIfEnabled(ctx)
+	m.attachDownloadListenerIfEnabled(tabID, ctx)
 	m.ensureConsoleCapture(tabID, ctx)
 	return ctx, nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,5 +62,53 @@ func TestUsageLogMaxBytes(t *testing.T) {
 	}
 	if _, err := usageLogMaxBytes(-1); err == nil {
 		t.Fatal("expected negative-size error")
+	}
+}
+
+func TestMebibytesRejectsNonPositiveLimits(t *testing.T) {
+	if got, err := mebibytes(128); err != nil || got != 128<<20 {
+		t.Fatalf("got %d, %v", got, err)
+	}
+	for _, value := range []int{0, -1} {
+		if _, err := mebibytes(value); err == nil {
+			t.Fatalf("mebibytes(%d) accepted", value)
+		}
+	}
+}
+
+func TestDefaultArtifactRootIsStableAndIsolatedByRuntimeIdentity(t *testing.T) {
+	first, err := defaultArtifactRoot(brwidentity.Identity{Workspace: "synthetic", Profile: "one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _ := defaultArtifactRoot(brwidentity.Identity{Workspace: "synthetic", Profile: "one", Mode: "bridge"})
+	other, _ := defaultArtifactRoot(brwidentity.Identity{Workspace: "synthetic", Profile: "two"})
+	fallback, _ := defaultArtifactRoot(brwidentity.Identity{})
+	if first != again || first == other || filepath.Base(fallback) != "default" || !strings.HasPrefix(filepath.Base(first), "runtime-") {
+		t.Fatalf("first=%q again=%q other=%q fallback=%q", first, again, other, fallback)
+	}
+}
+
+func TestReadPrivateTokenFileRequiresOwnerOnlyRegularFile(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "provider-token")
+	if err := os.WriteFile(path, []byte("sensitive-provider-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readPrivateTokenFile(path); err != nil || got != "sensitive-provider-token" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPrivateTokenFile(path); err == nil {
+		t.Fatal("world-readable token file accepted")
+	}
+	link := filepath.Join(directory, "token-link")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPrivateTokenFile(link); err == nil {
+		t.Fatal("symlink token file accepted")
 	}
 }

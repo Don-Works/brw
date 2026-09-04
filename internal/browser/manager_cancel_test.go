@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -74,6 +75,22 @@ func TestCancelTokenResolution(t *testing.T) {
 	}
 	if got := cancelToken(context.Background(), ""); got != "" {
 		t.Fatalf("bare context should resolve to empty token, got %q", got)
+	}
+}
+
+func TestRunWithPrearmedSettleDoesNotActuateCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	err := runWithPrearmedSettle(ctx, time.Second, func() error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if called {
+		t.Fatal("action ran after its context was cancelled")
 	}
 }
 

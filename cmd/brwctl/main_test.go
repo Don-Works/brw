@@ -1,15 +1,90 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Don-Works/brw/internal/profilepolicy"
+	"github.com/Don-Works/brw/internal/recipe"
 )
 
 const testBridgeExtensionID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+func TestInstallPrivateRecipeIsImmutableAndMakesRepairVersionSearchable(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "private-recipes")
+	value := recipe.Recipe{
+		SchemaVersion: recipe.SchemaVersion,
+		ID:            "example.reports.capture",
+		Version:       "1.9.0",
+		Name:          "Capture reusable report",
+		Description:   "Open and capture a synthetic report for a local test.",
+		Intents:       []string{"capture reusable report", "save report text"},
+		Origins:       []string{"https://reports.example.test"},
+		Risk:          "read_only",
+		Steps: []recipe.Step{
+			{ID: "open", Action: "navigate_to", Effect: "read", URL: "https://reports.example.test/report"},
+			{ID: "capture", Action: "capture", Capture: &recipe.CaptureSpec{Kind: "text"}},
+		},
+	}
+	first, err := installPrivateRecipe(root, value)
+	if err != nil || first.Action != "installed" {
+		t.Fatalf("first install=%+v err=%v", first, err)
+	}
+	deduped, err := installPrivateRecipe(root, value)
+	if err != nil || deduped.Action != "deduped" || deduped.Digest != first.Digest {
+		t.Fatalf("dedupe=%+v err=%v", deduped, err)
+	}
+
+	changedInPlace := value
+	changedInPlace.Description = "Silently changed executable version."
+	if _, err := installPrivateRecipe(root, changedInPlace); err == nil || !strings.Contains(err.Error(), "new semantic version") {
+		t.Fatalf("same-version mutation error=%v", err)
+	}
+
+	repaired := value
+	repaired.Version = "1.10.0"
+	repaired.Description = "Updated semantic report capture after the page changed."
+	second, err := installPrivateRecipe(root, repaired)
+	if err != nil || second.Action != "installed" {
+		t.Fatalf("repair install=%+v err=%v", second, err)
+	}
+	provider, err := recipe.NewDirectoryProvider(context.Background(), recipe.DirectoryConfig{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches, err := provider.Search(context.Background(), "capture reusable report", "", 10)
+	if err != nil || len(matches) != 1 || matches[0].Version != "1.10.0" {
+		t.Fatalf("repair search=%+v err=%v", matches, err)
+	}
+	if _, err := provider.Fetch(context.Background(), value.ID, value.Version, first.Digest); err != nil {
+		t.Fatalf("old immutable version no longer fetchable: %v", err)
+	}
+}
+
+func TestRecipeInstallSourceMustBeOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "draft.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRecipeSource(path, true); err == nil || !strings.Contains(err.Error(), "0600") {
+		t.Fatalf("broad recipe draft permissions error=%v", err)
+	}
+	if _, err := readRecipeSource(path, false); err != nil {
+		t.Fatalf("validation should permit a non-private draft: %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRecipeSource(path, true); err != nil {
+		t.Fatalf("owner-only recipe draft rejected: %v", err)
+	}
+}
 
 func TestChromeExtensionInstalled(t *testing.T) {
 	dir := t.TempDir()
@@ -195,6 +270,7 @@ func TestRemoteMCPWrapperValidation(t *testing.T) {
 }
 
 func TestRemoteMCPWrapperWritesExecutableOutput(t *testing.T) {
+	t.Setenv("BRW_MCP_TOOLS", "")
 	out := filepath.Join(t.TempDir(), "brw-remote")
 	if err := remoteMCPWrapper([]string{
 		"--host", "browser-host",
@@ -218,5 +294,25 @@ func TestRemoteMCPWrapperWritesExecutableOutput(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "BRW_REMOTE=${BRW_REMOTE:-'browser-host'}") {
 		t.Fatalf("generated wrapper missing host:\n%s", data)
+	}
+	if !strings.Contains(string(data), "--mcp-tools") || !strings.Contains(string(data), "auto") {
+		t.Fatalf("generated wrapper did not default to token-saving auto profile:\n%s", data)
+	}
+}
+
+func TestRemoteMCPWrapperAcceptsAllAdvertisedToolProfiles(t *testing.T) {
+	for _, profile := range []string{"all", "core", "minimal", "auto"} {
+		t.Run(profile, func(t *testing.T) {
+			root := t.TempDir()
+			err := remoteMCPWrapper([]string{
+				"--host", "browser-host", "--mcp-tools", profile,
+				"--known-hosts", filepath.Join(root, "known_hosts"),
+				"--log", filepath.Join(root, "remote.log"),
+				"--output", filepath.Join(root, "wrapper"),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

@@ -532,6 +532,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       name,
       tag: el.tagName.toLowerCase(),
       type: (el.getAttribute('type') || '').toLowerCase(),
+      test_id: clean(el.getAttribute('data-testid') || el.getAttribute('data-test-id') || el.getAttribute('data-test') || ''),
       href: el.href || el.getAttribute('href') || '',
       value: isSensitive ? '' : rawValue,
       visible: visible(el),
@@ -568,6 +569,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       item.name,
       item.tag,
       item.type,
+      item.test_id,
       item.href,
       item.value,
       proseText
@@ -585,6 +587,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       if (item.value.toLowerCase().indexOf(needle) !== -1) reasons.push('value');
       if (item.tag.toLowerCase().indexOf(needle) !== -1) reasons.push('tag');
       if (item.type.toLowerCase().indexOf(needle) !== -1) reasons.push('type');
+      if (item.test_id.toLowerCase().indexOf(needle) !== -1) reasons.push('test_id');
       if (item.href.toLowerCase().indexOf(needle) !== -1) reasons.push('href');
       if (textContent && proseText.toLowerCase().indexOf(needle) !== -1) reasons.push('text');
       item.match_reasons = reasons;
@@ -1942,9 +1945,10 @@ func WaitForCondition(ctx context.Context, condition string, timeoutMs int64) (b
 //   - Navigation / history signals: popstate, hashchange, and pagehide all mean
 //     the action triggered a navigation; resolve promptly (the post-action snapshot
 //     reads the new state). beforeunload is treated the same way.
-//   - Network signal: a PerformanceObserver for 'resource' entries resolves as soon
-//     as a network response lands (XHR/fetch/img), which is the common "click ->
-//     request -> render" case.
+//   - Network signal: a PerformanceObserver for 'resource' entries starts the
+//     same short quiet window. It does not resolve immediately: frameworks often
+//     render shortly after a response, and returning before that mutation would
+//     trade correctness for a misleading latency win.
 //
 // The hard cap (capMs, via performance.now) bounds the worst case so a page that
 // never quiesces (continuous animation, polling) degrades to exactly today's fixed
@@ -1979,13 +1983,13 @@ const SettleScript = `(function(capMs){
       resolve({settledMs:elapsed(), reason:reason, cap:cap});
     }
     function onNav(){ finish('navigation'); }
-    function armQuiet(){
+    function armQuiet(reason){
       if(quietTo) clearTimeout(quietTo);
-      quietTo=setTimeout(function(){ finish('quiesce'); }, quietMs);
+      quietTo=setTimeout(function(){ finish(reason||'quiesce'); }, quietMs);
     }
     function onMutation(){
       sawMutation=true;
-      armQuiet();
+      armQuiet('quiesce');
     }
     // Hard cap — never slower than today's fixed delay.
     capTo=setTimeout(function(){ finish(sawMutation?'quiesce_cap':'cap'); }, cap);
@@ -1995,7 +1999,7 @@ const SettleScript = `(function(capMs){
       obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true});
     }catch(e){}
     try{
-      po=new PerformanceObserver(function(){ finish('network'); });
+      po=new PerformanceObserver(function(){ armQuiet('network_quiesce'); });
       po.observe({type:'resource', buffered:false});
     }catch(e){}
     try{
@@ -2008,12 +2012,107 @@ const SettleScript = `(function(capMs){
 })`
 
 // SettleResult reports how an in-page settle wait resolved: how long it actually
-// waited (SettledMS), why it stopped (Reason: quiesce | navigation | network |
+// waited (SettledMS), why it stopped (Reason: quiesce | network_quiesce | navigation |
 // quiesce_cap | cap), and the cap that bounded it.
 type SettleResult struct {
 	SettledMS int64  `json:"settledMs"`
 	Reason    string `json:"reason"`
 	Cap       int64  `json:"cap"`
+}
+
+// SettleHandle identifies a settle observer that was installed before browser
+// input. Pre-arming is essential for synchronous click/input handlers: attaching
+// the observer after actuation permanently misses their mutation and burns the
+// full settle cap.
+type SettleHandle struct {
+	Token string
+	CapMS int64
+}
+
+// ArmSettle installs SettleScript and stores its promise in an unguessable,
+// process-namespaced page registry, then returns immediately. The action can run
+// in a following CDP command without racing observer installation.
+func ArmSettle(ctx context.Context, capMS int64) (SettleHandle, error) {
+	if capMS < 0 {
+		capMS = 0
+	}
+	token := randomToken()
+	// The registry name itself is recorded in the handle token prefix so Await
+	// can address the same object without exposing a stable page-global name.
+	registry := "__brw_settle_" + randomToken()
+	compound := registry + ":" + token
+	compoundJSON, _ := json.Marshal(compound)
+	expr := fmt.Sprintf(`(function(compound,cap){
+		var split=compound.indexOf(':');
+		var registry=compound.slice(0,split), token=compound.slice(split+1);
+		var entries=window[registry];
+		if(!entries){ entries=Object.create(null); Object.defineProperty(window,registry,{value:entries,configurable:true}); }
+		entries[token]={promise:(%s)(cap)};
+		setTimeout(function(){try{delete entries[token]}catch(e){}},Math.max(5000,cap+5000));
+		return true;
+	})(%s,%d)`, SettleScript, compoundJSON, capMS)
+	var armed bool
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		obj, exception, err := runtime.Evaluate(expr).WithReturnByValue(true).Do(ctx)
+		if err != nil {
+			return err
+		}
+		if exception != nil {
+			details, _ := json.Marshal(exception)
+			return fmt.Errorf("arm settle failed: %s", details)
+		}
+		if obj != nil && len(obj.Value) > 0 {
+			return json.Unmarshal(obj.Value, &armed)
+		}
+		return nil
+	})); err != nil {
+		return SettleHandle{}, err
+	}
+	if !armed {
+		return SettleHandle{}, errors.New("page did not arm settle observer")
+	}
+	return SettleHandle{Token: compound, CapMS: capMS}, nil
+}
+
+// AwaitSettle waits for a previously armed observer and removes its registry
+// entry. A navigation may destroy the execution context; callers preserve the
+// existing non-fatal settle semantics for that case.
+func AwaitSettle(ctx context.Context, handle SettleHandle) (SettleResult, error) {
+	if handle.Token == "" {
+		return SettleResult{}, errors.New("settle handle is empty")
+	}
+	tokenJSON, _ := json.Marshal(handle.Token)
+	expr := fmt.Sprintf(`(function(compound){
+		var split=compound.indexOf(':');
+		var registry=compound.slice(0,split), token=compound.slice(split+1);
+		var entries=window[registry], entry=entries&&entries[token];
+		if(!entry) return Promise.resolve({settledMs:0,reason:'missing',cap:%d});
+		return entry.promise.then(function(result){try{delete entries[token]}catch(e){};return result;});
+	})(%s)`, handle.CapMS, tokenJSON)
+	var result SettleResult
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		obj, exception, err := runtime.Evaluate(expr).
+			WithReturnByValue(true).
+			WithAwaitPromise(true).
+			Do(ctx)
+		if err != nil {
+			return err
+		}
+		if exception != nil {
+			details, _ := json.Marshal(exception)
+			return fmt.Errorf("await settle failed: %s", details)
+		}
+		if obj != nil && len(obj.Value) > 0 {
+			return json.Unmarshal(obj.Value, &result)
+		}
+		return nil
+	})); err != nil {
+		return SettleResult{}, err
+	}
+	if result.Reason == "missing" {
+		return result, errors.New("settle observer expired before it was awaited")
+	}
+	return result, nil
 }
 
 // Settle awaits SettleScript: it resolves the moment the page settles after an
@@ -2380,8 +2479,49 @@ const AssertValueScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelp
   function check(){
     var el=findByRef(ref);
     if(!el) return false;
-    var val=('value' in el)?el.value:(el.innerText||el.textContent||'');
-    return String(val)===expected;
+    if('value' in el) return String(el.value)===expected;
+    // Empty rich editors commonly retain a structural <p><br></p> or <div><br></div>.
+    // innerText reports that placeholder as "\n" even though the editable value is
+    // semantically empty. For non-empty editors, accept either DOM textContent (the
+    // representation brw_fill writes) or rendered innerText (the representation a
+    // framework/native editor may build from block nodes).
+    var text=String(el.textContent||'');
+    if(text===expected) return true;
+    return String(el.innerText||'')===expected;
+  }
+  return new Promise(function(resolve){
+    if(check()){ resolve(true); return; }
+    var done=false,iv=0,to=0;
+    function finish(v){ if(done)return; done=true; if(iv)clearInterval(iv); if(to)clearTimeout(to); resolve(v); }
+    try{ var obs=new MutationObserver(function(){ if(check()) finish(true); });
+         obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
+    iv=setInterval(function(){ if(check()) finish(true); }, 100);
+    to=setTimeout(function(){ finish(check()); }, Math.max(0, timeoutMs|0));
+  });
+})`
+
+// AssertValueContainsScript is the substring counterpart to AssertValueScript.
+// It deliberately reads form-control value before DOM text so a textarea's
+// initial textContent or a select's option labels cannot satisfy current-value
+// postconditions by accident.
+const AssertValueContainsScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelpers + `
+  function roots(){ return __abRootList(); }
+  function findByRef(ref){
+    const selector='[data-brw-ref="'+CSS.escape(ref)+'"]';
+    for(const root of roots()){
+      const el=root.querySelector&&root.querySelector(selector);
+      if(el) return el;
+    }
+    return null;
+  }
+  function currentValue(el){
+    if('value' in el) return String(el.value);
+    var text=String(el.textContent||'');
+    return text || String(el.innerText||'');
+  }
+  function check(){
+    var el=findByRef(ref);
+    return !!el && currentValue(el).toLowerCase().indexOf(expected.toLowerCase())!==-1;
   }
   return new Promise(function(resolve){
     if(check()){ resolve(true); return; }

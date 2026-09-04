@@ -47,6 +47,7 @@ Pop-Location
 
 Copy-Item -Recurse -Force (Join-Path $RepoRoot "extension") (Join-Path $StageDir "share/extension")
 Copy-Item -Recurse -Force (Join-Path $RepoRoot "tests") (Join-Path $StageDir "share/tests")
+Copy-Item -Recurse -Force (Join-Path $RepoRoot "skills") (Join-Path $StageDir "share/skills")
 Copy-Item -Force (Join-Path $RepoRoot "LICENSE") (Join-Path $StageDir "share/doc/LICENSE")
 Copy-Item -Force (Join-Path $RepoRoot "README.md") (Join-Path $StageDir "share/doc/README.md")
 

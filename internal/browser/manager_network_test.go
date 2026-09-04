@@ -1,6 +1,28 @@
 package browser
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Don-Works/brw/internal/snapshot"
+)
+
+func TestFilterCapturedRequestsPreservesLifecycleIDAndRedactsCredentials(t *testing.T) {
+	requests := []snapshot.CapturedRequest{{
+		CaptureID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1",
+		URL:       "https://api.example.test/events",
+		RequestHeaders: map[string]string{
+			"Authorization": "Bearer direct-secret",
+			"Accept":        "application/json",
+		},
+	}}
+	got := filterCapturedRequests(requests, "/events")
+	if len(got) != 1 || got[0].CaptureID != requests[0].CaptureID {
+		t.Fatalf("filtered lifecycle identity = %+v", got)
+	}
+	if got[0].RequestHeaders["Authorization"] != "[redacted]" || got[0].RequestHeaders["Accept"] != "application/json" {
+		t.Fatalf("filtered request headers = %+v", got[0].RequestHeaders)
+	}
+}
 
 func TestBlockedReplayReason(t *testing.T) {
 	cases := []struct {

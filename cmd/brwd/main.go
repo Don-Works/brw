@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -16,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	cdplaunch "github.com/Don-Works/brw/internal/cdp"
@@ -25,6 +29,7 @@ import (
 	"github.com/Don-Works/brw/internal/mcp"
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/profilepolicy"
+	"github.com/Don-Works/brw/internal/recipe"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
@@ -75,10 +80,17 @@ func main() {
 	var usageLog string
 	var usageLogMaxMB int
 	var usageLogBackups int
+	var artifactDir string
+	var artifactMaxMB int
+	var artifactTotalMB int
+	var artifactTTL time.Duration
+	var recipeRoot string
+	var recipeProviderURL string
+	var recipeProviderTokenFile string
 
 	flag.StringVar(&httpAddr, "http", envDefault("BRW_HTTP_ADDR", "127.0.0.1:17310"), "HTTP listen address, or off. Defaults to loopback; bind a non-loopback address only behind SSH/Tailscale with caller auth.")
 	flag.BoolVar(&mcpMode, "mcp", false, "run MCP stdio server")
-	flag.StringVar(&mcpToolProfile, "mcp-tools", envDefault("BRW_MCP_TOOLS", "all"), "MCP tool surface advertised in tools/list: 'all' (full), 'core' (lean common-flow set), 'minimal' (smallest surface that still completes ordinary web work), or 'auto' (starts minimal and grows as the agent discovers tools with brw_tools). The catalogue is re-sent on every request, so a narrower profile is a per-turn context saving. All tools remain callable regardless.")
+	flag.StringVar(&mcpToolProfile, "mcp-tools", envDefault("BRW_MCP_TOOLS", "auto"), "MCP tool surface advertised in tools/list: 'all' (full), 'core' (lean common-flow set), 'minimal' (smallest surface that still completes ordinary web work), or 'auto' (default; starts minimal and grows as the agent discovers tools with brw_tools). The catalogue is re-sent on every request, so a narrower profile is a per-turn context saving. All tools remain callable regardless.")
 	flag.DurationVar(&mcpIdleExit, "mcp-idle-exit", envDuration("BRW_MCP_IDLE_EXIT", 0), "exit the --mcp stdio server cleanly after this long with no requests; upstream HTTP proxies default to 90m unless this flag or BRW_MCP_IDLE_EXIT is explicitly set (0 disables). Prevents abandoned clients from accumulating disposable proxy processes.")
 	flag.BoolVar(&bridgeMode, "bridge", false, "use installed Chrome extension bridge instead of direct CDP")
 	flag.StringVar(&bridgeAddr, "bridge-addr", envDefault("BRW_BRIDGE_ADDR", "127.0.0.1:17311"), "extension bridge WebSocket listen address")
@@ -107,6 +119,13 @@ func main() {
 	flag.StringVar(&usageLog, "usage-log", envDefault("BRW_USAGE_LOG", "auto"), "privacy-safe metadata usage ledger path; auto writes under the user config directory, off disables. Never records tool arguments, typed text, page content, URLs, headers, or response bodies.")
 	flag.IntVar(&usageLogMaxMB, "usage-log-max-mb", envInt("BRW_USAGE_LOG_MAX_MB", 20), "rotate the usage ledger at this many MiB; 0 disables size rotation")
 	flag.IntVar(&usageLogBackups, "usage-log-backups", envInt("BRW_USAGE_LOG_BACKUPS", 7), "number of rotated usage-ledger files to retain")
+	flag.StringVar(&artifactDir, "artifact-dir", envDefault("BRW_ARTIFACT_DIR", "auto"), "browser-host artifact directory: auto uses the user cache outside source checkouts; off disables. Explicit paths must be absolute and outside any git checkout.")
+	flag.IntVar(&artifactMaxMB, "artifact-max-mb", envInt("BRW_ARTIFACT_MAX_MB", 128), "maximum size of one browser artifact in MiB")
+	flag.IntVar(&artifactTotalMB, "artifact-total-mb", envInt("BRW_ARTIFACT_TOTAL_MB", 2048), "maximum total browser artifact cache size in MiB")
+	flag.DurationVar(&artifactTTL, "artifact-ttl", envDuration("BRW_ARTIFACT_TTL", 24*time.Hour), "maximum artifact retention; individual captures may request a shorter TTL")
+	flag.StringVar(&recipeRoot, "recipe-root", os.Getenv("BRW_RECIPE_ROOT"), "absolute 0700 directory containing private 0600 recipe JSON files; must live outside the brw source repository")
+	flag.StringVar(&recipeProviderURL, "recipe-provider-url", os.Getenv("BRW_RECIPE_PROVIDER_URL"), "HTTPS private recipe-provider base URL (loopback HTTP allowed); use instead of --recipe-root")
+	flag.StringVar(&recipeProviderTokenFile, "recipe-provider-token-file", os.Getenv("BRW_RECIPE_PROVIDER_TOKEN_FILE"), "0600 regular file containing the private recipe-provider bearer token; never logged")
 	flag.Parse()
 
 	mcpIdleExit = effectiveMCPIdleExit(
@@ -352,11 +371,74 @@ func main() {
 		bridge.SetNavigationPolicy(navPolicy)
 	}
 
+	var artifactAPI artifact.API
+	var recipeAPI recipe.API
+	if upstreamHTTP != "" {
+		// The proxy controller implements both optional APIs and forwards them to
+		// the canonical browser host. Never create a second cache/provider here.
+		artifactAPI, _ = controller.(artifact.API)
+		recipeAPI, _ = controller.(recipe.API)
+		if strings.TrimSpace(recipeRoot) != "" || strings.TrimSpace(recipeProviderURL) != "" || strings.TrimSpace(recipeProviderTokenFile) != "" {
+			log.Printf("WARNING: recipe provider flags are ignored in --upstream-http mode; configure them on the browser-host daemon")
+		}
+	} else {
+		if !strings.EqualFold(strings.TrimSpace(artifactDir), "off") {
+			root := strings.TrimSpace(artifactDir)
+			if root == "" || strings.EqualFold(root, "auto") {
+				var err error
+				root, err = defaultArtifactRoot(runtimeIdentity)
+				if err != nil {
+					log.Fatalf("artifact store: %v", err)
+				}
+			}
+			maxArtifactBytes, err := mebibytes(artifactMaxMB)
+			if err != nil {
+				log.Fatalf("artifact store: %v", err)
+			}
+			maxTotalBytes, err := mebibytes(artifactTotalMB)
+			if err != nil {
+				log.Fatalf("artifact store: %v", err)
+			}
+			store, err := artifact.NewStore(artifact.Config{
+				Root: root, MaxArtifactBytes: maxArtifactBytes,
+				MaxTotalBytes: maxTotalBytes, TTL: artifactTTL,
+			})
+			if err != nil {
+				log.Fatalf("artifact store: %v", err)
+			}
+			service, err := artifact.NewService(store, controller)
+			if err != nil {
+				log.Fatalf("artifact service: %v", err)
+			}
+			artifactAPI = service
+			janitorInterval := min(5*time.Minute, max(time.Second, artifactTTL/2))
+			go store.RunJanitor(ctx, janitorInterval, func(err error) {
+				log.Printf("artifact retention janitor: %v", err)
+			})
+			log.Printf("browser-host artifact store enabled at %s (max=%d MiB, total=%d MiB, ttl=%s)", store.Root(), artifactMaxMB, artifactTotalMB, artifactTTL)
+		}
+
+		provider, err := configureRecipeProvider(ctx, recipeRoot, recipeProviderURL, recipeProviderTokenFile)
+		if err != nil {
+			log.Fatalf("recipe provider: %v", err)
+		}
+		if provider != nil {
+			service, err := recipe.NewService(provider, recipe.Runner{Surface: &recipe.BrowserSurface{Browser: controller, Artifacts: artifactAPI}})
+			if err != nil {
+				log.Fatalf("recipe service: %v", err)
+			}
+			recipeAPI = service
+			log.Printf("private recipe provider enabled (recipe bodies and inputs are never written to usage logs)")
+		}
+	}
+
 	var api *httpapi.Server
 	if httpAddr != "" && httpAddr != "off" {
 		api = httpapi.NewWithIdentity(httpAddr, controller, runtimeIdentity)
 		api.SetNavigationPolicy(navPolicy)
 		api.SetUsageRecorder(usage)
+		api.SetArtifactAPI(artifactAPI)
+		api.SetRecipeAPI(recipeAPI)
 		defer gracefulShutdown("HTTP API", api.Shutdown)
 		if !isLoopback(httpAddr) {
 			log.Printf("WARNING: HTTP API bound to non-loopback address %s; no authentication is enforced — ensure caller auth is in place (SSH/Tailscale)", httpAddr)
@@ -390,6 +472,8 @@ func main() {
 		go watchParentExit(stop)
 		server := mcp.NewWithToolProfile(controller, mcpToolProfile)
 		server.SetNavigationPolicy(navPolicy)
+		server.SetArtifactAPI(artifactAPI)
+		server.SetRecipeAPI(recipeAPI)
 		// usageIdentity is the fully-resolved workspace/profile/mode for this
 		// process, cross-checked against the upstream daemon's /health at startup
 		// when a profile policy is set. Handing it to the MCP server lets
@@ -502,6 +586,129 @@ func usageLogMaxBytes(megabytes int) (int64, error) {
 		return 0, errors.New("usage-log-max-mb is too large")
 	}
 	return int64(megabytes) * mib, nil
+}
+
+func mebibytes(value int) (int64, error) {
+	if value <= 0 {
+		return 0, errors.New("artifact size limits must be positive")
+	}
+	const mib = int64(1024 * 1024)
+	maxInt64 := int64(^uint64(0) >> 1)
+	if int64(value) > maxInt64/mib {
+		return 0, errors.New("artifact size limit is too large")
+	}
+	return int64(value) * mib, nil
+}
+
+func defaultArtifactRoot(identity brwidentity.Identity) (string, error) {
+	root, err := artifact.DefaultRoot()
+	if err != nil {
+		return "", err
+	}
+	material := strings.Join([]string{
+		identity.Workspace, identity.Profile, identity.UserDataDir, identity.ProfileDirectory,
+	}, "\x00")
+	if strings.Trim(material, "\x00") == "" {
+		return filepath.Join(root, "default"), nil
+	}
+	digest := sha256.Sum256([]byte(material))
+	return filepath.Join(root, "runtime-"+hex.EncodeToString(digest[:8])), nil
+}
+
+func configureRecipeProvider(ctx context.Context, directory, providerURL, tokenFile string) (recipe.Provider, error) {
+	directory = strings.TrimSpace(directory)
+	providerURL = strings.TrimSpace(providerURL)
+	tokenFile = strings.TrimSpace(tokenFile)
+	if directory != "" && providerURL != "" {
+		return nil, errors.New("use either --recipe-root or --recipe-provider-url, not both")
+	}
+	if tokenFile != "" && providerURL == "" {
+		return nil, errors.New("--recipe-provider-token-file requires --recipe-provider-url")
+	}
+	if directory != "" {
+		if !filepath.IsAbs(directory) {
+			return nil, errors.New("recipe root must be absolute")
+		}
+		return recipe.NewDirectoryProvider(ctx, recipe.DirectoryConfig{
+			Root: directory, RepositoryRoot: currentRepositoryRoot(),
+		})
+	}
+	if providerURL == "" {
+		return nil, nil
+	}
+	token := ""
+	if tokenFile != "" {
+		var err error
+		token, err = readPrivateTokenFile(tokenFile)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return recipe.NewHTTPProvider(recipe.HTTPProviderConfig{BaseURL: providerURL, Token: token})
+}
+
+// currentRepositoryRoot is a runtime safety belt for source-tree launches. It
+// lets the directory provider reject a recipe root nested in the checkout the
+// daemon was started from; release CI separately enforces that no recipe corpus
+// is tracked at all.
+func currentRepositoryRoot() string {
+	directory, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		if info, err := os.Lstat(filepath.Join(directory, ".git")); err == nil && (info.IsDir() || info.Mode().IsRegular()) {
+			return directory
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			return ""
+		}
+		directory = parent
+	}
+}
+
+func readPrivateTokenFile(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", errors.New("recipe provider token file must be absolute")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("recipe provider token file must be a regular file, not a symlink")
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("recipe provider token file permissions %o are too broad; require 0600 or stricter", info.Mode().Perm())
+	}
+	if info.Size() > 1<<20 {
+		return "", errors.New("recipe provider token file exceeds 1 MiB")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) || openedInfo.Mode().Perm()&0o077 != 0 {
+		return "", errors.New("recipe provider token file changed before it was read")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > 1<<20 {
+		return "", errors.New("recipe provider token file exceeds 1 MiB")
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", errors.New("recipe provider token file is empty")
+	}
+	return token, nil
 }
 
 func normalizeAddr(addr string) string {

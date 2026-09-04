@@ -301,6 +301,38 @@ func TestFillDispatchesBeforeInputBeforeContentEditableMutation(t *testing.T) {
 	}
 }
 
+func TestAssertValueTreatsStructuralEmptyContentEditableAsEmpty(t *testing.T) {
+	const page = `<!doctype html><html><head><title>empty rich editor</title></head><body>
+<div id="editor" role="textbox" contenteditable="true" aria-label="Composer"><p><br></p></div>
+</body></html>`
+	srv := serveHTML(t, page)
+	browserCtx, cancel := newHeadlessChrome(t)
+	defer cancel()
+	ctx, ctxCancel := context.WithTimeout(browserCtx, 30*time.Second)
+	defer ctxCancel()
+
+	if err := chromedp.Run(ctx, chromedp.Navigate(srv.URL), chromedp.WaitReady("body")); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	snap, err := snapshot.EvaluateWithOptions(ctx, snapshot.SnapshotOptions{Mode: "all"})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	editor := findByName(snap.Elements, "Composer")
+	if editor == nil {
+		t.Fatalf("composer missing from snapshot: %v", names(snap.Elements))
+	}
+	if err := snapshot.EvalAssert(ctx, snapshot.AssertValueScript, editor.Ref, "", 100); err != nil {
+		t.Fatalf("structural empty editor did not assert empty: %v", err)
+	}
+	if err := snapshot.Fill(ctx, editor.Ref, "prepared draft", true); err != nil {
+		t.Fatalf("fill editor: %v", err)
+	}
+	if err := snapshot.EvalAssert(ctx, snapshot.AssertValueScript, editor.Ref, "prepared draft", 100); err != nil {
+		t.Fatalf("filled editor value assertion failed: %v", err)
+	}
+}
+
 func TestHoverScriptTriggersDelegatedMouseenterMenus(t *testing.T) {
 	const page = `<!doctype html><html><head><title>delegated hover</title></head><body>
 <ul id="menu" role="menu" aria-label="Main menu"><li id="enabled" role="menuitem" aria-haspopup="menu" tabindex="0">Enabled<ul id="submenu" role="menu" aria-label="Downloads menu" hidden><li id="downloads" role="menuitem" aria-haspopup="menu" tabindex="0">Downloads<ul id="formats" role="menu" aria-label="Formats menu" hidden><li role="menuitem">PDF</li></ul></li></ul></li></ul>

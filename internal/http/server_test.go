@@ -830,14 +830,20 @@ func (e *errorController) Open(context.Context, string) (browser.OpenResult, err
 // tab pinned into the context for batch/cancel.
 type resolverController struct {
 	fakeController
-	resolveCalls int
-	batchCtxTab  string
-	cancelCtxTab string
+	resolveCalls            int
+	scrollRequiresOwnership bool
+	batchCtxTab             string
+	cancelCtxTab            string
 }
 
 func (r *resolverController) ResolveActiveTabID(context.Context) string {
 	r.resolveCalls++
 	return "auto-active"
+}
+
+func (r *resolverController) Scroll(ctx context.Context, direction string) (browser.ActionResult, error) {
+	r.scrollRequiresOwnership = browser.TabIDRequiresCurrentOwnership(ctx)
+	return r.fakeController.Scroll(ctx, direction)
 }
 
 func (r *resolverController) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
@@ -869,6 +875,9 @@ func TestBatchAndCancelStayTabAgnostic(t *testing.T) {
 	post("/api/page/scroll", `{"direction":"down"}`)
 	if ctrl.resolveCalls == 0 {
 		t.Fatal("scroll did not auto-resolve the active tab; resolver not wired, test would be vacuous")
+	}
+	if !ctrl.scrollRequiresOwnership {
+		t.Fatal("server-resolved scroll tab was not marked for reconnect ownership validation")
 	}
 
 	ctrl.resolveCalls = 0

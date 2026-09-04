@@ -120,12 +120,13 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
-	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return dispatchClick(ctx, x, y, button, clickCount)
-	})); err != nil {
+	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return dispatchClick(ctx, x, y, button, clickCount)
+		}))
+	}); err != nil {
 		return ActionResult{}, err
 	}
-	m.settle(tabCtx, actionSettleDelay)
 
 	desc := fmt.Sprintf("%s-clicked %s", buttonLabel(button), pointDescriptor(opts.MousePoint))
 	if clickCount > 1 {
@@ -183,16 +184,17 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
-	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return input.DispatchMouseEvent(eventType, x, y).
-			WithButton(button).
-			WithButtons(buttons).
-			WithClickCount(1).
-			Do(ctx)
-	})); err != nil {
+	if err := runWithPrearmedSettle(tabCtx, mouseHalfSettleDelay, func() error {
+		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return input.DispatchMouseEvent(eventType, x, y).
+				WithButton(button).
+				WithButtons(buttons).
+				WithClickCount(1).
+				Do(ctx)
+		}))
+	}); err != nil {
 		return ActionResult{}, err
 	}
-	m.settle(tabCtx, mouseHalfSettleDelay)
 
 	desc := fmt.Sprintf("%s %s at %s", action, buttonLabel(button), pointDescriptor(opts.MousePoint))
 	result := m.observeActionWithBefore(tabID, tabCtx, desc, before)
@@ -238,9 +240,13 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	// pointer-based libraries like jQuery UI sortable that listen on mousedown).
 	if opts.From.HasRef() && opts.To.HasRef() && snapshot.RefDraggable(tabCtx, opts.From.Ref) {
 		before := m.cachedBefore(tabID, tabCtx)
-		dropped, dErr := snapshot.DragHtml5(tabCtx, opts.From.Ref, opts.To.Ref)
+		var dropped bool
+		dErr := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+			var dragErr error
+			dropped, dragErr = snapshot.DragHtml5(tabCtx, opts.From.Ref, opts.To.Ref)
+			return dragErr
+		})
 		if dErr == nil && dropped {
-			m.settle(tabCtx, actionSettleDelay)
 			result := m.observeActionWithBefore(tabID, tabCtx, fmt.Sprintf("dragged %s -> %s (html5)", opts.From.Ref, opts.To.Ref), before)
 			result.DurationMS = time.Since(start).Milliseconds()
 			m.recordTrace(tabID, TraceEntry{
@@ -273,12 +279,13 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
-	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return dispatchDrag(ctx, fromX, fromY, toX, toY, steps, button)
-	})); err != nil {
+	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return dispatchDrag(ctx, fromX, fromY, toX, toY, steps, button)
+		}))
+	}); err != nil {
 		return ActionResult{}, err
 	}
-	m.settle(tabCtx, actionSettleDelay)
 
 	desc := fmt.Sprintf("dragged %s -> %s", pointDescriptor(opts.From), pointDescriptor(opts.To))
 	result := m.observeActionWithBefore(tabID, tabCtx, desc, before)

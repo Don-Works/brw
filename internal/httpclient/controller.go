@@ -17,11 +17,22 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/readability"
+	"github.com/Don-Works/brw/internal/recipe"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/usagelog"
+)
+
+const (
+	maxUpstreamResponseBytes       = int64(64 << 20)
+	maxUpstreamErrorBytes          = 8 << 10
+	maxArtifactInfoResponseBytes   = int64(64 << 10)
+	maxArtifactReadResponseBytes   = int64(8 << 20)
+	maxArtifactSearchResponseBytes = int64(1 << 20)
+	maxArtifactDeleteResponseBytes = int64(64 << 10)
 )
 
 type Controller struct {
@@ -187,6 +198,31 @@ func (c *Controller) Read(ctx context.Context) (readability.PageRead, error) {
 	values.Set("max_headings", strconv.Itoa(readability.UnboundedReadChars))
 	// Section selection is applied by the MCP layer on the full document, so the
 	// proxy deliberately does not forward it here.
+	err := c.get(ctx, "/api/page/read", values, &out)
+	return out, err
+}
+
+// ReadWindow applies the requested section/include/paging bounds on the browser
+// host. MCP uses this optional capability in upstream mode, avoiding full-page
+// transfer merely to return a small context window.
+func (c *Controller) ReadWindow(ctx context.Context, opts readability.ReadOptions) (readability.PageRead, error) {
+	if err := opts.Validate(); err != nil {
+		return readability.PageRead{}, err
+	}
+	values := url.Values{}
+	// Send zero explicitly: on the HTTP surface zero means the normal bounded
+	// default, while absence preserves the legacy unbounded endpoint contract.
+	values.Set("max_chars", strconv.Itoa(opts.MaxChars))
+	values.Set("offset", strconv.Itoa(opts.Offset))
+	values.Set("max_links", strconv.Itoa(opts.MaxLinks))
+	values.Set("max_headings", strconv.Itoa(opts.MaxHeadings))
+	if len(opts.Include) > 0 {
+		values.Set("include", strings.Join(opts.Include, ","))
+	}
+	if strings.TrimSpace(opts.Section) != "" {
+		values.Set("section", strings.TrimSpace(opts.Section))
+	}
+	var out readability.PageRead
 	err := c.get(ctx, "/api/page/read", values, &out)
 	return out, err
 }
@@ -528,6 +564,101 @@ func (c *Controller) Notify(ctx context.Context, opts browser.NotifyOptions) (br
 	return out, err
 }
 
+// CaptureArtifact delegates capture to the browser host. In upstream mode this
+// is the critical data-locality boundary: only payload-free metadata crosses
+// back to the disposable MCP process.
+func (c *Controller) CaptureArtifact(ctx context.Context, opts artifact.CaptureOptions) (artifact.Meta, error) {
+	if opts.TTL > 0 && opts.TTLSeconds == 0 {
+		seconds := opts.TTL / time.Second
+		if opts.TTL%time.Second != 0 {
+			seconds++
+		}
+		maxInt := int64(^uint(0) >> 1)
+		if int64(seconds) > maxInt {
+			return artifact.Meta{}, errors.New("artifact TTL is too large for the remote protocol")
+		}
+		opts.TTLSeconds = int(seconds)
+	}
+	var out artifact.Meta
+	client := c.client
+	if opts.Kind == "video" {
+		minimum := time.Duration(opts.DurationMS)*time.Millisecond + 30*time.Second
+		client = withMinimumTimeout(client, minimum)
+	}
+	err := c.postWithClient(ctx, client, "/api/artifacts/capture", opts, &out)
+	return out, err
+}
+
+func (c *Controller) ArtifactInfo(ctx context.Context, id string) (artifact.Meta, error) {
+	var out artifact.Meta
+	err := c.postExactWithLimit(ctx, "/api/artifacts/info", artifactIDRequest(id), &out, maxArtifactInfoResponseBytes)
+	return out, artifactClientError(ctx, "info", err)
+}
+
+func (c *Controller) ReadArtifact(ctx context.Context, id string, offset int64, maxBytes int) (artifact.Chunk, error) {
+	var out artifact.Chunk
+	body := map[string]any{"artifact_id": id, "offset": offset, "max_bytes": maxBytes}
+	err := c.postExactWithLimit(ctx, "/api/artifacts/read", body, &out, maxArtifactReadResponseBytes)
+	return out, artifactClientError(ctx, "read", err)
+}
+
+func (c *Controller) SearchArtifact(ctx context.Context, id, query string, limit int) ([]artifact.TextHit, error) {
+	var out []artifact.TextHit
+	body := map[string]any{"artifact_id": id, "query": query, "limit": limit}
+	err := c.postExactWithLimit(ctx, "/api/artifacts/search", body, &out, maxArtifactSearchResponseBytes)
+	return out, artifactClientError(ctx, "search", err)
+}
+
+func (c *Controller) DeleteArtifact(ctx context.Context, id string) error {
+	err := c.postExactWithLimit(ctx, "/api/artifacts/delete", artifactIDRequest(id), nil, maxArtifactDeleteResponseBytes)
+	return artifactClientError(ctx, "delete", err)
+}
+
+func artifactIDRequest(id string) map[string]any {
+	return map[string]any{"artifact_id": id}
+}
+
+func artifactClientError(ctx context.Context, operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	// An older or compromised upstream may reflect request values in its error
+	// body. Never forward that text across the artifact privacy boundary.
+	return fmt.Errorf("artifact %s request failed", operation)
+}
+
+func (c *Controller) SearchRecipes(ctx context.Context, query, origin string, limit int) ([]recipe.Match, error) {
+	var out []recipe.Match
+	err := c.post(ctx, "/api/recipes/search", map[string]any{"query": query, "origin": origin, "limit": limit}, &out)
+	return out, err
+}
+
+func (c *Controller) RunRecipe(ctx context.Context, request recipe.RunRequest) (recipe.RunResult, error) {
+	var out recipe.RunResult
+	// Ordinary browser calls default to a short transport timeout, but one valid
+	// recipe may contain bounded timers/events up to the runner's 30-minute cap.
+	// Keep caller context cancellation authoritative while preventing the proxy
+	// client from terminating a still-valid recipe at 20 seconds.
+	client := withMinimumTimeout(c.client, recipe.DefaultMaxRunDuration+30*time.Second)
+	err := c.postWithClient(ctx, client, "/api/recipes/run", request, &out)
+	return out, err
+}
+
+func withMinimumTimeout(client *http.Client, minimum time.Duration) *http.Client {
+	if client.Timeout == 0 || client.Timeout >= minimum {
+		return client
+	}
+	copy := *client
+	copy.Timeout = minimum
+	return &copy
+}
+
 func (c *Controller) get(ctx context.Context, path string, values url.Values, out any) error {
 	reqURL := c.baseURL + path
 	if tabID := browser.TabIDFromContext(ctx); tabID != "" {
@@ -549,8 +680,24 @@ func (c *Controller) get(ctx context.Context, path string, values url.Values, ou
 }
 
 func (c *Controller) post(ctx context.Context, path string, body any, out any) error {
+	return c.postWithClient(ctx, c.client, path, body, out)
+}
+
+func (c *Controller) postWithClient(ctx context.Context, client *http.Client, path string, body any, out any) error {
 	body = withTabID(ctx, body)
 	body = withSnapshot(ctx, body)
+	return c.postJSONWithLimit(ctx, client, path, body, out, maxUpstreamResponseBytes)
+}
+
+// postExactWithLimit intentionally does not add tab_id or snapshot fields.
+// Artifact handle operations are host-local and use strict, fixed request
+// schemas; keeping this separate prevents unrelated context values from making
+// those requests invalid or widening what crosses the proxy boundary.
+func (c *Controller) postExactWithLimit(ctx context.Context, path string, body any, out any, maxResponseBytes int64) error {
+	return c.postJSONWithLimit(ctx, c.client, path, body, out, maxResponseBytes)
+}
+
+func (c *Controller) postJSONWithLimit(ctx context.Context, client *http.Client, path string, body any, out any, maxResponseBytes int64) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -560,10 +707,18 @@ func (c *Controller) post(ctx context.Context, path string, body any, out any) e
 		return err
 	}
 	req.Header.Set("content-type", "application/json")
-	return c.do(req, out)
+	return c.doWithClientLimit(client, req, out, maxResponseBytes)
 }
 
 func (c *Controller) do(req *http.Request, out any) error {
+	return c.doWithClient(c.client, req, out)
+}
+
+func (c *Controller) doWithClient(client *http.Client, req *http.Request, out any) error {
+	return c.doWithClientLimit(client, req, out, maxUpstreamResponseBytes)
+}
+
+func (c *Controller) doWithClientLimit(client *http.Client, req *http.Request, out any, maxResponseBytes int64) error {
 	req.Header.Set(usagelog.HeaderSessionID, c.sessionID)
 	req.Header.Set(usagelog.HeaderOwnerID, c.ownerID)
 	req.Header.Set(usagelog.HeaderRequestID, fmt.Sprintf("%s:%d", c.sessionID, c.nextRequest.Add(1)))
@@ -571,28 +726,79 @@ func (c *Controller) do(req *http.Request, out any) error {
 	if name, _ := c.agentName.Load().(string); name != "" {
 		req.Header.Set(usagelog.HeaderAgentName, name)
 	}
-	resp, err := c.client.Do(req)
+	return c.doRequestWithLimit(client, req, out, maxResponseBytes)
+}
+
+func (c *Controller) doRequestWithLimit(client *http.Client, req *http.Request, out any, maxResponseBytes int64) error {
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	if maxResponseBytes < 1 || maxResponseBytes > maxUpstreamResponseBytes {
+		maxResponseBytes = maxUpstreamResponseBytes
+	}
+	limit := maxResponseBytes
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Error text is diagnostic, not a data result. Never read tens of MiB only
+		// to throw almost all of it away after allocation.
+		limit = maxUpstreamErrorBytes
+	}
+	if resp.ContentLength > limit && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return upstreamResponseBoundError(maxResponseBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return err
 	}
+	if int64(len(data)) > limit && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return upstreamResponseBoundError(maxResponseBytes)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		truncated := int64(len(data)) > limit
+		if truncated {
+			data = data[:limit]
+		}
 		var payload struct {
 			Error string `json:"error"`
 		}
 		if err := json.Unmarshal(data, &payload); err == nil && payload.Error != "" {
-			return errors.New(payload.Error)
+			return errors.New(boundedUpstreamError(payload.Error))
 		}
-		return fmt.Errorf("upstream HTTP %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		message := boundedUpstreamError(string(data))
+		if truncated && !strings.Contains(message, "[truncated]") {
+			message += "… [truncated]"
+		}
+		return errors.New(boundedUpstreamError(fmt.Sprintf("upstream HTTP %s: %s", resp.Status, message)))
 	}
 	if out == nil {
 		return nil
 	}
-	return json.Unmarshal(data, out)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("upstream HTTP response contains trailing JSON")
+	}
+	return nil
+}
+
+func upstreamResponseBoundError(maxResponseBytes int64) error {
+	if maxResponseBytes == maxUpstreamResponseBytes {
+		return errors.New("upstream HTTP response exceeds 64 MiB")
+	}
+	return errors.New("upstream HTTP response exceeds artifact operation bound")
+}
+
+func boundedUpstreamError(value string) string {
+	value = strings.ToValidUTF8(strings.TrimSpace(value), "�")
+	if len(value) <= maxUpstreamErrorBytes {
+		return value
+	}
+	value = strings.ToValidUTF8(value[:maxUpstreamErrorBytes], "�")
+	return value + "… [truncated]"
 }
 
 func withTabID(ctx context.Context, body any) any {

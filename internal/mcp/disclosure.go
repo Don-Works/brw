@@ -11,7 +11,7 @@ import (
 //
 // An MCP client re-sends the whole tool catalogue on every request, so the
 // catalogue is a fixed cost on every turn rather than a one-off. brw's full
-// surface is ~11.4k tokens; a browser agent uses a dozen of those tools in a
+// surface is over 13k approximate tokens; a browser agent uses a dozen tools in a
 // normal session and pays for all 54 every time it thinks.
 //
 // The "auto" profile advertises the minimal working set plus brw_tools. When an

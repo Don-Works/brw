@@ -353,6 +353,9 @@ func leaseOwner(ctx context.Context) string {
 }
 
 func leaseScopedPath(path string) bool {
+	if path == "/api/artifacts/capture" || path == "/api/recipes/run" {
+		return true
+	}
 	if strings.HasPrefix(path, "/api/visual/") || path == "/api/browser/emulate_device" {
 		return true
 	}

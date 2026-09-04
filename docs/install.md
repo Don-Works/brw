@@ -10,7 +10,8 @@ GitHub releases ship platform-native installers:
 - Fedora/RHEL Linux: `brw_<version>_linux_amd64.rpm` and `brw_<version>_linux_arm64.rpm`
 
 The installers put the brw commands on the platform PATH and install the
-extension, tests, README, and license into the platform share directory:
+extension, tests, bundled agent skill, README, and license into the platform
+share directory:
 
 - Windows: `C:\Program Files\brw\share\`
 - macOS: `/usr/local/share/brw/`
@@ -42,6 +43,7 @@ macOS:
   bin/
   config/browser-profiles.json
   extension/
+  skills/brw/
   tests/
 ```
 
@@ -54,7 +56,7 @@ Linux:
 
 ## Remote Install
 
-Copy the built binaries, `extension/`, `tests/`, and a profile policy to the
+Copy the built binaries, `extension/`, `skills/`, `tests/`, and a profile policy to the
 browser machine. Then generate MCP client config from the policy:
 
 ```sh
@@ -206,6 +208,12 @@ change.
 Set `bridge_extension_id` in the profile policy only when you ship your own
 re-signed build with a different id; the default published id is built in.
 
+For a local multi-profile installation, `make install-mac` also refreshes every
+existing `~/Library/Application Support/brw/extension-*` payload without
+overwriting its private `bridge-defaults.json`. Install the bundled operating
+skill for both common agent harnesses with `make install-agent-skills`; this
+copies instructions only, never the private recipe corpus.
+
 ## Keep the browser awake (macOS)
 
 macOS App Nap can freeze a backgrounded browser's extension, which drops the
@@ -219,6 +227,19 @@ defaults write com.google.Chrome     NSAppSleepDisabled -bool YES   # only if yo
 
 See [reliability.md](reliability.md) for the full "staying connected" story
 (the extension's service-worker keepalive and an optional watchdog).
+
+## macOS Downloads access
+
+Direct-CDP profiles stage deterministic downloads in brw's private cache and do
+not need access to the user's Downloads folder. Chrome's extension debugger API
+does not expose browser-level download routing, so extension-backed profiles use
+Chrome's configured download folder. Capturing those bytes as a brw artifact may
+therefore require Files & Folders consent for the installed `brwd` binary under
+System Settings > Privacy & Security > Files & Folders. The metadata-only
+download event remains available without file access. brw limits an unanswered
+OS permission request to one three-second attempt and makes concurrent/repeated
+attempts fail fast, so a missing permission cannot create a retry-driven thread
+or CPU storm.
 
 ## Verify
 

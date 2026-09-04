@@ -14,10 +14,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/readability"
+	"github.com/Don-Works/brw/internal/recipe"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
@@ -32,7 +34,9 @@ var Version = "dev"
 
 type Server struct {
 	manager     browser.Controller
-	toolProfile string // "all" (default) or "core"
+	artifacts   artifact.API
+	recipes     recipe.API
+	toolProfile string // all, core, minimal, or progressive auto
 	navPolicy   *navpolicy.Policy
 	idleExit    time.Duration
 	usage       *usagelog.Recorder
@@ -73,6 +77,27 @@ func (s *Server) SetUsageRecorder(recorder *usagelog.Recorder) {
 	s.usage = recorder
 }
 
+func (s *Server) SetArtifactAPI(api artifact.API) { s.artifacts = api }
+
+func (s *Server) SetRecipeAPI(api recipe.API) { s.recipes = api }
+
+// artifactService and recipeService prefer capabilities implemented by the
+// controller itself. In --upstream-http mode that controller is the proxy, so
+// this keeps storage and private-provider access on the long-lived browser host.
+func (s *Server) artifactService() artifact.API {
+	if api, ok := s.manager.(artifact.API); ok {
+		return api
+	}
+	return s.artifacts
+}
+
+func (s *Server) recipeService() recipe.API {
+	if api, ok := s.manager.(recipe.API); ok {
+		return api
+	}
+	return s.recipes
+}
+
 // SetNavigationPolicy installs an opt-in allow/deny guardrail enforced on
 // URL-opening tools (brw_open, brw_open_incognito) and brw_replay_request. A nil
 // or empty policy is a no-op.
@@ -87,8 +112,8 @@ const (
 )
 
 // coreToolNames is the lean, common-flow tool surface. It hides the long tail
-// behind the default "all" profile while keeping the verbs an agent needs for
-// common read/click/type/select/navigate/scroll/drag/upload/hover flows.
+// while keeping the verbs an agent needs for common
+// read/click/type/select/navigate/scroll/drag/upload/hover flows.
 var coreToolNames = map[string]bool{
 	"brw_identity":       true,
 	"brw_open":           true,
@@ -187,10 +212,10 @@ func (s *Server) prepareNavigation(rawURL string) (string, error) {
 	return s.navPolicy.CheckNavigation(rawURL)
 }
 
-// NewWithToolProfile builds a server exposing only the named tool profile in
-// tools/list ("core" for the lean surface, anything else for the full surface).
-// All tools remain callable regardless of profile; the profile only narrows what
-// tools/list advertises.
+// NewWithToolProfile builds a server that advertises the named all, core,
+// minimal, or auto tool profile. Auto starts minimal and grows through
+// brw_tools discovery. All tools remain callable regardless of profile; the
+// profile only narrows what tools/list advertises.
 func NewWithToolProfile(manager browser.Controller, profile string) *Server {
 	if profile == "" {
 		profile = "all"
@@ -198,8 +223,8 @@ func NewWithToolProfile(manager browser.Controller, profile string) *Server {
 	return &Server{manager: manager, toolProfile: profile, sessionID: usagelog.NewID()}
 }
 
-// advertisedTools returns the tool list for tools/list, narrowed to the active
-// profile. "core" filters to coreToolNames; any other value returns everything.
+// advertisedTools returns tools/list narrowed to the active profile. Unknown
+// profiles fall back to the complete surface for compatibility.
 func (s *Server) advertisedTools() []map[string]any {
 	all := tools()
 	allowed, known := toolProfiles[s.toolProfile]
@@ -303,6 +328,11 @@ type inbound struct {
 // elapses with no incoming request. Callers should treat it as a clean,
 // intentional shutdown, not a failure.
 var ErrIdleExit = errors.New("mcp: idle-exit deadline reached with no requests")
+
+// MCP arguments are commands, selectors, and bounded data windows—not a bulk
+// transfer channel. Cap both line and Content-Length framing before allocation;
+// large browser data belongs in the artifact store.
+const maxMCPMessageBytes = 8 << 20
 
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	serveCtx, stop := context.WithCancel(ctx)
@@ -575,6 +605,9 @@ func readMessage(r *bufio.Reader, mode stdioMode) ([]byte, stdioMode, error) {
 	if err != nil || length < 0 {
 		return nil, mode, fmt.Errorf("invalid Content-Length %q", rawLen)
 	}
+	if length > maxMCPMessageBytes {
+		return nil, mode, fmt.Errorf("MCP message exceeds %d-byte limit", maxMCPMessageBytes)
+	}
 	body := make([]byte, length)
 	if _, err := io.ReadFull(r, body); err != nil {
 		return nil, mode, err
@@ -583,14 +616,24 @@ func readMessage(r *bufio.Reader, mode stdioMode) ([]byte, stdioMode, error) {
 }
 
 func readLineAllowEOF(r *bufio.Reader) ([]byte, error) {
-	line, err := r.ReadBytes('\n')
-	if err == nil {
-		return line, nil
+	line := make([]byte, 0, min(r.Size(), maxMCPMessageBytes))
+	for {
+		fragment, err := r.ReadSlice('\n')
+		if len(fragment) > maxMCPMessageBytes-len(line) {
+			return nil, fmt.Errorf("MCP message line exceeds %d-byte limit", maxMCPMessageBytes)
+		}
+		line = append(line, fragment...)
+		switch {
+		case err == nil:
+			return line, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF) && len(line) > 0:
+			return line, nil
+		default:
+			return nil, err
+		}
 	}
-	if err == io.EOF && len(line) > 0 {
-		return line, nil
-	}
-	return nil, err
 }
 
 func writeMessage(w io.Writer, mode stdioMode, value any) error {
@@ -685,11 +728,16 @@ var tabAgnosticTools = map[string]bool{
 	"brw_cancel":          true,
 	"brw_trace":           true,
 	"brw_clear_trace":     true,
+	"brw_artifact_info":   true,
+	"brw_artifact_read":   true,
+	"brw_artifact_search": true,
+	"brw_artifact_delete": true,
+	"brw_recipe_search":   true,
 }
 
 // pinActiveTabForTool resolves the active tab once (when the controller supports
-// it and the tool acts on the active tab) and pins it into the context via
-// browser.WithTabID. A no-op when the controller does not implement
+// it and the tool acts on the active tab) and pins it into the context as an
+// implicit/server-selected tab. A no-op when the controller does not implement
 // activeTabResolver, the tool is tab-management/batch, or resolution fails.
 func pinActiveTabForTool(ctx context.Context, manager browser.Controller, name string) context.Context {
 	if tabAgnosticTools[name] {
@@ -700,7 +748,7 @@ func pinActiveTabForTool(ctx context.Context, manager browser.Controller, name s
 		return ctx
 	}
 	if tabID := resolver.ResolveActiveTabID(ctx); tabID != "" {
-		return browser.WithTabID(ctx, tabID)
+		return browser.WithCurrentOwnedTabID(ctx, tabID)
 	}
 	return ctx
 }
@@ -836,9 +884,22 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := req.Validate(); err != nil {
 			return nil, invalid(err)
 		}
-		read, err := s.manager.Read(ctx)
+		var (
+			read            readability.PageRead
+			err             error
+			alreadyWindowed bool
+		)
+		if reader, ok := s.manager.(browser.WindowReader); ok {
+			read, err = reader.ReadWindow(ctx, req)
+			alreadyWindowed = true
+		} else {
+			read, err = s.manager.Read(ctx)
+		}
 		if err != nil {
 			return toolError(err), nil
+		}
+		if alreadyWindowed {
+			return toolJSON(read, nil)
 		}
 		// An unmatched section is an argument error, not a silently empty read:
 		// the agent asked for a part of the page that is not there, and needs to
@@ -1420,6 +1481,98 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		}, nil)
 	case "brw_downloads":
 		return toolJSON(s.manager.Downloads(ctx))
+	case "brw_artifact_capture":
+		api := s.artifactService()
+		if api == nil {
+			return toolError(errors.New("artifact service is not configured on the browser host")), nil
+		}
+		var req struct {
+			artifact.CaptureOptions
+			TabID string `json:"tab_id"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(api.CaptureArtifact(ctx, req.CaptureOptions))
+	case "brw_artifact_info":
+		api := s.artifactService()
+		if api == nil {
+			return toolError(errors.New("artifact service is not configured on the browser host")), nil
+		}
+		var req struct {
+			ID string `json:"artifact_id"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(api.ArtifactInfo(ctx, req.ID))
+	case "brw_artifact_read":
+		api := s.artifactService()
+		if api == nil {
+			return toolError(errors.New("artifact service is not configured on the browser host")), nil
+		}
+		var req struct {
+			ID       string `json:"artifact_id"`
+			Offset   int64  `json:"offset"`
+			MaxBytes int    `json:"max_bytes"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(api.ReadArtifact(ctx, req.ID, req.Offset, req.MaxBytes))
+	case "brw_artifact_search":
+		api := s.artifactService()
+		if api == nil {
+			return toolError(errors.New("artifact service is not configured on the browser host")), nil
+		}
+		var req struct {
+			ID    string `json:"artifact_id"`
+			Query string `json:"query"`
+			Limit int    `json:"limit"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(api.SearchArtifact(ctx, req.ID, req.Query, req.Limit))
+	case "brw_artifact_delete":
+		api := s.artifactService()
+		if api == nil {
+			return toolError(errors.New("artifact service is not configured on the browser host")), nil
+		}
+		var req struct {
+			ID string `json:"artifact_id"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolOK(api.DeleteArtifact(ctx, req.ID))
+	case "brw_recipe_search":
+		api := s.recipeService()
+		if api == nil {
+			return toolError(errors.New("recipe provider is not configured on the browser host")), nil
+		}
+		var req struct {
+			Query  string `json:"query"`
+			Origin string `json:"origin"`
+			Limit  int    `json:"limit"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(api.SearchRecipes(ctx, req.Query, req.Origin, req.Limit))
+	case "brw_recipe_run":
+		api := s.recipeService()
+		if api == nil {
+			return toolError(errors.New("recipe provider is not configured on the browser host")), nil
+		}
+		var req struct {
+			recipe.RunRequest
+			TabID string `json:"tab_id"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(api.RunRecipe(ctx, req.RunRequest))
 	case "brw_trace":
 		var req struct {
 			Format        string `json:"format"`
@@ -1482,6 +1635,22 @@ func unmarshalArgs(args json.RawMessage, dst any) error {
 		args = []byte("{}")
 	}
 	return json.Unmarshal(args, dst)
+}
+
+func unmarshalStrictArgs(args json.RawMessage, dst any) error {
+	if len(args) == 0 || string(args) == "null" {
+		args = []byte("{}")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(args))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("arguments contain trailing JSON")
+	}
+	return nil
 }
 
 // tabIDArg reconciles the historical `id` parameter of brw_focus_tab /
@@ -1817,7 +1986,7 @@ func tools() []map[string]any {
 			"limit":   integerSchema("Maximum requests to return, taken from the most recent. Defaults to 100; -1 for no cap."),
 			"tab_id":  stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
-		tool("brw_network_capture", "Install an in-page interceptor wrapping fetch and XMLHttpRequest, then drain and return captured requests (method, url, request headers/body, status, ok, response snippet, started_at, duration_ms). Call once to start capturing, then again after triggering page activity to read what was recorded. Bodies and snippets are truncated.", object(map[string]any{
+		tool("brw_network_capture", "Install an in-page interceptor wrapping fetch and XMLHttpRequest, then drain and return captured requests (capture_id, completed, method, url, request headers/body, status, ok, response snippet, started_at, duration_ms). Call once to start capturing, then again after triggering page activity to read what was recorded. In-flight rows have completed=false and remain visible without being consumed; their stable capture_id is unchanged when a later call reports terminal success or failure. Terminal rows have completed=true and are consumed exactly once. Bodies and snippets are truncated.", object(map[string]any{
 			"filter":  stringSchema("Case-insensitive substring to filter captured request URLs."),
 			"pattern": stringSchema("Regular expression the request URL must match. Applied after filter."),
 			"limit":   integerSchema("Maximum requests to return, taken from the most recent. Defaults to 100; -1 for no cap."),
@@ -1910,14 +2079,14 @@ func tools() []map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"action":      stringEnumSchema("One of: click, type, fill, select, press, scroll, hover, wait, snapshot, read, open, focus_tab.", "click", "type", "fill", "select", "press", "scroll", "hover", "wait", "snapshot", "read", "open", "focus_tab"),
+						"action":      stringEnumSchema("One of: click, type, fill, select, press, scroll, hover, wait, snapshot, read, open, navigate_to, focus_tab. open spawns a new tab; navigate_to drives the plan's existing working tab.", "click", "type", "fill", "select", "press", "scroll", "hover", "wait", "snapshot", "read", "open", "navigate_to", "focus_tab"),
 						"ref":         stringSchema("Element ref for click, type, fill, select, hover."),
 						"text":        stringSchema("Text for type and fill actions."),
 						"value":       stringSchema("Option value for select. For fill, also accepted as a Playwright-style alias for text."),
 						"direction":   stringEnumSchema("Scroll direction: up, down, left, right.", "up", "down", "left", "right"),
 						"condition":   stringSchema("Wait condition (load, text:..., ref:..., url:..., etc)."),
 						"timeout_ms":  map[string]any{"type": "integer", "description": "Timeout for wait action in milliseconds."},
-						"url":         stringSchema("URL for open action."),
+						"url":         stringSchema("URL for open or navigate_to action."),
 						"id":          stringSchema("Tab id for focus_tab action."),
 						"key":         stringSchema("Key name for press action (Enter, Tab, Escape, etc)."),
 						"expect_ref":  stringSchema("Validate this ref exists before running the action (fail-fast)."),
@@ -1927,7 +2096,7 @@ func tools() []map[string]any {
 				},
 			},
 		}, []string{"steps"})),
-		tool("brw_batch", "PREFERRED for multi-step flows: chain click, type, fill, select, press, scroll, hover, wait, open, focus_tab, and inline assertions (assert_visible, assert_text, assert_value, assert_hidden) in ONE round-trip, returning a single observation at the end. Use this instead of individual brw_click/brw_type/brw_fill calls whenever you need 2+ actions. Steps run sequentially; interleave assertions to fail fast.", object(map[string]any{
+		tool("brw_batch", "PREFERRED for multi-step flows: chain click, click_text, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, and inline assertions (assert_visible, assert_text, assert_value, assert_hidden) in ONE round-trip, returning a single observation at the end. Use this instead of individual brw_click/brw_type/brw_fill calls whenever you need 2+ actions. Steps run sequentially; interleave assertions to fail fast.", object(map[string]any{
 			"steps": map[string]any{
 				"type":        "array",
 				"description": "Ordered list of actions and assertions to execute.",
@@ -1941,7 +2110,7 @@ func tools() []map[string]any {
 						"direction":  stringEnumSchema("Scroll direction: up, down, left, right.", "up", "down", "left", "right"),
 						"condition":  stringSchema("Wait condition (load, text:..., ref:..., url:..., etc)."),
 						"timeout_ms": map[string]any{"type": "integer", "description": "Timeout for wait/assert actions in milliseconds."},
-						"url":        stringSchema("URL for open action."),
+						"url":        stringSchema("URL for open or navigate_to action."),
 						"id":         stringSchema("Tab id for focus_tab action."),
 						"key":        stringSchema("Key name for press action (Enter, Tab, Escape, etc)."),
 					},
@@ -2028,7 +2197,46 @@ func tools() []map[string]any {
 			"limit":       integerSchema("Maximum messages to return, taken from the most recent. Defaults to 100; -1 for no cap."),
 			"clear":       boolSchema("Drop the returned messages from the buffer. Defaults true. Set false to re-read them later."),
 		}, nil)),
-		tool("brw_downloads", "Return and drain tracked file downloads with url, suggested_filename, state (inProgress/completed/canceled), received_bytes, total_bytes, guid, and path. The buffer clears after reading. Branch on supported=false, which only an extension build predating download support returns.", object(nil, nil)),
+		tool("brw_downloads", "Return a retained, bounded snapshot of tracked file downloads with url, suggested_filename, source tab_id when safely known, state (inProgress/completed/canceled), received_bytes, total_bytes, guid, and browser-host path. A returned guid remains available to a following brw_capture_artifact(kind=download) call; deterministic recipes internally receive only post-baseline changes. Branch on supported=false, which only an extension build predating download support returns.", object(nil, nil)),
+		tool("brw_artifact_capture", "Capture browser output into the private browser-host artifact store and return only an opaque metadata handle (never the payload). Use this for full page text/semantic JSON, screenshots, PDF, a completed download, or a short WebM video when putting the content in model context would be wasteful or sensitive. Inspect later with bounded brw_artifact_read or brw_artifact_search; delete early when no longer needed.", object(map[string]any{
+			"kind":          stringEnumSchema("Artifact type.", "text", "semantic_json", "screenshot", "pdf", "download", "video"),
+			"ref":           stringSchema("For screenshot only, capture this element ref instead of the viewport."),
+			"duration_ms":   integerSchema("For video only: duration from 100 to 30000 milliseconds."),
+			"fps":           integerSchema("For video only: frames per second from 1 to 30."),
+			"download_guid": stringSchema("For download only: completed GUID from brw_downloads."),
+			"filename":      stringSchema("For download only: exact completed suggested filename, used when GUID is omitted."),
+			"redaction":     stringSchema("Optional non-secret label describing redaction already applied by the caller."),
+			"ttl_seconds":   integerSchema("Optional shorter retention. Cannot exceed the browser-host store policy."),
+			"tab_id":        stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"kind"})),
+		tool("brw_artifact_info", "Return payload-free metadata for an artifact: kind, MIME type, byte size, SHA-256, creation/expiry, and source hash.", object(map[string]any{
+			"artifact_id": stringSchema("Opaque artifact_id returned by brw_artifact_capture."),
+		}, []string{"artifact_id"})),
+		tool("brw_artifact_read", "Read one bounded window from a browser-host artifact. Text/JSON returns UTF-8; binary returns base64 only when explicitly requested here. Page with next_offset instead of loading the whole artifact into context.", object(map[string]any{
+			"artifact_id": stringSchema("Opaque artifact_id returned by brw_artifact_capture."),
+			"offset":      integerSchema("Byte offset. Defaults to zero."),
+			"max_bytes":   integerSchema("Maximum bytes to return. Defaults to 65536 and is hard-capped at 1 MiB."),
+		}, []string{"artifact_id"})),
+		tool("brw_artifact_search", "Search inside one known stored text or semantic-JSON artifact and return only matching line numbers with bounded excerpts. This requires artifact_id and query; it does not list or discover artifacts. Prefer it over paging a large dump when you know what fact you need.", object(map[string]any{
+			"artifact_id": stringSchema("Opaque text/semantic artifact id."),
+			"query":       stringSchema("Case-insensitive literal text to find."),
+			"limit":       integerSchema("Maximum matches. Defaults to 20."),
+		}, []string{"artifact_id", "query"})),
+		tool("brw_artifact_delete", "Delete a browser-host artifact before its automatic expiry.", object(map[string]any{
+			"artifact_id": stringSchema("Opaque artifact id to delete."),
+		}, []string{"artifact_id"})),
+		tool("brw_recipe_search", "Semantically search the configured PRIVATE recipe provider using a natural-language intent such as 'download invoices from the billing page'. Returns disclosure-safe metadata only (id, version, description, origins, risk, digest and score), never recipe steps or secrets. Recipes are deliberately external to the open-source brw repository.", object(map[string]any{
+			"query":  stringSchema("Natural-language automation intent."),
+			"origin": stringSchema("Optional exact page origin, such as https://billing.example.com, to filter candidates."),
+			"limit":  integerSchema("Maximum metadata matches. Defaults to 10."),
+		}, []string{"query"})),
+		tool("brw_recipe_run", "Run one exact immutable recipe selected by brw_recipe_search. You MUST pass the returned id, version and digest together; brw fetches that pinned private recipe and executes deterministic semantic actions, timers and browser/page events with exact-origin checks. Inputs are never echoed in the result. External writes require recipe-declared risk/idempotency/postconditions.", object(map[string]any{
+			"id":      stringSchema("Recipe id returned by search."),
+			"version": stringSchema("Exact recipe version returned by search."),
+			"digest":  stringSchema("Exact content digest returned by search."),
+			"inputs":  map[string]any{"type": "object", "description": "Declared runtime inputs. Pass secret references resolved outside brw, never embed credentials in recipe files.", "additionalProperties": map[string]any{"type": "string"}},
+			"tab_id":  stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"id", "version", "digest"})),
 		tool("brw_trace", "Return the action trace: recent actions with their refs, the element each one acted on, timing, and outcomes. format:\"batch\" instead returns the same flow as a ready-to-run brw_batch steps array — do a flow once, get a deterministic replay script with no model in the loop. Each ref action is preceded by an assert step checking the ref still points at the element that was recorded, so a replay against a changed page fails loudly instead of acting on the wrong element. Coordinate-driven actions (drag, click_xy) and history navigation are not replayable and are reported under skipped_reasons rather than dropped silently.", object(map[string]any{
 			"format":         stringEnumSchema("entries (default, the raw log) or batch (a brw_batch steps array that reproduces the flow).", "entries", "batch"),
 			"guards":         boolSchema("format:batch only. Insert an assert step before each action to verify its ref still points at the recorded element. Defaults true; a replay that clicks the wrong element in silence is worse than one that fails."),

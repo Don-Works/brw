@@ -74,8 +74,9 @@ func (p ReplayRequestParams) BlockedReplayReason() string {
 	return ""
 }
 
-// NetworkCapture installs the in-page interceptor (idempotent) and drains the
+// NetworkCapture installs the in-page interceptor (idempotent) and snapshots
 // recorded requests, optionally filtered by a case-insensitive URL substring.
+// Terminal rows are drained; in-flight rows remain available until completion.
 // In-page is the required baseline so capture works on both transports.
 func (m *Manager) NetworkCapture(ctx context.Context, filter string) ([]snapshot.CapturedRequest, error) {
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)

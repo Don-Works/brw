@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>beforeunload close fixture</title></head>
+<body>
+  <label>Draft <input id="draft" aria-label="Draft"></label>
+  <script>
+    window.addEventListener("beforeunload", (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    });
+  </script>
+</body>
+</html>

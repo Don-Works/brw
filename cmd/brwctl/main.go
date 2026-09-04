@@ -23,7 +23,9 @@ import (
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/httpclient"
+	"github.com/Don-Works/brw/internal/mcp"
 	"github.com/Don-Works/brw/internal/profilepolicy"
+	"github.com/Don-Works/brw/internal/recipe"
 )
 
 func main() {
@@ -51,6 +53,8 @@ func main() {
 		err = updateXML(os.Args[2:])
 	case "daemons":
 		err = daemons(os.Args[2:])
+	case "recipe":
+		err = recipeCommand(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -71,7 +75,228 @@ commands:
   macos-policy    write a Chrome ExtensionSettings .mobileconfig
   pack-extension  pack the brw Chrome extension as a CRX using installed Chrome
   update-xml      write a Chrome extension update manifest XML
-  daemons         list configured bridge profile-daemons + probe each /health (JSON)`)
+  daemons         list configured bridge profile-daemons + probe each /health (JSON)
+  recipe          validate or atomically install a private deterministic recipe`)
+}
+
+func recipeCommand(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: brwctl recipe <validate|install> [options]")
+	}
+	switch args[0] {
+	case "validate":
+		return recipeValidate(args[1:])
+	case "install":
+		return recipeInstall(args[1:])
+	default:
+		return fmt.Errorf("unknown recipe command %q (want validate or install)", args[0])
+	}
+}
+
+type recipeCommandResult struct {
+	OK      bool   `json:"ok"`
+	Action  string `json:"action"`
+	ID      string `json:"id"`
+	Version string `json:"version"`
+	Digest  string `json:"digest"`
+}
+
+func recipeValidate(args []string) error {
+	fs := flag.NewFlagSet("recipe validate", flag.ContinueOnError)
+	var source string
+	fs.StringVar(&source, "file", "", "recipe JSON path, or - for stdin")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if source == "" || fs.NArg() != 0 {
+		return errors.New("recipe validate requires exactly one --file")
+	}
+	data, err := readRecipeSource(source, false)
+	if err != nil {
+		return err
+	}
+	value, err := recipe.Parse(data)
+	if err != nil {
+		return err
+	}
+	digest, err := recipe.Digest(value)
+	if err != nil {
+		return err
+	}
+	writeJSON(os.Stdout, recipeCommandResult{OK: true, Action: "validated", ID: value.ID, Version: value.Version, Digest: digest})
+	return nil
+}
+
+func recipeInstall(args []string) error {
+	fs := flag.NewFlagSet("recipe install", flag.ContinueOnError)
+	var source, root string
+	fs.StringVar(&source, "file", "", "recipe JSON path, or - for stdin")
+	fs.StringVar(&root, "root", os.Getenv("BRW_RECIPE_ROOT"), "owner-only private recipe directory outside every Git checkout")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if source == "" || fs.NArg() != 0 {
+		return errors.New("recipe install requires exactly one --file")
+	}
+	if root == "" {
+		var err error
+		root, err = defaultPrivateRecipeRoot()
+		if err != nil {
+			return err
+		}
+	}
+	if !filepath.IsAbs(root) {
+		return errors.New("recipe root must be absolute")
+	}
+	if source != "-" {
+		absoluteSource, err := filepath.Abs(source)
+		if err != nil {
+			return err
+		}
+		if err := recipe.EnsureOutsideGitCheckout(absoluteSource); err != nil {
+			return fmt.Errorf("recipe draft must not live in a Git checkout: %w", err)
+		}
+	}
+	data, err := readRecipeSource(source, true)
+	if err != nil {
+		return err
+	}
+	value, err := recipe.Parse(data)
+	if err != nil {
+		return err
+	}
+	result, err := installPrivateRecipe(root, value)
+	if err != nil {
+		return err
+	}
+	writeJSON(os.Stdout, result)
+	return nil
+}
+
+func defaultPrivateRecipeRoot() (string, error) {
+	configRoot, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configRoot, "brw", "private-recipes"), nil
+}
+
+func readRecipeSource(source string, requirePrivate bool) ([]byte, error) {
+	const limit = 1 << 20
+	if source == "-" {
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, limit+1))
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > limit {
+			return nil, errors.New("recipe exceeds 1 MiB")
+		}
+		return data, nil
+	}
+	before, err := os.Lstat(source)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("recipe source must be a non-symlink regular file")
+	}
+	if requirePrivate && before.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("recipe source permissions %o are too broad; require 0600 or stricter", before.Mode().Perm())
+	}
+	if before.Size() > limit {
+		return nil, errors.New("recipe exceeds 1 MiB")
+	}
+	file, err := os.Open(source)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	after, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !after.Mode().IsRegular() || !os.SameFile(before, after) {
+		return nil, errors.New("recipe source changed while opening")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > limit {
+		return nil, errors.New("recipe exceeds 1 MiB")
+	}
+	return data, nil
+}
+
+func installPrivateRecipe(root string, value recipe.Recipe) (recipeCommandResult, error) {
+	if err := recipe.Validate(value); err != nil {
+		return recipeCommandResult{}, err
+	}
+	if err := recipe.PreparePrivateDirectory(root); err != nil {
+		return recipeCommandResult{}, err
+	}
+	digest, err := recipe.Digest(value)
+	if err != nil {
+		return recipeCommandResult{}, err
+	}
+	catalog, err := recipe.LoadDirectory(context.Background(), recipe.DirectoryConfig{Root: root})
+	if err != nil {
+		return recipeCommandResult{}, err
+	}
+	if _, err := catalog.Fetch(context.Background(), value.ID, value.Version, digest); err == nil {
+		return recipeCommandResult{OK: true, Action: "deduped", ID: value.ID, Version: value.Version, Digest: digest}, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return recipeCommandResult{}, fmt.Errorf("immutable recipe %s@%s already exists with different content; create a new semantic version: %w", value.ID, value.Version, err)
+	}
+
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return recipeCommandResult{}, err
+	}
+	encoded = append(encoded, '\n')
+	temporary, err := os.CreateTemp(root, ".recipe-*.tmp")
+	if err != nil {
+		return recipeCommandResult{}, err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return recipeCommandResult{}, err
+	}
+	if _, err := temporary.Write(encoded); err != nil {
+		temporary.Close()
+		return recipeCommandResult{}, err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return recipeCommandResult{}, err
+	}
+	if err := temporary.Close(); err != nil {
+		return recipeCommandResult{}, err
+	}
+	destination := filepath.Join(root, value.ID+"@"+value.Version+".json")
+	if err := os.Link(temporaryPath, destination); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return recipeCommandResult{}, fmt.Errorf("immutable recipe path already exists; create a new semantic version: %w", err)
+		}
+		return recipeCommandResult{}, err
+	}
+	if err := os.Remove(temporaryPath); err != nil {
+		return recipeCommandResult{}, err
+	}
+	directory, err := os.Open(root)
+	if err != nil {
+		return recipeCommandResult{}, err
+	}
+	if err := directory.Sync(); err != nil {
+		directory.Close()
+		return recipeCommandResult{}, err
+	}
+	if err := directory.Close(); err != nil {
+		return recipeCommandResult{}, err
+	}
+	return recipeCommandResult{OK: true, Action: "installed", ID: value.ID, Version: value.Version, Digest: digest}, nil
 }
 
 // daemonRecord is one configured browser-profile bridge daemon, as emitted by
@@ -384,7 +609,7 @@ func remoteMCPWrapper(args []string) error {
 	fs.StringVar(&opts.User, "user", os.Getenv("BRW_REMOTE_USER"), "optional SSH user; omit when --host already includes user@")
 	fs.StringVar(&opts.RemoteBRWD, "remote-brwd", envDefault("BRW_REMOTE_BRWD", "brwd"), "remote brwd path; ~/ is expanded by the remote shell")
 	fs.StringVar(&opts.RemoteHTTP, "remote-http", envDefault("BRW_REMOTE_HTTP", "http://127.0.0.1:17310"), "remote loopback HTTP API used by the stdio wrapper")
-	fs.StringVar(&opts.MCPTools, "mcp-tools", envDefault("BRW_MCP_TOOLS", "all"), "MCP tool surface: all or core")
+	fs.StringVar(&opts.MCPTools, "mcp-tools", envDefault("BRW_MCP_TOOLS", "auto"), "MCP tool surface: all, core, minimal, or auto")
 	fs.StringVar(&opts.SSH, "ssh", envDefault("BRW_SSH", "ssh"), "local SSH executable")
 	fs.StringVar(&opts.ConnectTimeout, "connect-timeout", envDefault("BRW_CONNECT_TIMEOUT", "5"), "SSH ConnectTimeout seconds")
 	fs.StringVar(&opts.ConnectionAttempts, "connection-attempts", envDefault("BRW_CONNECTION_ATTEMPTS", "1"), "SSH ConnectionAttempts for the initial connection; raise for flaky links")
@@ -413,10 +638,8 @@ func remoteMCPWrapper(args []string) error {
 	default:
 		return errors.New("--strict-host-key-checking must be yes, accept-new, or no")
 	}
-	switch opts.MCPTools {
-	case "all", "core":
-	default:
-		return errors.New("--mcp-tools must be all or core")
+	if !mcp.ValidToolProfile(opts.MCPTools) {
+		return fmt.Errorf("--mcp-tools must be one of %s", strings.Join(mcp.ToolProfileNames(), ", "))
 	}
 	// Validate the numeric SSH/log knobs so the generated POSIX script never
 	// emits a value that ssh rejects or that the log-rotation guard mishandles.

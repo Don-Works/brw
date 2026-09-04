@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -224,7 +225,7 @@ func TestBatchAndPlanUseFastPrimitives(t *testing.T) {
 			ident, ok := sel.X.(*ast.Ident)
 			if ok && ident.Name == "b" {
 				switch sel.Sel.Name {
-				case "Click", "Type", "Fill", "Select", "Press", "Scroll", "Hover":
+				case "Click", "ClickText", "Type", "Fill", "Select", "Press", "Scroll", "Hover", "NavigateTo":
 					calls = append(calls, sel.Sel.Name)
 				}
 			}
@@ -232,6 +233,58 @@ func TestBatchAndPlanUseFastPrimitives(t *testing.T) {
 		})
 		if len(calls) > 0 {
 			t.Fatalf("%s must use raw primitives, not observed wrappers: %v", funcName, calls)
+		}
+	}
+}
+
+func TestBatchBackendsImplementTheSameActions(t *testing.T) {
+	parseCases := func(path string) map[string]bool {
+		t.Helper()
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fn := findFunc(file, "executeBatchStep")
+		if fn == nil {
+			t.Fatalf("missing executeBatchStep in %s", path)
+		}
+		cases := map[string]bool{}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			stmt, ok := n.(*ast.SwitchStmt)
+			if !ok {
+				return true
+			}
+			selector, ok := stmt.Tag.(*ast.SelectorExpr)
+			ident, identOK := selector.X.(*ast.Ident)
+			if !ok || !identOK || ident.Name != "step" || selector.Sel.Name != "Action" {
+				return true
+			}
+			for _, item := range stmt.Body.List {
+				clause, ok := item.(*ast.CaseClause)
+				if !ok {
+					continue
+				}
+				for _, expr := range clause.List {
+					literal, ok := expr.(*ast.BasicLit)
+					if ok && literal.Kind == token.STRING {
+						cases[strings.Trim(literal.Value, `"`)] = true
+					}
+				}
+			}
+			return false
+		})
+		return cases
+	}
+
+	direct := parseCases(filepath.Join("..", "browser", "manager.go"))
+	bridge := parseCases(filepath.Join("bridge.go"))
+	if !reflect.DeepEqual(direct, bridge) {
+		t.Fatalf("batch action parity drift: direct-CDP=%v extension=%v", direct, bridge)
+	}
+	for _, action := range []string{"navigate_to", "click_text"} {
+		if !bridge[action] {
+			t.Fatalf("batch backends do not implement advertised action %q", action)
 		}
 	}
 }
@@ -504,6 +557,33 @@ func TestFocusAndCloseTabRejectEmptyIDBeforeBridgeCall(t *testing.T) {
 	}
 }
 
+func TestCloseTabClearsEmulationStateBeforeNumericIDReuse(t *testing.T) {
+	b := New("", 5*time.Second, "")
+	_, cleanup := connectRetargetFake(t, b, 42)
+	defer cleanup()
+
+	b.emulationMu.Lock()
+	b.emulationStates["42"] = bridgeDeviceEmulationState{
+		HasBaseline: true,
+		Baseline:    bridgeDeviceIdentity{UserAgent: "closed-tab-agent", Platform: "closed-tab-platform"},
+	}
+	b.emulationMu.Unlock()
+
+	if err := b.CloseTab(context.Background(), "42"); err != nil {
+		t.Fatalf("CloseTab: %v", err)
+	}
+	// Chromium may later reuse 42 for an unrelated tab. A non-required baseline
+	// lookup models the first emulation operation on that reused id and must not
+	// recover the closed tab's UA/platform identity.
+	identity, found, err := b.deviceEmulationBaseline(context.Background(), "42", false)
+	if err != nil {
+		t.Fatalf("baseline lookup after close: %v", err)
+	}
+	if found || identity != (bridgeDeviceIdentity{}) {
+		t.Fatalf("reused tab id inherited closed-tab emulation baseline: found=%t identity=%+v", found, identity)
+	}
+}
+
 func TestOpenInGroupRejectsInvalidGroupIDBeforeBridgeCall(t *testing.T) {
 	b := New("", time.Second, "")
 	_, err := b.OpenInGroup(context.Background(), "https://example.com", browser.TabGroupOptions{GroupID: "not-a-number"})
@@ -757,15 +837,24 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// behind brw_window_resize, moving the real OS window via chrome.windows
 	// rather than overriding renderer viewport metrics; 0.4.8 stops a size-only
 	// resize from leaving a minimized or maximized window in the normal state it
-	// was temporarily put into to apply the size.
+	// was temporarily put into to apply the size; 0.4.9 keeps Page attached while
+	// closing a tab, 0.4.10 uses Page.close so an explicit close can accept a
+	// beforeunload dialog instead of leaving chrome.tabs.remove wedged, and 0.4.11
+	// waits for the closing target to disappear before acknowledging close_tab;
+	// 0.4.12 closes without reviving frozen/discarded tabs, requires Page events,
+	// handles detach races, and fails closed on a pinned non-drivable target;
+	// 0.4.13 exposes exact main-document identity plus a monotonic navigation
+	// epoch so recipe artifact capture cannot cross a document boundary; 0.4.14
+	// reports the extension-owned tab pin in each hello so reconnect can recover
+	// a lost tab_removed frame without reusing a human foreground tab.
 	// It is DECOUPLED from the wire PROTOCOL_VERSION below: the manifest moves
 	// with every feature release, while PROTOCOL_VERSION only moves on a breaking
-	// bridge-handshake change. 0.4.0-0.4.8 add fields, message types and
+	// bridge-handshake change. 0.4.0-0.4.14 add fields, message types and
 	// in-extension behaviour only. A new message type is additive in both
 	// directions: an older extension answers resize_window with "unknown message
 	// type", which the daemon reports as an upgrade note rather than a failure.
 	// So the protocol stays 0.2.0 (the daemon still accepts it).
-	const wantManifest = "0.4.8"
+	const wantManifest = "0.4.14"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

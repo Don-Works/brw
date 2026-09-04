@@ -15,6 +15,14 @@ Why this works:
 - SSH provides authentication, encryption, logging, and host policy.
 - Cookies, passkeys, downloads, and human takeover stay on the browser machine.
 - The same profile policy gates local and remote use.
+- Large artifacts stay on the browser machine; MCP receives an opaque handle
+  and only explicitly requested search hits or bounded chunks cross SSH.
+
+Configure the private recipe provider and artifact policy on the long-lived
+browser-host daemon, not on each disposable MCP proxy. Upstream proxies forward
+recipe and artifact calls back to that daemon, so provider credentials, recipe
+files, downloads, screenshots, PDFs, and video never need to exist on the agent
+machine.
 
 ## Generate MCP Config
 

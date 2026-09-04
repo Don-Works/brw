@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -383,6 +384,190 @@ func TestBridgeWithoutTabLockBypassesSerialization(t *testing.T) {
 	waitUntil(t, func() bool { cur, _, _ := e.snapshot(); return cur == 2 })
 
 	drain(t, e, 2)
+}
+
+func TestTabLockLifecycleSerializesRemovalAndNumericIDReuse(t *testing.T) {
+	b := New("", 5*time.Second, "")
+	params := map[string]any{"tabId": 42}
+	holderUnlock, err := b.lockTab(context.Background(), params)
+	if err != nil {
+		t.Fatalf("acquire holder: %v", err)
+	}
+
+	const oldWaiters = 24
+	start := make(chan struct{})
+	releaseAcquired := make(chan struct{})
+	acquired := make(chan struct{}, oldWaiters+1)
+	errs := make(chan error, oldWaiters+1)
+	var wg sync.WaitGroup
+	var currentMu sync.Mutex
+	current, peak := 0, 0
+	spawnWaiter := func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			unlock, lockErr := b.lockTab(context.Background(), params)
+			if lockErr != nil {
+				errs <- lockErr
+				return
+			}
+			currentMu.Lock()
+			current++
+			if current > peak {
+				peak = current
+			}
+			currentMu.Unlock()
+			acquired <- struct{}{}
+			<-releaseAcquired
+			currentMu.Lock()
+			current--
+			currentMu.Unlock()
+			unlock()
+		}()
+	}
+	for i := 0; i < oldWaiters; i++ {
+		spawnWaiter()
+	}
+	close(start)
+	waitUntil(t, func() bool {
+		b.tabLocksMu.Lock()
+		defer b.tabLocksMu.Unlock()
+		entry := b.tabLocks["42"]
+		return entry != nil && entry.refs == oldWaiters+1
+	})
+
+	// The browser removes tab 42 while its old operation and waiters still hold
+	// references. A new tab then reuses 42 and queues one more operation. All of
+	// them must share the original entry until the very last reference exits.
+	live := &websocket.Conn{}
+	b.mu.Lock()
+	b.conn = live
+	b.active = "42"
+	b.mu.Unlock()
+	b.handleDecodedFrame(live, response{Type: "tab_removed", TabID: 42})
+	reuseStart := make(chan struct{})
+	start = reuseStart
+	spawnWaiter()
+	close(reuseStart)
+	waitUntil(t, func() bool {
+		b.tabLocksMu.Lock()
+		defer b.tabLocksMu.Unlock()
+		entry := b.tabLocks["42"]
+		return entry != nil && entry.refs == oldWaiters+2
+	})
+	select {
+	case <-acquired:
+		t.Fatal("a waiter acquired while the removed tab's holder still owned the lock")
+	default:
+	}
+
+	holderUnlock()
+	for i := 0; i < oldWaiters+1; i++ {
+		select {
+		case <-acquired:
+			releaseAcquired <- struct{}{}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("waiter %d never acquired", i)
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("waiter failed: %v", err)
+	}
+	currentMu.Lock()
+	gotPeak, gotCurrent := peak, current
+	currentMu.Unlock()
+	if gotPeak != 1 || gotCurrent != 0 {
+		t.Fatalf("same numeric id was not serialized across removal/reuse: peak=%d current=%d", gotPeak, gotCurrent)
+	}
+	b.tabLocksMu.Lock()
+	remaining := len(b.tabLocks)
+	b.tabLocksMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("tab-lock table retained %d entries after all holders/waiters exited", remaining)
+	}
+}
+
+func TestTabLockCancelledWaitersReleaseReferences(t *testing.T) {
+	b := New("", time.Second, "")
+	params := map[string]any{"tabId": 77}
+	holderUnlock, err := b.lockTab(context.Background(), params)
+	if err != nil {
+		t.Fatalf("acquire holder: %v", err)
+	}
+
+	const waiters = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, waiters)
+	for i := 0; i < waiters; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+			defer cancel()
+			if _, lockErr := b.lockTab(ctx, params); !errors.Is(lockErr, ErrBridgeBusy) {
+				errs <- lockErr
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("cancelled waiter error = %v, want ErrBridgeBusy", err)
+	}
+	b.tabLocksMu.Lock()
+	entry := b.tabLocks["77"]
+	refs := 0
+	if entry != nil {
+		refs = entry.refs
+	}
+	b.tabLocksMu.Unlock()
+	if refs != 1 {
+		t.Fatalf("cancelled waiters leaked references: refs=%d want holder-only 1", refs)
+	}
+	holderUnlock()
+	b.tabLocksMu.Lock()
+	remaining := len(b.tabLocks)
+	b.tabLocksMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("tab-lock table retained %d entries after holder release", remaining)
+	}
+}
+
+func TestTabLockTableReturnsToBaselineAfterHighCardinalityChurn(t *testing.T) {
+	b := New("", time.Second, "")
+	const workers = 8
+	const perWorker = 500
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				key := strconv.Itoa(worker*perWorker + i + 1)
+				unlock, err := b.lockTab(context.Background(), map[string]any{"tabId": key})
+				if err != nil {
+					errs <- err
+					return
+				}
+				unlock()
+			}
+		}(worker)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("churn lock failed: %v", err)
+	}
+	b.tabLocksMu.Lock()
+	remaining := len(b.tabLocks)
+	b.tabLocksMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("tab-lock table retained %d entries after %d completed tab ids", remaining, workers*perWorker)
+	}
 }
 
 // TestBridgeWaitsForReconnectInsteadOfFailing proves a call arriving while the

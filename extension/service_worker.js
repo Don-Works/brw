@@ -42,6 +42,33 @@ const DISCONNECT_NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
 // window a dialog is the user's / a background script's, and is answered with the
 // NON-destructive choice instead of blindly accepting.
 const BRW_ACTING_WINDOW_MS = 8 * 1000;
+// Closing an ordinary page must keep Page events/debugger attachment live long
+// enough to answer beforeunload, but Page.close itself has occasionally stayed
+// pending forever. Bound command + disappearance confirmation to one budget so
+// a single dirty tab cannot strand its request handler indefinitely.
+const CLOSE_TAB_BUDGET_MS = 2 * 1000;
+// The daemon deliberately keeps a 4 MiB WebSocket read limit per frame. Large
+// snapshots/PDF responses therefore travel as independently bounded base64
+// frames, while the receiver enforces the matching aggregate limit. Two MiB of
+// raw payload expands to ~2.67 MiB in base64, leaving ample room for the JSON
+// envelope below the daemon's 4 MiB ceiling.
+const RESPONSE_DIRECT_MAX_BYTES = 3 * 1024 * 1024;
+const RESPONSE_CHUNK_BYTES = 2 * 1024 * 1024;
+// This is a serialized-response cap, not the artifact store's raw-byte cap.
+// Base64 means extension-backed binary captures top out around 48 MiB. Keeping
+// that distinction explicit avoids a single capture transiently consuming
+// hundreds of MiB in both the MV3 worker and daemon.
+const RESPONSE_TOTAL_MAX_BYTES = 64 * 1024 * 1024;
+// A capture that spans an MV3 service-worker restart must fail closed: the
+// in-memory per-tab navigation epoch below is intentionally reset with the
+// worker. Pairing it with a fresh instance id turns that reset into a mismatch
+// instead of allowing an A -> B -> BFCache-A transition to reuse epoch zero.
+const WORKER_INSTANCE_ID = (() => {
+  try {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  } catch (_) {}
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+})();
 // CDP methods brw refuses to forward, enforcing its promise not to read or export
 // cookies and site storage: every cookie read/write method (which can reach
 // HttpOnly cookies page JS cannot) plus the whole family of storage domains that
@@ -124,6 +151,11 @@ const state = {
   bridgeConfig: null,
   snapshotCache: new Map(),
   observerInjected: new Set(),
+  // Monotonic committed replacement-document count per main-frame tab. It is
+  // paired with webNavigation.documentId during recipe artifact capture so an
+  // A -> B -> back-to-A BFCache round trip cannot masquerade as uninterrupted
+  // capture. SPA history updates intentionally do not increment it.
+  documentEpochs: new Map(),
   // Per-tab capture of the most recent Page.fileChooserOpened CDP event, keyed
   // by tabId. File-chooser-interception upload mode enables interception, clicks
   // the trigger, then reads the chooser's backendNodeId from here to set the file
@@ -145,18 +177,24 @@ const state = {
   // or when the debugger/tab detaches.
   forcedHoverNodes: new Map(),
   forcedHoverTimers: new Map(),
-  // Downloads that started during this brw session, keyed by chrome.downloads id.
-  // Populated by the chrome.downloads.onCreated/onChanged listeners and drained
-  // by the get_downloads message (issue #6 — the extension bridge cannot observe
-  // CDP Browser.downloadWillBegin events, so we capture via chrome.downloads).
-  // Insertion order is preserved by Map, so trimming evicts the oldest first.
-  downloads: new Map()
+  // Downloads that started during this worker lifetime, keyed by
+  // chrome.downloads id. get_downloads returns retained snapshots so a listed
+  // GUID remains capturable by the next call. CDP Page.downloadWillBegin events
+  // carry the initiating source.tabId; recent events are correlated with
+  // chrome.downloads items below and ambiguous matches remain unattributed.
+  downloads: new Map(),
+  downloadCorrelation: new Map(),
+  downloadProvenance: []
 };
 
 // MAX_TRACKED_DOWNLOADS bounds the download buffer so a long-lived session that
 // triggers many downloads cannot grow it without limit. Mirrors the direct-CDP
 // Manager's maxTrackedDownloads cap (internal/browser/manager_downloads.go).
 const MAX_TRACKED_DOWNLOADS = 200;
+const MAX_DOWNLOAD_PROVENANCE = MAX_TRACKED_DOWNLOADS * 2;
+const DOWNLOAD_PROVENANCE_WINDOW_MS = 5 * 1000;
+const MAX_DOWNLOAD_URL_CHARS = 8 * 1024;
+const MAX_DOWNLOAD_FILENAME_CHARS = 1000;
 const MAX_CONSOLE_MESSAGES = 200;
 
 function remoteObjectText(arg) {
@@ -197,24 +235,150 @@ function recordDownload(item) {
   const guid = String(item.id);
   const prev = state.downloads.get(guid) || { guid };
   const path = (typeof item.filename === "string" && item.filename) ? item.filename : prev.path;
+  const url = boundedDownloadText(item.url || item.finalUrl || prev.url || "", MAX_DOWNLOAD_URL_CHARS);
+  const suggestedFilename = boundedDownloadText(
+    path ? downloadBasename(path) : (prev.suggested_filename || ""),
+    MAX_DOWNLOAD_FILENAME_CHARS
+  );
   const next = {
     guid,
-    url: item.url || prev.url || "",
-    suggested_filename: path ? path.split(/[\\/]/).pop() : (prev.suggested_filename || ""),
+    url,
+    suggested_filename: suggestedFilename,
     state: item.state ? mapDownloadState(item.state) : (prev.state || "inProgress"),
     received_bytes: typeof item.bytesReceived === "number" ? item.bytesReceived : (prev.received_bytes || 0),
     total_bytes: typeof item.totalBytes === "number" && item.totalBytes > 0 ? item.totalBytes : (prev.total_bytes || (typeof item.fileSize === "number" && item.fileSize > 0 ? item.fileSize : 0)),
     path: path || ""
   };
+  const priorCorrelation = state.downloadCorrelation.get(guid);
+  const urls = new Set(priorCorrelation?.urls || []);
+  for (const candidate of [item.url, item.finalUrl, url]) {
+    const bounded = boundedDownloadText(candidate || "", MAX_DOWNLOAD_URL_CHARS);
+    if (bounded) urls.add(bounded);
+  }
+  let directTabId = priorCorrelation?.directTabId || "";
+  let directConflict = priorCorrelation?.directConflict === true;
+  if (Number.isInteger(item.tabId) && item.tabId >= 0) {
+    const supplied = String(item.tabId);
+    // A future chrome.downloads implementation may expose tabId directly. If
+    // it ever contradicts an earlier value, fail closed instead of switching
+    // ownership on a retained download.
+    if (directTabId && directTabId !== supplied) directConflict = true;
+    directTabId = directConflict ? "" : supplied;
+  }
+  state.downloadCorrelation.set(guid, {
+    urls: Array.from(urls),
+    suggestedFilename,
+    observedAt: priorCorrelation?.observedAt || Date.now(),
+    directTabId,
+    directConflict
+  });
   // Re-insert at the end so the most-recently-touched download is freshest and
-  // trimming drops the stalest. Map.set on an existing key keeps original order,
-  // so delete first to move it to the tail.
+  // terminal entries are the first eviction candidates. Map.set on an existing
+  // key keeps original order, so delete first to move it to the tail.
   state.downloads.delete(guid);
   state.downloads.set(guid, next);
   while (state.downloads.size > MAX_TRACKED_DOWNLOADS) {
-    const oldest = state.downloads.keys().next().value;
+    let oldest = null;
+    for (const [candidateGUID, candidate] of state.downloads) {
+      if (candidate.state === "completed" || candidate.state === "canceled") {
+        oldest = candidateGUID;
+        break;
+      }
+    }
+    if (oldest == null) oldest = state.downloads.keys().next().value;
     state.downloads.delete(oldest);
+    state.downloadCorrelation.delete(oldest);
   }
+}
+
+function boundedDownloadText(value, limit) {
+  const text = String(value || "");
+  if (text.length <= limit) return text;
+  let out = text.slice(0, limit);
+  const last = out.charCodeAt(out.length - 1);
+  if (last >= 0xD800 && last <= 0xDBFF) out = out.slice(0, -1);
+  return out;
+}
+
+function downloadBasename(path) {
+  return String(path || "").split(/[\\/]/).pop() || "";
+}
+
+// Page.downloadWillBegin supplies source.tabId, which chrome.downloads omits.
+// Keep a bounded set of recent start observations and correlate only exact URL
+// candidates. When simultaneous matching starts came from different tabs the
+// result deliberately has no tab_id, so recipe polling rejects it.
+function recordDownloadProvenance(tabId, params) {
+  if (!Number.isInteger(tabId) || tabId < 0 || !params) return;
+  const url = boundedDownloadText(params.url || "", MAX_DOWNLOAD_URL_CHARS);
+  if (!url) return;
+  const guid = boundedDownloadText(params.guid || "", 500);
+  const observation = {
+    guid,
+    tabId: String(tabId),
+    url,
+    suggestedFilename: boundedDownloadText(params.suggestedFilename || "", MAX_DOWNLOAD_FILENAME_CHARS),
+    observedAt: Date.now()
+  };
+  // Some Chromium versions expose the same logical event under both the old
+  // Page and current Browser domain names. Deduplicate their CDP GUID so one
+  // download does not become artificially ambiguous.
+  const duplicate = guid ? state.downloadProvenance.findIndex((entry) => entry.guid === guid) : -1;
+  if (duplicate >= 0) {
+    const previous = state.downloadProvenance[duplicate];
+    observation.tabId = previous.tabId === observation.tabId ? observation.tabId : "";
+    observation.observedAt = previous.observedAt;
+    state.downloadProvenance[duplicate] = observation;
+  } else {
+    state.downloadProvenance.push(observation);
+  }
+  if (state.downloadProvenance.length > MAX_DOWNLOAD_PROVENANCE) {
+    state.downloadProvenance.splice(0, state.downloadProvenance.length - MAX_DOWNLOAD_PROVENANCE);
+  }
+}
+
+function matchingDownloadProvenance(correlation) {
+  let candidates = state.downloadProvenance.filter((entry) =>
+    entry.tabId &&
+    Math.abs(entry.observedAt - correlation.observedAt) <= DOWNLOAD_PROVENANCE_WINDOW_MS &&
+    correlation.urls.includes(entry.url)
+  );
+  if (candidates.length > 1 && correlation.suggestedFilename) {
+    const filenameMatches = candidates.filter((entry) =>
+      entry.suggestedFilename && entry.suggestedFilename === correlation.suggestedFilename
+    );
+    if (filenameMatches.length > 0) candidates = filenameMatches;
+  }
+  return candidates;
+}
+
+function downloadSnapshot() {
+  const candidatesByGUID = new Map();
+  const usesByProvenance = new Map();
+  for (const [guid, correlation] of state.downloadCorrelation) {
+    if (correlation.directTabId) continue;
+    const candidates = matchingDownloadProvenance(correlation);
+    candidatesByGUID.set(guid, candidates);
+    for (const candidate of candidates) {
+      usesByProvenance.set(candidate, (usesByProvenance.get(candidate) || 0) + 1);
+    }
+  }
+  return Array.from(state.downloads.entries()).map(([guid, entry]) => {
+    const out = { ...entry };
+    const correlation = state.downloadCorrelation.get(guid);
+    let tabId = correlation?.directTabId || "";
+    if (!tabId) {
+      const candidates = candidatesByGUID.get(guid) || [];
+      // Require a one-to-one match. One attached-tab CDP event plus two
+      // indistinguishable chrome.downloads items could mean the second download
+      // came from an unattached human tab; assigning either would be unsafe.
+      if (candidates.length === 1 && usesByProvenance.get(candidates[0]) === 1) {
+        tabId = candidates[0].tabId;
+      }
+    }
+    if (tabId) out.tab_id = tabId;
+    return out;
+  });
 }
 
 // flattenDownloadDelta turns a chrome.downloads.onChanged delta ({id, state:{current}})
@@ -383,6 +547,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   state.attachUsedAt.delete(tabId);
   state.snapshotCache.delete(tabId);
   state.observerInjected.delete(tabId);
+  state.documentEpochs.delete(tabId);
   state.fileChooserEvents.delete(tabId);
   state.actingUntil.delete(tabId);
 	state.consoleMessages.delete(tabId);
@@ -393,6 +558,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   // The agent's pinned tab was closed — drop the pin so resolution falls back to a
   // live tab instead of repeatedly probing a dead one.
   if (state.agentTabId === tabId) state.agentTabId = null;
+  // Tell the daemon immediately so its isolation ownership and every cache
+  // keyed by Chrome's reusable numeric tab id are invalidated before a later
+  // call can target or suppress state on an unrelated replacement tab. Older
+  // daemons safely ignore this additive id-less control frame.
+  send({ type: "tab_removed", tabId });
 });
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) return;
@@ -415,13 +585,18 @@ chrome.debugger.onDetach.addListener((source) => {
     state.forcedHoverTimers.delete(source.tabId);
   }
 });
-// Capture CDP events the daemon needs to observe out-of-band. The only one today
-// is Page.fileChooserOpened: when file-chooser interception is enabled
+// Capture CDP events the daemon needs to observe out-of-band. Page.downloadWillBegin
+// supplies the initiating source.tabId that chrome.downloads omits, while
+// Page.fileChooserOpened supports file-chooser interception. When interception is enabled
 // (Page.setInterceptFileChooserDialog), clicking a file-picker trigger fires this
 // event with the chooser's backendNodeId instead of opening the native OS dialog.
 // We stash the latest per tab so the daemon can poll for it via
 // get_file_chooser_event and then set the file with DOM.setFileInputFiles.
 chrome.debugger.onEvent.addListener((source, method, params) => {
+	if ((method === "Page.downloadWillBegin" || method === "Browser.downloadWillBegin") && typeof source.tabId === "number") {
+	  recordDownloadProvenance(source.tabId, params);
+	  return;
+	}
 	if (method === "Runtime.consoleAPICalled" && typeof source.tabId === "number") {
 	  const text = (params?.args || []).map(remoteObjectText).join(" ");
 	  recordConsoleMessage(source.tabId, params?.type || "log", text);
@@ -470,6 +645,7 @@ chrome.webNavigation.onCommitted.addListener((details) => {
   if (typeof details.tabId === "number" && details.frameId === 0) {
     state.snapshotCache.delete(details.tabId);
     state.observerInjected.delete(details.tabId);
+    state.documentEpochs.set(details.tabId, (state.documentEpochs.get(details.tabId) || 0) + 1);
   }
 });
 // SPA route changes via history.pushState/replaceState (the way frameworks like
@@ -552,6 +728,11 @@ async function connectOnce() {
         workspace: config.workspace || "",
         profile: config.profile || "",
         label: config.label || "",
+        // This is the extension's AGENT-OWNED pin, never the user's foreground
+        // tab. The daemon reconciles it before publishing a reconnected socket,
+        // so a tab_removed control frame lost during the disconnect gap cannot
+        // leave a stale numeric tab id pointing at an unrelated replacement.
+        agent_tab_id: agentOwnedTabIdForHello(),
         token
       }
     });
@@ -588,6 +769,12 @@ async function connectOnce() {
     }
     await handle(message);
   };
+}
+
+function agentOwnedTabIdForHello() {
+  return Number.isSafeInteger(state.agentTabId) && state.agentTabId > 0
+    ? state.agentTabId
+    : 0;
 }
 
 async function loadBridgeConfig() {
@@ -773,6 +960,47 @@ async function handle(message) {
       send({ id: message.id, ok: true, result: { tabId: tabId || 0, error: resolveError } });
       return;
     }
+    if (message.type === "get_document_identity") {
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      if (!Number.isSafeInteger(tabId) || tabId <= 0) {
+        throw new Error("main-document identity is unavailable");
+      }
+      let frame = null;
+      try {
+        // frameId 0 is the committed top-level document. Chrome's documentId is
+        // stable across pushState/replaceState/hash changes, but a reload or
+        // same/cross-origin replacement document receives a new UUID.
+        frame = await chrome.webNavigation.getFrame({ tabId, frameId: 0 });
+      } catch (_) {
+        throw new Error("main-document identity is unavailable");
+      }
+      const documentId = String(frame?.documentId || "").trim();
+      let origin = "";
+      try {
+        origin = new URL(String(frame?.url || "")).origin;
+      } catch (_) {
+        throw new Error("main-document identity is unavailable");
+      }
+      // Opaque-origin replacement documents (about:blank/data:) still have a
+      // trustworthy webNavigation documentId and are valid navigation-completion
+      // boundaries. Return origin:"null" on the wire; artifact capture keeps
+      // rejecting it in the daemon because its stronger origin guard requires a
+      // concrete security origin.
+      if (!documentId || documentId.length > 256 || !origin || origin.length > 2048) {
+        throw new Error("main-document identity is unavailable");
+      }
+      // Do not return the page URL. The browser-host capture guard needs only
+      // an opaque document id and exact origin, and neither leaves artifact
+      // metadata or an MCP response.
+      send({ id: message.id, ok: true, result: {
+        document_id: documentId,
+        document_epoch: state.documentEpochs.get(tabId) || 0,
+        worker_instance: WORKER_INSTANCE_ID,
+        origin,
+        tab_id: tabId
+      }});
+      return;
+    }
     if (message.type === "open_tab") {
       // Foreground vs background. By default (active !== false) the tab is created
       // ACTIVE within its window so it becomes the authoritative foreground tab
@@ -879,10 +1107,60 @@ async function handle(message) {
     }
     if (message.type === "close_tab") {
       const tabId = Number(message.params?.tabId);
-      // Detach our debugger before removing the tab so the session is released
-      // explicitly rather than relying solely on the onRemoved/onDetach events.
-      await detach(tabId);
-      await chrome.tabs.remove(tabId);
+      // Keep Page debugging attached while Chrome closes the tab. A page with
+      // unsaved state may raise a beforeunload dialog during close; Page's
+      // dialog event is the only reliable way to answer it. Detaching first left
+      // chrome.tabs.remove pending forever and wedged every later action on that
+      // tab. markActing makes the dialog handler choose Leave/accept for this
+      // explicit agent close. onRemoved/onDetach clears the debugger bookkeeping
+      // after Chrome has actually removed the tab.
+      const tab = await chrome.tabs.get(tabId);
+      // A discarded tab has no live renderer and browser-internal/foreign
+      // extension surfaces cannot be debugged. Neither can raise a page-owned
+      // beforeunload prompt, so the tabs API is the safe close path. Do not
+      // revive a discarded tab merely to destroy it.
+      const needsPageClose = !tab.discarded && isAgentDrivableUrl(tab.url);
+      if (!needsPageClose) {
+        await chrome.tabs.remove(tabId);
+      } else {
+        // skipRevive avoids flashing a frozen/background tab active just to
+        // close it. requirePageEvents makes Page.enable a hard prerequisite:
+        // without its dialog event an unsaved page can wedge forever.
+        await attach(tabId, { skipRevive: true, requirePageEvents: true });
+        markActing(tabId);
+        const closeDeadline = Date.now() + CLOSE_TAB_BUDGET_MS;
+        let closeError = null;
+        try {
+          // Page.close is explicitly defined to run beforeunload hooks. Use the
+          // raw command rather than sendDebuggerCommand: a successful close may
+          // detach/destroy the target while replying, which is success here and
+          // must not trigger the generic detached-session reattach retry.
+          await promiseWithin(
+            chrome.debugger.sendCommand({ tabId }, "Page.close", {}),
+            CLOSE_TAB_BUDGET_MS,
+            `Page.close timed out after ${CLOSE_TAB_BUDGET_MS}ms`
+          );
+        } catch (error) {
+          // Closing destroys the target and can reject the command with a
+          // detached-session error after the tab is already gone. Record the
+          // error, then let tab disappearance—not error-string timing—decide.
+          closeError = error;
+        }
+        const remaining = Math.max(0, closeDeadline - Date.now());
+        if (!(await waitForTabGone(tabId, remaining))) {
+          // Do not await detach here: a debugger command already exceeded the
+          // whole close budget, so another Chrome API wait would make the
+          // timeout nominal rather than real. forceDetach clears bookkeeping
+          // synchronously before issuing its best-effort asynchronous detach.
+          forceDetach(tabId).catch(() => {});
+          if (closeError && !isDetachedDebuggerError(closeError)) throw closeError;
+          const detail = closeError ? `: ${String(closeError?.message || closeError)}` : "";
+          throw new Error(`tab ${tabId} did not close within ${CLOSE_TAB_BUDGET_MS}ms${detail}`);
+        }
+      }
+      if (!(await waitForTabGone(tabId, 2000))) {
+        throw new Error(`tab ${tabId} did not close within 2000ms`);
+      }
       send({ id: message.id, ok: true, result: { closed: tabId } });
       return;
     }
@@ -1157,25 +1435,28 @@ async function handle(message) {
       return;
     }
     if (message.type === "get_downloads") {
-      // Drain the session download buffer (issue #6). chrome.downloads is gated on
-      // the manifest "downloads" permission; if unavailable, report supported:false
-      // so the daemon surfaces the same graceful note the old stub returned.
+      // Return a retained bounded snapshot. Keeping entries after a read makes
+      // brw_downloads -> brw_capture_artifact(download_guid) deterministic.
+      // chrome.downloads is gated on the manifest "downloads" permission; if
+      // unavailable, report supported:false for older Chrome builds.
       if (!chrome.downloads || !chrome.downloads.search) {
         send({ id: message.id, ok: true, result: { downloads: [], count: 0, supported: false, note: "chrome.downloads API unavailable in this Chrome/extension build" } });
         return;
       }
-      // Best-effort refresh each buffered download from chrome.downloads.search so
-      // one that completed between onChanged events reports its final filename and
-      // state, then drain (matching the direct-CDP Downloads() drain semantics).
-      const ids = Array.from(state.downloads.keys());
+      // onChanged is authoritative. Refresh only a bounded tail of in-progress
+      // entries; firing 200 concurrent chrome.downloads.search calls on every
+      // poll needlessly wakes Chrome and was visible as CPU/fan churn.
+      const ids = Array.from(state.downloads.entries())
+        .filter(([, entry]) => entry.state === "inProgress")
+        .slice(-20)
+        .map(([guid]) => guid);
       await Promise.all(ids.map(async (guid) => {
         try {
           const found = await chrome.downloads.search({ id: Number(guid) });
           if (found && found[0]) recordDownload(found[0]);
         } catch (_) {}
       }));
-      const downloads = Array.from(state.downloads.values());
-      state.downloads.clear();
+      const downloads = downloadSnapshot();
       send({ id: message.id, ok: true, result: { downloads, count: downloads.length, supported: true } });
       return;
     }
@@ -1422,6 +1703,37 @@ async function waitForTabLoad(tabId, deadlineMs) {
   }
 }
 
+// Page.close acknowledges that a target is closing, not necessarily that its
+// chrome.tabs entry has disappeared. Keep the close_tab RPC deterministic by
+// waiting a short bounded interval for onRemoved to land before replying.
+async function waitForTabGone(tabId, deadlineMs) {
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return !(await chrome.tabs.get(tabId).catch(() => null));
+}
+
+// promiseWithin bounds a Chrome API promise without attaching any late
+// continuation to the underlying operation. Once the timer wins, a subsequent
+// resolution/rejection is observed by Promise.race but cannot resume the caller
+// or emit a second bridge response.
+async function promiseWithin(promise, timeoutMs, timeoutMessage) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), Math.max(0, timeoutMs));
+      })
+    ]);
+  } finally {
+    if (timer != null) clearTimeout(timer);
+  }
+}
+
 async function attach(tabId, opts = {}) {
   // Revive frozen/discarded tabs before every drive, including on an existing
   // attachment — a tab can freeze WHILE attached. The screenshot juggle skips
@@ -1430,6 +1742,9 @@ async function attach(tabId, opts = {}) {
   if (!opts.skipRevive) await ensureTabDrivable(tabId);
   if (state.attachedTabs.has(tabId)) {
     state.attachUsedAt.set(tabId, Date.now());
+    if (opts.requirePageEvents) {
+      await chrome.debugger.sendCommand({ tabId }, "Page.enable", {});
+    }
     return;
   }
   try {
@@ -1454,11 +1769,17 @@ async function attach(tabId, opts = {}) {
 	// Enable Page events for dialogs, Runtime events for console/load-time
 	// exceptions, and focus emulation so trusted pointer/key input reaches a
 	// background automation tab without stealing the user's OS focus.
-	await Promise.all([
-	  chrome.debugger.sendCommand({ tabId }, "Page.enable", {}).catch(() => {}),
-	  chrome.debugger.sendCommand({ tabId }, "Runtime.enable", {}).catch(() => {}),
-	  chrome.debugger.sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {})
-	]);
+	try {
+	  const pageEvents = chrome.debugger.sendCommand({ tabId }, "Page.enable", {});
+	  await Promise.all([
+	    opts.requirePageEvents ? pageEvents : pageEvents.catch(() => {}),
+	    chrome.debugger.sendCommand({ tabId }, "Runtime.enable", {}).catch(() => {}),
+	    chrome.debugger.sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {})
+	  ]);
+	} catch (error) {
+	  await detach(tabId).catch(() => {});
+	  throw new Error(`cannot safely arm Page events for tab ${tabId}: ${String(error?.message || error)}`);
+	}
 }
 
 // reconcileDebuggerAttachments releases brw debugger sessions that leaked across
@@ -1849,10 +2170,13 @@ async function resolveForegroundTabId() {
       } else if (isAgentDrivableUrl(pinned.url)) {
         return pinned.id;
       }
-      // Window is fine but the tab currently shows a page brw cannot drive (the
-      // human opened a vault/settings page in the agent's own tab). KEEP the pin
-      // — fall through to a usable tab now, and the pin resumes the moment that
-      // tab navigates back to a real page.
+      // The pinned tab exists but cannot be driven. Keep the pin so it resumes
+      // if the tab returns to a normal page, but FAIL CLOSED: falling through
+      // here would silently redirect no-tab-id actions onto an unrelated human
+      // tab, violating the sticky agent-target guarantee.
+      throw new Error(
+        `no drivable tab: agent-pinned tab ${pinned.id} is ${String(pinned.url || "a browser-internal page").split("?")[0]}`
+      );
     } else {
       state.agentTabId = null;
     }
@@ -2319,11 +2643,66 @@ function createNotification(params) {
   });
 }
 
+function bytesToBase64(bytes) {
+  // Spreading a multi-megabyte Uint8Array into one String.fromCharCode call
+  // exceeds V8's argument limit. Convert in small blocks, then encode once.
+  const parts = [];
+  const blockSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += blockSize) {
+    parts.push(String.fromCharCode(...bytes.subarray(offset, Math.min(offset + blockSize, bytes.length))));
+  }
+  return btoa(parts.join(""));
+}
+
 function send(payload) {
   const socket = state.socket;
   if (!socket || socket.readyState !== WebSocket.OPEN) return false;
   try {
-    socket.send(JSON.stringify(payload));
+    const serialized = JSON.stringify(payload);
+    // Most bridge frames are small. A JSON string whose UTF-16 length is at
+    // most one third of the byte threshold is guaranteed to fit even if every
+    // code unit needs three UTF-8 bytes, so avoid allocating TextEncoder output
+    // on the hot path.
+    if (serialized.length <= Math.floor(RESPONSE_DIRECT_MAX_BYTES / 3)) {
+      socket.send(serialized);
+      return true;
+    }
+
+    const encoded = new TextEncoder().encode(serialized);
+    if (encoded.length <= RESPONSE_DIRECT_MAX_BYTES) {
+      socket.send(serialized);
+      return true;
+    }
+    // Hello, focus, and keepalive events have no request id and are expected to
+    // be tiny. Never violate the daemon's frame ceiling for a malformed giant
+    // event: without a request id there is no safe reassembly correlation key.
+    if (typeof payload?.id !== "string" || payload.id === "") {
+      state.lastError = "oversized uncorrelated bridge message was not sent";
+      return false;
+    }
+    if (encoded.length > RESPONSE_TOTAL_MAX_BYTES) {
+      socket.send(JSON.stringify({
+        id: payload.id,
+        ok: false,
+        error: `BRW_EXTENSION_RESPONSE_TOO_LARGE: serialized response exceeds ${RESPONSE_TOTAL_MAX_BYTES}-byte bridge transfer limit`
+      }));
+      return true;
+    }
+
+    const chunkCount = Math.ceil(encoded.length / RESPONSE_CHUNK_BYTES);
+    for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+      const start = chunkIndex * RESPONSE_CHUNK_BYTES;
+      const end = Math.min(start + RESPONSE_CHUNK_BYTES, encoded.length);
+      socket.send(JSON.stringify({
+        type: "response_chunk",
+        id: payload.id,
+        encoding: "base64",
+        chunk_index: chunkIndex,
+        chunk_count: chunkCount,
+        total_bytes: encoded.length,
+        data: bytesToBase64(encoded.subarray(start, end))
+      }));
+    }
     return true;
   } catch (error) {
     state.lastError = `send failed: ${String(error?.message || error)}`;

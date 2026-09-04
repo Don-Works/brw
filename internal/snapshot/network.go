@@ -15,6 +15,10 @@ import (
 // Bodies and response snippets are truncated in-page to keep the ring buffer
 // and the drained payload bounded.
 type CapturedRequest struct {
+	CaptureID string `json:"capture_id,omitempty"`
+	// Completed distinguishes a still-running request from terminal failures
+	// and opaque responses, both of which may legitimately have status zero.
+	Completed       bool              `json:"completed"`
 	Method          string            `json:"method"`
 	URL             string            `json:"url"`
 	RequestHeaders  map[string]string `json:"request_headers,omitempty"`
@@ -55,7 +59,59 @@ type ReplayResult struct {
 const NetworkCaptureInstallScript = `(function() {
   var MAX = 100;
   var BODY_CAP = 2048;
-  if (window.__brwNet) return { installed: true, already: true };
+  var VERSION = 2;
+  var PENDING = Symbol.for('brw.network.pending.v2');
+  function newEpoch() {
+    try {
+      var words = new Uint32Array(4);
+      crypto.getRandomValues(words);
+      return Array.prototype.map.call(words, function(word) {
+        return word.toString(16).padStart(8, '0');
+      }).join('');
+    } catch (e) {
+      return (Date.now().toString(36) + Math.random().toString(36).slice(2, 18)).slice(0, 32);
+    }
+  }
+  var lifecycle = window.__brwNetLifecycle;
+  if (!lifecycle || lifecycle.version !== VERSION || typeof lifecycle.epoch !== 'string') {
+    lifecycle = { version: VERSION, epoch: newEpoch(), seq: 0 };
+    try {
+      Object.defineProperty(window, '__brwNetLifecycle', { value: lifecycle, writable: true, configurable: true });
+    } catch (e) {
+      window.__brwNetLifecycle = lifecycle;
+    }
+  }
+  function ensureCaptureID(entry) {
+    if (entry && typeof entry.capture_id === 'string' && /^[0-9a-z]{1,32}:[0-9a-z]{1,7}$/i.test(entry.capture_id)) {
+      return entry.capture_id;
+    }
+    lifecycle.seq = Math.floor(Number(lifecycle.seq)) || 0;
+    if (lifecycle.seq < 0) lifecycle.seq = 0;
+    lifecycle.seq++;
+    if (lifecycle.seq > 0xffffffff) {
+      lifecycle.epoch = newEpoch();
+      lifecycle.seq = 1;
+    }
+    entry.capture_id = lifecycle.epoch + ':' + lifecycle.seq.toString(36);
+    return entry.capture_id;
+  }
+  function isPending(entry) {
+    if (entry && Object.prototype.hasOwnProperty.call(entry, PENDING)) return entry[PENDING] === true;
+    // Compatibility for entries created by a pre-v2 wrapper in a page that has
+    // not navigated since brw was upgraded.
+    return Number(entry && entry.status || 0) === 0 &&
+      !(entry && entry.error) && !(Number(entry && entry.duration_ms || 0) > 0);
+  }
+  function markPending(entry, pending) {
+    try {
+      entry[PENDING] = pending;
+      entry.completed = !pending;
+    } catch (e) {}
+  }
+  if (Array.isArray(window.__brwNet)) {
+    window.__brwNet.forEach(ensureCaptureID);
+    return { installed: true, already: true, version: VERSION };
+  }
   var buf = [];
   window.__brwNet = buf;
   function clip(s) {
@@ -63,8 +119,19 @@ const NetworkCaptureInstallScript = `(function() {
     return s.length > BODY_CAP ? s.slice(0, BODY_CAP) + '…[truncated]' : s;
   }
   function push(entry) {
+    ensureCaptureID(entry);
+    markPending(entry, true);
+    // Prefer evicting a terminal row. A genuinely pathological page with more
+    // than MAX simultaneous in-flight requests is still bounded: only then is
+    // the oldest pending row evicted.
+    while (buf.length >= MAX) {
+      var drop = -1;
+      for (var i = 0; i < buf.length; i++) {
+        if (!isPending(buf[i])) { drop = i; break; }
+      }
+      buf.splice(drop >= 0 ? drop : 0, 1);
+    }
     buf.push(entry);
-    if (buf.length > MAX) buf.shift();
   }
   function headerObj(h) {
     var out = {};
@@ -93,16 +160,27 @@ const NetworkCaptureInstallScript = `(function() {
         started_at: Date.now(), duration_ms: 0
       };
       push(entry);
-      return origFetch(input, init).then(function(resp) {
+      var promise;
+      try {
+        promise = origFetch(input, init);
+      } catch (err) {
+        entry.error = String(err && err.message || err);
+        entry.duration_ms = ((performance && performance.now) ? performance.now() : Date.now()) - started;
+        markPending(entry, false);
+        throw err;
+      }
+      return promise.then(function(resp) {
         entry.status = resp.status; entry.ok = resp.ok;
         entry.duration_ms = ((performance && performance.now) ? performance.now() : Date.now()) - started;
         try {
           resp.clone().text().then(function(t){ entry.response_snippet = clip(t); }).catch(function(){});
         } catch (e) {}
+        markPending(entry, false);
         return resp;
       }).catch(function(err) {
         entry.error = String(err && err.message || err);
         entry.duration_ms = ((performance && performance.now) ? performance.now() : Date.now()) - started;
+        markPending(entry, false);
         throw err;
       });
     };
@@ -136,20 +214,33 @@ const NetworkCaptureInstallScript = `(function() {
         started_at: Date.now(), duration_ms: 0
       };
       push(entry);
+      var failure = '';
+      xhr.addEventListener('error', function() { failure = failure || 'network error'; }, { once: true });
+      xhr.addEventListener('abort', function() { failure = failure || 'request aborted'; }, { once: true });
+      xhr.addEventListener('timeout', function() { failure = failure || 'request timed out'; }, { once: true });
       xhr.addEventListener('loadend', function() {
         entry.status = xhr.status || 0;
         entry.ok = xhr.status >= 200 && xhr.status < 300;
+        if (entry.status === 0 && failure) entry.error = failure;
         entry.duration_ms = ((performance && performance.now) ? performance.now() : Date.now()) - started;
         try {
           var rt = (xhr.responseType === '' || xhr.responseType === 'text') ? xhr.responseText : '';
           entry.response_snippet = clip(rt);
         } catch (e) {}
-      });
-      return origSend.apply(this, arguments);
+        markPending(entry, false);
+      }, { once: true });
+      try {
+        return origSend.apply(this, arguments);
+      } catch (err) {
+        entry.error = String(err && err.message || err);
+        entry.duration_ms = ((performance && performance.now) ? performance.now() : Date.now()) - started;
+        markPending(entry, false);
+        throw err;
+      }
     };
     proto.__brwWrapped = true;
   }
-  return { installed: true, already: false };
+  return { installed: true, already: false, version: VERSION };
 })()`
 
 // sensitiveHeaderNames are request-header names whose VALUE is a bare credential
@@ -193,12 +284,82 @@ func RedactCapturedCredentials(requests []CapturedRequest) []CapturedRequest {
 	return requests
 }
 
-// NetworkCaptureDrainScript returns the recorded requests and clears the ring
-// buffer, mirroring the console drain pattern (slice() then length = 0).
+// NetworkCaptureDrainScript returns a bounded snapshot of recorded requests.
+// Terminal rows are consumed exactly once; in-flight rows are reported for
+// manual diagnostics but retained so a later drain can observe their terminal
+// success or failure. The stable capture_id lets recipe arming exclude only the
+// exact requests that were already pending before its causative action.
 const NetworkCaptureDrainScript = `(function() {
-  if (!window.__brwNet) return [];
-  var msgs = window.__brwNet.slice();
-  window.__brwNet.length = 0;
+  var MAX = 100;
+  var VERSION = 2;
+  var PENDING = Symbol.for('brw.network.pending.v2');
+  var buf = window.__brwNet;
+  if (!Array.isArray(buf)) return [];
+  var lifecycle = window.__brwNetLifecycle;
+  function newEpoch() {
+    try {
+      var words = new Uint32Array(4);
+      crypto.getRandomValues(words);
+      return Array.prototype.map.call(words, function(word) {
+        return word.toString(16).padStart(8, '0');
+      }).join('');
+    } catch (e) {
+      return (Date.now().toString(36) + Math.random().toString(36).slice(2, 18)).slice(0, 32);
+    }
+  }
+  if (!lifecycle || lifecycle.version !== VERSION || typeof lifecycle.epoch !== 'string') {
+    lifecycle = { version: VERSION, epoch: newEpoch(), seq: 0 };
+    try {
+      Object.defineProperty(window, '__brwNetLifecycle', { value: lifecycle, writable: true, configurable: true });
+    } catch (e) {
+      window.__brwNetLifecycle = lifecycle;
+    }
+  }
+  function ensureCaptureID(entry) {
+    if (entry && typeof entry.capture_id === 'string' && /^[0-9a-z]{1,32}:[0-9a-z]{1,7}$/i.test(entry.capture_id)) {
+      return;
+    }
+    lifecycle.seq = Math.floor(Number(lifecycle.seq)) || 0;
+    if (lifecycle.seq < 0) lifecycle.seq = 0;
+    lifecycle.seq++;
+    if (lifecycle.seq > 0xffffffff) {
+      lifecycle.epoch = newEpoch();
+      lifecycle.seq = 1;
+    }
+    entry.capture_id = lifecycle.epoch + ':' + lifecycle.seq.toString(36);
+  }
+  function isPending(entry) {
+    if (entry && Object.prototype.hasOwnProperty.call(entry, PENDING)) return entry[PENDING] === true;
+    return Number(entry && entry.status || 0) === 0 &&
+      !(entry && entry.error) && !(Number(entry && entry.duration_ms || 0) > 0);
+  }
+  // Defend the response boundary even if a page mutated the public array.
+  while (buf.length > MAX) {
+    var drop = -1;
+    for (var i = 0; i < buf.length; i++) {
+      if (!isPending(buf[i])) { drop = i; break; }
+    }
+    buf.splice(drop >= 0 ? drop : 0, 1);
+  }
+  var msgs = [];
+  var pending = [];
+  for (var j = 0; j < buf.length; j++) {
+    var entry = buf[j];
+    if (!entry || typeof entry !== 'object') continue;
+    ensureCaptureID(entry);
+    // Copy the visible string/number fields now. A completion microtask after
+    // this function returns must not mutate the pending snapshot being encoded.
+    var pendingNow = isPending(entry);
+    var visible = Object.assign({}, entry);
+    // Legacy entries created by an already-installed v1 wrapper have no
+    // internal marker. Annotate only the returned copy so the next drain can
+    // continue to infer their live state as the old closure updates it.
+    visible.completed = !pendingNow;
+    msgs.push(visible);
+    if (pendingNow) pending.push(entry);
+  }
+  buf.length = 0;
+  for (var k = 0; k < pending.length && k < MAX; k++) buf.push(pending[k]);
   return msgs;
 })()`
 
@@ -285,9 +446,9 @@ func RegisterNetworkCaptureOnNewDocument(ctx context.Context) error {
 	}))
 }
 
-// CaptureNetwork installs the interceptor (idempotent) then drains and returns
-// the recorded requests, optionally filtered by a case-insensitive URL
-// substring filter applied Go-side.
+// CaptureNetwork installs the interceptor (idempotent) then returns the current
+// bounded snapshot. Terminal rows are consumed exactly once; in-flight rows are
+// retained so their later terminal state cannot be lost between calls.
 func CaptureNetwork(ctx context.Context) ([]CapturedRequest, error) {
 	if err := InstallNetworkCapture(ctx); err != nil {
 		return nil, err

@@ -194,7 +194,8 @@ brw_evaluate({expression: "chrome.runtime.getManifest().version"})   // confirm 
 brw_evaluate({expression: "chrome.runtime.reload(); 'go'"})          // bridge drops; expected
 ```
 
-Then re-check `/status` (or the daemon log) for the new `build`. Note that
-`make install-mac` only refreshes the `extension/` copy (Chrome work profile);
-the `extension-chromium/` copy used by the Chromium profiles must be synced
-manually, **without** overwriting its per-copy `bridge-defaults.json`.
+Then re-check `/status` (or the daemon log) for the new `build`. `make
+install-mac` refreshes the canonical extension and every existing
+`extension-*` profile copy with `make sync-installed-extensions`. The sync
+preserves each copy's local `bridge-defaults.json` while deleting stale source
+files. Run the sync target directly after an extension-only development change.

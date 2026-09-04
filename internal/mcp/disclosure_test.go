@@ -61,6 +61,33 @@ func TestAutoProfileStartsMinimalAndGrows(t *testing.T) {
 	}
 }
 
+func TestAutoProfileCanDiscoverArtifactAndRecipeSurfaces(t *testing.T) {
+	for _, test := range []struct {
+		query string
+		want  []string
+	}{
+		{"store a screenshot on disk as an artifact", []string{"brw_artifact_capture"}},
+		{"find and run a saved deterministic site recipe", []string{"brw_recipe_search", "brw_recipe_run"}},
+	} {
+		t.Run(test.query, func(t *testing.T) {
+			s := autoServer()
+			result, err := s.discoverTools(test.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := map[string]bool{}
+			for _, name := range relevantNames(result.Matches) {
+				found[name] = true
+			}
+			for _, name := range test.want {
+				if !found[name] {
+					t.Fatalf("%s was not a relevant discovery match; got %v", name, matchNames(result.Matches))
+				}
+			}
+		})
+	}
+}
+
 // Substring matching scored on accidents — "file" sits inside "profile", so a
 // file search matched brw_identity and unlocked a dozen unrelated tools,
 // undoing the saving the mechanism exists for.

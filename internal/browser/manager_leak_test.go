@@ -7,6 +7,7 @@ import "testing"
 // Chrome (the helpers do no browser I/O).
 func bareManager() *Manager {
 	return &Manager{
+		downloadCursors:   map[string]uint64{},
 		netCaptureTabs:    map[string]bool{},
 		shadowPierceTabs:  map[string]bool{},
 		webmcpTabs:        map[string]bool{},
@@ -22,13 +23,14 @@ func TestForgetTabCachesClearsAllPerTabMaps(t *testing.T) {
 	m := bareManager()
 	const id = "tab-1"
 	m.netCaptureTabs[id] = true
+	m.downloadCursors[id] = 7
 	m.shadowPierceTabs[id] = true
 	m.webmcpTabs[id] = true
 	m.emulationStates[id] = deviceEmulationState{}
 
 	m.forgetTabCaches(id)
 
-	if n := len(m.netCaptureTabs) + len(m.shadowPierceTabs) + len(m.webmcpTabs) + len(m.emulationStates); n != 0 {
+	if n := len(m.downloadCursors) + len(m.netCaptureTabs) + len(m.shadowPierceTabs) + len(m.webmcpTabs) + len(m.emulationStates); n != 0 {
 		t.Fatalf("forgetTabCaches left %d per-tab entries behind (emul=%d) — a leak on every closed tab",
 			n, len(m.emulationStates))
 	}

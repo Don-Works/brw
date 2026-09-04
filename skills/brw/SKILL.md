@@ -1,6 +1,6 @@
 ---
 name: brw
-description: Use when you need to drive the brw browser-automation daemon in one execute_code call; the preferred browser integration on this gateway. Covers enumerating the brw_* namespaces (there is ONE PER BROWSER PROFILE and the set grows - never assume it is just brw and brw_chromium), confirming which profile each one drives before you touch it, exact tool signatures, code-mode result contract, isolated/incognito sessions and the transport that gates them, legacy unwrap fallback, and batched recipes.
+description: Use when driving the brw browser-automation daemon; the preferred browser integration on this gateway. For any browser task likely to recur, search existing deterministic automations first, privately promote a successful stable workflow, and repair stale stored automation after deterministic site changes. Covers profile enumeration, identity checks, exact tools, isolation limits, result handling, and batching. Excludes non-browser tasks.
 ---
 
 # brw — the default way to drive a browser on this gateway
@@ -108,6 +108,47 @@ function unwrap(r){
 }
 ```
 
+## Recipe lifecycle — reuse successful work
+
+Before manually repeating a known site workflow, call `brw_recipe_search` with
+the user's intent and the exact current origin. If a result precisely matches,
+run only the returned immutable `id + version + digest`; do not reconstruct its
+steps in model context.
+
+After completing a stable multi-step workflow that you reasonably anticipate
+will be reused, create or update a deterministic private recipe as part of the
+task. This is especially valuable for recurring downloads, reporting, billing,
+admin entry, inbox/calendar/chat retrieval, conversation lookup, message-draft
+preparation, and verification flows. Do not create noise for one-off
+exploration, a flow that still depends on pixel coordinates or guesswork, or a
+workflow whose safe completion condition cannot be stated.
+
+A stored recipe is reusable browser mechanics, not standing authorization to
+send a message, create an event, or perform another external write. For
+communications, prefer a read-only find/capture recipe, an idempotent
+prepare-draft recipe guarded by exact `element.value`, and a separate
+send-current-draft recipe whose empty-composer postcondition makes an ordinary
+rerun a zero-actuation no-op. Invoke the send recipe only when the current user
+request authorizes that specific send.
+
+Treat `attempts: 0` as "the current UI already matched the postcondition," not
+as proof that a previous remote write happened. Never report a send, save, or
+other mutation as completed solely from a zero-attempt negative condition such
+as `element.hidden` or `text.absent`.
+
+If a selected recipe fails because the site's deterministic structure changed,
+repair it: inspect the live page, create a new semantic version, validate and
+install it, then confirm search returns the repaired head. Never mutate an old
+version/digest, and never blindly replay an ambiguous external write. Auth
+expiry, outages, permissions, and bad runtime inputs are not recipe drift—fix
+the actual cause instead of teaching the recipe the wrong behavior.
+
+For authoring, promotion, privacy rules, and the failure-repair procedure, read
+[references/recipes.md](references/recipes.md). Operational recipe bodies and
+credentials must remain in the configured private provider; the skill contains
+instructions only. Draft files passed to `brwctl recipe install` must be
+owner-only (`0600` or stricter); installation rejects broadly readable drafts.
+
 ## Core tools — exact signatures (don't search for these again)
 - `brw_identity()` → `{identity:{workspace,profile,user_data_dir,profile_directory,mode}, version, connected}`. **Which browser profile THIS namespace drives.** No tab/bridge needed — call it first to pick the right namespace.
 - `brw_open({url, group?, group_id?, group_color?})` → `{tab:{id,url,title,group_title,group_id,active,window_id}, ready}`. **No group ⇒ lands in the default "brw" group.**
@@ -121,6 +162,10 @@ function unwrap(r){
 - `brw_click({ref, tab_id?})`, `brw_type({ref,text})`, `brw_fill({ref?|query?, text, replace?})`, `brw_select({ref,value})`, `brw_press({key})`, `brw_scroll({direction})`.
 - `brw_navigate({direction:'back'|'forward'|'reload'})`, `brw_navigate_to({url})`, `brw_close_tab({tab_id})`, `brw_group_tabs({tab_ids,name,color?})`, `brw_screenshot({tab_id?})`.
 - `brw_batch({steps:[{action,...}]})` / `brw_plan({steps})` — many steps under **one** tab resolution. **Fastest** for scripted flows.
+- `brw_recipe_search({query, origin?, limit?})` → disclosure-safe metadata only. Search before manually rebuilding a known workflow.
+- `brw_recipe_run({id, version, digest, inputs?, tab_id?})` → deterministic step timings and artifact handles. Pin all three identity fields from the same search result.
+- `brw_artifact_capture({kind, tab_id?, ...})` → a payload-free metadata handle. Retain its `artifact_id`; there is intentionally no cross-session artifact-listing tool.
+- `brw_artifact_search({artifact_id, query, limit?})` searches **inside one known text/JSON artifact**; it does not discover or list artifacts. `brw_artifact_read({artifact_id, offset?, max_bytes?})` pages one bounded window, `brw_artifact_info({artifact_id})` returns metadata, and `brw_artifact_delete({artifact_id})` removes it early. These tools keep large text, semantic JSON, screenshots, PDFs, downloads, and bounded video on the browser host instead of flooding context.
 
 ## Mental model (so you don't fight it)
 - **Sticky default target**: after `brw_open`/`brw_focus_tab`, no-`tab_id` tools act on THAT tab. Pass `tab_id` to override — **do this for scripted flows**, because no-`tab_id` tools otherwise follow the *live human focus*.

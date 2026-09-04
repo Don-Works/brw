@@ -413,6 +413,12 @@ func ClassifyError(err error) string {
 	case strings.Contains(msg, "grouping is not supported by tabs in this window"),
 		strings.Contains(msg, "tab grouping unavailable"):
 		return "capability"
+	case strings.Contains(msg, "requires main-document identity support"):
+		return "capability"
+	case strings.Contains(msg, "could not verify the main document"):
+		return "document_identity_unavailable"
+	case strings.Contains(msg, "crossed a main-document boundary"):
+		return "document_changed"
 	case strings.Contains(msg, "frozen by chrome"):
 		return "tab_frozen"
 	case strings.Contains(msg, "discarded by chrome"):

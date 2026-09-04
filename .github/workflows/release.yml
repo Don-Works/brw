@@ -12,47 +12,81 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-      - uses: actions/setup-go@v5
+          fetch-depth: 0
+      - name: Verify release tag and checkout
+        shell: bash
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="$DISPATCH_TAG"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "Tag must be vX.Y.Z, got $tag" >&2
+            exit 2
+          fi
+          git show-ref --verify --quiet "refs/tags/$tag"
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "refs/tags/$tag")"
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+      - name: Verify dependency checksums
+        run: go mod verify
       - name: Test
         run: make test
+      - name: Run deterministic real-browser functional suite
+        run: make test-functional
+      - name: Enforce open-source privacy boundary
+        shell: bash
+        run: |
+          base="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
+          python3 scripts/check-oss-hygiene.py "$base"
+      - name: Scan Git history for secrets
+        run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 git . --redact --no-banner
       - name: Vet
         run: go vet ./...
+      - name: Static analysis
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
       - name: Reachable vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
   linux-packages:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
       - name: Resolve version
         shell: bash
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
+            tag="$DISPATCH_TAG"
           else
             tag="${GITHUB_REF_NAME}"
           fi
@@ -64,10 +98,10 @@ jobs:
           echo "BRW_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
           echo "BRW_VERSION=$version" >> "$GITHUB_ENV"
       - name: Install nFPM
-        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
       - name: Build Linux packages
         run: scripts/package-linux.sh "$BRW_VERSION" "${{ matrix.arch }}" dist/release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: brw-linux-${{ matrix.arch }}
           path: dist/release/*
@@ -76,18 +110,21 @@ jobs:
   macos-package:
     needs: test
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
       - name: Resolve version
         shell: bash
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
+            tag="$DISPATCH_TAG"
           else
             tag="${GITHUB_REF_NAME}"
           fi
@@ -100,7 +137,7 @@ jobs:
           echo "BRW_VERSION=$version" >> "$GITHUB_ENV"
       - name: Build macOS package
         run: scripts/package-macos.sh "$BRW_VERSION" dist/release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: brw-macos-universal
           path: dist/release/*
@@ -109,18 +146,19 @@ jobs:
   windows-packages:
     needs: test
     runs-on: windows-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: 8.0.x
       - name: Install WiX
@@ -128,9 +166,11 @@ jobs:
         run: dotnet tool install --global wix --version 5.0.2
       - name: Resolve version
         shell: pwsh
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ inputs.tag }}"
+            $tag = $env:DISPATCH_TAG
           } else {
             $tag = "${env:GITHUB_REF_NAME}"
           }
@@ -143,7 +183,7 @@ jobs:
       - name: Build Windows package
         shell: pwsh
         run: scripts/package-windows.ps1 -Version "$env:BRW_VERSION" -Arch "${{ matrix.arch }}" -OutDir dist/release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: brw-windows-${{ matrix.arch }}
           path: dist/release/*
@@ -155,28 +195,52 @@ jobs:
       - macos-package
       - windows-packages
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           merge-multiple: true
       - name: Resolve version
         shell: bash
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
+            tag="$DISPATCH_TAG"
           else
             tag="${GITHUB_REF_NAME}"
           fi
+          version="${tag#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "Tag must be vX.Y.Z, got $tag" >&2
+            exit 2
+          fi
           echo "BRW_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "BRW_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Generate CycloneDX SBOM
+        run: >-
+          go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.12.0
+          mod -json -output "artifacts/brw_${BRW_VERSION}_sbom.cdx.json"
       - name: Checksums
         shell: bash
         run: |
           cd artifacts
-          shasum -a 256 * > SHA256SUMS.txt
+          shasum -a 256 ./* > SHA256SUMS.txt
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: artifacts/*
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

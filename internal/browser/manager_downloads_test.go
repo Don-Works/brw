@@ -2,7 +2,10 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +20,7 @@ import (
 // newHeadlessManager builds a Manager wired to a headless Chrome launched via a
 // chromedp ExecAllocator. It exercises the real download-tracking code paths
 // (ensureDownloadTracking, the target-level listener, recordDownload*, and the
-// Downloads drain) without depending on the production visible-Chrome launcher,
+// Downloads snapshot) without depending on the production visible-Chrome launcher,
 // which is slow/fragile under headless CI on this platform.
 func newHeadlessManager(t *testing.T) *Manager {
 	t.Helper()
@@ -53,6 +56,8 @@ func newHeadlessManager(t *testing.T) *Manager {
 		consoleMessages:    map[string][]ConsoleMessage{},
 		userDataDir:        t.TempDir(),
 		downloadIndex:      map[string]int{},
+		downloadVersions:   map[string]uint64{},
+		downloadCursors:    map[string]uint64{},
 		cancels:            newCancelRegistry(),
 		netCaptureTabs:     map[string]bool{},
 		shadowPierceTabs:   map[string]bool{},
@@ -116,10 +121,8 @@ func TestManagerDownloadsCapturesTriggeredDownload(t *testing.T) {
 		t.Fatalf("trigger download: %v", err)
 	}
 
-	// Poll the buffer WITHOUT draining (Downloads() is drain-on-read, so polling
-	// it mid-flight would fragment a single download's lifecycle across reads).
 	// Wait until the download has both landed its begin event (filename present)
-	// and reached a terminal state, then drain once and assert.
+	// and reached a terminal state, then take a public snapshot and assert.
 	deadline := time.Now().Add(20 * time.Second)
 	var last DownloadEntry
 	ready := false
@@ -145,7 +148,8 @@ func TestManagerDownloadsCapturesTriggeredDownload(t *testing.T) {
 		t.Fatalf("download never reached a terminal state with a filename; last observed: %+v", last)
 	}
 
-	// brw_downloads drains: the buffer is reported once and then cleared.
+	// brw_downloads is non-draining: a listed GUID remains available to a
+	// following CaptureArtifact(download_guid) call.
 	res, err := m.Downloads(ctx)
 	if err != nil {
 		t.Fatalf("downloads: %v", err)
@@ -157,16 +161,19 @@ func TestManagerDownloadsCapturesTriggeredDownload(t *testing.T) {
 	for _, d := range res.Downloads {
 		if d.State == string(downloadStateCompleted) || d.State == string(downloadStateCanceled) {
 			assertTerminalDownload(t, d)
+			if d.TabID != string(id) {
+				t.Fatalf("source tab = %q, want %q", d.TabID, id)
+			}
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("no terminal download in drained result: %+v", res.Downloads)
+		t.Fatalf("no terminal download in retained snapshot: %+v", res.Downloads)
 	}
-	// Confirm the drain cleared the buffer.
+	// Confirm a second read returns the same lifecycle state.
 	res2, _ := m.Downloads(ctx)
-	if res2.Count != 0 {
-		t.Fatalf("buffer not drained after read: %d", res2.Count)
+	if res2.Count != res.Count || res2.Downloads[0].GUID != res.Downloads[0].GUID {
+		t.Fatalf("snapshot changed after read: first=%+v second=%+v", res, res2)
 	}
 }
 
@@ -183,16 +190,18 @@ func assertTerminalDownload(t *testing.T, d DownloadEntry) {
 	}
 }
 
-// TestManagerDownloadsDrainAndBounds is a fast, browser-free unit test of the
-// record + drain + eviction logic behind brw_downloads.
-func TestManagerDownloadsDrainAndBounds(t *testing.T) {
+// TestManagerDownloadsSnapshotsRecipeDeltasAndBounds is a fast, browser-free
+// unit test of snapshot, recipe-baseline, provenance, and eviction behavior.
+func TestManagerDownloadsSnapshotsRecipeDeltasAndBounds(t *testing.T) {
 	// Pre-mark download tracking as enabled so Downloads() does not try to wire a
 	// real browser; this isolates the record + drain + eviction logic.
-	m := &Manager{downloadIndex: map[string]int{}, downloadDir: t.TempDir(), downloadsEnabled: true}
+	m := &Manager{
+		downloadIndex: map[string]int{}, downloadVersions: map[string]uint64{},
+		downloadCursors: map[string]uint64{}, downloadDir: t.TempDir(), downloadsEnabled: true,
+	}
 
-	m.recordDownloadBegin(&cdpbrowser.EventDownloadWillBegin{GUID: "g1", URL: "https://example.com/a.bin", SuggestedFilename: "a.bin"})
-	m.recordDownloadProgress(&cdpbrowser.EventDownloadProgress{GUID: "g1", ReceivedBytes: 10, TotalBytes: 100, State: downloadStateInProgress})
-	m.recordDownloadProgress(&cdpbrowser.EventDownloadProgress{GUID: "g1", ReceivedBytes: 100, TotalBytes: 100, State: downloadStateCompleted, FilePath: "/tmp/a.bin"})
+	m.recordDownloadBeginForTab("tab-1", &cdpbrowser.EventDownloadWillBegin{GUID: "g1", URL: "https://example.com/a.bin", SuggestedFilename: "a.bin"})
+	m.recordDownloadProgressForTab("tab-1", &cdpbrowser.EventDownloadProgress{GUID: "g1", ReceivedBytes: 10, TotalBytes: 100, State: downloadStateInProgress})
 
 	res, err := m.Downloads(context.Background())
 	if err != nil {
@@ -202,17 +211,49 @@ func TestManagerDownloadsDrainAndBounds(t *testing.T) {
 		t.Fatalf("count = %d, want 1", res.Count)
 	}
 	got := res.Downloads[0]
-	if got.GUID != "g1" || got.SuggestedFilename != "a.bin" || got.State != string(downloadStateCompleted) {
+	if got.GUID != "g1" || got.SuggestedFilename != "a.bin" || got.State != string(downloadStateInProgress) || got.TabID != "tab-1" {
 		t.Fatalf("unexpected entry: %+v", got)
 	}
-	if got.ReceivedBytes != 100 || got.TotalBytes != 100 || got.Path != "/tmp/a.bin" {
+	if got.ReceivedBytes != 10 || got.TotalBytes != 100 {
 		t.Fatalf("unexpected progress fields: %+v", got)
 	}
 
-	// Draining clears the buffer.
+	// Ordinary snapshots do not consume the entry.
 	res2, _ := m.Downloads(context.Background())
-	if res2.Count != 0 {
-		t.Fatalf("buffer not drained: %d", res2.Count)
+	if res2.Count != 1 || res2.Downloads[0].SuggestedFilename != "a.bin" {
+		t.Fatalf("second snapshot lost state: %+v", res2)
+	}
+
+	// A guarded recipe call establishes a per-tab baseline. An in-progress
+	// event returned by that baseline remains in the registry; its later
+	// completion is returned as a new delta with begin-event fields intact.
+	recipeCtx := WithAllowedOrigins(WithTabID(context.Background(), "tab-1"), []string{"https://example.com"})
+	baseline, _ := m.Downloads(recipeCtx)
+	if baseline.Count != 1 {
+		t.Fatalf("recipe baseline = %+v, want existing entry", baseline)
+	}
+	unchanged, _ := m.Downloads(recipeCtx)
+	if unchanged.Count != 0 {
+		t.Fatalf("unchanged recipe delta = %+v, want empty", unchanged)
+	}
+	m.recordDownloadProgressForTab("tab-1", &cdpbrowser.EventDownloadProgress{GUID: "g1", ReceivedBytes: 100, TotalBytes: 100, State: downloadStateCompleted, FilePath: "/tmp/a.bin"})
+	completed, _ := m.Downloads(recipeCtx)
+	if completed.Count != 1 || completed.Downloads[0].State != string(downloadStateCompleted) || completed.Downloads[0].SuggestedFilename != "a.bin" {
+		t.Fatalf("completion delta lost lifecycle state: %+v", completed)
+	}
+	otherTabCtx := WithAllowedOrigins(WithTabID(context.Background(), "tab-2"), []string{"https://example.com"})
+	other, _ := m.Downloads(otherTabCtx)
+	if other.Count != 0 {
+		t.Fatalf("different tab observed attributed download: %+v", other)
+	}
+	m.recordDownloadBegin(&cdpbrowser.EventDownloadWillBegin{GUID: "unknown", URL: "https://example.com/u", SuggestedFilename: "unknown.bin"})
+	unknown, _ := m.Downloads(otherTabCtx)
+	if unknown.Count != 0 {
+		t.Fatalf("recipe observed unattributed download: %+v", unknown)
+	}
+	manual, _ := m.Downloads(context.Background())
+	if manual.Count != 2 {
+		t.Fatalf("manual snapshot should retain attributed and unattributed entries: %+v", manual)
 	}
 
 	// Eviction: pushing past the cap keeps only the most recent entries.
@@ -225,4 +266,94 @@ func TestManagerDownloadsDrainAndBounds(t *testing.T) {
 	if n != maxTrackedDownloads {
 		t.Fatalf("buffer size = %d, want %d", n, maxTrackedDownloads)
 	}
+}
+
+func TestManagerDownloadStagingIsPrivateOwnedAndConfined(t *testing.T) {
+	userDataDir := t.TempDir()
+	m := &Manager{userDataDir: userDataDir, downloadIndex: map[string]int{}}
+	dir, err := m.resolveDownloadDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.downloadDir = dir
+	info, err := os.Stat(dir)
+	if err != nil || info.Mode().Perm() != 0o700 || !strings.HasPrefix(filepath.Base(dir), "session-") {
+		t.Fatalf("staging dir=%q info=%v err=%v", dir, info, err)
+	}
+	baseInfo, err := os.Stat(filepath.Dir(dir))
+	if err != nil || baseInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("staging base mode/error = %v %v", baseInfo, err)
+	}
+
+	guid := "guid-1"
+	managedPath := filepath.Join(dir, guid)
+	if err := os.WriteFile(managedPath, []byte("managed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := m.CleanupManagedDownload(DownloadEntry{GUID: guid, Path: managedPath})
+	if err != nil || !removed {
+		t.Fatalf("managed cleanup removed=%v err=%v", removed, err)
+	}
+	if _, err := os.Stat(managedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed source survived cleanup: %v", err)
+	}
+
+	outside := filepath.Join(t.TempDir(), guid)
+	if err := os.WriteFile(outside, []byte("user-owned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed, err = m.CleanupManagedDownload(DownloadEntry{GUID: guid, Path: outside})
+	if err != nil || removed {
+		t.Fatalf("outside cleanup removed=%v err=%v", removed, err)
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "user-owned" {
+		t.Fatalf("outside file changed: data=%q err=%v", data, err)
+	}
+	linkedGUID := "guid-symlink"
+	linkedOutside := filepath.Join(t.TempDir(), "outside-source")
+	if err := os.WriteFile(linkedOutside, []byte("do not follow"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkedPath := filepath.Join(dir, linkedGUID)
+	if err := os.Symlink(linkedOutside, linkedPath); err != nil {
+		t.Fatal(err)
+	}
+	removed, err = m.CleanupManagedDownload(DownloadEntry{GUID: linkedGUID, Path: linkedPath})
+	if err != nil || !removed {
+		t.Fatalf("managed symlink cleanup removed=%v err=%v", removed, err)
+	}
+	if data, err := os.ReadFile(linkedOutside); err != nil || string(data) != "do not follow" {
+		t.Fatalf("managed cleanup followed symlink: data=%q err=%v", data, err)
+	}
+
+	if err := m.cleanupDownloadStaging(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owned session directory survived close cleanup: %v", err)
+	}
+}
+
+func TestManagerDownloadStagingRejectsSymlinkAndGitCheckout(t *testing.T) {
+	t.Run("symlink", func(t *testing.T) {
+		userDataDir := t.TempDir()
+		target := t.TempDir()
+		if err := os.Symlink(target, filepath.Join(userDataDir, "brw-downloads")); err != nil {
+			t.Fatal(err)
+		}
+		m := &Manager{userDataDir: userDataDir}
+		if _, err := m.resolveDownloadDir(); err == nil || !strings.Contains(err.Error(), "symlink") {
+			t.Fatalf("symlink staging error = %v", err)
+		}
+	})
+	t.Run("git-checkout", func(t *testing.T) {
+		checkout := t.TempDir()
+		if err := os.Mkdir(filepath.Join(checkout, ".git"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		m := &Manager{userDataDir: filepath.Join(checkout, "profile")}
+		if _, err := m.resolveDownloadDir(); err == nil || !strings.Contains(err.Error(), "Git checkout") {
+			t.Fatalf("checkout staging error = %v", err)
+		}
+	})
 }

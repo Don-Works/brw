@@ -45,6 +45,18 @@ func TestRetargetPinnedTabDistinguishesImplicitLeaseFromExplicitCallerPin(t *tes
 	if browser.TabIDIsExplicit(got) {
 		t.Fatal("retargeted implicit lease became an explicit caller pin")
 	}
+	if browser.TabIDRequiresCurrentOwnership(got) {
+		t.Fatal("retargeted session lease became a single-global-tab ownership pin")
+	}
+
+	owned := browser.WithCurrentOwnedTabID(context.Background(), "45")
+	got = b.retargetPinnedTab(context.Background(), owned, "46")
+	if tabID := browser.TabIDFromContext(got); tabID != "46" {
+		t.Fatalf("current-owned pin retarget = %q, want 46", tabID)
+	}
+	if !browser.TabIDRequiresCurrentOwnership(got) {
+		t.Fatal("retargeted current-owned pin lost reconnect validation marker")
+	}
 
 	explicit := browser.WithTabID(context.Background(), "51")
 	got = b.retargetPinnedTab(explicit, explicit, "52")
@@ -136,6 +148,7 @@ func connectRetargetFake(t *testing.T, b *Bridge, foreground int) (*retargetFake
 		srv.Close()
 		t.Fatalf("dial bridge: %v", err)
 	}
+	conn.SetReadLimit(4 << 20)
 	waitUntil(t, func() bool {
 		b.mu.RLock()
 		defer b.mu.RUnlock()
@@ -238,6 +251,7 @@ func TestBatchPinsActiveTabOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
+	conn.SetReadLimit(4 << 20)
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 	waitUntil(t, func() bool {
 		b.mu.RLock()

@@ -28,6 +28,20 @@ import (
 	"github.com/coder/websocket"
 )
 
+const (
+	// The per-frame ceiling stays deliberately small so one WebSocket message
+	// cannot make the daemon allocate an unbounded buffer. The extension splits
+	// larger logical responses below this limit and the receiver independently
+	// caps the aggregate transfer. The 64 MiB logical cap is intentionally below
+	// the artifact store's 128 MiB raw-byte default: base64-backed extension
+	// captures support roughly 48 MiB of binary data without multi-hundred-MiB
+	// transient allocations. Direct transports may support the store's full cap.
+	extensionFrameReadLimitBytes     = 4 << 20
+	maxChunkedResponseBytes          = 64 << 20
+	maxChunkedResponseChunks         = 128
+	maxBufferedChunkedResponsesBytes = 128 << 20
+)
+
 type Bridge struct {
 	addr               string
 	timeout            time.Duration
@@ -54,13 +68,28 @@ type Bridge struct {
 	// most once per daemon lifetime instead of on every MV3 reconnect.
 	compatWarnOnce sync.Once
 
-	mu      sync.RWMutex
-	conn    *websocket.Conn
-	hello   hello
-	active  string
-	pending map[string]chan response
-	writeMu sync.Mutex
-	nextID  atomic.Uint64
+	mu   sync.RWMutex
+	conn *websocket.Conn
+	// shuttingDown is set before Shutdown detaches the active socket. It keeps
+	// reconnect waiters and handlers that raced the HTTP shutdown from
+	// registering new work after the pending/chunk maps have been drained.
+	shuttingDown bool
+	hello        hello
+	active       string
+	// agentPinKnown is true only after the CURRENT connection has
+	// authoritatively reported its extension-owned tab pin. It prevents a
+	// no-tab_id isolation request that starts in an MV3 reconnect gap from
+	// returning b.active before the replacement worker has reconciled a lost
+	// tabs.onRemoved notification. Guarded by mu.
+	agentPinKnown bool
+	pending       map[string]chan response
+	// responseChunks holds partial logical responses split across bounded
+	// WebSocket frames. Guarded by mu and charged by responseChunkBytes so several
+	// concurrent callers cannot multiply the per-response cap without bound.
+	responseChunks     map[string]*responseChunkAssembly
+	responseChunkBytes int
+	writeMu            sync.Mutex
+	nextID             atomic.Uint64
 
 	// connReady is closed when a connection goes live and replaced with a fresh
 	// open channel on every (re)connect (guarded by mu). A call that arrives
@@ -78,9 +107,12 @@ type Bridge struct {
 
 	// tabLocks serialize RPCs per target tab so two operations on the SAME tab
 	// never interleave their CDP frames / in-page ref state (a stale-ref source).
-	// Different tabs still run in parallel up to the sema cap. Keyed by tab id.
+	// Different tabs still run in parallel up to the sema cap. Each keyed entry
+	// is reference-counted across holders and waiters, then removed after its last
+	// user; this bounds a long-running daemon without ever replacing a lock while
+	// an old waiter still references it.
 	tabLocksMu sync.Mutex
-	tabLocks   map[string]chan struct{}
+	tabLocks   map[string]*tabLockEntry
 
 	// Backpressure / resilience counters, surfaced over /status for operators.
 	inflight  atomic.Int64  // RPCs currently on the wire
@@ -108,6 +140,16 @@ type Bridge struct {
 
 	traceMu sync.Mutex
 	trace   []browser.TraceEntry
+
+	// The extension returns a retained bounded download snapshot. Track changes
+	// locally so deterministic recipe calls get a per-tab delta after their
+	// pre-arm baseline, while ordinary brw_downloads calls remain full and
+	// non-draining.
+	downloadsMu          sync.Mutex
+	downloadFingerprints map[string]string
+	downloadVersions     map[string]uint64
+	downloadCursors      map[string]uint64
+	downloadSequence     uint64
 
 	// emulationStates tracks per-tab DevTools device emulation so clear can
 	// restore UA/platform overrides that CDP itself has no clear command for.
@@ -287,6 +329,11 @@ type hello struct {
 	Workspace string `json:"workspace,omitempty"`
 	Profile   string `json:"profile,omitempty"`
 	Label     string `json:"label,omitempty"`
+	// AgentTabID is the extension-owned working-tab pin, not Chrome's foreground
+	// tab. A pointer distinguishes a current extension explicitly reporting
+	// "none" (0) from an older extension that omits the additive field. Both are
+	// accepted on the wire; omission fails closed by clearing cached ownership.
+	AgentTabID *int `json:"agent_tab_id,omitempty"`
 	// Token is the per-launch handshake secret. It is read off the hello for
 	// verification and then ZEROED before the hello is stored or echoed in
 	// /status, so the secret is never reflected back over an endpoint a web page
@@ -301,13 +348,32 @@ type request struct {
 }
 
 type response struct {
-	ID     string          `json:"id,omitempty"`
-	Type   string          `json:"type,omitempty"`
-	TabID  int             `json:"tabId,omitempty"`
-	OK     bool            `json:"ok,omitempty"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  string          `json:"error,omitempty"`
-	Hello  hello           `json:"hello,omitempty"`
+	ID         string          `json:"id,omitempty"`
+	Type       string          `json:"type,omitempty"`
+	TabID      int             `json:"tabId,omitempty"`
+	OK         bool            `json:"ok,omitempty"`
+	Result     json.RawMessage `json:"result,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Hello      hello           `json:"hello,omitempty"`
+	Encoding   string          `json:"encoding,omitempty"`
+	ChunkIndex *int            `json:"chunk_index,omitempty"`
+	ChunkCount *int            `json:"chunk_count,omitempty"`
+	TotalBytes *int            `json:"total_bytes,omitempty"`
+	ChunkData  string          `json:"data,omitempty"`
+}
+
+type responseChunkAssembly struct {
+	conn       *websocket.Conn
+	nextIndex  int
+	chunkCount int
+	totalBytes int
+	received   int
+	parts      [][]byte
+}
+
+type tabLockEntry struct {
+	ch   chan struct{}
+	refs int
 }
 
 func New(addr string, timeout time.Duration, allowedExtensionID string) *Bridge {
@@ -319,20 +385,24 @@ func NewWithIdentity(addr string, timeout time.Duration, allowedExtensionID stri
 		timeout = 20 * time.Second
 	}
 	b := &Bridge{
-		addr:               addr,
-		timeout:            timeout,
-		allowedExtensionID: strings.TrimSpace(allowedExtensionID),
-		identity:           identity,
-		pending:            map[string]chan response{},
-		cancels:            newCancelRegistry(),
-		observedState:      map[string]*browser.SemanticState{},
-		observeVersions:    map[string]int64{},
-		trace:              make([]browser.TraceEntry, 0, 256),
-		emulationStates:    map[string]bridgeDeviceEmulationState{},
-		connReady:          make(chan struct{}),
-		tabLocks:           map[string]chan struct{}{},
-		maxInflight:        defaultBridgeMaxInflight,
-		sema:               make(chan struct{}, defaultBridgeMaxInflight),
+		addr:                 addr,
+		timeout:              timeout,
+		allowedExtensionID:   strings.TrimSpace(allowedExtensionID),
+		identity:             identity,
+		pending:              map[string]chan response{},
+		responseChunks:       map[string]*responseChunkAssembly{},
+		cancels:              newCancelRegistry(),
+		observedState:        map[string]*browser.SemanticState{},
+		observeVersions:      map[string]int64{},
+		trace:                make([]browser.TraceEntry, 0, 256),
+		downloadFingerprints: map[string]string{},
+		downloadVersions:     map[string]uint64{},
+		downloadCursors:      map[string]uint64{},
+		emulationStates:      map[string]bridgeDeviceEmulationState{},
+		connReady:            make(chan struct{}),
+		tabLocks:             map[string]*tabLockEntry{},
+		maxInflight:          defaultBridgeMaxInflight,
+		sema:                 make(chan struct{}, defaultBridgeMaxInflight),
 		// Library default preserves historical behaviour (focus raises the
 		// window); the daemon flips this to false for the seamless experience.
 		raiseWindowOnFocus: true,
@@ -406,6 +476,11 @@ const replacedDrainReason = "extension connection replaced by a different extens
 // idempotent read can be retried after the worker reconnects.
 const disconnectDrainReason = "extension disconnected"
 
+// shutdownDrainReason is deliberately distinct from disconnectDrainReason:
+// shutdown is terminal, so idempotent calls must not enter the MV3 reconnect
+// retry path after their pending response has been drained.
+const shutdownDrainReason = "extension bridge shutting down"
+
 // ErrBridgeBusy signals that the bridge's in-flight cap is saturated and a call
 // could not get a slot before its deadline. It is backpressure, not a fault: a
 // caller should retry with backoff or reduce its concurrency rather than treat
@@ -419,6 +494,8 @@ var errBridgeNotConnected = errors.New("extension bridge is not connected; load/
 // errBridgeTransport wraps a transient transport failure (write failed mid-frame,
 // socket dropped while a call was pending). Safe to retry for idempotent ops.
 var errBridgeTransport = errors.New("extension bridge transport error")
+
+var errBridgeShuttingDown = errors.New(shutdownDrainReason)
 
 // SetMaxInflight sets the cap on concurrent RPCs over the shared socket. n<=0
 // disables the cap (unbounded). Call once before serving; it rebuilds the
@@ -438,11 +515,12 @@ func (b *Bridge) SetMaxInflight(n int) {
 // group/ungroup, and the generic "cdp" passthrough, which carries both reads and
 // writes) are deliberately excluded so a retry can never double-apply an action.
 var idempotentBridgeTypes = map[string]bool{
-	"list_tabs":         true,
-	"list_tab_groups":   true,
-	"get_active_tab_id": true,
-	"cached_snapshot":   true,
-	"get_downloads":     true,
+	"list_tabs":             true,
+	"list_tab_groups":       true,
+	"get_active_tab_id":     true,
+	"get_document_identity": true,
+	"cached_snapshot":       true,
+	"get_downloads":         true,
 }
 
 func isIdempotentType(typ string) bool { return idempotentBridgeTypes[typ] }
@@ -464,12 +542,29 @@ func (b *Bridge) ListenAndServe() error {
 }
 
 func (b *Bridge) Shutdown(ctx context.Context) error {
+	var conn *websocket.Conn
 	b.mu.Lock()
-	if b.conn != nil {
-		_ = b.conn.Close(websocket.StatusNormalClosure, "shutdown")
-		b.conn = nil
+	if !b.shuttingDown {
+		b.shuttingDown = true
+		// Wake every caller parked in getConn. They observe shuttingDown before
+		// consulting this gate, so leaving it closed cannot make a loop spin.
+		close(b.connReady)
 	}
+	conn = b.conn
+	b.conn = nil
+	b.agentPinKnown = false
+	b.disconnectedAt = time.Now().UTC()
+	b.disconnectReason = shutdownDrainReason
+	b.drainPendingLocked(shutdownDrainReason)
 	b.mu.Unlock()
+
+	// Never perform coder/websocket's graceful close handshake under b.mu: an
+	// unresponsive peer can consume its full multi-second close timeout and
+	// block status/dispatch. The server itself still receives the caller's
+	// bounded Shutdown context below.
+	if conn != nil {
+		_ = conn.CloseNow()
+	}
 	return b.server.Shutdown(ctx)
 }
 
@@ -588,7 +683,7 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		log.Printf("extension websocket accept: %v", err)
 		return
 	}
-	conn.SetReadLimit(4 << 20)
+	conn.SetReadLimit(extensionFrameReadLimitBytes)
 
 	if allowedID == "" {
 		log.Printf("WARNING: extension bridge accepting connections from any Chrome extension (chrome-extension://*); set a profile policy with bridge_extension_id to restrict")
@@ -611,6 +706,11 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 
 	b.mu.Lock()
 	now := time.Now().UTC()
+	if b.shuttingDown {
+		b.mu.Unlock()
+		_ = conn.CloseNow()
+		return
+	}
 	// Flap guard: two browser profiles running brw against one bridge otherwise
 	// displace each other forever (the flashing icon). While holding after a
 	// detected flap and the current connection is still live, reject the newcomer
@@ -650,6 +750,10 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		// socket is being force-discarded either way; tear it down immediately
 		// (its readLoop unblocks at once and releaseConn no-ops as stale).
 		_ = b.conn.CloseNow()
+		// A logical response may never span connection generations: a missing
+		// frame from the displaced socket would otherwise be silently combined
+		// with a new response that happens to reuse its request id.
+		b.clearAllResponseChunksLocked()
 		// Pending RPCs survive a SAME-extension replace on purpose: an MV3
 		// service worker reconnecting mid-call can still answer them over the
 		// new socket. But when the newcomer presents a DIFFERENT identity
@@ -658,10 +762,17 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		// letting each one hang for its full timeout.
 		if !sameExtensionIdentity(b.hello, verifiedHello) {
 			b.drainPendingLocked(replacedDrainReason)
+			b.resetProfileStateLocked()
 		}
 	}
 	b.conn = conn
 	b.hello = verifiedHello
+	// Reconcile the extension-owned pin before publishing this connection through
+	// connReady. A tabs.onRemoved frame is best-effort and can be lost while the
+	// MV3 worker/socket is down; the next hello is the authoritative recovery
+	// boundary. Missing agent_tab_id means an old extension and is accepted but
+	// fails closed (no cached ownership), never falling back to foreground state.
+	b.reconcileAgentPinLocked(verifiedHello)
 	b.connectedAt = now
 	b.lastSeenAt = now
 	b.disconnectedAt = time.Time{}
@@ -690,10 +801,7 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 
 	readErr := b.readLoop(r.Context(), conn)
 	pingCancel()
-	reason := "closed"
-	if readErr != nil {
-		reason = readErr.Error()
-	}
+	reason := readErr.Error()
 	log.Printf("extension bridge disconnected: %s", reason)
 
 	if b.releaseConn(conn, reason) {
@@ -716,6 +824,7 @@ func (b *Bridge) releaseConn(conn *websocket.Conn, reason string) bool {
 		return false
 	}
 	b.conn = nil
+	b.agentPinKnown = false
 	b.disconnectedAt = time.Now().UTC()
 	b.disconnectReason = reason
 	b.drainPendingLocked(disconnectDrainReason)
@@ -756,11 +865,401 @@ func (b *Bridge) recordTabGroupDegradation(warning string) {
 // drainPendingLocked fails every in-flight RPC with the given reason. Callers
 // must hold b.mu.
 func (b *Bridge) drainPendingLocked(reason string) {
+	b.clearAllResponseChunksLocked()
 	for id, ch := range b.pending {
 		delete(b.pending, id)
 		ch <- response{ID: id, Error: reason}
 		close(ch)
 	}
+}
+
+// clearResponseChunksLocked releases one partial logical response. Callers must
+// hold b.mu.
+func (b *Bridge) clearResponseChunksLocked(id string) {
+	assembly := b.responseChunks[id]
+	if assembly == nil {
+		return
+	}
+	b.responseChunkBytes -= assembly.received
+	if b.responseChunkBytes < 0 {
+		b.responseChunkBytes = 0
+	}
+	delete(b.responseChunks, id)
+}
+
+// clearAllResponseChunksLocked releases every partial response. Callers must
+// hold b.mu.
+func (b *Bridge) clearAllResponseChunksLocked() {
+	clear(b.responseChunks)
+	b.responseChunkBytes = 0
+}
+
+func (b *Bridge) clearResponseChunks(id string) {
+	b.mu.Lock()
+	b.clearResponseChunksLocked(id)
+	b.mu.Unlock()
+}
+
+func invalidChunkResponse(id string, err error) response {
+	return response{
+		ID:    id,
+		Error: "invalid chunked extension response: " + err.Error(),
+	}
+}
+
+// decodeResponseChunk validates the self-contained envelope fields and decodes
+// one frame. Cross-frame ordering and accounting are checked while holding the
+// bridge mutex in consumeResponseChunk.
+func decodeResponseChunk(frame response) (index, count, total int, data []byte, err error) {
+	if frame.Encoding != "base64" {
+		return 0, 0, 0, nil, fmt.Errorf("unsupported encoding %q", frame.Encoding)
+	}
+	if frame.ChunkIndex == nil || frame.ChunkCount == nil || frame.TotalBytes == nil {
+		return 0, 0, 0, nil, errors.New("missing chunk metadata")
+	}
+	index, count, total = *frame.ChunkIndex, *frame.ChunkCount, *frame.TotalBytes
+	if count < 1 || count > maxChunkedResponseChunks {
+		return 0, 0, 0, nil, fmt.Errorf("chunk_count %d is outside 1..%d", count, maxChunkedResponseChunks)
+	}
+	if index < 0 || index >= count {
+		return 0, 0, 0, nil, fmt.Errorf("chunk_index %d is outside 0..%d", index, count-1)
+	}
+	if total < 1 || total > maxChunkedResponseBytes {
+		return 0, 0, 0, nil, fmt.Errorf("total_bytes %d is outside 1..%d", total, maxChunkedResponseBytes)
+	}
+	if frame.ChunkData == "" {
+		return 0, 0, 0, nil, errors.New("empty chunk data")
+	}
+	// A padded base64 length can overstate decoded bytes by at most two. Reject
+	// obviously impossible envelopes before allocating their decoded buffer.
+	if decodedUpperBound := base64.StdEncoding.DecodedLen(len(frame.ChunkData)); decodedUpperBound > total+2 {
+		return 0, 0, 0, nil, fmt.Errorf("encoded chunk cannot fit within total_bytes %d", total)
+	}
+	data, err = base64.StdEncoding.DecodeString(frame.ChunkData)
+	if err != nil {
+		return 0, 0, 0, nil, fmt.Errorf("invalid base64 data: %w", err)
+	}
+	if len(data) == 0 || len(data) > total {
+		return 0, 0, 0, nil, fmt.Errorf("decoded chunk length %d is invalid for total_bytes %d", len(data), total)
+	}
+	return index, count, total, data, nil
+}
+
+// rejectResponseChunk discards the partial response and turns a protocol fault
+// into the one response awaited by dispatch. A stale socket may not clear state
+// belonging to its replacement, and a cancelled request receives no late reply.
+func (b *Bridge) rejectResponseChunk(conn *websocket.Conn, id string, err error) (response, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.conn != conn {
+		return response{}, false
+	}
+	b.clearResponseChunksLocked(id)
+	if _, pending := b.pending[id]; !pending {
+		return response{}, false
+	}
+	return invalidChunkResponse(id, err), true
+}
+
+// consumeResponseChunk accepts only a contiguous, metadata-consistent sequence
+// for an outstanding request. It returns ready=true exactly once, either for the
+// complete logical response or for a bounded protocol error that fails the RPC.
+func (b *Bridge) consumeResponseChunk(conn *websocket.Conn, frame response) (logical response, ready bool) {
+	// Avoid decoding a multi-megabyte frame for a cancelled/unknown request. This
+	// first check is repeated after decoding because dispatch may cancel meanwhile.
+	b.mu.Lock()
+	if b.conn != conn {
+		b.mu.Unlock()
+		return response{}, false
+	}
+	if _, pending := b.pending[frame.ID]; !pending {
+		b.clearResponseChunksLocked(frame.ID)
+		b.mu.Unlock()
+		return response{}, false
+	}
+	b.mu.Unlock()
+
+	index, count, total, chunk, err := decodeResponseChunk(frame)
+	if err != nil {
+		return b.rejectResponseChunk(conn, frame.ID, err)
+	}
+
+	b.mu.Lock()
+	if b.conn != conn {
+		b.mu.Unlock()
+		return response{}, false
+	}
+	if _, pending := b.pending[frame.ID]; !pending {
+		b.clearResponseChunksLocked(frame.ID)
+		b.mu.Unlock()
+		return response{}, false
+	}
+
+	assembly := b.responseChunks[frame.ID]
+	if assembly == nil {
+		if index != 0 {
+			b.mu.Unlock()
+			return b.rejectResponseChunk(conn, frame.ID, fmt.Errorf("first chunk has index %d, want 0", index))
+		}
+		if b.responseChunks == nil {
+			b.responseChunks = make(map[string]*responseChunkAssembly)
+		}
+		assembly = &responseChunkAssembly{
+			conn:       conn,
+			chunkCount: count,
+			totalBytes: total,
+			parts:      make([][]byte, 0, count),
+		}
+		b.responseChunks[frame.ID] = assembly
+	} else {
+		if assembly.conn != conn {
+			b.mu.Unlock()
+			return b.rejectResponseChunk(conn, frame.ID, errors.New("chunk sequence changed connection"))
+		}
+		if count != assembly.chunkCount || total != assembly.totalBytes {
+			b.mu.Unlock()
+			return b.rejectResponseChunk(conn, frame.ID, errors.New("chunk metadata changed during response"))
+		}
+	}
+	if index != assembly.nextIndex {
+		want := assembly.nextIndex
+		b.mu.Unlock()
+		return b.rejectResponseChunk(conn, frame.ID, fmt.Errorf("chunk index %d arrived out of order; want %d", index, want))
+	}
+	if assembly.received > total-len(chunk) {
+		b.mu.Unlock()
+		return b.rejectResponseChunk(conn, frame.ID, fmt.Errorf("decoded bytes exceed declared total_bytes %d", total))
+	}
+	if b.responseChunkBytes > maxBufferedChunkedResponsesBytes-len(chunk) {
+		b.mu.Unlock()
+		return b.rejectResponseChunk(conn, frame.ID, fmt.Errorf("buffered chunks exceed %d-byte bridge limit", maxBufferedChunkedResponsesBytes))
+	}
+
+	newReceived := assembly.received + len(chunk)
+	isFinal := index == count-1
+	if isFinal && newReceived != total {
+		b.mu.Unlock()
+		return b.rejectResponseChunk(conn, frame.ID, fmt.Errorf("final byte count %d does not match total_bytes %d", newReceived, total))
+	}
+	if !isFinal && newReceived >= total {
+		b.mu.Unlock()
+		return b.rejectResponseChunk(conn, frame.ID, fmt.Errorf("response reached total_bytes %d before final chunk", total))
+	}
+
+	assembly.parts = append(assembly.parts, chunk)
+	assembly.received = newReceived
+	assembly.nextIndex++
+	b.responseChunkBytes += len(chunk)
+	if !isFinal {
+		b.mu.Unlock()
+		return response{}, false
+	}
+
+	parts := assembly.parts
+	b.clearResponseChunksLocked(frame.ID)
+	b.mu.Unlock()
+
+	serialized := make([]byte, total)
+	offset := 0
+	for _, part := range parts {
+		offset += copy(serialized[offset:], part)
+	}
+	if offset != total {
+		return invalidChunkResponse(frame.ID, fmt.Errorf("reassembled byte count %d does not match total_bytes %d", offset, total)), true
+	}
+	if err := json.Unmarshal(serialized, &logical); err != nil {
+		return invalidChunkResponse(frame.ID, fmt.Errorf("reassembled payload is not valid JSON: %w", err)), true
+	}
+	if logical.ID != frame.ID {
+		return invalidChunkResponse(frame.ID, fmt.Errorf("reassembled response id %q does not match envelope id", logical.ID)), true
+	}
+	if logical.Type == "response_chunk" {
+		return invalidChunkResponse(frame.ID, errors.New("reassembled payload is another chunk envelope")), true
+	}
+	return logical, true
+}
+
+// deliverResponse atomically claims an outstanding request before sending its
+// result, so a final chunk, duplicate frame, cancellation, or disconnect can
+// never dispatch the same logical response twice.
+func (b *Bridge) deliverResponse(conn *websocket.Conn, resp response) {
+	b.mu.Lock()
+	// A decoded response can be waiting on b.mu while handleExtension replaces
+	// its socket. Never let that displaced connection claim a request belonging
+	// to the live connection generation.
+	if b.conn != conn {
+		b.mu.Unlock()
+		return
+	}
+	ch := b.pending[resp.ID]
+	delete(b.pending, resp.ID)
+	b.clearResponseChunksLocked(resp.ID)
+	b.mu.Unlock()
+	if ch != nil {
+		ch <- resp
+		close(ch)
+	}
+}
+
+// handleDecodedFrame applies the connection-generation gate shared by every
+// successfully decoded frame. Control frames mutate live bridge state while the
+// same lock still proves their socket is current; response paths repeat the
+// check when they claim a pending request because chunk decoding/reassembly can
+// yield between this gate and delivery.
+func (b *Bridge) handleDecodedFrame(conn *websocket.Conn, resp response) {
+	b.mu.Lock()
+	if b.conn != conn {
+		b.mu.Unlock()
+		return
+	}
+	b.lastSeenAt = time.Now().UTC()
+	if resp.Type == "hello" {
+		h := resp.Hello
+		h.Token = "" // never store or echo the handshake secret
+		b.hello = h
+		// Tokenless library/test embedders publish the socket before receiving a
+		// hello for backwards compatibility. Treat a later hello as the same
+		// authoritative pin boundary used by the authenticated handshake.
+		b.reconcileAgentPinLocked(h)
+		b.mu.Unlock()
+		return
+	}
+	if resp.Type == "active_tab" {
+		// active_tab is the USER's live-focus hint, pushed when they switch
+		// tabs. Honor it only in follow-focus mode; in isolation the cached
+		// active id must track the tab brw OWNS, so a user tab-switch must not
+		// repoint it onto the user's tab (that is the stomping we prevent).
+		if resp.TabID != 0 && b.followFocus {
+			b.active = strconv.Itoa(resp.TabID)
+		}
+		b.mu.Unlock()
+		return
+	}
+	if resp.Type == "tab_removed" {
+		if resp.TabID != 0 {
+			b.invalidateTabStateLocked(strconv.Itoa(resp.TabID))
+		}
+		b.mu.Unlock()
+		return
+	}
+	b.mu.Unlock()
+
+	if resp.Type == "response_chunk" {
+		if resp.ID == "" {
+			log.Printf("extension bridge invalid response chunk: missing id")
+			return
+		}
+		logical, ready := b.consumeResponseChunk(conn, resp)
+		if ready {
+			b.deliverResponse(conn, logical)
+		}
+		return
+	}
+	if resp.ID == "" {
+		return
+	}
+	b.deliverResponse(conn, resp)
+}
+
+// resetProfileStateLocked discards state whose keys and values only make sense
+// inside the connected browser profile. Chrome tab ids and download GUIDs can
+// both be reused by another profile, so retaining any of this state across an
+// identity-changing replacement can target an unrelated tab or suppress a new
+// download as already observed. The same-extension MV3 reconnect path does not
+// call this helper and deliberately retains all of this state.
+//
+// Caller must hold b.mu. The lock order is b.mu -> observeMu -> downloadsMu ->
+// emulationMu; code using the subordinate locks must not acquire b.mu while one
+// is held.
+func (b *Bridge) resetProfileStateLocked() {
+	b.active = ""
+	b.agentPinKnown = false
+	b.autoOpenFailedAt = time.Time{}
+
+	b.observeMu.Lock()
+	b.observedState = map[string]*browser.SemanticState{}
+	b.observeVersions = map[string]int64{}
+	b.observeMu.Unlock()
+
+	b.downloadsMu.Lock()
+	b.downloadFingerprints = map[string]string{}
+	b.downloadVersions = map[string]uint64{}
+	b.downloadCursors = map[string]uint64{}
+	b.downloadSequence = 0
+	b.downloadsMu.Unlock()
+
+	b.emulationMu.Lock()
+	b.emulationStates = map[string]bridgeDeviceEmulationState{}
+	b.emulationMu.Unlock()
+}
+
+// reconcileAgentPinLocked makes the newly connected extension's owned-tab pin
+// authoritative. In isolation this closes the reconnect-gap hole where a lost
+// tab_removed frame left b.active pointing at a numeric tab id Chrome had since
+// reused for an unrelated page. The user's foreground hint is intentionally not
+// consulted. Old extensions omit AgentTabID; accepting their connection while
+// clearing ownership preserves protocol compatibility without weakening
+// isolation. Same-pin reconnects retain per-tab caches across ordinary MV3
+// worker churn.
+//
+// Caller must hold b.mu and therefore follows the subordinate lock order
+// documented by resetProfileStateLocked.
+func (b *Bridge) reconcileAgentPinLocked(h hello) {
+	b.agentPinKnown = true
+	if b.followFocus {
+		return
+	}
+
+	previous := strings.TrimSpace(b.active)
+	next := ""
+	if h.AgentTabID != nil && *h.AgentTabID > 0 {
+		next = strconv.Itoa(*h.AgentTabID)
+	}
+	if previous == next {
+		return
+	}
+	if previous != "" {
+		b.invalidateTabStateLocked(previous)
+	}
+	// Chrome may already have reused next for a fresh tab while the daemon still
+	// carries cache/cursor/emulation entries under that numeric id. A changed pin
+	// establishes a new ownership epoch, so scrub the destination too.
+	if next != "" {
+		b.invalidateTabStateLocked(next)
+	}
+	b.active = next
+}
+
+// invalidateTabStateLocked forgets everything keyed by an authoritatively
+// disappeared Chrome tab. Numeric tab ids can later be reused, so retaining
+// ownership, observation/cursor state, or an emulation baseline could either
+// suppress fresh events or apply old-tab state to an unrelated target.
+// Caller must hold b.mu and therefore follows the same subordinate lock order
+// documented by resetProfileStateLocked.
+func (b *Bridge) invalidateTabStateLocked(tabID string) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return
+	}
+	if b.active == tabID {
+		b.active = ""
+	}
+	b.observeMu.Lock()
+	delete(b.observedState, tabID)
+	delete(b.observeVersions, tabID)
+	b.observeMu.Unlock()
+	b.downloadsMu.Lock()
+	delete(b.downloadCursors, tabID)
+	b.downloadsMu.Unlock()
+	b.emulationMu.Lock()
+	delete(b.emulationStates, tabID)
+	b.emulationMu.Unlock()
+}
+
+func (b *Bridge) invalidateTabState(tabID string) {
+	b.mu.Lock()
+	b.invalidateTabStateLocked(tabID)
+	b.mu.Unlock()
 }
 
 // sameExtensionIdentity reports whether two hellos describe the same configured
@@ -873,43 +1372,24 @@ func (b *Bridge) readLoop(ctx context.Context, conn *websocket.Conn) error {
 		}
 		var resp response
 		if err := json.Unmarshal(data, &resp); err != nil {
+			// A syntactically valid chunk envelope can still fail typed decoding
+			// (for example chunk_index:"zero" or an overflowing total_bytes).
+			// Recover just its routing header on this cold error path so the one
+			// affected RPC fails immediately and its partial buffer is released,
+			// rather than hanging until its context deadline.
+			var header struct {
+				ID   string `json:"id"`
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(data, &header) == nil && header.Type == "response_chunk" && header.ID != "" {
+				if logical, ready := b.rejectResponseChunk(conn, header.ID, fmt.Errorf("malformed envelope: %w", err)); ready {
+					b.deliverResponse(conn, logical)
+				}
+			}
 			log.Printf("extension bridge invalid message: %v", err)
 			continue
 		}
-		b.mu.Lock()
-		if b.conn == conn {
-			b.lastSeenAt = time.Now().UTC()
-		}
-		b.mu.Unlock()
-		if resp.Type == "hello" {
-			h := resp.Hello
-			h.Token = "" // never store or echo the handshake secret
-			b.mu.Lock()
-			b.hello = h
-			b.mu.Unlock()
-			continue
-		}
-		if resp.Type == "active_tab" {
-			// active_tab is the USER's live-focus hint, pushed when they switch
-			// tabs. Honor it only in follow-focus mode; in isolation the cached
-			// active id must track the tab brw OWNS, so a user tab-switch must not
-			// repoint it onto the user's tab (that is the stomping we prevent).
-			if resp.TabID != 0 && b.followFocus {
-				b.setActiveTabID(strconv.Itoa(resp.TabID))
-			}
-			continue
-		}
-		if resp.ID == "" {
-			continue
-		}
-		b.mu.Lock()
-		ch := b.pending[resp.ID]
-		delete(b.pending, resp.ID)
-		b.mu.Unlock()
-		if ch != nil {
-			ch <- resp
-			close(ch)
-		}
+		b.handleDecodedFrame(conn, resp)
 	}
 }
 
@@ -987,8 +1467,38 @@ func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any
 	id := strconv.FormatUint(b.nextID.Add(1), 10)
 	ch := make(chan response, 1)
 	b.mu.Lock()
+	// getConn and registration are intentionally two phases because JSON
+	// allocation happens afterward. Revalidate the generation and shutdown gate
+	// here so Shutdown cannot drain the map and then have this call add itself
+	// back, and so a replacement socket never inherits a request written to the
+	// displaced connection.
+	if b.shuttingDown {
+		b.mu.Unlock()
+		return nil, errBridgeShuttingDown
+	}
+	if b.conn != conn {
+		b.mu.Unlock()
+		return nil, fmt.Errorf("%w: extension connection changed before request dispatch", errBridgeTransport)
+	}
+	// A server-selected isolation pin is valid only while the CURRENT extension
+	// generation still claims it. The request may have resolved tab 42 just before
+	// a disconnect, then parked in getConn while tab_removed was lost and Chrome
+	// reused 42. Revalidate after getConn and under the same lock that proves the
+	// socket generation, so the replacement hello can revoke the stale context
+	// before any frame is registered or written. Caller-supplied explicit tab_id
+	// remains authoritative by design.
+	if !b.followFocus && browser.TabIDRequiresCurrentOwnership(ctx) {
+		if implicitTabID := browser.TabIDFromContext(ctx); implicitTabID != "" &&
+			(!b.agentPinKnown || strings.TrimSpace(b.active) != implicitTabID) {
+			b.mu.Unlock()
+			return nil, fmt.Errorf("extension bridge isolation ownership changed before request dispatch: implicit tab %s is no longer extension-owned", implicitTabID)
+		}
+	}
 	b.pending[id] = ch
 	b.mu.Unlock()
+	// Whichever terminal path wins (response, protocol failure, cancellation,
+	// write failure, or disconnect), release any partial body for this request.
+	defer b.clearResponseChunks(id)
 
 	msg, err := json.Marshal(request{ID: id, Type: typ, Params: params})
 	if err != nil {
@@ -1043,7 +1553,11 @@ func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any
 func (b *Bridge) getConn(ctx context.Context) (*websocket.Conn, error) {
 	b.mu.RLock()
 	conn := b.conn
+	shuttingDown := b.shuttingDown
 	b.mu.RUnlock()
+	if shuttingDown {
+		return nil, errBridgeShuttingDown
+	}
 	if conn != nil {
 		return conn, nil
 	}
@@ -1053,7 +1567,11 @@ func (b *Bridge) getConn(ctx context.Context) (*websocket.Conn, error) {
 		b.mu.RLock()
 		conn := b.conn
 		ready := b.connReady
+		shuttingDown := b.shuttingDown
 		b.mu.RUnlock()
+		if shuttingDown {
+			return nil, errBridgeShuttingDown
+		}
 		if conn != nil {
 			return conn, nil
 		}
@@ -1134,11 +1652,15 @@ func (b *Bridge) lockTab(ctx context.Context, params map[string]any) (func(), er
 	if key == "" {
 		return nil, nil
 	}
-	lock := b.tabLock(key)
+	entry := b.retainTabLock(key)
 	select {
-	case lock <- struct{}{}:
-		return func() { <-lock }, nil
+	case entry.ch <- struct{}{}:
+		return func() {
+			<-entry.ch
+			b.releaseTabLock(key, entry)
+		}, nil
 	case <-ctx.Done():
+		b.releaseTabLock(key, entry)
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, ErrBridgeBusy
 		}
@@ -1146,17 +1668,33 @@ func (b *Bridge) lockTab(ctx context.Context, params map[string]any) (func(), er
 	}
 }
 
-// tabLock returns the (lazily created) 1-buffered channel used as the lock for a
-// tab id. A held lock == a token sitting in the channel.
-func (b *Bridge) tabLock(key string) chan struct{} {
+// retainTabLock returns the stable lock entry for key and takes one reference
+// before the caller begins waiting. Counting waiters as well as the holder is
+// what makes deletion safe across a tab close followed by numeric-id reuse.
+func (b *Bridge) retainTabLock(key string) *tabLockEntry {
 	b.tabLocksMu.Lock()
 	defer b.tabLocksMu.Unlock()
-	lock := b.tabLocks[key]
-	if lock == nil {
-		lock = make(chan struct{}, 1)
-		b.tabLocks[key] = lock
+	entry := b.tabLocks[key]
+	if entry == nil {
+		entry = &tabLockEntry{ch: make(chan struct{}, 1)}
+		b.tabLocks[key] = entry
 	}
-	return lock
+	entry.refs++
+	return entry
+}
+
+// releaseTabLock drops one holder/waiter reference. Delete only when the map
+// still names this exact entry and no caller can retain or acquire its channel;
+// otherwise numeric-id reuse could create two live locks for the same tab.
+func (b *Bridge) releaseTabLock(key string, entry *tabLockEntry) {
+	b.tabLocksMu.Lock()
+	defer b.tabLocksMu.Unlock()
+	if entry.refs > 0 {
+		entry.refs--
+	}
+	if entry.refs == 0 && b.tabLocks[key] == entry {
+		delete(b.tabLocks, key)
+	}
 }
 
 // tabKeyFromParams extracts a stable string lock key from a call's tabId param,
@@ -1370,15 +1908,10 @@ func (b *Bridge) CloseTab(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	tabKey := strings.TrimSpace(id)
 	_, err = b.call(ctx, "close_tab", map[string]any{"tabId": tabID})
-	if err == nil && strings.TrimSpace(id) == b.activeTabID() {
-		b.setActiveTabID("")
-	}
 	if err == nil {
-		b.observeMu.Lock()
-		delete(b.observedState, strings.TrimSpace(id))
-		delete(b.observeVersions, strings.TrimSpace(id))
-		b.observeMu.Unlock()
+		b.invalidateTabState(tabKey)
 	}
 	return err
 }
@@ -1828,23 +2361,33 @@ func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) 
 	before := b.captureSemanticState(ctx)
 	before.Trace = browser.TraceEntry{Action: "click_text", Text: opts.Text}
 	beforeTabs := b.captureTabIDs(ctx)
+	label, err := b.clickTextRaw(ctx, opts)
+	if err != nil {
+		return browser.ActionResult{}, err
+	}
+	b.settle(ctx, observedActionSettle)
+	return b.observeActionWithBeforeAndTabs(ctx, "clicked text "+strconv.Quote(label), before, beforeTabs), nil
+}
+
+// clickTextRaw performs the semantic click without pre/post observations. Batch
+// and plan callers use it so they retain their one-final-observation contract.
+func (b *Bridge) clickTextRaw(ctx context.Context, opts snapshot.ClickTextOptions) (string, error) {
 	optsJSON, _ := json.Marshal(opts)
 	var clicked snapshot.ClickXYResult
 	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.ClickTextScript, optsJSON), "", &clicked); err != nil {
-		return browser.ActionResult{}, err
+		return "", err
 	}
 	if !clicked.OK {
 		if clicked.Error == "" {
 			clicked.Error = "click text failed"
 		}
-		return browser.ActionResult{}, fmt.Errorf("click text: %s", clicked.Error)
+		return "", fmt.Errorf("click text: %s", clicked.Error)
 	}
-	b.settle(ctx, observedActionSettle)
 	label := opts.Text
 	if clicked.Name != "" {
 		label = clicked.Name
 	}
-	return b.observeActionWithBeforeAndTabs(ctx, "clicked text "+strconv.Quote(label), before, beforeTabs), nil
+	return label, nil
 }
 
 func (b *Bridge) Hover(ctx context.Context, ref string) (browser.ActionResult, error) {
@@ -2049,7 +2592,7 @@ func (b *Bridge) activate(ctx context.Context, ref string) error {
 
 func (b *Bridge) Type(ctx context.Context, ref, text string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
-	before.Trace = b.traceOperands(before, browser.TraceEntry{Action: "type", Ref: ref, Text: text})
+	before.Trace = b.traceOperands(before, browser.RedactTraceEntry(ctx, browser.TraceEntry{Action: "type", Ref: ref, Text: text}))
 	if err := b.typeRef(ctx, ref, text); err != nil {
 		return browser.ActionResult{}, err
 	}
@@ -2065,9 +2608,15 @@ func (b *Bridge) typeRef(ctx context.Context, ref, text string) error {
 	return err
 }
 
+// FocusRef supports deterministic recipe key presses without exposing another
+// model-facing tool or relying on ambient focus from a previous step.
+func (b *Bridge) FocusRef(ctx context.Context, ref string) error {
+	return b.focus(ctx, ref)
+}
+
 func (b *Bridge) Fill(ctx context.Context, opts snapshot.FillOptions) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
-	before.Trace = b.traceOperands(before, browser.TraceEntry{Action: "fill", Ref: opts.Ref, Text: opts.EffectiveText()})
+	before.Trace = b.traceOperands(before, browser.RedactTraceEntry(ctx, browser.TraceEntry{Action: "fill", Ref: opts.Ref, Text: opts.EffectiveText()}))
 	ref, err := b.fillOptions(ctx, opts)
 	if err != nil {
 		return browser.ActionResult{}, err
@@ -2310,7 +2859,7 @@ func (b *Bridge) uploadViaFileChooser(ctx context.Context, opts snapshot.UploadO
 
 func (b *Bridge) Select(ctx context.Context, ref, value string) (browser.ActionResult, error) {
 	before := b.captureSemanticState(ctx)
-	before.Trace = b.traceOperands(before, browser.TraceEntry{Action: "select", Ref: ref, Value: value})
+	before.Trace = b.traceOperands(before, browser.RedactTraceEntry(ctx, browser.TraceEntry{Action: "select", Ref: ref, Value: value}))
 	message, err := b.selectValue(ctx, ref, value)
 	if err != nil {
 		return browser.ActionResult{}, err
@@ -2513,28 +3062,305 @@ func (b *Bridge) NavigateTo(ctx context.Context, url string) (browser.ActionResu
 	if err != nil {
 		return browser.ActionResult{}, fmt.Errorf("navigate_to: %w", err)
 	}
+	// Navigation completion and the observation must stay on the same tab even
+	// if the user changes focus while the replacement document is loading.
+	ctx = b.pinActiveTab(ctx)
 	before := b.captureSemanticState(ctx)
 	before.Trace = browser.TraceEntry{Action: "navigate_to", Text: url}
 	beforeTabs := b.captureTabIDs(ctx)
-	if err := b.navigateToURL(ctx, url); err != nil {
+	if err := b.navigateToURLAndWait(ctx, url); err != nil {
 		return browser.ActionResult{}, err
 	}
 	b.settle(ctx, observedActionSettle)
-	_ = b.WaitFor(ctx, "load", 10*time.Second)
 	return b.observeActionWithBeforeAndTabs(ctx, "navigated to "+url, before, beforeTabs), nil
 }
 
-func (b *Bridge) navigateToURL(ctx context.Context, url string) error {
-	urlJSON, _ := json.Marshal(url)
-	expr := fmt.Sprintf("(function(){location.href=%s;return true;})()", urlJSON)
-	var ok bool
-	if err := b.evaluate(ctx, expr, "", &ok); err != nil {
-		if isNavigationTeardownError(err) {
-			return nil
+const navigationCommitTimeout = 10 * time.Second
+
+type extensionDocumentIdentityPayload struct {
+	DocumentID     string `json:"document_id"`
+	DocumentEpoch  uint64 `json:"document_epoch"`
+	WorkerInstance string `json:"worker_instance"`
+	Origin         string `json:"origin"`
+	TabID          int64  `json:"tab_id"`
+}
+
+type bridgeMainFrameState struct {
+	ID       string
+	LoaderID string
+	URL      string
+}
+
+// navigateToURLAndWait pre-arms a trusted main-document identity before asking
+// CDP to navigate, then waits for that exact tab to commit a replacement
+// document. A generic "committed" wait is insufficient: the source document is
+// already interactive and can satisfy it before location.href begins loading,
+// allowing the next batch step to act on the old page. Page.navigate supplies a
+// target loader id for replacement navigations; the independent webNavigation
+// document id catches redirects/BFCache and protects against a stale source
+// document. Same-document fragment navigations legitimately keep both ids and
+// complete only when the main-frame URL reaches the requested target. An exact
+// current-URL request is idempotent: it skips Page.navigate (callers that need a
+// reload have the explicit navigate/reload action), but still requires the
+// current document to become ready and remain the same trusted document.
+func (b *Bridge) navigateToURLAndWait(ctx context.Context, targetURL string) error {
+	tabID := b.contextTabID(ctx)
+	if tabID == "" {
+		return errors.New("navigate_to: no active tab available")
+	}
+	// Freeze every probe and command to this tab even in follow-focus mode.
+	navCtx := browser.WithTabID(ctx, tabID)
+	commitCtx, cancelCommit := context.WithTimeout(navCtx, navigationCommitTimeout)
+	defer cancelCommit()
+	beforeIdentity, err := b.extensionDocumentIdentity(commitCtx)
+	if err != nil {
+		return fmt.Errorf("navigate_to: pre-arm main-document identity: %w", err)
+	}
+	beforeFrame, err := b.mainFrameState(commitCtx, tabID)
+	if err != nil {
+		return fmt.Errorf("navigate_to: pre-arm main-frame loader: %w", err)
+	}
+	// Page.navigate is not a reliable reload primitive for an exact-current URL:
+	// Chromium may return a loader id without ever committing a replacement
+	// document (for example when an app/service worker treats the request as an
+	// already-satisfied navigation). Waiting for that loader then burns the full
+	// commit timeout even though the requested destination is already active.
+	// Page.getFrameTree can retain a differently serialized/stale URL for a SPA,
+	// so use the active document's unforgeable location.href for this decision.
+	// Do this before issuing Page.navigate so we cannot mistake its still-active
+	// source document for completion while a real replacement is pending.
+	currentURL, currentURLErr := b.mainDocumentURL(commitCtx, tabID)
+	if currentURLErr == nil && currentURL == targetURL {
+		beforeFrame.URL = currentURL
+		return b.waitForAcceptedNavigationDestination(
+			commitCtx, tabID, targetURL, beforeIdentity, beforeFrame, true,
+		)
+	}
+	// A non-empty speculative loader may be ignored only for an exact
+	// fragment-only transition. This is the narrow URL shape the platform defines
+	// as same-document; a path/query/origin change must still commit the returned
+	// replacement loader even if the old document transiently reports the target.
+	sameDocumentTarget := currentURLErr == nil && isExactFragmentTransition(currentURL, targetURL)
+
+	raw, err := b.cdp(commitCtx, tabID, "Page.navigate", map[string]any{"url": targetURL})
+	if err != nil {
+		return fmt.Errorf("navigate_to: %w", err)
+	}
+	var started struct {
+		LoaderID   string `json:"loaderId"`
+		ErrorText  string `json:"errorText"`
+		IsDownload bool   `json:"isDownload"`
+	}
+	if err := json.Unmarshal(raw, &started); err != nil {
+		return fmt.Errorf("navigate_to: parse Page.navigate response: %w", err)
+	}
+	if strings.TrimSpace(started.ErrorText) != "" {
+		return fmt.Errorf("navigate_to: Page.navigate failed: %s", strings.TrimSpace(started.ErrorText))
+	}
+	if started.IsDownload {
+		return errors.New("navigate_to: destination started a download instead of replacing the page")
+	}
+
+	deadline, _ := commitCtx.Deadline()
+	backoff := 25 * time.Millisecond
+	for {
+		if err := commitCtx.Err(); err != nil {
+			return navigationCommitWaitError(err)
 		}
-		return err
+		frame, frameErr := b.mainFrameState(commitCtx, tabID)
+		identity, identityErr := b.extensionDocumentIdentity(commitCtx)
+		if frameErr == nil && identityErr == nil {
+			documentChanged := extensionNavigationDocumentChanged(beforeIdentity, identity)
+			loaderMatched := started.LoaderID != "" && frame.LoaderID == started.LoaderID
+			// Some SPAs update the live same-document location even though
+			// Page.navigate returns a speculative non-empty loader id which never
+			// commits. Accept that case only while BOTH trusted document identity and
+			// the pre-armed frame/loader remain unchanged, and only after the pinned
+			// document's exact location.href reaches the target. Page.getFrameTree's
+			// URL is insufficient here because it can retain another SPA spelling.
+			sameDocumentArrived := false
+			if sameDocumentTarget && !documentChanged && frame.ID == beforeFrame.ID && frame.LoaderID == beforeFrame.LoaderID {
+				if liveURL, err := b.mainDocumentURL(commitCtx, tabID); err == nil && liveURL == targetURL {
+					// Close the probe race: a replacement can commit between the
+					// frame/identity reads above and location.href. Re-read both boundaries
+					// after the exact URL match and accept only if they are still the
+					// original same-document values.
+					confirmedFrame, frameConfirmErr := b.mainFrameState(commitCtx, tabID)
+					confirmedIdentity, identityConfirmErr := b.extensionDocumentIdentity(commitCtx)
+					if frameConfirmErr == nil && identityConfirmErr == nil &&
+						!extensionNavigationDocumentChanged(beforeIdentity, confirmedIdentity) &&
+						confirmedFrame.ID == beforeFrame.ID && confirmedFrame.LoaderID == beforeFrame.LoaderID {
+						confirmedFrame.URL = liveURL
+						frame = confirmedFrame
+						identity = confirmedIdentity
+						sameDocumentArrived = true
+					}
+				}
+			}
+			if (documentChanged && loaderMatched) || sameDocumentArrived {
+				return b.waitForAcceptedNavigationDestination(
+					commitCtx, tabID, targetURL, identity, frame, sameDocumentArrived,
+				)
+			}
+		}
+		if time.Now().After(deadline) {
+			return errors.New("navigate_to: timed out waiting for the requested navigation to commit; the source document remained active")
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-commitCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return navigationCommitWaitError(commitCtx.Err())
+		case <-timer.C:
+		}
+		if backoff < 200*time.Millisecond {
+			backoff *= 2
+			if backoff > 200*time.Millisecond {
+				backoff = 200 * time.Millisecond
+			}
+		}
+	}
+}
+
+func isExactFragmentTransition(before, after string) bool {
+	if before == after {
+		return false
+	}
+	beforeBase, _, beforeHasFragment := strings.Cut(before, "#")
+	afterBase, _, afterHasFragment := strings.Cut(after, "#")
+	return beforeBase == afterBase && (beforeHasFragment || afterHasFragment)
+}
+
+func navigationCommitWaitError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errors.New("navigate_to: timed out waiting for the requested navigation to commit; the source document remained active")
+	}
+	return err
+}
+
+// waitForAcceptedNavigationDestination runs readiness only after a caller has
+// established a trusted destination boundary, then proves that boundary did not
+// change underneath the readiness check. requireExactURL is true for
+// same-document and exact-current requests; replacement navigations may finish
+// at a different policy-allowed URL after a legitimate redirect.
+func (b *Bridge) waitForAcceptedNavigationDestination(
+	ctx context.Context,
+	tabID, targetURL string,
+	acceptedIdentity extensionDocumentIdentityPayload,
+	acceptedFrame bridgeMainFrameState,
+	requireExactURL bool,
+) error {
+	// Validate the accepted main-frame URL before executing even the readiness
+	// predicate in that document. This closes the redirect gap without requiring
+	// equality to targetURL for replacement navigations.
+	if err := b.enforceFinalURL(ctx, acceptedFrame.URL); err != nil {
+		return fmt.Errorf("navigate_to: %w", err)
+	}
+	deadline, _ := ctx.Deadline()
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return errors.New("navigate_to: destination accepted after the navigation deadline")
+	}
+	if err := b.WaitFor(ctx, "ready", remaining); err != nil {
+		return fmt.Errorf("navigate_to: destination did not become ready: %w", err)
+	}
+	finalFrame, err := b.mainFrameState(ctx, tabID)
+	if err != nil {
+		return fmt.Errorf("navigate_to: verify accepted destination: %w", err)
+	}
+	finalIdentity, err := b.extensionDocumentIdentity(ctx)
+	if err != nil {
+		return fmt.Errorf("navigate_to: verify destination-document continuity: %w", err)
+	}
+	if extensionNavigationDocumentChanged(acceptedIdentity, finalIdentity) ||
+		acceptedFrame.ID != finalFrame.ID || acceptedFrame.LoaderID != finalFrame.LoaderID {
+		return errors.New("navigate_to: page changed again before the accepted destination became ready")
+	}
+	finalURL := finalFrame.URL
+	if requireExactURL {
+		// The frame-tree URL is not authoritative for a same-document SPA route;
+		// verify exactness against the live document just as the preflight does.
+		finalURL, err = b.mainDocumentURL(ctx, tabID)
+		if err != nil {
+			return fmt.Errorf("navigate_to: verify exact destination URL: %w", err)
+		}
+		if finalURL != targetURL {
+			return errors.New("navigate_to: exact destination changed again before it became ready")
+		}
+	}
+	if err := b.enforceFinalURL(ctx, finalURL); err != nil {
+		return fmt.Errorf("navigate_to: %w", err)
 	}
 	return nil
+}
+
+// mainDocumentURL reads the actual top-level document URL without going through
+// evaluateRuntime (whose navigation-policy guard intentionally performs another
+// evaluation). Window.location is an unforgeable browser object, and CDP chooses
+// the main-frame execution context when no context id is supplied.
+func (b *Bridge) mainDocumentURL(ctx context.Context, tabID string) (string, error) {
+	raw, err := b.cdp(ctx, tabID, "Runtime.evaluate", map[string]any{
+		"expression":    "globalThis.location.href",
+		"returnByValue": true,
+	})
+	if err != nil {
+		return "", err
+	}
+	var payload struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+		ExceptionDetails any `json:"exceptionDetails,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "", err
+	}
+	if payload.ExceptionDetails != nil {
+		if msg := browser.FormatRuntimeException(payload.ExceptionDetails); msg != "" {
+			return "", fmt.Errorf("runtime exception: %s", msg)
+		}
+		return "", errors.New("runtime exception while reading main-document URL")
+	}
+	if strings.TrimSpace(payload.Result.Value) == "" {
+		return "", errors.New("main-document URL is unavailable")
+	}
+	return payload.Result.Value, nil
+}
+
+func extensionNavigationDocumentChanged(before, after extensionDocumentIdentityPayload) bool {
+	if before.TabID != after.TabID || before.DocumentID != after.DocumentID {
+		return true
+	}
+	// Epoch detects BFCache A->B->A reuse while one worker stays alive. A worker
+	// restart resets the epoch, so do not mistake that reset alone for navigation;
+	// webNavigation's documentId remains the stable cross-worker comparison.
+	return before.WorkerInstance == after.WorkerInstance && before.DocumentEpoch != after.DocumentEpoch
+}
+
+func (b *Bridge) mainFrameState(ctx context.Context, tabID string) (bridgeMainFrameState, error) {
+	raw, err := b.cdp(ctx, tabID, "Page.getFrameTree", nil)
+	if err != nil {
+		return bridgeMainFrameState{}, err
+	}
+	var payload struct {
+		FrameTree struct {
+			Frame struct {
+				ID       string `json:"id"`
+				LoaderID string `json:"loaderId"`
+				URL      string `json:"url"`
+			} `json:"frame"`
+		} `json:"frameTree"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return bridgeMainFrameState{}, err
+	}
+	frame := payload.FrameTree.Frame
+	if strings.TrimSpace(frame.ID) == "" || strings.TrimSpace(frame.LoaderID) == "" || strings.TrimSpace(frame.URL) == "" {
+		return bridgeMainFrameState{}, errors.New("main-frame state is unavailable")
+	}
+	return bridgeMainFrameState{ID: frame.ID, LoaderID: frame.LoaderID, URL: frame.URL}, nil
 }
 
 func (b *Bridge) navigateDirection(ctx context.Context, dir string) error {
@@ -2783,21 +3609,32 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			sr.Result = openRes
 		}
 	case "navigate_to":
-		// Distinct from "open": this drives the batch's existing working tab to a
-		// new URL where open spawns a new one. Both backends must accept every
-		// advertised action, or an exported replay runs on direct CDP and fails
-		// on the extension with "unknown action".
+		// Distinct from "open": this drives the plan's existing working tab to a
+		// new URL where open spawns a new one. Stay on raw primitives so plans do
+		// not pay for the observed wrapper plus their own final observation.
 		if step.URL == "" {
 			actionErr = errors.New("navigate_to requires url")
 			break
 		}
-		_, actionErr = b.NavigateTo(ctx, step.URL)
+		var url string
+		url, actionErr = b.prepareNavigationURL(step.URL)
+		if actionErr == nil {
+			actionErr = b.navigateToURLAndWait(ctx, url)
+		}
+		if actionErr == nil {
+			b.settle(ctx, observedActionSettle)
+		}
 	case "click_text":
 		if step.Text == "" {
 			actionErr = errors.New("click_text requires text")
 			break
 		}
-		_, actionErr = b.ClickText(ctx, snapshot.ClickTextOptions{Text: step.Text})
+		var label string
+		label, actionErr = b.clickTextRaw(ctx, snapshot.ClickTextOptions{Text: step.Text})
+		if actionErr == nil {
+			sr.Result = map[string]any{"ok": true, "message": "clicked text " + strconv.Quote(label)}
+		}
+		b.settle(ctx, batchActionSettle)
 	case "focus_tab":
 		if step.ID == "" {
 			actionErr = errors.New("focus_tab requires id")
@@ -2920,6 +3757,97 @@ func (b *Bridge) Screenshot(ctx context.Context) (browser.Screenshot, error) {
 		params["fallbackViewport"] = map[string]any{"width": vw, "height": vh}
 	}
 	return b.captureScreenshot(ctx, tabID, params)
+}
+
+// CaptureArtifactScreenshot drops the duplicate model-facing base64 field once
+// the extension transport has been decoded. The extension protocol itself is
+// JSON/base64, but browser-host artifact storage needs only the raw bytes.
+func (b *Bridge) CaptureArtifactScreenshot(ctx context.Context, ref string) (browser.Screenshot, error) {
+	var (
+		shot browser.Screenshot
+		err  error
+	)
+	if strings.TrimSpace(ref) == "" {
+		shot, err = b.Screenshot(ctx)
+	} else {
+		shot, err = b.ScreenshotElement(ctx, ref)
+	}
+	shot.Base64 = ""
+	return shot, err
+}
+
+// DocumentIdentity asks the extension for Chrome's main-frame documentId.
+// Unlike a URL, documentId changes on every committed replacement document and
+// remains stable for same-document SPA history updates. The extension obtains
+// it through chrome.webNavigation, avoiding an extra debugger attachment for
+// text/semantic recipe captures.
+func (b *Bridge) DocumentIdentity(ctx context.Context) (browser.DocumentIdentity, error) {
+	payload, err := b.extensionDocumentIdentity(ctx)
+	if err != nil {
+		return browser.DocumentIdentity{}, err
+	}
+	if payload.Origin == "" || payload.Origin == "null" || len(payload.Origin) > 2048 {
+		return browser.DocumentIdentity{}, errors.New("extension returned an invalid main-document identity")
+	}
+	return browser.DocumentIdentity{
+		ID:     payload.WorkerInstance + "\x00" + strconv.FormatInt(payload.TabID, 10) + "\x00" + payload.DocumentID + "\x00" + strconv.FormatUint(payload.DocumentEpoch, 16),
+		Origin: payload.Origin,
+	}, nil
+}
+
+// extensionDocumentIdentity returns the raw trusted document boundary used by
+// both recipe artifact guards and navigation completion. Opaque origins are
+// valid here (data:/about: replacement documents still have exact document
+// identities); DocumentIdentity applies the stronger concrete-origin check
+// required before recipe capture.
+func (b *Bridge) extensionDocumentIdentity(ctx context.Context) (extensionDocumentIdentityPayload, error) {
+	tabID := b.contextTabID(ctx)
+	params := map[string]any{}
+	if tabID != "" {
+		params["tabId"] = parseTabID(tabID)
+	}
+	raw, err := b.call(ctx, "get_document_identity", params)
+	if err != nil {
+		return extensionDocumentIdentityPayload{}, err
+	}
+	var payload extensionDocumentIdentityPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return extensionDocumentIdentityPayload{}, errors.New("extension returned an invalid main-document identity")
+	}
+	payload.DocumentID = strings.TrimSpace(payload.DocumentID)
+	payload.WorkerInstance = strings.TrimSpace(payload.WorkerInstance)
+	payload.Origin = strings.TrimSpace(payload.Origin)
+	if payload.TabID <= 0 || payload.DocumentID == "" || len(payload.DocumentID) > 256 ||
+		payload.WorkerInstance == "" || len(payload.WorkerInstance) > 256 || len(payload.Origin) > 2048 {
+		return extensionDocumentIdentityPayload{}, errors.New("extension returned an invalid main-document identity")
+	}
+	return payload, nil
+}
+
+// CapturePDF renders the current page through CDP and returns the decoded PDF
+// bytes to artifact.Service on this browser host. The control-plane and MCP
+// layers expose only an opaque artifact handle unless a caller later requests a
+// bounded byte window explicitly.
+func (b *Bridge) CapturePDF(ctx context.Context) ([]byte, error) {
+	tabID := b.contextTabID(ctx)
+	raw, err := b.cdp(ctx, tabID, "Page.printToPDF", map[string]any{"printBackground": true})
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	if payload.Data == "" {
+		return nil, errors.New("Page.printToPDF returned no data")
+	}
+	data, err := base64.StdEncoding.DecodeString(payload.Data)
+	if err != nil {
+		return nil, fmt.Errorf("decode Page.printToPDF response: %w", err)
+	}
+	return data, nil
 }
 
 func (b *Bridge) ScreenshotElement(ctx context.Context, ref string) (browser.Screenshot, error) {
@@ -3409,14 +4337,20 @@ func (b *Bridge) cdp(ctx context.Context, tabID, method string, params map[strin
 	}
 	raw, err := b.call(ctx, "cdp", req)
 	if err != nil && tabID != "" && isBridgeTabLostError(err) {
+		// "No tab" is an authoritative disappearance. Clear every tab-id keyed
+		// cache before returning so Chromium cannot later reuse the numeric id and
+		// inherit ownership/cursors/emulation from the destroyed target.
+		b.invalidateTabState(tabID)
 		// A context pin is authoritative (explicit caller tab_id or an HTTP
 		// session lease). Never strip it and fall through to the extension's
 		// mutable active tab: in a shared daemon that would turn a closed leased
 		// tab into an operation on another agent's or the human's tab.
-		if browser.TabIDFromContext(ctx) != "" {
+		// Isolation mode applies the same fail-closed rule even for direct library
+		// callers without a context pin; their NEXT call can auto-open a new owned
+		// tab, but this failed call must never retry on the user's active tab.
+		if browser.TabIDFromContext(ctx) != "" || !b.followFocus {
 			return raw, err
 		}
-		b.setActiveTabID("")
 		delete(req, "tabId")
 		return b.call(ctx, "cdp", req)
 	}
@@ -3500,7 +4434,20 @@ func (b *Bridge) ensureOwnedTabID(ctx context.Context) string {
 	if b.followFocus {
 		return b.contextTabID(ctx)
 	}
-	if owned := b.activeTabID(); owned != "" {
+	owned, reconciled := b.reconciledOwnedTab()
+	if !reconciled {
+		// Do not trust ownership cached from the displaced worker while the socket
+		// is down. getConn parks through the short MV3 gap; handleExtension
+		// reconciles agent_tab_id before waking it.
+		if _, err := b.getConn(ctx); err != nil {
+			return ""
+		}
+		owned, reconciled = b.reconciledOwnedTab()
+		if !reconciled {
+			return ""
+		}
+	}
+	if owned != "" {
 		return owned
 	}
 	// No owned tab yet: open one (default group, background) so the call never
@@ -3532,10 +4479,20 @@ func (b *Bridge) ensureOwnedTabID(ctx context.Context) string {
 	return res.Tab.ID
 }
 
+// reconciledOwnedTab returns an isolation pin only when it belongs to the
+// currently published connection generation. A disconnected bridge may retain
+// b.active for a same-worker reconnect, but callers must wait for the new hello
+// to confirm it before using that numeric id.
+func (b *Bridge) reconciledOwnedTab() (string, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.active, b.conn != nil && b.agentPinKnown && !b.shuttingDown
+}
+
 // ResolveActiveTabID resolves the tab a top-level no-tab_id tool call targets and
 // returns it (or "" when it cannot be determined / opened). The MCP / HTTP entry
 // points call this when no explicit tab_id is supplied and pin the result into the
-// request context via browser.WithTabID, so every downstream contextTabID()
+// request context via browser.WithCurrentOwnedTabID, so every downstream contextTabID()
 // short-circuits instead of re-resolving per sub-call. In isolation it returns
 // (and, on first use, opens) brw's owned tab; in follow-focus mode it runs the
 // same bounded retry as contextTabID so a mid-reconnect MV3 service worker does
@@ -3545,7 +4502,7 @@ func (b *Bridge) ResolveActiveTabID(ctx context.Context) string {
 }
 
 // pinActiveTab resolves the active tab once and returns a context with that tab
-// pinned via browser.WithTabID. If an explicit tab is already in the context it
+// pinned via browser.WithCurrentOwnedTabID. If an explicit tab is already in the context it
 // is left untouched (the caller asked for a specific tab). If resolution fails
 // (extension disconnected, mid-reconnect) the original context is returned so
 // downstream calls keep their existing per-call resolution behaviour rather than
@@ -3557,7 +4514,7 @@ func (b *Bridge) pinActiveTab(ctx context.Context) context.Context {
 	// ensureOwnedTabID (not contextTabID) so a batch/plan that starts before any
 	// brw_open also opens its own tab in isolation instead of resolving the user's.
 	if tabID := b.ensureOwnedTabID(ctx); tabID != "" {
-		return browser.WithTabID(ctx, tabID)
+		return browser.WithCurrentOwnedTabID(ctx, tabID)
 	}
 	return ctx
 }
@@ -3581,6 +4538,9 @@ func (b *Bridge) retargetPinnedTab(base, stepCtx context.Context, targetTabID st
 	// regardless of focus_tab side effects): never let a focus_tab/open override it.
 	if browser.TabIDIsExplicit(base) {
 		return stepCtx
+	}
+	if browser.TabIDRequiresCurrentOwnership(stepCtx) {
+		return browser.WithCurrentOwnedTabID(base, targetTabID)
 	}
 	return browser.WithImplicitTabID(base, targetTabID)
 }
@@ -3980,9 +4940,9 @@ func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (b
 		}
 		frontier := browser.SelectFrontierElements(snap.Elements, result.Focus, 12)
 		result.Changed = browser.SummarizeElements(frontier, 12)
-	} else if !b.navPolicy.Empty() && result.Error == "" {
+	} else if result.Error == "" {
 		result.OK = false
-		result.Error = "final policy observation failed closed: " + snapErr.Error()
+		result.Error = "final batch observation failed: " + snapErr.Error()
 	}
 	return result, nil
 }
@@ -4010,6 +4970,13 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 				sr.NewTabID = openedChildTabID(tabs, beforeTabs, sourceTabID)
 			}
 		}
+	case "click_text":
+		if step.Text == "" {
+			actionErr = errors.New("click_text requires text")
+			break
+		}
+		_, actionErr = b.clickTextRaw(ctx, snapshot.ClickTextOptions{Text: step.Text})
+		b.settle(ctx, batchActionSettle)
 	case "type":
 		if step.Ref == "" || step.Text == "" {
 			actionErr = errors.New("type requires ref and text")
@@ -4059,6 +5026,22 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 		openRes, actionErr = b.Open(ctx, step.URL)
 		if actionErr == nil {
 			retargetTo = openRes.Tab.ID
+		}
+	case "navigate_to":
+		// Keep batch parity with the plan and direct-CDP runners. This reuses the
+		// batch's pinned working tab; unlike open it must not create or retarget to
+		// another tab.
+		if step.URL == "" {
+			actionErr = errors.New("navigate_to requires url")
+			break
+		}
+		var url string
+		url, actionErr = b.prepareNavigationURL(step.URL)
+		if actionErr == nil {
+			actionErr = b.navigateToURLAndWait(ctx, url)
+		}
+		if actionErr == nil {
+			b.settle(ctx, observedActionSettle)
 		}
 	case "focus_tab":
 		if step.ID == "" {
@@ -4192,6 +5175,13 @@ func (b *Bridge) AssertValue(ctx context.Context, ref, value string, timeout tim
 	return b.evalAssert(ctx, snapshot.AssertValueScript, ref, value, timeout.Milliseconds())
 }
 
+func (b *Bridge) AssertValueContains(ctx context.Context, ref, value string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	return b.evalAssert(ctx, snapshot.AssertValueContainsScript, ref, value, timeout.Milliseconds())
+}
+
 func (b *Bridge) AssertHidden(ctx context.Context, ref string, timeout time.Duration) error {
 	if timeout == 0 {
 		timeout = 5 * time.Second
@@ -4321,14 +5311,12 @@ func (b *Bridge) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYRes
 // Supported=false contract instead of a hard error.
 const downloadsUnsupportedNote = "Download capture is unavailable: the connected brw extension predates chrome.downloads support (issue #6). Reload the brw extension, or restart brw with the direct-CDP backend. Check Supported=false to detect this programmatically."
 
-// Downloads captures downloads over the extension bridge via the extension's
-// chrome.downloads API (issue #6). The bridge cannot observe CDP
-// Browser.downloadWillBegin / downloadProgress events — those only fire on a
-// debugger-attached target — so the extension's service worker registers
-// chrome.downloads.onCreated / onChanged listeners and buffers entries, which we
-// drain here through the get_downloads RPC. The wire shape already matches
-// browser.DownloadEntry, so it unmarshals directly. An extension too old to know
-// the message returns the legacy Supported=false note rather than erroring.
+// Downloads captures retained snapshots from the extension's chrome.downloads
+// registry. Page.downloadWillBegin provenance is correlated extension-side and
+// arrives as DownloadEntry.TabID. Recipe-scoped contexts receive only entries
+// changed after their per-tab baseline and require exact provenance; ordinary
+// calls receive the complete bounded snapshot. An extension too old to know the
+// message returns the legacy Supported=false note rather than erroring.
 func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error) {
 	raw, err := b.call(ctx, "get_downloads", nil)
 	if err != nil {
@@ -4355,12 +5343,84 @@ func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error)
 	if payload.Downloads == nil {
 		payload.Downloads = []browser.DownloadEntry{}
 	}
+	if !payload.Supported {
+		return browser.DownloadsResult{
+			Downloads: payload.Downloads,
+			Count:     len(payload.Downloads),
+			Supported: false,
+			Note:      payload.Note,
+		}, nil
+	}
+	if len(payload.Downloads) > maxBridgeTrackedDownloads {
+		payload.Downloads = append([]browser.DownloadEntry(nil), payload.Downloads[len(payload.Downloads)-maxBridgeTrackedDownloads:]...)
+	}
+
+	b.downloadsMu.Lock()
+	b.ensureDownloadTrackingMapsLocked()
+	b.ingestDownloadSnapshotLocked(payload.Downloads)
+	result := append([]browser.DownloadEntry(nil), payload.Downloads...)
+	if _, recipeScoped := browser.AllowedOriginsFromContext(ctx); recipeScoped {
+		tabID := browser.TabIDFromContext(ctx)
+		if tabID == "" {
+			b.downloadsMu.Unlock()
+			return browser.DownloadsResult{}, errors.New("recipe download polling requires a pinned browser tab")
+		}
+		cursor := b.downloadCursors[tabID]
+		result = result[:0]
+		for _, entry := range payload.Downloads {
+			if entry.TabID == tabID && b.downloadVersions[entry.GUID] > cursor {
+				result = append(result, entry)
+			}
+		}
+		b.downloadCursors[tabID] = b.downloadSequence
+	}
+	b.downloadsMu.Unlock()
+	if result == nil {
+		result = []browser.DownloadEntry{}
+	}
 	return browser.DownloadsResult{
-		Downloads: payload.Downloads,
-		Count:     len(payload.Downloads),
+		Downloads: result,
+		Count:     len(result),
 		Supported: payload.Supported,
 		Note:      payload.Note,
 	}, nil
+}
+
+const maxBridgeTrackedDownloads = 200
+
+func (b *Bridge) ensureDownloadTrackingMapsLocked() {
+	if b.downloadFingerprints == nil {
+		b.downloadFingerprints = map[string]string{}
+	}
+	if b.downloadVersions == nil {
+		b.downloadVersions = map[string]uint64{}
+	}
+	if b.downloadCursors == nil {
+		b.downloadCursors = map[string]uint64{}
+	}
+}
+
+func (b *Bridge) ingestDownloadSnapshotLocked(entries []browser.DownloadEntry) {
+	present := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if entry.GUID == "" || len(entry.GUID) > 500 {
+			continue
+		}
+		present[entry.GUID] = true
+		encoded, _ := json.Marshal(entry)
+		fingerprint := string(encoded)
+		if b.downloadFingerprints[entry.GUID] != fingerprint {
+			b.downloadSequence++
+			b.downloadFingerprints[entry.GUID] = fingerprint
+			b.downloadVersions[entry.GUID] = b.downloadSequence
+		}
+	}
+	for guid := range b.downloadFingerprints {
+		if !present[guid] {
+			delete(b.downloadFingerprints, guid)
+			delete(b.downloadVersions, guid)
+		}
+	}
 }
 
 func (b *Bridge) finishObservedTrace(before bridgeActionBaseline, message string, result *browser.ActionResult) {

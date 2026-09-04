@@ -3,6 +3,7 @@ package httpapi
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Don-Works/brw/internal/usagelog"
@@ -62,6 +63,13 @@ var usageOperations = map[string]string{
 	"/api/page/clear_trace":          "brw_clear_trace",
 	"/api/visual/screenshot":         "brw_screenshot",
 	"/api/visual/screenshot_element": "brw_screenshot_element",
+	"/api/artifacts/capture":         "brw_artifact_capture",
+	"/api/artifacts/info":            "brw_artifact_info",
+	"/api/artifacts/read":            "brw_artifact_read",
+	"/api/artifacts/search":          "brw_artifact_search",
+	"/api/artifacts/delete":          "brw_artifact_delete",
+	"/api/recipes/search":            "brw_recipe_search",
+	"/api/recipes/run":               "brw_recipe_run",
 }
 
 type usageResponseWriter struct {
@@ -87,6 +95,18 @@ func (w *usageResponseWriter) Write(data []byte) (int, error) {
 func (s *Server) usageMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		operation := usageOperations[r.URL.Path]
+		if operation == "" && strings.HasPrefix(r.URL.Path, "/api/artifacts/") {
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/info"):
+				operation = "brw_artifact_info"
+			case strings.HasSuffix(r.URL.Path, "/read"):
+				operation = "brw_artifact_read"
+			case strings.HasSuffix(r.URL.Path, "/search"):
+				operation = "brw_artifact_search"
+			case r.Method == http.MethodDelete:
+				operation = "brw_artifact_delete"
+			}
+		}
 		if operation == "" || s.usage == nil {
 			next.ServeHTTP(w, r)
 			return

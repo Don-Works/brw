@@ -27,9 +27,10 @@ func filterBridgeCapturedRequests(requests []snapshot.CapturedRequest, filter st
 }
 
 // NetworkCapture installs the in-page interceptor (idempotent) over the bridge
-// transport and drains the recorded requests. This works without the CDP Network
-// domain because the interceptor is pure in-page JS — the required baseline for
-// the extension bridge into real Chrome.
+// transport and snapshots the recorded requests. Terminal rows are drained;
+// in-flight rows remain available until completion. This works without the CDP
+// Network domain because the interceptor is pure in-page JS — the required
+// baseline for the extension bridge into real Chrome.
 func (b *Bridge) NetworkCapture(ctx context.Context, filter string) ([]snapshot.CapturedRequest, error) {
 	var installed json.RawMessage
 	if err := b.evaluate(ctx, snapshot.NetworkCaptureInstallScript, "", &installed); err != nil {

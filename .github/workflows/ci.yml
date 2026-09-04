@@ -17,19 +17,42 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+      - name: Verify dependency checksums
+        run: go mod verify
+      - name: Lint GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Test every package and the real extension worker
         run: make test
+      - name: Run deterministic real-browser functional suite
+        run: make test-functional
+      - name: Enforce open-source privacy boundary
+        shell: bash
+        run: |
+          base=origin/main
+          if [ "${{ github.event_name }}" = "push" ]; then
+            base="${{ github.event.before }}"
+          fi
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base=HEAD^
+          fi
+          python3 scripts/check-oss-hygiene.py "$base"
+      - name: Scan Git history for secrets
+        run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 git . --redact --no-banner
       - name: Vet
         run: go vet ./...
+      - name: Static analysis
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
       - name: Reachable vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
       - name: Race-test transport and policy boundaries
-        run: go test -race ./internal/mcp ./internal/http ./internal/httpclient ./internal/navpolicy ./internal/extensionbridge
+        run: go test -race ./internal/artifact ./internal/recipe ./internal/mcp ./internal/http ./internal/httpclient ./internal/navpolicy ./internal/extensionbridge

@@ -44,7 +44,26 @@ a tool returns `ref not found` or `not actionable`, the page changed — call
   microdata, OpenGraph). The fast path for prices, product details, listings.
 - **`brw_network_capture`** then **`brw_replay_request`** — read the page's own
   JSON/XHR API instead of scraping the DOM, when that is the data you want.
+  An in-flight row has `completed:false` and remains visible across calls under
+  the same `capture_id`; its terminal row is returned once, then consumed.
   (Mutating replays of checkout/payment URLs are blocked by design.)
+- **`brw_artifact_capture { kind: "text" }`** — dump a large page on the
+  browser host without returning it. Search it with `brw_artifact_search`, or
+  page only the needed bytes with `brw_artifact_read`. The same pattern works
+  for semantic JSON, screenshots, PDF, downloads, and bounded video.
+
+## Reusing a known site workflow
+
+When the operator has configured a private recipe provider, describe the goal to
+`brw_recipe_search`, optionally constrained to the current exact origin. Choose
+from its metadata, then pass the returned `id`, `version`, and `digest` unchanged
+to `brw_recipe_run`. Do not ask search to reveal the steps and do not synthesize
+a digest. The recipe runtime resolves fresh semantic targets and handles its own
+bounded timers/events; the model supplies only declared runtime inputs.
+
+Operational recipes live outside this open-source repository. A skill may teach
+an agent when to look for one, but it should point to the private provider rather
+than embed the recipe. See [recipes and artifacts](recipes-and-artifacts.md).
 
 ## Token discipline
 
@@ -225,14 +244,14 @@ prevented from leaving the machine.
 ## Lean tool surface for small models
 
 The tool catalogue is re-sent on every request, so its size is a fixed cost on
-every turn — not a one-off. Three profiles trade breadth against that cost:
+every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` (default) | 55 | ~12.1k tokens |
+| `all` | 62 | ~13.5k tokens |
 | `core` | 24 | ~7.0k tokens |
 | `minimal` | 12 | ~3.8k tokens |
-| `auto` | 13, growing | ~4.1k tokens to start |
+| `auto` (default) | 13, growing | ~4.1k tokens to start |
 
 `core` advertises the common-flow tools (open/snapshot/find/click/type/fill/
 select/press/scroll/hover/drag/upload/navigate/wait/batch/observe/screenshot).

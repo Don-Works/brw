@@ -52,3 +52,38 @@ func TestUsageMiddlewareNeverLogsRequestOrErrorText(t *testing.T) {
 		t.Fatalf("middleware changed API error response: %s", body)
 	}
 }
+
+func TestArtifactUsageLogNeverContainsHandleQueryOrBackingError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "artifact-usage.ndjson")
+	recorder, err := usagelog.New(usagelog.Config{
+		Path: path, MaxBytes: 1 << 20, Backups: 1,
+		Identity: brwidentity.Identity{Workspace: "brw-test", Profile: "test", Mode: "bridge"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const artifactID = "art_0123456789abcdef0123456789abcdef"
+	const query = "PRIVATE_ARTIFACT_QUERY_SENTINEL"
+	api := &artifactAPIFake{operationErr: errors.New("backend failed for " + artifactID + " query " + query)}
+	server := New("", &fakeController{})
+	server.SetArtifactAPI(api)
+	server.SetUsageRecorder(recorder)
+	body := `{"artifact_id":"` + artifactID + `","query":"` + query + `","limit":1}`
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/artifacts/search", strings.NewReader(body)))
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{artifactID, query, "backend failed"} {
+		if strings.Contains(string(data), forbidden) || strings.Contains(rec.Body.String(), forbidden) {
+			t.Fatalf("artifact HTTP telemetry or response retained %q: log=%s response=%s", forbidden, data, rec.Body.String())
+		}
+	}
+	if !strings.Contains(string(data), `"operation":"brw_artifact_search"`) || !strings.Contains(string(data), `"outcome":"error"`) {
+		t.Fatalf("missing safe artifact usage metadata: %s", data)
+	}
+}

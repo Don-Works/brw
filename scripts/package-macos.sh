@@ -62,6 +62,7 @@ done
 
 cp -R "$repo_root/extension" "$root_dir/usr/local/share/brw/extension"
 cp -R "$repo_root/tests" "$root_dir/usr/local/share/brw/tests"
+cp -R "$repo_root/skills" "$root_dir/usr/local/share/brw/skills"
 cp "$repo_root/LICENSE" "$root_dir/usr/local/share/brw/doc/LICENSE"
 cp "$repo_root/README.md" "$root_dir/usr/local/share/brw/doc/README.md"
 find "$root_dir" -name '._*' -delete

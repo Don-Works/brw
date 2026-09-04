@@ -3,6 +3,8 @@ package snapshot
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -178,5 +180,72 @@ func TestSettleZeroCapReturnsImmediately(t *testing.T) {
 	}
 	if res.Reason != "cap" || res.SettledMS > 25 {
 		t.Fatalf("expected immediate cap return, got reason=%q settledMs=%d", res.Reason, res.SettledMS)
+	}
+}
+
+// TestPreArmedSettleCatchesSynchronousMutation is the regression test for the
+// latency bug that a post-action observer cannot see: the click handler mutates
+// synchronously before a following CDP command can attach anything.
+func TestPreArmedSettleCatchesSynchronousMutation(t *testing.T) {
+	ctx, cancel := newHeadlessSettleCtx(t)
+	defer cancel()
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+	fixture := `data:text/html,<button id="b">go</button><output id="o">0</output><script>b.onclick=()=>o.textContent='1'</script>`
+	if err := chromedp.Run(runCtx, chromedp.Navigate(fixture), chromedp.WaitReady("#b")); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := ArmSettle(runCtx, 150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(`document.getElementById('b').click()`, nil)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := AwaitSettle(runCtx, handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reason != "quiesce" || result.SettledMS >= 100 || time.Since(started) >= 130*time.Millisecond {
+		t.Fatalf("pre-armed settle missed synchronous mutation: result=%+v wall=%s", result, time.Since(started))
+	}
+}
+
+func TestPreArmedSettleWaitsForRenderAfterNetworkResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/signal" {
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		_, _ = w.Write([]byte(`<!doctype html><button id="b">load</button><output id="o">pending</output><script>
+			b.onclick=()=>fetch('/signal').then(()=>setTimeout(()=>{o.textContent='rendered'},20))
+		</script>`))
+	}))
+	defer server.Close()
+	ctx, cancel := newHeadlessSettleCtx(t)
+	defer cancel()
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.Navigate(server.URL), chromedp.WaitReady("#b")); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := ArmSettle(runCtx, 150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(`document.getElementById('b').click()`, nil)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := AwaitSettle(runCtx, handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered string
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(`document.getElementById('o').textContent`, &rendered)); err != nil {
+		t.Fatal(err)
+	}
+	if rendered != "rendered" || result.SettledMS < 35 {
+		t.Fatalf("settled before post-response render: result=%+v output=%q", result, rendered)
 	}
 }

@@ -48,6 +48,40 @@ func (longPageController) Read(context.Context) (readability.PageRead, error) {
 	}, nil
 }
 
+type upstreamWindowController struct {
+	longPageController
+	fullCalls   int
+	windowCalls int
+	options     readability.ReadOptions
+}
+
+func (c *upstreamWindowController) Read(context.Context) (readability.PageRead, error) {
+	c.fullCalls++
+	return c.longPageController.Read(context.Background())
+}
+
+func (c *upstreamWindowController) ReadWindow(_ context.Context, options readability.ReadOptions) (readability.PageRead, error) {
+	c.windowCalls++
+	c.options = options
+	full, _ := c.longPageController.Read(context.Background())
+	return readability.Window(full, options), nil
+}
+
+func TestReadToolUsesBrowserHostWindowCapability(t *testing.T) {
+	controller := &upstreamWindowController{}
+	srv := &Server{manager: controller, toolProfile: "all"}
+	got := callToolJSON(t, srv, "brw_read", `{"max_chars":321,"offset":99,"include":["main"]}`)
+	if controller.fullCalls != 0 || controller.windowCalls != 1 {
+		t.Fatalf("full calls=%d window calls=%d", controller.fullCalls, controller.windowCalls)
+	}
+	if controller.options.MaxChars != 321 || controller.options.Offset != 99 || len(controller.options.Include) != 1 {
+		t.Fatalf("forwarded options=%+v", controller.options)
+	}
+	if main, _ := got["main"].(string); len(main) != 321 {
+		t.Fatalf("windowed main len=%d", len(main))
+	}
+}
+
 func TestReadToolBoundsProseByDefault(t *testing.T) {
 	srv := &Server{manager: longPageController{}, toolProfile: "all"}
 	got := callToolJSON(t, srv, "brw_read", `{}`)

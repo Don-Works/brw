@@ -3,8 +3,11 @@ package snapshot
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -129,6 +132,375 @@ func TestNetworkCaptureRecordsFetch(t *testing.T) {
 	}
 }
 
+func TestNetworkCaptureRetainsSlowFetchUntilTerminalDrain(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/slow" {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<html><body>slow network fixture</body></html>`))
+			return
+		}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-release:
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("slow response complete"))
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := newHeadlessCtx(t)
+	defer cancel()
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.Navigate(srv.URL)); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	if err := InstallNetworkCapture(runCtx); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	var ignored any
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(
+		`(function(){ window.__slowPromise = fetch('/slow', {headers:{Authorization:'Bearer must-not-leak'}}).then(function(r){ return r.text(); }); return true; })()`,
+		&ignored,
+	)); err != nil {
+		t.Fatalf("start slow fetch: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("slow request did not reach fixture server")
+	}
+
+	first, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatalf("drain pending request: %v", err)
+	}
+	pending := capturedRequestContaining(first, "/slow")
+	if pending == nil {
+		t.Fatalf("manual drain did not report the in-flight request: %+v", first)
+	}
+	if pending.Completed || pending.Status != 0 || pending.Error != "" || pending.CaptureID == "" || len(pending.CaptureID) > 40 {
+		t.Fatalf("pending request has invalid lifecycle state: %+v", *pending)
+	}
+	redacted := RedactCapturedCredentials(first)
+	pending = capturedRequestContaining(redacted, "/slow")
+	if pending == nil || pending.RequestHeaders["Authorization"] != "[redacted]" {
+		t.Fatalf("credential redaction regressed for pending capture: %+v", pending)
+	}
+	pendingID := pending.CaptureID
+	stillPending, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatalf("repeat pending drain: %v", err)
+	}
+	repeated := capturedRequestContaining(stillPending, "/slow")
+	if repeated == nil || repeated.Completed || repeated.CaptureID != pendingID || repeated.Status != 0 {
+		t.Fatalf("in-flight row did not survive repeated drains: %+v", repeated)
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(`window.__slowPromise`, &ignored, awaitPromise)); err != nil {
+		t.Fatalf("await slow fetch: %v", err)
+	}
+	terminal, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatalf("drain completed request: %v", err)
+	}
+	completed := capturedRequestContaining(terminal, "/slow")
+	if completed == nil {
+		t.Fatalf("slow request disappeared after the earlier drain: %+v", terminal)
+	}
+	if !completed.Completed || completed.CaptureID != pendingID || completed.Status != http.StatusOK || !completed.OK || completed.Error != "" {
+		t.Fatalf("terminal lifecycle did not preserve identity/status: pending=%q completed=%+v", pendingID, *completed)
+	}
+
+	again, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatalf("third drain: %v", err)
+	}
+	if duplicate := capturedRequestContaining(again, "/slow"); duplicate != nil {
+		t.Fatalf("terminal request was not consumed exactly once: %+v", *duplicate)
+	}
+}
+
+func TestNetworkCaptureRetainsThenTerminallyDrainsAbortedXHR(t *testing.T) {
+	started := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/hang-xhr" {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-r.Context().Done()
+			return
+		}
+		_, _ = w.Write([]byte(`<html><body>xhr fixture</body></html>`))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := newHeadlessCtx(t)
+	defer cancel()
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.Navigate(srv.URL)); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallNetworkCapture(runCtx); err != nil {
+		t.Fatal(err)
+	}
+	var ignored any
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(
+		`(function(){ var x = new XMLHttpRequest(); window.__testXHR=x; window.__xhrDone=false; x.addEventListener('loadend', function(){window.__xhrDone=true}); x.open('GET','/hang-xhr'); x.send(); return true; })()`,
+		&ignored,
+	)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("XHR did not reach fixture server")
+	}
+	pendingRows, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := capturedRequestContaining(pendingRows, "/hang-xhr")
+	if pending == nil || pending.Completed || pending.Transport != "xhr" || pending.Status != 0 || pending.CaptureID == "" {
+		t.Fatalf("pending XHR capture = %+v", pending)
+	}
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(
+		`(function(){ window.__testXHR.abort(); return window.__xhrDone; })()`, &ignored,
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if err := chromedp.Run(runCtx, chromedp.Poll(`window.__xhrDone === true`, nil)); err != nil {
+		t.Fatalf("wait for XHR abort: %v", err)
+	}
+	terminalRows, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := capturedRequestContaining(terminalRows, "/hang-xhr")
+	if terminal == nil || !terminal.Completed || terminal.CaptureID != pending.CaptureID || terminal.Status != 0 || terminal.OK || terminal.Error != "request aborted" {
+		t.Fatalf("terminal aborted XHR capture = %+v", terminal)
+	}
+	again, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate := capturedRequestContaining(again, "/hang-xhr"); duplicate != nil {
+		t.Fatalf("aborted XHR was returned more than once: %+v", *duplicate)
+	}
+}
+
+func TestNetworkCaptureDrainsFailedFetchExactlyOnce(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/fail" {
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("fixture response writer does not support hijacking")
+				return
+			}
+			conn, _, err := hijacker.Hijack()
+			if err != nil {
+				t.Errorf("hijack failing response: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>failed network fixture</body></html>`))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := newHeadlessCtx(t)
+	defer cancel()
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.Navigate(srv.URL)); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	if err := InstallNetworkCapture(runCtx); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	var ignored any
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(
+		`(function(){ window.__failedPromise = fetch('/fail').then(function(){ return 'unexpected success'; }, function(){ return 'expected failure'; }); return true; })()`,
+		&ignored,
+	)); err != nil {
+		t.Fatalf("start failing fetch: %v", err)
+	}
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(`window.__failedPromise`, &ignored, awaitPromise)); err != nil {
+		t.Fatalf("await failing fetch: %v", err)
+	}
+
+	requests, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatalf("drain failure: %v", err)
+	}
+	failed := capturedRequestContaining(requests, "/fail")
+	if failed == nil || !failed.Completed || failed.CaptureID == "" || failed.Status != 0 || failed.OK || failed.Error == "" {
+		t.Fatalf("failed request was not recorded as terminal: %+v", failed)
+	}
+	again, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatalf("repeat failure drain: %v", err)
+	}
+	if duplicate := capturedRequestContaining(again, "/fail"); duplicate != nil {
+		t.Fatalf("failed request was returned more than once: %+v", *duplicate)
+	}
+}
+
+func TestNetworkCaptureUpgradesInflightV1EntryWithoutLosingIt(t *testing.T) {
+	ctx, cancel := newHeadlessCtx(t)
+	defer cancel()
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.Navigate("about:blank")); err != nil {
+		t.Fatal(err)
+	}
+	var ignored any
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(`(function(){
+		window.__legacyEntry = {method:'GET',url:'/legacy-slow',request_headers:{},request_body:'',status:0,ok:false,response_snippet:'',transport:'fetch',error:'',started_at:1,duration_ms:0};
+		window.__brwNet = [window.__legacyEntry];
+		return true;
+	})()`, &ignored)); err != nil {
+		t.Fatal(err)
+	}
+	pendingRows, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := capturedRequestContaining(pendingRows, "/legacy-slow")
+	if pending == nil || pending.Completed || pending.CaptureID == "" {
+		t.Fatalf("v1 pending entry upgrade = %+v", pending)
+	}
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(`(function(){ window.__legacyEntry.status=200; window.__legacyEntry.ok=true; window.__legacyEntry.duration_ms=10; return true; })()`, &ignored)); err != nil {
+		t.Fatal(err)
+	}
+	terminalRows, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := capturedRequestContaining(terminalRows, "/legacy-slow")
+	if terminal == nil || !terminal.Completed || terminal.CaptureID != pending.CaptureID || terminal.Status != http.StatusOK {
+		t.Fatalf("v1 terminal entry upgrade = %+v", terminal)
+	}
+	again, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate := capturedRequestContaining(again, "/legacy-slow"); duplicate != nil {
+		t.Fatalf("upgraded terminal entry repeated: %+v", *duplicate)
+	}
+}
+
+func TestNetworkCaptureRingBoundPrefersInflightRows(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slow-ring" {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			select {
+			case <-release:
+				_, _ = w.Write([]byte("done"))
+			case <-r.Context().Done():
+			}
+			return
+		}
+		_, _ = w.Write([]byte(`<html><body>bounded ring fixture</body></html>`))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := newHeadlessCtx(t)
+	defer cancel()
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.Navigate(srv.URL)); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallNetworkCapture(runCtx); err != nil {
+		t.Fatal(err)
+	}
+	var ignored any
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(
+		`(function(){ window.__ringSlowPromise = fetch('/slow-ring'); return true; })()`, &ignored,
+	)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("slow ring request did not start")
+	}
+
+	var buffered int
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(
+		`(async function(){ for (var i=0; i<140; i++) await fetch('/quick-ring?i=' + i); return window.__brwNet.length; })()`,
+		&buffered,
+		awaitPromise,
+	)); err != nil {
+		t.Fatalf("fill capture ring: %v", err)
+	}
+	if buffered != 100 {
+		t.Fatalf("capture ring length=%d, want hard bound 100", buffered)
+	}
+	requests, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 100 {
+		t.Fatalf("bounded drain returned %d rows, want 100", len(requests))
+	}
+	pending := capturedRequestContaining(requests, "/slow-ring")
+	if pending == nil || pending.Completed || pending.Status != 0 {
+		t.Fatalf("completed churn evicted the older in-flight request: %+v", pending)
+	}
+	seen := make(map[string]bool, len(requests))
+	for _, request := range requests {
+		if request.CaptureID == "" || len(request.CaptureID) > 40 || seen[request.CaptureID] {
+			t.Fatalf("unbounded or duplicate capture id %q", request.CaptureID)
+		}
+		seen[request.CaptureID] = true
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(`window.__ringSlowPromise`, &ignored, awaitPromise)); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed := capturedRequestContaining(terminal, "/slow-ring"); completed == nil || !completed.Completed || completed.CaptureID != pending.CaptureID || completed.Status != http.StatusOK {
+		t.Fatalf("retained ring request did not complete with stable identity: %+v", completed)
+	}
+}
+
+func capturedRequestContaining(requests []CapturedRequest, needle string) *CapturedRequest {
+	for i := range requests {
+		if strings.Contains(requests[i].URL, needle) {
+			return &requests[i]
+		}
+	}
+	return nil
+}
+
 func TestNetworkCaptureSurvivesNavigation(t *testing.T) {
 	ctx, cancel := newHeadlessCtx(t)
 	defer cancel()
@@ -166,6 +538,57 @@ func TestNetworkCaptureSurvivesNavigation(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("interceptor did not survive navigation (no manual reinstall); captured: %+v", requests)
+	}
+}
+
+func TestNetworkCaptureIDUsesANewEpochAfterNavigation(t *testing.T) {
+	ctx, cancel := newHeadlessCtx(t)
+	defer cancel()
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+	if err := chromedp.Run(runCtx, chromedp.Navigate("about:blank")); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterNetworkCaptureOnNewDocument(runCtx); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallNetworkCapture(runCtx); err != nil {
+		t.Fatal(err)
+	}
+	var ignored any
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(`fetch('data:text/plain,before-navigation')`, &ignored, awaitPromise)); err != nil {
+		t.Fatal(err)
+	}
+	beforeRows, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := capturedRequestContaining(beforeRows, "before-navigation")
+	if before == nil || before.CaptureID == "" {
+		t.Fatalf("before-navigation capture = %+v", before)
+	}
+	beforeEpoch, _, ok := strings.Cut(before.CaptureID, ":")
+	if !ok {
+		t.Fatalf("before capture id has no epoch: %q", before.CaptureID)
+	}
+
+	if err := chromedp.Run(runCtx, chromedp.Navigate(`data:text/html,<html><body>new document</body></html>`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := chromedp.Run(runCtx, chromedp.Evaluate(`fetch('data:text/plain,after-navigation')`, &ignored, awaitPromise)); err != nil {
+		t.Fatal(err)
+	}
+	afterRows, err := CaptureNetwork(runCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := capturedRequestContaining(afterRows, "after-navigation")
+	if after == nil || after.CaptureID == "" {
+		t.Fatalf("after-navigation capture = %+v", after)
+	}
+	afterEpoch, _, ok := strings.Cut(after.CaptureID, ":")
+	if !ok || afterEpoch == beforeEpoch {
+		t.Fatalf("capture epochs did not change across navigation: before=%q after=%q", before.CaptureID, after.CaptureID)
 	}
 }
 

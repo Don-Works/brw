@@ -237,6 +237,21 @@ func TestClassifyErrorSeparatesNonDrivableTabsFromToolFailures(t *testing.T) {
 			want: "tool",
 		},
 		{
+			name: "recipe transport lacks document identity",
+			err:  errors.New("deterministic recipe artifact capture requires main-document identity support"),
+			want: "capability",
+		},
+		{
+			name: "recipe document identity unavailable",
+			err:  errors.New("could not verify the main document for recipe artifact capture"),
+			want: "document_identity_unavailable",
+		},
+		{
+			name: "recipe crossed document boundary",
+			err:  errors.New("recipe artifact capture crossed a main-document boundary"),
+			want: "document_changed",
+		},
+		{
 			name: "a real transport drop is unaffected",
 			err:  errors.New("extension bridge is not connected; load/click the Chrome extension first"),
 			want: "transport",

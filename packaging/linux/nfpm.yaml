@@ -33,6 +33,9 @@ contents:
   - src: "@BRW_PACKAGE_ROOT@/usr/share/brw/tests"
     dst: /usr/share/brw/tests
     type: tree
+  - src: "@BRW_PACKAGE_ROOT@/usr/share/brw/skills"
+    dst: /usr/share/brw/skills
+    type: tree
   - src: "@BRW_PACKAGE_ROOT@/usr/share/brw/doc"
     dst: /usr/share/doc/brw
     type: tree

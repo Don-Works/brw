@@ -2,10 +2,15 @@ package extensionbridge
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/coder/websocket"
 )
 
 // newIsolationExtension builds a group-aware fake with a single tab the USER has
@@ -170,5 +175,96 @@ func TestFollowFocusModeResolvesUsersTabWithoutOpening(t *testing.T) {
 	fe.mu.Unlock()
 	if next != 300 {
 		t.Fatalf("follow-focus must NOT auto-open; nextTabID advanced to %d", next)
+	}
+}
+
+func TestIsolationLostOwnedTabFailsClosedAndInvalidatesBeforeReuse(t *testing.T) {
+	b := New("", 2*time.Second, "")
+	b.SetFollowFocus(false)
+	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/extension"
+	conn, err := dialExtension(t, wsURL, testDefaultOrigin)
+	if err != nil {
+		t.Fatalf("dial extension: %v", err)
+	}
+	defer conn.CloseNow()
+	waitUntil(t, b.liveConn)
+
+	cdpTargets := make(chan bool, 2)
+	serveCtx, serveCancel := context.WithCancel(context.Background())
+	defer serveCancel()
+	go func() {
+		for {
+			_, data, readErr := conn.Read(serveCtx)
+			if readErr != nil {
+				return
+			}
+			var req request
+			if json.Unmarshal(data, &req) != nil {
+				continue
+			}
+			reply := map[string]any{"id": req.ID, "ok": true, "result": map[string]any{}}
+			if req.Type == "cdp" {
+				_, pinned := req.Params["tabId"]
+				cdpTargets <- pinned
+				if pinned {
+					reply["ok"] = false
+					reply["error"] = "No tab with id: 42"
+					delete(reply, "result")
+				}
+			}
+			encoded, _ := json.Marshal(reply)
+			_ = conn.Write(serveCtx, websocket.MessageText, encoded)
+		}
+	}()
+
+	b.mu.Lock()
+	b.active = "42"
+	b.mu.Unlock()
+	b.observeMu.Lock()
+	b.observedState["42"] = &browser.SemanticState{URL: "https://closed.example.test/"}
+	b.observeVersions["42"] = 4
+	b.observeMu.Unlock()
+	b.downloadsMu.Lock()
+	b.downloadCursors["42"] = 6
+	b.downloadsMu.Unlock()
+	b.emulationMu.Lock()
+	b.emulationStates["42"] = bridgeDeviceEmulationState{HasBaseline: true}
+	b.emulationMu.Unlock()
+
+	_, err = b.cdp(context.Background(), "42", "Runtime.evaluate", map[string]any{"expression": "true"})
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "no tab") {
+		t.Fatalf("lost owned tab error = %v, want authoritative no-tab failure", err)
+	}
+	select {
+	case pinned := <-cdpTargets:
+		if !pinned {
+			t.Fatal("first CDP request was not pinned to the owned tab")
+		}
+	default:
+		t.Fatal("fake extension did not receive the pinned CDP request")
+	}
+	select {
+	case <-cdpTargets:
+		t.Fatal("isolation retried a lost owned-tab command without tabId, which could target the user's active tab")
+	default:
+	}
+
+	b.mu.RLock()
+	active := b.active
+	b.mu.RUnlock()
+	b.observeMu.Lock()
+	_, observed := b.observedState["42"]
+	_, versioned := b.observeVersions["42"]
+	b.observeMu.Unlock()
+	b.downloadsMu.Lock()
+	_, cursor := b.downloadCursors["42"]
+	b.downloadsMu.Unlock()
+	b.emulationMu.Lock()
+	_, emulated := b.emulationStates["42"]
+	b.emulationMu.Unlock()
+	if active != "" || observed || versioned || cursor || emulated {
+		t.Fatalf("authoritative no-tab failure retained reusable-id state: active=%q observed=%t versioned=%t cursor=%t emulated=%t", active, observed, versioned, cursor, emulated)
 	}
 }

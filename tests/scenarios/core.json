@@ -81,6 +81,7 @@
         },
         {
           "snapshot": {
+            "mode": "all",
             "min_elements": 8,
             "require": [
               {
@@ -466,6 +467,7 @@
         },
         {
           "snapshot": {
+            "mode": "all",
             "min_elements": 2,
             "require": [
               {
@@ -1148,6 +1150,7 @@
         },
         {
           "snapshot": {
+            "mode": "all",
             "require": [
               {
                 "role": "textbox",

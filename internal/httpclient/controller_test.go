@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
@@ -55,6 +58,38 @@ func TestNew_DefaultTimeout(t *testing.T) {
 	if c.client.Timeout != 20*time.Second {
 		t.Fatalf("expected 20s timeout, got %v", c.client.Timeout)
 	}
+}
+
+func TestUpstreamErrorsAndJSONAreBoundedAndStrict(t *testing.T) {
+	t.Run("bounded error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": strings.Repeat("x", 1<<20)})
+		}))
+		defer srv.Close()
+		controller, err := New(srv.URL, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = controller.ListTabs(context.Background())
+		if err == nil || len(err.Error()) > maxUpstreamErrorBytes+32 || !strings.Contains(err.Error(), "truncated") {
+			t.Fatalf("error length=%d error=%v", len(err.Error()), err)
+		}
+	})
+
+	t.Run("trailing JSON", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`[] {}`))
+		}))
+		defer srv.Close()
+		controller, err := New(srv.URL, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := controller.ListTabs(context.Background()); err == nil || !strings.Contains(err.Error(), "trailing JSON") {
+			t.Fatalf("trailing JSON error = %v", err)
+		}
+	})
 }
 
 func TestRequestsCarryOnlyNonSecretCorrelationMetadata(t *testing.T) {
@@ -194,6 +229,67 @@ func TestReplayRequestForwardsBodyWindowAcrossHTTP(t *testing.T) {
 	}
 	if got.Offset != 19_000 || got.MaxBytes != 32_000 || result.BodyOffset != 19_000 {
 		t.Fatalf("window lost across HTTP: request=%+v result=%+v", got, result)
+	}
+}
+
+func TestReadWindowIsAppliedOnBrowserHost(t *testing.T) {
+	const payloadChars = 1 << 20
+	var requestedMaxChars string
+	var wireBytes int
+	full := readability.PageRead{
+		URL: "https://synthetic.example.test/large", Title: "Synthetic large page",
+		Main: strings.Repeat("x", payloadChars),
+	}
+	fullEncoded, _ := json.Marshal(full)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/page/read" {
+			http.NotFound(w, r)
+			return
+		}
+		requestedMaxChars = r.URL.Query().Get("max_chars")
+		maxChars, _ := strconv.Atoi(requestedMaxChars)
+		encoded, err := json.Marshal(readability.Window(full, readability.ReadOptions{MaxChars: maxChars}))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		wireBytes = len(encoded)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(encoded)
+	}))
+	defer upstream.Close()
+
+	controller, err := New(upstream.URL, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := controller.ReadWindow(context.Background(), readability.ReadOptions{MaxChars: 20_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	returned, _ := json.Marshal(read)
+	if requestedMaxChars != "20000" || len(read.Main) != 20_000 || !read.MainTruncated {
+		t.Fatalf("max=%q window=%d truncated=%v", requestedMaxChars, len(read.Main), read.MainTruncated)
+	}
+	if wireBytes > len(returned)+2 || len(fullEncoded) < wireBytes*40 {
+		t.Fatalf("full=%d wire=%d returned=%d; bounds were not applied at the browser host", len(fullEncoded), wireBytes, len(returned))
+	}
+	t.Logf("browser-host window transferred %d bytes instead of %d (%.1fx less data)", wireBytes, len(fullEncoded), float64(len(fullEncoded))/float64(wireBytes))
+}
+
+func TestUpstreamResponseSizeIsBoundedBeforeReadingBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.FormatInt(maxUpstreamResponseBytes+1, 10))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	controller, err := New(server.URL, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = controller.ListTabs(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "exceeds 64 MiB") {
+		t.Fatalf("oversized upstream response was not rejected: %v", err)
 	}
 }
 
@@ -433,5 +529,48 @@ func TestScreenshot_ReturnsBytes(t *testing.T) {
 	}
 	if string(shot.Data) != "fake-png-data" {
 		t.Fatalf("unexpected decoded data: %q", shot.Data)
+	}
+}
+
+func TestReadWindowPushesEveryBoundToBrowserHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/page/read" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		want := map[string]string{
+			"max_chars": "123", "offset": "45", "max_links": "6", "max_headings": "7",
+			"include": "main,headings", "section": "Invoices",
+		}
+		for name, expected := range want {
+			if got := r.URL.Query().Get(name); got != expected {
+				t.Errorf("%s=%q want %q", name, got, expected)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(readability.PageRead{Main: strings.Repeat("x", 123), MainTruncated: true, NextOffset: 168})
+	}))
+	defer srv.Close()
+	c, _ := New(srv.URL, 5*time.Second)
+	read, err := c.ReadWindow(context.Background(), readability.ReadOptions{
+		MaxChars: 123, Offset: 45, MaxLinks: 6, MaxHeadings: 7,
+		Include: []string{"main", "headings"}, Section: "Invoices",
+	})
+	if err != nil || len(read.Main) != 123 || read.NextOffset != 168 {
+		t.Fatalf("read=%+v err=%v", read, err)
+	}
+}
+
+func TestReadWindowSendsZeroToSelectHostDefaults(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, name := range []string{"max_chars", "offset", "max_links", "max_headings"} {
+			if got := r.URL.Query().Get(name); got != "0" {
+				t.Errorf("%s=%q; zero must be explicit", name, got)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(readability.PageRead{})
+	}))
+	defer srv.Close()
+	c, _ := New(srv.URL, 5*time.Second)
+	if _, err := c.ReadWindow(context.Background(), readability.ReadOptions{}); err != nil {
+		t.Fatal(err)
 	}
 }

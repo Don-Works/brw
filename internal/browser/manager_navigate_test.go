@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Don-Works/brw/internal/cdp"
+	"github.com/Don-Works/brw/internal/readability"
 )
 
 func TestNormalizeNavigateDirection(t *testing.T) {
@@ -113,6 +115,87 @@ func TestManagerNavigateHistory(t *testing.T) {
 	// invalid direction is rejected without touching the page.
 	if _, err := m.Navigate(ctx, "sideways"); err == nil {
 		t.Fatal("expected error for invalid navigate direction")
+	}
+}
+
+// TestManagerPlanNavigateToWaitsForReplacement covers transport parity with
+// the extension-backed controller and, more importantly, the ordering contract:
+// the next plan step must run in the replacement document, never the source.
+func TestManagerPlanNavigateToWaitsForReplacement(t *testing.T) {
+	if _, err := cdp.FindChrome(""); err != nil {
+		t.Skipf("Chrome/Chromium not available: %v", err)
+	}
+
+	requested := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	var requestedOnce sync.Once
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseResponse) })
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/source", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "text/html")
+		_, _ = w.Write([]byte(`<!doctype html><title>Source</title><main>source-document-marker</main>`))
+	})
+	mux.HandleFunc("/replacement", func(w http.ResponseWriter, _ *http.Request) {
+		requestedOnce.Do(func() { close(requested) })
+		<-releaseResponse
+		w.Header().Set("content-type", "text/html")
+		_, _ = w.Write([]byte(`<!doctype html><title>Replacement</title><main>replacement-document-marker</main>`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	m, err := New(ctx, Config{
+		Timeout:    20 * time.Second,
+		ChromeArgs: []string{"--headless=new", "--disable-gpu", "--no-sandbox"},
+	})
+	if err != nil {
+		t.Skipf("could not launch headless Chrome: %v", err)
+	}
+	defer m.Close()
+	if _, err := m.Open(ctx, srv.URL+"/source"); err != nil {
+		t.Fatalf("open source fixture: %v", err)
+	}
+
+	resultCh := make(chan PlanResult, 1)
+	go func() {
+		result, _ := m.ExecutePlan(ctx, []PlanStep{
+			{Action: "navigate_to", URL: srv.URL + "/replacement"},
+			{Action: "read"},
+		})
+		resultCh <- result
+	}()
+
+	select {
+	case <-requested:
+	case <-time.After(10 * time.Second):
+		t.Fatal("plan never requested the navigate_to destination")
+	}
+	select {
+	case result := <-resultCh:
+		t.Fatalf("plan returned before the replacement response was released: %+v", result)
+	case <-time.After(150 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(releaseResponse) })
+
+	var result PlanResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("plan did not finish after the replacement response was released")
+	}
+	if !result.OK || result.StepsCompleted != 2 || len(result.Steps) != 2 {
+		t.Fatalf("unexpected plan result: %+v", result)
+	}
+	read, ok := result.Steps[1].Result.(readability.PageRead)
+	if !ok {
+		t.Fatalf("read result type = %T, want readability.PageRead", result.Steps[1].Result)
+	}
+	if !strings.Contains(read.Main, "replacement-document-marker") || strings.Contains(read.Main, "source-document-marker") {
+		t.Fatalf("next step read the wrong document: url=%q main=%q", read.URL, read.Main)
 	}
 }
 

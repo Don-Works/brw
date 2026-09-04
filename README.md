@@ -26,10 +26,17 @@ for normal web work.
 - Uses screenshots only as visual fallback, with optional Set-of-Marks overlays and a locked-session print-renderer fallback.
 - Supports tabs, downloads, console, network capture, request replay, and cancellation.
 - Turns a completed flow into a replayable `brw_batch` script, with identity guards.
+- Finds and runs immutable deterministic browser recipes from a private provider, with timers and pre-armed page/browser events.
+- Bundles an agent skill that searches before repeating work, promotes stable reusable flows, and repairs failures as new immutable recipe versions.
+- Stores page text, semantic JSON, screenshots, PDFs, downloads, and short video as browser-host artifacts instead of flooding model context.
 - Grows its advertised tool catalogue on demand instead of shipping all of it every turn.
 - Reuses a persistent non-default Chrome profile for signed-in flows.
 - Bridges to an already-authenticated installed Chrome profile through a Chrome extension.
 - Runs cleanly over SSH so the browser profile stays on the machine that owns it.
+
+See [private recipes and browser-host artifacts](docs/recipes-and-artifacts.md)
+for the architecture and [the browser automation review](docs/browser-automation-review.md)
+for measured gains, security gates, competitive gaps, and prioritized next work.
 
 The extension screenshot path is bounded and background-safe. Chrome may suspend
 its compositor while a desktop session is locked; when that happens, `brw`
@@ -69,6 +76,9 @@ they can contain prompts, machine paths, and session metadata. Treat the public
 benchmark note as directional until a reproducible public harness lands.
 
 See [docs/benchmarks.md](docs/benchmarks.md).
+
+For repeated site workflows and large observations, see
+[Private recipes and browser-host artifacts](docs/recipes-and-artifacts.md).
 
 ## Quick Start
 
@@ -232,6 +242,9 @@ Core MCP tools include:
 - `brw_drag`, `brw_upload_file`, `brw_wait_for`
 - `brw_batch`, `brw_cancel`, `brw_observe`
 - `brw_screenshot`, `brw_screenshot_element`
+- `brw_artifact_capture`, `brw_artifact_info`, `brw_artifact_read`,
+  `brw_artifact_search`, `brw_artifact_delete`
+- `brw_recipe_search`, `brw_recipe_run` (only when a private provider is configured)
 - `brw_emulate_device` for DevTools mobile/responsive emulation
 - `brw_network_requests`, `brw_network_capture`, `brw_replay_request`
 - `brw_console`, `brw_downloads`, `brw_trace`
@@ -243,7 +256,7 @@ Core MCP tools include:
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: `all` costs ~12.1k tokens, `core` ~7.0k, `minimal` ~3.8k,
+tokens on every turn: `all` costs ~13.5k tokens, `core` ~7.0k, `minimal` ~3.8k,
 and `auto` starts at ~4.1k and grows only as the agent discovers tools it needs
 via `brw_tools`.
 

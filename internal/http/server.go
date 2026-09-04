@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -11,17 +12,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/readability"
+	"github.com/Don-Works/brw/internal/recipe"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
 type Server struct {
 	manager   browser.Controller
+	artifacts artifact.API
+	recipes   recipe.API
 	identity  brwidentity.Identity
 	navPolicy *navpolicy.Policy
 	usage     *usagelog.Recorder
@@ -42,6 +48,24 @@ type snapshotRequest struct {
 	MaxBytes int
 }
 
+const maxArtifactRequestBodyBytes = 4 << 10 // 4 KiB
+
+type artifactIDRequest struct {
+	ArtifactID string `json:"artifact_id"`
+}
+
+type artifactReadRequest struct {
+	ArtifactID string `json:"artifact_id"`
+	Offset     int64  `json:"offset"`
+	MaxBytes   int    `json:"max_bytes"`
+}
+
+type artifactSearchRequest struct {
+	ArtifactID string `json:"artifact_id"`
+	Query      string `json:"query"`
+	Limit      int    `json:"limit"`
+}
+
 func New(addr string, manager browser.Controller) *Server {
 	return NewWithIdentity(addr, manager, brwidentity.Identity{})
 }
@@ -60,7 +84,7 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	// Wrap the router so every request first passes the same-machine browser
 	// guard (DNS-rebinding + cross-origin CSRF). A loopback CLI/MCP client sends
 	// a loopback Host and no browser Origin, so it is untouched.
-	s.server.Handler = s.usageMiddleware(s.hostGuard(s.leaseMiddleware(mux)))
+	s.server.Handler = s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.leaseMiddleware(mux))))
 	return s
 }
 
@@ -69,6 +93,16 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 func (s *Server) SetUsageRecorder(recorder *usagelog.Recorder) {
 	s.usage = recorder
 }
+
+// SetArtifactAPI installs the browser-host artifact capability. Keeping this
+// on the long-lived daemon ensures page bytes, screenshots, PDFs, downloads and
+// video never cross an upstream proxy merely to be written back to disk.
+func (s *Server) SetArtifactAPI(api artifact.API) { s.artifacts = api }
+
+// SetRecipeAPI installs private recipe discovery and deterministic execution.
+// Recipe contents remain behind the provider boundary; this HTTP surface only
+// exposes metadata search and exact, digest-pinned execution.
+func (s *Server) SetRecipeAPI(api recipe.API) { s.recipes = api }
 
 // computeAllowedHosts derives the Host allowlist and whether to enforce it from
 // the daemon's bind address. The Host check defends against DNS-rebinding — a
@@ -137,6 +171,32 @@ func (s *Server) hostGuard(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// artifactPrivacyHeaders also covers router-generated 404/405 responses, which
+// do not pass through writeJSON. That keeps method-rejection and compatibility
+// behavior from becoming the one cacheable response on this sensitive surface.
+func (s *Server) artifactPrivacyHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/artifacts/") {
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			if isCanonicalArtifactPath(r.URL.Path) && r.Method != http.MethodPost {
+				artifactPostOnly(w)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isCanonicalArtifactPath(path string) bool {
+	switch path {
+	case "/api/artifacts/info", "/api/artifacts/read", "/api/artifacts/search", "/api/artifacts/delete":
+		return true
+	default:
+		return false
+	}
 }
 
 // allowedOrigin reports whether a browser Origin may drive the control plane. A
@@ -260,6 +320,21 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/browser/ungroup_tabs", s.ungroupTabs)
 	mux.HandleFunc("GET /api/visual/screenshot", s.screenshot)
 	mux.HandleFunc("GET /api/visual/screenshot_element", s.screenshotElement)
+	mux.HandleFunc("POST /api/artifacts/capture", s.captureArtifact)
+	// Canonical artifact operations keep opaque handles, search terms, and read
+	// windows in bounded request bodies so reverse-proxy access logs see only a
+	// fixed path. The path-parameter routes below remain for compatibility and
+	// advertise their deprecation on every response.
+	mux.HandleFunc("POST /api/artifacts/info", s.artifactInfo)
+	mux.HandleFunc("POST /api/artifacts/read", s.readArtifact)
+	mux.HandleFunc("POST /api/artifacts/search", s.searchArtifact)
+	mux.HandleFunc("POST /api/artifacts/delete", s.deleteArtifact)
+	mux.HandleFunc("GET /api/artifacts/{id}/info", s.artifactInfoLegacy)
+	mux.HandleFunc("GET /api/artifacts/{id}/read", s.readArtifactLegacy)
+	mux.HandleFunc("GET /api/artifacts/{id}/search", s.searchArtifactLegacy)
+	mux.HandleFunc("DELETE /api/artifacts/{id}", s.deleteArtifactLegacy)
+	mux.HandleFunc("POST /api/recipes/search", s.searchRecipes)
+	mux.HandleFunc("POST /api/recipes/run", s.runRecipe)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -268,6 +343,177 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		payload["identity"] = s.identity
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) captureArtifact(w http.ResponseWriter, r *http.Request) {
+	if s.artifacts == nil {
+		writeError(w, errors.New("artifact service is not configured on the browser host"))
+		return
+	}
+	var req struct {
+		artifact.CaptureOptions
+		TabID string `json:"tab_id"`
+	}
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	result, err := s.artifacts.CaptureArtifact(s.contextWithTabID(r.Context(), req.TabID), req.CaptureOptions)
+	writeResult(w, result, err)
+}
+
+func (s *Server) artifactInfo(w http.ResponseWriter, r *http.Request) {
+	var req artifactIDRequest
+	if !decodeArtifactRequest(w, r, &req) {
+		return
+	}
+	s.artifactInfoForID(w, r, req.ArtifactID)
+}
+
+func (s *Server) artifactInfoLegacy(w http.ResponseWriter, r *http.Request) {
+	markArtifactRouteDeprecated(w, "/api/artifacts/info")
+	s.artifactInfoForID(w, r, r.PathValue("id"))
+}
+
+func (s *Server) artifactInfoForID(w http.ResponseWriter, r *http.Request, id string) {
+	if s.artifacts == nil {
+		writeError(w, errors.New("artifact service is not configured on the browser host"))
+		return
+	}
+	result, err := s.artifacts.ArtifactInfo(r.Context(), id)
+	writeArtifactResult(w, result, err)
+}
+
+func (s *Server) readArtifact(w http.ResponseWriter, r *http.Request) {
+	var req artifactReadRequest
+	if !decodeArtifactRequest(w, r, &req) {
+		return
+	}
+	if req.Offset < 0 || req.MaxBytes < 0 || req.MaxBytes > artifact.MaxReadBytes {
+		writeArtifactRequestError(w)
+		return
+	}
+	s.readArtifactWindow(w, r, req.ArtifactID, req.Offset, req.MaxBytes)
+}
+
+func (s *Server) readArtifactLegacy(w http.ResponseWriter, r *http.Request) {
+	markArtifactRouteDeprecated(w, "/api/artifacts/read")
+	offset, ok := parseInt64Param(w, r.URL.Query().Get("offset"), "offset")
+	if !ok {
+		return
+	}
+	maxBytes, ok := parseIntParam(w, r.URL.Query().Get("max_bytes"), "max_bytes")
+	if !ok {
+		return
+	}
+	s.readArtifactWindow(w, r, r.PathValue("id"), offset, maxBytes)
+}
+
+func (s *Server) readArtifactWindow(w http.ResponseWriter, r *http.Request, id string, offset int64, maxBytes int) {
+	if s.artifacts == nil {
+		writeError(w, errors.New("artifact service is not configured on the browser host"))
+		return
+	}
+	result, err := s.artifacts.ReadArtifact(r.Context(), id, offset, maxBytes)
+	writeArtifactResult(w, result, err)
+}
+
+func (s *Server) searchArtifact(w http.ResponseWriter, r *http.Request) {
+	var req artifactSearchRequest
+	if !decodeArtifactRequest(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Query) == "" || len(req.Query) > 256 || !utf8.ValidString(req.Query) || req.Limit < 0 || req.Limit > 100 {
+		writeArtifactRequestError(w)
+		return
+	}
+	s.searchArtifactFor(w, r, req.ArtifactID, req.Query, req.Limit)
+}
+
+func (s *Server) searchArtifactLegacy(w http.ResponseWriter, r *http.Request) {
+	markArtifactRouteDeprecated(w, "/api/artifacts/search")
+	limit, ok := parseIntParam(w, r.URL.Query().Get("limit"), "limit")
+	if !ok {
+		return
+	}
+	s.searchArtifactFor(w, r, r.PathValue("id"), r.URL.Query().Get("query"), limit)
+}
+
+func (s *Server) searchArtifactFor(w http.ResponseWriter, r *http.Request, id, query string, limit int) {
+	if s.artifacts == nil {
+		writeError(w, errors.New("artifact service is not configured on the browser host"))
+		return
+	}
+	result, err := s.artifacts.SearchArtifact(r.Context(), id, query, limit)
+	writeArtifactResult(w, result, err)
+}
+
+func (s *Server) deleteArtifact(w http.ResponseWriter, r *http.Request) {
+	var req artifactIDRequest
+	if !decodeArtifactRequest(w, r, &req) {
+		return
+	}
+	s.deleteArtifactByID(w, r, req.ArtifactID)
+}
+
+func (s *Server) deleteArtifactLegacy(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/artifacts/info" || r.URL.Path == "/api/artifacts/read" || r.URL.Path == "/api/artifacts/search" || r.URL.Path == "/api/artifacts/delete" {
+		artifactPostOnly(w)
+		return
+	}
+	markArtifactRouteDeprecated(w, "/api/artifacts/delete")
+	s.deleteArtifactByID(w, r, r.PathValue("id"))
+}
+
+func (s *Server) deleteArtifactByID(w http.ResponseWriter, r *http.Request, id string) {
+	if s.artifacts == nil {
+		writeError(w, errors.New("artifact service is not configured on the browser host"))
+		return
+	}
+	err := s.artifacts.DeleteArtifact(r.Context(), id)
+	writeArtifactResult(w, map[string]any{"ok": err == nil}, err)
+}
+
+func artifactPostOnly(w http.ResponseWriter) {
+	w.Header().Set("Allow", http.MethodPost)
+	writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+}
+
+func markArtifactRouteDeprecated(w http.ResponseWriter, successor string) {
+	w.Header().Set("Deprecation", "@0")
+	w.Header().Set("Link", "<"+successor+">; rel=\"successor-version\"")
+}
+
+func (s *Server) searchRecipes(w http.ResponseWriter, r *http.Request) {
+	if s.recipes == nil {
+		writeError(w, errors.New("recipe provider is not configured on the browser host"))
+		return
+	}
+	var req struct {
+		Query  string `json:"query"`
+		Origin string `json:"origin"`
+		Limit  int    `json:"limit"`
+	}
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	result, err := s.recipes.SearchRecipes(r.Context(), req.Query, req.Origin, req.Limit)
+	writeResult(w, result, err)
+}
+
+func (s *Server) runRecipe(w http.ResponseWriter, r *http.Request) {
+	if s.recipes == nil {
+		writeError(w, errors.New("recipe provider is not configured on the browser host"))
+		return
+	}
+	var req struct {
+		recipe.RunRequest
+		TabID string `json:"tab_id"`
+	}
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	result, err := s.recipes.RunRecipe(s.contextWithTabID(r.Context(), req.TabID), req.RunRequest)
+	writeResult(w, result, err)
 }
 
 func (s *Server) requestContext(r *http.Request) context.Context {
@@ -293,7 +539,7 @@ func (s *Server) contextWithTabID(ctx context.Context, tabID string) context.Con
 	}
 	if resolver, ok := s.manager.(activeTabResolver); ok {
 		if resolved := resolver.ResolveActiveTabID(ctx); resolved != "" {
-			return browser.WithImplicitTabID(ctx, resolved)
+			return browser.WithCurrentOwnedTabID(ctx, resolved)
 		}
 	}
 	return ctx
@@ -746,11 +992,9 @@ func (s *Server) writeActionResult(w http.ResponseWriter, r *http.Request, resul
 	if err == nil && result.NewTabID != "" {
 		err = s.leases.bind(leaseOwner(r.Context()), result.NewTabID, true)
 	}
-	if err != nil {
-		if _, ok := err.(*tabLeaseConflictError); ok {
-			writeLeaseError(w, err)
-			return
-		}
+	if _, ok := err.(*tabLeaseConflictError); ok {
+		writeLeaseError(w, err)
+		return
 	}
 	writeResult(w, result, err)
 }
@@ -1711,6 +1955,62 @@ func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
+func decodeStrict(w http.ResponseWriter, r *http.Request, dst any) bool {
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "request contains trailing JSON"})
+		return false
+	}
+	return true
+}
+
+// decodeArtifactRequest deliberately returns one constant error for malformed,
+// oversized, unknown-field, and trailing-JSON requests. Artifact handles and
+// search terms are private bearer-like values; reflecting decoder details can
+// copy attacker-controlled field names into client errors or proxy logs.
+func decodeArtifactRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxArtifactRequestBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		writeArtifactRequestError(w)
+		return false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeArtifactRequestError(w)
+		return false
+	}
+	return true
+}
+
+func writeArtifactRequestError(w http.ResponseWriter) {
+	writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid artifact request"})
+}
+
+func writeArtifactResult(w http.ResponseWriter, value any, err error) {
+	if err != nil {
+		// Classify the real failure, but fingerprint only the constant public
+		// message: some backing-store errors may incorporate an artifact handle
+		// or literal search term and the operational ledger must not depend on it.
+		const publicMessage = "artifact operation failed"
+		w.Header().Set(usagelog.HeaderErrorClass, usagelog.ClassifyError(err))
+		w.Header().Set(usagelog.HeaderErrorFingerprint, usagelog.Fingerprint(publicMessage))
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": publicMessage})
+		return
+	}
+	writeJSON(w, http.StatusOK, value)
+}
+
 func writeResult(w http.ResponseWriter, value any, err error) {
 	if err != nil {
 		writeError(w, err)
@@ -1726,6 +2026,12 @@ func writeError(w http.ResponseWriter, err error) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	// Browser-control responses can contain page text, artifact excerpts, and
+	// recipe metadata.  Even though brwd is normally loopback-only, operators
+	// sometimes put an authenticated reverse proxy in front of it.  Never let a
+	// shared or browser cache retain those responses.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("content-type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)

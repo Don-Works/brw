@@ -69,3 +69,74 @@ type Controller interface {
 	CommitField(context.Context, string) error
 	Notify(context.Context, NotifyOptions) (NotifyResult, error)
 }
+
+// WindowReader is an optional transport capability that applies page-content
+// filtering on the browser host. The upstream HTTP controller implements it so
+// a 20 KiB MCP read does not transfer and materialize an entire megabyte-scale
+// document before the outer process slices it.
+type WindowReader interface {
+	ReadWindow(context.Context, readability.ReadOptions) (readability.PageRead, error)
+}
+
+// DocumentIdentity is an opaque, main-frame document identity plus its exact
+// security origin. ID must remain stable across same-document history changes
+// (pushState/replaceState/hash changes) and change whenever Chrome commits a
+// replacement document, including a reload or same-origin navigation.
+//
+// The value is an internal capture guard. It is deliberately not exposed by
+// the MCP/HTTP artifact APIs or included in error messages.
+type DocumentIdentity struct {
+	ID     string
+	Origin string
+}
+
+// DocumentIdentityProvider is an optional transport capability used only by
+// deterministic recipe-scoped artifact capture. Manual artifact capture does
+// not pay for this probe. A recipe capture fails closed when its transport
+// cannot provide an exact main-document identity.
+type DocumentIdentityProvider interface {
+	DocumentIdentity(context.Context) (DocumentIdentity, error)
+}
+
+type sensitiveActionContextKey struct{}
+type allowedOriginsContextKey struct{}
+
+// WithSensitiveAction marks one browser actuation as carrying a caller-declared
+// secret. Transport implementations must still perform the action, but omit its
+// text/value from their replayable trace even when the page field itself is not
+// recognizably credential-bearing.
+func WithSensitiveAction(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sensitiveActionContextKey{}, true)
+}
+
+func RedactTraceEntry(ctx context.Context, entry TraceEntry) TraceEntry {
+	if ctx != nil {
+		redact, _ := ctx.Value(sensitiveActionContextKey{}).(bool)
+		if redact {
+			entry.Text = ""
+			entry.Value = ""
+			entry.Redacted = true
+		}
+	}
+	return entry
+}
+
+// WithAllowedOrigins carries a deterministic recipe's exact page-origin
+// boundary into lower-level capture code. Ordinary model-driven browser calls
+// do not set it; artifact capture then keeps its existing unrestricted behavior.
+func WithAllowedOrigins(ctx context.Context, origins []string) context.Context {
+	return context.WithValue(ctx, allowedOriginsContextKey{}, append([]string(nil), origins...))
+}
+
+// AllowedOriginsFromContext returns a defensive copy so transport code cannot
+// mutate the runner's reviewed allowlist through a shared backing array.
+func AllowedOriginsFromContext(ctx context.Context) ([]string, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	origins, ok := ctx.Value(allowedOriginsContextKey{}).([]string)
+	if !ok || len(origins) == 0 {
+		return nil, false
+	}
+	return append([]string(nil), origins...), true
+}
