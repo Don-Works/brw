@@ -162,7 +162,7 @@ func (f *findOnlyController) Find(_ context.Context, opts snapshot.FindOptions) 
 func TestBrowserSurfaceResolveFailsClosedWhenCandidateSetIsTruncated(t *testing.T) {
 	controller := &findOnlyController{result: snapshot.FindResult{
 		Elements: []snapshot.Element{{Ref: "e1", Role: "button", Name: "Submit", Visible: true}},
-		Metadata: map[string]interface{}{"truncated": true},
+		Metadata: map[string]any{"truncated": true},
 	}}
 	surface := BrowserSurface{Browser: controller}
 

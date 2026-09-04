@@ -1619,10 +1619,6 @@ const ScrollPageScript = `(function(direction) {
   return { ok: true, target: 'none', changed: false };
 })`
 
-func Evaluate(ctx context.Context) (PageSnapshot, error) {
-	return EvaluateWithOptions(ctx, SnapshotOptions{})
-}
-
 func EvaluateWithOptions(ctx context.Context, opts SnapshotOptions) (PageSnapshot, error) {
 	var snap PageSnapshot
 	args, _ := json.Marshal(opts)

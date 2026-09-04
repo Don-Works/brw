@@ -1,11 +1,11 @@
 package snapshot
 
 type PageSnapshot struct {
-	URL           string                 `json:"url"`
-	Title         string                 `json:"title"`
-	Elements      []Element              `json:"elements"`
-	Accessibility AccessibilitySummary   `json:"accessibility"`
-	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+	URL           string               `json:"url"`
+	Title         string               `json:"title"`
+	Elements      []Element            `json:"elements"`
+	Accessibility AccessibilitySummary `json:"accessibility"`
+	Metadata      map[string]any       `json:"metadata,omitempty"`
 	// Delta is set ONLY on a since-delta response — when opts.Since matched the
 	// prior snapshot's version AND the snapshot options were identical. When
 	// present, Elements carries just the added+changed elements (a change set, not
@@ -79,10 +79,10 @@ type FindOptions struct {
 }
 
 type FindResult struct {
-	URL      string                 `json:"url"`
-	Title    string                 `json:"title"`
-	Elements []Element              `json:"elements"`
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
+	URL      string         `json:"url"`
+	Title    string         `json:"title"`
+	Elements []Element      `json:"elements"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type FillOptions struct {

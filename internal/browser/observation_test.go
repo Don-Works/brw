@@ -12,7 +12,7 @@ func TestNewSemanticState_ExtractsFocus(t *testing.T) {
 	snap := snapshot.PageSnapshot{
 		URL:   "https://example.com",
 		Title: "Test",
-		Metadata: map[string]interface{}{
+		Metadata: map[string]any{
 			"focused_ref": "e5",
 		},
 		Elements: []snapshot.Element{

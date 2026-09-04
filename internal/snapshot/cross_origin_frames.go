@@ -10,20 +10,20 @@ type frameBox struct {
 }
 
 // crossOriginBoxesFromMetadata parses snap.Metadata["cross_origin_frames"] into
-// typed boxes. The metadata survives a JSON round-trip as []interface{} of
-// map[string]interface{} with float64 numbers, so we read it defensively and
+// typed boxes. The metadata survives a JSON round-trip as []any of
+// map[string]any with float64 numbers, so we read it defensively and
 // skip anything malformed rather than failing the whole snapshot.
-func crossOriginBoxesFromMetadata(meta map[string]interface{}) []frameBox {
+func crossOriginBoxesFromMetadata(meta map[string]any) []frameBox {
 	if meta == nil {
 		return nil
 	}
-	raw, ok := meta["cross_origin_frames"].([]interface{})
+	raw, ok := meta["cross_origin_frames"].([]any)
 	if !ok {
 		return nil
 	}
 	boxes := make([]frameBox, 0, len(raw))
 	for _, item := range raw {
-		m, ok := item.(map[string]interface{})
+		m, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -38,7 +38,7 @@ func crossOriginBoxesFromMetadata(meta map[string]interface{}) []frameBox {
 	return boxes
 }
 
-func toFloat(v interface{}) float64 {
+func toFloat(v any) float64 {
 	switch n := v.(type) {
 	case float64:
 		return n
@@ -51,7 +51,7 @@ func toFloat(v interface{}) float64 {
 	}
 }
 
-func toString(v interface{}) string {
+func toString(v any) string {
 	if s, ok := v.(string); ok {
 		return s
 	}
@@ -130,7 +130,7 @@ func MergeCrossOriginFrames(snap *PageSnapshot, frames []CrossOriginFrame) int {
 	}
 
 	if snap.Metadata == nil {
-		snap.Metadata = map[string]interface{}{}
+		snap.Metadata = map[string]any{}
 	}
 	snap.Metadata["cross_origin_frames_read"] = readFrames
 	snap.Metadata["cross_origin_frame_elements"] = appended
@@ -185,7 +185,7 @@ func PromoteCrossOriginFrames(snap *PageSnapshot, alreadyRead map[int]bool) int 
 		promoted++
 	}
 	if snap.Metadata == nil {
-		snap.Metadata = map[string]interface{}{}
+		snap.Metadata = map[string]any{}
 	}
 	snap.Metadata["cross_origin_frames_promoted"] = promoted
 	if promoted > 0 {

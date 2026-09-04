@@ -5,9 +5,9 @@ import "testing"
 func TestMergeCrossOriginFramesTranslatesToTopLevelCenter(t *testing.T) {
 	snap := &PageSnapshot{
 		Elements: []Element{{Ref: "e1", Role: "button", Name: "Existing"}},
-		Metadata: map[string]interface{}{
-			"cross_origin_frames": []interface{}{
-				map[string]interface{}{"x": 100.0, "y": 200.0, "width": 400.0, "height": 300.0, "origin": "https://embed.test"},
+		Metadata: map[string]any{
+			"cross_origin_frames": []any{
+				map[string]any{"x": 100.0, "y": 200.0, "width": 400.0, "height": 300.0, "origin": "https://embed.test"},
 			},
 		},
 	}
@@ -83,9 +83,9 @@ func TestMergeCrossOriginFramesEmptyIsNoOp(t *testing.T) {
 
 func TestPromoteCrossOriginFramesSurfacesClickableFrameElements(t *testing.T) {
 	snap := &PageSnapshot{
-		Metadata: map[string]interface{}{
-			"cross_origin_frames": []interface{}{
-				map[string]interface{}{"x": 40.0, "y": 60.0, "width": 600.0, "height": 300.0, "origin": "https://example.com"},
+		Metadata: map[string]any{
+			"cross_origin_frames": []any{
+				map[string]any{"x": 40.0, "y": 60.0, "width": 600.0, "height": 300.0, "origin": "https://example.com"},
 			},
 		},
 	}
@@ -111,10 +111,10 @@ func TestPromoteCrossOriginFramesSurfacesClickableFrameElements(t *testing.T) {
 
 func TestPromoteCrossOriginFramesSkipsAlreadyRead(t *testing.T) {
 	snap := &PageSnapshot{
-		Metadata: map[string]interface{}{
-			"cross_origin_frames": []interface{}{
-				map[string]interface{}{"x": 0.0, "y": 0.0, "width": 100.0, "height": 100.0, "origin": "https://a.test"},
-				map[string]interface{}{"x": 0.0, "y": 0.0, "width": 100.0, "height": 100.0, "origin": "https://b.test"},
+		Metadata: map[string]any{
+			"cross_origin_frames": []any{
+				map[string]any{"x": 0.0, "y": 0.0, "width": 100.0, "height": 100.0, "origin": "https://a.test"},
+				map[string]any{"x": 0.0, "y": 0.0, "width": 100.0, "height": 100.0, "origin": "https://b.test"},
 			},
 		},
 	}
@@ -131,10 +131,10 @@ func TestMergeCrossOriginFramesMatchesBoxByOrigin(t *testing.T) {
 	// Two frames of different origins listed out of order vs the metadata boxes;
 	// each must pick the box of its OWN origin, not positional order.
 	snap := &PageSnapshot{
-		Metadata: map[string]interface{}{
-			"cross_origin_frames": []interface{}{
-				map[string]interface{}{"x": 0.0, "y": 0.0, "width": 50.0, "height": 50.0, "origin": "https://a.test"},
-				map[string]interface{}{"x": 1000.0, "y": 0.0, "width": 50.0, "height": 50.0, "origin": "https://b.test"},
+		Metadata: map[string]any{
+			"cross_origin_frames": []any{
+				map[string]any{"x": 0.0, "y": 0.0, "width": 50.0, "height": 50.0, "origin": "https://a.test"},
+				map[string]any{"x": 1000.0, "y": 0.0, "width": 50.0, "height": 50.0, "origin": "https://b.test"},
 			},
 		},
 	}

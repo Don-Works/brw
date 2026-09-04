@@ -1,13 +1,5 @@
 package snapshot
 
-import (
-	"context"
-	"encoding/json"
-
-	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/chromedp"
-)
-
 // ConsoleCaptureInstallScript installs a bounded, idempotent console interceptor.
 // It is intentionally in-page so direct CDP and the extension transport expose
 // the same drain semantics. The original console methods always run.
@@ -47,17 +39,3 @@ const ConsoleCaptureDrainScript = `(function() {
   window.__brwConsole.length = 0;
   return messages;
 })()`
-
-func InstallConsoleCapture(ctx context.Context) error {
-	var ignored json.RawMessage
-	return chromedp.Run(ctx, chromedp.Evaluate(ConsoleCaptureInstallScript, &ignored))
-}
-
-// RegisterConsoleCaptureOnNewDocument makes capture survive reloads and full
-// navigations, and runs before the destination page's own scripts.
-func RegisterConsoleCaptureOnNewDocument(ctx context.Context) error {
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		_, err := page.AddScriptToEvaluateOnNewDocument(ConsoleCaptureInstallScript).Do(ctx)
-		return err
-	}))
-}
