@@ -20,7 +20,10 @@ build:
 	go build -ldflags "$(GO_LDFLAGS)" -o bin/brw-devtools-mcp ./cmd/brw-devtools-mcp
 
 test: test-extension
-	go test ./...
+	# browser, snapshot, and readability tests each launch real headless Chrome.
+	# Serialize package test binaries so CI does not run dozens of Chrome roots at
+	# once and turn the Manager's intentional 20s operation timeout into a load race.
+	go test -p=1 ./...
 
 # Extension service-worker regression tests (run the real service_worker.js in a
 # vm with a mocked chrome API). Skipped — not failed — when node is unavailable.

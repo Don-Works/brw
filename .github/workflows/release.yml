@@ -14,6 +14,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BRW_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -21,24 +28,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: Verify release tag and checkout
         shell: bash
-        env:
-          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="$DISPATCH_TAG"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
+          tag="$BRW_RELEASE_TAG"
           if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
             echo "Tag must be vX.Y.Z, got $tag" >&2
             exit 2
           fi
+          if [ "$GITHUB_REF_TYPE" != "tag" ] || [ "$GITHUB_REF_NAME" != "$tag" ]; then
+            echo "Release workflow must run from the exact tag ref ($tag), got $GITHUB_REF" >&2
+            exit 2
+          fi
           git show-ref --verify --quiet "refs/tags/$tag"
-          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "refs/tags/$tag")"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-list -n 1 "refs/tags/$tag")" = "$GITHUB_SHA"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -76,20 +82,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.sha }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Resolve version
         shell: bash
-        env:
-          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="$DISPATCH_TAG"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
+          tag="$BRW_RELEASE_TAG"
           version="${tag#v}"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
             echo "Tag must be vX.Y.Z, got $tag" >&2
@@ -114,20 +114,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.sha }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Resolve version
         shell: bash
-        env:
-          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="$DISPATCH_TAG"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
+          tag="$BRW_RELEASE_TAG"
           version="${tag#v}"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
             echo "Tag must be vX.Y.Z, got $tag" >&2
@@ -154,7 +148,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.sha }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -166,14 +160,8 @@ jobs:
         run: dotnet tool install --global wix --version 5.0.2
       - name: Resolve version
         shell: pwsh
-        env:
-          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = $env:DISPATCH_TAG
-          } else {
-            $tag = "${env:GITHUB_REF_NAME}"
-          }
+          $tag = $env:BRW_RELEASE_TAG
           $version = $tag -replace "^v", ""
           if ($version -notmatch "^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$") {
             throw "Tag must be vX.Y.Z, got $tag"
@@ -203,7 +191,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.sha }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -213,14 +201,8 @@ jobs:
           merge-multiple: true
       - name: Resolve version
         shell: bash
-        env:
-          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="$DISPATCH_TAG"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
+          tag="$BRW_RELEASE_TAG"
           version="${tag#v}"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
             echo "Tag must be vX.Y.Z, got $tag" >&2
@@ -248,8 +230,19 @@ jobs:
         run: |
           tag="$BRW_RELEASE_TAG"
           title="brw $tag"
-          if gh release view "$tag" >/dev/null 2>&1; then
+          state="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || true)"
+          if [ "$state" = "false" ]; then
+            echo "Release $tag is already published; refusing to replace immutable assets" >&2
+            exit 2
+          elif [ "$state" = "true" ]; then
             gh release upload "$tag" artifacts/* --clobber
           else
-            gh release create "$tag" artifacts/* --title "$title" --generate-notes
+            previous_tag="$(gh release list --limit 100 --json tagName,isDraft,isPrerelease \
+              --jq '[.[] | select(.isDraft == false and .isPrerelease == false)][0].tagName // empty')"
+            notes_args=(--generate-notes)
+            if [ -n "$previous_tag" ]; then
+              notes_args+=(--notes-start-tag "$previous_tag")
+            fi
+            gh release create "$tag" artifacts/* --title "$title" --verify-tag --draft "${notes_args[@]}"
           fi
+          gh release edit "$tag" --draft=false --latest

@@ -17,7 +17,9 @@ import (
 
 // TestPrearmedSettleIsMateriallyFaster is a regression/benchmark gate for the
 // observer-ordering bug: a settle observer installed after a synchronous DOM
-// change cannot see it and burns the full cap. Production actions arm first and
+// change cannot see it and burns the full cap. Measure the settle mechanism
+// directly so unrelated actionability checks and post-action snapshots cannot
+// turn host load into timing noise. Production actions use this same helper and
 // should finish after the 40 ms quiescence window.
 func TestPrearmedSettleIsMateriallyFaster(t *testing.T) {
 	chromePath, err := cdplaunch.FindChrome("")
@@ -44,43 +46,37 @@ func TestPrearmedSettleIsMateriallyFaster(t *testing.T) {
 	if _, err := manager.Open(ctx, fixture.URL); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := manager.Snapshot(ctx, snapshot.SnapshotOptions{Mode: "all", Limit: 100})
+	_, tabCtx, release, err := manager.activeContext(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref := ""
-	for _, element := range snap.Elements {
-		if element.Role == "button" && element.Name == "Update" {
-			ref = element.Ref
-			break
-		}
-	}
-	if ref == "" {
-		t.Fatal("fixture button not found")
+	defer release()
+	action := func() error {
+		return chromedp.Run(tabCtx, chromedp.Evaluate(`document.getElementById("trigger").click()`, nil))
 	}
 
-	const samples = 5
+	const (
+		samples = 5
+		// Keep the measured signal well above host-scheduler/CDP jitter. This does
+		// not change production's 150 ms cap; both paths below receive the same cap,
+		// and the separate snapshot tests exercise the production-sized boundary.
+		benchmarkCap = 500 * time.Millisecond
+	)
 	production := make([]time.Duration, 0, samples)
 	legacy := make([]time.Duration, 0, samples)
 	for range samples {
 		started := time.Now()
-		if _, err := manager.Click(ctx, ref); err != nil {
+		if err := runWithPrearmedSettle(tabCtx, benchmarkCap, action); err != nil {
 			t.Fatal(err)
 		}
 		production = append(production, time.Since(started))
 
-		_, tabCtx, release, err := manager.activeContext(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
 		started = time.Now()
-		if err := chromedp.Run(tabCtx, chromedp.Evaluate(`document.getElementById("trigger").click()`, nil)); err != nil {
-			release()
+		if err := action(); err != nil {
 			t.Fatal(err)
 		}
-		_, _ = snapshot.Settle(tabCtx, actionSettleDelay.Milliseconds())
+		_, _ = snapshot.Settle(tabCtx, benchmarkCap.Milliseconds())
 		legacy = append(legacy, time.Since(started))
-		release()
 	}
 	sort.Slice(production, func(i, j int) bool { return production[i] < production[j] })
 	sort.Slice(legacy, func(i, j int) bool { return legacy[i] < legacy[j] })
