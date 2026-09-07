@@ -39,7 +39,8 @@ a tool returns `ref not found` or `not actionable`, the page changed — call
 ## Reading content without screenshots
 
 - **`brw_read`** — page prose, headings, links, forms, tables. The primary
-  prose is returned as both `text` and `main`.
+  prose is returned as `main` (paged via `next_offset`, bounded by
+  `main_total_chars`) — there is no `text` key.
 - **`brw_read_data`** — embedded structured data (JSON-LD, `__NEXT_DATA__`,
   microdata, OpenGraph). The fast path for prices, product details, listings.
 - **`brw_network_capture`** then **`brw_replay_request`** — read the page's own
