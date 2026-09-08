@@ -145,8 +145,9 @@ hold them, and the error says so.
 **Direct-CDP transport only.** On the extension bridge (driving the user's
 existing signed-in Chrome) `brw_cookies` returns an explicit error: the
 extension's security policy blocks cookie CDP methods so a rogue server can
-never exfiltrate HttpOnly cookies through brw. Use a dedicated direct-CDP
-profile — or an incognito context there (`brw_open_incognito` +
+never exfiltrate HttpOnly cookies through brw. `brw_identity`'s `transport`
+field (`direct-cdp` | `extension-bridge`) tells you which you are on. Use a
+dedicated direct-CDP profile — or an incognito context there (`brw_open_incognito` +
 `brw_close_context`) for disposable cookie states.
 
 ## Waiting

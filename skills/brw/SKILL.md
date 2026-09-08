@@ -23,7 +23,7 @@ Confirm what a namespace actually drives (authoritative, never stale) with `brw_
 
 ```js
 brw_chromium_work.brw_identity();
-// -> { identity:{workspace, profile, user_data_dir, profile_directory, mode}, version, connected }
+// -> { identity:{workspace, profile, user_data_dir, profile_directory, mode, transport, headless}, version, connected }
 ```
 
 Enumerate with `help()`, then map each `brw*` namespace to a concrete profile via `brw_identity`. Pick by what the user asked for; if ambiguous, show the list and ask — do not guess.
@@ -48,7 +48,7 @@ ns.brw_close_tab({ tab_id: tab });                         // leave nothing behi
 
 ## Core tools — exact signatures (don't search for these again)
 
-- `brw_identity()` → `{identity:{workspace,profile,user_data_dir,profile_directory,mode}, version, connected}`. **Which profile this namespace drives** — call it first.
+- `brw_identity()` → `{identity:{workspace,profile,user_data_dir,profile_directory,mode,transport,headless}, version, connected}`. **Which profile this namespace drives** — call it first. `transport` = `"direct-cdp"` | `"extension-bridge"` (how brw reaches Chrome — decides which capabilities exist: incognito + `brw_cookies` need direct-cdp, Chrome tab groups need the extension bridge). `headless` = the browser has no visible window (verify visually with `brw_screenshot`, not by looking at a screen).
 - `brw_open({url, group?, group_id?, group_color?})` → `{tab:{id,url,title,group_title,group_id,active,window_id}, ready}`. No group ⇒ default "brw" group. `tab.id` may be numeric — pass it back as a STRING.
 - `brw_open_incognito({url})` → a tab in a fresh isolated context, including its `context_id`. **Direct-CDP transport only** — see below.
 - `brw_close_context({context_id})` → dispose an incognito context and everything in it.
@@ -88,7 +88,7 @@ incognito browser contexts are not supported on the extension-bridge
 transport; use a direct-CDP profile for incognito
 ```
 
-This tool is listed with a full description and fails only at call time. **Test it before you design around it** — one call, costs nothing:
+This tool is listed with a full description and fails only at call time. Check `identity.transport` first (`direct-cdp` ⇒ incognito works); when transport is unknown or you want belt-and-braces, probe once — one call, costs nothing:
 
 ```js
 try {
@@ -99,7 +99,7 @@ try {
 } catch (e) { print("NO incognito:", String(e).slice(0,120)); }
 ```
 
-`brw_identity().identity.mode` does NOT distinguish the two transports — bridge daemons report `upstream-http` like everything else. Out of band, `ps | grep brwd` and look for `--bridge`.
+`brw_identity().identity.transport` answers this directly — `"direct-cdp"` or `"extension-bridge"` (a `--upstream-http` proxy adopts its upstream's answer, so it means the same thing at every hop). `mode` does NOT: bridge daemons report `upstream-http` like everything else. If `transport` comes back empty the upstream was unreachable at startup — fall back to the one-call probe below.
 
 **When incognito is unavailable**, isolation has to come from somewhere else:
 - **A second brw profile.** Two namespaces = two genuinely separate logins (covers a two-role comparison, nothing wider).
@@ -153,6 +153,7 @@ For authoring/promotion/privacy/failure-repair, read [references/recipes.md](ref
 ## Mental model (so you don't fight it)
 
 - **Sticky default target:** after `brw_open`/`brw_focus_tab`, no-`tab_id` tools act on THAT tab; un-pinned tools otherwise follow *live human focus*. Pin `tab_id` for scripted flows (explicit ids also skip per-call resolution — speed).
+- **Transport decides capabilities:** `identity.transport` — `direct-cdp` unlocks incognito + `brw_cookies`; `extension-bridge` unlocks Chrome tab groups and drives the human's signed-in Chrome (cookie access deliberately blocked). `identity.headless` means no visible window.
 - **Leases:** another session's tabs come back `leased` — never drive them; open your own.
 - **No focus-steal:** brw won't raise the Chrome window over other apps.
 - **Default group:** no-group opens land in `brw` so agent tabs stay corralled.
@@ -164,7 +165,7 @@ For authoring/promotion/privacy/failure-repair, read [references/recipes.md](ref
 - Don't forget `print(...)` — execute_code only returns what you print (24 KiB cap — print fields, not payloads).
 - Don't assume the profile set — run `help()` and check every `brw*` namespace.
 - Don't design around incognito before testing it. On a `--bridge` daemon it fails at call time, not at plan time.
-- Don't read `brw_identity().mode` as the transport — it says `upstream-http` for bridge daemons too.
+- Don't read `brw_identity().mode` as the transport — read `.transport` (`"direct-cdp"` | `"extension-bridge"`) instead.
 - Don't treat any brw namespace as a throwaway sandbox: they all drive real profiles the human is signed into.
 - Don't drive a tab whose `lease.status` is `leased` — it belongs to another session.
 - Don't rely on no-`tab_id` resolution while the human is also driving — pin `tab_id`.

@@ -1327,13 +1327,14 @@ func TestVideoNoisyEncoderHasBoundedDiagnosticAndCleansTemp(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ffmpeg fixture is a POSIX shell script")
 	}
+	// Emit ~512 KiB of noise in one awk pass rather than an 8192-iteration
+	// shell loop. The subject is the bounded tail diagnostic, not shell
+	// throughput: the loop alone outran the capture budget on a loaded
+	// machine, so the test failed on a deadline without asserting anything
+	// about the diagnostic it exists to check.
 	ffmpeg := writeExecutableFixture(t, `#!/bin/sh
 cat >/dev/null
-i=0
-while [ "$i" -lt 8192 ]; do
-  printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' >&2
-  i=$((i + 1))
-done
+awk 'BEGIN{s="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";for(i=0;i<8192;i++)printf "%s", s}' >&2
 printf 'TAIL_SENTINEL\n' >&2
 exit 23
 `)
