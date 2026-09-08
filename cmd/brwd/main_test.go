@@ -112,3 +112,54 @@ func TestReadPrivateTokenFileRequiresOwnerOnlyRegularFile(t *testing.T) {
 		t.Fatal("symlink token file accepted")
 	}
 }
+
+func TestLocalTransport(t *testing.T) {
+	tests := []struct {
+		name     string
+		upstream string
+		bridge   bool
+		want     string
+	}{
+		{"direct cdp", "", false, brwidentity.TransportDirectCDP},
+		{"extension bridge", "", true, brwidentity.TransportExtensionBridge},
+		// A proxy cannot know how its upstream reaches Chrome, so it reports
+		// empty and adopts the upstream's answer from /health.
+		{"upstream proxy defers", "http://127.0.0.1:17410", false, ""},
+		{"upstream proxy defers even with bridge set", "http://127.0.0.1:17410", true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := localTransport(tt.upstream, tt.bridge); got != tt.want {
+				t.Fatalf("localTransport(%q, %v) = %q, want %q", tt.upstream, tt.bridge, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindInstalledExtensionNeedsAManifest(t *testing.T) {
+	dir := t.TempDir()
+	withManifest := filepath.Join(dir, "good")
+	bare := filepath.Join(dir, "bare")
+	for _, d := range []string{withManifest, bare} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(withManifest, "manifest.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := extensionSearchPaths
+	t.Cleanup(func() { extensionSearchPaths = orig })
+
+	extensionSearchPaths = func() []string { return []string{bare, withManifest} }
+	got, ok := findInstalledExtension()
+	if !ok || got != withManifest {
+		t.Fatalf("findInstalledExtension() = %q,%v; want %q,true (a dir without a manifest is not our extension)", got, ok, withManifest)
+	}
+
+	extensionSearchPaths = func() []string { return []string{bare} }
+	if got, ok := findInstalledExtension(); ok {
+		t.Fatalf("findInstalledExtension() = %q,true; want not found", got)
+	}
+}

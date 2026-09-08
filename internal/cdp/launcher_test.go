@@ -195,3 +195,66 @@ func TestEnsureSafeUserDataDirRefusesRealProfileRoot(t *testing.T) {
 		t.Fatal("must refuse to launch against the real Chrome profile root without the override")
 	}
 }
+
+func TestLaunchArgsHeadlessAndExtensions(t *testing.T) {
+	base := LaunchConfig{UserDataDir: "/tmp/brw-agent", Port: 9333}
+	tests := []struct {
+		name    string
+		mutate  func(*LaunchConfig)
+		want    []string
+		notWant []string
+	}{
+		{
+			name:    "headed by default",
+			mutate:  func(*LaunchConfig) {},
+			notWant: []string{"--headless=new"},
+		},
+		{
+			name:   "headless emits the new-headless form",
+			mutate: func(c *LaunchConfig) { c.Headless = true },
+			want:   []string{"--headless=new"},
+		},
+		{
+			name: "headless still loads extensions",
+			mutate: func(c *LaunchConfig) {
+				c.Headless = true
+				c.Extensions = []string{"/opt/brw/extension"}
+			},
+			want: []string{"--headless=new", "--load-extension=/opt/brw/extension"},
+		},
+		{
+			name: "operator args come after ours so they win",
+			mutate: func(c *LaunchConfig) {
+				c.Headless = true
+				c.Args = []string{"--window-size=1280,900"}
+			},
+			want: []string{"--window-size=1280,900"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			tt.mutate(&cfg)
+			args := launchArgs(cfg, cfg.Port)
+			joined := strings.Join(args, " ")
+			for _, w := range tt.want {
+				if !strings.Contains(joined, w) {
+					t.Errorf("args missing %q\ngot: %s", w, joined)
+				}
+			}
+			for _, n := range tt.notWant {
+				if strings.Contains(joined, n) {
+					t.Errorf("args unexpectedly contain %q\ngot: %s", n, joined)
+				}
+			}
+			if got := args[len(args)-1]; got != "about:blank" {
+				t.Errorf("last arg = %q, want about:blank", got)
+			}
+			if tt.name == "operator args come after ours so they win" {
+				if !strings.Contains(joined, "--headless=new --window-size=1280,900") {
+					t.Errorf("operator args must follow brw's own\ngot: %s", joined)
+				}
+			}
+		})
+	}
+}

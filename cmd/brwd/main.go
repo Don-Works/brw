@@ -70,6 +70,9 @@ func main() {
 	var unsafeAllowDefaultProfileCDP bool
 	var unsafeRealProfile bool
 	var bridgeExtensionID string
+	var headless bool
+	var loginMode bool
+	var noDefaultExtension bool
 	var upstreamHTTP string
 	var mcpToolProfile string
 	var mcpIdleExit time.Duration
@@ -93,6 +96,7 @@ func main() {
 	flag.StringVar(&mcpToolProfile, "mcp-tools", envDefault("BRW_MCP_TOOLS", "auto"), "MCP tool surface advertised in tools/list: 'all' (full), 'core' (lean common-flow set), 'minimal' (smallest surface that still completes ordinary web work), or 'auto' (default; starts minimal and grows as the agent discovers tools with brw_tools). The catalogue is re-sent on every request, so a narrower profile is a per-turn context saving. All tools remain callable regardless.")
 	flag.DurationVar(&mcpIdleExit, "mcp-idle-exit", envDuration("BRW_MCP_IDLE_EXIT", 0), "exit the --mcp stdio server cleanly after this long with no requests; upstream HTTP proxies default to 90m unless this flag or BRW_MCP_IDLE_EXIT is explicitly set (0 disables). Prevents abandoned clients from accumulating disposable proxy processes.")
 	flag.BoolVar(&bridgeMode, "bridge", false, "use installed Chrome extension bridge instead of direct CDP")
+	flag.BoolVar(&headless, "headless", envBool("BRW_HEADLESS"), "direct CDP: launch Chrome with no visible window (--headless=new). Extensions, the persistent profile and the full CDP surface still work. Incompatible with --bridge and --remote, which attach to a browser brw did not launch. A profile may set \"headless\": true instead.")
 	flag.StringVar(&bridgeAddr, "bridge-addr", envDefault("BRW_BRIDGE_ADDR", "127.0.0.1:17311"), "extension bridge WebSocket listen address")
 	flag.BoolVar(&bridgeRaiseWindow, "bridge-raise-window", envBool("BRW_BRIDGE_RAISE_WINDOW"), "bridge: raise the Chrome window to the OS foreground on focus_tab. Off by default so automation never steals your focus while you work elsewhere.")
 	flag.StringVar(&bridgeTabGroup, "bridge-tab-group", envDefault("BRW_BRIDGE_TAB_GROUP", "brw"), "bridge: tab-group title brw_open uses when no group is given, so the agent's tabs stay corralled in one labelled group. Set empty to disable default grouping.")
@@ -110,6 +114,8 @@ func main() {
 	flag.StringVar(&cfg.ProfileDirectory, "profile-directory", os.Getenv("BRW_PROFILE_DIRECTORY"), "Chrome profile directory within user data dir, for example 'Profile 1'")
 	flag.IntVar(&cfg.Port, "remote-debugging-port", 0, "remote debugging port for launched Chrome; 0 chooses a free local port")
 	flag.Var(&extensions, "extension", "extension directory to load; repeatable")
+	flag.BoolVar(&noDefaultExtension, "no-default-extension", envBool("BRW_NO_DEFAULT_EXTENSION"), "direct CDP: do not auto-load the installed brw extension. Loading it is the default because it is what gives a direct-CDP profile Chrome tab groups and file-chooser interception; an explicit --extension also suppresses the default.")
+	flag.BoolVar(&loginMode, "login", false, "direct CDP: force a headed window even on a headless profile, so you can sign in once. The profile keeps the session; later headless runs on the same --user-data-dir are still signed in. Stop this daemon before starting the headless one — one Chrome per profile directory.")
 	flag.Var(&chromeArgs, "chrome-arg", "extra Chrome argument; repeatable")
 	flag.DurationVar(&timeout, "timeout", 20*time.Second, "default browser operation timeout")
 	flag.BoolVar(&printSystemPrompt, "print-system-prompt", false, "print the recommended agent system prompt to stdout and exit")
@@ -141,6 +147,21 @@ func main() {
 	}
 
 	cfg.Extensions = extensions
+	// On direct CDP brw launches its own Chrome, so it may as well load its
+	// own extension into it. That is what recovers, on this transport, the
+	// two things the bridge had exclusively: chrome.tabGroups (an extension
+	// API, so plain CDP cannot corral agent tabs) and file-chooser
+	// interception, without which a click that creates an <input type=file>
+	// opens a native OS dialog and blocks the whole CDP session.
+	//
+	// --headless=new supports --load-extension (Chrome 112+), so the headless
+	// lane keeps both.
+	if len(cfg.Extensions) == 0 && !noDefaultExtension && !bridgeMode && upstreamHTTP == "" && cfg.RemoteURL == "" {
+		if dir, ok := findInstalledExtension(); ok {
+			cfg.Extensions = []string{dir}
+			log.Printf("loading brw extension from %s (tab groups + file-chooser interception; --no-default-extension to skip)", dir)
+		}
+	}
 	cfg.ChromeArgs = chromeArgs
 	cfg.Timeout = timeout
 	cfg.WebMCP = enableWebMCP
@@ -188,6 +209,9 @@ func main() {
 		}
 		cfg.UserDataDir = profile.UserDataDir
 		cfg.ProfileDirectory = profile.ProfileDirectory
+		if profile.Headless {
+			headless = true
+		}
 		mode := "direct"
 		if upstreamHTTP != "" {
 			mode = "upstream-http"
@@ -200,11 +224,40 @@ func main() {
 			UserDataDir:      profile.UserDataDir,
 			ProfileDirectory: profile.ProfileDirectory,
 			Mode:             mode,
+			Transport:        localTransport(upstreamHTTP, bridgeMode),
+			Headless:         headless,
 		}
 		identityExpected = runtimeIdentity
+		// Mode, Transport and Headless are all properties of the daemon
+		// answering, not of the workspace/profile binding being verified. A
+		// proxy learns the last two from its upstream rather than asserting
+		// them, so pinning them here would reject every healthy upstream.
 		identityExpected.Mode = ""
+		identityExpected.Transport = ""
+		identityExpected.Headless = false
 		log.Printf("using workspace profile %q (%s)", profile.Name, profile.Kind)
 	}
+	if loginMode {
+		switch {
+		case bridgeMode, upstreamHTTP != "", cfg.RemoteURL != "":
+			log.Fatalf("--login only applies to a direct-CDP profile brw launches itself; the bridge, --remote and --upstream-http all attach to a browser you sign into directly")
+		}
+		if headless {
+			log.Printf("--login: launching headed despite the profile's headless setting; sign in, then stop this daemon before starting the headless one")
+			headless = false
+		}
+	}
+	if headless {
+		switch {
+		case bridgeMode:
+			log.Fatalf("--headless cannot be combined with --bridge: the bridge drives the browser you are already running, so there is no window for brw to suppress")
+		case cfg.RemoteURL != "":
+			log.Fatalf("--headless cannot be combined with --remote: brw attaches to a browser it did not launch, so headlessness was decided by whoever started it")
+		case upstreamHTTP != "":
+			log.Fatalf("--headless cannot be combined with --upstream-http: this process proxies to a daemon that already launched the browser; set --headless on that daemon")
+		}
+	}
+	cfg.Headless = headless
 	usageIdentity := runtimeIdentity
 	if usageIdentity.Mode == "" {
 		switch {
@@ -216,6 +269,10 @@ func main() {
 			usageIdentity.Mode = "direct"
 		}
 	}
+	if usageIdentity.Transport == "" {
+		usageIdentity.Transport = localTransport(upstreamHTTP, bridgeMode)
+	}
+	usageIdentity.Headless = headless
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -278,12 +335,12 @@ func main() {
 		if err != nil {
 			log.Fatalf("upstream HTTP controller: %v", err)
 		}
+		verifyCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		health, healthErr := upstream.Health(verifyCtx)
+		cancel()
 		if haveProfilePolicy {
-			verifyCtx, cancel := context.WithTimeout(context.Background(), timeout)
-			health, err := upstream.Health(verifyCtx)
-			cancel()
-			if err != nil {
-				log.Fatalf("verify upstream identity: %v", err)
+			if healthErr != nil {
+				log.Fatalf("verify upstream identity: %v", healthErr)
 			}
 			if health.Identity.Empty() {
 				log.Fatalf("upstream HTTP controller %s does not expose workspace/profile identity; refusing to proxy workspace %q profile %q", upstreamHTTP, identityExpected.Workspace, identityExpected.Profile)
@@ -291,6 +348,20 @@ func main() {
 			if mismatches := health.Identity.Mismatches(identityExpected); len(mismatches) > 0 {
 				log.Fatalf("upstream HTTP controller %s identity mismatch: %s", upstreamHTTP, strings.Join(mismatches, "; "))
 			}
+		}
+		// Adopt the upstream's transport and headlessness. This process is a
+		// disposable MCP proxy: its own Mode is "upstream-http", which says
+		// how the AGENT reaches brw and nothing about how brw reaches Chrome.
+		// Without adoption every bridge daemon looked identical to every
+		// direct-CDP one from inside a tool call, and the documented advice
+		// was to shell out and grep ps for --bridge.
+		if healthErr == nil && !health.Identity.Empty() {
+			runtimeIdentity.Transport = health.Identity.Transport
+			runtimeIdentity.Headless = health.Identity.Headless
+			usageIdentity.Transport = health.Identity.Transport
+			usageIdentity.Headless = health.Identity.Headless
+		} else if healthErr != nil {
+			log.Printf("WARNING: upstream %s health unavailable (%v); transport and headless state will be reported empty", upstreamHTTP, healthErr)
 		}
 		controller = upstream
 		log.Printf("using upstream HTTP controller %s", upstreamHTTP)
@@ -516,6 +587,50 @@ func effectiveMCPIdleExit(configured time.Duration, mcpMode bool, upstreamHTTP s
 		return configured
 	}
 	return defaultProxyIdleExit
+}
+
+// extensionSearchPaths lists where an installed brw extension lives, most
+// specific first. Exposed as a variable so tests can point it at a temp dir.
+var extensionSearchPaths = func() []string {
+	var out []string
+	if dir := strings.TrimSpace(os.Getenv("BRW_EXTENSION_DIR")); dir != "" {
+		out = append(out, dir)
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		out = append(out,
+			filepath.Join(home, "Library", "Application Support", "brw", "extension"),
+			filepath.Join(home, ".local", "share", "brw", "extension"),
+		)
+	}
+	return append(out, filepath.Join("/usr", "share", "brw", "extension"))
+}
+
+// findInstalledExtension returns the first search path holding a manifest.
+// A directory without one is somebody else's folder, not our extension.
+func findInstalledExtension() (string, bool) {
+	for _, dir := range extensionSearchPaths() {
+		if dir == "" {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(dir, "manifest.json")); err == nil && !info.IsDir() {
+			return dir, true
+		}
+	}
+	return "", false
+}
+
+// localTransport names how THIS process reaches the browser. A proxy cannot
+// know until it asks its upstream, so it reports empty here and adopts the
+// answer from the upstream's health response.
+func localTransport(upstreamHTTP string, bridgeMode bool) string {
+	switch {
+	case upstreamHTTP != "":
+		return ""
+	case bridgeMode:
+		return brwidentity.TransportExtensionBridge
+	default:
+		return brwidentity.TransportDirectCDP
+	}
 }
 
 func resolveUsageLogPath(configured string, identity brwidentity.Identity) (string, error) {

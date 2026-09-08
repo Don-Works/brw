@@ -40,6 +40,9 @@ type Config struct {
 	// against the user's real browser profile (which corrupts it). Diagnostics
 	// only; see cdp.EnsureSafeUserDataDir.
 	AllowRealProfile bool
+	// Headless launches Chrome with --headless=new. Extensions, persistent
+	// profiles and the whole CDP surface still work; only the window is gone.
+	Headless bool
 }
 
 type Tab struct {

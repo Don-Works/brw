@@ -11,14 +11,35 @@ type Identity struct {
 	UserDataDir      string `json:"user_data_dir,omitempty"`
 	ProfileDirectory string `json:"profile_directory,omitempty"`
 	Mode             string `json:"mode,omitempty"`
+	// Transport is how this daemon reaches the browser, independent of how
+	// the caller reaches this daemon. Mode cannot answer that: a disposable
+	// --upstream-http MCP proxy reports Mode "upstream-http" whether the
+	// daemon behind it drives Chrome over direct CDP or the extension
+	// bridge, so an agent choosing between incognito (direct only) and tab
+	// groups (an extension API) had no way to tell but to grep ps for the
+	// upstream's flags. The proxy adopts its upstream's Transport, so this
+	// field means the same thing at every hop.
+	Transport string `json:"transport,omitempty"`
+	// Headless reports whether the browser this daemon drives has no visible
+	// window. Propagated through a proxy the same way Transport is.
+	Headless bool `json:"headless,omitempty"`
 }
+
+// Transport values. These name how brw reaches the browser, not how a client
+// reaches brw.
+const (
+	TransportDirectCDP       = "direct-cdp"
+	TransportExtensionBridge = "extension-bridge"
+)
 
 func (i Identity) Empty() bool {
 	return i.Workspace == "" &&
 		i.Profile == "" &&
 		i.UserDataDir == "" &&
 		i.ProfileDirectory == "" &&
-		i.Mode == ""
+		i.Mode == "" &&
+		i.Transport == "" &&
+		!i.Headless
 }
 
 // Mismatches compares non-empty expected fields. Empty expected fields are

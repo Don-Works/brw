@@ -32,6 +32,11 @@ type LaunchConfig struct {
 	// AllowRealProfile overrides the refusal to launch against the user's real
 	// browser profile (see EnsureSafeUserDataDir). Diagnostics only.
 	AllowRealProfile bool
+	// Headless launches Chrome with --headless=new. Chrome 132 removed old
+	// headless entirely (it ships separately as chrome-headless-shell), so
+	// --headless and --headless=new are the same browser now; brw emits the
+	// explicit form so the intent survives a log line.
+	Headless bool
 }
 
 type Launcher struct {
@@ -72,6 +77,25 @@ func Launch(ctx context.Context, cfg LaunchConfig) (*Launcher, error) {
 		}
 	}
 
+	args := launchArgs(cfg, port)
+
+	// Deliberately NOT exec.CommandContext(ctx, ...): binding Chrome's lifetime to
+	// ctx means a cancelled ctx (the daemon's SIGTERM signal context on shutdown)
+	// makes os/exec send its own SIGKILL, racing the graceful Close() below and
+	// corrupting the profile on a normal Ctrl-C. Chrome is stopped solely by
+	// Close(), which terminates it gracefully.
+	cmd := exec.Command(chromePath, args...)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return finishLaunch(ctx, cmd, port)
+}
+
+// launchArgs builds Chrome's command line. Split out from Launch so the flag
+// set is testable without spawning a browser.
+func launchArgs(cfg LaunchConfig, port int) []string {
 	args := []string{
 		"--remote-debugging-address=127.0.0.1",
 		"--remote-debugging-port=" + strconv.Itoa(port),
@@ -87,6 +111,9 @@ func Launch(ctx context.Context, cfg LaunchConfig) (*Launcher, error) {
 		"--disable-backgrounding-occluded-windows",
 		"--disable-renderer-backgrounding",
 	}
+	if cfg.Headless {
+		args = append(args, "--headless=new")
+	}
 	if cfg.ProfileDirectory != "" {
 		args = append(args, "--profile-directory="+cfg.ProfileDirectory)
 	}
@@ -95,19 +122,12 @@ func Launch(ctx context.Context, cfg LaunchConfig) (*Launcher, error) {
 	}
 	args = append(args, cfg.Args...)
 	args = append(args, "about:blank")
+	return args
+}
 
-	// Deliberately NOT exec.CommandContext(ctx, ...): binding Chrome's lifetime to
-	// ctx means a cancelled ctx (the daemon's SIGTERM signal context on shutdown)
-	// makes os/exec send its own SIGKILL, racing the graceful Close() below and
-	// corrupting the profile on a normal Ctrl-C. Chrome is stopped solely by
-	// Close(), which terminates it gracefully.
-	cmd := exec.Command(chromePath, args...)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
+// finishLaunch waits for the freshly started Chrome to answer on its debugging
+// port, tearing it down if it never does.
+func finishLaunch(ctx context.Context, cmd *exec.Cmd, port int) (*Launcher, error) {
 	launcher := &Launcher{cmd: cmd, endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), port: port, grace: defaultShutdownGrace}
 	if err := launcher.waitReady(ctx, 15*time.Second); err != nil {
 		_ = launcher.Close()

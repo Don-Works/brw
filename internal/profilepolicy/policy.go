@@ -39,12 +39,16 @@ type Profile struct {
 	ProfileDirectory       string `json:"profile_directory,omitempty"`
 	DirectCDPAllowed       bool   `json:"direct_cdp_allowed"`
 	ExtensionBridgeAllowed bool   `json:"extension_bridge_allowed"`
-	BridgeExtensionID      string `json:"bridge_extension_id,omitempty"`
-	BridgeInstallMode      string `json:"bridge_install_mode,omitempty"`
-	BridgeHTTPAddr         string `json:"bridge_http_addr,omitempty"`
-	BridgeWSAddr           string `json:"bridge_ws_addr,omitempty"`
-	DevToolsMCPAllowed     bool   `json:"devtools_mcp_allowed,omitempty"`
-	DevToolsMCPMode        string `json:"devtools_mcp_mode,omitempty"`
+	// Headless launches this profile's Chrome with no visible window. Direct
+	// CDP only — the extension bridge attaches to a browser the user is
+	// already running, so there is nothing for brw to make headless.
+	Headless           bool   `json:"headless,omitempty"`
+	BridgeExtensionID  string `json:"bridge_extension_id,omitempty"`
+	BridgeInstallMode  string `json:"bridge_install_mode,omitempty"`
+	BridgeHTTPAddr     string `json:"bridge_http_addr,omitempty"`
+	BridgeWSAddr       string `json:"bridge_ws_addr,omitempty"`
+	DevToolsMCPAllowed bool   `json:"devtools_mcp_allowed,omitempty"`
+	DevToolsMCPMode    string `json:"devtools_mcp_mode,omitempty"`
 }
 
 type Transport struct {

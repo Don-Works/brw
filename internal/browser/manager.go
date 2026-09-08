@@ -288,6 +288,7 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 			Extensions:       cfg.Extensions,
 			Args:             cfg.ChromeArgs,
 			AllowRealProfile: cfg.AllowRealProfile,
+			Headless:         cfg.Headless,
 		})
 		if err != nil {
 			return nil, err
