@@ -76,20 +76,22 @@ commands:
   pack-extension  pack the brw Chrome extension as a CRX using installed Chrome
   update-xml      write a Chrome extension update manifest XML
   daemons         list configured bridge profile-daemons + probe each /health (JSON)
-  recipe          validate or atomically install a private deterministic recipe`)
+  recipe          draft, validate or atomically install a private deterministic recipe`)
 }
 
 func recipeCommand(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: brwctl recipe <validate|install> [options]")
+		return errors.New("usage: brwctl recipe <draft|validate|install> [options]")
 	}
 	switch args[0] {
+	case "draft":
+		return recipeDraft(args[1:])
 	case "validate":
 		return recipeValidate(args[1:])
 	case "install":
 		return recipeInstall(args[1:])
 	default:
-		return fmt.Errorf("unknown recipe command %q (want validate or install)", args[0])
+		return fmt.Errorf("unknown recipe command %q (want draft, validate or install)", args[0])
 	}
 }
 

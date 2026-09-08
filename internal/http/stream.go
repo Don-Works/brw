@@ -47,6 +47,21 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 	entries, cancel := sub.SubscribeTrace()
 	defer cancel()
 
+	// Scope exactly as /api/page/trace does. The daemon is shared, so an
+	// unscoped stream hands one agent session another's browsing live — on a
+	// signed-in profile that means authenticated page titles and URLs. An
+	// entry with no tab is daemon-wide and safe; anything else needs a lease
+	// this caller holds. A request with no lease identity sees only tab-less
+	// entries, because entitlement cannot be established.
+	owner := leaseOwner(r.Context())
+	visible := func(entry browser.TraceEntry) bool {
+		if entry.TabID == "" {
+			return true
+		}
+		return owner != "" && s.leases.ownsTab(owner, entry.TabID)
+	}
+	var withheld uint64
+
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-store")
@@ -74,6 +89,17 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 		case entry, open := <-entries:
 			if !open {
 				return
+			}
+			if !visible(entry) {
+				// Count rather than drop silently, so a caller can tell a
+				// filtered stream from an idle browser — same contract as the
+				// trace endpoint's "withheld".
+				withheld++
+				if _, err := fmt.Fprintf(w, "event: withheld\ndata: {\"withheld\":%d}\n\n", withheld); err != nil {
+					return
+				}
+				flusher.Flush()
+				continue
 			}
 			seq++
 			payload, err := json.Marshal(struct {
