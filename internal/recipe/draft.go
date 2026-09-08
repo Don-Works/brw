@@ -164,6 +164,15 @@ func draftSteps(actions []TraceAction) []Step {
 				Kind:      TodoMarker + ": page.ready | text.present | element.value | url.match | download.completed",
 				TimeoutMS: 15000,
 			}
+			// Element-kind events need a target of their own. Pre-fill it with
+			// the step's, which is the overwhelmingly common case (assert on
+			// the thing you just acted on) and is otherwise a second manual
+			// edit for information the draft already has. A human choosing a
+			// page- or url-kind event deletes it.
+			if step.Target != nil {
+				t := *step.Target
+				step.Postcondition.Target = &t
+			}
 		}
 		steps = append(steps, step)
 	}
