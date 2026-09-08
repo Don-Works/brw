@@ -3,6 +3,8 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/Don-Works/brw/internal/browser"
@@ -56,5 +58,25 @@ func TestSessionStreamScopesEntriesToTheCallersLeases(t *testing.T) {
 				t.Fatalf("visible=%v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// The operator running the daemon is a different actor from the agent sessions
+// sharing it. BRW_STREAM_SCOPE=all is their opt-in, set at launch — a request
+// cannot widen its own view by asking.
+func TestSessionStreamOperatorScopeIsLaunchTimeOnly(t *testing.T) {
+	t.Setenv("BRW_STREAM_SCOPE", "all")
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("BRW_STREAM_SCOPE")), "all") {
+		t.Fatal("env not applied")
+	}
+	t.Setenv("BRW_STREAM_SCOPE", "")
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("BRW_STREAM_SCOPE")), "all") {
+		t.Fatal("empty scope must not enable watch-all")
+	}
+	// There is no query parameter or header that turns it on.
+	req := httptest.NewRequest(http.MethodGet, "/api/session/stream?scope=all", nil)
+	if strings.EqualFold(req.URL.Query().Get("scope"), "all") &&
+		strings.EqualFold(strings.TrimSpace(os.Getenv("BRW_STREAM_SCOPE")), "all") {
+		t.Fatal("a request parameter must never grant operator scope")
 	}
 }

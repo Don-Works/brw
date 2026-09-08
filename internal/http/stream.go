@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
@@ -53,9 +55,15 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 	// entry with no tab is daemon-wide and safe; anything else needs a lease
 	// this caller holds. A request with no lease identity sees only tab-less
 	// entries, because entitlement cannot be established.
+	// The operator running the daemon is a different actor from the agent
+	// sessions sharing it, and watching your own browser work is the whole
+	// point of this endpoint. BRW_STREAM_SCOPE=all is that opt-in, set on the
+	// daemon at launch rather than chosen per request, so a lease-holding
+	// session cannot widen its own view by asking. Default stays closed.
+	watchAll := strings.EqualFold(strings.TrimSpace(os.Getenv("BRW_STREAM_SCOPE")), "all")
 	owner := leaseOwner(r.Context())
 	visible := func(entry browser.TraceEntry) bool {
-		if entry.TabID == "" {
+		if watchAll || entry.TabID == "" {
 			return true
 		}
 		return owner != "" && s.leases.ownsTab(owner, entry.TabID)
