@@ -71,6 +71,7 @@ ns.brw_close_tab({ tab_id: tab });                         // leave nothing behi
 Long tail — full signatures via `help('<namespace>')`:
 - **Observe/debug:** `brw_console` (buffered page console — first stop when JS breaks) · `brw_observe` (cheap change detector: version/url/title/focused ref/frontier diffs) · `brw_screenshot` / `brw_screenshot_element` (visual FALLBACK only — semantic tools come first) · `brw_trace({format:"entries"|"batch"})` (action trace; `batch` = a brw_batch steps array reproducing the flow; coordinate steps reported under `skipped_reasons`) · `brw_clear_trace`.
 - **Network:** `brw_network_requests` (passive Performance-API resource list) · `brw_network_capture` (active in-page fetch/XHR interceptor → `capture_id`) · `brw_replay_request({url, method?, headers?, body?, offset?, max_bytes?})` — re-execute a request IN-PAGE carrying the tab's cookies (mutating checkout/payment-like URLs blocked); the right tool to prove a denial "comes from the server", not the UI.
+- **Cookies:** `brw_cookies({action:"list"|"set"|"delete", tab_id?, url?, domain?, path?, name?, value?, secure?, http_only?, same_site?, expires?})` — CDP-level cookie access INCLUDING HttpOnly (list returns `name,value,domain,path,expires,size,http_only,secure,session,same_site`; set reads the stored cookie back; delete reports `remaining_same_name`). Scope defaults to the tab's current URL. **Direct-CDP transport only** — same trap as incognito (see below).
 - **Data:** `brw_read_data` (`__NEXT_DATA__`, JSON-LD, microdata, Open Graph as compact JSON) · `brw_downloads` (tracked file downloads) · `brw_evaluate({expression, offset?, max_bytes?})` (page-context JS, async allowed, JSON-serializable result).
 - **WebMCP:** `brw_page_tools` / `brw_call_page_tool` — tools the page itself exposes via `navigator.modelContext`.
 - **Environment:** `brw_emulate_device` (CDP device emulation for responsive tests) · `brw_window_resize` / `brw_window_bounds` (the REAL OS window; screen-pixel → viewport mapping).
@@ -103,10 +104,22 @@ try {
 **When incognito is unavailable**, isolation has to come from somewhere else:
 - **A second brw profile.** Two namespaces = two genuinely separate logins (covers a two-role comparison, nothing wider).
 - **`playwright`.** A separate isolated, disposable browser; no user sessions — clean-room work.
-- **Sequential, with proof.** One role at a time; log out and clear storage between, and VERIFY the previous session is gone rather than assuming it.
-- **Add a direct-CDP daemon.** The durable fix: a `brwd` without `--bridge`, which launches its own Chrome with `--remote-debugging-port`. Gains incognito, loses Chrome tab-group support (groups are an extension API).
+- **Sequential, with proof.** One role at a time; on a direct-CDP daemon scrub auth cookies with `brw_cookies` (delete the session cookies, verify with `list`) instead of logging out through the UI, and VERIFY the previous session is gone rather than assuming it.
+- **Add a direct-CDP daemon.** The durable fix: a `brwd` without `--bridge`, which launches its own Chrome with `--remote-debugging-port`. Gains incognito AND `brw_cookies`, loses Chrome tab-group support (groups are an extension API).
 
-**Cookies have no dedicated tool (yet).** As of v0.10.3 there is no `brw_cookies` list/set/delete — only escape hatch is `brw_evaluate({expression:"document.cookie"})` (no HttpOnly visibility, cannot set attributes). Tracked in the task ledger (search `brw_cookies`).
+**`brw_cookies` is direct-CDP only too — same trap.** On a `--bridge` daemon it fails at call time with the same shape of error:
+
+```
+cookie access is not supported on the extension-bridge transport; the
+extension's security policy blocks cookie CDP methods …
+```
+
+That boundary is deliberate: the extension never exposes the signed-in
+profile's HttpOnly cookies. Test it before designing around it (one call), and
+when it works use it to scrub auth state between sequential multi-role runs —
+delete the session cookies, verify with `list`, then log in as the next role;
+`document.cookie` via `brw_evaluate` can neither see nor write HttpOnly
+cookies, which is exactly why this tool exists.
 
 ## Gotchas (field-verified against v0.10.3, 2026-09)
 

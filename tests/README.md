@@ -6,7 +6,8 @@ It intentionally mixes deterministic local fixtures with opt-in public network
 scenarios:
 
 - local fixtures cover semantic read, forms, selects, checkboxes, keyboard input,
-  delayed controls, screenshots, canvas/map-like visual fallback, and open Shadow DOM
+  delayed controls, screenshots, canvas/map-like visual fallback, open Shadow DOM,
+  and cookie list/set/delete (incl. HttpOnly) over a loopback HTTP fixture origin
 - public scenarios check stable external sites
 
 Run the default deterministic suite:

@@ -1449,6 +1449,10 @@ func (fakeController) NetworkCapture(context.Context, string) ([]snapshot.Captur
 func (fakeController) ReplayRequest(context.Context, browser.ReplayRequestParams) (snapshot.ReplayResult, error) {
 	return snapshot.ReplayResult{}, nil
 }
+
+func (fakeController) Cookies(context.Context, browser.CookieParams) (browser.CookieResult, error) {
+	return browser.CookieResult{}, nil
+}
 func (fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.PlanResult, error) {
 	snap := snapshot.PageSnapshot{URL: "https://example.com", Title: "Example"}
 	return browser.PlanResult{

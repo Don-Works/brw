@@ -444,6 +444,14 @@ func (c *Controller) ReplayRequest(ctx context.Context, params browser.ReplayReq
 	return out, err
 }
 
+func (c *Controller) Cookies(ctx context.Context, params browser.CookieParams) (browser.CookieResult, error) {
+	var out browser.CookieResult
+	// withTabID folds the context's tab_id into the marshalled body, keeping the
+	// daemon-side lease/ownership semantics identical to every other page tool.
+	err := c.post(ctx, "/api/page/cookies", params, &out)
+	return out, err
+}
+
 func (c *Controller) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {
 	var out browser.PlanResult
 	err := c.post(ctx, "/api/page/execute_plan", map[string]any{"steps": steps}, &out)

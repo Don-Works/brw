@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cookie Fixture</title>
+  <meta name="description" content="Deterministic cookie fixture served over loopback HTTP">
+</head>
+<body>
+  <main>
+    <h1>Cookie Fixture</h1>
+    <p id="status">checking</p>
+  </main>
+  <script>
+    // Set a page-visible (non-HttpOnly) cookie so scenarios can contrast it
+    // with the HttpOnly cookie brw_cookies installs via CDP.
+    document.cookie = "fixture_js=page-set; path=/; SameSite=Lax";
+    document.getElementById("status").textContent =
+      document.cookie.includes("fixture_js=page-set") ? "fixture_js set" : "fixture_js missing";
+  </script>
+</body>
+</html>

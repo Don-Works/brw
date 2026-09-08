@@ -299,6 +299,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/page/network_capture", s.networkCapture)
 	mux.HandleFunc("POST /api/page/network_capture", s.networkCapture)
 	mux.HandleFunc("POST /api/page/replay_request", s.replayRequest)
+	mux.HandleFunc("POST /api/page/cookies", s.cookies)
 	mux.HandleFunc("POST /api/page/execute_plan", s.executePlan)
 	mux.HandleFunc("POST /api/page/batch", s.executeBatch)
 	mux.HandleFunc("POST /api/page/cancel", s.cancel)
@@ -1243,6 +1244,18 @@ func (s *Server) replayRequest(w http.ResponseWriter, r *http.Request) {
 		Offset:   req.Offset,
 		MaxBytes: req.MaxBytes,
 	})
+	writeResult(w, result, err)
+}
+
+func (s *Server) cookies(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		browser.CookieParams
+		TabID string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := s.manager.Cookies(s.contextWithTabID(r.Context(), req.TabID), req.CookieParams)
 	writeResult(w, result, err)
 }
 

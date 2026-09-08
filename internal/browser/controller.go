@@ -51,6 +51,7 @@ type Controller interface {
 	NetworkRequests(context.Context, string) ([]NetworkRequest, error)
 	NetworkCapture(context.Context, string) ([]snapshot.CapturedRequest, error)
 	ReplayRequest(context.Context, ReplayRequestParams) (snapshot.ReplayResult, error)
+	Cookies(context.Context, CookieParams) (CookieResult, error)
 	ExecutePlan(context.Context, []PlanStep) (PlanResult, error)
 	ExecuteBatch(context.Context, []BatchStep) (BatchResult, error)
 	Cancel(context.Context, string) (CancelResult, error)

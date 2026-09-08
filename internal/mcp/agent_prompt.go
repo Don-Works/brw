@@ -36,6 +36,12 @@ READING CONTENT (no screenshots):
   — the fast path for prices, product details, listings.
 - brw_network_capture then brw_replay_request to read a page's own JSON API
   instead of scraping the DOM, when that is the data you need.
+- brw_cookies { action: "list" } to inspect a tab's cookies at the CDP level,
+  including HttpOnly auth cookies document.cookie cannot see; set/delete with
+  full attribute control (secure, http_only, same_site, expires). Scrub auth
+  state between multi-role runs with delete, then verify with list. Direct-CDP
+  transports only; the extension bridge refuses it to protect the signed-in
+  profile.
 
 MOBILE/RESPONSIVE: use brw_emulate_device for small-screen testing. It is real
 Chrome DevTools device emulation (CSS viewport, DPR, mobile viewport-meta

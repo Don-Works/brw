@@ -120,6 +120,35 @@ under `--enable-webmcp`:
   when a tool matches your task. `supported:false` just means fall back to the
   normal snapshot/act loop.
 
+## Cookies: list, set, delete — HttpOnly included
+
+`brw_cookies` works at the CDP cookie-store level, so it sees and writes cookies
+`document.cookie` cannot: **HttpOnly** auth cookies above all. Actions:
+
+- `brw_cookies { action: "list" }` — cookies applicable to the target tab's
+  origin (or an explicit `url`/`domain`), each with `name, value, domain, path,
+  expires, size, http_only, secure, session, same_site`. An optional exact
+  `name` filters the list.
+- `brw_cookies { action: "set", name, value }` — optional `domain`, `path`,
+  `secure`, `http_only`, `same_site` (`strict|lax|none`), and `expires` as unix
+  seconds (omit for a session cookie). The stored cookie is read back so you
+  see the domain/path Chrome actually persisted.
+- `brw_cookies { action: "delete", name }` — removes the cookies matching
+  `name` for the tab's URL (or explicit `url` / `domain`+`path`) and reports
+  `remaining_same_name` so a partial scrub is visible.
+
+Typical uses: scrub auth state between sequential multi-role test runs, inspect
+a session cookie before/after login, or stage a clean-room cookie setup.
+Cookies need a real http(s) origin — `file://` and `about:blank` pages cannot
+hold them, and the error says so.
+
+**Direct-CDP transport only.** On the extension bridge (driving the user's
+existing signed-in Chrome) `brw_cookies` returns an explicit error: the
+extension's security policy blocks cookie CDP methods so a rogue server can
+never exfiltrate HttpOnly cookies through brw. Use a dedicated direct-CDP
+profile — or an incognito context there (`brw_open_incognito` +
+`brw_close_context`) for disposable cookie states.
+
 ## Waiting
 
 Use `brw_wait_for {condition}` (`ready`, `text:…`, `url:…`, `ref:…`) and the
@@ -249,7 +278,7 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` | 62 | ~13.5k tokens |
+| `all` | 63 | ~13.5k tokens |
 | `core` | 24 | ~7.0k tokens |
 | `minimal` | 12 | ~3.8k tokens |
 | `auto` (default) | 13, growing | ~4.1k tokens to start |

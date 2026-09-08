@@ -393,6 +393,7 @@ type fakeController struct {
 	clickY        float64
 	cancelToken   string
 	notifyOpts    browser.NotifyOptions
+	cookiesParams []browser.CookieParams
 	clickButton   browser.ClickButtonOptions
 	dragOpts      browser.DragOptions
 	mouseDownOpt  browser.MouseButtonOptions
@@ -571,6 +572,11 @@ func (f *fakeController) Evaluate(context.Context, string) (any, error) {
 
 func (f *fakeController) NetworkRequests(context.Context, string) ([]browser.NetworkRequest, error) {
 	return nil, nil
+}
+
+func (f *fakeController) Cookies(_ context.Context, params browser.CookieParams) (browser.CookieResult, error) {
+	f.cookiesParams = append(f.cookiesParams, params)
+	return browser.CookieResult{Action: params.Action, URL: "https://example.test/", Count: 1, Cookies: []browser.Cookie{{Name: "session", Value: "s3cr3t", Domain: "example.test", Path: "/", HTTPOnly: true}}}, nil
 }
 
 func (f *fakeController) NetworkCapture(context.Context, string) ([]snapshot.CapturedRequest, error) {

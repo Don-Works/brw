@@ -7,12 +7,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
@@ -57,6 +60,7 @@ type step struct {
 	AssertHidden      *assertRefStep         `json:"assert_hidden,omitempty"`
 	AssertText        *assertTextStep        `json:"assert_text,omitempty"`
 	AssertValue       *assertValueStep       `json:"assert_value,omitempty"`
+	Cookies           *cookiesStep           `json:"cookies,omitempty"`
 }
 
 type assertRefStep struct {
@@ -77,6 +81,30 @@ type assertValueStep struct {
 	Target    string `json:"target,omitempty"`
 	Value     string `json:"value"`
 	TimeoutMS int    `json:"timeout_ms,omitempty"`
+}
+
+// cookiesStep drives brw_cookies over the daemon's HTTP API: set a cookie
+// (with attributes), list applicable cookies, or delete by name, with list-side
+// assertions. Values support ${HTTP_FIXTURES}-style expansion like other URLs.
+type cookiesStep struct {
+	Action   string  `json:"action"`
+	URL      string  `json:"url,omitempty"`
+	Domain   string  `json:"domain,omitempty"`
+	Path     string  `json:"path,omitempty"`
+	Name     string  `json:"name,omitempty"`
+	Value    string  `json:"value,omitempty"`
+	Secure   bool    `json:"secure,omitempty"`
+	HTTPOnly bool    `json:"http_only,omitempty"`
+	SameSite string  `json:"same_site,omitempty"`
+	Expires  float64 `json:"expires,omitempty"`
+
+	// List assertions.
+	MinCount    int      `json:"min_count,omitempty"`
+	Require     []string `json:"require,omitempty"`      // cookie names that must be present
+	Absent      []string `json:"absent,omitempty"`       // cookie names that must NOT be present
+	HTTPOnlyOf  []string `json:"http_only_of,omitempty"` // names that must be present AND http_only
+	TabID       string   `json:"tab_id,omitempty"`
+	ExpectValue string   `json:"expect_value,omitempty"` // with name: the set/read-back value must match exactly
 }
 
 type openStep struct {
@@ -243,6 +271,12 @@ type runner struct {
 	tabRefs  map[string]string
 	preClick map[string]bool
 	tabID    string
+
+	// httpFixtures lazily serves tests/fixtures over loopback HTTP so cookie
+	// scenarios get a real http-origin (file:// pages cannot hold cookies).
+	httpFixturesOnce sync.Once
+	httpFixturesURL  string
+	httpFixturesLn   net.Listener
 }
 
 type apiClient struct {
@@ -638,9 +672,100 @@ func (r *runner) runStep(st step) error {
 		body := map[string]any{"ref": ref, "value": st.AssertValue.Value, "timeout_ms": timeout}
 		r.addTabID(body)
 		return r.client.postJSON("/api/page/assert_value", body, nil)
+	case st.Cookies != nil:
+		return r.runCookiesStep(*st.Cookies)
 	default:
 		return errors.New("empty or unknown step")
 	}
+}
+
+// runCookiesStep posts one brw_cookies action to the daemon and applies the
+// step's list/set assertions to the result.
+func (r *runner) runCookiesStep(st cookiesStep) (retErr error) {
+	body := map[string]any{"action": st.Action}
+	r.addTabID(body)
+	if st.URL != "" {
+		body["url"] = r.expandURL(st.URL)
+	}
+	for key, value := range map[string]any{
+		"domain": st.Domain, "path": st.Path, "name": st.Name, "value": st.Value,
+		"same_site": st.SameSite, "secure": st.Secure, "http_only": st.HTTPOnly,
+	} {
+		switch v := value.(type) {
+		case string:
+			if v != "" {
+				body[key] = v
+			}
+		case bool:
+			if v {
+				body[key] = v
+			}
+		}
+	}
+	if st.Expires > 0 {
+		body["expires"] = st.Expires
+	}
+	var result browser.CookieResult
+	err := r.client.postJSON("/api/page/cookies", body, &result)
+	if err != nil {
+		// A scenario may be optional on transports lacking cookie support
+		// (extension bridge); surface the daemon's refusal verbatim.
+		return fmt.Errorf("cookies %s: %w", st.Action, err)
+	}
+	switch st.Action {
+	case "list":
+		return assertCookieList(result, st)
+	case "set":
+		if result.Cookie == nil {
+			return fmt.Errorf("cookies set %q: daemon did not read the stored cookie back", st.Name)
+		}
+		if result.Cookie.Name != st.Name {
+			return fmt.Errorf("cookies set read back %q, want %q", result.Cookie.Name, st.Name)
+		}
+		if st.ExpectValue != "" && result.Cookie.Value != st.ExpectValue {
+			return fmt.Errorf("cookies set %q value = %q, want %q", st.Name, result.Cookie.Value, st.ExpectValue)
+		}
+		if st.HTTPOnly && !result.Cookie.HTTPOnly {
+			return fmt.Errorf("cookies set %q: stored cookie is not http_only", st.Name)
+		}
+		return nil
+	case "delete":
+		if result.RemainingSameName != 0 {
+			return fmt.Errorf("cookies delete %q: %d same-name cookie(s) remain", st.Name, result.RemainingSameName)
+		}
+		return nil
+	}
+	return fmt.Errorf("cookies step has unknown action %q", st.Action)
+}
+
+func assertCookieList(result browser.CookieResult, want cookiesStep) error {
+	if result.Count < want.MinCount {
+		return fmt.Errorf("cookie list has %d cookies, want at least %d", result.Count, want.MinCount)
+	}
+	present := map[string]browser.Cookie{}
+	for _, c := range result.Cookies {
+		present[c.Name] = c
+	}
+	for _, name := range want.Require {
+		if _, ok := present[name]; !ok {
+			return fmt.Errorf("cookie list is missing required cookie %q (have %d cookies)", name, result.Count)
+		}
+	}
+	for _, name := range want.Absent {
+		if _, ok := present[name]; ok {
+			return fmt.Errorf("cookie %q still present after deletion/scrub", name)
+		}
+	}
+	for _, name := range want.HTTPOnlyOf {
+		c, ok := present[name]
+		if !ok {
+			return fmt.Errorf("cookie list is missing cookie %q required to be http_only", name)
+		}
+		if !c.HTTPOnly {
+			return fmt.Errorf("cookie %q is not http_only (got http_only=false)", name)
+		}
+	}
+	return nil
 }
 
 func (r *runner) assertSnapshot(snap snapshot.PageSnapshot, want snapshotStep) error {
@@ -976,11 +1101,57 @@ func (r *runner) expandURL(raw string) string {
 		rel := strings.TrimPrefix(raw, "${FIXTURES}/")
 		return fileURL(filepath.Join(r.repoRoot, "tests", "fixtures", rel))
 	}
+	if strings.HasPrefix(raw, "${HTTP_FIXTURES}/") {
+		rel := strings.TrimPrefix(raw, "${HTTP_FIXTURES}/")
+		base, err := r.httpFixturesBase()
+		if err != nil {
+			// A scenario URL that cannot be served is a suite setup failure;
+			// returning the raw marker keeps the error identifiable.
+			fmt.Printf("WARN http fixture server unavailable: %v\n", err)
+			return raw
+		}
+		return base + "/" + rel
+	}
 	if strings.HasPrefix(raw, "${REPO_ROOT}/") {
 		rel := strings.TrimPrefix(raw, "${REPO_ROOT}/")
 		return fileURL(filepath.Join(r.repoRoot, rel))
 	}
 	return raw
+}
+
+// httpFixturesBase lazily starts a loopback HTTP server rooted at
+// tests/fixtures and returns its base URL. Cookie scenarios need a real
+// http(s) origin — Chrome does not store cookies for file:// pages — so the
+// same fixture directory is also served over http://127.0.0.1:<ephemeral>.
+// The listener intentionally lives for the process lifetime: brwcheck is
+// short-lived and scenario cleanup only closes tabs, never this server.
+func (r *runner) httpFixturesBase() (string, error) {
+	var err error
+	r.httpFixturesOnce.Do(func() {
+		root := filepath.Join(r.repoRoot, "tests", "fixtures")
+		ln, listenErr := net.Listen("tcp", "127.0.0.1:0")
+		if listenErr != nil {
+			err = listenErr
+			return
+		}
+		r.httpFixturesLn = ln
+		r.httpFixturesURL = "http://" + ln.Addr().String()
+		mux := http.NewServeMux()
+		mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+			// Serve only files inside the fixtures root; no directory listing.
+			rel := strings.TrimPrefix(path.Clean(req.URL.Path), "/")
+			if rel == "" || strings.HasPrefix(rel, "..") {
+				http.NotFound(w, req)
+				return
+			}
+			http.ServeFile(w, req, filepath.Join(root, filepath.FromSlash(rel)))
+		})
+		go func() { _ = http.Serve(ln, mux) }()
+	})
+	if err != nil {
+		return "", err
+	}
+	return r.httpFixturesURL, nil
 }
 
 func (r *runner) expandPath(raw string) string {

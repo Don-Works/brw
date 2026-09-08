@@ -1286,6 +1286,12 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			Offset:   req.Offset,
 			MaxBytes: req.MaxBytes,
 		}))
+	case "brw_cookies":
+		var req browser.CookieParams
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.manager.Cookies(ctx, req))
 	case "brw_plan":
 		var req struct {
 			Steps []browser.PlanStep `json:"steps"`
@@ -2006,6 +2012,19 @@ func tools() []map[string]any {
 			"max_bytes": integerSchema("Maximum response-body bytes to return. Defaults to 65536 and is capped at 1048576."),
 			"tab_id":    stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"url"})),
+		tool("brw_cookies", "List, set, or delete browser cookies for a tab's origin at the CDP level — including HttpOnly cookies that document.cookie cannot see or write. Actions: list (cookies applicable to url, defaulting to the tab's current URL; returns name, value, domain, path, expires, size, http_only, secure, session, same_site), set (write name/value with optional domain, path, secure, http_only, same_site strict|lax|none, and expires as unix seconds — session cookie when omitted; the stored cookie is read back), delete (remove cookies matching name for the url or domain/path; reports how many same-name cookies remain). Use it to scrub auth state between multi-role test runs, inspect session cookies, or build clean-room setups. DIRECT-CDP TRANSPORT ONLY: on the extension-bridge transport (driving the user's existing signed-in Chrome) this returns an error — the extension's security policy blocks cookie access to protect the signed-in profile. Use a dedicated direct-CDP profile (or an incognito context there) instead.", object(map[string]any{
+			"action":    stringEnumSchema("list, set, or delete.", "list", "set", "delete"),
+			"tab_id":    stringSchema("Tab id from brw_list_tabs. Omit for the active tab; its current URL becomes the cookie scope."),
+			"url":       stringSchema("URL (or bare host, https assumed) scoping the operation. Defaults to the target tab's current URL."),
+			"domain":    stringSchema("Cookie domain for set/delete, as an alternative to url scoping (path defaults to /). For list, filters results to this domain."),
+			"path":      stringSchema("Cookie path. Defaults to / (set with domain) or the url's path."),
+			"name":      stringSchema("Cookie name. Required for set and delete; optional exact-name filter for list."),
+			"value":     stringSchema("Cookie value for set."),
+			"secure":    boolSchema("Mark the cookie Secure (https origins only)."),
+			"http_only": boolSchema("Mark the cookie HttpOnly — invisible to document.cookie. The reason this tool exists; only CDP can write these."),
+			"same_site": stringEnumSchema("SameSite attribute: strict, lax, or none (none requires secure).", "strict", "lax", "none"),
+			"expires":   integerSchema("Expiration as unix epoch seconds. Omit for a session cookie."),
+		}, []string{"action"})),
 		tool("brw_type", "Type text into a semantic element ref.", object(map[string]any{
 			"ref":      stringSchema("Element ref, for example e17."),
 			"text":     stringSchema("Text to insert."),

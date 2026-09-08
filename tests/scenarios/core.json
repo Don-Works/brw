@@ -1185,6 +1185,80 @@
           }
         }
       ]
+    },
+    {
+      "id": "fixture-cookies",
+      "name": "Set, list (incl. HttpOnly), and delete cookies on a real origin",
+      "tags": [
+        "local",
+        "cookies"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${HTTP_FIXTURES}/cookies.html"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:fixture_js set",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "cookies": {
+            "action": "set",
+            "name": "brw_scenario",
+            "value": "plain",
+            "path": "/"
+          }
+        },
+        {
+          "cookies": {
+            "action": "set",
+            "name": "brw_httponly",
+            "value": "invisible-to-js",
+            "http_only": true,
+            "expect_value": "invisible-to-js"
+          }
+        },
+        {
+          "cookies": {
+            "action": "list",
+            "min_count": 3,
+            "require": [
+              "fixture_js",
+              "brw_scenario",
+              "brw_httponly"
+            ],
+            "http_only_of": [
+              "brw_httponly"
+            ]
+          }
+        },
+        {
+          "cookies": {
+            "action": "delete",
+            "name": "brw_scenario"
+          }
+        },
+        {
+          "cookies": {
+            "action": "list",
+            "min_count": 2,
+            "require": [
+              "fixture_js",
+              "brw_httponly"
+            ],
+            "absent": [
+              "brw_scenario"
+            ],
+            "http_only_of": [
+              "brw_httponly"
+            ]
+          }
+        }
+      ]
     }
   ]
 }
