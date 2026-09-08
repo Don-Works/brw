@@ -57,6 +57,13 @@ type rawScreenshotCapturer interface {
 	CaptureArtifactScreenshot(context.Context, string) (browser.Screenshot, error)
 }
 
+// videoScreencaster is implemented by transports that can stream compositor
+// frames — direct CDP. The extension bridge has no equivalent, so a bridge
+// profile keeps the screenshot loop and produces byte-identical output.
+type videoScreencaster interface {
+	ScreencastFrames(context.Context, browser.ScreencastOptions) (<-chan browser.ScreencastFrame, func(), error)
+}
+
 type managedDownloadCleaner interface {
 	CleanupManagedDownload(browser.DownloadEntry) (bool, error)
 }
@@ -90,6 +97,7 @@ const (
 	videoCaptureMaxHeadroom = 5 * time.Second
 	videoProcessWaitDelay   = time.Second
 	videoStderrLimit        = 4 << 10
+	videoScreencastQuality  = 75
 	videoErrorStderrLimit   = 1000
 	videoContinuityInterval = 500 * time.Millisecond
 
@@ -559,6 +567,27 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 		}
 	}()
 
+	// Prefer the compositor. Chrome pushes a frame only when the page changes,
+	// so the per-frame Page.captureScreenshot round trip disappears; the tick
+	// below still writes one frame per 1/FPS so the encoded duration and frame
+	// count are exactly what the caller asked for, static page or not.
+	var (
+		screencast <-chan browser.ScreencastFrame
+		stopCast   func()
+		latest     []byte
+	)
+	if caster, ok := s.browser.(videoScreencaster); ok {
+		ch, stop, castErr := caster.ScreencastFrames(videoCtx, browser.ScreencastOptions{
+			Quality: videoScreencastQuality,
+		})
+		if castErr == nil {
+			screencast, stopCast = ch, stop
+			defer stopCast()
+		}
+		// A screencast that will not start is not a capture failure: fall
+		// through to the screenshot loop rather than losing the video.
+	}
+
 	interval := time.Second / time.Duration(opts.FPS)
 	started := time.Now()
 	lastContinuityCheck := started
@@ -572,12 +601,49 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 				return Meta{}, videoCaptureContextError(ctx, videoCtx)
 			}
 		}
-		shot, err := s.captureVideoScreenshot(videoCtx)
-		if err != nil {
-			if videoCtx.Err() != nil {
-				return Meta{}, videoCaptureContextError(ctx, videoCtx)
+		var shot browser.Screenshot
+		if screencast != nil {
+			// Drain to the newest frame, then reuse it if the page has not
+			// repainted since the last tick.
+			for drained := false; !drained; {
+				select {
+				case f, open := <-screencast:
+					if !open {
+						screencast = nil
+						drained = true
+						break
+					}
+					latest = f.Data
+				default:
+					drained = true
+				}
 			}
-			return Meta{}, fmt.Errorf("capture video frame %d: %w", frame, err)
+			if latest == nil {
+				// No frame yet (first tick on a page that has not painted).
+				// Block briefly rather than encode nothing.
+				select {
+				case f, open := <-screencast:
+					if open {
+						latest = f.Data
+					}
+				case <-time.After(interval):
+				case <-videoCtx.Done():
+					return Meta{}, videoCaptureContextError(ctx, videoCtx)
+				}
+			}
+			if latest != nil {
+				shot = browser.Screenshot{MIMEType: "image/jpeg", Data: latest}
+			}
+		}
+		if len(shot.Data) == 0 && shot.Base64 == "" {
+			var err error
+			shot, err = s.captureVideoScreenshot(videoCtx)
+			if err != nil {
+				if videoCtx.Err() != nil {
+					return Meta{}, videoCaptureContextError(ctx, videoCtx)
+				}
+				return Meta{}, fmt.Errorf("capture video frame %d: %w", frame, err)
+			}
 		}
 		if err := writeMJPEGFrame(stdin, shot); err != nil {
 			if videoCtx.Err() != nil {
