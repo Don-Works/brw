@@ -72,7 +72,6 @@ func main() {
 	var bridgeExtensionID string
 	var headless bool
 	var loginMode bool
-	var noDefaultExtension bool
 	var upstreamHTTP string
 	var mcpToolProfile string
 	var mcpIdleExit time.Duration
@@ -114,7 +113,6 @@ func main() {
 	flag.StringVar(&cfg.ProfileDirectory, "profile-directory", os.Getenv("BRW_PROFILE_DIRECTORY"), "Chrome profile directory within user data dir, for example 'Profile 1'")
 	flag.IntVar(&cfg.Port, "remote-debugging-port", 0, "remote debugging port for launched Chrome; 0 chooses a free local port")
 	flag.Var(&extensions, "extension", "extension directory to load; repeatable")
-	flag.BoolVar(&noDefaultExtension, "no-default-extension", envBool("BRW_NO_DEFAULT_EXTENSION"), "direct CDP: do not auto-load the installed brw extension. Loading it is the default because it is what gives a direct-CDP profile Chrome tab groups and file-chooser interception; an explicit --extension also suppresses the default.")
 	flag.BoolVar(&loginMode, "login", false, "direct CDP: force a headed window even on a headless profile, so you can sign in once. The profile keeps the session; later headless runs on the same --user-data-dir are still signed in. Stop this daemon before starting the headless one — one Chrome per profile directory.")
 	flag.Var(&chromeArgs, "chrome-arg", "extra Chrome argument; repeatable")
 	flag.DurationVar(&timeout, "timeout", 20*time.Second, "default browser operation timeout")
@@ -147,21 +145,6 @@ func main() {
 	}
 
 	cfg.Extensions = extensions
-	// On direct CDP brw launches its own Chrome, so it may as well load its
-	// own extension into it. That is what recovers, on this transport, the
-	// two things the bridge had exclusively: chrome.tabGroups (an extension
-	// API, so plain CDP cannot corral agent tabs) and file-chooser
-	// interception, without which a click that creates an <input type=file>
-	// opens a native OS dialog and blocks the whole CDP session.
-	//
-	// --headless=new supports --load-extension (Chrome 112+), so the headless
-	// lane keeps both.
-	if len(cfg.Extensions) == 0 && !noDefaultExtension && !bridgeMode && upstreamHTTP == "" && cfg.RemoteURL == "" {
-		if dir, ok := findInstalledExtension(); ok {
-			cfg.Extensions = []string{dir}
-			log.Printf("loading brw extension from %s (tab groups + file-chooser interception; --no-default-extension to skip)", dir)
-		}
-	}
 	cfg.ChromeArgs = chromeArgs
 	cfg.Timeout = timeout
 	cfg.WebMCP = enableWebMCP
@@ -591,6 +574,16 @@ func effectiveMCPIdleExit(configured time.Duration, mcpMode bool, upstreamHTTP s
 
 // extensionSearchPaths lists where an installed brw extension lives, most
 // specific first. Exposed as a variable so tests can point it at a temp dir.
+//
+// brw does NOT load its extension into a direct-CDP Chrome by default. Loading
+// it there buys nothing today: the extension reaches brw over the bridge
+// WebSocket, and a direct-CDP daemon runs no bridge listener, so chrome.tabGroups
+// stays unreachable and manager_tabgroups.go still returns
+// ErrTabGroupingUnsupported. File-chooser interception, the other thing the
+// bridge had, is plain CDP (page.SetInterceptFileChooserDialog, see
+// manager.go uploadFileViaChooser) and already works without any extension.
+// Serving tab groups on direct CDP needs a hybrid daemon that runs the bridge
+// listener alongside CDP; until that exists, --extension stays explicit.
 var extensionSearchPaths = func() []string {
 	var out []string
 	if dir := strings.TrimSpace(os.Getenv("BRW_EXTENSION_DIR")); dir != "" {

@@ -57,6 +57,13 @@ two profiles.
 The extension bridge is unaffected — it drives a browser the user is already
 running, so `--headless` with `--bridge` is refused rather than ignored.
 
+What the headless lane does not get is Chrome tab groups: `chrome.tabGroups` is
+an extension API with no DevTools Protocol equivalent, and a direct-CDP daemon
+runs no bridge listener for an extension to connect back through. Loading the
+extension with `--extension` does not change that on its own. File-chooser
+interception, the bridge's other exclusive, is plain CDP
+(`Page.setInterceptFileChooserDialog`) and works on this transport already.
+
 ## Non-Goals
 
 - No cookie extraction.
