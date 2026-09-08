@@ -101,7 +101,12 @@ type Manager struct {
 	versions      map[string]int64
 
 	traceMu sync.Mutex
-	trace   []TraceEntry
+
+	// Live trace subscribers (see manager_stream.go). Separate lock from
+	// traceMu so a slow watcher cannot contend with recording.
+	streamMu   sync.RWMutex
+	streamSubs map[*traceSubscriber]struct{}
+	trace      []TraceEntry
 
 	consoleCaptureMu   sync.Mutex
 	consoleCaptureTabs map[string]bool
@@ -2664,6 +2669,9 @@ func (m *Manager) recordTrace(tabID string, entry TraceEntry) {
 			}
 		}
 	}
+	// Publish before taking traceMu: subscribers get the same fully redacted
+	// entry the ring buffer stores, without waiting on it.
+	m.publishTrace(entry)
 	m.traceMu.Lock()
 	m.trace = append(m.trace, entry)
 	if len(m.trace) > 500 {

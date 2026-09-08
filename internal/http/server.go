@@ -265,6 +265,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("GET /api/session/stream", s.sessionStream)
 	mux.HandleFunc("POST /api/browser/open", s.open)
 	mux.HandleFunc("POST /api/browser/open_incognito", s.openIncognito)
 	mux.HandleFunc("POST /api/browser/close_context", s.closeContext)
