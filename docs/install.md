@@ -83,8 +83,11 @@ Takes a machine with brw binaries on it to a connected bridge. Every step is
 idempotent and reports what it did or why it was already satisfied. `--dry-run`
 prints the whole plan and performs none of it.
 
-1. **Profile policy.** Writes `~/.config/brw/browser-profiles.json` (0600),
-   backing up any existing file to `<path>.bak.<UTC timestamp>`. It binds to a
+1. **Profile policy.** Writes the policy into the platform user config
+   directory (0600) — `~/Library/Application Support/brw/browser-profiles.json`
+   on macOS, `~/.config/brw/browser-profiles.json` on Linux — reusing a policy
+   already present in any of the standard locations and backing it up to
+   `<path>.bak.<UTC timestamp>` before merging. It binds to a
    browser profile directory that exists, so the browser must have been run at
    least once; `--browser` and `--profile-directory` override the choice. No
    package ships a policy.
