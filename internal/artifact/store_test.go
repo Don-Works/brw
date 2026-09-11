@@ -1313,10 +1313,19 @@ exec sleep 60
 	}
 	started := time.Now()
 	_, err = service.CaptureArtifact(context.Background(), CaptureOptions{Kind: "video", DurationMS: 100, FPS: 1})
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("hanging encoder returned after %s, want under 5s", elapsed)
+	// Derived from the budget rather than hardcoded: the guarantee is that a
+	// wedged encoder is terminated at its own ceiling, not that it is terminated
+	// at some particular number of seconds. videoProcessWaitDelay is the extra
+	// bound on Wait after the kill.
+	ceiling := videoCaptureBudget(100) + videoEncodeBudget(1) + videoProcessWaitDelay + time.Second
+	if elapsed := time.Since(started); elapsed > ceiling {
+		t.Fatalf("hanging encoder returned after %s, want under %s", elapsed, ceiling)
 	}
-	if err == nil || !strings.Contains(err.Error(), "bounded runtime") || !errors.Is(err, context.DeadlineExceeded) {
+	// The encode phase names itself: a capture that recorded every frame and
+	// then lost the encoder is a different failure from one that never finished
+	// recording, and an operator reading the error should not have to guess.
+	if err == nil || !strings.Contains(err.Error(), "encoder did not finish") ||
+		!errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("hanging encoder error = %v", err)
 	}
 	assertFixtureProcessStopped(t, pidPath)

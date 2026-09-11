@@ -89,17 +89,33 @@ type recipeCaptureContinuity struct {
 }
 
 const (
-	// Video capture is paced for the requested duration. Leave a small amount of
-	// bounded time for browser/encoder startup, the final mux, and persistence,
-	// without allowing a stuck browser call or child process to inherit an
-	// unbounded caller context.
+	// Video capture is paced for the requested duration. The recording headroom
+	// leaves bounded time for the browser round trips that feed the frame loop,
+	// without letting a stuck browser call inherit an unbounded caller context.
+	// Encoding, the final mux and persistence are budgeted separately below.
 	videoCaptureMinHeadroom = 2 * time.Second
 	videoCaptureMaxHeadroom = 5 * time.Second
-	videoProcessWaitDelay   = time.Second
-	videoStderrLimit        = 4 << 10
-	videoScreencastQuality  = 75
-	videoErrorStderrLimit   = 1000
-	videoContinuityInterval = 500 * time.Millisecond
+	// The encoder gets its own allowance, because how long ffmpeg takes to
+	// finish is a property of the host and the frame count, not of how long the
+	// caller asked to record. Charging it against a headroom derived from the
+	// recording duration failed captures that had already done all their work:
+	// on a loaded machine the child-process wait alone measured 2.2s against a
+	// 2.4s total budget, and a real 300-frame VP9 encode measured 4.0-4.8s on an
+	// idle machine against a 5s ceiling.
+	//
+	// videoEncodeBaseBudget covers spawning and reaping the process under
+	// contention, ~3.5x the 2.2s measured on a machine running the whole test
+	// suite alongside several agent sessions. videoEncodePerFrameBudget covers
+	// the encode backlog, ~3x the measured idle rate at the 300-frame maximum.
+	// Both are ceilings on a wedged encoder, not waits: a healthy capture
+	// returns as soon as ffmpeg exits.
+	videoEncodeBaseBudget     = 8 * time.Second
+	videoEncodePerFrameBudget = 50 * time.Millisecond
+	videoProcessWaitDelay     = time.Second
+	videoStderrLimit          = 4 << 10
+	videoScreencastQuality    = 75
+	videoErrorStderrLimit     = 1000
+	videoContinuityInterval   = 500 * time.Millisecond
 
 	// Opening a completed local browser download should be effectively instant.
 	// A short bound surfaces OS privacy/file-provider stalls while holding the
@@ -515,7 +531,15 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 	if frames > 300 {
 		return Meta{}, errors.New("video capture is limited to 300 frames; reduce duration_ms or fps")
 	}
-	videoCtx, cancel := context.WithTimeout(ctx, videoCaptureBudget(opts.DurationMS))
+	// Two deadlines, because the two phases fail for different reasons. opCtx is
+	// the ceiling on the whole operation and owns the encoder process; videoCtx
+	// bounds the recording inside it. Keeping the encoder on opCtx means a
+	// capture that recorded every frame is not thrown away because the child
+	// took longer to exit than the recording took to run.
+	opCtx, cancelOp := context.WithTimeout(
+		ctx, videoCaptureBudget(opts.DurationMS)+videoEncodeBudget(frames))
+	defer cancelOp()
+	videoCtx, cancel := context.WithTimeout(opCtx, videoCaptureBudget(opts.DurationMS))
 	defer cancel()
 	ffmpeg, err := resolveFFmpegPath()
 	if err != nil {
@@ -535,7 +559,7 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 		return Meta{}, err
 	}
 
-	command := exec.CommandContext(videoCtx, ffmpeg,
+	command := exec.CommandContext(opCtx, ffmpeg,
 		"-hide_banner", "-loglevel", "error", "-y",
 		"-f", "image2pipe", "-framerate", strconv.Itoa(opts.FPS), "-vcodec", "mjpeg", "-i", "pipe:0",
 		"-frames:v", strconv.Itoa(frames),
@@ -665,6 +689,9 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 			lastContinuityCheck = time.Now()
 		}
 	}
+	// From here only the operation ceiling applies, so a slow encoder is judged
+	// against its own allowance rather than against the recording window, which
+	// may already have expired. The screencast is released by the deferred stop.
 	closeErr := stdin.Close()
 	err = command.Wait()
 	waited = true
@@ -672,8 +699,8 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 		err = closeErr
 	}
 	if err != nil {
-		if videoCtx.Err() != nil {
-			return Meta{}, videoCaptureContextError(ctx, videoCtx)
+		if opCtx.Err() != nil {
+			return Meta{}, videoEncodeContextError(ctx, opCtx, frames)
 		}
 		message := strings.ToValidUTF8(strings.TrimSpace(stderr.String()), "�")
 		if len(message) > videoErrorStderrLimit {
@@ -688,8 +715,8 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 		}
 		return Meta{}, fmt.Errorf("encode video artifact: %w: %s", err, message)
 	}
-	if videoCtx.Err() != nil {
-		return Meta{}, videoCaptureContextError(ctx, videoCtx)
+	if opCtx.Err() != nil {
+		return Meta{}, videoEncodeContextError(ctx, opCtx, frames)
 	}
 	if err := os.Chmod(output, 0o600); err != nil {
 		return Meta{}, err
@@ -700,12 +727,15 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 	}
 	defer file.Close()
 	put.MIMEType = "video/webm"
-	put.SourceHash = s.currentSourceHash(videoCtx)
+	// Persistence belongs to the operation, not to the recording window: the
+	// frames are already captured and the encode already done, so finishing the
+	// write must not be judged against a deadline sized for the frame loop.
+	put.SourceHash = s.currentSourceHash(opCtx)
 	// PutContext is the concurrency-correct quota gate. Deliberately do not do
 	// an unlocked quota preflight before encoding: without a Store reservation
 	// transaction it can only race concurrent writers and promise capacity that
 	// no longer exists by commit time.
-	return s.store.PutContext(videoCtx, put, file)
+	return s.store.PutContext(opCtx, put, file)
 }
 
 func (s *Service) captureVideoScreenshot(ctx context.Context) (browser.Screenshot, error) {
@@ -740,6 +770,9 @@ func (s *Service) captureVideoScreenshot(ctx context.Context) (browser.Screensho
 	}
 }
 
+// videoCaptureBudget bounds the RECORDING phase: the paced frame loop plus the
+// browser round trips that feed it. It deliberately does not cover the encoder
+// — see videoEncodeBudget.
 func videoCaptureBudget(durationMS int) time.Duration {
 	duration := time.Duration(durationMS) * time.Millisecond
 	headroom := duration / 5
@@ -752,6 +785,17 @@ func videoCaptureBudget(durationMS int) time.Duration {
 	return duration + headroom
 }
 
+// videoEncodeBudget bounds the encoder finishing after the last frame is
+// written. It scales with the frames it has to encode, not with the recording
+// duration: a 30s capture at 1fps hands ffmpeg 30 frames, and a 10s capture at
+// 30fps hands it 300.
+func videoEncodeBudget(frames int) time.Duration {
+	if frames < 1 {
+		frames = 1
+	}
+	return videoEncodeBaseBudget + time.Duration(frames)*videoEncodePerFrameBudget
+}
+
 func videoCaptureContextError(parent, operation context.Context) error {
 	if err := parent.Err(); err != nil {
 		return err
@@ -760,6 +804,21 @@ func videoCaptureContextError(parent, operation context.Context) error {
 		return fmt.Errorf("video capture exceeded its bounded runtime: %w", err)
 	}
 	return errors.New("video capture stopped without a context error")
+}
+
+// videoEncodeContextError names the phase that ran out, so an operator can tell
+// a capture that never finished recording from one that recorded everything and
+// then lost the encode.
+func videoEncodeContextError(parent, operation context.Context, frames int) error {
+	if err := parent.Err(); err != nil {
+		return err
+	}
+	if err := operation.Err(); err != nil {
+		return fmt.Errorf(
+			"video encoder did not finish %d frame(s) within %s of the last frame: %w",
+			frames, videoEncodeBudget(frames), err)
+	}
+	return errors.New("video encode stopped without a context error")
 }
 
 // boundedTailBuffer retains only the most recent limit bytes while always
