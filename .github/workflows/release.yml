@@ -101,6 +101,8 @@ jobs:
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
       - name: Build Linux packages
         run: scripts/package-linux.sh "$BRW_VERSION" "${{ matrix.arch }}" dist/release
+      - name: Build the Linux tarball
+        run: scripts/package-tarball.sh "$BRW_VERSION" linux "${{ matrix.arch }}" dist/release
       - name: Record signing status
         shell: bash
         run: |
@@ -234,6 +236,15 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           BRW_SIGNING_REPORT: ${{ github.workspace }}/dist/reports/10-macos-universal.signing.md
         run: scripts/package-macos.sh "$BRW_VERSION" dist/release
+      # Both darwin arches are built on this runner rather than alongside the
+      # Linux tarballs because codesign exists only on macOS, and a darwin binary
+      # without even an ad-hoc signature is SIGKILLed on Apple Silicon.
+      - name: Build the macOS tarballs
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/package-tarball.sh "$BRW_VERSION" darwin amd64 dist/release
+          scripts/package-tarball.sh "$BRW_VERSION" darwin arm64 dist/release
       - name: Verify macOS signing
         shell: bash
         env:
@@ -469,6 +480,21 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: artifacts/*
+      # The .tar.gz assets carry no signature of their own and are not covered by
+      # any packaging job's report, so without this the notes would describe how
+      # every installer is signed except the one install.sh downloads.
+      - name: Record tarball signing status
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Relocatable tarballs (.tar.gz)"
+            echo ""
+            echo "- macOS binaries: **ad-hoc signed**, which is what lets Apple Silicon run them at all. No Developer ID is involved on this path; \`scripts/install.sh\` re-applies the same ad-hoc signature after unpacking. The \`.pkg\` above is the signed macOS installer."
+            echo "- Linux binaries: **unsigned**, as on the \`.deb\` / \`.rpm\` path."
+            echo "- Every archive ships a matching \`.sha256\`. \`install.sh\` checks it before unpacking and falls back to \`SHA256SUMS.txt\`, and the provenance attestation covers the archive itself."
+            echo ""
+          } > signing-reports/40-tarballs.signing.md
       - name: Compose release notes
         shell: bash
         run: |
@@ -537,3 +563,79 @@ jobs:
           fi
           prepend_verification_notes
           gh release edit "$tag" --draft=false --latest
+
+  homebrew-tap:
+    needs: publish-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Resolve version
+        shell: bash
+        run: |
+          tag="$BRW_RELEASE_TAG"
+          version="${tag#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "Tag must be vX.Y.Z, got $tag" >&2
+            exit 2
+          fi
+          echo "BRW_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "BRW_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Render the Homebrew formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          # render-formula.sh falls back to downloading the published
+          # SHA256SUMS.txt when a local sum is missing, which would let a release
+          # that never built one of the four archives still produce a formula
+          # pointing at it. The archives are the formula's entire subject matter.
+          for target in darwin_arm64 darwin_amd64 linux_arm64 linux_amd64; do
+            sum="artifacts/brw_${BRW_VERSION}_${target}.tar.gz.sha256"
+            if [ ! -f "$sum" ]; then
+              echo "$sum is missing: this release published no $target tarball, so the tap cannot be bumped" >&2
+              exit 2
+            fi
+          done
+          packaging/homebrew/render-formula.sh "$BRW_VERSION" artifacts > "$RUNNER_TEMP/brw.rb"
+          {
+            echo "## Homebrew formula for $BRW_RELEASE_TAG"
+            echo ""
+            echo '```ruby'
+            cat "$RUNNER_TEMP/brw.rb"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      # github.token is scoped to this repository and cannot write to the tap, so
+      # a separate token is the only way to push the bump. Its absence leaves the
+      # tap on the previous release and must not fail a release that is already
+      # published; a token that is present but cannot write is a broken secret.
+      - name: Commit the formula to Don-Works/homebrew-tap
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          tap="Don-Works/homebrew-tap"
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning title=Homebrew tap not bumped::HOMEBREW_TAP_TOKEN is not set, so $tap still carries the previous release and 'brew install don-works/tap/brw' installs the old version. The rendered formula is in this job's summary; commit it to $tap as Formula/brw.rb by hand, or set the secret. See docs/release-signing.md."
+            exit 0
+          fi
+
+          if ! gh api "repos/$tap" --jq .full_name >/dev/null; then
+            echo "HOMEBREW_TAP_TOKEN is set but cannot read $tap. It has expired, been revoked, or was minted without Contents: Read and write on that repository. See docs/release-signing.md." >&2
+            exit 1
+          fi
+
+          existing_sha="$(gh api "repos/$tap/contents/Formula/brw.rb" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/$tap/contents/Formula/brw.rb")
+          args+=(-f "message=brw $BRW_VERSION")
+          args+=(-f "content=$(base64 -w0 < "$RUNNER_TEMP/brw.rb")")
+          if [ -n "$existing_sha" ]; then
+            args+=(-f "sha=$existing_sha")
+          fi
+          gh api "${args[@]}" --jq .commit.html_url

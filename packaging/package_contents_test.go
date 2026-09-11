@@ -22,6 +22,12 @@ func TestInstallersBundlePublicAgentSkill(t *testing.T) {
 	requireFileContains(t, "../scripts/package-windows.ps1",
 		`Copy-Item -Recurse -Force (Join-Path $RepoRoot "skills") (Join-Path $StageDir "share/skills")`,
 	)
+	// The second fragment is what makes the first load-bearing: staging the
+	// skill only ships it because $stage_dir is the directory tar archives.
+	requireFileContains(t, "../scripts/package-tarball.sh",
+		`cp -R "$repo_root/skills" "$stage_dir/skills"`,
+		`tar -C "$work_dir" -cf - "$name"`,
+	)
 	requireFileContains(t, "windows/brw.wxs",
 		`<Files Directory="INSTALLFOLDER" Include="$(var.SourceDir)\**" />`,
 	)

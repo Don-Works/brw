@@ -18,6 +18,7 @@ falls back to today's behaviour and prints a warning annotation on the job:
 | macOS | Binaries ad-hoc signed (`codesign --sign -`), `.pkg` unsigned. Gatekeeper says "unidentified developer". | Binaries signed with Developer ID Application, hardened runtime, secure timestamp; `.pkg` signed with Developer ID Installer, notarized by Apple, ticket stapled. |
 | Windows | `.msi` and the `.exe` files inside it unsigned. SmartScreen warns on download and hides Run behind More info. | Authenticode SHA-256 with an RFC 3161 timestamp on the four executables and on each `.msi`. |
 | Linux | `.deb` / `.rpm` unsigned. No change planned; there is no distribution GPG key. | Unchanged. |
+| Relocatable `.tar.gz` | macOS binaries ad-hoc signed, Linux binaries unsigned. This is the archive `scripts/install.sh` and the Homebrew formula download. | Unchanged. `scripts/package-tarball.sh` ad-hoc signs on macOS whatever else is configured, because `install.sh` re-signs the unpacked copy the same way and would discard a Developer ID signature anyway. |
 
 Every release, signed or not, publishes `SHA256SUMS.txt`, a CycloneDX SBOM, and a
 GitHub build provenance attestation over every attached file. The release notes
@@ -260,6 +261,55 @@ Get-AuthenticodeSignature .\brw_<version>_windows_amd64.msi | Format-List
 
 `Status` must be `Valid` and `SignerCertificate` must name your organisation.
 
+## Part 3 — the Homebrew tap token
+
+Not a signing credential, but the other secret the release workflow reads, and
+this one is free.
+
+`brew install don-works/tap/brw` resolves to `github.com/Don-Works/homebrew-tap`,
+a repository separate from this one. After `publish-release` succeeds, the
+`homebrew-tap` job renders the formula from `packaging/homebrew/brw.rb` with the
+version and the four tarball sha256 sums filled in, and commits it to that
+repository as `Formula/brw.rb`. The sums come from the artifacts the release just
+built, so nothing is fetched over the network to find them.
+
+`github.token` is scoped to `Don-Works/brw` and cannot write to another
+repository, so the commit needs a token of its own.
+
+### 3.1 Mint the token
+
+A fine-grained personal access token, from
+<https://github.com/settings/personal-access-tokens/new>:
+
+- **Resource owner**: `Don-Works`.
+- **Repository access**: only select repositories, and pick only
+  `Don-Works/homebrew-tap`.
+- **Permissions** → Repository permissions → **Contents: Read and write**.
+  Nothing else.
+- **Expiration**: pick a date and put the renewal in your calendar.
+
+```sh
+gh secret set HOMEBREW_TAP_TOKEN --repo Don-Works/brw   # paste the token
+```
+
+### 3.2 What happens with it and without it
+
+- **Absent**: the `homebrew-tap` job prints a warning annotation naming
+  `HOMEBREW_TAP_TOKEN`, writes the rendered formula into the job summary, and
+  succeeds. The release publishes as normal, and `brew install don-works/tap/brw`
+  keeps installing the previous version until someone commits that formula to
+  `Don-Works/homebrew-tap` as `Formula/brw.rb`. A missing tap token never fails a
+  release.
+- **Present and able to write**: the job commits `Formula/brw.rb` with the
+  message `brw <version>` and prints the resulting commit URL.
+- **Present but expired, revoked, or scoped to the wrong repository**: the job
+  fails, the same way a broken signing secret does. The release itself is already
+  published by then, so there is nothing to roll back — fix the token and use
+  "Re-run failed jobs" on that workflow run.
+
+The formula is also in the job summary on every release, token or not, so a bump
+can always be done by hand from the run page.
+
 ## Secret and variable reference
 
 Repository secrets, `gh secret set <NAME> --repo Don-Works/brw`:
@@ -276,6 +326,7 @@ Repository secrets, `gh secret set <NAME> --repo Don-Works/brw`:
 | `APPLE_API_ISSUER_ID` | App Store Connect issuer UUID | Notarization |
 | `WINDOWS_CERTIFICATE_PFX` | Single-line base64 of an exportable `.pfx` | Windows signing, route A |
 | `WINDOWS_CERTIFICATE_PASSWORD` | The `.pfx` password | Windows signing, route A |
+| `HOMEBREW_TAP_TOKEN` | Fine-grained PAT with Contents: Read and write on `Don-Works/homebrew-tap` and nothing else | Committing `Formula/brw.rb` to the tap after a release |
 
 Repository variables, `gh variable set <NAME> --repo Don-Works/brw`:
 
@@ -287,6 +338,7 @@ Repository variables, `gh variable set <NAME> --repo Don-Works/brw`:
 
 Each group is independent. Setting only the macOS secrets signs the `.pkg` and
 leaves the MSIs unsigned, and the release notes will say exactly that.
+`HOMEBREW_TAP_TOKEN` is independent of both and buys nothing about signatures.
 
 ## Renewals and what expires
 
@@ -297,6 +349,9 @@ leaves the MSIs unsigned, and the release notes will say exactly that.
 - **App Store Connect API key**: does not expire, but can be revoked. Revoking it
   breaks notarization only, not signing.
 - **Code-signing certificate**: one to three years depending on what you buy.
+- **`HOMEBREW_TAP_TOKEN`**: whatever expiry you chose when minting it. Expiry
+  fails the `homebrew-tap` job rather than skipping it, because a token that is
+  present and rejected is indistinguishable from a token that is wrong.
 - **Timestamps**: the reason `/tr` and `--timestamp` are used everywhere. A
   timestamped signature stays valid for what it signed after the certificate
   expires. Without one, every shipped installer breaks on the expiry date.
@@ -330,3 +385,8 @@ Common causes:
   means something re-wrote the payload after `codesign` ran.
 - `signtool verify` fails on the timestamp: the timestamp authority was
   unreachable during the run. Re-run the job.
+- `gh api repos/Don-Works/homebrew-tap` returns 404 or 403: `HOMEBREW_TAP_TOKEN`
+  expired, or was minted without Contents: Read and write on that repository.
+  This is the one failure on this page that happens after the release is
+  published, because the tap bump runs last. The release is fine; only the
+  `homebrew-tap` job needs re-running.
