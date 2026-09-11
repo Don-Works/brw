@@ -23,8 +23,13 @@ PUBLIC_SYNTHETIC_FIXTURES = {
     SELF,
     "scripts/test-functional.sh",
     "internal/recipe/schema_test.go",
-    # Setup renders absolute service, log and policy paths, so its tests have to
-    # assert on home-shaped strings. They are fabricated users, not this machine.
+}
+
+# Setup renders absolute LaunchAgent, systemd, log and policy paths, so its tests
+# have to assert on home-shaped literals for a fabricated user. Only the home
+# path rule is waived for these files; an email, token, key, tailnet host or
+# private address in one is still a finding.
+SYNTHETIC_HOME_FIXTURES = {
     "cmd/brwctl/setup_test.go",
     "internal/setup/service_test.go",
     "internal/setup/skills_test.go",
@@ -145,6 +150,8 @@ def main():
             continue
         scanned += 1
         for label, pattern in PATTERNS:
+            if label == "home directory path" and path in SYNTHETIC_HOME_FIXTURES:
+                continue
             if re.search(pattern, line):
                 hits.append((label, path, line.strip()[:160]))
 
