@@ -81,7 +81,7 @@ func Load(path string) (Policy, error) {
 		return Policy{}, err
 	}
 	for i := range policy.Profiles {
-		policy.Profiles[i].UserDataDir = expandPath(policy.Profiles[i].UserDataDir)
+		policy.Profiles[i].UserDataDir = ExpandPath(policy.Profiles[i].UserDataDir)
 	}
 	return policy, nil
 }
@@ -213,7 +213,10 @@ func contains(values []string, needle string) bool {
 	return false
 }
 
-func expandPath(path string) string {
+// ExpandPath resolves the two forms a policy may use for a browser directory: a
+// leading ~/ and ${VAR}. Policies are written unexpanded so one file stays valid
+// across machines and users; every consumer expands at the point of use.
+func ExpandPath(path string) string {
 	if path == "" {
 		return ""
 	}

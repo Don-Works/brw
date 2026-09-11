@@ -26,6 +26,7 @@ import (
 	"github.com/Don-Works/brw/internal/mcp"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/recipe"
+	"github.com/Don-Works/brw/internal/setup"
 )
 
 func main() {
@@ -39,6 +40,8 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	case "setup":
+		err = setupCommand(os.Args[2:])
 	case "doctor":
 		err = doctor(os.Args[2:])
 	case "mcp-config":
@@ -68,6 +71,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage: brwctl <command> [options]
 
 commands:
+  setup           take this machine to a working, connected brw bridge (idempotent, no sudo)
   doctor          verify profile policy, app install, and brw extension state
   mcp-config      print an MCP server config for a policy profile/transport
   remote-mcp-wrapper
@@ -390,6 +394,44 @@ func probeDaemon(profile profilepolicy.Profile, timeout time.Duration) daemonRec
 	return rec
 }
 
+// doctorWarning is a named, non-fatal finding. The name is the stable handle a
+// consumer matches on; the message is what a human reads.
+type doctorWarning struct {
+	Name    string `json:"name"`
+	Message string `json:"message"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+// doctorResult is the `brwctl doctor` JSON contract. Fields are only ever added
+// to it: an existing consumer keeps reading the keys it already knows.
+type doctorResult struct {
+	Profile                  string              `json:"profile"`
+	Kind                     string              `json:"kind"`
+	AppDir                   string              `json:"app_dir"`
+	ProfilePolicyPath        string              `json:"profile_policy_path,omitempty"`
+	ChromeProfileDir         string              `json:"chrome_profile_dir"`
+	BridgeExtensionID        string              `json:"bridge_extension_id,omitempty"`
+	BridgeExtensionInstalled *bool               `json:"bridge_extension_installed,omitempty"`
+	BridgeExtensionSource    string              `json:"bridge_extension_source,omitempty"`
+	Transport                string              `json:"transport,omitempty"`
+	Capabilities             *setup.Capabilities `json:"capabilities,omitempty"`
+	Warnings                 []doctorWarning     `json:"warnings,omitempty"`
+	OK                       bool                `json:"ok"`
+	Failures                 []string            `json:"failures,omitempty"`
+}
+
+// doctorRequest is what doctorReport needs. Policy is optional: `brwctl setup`
+// passes the policy it has just merged in memory so --dry-run can verify a
+// configuration that is not on disk yet.
+type doctorRequest struct {
+	Workspace  string
+	Profile    string
+	PolicyPath string
+	AppDir     string
+	Home       string
+	Policy     *profilepolicy.Policy
+}
+
 func doctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	var profileName, workspaceName, policyPath, appDir string
@@ -403,20 +445,53 @@ func doctor(args []string) error {
 	if profileName == "" && workspaceName == "" {
 		return errors.New("--profile or --workspace is required")
 	}
-
-	policy, err := profilepolicy.Load(policyPath)
+	home, _ := os.UserHomeDir()
+	report, err := doctorReport(doctorRequest{
+		Workspace:  workspaceName,
+		Profile:    profileName,
+		PolicyPath: policyPath,
+		AppDir:     appDir,
+		Home:       home,
+	})
 	if err != nil {
 		return err
 	}
-	profile, err := policy.ResolveProfile(workspaceName, profileName)
+	writeJSON(os.Stdout, report)
+	if !report.OK {
+		return errors.New("doctor failed")
+	}
+	return nil
+}
+
+func doctorReport(req doctorRequest) (doctorResult, error) {
+	policyPath := req.PolicyPath
+	policy := profilepolicy.Policy{}
+	if req.Policy != nil {
+		policy = *req.Policy
+	} else {
+		if policyPath == "" {
+			discovered, err := profilepolicy.Discover("")
+			if err != nil {
+				return doctorResult{}, err
+			}
+			policyPath = discovered
+		}
+		loaded, err := profilepolicy.Load(policyPath)
+		if err != nil {
+			return doctorResult{}, err
+		}
+		policy = loaded
+	}
+	profile, err := policy.ResolveProfile(req.Workspace, req.Profile)
 	if err != nil {
-		return err
+		return doctorResult{}, err
 	}
 
-	report := map[string]any{
-		"profile": profile.Name,
-		"kind":    profile.Kind,
-		"app_dir": appDir,
+	report := doctorResult{
+		Profile:           profile.Name,
+		Kind:              profile.Kind,
+		AppDir:            req.AppDir,
+		ProfilePolicyPath: policyPath,
 	}
 	var failures []string
 	for _, rel := range []string{
@@ -424,48 +499,179 @@ func doctor(args []string) error {
 		"bin/brwcheck",
 		"bin/brw-devtools-mcp",
 		"extension/manifest.json",
-		"config/browser-profiles.json",
 	} {
-		path := filepath.Join(appDir, rel)
+		path := filepath.Join(req.AppDir, rel)
 		if _, err := os.Stat(path); err != nil {
 			failures = append(failures, "missing "+path)
 		}
 	}
+	// The app-directory copy of the policy is what `make install-mac` syncs for
+	// a remote push; it is not the policy this run loaded, and a machine set up
+	// by `brwctl setup` legitimately has none. Report it, do not fail on it.
+	appPolicy := filepath.Join(req.AppDir, "config", "browser-profiles.json")
+	if _, err := os.Stat(appPolicy); err != nil {
+		report.Warnings = append(report.Warnings, doctorWarning{
+			Name:    "app_dir_policy_copy_missing",
+			Message: "no policy copy at " + appPolicy + "; the policy in use is " + policyPath,
+			Detail:  "only needed when pushing this install to another machine",
+		})
+	}
 
-	profileDir := filepath.Join(profile.UserDataDir, profile.ProfileDirectory)
-	report["chrome_profile_dir"] = profileDir
+	profileDir := filepath.Join(profilepolicy.ExpandPath(profile.UserDataDir), profile.ProfileDirectory)
+	report.ChromeProfileDir = profileDir
 	if _, err := os.Stat(profileDir); err != nil {
 		failures = append(failures, "missing Chrome profile dir "+profileDir)
 	}
 
 	if profile.ExtensionBridgeAllowed {
+		// Match the daemon: an unconfigured bridge already trusts the published
+		// extension id, so doctor must verify against the same id rather than
+		// failing a policy that simply did not repeat it.
 		id := profile.BridgeExtensionID
-		report["bridge_extension_id"] = id
 		if id == "" {
-			failures = append(failures, "bridge_extension_id is required to verify an installed brw extension")
-		} else {
-			installed, source, err := chromeExtensionInstalled(profileDir, id)
-			report["bridge_extension_installed"] = installed
-			if source != "" {
-				report["bridge_extension_source"] = source
-			}
-			if err != nil {
-				failures = append(failures, err.Error())
-			} else if !installed {
-				failures = append(failures, "brw extension "+id+" is not installed in "+profileDir)
-			}
+			id = profilepolicy.DefaultBridgeExtensionID
+		}
+		report.BridgeExtensionID = id
+		installed, source, err := chromeExtensionInstalled(profileDir, id)
+		report.BridgeExtensionInstalled = &installed
+		if source != "" {
+			report.BridgeExtensionSource = source
+		}
+		if err != nil {
+			failures = append(failures, err.Error())
+		} else if !installed {
+			failures = append(failures, "brw extension "+id+" is not installed in "+profileDir)
 		}
 	}
 
-	report["ok"] = len(failures) == 0
-	if len(failures) > 0 {
-		report["failures"] = failures
+	// Name the lane and its capability gap. Both transports are complete
+	// browsers, but incognito, HttpOnly cookies and download routing exist on
+	// one and Chrome tab groups on the other, and nothing else tells the user
+	// which one their install chose.
+	if transport := setup.ResolvedTransport(profile); transport != "" {
+		capabilities := setup.CapabilitiesFor(transport)
+		report.Transport = transport
+		report.Capabilities = &capabilities
 	}
-	writeJSON(os.Stdout, report)
-	if len(failures) > 0 {
-		return errors.New("doctor failed")
+
+	if state := setup.DetectClaudeInChrome(setup.ClaudeConfigPath(req.Home)); state.Enabled {
+		report.Warnings = append(report.Warnings, doctorWarning{
+			Name:    setup.ClaudeInChromeWarning,
+			Message: "Claude Code's own Chrome integration is enabled; run /chrome in Claude Code and turn it off, or the agent sees two browser tool sets and may drive the wrong browser",
+			Detail:  strings.Join(state.Signals, ", ") + " in " + state.Path,
+		})
 	}
-	return nil
+
+	report.OK = len(failures) == 0
+	report.Failures = failures
+	return report, nil
+}
+
+// mcpConfigRequest is one resolved MCP server derivation. `brwctl setup` builds
+// the same request so the command it registers with an MCP client is byte-for-byte
+// what `brwctl mcp-config` prints.
+type mcpConfigRequest struct {
+	Workspace  string
+	Profile    string
+	Transport  string
+	PolicyPath string
+	Mode       string
+}
+
+// mcpServerSpec is the launchable form of an MCP server entry.
+type mcpServerSpec struct {
+	Name    string
+	Command string
+	Args    []string
+	Env     map[string]string
+	Mode    string
+	Profile profilepolicy.Profile
+}
+
+// configJSON renders the spec as the mcpServers block an MCP client config file
+// expects, for the clients setup cannot drive through a CLI.
+func (s mcpServerSpec) configJSON() string {
+	entry := map[string]any{
+		"command": s.Command,
+		"args":    s.Args,
+	}
+	if len(s.Env) > 0 {
+		entry["env"] = s.Env
+	}
+	data, err := json.MarshalIndent(map[string]any{"mcpServers": map[string]any{s.Name: entry}}, "", "  ")
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+// deriveMCPServer resolves a profile and transport against a policy and returns
+// the exact command, arguments and environment an MCP client must run.
+func deriveMCPServer(policy profilepolicy.Policy, req mcpConfigRequest) (mcpServerSpec, error) {
+	profile, err := policy.ResolveProfile(req.Workspace, req.Profile)
+	if err != nil {
+		return mcpServerSpec{}, err
+	}
+	transport, err := policy.ResolveTransport(req.Workspace, req.Transport)
+	if err != nil {
+		return mcpServerSpec{}, err
+	}
+	mode := req.Mode
+	if mode == "auto" {
+		if profile.DirectCDPAllowed {
+			mode = "direct"
+		} else if profile.ExtensionBridgeAllowed {
+			mode = "bridge"
+		} else {
+			return mcpServerSpec{}, fmt.Errorf("profile %q has no allowed runtime mode", profile.Name)
+		}
+	}
+	if mode == "bridge" && !profile.ExtensionBridgeAllowed {
+		return mcpServerSpec{}, fmt.Errorf("profile %q is not allowed for bridge mode", profile.Name)
+	}
+	if mode == "upstream-http" && !profile.ExtensionBridgeAllowed && !profile.DirectCDPAllowed {
+		return mcpServerSpec{}, fmt.Errorf("profile %q is not allowed for upstream HTTP mode", profile.Name)
+	}
+	if mode == "direct" && !profile.DirectCDPAllowed {
+		return mcpServerSpec{}, fmt.Errorf("profile %q is not allowed for direct mode", profile.Name)
+	}
+
+	envPolicyPath := req.PolicyPath
+	if transport.Kind == "ssh-stdio" {
+		envPolicyPath = remotePolicyPath(transport)
+	}
+	envOut := runtimeEnv(req.Workspace, profile.Name, envPolicyPath)
+	runtimeOut := runtimeArgs(mode, profile)
+	argsOut := append([]string{}, runtimeOut...)
+	command := ""
+	switch transport.Kind {
+	case "stdio":
+		command = transport.Command
+		if command == "" {
+			command = "brwd"
+		}
+	case "ssh-stdio":
+		host := transport.Host
+		if transport.User != "" {
+			host = transport.User + "@" + host
+		}
+		command = transport.Command
+		if command == "" {
+			command = "ssh"
+		}
+		commandArgs := append([]string{}, transport.CommandArgs...)
+		remoteArgs := append([]string{remoteBinary(transport, "brwd")}, runtimeOut...)
+		argsOut = append(commandArgs, host, shellJoin(append(shellEnv(envOut), remoteArgs...)))
+		envOut = nil
+	default:
+		return mcpServerSpec{}, fmt.Errorf("transport %q has unsupported kind %q for stdio MCP config", transport.Name, transport.Kind)
+	}
+
+	name := "brw"
+	if transport.Name != "local" {
+		name += "-" + transport.Name
+	}
+	return mcpServerSpec{Name: name, Command: command, Args: argsOut, Env: envOut, Mode: mode, Profile: profile}, nil
 }
 
 func mcpConfig(args []string) error {
@@ -490,80 +696,24 @@ func mcpConfig(args []string) error {
 	if err != nil {
 		return err
 	}
-	profile, err := policy.ResolveProfile(workspaceName, profileName)
+	spec, err := deriveMCPServer(policy, mcpConfigRequest{
+		Workspace:  workspaceName,
+		Profile:    profileName,
+		Transport:  transportName,
+		PolicyPath: policyPath,
+		Mode:       mode,
+	})
 	if err != nil {
 		return err
 	}
-	transport, err := policy.ResolveTransport(workspaceName, transportName)
-	if err != nil {
-		return err
+	entry := map[string]any{
+		"command": spec.Command,
+		"args":    spec.Args,
 	}
-	if mode == "auto" {
-		if profile.DirectCDPAllowed {
-			mode = "direct"
-		} else if profile.ExtensionBridgeAllowed {
-			mode = "bridge"
-		} else {
-			return fmt.Errorf("profile %q has no allowed runtime mode", profile.Name)
-		}
+	if len(spec.Env) > 0 {
+		entry["env"] = spec.Env
 	}
-	if mode == "bridge" && !profile.ExtensionBridgeAllowed {
-		return fmt.Errorf("profile %q is not allowed for bridge mode", profile.Name)
-	}
-	if mode == "upstream-http" && !profile.ExtensionBridgeAllowed && !profile.DirectCDPAllowed {
-		return fmt.Errorf("profile %q is not allowed for upstream HTTP mode", profile.Name)
-	}
-	if mode == "direct" && !profile.DirectCDPAllowed {
-		return fmt.Errorf("profile %q is not allowed for direct mode", profile.Name)
-	}
-
-	envPolicyPath := policyPath
-	if transport.Kind == "ssh-stdio" {
-		envPolicyPath = remotePolicyPath(transport)
-	}
-	envOut := runtimeEnv(workspaceName, profile.Name, envPolicyPath)
-	runtimeOut := runtimeArgs(mode, profile)
-	argsOut := append([]string{}, runtimeOut...)
-	command := ""
-	switch transport.Kind {
-	case "stdio":
-		command = transport.Command
-		if command == "" {
-			command = "brwd"
-		}
-	case "ssh-stdio":
-		host := transport.Host
-		if transport.User != "" {
-			host = transport.User + "@" + host
-		}
-		command = transport.Command
-		if command == "" {
-			command = "ssh"
-		}
-		commandArgs := append([]string{}, transport.CommandArgs...)
-		remoteArgs := append([]string{remoteBinary(transport, "brwd")}, runtimeOut...)
-		argsOut = append(commandArgs, host, shellJoin(append(shellEnv(envOut), remoteArgs...)))
-		envOut = nil
-	default:
-		return fmt.Errorf("transport %q has unsupported kind %q for stdio MCP config", transport.Name, transport.Kind)
-	}
-
-	name := "brw"
-	if transport.Name != "local" {
-		name += "-" + transport.Name
-	}
-	result := map[string]any{
-		"mcpServers": map[string]any{
-			name: map[string]any{
-				"command": command,
-				"args":    argsOut,
-			},
-		},
-	}
-	if len(envOut) > 0 {
-		result["mcpServers"].(map[string]any)[name].(map[string]any)["env"] = envOut
-	}
-	writeJSON(os.Stdout, result)
+	writeJSON(os.Stdout, map[string]any{"mcpServers": map[string]any{spec.Name: entry}})
 	return nil
 }
 
