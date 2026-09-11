@@ -46,12 +46,12 @@ class Brw < Formula
 
   def caveats
     <<~EOS
-      Finish setup (writes ~/.config/brw/browser-profiles.json and registers the
-      MCP server; nothing here needs sudo):
+      Finish setup (writes a profile policy under the platform user config
+      directory and registers the MCP server; nothing here needs sudo):
         brwctl setup
 
       This formula's app dir is the Homebrew prefix, so point doctor at it:
-        brwctl doctor --app-dir "#{opt_prefix}" --workspace brw
+        brwctl doctor --app-dir "#{opt_prefix}"
 
       The Chrome extension ships at:
         #{opt_prefix}/extension
