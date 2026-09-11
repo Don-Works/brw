@@ -95,8 +95,11 @@ sync-installed-extensions:
 
 # Install the public operating skill where the common agent harnesses discover
 # it globally. Operational recipes remain in the private provider, never here.
+# Claude Code reads ~/.claude/skills; omitting it is why a Claude Code user found
+# no brw skill installed and wrote their own.
 install-agent-skills:
-	mkdir -p "$(HOME)/.agents/skills/brw" "$(HOME)/.codex/skills/brw"
+	mkdir -p "$(HOME)/.claude/skills/brw" "$(HOME)/.agents/skills/brw" "$(HOME)/.codex/skills/brw"
+	rsync -a --delete skills/brw/ "$(HOME)/.claude/skills/brw"/
 	rsync -a --delete skills/brw/ "$(HOME)/.agents/skills/brw"/
 	rsync -a --delete skills/brw/ "$(HOME)/.codex/skills/brw"/
 

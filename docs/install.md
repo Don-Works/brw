@@ -361,7 +361,8 @@ re-signed build with a different id; the default published id is built in.
 For a local multi-profile installation, `make install-mac` also refreshes every
 existing `~/Library/Application Support/brw/extension-*` payload without
 overwriting its private `bridge-defaults.json`. Install the bundled operating
-skill for both common agent harnesses with `make install-agent-skills`; this
+skill into `~/.claude/skills/brw`, `~/.agents/skills/brw` and
+`~/.codex/skills/brw` with `make install-agent-skills`; this
 copies instructions only, never the private recipe corpus.
 
 ## Keep the browser awake (macOS)
