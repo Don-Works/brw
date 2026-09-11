@@ -40,7 +40,9 @@ agent skill, and verify the result. Every step is idempotent and needs no sudo.
 options:
   --profile NAME        profile name to create or reuse (default: derived from --browser and --transport)
   --workspace NAME      workspace binding name (default: derived from --browser and --transport)
-  --browser NAME        chrome or chromium (default: whichever browser has been used on this machine)
+  --browser NAME        chrome, chromium, edge, brave, vivaldi, opera or arc; any other Chromium
+                        build with --user-data-dir (default: whichever browser has been used
+                        on this machine)
   --profile-directory D browser profile directory inside the user data dir, for example "Profile 1"
                         (default: the first existing one, else Default)
   --user-data-dir PATH  browser user data directory. Only needed for a Chromium build brw has
@@ -135,7 +137,7 @@ func setupCommand(args []string) error {
 	var opts setupOptions
 	fs.StringVar(&opts.profileName, "profile", os.Getenv("BRW_PROFILE"), "profile name to create or reuse")
 	fs.StringVar(&opts.workspace, "workspace", os.Getenv("BRW_WORKSPACE"), "workspace binding name")
-	fs.StringVar(&opts.browser, "browser", "", "chrome or chromium")
+	fs.StringVar(&opts.browser, "browser", "", "chrome, chromium, edge, brave, vivaldi, opera, arc, or any Chromium build with --user-data-dir")
 	fs.StringVar(&opts.profileDirectory, "profile-directory", "", `browser profile directory inside the user data dir, for example "Profile 1"`)
 	fs.StringVar(&opts.userDataDir, "user-data-dir", "", "browser user data directory, for a Chromium build brw does not know")
 	fs.StringVar(&opts.transport, "transport", setup.TransportBridge, "bridge or direct-cdp")
