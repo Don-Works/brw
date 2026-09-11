@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -125,7 +126,8 @@ func (s *Server) dashboardStream(w http.ResponseWriter, r *http.Request) {
 func (s *Server) streamViaScreencast(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, caster screencaster, opts browser.ScreencastOptions, interval time.Duration) {
 	frames, stop, err := caster.ScreencastFrames(ctx, opts)
 	if err != nil {
-		fmt.Fprintf(w, "event: error\ndata: %s\n\n", jsonString(err.Error()))
+		reason, _ := json.Marshal(err.Error())
+		fmt.Fprintf(w, "event: error\ndata: {\"error\":%s}\n\n", reason)
 		flusher.Flush()
 		return
 	}
@@ -195,40 +197,19 @@ func (s *Server) streamViaScreenshots(ctx context.Context, w http.ResponseWriter
 }
 
 func writeFrame(w http.ResponseWriter, flusher http.Flusher, seq int, data []byte) bool {
-	payload := fmt.Sprintf(`{"seq":%d,"at":%s,"jpeg_base64":%s}`,
-		seq, jsonString(time.Now().UTC().Format(time.RFC3339)), jsonString(base64.StdEncoding.EncodeToString(data)))
+	payload, err := json.Marshal(dashboardFrame{
+		Seq:        seq,
+		At:         time.Now().UTC().Format(time.RFC3339),
+		JPEGBase64: base64.StdEncoding.EncodeToString(data),
+	})
+	if err != nil {
+		return false
+	}
 	if _, err := fmt.Fprintf(w, "event: frame\ndata: %s\n\n", payload); err != nil {
 		return false
 	}
 	flusher.Flush()
 	return true
-}
-
-func jsonString(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			if r < 0x20 {
-				fmt.Fprintf(&b, `\u%04x`, r)
-				continue
-			}
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
 }
 
 func queryInt(r *http.Request, name string, fallback int) int {

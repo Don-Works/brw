@@ -5684,7 +5684,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 // dialog arming. The extension has always ANSWERED dialogs (so the renderer
 // never hangs on either build); what an old build lacks is the arm/observe
 // surface, hence a graceful Supported=false rather than an error.
-const dialogsUnsupportedNote = "Dialog control is unavailable: the connected brw extension predates brw_dialog support. Dialogs are still answered automatically (alert accepted, confirm/prompt given the non-destructive answer), but they cannot be pre-armed or listed. Reload the brw extension to enable it. Check supported=false to detect this programmatically."
+const dialogsUnsupportedNote = "Dialog control is unavailable: the connected brw extension predates brw_dialog support. Dialogs are still answered automatically (alert accepted, confirm/prompt given the non-destructive answer), but they cannot be pre-armed or listed. Reload the brw extension to enable it, or check supported=false to detect this programmatically"
 
 // Dialog implements the browser.DialogController capability over the extension
 // bridge. Arming is stored extension-side so the answer is already present when
@@ -5717,7 +5717,7 @@ func (b *Bridge) Dialog(ctx context.Context, opts browser.DialogOptions) (browse
 			Armed   *struct {
 				Accept     bool   `json:"accept"`
 				Remaining  int    `json:"remaining"`
-				PromptText string `json:"promptText"`
+				PromptText string `json:"prompt_text"`
 			} `json:"armed"`
 		}
 		if len(raw) > 0 {

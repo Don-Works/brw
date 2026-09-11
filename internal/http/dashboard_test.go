@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -134,23 +136,36 @@ func TestClampAndQueryInt(t *testing.T) {
 	}
 }
 
-// Frame payloads are assembled by hand rather than through encoding/json, so
-// the escaping has to be right or a page title with a quote in it breaks the
-// stream for the viewer.
-func TestJSONStringEscapes(t *testing.T) {
-	tests := []struct {
-		in   string
-		want string
-	}{
-		{`plain`, `"plain"`},
-		{`say "hi"`, `"say \"hi\""`},
-		{"line\nbreak", `"line\nbreak"`},
-		{`back\slash`, `"back\\slash"`},
-		{string(rune(1)), `"` + `\` + `u0001"`},
+// The frame payload is the SSE wire contract, so its shape is pinned here.
+func TestDashboardFrameWireShape(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	if !writeFrame(recorder, recorder, 7, []byte{0xff, 0xd8, 0xff}) {
+		t.Fatal("writeFrame reported failure on a healthy writer")
 	}
-	for _, tt := range tests {
-		if got := jsonString(tt.in); got != tt.want {
-			t.Errorf("jsonString(%q) = %s, want %s", tt.in, got, tt.want)
-		}
+	body := recorder.Body.String()
+	if !strings.HasPrefix(body, "event: frame\ndata: ") {
+		t.Fatalf("frame is not a well-formed SSE event: %q", body)
+	}
+	payload := strings.TrimSuffix(strings.TrimPrefix(body, "event: frame\ndata: "), "\n\n")
+	var frame dashboardFrame
+	if err := json.Unmarshal([]byte(payload), &frame); err != nil {
+		t.Fatalf("frame payload is not valid JSON: %v (%q)", err, payload)
+	}
+	if frame.Seq != 7 {
+		t.Errorf("seq = %d, want 7", frame.Seq)
+	}
+	if frame.At == "" {
+		t.Error("frame must carry a timestamp")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(frame.JPEGBase64)
+	if err != nil {
+		t.Fatalf("jpeg_base64 does not decode: %v", err)
+	}
+	if len(decoded) != 3 || decoded[0] != 0xff {
+		t.Errorf("decoded frame bytes = %v, want the original JPEG bytes", decoded)
+	}
+	// An SSE event ends at a blank line, so a payload may never contain one.
+	if strings.Contains(payload, "\n") {
+		t.Error("frame payload must not contain a newline; it would terminate the SSE event early")
 	}
 }

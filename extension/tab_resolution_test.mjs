@@ -1082,8 +1082,17 @@ async function scenarioDialogArmingAndSafeDefaults() {
     const listed = await T.handle({ id: "dlg-1", type: "get_dialogs", params: { tabId: 11, peek: true } });
     const ring = T.state.dialogLog.get(11) || [];
     check("answered dialogs are recorded", ring.length === 2);
+    // The record shape is the daemon's wire contract (browser.DialogRecord).
+    // camelCase keys blank the field on the Go side, and a numeric `at` fails
+    // the whole parse, so both are pinned here rather than left to house style.
+    check("records use the daemon's snake_case wire keys",
+      "decided_by" in ring[0] && "default_prompt" in ring[0] && "prompt_text" in ring[0]);
+    check("records carry no camelCase aliases",
+      !("decidedBy" in ring[0]) && !("defaultPrompt" in ring[0]) && !("promptText" in ring[0]));
+    check("at is an RFC 3339 string, not a number",
+      typeof ring[0].at === "string" && !Number.isNaN(Date.parse(ring[0].at)));
     check("records name why they were answered that way",
-      ring[0].decidedBy === "user_safe_default" || ring[0].decidedBy === "agent_acting");
+      ring[0].decided_by === "user_safe_default" || ring[0].decided_by === "agent_acting");
 
     // 4. An arm wins over the default, and carries prompt text.
     await T.handle({ id: "arm-1", type: "arm_dialog",
@@ -1094,6 +1103,28 @@ async function scenarioDialogArmingAndSafeDefaults() {
     check("armed answer overrides the safe default", answers.at(-1)?.accept === true);
     check("armed prompt text reaches the page", answers.at(-1)?.promptText === "brw-was-here");
     check("a single-shot arm is consumed", !T.state.dialogArm.has(11));
+
+    // The armed block crosses the same wire and follows the same convention.
+    // Assert on the FRAME the extension actually sends, not on internal state:
+    // the bug this guards against is a key name that only exists on the wire.
+    const wireSocket = new MockWebSocket();
+    wireSocket.readyState = MockWebSocket.OPEN;
+    T.state.socket = wireSocket;
+    await T.handle({ id: "arm-shape", type: "arm_dialog",
+      params: { tabId: 11, accept: false, promptText: "x", count: 2 } });
+    await T.handle({ id: "dlg-shape", type: "get_dialogs", params: { tabId: 11, peek: true } });
+    const dialogFrame = wireSocket.sent.find((f) => f.id === "dlg-shape");
+    const armedOut = dialogFrame?.result?.armed;
+    check("get_dialogs actually replies on the wire", !!armedOut);
+    check("armed block uses snake_case prompt_text",
+      !!armedOut && "prompt_text" in armedOut && !("promptText" in armedOut));
+    const wireRecord = dialogFrame?.result?.dialogs?.[0];
+    check("the dialog record on the wire uses snake_case keys",
+      !!wireRecord && "decided_by" in wireRecord && !("decidedBy" in wireRecord));
+    check("the dialog record on the wire carries a string timestamp",
+      !!wireRecord && typeof wireRecord.at === "string");
+    T.state.socket = null;
+    await T.handle({ id: "arm-shape-clear", type: "arm_dialog", params: { tabId: 11, clear: true } });
 
     // 5. promptText is only sent for prompt(); other types must not carry it.
     await T.handle({ id: "arm-2", type: "arm_dialog",
@@ -1167,6 +1198,8 @@ async function scenarioSubresourceContainment() {
     const blocked = T.state.blockedRequests.get(11) || [];
     check("refusals are recorded for the agent to read", blocked.length === 2);
     check("a recorded refusal names the URL", blocked.some((b) => b.url.includes("tracker.example")));
+    check("blocked records use the daemon's wire keys",
+      "resource_type" in blocked[0] && typeof blocked[0].at === "string");
 
     // Reading them consumes, so the same refusal is not re-reported every turn.
     await T.handle({ id: "cont-2", type: "get_blocked_requests", params: { tabId: 11 } });

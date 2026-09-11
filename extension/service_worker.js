@@ -760,15 +760,19 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     // promptText is only meaningful for prompt(); sending it otherwise is a
     // protocol error on some Chrome builds.
     if (type === "prompt" && typeof promptText === "string") command.promptText = promptText;
+    // Field names and types are the DAEMON's wire contract (browser.DialogRecord),
+    // not this file's house style: snake_case keys and an RFC 3339 string for at.
+    // Emitting camelCase here silently blanks decided_by on the daemon side, and
+    // a numeric timestamp fails the whole parse.
     recordDialog(source.tabId, {
       type,
       message: String(params?.message || "").slice(0, 2000),
-      defaultPrompt: String(params?.defaultPrompt || "").slice(0, 2000),
+      default_prompt: String(params?.defaultPrompt || "").slice(0, 2000),
       url: String(params?.url || "").slice(0, 2000),
       accepted: accept,
-      promptText: command.promptText || "",
-      decidedBy,
-      at: Date.now()
+      prompt_text: command.promptText || "",
+      decided_by: decidedBy,
+      at: new Date().toISOString()
     });
     chrome.debugger.sendCommand(
       { tabId: source.tabId },
@@ -1740,7 +1744,8 @@ async function handle(message) {
         result: {
           dialogs: entries,
           count: entries.length,
-          armed: arm ? { accept: arm.accept, remaining: arm.remaining, promptText: arm.promptText || "" } : null
+          // snake_case here too: one convention across the whole bridge wire.
+          armed: arm ? { accept: arm.accept, remaining: arm.remaining, prompt_text: arm.promptText || "" } : null
         }
       });
       return;
