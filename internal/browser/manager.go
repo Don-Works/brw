@@ -127,6 +127,15 @@ type Manager struct {
 	downloadDirOwned bool
 	userDataDir      string
 	downloadsEnabled bool
+	// dialogs holds per-tab JavaScript-dialog arms and the answered-dialog ring.
+	// The listener it backs is mandatory: see ensureDialogHandling. Zero value is
+	// usable; its maps are created on first use.
+	dialogs dialogState
+	// containment enforces the navigation policy on SUBRESOURCES, not just on
+	// the URL an agent asks to open. Zero value is usable.
+	containment containmentState
+	// routes holds per-tab request interception rules. Zero value is usable.
+	routes routeState
 
 	// cancels tracks in-flight long-running operations (plan / batch / wait
 	// loops) keyed by an operation token so brw_cancel can stop a specific
@@ -1559,6 +1568,13 @@ func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Du
 	if timeout == 0 {
 		timeout = m.timeout
 	}
+	// A download never touches the DOM, so it cannot be observed by the in-page
+	// condition script. It is resolved against the manager's own download
+	// registry instead, which is in-process: each re-check costs a mutex, not a
+	// CDP round trip.
+	if condition == "download" || strings.HasPrefix(condition, "download:") {
+		return m.waitForDownload(ctx, strings.TrimPrefix(strings.TrimPrefix(condition, "download"), ":"), timeout)
+	}
 	// Buffer the Go-side context slightly beyond the in-page timeout so the
 	// page's own timer resolves the wait before the CDP call is cancelled.
 	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
@@ -1597,6 +1613,82 @@ func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Du
 			return err
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// waitForDownload blocks until a download that was not already finished when the
+// wait started reaches the completed state. match, when non-empty, is a
+// case-insensitive substring tested against the suggested filename and the URL,
+// so a caller can wait for one specific file among several in flight.
+//
+// Only downloads that start (or are still running) after the baseline is taken
+// can satisfy the wait. Without that, a wait placed after a click would return
+// instantly on an unrelated download completed minutes earlier.
+func (m *Manager) waitForDownload(ctx context.Context, match string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = m.timeout
+	}
+	if err := m.ensureDownloadTracking(ctx); err != nil {
+		return err
+	}
+	needle := strings.ToLower(strings.TrimSpace(match))
+	matches := func(entry DownloadEntry) bool {
+		if needle == "" {
+			return true
+		}
+		return strings.Contains(strings.ToLower(entry.SuggestedFilename), needle) ||
+			strings.Contains(strings.ToLower(entry.URL), needle)
+	}
+
+	// Baseline: every download already in a terminal state is ignored for the
+	// rest of this wait.
+	settled := make(map[string]bool)
+	m.downloadsMu.Lock()
+	for _, entry := range m.downloads {
+		if entry.State == string(downloadStateCompleted) || entry.State == string(downloadStateCanceled) {
+			settled[entry.GUID] = true
+		}
+	}
+	m.downloadsMu.Unlock()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("wait for %q cancelled", "download")
+		}
+		var cancelled string
+		m.downloadsMu.Lock()
+		for _, entry := range m.downloads {
+			if settled[entry.GUID] || !matches(entry) {
+				continue
+			}
+			if entry.State == string(downloadStateCompleted) {
+				m.downloadsMu.Unlock()
+				return nil
+			}
+			if entry.State == string(downloadStateCanceled) {
+				cancelled = entry.SuggestedFilename
+			}
+		}
+		m.downloadsMu.Unlock()
+		if cancelled != "" {
+			return fmt.Errorf("download %q was cancelled by the browser before it completed", cancelled)
+		}
+		if remaining := time.Until(deadline); remaining <= 0 {
+			if needle == "" {
+				return errors.New("timed out waiting for a download to complete")
+			}
+			return fmt.Errorf("timed out waiting for a download matching %q to complete", match)
+		}
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("wait for %q cancelled", "download")
+		case <-timer.C:
+		}
 	}
 }
 
@@ -2765,6 +2857,16 @@ type ObserveResult struct {
 	Title   string   `json:"title,omitempty"`
 	Focus   string   `json:"focus,omitempty"`
 	Changed []string `json:"changed,omitempty"`
+	// Blocked reports subresources containment refused since the previous
+	// observation. Omitted entirely when nothing was blocked, so it costs
+	// nothing on the ordinary path and no policy-free session ever sees it.
+	// Reporting it here is what keeps a contained page from looking like a
+	// mysteriously broken one.
+	Blocked []BlockedRequest `json:"blocked_requests,omitempty"`
+	// ActiveRoutes reports how many interception rules are answering requests on
+	// this tab. Omitted when there are none. Mocked traffic that is invisible in
+	// the observation is how an agent ends up trusting a response brw invented.
+	ActiveRoutes int `json:"active_routes,omitempty"`
 }
 
 func (m *Manager) Observe(ctx context.Context) (ObserveResult, error) {
@@ -2782,6 +2884,8 @@ func (m *Manager) Observe(ctx context.Context) (ObserveResult, error) {
 		return ObserveResult{}, err
 	}
 	m.refs.Observe(tabID, snap.Elements)
+
+	blocked := m.BlockedRequests(tabID)
 
 	focus := ""
 	if snap.Metadata != nil {
@@ -2802,13 +2906,18 @@ func (m *Manager) Observe(ctx context.Context) (ObserveResult, error) {
 		changed = SummarizeElements(SelectFrontierElements(snap.Elements, focus, 12), 12)
 	}
 
-	return ObserveResult{
+	result := ObserveResult{
 		Version: version,
 		URL:     snap.URL,
 		Title:   snap.Title,
 		Focus:   focus,
 		Changed: changed,
-	}, nil
+	}
+	if len(blocked) > 0 {
+		result.Blocked = blocked
+	}
+	result.ActiveRoutes = m.routes.count(tabID)
+	return result, nil
 }
 
 // SummarizeElements returns compact one-line summaries of the given elements,
@@ -2943,6 +3052,10 @@ func (m *Manager) tabContext(tabID string) (context.Context, error) {
 	// this newly created tab context so page-initiated downloads are observed.
 	m.attachDownloadListenerIfEnabled(tabID, ctx)
 	m.ensureConsoleCapture(tabID, ctx)
+	// Unconditional: an unanswered JS dialog blocks the renderer outright.
+	m.ensureDialogHandling(tabID, ctx)
+	// No-op unless a navigation policy is configured.
+	m.ensureContainment(tabID, ctx)
 	return ctx, nil
 }
 

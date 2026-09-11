@@ -1869,23 +1869,67 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
     const selector='[data-brw-ref="'+CSS.escape(ref)+'"]';
     return roots().some(root => root.querySelector && root.querySelector(selector));
   }
+  function hasSelector(sel){
+    // Frame-aware: a selector condition is satisfied by a match in ANY reachable
+    // root (main document, same-origin iframes, open shadow roots), so a wait
+    // does not have to know which frame the element will land in.
+    return roots().some(function(root){
+      if(!root || !root.querySelector) return false;
+      try{ return !!root.querySelector(sel); }catch(e){ return false; }
+    });
+  }
+  // fn: conditions are compiled ONCE here rather than per re-check. The page's
+  // own predicate is then re-run on each DOM mutation and nav event, so it
+  // resolves on the mutation that makes it true instead of at the next poll tick.
+  // An expression ("document.readyState === 'complete'") and a statement body
+  // ("const n = document.querySelectorAll('li').length; return n > 10;") are both
+  // accepted: the expression form is tried first and the body form is the fallback.
+  var fnCompiled=null, fnCompileError=null;
+  if(condition.indexOf('fn:')===0){
+    var src=condition.slice(3);
+    try{
+      fnCompiled=new Function('"use strict"; return ('+src+');');
+    }catch(e1){
+      try{
+        fnCompiled=new Function('"use strict"; '+src);
+      }catch(e2){
+        fnCompileError=String(e2 && e2.message || e2);
+      }
+    }
+  }
   function check(){
     if(condition==='ready') return document.readyState==='complete'||document.readyState==='interactive';
     if(condition==='committed') return (document.readyState==='complete'||document.readyState==='interactive') && location.href !== 'about:blank' && location.href !== '';
-    if(condition.startsWith('url:')) return location.href.includes(condition.slice(4));
-    if(condition.startsWith('not_url:')) return !location.href.includes(condition.slice(8));
-    if(condition.startsWith('title:')) return document.title.includes(condition.slice(6));
-    if(condition.startsWith('not_title:')) return !document.title.includes(condition.slice(10));
-    if(condition.startsWith('text:')) return !!document.body && document.body.innerText.includes(condition.slice(5));
-    if(condition.startsWith('not_text:')) return !document.body || !document.body.innerText.includes(condition.slice(9));
-    if(condition.startsWith('ref:')) return hasRef(condition.slice(4));
-    if(condition.startsWith('not_ref:')) return !hasRef(condition.slice(8));
+    if(condition.indexOf('url:')===0) return location.href.includes(condition.slice(4));
+    if(condition.indexOf('not_url:')===0) return !location.href.includes(condition.slice(8));
+    if(condition.indexOf('title:')===0) return document.title.includes(condition.slice(6));
+    if(condition.indexOf('not_title:')===0) return !document.title.includes(condition.slice(10));
+    if(condition.indexOf('text:')===0) return !!document.body && document.body.innerText.includes(condition.slice(5));
+    if(condition.indexOf('not_text:')===0) return !document.body || !document.body.innerText.includes(condition.slice(9));
+    if(condition.indexOf('ref:')===0) return hasRef(condition.slice(4));
+    if(condition.indexOf('not_ref:')===0) return !hasRef(condition.slice(8));
+    if(condition.indexOf('selector:')===0) return hasSelector(condition.slice(9));
+    if(condition.indexOf('not_selector:')===0) return !hasSelector(condition.slice(13));
+    // fn: may return a thenable; settle() below awaits it.
+    if(condition.indexOf('fn:')===0) return fnCompiled ? fnCompiled() : false;
     return !!document.body && document.body.innerText.includes(condition);
   }
-  return new Promise(function(resolve){
-    if(check()){ resolve(true); return; }
-    var done=false, obs=null, iv=0, to=0;
-    function recheck(){ try{ if(check()) finish(true); }catch(e){} }
+  // Normalises check() to a boolean callback, awaiting a thenable result so an
+  // async predicate is supported. A predicate that throws counts as "not yet":
+  // a fn that dereferences an element before it exists is the normal case while
+  // waiting, not a failure.
+  function settle(cb){
+    var v;
+    try{ v=check(); }catch(e){ cb(false); return; }
+    if(v && typeof v.then==='function'){
+      try{ v.then(function(r){ cb(!!r); }, function(){ cb(false); }); }catch(e){ cb(false); }
+      return;
+    }
+    cb(!!v);
+  }
+  return new Promise(function(resolve, reject){
+    if(fnCompileError){ reject(new Error('wait fn did not compile: '+fnCompileError)); return; }
+    var done=false, obs=null, iv=0, to=0, pending=false;
     function finish(v){
       if(done) return; done=true;
       try{ if(obs) obs.disconnect(); }catch(e){}
@@ -1894,10 +1938,25 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
       try{ window.removeEventListener('popstate', recheck); window.removeEventListener('hashchange', recheck); }catch(e){}
       resolve(v);
     }
-    try{ obs=new MutationObserver(recheck); obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
-    try{ window.addEventListener('popstate', recheck); window.addEventListener('hashchange', recheck); }catch(e){}
-    iv=setInterval(recheck, 100);
-    to=setTimeout(function(){ finish(check()); }, Math.max(0, timeoutMs|0));
+    // pending guards against stacking overlapping async predicate evaluations
+    // when mutations arrive faster than the predicate resolves.
+    function recheck(){
+      if(done||pending) return;
+      pending=true;
+      settle(function(ok){ pending=false; if(ok) finish(true); });
+    }
+    settle(function(ok){
+      if(ok){ resolve(true); return; }
+      try{ obs=new MutationObserver(recheck); obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
+      try{ window.addEventListener('popstate', recheck); window.addEventListener('hashchange', recheck); }catch(e){}
+      iv=setInterval(recheck, 100);
+      to=setTimeout(function(){
+        if(done) return;
+        // One last evaluation so a predicate that became true between the final
+        // recheck and the deadline is still honoured.
+        settle(function(ok2){ finish(ok2); });
+      }, Math.max(0, timeoutMs|0));
+    });
   });
 })`
 
@@ -1916,6 +1975,12 @@ func WaitForCondition(ctx context.Context, condition string, timeoutMs int64) (b
 			return err
 		}
 		if exception != nil {
+			// A rejected promise carries the reason in Description; surface that
+			// directly so a bad fn: predicate reports its own syntax error rather
+			// than a wall of CDP exception JSON.
+			if exception.Exception != nil && exception.Exception.Description != "" {
+				return fmt.Errorf("wait condition failed: %s", exception.Exception.Description)
+			}
 			details, _ := json.Marshal(exception)
 			return fmt.Errorf("wait condition failed: %s", details)
 		}

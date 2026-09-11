@@ -67,8 +67,8 @@ Adaptive event polling checks again at 25, 50, 100, and 200 ms, then caps at
 idle DOM scans on large inbox/message pages; the explicit tradeoff is up to
 250 ms steady-state detection latency instead of 100 ms.
 
-The measured MCP catalogues are 62 tools / ~13.5k tokens for `all`, 24 / ~7.0k
-for `core`, 12 / ~3.8k for `minimal`, and 13 / ~4.1k initially for the default
+The measured MCP catalogues are 69 tools / ~16.0k tokens for `all`, 26 / ~7.7k
+for `core`, 13 / ~4.1k for `minimal`, and 14 / ~4.4k initially for the default
 `auto` profile. Thus the default starts about 69.9% smaller than advertising every
 tool, while every tool remains directly callable and discoverable through
 `brw_tools`.

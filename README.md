@@ -62,8 +62,8 @@ The full MCP surface is large. For lean agent contexts, run:
 
 ```sh
 brwd --mcp --mcp-tools auto     # 13 tools to start, grows on demand
-brwd --mcp --mcp-tools core     # 24 tools, ~7.0k tokens of catalogue
-brwd --mcp --mcp-tools minimal  # 12 tools, ~3.8k tokens of catalogue
+brwd --mcp --mcp-tools core     # 26 tools, ~7.7k tokens of catalogue
+brwd --mcp --mcp-tools minimal  # 13 tools, ~4.1k tokens of catalogue
 ```
 
 For a ready-to-paste agent system prompt that encodes the fast, token-efficient
@@ -291,6 +291,14 @@ Core MCP tools include:
 - `brw_click`, `brw_click_text`, `brw_type`, `brw_fill`
 - `brw_select`, `brw_press`, `brw_scroll`, `brw_hover`
 - `brw_drag`, `brw_upload_file`, `brw_wait_for`
+- `brw_read_url` — read a public page with no tab, no lease, no navigation
+- `brw_get` — one typed fact (text, value, attr, box, count, visible, …) without
+  hand-written JS, resolved across iframes and open shadow roots
+- `brw_storage` — localStorage / sessionStorage for the current origin
+- `brw_dialog` — pre-arm the answer to a confirm/prompt before the click that
+  raises it, and see which dialogs were answered
+- `brw_diff` — mark, act, compare: did the page actually change?
+- `brw_route` — mock or abort matching requests without touching the network
 - `brw_batch`, `brw_cancel`, `brw_observe`
 - `brw_screenshot`, `brw_screenshot_element`
 - `brw_artifact_capture`, `brw_artifact_info`, `brw_artifact_read`,
@@ -307,7 +315,7 @@ Core MCP tools include:
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: `all` costs ~13.5k tokens, `core` ~7.0k, `minimal` ~3.8k,
+tokens on every turn: `all` costs ~16.0k tokens, `core` ~7.7k, `minimal` ~4.1k,
 and `auto` starts at ~4.1k and grows only as the agent discovers tools it needs
 via `brw_tools`.
 

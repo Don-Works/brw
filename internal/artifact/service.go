@@ -189,6 +189,30 @@ func (s *Service) captureArtifact(ctx context.Context, opts CaptureOptions, put 
 		put.MIMEType = "application/json"
 		put.SourceHash = sourceHash(snap.URL, snap.Title)
 		return s.store.PutContext(ctx, put, bytes.NewReader(data))
+	case "har":
+		// A HAR is the shareable form of a capture, so it becomes an artifact
+		// rather than an inline payload: paged, searchable, TTL-bounded and
+		// never dumped whole into an agent's context.
+		requests, err := s.browser.NetworkCapture(ctx, "")
+		if err != nil {
+			return Meta{}, err
+		}
+		pageURL, pageTitle := "", ""
+		if snap, snapErr := s.browser.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true}); snapErr == nil {
+			pageURL, pageTitle = snap.URL, snap.Title
+			if err := guardCapturedPageURL(ctx, pageURL); err != nil {
+				return Meta{}, err
+			}
+		}
+		// Redaction is ON unless the caller explicitly asks for "none".
+		redact := !strings.EqualFold(strings.TrimSpace(opts.Redaction), "none")
+		data, err := json.MarshalIndent(BuildHAR(requests, pageURL, pageTitle, brwVersionForHAR, redact), "", "  ")
+		if err != nil {
+			return Meta{}, err
+		}
+		put.MIMEType = "application/json"
+		put.SourceHash = sourceHash(pageURL, pageTitle)
+		return s.store.PutContext(ctx, put, bytes.NewReader(data))
 	case "screenshot":
 		var (
 			shot browser.Screenshot
@@ -907,6 +931,12 @@ func validateCaptureOptions(opts CaptureOptions) error {
 	}
 	if opts.Ref != "" {
 		return errors.New("ref is only valid for screenshot capture")
+	}
+	if opts.Kind == "har" {
+		if opts.DurationMS != 0 || opts.FPS != 0 || opts.DownloadGUID != "" || opts.Filename != "" {
+			return errors.New("har capture received fields for another capture kind")
+		}
+		return nil
 	}
 	if opts.Kind == "video" {
 		if opts.DownloadGUID != "" || opts.Filename != "" {

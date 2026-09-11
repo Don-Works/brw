@@ -265,6 +265,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", s.health)
+	// Off unless BRW_DASHBOARD=1, and loopback-only even then: it streams the
+	// rendered pixels of a signed-in browser.
+	mux.HandleFunc("GET /dashboard", s.dashboardPage)
+	mux.HandleFunc("GET /dashboard/stream", s.dashboardStream)
 	mux.HandleFunc("GET /api/session/stream", s.sessionStream)
 	mux.HandleFunc("POST /api/browser/open", s.open)
 	mux.HandleFunc("POST /api/browser/open_incognito", s.openIncognito)

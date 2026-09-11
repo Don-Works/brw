@@ -71,6 +71,24 @@ type Controller interface {
 	Notify(context.Context, NotifyOptions) (NotifyResult, error)
 }
 
+// DialogController is an optional transport capability for JavaScript dialogs
+// (alert / confirm / prompt / beforeunload). Both first-party transports
+// implement it; the interface exists so an upstream HTTP controller that has not
+// been upgraded degrades to "unsupported" instead of failing to compile.
+//
+// Every transport ANSWERS dialogs whether or not this capability is present,
+// because an unanswered dialog blocks the renderer. The capability is about
+// choosing the answer in advance and seeing what happened.
+type DialogController interface {
+	Dialog(context.Context, DialogOptions) (DialogResult, error)
+}
+
+// RouteController is an optional transport capability for request interception:
+// answering a matching request from a mock instead of the network.
+type RouteController interface {
+	Route(context.Context, RouteOptions) (RouteResult, error)
+}
+
 // WindowReader is an optional transport capability that applies page-content
 // filtering on the browser host. The upstream HTTP controller implements it so
 // a 20 KiB MCP read does not transfer and materialize an entire megabyte-scale

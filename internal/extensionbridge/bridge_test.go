@@ -852,15 +852,24 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// 0.4.16 marks a tab's cached snapshot dirty on input/change as well as on
 	// DOM mutation, so a fill, a select, a ticked box or the human typing — each
 	// of which writes a DOM property and mutates no node — is no longer answered
-	// from the pre-edit snapshot.
+	// from the pre-edit snapshot; 0.5.0 adds two capability groups. Dialogs:
+	// arm_dialog pre-declares the answer to the next JS dialog(s) on a tab and
+	// get_dialogs reports the ones already answered, so an agent can decide a
+	// confirm()/prompt() outcome without the renderer ever blocking on a round
+	// trip, and can see that a dialog happened at all. Containment:
+	// set_containment enables Fetch interception plus the in-page
+	// WebSocket/EventSource/sendBeacon/WebRTC guard so --allowed-domains confines
+	// subresources rather than only navigation, and get_blocked_requests reports
+	// what was refused so a contained page is explainable instead of mysteriously
+	// half-rendered.
 	// It is DECOUPLED from the wire PROTOCOL_VERSION below: the manifest moves
 	// with every feature release, while PROTOCOL_VERSION only moves on a breaking
-	// bridge-handshake change. 0.4.0-0.4.16 add fields, message types and
+	// bridge-handshake change. 0.4.0-0.5.0 add fields, message types and
 	// in-extension behaviour only. A new message type is additive in both
 	// directions: an older extension answers resize_window with "unknown message
 	// type", which the daemon reports as an upgrade note rather than a failure.
 	// So the protocol stays 0.2.0 (the daemon still accepts it).
-	const wantManifest = "0.4.16"
+	const wantManifest = "0.5.0"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

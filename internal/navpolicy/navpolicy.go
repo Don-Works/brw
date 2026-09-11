@@ -285,3 +285,69 @@ func splitDomains(csv string) []string {
 	}
 	return out
 }
+
+// CheckSubresource gates a SUBRESOURCE request (image, script, font, stylesheet,
+// fetch/XHR, WebSocket, EventSource, beacon) rather than a navigation.
+//
+// It differs from Check in one way that matters: non-network schemes pass even
+// in allowlist mode. A data: image, a blob: worker script and an about:blank
+// frame carry no network destination, so blocking them confines nothing and
+// breaks ordinary pages. The confinement boundary for a subresource is the set
+// of hosts it can reach, which is exactly what this gates.
+//
+// Navigation keeps the stricter rule: a data: or javascript: NAVIGATION can
+// execute attacker-controlled content as a document and is still refused.
+func (p *Policy) CheckSubresource(rawURL string) error {
+	if p.Empty() {
+		return nil
+	}
+	host := subresourceHostOf(rawURL)
+	if host != "" {
+		for _, b := range p.Blocked {
+			if hostMatches(host, b) {
+				return fmt.Errorf("subresource request to %q is blocked by brw policy (blocked domain %q)", host, b)
+			}
+		}
+	}
+	if len(p.Allowed) == 0 {
+		return nil
+	}
+	if host == "" {
+		// hostOf returns "" for non-network schemes and for scheme-less relative
+		// references, both of which are same-document or inline and cannot leave
+		// the allowlist.
+		return nil
+	}
+	for _, a := range p.Allowed {
+		if hostMatches(host, a) {
+			return nil
+		}
+	}
+	return fmt.Errorf("subresource request to %q is not on the brw allowlist (--allowed-domains)", host)
+}
+
+// subresourceHostOf extracts the gated host for a subresource request.
+//
+// hostOf deliberately returns "" for ws:/wss:, because they are not navigable
+// schemes. For containment that answer is wrong and dangerous: a WebSocket is a
+// live network destination and the most direct way for a contained page to talk
+// to a host outside the allowlist. Map the WebSocket schemes onto their HTTP
+// equivalents so they are gated by host like any other request.
+func subresourceHostOf(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	lower := strings.ToLower(trimmed)
+	switch {
+	case strings.HasPrefix(lower, "wss://"):
+		return hostOf("https://" + trimmed[len("wss://"):])
+	case strings.HasPrefix(lower, "ws://"):
+		return hostOf("http://" + trimmed[len("ws://"):])
+	}
+	return hostOf(trimmed)
+}
+
+// Confines reports whether the policy restricts destinations at all, i.e.
+// whether subresource containment has anything to enforce. A blocklist-only
+// policy still confines: it must stop a page reaching a blocked host.
+func (p *Policy) Confines() bool {
+	return p != nil && !p.Empty()
+}

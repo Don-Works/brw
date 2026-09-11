@@ -681,6 +681,7 @@ func validateKind(kind, rawMIME string) (string, error) {
 	allowed := map[string][]string{
 		"text":          {"text/plain", "text/markdown", "text/html"},
 		"semantic_json": {"application/json"},
+		"har":           {"application/json"},
 		"screenshot":    {"image/png", "image/jpeg", "image/webp"},
 		"pdf":           {"application/pdf"},
 		"video":         {"video/webm", "video/mp4"},

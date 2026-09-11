@@ -38,6 +38,13 @@ a tool returns `ref not found` or `not actionable`, the page changed — call
 
 ## Reading content without screenshots
 
+- **`brw_read_url`** — read a public page with **no browser at all**: no tab, no
+  lease, no navigation, no settle. It negotiates `Accept: text/markdown`, falls
+  back to extracting the HTML on the browser host, and `llms:true` fetches the
+  origin's `/llms.txt`. Pages exactly like `brw_read`. Reach for it first
+  whenever the page does not need a login — it is the cheapest read brw has.
+  It sends no cookies, profile or credentials, so anything behind a login still
+  needs `brw_open` + `brw_read`.
 - **`brw_read`** — page prose, headings, links, forms, tables. The primary
   prose is returned as `main` (paged via `next_offset`, bounded by
   `main_total_chars`) — there is no `text` key.
@@ -51,7 +58,10 @@ a tool returns `ref not found` or `not actionable`, the page changed — call
 - **`brw_artifact_capture { kind: "text" }`** — dump a large page on the
   browser host without returning it. Search it with `brw_artifact_search`, or
   page only the needed bytes with `brw_artifact_read`. The same pattern works
-  for semantic JSON, screenshots, PDF, downloads, and bounded video.
+  for semantic JSON, screenshots, PDF, downloads, bounded video, and `har`
+  (the tab's captured traffic as a HAR 1.2 file for DevTools or a bug report,
+  with credential headers and request bodies redacted unless you pass
+  `redaction:"none"`).
 
 ## Reusing a known site workflow
 
@@ -152,9 +162,75 @@ dedicated direct-CDP profile — or an incognito context there (`brw_open_incogn
 
 ## Waiting
 
-Use `brw_wait_for {condition}` (`ready`, `text:…`, `url:…`, `ref:…`) and the
-`brw_assert_*` tools. They retry until the condition holds or time out — no
-manual sleep/snapshot polling.
+Use `brw_wait_for {condition}` and the `brw_assert_*` tools. They retry until the
+condition holds or time out — no manual sleep/snapshot polling.
+
+Conditions: `ready`, `committed`, `text:…`, `not_text:…`, `url:…`, `not_url:…`,
+`title:…`, `not_title:…`, `ref:…`, `not_ref:…`, `selector:<css>`,
+`not_selector:<css>`, `fn:<js>`, and `download` / `download:<substring>`.
+
+- **`fn:`** runs the page's own predicate — an expression
+  (`fn:document.querySelector('.ready') !== null`) or a statement body ending in
+  `return`, and `async` is allowed. It is re-run on every DOM mutation and
+  navigation event rather than polled, so it resolves on the change rather than
+  at the next tick. A predicate that throws counts as "not yet", which is what
+  makes `fn:document.getElementById('x').textContent === 'done'` safe to write
+  before `#x` exists. This is the escape hatch when a wait does not fit the
+  fixed conditions: infinite-scroll end, lazy hydration, a custom app state.
+- **`selector:`** matches in the main document, same-origin iframes and open
+  shadow roots, so a wait need not know which frame the element lands in.
+- **`download`** blocks until a download that starts after the wait begins
+  finishes, resolved against the daemon's own registry rather than the page.
+
+## Did my action actually change the page?
+
+`brw_diff {action:"mark"}` before, `brw_diff {action:"compare"}` after. The reply
+leads with `changed` and a one-line `summary` (`unchanged`, `+3 ~1`,
+`url a -> b`), then names the added, removed and updated elements. Elements are
+matched by identity, so a list that re-renders in place does not read as
+everything being replaced, and a prose fingerprint catches content changes that
+add no element at all. Cheaper than taking two full snapshots and comparing them
+in context.
+
+## Dialogs
+
+brw always answers a JavaScript dialog immediately, because an unanswered one
+blocks the renderer and wedges the tab. `brw_dialog` decides *what* it answers.
+
+Arm **before** the click that raises it:
+
+```json
+{"action":"expect","response":"accept"}
+```
+
+then click. The answer is already in place when the dialog opens, so the page is
+never frozen waiting for a round trip. `prompt_text` supplies what a `prompt()`
+returns.
+
+Unarmed, `alert` is accepted (OK is its only button) and `confirm`/`prompt` get
+the non-destructive answer — brw will not auto-confirm "Delete this account?".
+`{"action":"status"}` lists the dialogs that were answered and why, which is
+where to look when a flow did something you did not expect.
+
+## Mocking requests
+
+`brw_route {action:"add", pattern, behaviour}` answers matching requests without
+touching the network: `fulfill` serves `body`/`status`, `abort` fails the request
+(analytics, a slow third party). `pattern` is a URL glob where `*` matches any
+run of characters; a pattern with no `*` matches as a prefix, and the first
+matching rule wins.
+
+A route can never reach a host the navigation policy forbids — containment is
+evaluated first. `brw_observe` reports `active_routes`, so mocked traffic is
+never invisible in the transcript.
+
+## When a page is contained
+
+With `--allowed-domains` the daemon confines subresources as well as navigation:
+off-list fetch/XHR/script/image/font/WebSocket/EventSource/beacon are refused and
+WebRTC is disabled. Refusals surface in `brw_observe` as `blocked_requests`. If a
+page renders half-empty under an allowlist, read those before concluding the site
+is broken.
 
 ## Tabs, groups, and cleanup
 
@@ -279,10 +355,10 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` | 63 | ~13.5k tokens |
-| `core` | 24 | ~7.0k tokens |
-| `minimal` | 12 | ~3.8k tokens |
-| `auto` (default) | 13, growing | ~4.1k tokens to start |
+| `all` | 69 | ~16.0k tokens |
+| `core` | 26 | ~7.7k tokens |
+| `minimal` | 13 | ~4.1k tokens |
+| `auto` (default) | 14, growing | ~4.4k tokens to start |
 
 `core` advertises the common-flow tools (open/snapshot/find/click/type/fill/
 select/press/scroll/hover/drag/upload/navigate/wait/batch/observe/screenshot).

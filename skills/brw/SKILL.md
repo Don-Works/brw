@@ -141,7 +141,10 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - Action tools return a post-action observation: `{ok,message,tab_id,version,url,title,focus,changed_state,changed[],elements[],warning?}`.
 
 **Waiting and asserting**
-- `brw_wait_for({condition, timeout_ms?})` → `{ok:true}`. Conditions: `ready`/`page_ready`/`load`, `committed` (loaded *and* a real navigated URL, not about:blank), `text:…`, `not_text:…`, `url:…`, `not_url:…`, `title:…`, `not_title:…`, `ref:…`, `not_ref:…`, or a bare body-text substring.
+- `brw_wait_for({condition, timeout_ms?})` → `{ok:true}`. Conditions: `ready`/`page_ready`/`load`, `committed` (loaded *and* a real navigated URL, not about:blank), `text:…`, `not_text:…`, `url:…`, `not_url:…`, `title:…`, `not_title:…`, `ref:…`, `not_ref:…`, `selector:<css>`, `not_selector:<css>`, `fn:<js>`, `download` / `download:<substring>`, or a bare body-text substring.
+- `fn:` runs the page's own predicate — an expression (`fn:document.querySelector('.ready') !== null`) or a statement body ending in `return`, and `async` is allowed. It is re-run on every DOM mutation and nav event rather than polled, so it resolves on the change. A predicate that throws counts as "not yet", which is what makes `fn:document.getElementById('x').textContent === 'done'` safe to write before `#x` exists.
+- `selector:` is frame-aware: it matches in the main document, same-origin iframes and open shadow roots.
+- `download` waits for a file download that starts after the wait begins to finish; `download:<substring>` picks one by filename or URL.
 - `brw_assert_visible/brw_assert_hidden({ref, timeout_ms?})`, `brw_assert_text({ref,text})`, `brw_assert_value({ref,value})` — retry until true, then `{ok:true}`; otherwise `{"error":"timeout","message":"assertion did not pass within timeout","retryable":true}`.
 - Never poll with sleep loops. These retry for you.
 
@@ -162,11 +165,40 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `brw_page_tools({tab_id?})` → `{supported, tools}`; `brw_call_page_tool({name, arguments?})` — tools the page exposes via WebMCP (`navigator.modelContext`). Prefer them over clicking when a page offers them.
 
 **Files, artifacts, environment**
-- `brw_downloads()` → `{downloads,count,supported}`.
-- `brw_artifact_capture({kind:"text"|"semantic_json"|"screenshot"|"pdf"|"download"|"video", tab_id?, ref?, download_guid?, filename?, fps?, duration_ms?, ttl_seconds?, redaction?})` → payload-free `{artifact_id,kind,mime_type,size_bytes,sha256,created_at,expires_at,source_hash}`. Keep large content out of context and read windows of it: `brw_artifact_read({artifact_id, offset?, max_bytes?})` → `{text,offset,size_bytes,total_bytes,more,next_offset}`, `brw_artifact_search({artifact_id, query, limit?})` → line excerpts, `brw_artifact_info`, `brw_artifact_delete`. There is no list-all-artifacts tool: record `artifact_id` when you get it.
+- `brw_downloads()` → `{downloads,count,supported}`. To block until one finishes, use `brw_wait_for({condition:"download"})` rather than polling this.
+- `brw_artifact_capture({kind:"text"|"semantic_json"|"screenshot"|"pdf"|"download"|"video"|"har", tab_id?, ref?, download_guid?, filename?, fps?, duration_ms?, ttl_seconds?, redaction?})` → payload-free `{artifact_id,kind,mime_type,size_bytes,sha256,created_at,expires_at,source_hash}`. Keep large content out of context and read windows of it: `brw_artifact_read({artifact_id, offset?, max_bytes?})` → `{text,offset,size_bytes,total_bytes,more,next_offset}`, `brw_artifact_search({artifact_id, query, limit?})` → line excerpts, `brw_artifact_info`, `brw_artifact_delete`. There is no list-all-artifacts tool: record `artifact_id` when you get it.
 - `brw_emulate_device({device?, clear?, width?, height?, device_scale_factor?, mobile?, touch?, user_agent?, platform?, orientation?, max_touch_points?, tab_id?})` — real DevTools emulation (presets `iphone_se`, `pixel_7`, `ipad`, …), not OS resizing. Reload after applying if the app decides layout at load.
 - `brw_window_bounds({tab_id?})` → `{device_pixel_ratio,screen_x,screen_y,inner_*,outer_*,scroll_*,screen_*}`; `brw_window_resize({width?,height?,left?,top?,state?})` moves the real OS window.
 - `brw_notify({title?, message?, kind?})` — desktop notification. `kind` is `needs_input`, `done`, or `error`; anything else is rejected. Use `needs_input` at MFA/CAPTCHA/payment and stop.
+
+**Dialogs**
+- `brw_dialog({action:"expect"|"status"|"clear", response?, prompt_text?, count?, peek?, tab_id?})`. brw always answers a JS dialog immediately — an unanswered one blocks the renderer and wedges the tab — so this decides *what* the answer is.
+- Arm BEFORE the click that triggers it: `brw_dialog({action:"expect", response:"accept"})` then click. The answer is already in place when the dialog opens, so nothing waits on a round trip.
+- Unarmed defaults: `alert` is accepted (OK is its only button); `confirm` and `prompt` get the non-destructive answer. brw will not auto-confirm "Delete this account?" for you.
+- `action:"status"` lists dialogs that were answered and consumes the list; pass `peek:true` to leave it. If a flow did something unexpected, check here — a `confirm` you did not arm was answered Cancel.
+- `prompt_text` supplies what a `prompt()` returns to the page.
+
+**Reading without a browser**
+- `brw_read_url({url, llms?, max_chars?, offset?, section?})` reads a page with no tab, no lease, no navigation and no settle. It negotiates `Accept: text/markdown`, falls back to extracting the HTML on the browser host, and `llms:true` fetches the origin's `/llms.txt`.
+- Pages exactly like `brw_read` (`offset`, `max_chars`, `section`), and it is the cheapest read brw has — prefer it for any public page.
+- It is **unauthenticated**: no cookies, no profile, no credentials. Anything behind a login needs `brw_open` + `brw_read`.
+
+**Small reads and page storage**
+- `brw_get({what, target?, name?})` — one typed fact, no hand-written JS. `what` is `url|title|text|value|attr|count|box|styles|visible|hidden|enabled|disabled|checked`. `target` is a ref or a CSS selector and resolves across same-origin iframes and open shadow roots. Use this instead of `brw_evaluate` for simple reads.
+- `brw_storage({action:"get"|"set"|"remove"|"clear", kind?:"local"|"session", key?, value?})` — localStorage/sessionStorage for the current origin. `get` with no `key` returns everything. Not a cookie or credential surface.
+
+**Did my action change anything?**
+- `brw_diff({action:"mark"})` before, `brw_diff({action:"compare"})` after → `{changed, summary, added/removed/updated[], *_count, url_changed, …}`. Elements match on identity, so a list that re-renders in place does not read as everything being replaced. Counts stay exact even when the lists are capped.
+- Cheaper than two snapshots compared in context, and `summary` (`"unchanged"`, `"+3 ~1"`) is usually all you need to branch on.
+
+**Mocking requests**
+- `brw_route({action:"add"|"list"|"clear", pattern, behaviour?:"fulfill"|"abort", status?, body?, content_type?, headers?, times?, tab_id?})`. `pattern` is a URL glob where `*` matches any run of characters; a pattern with no `*` matches as a prefix. First match wins, so add specific rules before general ones.
+- `fulfill` answers from `body`/`status` without touching the network (content type is inferred from the body or the pattern); `abort` fails the request — useful for analytics or a slow third party.
+- A route can never reach a host the navigation policy forbids: containment is evaluated first. Active routes are reported by `brw_observe` as `active_routes`, so mocked traffic is never invisible.
+- `brw_artifact_capture({kind:"har"})` exports the tab's captured traffic as a HAR 1.2 file for DevTools or a bug report. Credential headers and request bodies are redacted unless you pass `redaction:"none"`.
+
+**When a page is contained**
+- With `--allowed-domains` the daemon confines subresources too, not just navigation: off-list fetch/XHR/script/image/WebSocket/EventSource/beacon are refused and WebRTC is disabled. Refusals appear in `brw_observe` as `blocked_requests` — if a page renders half-empty, look there before assuming the site is broken.
 
 ## Tabs, leases, cleanup
 

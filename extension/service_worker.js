@@ -165,6 +165,21 @@ const state = {
   // session). backendNodeId is frame-agnostic, so this also reaches inputs in
   // cross-origin iframes.
   fileChooserEvents: new Map(),
+  // dialogArm holds a PRE-DECLARED answer for the next JS dialog(s) on a tab:
+  // {accept, promptText, remaining, armedAt}. Pre-arming is what lets an agent
+  // control a confirm()/prompt() outcome WITHOUT the renderer ever blocking on a
+  // round trip to the daemon — the answer is already here when the dialog opens.
+  // containment holds the daemon's navigation policy for SUBRESOURCE gating.
+  // The nav policy alone only gates the URL an agent asks to open; without this
+  // an allowlisted page can still fetch, beacon and socket anywhere it likes.
+  containment: { allowed: [], blocked: [], enabled: false },
+  containmentTabs: new Set(),
+  blockedRequests: new Map(),
+  dialogArm: new Map(),
+  // dialogLog is a bounded per-tab ring of dialogs that were answered, so an
+  // agent can see that a dialog happened and how it was resolved. Without this a
+  // dialog is invisible: brw answers it immediately and the page moves on.
+  dialogLog: new Map(),
   // Per-tab expiry timestamp marking that brw is actively driving the tab, so a
   // JS dialog opening during the window is treated as brw's own (see
   // BRW_ACTING_WINDOW_MS). Set on every brw-initiated CDP command.
@@ -198,6 +213,12 @@ const DOWNLOAD_PROVENANCE_WINDOW_MS = 5 * 1000;
 const MAX_DOWNLOAD_URL_CHARS = 8 * 1024;
 const MAX_DOWNLOAD_FILENAME_CHARS = 1000;
 const MAX_CONSOLE_MESSAGES = 200;
+// Dialogs are rare compared with console lines; a short ring is enough to answer
+// "did anything pop up during my last few actions?" without unbounded growth.
+const MAX_DIALOG_RECORDS = 20;
+// Blocked-request records exist so a contained page that half-renders can be
+// explained rather than guessed at.
+const MAX_BLOCKED_REQUESTS = 100;
 
 function remoteObjectText(arg) {
   if (!arg) return "undefined";
@@ -214,6 +235,59 @@ function recordConsoleMessage(tabId, level, text) {
   messages.push({ level: level === "warning" ? "warn" : (level || "log"), text: String(text || "").slice(0, 1000), timestamp: new Date().toISOString() });
   if (messages.length > MAX_CONSOLE_MESSAGES) messages.splice(0, messages.length - MAX_CONSOLE_MESSAGES);
   state.consoleMessages.set(tabId, messages);
+}
+
+// recordDialog appends an answered JS dialog to the tab's bounded ring. brw
+// always answers a dialog immediately so the renderer never hangs, which means
+// the dialog is over before an agent could observe it; the ring is how the agent
+// finds out it happened and how it was resolved.
+function recordDialog(tabId, record) {
+  if (typeof tabId !== "number") return;
+  const entries = state.dialogLog.get(tabId) || [];
+  entries.push(record);
+  if (entries.length > MAX_DIALOG_RECORDS) entries.splice(0, entries.length - MAX_DIALOG_RECORDS);
+  state.dialogLog.set(tabId, entries);
+}
+
+function containmentHostMatches(host, domain) {
+  if (!host || !domain) return false;
+  host = String(host).toLowerCase();
+  domain = String(domain).toLowerCase();
+  return host === domain || host.endsWith("." + domain);
+}
+
+// containmentHostOf mirrors the Go policy's subresource host extraction: ws/wss
+// are mapped onto http/https so a WebSocket is gated by host like any other
+// request, and non-network schemes yield "" (nothing to confine).
+function containmentHostOf(raw) {
+  try {
+    const u = new URL(String(raw));
+    if (u.protocol === "ws:" || u.protocol === "wss:" || u.protocol === "http:" || u.protocol === "https:") {
+      return u.hostname.toLowerCase();
+    }
+    return "";
+  } catch (e) {
+    return "";
+  }
+}
+
+// containmentPermits answers the same question as navpolicy.CheckSubresource.
+function containmentPermits(raw) {
+  const host = containmentHostOf(raw);
+  if (!host) return true;
+  const { allowed, blocked } = state.containment;
+  for (const b of blocked) if (containmentHostMatches(host, b)) return false;
+  if (!allowed.length) return true;
+  for (const a of allowed) if (containmentHostMatches(host, a)) return true;
+  return false;
+}
+
+function recordBlockedRequest(tabId, record) {
+  if (typeof tabId !== "number") return;
+  const entries = state.blockedRequests.get(tabId) || [];
+  entries.push(record);
+  if (entries.length > MAX_BLOCKED_REQUESTS) entries.splice(0, entries.length - MAX_BLOCKED_REQUESTS);
+  state.blockedRequests.set(tabId, entries);
 }
 
 // mapDownloadState translates a chrome.downloads state to the wire vocabulary the
@@ -602,6 +676,10 @@ chrome.debugger.onDetach.addListener((source) => {
     state.attachedTabs.delete(source.tabId);
     state.attachUsedAt.delete(source.tabId);
     state.fileChooserEvents.delete(source.tabId);
+  state.containmentTabs.delete(source.tabId);
+  state.blockedRequests.delete(source.tabId);
+  state.dialogArm.delete(source.tabId);
+  state.dialogLog.delete(source.tabId);
     state.actingUntil.delete(source.tabId);
     state.forcedHoverNodes.delete(source.tabId);
     if (state.forcedHoverTimers.has(source.tabId)) clearTimeout(state.forcedHoverTimers.get(source.tabId));
@@ -641,12 +719,61 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   //     the NON-destructive choice — Cancel/Stay for confirm/prompt/beforeunload
   //     (never auto-OK "Delete account?", never silently discard unsaved changes),
   //     and OK only for alert, whose sole button is OK.
+  if (method === "Fetch.requestPaused" && typeof source.tabId === "number") {
+    const requestId = params?.requestId;
+    const url = params?.request?.url || "";
+    const resourceType = params?.resourceType || "";
+    if (!requestId) return;
+    if (!state.containment.enabled || containmentPermits(url)) {
+      chrome.debugger.sendCommand({ tabId: source.tabId }, "Fetch.continueRequest", { requestId }).catch(() => {});
+      return;
+    }
+    recordBlockedRequest(source.tabId, {
+      url: String(url).slice(0, 2000),
+      resource_type: resourceType,
+      reason: "not permitted by the brw navigation policy (--allowed-domains/--blocked-domains)",
+      at: new Date().toISOString()
+    });
+    chrome.debugger.sendCommand({ tabId: source.tabId }, "Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }).catch(() => {});
+    return;
+  }
   if (method === "Page.javascriptDialogOpening" && typeof source.tabId === "number") {
-    const accept = isActing(source.tabId) || (params?.type || "") === "alert";
+    const type = params?.type || "";
+    // A pre-armed answer (brw_dialog action:"expect") wins over the default
+    // policy. It is consumed here, at native speed, so the renderer is never
+    // held open waiting for the daemon to be asked what to do.
+    const arm = state.dialogArm.get(source.tabId);
+    let accept;
+    let promptText;
+    let decidedBy;
+    if (arm && arm.remaining > 0) {
+      accept = arm.accept;
+      promptText = arm.promptText;
+      decidedBy = "armed";
+      arm.remaining -= 1;
+      if (arm.remaining <= 0) state.dialogArm.delete(source.tabId);
+    } else {
+      accept = isActing(source.tabId) || type === "alert";
+      decidedBy = isActing(source.tabId) ? "agent_acting" : "user_safe_default";
+    }
+    const command = { accept };
+    // promptText is only meaningful for prompt(); sending it otherwise is a
+    // protocol error on some Chrome builds.
+    if (type === "prompt" && typeof promptText === "string") command.promptText = promptText;
+    recordDialog(source.tabId, {
+      type,
+      message: String(params?.message || "").slice(0, 2000),
+      defaultPrompt: String(params?.defaultPrompt || "").slice(0, 2000),
+      url: String(params?.url || "").slice(0, 2000),
+      accepted: accept,
+      promptText: command.promptText || "",
+      decidedBy,
+      at: Date.now()
+    });
     chrome.debugger.sendCommand(
       { tabId: source.tabId },
       "Page.handleJavaScriptDialog",
-      { accept }
+      command
     ).catch(() => {});
     return;
   }
@@ -1538,6 +1665,86 @@ async function handle(message) {
       send({ id: message.id, ok: true, result: ev ? { captured: true, ...ev } : { captured: false } });
       return;
     }
+    if (message.type === "set_containment") {
+      // The daemon owns the policy; the extension only enforces it. Arming is
+      // per tab because Fetch interception is a per-target debugger domain.
+      const allowed = Array.isArray(message.params?.allowed) ? message.params.allowed.map(String) : [];
+      const blocked = Array.isArray(message.params?.blocked) ? message.params.blocked.map(String) : [];
+      const enabled = message.params?.enabled === true;
+      state.containment = { allowed, blocked, enabled };
+      if (!enabled) {
+        send({ id: message.id, ok: true, result: { enabled: false } });
+        return;
+      }
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      await attach(tabId);
+      if (!state.containmentTabs.has(tabId)) {
+        await sendDebuggerCommand(tabId, "Fetch.enable", { patterns: [{ urlPattern: "*" }] });
+        if (typeof message.params?.guard === "string" && message.params.guard) {
+          await sendDebuggerCommand(tabId, "Page.enable", {}).catch(() => {});
+          // Runs before each new document's own scripts, so the wrappers land
+          // before page code can capture the originals.
+          await sendDebuggerCommand(tabId, "Page.addScriptToEvaluateOnNewDocument", {
+            source: message.params.guard
+          }).catch(() => {});
+          // Catch-up for the document already loaded; best-effort only.
+          await sendDebuggerCommand(tabId, "Runtime.evaluate", {
+            expression: message.params.guard,
+            returnByValue: true
+          }).catch(() => {});
+        }
+        state.containmentTabs.add(tabId);
+      }
+      send({ id: message.id, ok: true, result: { enabled: true, tabId } });
+      return;
+    }
+    if (message.type === "get_blocked_requests") {
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      const entries = state.blockedRequests.get(tabId) || [];
+      if (message.params?.peek !== true) state.blockedRequests.delete(tabId);
+      send({ id: message.id, ok: true, result: { blocked: entries, count: entries.length } });
+      return;
+    }
+    if (message.type === "arm_dialog") {
+      // Pre-declare the answer for the next dialog(s) on this tab. Page must be
+      // enabled or Chrome shows the native dialog and never fires the CDP event.
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      await attach(tabId);
+      await sendDebuggerCommand(tabId, "Page.enable", {}).catch(() => {});
+      const count = Number(message.params?.count);
+      if (message.params?.clear === true) {
+        state.dialogArm.delete(tabId);
+        send({ id: message.id, ok: true, result: { armed: false, tabId } });
+        return;
+      }
+      const arm = {
+        accept: message.params?.accept === true,
+        promptText: typeof message.params?.promptText === "string" ? message.params.promptText : undefined,
+        remaining: Number.isFinite(count) && count > 0 ? Math.min(count, 50) : 1,
+        armedAt: Date.now()
+      };
+      state.dialogArm.set(tabId, arm);
+      send({ id: message.id, ok: true, result: { armed: true, tabId, accept: arm.accept, remaining: arm.remaining } });
+      return;
+    }
+    if (message.type === "get_dialogs") {
+      // Return the tab's answered-dialog ring. Consumed by default so repeated
+      // observations do not re-report the same dialog.
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      const entries = state.dialogLog.get(tabId) || [];
+      if (message.params?.peek !== true) state.dialogLog.delete(tabId);
+      const arm = state.dialogArm.get(tabId);
+      send({
+        id: message.id,
+        ok: true,
+        result: {
+          dialogs: entries,
+          count: entries.length,
+          armed: arm ? { accept: arm.accept, remaining: arm.remaining, promptText: arm.promptText || "" } : null
+        }
+      });
+      return;
+    }
     if (message.type === "get_downloads") {
       // Return a retained bounded snapshot. Keeping entries after a read makes
       // brw_downloads -> brw_capture_artifact(download_guid) deterministic.
@@ -1922,6 +2129,10 @@ async function detach(tabId) {
   state.attachedTabs.delete(tabId);
   state.observerInjected.delete(tabId);
   state.fileChooserEvents.delete(tabId);
+  // Detaching tears down the Fetch domain with the debugger session, so the tab
+  // must re-arm on the next attach. Leaving it in the set would silently drop
+  // containment on a tab that still believes it is contained.
+  state.containmentTabs.delete(tabId);
   try {
     await chrome.debugger.detach({ tabId });
   } catch (_) {
@@ -1941,6 +2152,7 @@ async function forceDetach(tabId) {
   state.attachUsedAt.delete(tabId);
   state.observerInjected.delete(tabId);
   state.fileChooserEvents.delete(tabId);
+  state.containmentTabs.delete(tabId);
   try { await chrome.debugger.detach({ tabId }); } catch (_) {}
 }
 

@@ -51,6 +51,9 @@ func (s *stringList) Set(value string) error {
 
 func main() {
 	log.SetOutput(os.Stderr)
+	// An exported HAR names the brw that produced it, so the build's version has
+	// to reach the artifact package as well as the usage ledger.
+	artifact.SetVersion(mcp.Version)
 
 	var extensions stringList
 	var chromeArgs stringList

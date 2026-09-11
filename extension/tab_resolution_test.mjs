@@ -1051,6 +1051,138 @@ async function scenarioForeignExtensionPopoutNeverStealsForeground() {
   check("the real page is reported active", listed.find((t) => t.id === 11)?.active === true);
 }
 
+// brw ALWAYS answers a JS dialog, because an unanswered one blocks the renderer
+// and wedges the tab. These scenarios pin down WHAT it answers: a pre-declared
+// arm wins, and without one the non-destructive choice is taken.
+async function scenarioDialogArmingAndSafeDefaults() {
+  await reset();
+  const savedSend = overrides["debugger.sendCommand"];
+  const answers = [];
+  try {
+    overrides["debugger.sendCommand"] = async (target, method, params) => {
+      if (method === "Page.handleJavaScriptDialog") answers.push({ tabId: target.tabId, ...params });
+      return {};
+    };
+    setWin({ id: 1, type: "normal", focused: true });
+    setTab({ id: 11, windowId: 1, active: true, url: "https://app.test/", title: "app" });
+
+    // 1. Unarmed alert: accepted, because OK is its only button.
+    fireEvent("debugger.onEvent", { tabId: 11 }, "Page.javascriptDialogOpening",
+      { type: "alert", message: "heads up", url: "https://app.test/" });
+    await new Promise((r) => setTimeout(r, 0));
+    check("unarmed alert is accepted", answers.at(-1)?.accept === true);
+
+    // 2. Unarmed confirm: the non-destructive answer, NOT a blanket accept.
+    fireEvent("debugger.onEvent", { tabId: 11 }, "Page.javascriptDialogOpening",
+      { type: "confirm", message: "Delete this account?", url: "https://app.test/" });
+    await new Promise((r) => setTimeout(r, 0));
+    check("unarmed confirm is not rubber-stamped", answers.at(-1)?.accept === false);
+
+    // 3. Both were recorded so an agent can see a dialog happened at all.
+    const listed = await T.handle({ id: "dlg-1", type: "get_dialogs", params: { tabId: 11, peek: true } });
+    const ring = T.state.dialogLog.get(11) || [];
+    check("answered dialogs are recorded", ring.length === 2);
+    check("records name why they were answered that way",
+      ring[0].decidedBy === "user_safe_default" || ring[0].decidedBy === "agent_acting");
+
+    // 4. An arm wins over the default, and carries prompt text.
+    await T.handle({ id: "arm-1", type: "arm_dialog",
+      params: { tabId: 11, accept: true, promptText: "brw-was-here" } });
+    fireEvent("debugger.onEvent", { tabId: 11 }, "Page.javascriptDialogOpening",
+      { type: "prompt", message: "Name?", defaultPrompt: "unused", url: "https://app.test/" });
+    await new Promise((r) => setTimeout(r, 0));
+    check("armed answer overrides the safe default", answers.at(-1)?.accept === true);
+    check("armed prompt text reaches the page", answers.at(-1)?.promptText === "brw-was-here");
+    check("a single-shot arm is consumed", !T.state.dialogArm.has(11));
+
+    // 5. promptText is only sent for prompt(); other types must not carry it.
+    await T.handle({ id: "arm-2", type: "arm_dialog",
+      params: { tabId: 11, accept: true, promptText: "ignored" } });
+    fireEvent("debugger.onEvent", { tabId: 11 }, "Page.javascriptDialogOpening",
+      { type: "confirm", message: "ok?", url: "https://app.test/" });
+    await new Promise((r) => setTimeout(r, 0));
+    check("promptText is not sent for a confirm", answers.at(-1)?.promptText === undefined);
+
+    // 6. count arms several, and clear discards a pending arm.
+    await T.handle({ id: "arm-3", type: "arm_dialog", params: { tabId: 11, accept: true, count: 3 } });
+    check("count arms several dialogs", T.state.dialogArm.get(11)?.remaining === 3);
+    await T.handle({ id: "arm-4", type: "arm_dialog", params: { tabId: 11, clear: true } });
+    check("clear discards the arm", !T.state.dialogArm.has(11));
+
+    // 7. status consumes by default so the same dialog is not re-reported.
+    await T.handle({ id: "dlg-2", type: "get_dialogs", params: { tabId: 11 } });
+    check("reading the ring without peek consumes it", (T.state.dialogLog.get(11) || []).length === 0);
+  } finally {
+    if (savedSend === undefined) delete overrides["debugger.sendCommand"];
+    else overrides["debugger.sendCommand"] = savedSend;
+  }
+}
+
+// --allowed-domains must confine SUBRESOURCES, not just navigation: without this
+// an allowlisted page can still fetch, socket and beacon anywhere it likes.
+async function scenarioSubresourceContainment() {
+  await reset();
+  const savedSend = overrides["debugger.sendCommand"];
+  const verdicts = [];
+  try {
+    overrides["debugger.sendCommand"] = async (target, method, params) => {
+      if (method === "Fetch.continueRequest") verdicts.push({ verdict: "continue", ...params });
+      if (method === "Fetch.failRequest") verdicts.push({ verdict: "fail", ...params });
+      return {};
+    };
+    setWin({ id: 1, type: "normal", focused: true });
+    setTab({ id: 11, windowId: 1, active: true, url: "https://app.test/", title: "app" });
+
+    await T.handle({ id: "cont-1", type: "set_containment",
+      params: { tabId: 11, enabled: true, allowed: ["app.test"], blocked: [], guard: "void 0;" } });
+
+    const paused = (url, requestId, resourceType) =>
+      fireEvent("debugger.onEvent", { tabId: 11 }, "Fetch.requestPaused",
+        { requestId, request: { url }, resourceType: resourceType || "XHR" });
+
+    paused("https://app.test/api/data", "r1");
+    await new Promise((r) => setTimeout(r, 0));
+    check("an allowlisted request continues", verdicts.at(-1)?.verdict === "continue");
+
+    paused("https://cdn.app.test/lib.js", "r2", "Script");
+    await new Promise((r) => setTimeout(r, 0));
+    check("a subdomain of an allowed host continues", verdicts.at(-1)?.verdict === "continue");
+
+    paused("https://tracker.example/px.gif", "r3", "Image");
+    await new Promise((r) => setTimeout(r, 0));
+    check("an off-allowlist subresource is refused", verdicts.at(-1)?.verdict === "fail");
+    check("the refusal uses BlockedByClient", verdicts.at(-1)?.errorReason === "BlockedByClient");
+
+    // A WebSocket is the most direct way out of a contained page, and the
+    // navigation rules do not gate ws:/wss: at all.
+    paused("wss://exfil.example/socket", "r4", "WebSocket");
+    await new Promise((r) => setTimeout(r, 0));
+    check("an off-allowlist WebSocket is refused", verdicts.at(-1)?.verdict === "fail");
+
+    // Inline destinations carry no network host and must not be broken.
+    paused("data:image/png;base64,iVBORw0KGgo=", "r5", "Image");
+    await new Promise((r) => setTimeout(r, 0));
+    check("a data: subresource still continues", verdicts.at(-1)?.verdict === "continue");
+
+    const blocked = T.state.blockedRequests.get(11) || [];
+    check("refusals are recorded for the agent to read", blocked.length === 2);
+    check("a recorded refusal names the URL", blocked.some((b) => b.url.includes("tracker.example")));
+
+    // Reading them consumes, so the same refusal is not re-reported every turn.
+    await T.handle({ id: "cont-2", type: "get_blocked_requests", params: { tabId: 11 } });
+    check("reading blocked requests consumes them", (T.state.blockedRequests.get(11) || []).length === 0);
+
+    // With containment off, nothing is filtered.
+    await T.handle({ id: "cont-3", type: "set_containment", params: { tabId: 11, enabled: false } });
+    paused("https://tracker.example/px.gif", "r6", "Image");
+    await new Promise((r) => setTimeout(r, 0));
+    check("with containment off every request continues", verdicts.at(-1)?.verdict === "continue");
+  } finally {
+    if (savedSend === undefined) delete overrides["debugger.sendCommand"];
+    else overrides["debugger.sendCommand"] = savedSend;
+  }
+}
+
 (async () => {
   await scenarioConsentGateIsFailClosed();
   await scenarioPinBeatsForeground();
@@ -1071,6 +1203,8 @@ async function scenarioForeignExtensionPopoutNeverStealsForeground() {
   await scenarioObserverMarksFormControlWritesDirty();
   await scenarioTabRemovalPublishesDaemonInvalidation();
   await scenarioCloseTabIsBoundedAndFailClosed();
+  await scenarioDialogArmingAndSafeDefaults();
+  await scenarioSubresourceContainment();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })();

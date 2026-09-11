@@ -21,6 +21,7 @@ import (
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/recipe"
 	"github.com/Don-Works/brw/internal/snapshot"
+	"github.com/Don-Works/brw/internal/urlread"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
@@ -44,6 +45,8 @@ type Server struct {
 	identity    brwidentity.Identity
 	console     consoleBuffer
 	unlocked    unlockedTools
+	// diffs holds per-tab brw_diff baselines. Zero value is usable.
+	diffs diffStore
 
 	// notify pushes a JSON-RPC notification to the client. Serve installs it;
 	// it is nil before Serve runs and on transports that cannot push.
@@ -139,6 +142,11 @@ var coreToolNames = map[string]bool{
 	"brw_observe":        true,
 	"brw_screenshot":     true,
 	"brw_emulate_device": true,
+	// The cheapest read brw has; an agent should reach for it before opening a tab.
+	"brw_read_url": true,
+	// A dialog can stop a flow dead, and the recovery is to pre-arm the answer
+	// and retry. That has to be reachable without first discovering it.
+	"brw_dialog": true,
 }
 
 // minimalToolNames is the smallest surface that still completes ordinary web
@@ -164,6 +172,9 @@ var minimalToolNames = map[string]bool{
 	"brw_wait_for":    true,
 	"brw_observe":     true,
 	"brw_batch":       true,
+	// Reading a public page is common enough, and cheap enough without a tab,
+	// that leaving it out of the minimal surface costs more than it saves.
+	"brw_read_url": true,
 }
 
 // toolProfiles maps a profile name to its allowed set. A nil set means every
@@ -1216,6 +1227,123 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolOK(s.manager.WaitFor(ctx, req.Condition, time.Duration(req.TimeoutMS)*time.Millisecond))
+	case "brw_route":
+		router, ok := s.manager.(browser.RouteController)
+		if !ok {
+			return toolError(errors.New("this browser transport does not support request interception")), nil
+		}
+		var req browser.RouteOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		result, err := router.Route(ctx, req)
+		return toolJSON(result, err)
+	case "brw_diff":
+		var req struct {
+			Action string `json:"action"`
+			TabID  string `json:"tab_id"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		// Mode "all" rather than the default scored frontier: a diff must see the
+		// paragraph a click appended, not only the actionable controls.
+		snap, err := s.manager.Snapshot(ctx, snapshot.SnapshotOptions{Mode: "all", ViewportOnly: false})
+		if err != nil {
+			return toolError(err), nil
+		}
+		// A cheap prose fingerprint alongside the elements, so "changed:false"
+		// means the page really did not change. A failure here degrades to an
+		// element-only diff rather than failing the call.
+		pageText := ""
+		if value, textErr := s.manager.Evaluate(ctx, textFingerprintExpression); textErr == nil {
+			if fingerprint, isString := value.(string); isString {
+				pageText = fingerprint
+			}
+		}
+		key := strings.TrimSpace(req.TabID)
+		if key == "" {
+			key = activeDiffKey
+		}
+		switch req.Action {
+		case "mark":
+			baseline := baselineFrom(snap)
+			baseline.Text = pageText
+			s.diffs.put(key, baseline)
+			return toolJSON(DiffResult{Action: "mark", TabID: req.TabID, Note: "baseline recorded; call brw_diff action=compare after acting"}, nil)
+		case "compare":
+			baseline, ok := s.diffs.get(key)
+			if !ok {
+				return toolError(errors.New("no baseline for this tab: call brw_diff action=mark before the action you want to measure")), nil
+			}
+			result := diffSnapshots(baseline, snap, pageText)
+			result.TabID = req.TabID
+			return toolJSON(result, nil)
+		default:
+			return toolError(fmt.Errorf("unknown diff action %q: use mark or compare", req.Action)), nil
+		}
+	case "brw_get":
+		var req struct {
+			What   string `json:"what"`
+			Target string `json:"target"`
+			Name   string `json:"name"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		if req.What == "count" && strings.TrimSpace(req.Target) == "" {
+			return toolError(errors.New("brw_get what=count requires target: the CSS selector to count")), nil
+		}
+		if req.What == "attr" && strings.TrimSpace(req.Name) == "" {
+			return toolError(errors.New("brw_get what=attr requires name: the attribute to read")), nil
+		}
+		value, err := s.manager.Evaluate(ctx, snapshot.BuildGetExpression(req.What, req.Target, req.Name))
+		if err != nil {
+			return toolError(err), nil
+		}
+		return toolJSON(value, nil)
+	case "brw_storage":
+		var req struct {
+			Kind   string `json:"kind"`
+			Action string `json:"action"`
+			Key    string `json:"key"`
+			Value  string `json:"value"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		if req.Kind == "" {
+			req.Kind = "local"
+		}
+		value, err := s.manager.Evaluate(ctx, snapshot.BuildStorageExpression(req.Kind, req.Action, req.Key, req.Value))
+		if err != nil {
+			return toolError(err), nil
+		}
+		return toolJSON(value, nil)
+	case "brw_read_url":
+		var req urlread.Options
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		// The no-browser read is a network destination like any other, so it is
+		// gated by exactly the same navigation policy as a tab navigation.
+		req.PolicyCheck = s.checkNavPolicy
+		result, err := urlread.Fetch(ctx, req)
+		if err != nil {
+			return toolError(err), nil
+		}
+		return toolJSON(result, nil)
+	case "brw_dialog":
+		dialogs, ok := s.manager.(browser.DialogController)
+		if !ok {
+			return toolError(errors.New("this browser transport does not support dialog control")), nil
+		}
+		var req browser.DialogOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		result, err := dialogs.Dialog(ctx, req)
+		return toolJSON(result, err)
 	case "brw_evaluate":
 		var req struct {
 			Expression string `json:"expression"`
@@ -2091,11 +2219,52 @@ func tools() []map[string]any {
 			"ref":    stringSchema("Element ref from brw_snapshot."),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"ref"})),
-		tool("brw_wait_for", "Wait for page readiness, URL/title/text substring, or ref availability.", object(map[string]any{
-			"condition":  stringSchema("Condition to wait for: ready or page_ready (document interactive/complete), load (alias of ready), committed (interactive/complete AND a real navigated URL, not about:blank), text:<substring>, not_text:<substring>, url:<substring>, not_url:<substring>, title:<substring>, not_title:<substring>, ref:<brw-ref>, not_ref:<brw-ref>, or a plain text substring of body innerText."),
+		tool("brw_wait_for", "Wait for page readiness, a URL/title/text substring, a ref or CSS selector, the page's own JS predicate (fn:), or a file download to complete.", object(map[string]any{
+			"condition":  stringSchema("Condition to wait for: ready or page_ready (document interactive/complete), load (alias of ready), committed (interactive/complete AND a real navigated URL, not about:blank), text:<substring>, not_text:<substring>, url:<substring>, not_url:<substring>, title:<substring>, not_title:<substring>, ref:<brw-ref>, not_ref:<brw-ref>, selector:<css>, not_selector:<css>, fn:<js> (the page's own predicate; an expression or a statement body ending in return; may be async; re-run on every DOM mutation and nav event, not polled), download or download:<substring> (a download that starts after the wait begins reaching completed; matched on suggested filename or URL), or a plain text substring of body innerText."),
 			"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds. Defaults to the daemon timeout (typically 20s)."},
 			"tab_id":     stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"condition"})),
+		tool("brw_route", "Intercept matching requests and answer them without touching the network: mock an API response, force an error status, or abort a request entirely (analytics, a slow third party). pattern is a URL glob where * matches any run of characters; a pattern with no * matches as a prefix. First matching route wins, so add specific rules before general ones. Routes never widen what the page may reach: a request the navigation policy forbids stays blocked. Active routes are reported by brw_observe so mocked traffic is never invisible in the transcript.", object(map[string]any{
+			"action":       stringEnumSchema("add installs a rule, list shows the tab's rules, clear removes one pattern (or all rules when pattern is omitted).", "add", "list", "clear"),
+			"pattern":      stringSchema("URL glob, e.g. https://api.example.com/v1/* — required for add, optional for clear."),
+			"behaviour":    stringEnumSchema("fulfill answers from body/status (the default); abort fails the request as a network error.", "fulfill", "abort"),
+			"status":       map[string]any{"type": "integer", "description": "HTTP status for behaviour=fulfill. Defaults to 200."},
+			"body":         stringSchema("Response body for behaviour=fulfill."),
+			"content_type": stringSchema("Response Content-Type. Inferred from the body or the pattern's extension when omitted."),
+			"headers":      map[string]any{"type": "object", "description": "Extra response headers for behaviour=fulfill.", "additionalProperties": map[string]any{"type": "string"}},
+			"times":        map[string]any{"type": "integer", "description": "Retire the route after this many matches. Omit for a rule that applies until cleared."},
+			"tab_id":       stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"action"})),
+		tool("brw_diff", "Answer \"did my action actually change the page?\" without re-reading the page. action=mark records the current state for the tab; action=compare reports what changed since that mark as counts plus named added/removed/updated elements, and says plainly when nothing changed. Elements are matched by identity, so a list that re-renders in place does not read as everything being replaced. Far cheaper than taking two full snapshots and comparing them in context.", object(map[string]any{
+			"action": stringEnumSchema("mark records the baseline; compare reports what changed since it.", "mark", "compare"),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"action"})),
+		tool("brw_get", "Read ONE typed fact about the page or an element, without writing JavaScript. what=url|title|text|value|attr|count|box|styles|visible|hidden|enabled|disabled|checked. target is a brw ref from brw_snapshot or a CSS selector, and resolves across same-origin iframes and open shadow roots (plain document.querySelector does not). Use this instead of brw_evaluate for simple reads: it is one round trip, it needs no hand-written JS, and it cannot be tripped up by a value that will not serialize.", object(map[string]any{
+			"what":   stringEnumSchema("Which fact to read.", "url", "title", "text", "value", "attr", "count", "box", "styles", "visible", "hidden", "enabled", "disabled", "checked"),
+			"target": stringSchema("Element ref from brw_snapshot, or a CSS selector. Omit for page-level facts (url, title, and text of the whole body). Required for count as the selector to count."),
+			"name":   stringSchema("Attribute name for what=attr, or a single CSS property name for what=styles. Omitting it for styles returns the properties that explain layout and appearance rather than every property."),
+		}, []string{"what"})),
+		tool("brw_storage", "Read and write the page's localStorage or sessionStorage for the current origin. Inspect feature flags and app state, or seed a value for a test. This is web storage only: it is not a cookie or credential surface and never exposes HttpOnly state.", object(map[string]any{
+			"kind":   stringEnumSchema("Which store. Defaults to local.", "local", "session"),
+			"action": stringEnumSchema("get (one key, or every key when key is omitted), set, remove, or clear.", "get", "set", "remove", "clear"),
+			"key":    stringSchema("Storage key. Omit with action=get to return every key for the origin."),
+			"value":  stringSchema("Value for action=set."),
+		}, []string{"action"})),
+		tool("brw_read_url", "Cheapest read: fetches and extracts a page with no tab, lease or navigation. Prefers markdown, else extracts the HTML; llms=true fetches the origin's /llms.txt. Pages like brw_read. UNAUTHENTICATED (no cookies or profile) — use brw_open + brw_read behind a login.", object(map[string]any{
+			"url":       stringSchema("Absolute http(s) URL; a bare host is assumed https."),
+			"llms":      map[string]any{"type": "boolean", "description": "Fetch the origin's /llms.txt instead of the URL."},
+			"max_chars": map[string]any{"type": "integer", "description": "Max characters of prose."},
+			"offset":    map[string]any{"type": "integer", "description": "Character offset, for paging."},
+			"section":   stringSchema("Only the section under this heading."),
+		}, []string{"url"})),
+		tool("brw_dialog", "Decide and inspect JavaScript dialog answers. brw always answers a dialog at once (an unanswered one wedges the renderer), so this chooses WHAT it answers. Arm BEFORE the click that raises it: action=expect pre-declares the answer, so confirm()/prompt() resolve your way with the page never frozen waiting. action=status lists answered dialogs. Unarmed: alert is accepted; confirm/prompt get the non-destructive answer rather than rubber-stamping a destructive one.", object(map[string]any{
+			"action":      stringEnumSchema("expect pre-declares the answer; status lists answered dialogs and any pending arm; clear discards an arm. Defaults to status.", "expect", "status", "clear"),
+			"response":    stringEnumSchema("For expect: accept presses OK/Yes; dismiss presses Cancel/No.", "accept", "dismiss"),
+			"prompt_text": stringSchema("What a prompt() returns to the page. Ignored for other dialog types."),
+			"count":       map[string]any{"type": "integer", "description": "How many upcoming dialogs this answer covers. Default 1, max 50."},
+			"peek":        map[string]any{"type": "boolean", "description": "For status: do not consume the list."},
+			"tab_id":      stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, nil)),
 		tool("brw_plan", "Execute a sequence of browser operations in one round-trip. Steps run sequentially and stop on first failure. Steps that produce data carry it under result; snapshot steps also populate snapshot. Prefer brw_batch, which returns one observation instead of per-step payloads.", object(map[string]any{
 			"steps": map[string]any{
 				"type":        "array",
@@ -2108,7 +2277,7 @@ func tools() []map[string]any {
 						"text":        stringSchema("Text for type and fill actions."),
 						"value":       stringSchema("Option value for select. For fill, also accepted as a Playwright-style alias for text."),
 						"direction":   stringEnumSchema("Scroll direction: up, down, left, right.", "up", "down", "left", "right"),
-						"condition":   stringSchema("Wait condition (load, text:..., ref:..., url:..., etc)."),
+						"condition":   stringSchema("Wait condition (load, text:..., ref:..., url:..., selector:..., fn:..., download, etc)."),
 						"timeout_ms":  map[string]any{"type": "integer", "description": "Timeout for wait action in milliseconds."},
 						"url":         stringSchema("URL for open or navigate_to action."),
 						"id":          stringSchema("Tab id for focus_tab action."),
@@ -2132,7 +2301,7 @@ func tools() []map[string]any {
 						"text":       stringSchema("Text for type and fill actions, or expected text for assert_text."),
 						"value":      stringSchema("Option value for select / assert_value. For fill, also accepted as a Playwright-style alias for text."),
 						"direction":  stringEnumSchema("Scroll direction: up, down, left, right.", "up", "down", "left", "right"),
-						"condition":  stringSchema("Wait condition (load, text:..., ref:..., url:..., etc)."),
+						"condition":  stringSchema("Wait condition (load, text:..., ref:..., url:..., selector:..., fn:..., download, etc)."),
 						"timeout_ms": map[string]any{"type": "integer", "description": "Timeout for wait/assert actions in milliseconds."},
 						"url":        stringSchema("URL for open or navigate_to action."),
 						"id":         stringSchema("Tab id for focus_tab action."),
@@ -2223,7 +2392,7 @@ func tools() []map[string]any {
 		}, nil)),
 		tool("brw_downloads", "Return a retained, bounded snapshot of tracked file downloads with url, suggested_filename, source tab_id when safely known, state (inProgress/completed/canceled), received_bytes, total_bytes, guid, and browser-host path. A returned guid remains available to a following brw_capture_artifact(kind=download) call; deterministic recipes internally receive only post-baseline changes. Branch on supported=false, which only an extension build predating download support returns.", object(nil, nil)),
 		tool("brw_artifact_capture", "Capture browser output into the private browser-host artifact store and return only an opaque metadata handle (never the payload). Use this for full page text/semantic JSON, screenshots, PDF, a completed download, or a short WebM video when putting the content in model context would be wasteful or sensitive. Inspect later with bounded brw_artifact_read or brw_artifact_search; delete early when no longer needed.", object(map[string]any{
-			"kind":          stringEnumSchema("Artifact type.", "text", "semantic_json", "screenshot", "pdf", "download", "video"),
+			"kind":          stringEnumSchema("Artifact type. har exports the tab's captured network traffic as a HAR 1.2 file for DevTools or a bug report; credential headers and request bodies are redacted unless redaction=none.", "text", "semantic_json", "screenshot", "pdf", "download", "video", "har"),
 			"ref":           stringSchema("For screenshot only, capture this element ref instead of the viewport."),
 			"duration_ms":   integerSchema("For video only: duration from 100 to 30000 milliseconds."),
 			"fps":           integerSchema("For video only: frames per second from 1 to 30."),
