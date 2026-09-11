@@ -43,7 +43,9 @@ RECIPE_CORPUS_PATH = re.compile(
 
 PATTERNS = [
     ("home directory path", r"/Users/[a-z]|/home/[a-z]"),
-    ("personal email", r"[a-zA-Z0-9._%+-]+@(?!example\.(com|org)\b)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"),
+    # The reserved names are RFC 2606 / RFC 6761: they can never route to a real
+    # mailbox, so a fixture using one is not a leak. Everything else is.
+    ("personal email", r"[a-zA-Z0-9._%+-]+@(?!example\.(com|org|net|edu)\b)(?![a-zA-Z0-9.-]*\.(test|invalid|example|localhost)\b)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"),
     ("local workspace or profile name", r"brw-chromium-work|chromium-work-profile"),
     ("launchd label", r"co\.revitt\."),
     ("tailscale host", r"[a-z0-9-]+\.ts\.net"),
