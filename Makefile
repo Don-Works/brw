@@ -11,7 +11,10 @@ GOARCH ?= $(shell go env GOARCH)
 # agent sees over MCP always matches the binary, instead of a hand-edited constant.
 GO_LDFLAGS ?= -X github.com/Don-Works/brw/internal/mcp.Version=$(VERSION)
 
-.PHONY: build test test-extension test-functional install install-mac install-agent-skills sync-installed-extensions install-extension package-web-store package-darwin-arm64 package-linux package-macos
+TARBALL_OS ?= $(shell go env GOOS)
+HOMEBREW_TAP ?= Don-Works/homebrew-tap
+
+.PHONY: build test test-extension test-functional install install-mac install-agent-skills sync-installed-extensions install-extension package-web-store package-darwin-arm64 package-linux package-macos package-tarball package-tarballs homebrew-formula
 
 build:
 	go build -ldflags "$(GO_LDFLAGS)" -o bin/brwd ./cmd/brwd
@@ -39,20 +42,28 @@ test-extension:
 test-functional: build
 	./scripts/test-functional.sh
 
+# The binaries live under DATADIR and reach PATH through BINDIR symlinks, the
+# same shape scripts/install.sh produces. brwctl doctor's default --app-dir on
+# Linux is DATADIR and it looks for bin/brwd there, so binaries installed only
+# into BINDIR would leave doctor reporting a broken install.
 install: build
-	mkdir -p "$(BINDIR)" "$(DATADIR)/extension" "$(DATADIR)/tests" "$(DATADIR)/skills/brw"
-	cp bin/brwd "$(BINDIR)/brwd"
-	cp bin/brwcheck "$(BINDIR)/brwcheck"
-	cp bin/brwctl "$(BINDIR)/brwctl"
-	cp bin/brw-devtools-mcp "$(BINDIR)/brw-devtools-mcp"
+	mkdir -p "$(BINDIR)" "$(DATADIR)/bin" "$(DATADIR)/extension" "$(DATADIR)/tests" "$(DATADIR)/skills/brw"
+	cp bin/brwd "$(DATADIR)/bin/brwd"
+	cp bin/brwcheck "$(DATADIR)/bin/brwcheck"
+	cp bin/brwctl "$(DATADIR)/bin/brwctl"
+	cp bin/brw-devtools-mcp "$(DATADIR)/bin/brw-devtools-mcp"
 	cp -R extension/. "$(DATADIR)/extension/"
 	cp -R tests/. "$(DATADIR)/tests/"
 	cp -R skills/brw/. "$(DATADIR)/skills/brw/"
 	@# On Apple Silicon, copying a Go binary invalidates its ad-hoc code
 	@# signature and the OS then SIGKILLs it ("Killed: 9"); re-sign the copies.
 	@if [ "$$(uname)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then \
-		codesign --force --sign - "$(BINDIR)/brwd" "$(BINDIR)/brwcheck" "$(BINDIR)/brwctl" "$(BINDIR)/brw-devtools-mcp"; \
+		codesign --force --sign - "$(DATADIR)/bin/brwd" "$(DATADIR)/bin/brwcheck" "$(DATADIR)/bin/brwctl" "$(DATADIR)/bin/brw-devtools-mcp"; \
 	fi
+	ln -sf "$(DATADIR)/bin/brwd" "$(BINDIR)/brwd"
+	ln -sf "$(DATADIR)/bin/brwcheck" "$(BINDIR)/brwcheck"
+	ln -sf "$(DATADIR)/bin/brwctl" "$(BINDIR)/brwctl"
+	ln -sf "$(DATADIR)/bin/brw-devtools-mcp" "$(BINDIR)/brw-devtools-mcp"
 
 install-mac: build
 	mkdir -p "$(MAC_APPDIR)/bin" "$(MAC_APPDIR)/extension" "$(MAC_APPDIR)/tests" "$(MAC_APPDIR)/skills/brw" "$(MAC_APPDIR)/config"
@@ -122,3 +133,23 @@ package-linux:
 
 package-macos:
 	scripts/package-macos.sh "$(VERSION)" dist/release
+
+# The sudo-free install path: relocatable archives for scripts/install.sh and
+# the Homebrew formula. One OS/arch, defaulting to the host.
+package-tarball:
+	scripts/package-tarball.sh "$(VERSION)" "$(TARBALL_OS)" "$(GOARCH)" dist/release
+
+# darwin/arm64 is built last so a macOS host leaves a natively signable archive
+# in place; cross-built darwin binaries cannot be ad-hoc signed off a Mac.
+package-tarballs:
+	scripts/package-tarball.sh "$(VERSION)" linux amd64 dist/release
+	scripts/package-tarball.sh "$(VERSION)" linux arm64 dist/release
+	scripts/package-tarball.sh "$(VERSION)" darwin amd64 dist/release
+	scripts/package-tarball.sh "$(VERSION)" darwin arm64 dist/release
+
+# Print the tap formula for VERSION with the four release sha256 sums filled in,
+# so a release bumps the tap mechanically rather than by hand. Reads the sums
+# from dist/release when the archives are local, otherwise from the published
+# release. Redirect into the tap checkout's Formula/brw.rb.
+homebrew-formula:
+	@packaging/homebrew/render-formula.sh "$(VERSION)"
