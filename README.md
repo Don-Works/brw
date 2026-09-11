@@ -82,14 +82,38 @@ For repeated site workflows and large observations, see
 
 ## Quick Start
 
-Download a native installer from the
-[GitHub releases page](https://github.com/Don-Works/brw/releases):
+```sh
+curl -fsSL https://brw.donworks.co.uk/install.sh | sh
+```
 
-- Windows: `.msi`
-- macOS: `.pkg`
-- Linux: `.deb` or `.rpm`
+No sudo, nothing written outside `$HOME`. The installer verifies the release
+checksum and, when `gh` is present, its build provenance attestation, then runs
+`brwctl setup`: a profile policy, a per-user `brwd --bridge` service on
+loopback, MCP registration with your agent client, and the bundled skill.
+`brwctl setup --dry-run` prints the plan without performing it.
 
-After installing, run `brwd` directly from your terminal or MCP client.
+Then load the extension into the browser you want driven — `chrome://extensions`
+-> Developer mode -> Load unpacked -> `<app-dir>/extension` — and click **Enable
+local browser control** in the Options page that opens. Nothing connects before
+you do.
+
+Also available:
+
+```sh
+brew install don-works/tap/brw
+```
+
+and platform packages on the
+[releases page](https://github.com/Don-Works/brw/releases) — `.pkg`, `.msi`,
+`.deb`, `.rpm` — for managed machines where a system-wide install is wanted.
+Those need an administrator and are not yet code-signed; see
+[docs/install.md](docs/install.md).
+
+Verify any release artifact:
+
+```sh
+gh attestation verify <artifact> --repo Don-Works/brw
+```
 
 ## Build From Source
 
@@ -181,6 +205,24 @@ The extension keeps its service worker alive so the bridge does not drop while
 Chrome idles in the background — see [docs/reliability.md](docs/reliability.md)
 for how brw stays connected, the one-time macOS App Nap setup, and how to verify.
 
+### Two transports
+
+`brw_identity` reports which one a namespace resolved to; `brwctl doctor` names
+it with the capabilities it implies.
+
+| | Extension bridge | Direct CDP |
+|---|---|---|
+| Browser | Your real signed-in Chrome or Chromium | A separate brw-owned instance |
+| Existing logins | Yes | No, unless pointed at a cloned profile |
+| Chrome tab groups | Yes | No |
+| `brw_open_incognito` | No | Yes |
+| `brw_cookies`, incl. HttpOnly | No | Yes |
+| Deterministic download capture | No | Yes |
+| Headless | No | Yes |
+
+Both lanes are supported at once: one `brwd` per profile, one MCP server per
+daemon. `brwctl setup --transport direct-cdp` configures the second.
+
 ### Chromium recommended (open source)
 
 Chromium is open source and not gated by the Chrome Web Store, so you can
@@ -226,10 +268,9 @@ and served with the correct content-types.
 - **Load unpacked:** run `make install-extension` to print the folder and open
   `chrome://extensions`, then enable Developer mode → Load unpacked → select
   `extension/`.
-- **Chrome Web Store (one-click):** a current store package, listing copy,
-  disclosure checklist, and reviewer flow are prepared in
-  [`docs/web-store-listing.md`](docs/web-store-listing.md). The listing is not
-  live; verify its item id against the pinned id before publishing.
+- **Chrome Web Store (one-click):** the store package and listing are prepared
+  in [`docs/web-store-listing.md`](docs/web-store-listing.md) and not yet
+  published. Verify the item id against the pinned id before publishing.
 
 See the [Install page](https://brw.donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss#install),
 [docs/install.md](docs/install.md), and [docs/auth-model.md](docs/auth-model.md).

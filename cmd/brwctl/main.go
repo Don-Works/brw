@@ -443,7 +443,14 @@ func doctor(args []string) error {
 		return err
 	}
 	if profileName == "" && workspaceName == "" {
-		return errors.New("--profile or --workspace is required")
+		// A machine configured by `brwctl setup` has exactly one binding, and
+		// making the operator retype its generated name is the kind of friction
+		// that sends people back to hand-editing the policy.
+		resolved, err := soleWorkspace(policyPath)
+		if err != nil {
+			return err
+		}
+		workspaceName = resolved
 	}
 	home, _ := os.UserHomeDir()
 	report, err := doctorReport(doctorRequest{
@@ -461,6 +468,28 @@ func doctor(args []string) error {
 		return errors.New("doctor failed")
 	}
 	return nil
+}
+
+// soleWorkspace names the only workspace binding in the policy. More than one
+// is ambiguous and the caller has to say which; none means the policy predates
+// workspace bindings, so the profile name is the only handle.
+func soleWorkspace(policyPath string) (string, error) {
+	policy, err := profilepolicy.Load(policyPath)
+	if err != nil {
+		return "", fmt.Errorf("--profile or --workspace is required (could not read the profile policy: %w)", err)
+	}
+	switch len(policy.WorkspaceBindings) {
+	case 1:
+		return policy.WorkspaceBindings[0].Workspace, nil
+	case 0:
+		return "", errors.New("--profile or --workspace is required; the profile policy binds no workspaces")
+	default:
+		names := make([]string, 0, len(policy.WorkspaceBindings))
+		for _, binding := range policy.WorkspaceBindings {
+			names = append(names, binding.Workspace)
+		}
+		return "", fmt.Errorf("--workspace is required; the profile policy binds %s", strings.Join(names, ", "))
+	}
 }
 
 func doctorReport(req doctorRequest) (doctorResult, error) {

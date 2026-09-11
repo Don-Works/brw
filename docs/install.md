@@ -1,40 +1,167 @@
 # Install
 
-## Native Installers
-
-GitHub releases ship platform-native installers:
-
-- Windows: `brw_<version>_windows_amd64.msi` and `brw_<version>_windows_arm64.msi`
-- macOS: `brw_<version>_macos_universal.pkg`
-- Debian/Ubuntu Linux: `brw_<version>_linux_amd64.deb` and `brw_<version>_linux_arm64.deb`
-- Fedora/RHEL Linux: `brw_<version>_linux_amd64.rpm` and `brw_<version>_linux_arm64.rpm`
-
-The installers put the brw commands on the platform PATH and install the
-extension, tests, bundled agent skill, README, and license into the platform
-share directory:
-
-- Windows: `C:\Program Files\brw\share\`
-- macOS: `/usr/local/share/brw/`
-- Linux: `/usr/share/brw/`
-
-Download them from <https://github.com/Don-Works/brw/releases>.
-
-## Build From Source
+## One line, no sudo
 
 ```sh
-make test
-make build
-make package-darwin-arm64
+curl -fsSL https://brw.donworks.co.uk/install.sh | sh
 ```
 
-Built binaries:
+The installer writes nothing outside `$HOME` and never asks for a privileged
+step. It resolves the latest release, downloads the archive for your OS and
+architecture, verifies its SHA256, verifies the GitHub build provenance
+attestation when `gh` is installed and authenticated, unpacks it, and then runs
+`brwctl setup` (below). Read it first if you would rather not pipe a URL into a
+shell: <https://brw.donworks.co.uk/install.sh>.
 
-- `bin/brwd`
-- `bin/brwctl`
-- `bin/brwcheck`
-- `bin/brw-devtools-mcp`
+| Variable | Effect |
+|---|---|
+| `BRW_VERSION` | Release to install, with or without the leading `v`. Default: the latest release tag. |
+| `BRW_INSTALL_DIR` | Payload directory. Must be absolute. |
+| `BRW_BIN_DIR` | Where the command symlinks go. Defaults to `~/.local/bin`, or to `<install dir>/bin` when `BRW_INSTALL_DIR` is set, so a relocated install stays self-contained. |
+| `BRW_BASE_URL` | Where to fetch the archive from. For mirrors and testing. |
+| `BRW_NO_SETUP` | Stop after unpacking; do not run `brwctl setup`. |
+| `BRW_SKIP_ATTESTATION` | Skip the provenance check. The SHA256 check still runs. |
 
-## Runtime Layout
+A checksum mismatch aborts before anything is written. An explicit attestation
+failure aborts; an unauthenticated `gh` warns and continues. Re-running replaces
+`bin extension tests skills doc` and preserves `config/` and
+`extension/bridge-defaults.json`.
+
+## Homebrew
+
+```sh
+brew install don-works/tap/brw
+```
+
+Homebrew puts the whole tree in the formula prefix, so that prefix is the app
+directory:
+
+```sh
+brwctl doctor --app-dir "$(brew --prefix brw)"
+```
+
+## Native installers
+
+For managed and multi-user machines, GitHub releases ship platform packages:
+
+- macOS: `brw_<version>_macos_universal.pkg`
+- Windows: `brw_<version>_windows_amd64.msi` and `..._arm64.msi`
+- Debian/Ubuntu: `brw_<version>_linux_amd64.deb` and `..._arm64.deb`
+- Fedora/RHEL: `brw_<version>_linux_amd64.rpm` and `..._arm64.rpm`
+
+These install to the system PATH and need sudo or an administrator. They put the
+extension, tests, bundled agent skill, README and license in the platform share
+directory: `/usr/local/share/brw/` on macOS, `C:\Program Files\brw\share\` on
+Windows, `/usr/share/brw/` on Linux.
+
+The packages are not yet code-signed. macOS Gatekeeper reports an unidentified
+developer: open the `.pkg` with right-click -> Open rather than stripping the
+quarantine attribute. Windows SmartScreen shows "Windows protected your PC".
+The `.deb` and `.rpm` are unsigned and there is no distribution GPG key.
+[`release-signing.md`](release-signing.md) tracks what is needed to change that.
+
+## Verify what you downloaded
+
+Every release artifact carries a SHA256 in `SHA256SUMS.txt` and a GitHub build
+provenance attestation:
+
+```sh
+gh attestation verify brw_<version>_macos_universal.pkg --repo Don-Works/brw
+```
+
+The checksum proves the file matches the release page. The attestation proves
+this repository's release workflow built it from that tag, which is the part a
+checksum cannot tell you. It needs `gh` 2.49+ and `gh auth login`.
+
+## brwctl setup
+
+```sh
+brwctl setup
+```
+
+Takes a machine with brw binaries on it to a connected bridge. Every step is
+idempotent and reports what it did or why it was already satisfied. `--dry-run`
+prints the whole plan and performs none of it.
+
+1. **Profile policy.** Writes `~/.config/brw/browser-profiles.json` (0600),
+   backing up any existing file to `<path>.bak.<UTC timestamp>`. It binds to a
+   browser profile directory that exists, so the browser must have been run at
+   least once; `--browser` and `--profile-directory` override the choice. No
+   package ships a policy.
+2. **App Nap.** Sets `NSAppSleepDisabled` for the chosen browser's bundle id on
+   macOS. It applies at that browser's next full launch — Cmd-Q, not just
+   closing the window.
+3. **Background service.** A per-user service running
+   `brwd --bridge`, bound to `127.0.0.1:17310` (control) and `127.0.0.1:17311`
+   (extension WebSocket); `--http-port N` moves both, the bridge to N+1.
+   macOS: `~/Library/LaunchAgents/co.donworks.brwd.<profile>.plist`, logging to
+   `~/Library/Logs/brw/brwd-<profile>.log`. Linux:
+   `~/.config/systemd/user/brwd-<profile>.service`, logging to
+   `~/.local/state/brw/brwd-<profile>.log`; with no user systemd instance, setup
+   prints a `nohup` line instead. Windows: a logon scheduled task.
+   Setup refuses to replace a pre-existing service that drives the same profile
+   or binds the same ports, and prints the path, label and reason.
+4. **MCP client registration.** `claude mcp add -s user brw -- …`, derived from
+   the same code as `brwctl mcp-config`. brw never edits `~/.claude.json`
+   directly, because Claude Code rewrites that file while it runs. Codex with
+   `--mcp-client codex|both`; `--mcp-client none` prints the `mcpServers` block.
+5. **Agent skill.** Copies `skills/brw` into `~/.claude/skills/brw`,
+   `~/.agents/skills/brw` and `~/.codex/skills/brw`.
+6. **Verify.** Runs the doctor checks and prints what is left to do by hand.
+
+Flags: `--profile` `--workspace` `--browser` `--profile-directory`
+`--transport` `--mcp-client` `--http-port` `--profile-policy` `--app-dir`
+`--skills-dir` `--no-service` `--dry-run` `--yes` `--help`.
+
+Default names come from the browser and lane: workspace `brw-chrome-profile`
+with profile `chrome-profile`, `brw-chromium-profile` with `chromium-profile`,
+`brw-chrome-agent` with `chrome-agent` for direct CDP.
+
+### What setup cannot do for you
+
+Loading an unpacked extension is a browser-UI action with no command-line
+equivalent, so it stays manual until the Chrome Web Store listing is live:
+
+1. Open `chrome://extensions`, turn on Developer mode (top right), click Load
+   unpacked, and select `<app-dir>/extension`. The id must read
+   `amocjcgddnoakjijfggdpnefdnboilpe`.
+2. Open the extension's Options, read the browser-data disclosure, and click
+   **Enable local browser control**. Nothing connects before you do.
+3. Quit the browser completely and reopen it, so the App Nap default applies.
+4. Restart your MCP client, or run `/mcp` in Claude Code, so it picks up the new
+   server.
+
+Between setup and step 1, `brwctl doctor` reports that the extension is not
+installed and exits non-zero. That is the expected state, not a broken install.
+
+### Claude Code's own Chrome integration
+
+Claude Code ships a separate Chrome integration, enabled in `~/.claude.json`.
+With both switched on the agent sees two browser tool sets and may drive the
+wrong one. `brwctl doctor` emits the `claude_in_chrome_enabled` warning when it
+finds it; run `/chrome` in Claude Code and turn it off.
+
+## Two transports, different capabilities
+
+`brw_identity` reports which one a namespace resolved to, and `brwctl doctor`
+names it with the capabilities it implies.
+
+| | Extension bridge | Direct CDP |
+|---|---|---|
+| Browser | Your real signed-in Chrome or Chromium | A separate brw-owned instance |
+| Existing logins | Yes | No, unless you point it at a cloned profile |
+| Chrome tab groups | Yes | No |
+| Incognito contexts (`brw_open_incognito`) | No | Yes |
+| Cookies incl. HttpOnly (`brw_cookies`) | No | Yes |
+| Deterministic download capture | No, uses the browser's download folder | Yes, staged in brw's cache |
+| Headless | No | Yes |
+
+`brwctl setup --transport direct-cdp` configures the second lane. Running both
+against different profiles is supported: one `brwd` per profile, one MCP server
+per daemon. Testing several signed-in roles at once wants a second browser
+profile rather than a second transport.
+
+## Runtime layout
 
 macOS:
 
@@ -50,14 +177,27 @@ macOS:
 Linux:
 
 ```text
-~/.local/bin/
-~/.local/share/brw/
+~/.local/share/brw/{bin,extension,skills,tests}
+~/.local/bin/{brwd,brwctl,brwcheck,brw-devtools-mcp}   # symlinks
 ```
 
-## Remote Install
+If `~/.local/bin` is not on your PATH, the installer prints the line to add.
 
-Copy the built binaries, `extension/`, `skills/`, `tests/`, and a profile policy to the
-browser machine. Then generate MCP client config from the policy:
+## Build from source
+
+```sh
+make test
+make build
+```
+
+Built binaries: `bin/brwd`, `bin/brwctl`, `bin/brwcheck`,
+`bin/brw-devtools-mcp`. `make install` puts them in the user-local layout above.
+`make package-tarballs` builds the archives the one-line installer consumes.
+
+## Remote install
+
+Copy the built binaries, `extension/`, `skills/`, `tests/`, and a profile policy
+to the browser machine. Then generate MCP client config from the policy:
 
 ```sh
 brwctl mcp-config \
@@ -224,16 +364,17 @@ copies instructions only, never the private recipe corpus.
 ## Keep the browser awake (macOS)
 
 macOS App Nap can freeze a backgrounded browser's extension, which drops the
-bridge until the browser is focused again. Disable it per browser (takes effect
-on next launch) so brw stays connected while it runs in the background:
+bridge until the browser is focused again. `brwctl setup` disables it for the
+browser it configures. To do it by hand, or for a second browser:
 
 ```sh
 defaults write org.chromium.Chromium NSAppSleepDisabled -bool YES
-defaults write com.google.Chrome     NSAppSleepDisabled -bool YES   # only if you drive Chrome
+defaults write com.google.Chrome     NSAppSleepDisabled -bool YES
 ```
 
-See [reliability.md](reliability.md) for the full "staying connected" story
-(the extension's service-worker keepalive and an optional watchdog).
+It applies at that browser's next full launch. See
+[reliability.md](reliability.md) for the rest of the staying-connected story:
+the extension's service-worker keepalive and an optional watchdog.
 
 ## macOS Downloads access
 
@@ -248,14 +389,17 @@ OS permission request to one three-second attempt and makes concurrent/repeated
 attempts fail fast, so a missing permission cannot create a retry-driven thread
 or CPU storm.
 
-## Verify
+## Verify the install
 
 ```sh
-brwctl doctor \
-  --workspace brw \
-  --profile work-profile \
-  --profile-policy ~/.config/brw/browser-profiles.json
+brwctl doctor
 ```
 
-`doctor` fails if app files are missing, the profile is not allowed, or the
-expected `brw` extension is not installed.
+With no arguments it reads the policy `brwctl setup` wrote. Pass `--workspace`,
+`--profile` and `--profile-policy` to check a specific profile, or `--app-dir`
+for a Homebrew or relocated install.
+
+`doctor` fails when app files are missing, the profile is not allowed by policy,
+or the brw extension is not installed in the target browser profile. It reports
+the resolved transport and its capabilities, and warns about a Claude Code
+Chrome integration left switched on.

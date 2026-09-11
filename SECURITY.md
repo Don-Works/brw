@@ -5,6 +5,24 @@
 Security fixes are made against the latest released version of `brw`. Upgrade
 to the newest release before reporting an issue that may already be resolved.
 
+## Verifying a release
+
+Every published artifact has a SHA256 in `SHA256SUMS.txt`, a CycloneDX SBOM, and
+a GitHub build provenance attestation:
+
+```sh
+gh attestation verify <artifact> --repo Don-Works/brw
+```
+
+The checksum proves the file matches the release page. The attestation proves
+this repository's release workflow built it from that tag. Needs `gh` 2.49+ and
+`gh auth login`.
+
+The macOS `.pkg`, the Windows `.msi` and the Linux `.deb`/`.rpm` are not yet
+code-signed, so Gatekeeper reports an unidentified developer and SmartScreen
+warns. [`docs/release-signing.md`](docs/release-signing.md) records what that
+needs; the signing path is wired and waits on certificates.
+
 ## Reporting a vulnerability
 
 Do not disclose a suspected vulnerability in a public issue. Use the
