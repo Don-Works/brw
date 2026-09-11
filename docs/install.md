@@ -113,12 +113,42 @@ prints the whole plan and performs none of it.
 6. **Verify.** Runs the doctor checks and prints what is left to do by hand.
 
 Flags: `--profile` `--workspace` `--browser` `--profile-directory`
-`--transport` `--mcp-client` `--http-port` `--profile-policy` `--app-dir`
-`--skills-dir` `--no-service` `--dry-run` `--yes` `--help`.
+`--user-data-dir` `--transport` `--mcp-client` `--http-port` `--profile-policy`
+`--app-dir` `--skills-dir` `--no-service` `--dry-run` `--yes` `--help`.
 
 Default names come from the browser and lane: workspace `brw-chrome-profile`
 with profile `chrome-profile`, `brw-chromium-profile` with `chromium-profile`,
 `brw-chrome-agent` with `chrome-agent` for direct CDP.
+
+### Which browsers
+
+Every Chromium-based browser works over both lanes: the daemon speaks the same
+CDP to all of them and the extension loads in all of them. `--browser` takes:
+
+| `--browser` | | Profile directory |
+|---|---|---|
+| `chrome` | Google Chrome | `~/Library/Application Support/Google/Chrome`, `~/.config/google-chrome` |
+| `chromium` | Chromium | `~/Library/Application Support/Chromium`, `~/.config/chromium` |
+| `edge` | Microsoft Edge | `~/Library/Application Support/Microsoft Edge`, `~/.config/microsoft-edge` |
+| `brave` | Brave Browser | `~/Library/Application Support/BraveSoftware/Brave-Browser`, `~/.config/BraveSoftware/Brave-Browser` |
+| `vivaldi` | Vivaldi | `~/Library/Application Support/Vivaldi`, `~/.config/vivaldi` |
+| `opera` | Opera | `~/Library/Application Support/com.operasoftware.Opera`, `~/.config/opera` |
+| `arc` | Arc | `~/Library/Application Support/Arc/User Data` (macOS only) |
+
+With no `--browser`, setup picks the one that has actually been run — a browser
+that is merely installed has no profile directory to bind to — and Chrome breaks
+the tie.
+
+A Chromium build that is not in that table still works; it just has to say where
+its profiles live:
+
+```sh
+brwctl setup --browser comet --user-data-dir ~/Library/Application\ Support/Comet
+```
+
+Firefox and Safari are not supported. Neither speaks CDP, and Safari's
+automation route hands you a clean window rather than your signed-in session,
+which is the opposite of what brw is for.
 
 ### What setup cannot do for you
 

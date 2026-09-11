@@ -222,26 +222,6 @@ func TestMergeExistingPolicy(t *testing.T) {
 	}
 }
 
-func TestBrowserUserDataDir(t *testing.T) {
-	cases := []struct {
-		goos, browser, want string
-	}{
-		{"darwin", BrowserChrome, "~/Library/Application Support/Google/Chrome"},
-		{"darwin", BrowserChromium, "~/Library/Application Support/Chromium"},
-		{"linux", BrowserChrome, "~/.config/google-chrome"},
-		{"linux", BrowserChromium, "~/.config/chromium"},
-		{"windows", BrowserChrome, "${LOCALAPPDATA}/Google/Chrome/User Data"},
-		{"windows", BrowserChromium, "${LOCALAPPDATA}/Chromium/User Data"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.goos+"/"+tc.browser, func(t *testing.T) {
-			if got := BrowserUserDataDir(tc.goos, tc.browser); got != tc.want {
-				t.Fatalf("BrowserUserDataDir = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestWritePolicyBacksUpAndStaysOwnerOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "brw", "browser-profiles.json")
 	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)

@@ -25,7 +25,9 @@ const (
 	TransportDirectCDP = "direct-cdp"
 )
 
-// Browsers setup knows how to bind a profile to.
+// The two browsers with special standing: Chrome is the fallback when nothing
+// has been run, and Chromium is the one brw champions. Every other browser is
+// data in browsers.go and needs no constant.
 const (
 	BrowserChrome   = "chrome"
 	BrowserChromium = "chromium"
@@ -52,6 +54,9 @@ type PolicyRequest struct {
 	// ProfileDirectory is the browser profile directory inside the user data
 	// directory. Empty means Default, the one Chrome creates on first launch.
 	ProfileDirectory string
+	// UserDataDir overrides the table, which is how a Chromium build brw has no
+	// entry for is bound without a code change. Empty means look Browser up.
+	UserDataDir string
 	// BRWDPath is written as the local stdio transport's command. An absolute
 	// path is what makes the MCP server start under a client that does not
 	// inherit the user's PATH; "brwd" is the degraded fallback.
@@ -87,47 +92,12 @@ func DefaultWorkspaceName(browser, transport string) string {
 	return "brw-" + DefaultProfileName(browser, transport)
 }
 
-// BrowserUserDataDir is where the named browser keeps its user data directory
-// on the named OS. The returned path is deliberately unexpanded (~/ or ${VAR}),
-// because profilepolicy expands both at load time and an unexpanded path stays
-// valid if the policy is copied to another machine or another user.
-func BrowserUserDataDir(goos, browser string) string {
-	switch goos {
-	case "darwin":
-		if browser == BrowserChromium {
-			return "~/Library/Application Support/Chromium"
-		}
-		return "~/Library/Application Support/Google/Chrome"
-	case "windows":
-		if browser == BrowserChromium {
-			return "${LOCALAPPDATA}/Chromium/User Data"
-		}
-		return "${LOCALAPPDATA}/Google/Chrome/User Data"
-	default:
-		if browser == BrowserChromium {
-			return "~/.config/chromium"
-		}
-		return "~/.config/google-chrome"
+// userDataDir prefers what the operator passed over what the table knows.
+func (r PolicyRequest) userDataDir() string {
+	if r.UserDataDir != "" {
+		return r.UserDataDir
 	}
-}
-
-// BrowserBundleIDs are the macOS bundle identifiers whose App Nap must be
-// disabled so a backgrounded window keeps servicing the bridge. Only the chosen
-// browser is listed: writing a default for a browser the user does not run
-// leaves a stray preference domain behind.
-func BrowserBundleIDs(browser string) []string {
-	if browser == BrowserChromium {
-		return []string{"org.chromium.Chromium"}
-	}
-	return []string{"com.google.Chrome"}
-}
-
-// BrowserDisplayName is the name a human sees in their Applications folder.
-func BrowserDisplayName(browser string) string {
-	if browser == BrowserChromium {
-		return "Chromium"
-	}
-	return "Google Chrome"
+	return BrowserUserDataDir(r.GOOS, r.Browser)
 }
 
 // NewProfile builds the profile a first-time user needs for one lane. A bridge
@@ -157,7 +127,7 @@ func NewProfile(req PolicyRequest) profilepolicy.Profile {
 		Name:                   req.Profile,
 		Description:            BrowserDisplayName(req.Browser) + " " + profileDirectory + " profile, bridged through the brw extension.",
 		Kind:                   req.Browser,
-		UserDataDir:            BrowserUserDataDir(req.GOOS, req.Browser),
+		UserDataDir:            req.userDataDir(),
 		ProfileDirectory:       profileDirectory,
 		DirectCDPAllowed:       false,
 		ExtensionBridgeAllowed: true,

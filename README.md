@@ -106,6 +106,10 @@ brew install don-works/tap/brw
 and platform packages on the
 [releases page](https://github.com/Don-Works/brw/releases) — `.pkg`, `.msi`,
 `.deb`, `.rpm` — for managed machines where a system-wide install is wanted.
+
+Setup binds to whichever Chromium-based browser you already use:
+`--browser chrome|chromium|edge|brave|vivaldi|opera|arc`, or any other Chromium
+build with `--browser <name> --user-data-dir <path>`.
 Those need an administrator and are not yet code-signed; see
 [docs/install.md](docs/install.md).
 

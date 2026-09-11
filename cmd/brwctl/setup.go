@@ -43,6 +43,8 @@ options:
   --browser NAME        chrome or chromium (default: whichever browser has been used on this machine)
   --profile-directory D browser profile directory inside the user data dir, for example "Profile 1"
                         (default: the first existing one, else Default)
+  --user-data-dir PATH  browser user data directory. Only needed for a Chromium build brw has
+                        no entry for; with it, --browser accepts any name
   --transport NAME      bridge or direct-cdp (default: bridge). This is the runtime lane, not an
                         entry in the policy's "transports" array; setup writes a policy transport
                         named "local" either way.
@@ -62,6 +64,7 @@ type setupOptions struct {
 	browser          string
 	transport        string
 	profileDirectory string
+	userDataDir      string
 	mcpClient        string
 	policyPath       string
 	appDir           string
@@ -134,6 +137,7 @@ func setupCommand(args []string) error {
 	fs.StringVar(&opts.workspace, "workspace", os.Getenv("BRW_WORKSPACE"), "workspace binding name")
 	fs.StringVar(&opts.browser, "browser", "", "chrome or chromium")
 	fs.StringVar(&opts.profileDirectory, "profile-directory", "", `browser profile directory inside the user data dir, for example "Profile 1"`)
+	fs.StringVar(&opts.userDataDir, "user-data-dir", "", "browser user data directory, for a Chromium build brw does not know")
 	fs.StringVar(&opts.transport, "transport", setup.TransportBridge, "bridge or direct-cdp")
 	fs.StringVar(&opts.mcpClient, "mcp-client", "claude", "claude, codex, both, or none")
 	fs.StringVar(&opts.policyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path")
@@ -223,10 +227,14 @@ func (o *setupOptions) normalise() error {
 		return errors.New("--mcp-client must be claude, codex, both, or none")
 	}
 	if o.browser == "" {
-		o.browser = detectBrowser(o.goos, o.home)
+		o.browser = detectBrowser(o.goos, o.home, o.runner)
 	}
-	if o.browser != setup.BrowserChrome && o.browser != setup.BrowserChromium {
-		return fmt.Errorf("--browser must be %s or %s", setup.BrowserChrome, setup.BrowserChromium)
+	if _, known := setup.LookupBrowser(o.browser); !known && o.userDataDir == "" {
+		return setup.UnknownBrowserError(o.browser)
+	}
+	if o.userDataDir == "" && setup.BrowserUserDataDir(o.goos, o.browser) == "" {
+		return fmt.Errorf("brw does not know where %s keeps its user data directory on %s; pass --user-data-dir",
+			setup.BrowserDisplayName(o.browser), o.goos)
 	}
 	if o.httpPort <= 0 || o.httpPort > 65534 {
 		return errors.New("--http-port must be between 1 and 65534; the bridge uses the next port up")
@@ -243,35 +251,51 @@ func (o *setupOptions) normalise() error {
 // detectBrowser picks the browser to bridge. A browser that has actually been
 // run wins over one that is merely installed: a bridge profile binds to a
 // profile directory, and an installed-but-never-launched browser has none, so
-// binding to it writes a policy that cannot verify. Chrome breaks the tie when
-// both have been used. --browser overrides.
-func detectBrowser(goos, home string) string {
-	if setup.HasProfiles(browserDataDir(goos, home, setup.BrowserChrome)) {
-		return setup.BrowserChrome
-	}
-	if setup.HasProfiles(browserDataDir(goos, home, setup.BrowserChromium)) {
-		return setup.BrowserChromium
-	}
-	if goos == "darwin" {
-		if _, err := os.Stat("/Applications/Google Chrome.app"); err == nil {
-			return setup.BrowserChrome
-		}
-		if _, err := os.Stat("/Applications/Chromium.app"); err == nil {
-			return setup.BrowserChromium
-		}
-		return setup.BrowserChrome
-	}
-	for _, name := range []string{"google-chrome", "google-chrome-stable"} {
-		if _, err := exec.LookPath(name); err == nil {
-			return setup.BrowserChrome
+// binding to it writes a policy that cannot verify. A stale user data directory
+// left behind by an uninstalled browser has no profile directories either, so
+// it loses to a browser in use. Table order breaks the tie; --browser
+// overrides.
+func detectBrowser(goos, home string, runner commandRunner) string {
+	for _, b := range setup.Browsers() {
+		if setup.HasProfiles(browserDataDir(goos, home, b.Name)) {
+			return b.Name
 		}
 	}
-	for _, name := range []string{"chromium", "chromium-browser"} {
-		if _, err := exec.LookPath(name); err == nil {
-			return setup.BrowserChromium
+	for _, b := range setup.Browsers() {
+		if browserInstalled(goos, b, runner) {
+			return b.Name
 		}
 	}
 	return setup.BrowserChrome
+}
+
+// browserInstalled reports whether the browser is on the machine at all, which
+// is weaker evidence than a profile directory but enough to name a default the
+// operator recognises.
+func browserInstalled(goos string, b setup.Browser, runner commandRunner) bool {
+	if goos == "darwin" {
+		for _, path := range b.AppPaths {
+			if _, err := os.Stat(path); err == nil {
+				return true
+			}
+		}
+		return false
+	}
+	for _, name := range b.Commands {
+		if _, ok := runner.look(name); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// browserDataDir is the directory this run will bind to, expanded: the
+// operator's override when there is one, otherwise the table's entry.
+func (r *setupRunner) browserDataDir() string {
+	if r.opts.userDataDir != "" {
+		return profilepolicy.ExpandPath(r.opts.userDataDir)
+	}
+	return browserDataDir(r.opts.goos, r.opts.home, r.opts.browser)
 }
 
 // browserDataDir expands a policy-shaped user data directory against a known
@@ -397,7 +421,7 @@ func (r *setupRunner) stepConfig() error {
 
 	profileDirectory := r.opts.profileDirectory
 	if profileDirectory == "" && r.opts.transport == setup.TransportBridge {
-		dataDir := browserDataDir(r.opts.goos, r.opts.home, r.opts.browser)
+		dataDir := r.browserDataDir()
 		profileDirectory = setup.PickProfileDirectory(dataDir)
 		if dirs := setup.ProfileDirectories(dataDir); len(dirs) > 0 {
 			r.act(statusOK, "%s profile directories in %s: %s", setup.BrowserDisplayName(r.opts.browser), dataDir, strings.Join(dirs, ", "))
@@ -411,6 +435,7 @@ func (r *setupRunner) stepConfig() error {
 		Browser:          r.opts.browser,
 		Transport:        r.opts.transport,
 		ProfileDirectory: profileDirectory,
+		UserDataDir:      r.opts.userDataDir,
 		BRWDPath:         r.brwdPath(),
 		HTTPPort:         r.opts.httpPort,
 		Home:             r.opts.home,
@@ -461,13 +486,40 @@ func (r *setupRunner) stepConfig() error {
 	return nil
 }
 
+// bundleIDs names the preference domains to disable App Nap in. An installed
+// application is asked for its own identifier rather than trusting the table:
+// writing the default for a bundle id the browser does not actually use leaves
+// a stray preference domain behind and fixes nothing.
+func (r *setupRunner) bundleIDs() []string {
+	browser, known := setup.LookupBrowser(r.opts.browser)
+	if known {
+		for _, app := range browser.AppPaths {
+			if _, err := os.Stat(app); err != nil {
+				continue
+			}
+			plist := filepath.Join(app, "Contents", "Info")
+			if out, err := r.opts.runner.run("defaults", "read", plist, "CFBundleIdentifier"); err == nil {
+				if id := strings.TrimSpace(out); id != "" {
+					return []string{id}
+				}
+			}
+		}
+	}
+	return setup.BrowserBundleIDs(r.opts.browser)
+}
+
 func (r *setupRunner) stepAppNap() {
 	r.begin("browser App Nap")
 	if r.opts.goos != "darwin" {
 		r.act(statusSkip, "App Nap is macOS only; nothing to do on %s", r.opts.goos)
 		return
 	}
-	for _, bundleID := range setup.BrowserBundleIDs(r.opts.browser) {
+	ids := r.bundleIDs()
+	if len(ids) == 0 {
+		r.act(statusSkip, "no macOS preference domain known for %s; set NSAppSleepDisabled by hand if the bridge drops while it is in the background", setup.BrowserDisplayName(r.opts.browser))
+		return
+	}
+	for _, bundleID := range ids {
 		current, _ := r.opts.runner.run("defaults", "read", bundleID, "NSAppSleepDisabled")
 		if strings.TrimSpace(current) == "1" {
 			r.act(statusOK, "%s already has NSAppSleepDisabled=YES", bundleID)

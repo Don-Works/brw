@@ -450,7 +450,7 @@ func TestDetectBrowserPrefersAUsedBrowser(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if got := detectBrowser("darwin", home); got != tc.want {
+			if got := detectBrowser("darwin", home, &fakeRunner{}); got != tc.want {
 				t.Fatalf("detectBrowser = %q, want %q", got, tc.want)
 			}
 		})

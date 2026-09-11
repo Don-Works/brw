@@ -32,13 +32,23 @@ func FindChrome(explicit string) (string, error) {
 	return "", errors.New("Chrome/Chromium executable not found; pass --chrome-path")
 }
 
-func chromeCandidates() []string {
-	switch runtime.GOOS {
+// Candidates is the ordered list FindChrome walks when no path is given. Chrome
+// and Chromium lead, so a machine that has them keeps the binary it always
+// picked; the rest are there so a machine with only a Chromium fork on it still
+// starts. Every browser in setup's table appears here, which a test in that
+// package enforces — the two lists drift apart silently otherwise.
+func Candidates(goos string) []string {
+	switch goos {
 	case "darwin":
 		return []string{
 			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 			"/Applications/Chromium.app/Contents/MacOS/Chromium",
 			"/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+			"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+			"/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
+			"/Applications/Opera.app/Contents/MacOS/Opera",
+			"/Applications/Arc.app/Contents/MacOS/Arc",
 			"google-chrome",
 			"chromium",
 			"chromium-browser",
@@ -50,8 +60,19 @@ func chromeCandidates() []string {
 			"chromium",
 			"chromium-browser",
 			"chrome",
+			"microsoft-edge",
+			"microsoft-edge-stable",
+			"brave-browser",
+			"brave",
+			"vivaldi",
+			"vivaldi-stable",
+			"opera",
 		}
 	}
+}
+
+func chromeCandidates() []string {
+	return Candidates(runtime.GOOS)
 }
 
 func DefaultProfileDir(home string) string {
