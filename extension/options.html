@@ -21,6 +21,29 @@
     </header>
 
     <section class="surface" aria-labelledby="connectionHeading">
+      <section class="consent-panel" id="consentPanel" data-enabled="false" aria-labelledby="consentHeading">
+        <p class="consent-kicker" id="consentKicker">Required before connection</p>
+        <h2 id="consentHeading">Enable local browser control</h2>
+        <p class="consent-summary" id="consentSummary">
+          When you ask an agent to use brw, this extension can read and change content in visible tabs and return the result to a brw daemon on this computer.
+        </p>
+        <ul class="consent-facts">
+          <li>Handles tab URLs, page content, form values, screenshots, console/network diagnostics and requested downloads. On pages you choose, this may include personal, communication, financial, health, location or authentication information.</li>
+          <li>Connects only to <code>127.0.0.1</code> or <code>localhost</code>; Don Works and Revitt do not receive the data.</li>
+          <li>Refuses HttpOnly cookie and bulk-storage CDP methods. Browser control remains visible and can be disabled here at any time.</li>
+        </ul>
+        <p class="consent-terms">
+          If you connect brw to a third-party AI service, observations requested by that agent may be sent to that service under its privacy terms.
+          <a href="https://brw.donworks.co.uk/privacy" target="_blank" rel="noreferrer">Read the full privacy policy</a>.
+        </p>
+        <div class="consent-actions">
+          <button class="button primary" id="grantConsent" type="button">Enable local browser control</button>
+          <button class="button secondary" id="revokeConsent" type="button" hidden>Disable browser control</button>
+        </div>
+      </section>
+
+      <div class="divider consent-divider"></div>
+
       <div class="status-block" id="statusBlock" data-state="loading" aria-live="polite" aria-busy="true">
         <div class="status-mark" aria-hidden="true"></div>
         <div class="status-copy">
@@ -129,8 +152,12 @@
     </section>
 
     <footer>
-      <p>Local only. brw refuses cookie and bulk-storage CDP methods.</p>
-      <a href="https://github.com/Don-Works/brw" target="_blank" rel="noreferrer">Documentation</a>
+      <p>Local bridge. Page data goes only where you configure your agent to send it.</p>
+      <span>
+        <a href="https://brw.donworks.co.uk/privacy" target="_blank" rel="noreferrer">Privacy</a>
+        ·
+        <a href="https://github.com/Don-Works/brw" target="_blank" rel="noreferrer">Documentation</a>
+      </span>
     </footer>
   </main>
   <script src="options.js"></script>

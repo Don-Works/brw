@@ -846,15 +846,17 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// 0.4.13 exposes exact main-document identity plus a monotonic navigation
 	// epoch so recipe artifact capture cannot cross a document boundary; 0.4.14
 	// reports the extension-owned tab pin in each hello so reconnect can recover
-	// a lost tab_removed frame without reusing a human foreground tab.
+	// a lost tab_removed frame without reusing a human foreground tab; 0.4.15
+	// gates every connection on a stored affirmative consent grant, so a fresh
+	// install holds at consent_required until the user enables browser control.
 	// It is DECOUPLED from the wire PROTOCOL_VERSION below: the manifest moves
 	// with every feature release, while PROTOCOL_VERSION only moves on a breaking
-	// bridge-handshake change. 0.4.0-0.4.14 add fields, message types and
+	// bridge-handshake change. 0.4.0-0.4.15 add fields, message types and
 	// in-extension behaviour only. A new message type is additive in both
 	// directions: an older extension answers resize_window with "unknown message
 	// type", which the daemon reports as an upgrade note rather than a failure.
 	// So the protocol stays 0.2.0 (the daemon still accepts it).
-	const wantManifest = "0.4.14"
+	const wantManifest = "0.4.15"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

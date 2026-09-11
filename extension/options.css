@@ -115,6 +115,73 @@ footer p {
   background: var(--surface);
 }
 
+.consent-panel {
+  padding: 24px 26px;
+  background: var(--warning-soft);
+}
+
+.consent-panel[data-enabled="true"] {
+  background: var(--success-soft);
+}
+
+.consent-kicker {
+  margin: 0 0 5px;
+  color: var(--warning);
+  font-size: .76rem;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.consent-panel[data-enabled="true"] .consent-kicker {
+  color: var(--success);
+}
+
+.consent-summary,
+.consent-terms {
+  max-width: 72ch;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.consent-summary {
+  margin: 7px 0 0;
+}
+
+.consent-facts {
+  display: grid;
+  gap: 7px;
+  margin: 14px 0 0;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: .84rem;
+  line-height: 1.5;
+}
+
+.consent-terms {
+  margin: 14px 0 0;
+  font-size: .8rem;
+}
+
+.consent-terms a {
+  color: var(--accent);
+  font-weight: 680;
+  text-underline-offset: 3px;
+}
+
+.consent-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.consent-actions [hidden] {
+  display: none;
+}
+
+.consent-divider {
+  background: var(--line-strong);
+}
+
 .status-block {
   position: relative;
   gap: 14px;
@@ -180,20 +247,27 @@ h1 {
   color: #315d45;
 }
 
-.status-block[data-state="connecting"] {
+.status-block[data-state="connecting"],
+.status-block[data-state="consent"] {
   background: var(--warning-soft);
 }
 
-.status-block[data-state="connecting"] .status-mark {
+.status-block[data-state="connecting"] .status-mark,
+.status-block[data-state="consent"] .status-mark {
   border-color: var(--warning);
+}
+
+.status-block[data-state="connecting"] .status-mark {
   animation: status-pulse 1.4s var(--ease) infinite;
 }
 
-.status-block[data-state="connecting"] .status-label {
+.status-block[data-state="connecting"] .status-label,
+.status-block[data-state="consent"] .status-label {
   color: var(--warning);
 }
 
-.status-block[data-state="connecting"] #statusSummary {
+.status-block[data-state="connecting"] #statusSummary,
+.status-block[data-state="consent"] #statusSummary {
   color: #624900;
 }
 
@@ -574,6 +648,10 @@ footer a {
     padding: 20px 18px 16px;
   }
 
+  .consent-panel {
+    padding: 20px 18px;
+  }
+
   .status-mark {
     margin-top: 5px;
   }
@@ -612,6 +690,7 @@ footer a {
   }
 
   .actions,
+  .consent-actions,
   footer {
     align-items: stretch;
     flex-direction: column;
@@ -657,12 +736,25 @@ footer a {
     color: #c2e2cf;
   }
 
-  .status-block[data-state="connecting"] #statusSummary {
+  .status-block[data-state="connecting"] #statusSummary,
+  .status-block[data-state="consent"] #statusSummary {
     color: #ead596;
   }
 
   .status-block[data-state="error"] #statusSummary {
     color: #f1c0c3;
+  }
+
+  .consent-panel .consent-summary,
+  .consent-panel .consent-terms,
+  .consent-panel .consent-facts {
+    color: #ead596;
+  }
+
+  .consent-panel[data-enabled="true"] .consent-summary,
+  .consent-panel[data-enabled="true"] .consent-terms,
+  .consent-panel[data-enabled="true"] .consent-facts {
+    color: #c2e2cf;
   }
 }
 

@@ -3,6 +3,7 @@
 const LEXICON = {
   connected: { state: "connected", label: "Idle", heading: "Idle", summary: "" },
   used: { state: "used", label: "Agent active", heading: "Agent active", summary: "An agent is driving a page in this browser right now." },
+  consent: { state: "consent", label: "Not enabled", heading: "Enable browser control", summary: "Open Options to review the data disclosure and enable the local bridge." },
   connecting: { state: "connecting", label: "Reconnecting", heading: "Reconnecting", summary: "Retrying automatically. Use Reconnect if this sticks." },
   disconnected: { state: "disconnected", label: "Down", heading: "Down", summary: "" },
   error: { state: "error", label: "Down", heading: "Worker unavailable", summary: "" },
@@ -18,6 +19,7 @@ const detailsPanel = document.getElementById("detailsPanel");
 let refreshTimer = 0;
 let busy = false;
 let operatorOpenedDetails = false;
+let consentGranted = false;
 
 reconnectButton.addEventListener("click", reconnect);
 optionsButton.addEventListener("click", () => {
@@ -39,6 +41,11 @@ async function init() {
 
 async function reconnect() {
   if (busy) return;
+  if (!consentGranted) {
+    chrome.runtime.openOptionsPage();
+    window.close();
+    return;
+  }
   busy = true;
   reconnectButton.disabled = true;
   optionsButton.disabled = true;
@@ -99,6 +106,7 @@ async function refresh({ announce = false } = {}) {
 }
 
 function render(status, announce) {
+  consentGranted = status.consent?.granted === true;
   const socket = status.socket || "closed";
   const daemon = status.daemon || {};
   const bridge = status.bridge || {};
@@ -112,7 +120,8 @@ function render(status, announce) {
     || ["starting", "connecting", "configured"].includes(bridge.status);
 
   let mode = "disconnected";
-  if (badge === "used" || (connected && status.agentActive)) mode = "used";
+  if (!consentGranted) mode = "consent";
+  else if (badge === "used" || (connected && status.agentActive)) mode = "used";
   else if (connected) mode = "connected";
   else if (connecting) mode = "connecting";
 
@@ -127,6 +136,8 @@ function render(status, announce) {
     summary = actionable(status);
   }
 
+  reconnectButton.textContent = consentGranted ? "Reconnect" : "Enable in Options";
+
   applyLexicon(mode, summary);
   popup.dataset.state = mode;
 
@@ -139,7 +150,9 @@ function render(status, announce) {
   document.getElementById("extensionVersion").textContent = status.extensionVersion
     ? `v${status.extensionVersion}`
     : "";
-  document.getElementById("profileLine").textContent = name || "Unbound profile";
+  document.getElementById("profileLine").textContent = consentGranted
+    ? (name || "Unbound profile")
+    : "Local control disabled";
   document.getElementById("detailsMeta").textContent = port
     ? `:${port} · ${socketLabel(socket).toLowerCase()}`
     : socketLabel(socket).toLowerCase();
@@ -175,13 +188,14 @@ function lexiconName(mode) {
   if (mode === "used") return "Agent active";
   if (mode === "connected") return "Idle";
   if (mode === "connecting") return "Reconnecting";
+  if (mode === "consent") return "Not enabled";
   return "Down";
 }
 
 function isVerifiedUp(status) {
   const socket = status.socket || "closed";
   const daemon = status.daemon || {};
-  return socket === "open" && daemon.reachable && daemon.connected;
+  return status.consent?.granted === true && socket === "open" && daemon.reachable && daemon.connected;
 }
 
 function profileName(status) {
@@ -191,6 +205,7 @@ function profileName(status) {
 }
 
 function actionable(status) {
+  if (status.consent?.granted !== true) return "Open Options to review the disclosure and enable browser control.";
   const daemon = status.daemon || {};
   const bridge = status.bridge || {};
   if (!daemon.reachable) return "Start brwd on this profile's port, or open Options to pick the right one.";

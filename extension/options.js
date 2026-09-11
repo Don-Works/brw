@@ -6,11 +6,21 @@ const statusBlock = document.getElementById("statusBlock");
 const formMessage = document.getElementById("formMessage");
 const rawStatus = document.getElementById("rawStatus");
 const advanced = document.getElementById("advancedConfig");
+const consentPanel = document.getElementById("consentPanel");
+const grantConsentButton = document.getElementById("grantConsent");
+const revokeConsentButton = document.getElementById("revokeConsent");
 let refreshTimer = 0;
 let refreshing = false;
+let consentGranted = false;
 
 form.addEventListener("submit", save);
 refreshButton.addEventListener("click", () => refreshStatus({ announce: true }));
+grantConsentButton.addEventListener("click", () => updateConsent(true));
+revokeConsentButton.addEventListener("click", () => {
+  if (window.confirm("Disable brw browser control and disconnect the local daemon?")) {
+    updateConsent(false);
+  }
+});
 document.getElementById("bridgeUrl").addEventListener("change", syncStatusEndpoint);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refreshStatus();
@@ -33,6 +43,11 @@ async function init() {
 async function save(event) {
   event.preventDefault();
   clearValidation();
+  if (!consentGranted) {
+    setFormMessage("Enable local browser control before connecting this profile.", "error");
+    grantConsentButton.focus();
+    return;
+  }
   if (!validateEndpoints()) return;
 
   saveButton.disabled = true;
@@ -49,9 +64,35 @@ async function save(event) {
     setFormMessage(humanizeError(error), "error");
     advanced.open = true;
   } finally {
-    saveButton.disabled = false;
+    saveButton.disabled = !consentGranted;
     saveButton.textContent = "Save and reconnect";
     form.removeAttribute("aria-busy");
+  }
+}
+
+async function updateConsent(granted) {
+  grantConsentButton.disabled = true;
+  revokeConsentButton.disabled = true;
+  setFormMessage(
+    granted
+      ? "Enabling browser control and connecting to the local daemon…"
+      : "Disabling browser control and releasing controlled tabs…"
+  );
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "BRW_SET_CONSENT", granted });
+    if (!response?.ok) throw new Error(response?.error || "Could not update browser control");
+    renderStatus(response.status || {}, false);
+    setFormMessage(
+      granted
+        ? "Browser control enabled. The extension may now connect to your local brw daemon."
+        : "Browser control disabled. The daemon is disconnected and debugger sessions are released.",
+      "success"
+    );
+  } catch (error) {
+    setFormMessage(humanizeError(error), "error");
+  } finally {
+    grantConsentButton.disabled = false;
+    revokeConsentButton.disabled = false;
   }
 }
 
@@ -87,14 +128,20 @@ function renderStatus(status, announce = false) {
   const bridge = status.bridge || {};
   const identity = daemon.identity || {};
   const configured = status.config || {};
-  const connected = socket === "open" && daemon.reachable && daemon.connected;
+  renderConsent(status.consent || {});
+  const connected = consentGranted && socket === "open" && daemon.reachable && daemon.connected;
   const connecting = socket === "connecting" || ["starting", "connecting", "configured"].includes(bridge.status);
 
   let state = "error";
   let label = "Needs attention";
   let heading = "This profile is not connected";
   let summary = actionableFailure(status);
-  if (connected) {
+  if (!consentGranted) {
+    state = "consent";
+    label = "Not enabled";
+    heading = "Enable browser control first";
+    summary = "The extension will not connect to a daemon or handle page data until you use the enable button above.";
+  } else if (connected) {
     state = "connected";
     label = "Ready for automation";
     heading = "Connected and identity-verified";
@@ -122,6 +169,23 @@ function renderStatus(status, announce = false) {
   if (announce) setFormMessage(connected ? "Connection verified." : summary, connected ? "success" : "error");
 }
 
+function renderConsent(consent = {}) {
+  consentGranted = consent.granted === true;
+  consentPanel.dataset.enabled = String(consentGranted);
+  document.getElementById("consentKicker").textContent = consentGranted
+    ? "Browser control enabled"
+    : "Required before connection";
+  document.getElementById("consentHeading").textContent = consentGranted
+    ? "Local browser control is on"
+    : "Enable local browser control";
+  document.getElementById("consentSummary").textContent = consentGranted
+    ? "brw may connect to your local daemon and handle browser data only when your configured agent requests it."
+    : "When you ask an agent to use brw, this extension can read and change content in visible tabs and return the result to a brw daemon on this computer.";
+  grantConsentButton.hidden = consentGranted;
+  revokeConsentButton.hidden = !consentGranted;
+  saveButton.disabled = !consentGranted;
+}
+
 function renderUnavailable(error) {
   statusBlock.dataset.state = "error";
   statusBlock.setAttribute("aria-busy", "false");
@@ -134,6 +198,7 @@ function renderUnavailable(error) {
 }
 
 function actionableFailure(status) {
+  if (status.consent?.granted !== true) return "Enable local browser control above before connecting this profile.";
   const daemon = status.daemon || {};
   const bridge = status.bridge || {};
   if (!daemon.reachable) return "Start brwd on the selected port, or choose the port used by this browser profile.";

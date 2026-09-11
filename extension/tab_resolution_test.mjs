@@ -48,7 +48,9 @@ const overrides = {
   "windows.WINDOW_ID_NONE": -1,
   "offscreen.Reason": { BLOBS: "BLOBS" },
   "offscreen.hasDocument": async () => true,
-  "storage.local.get": async () => ({}),
+  "storage.local.get": async (key) => key === "brwBrowserControlConsent"
+    ? { brwBrowserControlConsent: { granted: true, version: 1, grantedAt: "2026-09-10T00:00:00.000Z" } }
+    : {},
   "storage.local.set": async () => {},
   "alarms.create": async () => {},
   "action.setBadgeText": async () => {},
@@ -145,6 +147,9 @@ src += `
   groupTabForParams,
   listTabSummaries,
   probeDaemonStatus,
+  bridgeDebugStatus,
+  connect,
+  isGrantedConsent,
   ensureTabDrivable,
   waitForTabGone,
   agentOwnedTabIdForHello,
@@ -178,6 +183,47 @@ async function reset() {
   T.state.socket = null;
   T.state.statusProbeFailures = 0;
   T.state.statusProbeInFlight = null;
+}
+
+async function scenarioConsentGateIsFailClosed() {
+  await reset();
+  const savedGet = overrides["storage.local.get"];
+  const savedDetach = overrides["debugger.detach"];
+  const savedFetch = sandbox.fetch;
+  let detachCalls = 0;
+  try {
+    overrides["storage.local.get"] = async () => ({});
+    overrides["debugger.detach"] = async () => { detachCalls += 1; };
+    sandbox.fetch = async () => ({ ok: true, json: async () => ({ connected: true }) });
+
+    const socket = new MockWebSocket();
+    socket.readyState = MockWebSocket.OPEN;
+    T.state.socket = socket;
+    T.state.attachedTabs.add(17);
+    await T.connect({ probe: true });
+
+    check("missing consent closes an existing bridge socket",
+      T.state.socket === null && socket.closeCalls === 1);
+    check("missing consent releases debugger attachments",
+      detachCalls === 1 && T.state.attachedTabs.size === 0);
+    check("missing consent is a distinct visible bridge state",
+      T.state.reportedStatus === "consent_required");
+
+    const status = await T.bridgeDebugStatus();
+    check("status reports the daemon as gated before consent",
+      status.consent?.granted === false &&
+      status.daemon?.reachable === false &&
+      status.daemon?.consentRequired === true);
+    check("only the current explicit consent version is accepted",
+      T.isGrantedConsent({ granted: true, version: 1 }) === true &&
+      T.isGrantedConsent({ granted: true, version: 0 }) === false &&
+      T.isGrantedConsent({ granted: false, version: 1 }) === false);
+  } finally {
+    overrides["storage.local.get"] = savedGet;
+    if (savedDetach === undefined) delete overrides["debugger.detach"];
+    else overrides["debugger.detach"] = savedDetach;
+    sandbox.fetch = savedFetch;
+  }
 }
 
 async function scenarioMainDocumentIdentityIsExactAndMonotonic() {
@@ -924,6 +970,7 @@ async function scenarioForeignExtensionPopoutNeverStealsForeground() {
 }
 
 (async () => {
+  await scenarioConsentGateIsFailClosed();
   await scenarioPinBeatsForeground();
   await scenarioUserClicksChatPWA();
   await scenarioPoisonedCacheNoPin();

@@ -162,8 +162,7 @@ HttpOnly cookies or bulk-exports a site's stored credentials, and sensitive form
 fields are redacted from snapshots, reads, and captured network headers.
 
 The extension is open source (AGPL-3.0) and ships with a pinned public key, so
-it always loads with the same stable id — identical for load-unpacked, the
-self-hosted CRX, and the Web Store build:
+load-unpacked and self-hosted builds use the same stable id:
 
 ```
 amocjcgddnoakjijfggdpnefdnboilpe
@@ -171,7 +170,12 @@ amocjcgddnoakjijfggdpnefdnboilpe
 
 That id is the daemon's `DefaultBridgeExtensionID`, so an unconfigured bridge
 trusts the real extension with no policy edit. Only set `bridge_extension_id`
-for a different re-signed build.
+for a different re-signed build. Before publishing through the Chrome Web
+Store, verify that the draft item resolves to this same id.
+
+After install or update, Options opens with the browser-data disclosure. The
+extension stays disconnected until you explicitly click **Enable local browser
+control**.
 
 The extension keeps its service worker alive so the bridge does not drop while
 Chrome idles in the background — see [docs/reliability.md](docs/reliability.md)
@@ -222,8 +226,10 @@ and served with the correct content-types.
 - **Load unpacked:** run `make install-extension` to print the folder and open
   `chrome://extensions`, then enable Developer mode → Load unpacked → select
   `extension/`.
-- **Chrome Web Store (one-click):** an unlisted listing is in review for
-  one-click install + auto-updates, sharing the same id (not live yet).
+- **Chrome Web Store (one-click):** a current store package, listing copy,
+  disclosure checklist, and reviewer flow are prepared in
+  [`docs/web-store-listing.md`](docs/web-store-listing.md). The listing is not
+  live; verify its item id against the pinned id before publishing.
 
 See the [Install page](https://brw.donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss#install),
 [docs/install.md](docs/install.md), and [docs/auth-model.md](docs/auth-model.md).

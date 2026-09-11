@@ -2,6 +2,8 @@ const BRIDGE_URL = "ws://127.0.0.1:17311/extension";
 const BRIDGE_STATUS_URL = "http://127.0.0.1:17311/status";
 const BRIDGE_CONFIG_KEY = "brwBridgeConfig";
 const BRIDGE_STATUS_KEY = "brwBridge";
+const BRIDGE_CONSENT_KEY = "brwBrowserControlConsent";
+const BRIDGE_CONSENT_VERSION = 1;
 const PROTOCOL_VERSION = "0.2.0";
 const KEEPALIVE_INTERVAL_MS = 5 * 1000;
 const DAEMON_STATUS_INTERVAL_MS = 10 * 1000;
@@ -448,11 +450,16 @@ function touchAgentActivity() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(async (details) => {
   ensureConnectAlarm();
   ensureOffscreen();
   reconcileDebuggerAttachments().catch(() => {});
-  markBridgeStatus("starting").catch(() => {});
+  if (!(await hasBrowserControlConsent())) {
+    await markBridgeStatus("consent_required", "Browser control has not been enabled by the user.");
+    if (details?.reason === "install" || details?.reason === "update") {
+      chrome.runtime.openOptionsPage().catch(() => {});
+    }
+  }
   connect();
 });
 
@@ -464,6 +471,12 @@ chrome.runtime.onStartup.addListener(() => {
   connect();
 });
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "BRW_SET_CONSENT") {
+    setBrowserControlConsent(Boolean(message.granted)).then(() => bridgeDebugStatus())
+      .then((status) => sendResponse({ ok: true, status }))
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
   if (message?.type === "BRW_GET_STATUS") {
     bridgeDebugStatus().then((status) => sendResponse({ ok: true, status })).catch((error) => {
       sendResponse({ ok: false, error: String(error?.message || error) });
@@ -506,7 +519,17 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || !changes[BRIDGE_CONFIG_KEY]) return;
+  if (area !== "local") return;
+  if (changes[BRIDGE_CONSENT_KEY]) {
+    const granted = isGrantedConsent(changes[BRIDGE_CONSENT_KEY].newValue);
+    if (granted) {
+      connect({ probe: true });
+    } else {
+      disconnectForConsent().catch(() => {});
+    }
+    return;
+  }
+  if (!changes[BRIDGE_CONFIG_KEY]) return;
   try {
     state.bridgeConfig = normalizeBridgeConfig(changes[BRIDGE_CONFIG_KEY].newValue || {});
   } catch (error) {
@@ -670,6 +693,11 @@ markBridgeStatus("starting").catch(() => {});
 connect();
 
 async function connect(options = {}) {
+  if (!(await hasBrowserControlConsent())) {
+    if (state.socket) await disconnectForConsent();
+    else await markBridgeStatus("consent_required", "Browser control has not been enabled by the user.");
+    return;
+  }
   if (isSocketOpen()) {
     if (options.probe) await probeDaemonStatus();
     return;
@@ -694,6 +722,13 @@ async function connectOnce() {
     await markBridgeStatus("error", state.lastError);
     return;
   }
+  // Consent can be revoked while the asynchronous config read above is in
+  // flight. Re-check immediately before creating any transport so an older
+  // connect attempt cannot outlive the user's choice.
+  if (!(await hasBrowserControlConsent())) {
+    await markBridgeStatus("consent_required", "Browser control has not been enabled by the user.");
+    return;
+  }
   await markBridgeStatus("connecting");
 
   const socket = new WebSocket(config.bridgeUrl);
@@ -701,6 +736,14 @@ async function connectOnce() {
 
   socket.onopen = async () => {
     if (state.socket !== socket) return;
+    // A WebSocket may finish opening after Disable was clicked. Never send the
+    // authenticated hello or accept work until the current consent is checked.
+    if (!(await hasBrowserControlConsent())) {
+      if (state.socket === socket) state.socket = null;
+      try { socket.close(); } catch (_) {}
+      await disconnectForConsent();
+      return;
+    }
     state.reconnectAttempt = 0;
     state.statusProbeFailures = 0;
     state.lastError = "";
@@ -760,6 +803,13 @@ async function connectOnce() {
     try { socket.close(); } catch (_) {}
   };
   socket.onmessage = async (event) => {
+    // Storage-change delivery and WebSocket events are separate queues. This
+    // closes the last race where a command was already queued as consent was
+    // revoked.
+    if (!(await hasBrowserControlConsent())) {
+      await disconnectForConsent();
+      return;
+    }
     let message;
     try {
       message = JSON.parse(event.data);
@@ -782,6 +832,56 @@ async function loadBridgeConfig() {
   const data = await chrome.storage.local.get(BRIDGE_CONFIG_KEY).catch(() => ({}));
   state.bridgeConfig = normalizeBridgeConfig({ ...defaults, ...(data[BRIDGE_CONFIG_KEY] || {}) });
   return state.bridgeConfig;
+}
+
+function isGrantedConsent(value) {
+  return Boolean(
+    value &&
+    value.granted === true &&
+    Number(value.version) === BRIDGE_CONSENT_VERSION
+  );
+}
+
+async function readBrowserControlConsent() {
+  const data = await chrome.storage.local.get(BRIDGE_CONSENT_KEY).catch(() => ({}));
+  const value = data[BRIDGE_CONSENT_KEY] || null;
+  return {
+    granted: isGrantedConsent(value),
+    version: Number(value?.version) || 0,
+    grantedAt: typeof value?.grantedAt === "string" ? value.grantedAt : ""
+  };
+}
+
+async function hasBrowserControlConsent() {
+  return (await readBrowserControlConsent()).granted;
+}
+
+async function setBrowserControlConsent(granted) {
+  const value = {
+    granted: Boolean(granted),
+    version: BRIDGE_CONSENT_VERSION,
+    grantedAt: granted ? new Date().toISOString() : ""
+  };
+  await chrome.storage.local.set({ [BRIDGE_CONSENT_KEY]: value });
+  if (value.granted) {
+    await markBridgeStatus("starting", "Browser control enabled by the user.");
+    await connect({ probe: true });
+  } else {
+    await disconnectForConsent();
+  }
+}
+
+async function disconnectForConsent() {
+  const socket = state.socket;
+  state.socket = null;
+  if (socket) {
+    try { socket.close(); } catch (_) {}
+  }
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
+  stopKeepAlive();
+  await detachAll().catch(() => {});
+  await markBridgeStatus("consent_required", "Browser control has been disabled by the user.");
 }
 
 async function packagedDefaultBridgeConfig() {
@@ -810,10 +910,14 @@ async function configureBridge(config) {
 async function bridgeDebugStatus() {
   const config = await loadBridgeConfig();
   const data = await chrome.storage.local.get(BRIDGE_STATUS_KEY).catch(() => ({}));
-  const daemon = await fetchDaemonSummary(config);
+  const consent = await readBrowserControlConsent();
+  const daemon = consent.granted
+    ? await fetchDaemonSummary(config)
+    : { reachable: false, connected: false, consentRequired: true };
   const badge = resolveBadgeMode(state.reportedStatus || "disconnected");
   return {
     config,
+    consent,
     bridge: data[BRIDGE_STATUS_KEY] || null,
     socket: isSocketOpen() ? "open" : (isSocketConnecting() ? "connecting" : "closed"),
     daemon,
@@ -2839,6 +2943,7 @@ function resolveBadgeMode(status) {
   if (status === "connecting" || status === "starting" || status === "configured") {
     return "connecting";
   }
+  if (status === "consent_required") return "consent";
   // "error", "disconnected", empty — Down.
   return "disconnected";
 }
@@ -2896,6 +3001,10 @@ function applyBadgeFrame(mode, phase) {
     }
     return;
   }
+  if (mode === "consent") {
+    setBadgeVisual("!", BADGE_CONNECTING_BG, "brw · Browser control not enabled");
+    return;
+  }
   setBadgeVisual("off", BADGE_DOWN_BG, "brw · Down — click for status");
 }
 
@@ -2943,6 +3052,13 @@ function setBridgeBadge(status) {
 }
 
 function noteConnectionLifecycle(status) {
+  if (status === "consent_required") {
+    if (disconnectNotifyTimer) {
+      clearTimeout(disconnectNotifyTimer);
+      disconnectNotifyTimer = null;
+    }
+    return;
+  }
   if (status === "connected") {
     everConnectedThisWorker = true;
     if (disconnectNotifyTimer) {

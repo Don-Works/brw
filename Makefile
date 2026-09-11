@@ -11,7 +11,7 @@ GOARCH ?= $(shell go env GOARCH)
 # agent sees over MCP always matches the binary, instead of a hand-edited constant.
 GO_LDFLAGS ?= -X github.com/Don-Works/brw/internal/mcp.Version=$(VERSION)
 
-.PHONY: build test test-extension test-functional install install-mac install-agent-skills sync-installed-extensions install-extension package-darwin-arm64 package-linux package-macos
+.PHONY: build test test-extension test-functional install install-mac install-agent-skills sync-installed-extensions install-extension package-web-store package-darwin-arm64 package-linux package-macos
 
 build:
 	go build -ldflags "$(GO_LDFLAGS)" -o bin/brwd ./cmd/brwd
@@ -107,6 +107,9 @@ install-extension:
 	@echo ""
 	-@open -a "Google Chrome" "chrome://extensions" 2>/dev/null || true
 	-@open -R "$(CURDIR)/extension" 2>/dev/null || true
+
+package-web-store:
+	scripts/package-web-store.sh dist/web-store
 
 package-darwin-arm64:
 	GOOS=darwin GOARCH=arm64 go build -ldflags "$(GO_LDFLAGS)" -o bin/brwd-darwin-arm64 ./cmd/brwd

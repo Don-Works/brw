@@ -2,16 +2,19 @@
 
 This is the Chrome extension transport for installed-profile auth.
 
-The manifest pins a public `key`, so the extension always loads with the same
-stable id — `amocjcgddnoakjijfggdpnefdnboilpe` — whether loaded unpacked,
-installed from the self-hosted CRX, or installed from the Chrome Web Store. That
-id is baked into the daemon as
+The manifest pins a public `key`, so load-unpacked and self-hosted builds use
+the stable id `amocjcgddnoakjijfggdpnefdnboilpe`. That id is baked into the daemon as
 `DefaultBridgeExtensionID`, so an unconfigured bridge trusts it with no policy
 edit. Only set `bridge_extension_id` if you re-sign the extension with your own
-key (which produces a different id).
+key (which produces a different id). Verify that a draft Chrome Web Store item
+resolves to this id before publishing it.
 
 ## What It Does
 
+- Remains disabled after install or update until the user reviews the prominent
+  browser-data disclosure in Options and clicks **Enable local browser
+  control**. Disabling control closes the socket and releases debugger
+  attachments.
 - Connects to `ws://127.0.0.1:17311/extension` and authenticates with the
   daemon's per-launch handshake token (read over loopback `/status`, which a web
   page cannot read cross-origin) as the first frame (extension `0.2.0`+). The
@@ -28,10 +31,12 @@ key (which produces a different id).
   opens a distilled status popup (Details collapsed when healthy; Reconnect
   verifies until the bridge is up). Sustained disconnect after a prior
   connection also notifies the operator.
-- **Never reads or exports Chrome cookies, passwords, passkeys, or profile
-  files — enforced, not just promised.** The extension refuses every cookie CDP
-  method and the entire `Storage` CDP domain, so the privacy claim holds even if
-  a rogue local server answers its socket.
+- **Does not access Chrome's password store, passkey store, profile files,
+  HttpOnly cookies, or bulk site storage.** The extension refuses every cookie
+  CDP method and the site-storage CDP domains. `Runtime.evaluate` remains
+  available for page control, so page-visible values can still be handled when
+  the user asks their configured agent to do so; sensitive fields are redacted
+  from normal semantic observations.
 - **Does not auto-confirm the user's own dialogs.** JS dialogs are auto-accepted
   only while `brw` is actively driving the tab; otherwise `confirm`, `prompt`, and
   `beforeunload` get the non-destructive answer (Cancel/Stay), so a background or
@@ -108,7 +113,8 @@ For development, run `make install-extension` from the repo root (it prints the
 folder and opens `chrome://extensions`), then Developer mode → Load unpacked →
 select this directory.
 
-A one-click, unlisted Chrome Web Store build is in review (not live yet) — same
-id, plus auto-updates. Chrome 137+ branded builds dropped reliable
+A one-click Chrome Web Store build is being prepared. See
+[`docs/web-store-listing.md`](../docs/web-store-listing.md) for the current
+submission package, privacy disclosures, and reviewer flow. Chrome 137+ branded builds dropped reliable
 `--load-extension`, so use the load-unpacked path (or the Web Store once live)
 rather than launch flags on Chrome.

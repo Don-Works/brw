@@ -186,6 +186,12 @@ h1 {
 }
 .popup[data-state="connecting"] .status-label { color: var(--warning); }
 
+.popup[data-state="consent"] .status { background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 30%, var(--line)); }
+.popup[data-state="consent"] .status-mark {
+  border-color: var(--warning);
+}
+.popup[data-state="consent"] .status-label { color: var(--warning); }
+
 .popup[data-state="disconnected"] .status,
 .popup[data-state="error"] .status { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); }
 .popup[data-state="disconnected"] .status-mark,

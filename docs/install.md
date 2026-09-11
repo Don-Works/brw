@@ -90,18 +90,21 @@ security.
 
 ## brw Extension
 
-The extension is open source (AGPL-3.0). It pins a public key in
-`extension/manifest.json`, so it always loads with the same stable id —
-`amocjcgddnoakjijfggdpnefdnboilpe` — whether loaded unpacked, installed from the
-self-hosted CRX, or installed from the Chrome Web Store. That id is the daemon's
+The extension is open source (AGPL-3.0). Its public key in
+`extension/manifest.json` gives load-unpacked and self-hosted builds the stable
+id `amocjcgddnoakjijfggdpnefdnboilpe`. That id is the daemon's
 `profilepolicy.DefaultBridgeExtensionID`, so an unconfigured bridge already
 trusts the real extension; you only set `bridge_extension_id` for a different
-(re-signed) build.
+(re-signed) build. Verify that the draft Chrome Web Store item resolves to the
+same id before publishing it.
 
 The extension bridges the brw daemon to your real, signed-in browser over
-`ws://127.0.0.1` and drives visible tabs via the Chrome debugger protocol. It
-never reads cookies, passwords, or passkeys — it is a normal visible browser, no
-stealth / CAPTCHA / MFA bypass.
+`ws://127.0.0.1` after you review its disclosure and explicitly enable browser
+control. It drives visible tabs via the Chrome debugger protocol, blocks
+HttpOnly-cookie and bulk-storage CDP access, and does not access Chrome's
+password store, passkey store, or profile files. Page-visible values can still
+be handled when you ask your configured agent to do so. It is a normal visible
+browser, with no stealth / CAPTCHA / MFA bypass.
 
 ### Chromium recommended (open source)
 
@@ -199,11 +202,15 @@ make install-extension   # prints the folder + opens chrome://extensions
 2. Enable Developer mode.
 3. Choose Load unpacked.
 4. Select the `extension/` directory.
-5. Keep the extension enabled.
+5. In the Options page that opens, review the browser-data disclosure and click
+   **Enable local browser control**.
+6. Keep the extension enabled.
 
-One-click Chrome Web Store install: an unlisted listing is **in review** (not
-live yet). It shares the same id, so switching to it later needs no policy
-change.
+One-click Chrome Web Store install is being prepared, but is not live. The
+current package, accurate disclosure answers, permission justifications, and
+reviewer flow are in [`web-store-listing.md`](web-store-listing.md). Verify the
+draft item id against the pinned id before publishing; if it differs, update the
+profile policy's `bridge_extension_id` before switching users to it.
 
 Set `bridge_extension_id` in the profile policy only when you ship your own
 re-signed build with a different id; the default published id is built in.
