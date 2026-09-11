@@ -72,7 +72,7 @@ open → snapshot for refs → act by ref → wait/assert → read → close.
 → e1 label "Email" · e2 textbox "Email" type=email · e3 label "Plan"
   e4 combobox "Plan" =free · e5 button "Continue" type=submit
 
-{"name":"brw_fill","arguments":{"tab_id":"235935873","ref":"e2","text":"a@example.test"}}
+{"name":"brw_fill","arguments":{"tab_id":"235935873","ref":"e2","text":"a@example.com"}}
 {"name":"brw_select","arguments":{"tab_id":"235935873","ref":"e4","value":"pro"}}
 {"name":"brw_batch","arguments":{"steps":[
    {"action":"focus_tab","id":"235935873"},

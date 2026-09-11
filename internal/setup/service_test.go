@@ -110,7 +110,7 @@ const revittStyleAgent = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>co.revitt.brw.chromium</string>
+  <string>co.acme.brw.chromium</string>
   <key>ProgramArguments</key>
   <array>
     <string>/Users/someone/Library/Application Support/brw/bin/brwd</string>
@@ -136,7 +136,7 @@ func TestConflictsRefusesPreExistingAgent(t *testing.T) {
 	}{
 		{
 			name:       "hand made agent for the same profile",
-			file:       "co.revitt.brw.chromium.plist",
+			file:       "co.acme.brw.chromium.plist",
 			content:    revittStyleAgent,
 			wantReason: "drives profile chrome-profile",
 		},

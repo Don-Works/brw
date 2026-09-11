@@ -57,7 +57,7 @@ const tab = String((r.tab || r).id);                        // ids may arrive nu
 const s = ns.brw_snapshot({ mode: "all", tab_id: tab });
 const email = s.elements.find(e => e.role === "textbox" && /email/i.test(e.name)).ref;
 const submit = s.elements.find(e => e.role === "button" && /continue|sign in/i.test(e.name)).ref;
-ns.brw_fill({ ref: email, text: "a@example.test", tab_id: tab });
+ns.brw_fill({ ref: email, text: "a@example.com", tab_id: tab });
 ns.brw_batch({ steps: [
   { action: "focus_tab", id: tab },
   { action: "click", ref: submit },

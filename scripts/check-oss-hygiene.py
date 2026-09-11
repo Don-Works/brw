@@ -23,6 +23,12 @@ PUBLIC_SYNTHETIC_FIXTURES = {
     SELF,
     "scripts/test-functional.sh",
     "internal/recipe/schema_test.go",
+    # Setup renders absolute service, log and policy paths, so its tests have to
+    # assert on home-shaped strings. They are fabricated users, not this machine.
+    "cmd/brwctl/setup_test.go",
+    "internal/setup/service_test.go",
+    "internal/setup/skills_test.go",
+    "internal/setup/claudechrome_test.go",
 }
 
 RECIPE_CORPUS_PATH = re.compile(

@@ -228,9 +228,9 @@ func TestSetupRefusesPreExistingLaunchAgent(t *testing.T) {
 	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	handMade := filepath.Join(agentDir, "co.revitt.brw.chrome.plist")
+	handMade := filepath.Join(agentDir, "co.acme.brw.chrome.plist")
 	handMadeContent := `<?xml version="1.0"?><plist><dict>
-  <key>Label</key><string>co.revitt.brw.chrome</string>
+  <key>Label</key><string>co.acme.brw.chrome</string>
   <key>ProgramArguments</key><array>
     <string>/usr/local/bin/brwd</string>
     <string>--profile</string><string>chrome-profile</string>
@@ -257,7 +257,7 @@ func TestSetupRefusesPreExistingLaunchAgent(t *testing.T) {
 	text := out.String()
 	for _, want := range []string{
 		statusRefuse,
-		"co.revitt.brw.chrome",
+		"co.acme.brw.chrome",
 		"drives profile chrome-profile",
 		"leaving the existing LaunchAgent alone",
 	} {
