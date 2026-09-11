@@ -18,6 +18,7 @@ set -eu
 #   BRW_BASE_URL          where to fetch the archive from (default: the GitHub
 #                         release download URL for the resolved version)
 #   BRW_NO_SETUP          set to any value to stop before `brwctl setup`
+#   BRW_NO_PATH           set to any value to leave shell startup files alone
 #   BRW_SKIP_ATTESTATION  set to any value to skip the provenance check; the
 #                         SHA256 check still runs
 
@@ -301,8 +302,32 @@ case ":$PATH:" in
 esac
 if [ "$on_path" = "no" ]; then
   printf '\n'
-  warn "$bin_dir is not on your PATH. Add it:"
-  warn "  export PATH=\"$bin_dir:\$PATH\""
+  # An installer that leaves "command not found" behind has not installed
+  # anything as far as the person running it is concerned.
+  rc_file=""
+  case "${SHELL:-}" in
+    */zsh)  rc_file="$HOME/.zshrc" ;;
+    */bash) if [ "$os" = "darwin" ]; then rc_file="$HOME/.bash_profile"; else rc_file="$HOME/.bashrc"; fi ;;
+    */fish) rc_file="$HOME/.config/fish/config.fish" ;;
+  esac
+  path_line="export PATH=\"$bin_dir:\$PATH\""
+  if [ "${SHELL:-}" != "${SHELL%fish}" ]; then
+    path_line="fish_add_path $bin_dir"
+  fi
+  if [ -n "${BRW_NO_PATH:-}" ] || [ -z "$rc_file" ]; then
+    warn "$bin_dir is not on your PATH. Add it:"
+    warn "  $path_line"
+  elif [ -f "$rc_file" ] && grep -qF "$bin_dir" "$rc_file" 2>/dev/null; then
+    warn "$bin_dir is in $rc_file but not in this shell. Open a new terminal, or:"
+    warn "  $path_line"
+  else
+    mkdir -p "$(dirname "$rc_file")"
+    printf '\n# Added by the brw installer\n%s\n' "$path_line" >> "$rc_file"
+    step "Added $bin_dir to your PATH in $rc_file"
+    info "This shell does not have it yet. Open a new terminal, or run:"
+    info "  $path_line"
+    info "BRW_NO_PATH=1 skips this next time."
+  fi
 fi
 
 printf '\n'
@@ -312,8 +337,10 @@ if [ -n "${BRW_NO_SETUP:-}" ]; then
 elif "$install_dir/bin/brwctl" setup --help >/dev/null 2>&1; then
   step "Running brwctl setup"
   # Detach stdin: when this script is itself being read from a pipe, a child
-  # reading stdin would consume the rest of the script.
-  if ! "$install_dir/bin/brwctl" setup < /dev/null; then
+  # reading stdin would consume the rest of the script. That also means setup
+  # cannot ask for confirmation, so answer for it — running this installer is
+  # the consent, and BRW_NO_SETUP stops before this point.
+  if ! "$install_dir/bin/brwctl" setup --yes < /dev/null; then
     printf '\n'
     warn "brw is installed in $install_dir but 'brwctl setup' did not finish."
     warn "Re-run it once the problem above is fixed:  $bin_dir/brwctl setup"

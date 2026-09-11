@@ -416,12 +416,16 @@ func (r *setupRunner) stepConfig() error {
 		Home:             r.opts.home,
 		GOOS:             r.opts.goos,
 	})
+	// The edits are not separate side effects: they all land in the single
+	// policy write below, so they are reported as its contents rather than as
+	// actions of their own.
+	var edits []string
 	for _, change := range changes {
 		if !change.Edit {
 			r.act(statusOK, "%s", change.Detail)
 			continue
 		}
-		r.act(statusWould, "%s", change.Detail)
+		edits = append(edits, change.Detail)
 	}
 	r.policy = merged
 	profile, err := merged.Find(r.opts.profileName)
@@ -444,6 +448,13 @@ func (r *setupRunner) stepConfig() error {
 		backup = saved
 		return err
 	})
+	for _, edit := range edits {
+		if !written {
+			r.act(statusSkip, "%s", edit)
+			continue
+		}
+		r.act(statusOK, "%s", edit)
+	}
 	if written && backup != "" {
 		r.act(statusOK, "previous policy saved as %s", backup)
 	}
