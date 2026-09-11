@@ -146,9 +146,20 @@ its profiles live:
 brwctl setup --browser comet --user-data-dir ~/Library/Application\ Support/Comet
 ```
 
-Firefox and Safari are not supported. Neither speaks CDP, and Safari's
-automation route hands you a clean window rather than your signed-in session,
-which is the opposite of what brw is for.
+Firefox and Safari are not supported.
+
+Firefox does speak an automation protocol — WebDriver BiDi, over the same
+`--remote-debugging-port` flag, with no driver binary. Three things stop it
+being a lane. BiDi can only be switched on at startup, so brw would have to be
+what launches your browser rather than attaching to the one you already have
+open. Firefox sets `navigator.webdriver = true` for the whole process whenever
+the remote agent is enabled, not per session, so every page of a signed-in
+session would be told it is automated. And there is no extension lane to fall
+back on: Firefox has no equivalent of `chrome.debugger`, and a content script
+can only produce untrusted events.
+
+Safari's automation route hands you a clean window rather than your signed-in
+session, which is the opposite of what brw is for.
 
 ### What setup cannot do for you
 
