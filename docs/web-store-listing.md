@@ -81,7 +81,7 @@ submission.
 
 **Homepage URL:** `https://brw.donworks.co.uk`
 
-**Privacy policy URL:** `https://brw.donworks.co.uk/privacy`
+**Privacy policy URL:** `https://brw.donworks.co.uk/privacy/extension`
 
 **Support URL:** `https://github.com/Don-Works/brw/issues`
 
@@ -159,7 +159,7 @@ analytics, personalisation, or unrelated purposes. The accurate explanation is:
 
 Complete all Limited Use certifications: no sale, no advertising, no unrelated
 use, no lending/credit use, and no publisher human access. The affirmative
-Limited Use statement is published at `https://brw.donworks.co.uk/privacy`.
+Limited Use statement is published at `https://brw.donworks.co.uk/privacy/extension`.
 
 The `ws://127.0.0.1` transport is intentional. Chrome's policy says the secure
 transmission requirement does not apply between an extension and a native

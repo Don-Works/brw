@@ -67,13 +67,28 @@ for cmd in brwd brwctl brwcheck brw-devtools-mcp; do
   chmod 0755 "$stage_dir/bin/$cmd"
 done
 
-# A Go binary's ad-hoc signature is what lets Apple Silicon run it at all; an
-# unsigned one is SIGKILLed on launch. Only a macOS host can produce it, and the
-# release workflow already builds the darwin archives on macOS.
+# A Go binary's signature is what lets Apple Silicon run it at all; an unsigned
+# one is SIGKILLed on launch. Only a macOS host can produce it, and the release
+# workflow already builds the darwin archives on macOS. Sign with the Developer
+# ID identity when the release has one, so the archives the one-line installer
+# downloads carry the same provenance as the .pkg rather than an anonymous
+# ad-hoc signature.
 if [ "$os" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
+  sign_identity="${MACOS_SIGN_IDENTITY:--}"
+  sign_flags=""
+  if [ "$sign_identity" != "-" ]; then
+    sign_flags="--timestamp --options runtime"
+    # The release imports the certificate into a temporary keychain that is not
+    # in the default search list, so codesign has to be told where to look.
+    if [ -n "${MACOS_KEYCHAIN:-}" ]; then
+      sign_flags="$sign_flags --keychain ${MACOS_KEYCHAIN}"
+    fi
+  fi
   for cmd in brwd brwctl brwcheck brw-devtools-mcp; do
-    codesign --force --sign - "$stage_dir/bin/$cmd" >/dev/null
+    # shellcheck disable=SC2086 # sign_flags is a deliberate word list
+    codesign --force --sign "$sign_identity" $sign_flags "$stage_dir/bin/$cmd" >/dev/null
   done
+  echo "signed the darwin binaries with identity: $sign_identity" >&2
 fi
 
 cp -R "$repo_root/extension" "$stage_dir/extension"

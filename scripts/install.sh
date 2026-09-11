@@ -265,13 +265,19 @@ for cmd in $COMMANDS; do
 done
 
 if [ "$os" = "darwin" ]; then
-  # An unpacked Go binary carries no valid ad-hoc signature on Apple Silicon and
-  # the kernel SIGKILLs it on launch ("Killed: 9"); re-signing the copy fixes it.
   if command -v xattr >/dev/null 2>&1; then
     xattr -cr "$install_dir/bin" 2>/dev/null || true
   fi
   if command -v codesign >/dev/null 2>&1; then
     for cmd in $COMMANDS; do
+      # An unpacked Go binary whose signature did not survive the round trip is
+      # SIGKILLed on Apple Silicon ("Killed: 9"), and an ad-hoc re-sign fixes
+      # that. Only re-sign what actually fails verification: forcing it over a
+      # Developer ID signature would throw away the release's provenance to
+      # solve a problem that signature does not have.
+      if codesign --verify --strict "$install_dir/bin/$cmd" >/dev/null 2>&1; then
+        continue
+      fi
       codesign --force --sign - "$install_dir/bin/$cmd" >/dev/null 2>&1 || true
     done
   fi
@@ -314,7 +320,10 @@ if [ "$on_path" = "no" ]; then
   if [ "${SHELL:-}" != "${SHELL%fish}" ]; then
     path_line="fish_add_path $bin_dir"
   fi
-  if [ -n "${BRW_NO_PATH:-}" ] || [ -z "$rc_file" ]; then
+  # Only the default location is written into a startup file. A relocated
+  # install is someone testing or packaging, and editing their shell config
+  # behind their back is not what they asked for.
+  if [ -n "${BRW_NO_PATH:-}" ] || [ -z "$rc_file" ] || [ "$bin_dir" != "$HOME/.local/bin" ]; then
     warn "$bin_dir is not on your PATH. Add it:"
     warn "  $path_line"
   elif [ -f "$rc_file" ] && grep -qF "$bin_dir" "$rc_file" 2>/dev/null; then
