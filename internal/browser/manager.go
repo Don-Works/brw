@@ -393,6 +393,7 @@ func (m *Manager) connect() error {
 const openNavigateTimeout = 10 * time.Second
 
 func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
+	start := time.Now()
 	var err error
 	url, err = m.prepareNavigationURL(url)
 	if err != nil {
@@ -417,6 +418,16 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		return OpenResult{}, err
 	}
 	tabID := string(id)
+	// The tab exists from here on, so every exit below records what became of
+	// it. tabID is read at call time because the attach-failure path recreates
+	// the target and reassigns it. Earlier failures create no tab and are not
+	// recorded: an entry without a tab id would be an unscoped URL.
+	recordOpen := func(finalURL string, err error) {
+		if finalURL == "" {
+			finalURL = url
+		}
+		m.recordObservation(tabID, TraceActionOpen, finalURL, start, err)
+	}
 
 	// navErr records a navigation that never started. It does not fail the open
 	// — the previous path could not report one either — but it is carried into
@@ -474,21 +485,31 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	tab, err := m.tabByID(ctx, tabID)
 	if err != nil {
 		if !m.navPolicy.Empty() {
+			verifyErr := fmt.Errorf("verify open final destination: %w", err)
+			recordOpen(url, verifyErr)
 			_ = m.CloseTab(ctx, tabID)
-			return OpenResult{}, fmt.Errorf("verify open final destination: %w", err)
+			return OpenResult{}, verifyErr
 		}
+		recordOpen(url, nil)
 		return OpenResult{Tab: Tab{ID: tabID, URL: url, Type: "page"}, Ready: ready}, nil
 	}
 	if err := m.navPolicy.Check(tab.URL); err != nil {
+		blocked := fmt.Errorf("open redirected to a disallowed final destination: %w", err)
+		// The final URL is the useful fact here: it names where the redirect
+		// actually went, which is the whole reason the open was refused.
+		recordOpen(tab.URL, blocked)
 		_ = m.CloseTab(ctx, tabID)
-		return OpenResult{}, fmt.Errorf("open redirected to a disallowed final destination: %w", err)
+		return OpenResult{}, blocked
 	}
 	// A tab that never left about:blank is not a page that loaded, whatever the
 	// readiness wait concluded. Report it rather than let a caller act on a
 	// blank tab believing it holds the requested URL.
 	if navErr != nil && strings.HasPrefix(tab.URL, "about:") {
-		return OpenResult{Tab: tab, Ready: false}, fmt.Errorf("navigate new tab to %s: %w", url, navErr)
+		stalled := fmt.Errorf("navigate new tab to %s: %w", url, navErr)
+		recordOpen(url, stalled)
+		return OpenResult{Tab: tab, Ready: false}, stalled
 	}
+	recordOpen(tab.URL, nil)
 	return OpenResult{Tab: tab, Ready: ready}, nil
 }
 
@@ -524,12 +545,15 @@ func (m *Manager) FocusTab(ctx context.Context, id string) error {
 	if id == "" {
 		return errors.New("tab id is required")
 	}
+	start := time.Now()
 	if err := m.runBrowser(ctx, func(ctx context.Context) error {
 		return target.ActivateTarget(target.ID(id)).Do(ctx)
 	}); err != nil {
+		m.recordObservation(id, TraceActionFocusTab, "", start, err)
 		return err
 	}
 	m.refs.SetActive(id)
+	m.recordObservation(id, TraceActionFocusTab, "", start, nil)
 	return nil
 }
 
@@ -537,11 +561,16 @@ func (m *Manager) CloseTab(ctx context.Context, id string) error {
 	if id == "" {
 		return errors.New("tab id is required")
 	}
+	start := time.Now()
 	if err := m.runBrowser(ctx, func(ctx context.Context) error {
 		return target.CloseTarget(target.ID(id)).Do(ctx)
 	}); err != nil {
+		m.recordObservation(id, TraceActionCloseTab, "", start, err)
 		return err
 	}
+	// Recorded before forgetTab: the entry is scoped by the tab's lease, and
+	// dropping the tab first would leave the close itself unattributable.
+	m.recordObservation(id, TraceActionCloseTab, "", start, nil)
 	m.forgetTab(id)
 	return nil
 }
@@ -723,6 +752,7 @@ func (m *Manager) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot
 }
 
 func (m *Manager) Read(ctx context.Context) (readability.PageRead, error) {
+	start := time.Now()
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return readability.PageRead{}, err
@@ -732,14 +762,22 @@ func (m *Manager) Read(ctx context.Context) (readability.PageRead, error) {
 	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{})
 	if err == nil {
 		if guardErr := m.enforceFinalURL(tabID, tabCtx, snap.URL); guardErr != nil {
+			m.recordObservation(tabID, TraceActionRead, snap.URL, start, guardErr)
 			return readability.PageRead{}, guardErr
 		}
 		m.refs.Observe(tabID, snap.Elements)
 	}
-	return readability.Evaluate(tabCtx)
+	read, readErr := readability.Evaluate(tabCtx)
+	url := read.URL
+	if url == "" {
+		url = snap.URL
+	}
+	m.recordObservation(tabID, TraceActionRead, url, start, readErr)
+	return read, readErr
 }
 
 func (m *Manager) ReadData(ctx context.Context) (snapshot.StructuredData, error) {
+	start := time.Now()
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return snapshot.StructuredData{}, err
@@ -748,7 +786,9 @@ func (m *Manager) ReadData(ctx context.Context) (snapshot.StructuredData, error)
 	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
 		return snapshot.StructuredData{}, err
 	}
-	return snapshot.EvaluateStructured(tabCtx)
+	data, dataErr := snapshot.EvaluateStructured(tabCtx)
+	m.recordObservation(tabID, TraceActionReadData, data.URL, start, dataErr)
+	return data, dataErr
 }
 
 func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
@@ -921,11 +961,22 @@ func (m *Manager) hoverRef(tabCtx context.Context, ref string) (string, error) {
 }
 
 func (m *Manager) Evaluate(ctx context.Context, expression string) (any, error) {
+	start := time.Now()
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer cancel()
+	// An expression can carry a value a sensitive recipe step supplied, so the
+	// same redaction the input actions use applies here before the text is
+	// recorded. The action is still recorded; only the script goes.
+	recordEvaluate := func(err error) {
+		if tabID == "" {
+			return
+		}
+		entry := RedactTraceEntry(ctx, NewObservationTrace(TraceActionEvaluate, expression, start, err))
+		m.recordTrace(tabID, entry)
+	}
 
 	var result any
 	evaluate := func(replMode bool) error {
@@ -959,11 +1010,14 @@ func (m *Manager) Evaluate(ctx context.Context, expression string) (any, error) 
 		err = evaluate(true)
 	}
 	if err != nil {
+		recordEvaluate(err)
 		return nil, err
 	}
 	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		recordEvaluate(err)
 		return nil, err
 	}
+	recordEvaluate(nil)
 	return result, nil
 }
 
@@ -2648,6 +2702,17 @@ func (m *Manager) refIdentity(tabID, ref string) (name, role string, nameIsText 
 		return el.Name, el.Role, el.NameIsVisibleText
 	}
 	return "", "", false
+}
+
+// recordObservation records a navigation or read. A trace entry with no tab id
+// is visible to EVERY caller of the shared daemon (scopedTrace and the session
+// stream both treat a tab-less entry as unscoped), so an observation that
+// cannot name its tab is dropped rather than broadcast with its URL.
+func (m *Manager) recordObservation(tabID, action, text string, start time.Time, err error) {
+	if tabID == "" {
+		return
+	}
+	m.recordTrace(tabID, NewObservationTrace(action, text, start, err))
 }
 
 func (m *Manager) recordTrace(tabID string, entry TraceEntry) {

@@ -1822,6 +1822,7 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	if group := b.defaultGroup; group != "" {
 		return b.OpenInGroup(ctx, url, browser.TabGroupOptions{Name: group})
 	}
+	start := time.Now()
 	var err error
 	url, err = b.prepareNavigationURL(url)
 	if err != nil {
@@ -1839,6 +1840,15 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	if out.ID == "" {
 		return browser.OpenResult{}, errors.New("open_tab returned no tab id")
 	}
+	// The tab exists from here on, so every exit records what became of it.
+	// Earlier failures create no tab and are not recorded: an entry without a
+	// tab id would be an unscoped URL.
+	recordOpen := func(finalURL string, err error) {
+		if finalURL == "" {
+			finalURL = url
+		}
+		b.recordObservation(out.ID, browser.TraceActionOpen, finalURL, start, err)
+	}
 	b.setActiveTabID(out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
 	// Re-read the tab after commit so the agent gets a real url/title instead of
@@ -1850,12 +1860,15 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	// later actions chase the live foreground tab, must make the new tab current.
 	if b.followFocus {
 		if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
+			recordOpen(out.URL, err)
 			return browser.OpenResult{Tab: out, Ready: ready}, err
 		}
 	}
 	if err := b.verifyOpenedTabURL(ctx, out.ID); err != nil {
+		recordOpen(out.URL, err)
 		return browser.OpenResult{}, err
 	}
+	recordOpen(out.URL, nil)
 	return browser.OpenResult{Tab: out, Ready: ready}, nil
 }
 
@@ -1937,13 +1950,17 @@ func (b *Bridge) FocusTab(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	start := time.Now()
 	raw, err := b.call(ctx, "focus_tab", map[string]any{"tabId": tabID, "raiseWindow": b.raiseWindowOnFocus})
 	if err != nil {
+		b.recordObservation(strings.TrimSpace(id), browser.TraceActionFocusTab, "", start, err)
 		return err
 	}
 	var tab extTab
 	if err := json.Unmarshal(raw, &tab); err == nil && tab.ID != 0 {
-		b.setActiveTabID(strconv.Itoa(tab.ID))
+		focused := strconv.Itoa(tab.ID)
+		b.setActiveTabID(focused)
+		b.recordObservation(focused, browser.TraceActionFocusTab, "", start, nil)
 		return nil
 	}
 	// Unmarshal failed or returned zero ID; fall through to use the original
@@ -1952,6 +1969,7 @@ func (b *Bridge) FocusTab(ctx context.Context, id string) error {
 	if strings.TrimSpace(id) != "" {
 		b.setActiveTabID(id)
 	}
+	b.recordObservation(strings.TrimSpace(id), browser.TraceActionFocusTab, "", start, nil)
 	return nil
 }
 
@@ -1961,7 +1979,11 @@ func (b *Bridge) CloseTab(ctx context.Context, id string) error {
 		return err
 	}
 	tabKey := strings.TrimSpace(id)
+	start := time.Now()
 	_, err = b.call(ctx, "close_tab", map[string]any{"tabId": tabID})
+	// Recorded before the tab state is dropped: the entry is scoped by the
+	// tab's lease, and forgetting the tab first leaves the close unattributable.
+	b.recordObservation(tabKey, browser.TraceActionCloseTab, "", start, err)
 	if err == nil {
 		b.invalidateTabState(tabKey)
 	}
@@ -1999,6 +2021,7 @@ func (b *Bridge) UngroupTabs(ctx context.Context, tabIDs []string) error {
 }
 
 func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGroupOptions) (browser.OpenResult, error) {
+	start := time.Now()
 	var err error
 	url, err = b.prepareNavigationURL(url)
 	if err != nil {
@@ -2030,6 +2053,12 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 	if out.ID == "" {
 		return browser.OpenResult{}, errors.New("open_tab returned no tab id")
 	}
+	recordOpen := func(finalURL string, err error) {
+		if finalURL == "" {
+			finalURL = url
+		}
+		b.recordObservation(out.ID, browser.TraceActionOpen, finalURL, start, err)
+	}
 	b.setActiveTabID(out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
 	// Same rehydrate as Open — agents need url/title on the open observation.
@@ -2040,12 +2069,15 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 	// foregrounds it.
 	if b.followFocus {
 		if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
+			recordOpen(out.URL, err)
 			return browser.OpenResult{Tab: out, Ready: ready}, err
 		}
 	}
 	if err := b.verifyOpenedTabURL(ctx, out.ID); err != nil {
+		recordOpen(out.URL, err)
 		return browser.OpenResult{}, err
 	}
+	recordOpen(out.URL, nil)
 	return browser.OpenResult{Tab: out, Ready: ready}, nil
 }
 
@@ -2247,8 +2279,10 @@ func (b *Bridge) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.
 }
 
 func (b *Bridge) Read(ctx context.Context) (readability.PageRead, error) {
+	start := time.Now()
 	var read readability.PageRead
 	err := b.evaluateReadOnly(ctx, readability.ReadExpr(), "", &read)
+	b.recordObservation(b.contextTabID(ctx), browser.TraceActionRead, read.URL, start, err)
 	if err != nil {
 		return readability.PageRead{}, err
 	}
@@ -2256,8 +2290,10 @@ func (b *Bridge) Read(ctx context.Context) (readability.PageRead, error) {
 }
 
 func (b *Bridge) ReadData(ctx context.Context) (snapshot.StructuredData, error) {
+	start := time.Now()
 	var data snapshot.StructuredData
 	err := b.evaluateReadOnly(ctx, snapshot.StructuredDataScript, "", &data)
+	b.recordObservation(b.contextTabID(ctx), browser.TraceActionReadData, data.URL, start, err)
 	return data, err
 }
 
@@ -2520,14 +2556,31 @@ func (b *Bridge) hoverRef(ctx context.Context, ref string) error {
 }
 
 func (b *Bridge) Evaluate(ctx context.Context, expression string) (any, error) {
+	start := time.Now()
+	// An expression can carry a value a sensitive recipe step supplied, so the
+	// same redaction the input actions use applies before the text is recorded.
+	// The action is still recorded; only the script goes.
+	record := func(err error) {
+		tabID := b.contextTabID(ctx)
+		if strings.TrimSpace(tabID) == "" {
+			return
+		}
+		entry := browser.RedactTraceEntry(ctx, browser.NewObservationTrace(
+			browser.TraceActionEvaluate, expression, start, err))
+		entry.TabID = tabID
+		b.appendTrace(entry)
+	}
 	var result json.RawMessage
 	if err := b.evaluateUserExpression(ctx, expression, "", &result); err != nil {
+		record(err)
 		return nil, err
 	}
 	var value any
 	if err := json.Unmarshal(result, &value); err != nil {
+		record(err)
 		return nil, err
 	}
+	record(nil)
 	return value, nil
 }
 
@@ -5521,12 +5574,29 @@ func (b *Bridge) finishObservedTrace(before bridgeActionBaseline, message string
 	} else {
 		entry.Error = result.Message
 	}
+	b.appendTrace(entry)
+}
+
+func (b *Bridge) appendTrace(entry browser.TraceEntry) {
 	b.traceMu.Lock()
 	b.trace = append(b.trace, entry)
 	if len(b.trace) > 500 {
 		b.trace = b.trace[len(b.trace)-500:]
 	}
 	b.traceMu.Unlock()
+}
+
+// recordObservation records a navigation or read. It mirrors the direct-CDP
+// Manager method of the same name, including its rule: a trace entry with no
+// tab id is unscoped and visible to every caller of the shared daemon, so an
+// observation that cannot name its tab is dropped rather than broadcast.
+func (b *Bridge) recordObservation(tabID, action, text string, start time.Time, err error) {
+	if strings.TrimSpace(tabID) == "" {
+		return
+	}
+	entry := browser.NewObservationTrace(action, text, start, err)
+	entry.TabID = tabID
+	b.appendTrace(entry)
 }
 
 func bridgeTraceEntry(message string) browser.TraceEntry {

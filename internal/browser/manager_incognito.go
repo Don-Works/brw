@@ -20,6 +20,7 @@ import (
 // (closing every tab in it and discarding its data) when the throwaway session
 // is done.
 func (m *Manager) OpenIncognito(ctx context.Context, url string) (OpenResult, error) {
+	start := time.Now()
 	var err error
 	url, err = m.prepareNavigationURL(url)
 	if err != nil {
@@ -46,6 +47,14 @@ func (m *Manager) OpenIncognito(ctx context.Context, url string) (OpenResult, er
 	m.trackIncognito(string(ctxID))
 
 	tabID := string(id)
+	// The isolated context still belongs to this daemon's activity: an
+	// incognito open is recorded like any other, scoped to its own tab.
+	recordOpen := func(finalURL string, err error) {
+		if finalURL == "" {
+			finalURL = url
+		}
+		m.recordObservation(tabID, TraceActionOpen, finalURL, start, err)
+	}
 	m.refs.SetActive(tabID)
 	ready := m.WaitFor(ctx, "load", 10*time.Second) == nil
 	// As with Open, do NOT OS-activate the tab; foreground focus stays reserved
@@ -53,16 +62,21 @@ func (m *Manager) OpenIncognito(ctx context.Context, url string) (OpenResult, er
 	tab, err := m.tabByID(ctx, tabID)
 	if err != nil {
 		if !m.navPolicy.Empty() {
+			verifyErr := fmt.Errorf("verify incognito final destination: %w", err)
+			recordOpen(url, verifyErr)
 			_ = m.CloseContext(ctx, string(ctxID))
-			return OpenResult{}, fmt.Errorf("verify incognito final destination: %w", err)
+			return OpenResult{}, verifyErr
 		}
 		tab = Tab{ID: tabID, URL: url, Type: "page"}
 	}
 	if err := m.navPolicy.Check(tab.URL); err != nil {
+		blocked := fmt.Errorf("incognito open redirected to a disallowed final destination: %w", err)
+		recordOpen(tab.URL, blocked)
 		_ = m.CloseContext(ctx, string(ctxID))
-		return OpenResult{}, fmt.Errorf("incognito open redirected to a disallowed final destination: %w", err)
+		return OpenResult{}, blocked
 	}
 	tab.BrowserContextID = string(ctxID)
+	recordOpen(tab.URL, nil)
 	return OpenResult{Tab: tab, Ready: ready}, nil
 }
 

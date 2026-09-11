@@ -252,6 +252,13 @@ func skipReason(action string) string {
 	case "navigate":
 		return "history navigation (back/forward/reload) depends on session history"
 	default:
+		// Observations (open, read, focus_tab, ...) are recorded so the activity
+		// stream can show a visit that performed no input action. They are not a
+		// defect in the recording, so they are grouped rather than listed back
+		// one action name at a time.
+		if IsObservationAction(action) {
+			return "observation, not an action to replay"
+		}
 		if strings.TrimSpace(action) == "" {
 			return "unnamed action"
 		}
