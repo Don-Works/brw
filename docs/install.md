@@ -181,7 +181,7 @@ names it with the capabilities it implies.
 
 | | Extension bridge | Direct CDP |
 |---|---|---|
-| Browser | Your real signed-in Chrome or Chromium | A separate brw-owned instance |
+| Browser | The real signed-in Chromium browser you already use | A separate brw-owned instance |
 | Existing logins | Yes | No, unless you point it at a cloned profile |
 | Chrome tab groups | Yes | No |
 | Incognito contexts (`brw_open_incognito`) | No | Yes |

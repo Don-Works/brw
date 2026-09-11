@@ -1,6 +1,9 @@
 # brw Chrome Extension
 
-This is the Chrome extension transport for installed-profile auth.
+This is the Chrome extension transport for installed-profile auth. It is a
+Manifest V3 extension, so it loads in any Chromium browser — Chrome,
+Chromium, Edge, Brave, Vivaldi, Opera, Arc — and the daemon bridges to
+whichever one the profile policy names.
 
 The manifest pins a public `key`, so load-unpacked and self-hosted builds use
 the stable id `amocjcgddnoakjijfggdpnefdnboilpe`. That id is baked into the daemon as

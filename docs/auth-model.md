@@ -1,10 +1,11 @@
 # Auth Model
 
-`brw` never copies Chrome profile data. It controls a visible browser.
+`brw` never copies browser profile data. It controls a visible browser.
 
 ## Launch Mode
 
-`brwd` launches Chrome/Chromium with a persistent non-default profile:
+`brwd` launches the chosen Chromium browser with a persistent non-default
+profile:
 
 ```text
 ~/.brw/chrome-profile

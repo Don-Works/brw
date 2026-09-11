@@ -10,13 +10,13 @@ Open source by [Revitt](https://revitt.co/?utm_source=brw&utm_medium=readme&utm_
 
 **[Website](https://brw.donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss)** &middot; **[Install](https://brw.donworks.co.uk/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss#install)** &middot; **[MCPlexer](https://mcplexer.com/?utm_source=brw&utm_medium=readme&utm_campaign=donworks_oss)** &middot; **[Issues](https://github.com/Don-Works/brw/issues)**
 
-`brw` runs a real, visible Chrome/Chromium browser and exposes it over MCP and
-HTTP. Agents use stable refs like `e17` instead of CSS selectors or screenshots
+`brw` runs a real, visible Chromium-based browser — Chrome, Chromium, Edge,
+Brave, Vivaldi, Opera or Arc — and exposes it over MCP and HTTP. Agents use stable refs like `e17` instead of CSS selectors or screenshots
 for normal web work.
 
 ## What It Does
 
-- Controls headed Chrome/Chromium through CDP.
+- Controls any headed Chromium browser through CDP.
 - Exposes stdio MCP tools for agent harnesses.
 - Exposes an HTTP JSON API for custom clients.
 - Returns semantic snapshots from DOM plus accessibility data.
@@ -216,7 +216,7 @@ it with the capabilities it implies.
 
 | | Extension bridge | Direct CDP |
 |---|---|---|
-| Browser | Your real signed-in Chrome or Chromium | A separate brw-owned instance |
+| Browser | The real signed-in Chromium browser you already use | A separate brw-owned instance |
 | Existing logins | Yes | No, unless pointed at a cloned profile |
 | Chrome tab groups | Yes | No |
 | `brw_open_incognito` | No | Yes |

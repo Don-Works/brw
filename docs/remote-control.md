@@ -125,7 +125,7 @@ Every baked-in value is overridable at runtime via the matching `BRW_*` env var
 
 ## Discovering Profile Daemons
 
-When you run several profile daemons (e.g. one per Chrome/Chromium profile, each
+When you run several profile daemons (e.g. one per browser profile, each
 on its own ports), `brwctl daemons` enumerates every extension-bridge profile in
 the policy and probes each daemon's `/health`, emitting a JSON array a gateway
 can consume to register one namespace per browser:
