@@ -71,7 +71,15 @@ func newHeadlessManager(t *testing.T) *Manager {
 	if err := m.connect(); err != nil {
 		t.Skipf("headless Chrome connect failed: %v", err)
 	}
+	// This cleanup owns the shutdown. It is registered after the t.TempDir calls
+	// above and cleanups run last-in-first-out, so it completes before testing
+	// removes the user-data-dir. A test must therefore NOT close this Manager
+	// itself: chromedp.Cancel only waits for the Chrome process over a live
+	// browser connection, and Manager.Close cancels browserCtx.
 	t.Cleanup(func() {
+		if err := m.browserCtx.Err(); err != nil {
+			t.Errorf("browser context was already cancelled (%v) before cleanup: chromedp.Cancel returns without waiting for Chrome to exit, and the user-data-dir removal then races its final writes. Let this cleanup own the shutdown.", err)
+		}
 		// chromedp's context cancel is asynchronous with respect to the Chrome
 		// process. Wait for the allocator's process-exit signal before testing's
 		// TempDir cleanup runs; otherwise Chrome can still be writing Cache_Data and

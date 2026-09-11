@@ -2671,6 +2671,17 @@ function ensureObserver(tabId) {
       attributes: true,
       characterData: true
     });
+    // A form control's value, checked and selectedIndex are DOM PROPERTIES, not
+    // attributes, so filling a field, picking an option or ticking a box mutates
+    // no node and a MutationObserver never fires. Without these listeners the
+    // cached snapshot is reported clean and a later read returns the pre-edit
+    // page. Capture phase on document also sees composed events crossing a
+    // shadow boundary, and catches the human typing as well as brw.
+    ['input', 'change'].forEach(function(type) {
+      document.addEventListener(type, function() {
+        window.__brwDirty = true;
+      }, true);
+    });
     function stringify(value) {
       try {
         if (value instanceof Error) return value.stack || value.message || String(value);
