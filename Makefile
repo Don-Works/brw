@@ -11,7 +11,10 @@ GOARCH ?= $(shell go env GOARCH)
 # agent sees over MCP always matches the binary, instead of a hand-edited constant.
 GO_LDFLAGS ?= -X github.com/Don-Works/brw/internal/mcp.Version=$(VERSION)
 
-.PHONY: build test test-extension test-functional install install-mac install-agent-skills sync-installed-extensions install-extension package-darwin-arm64 package-linux package-macos
+TARBALL_OS ?= $(shell go env GOOS)
+HOMEBREW_TAP ?= Don-Works/homebrew-tap
+
+.PHONY: build test test-extension test-functional install install-mac install-agent-skills sync-installed-extensions install-extension package-darwin-arm64 package-linux package-macos package-tarball package-tarballs homebrew-formula
 
 build:
 	go build -ldflags "$(GO_LDFLAGS)" -o bin/brwd ./cmd/brwd
@@ -119,3 +122,23 @@ package-linux:
 
 package-macos:
 	scripts/package-macos.sh "$(VERSION)" dist/release
+
+# The sudo-free install path: relocatable archives for scripts/install.sh and
+# the Homebrew formula. One OS/arch, defaulting to the host.
+package-tarball:
+	scripts/package-tarball.sh "$(VERSION)" "$(TARBALL_OS)" "$(GOARCH)" dist/release
+
+# darwin/arm64 is built last so a macOS host leaves a natively signable archive
+# in place; cross-built darwin binaries cannot be ad-hoc signed off a Mac.
+package-tarballs:
+	scripts/package-tarball.sh "$(VERSION)" linux amd64 dist/release
+	scripts/package-tarball.sh "$(VERSION)" linux arm64 dist/release
+	scripts/package-tarball.sh "$(VERSION)" darwin amd64 dist/release
+	scripts/package-tarball.sh "$(VERSION)" darwin arm64 dist/release
+
+# Print the tap formula for VERSION with the four release sha256 sums filled in,
+# so a release bumps the tap mechanically rather than by hand. Reads the sums
+# from dist/release when the archives are local, otherwise from the published
+# release. Redirect into the tap checkout's Formula/brw.rb.
+homebrew-formula:
+	@packaging/homebrew/render-formula.sh "$(VERSION)"
