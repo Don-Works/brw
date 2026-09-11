@@ -14,7 +14,7 @@ GO_LDFLAGS ?= -X github.com/Don-Works/brw/internal/mcp.Version=$(VERSION)
 TARBALL_OS ?= $(shell go env GOOS)
 HOMEBREW_TAP ?= Don-Works/homebrew-tap
 
-.PHONY: build test test-extension test-functional install install-mac install-agent-skills sync-installed-extensions install-extension package-web-store package-darwin-arm64 package-linux package-macos package-tarball package-tarballs homebrew-formula
+.PHONY: build check lint test test-extension test-functional install install-mac install-agent-skills sync-installed-extensions install-extension package-web-store package-darwin-arm64 package-linux package-macos package-tarball package-tarballs homebrew-formula
 
 build:
 	go build -ldflags "$(GO_LDFLAGS)" -o bin/brwd ./cmd/brwd
@@ -27,6 +27,27 @@ test: test-extension
 	# Serialize package test binaries so CI does not run dozens of Chrome roots at
 	# once and turn the Manager's intentional 20s operation timeout into a load race.
 	go test -p=1 ./...
+
+# Everything CI runs, in CI's order, so a release cannot fail on a check that
+# was never run locally. `go vet` alone is not the gate: staticcheck catches
+# unused declarations and error-string style that vet does not, and a v0.13.0
+# release job failed on exactly those two after a local vet-only pass.
+#
+# Tool versions are pinned to the same ones .github/workflows/ci.yml uses; when
+# you bump one there, bump it here in the same commit or this stops predicting CI.
+check: lint test test-functional
+	python3 scripts/check-oss-hygiene.py
+	go run github.com/zricethezav/gitleaks/v8@v8.30.1 git . --redact --no-banner
+	go test -race ./internal/artifact ./internal/recipe ./internal/mcp ./internal/http ./internal/httpclient ./internal/navpolicy ./internal/extensionbridge
+
+# The static half of `check`, fast enough to run on every save.
+lint:
+	go mod verify
+	gofmt -l cmd internal packaging | tee /dev/stderr | (! read)
+	go vet ./...
+	go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+	go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
 # Extension service-worker regression tests (run the real service_worker.js in a
 # vm with a mocked chrome API). Skipped — not failed — when node is unavailable.
