@@ -148,6 +148,7 @@ src += `
   ensureTabDrivable,
   waitForTabGone,
   agentOwnedTabIdForHello,
+  ensureObserver,
   handle,
   send,
   RESPONSE_DIRECT_MAX_BYTES,
@@ -346,6 +347,87 @@ async function scenarioWaitForTabGoneIsBoundedAndHonest() {
   setWin({ id: 1, type: "normal", focused: true });
   setTab({ id: 5, windowId: 1, active: true, url: "https://app.test/", title: "app" });
   check("live tab at a zero deadline is not falsely reported gone", await T.waitForTabGone(5, 0) === false);
+}
+
+// Runs the REAL observer script the service worker injects, against a minimal
+// DOM, and returns handles to fire the signals it listens for.
+function runInjectedObserver(expression) {
+  const listeners = new Map();
+  let mutationCallback = null;
+  const ctx = {
+    console: { log() {}, warn() {}, error() {}, info() {}, debug() {} },
+    JSON, Date, Array, String,
+    MutationObserver: class {
+      constructor(callback) { mutationCallback = callback; }
+      observe() {}
+    },
+    document: {
+      documentElement: {},
+      addEventListener(type, fn, capture) {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push({ fn, capture });
+      },
+    },
+  };
+  ctx.window = ctx;
+  ctx.globalThis = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(expression, ctx, { filename: "brw-observer.js" });
+  return {
+    ctx,
+    listeners,
+    fire: (type) => (listeners.get(type) || []).forEach((l) => l.fn({ type })),
+    mutate: () => mutationCallback && mutationCallback([]),
+  };
+}
+
+// The daemon re-reads a tab's cached snapshot only when the page reports itself
+// dirty. value, checked and selectedIndex are DOM PROPERTIES, so a fill, a
+// select or a ticked box mutates no node and a MutationObserver alone leaves the
+// cache marked clean — the pre-edit page is then served back as the result of
+// the edit.
+async function scenarioObserverMarksFormControlWritesDirty() {
+  await reset();
+  setWin({ id: 1, type: "normal", focused: true });
+  setTab({ id: 51, windowId: 1, active: true, url: "https://form.test/", title: "form" });
+  const saved = overrides["debugger.sendCommand"];
+  const sentCommands = [];
+  overrides["debugger.sendCommand"] = async (target, method, params) => {
+    sentCommands.push({ target, method, params });
+    return { result: { value: true } };
+  };
+  try {
+    T.ensureObserver(51);
+    for (let i = 0; i < 50 && sentCommands.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const injected = sentCommands.find((c) => c.method === "Runtime.evaluate")?.params?.expression;
+    check("the observer script is injected into the tab", typeof injected === "string" && injected.includes("__brwDirty"));
+    if (typeof injected !== "string") return;
+
+    const run = runInjectedObserver(injected);
+    check("a freshly observed page starts clean", run.ctx.window.__brwDirty === false);
+
+    const inputListener = run.listeners.get("input")?.[0];
+    const changeListener = run.listeners.get("change")?.[0];
+    check("the observer listens for input", Boolean(inputListener));
+    check("the observer listens for change", Boolean(changeListener));
+    check("both listen in the capture phase, so a shadow-DOM control is seen too",
+      inputListener?.capture === true && changeListener?.capture === true);
+
+    run.fire("input");
+    check("an input event marks the page dirty (fill, type)", run.ctx.window.__brwDirty === true);
+
+    run.ctx.window.__brwDirty = false;
+    run.fire("change");
+    check("a change event marks the page dirty (select, checkbox)", run.ctx.window.__brwDirty === true);
+
+    run.ctx.window.__brwDirty = false;
+    run.mutate();
+    check("a DOM mutation still marks the page dirty", run.ctx.window.__brwDirty === true);
+  } finally {
+    overrides["debugger.sendCommand"] = saved;
+  }
 }
 
 async function scenarioTabRemovalPublishesDaemonInvalidation() {
@@ -939,6 +1021,7 @@ async function scenarioForeignExtensionPopoutNeverStealsForeground() {
   await scenarioMainDocumentIdentityIsExactAndMonotonic();
   await scenarioLargeResponsesUseBoundedFrames();
   await scenarioWaitForTabGoneIsBoundedAndHonest();
+  await scenarioObserverMarksFormControlWritesDirty();
   await scenarioTabRemovalPublishesDaemonInvalidation();
   await scenarioCloseTabIsBoundedAndFailClosed();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);

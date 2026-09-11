@@ -141,6 +141,11 @@ func (f *navigationFakeExtension) serve(ctx context.Context, conn *websocket.Con
 				if locationRead {
 					value = f.url
 				}
+				if strings.HasPrefix(expression, "(function(opts) {") {
+					// the in-page snapshot walker, which an observed action runs
+					// against the live page rather than the tab's cached snapshot
+					value = f.snapshotLocked()
+				}
 				if !f.replaced && !locationRead {
 					f.earlyEvaluate = true
 				}
@@ -190,6 +195,8 @@ func newNavigationFake(t *testing.T, finalURL, finalOrigin string, delay time.Du
 		srv.Close()
 		t.Fatalf("dial navigation fake: %v", err)
 	}
+	// The snapshot walker arrives as one large expression.
+	conn.SetReadLimit(4 << 20)
 	waitUntil(t, b.liveConn)
 	fake := &navigationFakeExtension{
 		documentID: "doc-source", worker: "worker-a", origin: "https://source.test",

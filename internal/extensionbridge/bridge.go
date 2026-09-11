@@ -2095,6 +2095,22 @@ func (b *Bridge) refreshOpenedTab(ctx context.Context, tab browser.Tab, requeste
 }
 
 func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
+	return b.snapshot(ctx, opts, false)
+}
+
+// snapshotLive re-walks the page without consulting the tab's cached snapshot,
+// and refreshes that cache with what it reads. Used to observe an action's
+// effect: the extension's cache-validity probe can only see DOM mutations, and a
+// fill/select/checkbox writes a DOM PROPERTY (value, checked, selectedIndex)
+// that mutates no node, so a cached read after such an action returns the
+// pre-action page and the result claims the action changed nothing. Re-walking
+// costs one in-page pass on an action that changed nothing visible; reporting an
+// action as a no-op when it landed costs a duplicate write on the retry.
+func (b *Bridge) snapshotLive(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
+	return b.snapshot(ctx, opts, true)
+}
+
+func (b *Bridge) snapshot(ctx context.Context, opts snapshot.SnapshotOptions, skipCacheRead bool) (snapshot.PageSnapshot, error) {
 	var snap snapshot.PageSnapshot
 	opts.IncludeAX = false
 	// A since-delta request must reach the in-page walker (which derives the delta
@@ -2105,7 +2121,7 @@ func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (s
 	// is never served stale.
 	sinceDelta := opts.Since > 0
 	bypassCache := sinceDelta || opts.IncludeFrames
-	if !bypassCache {
+	if !bypassCache && !skipCacheRead {
 		if cached, ok := b.tryCachedSnapshot(ctx, opts); ok {
 			return cached, nil
 		}
@@ -4182,7 +4198,7 @@ func (b *Bridge) observeActionWithBefore(ctx context.Context, message string, be
 
 func (b *Bridge) observeActionWithBeforeAndTabs(ctx context.Context, message string, before bridgeActionBaseline, beforeTabIDs map[string]bool) browser.ActionResult {
 	result := browser.ActionResult{OK: true, Message: message, TabID: b.contextTabID(ctx)}
-	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
+	snap, err := b.snapshotLive(ctx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
 		result.OK = false
 		result.Message = message + "; observation failed: " + err.Error()

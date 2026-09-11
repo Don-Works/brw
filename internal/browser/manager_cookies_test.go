@@ -121,12 +121,10 @@ func TestCookiePathOrDefault(t *testing.T) {
 // round-trip through the CDP cookie store — including an HttpOnly cookie that
 // document.cookie provably cannot see. Skipped when no local Chrome exists.
 func TestManagerCookiesSetListDeleteIncludingHTTPOnly(t *testing.T) {
+	// newHeadlessManager owns the shutdown; closing here would cancel the browser
+	// connection before its cleanup can wait for the Chrome process to exit, and
+	// the user-data-dir removal would then race Chrome's final writes.
 	m := newHeadlessManager(t)
-	defer func() {
-		if err := m.Close(); err != nil {
-			t.Fatalf("close manager: %v", err)
-		}
-	}()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/html")
@@ -226,11 +224,6 @@ func TestManagerCookiesSetListDeleteIncludingHTTPOnly(t *testing.T) {
 // before any CDP round-trip.
 func TestManagerCookiesRejectsNonHTTPScope(t *testing.T) {
 	m := newHeadlessManager(t)
-	defer func() {
-		if err := m.Close(); err != nil {
-			t.Fatalf("close manager: %v", err)
-		}
-	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	open, err := m.Open(ctx, "about:blank")
