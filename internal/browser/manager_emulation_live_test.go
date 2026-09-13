@@ -77,6 +77,19 @@ func TestEmulateDeviceGivesAMobileLayoutViewport(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			emulationTab(t, m, ctx, serveEmulationFixture(t, tt.fixture))
 
+			// Record the real viewport so the clear can be checked against it
+			// rather than against a hardcoded number. Asserting "not 375" would
+			// fail spuriously wherever the browser window happens to be 375 wide,
+			// and would pass without proving anything was restored.
+			beforeValue, err := m.Evaluate(ctx, `window.innerWidth`)
+			if err != nil {
+				t.Fatalf("measure the viewport before emulating: %v", err)
+			}
+			beforeWidth, _ := beforeValue.(float64)
+			if beforeWidth <= 0 {
+				t.Fatalf("pre-emulation viewport width = %v, want a positive width", beforeValue)
+			}
+
 			result, err := m.EmulateDevice(ctx, DeviceEmulationOptions{Device: "iphone_se"})
 			if err != nil {
 				t.Fatalf("EmulateDevice: %v", err)
@@ -119,12 +132,26 @@ func TestEmulateDeviceGivesAMobileLayoutViewport(t *testing.T) {
 			if _, err := m.EmulateDevice(ctx, DeviceEmulationOptions{Clear: true}); err != nil {
 				t.Fatalf("clear: %v", err)
 			}
-			after, err := m.Evaluate(ctx, `window.innerWidth`)
-			if err != nil {
-				t.Fatalf("evaluate after clear: %v", err)
+			// Clearing the override is applied asynchronously by the renderer, so
+			// a single read straight afterwards can still observe the emulated
+			// width on a slow machine. The property under test is that the width
+			// IS restored, not that it is restored within one CDP round trip.
+			var afterWidth float64
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				afterValue, err := m.Evaluate(ctx, `window.innerWidth`)
+				if err != nil {
+					t.Fatalf("evaluate after clear: %v", err)
+				}
+				afterWidth, _ = afterValue.(float64)
+				if afterWidth == beforeWidth || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
 			}
-			if got, _ := after.(float64); got == 375 {
-				t.Error("clearing emulation should restore the real viewport width")
+			if afterWidth != beforeWidth {
+				t.Errorf("viewport after clear = %v, want the pre-emulation %v; clearing must restore the real width",
+					afterWidth, beforeWidth)
 			}
 		})
 	}
