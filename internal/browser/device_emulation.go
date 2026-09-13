@@ -55,10 +55,18 @@ type DeviceEmulationConfig struct {
 }
 
 type DeviceEmulationResult struct {
-	OK        bool                   `json:"ok"`
-	Cleared   bool                   `json:"cleared,omitempty"`
-	Emulation *DeviceEmulationConfig `json:"emulation,omitempty"`
-	Message   string                 `json:"message,omitempty"`
+	OK      bool `json:"ok"`
+	Cleared bool `json:"cleared,omitempty"`
+	// LayoutViewportWidth is the width the page ACTUALLY lays out at, measured
+	// after the override was applied. It is not always Emulation.Width: see
+	// MobileLayoutFallback. Reporting the measured value is what stops an agent
+	// concluding it tested a 375px layout when the page rendered at 980.
+	LayoutViewportWidth int64 `json:"layout_viewport_width,omitempty"`
+	// MobileLayoutFallback reports that the mobile flag had to be dropped to get
+	// a correct layout viewport.
+	MobileLayoutFallback bool                   `json:"mobile_layout_fallback,omitempty"`
+	Emulation            *DeviceEmulationConfig `json:"emulation,omitempty"`
+	Message              string                 `json:"message,omitempty"`
 }
 
 type devicePreset struct {

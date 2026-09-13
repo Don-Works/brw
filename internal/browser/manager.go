@@ -121,12 +121,15 @@ type Manager struct {
 	downloads        []DownloadEntry
 	downloadIndex    map[string]int // guid -> index into downloads
 	downloadVersions map[string]uint64
-	downloadCursors  map[string]uint64 // recipe tab id -> last observed change
-	downloadSequence uint64
-	downloadDir      string
-	downloadDirOwned bool
-	userDataDir      string
-	downloadsEnabled bool
+	// downloadChangedAt records when each download last changed state, so a wait
+	// can tell a download that just finished from one that finished long ago.
+	downloadChangedAt map[string]time.Time
+	downloadCursors   map[string]uint64 // recipe tab id -> last observed change
+	downloadSequence  uint64
+	downloadDir       string
+	downloadDirOwned  bool
+	userDataDir       string
+	downloadsEnabled  bool
 	// dialogs holds per-tab JavaScript-dialog arms and the answered-dialog ring.
 	// The listener it backs is mandatory: see ensureDialogHandling. Zero value is
 	// usable; its maps are created on first use.
@@ -870,7 +873,17 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 		var clickErr error
 		clicked, clickErr = snapshot.ClickText(tabCtx, opts)
-		return clickErr
+		if clickErr != nil {
+			return clickErr
+		}
+		// The script resolved a control that only responds to a real input
+		// gesture and deliberately did not dispatch anything, so actuate it by
+		// coordinate the way Click does. Without this a target="_blank" link or
+		// a window.open() button reported a successful click and did nothing.
+		if clicked.Deferred {
+			return chromedp.Run(tabCtx, chromedp.MouseClickXY(clicked.X, clicked.Y))
+		}
+		return nil
 	}); err != nil {
 		return ActionResult{}, err
 	}
@@ -1616,6 +1629,13 @@ func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Du
 	}
 }
 
+// recentDownloadWindow is how far back a finished download still counts as
+// belonging to the caller's most recent action. Long enough to cover a click
+// whose download completes before the following wait call is issued, short
+// enough that an unrelated download from earlier in the session does not
+// satisfy the wait.
+const recentDownloadWindow = 15 * time.Second
+
 // waitForDownload blocks until a download that was not already finished when the
 // wait started reaches the completed state. match, when non-empty, is a
 // case-insensitive substring tested against the suggested filename and the URL,
@@ -1640,12 +1660,17 @@ func (m *Manager) waitForDownload(ctx context.Context, match string, timeout tim
 			strings.Contains(strings.ToLower(entry.URL), needle)
 	}
 
-	// Baseline: every download already in a terminal state is ignored for the
-	// rest of this wait.
+	// Baseline: ignore downloads that finished before this action. A download
+	// that completed moments ago is the one the caller just triggered — waits are
+	// written after the click, and a small file frequently beats the wait — so it
+	// counts, while anything older is treated as already dealt with.
+	cutoff := time.Now().Add(-recentDownloadWindow)
 	settled := make(map[string]bool)
 	m.downloadsMu.Lock()
+	m.ensureDownloadMapsLocked()
 	for _, entry := range m.downloads {
-		if entry.State == string(downloadStateCompleted) || entry.State == string(downloadStateCanceled) {
+		terminal := entry.State == string(downloadStateCompleted) || entry.State == string(downloadStateCanceled)
+		if terminal && m.downloadSettledBefore(entry.GUID, cutoff) {
 			settled[entry.GUID] = true
 		}
 	}

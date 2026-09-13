@@ -145,6 +145,11 @@ type ClickTextOptions struct {
 	// fold is found and clicked without a manual scroll; set false to opt out and
 	// click only elements already in the viewport.
 	AutoScroll *bool `json:"auto_scroll,omitempty"`
+	// NoDefer makes the script actuate in-page even for a control that needs a
+	// real input gesture. The caller sets it on the RETRY, after supplying that
+	// gesture itself (a user-gesture evaluation or real CDP input); without it
+	// the script would defer again and nothing would ever be clicked.
+	NoDefer bool `json:"no_defer,omitempty"`
 }
 
 type Element struct {

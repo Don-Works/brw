@@ -54,6 +54,22 @@ func NormalizeNavigationURL(rawURL string) (string, error) {
 	if lower == "about:blank" || lower == "about:newtab" {
 		return lower, nil
 	}
+	// A javascript:/vbscript: "navigation" does not navigate: it executes script
+	// in the CURRENT page's origin. On the signed-in profile brw is built to
+	// drive, that runs as the user on whatever is already open. Worse, Chrome
+	// then reports the navigation as aborted, so the caller is told nothing
+	// happened while the script has already run — the result is neither
+	// truthfully reported nor recorded as a script execution in the trace.
+	//
+	// Refused at the shared normalisation choke point rather than under the
+	// allowlist, so it holds with no policy configured, on both transports, for
+	// open and for navigate alike. Running JavaScript has its own tool
+	// (brw_evaluate), which is traced and redaction-aware.
+	for _, scheme := range []string{"javascript:", "vbscript:"} {
+		if strings.HasPrefix(lower, scheme) {
+			return "", fmt.Errorf("refusing to navigate to a %s URL: that executes script in the current page rather than navigating. Use brw_evaluate to run JavaScript", strings.TrimSuffix(scheme, ":"))
+		}
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("invalid navigation URL %q: %w", clip(rawURL), err)

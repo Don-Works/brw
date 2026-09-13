@@ -3198,6 +3198,31 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
   const y = Math.max(1, Math.min(vh - 1, r.top + r.height / 2));
   let target = document.elementFromPoint(x, y) || el;
   target = clickableAncestor(target) || el;
+  const clickedRoleEarly = roleFor(target);
+  const clickedNameEarly = nameFor(target);
+  // Some controls only work for a REAL browser input gesture: a target="_blank"
+  // link, window.open(), a download, fullscreen, the clipboard and file pickers
+  // all check event.isTrusted or transient user activation, and a synthetic
+  // MouseEvent has neither. Dispatching one here would silently do nothing while
+  // still reporting ok:true.
+  //
+  // Rather than pay CDP's slower input round trip on every click, report the
+  // need and let the caller actuate by coordinate. The ordinary case still
+  // clicks in-page in this single evaluate.
+  if ((__abRequiresTrustedClick(target) || __abRequiresTrustedClick(el)) && opts.no_defer !== true) {
+    return {
+      ok: true,
+      x,
+      y,
+      requires_trusted: true,
+      deferred: true,
+      tag: target.tagName.toLowerCase(),
+      role: clickedRoleEarly,
+      name: clickedNameEarly,
+      text: clean(target.innerText || target.textContent || hit.text || hit.label).slice(0, 200),
+      href: target.href || target.getAttribute('href') || ''
+    };
+  }
   target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
   target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
   target.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
@@ -3279,6 +3304,14 @@ type ClickXYResult struct {
 	Text  string  `json:"text,omitempty"`
 	Href  string  `json:"href,omitempty"`
 	Error string  `json:"error,omitempty"`
+	// RequiresTrusted reports that the resolved target only responds to a real
+	// browser input gesture (target="_blank", window.open, download, fullscreen,
+	// clipboard, file pickers).
+	RequiresTrusted bool `json:"requires_trusted,omitempty"`
+	// Deferred reports that NOTHING was clicked in-page: the caller must actuate
+	// at X/Y with real CDP input. Treating a deferred result as a completed click
+	// is the bug this field exists to prevent.
+	Deferred bool `json:"deferred,omitempty"`
 }
 
 func ClickXY(ctx context.Context, x, y float64) (ClickXYResult, error) {

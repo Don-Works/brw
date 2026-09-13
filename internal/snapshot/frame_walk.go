@@ -155,6 +155,7 @@ const FrameWalkHelpers = `
   // pickers) reject synthetic JS MouseEvents because event.isTrusted is false.
   // Flag the common declarative/inline shapes so click paths can use real CDP
   // input selectively, preserving fast in-page clicks for ordinary controls.
+  var __abTrustedClickPattern = /window\s*\.\s*open|showOpenFilePicker|showSaveFilePicker|requestFullscreen|clipboard\s*\.\s*(write|read)/i;
   function __abRequiresTrustedClick(el) {
     if (!el || !el.getAttribute) return false;
     var popup = String(el.getAttribute('aria-haspopup') || '').toLowerCase();
@@ -163,7 +164,16 @@ const FrameWalkHelpers = `
     if (tag === 'a' && String(el.getAttribute('target') || '').toLowerCase() === '_blank') return true;
     if (el.hasAttribute && el.hasAttribute('download')) return true;
     var source = String(el.getAttribute('onclick') || '') + ' ' + String(el.getAttribute('href') || '');
-    return /window\s*\.\s*open|showOpenFilePicker|showSaveFilePicker|requestFullscreen|clipboard\s*\.\s*(write|read)/i.test(source);
+    if (__abTrustedClickPattern.test(source)) return true;
+    // Also read a handler assigned as a PROPERTY (el.onclick = fn), which has no
+    // attribute to inspect and is how most code that is not inline HTML is
+    // written. A listener registered with addEventListener stays invisible from
+    // here — the page exposes no way to read it — so a gesture-gated action
+    // wired that way cannot be predicted, only observed to have done nothing.
+    try {
+      if (typeof el.onclick === 'function' && __abTrustedClickPattern.test(Function.prototype.toString.call(el.onclick))) return true;
+    } catch (e) {}
+    return false;
   }
   // ARIA menus commonly defer opening/closing submenus for roughly 300ms so a
   // pointer can cross small gaps without collapsing the menu tree. Most hover

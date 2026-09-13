@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/chromedp/cdproto/browser"
@@ -340,6 +341,7 @@ func (m *Manager) trimDownloadsLocked() {
 		m.downloads = append(m.downloads[:remove], m.downloads[remove+1:]...)
 		delete(m.downloadIndex, guid)
 		delete(m.downloadVersions, guid)
+		delete(m.downloadChangedAt, guid)
 	}
 	m.rebuildDownloadIndexLocked()
 }
@@ -354,11 +356,39 @@ func (m *Manager) ensureDownloadMapsLocked() {
 	if m.downloadCursors == nil {
 		m.downloadCursors = map[string]uint64{}
 	}
+	if m.downloadChangedAt == nil {
+		m.downloadChangedAt = map[string]time.Time{}
+	}
 }
 
 func (m *Manager) markDownloadChangedLocked(guid string) {
 	m.downloadSequence++
 	m.downloadVersions[guid] = m.downloadSequence
+	if m.downloadChangedAt == nil {
+		m.downloadChangedAt = map[string]time.Time{}
+	}
+	m.downloadChangedAt[guid] = time.Now()
+}
+
+// downloadSettledBefore reports whether a download reached its terminal state
+// long enough ago to be treated as old news by a wait that starts now.
+//
+// brw_wait_for{condition:"download"} is written after the click that triggers
+// the download, so by the time the wait runs a small file has often already
+// finished. Ignoring every already-terminal download made the wait hang for its
+// whole timeout on exactly the fast downloads it should have answered
+// instantly. Ignoring none of them would let an unrelated download from earlier
+// in the session satisfy the wait immediately, which is the opposite failure.
+//
+// A short recency window separates the two: a download that finished within it
+// belongs to the action the caller just took, and anything older does not.
+func (m *Manager) downloadSettledBefore(guid string, cutoff time.Time) bool {
+	changed, known := m.downloadChangedAt[guid]
+	if !known {
+		// No timestamp means it predates this bookkeeping entirely, so it is old.
+		return true
+	}
+	return changed.Before(cutoff)
 }
 
 func (m *Manager) rebuildDownloadIndexLocked() {

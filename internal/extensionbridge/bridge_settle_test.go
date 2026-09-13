@@ -179,14 +179,37 @@ func TestSettleHonoursMinimumFloor(t *testing.T) {
 	defer cleanup()
 
 	ctx := browser.WithTabID(context.Background(), "5")
+
+	// Calibrate before asserting an upper bound. settle polls a fingerprint over
+	// the websocket, so its wall-clock is floor + a few round trips. The cap is
+	// 75ms and the floor 24ms, which leaves room for only a handful of fast round
+	// trips; on a loaded machine a single slow one pushes the call past the cap
+	// for reasons that have nothing to do with the floor logic under test. Time
+	// one round trip against the same fake and assert the upper bound only while
+	// the transport is quick enough for that bound to mean anything.
+	roundTripStart := time.Now()
+	var warm string
+	_ = b.evaluate(ctx, settleFingerprintExpr, "", &warm)
+	roundTrip := time.Since(roundTripStart)
+
 	start := time.Now()
 	b.settle(ctx, observedActionSettle)
 	elapsed := time.Since(start)
+
+	// The floor is the real invariant and is safe to assert either way: returning
+	// early is a bug no matter how slow the machine is.
 	if elapsed < settleMinFloor-5*time.Millisecond {
 		t.Fatalf("settle returned in %v, below the %v floor; a delayed mutation could be missed", elapsed, settleMinFloor)
 	}
+
+	// settle needs roughly three stable reads after the floor before it exits.
+	budget := settleMinFloor + 4*roundTrip
+	if budget >= observedActionSettle {
+		t.Skipf("transport round trip is %v, so floor+polls (%v) cannot be distinguished from the %v cap on this machine; floor assertion still held at %v",
+			roundTrip, budget, observedActionSettle, elapsed)
+	}
 	if elapsed >= observedActionSettle {
-		t.Fatalf("settle took %v; floor must not push it to the %v cap on a quiescent page", elapsed, observedActionSettle)
+		t.Fatalf("settle took %v (round trip %v); floor must not push it to the %v cap on a quiescent page", elapsed, roundTrip, observedActionSettle)
 	}
 }
 

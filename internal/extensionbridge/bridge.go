@@ -2495,6 +2495,17 @@ func (b *Bridge) clickTextRaw(ctx context.Context, opts snapshot.ClickTextOption
 		}
 		return "", fmt.Errorf("click text: %s", clicked.Error)
 	}
+	if clicked.Deferred {
+		// The resolved control only responds to a real input gesture, so the
+		// script deliberately did not dispatch anything. Re-run it under
+		// Runtime.evaluate's userGesture flag, which grants the transient
+		// activation window.open/target=_blank/download/fullscreen require while
+		// keeping the single in-page round trip. Real CDP input is the fallback
+		// when that still does not take.
+		if err := b.clickTextTrusted(ctx, opts, clicked); err != nil {
+			return "", err
+		}
+	}
 	label := opts.Text
 	if clicked.Name != "" {
 		label = clicked.Name
@@ -2664,6 +2675,36 @@ func (b *Bridge) clickRef(ctx context.Context, ref string) error {
 			"clickCount": 1,
 		}); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// clickTextTrusted actuates a click_text target that needs a genuine input
+// gesture, which the ordinary in-page dispatch cannot provide.
+func (b *Bridge) clickTextTrusted(ctx context.Context, opts snapshot.ClickTextOptions, deferred snapshot.ClickXYResult) error {
+	retry := opts
+	retry.NoDefer = true
+	retryJSON, _ := json.Marshal(retry)
+	var clicked snapshot.ClickXYResult
+	err := b.evaluateWithUserGesture(ctx, fmt.Sprintf("%s(%s)", snapshot.ClickTextScript, retryJSON), "", &clicked)
+	if err == nil && clicked.OK && !clicked.Deferred {
+		return nil
+	}
+	for _, typ := range []string{"mouseMoved", "mousePressed", "mouseReleased"} {
+		buttons := 0
+		if typ == "mousePressed" {
+			buttons = 1
+		}
+		if _, dispatchErr := b.cdp(ctx, "", "Input.dispatchMouseEvent", map[string]any{
+			"type":       typ,
+			"x":          deferred.X,
+			"y":          deferred.Y,
+			"button":     "left",
+			"buttons":    buttons,
+			"clickCount": 1,
+		}); dispatchErr != nil {
+			return dispatchErr
 		}
 	}
 	return nil

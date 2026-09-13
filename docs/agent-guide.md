@@ -119,6 +119,14 @@ any other device pass `responsive` (or `custom`) with explicit `width` and
 applying emulation when the app only chooses mobile/desktop behavior at initial
 page load.
 
+The reply reports `layout_viewport_width`, the width the page actually laid
+out at. Read it rather than assuming the requested width took effect. When it
+also reports `mobile_layout_fallback:true`, brw dropped the mobile flag to get
+that width: Chrome ignores a page's viewport meta tag under mobile emulation
+and lays it out at a fixed 980px instead, which would leave every width-based
+media query evaluating against a desktop width. Screen size, pixel ratio, user
+agent and touch points are emulated either way.
+
 ## WebMCP: use the page's own tools when it offers them
 
 Some sites expose callable tools via the W3C WebMCP API (`navigator.modelContext`)

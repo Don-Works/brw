@@ -168,6 +168,7 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `brw_downloads()` → `{downloads,count,supported}`. To block until one finishes, use `brw_wait_for({condition:"download"})` rather than polling this.
 - `brw_artifact_capture({kind:"text"|"semantic_json"|"screenshot"|"pdf"|"download"|"video"|"har", tab_id?, ref?, download_guid?, filename?, fps?, duration_ms?, ttl_seconds?, redaction?})` → payload-free `{artifact_id,kind,mime_type,size_bytes,sha256,created_at,expires_at,source_hash}`. Keep large content out of context and read windows of it: `brw_artifact_read({artifact_id, offset?, max_bytes?})` → `{text,offset,size_bytes,total_bytes,more,next_offset}`, `brw_artifact_search({artifact_id, query, limit?})` → line excerpts, `brw_artifact_info`, `brw_artifact_delete`. There is no list-all-artifacts tool: record `artifact_id` when you get it.
 - `brw_emulate_device({device?, clear?, width?, height?, device_scale_factor?, mobile?, touch?, user_agent?, platform?, orientation?, max_touch_points?, tab_id?})` — real DevTools emulation (presets `iphone_se`, `pixel_7`, `ipad`, …), not OS resizing. Reload after applying if the app decides layout at load.
+  The reply carries `layout_viewport_width`: the width the page ACTUALLY laid out at, measured after the override. Check it rather than assuming you got the width you asked for. `mobile_layout_fallback:true` means the mobile flag was dropped to get that width — Chrome ignores a page's viewport meta tag under mobile emulation and would otherwise lay the page out at a fixed 980px, so every width-based media query would evaluate against 980. Screen size, pixel ratio, user agent and touch points are still emulated.
 - `brw_window_bounds({tab_id?})` → `{device_pixel_ratio,screen_x,screen_y,inner_*,outer_*,scroll_*,screen_*}`; `brw_window_resize({width?,height?,left?,top?,state?})` moves the real OS window.
 - `brw_notify({title?, message?, kind?})` — desktop notification. `kind` is `needs_input`, `done`, or `error`; anything else is rejected. Use `needs_input` at MFA/CAPTCHA/payment and stop.
 
@@ -249,6 +250,8 @@ Authoring, promotion, validation and drift repair:
 [references/recipes.md](references/recipes.md). Auth expiry, outages, permissions and
 bad inputs are not recipe drift — fix the cause instead of teaching the recipe to
 tolerate it.
+
+- `brw_open`/`brw_navigate_to` refuse a `javascript:` or `vbscript:` URL. Those do not navigate — they run script in the page that is already open, and Chrome then reports the navigation as failed, so the call would lie about what happened. Use `brw_evaluate` to run JavaScript.
 
 ## Don't
 
