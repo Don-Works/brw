@@ -1287,6 +1287,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			What   string `json:"what"`
 			Target string `json:"target"`
 			Name   string `json:"name"`
+			// Declared so strict unmarshalling accepts it; callTool has already
+			// put it on the context, which is what actually targets the tab.
+			TabID string `json:"tab_id"`
 		}
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
@@ -1308,6 +1311,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			Action string `json:"action"`
 			Key    string `json:"key"`
 			Value  string `json:"value"`
+			// Declared so strict unmarshalling accepts it; callTool has already
+			// put it on the context, which is what actually targets the tab.
+			TabID string `json:"tab_id"`
 		}
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
@@ -2243,12 +2249,14 @@ func tools() []map[string]any {
 			"what":   stringEnumSchema("Which fact to read.", "url", "title", "text", "value", "attr", "count", "box", "styles", "visible", "hidden", "enabled", "disabled", "checked"),
 			"target": stringSchema("Element ref from brw_snapshot, or a CSS selector. Omit for page-level facts (url, title, and text of the whole body). Required for count as the selector to count."),
 			"name":   stringSchema("Attribute name for what=attr, or a single CSS property name for what=styles. Omitting it for styles returns the properties that explain layout and appearance rather than every property."),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"what"})),
 		tool("brw_storage", "Read and write the page's localStorage or sessionStorage for the current origin. Inspect feature flags and app state, or seed a value for a test. This is web storage only: it is not a cookie or credential surface and never exposes HttpOnly state.", object(map[string]any{
 			"kind":   stringEnumSchema("Which store. Defaults to local.", "local", "session"),
 			"action": stringEnumSchema("get (one key, or every key when key is omitted), set, remove, or clear.", "get", "set", "remove", "clear"),
 			"key":    stringSchema("Storage key. Omit with action=get to return every key for the origin."),
 			"value":  stringSchema("Value for action=set."),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"action"})),
 		tool("brw_read_url", "Cheapest read: fetches and extracts a page with no tab, lease or navigation. Prefers markdown, else extracts the HTML; llms=true fetches the origin's /llms.txt. Pages like brw_read. UNAUTHENTICATED (no cookies or profile) — use brw_open + brw_read behind a login.", object(map[string]any{
 			"url":       stringSchema("Absolute http(s) URL; a bare host is assumed https."),
