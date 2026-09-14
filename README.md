@@ -96,6 +96,10 @@ checksum and, when `gh` is present, its build provenance attestation, then runs
 loopback, MCP registration with your agent client, and the bundled skill.
 `brwctl setup --dry-run` prints the plan without performing it.
 
+`brwctl doctor` diagnoses an install and prints a fix command for every failing
+check; `brwctl upgrade` replaces it with a later release under the same checksum
+and provenance rules, refusing while a daemon is mid-operation.
+
 Then load the extension into the browser you want driven — `chrome://extensions`
 -> Developer mode -> Load unpacked -> `<app-dir>/extension` — and click **Enable
 local browser control** in the Options page that opens. Nothing connects before

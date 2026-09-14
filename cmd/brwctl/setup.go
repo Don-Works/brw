@@ -380,21 +380,34 @@ func (r *setupRunner) header() {
 // is where `task install-mac` and the macOS package put it, and it is not on
 // PATH.
 func (r *setupRunner) brwdPath() string {
+	return brwdPath(r.opts.appDir, r.opts.executable, r.opts.goos, r.opts.runner.look)
+}
+
+// brwdPath is the daemon binary belonging to this install: the one in the app
+// directory, else the one beside the running brwctl, else whatever is on PATH.
+// doctor resolves it the same way setup does, so a registration setup wrote and
+// a registration doctor approves can never disagree.
+func brwdPath(appDir, executable, goos string, lookPath func(string) (string, bool)) string {
 	name := "brwd"
-	if r.opts.goos == "windows" {
+	if goos == "windows" {
 		name = "brwd.exe"
 	}
-	candidates := []string{filepath.Join(r.opts.appDir, "bin", name)}
-	if r.opts.executable != "" {
-		candidates = append(candidates, filepath.Join(filepath.Dir(r.opts.executable), name))
+	var candidates []string
+	if appDir != "" {
+		candidates = append(candidates, filepath.Join(appDir, "bin", name))
+	}
+	if executable != "" {
+		candidates = append(candidates, filepath.Join(filepath.Dir(executable), name))
 	}
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
 			return candidate
 		}
 	}
-	if path, ok := r.opts.runner.look("brwd"); ok {
-		return path
+	if lookPath != nil {
+		if path, ok := lookPath("brwd"); ok {
+			return path
+		}
 	}
 	return "brwd"
 }
@@ -840,16 +853,24 @@ func (r *setupRunner) stepSkills() {
 
 func (r *setupRunner) stepVerify() {
 	r.begin("verify")
-	report, err := doctorReport(doctorRequest{
-		Workspace:  r.opts.workspace,
-		Profile:    r.opts.profileName,
-		PolicyPath: r.resolvedPath,
-		AppDir:     r.opts.appDir,
-		Home:       r.opts.home,
-		Policy:     &r.policy,
+	// Live checks are left to `brwctl doctor`: loading the extension is the
+	// first thing the summary below tells the operator to do by hand, so a
+	// bridge probe here would end every successful setup with a red check for
+	// work setup has just asked for.
+	report := doctorReport(doctorRequest{
+		Workspace:      r.opts.workspace,
+		Profile:        r.opts.profileName,
+		PolicyPath:     r.resolvedPath,
+		AppDir:         r.opts.appDir,
+		Home:           r.opts.home,
+		GOOS:           r.opts.goos,
+		Executable:     r.opts.executable,
+		Runner:         r.opts.runner,
+		Policy:         &r.policy,
+		SkipLiveChecks: true,
 	})
-	if err != nil {
-		r.act(statusFail, "doctor: %v", err)
+	if report.Capabilities == nil {
+		r.act(statusFail, "doctor could not resolve a transport for profile %s", r.opts.profileName)
 		return
 	}
 	r.act(statusOK, "transport %s", report.Transport)

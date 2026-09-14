@@ -602,15 +602,17 @@ func TestDoctorReportContract(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			report, err := doctorReport(doctorRequest{
-				Profile: "chrome-profile",
-				AppDir:  appDir,
-				Home:    home,
-				Policy:  &policy,
+			// The file-level contract only: the live daemon and bridge probes
+			// have their own tests against fixture servers.
+			report := doctorReport(doctorRequest{
+				Profile:        "chrome-profile",
+				AppDir:         appDir,
+				Home:           home,
+				Policy:         &policy,
+				GOOS:           "darwin",
+				Runner:         newFakeRunner(),
+				SkipLiveChecks: true,
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
 
 			encoded, err := json.Marshal(report)
 			if err != nil {
@@ -679,10 +681,10 @@ func TestDoctorUsesDefaultBridgeExtensionID(t *testing.T) {
 		ProfileDirectory:       "Default",
 		ExtensionBridgeAllowed: true,
 	}}}
-	report, err := doctorReport(doctorRequest{Profile: "chrome-profile", AppDir: filepath.Join(home, "app"), Home: home, Policy: &policy})
-	if err != nil {
-		t.Fatal(err)
-	}
+	report := doctorReport(doctorRequest{
+		Profile: "chrome-profile", AppDir: filepath.Join(home, "app"), Home: home, Policy: &policy,
+		GOOS: "darwin", Runner: newFakeRunner(), SkipLiveChecks: true,
+	})
 	if report.BridgeExtensionID != profilepolicy.DefaultBridgeExtensionID {
 		t.Fatalf("bridge_extension_id = %q, want the published default", report.BridgeExtensionID)
 	}
@@ -717,10 +719,10 @@ func TestDoctorAppDirPolicyCopyIsAWarning(t *testing.T) {
 		UserDataDir:      profileDir,
 		DirectCDPAllowed: true,
 	}}}
-	report, err := doctorReport(doctorRequest{Profile: "chrome-agent", AppDir: appDir, Home: home, Policy: &policy})
-	if err != nil {
-		t.Fatal(err)
-	}
+	report := doctorReport(doctorRequest{
+		Profile: "chrome-agent", AppDir: appDir, Home: home, Policy: &policy,
+		GOOS: "darwin", Runner: newFakeRunner(), SkipLiveChecks: true,
+	})
 	if !report.OK {
 		t.Fatalf("doctor failed on a setup-configured machine: %v", report.Failures)
 	}

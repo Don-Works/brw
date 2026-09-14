@@ -511,9 +511,45 @@ brwctl doctor
 
 With no arguments it reads the policy `brwctl setup` wrote. Pass `--workspace`,
 `--profile` and `--profile-policy` to check a specific profile, or `--app-dir`
-for a Homebrew or relocated install.
+for a Homebrew or relocated install. `--json` prints the whole report for a
+script; `--timeout` bounds the two live probes.
 
-`doctor` fails when app files are missing, the profile is not allowed by policy,
-or the brw extension is not installed in the target browser profile. It reports
-the resolved transport and its capabilities, and warns about a Claude Code
-Chrome integration left switched on.
+Each check prints `ok`, `warn`, `skip` or `fail`, and every failing check prints
+the command that fixes it. `doctor` exits non-zero if any check failed.
+
+| check | what it proves |
+| --- | --- |
+| `profile_policy` | the policy file is readable and parses |
+| `profile_resolved` | this workspace still resolves to a profile the policy defines |
+| `app_files` | `brwd`, `brwcheck`, `brw-devtools-mcp` and the extension payload are installed |
+| `browser_binary` | the browser is installed, and which version |
+| `browser_profile_dir` | the browser has actually created the bound profile directory |
+| `bridge_extension` | the brw extension is installed in that browser profile |
+| `daemon` | the daemon answers on its loopback port — and serves *this* workspace, not another one |
+| `bridge_connected` | an extension has completed the handshake, not merely been installed |
+| `extension_version` | the loaded build matches the installed payload, and no per-profile copy has fallen behind |
+| `mcp_registration` | the agent client launches this install's `brwd`, not a path left by an older one |
+| `claude_in_chrome` | Claude Code's own Chrome integration is not competing for the browser |
+| `transport` | which lane is live, and therefore which tools exist |
+
+## Upgrade
+
+```sh
+brwctl upgrade --check   # report the published version, change nothing
+brwctl upgrade           # replace this install with it
+```
+
+`upgrade` resolves the latest release, verifies the archive's SHA256 against the
+published checksum and its GitHub build provenance with `gh attestation verify`
+when `gh` is installed, then replaces the binaries and the extension payload,
+refreshes every per-profile extension copy, and restarts the per-user daemons.
+The verification rules are the ones `install.sh` uses: an archive with no
+published checksum, a checksum that does not match, or a provenance check that
+runs and fails all abort before anything on disk is replaced.
+
+It refuses while a daemon reports work in flight rather than pulling the binary
+out from under a running agent; `--force` overrides that. `--refresh-extensions`
+re-syncs the per-profile extension copies from the installed payload without
+downloading anything, which is what `doctor` sends you to when one has fallen
+behind. Reload the extension in the browser afterwards (`chrome://extensions`,
+Reload) so it runs the payload the upgrade wrote.

@@ -26,7 +26,6 @@ import (
 	"github.com/Don-Works/brw/internal/mcp"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/recipe"
-	"github.com/Don-Works/brw/internal/setup"
 )
 
 func main() {
@@ -44,6 +43,8 @@ func main() {
 		err = setupCommand(os.Args[2:])
 	case "doctor":
 		err = doctor(os.Args[2:])
+	case "upgrade":
+		err = upgradeCommand(os.Args[2:])
 	case "mcp-config":
 		err = mcpConfig(os.Args[2:])
 	case "remote-mcp-wrapper":
@@ -72,7 +73,9 @@ func usage() {
 
 commands:
   setup           take this machine to a working, connected brw bridge (idempotent, no sudo)
-  doctor          verify profile policy, app install, and brw extension state
+  doctor          diagnose policy, app install, browser, daemon, bridge and MCP registration,
+                  printing a fix command for every failing check (--json for machine output)
+  upgrade         replace this install with a verified published release (--check to look only)
   mcp-config      print an MCP server config for a policy profile/transport
   remote-mcp-wrapper
                   write an SSH stdio wrapper for a remote brw bridge daemon
@@ -392,208 +395,6 @@ func probeDaemon(profile profilepolicy.Profile, timeout time.Duration) daemonRec
 		rec.Workspace = health.Identity.Workspace
 	}
 	return rec
-}
-
-// doctorWarning is a named, non-fatal finding. The name is the stable handle a
-// consumer matches on; the message is what a human reads.
-type doctorWarning struct {
-	Name    string `json:"name"`
-	Message string `json:"message"`
-	Detail  string `json:"detail,omitempty"`
-}
-
-// doctorResult is the `brwctl doctor` JSON contract. Fields are only ever added
-// to it: an existing consumer keeps reading the keys it already knows.
-type doctorResult struct {
-	Profile                  string              `json:"profile"`
-	Kind                     string              `json:"kind"`
-	AppDir                   string              `json:"app_dir"`
-	ProfilePolicyPath        string              `json:"profile_policy_path,omitempty"`
-	ChromeProfileDir         string              `json:"chrome_profile_dir"`
-	BridgeExtensionID        string              `json:"bridge_extension_id,omitempty"`
-	BridgeExtensionInstalled *bool               `json:"bridge_extension_installed,omitempty"`
-	BridgeExtensionSource    string              `json:"bridge_extension_source,omitempty"`
-	Transport                string              `json:"transport,omitempty"`
-	Capabilities             *setup.Capabilities `json:"capabilities,omitempty"`
-	Warnings                 []doctorWarning     `json:"warnings,omitempty"`
-	OK                       bool                `json:"ok"`
-	Failures                 []string            `json:"failures,omitempty"`
-}
-
-// doctorRequest is what doctorReport needs. Policy is optional: `brwctl setup`
-// passes the policy it has just merged in memory so --dry-run can verify a
-// configuration that is not on disk yet.
-type doctorRequest struct {
-	Workspace  string
-	Profile    string
-	PolicyPath string
-	AppDir     string
-	Home       string
-	Policy     *profilepolicy.Policy
-}
-
-func doctor(args []string) error {
-	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	var profileName, workspaceName, policyPath, appDir string
-	fs.StringVar(&profileName, "profile", os.Getenv("BRW_PROFILE"), "workspace profile name")
-	fs.StringVar(&workspaceName, "workspace", os.Getenv("BRW_WORKSPACE"), "workspace binding name for default/restricted profiles")
-	fs.StringVar(&policyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path")
-	fs.StringVar(&appDir, "app-dir", defaultAppDir(), "brw app install directory")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if profileName == "" && workspaceName == "" {
-		// A machine configured by `brwctl setup` has exactly one binding, and
-		// making the operator retype its generated name is the kind of friction
-		// that sends people back to hand-editing the policy.
-		resolved, err := soleWorkspace(policyPath)
-		if err != nil {
-			return err
-		}
-		workspaceName = resolved
-	}
-	home, _ := os.UserHomeDir()
-	report, err := doctorReport(doctorRequest{
-		Workspace:  workspaceName,
-		Profile:    profileName,
-		PolicyPath: policyPath,
-		AppDir:     appDir,
-		Home:       home,
-	})
-	if err != nil {
-		return err
-	}
-	writeJSON(os.Stdout, report)
-	if !report.OK {
-		return errors.New("doctor failed")
-	}
-	return nil
-}
-
-// soleWorkspace names the only workspace binding in the policy. More than one
-// is ambiguous and the caller has to say which; none means the policy predates
-// workspace bindings, so the profile name is the only handle.
-func soleWorkspace(policyPath string) (string, error) {
-	policy, err := profilepolicy.Load(policyPath)
-	if err != nil {
-		return "", fmt.Errorf("--profile or --workspace is required (could not read the profile policy: %w)", err)
-	}
-	switch len(policy.WorkspaceBindings) {
-	case 1:
-		return policy.WorkspaceBindings[0].Workspace, nil
-	case 0:
-		return "", errors.New("--profile or --workspace is required; the profile policy binds no workspaces")
-	default:
-		names := make([]string, 0, len(policy.WorkspaceBindings))
-		for _, binding := range policy.WorkspaceBindings {
-			names = append(names, binding.Workspace)
-		}
-		return "", fmt.Errorf("--workspace is required; the profile policy binds %s", strings.Join(names, ", "))
-	}
-}
-
-func doctorReport(req doctorRequest) (doctorResult, error) {
-	policyPath := req.PolicyPath
-	policy := profilepolicy.Policy{}
-	if req.Policy != nil {
-		policy = *req.Policy
-	} else {
-		if policyPath == "" {
-			discovered, err := profilepolicy.Discover("")
-			if err != nil {
-				return doctorResult{}, err
-			}
-			policyPath = discovered
-		}
-		loaded, err := profilepolicy.Load(policyPath)
-		if err != nil {
-			return doctorResult{}, err
-		}
-		policy = loaded
-	}
-	profile, err := policy.ResolveProfile(req.Workspace, req.Profile)
-	if err != nil {
-		return doctorResult{}, err
-	}
-
-	report := doctorResult{
-		Profile:           profile.Name,
-		Kind:              profile.Kind,
-		AppDir:            req.AppDir,
-		ProfilePolicyPath: policyPath,
-	}
-	var failures []string
-	for _, rel := range []string{
-		"bin/brwd",
-		"bin/brwcheck",
-		"bin/brw-devtools-mcp",
-		"extension/manifest.json",
-	} {
-		path := filepath.Join(req.AppDir, rel)
-		if _, err := os.Stat(path); err != nil {
-			failures = append(failures, "missing "+path)
-		}
-	}
-	// The app-directory copy of the policy is what `task install-mac` syncs for
-	// a remote push; it is not the policy this run loaded, and a machine set up
-	// by `brwctl setup` legitimately has none. Report it, do not fail on it.
-	appPolicy := filepath.Join(req.AppDir, "config", "browser-profiles.json")
-	if _, err := os.Stat(appPolicy); err != nil {
-		report.Warnings = append(report.Warnings, doctorWarning{
-			Name:    "app_dir_policy_copy_missing",
-			Message: "no policy copy at " + appPolicy + "; the policy in use is " + policyPath,
-			Detail:  "only needed when pushing this install to another machine",
-		})
-	}
-
-	profileDir := filepath.Join(profilepolicy.ExpandPath(profile.UserDataDir), profile.ProfileDirectory)
-	report.ChromeProfileDir = profileDir
-	if _, err := os.Stat(profileDir); err != nil {
-		failures = append(failures, "missing Chrome profile dir "+profileDir)
-	}
-
-	if profile.ExtensionBridgeAllowed {
-		// Match the daemon: an unconfigured bridge already trusts the published
-		// extension id, so doctor must verify against the same id rather than
-		// failing a policy that simply did not repeat it.
-		id := profile.BridgeExtensionID
-		if id == "" {
-			id = profilepolicy.DefaultBridgeExtensionID
-		}
-		report.BridgeExtensionID = id
-		installed, source, err := chromeExtensionInstalled(profileDir, id)
-		report.BridgeExtensionInstalled = &installed
-		if source != "" {
-			report.BridgeExtensionSource = source
-		}
-		if err != nil {
-			failures = append(failures, err.Error())
-		} else if !installed {
-			failures = append(failures, "brw extension "+id+" is not installed in "+profileDir)
-		}
-	}
-
-	// Name the lane and its capability gap. Both transports are complete
-	// browsers, but incognito, HttpOnly cookies and download routing exist on
-	// one and Chrome tab groups on the other, and nothing else tells the user
-	// which one their install chose.
-	if transport := setup.ResolvedTransport(profile); transport != "" {
-		capabilities := setup.CapabilitiesFor(transport)
-		report.Transport = transport
-		report.Capabilities = &capabilities
-	}
-
-	if state := setup.DetectClaudeInChrome(setup.ClaudeConfigPath(req.Home)); state.Enabled {
-		report.Warnings = append(report.Warnings, doctorWarning{
-			Name:    setup.ClaudeInChromeWarning,
-			Message: "Claude Code's own Chrome integration is enabled; run /chrome in Claude Code and turn it off, or the agent sees two browser tool sets and may drive the wrong browser",
-			Detail:  strings.Join(state.Signals, ", ") + " in " + state.Path,
-		})
-	}
-
-	report.OK = len(failures) == 0
-	report.Failures = failures
-	return report, nil
 }
 
 // mcpConfigRequest is one resolved MCP server derivation. `brwctl setup` builds
