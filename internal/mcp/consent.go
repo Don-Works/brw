@@ -30,22 +30,26 @@ func (s *Server) enforceSiteConsent(ctx context.Context, name string, args json.
 	}
 	tabID := browser.TabIDFromContext(ctx)
 	return s.consent.CheckTool(name, args,
-		func() (string, error) { return s.currentPageOrigin(ctx) },
+		func(want string) (string, error) { return s.currentPageOrigin(ctx, want) },
 		func(ref string) string { return s.refLabels.label(tabID, ref) },
 	)
 }
 
-// currentPageOrigin resolves the origin the tab this call targets is showing.
+// currentPageOrigin resolves the origin a tab is showing. An empty want is the
+// tab this call targets; a named one is a tab the call moves to, which a plan's
+// focus_tab step does mid-sequence.
 //
 // It fails CLOSED. If the transport cannot say what the tab is showing, consent
 // cannot be checked against anything, and an action allowed because brw did not
 // know where it was landing is the failure this whole surface exists to stop.
-func (s *Server) currentPageOrigin(ctx context.Context) (string, error) {
+func (s *Server) currentPageOrigin(ctx context.Context, want string) (string, error) {
 	tabs, err := s.manager.ListTabs(ctx)
 	if err != nil {
 		return "", fmt.Errorf("site consent needs the tab's current URL to decide, and listing tabs failed: %w", err)
 	}
-	want := browser.TabIDFromContext(ctx)
+	if want == "" {
+		want = browser.TabIDFromContext(ctx)
+	}
 	for _, tab := range tabs {
 		if want != "" && tab.ID == want {
 			return tab.URL, nil

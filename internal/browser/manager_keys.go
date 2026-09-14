@@ -53,6 +53,7 @@ func (m *Manager) KeyDown(ctx context.Context, opts KeyHoldOptions) (KeyHoldResu
 		return KeyHoldResult{}, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "key_down")
 
 	before := m.cachedBefore(tabID, tabCtx)
 	// Record the hold before dispatching so the keydown itself carries the
@@ -102,6 +103,7 @@ func (m *Manager) KeyUp(ctx context.Context, opts KeyHoldOptions) (KeyHoldResult
 		return KeyHoldResult{}, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "key_up")
 
 	release := []actions.KeyDescriptor{desc}
 	if releaseAll {

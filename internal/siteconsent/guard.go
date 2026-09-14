@@ -3,6 +3,7 @@ package siteconsent
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -87,6 +88,37 @@ func (e *ConfirmationDeclinedError) Error() string {
 	return fmt.Sprintf("%s on %s was declined at the confirmation prompt (%s)", e.Tool, e.Origin, Summary(e.Risks))
 }
 
+// CannotDecideError is the refusal for a call whose own arguments do not say
+// which origin it lands on, and whose surface cannot answer either. It is a
+// named error rather than a pass because a call brw cannot place is exactly the
+// call this surface exists to stop.
+type CannotDecideError struct {
+	Tool   string
+	Reason string
+}
+
+func (e *CannotDecideError) Error() string {
+	return fmt.Sprintf("site consent cannot decide where %s lands: %s", e.Tool, e.Reason)
+}
+
+// LocalTargetError is the refusal for a target that is not a network origin but
+// still reaches something: a local file, a filesystem: or view-source: URL, a
+// chrome: page. There is no origin to grant, so with the guard on there is
+// nothing that could authorise it.
+type LocalTargetError struct {
+	Scheme string
+	Target string
+}
+
+func (e *LocalTargetError) Error() string {
+	return fmt.Sprintf("%s targets are refused while site permissions are enabled: %q is not a site that can be granted, and reading it is not something a user consented to", e.Scheme, clip(e.Target))
+}
+
+// ErrPromptUnanswerable is what a prompter returns when there is nobody at the
+// other end. It is distinct from a "no": a refusal the user never gave must not
+// be recorded as their decision.
+var ErrPromptUnanswerable = errors.New("consent prompt has no reader; nobody answered")
+
 // Prompter asks the user about an origin and returns their answer. A nil
 // Prompter is the non-interactive case, which fails closed.
 //
@@ -107,6 +139,8 @@ type Guard struct {
 	prompter   Prompter
 	grantor    string
 	now        func() time.Time
+
+	onLedgerError func(error)
 }
 
 // NewGuard builds a guard over a store. A nil store disables consent entirely
@@ -126,6 +160,10 @@ func NewGuard(store *Store, admin AdminConfig) (*Guard, error) {
 		source:     source,
 		grantor:    "unknown",
 		now:        time.Now,
+		// Ledger writes are evidence, so a failed one must not be silent. The
+		// default goes to the daemon's own log; SetLedgerErrorHandler replaces
+		// it where there is somewhere better to put it.
+		onLedgerError: func(err error) { log.Printf("WARNING: consent ledger write failed: %v", err) },
 	}, nil
 }
 
@@ -179,6 +217,14 @@ func (g *Guard) Authorize(rawURL string, scope Scope) error {
 		return err
 	}
 	if origin == "" {
+		if scheme, local := LocalScheme(rawURL); local {
+			// file:, filesystem:, view-source: and the chrome: family have no
+			// origin to grant, but they are not nothing either: navpolicy runs
+			// in blocklist-only mode by default and passes non-network schemes,
+			// so treating them as "nothing to consent to" made brw_read_url a
+			// local-file reader with the guard on.
+			return &LocalTargetError{Scheme: scheme, Target: rawURL}
+		}
 		// about:blank, a data: URL or a relative reference: no site to consent to.
 		return nil
 	}
@@ -219,6 +265,12 @@ func (g *Guard) Authorize(rawURL string, scope Scope) error {
 		return &NotGrantedError{Origin: origin, Scope: scope, Expired: expired}
 	}
 	allow, err := g.prompter.AskSite(origin, scope)
+	if errors.Is(err, ErrPromptUnanswerable) {
+		// Nobody answered. Refuse this call, but record nothing: a persistent
+		// deny written from a closed stdin is a "no" the user never gave, and it
+		// would survive restarts and need manual revocation.
+		return &NotGrantedError{Origin: origin, Scope: scope, Expired: expired}
+	}
 	if err != nil {
 		return fmt.Errorf("ask for site permission on %s: %w", origin, err)
 	}
@@ -237,10 +289,10 @@ func (g *Guard) Authorize(rawURL string, scope Scope) error {
 	if err != nil {
 		return fmt.Errorf("record site permission for %s: %w", origin, err)
 	}
-	_ = g.store.AppendLedger(LedgerEntry{
+	g.noteLedger(g.store.AppendLedger(LedgerEntry{
 		At: now, Event: "prompt", Origin: origin, Scope: scope,
 		Decision: decision, Actor: g.grantor,
-	})
+	}))
 	if !allow {
 		return &DeniedError{Origin: origin, Scope: scope, When: recorded.GrantedAt}
 	}
@@ -334,7 +386,11 @@ func (g *Guard) Allow(opts GrantOptions) (Grant, error) {
 		Decision: DecisionAllow, Actor: actor, OverrideCategory: override,
 		Reason: opts.Note,
 	}); err != nil {
-		return Grant{}, fmt.Errorf("write consent ledger: %w", err)
+		// The grant is already persisted and already authorising. Returning a
+		// bare error here reported a failure for a grant that exists, which
+		// reads as "nothing happened" and invites a retry; the caller gets the
+		// record AND the reason the ledger is now incomplete.
+		return grant, fmt.Errorf("the grant for %s was recorded, but writing the consent ledger failed: %w", origin, err)
 	}
 	return grant, nil
 }
@@ -349,9 +405,9 @@ func (g *Guard) Revoke(origin string, scope Scope, actor string) (int, error) {
 		return removed, err
 	}
 	canonical, _ := CanonicalOrigin(origin)
-	_ = g.store.AppendLedger(LedgerEntry{
+	g.noteLedger(g.store.AppendLedger(LedgerEntry{
 		At: g.now(), Event: "revoke", Origin: canonical, Scope: scope, Actor: actorOr(actor, g.grantor),
-	})
+	}))
 	return removed, nil
 }
 
@@ -364,10 +420,10 @@ func (g *Guard) RevokeAll(actor string) (int, error) {
 	if err != nil || removed == 0 {
 		return removed, err
 	}
-	_ = g.store.AppendLedger(LedgerEntry{
+	g.noteLedger(g.store.AppendLedger(LedgerEntry{
 		At: g.now(), Event: "revoke-all", Actor: actorOr(actor, g.grantor),
 		Reason: fmt.Sprintf("%d records", removed),
-	})
+	}))
 	return removed, nil
 }
 
@@ -398,11 +454,30 @@ func (g *Guard) CheckAction(request ActionRequest) error {
 	if !allow {
 		return &ConfirmationDeclinedError{Tool: request.Tool, Origin: origin, Risks: risks}
 	}
-	_ = g.store.AppendLedger(LedgerEntry{
+	g.noteLedger(g.store.AppendLedger(LedgerEntry{
 		At: g.now(), Event: "confirm-action", Origin: origin, Actor: g.grantor,
 		Reason: request.Tool + ": " + Summary(risks),
-	})
+	}))
 	return nil
+}
+
+// noteLedger reports a ledger write that failed. The ledger is the only record
+// that a prompt was answered or a grant revoked, so a full disk must not make
+// those events vanish silently; it is evidence, not an input to a decision, so a
+// failed write does not fail the operation either.
+func (g *Guard) noteLedger(err error) {
+	if err == nil || g.onLedgerError == nil {
+		return
+	}
+	g.onLedgerError(err)
+}
+
+// SetLedgerErrorHandler installs the sink for ledger write failures. The daemon
+// passes its logger; tests pass a recorder.
+func (g *Guard) SetLedgerErrorHandler(handle func(error)) {
+	if g != nil {
+		g.onLedgerError = handle
+	}
 }
 
 func actorOr(actor, fallback string) string {

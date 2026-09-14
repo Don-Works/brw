@@ -777,31 +777,43 @@ func (m *Manager) syncFetchInterception(tabCtx context.Context, tabID string) er
 	lock.Lock()
 	defer lock.Unlock()
 
-	enable, handleAuth := m.fetchInterceptionCommand(tabID)
+	enable, handleAuth, patterns := m.fetchInterceptionCommand(tabID)
 	runCtx, cancel := context.WithTimeout(tabCtx, m.timeout)
 	defer cancel()
 	if !enable {
 		return chromedp.Run(runCtx, fetch.Disable())
 	}
 	return chromedp.Run(runCtx, fetch.Enable().
-		WithPatterns([]*fetch.RequestPattern{{URLPattern: "*"}}).
+		WithPatterns(patterns).
 		WithHandleAuthRequests(handleAuth))
 }
 
 // fetchInterceptionCommand answers what Chrome should be told about this tab:
-// whether to intercept at all, and whether to deliver authRequired events while
-// it does. Separate from the command that carries it so the decision can be
-// exercised without a browser.
-func (m *Manager) fetchInterceptionCommand(tabID string) (enable, handleAuth bool) {
+// whether to intercept at all, whether to deliver authRequired events while it
+// does, and WHICH requests to pause. Separate from the command that carries it
+// so the decision can be exercised without a browser.
+//
+// The pattern matters as much as the enable. Every intercepted request pauses,
+// crosses to the daemon and is continued from a goroutine, so pausing "*" on a
+// tab whose only reason to intercept is the content boundary makes every image,
+// font, script and XHR on the page pay for a rule that only ever decides
+// documents.
+func (m *Manager) fetchInterceptionCommand(tabID string) (enable, handleAuth bool, patterns []*fetch.RequestPattern) {
 	handleAuth = m.env.authArmed(tabID)
-	enable = handleAuth ||
+	everything := handleAuth ||
 		m.navPolicy.Confines() ||
-		// The content boundary decides document requests, which it can only do
-		// while Chrome is pausing them.
-		m.contentNavGuard ||
 		m.routes.count(tabID) > 0 ||
 		len(m.env.listHeaders(tabID)) > 0
-	return enable, handleAuth
+	// The content boundary decides document requests, which it can only do while
+	// Chrome is pausing them.
+	enable = everything || m.contentNavGuard
+	if !enable {
+		return false, false, nil
+	}
+	if !everything {
+		return true, handleAuth, []*fetch.RequestPattern{{URLPattern: "*", ResourceType: network.ResourceTypeDocument}}
+	}
+	return true, handleAuth, []*fetch.RequestPattern{{URLPattern: "*"}}
 }
 
 // continueWithEnvironmentHeaders answers one paused request, attaching the

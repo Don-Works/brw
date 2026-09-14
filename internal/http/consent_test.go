@@ -108,46 +108,141 @@ func TestConsentGatesTheHTTPAPIToo(t *testing.T) {
 // operation through usageOperations, so a gated tool whose route is missing from
 // that map, or a rule added to the shared table with no route wiring, shows up
 // here as a route that answered 200.
+//
+// The request uses the method the route is REGISTERED with, discovered from the
+// Allow header a method mismatch returns. Posting to every route instead would
+// count a GET-only route's 405 as proof the gate fired, which is a pass for the
+// wrong reason - and the refusal body is checked for the same reason, since only
+// the gate names the origin and the missing scope.
 func TestEveryGatedOperationIsRefusedOverHTTP(t *testing.T) {
 	for route, operation := range usageOperations {
 		rule, gated := siteconsent.ToolRules[operation]
 		if !gated && !siteconsent.SequenceTools[operation] {
 			continue
 		}
-		t.Run(operation, func(t *testing.T) {
-			server, _, ctrl := newConsentServerWithController(t, &consentController{tabURL: "https://shop.test/cart"})
-			body := `{}`
-			switch {
-			case siteconsent.SequenceTools[operation]:
-				body = `{"steps":[{"action":"open","url":"https://ungranted.test/x"}]}`
-			case rule.Target == siteconsent.TargetURL:
-				body = `{"url":"https://ungranted.test/x"}`
-			}
-			rec := doJSON(t, server, http.MethodPost, route, body)
-			if rec.Code < http.StatusBadRequest {
-				t.Fatalf("%s (%s) answered %d without a grant: %s", route, operation, rec.Code, rec.Body.String())
-			}
-			if ctrl.openURL != "" || ctrl.clicked {
-				t.Fatalf("%s reached the controller despite the refusal", route)
-			}
-		})
+		for _, method := range registeredMethods(t, route) {
+			t.Run(operation+"/"+method, func(t *testing.T) {
+				server, _, ctrl := newConsentServerWithController(t, &consentController{tabURL: "https://ungranted.test/cart"})
+				body := ""
+				if method != http.MethodGet {
+					switch {
+					case siteconsent.SequenceTools[operation]:
+						body = `{"steps":[{"action":"open","url":"https://ungranted.test/x"}]}`
+					case rule.Target == siteconsent.TargetURL:
+						// Addressed in the argument the RULE declares, so a rule
+						// naming a field the tool does not have fails here too.
+						body = destinationBody(t, rule.Fields[0])
+					default:
+						body = `{}`
+					}
+				}
+				rec := doJSON(t, server, method, route, body)
+				if rec.Code < http.StatusBadRequest {
+					t.Fatalf("%s %s (%s) answered %d without a grant: %s", method, route, operation, rec.Code, rec.Body.String())
+				}
+				answer := rec.Body.String()
+				if !strings.Contains(answer, "https://ungranted.test") {
+					t.Fatalf("%s %s (%s) refused with %d but did not name the origin, so this is not the gate refusing: %s", method, route, operation, rec.Code, answer)
+				}
+				if ctrl.openURL != "" || ctrl.clicked {
+					t.Fatalf("%s reached the controller despite the refusal", route)
+				}
+			})
+		}
+	}
+}
+
+// destinationBody writes an un-granted origin into the argument a rule says the
+// tool names its destination in.
+func destinationBody(t *testing.T, field siteconsent.DestinationField) string {
+	t.Helper()
+	switch field {
+	case siteconsent.FieldURL:
+		return `{"url":"https://ungranted.test/x"}`
+	case siteconsent.FieldOrigin:
+		return `{"origin":"https://ungranted.test"}`
+	case siteconsent.FieldDomain:
+		return `{"domain":"ungranted.test"}`
+	case siteconsent.FieldOrigins:
+		return `{"origins":[{"origin":"https://ungranted.test","headers":{"X-Test":"1"}}]}`
+	}
+	t.Fatalf("no request body shape for destination field %q", field)
+	return ""
+}
+
+// registeredMethods asks the route table which methods a path is registered
+// with. A mismatch answers 405 with an Allow header, so the test reads the
+// methods out of the mux rather than guessing them.
+func registeredMethods(t *testing.T, route string) []string {
+	t.Helper()
+	// A server with no consent guard, so the gate cannot answer before the mux
+	// reports the method mismatch.
+	server := New("", &consentController{})
+	req := httptest.NewRequest("BREW", route, strings.NewReader(""))
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("%s answered %d for an unregistered method; the Allow header is how this test finds the real methods", route, rec.Code)
+	}
+	var methods []string
+	for _, method := range strings.Split(rec.Header().Get("Allow"), ",") {
+		method = strings.TrimSpace(method)
+		if method != "" && method != http.MethodOptions && method != http.MethodHead {
+			methods = append(methods, method)
+		}
+	}
+	if len(methods) == 0 {
+		t.Fatalf("%s reports no methods in Allow: %q", route, rec.Header().Get("Allow"))
+	}
+	return methods
+}
+
+// TestEveryAPIRouteIsClassifiedForConsent is the route-table half of the
+// exhaustiveness rule: an /api/ route whose operation is in neither half of the
+// consent table is a route nothing decided about.
+func TestEveryAPIRouteIsClassifiedForConsent(t *testing.T) {
+	// The consent surface itself: these routes list and revoke grants rather
+	// than drive a site, and gating them behind a grant would make a user unable
+	// to revoke without first granting.
+	surface := map[string]string{
+		"brw_consent_grants": "lists this profile's own grants; it touches no site",
+		"brw_consent_revoke": "revokes this profile's own grants; it touches no site",
+	}
+	for route, operation := range usageOperations {
+		_, gated := siteconsent.ToolRules[operation]
+		if gated || siteconsent.SequenceTools[operation] {
+			continue
+		}
+		if _, ungated := siteconsent.UngatedTools[operation]; ungated {
+			continue
+		}
+		if surface[operation] != "" {
+			continue
+		}
+		t.Errorf("%s (%s) is in neither siteconsent.ToolRules nor siteconsent.UngatedTools", route, operation)
 	}
 }
 
 // TestConsentMiddlewareLeavesUngatedRoutesAlone keeps the gate from becoming a
-// blanket refusal: a read route carries no consent rule and must pass through
-// untouched, body included.
+// blanket refusal: a route that drives no site passes through untouched, and a
+// gated one still delivers its body to the handler once the origin is granted.
 func TestConsentMiddlewareLeavesUngatedRoutesAlone(t *testing.T) {
 	ctrl := &consentController{tabURL: "https://shop.test/cart"}
 	ctrl.snap = sampleSnapshot()
-	server, _, _ := newConsentServerWithController(t, ctrl)
+	server, guard, _ := newConsentServerWithController(t, ctrl)
 	rec := doJSON(t, server, http.MethodGet, "/api/browser/tabs", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("an ungated route was refused: %d %s", rec.Code, rec.Body.String())
 	}
+	if rec := doJSON(t, server, http.MethodPost, "/api/page/find", `{"query":"button"}`); rec.Code < http.StatusBadRequest {
+		t.Fatalf("a read of an un-granted page was allowed: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://shop.test", Scope: siteconsent.ScopeRead, Actor: "fixture-user"}); err != nil {
+		t.Fatal(err)
+	}
 	rec = doJSON(t, server, http.MethodPost, "/api/page/find", `{"query":"button"}`)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("find was refused: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("find was refused with a read grant: %d %s", rec.Code, rec.Body.String())
 	}
 	if ctrl.findOpts.Query != "button" {
 		t.Fatalf("the buffered body did not reach the handler: %+v", ctrl.findOpts)

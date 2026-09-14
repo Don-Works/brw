@@ -1,6 +1,7 @@
 package siteconsent
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,11 +45,11 @@ type Store struct {
 	key       []byte
 	ledgerPth string
 
-	mu       sync.Mutex
-	grants   []Grant
-	rejected []RejectedRecord
-	loadedSz int64
-	loadedMd time.Time
+	mu        sync.Mutex
+	grants    []Grant
+	rejected  []RejectedRecord
+	loadedSum [sha256.Size]byte
+	loaded    bool
 }
 
 // OpenStore loads (or starts) the consent store at path, keyed by keyPath.
@@ -100,13 +101,17 @@ func (s *Store) reloadLocked() error {
 	if errors.Is(err, os.ErrNotExist) {
 		s.grants = nil
 		s.rejected = nil
-		s.loadedSz = -1
-		s.loadedMd = time.Time{}
+		s.loadedSum = [sha256.Size]byte{}
+		s.loaded = false
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	return s.parseLocked(data)
+}
+
+func (s *Store) parseLocked(data []byte) error {
 	var file storeFile
 	if err := json.Unmarshal(data, &file); err != nil {
 		return fmt.Errorf("read consent store %s: %w", s.path, err)
@@ -129,10 +134,8 @@ func (s *Store) reloadLocked() error {
 	}
 	s.grants = grants
 	s.rejected = rejected
-	if info, statErr := os.Stat(s.path); statErr == nil {
-		s.loadedSz = info.Size()
-		s.loadedMd = info.ModTime()
-	}
+	s.loadedSum = sha256.Sum256(data)
+	s.loaded = true
 	return nil
 }
 
@@ -140,21 +143,25 @@ func (s *Store) reloadLocked() error {
 //
 // Revocation has to take effect on the next action without restarting the
 // daemon, and the revoking process is usually a different one (brwctl, or the
-// extension options page through the bridge). Comparing size and modification
-// time is enough to notice that: a rewrite always changes at least one, and a
-// false positive only costs a re-read.
+// extension options page through the bridge). The file's CONTENT decides, not
+// its size and modification time: a record swapped for one of the same
+// serialised length inside a single mtime tick - an allow flipped to a deny with
+// the same field widths, or one origin for another of equal length - moves
+// neither, and the stale in-memory copy would keep deciding. The store is a
+// couple of kilobytes, so re-reading it per decision is not a cost worth a stale
+// grant.
 func (s *Store) refreshLocked() {
-	info, err := os.Stat(s.path)
+	data, err := os.ReadFile(s.path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && s.loadedSz != -1 {
+		if errors.Is(err, os.ErrNotExist) && s.loaded {
 			_ = s.reloadLocked()
 		}
 		return
 	}
-	if info.Size() == s.loadedSz && info.ModTime().Equal(s.loadedMd) {
+	if s.loaded && sha256.Sum256(data) == s.loadedSum {
 		return
 	}
-	_ = s.reloadLocked()
+	_ = s.parseLocked(data)
 }
 
 // List returns every loaded record, newest first. Expired records are included:
@@ -177,8 +184,14 @@ func (s *Store) Rejected() []RejectedRecord {
 }
 
 // Lookup returns the record that decides origin at scope want, and whether one
-// was found. A deny at any scope that covers the request wins over an allow,
-// and an expired record is not returned at all, so the caller re-prompts.
+// was found. An expired record is not returned at all, so the caller re-prompts.
+//
+// The two decisions match at different scopes, deliberately. An ALLOW at act
+// covers a read, because an agent that may change a site may look at it. A DENY
+// runs the other way: "do not change things on this site" is not "do not look at
+// this site", and the prompt asks them as two questions, so a deny answers the
+// scope it was given and every scope that implies it - refusing read refuses act
+// too, refusing act leaves read to be asked.
 func (s *Store) Lookup(origin string, want Scope, now time.Time) (Grant, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -186,7 +199,14 @@ func (s *Store) Lookup(origin string, want Scope, now time.Time) (Grant, bool) {
 	var best Grant
 	var found bool
 	for _, grant := range s.grants {
-		if grant.Origin != origin || !grant.Scope.covers(want) || grant.Expired(now) {
+		if grant.Origin != origin || grant.Expired(now) {
+			continue
+		}
+		if grant.Decision == DecisionDeny {
+			if !want.covers(grant.Scope) {
+				continue
+			}
+		} else if !grant.Scope.covers(want) {
 			continue
 		}
 		// Re-verify on the decision path, not only on load. The in-memory copy
@@ -335,10 +355,8 @@ func (s *Store) writeLocked(grants []Grant) error {
 		return err
 	}
 	s.grants = sorted
-	if info, statErr := os.Stat(s.path); statErr == nil {
-		s.loadedSz = info.Size()
-		s.loadedMd = info.ModTime()
-	}
+	s.loadedSum = sha256.Sum256(payload)
+	s.loaded = true
 	return nil
 }
 

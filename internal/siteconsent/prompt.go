@@ -65,10 +65,12 @@ func (p *TerminalPrompter) ask(question string) (bool, error) {
 	line, err := p.reader.ReadString('\n')
 	if err != nil && line == "" {
 		if errors.Is(err, io.EOF) {
-			// Nobody is there. Refuse and say so rather than reporting a "no"
-			// the user never gave.
+			// Nobody is there. Say so with the sentinel rather than returning a
+			// plain false: the caller records whatever a prompt answers, and a
+			// recorded deny from a closed stdin is a "no" the user never gave -
+			// one that survives restarts and needs manual revocation.
 			fmt.Fprintln(p.out, "no answer (input closed); refusing")
-			return false, nil
+			return false, ErrPromptUnanswerable
 		}
 		return false, err
 	}

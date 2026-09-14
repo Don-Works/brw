@@ -3287,16 +3287,6 @@ function send(payload) {
   }
 }
 
-// fetchBridgeToken reads the per-launch handshake token from the daemon's
-// loopback /status endpoint. The extension can read the response body because
-// the loopback origin is in host_permissions; a web page cannot.
-//
-// It returns {token, reachable, detail} rather than a bare string because the
-// three ways of ending up with no token are no longer equivalent. The daemon
-// now requires the token, so an unreachable or wrong statusUrl produces a
-// refused connection rather than a tokenless one - and a caller that cannot
-// tell "the daemon offered none" from "I never reached the daemon" reports a
-// bridge that will not come up with the cause three layers away.
 // consentURL derives the daemon's consent surface from the configured status
 // endpoint. It is derived rather than configured so there is one address to get
 // wrong, and normalizeStatusURL has already pinned that address to loopback.
@@ -3337,6 +3327,16 @@ async function revokeSiteConsent(request) {
   return result;
 }
 
+// fetchBridgeToken reads the per-launch handshake token from the daemon's
+// loopback /status endpoint. The extension can read the response body because
+// the loopback origin is in host_permissions; a web page cannot.
+//
+// It returns {token, reachable, detail} rather than a bare string because the
+// three ways of ending up with no token are no longer equivalent. The daemon
+// now requires the token, so an unreachable or wrong statusUrl produces a
+// refused connection rather than a tokenless one - and a caller that cannot
+// tell "the daemon offered none" from "I never reached the daemon" reports a
+// bridge that will not come up with the cause three layers away.
 async function fetchBridgeToken(config) {
   try {
     // Bounded so a hung /status can never block hello indefinitely; the bridge's

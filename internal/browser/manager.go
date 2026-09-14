@@ -966,6 +966,7 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 		return ActionResult{}, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "click")
 
 	// Gate actuation on actionability that accepts EITHER the strict AX heuristic
 	// OR geometry+hit-test (so a custom web component reporting visible:false in
@@ -1038,6 +1039,7 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 		return ActionResult{}, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "click_text")
 
 	before := m.cachedBefore(tabID, tabCtx)
 	// A held modifier cannot survive the in-page dispatch: the MouseEvent the
@@ -1187,6 +1189,7 @@ func (m *Manager) Evaluate(ctx context.Context, expression string) (any, error) 
 		return nil, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "evaluate")
 	// An expression can carry a value a sensitive recipe step supplied, so the
 	// same redaction the input actions use applies here before the text is
 	// recorded. The action is still recorded; only the script goes.
@@ -1296,6 +1299,7 @@ func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, err
 		return ActionResult{}, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "type")
 
 	before := m.cachedBefore(tabID, tabCtx)
 	traceName, traceRole, traceNameIsText := m.refIdentity(tabID, ref)
@@ -1404,6 +1408,7 @@ func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionRe
 		return ActionResult{}, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "fill")
 
 	ref := opts.Ref
 	if ref == "" {
@@ -1460,6 +1465,7 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 		return ActionResult{}, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "upload_file")
 
 	// Resolve the upload source on the daemon host: local path(s), inline
 	// bytes_base64, or a remote URL. bytes/url sources are materialized to temp
@@ -1606,6 +1612,7 @@ func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, 
 		return ActionResult{}, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "select")
 	before := m.cachedBefore(tabID, tabCtx)
 	traceName, traceRole, traceNameIsText := m.refIdentity(tabID, ref)
 	message, err := m.selectValue(tabCtx, ref, value)
@@ -1767,6 +1774,7 @@ func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
 		return ActionResult{}, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "press")
 	before := m.cachedBefore(tabID, tabCtx)
 	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 		return m.pressKey(tabCtx, tabID, key)
@@ -1968,11 +1976,12 @@ func (m *Manager) CommitField(ctx context.Context, ref string) error {
 	if err := m.guardTakeover("commit"); err != nil {
 		return err
 	}
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "commit")
 	return snapshot.CommitField(tabCtx, ref)
 }
 
@@ -1980,11 +1989,12 @@ func (m *Manager) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYRe
 	if err := m.guardTakeover("click_xy"); err != nil {
 		return snapshot.ClickXYResult{}, err
 	}
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return snapshot.ClickXYResult{}, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "click_xy")
 	return snapshot.ClickXY(tabCtx, x, y)
 }
 
@@ -2785,6 +2795,11 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 		sr.Error = err.Error()
 		return sr
 	}
+	// A batch step reaches the low-level helpers directly rather than the public
+	// verb, so the content boundary would otherwise never hear that the agent
+	// asked for this input - and a batched click on a cross-site link would be
+	// refused as though the page had initiated it.
+	m.recordAgentInteraction(tabID, step.Action)
 
 	var actionErr error
 	switch step.Action {
@@ -2879,6 +2894,10 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 		var url string
 		url, actionErr = m.prepareNavigationURL(step.URL)
 		if actionErr == nil {
+			// Recorded BEFORE the navigation starts, like NavigateTo does: this
+			// step drives chromedp directly, and without the intent the content
+			// boundary sees the agent's own navigation as one the page made.
+			m.recordAgentNavigation(tabID, url)
 			actionErr = chromedp.Run(tabCtx, chromedp.Navigate(url))
 		}
 	case "focus_tab":

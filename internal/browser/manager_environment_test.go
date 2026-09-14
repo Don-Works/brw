@@ -104,6 +104,10 @@ func TestFetchInterceptionIsOnlyEnabledWhileSomethingNeedsIt(t *testing.T) {
 		arrange        func(m *Manager)
 		wantEnable     bool
 		wantHandleAuth bool
+		// wantDocumentOnly says Chrome should be told to pause top-level
+		// documents and nothing else, which is all the content boundary can
+		// decide.
+		wantDocumentOnly bool
 	}{
 		{
 			name:    "nothing needs it",
@@ -144,6 +148,23 @@ func TestFetchInterceptionIsOnlyEnabledWhileSomethingNeedsIt(t *testing.T) {
 			},
 		},
 		{
+			name:             "only the content boundary needs it",
+			arrange:          func(m *Manager) { m.contentNavGuard = true },
+			wantEnable:       true,
+			wantDocumentOnly: true,
+		},
+		{
+			name: "the content boundary alongside a route pauses everything",
+			arrange: func(m *Manager) {
+				m.contentNavGuard = true
+				m.routes.mu.Lock()
+				m.routes.initLocked()
+				m.routes.routes[tabID] = []*Route{{Pattern: "*"}}
+				m.routes.mu.Unlock()
+			},
+			wantEnable: true,
+		},
+		{
 			name: "the credential is dropped again",
 			arrange: func(m *Manager) {
 				m.env.armCredential(tabID, "https://api.example.com", "u", "fabricated")
@@ -156,9 +177,22 @@ func TestFetchInterceptionIsOnlyEnabledWhileSomethingNeedsIt(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &Manager{}
 			tt.arrange(m)
-			enable, handleAuth := m.fetchInterceptionCommand(tabID)
+			enable, handleAuth, patterns := m.fetchInterceptionCommand(tabID)
 			if enable != tt.wantEnable || handleAuth != tt.wantHandleAuth {
 				t.Fatalf("command = (enable %v, handleAuth %v), want (%v, %v)", enable, handleAuth, tt.wantEnable, tt.wantHandleAuth)
+			}
+			if !enable {
+				if patterns != nil {
+					t.Fatalf("interception is off but %d patterns were asked for", len(patterns))
+				}
+				return
+			}
+			if len(patterns) != 1 {
+				t.Fatalf("want one pattern, got %+v", patterns)
+			}
+			documentOnly := patterns[0].ResourceType == network.ResourceTypeDocument
+			if documentOnly != tt.wantDocumentOnly {
+				t.Fatalf("pattern = %+v, documentOnly=%v want %v", patterns[0], documentOnly, tt.wantDocumentOnly)
 			}
 		})
 	}

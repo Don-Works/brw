@@ -135,6 +135,12 @@ func (s *Server) consentRevoke(w http.ResponseWriter, r *http.Request) {
 // rules are the shared table in internal/siteconsent, keyed by the operation
 // names usageOperations already maps each route to, so the two surfaces cannot
 // drift apart.
+//
+// POST /dashboard/input is deliberately outside the table. It carries a takeover
+// token and dispatches the keystrokes and clicks of a HUMAN who has taken the
+// browser over at that moment, and a person at the keyboard IS the consent this
+// gate exists to obtain; the token is what proves someone is there. Nothing else
+// off /api/ reaches the controller.
 func (s *Server) consentMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.consent.Enabled() {
@@ -164,8 +170,11 @@ func (s *Server) consentMiddleware(next http.Handler) http.Handler {
 		// through a per-session cache, so there is no accessible name to recover
 		// for a bare ref. Such an action is classified by its origin alone,
 		// exactly as an unseen ref is on the MCP surface.
-		if err := s.consent.CheckTool(operation, body, func() (string, error) {
-			return s.currentPageOrigin(r.Context(), tabID)
+		if err := s.consent.CheckTool(operation, body, func(want string) (string, error) {
+			if want == "" {
+				want = tabID
+			}
+			return s.currentPageOrigin(r.Context(), want)
 		}, nil); err != nil {
 			writeError(w, err)
 			return

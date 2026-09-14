@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
@@ -159,6 +160,9 @@ func TestContentNavigationVerdict(t *testing.T) {
 		intent    string
 		anyIntent bool
 		intentAge time.Duration
+		// intentTTL is the bound the recording site gave this intent. Zero means
+		// the navigation one; an interaction records a much shorter bound.
+		intentTTL time.Duration
 		chain     network.RequestID
 		paused    *fetch.EventRequestPaused
 		allow     bool
@@ -205,6 +209,27 @@ func TestContentNavigationVerdict(t *testing.T) {
 			anyIntent: true,
 			paused:    documentRequest("https://elsewhere.test/x", "frame-1", "net-1"),
 			allow:     true,
+		},
+		{
+			name:      "the agent's own click explains the navigation it caused",
+			guard:     true,
+			committed: "https://start.test/",
+			mainFrame: "frame-1",
+			anyIntent: true,
+			intentTTL: agentInteractionTTL,
+			paused:    documentRequest("https://elsewhere.test/x", "frame-1", "net-1"),
+			allow:     true,
+		},
+		{
+			name:      "a page that moves long after the agent's click is not that click",
+			guard:     true,
+			committed: "https://start.test/",
+			mainFrame: "frame-1",
+			anyIntent: true,
+			intentTTL: agentInteractionTTL,
+			intentAge: agentInteractionTTL + time.Second,
+			paused:    documentRequest("https://elsewhere.test/x", "frame-1", "net-1"),
+			allow:     false,
 		},
 		{
 			name:      "same-host navigation by the page is ordinary routing",
@@ -272,10 +297,15 @@ func TestContentNavigationVerdict(t *testing.T) {
 				m.contentNav.mainFrames[tabID] = c.mainFrame
 			}
 			if c.intent != "" || c.anyIntent {
+				ttl := c.intentTTL
+				if ttl == 0 {
+					ttl = agentIntentTTL
+				}
 				m.contentNav.intents[tabID] = agentIntent{
 					host: hostOfURL(c.intent),
 					any:  c.anyIntent,
 					at:   time.Now().Add(-c.intentAge),
+					ttl:  ttl,
 				}
 			}
 			if c.chain != "" {
@@ -337,5 +367,142 @@ func documentRequest(rawURL string, frame cdp.FrameID, networkID network.Request
 		ResourceType: network.ResourceTypeDocument,
 		FrameID:      frame,
 		NetworkID:    networkID,
+	}
+}
+
+// TestAgentClickOnACrossSiteLinkIsAllowed drives real Chrome. The agent clicks
+// a link it chose from the page, and the navigation that click causes is the
+// agent's - refusing it would break every cross-site hand-off (an OAuth sign-in,
+// a checkout passing to a payment processor) the moment the guard is armed.
+func TestAgentClickOnACrossSiteLinkIsAllowed(t *testing.T) {
+	var offSiteHits int64
+	offSite := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt64(&offSiteHits, 1)
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!doctype html><html><body><p id="landed">off-site</p></body></html>`)
+	}))
+	defer offSite.Close()
+	// The same listener under a different host string, which is what the
+	// boundary compares.
+	offSiteURL := asLocalhost(offSite.URL) + "/destination"
+
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<!doctype html><html><body><p id="here">start</p><a href=%q>Continue to partner</a></body></html>`, offSiteURL)
+	}))
+	defer page.Close()
+
+	m := newHeadlessManager(t)
+	m.SetContentNavigationGuard(true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var id target.ID
+	if err := m.runBrowser(ctx, func(rc context.Context) error {
+		var e error
+		id, e = target.CreateTarget("about:blank").Do(rc)
+		return e
+	}); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	tabID := string(id)
+	m.refs.SetActive(tabID)
+	if _, err := m.tabContext(tabID); err != nil {
+		t.Fatalf("tab context: %v", err)
+	}
+	if _, err := m.NavigateTo(ctx, page.URL); err != nil {
+		t.Fatalf("agent navigation to the start page failed: %v", err)
+	}
+
+	if _, err := m.ClickText(ctx, snapshot.ClickTextOptions{Text: "Continue to partner"}); err != nil {
+		t.Fatalf("the agent's own click was refused: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt64(&offSiteHits) == 0 {
+		time.Sleep(200 * time.Millisecond)
+	}
+	if got := atomic.LoadInt64(&offSiteHits); got == 0 {
+		t.Fatalf("the destination the agent clicked through to was never reached; blocked=%+v", m.contentNavBlocked(tabID))
+	}
+	for _, blocked := range m.contentNavBlocked(tabID) {
+		if strings.Contains(blocked.Reason, "content-initiated navigation refused") {
+			t.Fatalf("the agent's own click was recorded as content-initiated: %s", blocked.Reason)
+		}
+	}
+	tab, err := m.tabByID(ctx, tabID)
+	if err != nil {
+		t.Fatalf("tab lookup: %v", err)
+	}
+	if !strings.Contains(tab.URL, "/destination") {
+		t.Fatalf("after the agent clicked the link, the tab is on %q", tab.URL)
+	}
+}
+
+// TestAgentInputRecordsAnIntent walks the input verbs the manager records for
+// and proves each one flips the verdict, and that a verb which only looks at the
+// page does not: a navigation the agent did not ask for stays refused.
+func TestAgentInputRecordsAnIntent(t *testing.T) {
+	const tabID = "tab-1"
+	verbs := []struct {
+		action string
+		allow  bool
+	}{
+		{"click", true},
+		{"click_text", true},
+		{"click_xy", true},
+		{"click_button", true},
+		{"press", true},
+		{"type", true},
+		{"fill", true},
+		{"select", true},
+		{"commit", true},
+		{"drag", true},
+		{"evaluate", true},
+		{"upload_file", true},
+		{"key_down", true},
+		{"key_up", true},
+		{"mouse_down", true},
+		{"mouse_up", true},
+		{"hover", false},
+		{"scroll", false},
+		{"snapshot", false},
+		{"read", false},
+	}
+	for _, verb := range verbs {
+		t.Run(verb.action, func(t *testing.T) {
+			m := &Manager{contentNavGuard: true}
+			m.contentNav.mu.Lock()
+			m.contentNav.initLocked()
+			m.contentNav.committed[tabID] = "https://start.test/"
+			m.contentNav.mainFrames[tabID] = "frame-1"
+			m.contentNav.mu.Unlock()
+
+			m.recordAgentInteraction(tabID, verb.action)
+			allow, reason := m.contentNavigationVerdict(tabID, documentRequest("https://elsewhere.test/x", "frame-1", "net-1"))
+			if allow != verb.allow {
+				t.Fatalf("after %s the verdict was allow=%v (%s), want %v", verb.action, allow, reason, verb.allow)
+			}
+		})
+	}
+}
+
+// TestAgentInputActionsCoverEveryInputStep keeps the two tables in step: a batch
+// step verb that actuates input but is missing from agentInputActions records no
+// intent, so the navigation it causes is refused as the page's.
+func TestAgentInputActionsCoverEveryInputStep(t *testing.T) {
+	// The step verbs that only observe. Everything else a batch can run is
+	// input, or navigation that records its own intent.
+	observation := map[string]bool{
+		"read": true, "snapshot": true, "scroll": true, "hover": true, "wait": true,
+		"assert": true, "assert_visible": true, "assert_text": true,
+		"assert_value": true, "assert_hidden": true,
+		"open": true, "navigate_to": true, "focus_tab": true,
+	}
+	for _, action := range planAndBatchStepActions(t) {
+		if observation[action] || agentInputActions[action] {
+			continue
+		}
+		t.Errorf("step %q actuates input but is not in agentInputActions, so the navigation it causes is refused as content-initiated", action)
 	}
 }

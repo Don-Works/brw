@@ -304,32 +304,76 @@ func TestConsentRulesNameRealTools(t *testing.T) {
 	}
 }
 
-// TestEveryURLOpeningToolIsInTheConsentTable walks the catalogue for tools that
-// take a url argument and requires each to be gated or deliberately exempt. A
-// new URL-opening tool that is neither fails here rather than shipping ungated.
-func TestEveryURLOpeningToolIsInTheConsentTable(t *testing.T) {
-	// Exempt tools take a "url" property that is not a destination brw steers
-	// to: a match pattern, or an assertion about where the page already is.
+// TestEveryDestinationArgumentIsRefused walks the catalogue for tools that take
+// a destination argument - whatever that tool calls it - and drives each one at
+// an un-granted origin through the real call path.
+//
+// Asserting BEHAVIOUR rather than table membership is the point. The membership
+// version of this test passed for brw_authenticate and brw_cookies while both
+// were ungated in their real argument shape: one is addressed by origin, the
+// other by domain, and the gate read only url.
+func TestEveryDestinationArgumentIsRefused(t *testing.T) {
+	// Exempt properties name something other than a destination brw steers to
+	// or fetches.
 	exempt := map[string]string{
-		"brw_route":  "url is an interception match pattern, not a destination",
-		"brw_assert": "url is an assertion about the page's current location",
+		"brw_pushstate":     "url is a same-document History API change, which loads no document and cannot leave the origin",
+		"brw_recipe_search": "origin filters the recipe index; it is not a site brw reaches",
+	}
+	destinations := map[string]any{
+		"url":     "https://ungranted.test/x",
+		"origin":  "https://ungranted.test",
+		"domain":  "ungranted.test",
+		"origins": []any{map[string]any{"origin": "https://ungranted.test", "headers": map[string]any{"X-Test": "1"}}},
 	}
 	for _, tl := range tools() {
 		name, _ := tl["name"].(string)
 		schema, _ := tl["inputSchema"].(map[string]any)
 		props, _ := schema["properties"].(map[string]any)
-		if _, takesURL := props["url"]; !takesURL {
-			continue
-		}
-		if _, gated := siteconsent.ToolRules[name]; gated {
-			continue
-		}
 		if reason := exempt[name]; reason != "" {
 			continue
 		}
-		if name == "brw_plan" || name == "brw_batch" {
-			continue // gated per step by navigationTargets
+		for field, value := range destinations {
+			if _, takes := props[field]; !takes {
+				continue
+			}
+			t.Run(name+"/"+field, func(t *testing.T) {
+				ctrl := &consentController{tabURL: "https://start.test/"}
+				srv, guard := newConsentServer(t, ctrl, siteconsent.AdminConfig{})
+				// The tab brw is on is granted, so the only thing that can
+				// refuse is the destination in the argument.
+				if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://start.test", Scope: siteconsent.ScopeAct, Actor: "fixture-user"}); err != nil {
+					t.Fatal(err)
+				}
+				response := callConsentTool(t, srv, name, map[string]any{field: value})
+				if !strings.Contains(response, "https://ungranted.test") {
+					t.Fatalf("%s addressed by %q reached an un-granted origin: %s", name, field, response)
+				}
+				if !strings.Contains(response, `"isError":true`) {
+					t.Fatalf("%s addressed by %q was not refused: %s", name, field, response)
+				}
+			})
 		}
-		t.Errorf("tool %q takes a url but is in neither siteconsent.ToolRules nor the exempt list", name)
+	}
+}
+
+// TestEveryToolIsClassifiedForConsent makes the table exhaustive by
+// construction. A new tool is either gated or deliberately ungated with the
+// reason; one that is neither fails here instead of shipping with no rule.
+func TestEveryToolIsClassifiedForConsent(t *testing.T) {
+	known := map[string]bool{}
+	for _, tl := range tools() {
+		name, _ := tl["name"].(string)
+		known[name] = true
+		_, gated := siteconsent.ToolRules[name]
+		_, sequence := siteconsent.SequenceTools[name]
+		_, ungated := siteconsent.UngatedTools[name]
+		if !gated && !sequence && !ungated {
+			t.Errorf("tool %q is in neither siteconsent.ToolRules nor siteconsent.UngatedTools; every tool needs a rule or a written reason it needs none", name)
+		}
+	}
+	for name := range siteconsent.UngatedTools {
+		if !known[name] {
+			t.Errorf("siteconsent.UngatedTools names %q, which is not a registered tool", name)
+		}
 	}
 }

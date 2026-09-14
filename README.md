@@ -473,15 +473,19 @@ Backend-specific notes:
   refused by name and scope, revocation applies on the next action with no daemon
   restart, and a shipped `financial-services` / `adult` / `pirated` category
   blocklist needs an explicit `--override-category` that is written to the
-  consent ledger. `--confirm-actions` gates publishing, purchasing, personal-data
-  form submissions and anything on a blocklisted category, and fails CLOSED when
-  nobody is there to confirm. List and revoke with `brwctl grants`, the extension
+  consent ledger. Every tool carries a rule or a written reason it needs none, so
+  reads of the live page are gated too, not only the navigation that reached it.
+  `--confirm-actions` gates publishing, purchasing, personal-data form
+  submissions and anything on a blocklisted category, on single tools and on
+  plan/batch steps alike, and fails CLOSED when nobody is there to confirm. List and revoke with `brwctl grants`, the extension
   options page, or `brw grants`. Opt-in; off by default.
   See [docs/site-permissions.md](docs/site-permissions.md).
 - **Content-boundary navigation guard**: `--content-nav-guard` (direct CDP only)
   refuses a top-level navigation that page content initiated to another site — an
-  injected link click, a meta refresh, a script `location` assignment — while the
-  same destination requested by the agent still works. Opt-in; off by default.
+  injected link click, a meta refresh, a script `location` assignment — while
+  what the agent asked for still works: the destination it named, and the
+  navigation its own click, keypress or form submission causes. Opt-in; off by
+  default.
 
 With the extension bridge, each agent session automatically gets its own
 **per-agent tab group**: tabs opened without an explicit `group` land in a

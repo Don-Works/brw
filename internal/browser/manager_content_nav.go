@@ -19,6 +19,12 @@ import (
 // explaining away a later content-initiated navigation to the same host.
 const agentIntentTTL = 60 * time.Second
 
+// agentInteractionTTL is the same bound for an agent's own input to the page.
+// It is much shorter because the intent it records names no destination: a click
+// explains the navigation it causes, and a page that waits ten seconds and then
+// moves the tab is not that navigation.
+const agentInteractionTTL = 5 * time.Second
+
 // maxAgentChains bounds the remembered redirect chains per tab.
 const maxAgentChains = 64
 
@@ -62,6 +68,41 @@ type agentIntent struct {
 	host string
 	any  bool
 	at   time.Time
+	ttl  time.Duration
+}
+
+// fresh reports whether an intent is still young enough to explain a request.
+func (i agentIntent) fresh(now time.Time) bool {
+	return now.Sub(i.at) <= i.ttl
+}
+
+// agentInputActions are the verbs that are the AGENT driving the page itself.
+// A click on a link is a navigation the agent asked for as much as
+// brw_navigate_to is - the agent chose the control and brw actuated it - so the
+// navigation it causes is the agent's, and refusing it as content-initiated
+// would break every ordinary cross-site link click (an OAuth hand-off, a
+// checkout passing to a payment processor).
+//
+// The verbs that only LOOK at the page (hover, scroll) are deliberately absent:
+// a page that navigates because the agent scrolled is moving the agent on its
+// own initiative, which is what the boundary exists to catch.
+var agentInputActions = map[string]bool{
+	"click":        true,
+	"click_text":   true,
+	"click_xy":     true,
+	"click_button": true,
+	"mouse_down":   true,
+	"mouse_up":     true,
+	"drag":         true,
+	"press":        true,
+	"key_down":     true,
+	"key_up":       true,
+	"type":         true,
+	"fill":         true,
+	"select":       true,
+	"commit":       true,
+	"upload_file":  true,
+	"evaluate":     true,
 }
 
 // SetContentNavigationGuard turns the content boundary on. Off by default: it
@@ -97,10 +138,24 @@ func (m *Manager) recordAgentNavigation(tabID, rawURL string) {
 	defer m.contentNav.mu.Unlock()
 	m.contentNav.initLocked()
 	if strings.TrimSpace(rawURL) == "" {
-		m.contentNav.intents[tabID] = agentIntent{any: true, at: time.Now()}
+		m.contentNav.intents[tabID] = agentIntent{any: true, at: time.Now(), ttl: agentIntentTTL}
 		return
 	}
-	m.contentNav.intents[tabID] = agentIntent{host: hostOfURL(rawURL), at: time.Now()}
+	m.contentNav.intents[tabID] = agentIntent{host: hostOfURL(rawURL), at: time.Now(), ttl: agentIntentTTL}
+}
+
+// recordAgentInteraction notes that the agent is about to drive the page itself
+// with action. The destination is not knowable here - the agent clicked a
+// control, not a URL - so the intent is recorded as "wherever this goes", on a
+// short TTL, and is spent the moment the tab lands.
+func (m *Manager) recordAgentInteraction(tabID, action string) {
+	if !m.contentNavGuard || tabID == "" || !agentInputActions[action] {
+		return
+	}
+	m.contentNav.mu.Lock()
+	defer m.contentNav.mu.Unlock()
+	m.contentNav.initLocked()
+	m.contentNav.intents[tabID] = agentIntent{any: true, at: time.Now(), ttl: agentInteractionTTL}
 }
 
 // noteFrameNavigated records where a tab actually landed and retires the intent
@@ -172,7 +227,7 @@ func (m *Manager) contentNavigationVerdict(tabID string, paused *fetch.EventRequ
 	}
 
 	intent, hasIntent := m.contentNav.intents[tabID]
-	if hasIntent && time.Since(intent.at) <= agentIntentTTL && (intent.any || intent.host == destination) {
+	if hasIntent && intent.fresh(time.Now()) && (intent.any || intent.host == destination) {
 		m.contentNav.rememberChainLocked(tabID, paused.NetworkID)
 		return true, ""
 	}

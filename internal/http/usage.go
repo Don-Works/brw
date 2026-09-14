@@ -11,6 +11,10 @@ import (
 
 // usageOperations is intentionally an allowlist. Unknown/raw paths are never
 // copied to the ledger because a caller could put secrets in a URL path.
+//
+// Each operation is named for the MCP tool it is the same call as. The site
+// consent gate finds a route's rule through this map, so a route whose operation
+// is spelled differently from its tool is a route with no rule.
 var usageOperations = map[string]string{
 	"/api/browser/open":              "brw_open",
 	"/api/browser/open_incognito":    "brw_open_incognito",
@@ -77,7 +81,7 @@ var usageOperations = map[string]string{
 	"/api/page/vitals":               "brw_vitals",
 	"/api/page/a11y":                 "brw_a11y_audit",
 	"/api/page/highlight":            "brw_highlight",
-	"/api/page/console":              "brw_console_messages",
+	"/api/page/console":              "brw_console",
 	"/api/page/downloads":            "brw_downloads",
 	"/api/page/trace":                "brw_trace",
 	"/api/page/clear_trace":          "brw_clear_trace",

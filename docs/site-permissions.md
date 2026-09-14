@@ -53,18 +53,54 @@ What this does and does not buy:
 
 ## Where each scope is enforced
 
-Not symmetrical, deliberately:
+Every tool carries a rule in `internal/siteconsent/toolgate.go`, or a written
+reason it needs no grant. `TestEveryToolIsClassifiedForConsent` fails on a tool
+that has neither, so a new tool cannot ship ungated by being forgotten.
 
-- `read` is checked on the **navigation** that reaches an origin —
-  `brw_open`, `brw_open_incognito`, `brw_navigate_to`, `brw_read_url`,
-  `brw_replay_request`, `brw_cookies`, and `open` steps inside `brw_plan` /
-  `brw_batch`. An origin can only be looked at after brw has been steered there.
+- `read` is checked twice: on the **destination** a call names (`brw_open`,
+  `brw_open_incognito`, `brw_navigate_to`, `brw_read_url`, `brw_replay_request`,
+  `brw_cookies`, and `open` / `navigate_to` steps inside `brw_plan` /
+  `brw_batch`), and on the **live page** every reading tool is pointed at
+  (`brw_read`, `brw_snapshot`, `brw_screenshot`, `brw_find`, `brw_get`,
+  `brw_console`, the assertions, …).
+
+  Gating the arrival alone was not enough. On the extension bridge brw attaches
+  to a Chrome the user is already driving, so tabs exist that brw never opened;
+  and a server redirect from a granted origin produces a document brw never
+  asked for. Both are pages no grant was given for. Each read therefore costs one
+  transport round trip to resolve the tab's URL, the same one `act` pays.
 - `act` is checked on the **action**, against the tab's live URL, because
-  between the navigation and the click the page may have moved. Resolving that
-  URL is a transport round trip, which is why reads do not pay it.
+  between the navigation and the click the page may have moved.
 
-If the live URL cannot be resolved, the action is refused. There is no
-"allow because we could not tell".
+A tool is checked in the argument it really uses, not in a field named `url`:
+`brw_authenticate` is addressed by `origin`, `brw_cookies` by `url` or `domain`
+or neither (and then by the tab's own URL), `brw_set_extra_headers` by a list of
+origins. A call whose own arguments can escalate it does:
+`brw_cookies action=set`, `brw_storage action=set`, a non-GET
+`brw_replay_request` and a `fn:` predicate in `brw_wait_for` all need `act`, not
+`read`.
+
+A plan or batch is walked in step order. `open` and `navigate_to` move the
+working tab, so the steps after one of them are checked against the destination
+that step named, and `focus_tab` against the tab it moves to. Every step verb
+both runners implement is classified; `TestEveryPlanAndBatchStepActionIsClassified`
+reads the verbs out of the runners themselves, so a step kind that reaches the
+controller with no rule fails that test rather than walking through the gate.
+
+If the live URL cannot be resolved, or the arguments do not say where a step
+lands, the call is refused. There is no "allow because we could not tell".
+
+`file:`, `filesystem:`, `view-source:`, `chrome:`, `chrome-extension:` and
+`javascript:` targets are refused outright while the guard is on. They carry no
+origin that could be granted, but they are not nothing either: domain containment
+is blocklist-only by default and lets non-network schemes past, so treating them
+as "no site here" made `brw_read_url` a local-file reader. `about:`, `data:`,
+`blob:` and same-origin relative references stay exempt — there is genuinely no
+site there.
+
+`POST /dashboard/input` is outside the gate on purpose. It carries a takeover
+token and dispatches the input of a **human** who has taken the browser over, and
+a person at the keyboard is the consent this gate exists to obtain.
 
 ## Category blocklist
 
@@ -170,21 +206,36 @@ Over HTTP: `GET /api/consent/grants`, `POST /api/consent/revoke`, and the
 
 `brwd --content-nav-guard` (direct CDP only) refuses a top-level navigation that
 **page content** initiated to another site — an injected link click, a meta
-refresh, a script assignment to `location`. The same destination requested by
-the agent still works.
+refresh, a script assignment to `location`. What the agent asked for still works.
 
 The signal is brw's own bookkeeping, not anything read out of the page: every
 entry point that steers the browser records its intent first, and a page cannot
-write to that. Redirect hops of an agent navigation stay agent-initiated;
-same-site navigation and cross-origin subframes are untouched.
+write to that. Two kinds of intent:
+
+- A **navigation verb** (`brw_open`, `brw_navigate_to`, `brw_navigate`, and the
+  `open` / `navigate_to` steps) names its destination, and that destination is
+  allowed for up to a minute.
+- The agent's own **input** (click, click_text, click_xy, press, type, fill,
+  select, commit, drag, upload_file, the key and mouse halves, evaluate) names no
+  destination — the agent chose a control, not a URL — so it allows the next
+  navigation wherever it goes, for five seconds. Without this, clicking an
+  ordinary cross-site link (an OAuth sign-in, a checkout handing off to a payment
+  processor) was refused as though the page had done it.
+
+Either intent is spent the moment the tab lands, so a page cannot re-use it.
+Redirect hops of an agent navigation stay agent-initiated; same-site navigation
+and cross-origin subframes are untouched.
 
 A refused navigation is failed with `ERR_ABORTED` rather than
 `ERR_BLOCKED_BY_CLIENT`, so the tab stays on the document it was on. Blocking it
 the other way still moved the agent — to a Chrome error page on the attacker's
 URL.
 
-Two limits:
+Three limits:
 
+- A navigation that the page makes within five seconds of the agent's own click
+  is allowed: brw cannot tell it apart from the navigation the click was for.
+  The window is deliberately short, and an intent is spent on the first arrival.
 - Direct CDP only. The extension bridge has no equivalent interception point, so
   `--content-nav-guard` there is refused at startup rather than ignored.
 - "Same site" is host equality or a subdomain relationship. brw carries no

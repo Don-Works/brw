@@ -106,6 +106,7 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 		return ActionResult{}, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "click_button")
 
 	if opts.HasRef() {
 		if err := snapshot.WaitForActionable(tabCtx, opts.Ref, 5000); err != nil {
@@ -236,6 +237,7 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 		return ActionResult{}, err
 	}
 	defer cancel()
+	m.recordAgentInteraction(tabID, "drag")
 
 	if opts.From.HasRef() {
 		if err := snapshot.WaitForActionable(tabCtx, opts.From.Ref, 5000); err != nil {

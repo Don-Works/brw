@@ -56,7 +56,12 @@ func CanonicalOrigin(rawURL string) (string, error) {
 		return "", nil
 	}
 	lower := strings.ToLower(raw)
-	for _, scheme := range []string{"about:", "data:", "blob:", "javascript:", "vbscript:", "chrome:", "chrome-extension:", "file:", "filesystem:", "view-source:"} {
+	for _, scheme := range inertSchemes {
+		if strings.HasPrefix(lower, scheme) {
+			return "", nil
+		}
+	}
+	for _, scheme := range localSchemes {
 		if strings.HasPrefix(lower, scheme) {
 			return "", nil
 		}
@@ -87,6 +92,30 @@ func CanonicalOrigin(rawURL string) (string, error) {
 		return scheme + "://" + host + ":" + port, nil
 	}
 	return scheme + "://" + host, nil
+}
+
+// inertSchemes carry no site and reach nothing: there is genuinely nothing to
+// consent to.
+var inertSchemes = []string{"about:", "data:", "blob:"}
+
+// localSchemes carry no network origin either, but they are not nothing: they
+// reach the filesystem, the browser's own pages, or script on whatever document
+// is open. None can be granted, so with the guard on none is allowed.
+var localSchemes = []string{"file:", "filesystem:", "view-source:", "chrome:", "chrome-extension:", "javascript:", "vbscript:"}
+
+// LocalScheme reports whether a target is one of the local or privileged schemes
+// and names it. Callers use it to tell "no site here" from "no site here, and
+// that is the problem".
+func LocalScheme(rawURL string) (string, bool) {
+	raw := strings.TrimSpace(rawURL)
+	raw = strings.NewReplacer("\t", "", "\r", "", "\n", "").Replace(raw)
+	raw = strings.ToLower(strings.ReplaceAll(raw, "\\", "/"))
+	for _, scheme := range localSchemes {
+		if strings.HasPrefix(raw, scheme) {
+			return strings.TrimSuffix(scheme, ":"), true
+		}
+	}
+	return "", false
 }
 
 // HostOfOrigin returns the bare host of a canonical origin, for matching against
