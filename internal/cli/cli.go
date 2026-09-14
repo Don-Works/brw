@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,14 +39,24 @@ const (
 
 const (
 	defaultTimeout = 30 * time.Second
-	// The HTTP client deadline sits beyond the action deadline so a wait that
-	// runs its full timeout is answered by the daemon rather than cut off by
-	// this client, which would report a transport failure for a working daemon.
+	// Headroom for the one verb that hands its timeout to the daemon: the client
+	// deadline has to sit beyond the daemon's own so a wait that runs its full
+	// timeout is answered rather than cut off here, which would report a
+	// transport failure for a working daemon. Every other verb forwards no
+	// timeout, so adding this to its deadline would only make --timeout a lie.
 	clientHeadroom = 10 * time.Second
 )
 
 // errNoDaemon marks every failure where the action never reached a daemon.
 var errNoDaemon = errors.New("no brw daemon reachable")
+
+// builtinCommands carry no route: they print and exit. A verb may not start
+// with one of these words or it would never be dispatched.
+func builtinCommands() []string { return []string{"completion", "help", "version"} }
+
+// builtinFlagWords are the built-ins people also spell with dashes, as in
+// `brw --help`.
+var builtinFlagWords = map[string]bool{"h": true, "help": true, "version": true}
 
 // options carries every flag any verb can take. One struct rather than one per
 // verb keeps build/render free of type assertions; a verb only registers the
@@ -80,17 +91,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return ExitUsage
 	}
-	switch args[0] {
-	case "help", "-h", "--help":
-		usage(stdout)
-		return ExitOK
-	case "version", "--version":
-		fmt.Fprintln(stdout, Version)
-		return ExitOK
-	case "completion":
-		return runCompletion(args[1:], stdout, stderr)
-	}
-
+	// Hoisting runs before the built-ins are matched, so a global flag typed to
+	// the left of one (`brw --json completion bash`) is the same argument order
+	// every verb already accepts rather than an unknown-command error.
 	leading, rest, err := hoistGlobalFlags(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "brw: %v\n\n", err)
@@ -101,6 +104,17 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return ExitUsage
 	}
+	switch rest[0] {
+	case "help", "-h", "--help":
+		usage(stdout)
+		return ExitOK
+	case "version", "--version":
+		fmt.Fprintln(stdout, Version)
+		return ExitOK
+	case "completion":
+		return runCompletion(rest[1:], stdout, stderr)
+	}
+
 	v, verbArgs, ok := lookupVerb(rest)
 	if !ok {
 		fmt.Fprintf(stderr, "brw: unknown command %q\n\n", rest[0])
@@ -128,6 +142,12 @@ func hoistGlobalFlags(args []string) (leading, rest []string, err error) {
 			return leading, args[i+1:], nil
 		}
 		name := strings.TrimLeft(arg, "-")
+		if builtinFlagWords[name] {
+			// help and version are commands spelled like flags, not globals.
+			// Handing them back as the verb is what lets `brw --json --help`
+			// print usage instead of dying on an unknown flag.
+			return leading, args[i:], nil
+		}
 		if strings.Contains(name, "=") {
 			leading = append(leading, arg)
 			continue
@@ -206,12 +226,27 @@ func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Write
 		return ExitUsage
 	}
 
+	if v.exactBody && opts.tab != "" {
+		// The strict-schema routes are host-local and have no tab to act on, and
+		// their handlers answer 400 to any field they do not declare. Saying so
+		// beats sending a request that cannot work.
+		fmt.Fprintf(stderr, "brw %s: --tab does not apply to this verb\n", v.name)
+		return ExitUsage
+	}
+
 	baseURL, err := resolveBaseURL(opts)
 	if err != nil {
 		fmt.Fprintf(stderr, "brw: %v\n", err)
 		return ExitNoDaemon
 	}
-	ctrl, err := httpclient.New(baseURL, opts.timeout+clientHeadroom)
+	// --timeout is the whole wait for every verb that keeps its own deadline;
+	// only a verb the daemon times out server-side needs the client to wait
+	// longer than it asked for.
+	deadline := opts.timeout
+	if v.serverTimeout {
+		deadline += clientHeadroom
+	}
+	ctrl, err := httpclient.New(baseURL, deadline)
 	if err != nil {
 		fmt.Fprintf(stderr, "brw: %v\n", err)
 		return ExitNoDaemon
@@ -220,15 +255,16 @@ func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Write
 	if opts.tab != "" {
 		ctx = browser.WithTabID(ctx, opts.tab)
 	}
-	ctx, cancel := context.WithTimeout(ctx, opts.timeout+clientHeadroom)
+	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
-	body, err := ctrl.Request(ctx, v.method, v.path, req.Query, req.Body)
+	body, err := v.call(ctx, ctrl, req)
 	if err != nil {
-		if unreachable(err) {
+		if unreachable(ctx, err) {
 			fmt.Fprintf(stderr, "brw: %v: %v\n", errNoDaemon, err)
 			return ExitNoDaemon
 		}
+		err = actionError(ctx, deadline, err)
 		if opts.json {
 			writeJSONError(stdout, err)
 		} else {
@@ -237,33 +273,90 @@ func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Write
 		return ExitActionFailed
 	}
 
+	// Human output is rendered into a buffer first so the failure path below can
+	// see whether the verb already printed the daemon's reason, and not print it
+	// a second time on stderr.
+	var rendered string
 	if opts.json {
 		if _, err := stdout.Write(append([]byte(strings.TrimRight(string(body), "\n")), '\n')); err != nil {
 			fmt.Fprintf(stderr, "brw %s: %v\n", v.name, err)
 			return ExitActionFailed
 		}
-	} else if err := v.render(stdout, opts, body); err != nil {
-		fmt.Fprintf(stderr, "brw %s: %v\n", v.name, err)
-		return ExitActionFailed
+	} else {
+		var out bytes.Buffer
+		if err := v.render(&out, opts, body); err != nil {
+			fmt.Fprintf(stderr, "brw %s: %v\n", v.name, err)
+			return ExitActionFailed
+		}
+		rendered = out.String()
+		if _, err := stdout.Write(out.Bytes()); err != nil {
+			fmt.Fprintf(stderr, "brw %s: %v\n", v.name, err)
+			return ExitActionFailed
+		}
 	}
 
-	// A refusal the daemon answered 200 to (ok:false) is still a failed action,
-	// and a shell script only ever sees the exit code.
-	if message, failed := envelopeRefused(body); failed {
-		if message != "" && !opts.json {
-			fmt.Fprintf(stderr, "brw %s: %s\n", v.name, message)
+	if reason, failed := actionFailed(v, body); failed {
+		if reason != "" && !strings.Contains(rendered, reason) {
+			fmt.Fprintf(stderr, "brw %s: %s\n", v.name, reason)
 		}
 		return ExitActionFailed
 	}
 	return ExitOK
 }
 
+// call issues the verb's request, keeping the strict-schema routes off the
+// path that folds context values into the body.
+func (v verb) call(ctx context.Context, ctrl *httpclient.Controller, req request) (json.RawMessage, error) {
+	if v.exactBody {
+		return ctrl.RequestExact(ctx, v.method, v.path, req.Query, req.Body)
+	}
+	return ctrl.Request(ctx, v.method, v.path, req.Query, req.Body)
+}
+
+// actionFailed reports the daemon's own reason for a 200 that is not a success:
+// an ok:false envelope, or a capability the active transport does not have.
+// Both answer 200, and a shell script only ever sees the exit code.
+func actionFailed(v verb, body []byte) (string, bool) {
+	if message, failed := envelopeRefused(body); failed {
+		return message, true
+	}
+	if v.unsupported == nil {
+		return "", false
+	}
+	return v.unsupported(body)
+}
+
 // unreachable reports whether an error means the request never got an answer
 // from a daemon. httpclient turns every HTTP status into a plain error, so
-// anything still carrying a *url.Error is a transport failure.
-func unreachable(err error) bool {
+// anything still carrying a *url.Error is a transport failure — except a
+// cancelled or expired one: the daemon may be up and still working, and exit 3
+// tells a script to go start one. cmd/brw wires SIGINT into this context, so
+// Ctrl-C lands here too.
+func unreachable(ctx context.Context, err error) bool {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	var urlErr *url.Error
-	return errors.As(err, &urlErr)
+	if !errors.As(err, &urlErr) {
+		return false
+	}
+	// http.Client's own deadline surfaces as a timeout on the *url.Error rather
+	// than as a context error.
+	return !urlErr.Timeout()
+}
+
+// actionError names why an action ended without an answer. The transport error
+// says only that the connection went away, which reads as a broken daemon; the
+// operator's Ctrl-C or their --timeout is the real reason.
+func actionError(ctx context.Context, deadline time.Duration, err error) error {
+	switch {
+	case errors.Is(ctx.Err(), context.Canceled):
+		return errors.New("cancelled")
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return fmt.Errorf("timed out after %s", deadline)
+	default:
+		return err
+	}
 }
 
 func writeJSONError(w io.Writer, err error) {
@@ -303,7 +396,7 @@ func registerGlobalFlags(fs *flag.FlagSet, opts *options) {
 	fs.StringVar(&opts.daemon, "daemon", "", "daemon base URL (default $BRW_URL, else the profile policy)")
 	fs.StringVar(&opts.profile, "profile", os.Getenv("BRW_PROFILE"), "bridge profile name to act against")
 	fs.StringVar(&opts.policyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path")
-	fs.StringVar(&opts.tab, "tab", "", "act on this tab id instead of the active tab")
+	fs.StringVar(&opts.tab, "tab", "", "act on this tab id instead of the active tab (page verbs only)")
 	fs.DurationVar(&opts.timeout, "timeout", defaultTimeout, "per-action timeout")
 }
 
@@ -375,7 +468,7 @@ global flags:
   --daemon <url>             daemon base URL (default $BRW_URL, else the profile policy)
   --profile <name>           bridge profile to act against (default $BRW_PROFILE)
   --profile-policy <path>    profile policy JSON path (default $BRW_PROFILE_POLICY)
-  --tab <id>                 act on this tab id instead of the active tab
+  --tab <id>                 act on this tab id instead of the active tab (page verbs only)
   --timeout <duration>       per-action timeout (default 30s)
 
 exit codes:

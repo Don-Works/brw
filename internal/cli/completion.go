@@ -41,9 +41,26 @@ func topLevelWords() []string {
 		seen[first] = true
 		words = append(words, first)
 	}
-	words = append(words, "completion", "help", "version")
+	words = append(words, builtinCommands()...)
 	sort.Strings(words)
 	return words
+}
+
+// globalFlagNames lists the flags every verb accepts. withValue is the subset
+// that consumes the following word, which is what lets a completion script walk
+// past `--profile work` to the verb behind it.
+func globalFlagNames() (all, withValue []string) {
+	fs := flag.NewFlagSet("brw", flag.ContinueOnError)
+	registerGlobalFlags(fs, &options{})
+	fs.VisitAll(func(f *flag.Flag) {
+		all = append(all, "--"+f.Name)
+		if !isBoolFlag(f) {
+			withValue = append(withValue, "--"+f.Name)
+		}
+	})
+	sort.Strings(all)
+	sort.Strings(withValue)
+	return all, withValue
 }
 
 // subWords maps a first token to its second tokens, for the verbs whose name is
@@ -110,40 +127,55 @@ func sortedKeys(values map[string][]string) []string {
 
 // BashCompletion returns the bash completion script for brw.
 func BashCompletion() string {
+	globals, valueGlobals := globalFlagNames()
 	var b strings.Builder
 	b.WriteString(`# brw bash completion. Regenerate with: brw completion bash
 _brw() {
-    local cur words_1 flags
+    local cur verb verb_index flags
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
-    words_1="${COMP_WORDS[1]}"
 
-    if [ "$COMP_CWORD" -eq 1 ]; then
+    # A global flag may be typed before the verb, so the verb is the first word
+    # that is neither a flag nor a flag's value — not always COMP_WORDS[1].
+    verb_index=1
+    while [ "$verb_index" -lt "${#COMP_WORDS[@]}" ]; do
+        case "${COMP_WORDS[$verb_index]}" in
+            --) verb_index=$((verb_index + 1)); break ;;
+            -*=*) verb_index=$((verb_index + 1)) ;;
+`)
+	fmt.Fprintf(&b, "            %s) verb_index=$((verb_index + 2)) ;;\n", strings.Join(valueGlobals, "|"))
+	b.WriteString(`            -*) verb_index=$((verb_index + 1)) ;;
+            *) break ;;
+        esac
+    done
+    verb="${COMP_WORDS[$verb_index]}"
+
+    if [ "$COMP_CWORD" -eq "$verb_index" ]; then
         COMPREPLY=( $(compgen -W "`)
 	b.WriteString(strings.Join(topLevelWords(), " "))
 	b.WriteString(`" -- "$cur") )
         return 0
     fi
 
-    case "$words_1" in
+    case "$verb" in
 `)
 	subs := subWords()
 	for _, word := range sortedKeys(subs) {
-		fmt.Fprintf(&b, "        %s)\n            if [ \"$COMP_CWORD\" -eq 2 ]; then\n                COMPREPLY=( $(compgen -W \"%s\" -- \"$cur\") )\n                return 0\n            fi\n            ;;\n",
+		fmt.Fprintf(&b, "        %s)\n            if [ \"$COMP_CWORD\" -eq \"$((verb_index + 1))\" ]; then\n                COMPREPLY=( $(compgen -W \"%s\" -- \"$cur\") )\n                return 0\n            fi\n            ;;\n",
 			word, strings.Join(subs[word], " "))
 	}
 	b.WriteString(`    esac
 
     case "$cur" in
         -*)
-            case "$words_1" in
+            case "$verb" in
 `)
 	byWord := flagsByFirstWord()
 	for _, word := range sortedKeys(byWord) {
 		fmt.Fprintf(&b, "                %s) flags=\"%s\" ;;\n", word, strings.Join(byWord[word], " "))
 	}
-	b.WriteString(`                *) flags="--json --daemon --profile --profile-policy --tab --timeout" ;;
-            esac
+	fmt.Fprintf(&b, "                *) flags=\"%s\" ;;\n", strings.Join(globals, " "))
+	b.WriteString(`            esac
             COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
             return 0
             ;;
@@ -158,8 +190,9 @@ complete -F _brw brw
 // ZshCompletion returns the zsh completion script for brw. It works both when
 // dropped into fpath as _brw and when sourced directly from a shell rc.
 func ZshCompletion() string {
+	globals, valueGlobals := globalFlagNames()
 	var b strings.Builder
-	b.WriteString("#compdef brw\n# brw zsh completion. Regenerate with: brw completion zsh\n_brw() {\n    local -a _brw_verbs _brw_subs _brw_flags\n    _brw_verbs=(\n")
+	b.WriteString("#compdef brw\n# brw zsh completion. Regenerate with: brw completion zsh\n_brw() {\n    local -a _brw_verbs _brw_subs _brw_flags\n    local -i _brw_verb_index\n    _brw_verbs=(\n")
 	for _, v := range verbs() {
 		tokens := strings.Fields(v.name)
 		if len(tokens) > 1 {
@@ -178,28 +211,42 @@ func ZshCompletion() string {
 	b.WriteString("        'version:print the brw version'\n")
 	b.WriteString(`    )
 
-    if (( CURRENT == 2 )); then
+    # A global flag may be typed before the verb, so the verb is the first word
+    # that is neither a flag nor a flag's value — not always words[2].
+    _brw_verb_index=2
+    while (( _brw_verb_index <= ${#words} )); do
+        case "${words[_brw_verb_index]}" in
+            '--') (( _brw_verb_index++ )); break ;;
+            -*=*) (( _brw_verb_index++ )) ;;
+`)
+	fmt.Fprintf(&b, "            %s) (( _brw_verb_index += 2 )) ;;\n", strings.Join(valueGlobals, "|"))
+	b.WriteString(`            -*) (( _brw_verb_index++ )) ;;
+            *) break ;;
+        esac
+    done
+
+    if (( CURRENT == _brw_verb_index )); then
         _describe -t commands 'brw verb' _brw_verbs
         return
     fi
 
-    case "${words[2]}" in
+    case "${words[_brw_verb_index]}" in
 `)
 	subs := subWords()
 	for _, word := range sortedKeys(subs) {
-		fmt.Fprintf(&b, "        %s)\n            if (( CURRENT == 3 )); then\n                _brw_subs=(%s)\n                compadd -- $_brw_subs\n                return\n            fi\n            ;;\n",
+		fmt.Fprintf(&b, "        %s)\n            if (( CURRENT == _brw_verb_index + 1 )); then\n                _brw_subs=(%s)\n                compadd -- $_brw_subs\n                return\n            fi\n            ;;\n",
 			word, strings.Join(subs[word], " "))
 	}
 	b.WriteString(`    esac
 
-    case "${words[2]}" in
+    case "${words[_brw_verb_index]}" in
 `)
 	byWord := flagsByFirstWord()
 	for _, word := range sortedKeys(byWord) {
 		fmt.Fprintf(&b, "        %s) _brw_flags=(%s) ;;\n", word, strings.Join(byWord[word], " "))
 	}
-	b.WriteString(`        *) _brw_flags=(--json --daemon --profile --profile-policy --tab --timeout) ;;
-    esac
+	fmt.Fprintf(&b, "        *) _brw_flags=(%s) ;;\n", strings.Join(globals, " "))
+	b.WriteString(`    esac
 
     if [[ "${words[CURRENT]}" == -* ]]; then
         compadd -- $_brw_flags

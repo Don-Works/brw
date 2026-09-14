@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/readability"
 )
 
 // verb is one CLI action bound to exactly one route the daemon already serves.
@@ -24,6 +28,18 @@ type verb struct {
 	flags   func(fs *flag.FlagSet, opts *options)
 	build   func(opts *options, args []string) (request, error)
 	render  func(w io.Writer, opts *options, body []byte) error
+
+	// exactBody marks a route whose handler decodes a fixed schema with
+	// DisallowUnknownFields. Nothing may be added to the request the verb built
+	// — a tab_id folded in from --tab turns the call into a 400.
+	exactBody bool
+	// serverTimeout marks a verb that forwards --timeout to the daemon, which
+	// then enforces it. Only those need the client deadline to sit beyond it.
+	serverTimeout bool
+	// unsupported reads a capability gap out of a 200 answer, for the routes
+	// that report one with a flag rather than an error. Without it a script
+	// branching on the exit code reads "this transport cannot" as success.
+	unsupported func(body []byte) (string, bool)
 }
 
 func verbs() []verb {
@@ -160,10 +176,19 @@ func verbs() []verb {
 				values := url.Values{}
 				// The route treats any bound parameter as "bound this read" and
 				// its absence as the unbounded contract, so send them only when
-				// asked for: an unflagged `brw read` returns the whole page.
+				// asked for: an unflagged `brw read` returns the whole page. Once
+				// one bound is sent the others have to say -1 explicitly, or
+				// --offset alone would silently cap the prose at the route's
+				// 20000-char default and the lists at theirs.
 				if opts.maxChars > 0 || opts.offset > 0 {
-					values.Set("max_chars", strconv.Itoa(opts.maxChars))
+					maxChars := opts.maxChars
+					if maxChars <= 0 {
+						maxChars = readability.UnboundedReadChars
+					}
+					values.Set("max_chars", strconv.Itoa(maxChars))
 					values.Set("offset", strconv.FormatInt(opts.offset, 10))
+					values.Set("max_links", strconv.Itoa(readability.UnboundedReadChars))
+					values.Set("max_headings", strconv.Itoa(readability.UnboundedReadChars))
 				}
 				setString(values, "section", opts.section)
 				return request{Query: values}, nil
@@ -218,11 +243,12 @@ func verbs() []verb {
 			render: renderScreenshot,
 		},
 		{
-			name:    "wait",
-			usage:   "<condition>",
-			summary: "wait for load, idle, a URL/title/text substring, a ref, a selector or download",
-			method:  http.MethodPost,
-			path:    "/api/page/wait_for",
+			name:          "wait",
+			usage:         "<condition>",
+			summary:       "wait for load, idle, a URL/title/text substring, a ref, a selector or download",
+			method:        http.MethodPost,
+			path:          "/api/page/wait_for",
+			serverTimeout: true,
 			build: func(opts *options, args []string) (request, error) {
 				condition, err := oneArg(args, "condition")
 				if err != nil {
@@ -249,21 +275,23 @@ func verbs() []verb {
 			render: renderTabs,
 		},
 		{
-			name:    "downloads",
-			summary: "list downloads this session captured",
-			method:  http.MethodGet,
-			path:    "/api/page/downloads",
+			name:        "downloads",
+			summary:     "list downloads this session captured",
+			method:      http.MethodGet,
+			path:        "/api/page/downloads",
+			unsupported: downloadsUnsupported,
 			build: func(_ *options, args []string) (request, error) {
 				return request{}, noArgs(args)
 			},
 			render: renderDownloads,
 		},
 		{
-			name:    "artifact read",
-			usage:   "<artifact-id>",
-			summary: "read a captured artifact's text",
-			method:  http.MethodPost,
-			path:    "/api/artifacts/read",
+			name:      "artifact read",
+			usage:     "<artifact-id>",
+			summary:   "read a captured artifact's text",
+			method:    http.MethodPost,
+			path:      "/api/artifacts/read",
+			exactBody: true,
 			flags: func(fs *flag.FlagSet, opts *options) {
 				fs.Int64Var(&opts.offset, "offset", 0, "start reading at this byte offset")
 				fs.IntVar(&opts.maxBytes, "max-bytes", 0, "read at most this many bytes")
@@ -292,6 +320,20 @@ func verbs() []verb {
 			render: renderHealth,
 		},
 	}
+}
+
+// downloadsUnsupported reads the flag the downloads route sets when the active
+// transport cannot observe downloads. It answers 200 with an empty list, which
+// is indistinguishable from "no downloads" to anything but this flag.
+func downloadsUnsupported(body []byte) (string, bool) {
+	var result browser.DownloadsResult
+	if err := json.Unmarshal(body, &result); err != nil || result.Supported {
+		return "", false
+	}
+	if note := strings.TrimSpace(result.Note); note != "" {
+		return note, true
+	}
+	return "this transport cannot observe downloads", true
 }
 
 // normalizeRef accepts a ref in the shape brw prints it (@e17) as well as the

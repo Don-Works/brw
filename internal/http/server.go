@@ -255,6 +255,13 @@ func (s *Server) denyNav(w http.ResponseWriter, rawURL string) bool {
 	return false
 }
 
+// Handler exposes the routed, middleware-wrapped handler this daemon serves, so
+// a client in another package can be driven against the real request decoding
+// rather than a permissive stand-in that accepts anything sent to it.
+func (s *Server) Handler() http.Handler {
+	return s.server.Handler
+}
+
 func (s *Server) ListenAndServe() error {
 	return s.server.ListenAndServe()
 }

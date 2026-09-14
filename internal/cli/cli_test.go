@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // call is what the stand-in daemon saw: the whole wire contract a verb is
@@ -190,7 +191,23 @@ func TestVerbsDriveTheDaemonHTTPAPI(t *testing.T) {
 			args:       []string{"read", "--max-chars", "100", "--offset", "40"},
 			wantMethod: http.MethodGet,
 			wantPath:   "/api/page/read",
-			wantQuery:  url.Values{"max_chars": {"100"}, "offset": {"40"}},
+			wantQuery: url.Values{
+				"max_chars": {"100"}, "offset": {"40"},
+				"max_links": {"-1"}, "max_headings": {"-1"},
+			},
+		},
+		{
+			// The route bounds every list the moment one bound is present, so an
+			// offset on its own has to say -1 for the rest or the prose comes
+			// back capped at the route's default.
+			name:       "read from an offset leaves everything else unbounded",
+			args:       []string{"read", "--offset", "5000"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/page/read",
+			wantQuery: url.Values{
+				"max_chars": {"-1"}, "offset": {"5000"},
+				"max_links": {"-1"}, "max_headings": {"-1"},
+			},
 		},
 		{
 			name:       "snapshot prints refs",
@@ -413,19 +430,217 @@ func TestExitCodes(t *testing.T) {
 }
 
 // An action the daemon answers 200 with ok:false is still a failure, and a
-// shell script only ever sees the exit code.
+// shell script only ever sees the exit code. The reason is printed once: the
+// verb's own output already carries it, so a second copy on stderr shows the
+// line twice in a terminal.
 func TestRefusedActionExitsNonZero(t *testing.T) {
-	srv, _ := fakeDaemon(t, map[string]string{
-		"POST /api/page/click": `{"ok":false,"message":"element is not clickable"}`,
-	})
+	const reason = "element is not clickable"
+	tests := []struct {
+		name       string
+		args       []string
+		wantStdout int
+		wantStderr int
+	}{
+		{
+			// Once, on stdout, from the verb's own output.
+			name:       "human output",
+			args:       []string{"click", "@e17"},
+			wantStdout: 1,
+			wantStderr: 0,
+		},
+		{
+			// --json prints the envelope, which carries the reason; stderr is
+			// where a person reads it, since nothing renders it in this mode.
+			name:       "json output",
+			args:       []string{"click", "@e17", "--json"},
+			wantStdout: 1,
+			wantStderr: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _ := fakeDaemon(t, map[string]string{
+				"POST /api/page/click": `{"ok":false,"message":"` + reason + `"}`,
+			})
+			t.Setenv("BRW_URL", srv.URL)
+
+			var stdout, stderr bytes.Buffer
+			if code := Run(context.Background(), tt.args, &stdout, &stderr); code != ExitActionFailed {
+				t.Fatalf("exit=%d, want %d", code, ExitActionFailed)
+			}
+			if got := strings.Count(stdout.String(), reason); got != tt.wantStdout {
+				t.Fatalf("stdout = %q, want the reason %d time(s)", stdout.String(), tt.wantStdout)
+			}
+			if got := strings.Count(stderr.String(), reason); got != tt.wantStderr {
+				t.Fatalf("stderr = %q, want the reason %d time(s)", stderr.String(), tt.wantStderr)
+			}
+		})
+	}
+}
+
+// slowDaemon answers nothing until the client gives up, which is what a daemon
+// mid-action looks like from here.
+func slowDaemon(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		// Drain the body first: net/http only starts watching for the client
+		// going away once the request body has been consumed, so a handler that
+		// ignores it never sees the disconnect and blocks the server's Close.
+		_, _ = io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// --timeout is advertised as the per-action timeout, so it has to be able to
+// shorten one. Only the verb that hands its timeout to the daemon waits longer
+// than it asked for, and that verb is not this one.
+func TestShortTimeoutAbortsTheAction(t *testing.T) {
+	srv := slowDaemon(t)
 	t.Setenv("BRW_URL", srv.URL)
 
 	var stdout, stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"click", "@e17"}, &stdout, &stderr); code != ExitActionFailed {
-		t.Fatalf("exit=%d, want %d", code, ExitActionFailed)
+	started := time.Now()
+	code := Run(context.Background(), []string{"click", "@e17", "--timeout", "200ms"}, &stdout, &stderr)
+	elapsed := time.Since(started)
+
+	if code != ExitActionFailed {
+		t.Fatalf("exit=%d, want %d (stderr=%q)", code, ExitActionFailed, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "element is not clickable") {
-		t.Fatalf("stderr = %q, want the daemon's reason", stderr.String())
+	if elapsed > 5*time.Second {
+		t.Fatalf("--timeout 200ms waited %s before giving up", elapsed)
+	}
+	if !strings.Contains(stderr.String(), "timed out after 200ms") {
+		t.Fatalf("stderr = %q, want the timeout named", stderr.String())
+	}
+	if strings.Contains(stderr.String(), errNoDaemon.Error()) {
+		t.Fatalf("stderr = %q; a daemon that answered too slowly is present, not missing", stderr.String())
+	}
+}
+
+// The wait verb is the exception: the daemon enforces its timeout server-side,
+// so the client has to outlast it rather than cut the answer off.
+func TestWaitKeepsClientHeadroomOverTheDaemonTimeout(t *testing.T) {
+	srv, calls := fakeDaemon(t, daemonResponses())
+	t.Setenv("BRW_URL", srv.URL)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"wait", "load", "--timeout", "5s"}, &stdout, &stderr); code != ExitOK {
+		t.Fatalf("exit=%d (stderr=%q)", code, stderr.String())
+	}
+	if (*calls)[0].body != `{"condition":"load","timeout_ms":5000}` {
+		t.Fatalf("body = %q, want the timeout forwarded to the daemon", (*calls)[0].body)
+	}
+	for _, v := range verbs() {
+		if v.serverTimeout != (v.name == "wait") {
+			t.Errorf("verb %q serverTimeout=%v; only a verb that forwards timeout_ms may claim it", v.name, v.serverTimeout)
+		}
+	}
+}
+
+// Ctrl-C is wired into the context cmd/brw passes in. Reporting that as "no
+// daemon reachable" tells a script to start a daemon that is already running.
+func TestCancellationIsNotAMissingDaemon(t *testing.T) {
+	srv := slowDaemon(t)
+	t.Setenv("BRW_URL", srv.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	timer := time.AfterFunc(100*time.Millisecond, cancel)
+	defer timer.Stop()
+
+	var stdout, stderr bytes.Buffer
+	code := Run(ctx, []string{"click", "@e17"}, &stdout, &stderr)
+	if code != ExitActionFailed {
+		t.Fatalf("exit=%d, want %d (stderr=%q)", code, ExitActionFailed, stderr.String())
+	}
+	if strings.Contains(stderr.String(), errNoDaemon.Error()) {
+		t.Fatalf("stderr = %q; the daemon answered the connection, it was the caller that stopped", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "cancelled") {
+		t.Fatalf("stderr = %q, want the cancellation named", stderr.String())
+	}
+}
+
+// A capability the transport does not have answers 200 with an empty list, so
+// without the flag being read a script cannot tell it from "no downloads".
+func TestUnsupportedDownloadsExitNonZero(t *testing.T) {
+	const note = "the extension bridge cannot observe downloads"
+	const envelope = `{"downloads":[],"count":0,"supported":false,"note":"` + note + `"}`
+	tests := []struct {
+		name       string
+		args       []string
+		wantStdout int
+		wantStderr int
+	}{
+		// The human line is on stdout, so stderr stays clear; --json renders
+		// nothing, and the envelope's own note is the one on stdout.
+		{name: "human output", args: []string{"downloads"}, wantStdout: 1, wantStderr: 0},
+		{name: "json output", args: []string{"downloads", "--json"}, wantStdout: 1, wantStderr: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _ := fakeDaemon(t, map[string]string{"GET /api/page/downloads": envelope})
+			t.Setenv("BRW_URL", srv.URL)
+
+			var stdout, stderr bytes.Buffer
+			if code := Run(context.Background(), tt.args, &stdout, &stderr); code != ExitActionFailed {
+				t.Fatalf("exit=%d, want %d", code, ExitActionFailed)
+			}
+			if got := strings.Count(stdout.String(), note); got != tt.wantStdout {
+				t.Fatalf("stdout = %q, want the note %d time(s)", stdout.String(), tt.wantStdout)
+			}
+			if got := strings.Count(stderr.String(), note); got != tt.wantStderr {
+				t.Fatalf("stderr = %q, want the note %d time(s)", stderr.String(), tt.wantStderr)
+			}
+		})
+	}
+}
+
+// A transport that can observe downloads still succeeds, so the check above is
+// reading the flag rather than failing the verb outright.
+func TestSupportedDownloadsSucceed(t *testing.T) {
+	srv, _ := fakeDaemon(t, daemonResponses())
+	t.Setenv("BRW_URL", srv.URL)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"downloads"}, &stdout, &stderr); code != ExitOK {
+		t.Fatalf("exit=%d, want %d (stderr=%q)", code, ExitOK, stderr.String())
+	}
+}
+
+// os.WriteFile applies its mode only when it creates the file, and --out
+// defaults to a fixed name in the working directory, so overwriting yesterday's
+// screenshot is the common case.
+func TestScreenshotNarrowsAnExistingFile(t *testing.T) {
+	srv, _ := fakeDaemon(t, daemonResponses())
+	t.Setenv("BRW_URL", srv.URL)
+	out := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(out, []byte("older screenshot"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"screenshot", "--out", out}, &stdout, &stderr); code != ExitOK {
+		t.Fatalf("exit=%d (stderr=%q)", code, stderr.String())
+	}
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("overwritten screenshot mode = %o, want 0600", perm)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := base64.StdEncoding.DecodeString("aGVsbG8=")
+	if !bytes.Equal(data, want) {
+		t.Fatalf("file = %q, want the new PNG bytes %q", data, want)
 	}
 }
 

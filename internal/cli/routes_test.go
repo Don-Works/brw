@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -32,7 +33,10 @@ func TestEveryVerbBindsToARouteTheDaemonServes(t *testing.T) {
 
 func TestVerbTableIsWellFormed(t *testing.T) {
 	seen := map[string]bool{}
-	builtins := map[string]bool{"help": true, "version": true, "completion": true}
+	builtins := map[string]bool{}
+	for _, word := range builtinCommands() {
+		builtins[word] = true
+	}
 	for _, v := range verbs() {
 		if seen[v.name] {
 			t.Errorf("verb %q is registered twice", v.name)
@@ -41,11 +45,34 @@ func TestVerbTableIsWellFormed(t *testing.T) {
 		if v.summary == "" || v.build == nil || v.render == nil {
 			t.Errorf("verb %q is missing a summary, build or render", v.name)
 		}
-		first := strings.Fields(v.name)[0]
-		if builtins[first] {
+		tokens := strings.Fields(v.name)
+		if len(tokens) == 0 {
+			// Every name is indexed at [0] by the dispatcher, the usage text and
+			// both completion scripts, so a blank one panics rather than fails.
+			t.Errorf("a verb has a blank name: %+v", v.summary)
+			continue
+		}
+		if builtins[tokens[0]] {
 			// A verb that shadows a built-in would be unreachable, and worse,
 			// would escape the route check above by never being dispatched.
-			t.Errorf("verb %q starts with the built-in word %q", v.name, first)
+			t.Errorf("verb %q starts with the built-in word %q", v.name, tokens[0])
+		}
+		if v.exactBody && v.method != http.MethodPost {
+			// The strict-schema routes this flag exists for are POST-only; a GET
+			// would carry its arguments in the query, which this flag does not
+			// keep the context out of.
+			t.Errorf("verb %q claims exactBody on a %s route", v.name, v.method)
+		}
+	}
+}
+
+// A verb bound to an artifact route has to declare exactBody, or the generic
+// POST path folds context values into a body the daemon decodes with
+// DisallowUnknownFields and answers 400 to.
+func TestArtifactVerbsUseTheExactBodyPath(t *testing.T) {
+	for _, v := range verbs() {
+		if strings.HasPrefix(v.path, "/api/artifacts/") && !v.exactBody {
+			t.Errorf("verb %q binds to %q without exactBody", v.name, v.path)
 		}
 	}
 }
