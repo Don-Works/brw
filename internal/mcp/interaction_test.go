@@ -52,9 +52,9 @@ func (c *interactionController) PushState(_ context.Context, opts browser.Histor
 	return browser.HistoryStateResult{OK: true, URL: "https://corp.example.com" + opts.URL}, nil
 }
 
-func (c *interactionController) FocusRef(_ context.Context, ref string) error {
+func (c *interactionController) Focus(_ context.Context, ref string) (browser.ActionResult, error) {
 	c.focusedRef = ref
-	return nil
+	return browser.ActionResult{OK: true, Message: "focused " + ref, Focus: ref}, nil
 }
 
 func callInteraction(t *testing.T, ctrl browser.Controller, tool, args string) string {

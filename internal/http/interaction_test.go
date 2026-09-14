@@ -25,6 +25,7 @@ type interactionController struct {
 	keyUp        browser.KeyHoldOptions
 	pushState    browser.HistoryStateOptions
 	focusedRef   string
+	focusSnap    bool
 	evaluateCall int
 }
 
@@ -54,9 +55,10 @@ func (c *interactionController) PushState(_ context.Context, opts browser.Histor
 	return browser.HistoryStateResult{OK: true, URL: "https://app.test" + opts.URL}, nil
 }
 
-func (c *interactionController) FocusRef(_ context.Context, ref string) error {
+func (c *interactionController) Focus(ctx context.Context, ref string) (browser.ActionResult, error) {
 	c.focusedRef = ref
-	return nil
+	c.focusSnap = browser.WantSnapshotFromCtx(ctx)
+	return browser.ActionResult{OK: true, Message: "focused " + ref, Focus: ref, URL: "https://app.test/"}, nil
 }
 
 func newInteractionServer() (*Server, *interactionController) {
@@ -172,6 +174,25 @@ func TestFocusRouteForwardsTheRef(t *testing.T) {
 	}
 	if ctrl.focusedRef != "e12" {
 		t.Fatalf("focused ref = %q", ctrl.focusedRef)
+	}
+	// The route answers with the post-action observation, not {ok,ref}: an agent
+	// has to be able to read focus/url out of the result the way it can for press.
+	var observed browser.ActionResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &observed); err != nil {
+		t.Fatalf("decode focus result %s: %v", rec.Body.String(), err)
+	}
+	if observed.Focus != "e12" || observed.URL == "" {
+		t.Fatalf("focus result = %+v, want the observation with focus e12 and a url", observed)
+	}
+	if ctrl.focusSnap {
+		t.Fatal("focus without snapshot:true asked for a snapshot")
+	}
+	// snapshot:true must reach the controller, the way it does on press/select.
+	if rec := call(t, server, http.MethodPost, "/api/page/focus", `{"ref":"e12","snapshot":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !ctrl.focusSnap {
+		t.Fatal("focus with snapshot:true did not request the snapshot re-materialization")
 	}
 	if rec := call(t, server, http.MethodPost, "/api/page/focus", `{}`); rec.Code == http.StatusOK {
 		t.Fatal("focus with no ref should be rejected")

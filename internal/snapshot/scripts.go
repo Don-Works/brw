@@ -3209,12 +3209,17 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
   // Rather than pay CDP's slower input round trip on every click, report the
   // need and let the caller actuate by coordinate. The ordinary case still
   // clicks in-page in this single evaluate.
-  if ((__abRequiresTrustedClick(target) || __abRequiresTrustedClick(el)) && opts.no_defer !== true) {
+  //
+  // opts.locate asks for the same deferral unconditionally: a caller holding a
+  // modifier has to actuate through trusted CDP input, because a MouseEvent
+  // built here reports shiftKey/ctrlKey false whatever is held.
+  var trustedNeeded = (__abRequiresTrustedClick(target) || __abRequiresTrustedClick(el)) && opts.no_defer !== true;
+  if (trustedNeeded || opts.locate === true) {
     return {
       ok: true,
       x,
       y,
-      requires_trusted: true,
+      requires_trusted: trustedNeeded,
       deferred: true,
       tag: target.tagName.toLowerCase(),
       role: clickedRoleEarly,

@@ -37,9 +37,13 @@ func (c *Controller) PushState(ctx context.Context, opts browser.HistoryStateOpt
 	return out, err
 }
 
+func (c *Controller) Focus(ctx context.Context, ref string) (browser.ActionResult, error) {
+	var out browser.ActionResult
+	err := c.post(ctx, "/api/page/focus", map[string]any{"ref": ref, "snapshot": browser.WantSnapshotFromCtx(ctx)}, &out)
+	return out, err
+}
+
 func (c *Controller) FocusRef(ctx context.Context, ref string) error {
-	var out struct {
-		OK bool `json:"ok"`
-	}
-	return c.post(ctx, "/api/page/focus", map[string]string{"ref": ref}, &out)
+	_, err := c.Focus(ctx, ref)
+	return err
 }

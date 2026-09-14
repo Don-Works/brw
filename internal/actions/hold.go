@@ -48,29 +48,3 @@ func sideCode(name, base string) string {
 	}
 	return base + "Left"
 }
-
-// IsModifierKey reports whether raw names a modifier key rather than a
-// character or navigation key.
-func IsModifierKey(raw string) bool {
-	return modifierKey(raw) != nil
-}
-
-// ModifierNames renders a CDP modifier mask as the key names that produced it,
-// for reporting which keys a tab is still holding.
-func ModifierNames(mask int64) []string {
-	var names []string
-	for _, m := range []struct {
-		bit  int64
-		name string
-	}{
-		{ModifierCtrl, "Control"},
-		{ModifierAlt, "Alt"},
-		{ModifierShift, "Shift"},
-		{ModifierMeta, "Meta"},
-	} {
-		if mask&m.bit != 0 {
-			names = append(names, m.name)
-		}
-	}
-	return names
-}

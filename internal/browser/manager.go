@@ -903,6 +903,14 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 	defer cancel()
 
 	before := m.cachedBefore(tabID, tabCtx)
+	// A held modifier cannot survive the in-page dispatch: the MouseEvent the
+	// script constructs reports shiftKey/ctrlKey false whatever the tab holds.
+	// Ask for the click POINT instead and actuate it through trusted CDP input,
+	// which stamps the mask onto every event.
+	modifiers := input.Modifier(m.heldModifierMask(tabID))
+	if modifiers != 0 {
+		opts.Locate = true
+	}
 	var clicked snapshot.ClickXYResult
 	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 		var clickErr error
@@ -915,7 +923,9 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 		// coordinate the way Click does. Without this a target="_blank" link or
 		// a window.open() button reported a successful click and did nothing.
 		if clicked.Deferred {
-			return chromedp.Run(tabCtx, chromedp.MouseClickXY(clicked.X, clicked.Y))
+			return chromedp.Run(tabCtx, chromedp.ActionFunc(func(c context.Context) error {
+				return dispatchClick(c, clicked.X, clicked.Y, input.Left, 1, modifiers)
+			}))
 		}
 		return nil
 	}); err != nil {
@@ -955,7 +965,7 @@ func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
 	// per target in tabContext) ensures delivery even when the window is backgrounded.
 	before := m.cachedBefore(tabID, tabCtx)
 	traceName, traceRole, traceNameIsText := m.refIdentity(tabID, ref)
-	recovery, err := m.hoverRef(tabCtx, ref)
+	recovery, err := m.hoverRef(tabCtx, tabID, ref)
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -977,7 +987,7 @@ func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
 	return result, nil
 }
 
-func (m *Manager) hoverRef(tabCtx context.Context, ref string) (string, error) {
+func (m *Manager) hoverRef(tabCtx context.Context, tabID, ref string) (string, error) {
 	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
 		return "", err
 	}
@@ -995,7 +1005,9 @@ func (m *Manager) hoverRef(tabCtx context.Context, ref string) (string, error) {
 	}
 	if err := runWithPrearmedSettle(tabCtx, settleCap, func() error {
 		if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			return input.DispatchMouseEvent(input.MouseMoved, box.ViewportX, box.ViewportY).Do(ctx)
+			return input.DispatchMouseEvent(input.MouseMoved, box.ViewportX, box.ViewportY).
+				WithModifiers(input.Modifier(m.heldModifierMask(tabID))).
+				Do(ctx)
 		})); err != nil {
 			return err
 		}
@@ -1030,7 +1042,11 @@ func (m *Manager) Evaluate(ctx context.Context, expression string) (any, error) 
 		if tabID == "" {
 			return
 		}
-		entry := RedactTraceEntry(ctx, NewObservationTrace(TraceActionEvaluate, expression, start, err))
+		action, text := TraceActionEvaluate, expression
+		if label, ok := TraceLabelFromCtx(ctx); ok {
+			action, text = label.Action, label.Value
+		}
+		entry := RedactTraceEntry(ctx, NewObservationTrace(action, text, start, err))
 		m.recordTrace(tabID, entry)
 	}
 
@@ -1159,6 +1175,48 @@ func (m *Manager) typeRef(tabCtx context.Context, ref, text string) error {
 			return input.InsertText(text).Do(ctx)
 		}))
 	})
+}
+
+// Focus gives one element the keyboard focus and reports the page afterwards,
+// which is the contract every action tool answers on. The observation is the
+// point: focusing is only useful if the caller can tell that focus landed where
+// it asked, and result.Focus carries the ref the document ended up on.
+func (m *Manager) Focus(ctx context.Context, ref string) (ActionResult, error) {
+	if strings.TrimSpace(ref) == "" {
+		return ActionResult{}, errors.New("ref is required")
+	}
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	defer cancel()
+
+	before := m.cachedBefore(tabID, tabCtx)
+	traceName, traceRole, traceNameIsText := m.refIdentity(tabID, ref)
+	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
+		return ActionResult{}, err
+	}
+	if err := runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+		return snapshot.Focus(tabCtx, ref)
+	}); err != nil {
+		return ActionResult{}, err
+	}
+	result := m.observeActionWithBefore(tabID, tabCtx, "focused "+ref, before)
+	if result.Focus != "" && result.Focus != ref {
+		appendWarning(&result, fmt.Sprintf("focus landed on %s, not %s: the element moved focus on its own", result.Focus, ref))
+	}
+	m.recordTrace(tabID, TraceEntry{
+		Action:            "focus",
+		Ref:               ref,
+		Name:              traceName,
+		Role:              traceRole,
+		NameIsVisibleText: traceNameIsText,
+		OK:                result.OK,
+		Error:             result.Warning,
+		DurationMS:        result.DurationMS,
+		Timestamp:         time.Now().Format(time.RFC3339),
+	})
+	return result, nil
 }
 
 // FocusRef is the narrow transport capability deterministic recipes use before
@@ -1538,7 +1596,7 @@ func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
 	defer cancel()
 	before := m.cachedBefore(tabID, tabCtx)
 	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
-		return m.pressKey(tabCtx, key)
+		return m.pressKey(tabCtx, tabID, key)
 	}); err != nil {
 		return ActionResult{}, err
 	}
@@ -1554,11 +1612,15 @@ func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
 	return result, nil
 }
 
-func (m *Manager) pressKey(tabCtx context.Context, key string) error {
+// pressKey sends one discrete keystroke. The dispatched mask is the chord the
+// key string named OR the keys the tab is HOLDING, so Shift+Tab works whether
+// the Shift came from "shift+tab" or from an earlier KeyDown.
+func (m *Manager) pressKey(tabCtx context.Context, tabID, key string) error {
 	desc := actions.DescribeKey(key)
 	if desc.Key == "" {
 		return errors.New("key is required")
 	}
+	modifiers := input.Modifier(desc.Modifiers | m.heldModifierMask(tabID))
 	return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		keyType := input.KeyDown
 		if desc.Text == "" {
@@ -1568,7 +1630,7 @@ func (m *Manager) pressKey(tabCtx context.Context, key string) error {
 			keyType = input.KeyRawDown
 		}
 		down := input.DispatchKeyEvent(keyType).
-			WithModifiers(input.Modifier(desc.Modifiers)).
+			WithModifiers(modifiers).
 			WithKey(desc.Key).
 			WithCode(desc.Code).
 			WithWindowsVirtualKeyCode(desc.WindowsVirtualKeyCode).
@@ -1580,7 +1642,7 @@ func (m *Manager) pressKey(tabCtx context.Context, key string) error {
 			return err
 		}
 		return input.DispatchKeyEvent(input.KeyUp).
-			WithModifiers(input.Modifier(desc.Modifiers)).
+			WithModifiers(modifiers).
 			WithKey(desc.Key).
 			WithCode(desc.Code).
 			WithWindowsVirtualKeyCode(desc.WindowsVirtualKeyCode).
@@ -2580,7 +2642,7 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 			result.Error = "cancelled"
 			break
 		}
-		sr := m.executeBatchStep(tabCtx, i, step)
+		sr := m.executeBatchStep(tabCtx, tabID, i, step)
 		result.Steps = append(result.Steps, sr)
 		if !sr.OK {
 			if entry.Cancelled() {
@@ -2646,7 +2708,11 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 	return result, nil
 }
 
-func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step BatchStep) BatchStepResult {
+// executeBatchStep runs one step of a batch. tabID is threaded in because the
+// steps that actuate input have to carry the tab's held-key mask: a batch is
+// where a flow wraps a Shift+click, and a step that dropped the modifier would
+// report a successful ordinary click.
+func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index int, step BatchStep) BatchStepResult {
 	sr := BatchStepResult{Index: index, Action: step.Action, OK: true}
 
 	var actionErr error
@@ -2658,7 +2724,11 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step Batch
 		}
 		actionErr = snapshot.WaitForActionable(tabCtx, step.Ref, 5000)
 		if actionErr == nil {
-			_, actionErr = clickElementCenter(tabCtx, step.Ref, actionSettleDelay)
+			if modifiers := input.Modifier(m.heldModifierMask(tabID)); modifiers != 0 {
+				_, actionErr = clickElementCenterWithModifiers(tabCtx, step.Ref, modifiers)
+			} else {
+				_, actionErr = clickElementCenter(tabCtx, step.Ref, actionSettleDelay)
+			}
 		}
 	case "click_text":
 		// Clicking by visible/accessible text survives a page whose refs have
@@ -2669,8 +2739,14 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step Batch
 			break
 		}
 		actionErr = runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
-			_, clickErr := snapshot.ClickText(tabCtx, snapshot.ClickTextOptions{Text: step.Text})
-			return clickErr
+			modifiers := input.Modifier(m.heldModifierMask(tabID))
+			clicked, clickErr := snapshot.ClickText(tabCtx, snapshot.ClickTextOptions{Text: step.Text, Locate: modifiers != 0})
+			if clickErr != nil || !clicked.Deferred {
+				return clickErr
+			}
+			return chromedp.Run(tabCtx, chromedp.ActionFunc(func(c context.Context) error {
+				return dispatchClick(c, clicked.X, clicked.Y, input.Left, 1, modifiers)
+			}))
 		})
 	case "type":
 		if step.Ref == "" || step.Text == "" {
@@ -2696,7 +2772,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step Batch
 			break
 		}
 		actionErr = runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
-			return m.pressKey(tabCtx, step.Key)
+			return m.pressKey(tabCtx, tabID, step.Key)
 		})
 	case "scroll":
 		actionErr = runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
@@ -2708,7 +2784,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step Batch
 			actionErr = errors.New("hover requires ref")
 			break
 		}
-		_, actionErr = m.hoverRef(tabCtx, step.Ref)
+		_, actionErr = m.hoverRef(tabCtx, tabID, step.Ref)
 	case "wait":
 		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
 		if timeout == 0 {
@@ -2800,8 +2876,16 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step Batch
 	return sr
 }
 
-func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, message string, before *SemanticState) ActionResult {
-	result := ActionResult{OK: true, Message: message, TabID: tabID}
+// The return is named so the deferred held-key warning reaches the caller: a
+// defer that mutates an unnamed result mutates only the local copy.
+func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, message string, before *SemanticState) (result ActionResult) {
+	result = ActionResult{OK: true, Message: message, TabID: tabID}
+	// Every action result carries the hold, not just the two key verbs: a held
+	// modifier is brw state that the page reports nowhere, so a flow that died
+	// between KeyDown and KeyUp would otherwise have no way to notice that its
+	// later clicks are all Shift-clicks. Deferred so a future early return
+	// cannot forget it.
+	defer m.warnHeldKeys(tabID, &result)
 	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
 		result.OK = false

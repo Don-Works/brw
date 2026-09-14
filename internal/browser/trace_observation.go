@@ -19,6 +19,8 @@ const (
 	TraceActionRead     = "read"
 	TraceActionReadData = "read_data"
 	TraceActionEvaluate = "evaluate"
+	TraceActionGet      = "get"
+	TraceActionFrame    = "frame"
 )
 
 var observationActions = map[string]bool{
@@ -28,6 +30,8 @@ var observationActions = map[string]bool{
 	TraceActionRead:     true,
 	TraceActionReadData: true,
 	TraceActionEvaluate: true,
+	TraceActionGet:      true,
+	TraceActionFrame:    true,
 }
 
 // IsObservationAction reports whether a traced action observed the page rather

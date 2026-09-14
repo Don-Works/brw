@@ -101,12 +101,22 @@ const frameScopeHelpers = `
 // It answers three shapes of target:
 //
 //   - "main" (or an empty target) clears the scope and reports the top document.
-//   - "f<i>" is the ref the snapshot walker mints for a CROSS-ORIGIN iframe. Its
-//     document is isolated by the browser, so there is nothing to scope into:
-//     the frame is reported with its top-level box and origin, switched:false,
-//     and the caller acts on it by coordinate.
+//   - "f<i>", or the "f<i>:e<j>" ref MergeCrossOriginFrames mints for one
+//     control inside that frame, names a CROSS-ORIGIN iframe. Its document is
+//     isolated by the browser, so there is nothing to scope into: the frame is
+//     reported with its top-level box and origin, switched:false, and the caller
+//     acts on it by coordinate. The ":e<j>" half is dropped — an element inside
+//     an isolated document is reachable only by coordinate, and the frame is
+//     what can be described.
 //   - anything else is a brw ref or CSS selector for the frame element (or for
 //     an element inside it, which identifies the same frame).
+//
+// The f<i> index is per SURFACE. On a direct-CDP snapshot it indexes the frames
+// the page walk could not enter (__abInaccessibleFrames); on an extension-bridge
+// snapshot it indexes the bridge's own frames array, matched to boxes by origin.
+// With more than one cross-origin frame on a page the same f<i> can therefore
+// name different frames on the two transports, so an f<i> ref belongs to the
+// snapshot that produced it.
 const FrameSwitchScript = `(function(target){` + FrameWalkHelpers + `
   var t = String(target == null ? '' : target).trim();
   var entries = __abRootsCompute();
@@ -121,11 +131,17 @@ const FrameSwitchScript = `(function(target){` + FrameWalkHelpers + `
             x: box.x, y: box.y, width: box.width, height: box.height,
             note:'This frame is cross-origin: the browser isolates its DOM, so it cannot be scoped into or read as refs. Act on it with brw_click_xy at the center of the reported box (brw_screenshot first to see it).'};
   }
-  var promoted = /^f(\d+)$/.exec(t);
+  // An f<i>:e<j> ref names a control inside a cross-origin frame. Its element
+  // half cannot be resolved from here (the document is isolated), but the frame
+  // half can, so report the frame rather than falling through to the selector
+  // pass, where querySelector("f0:e3") throws and the error tells the agent to
+  // pass a ref it is already holding.
+  var promoted = /^f(\d+)(?::e\d+)?$/.exec(t);
   if (promoted) {
+    var frameRef = 'f' + promoted[1];
     var box = __abInaccessibleFrames[parseInt(promoted[1], 10)];
-    if (!box) throw new Error('no cross-origin frame ' + JSON.stringify(t) + ' on this page; take a snapshot with include_frames to refresh frame refs');
-    return crossOrigin(t, box);
+    if (!box) throw new Error('no cross-origin frame ' + JSON.stringify(frameRef) + ' on this page; take a snapshot with include_frames to refresh frame refs');
+    return crossOrigin(frameRef, box);
   }
   var frame = __abFrameElementIn(t, entries);
   if (!frame) throw new Error('no frame matched ' + JSON.stringify(t) + '; pass a brw ref, a CSS selector for the iframe, or "main"');

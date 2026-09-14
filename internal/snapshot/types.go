@@ -150,6 +150,12 @@ type ClickTextOptions struct {
 	// gesture itself (a user-gesture evaluation or real CDP input); without it
 	// the script would defer again and nothing would ever be clicked.
 	NoDefer bool `json:"no_defer,omitempty"`
+	// Locate resolves, scrolls to and reports the target WITHOUT dispatching
+	// anything, returning Deferred so the caller actuates at the reported point.
+	// A caller holding a modifier needs this: the in-page MouseEvent the script
+	// would otherwise construct has shiftKey/ctrlKey false whatever is held, so
+	// only a CDP dispatch carrying the mask can express Shift+click-text.
+	Locate bool `json:"locate,omitempty"`
 }
 
 type Element struct {

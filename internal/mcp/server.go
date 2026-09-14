@@ -1448,7 +1448,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := req.Validate(); err != nil {
 			return toolError(err), nil
 		}
-		value, err := s.manager.Evaluate(ctx, req.Expression())
+		value, err := s.manager.Evaluate(browser.WithTraceLabel(ctx, browser.TraceActionGet, req.TraceLabel()), req.Expression())
 		if err != nil {
 			return toolError(err), nil
 		}
@@ -1461,7 +1461,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		value, err := s.manager.Evaluate(ctx, snapshot.BuildFrameSwitchExpression(req.Target))
+		value, err := s.manager.Evaluate(browser.WithTraceLabel(ctx, browser.TraceActionFrame, req.Target), snapshot.BuildFrameSwitchExpression(req.Target))
 		if err != nil {
 			return toolError(err), nil
 		}
@@ -1481,10 +1481,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if strings.TrimSpace(req.Ref) == "" {
 			return toolError(errors.New("ref is required")), nil
 		}
-		if err := focuser.FocusRef(ctx, req.Ref); err != nil {
-			return toolError(err), nil
-		}
-		return toolJSON(map[string]any{"ok": true, "ref": req.Ref}, nil)
+		return toolJSON(focuser.Focus(ctx, req.Ref))
 	case "brw_clipboard":
 		clipboard, ok := s.manager.(browser.ClipboardController)
 		if !ok {
@@ -2532,20 +2529,20 @@ func tools() []map[string]any {
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"action"})),
 		tool("brw_get", "Read ONE typed fact about the page or an element, without writing JavaScript. what=url|title|status|text|value|attr|count|box|styles|visible|hidden|enabled|disabled|editable|checked|focused|state. status is the HTTP status of the current document's last cross-document navigation (0 when there was none, as for a data: or about: document). state returns every interaction flag for one element at once — {found, visible, enabled, editable, checked, focused} — and is the cheap way to ask several of those questions together. target is a brw ref from brw_snapshot or a CSS selector, and resolves across same-origin iframes and open shadow roots (plain document.querySelector does not). Use this instead of brw_evaluate for simple reads: it is one round trip, it needs no hand-written JS, and it cannot be tripped up by a value that will not serialize. To CHECK one of these rather than read it, use brw_assert: it returns expected against actual when the check does not hold.", object(map[string]any{
-			"what":   stringEnumSchema("Which fact to read.", "url", "title", "status", "text", "value", "attr", "count", "box", "styles", "visible", "hidden", "enabled", "disabled", "editable", "checked", "focused", "state"),
+			"what":   stringEnumSchema("Which fact to read.", snapshot.GetKindNames()...),
 			"target": stringSchema("Element ref from brw_snapshot, or a CSS selector. Omit for page-level facts (url, title, and text of the whole body). Required for count as the selector to count."),
 			"name":   stringSchema("Attribute name for what=attr, or a single CSS property name for what=styles. Omitting it for styles returns the properties that explain layout and appearance rather than every property."),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"what"})),
-		tool("brw_frame", "Switch the active FRAME scope, so brw_snapshot, brw_find, brw_get and every ref lookup afterwards see only that frame's document. Pass a brw ref or CSS selector for the iframe (a ref for an element INSIDE the frame selects that frame too), or target \"main\" to go back to the whole page. Returns {switched, scope, kind, url, origin, accessible, x, y, width, height, element_count}. You rarely need this to CLICK something: refs already resolve across same-origin iframes. Reach for it when the same selector exists in the page and in an embed and you mean the embedded one, or to count/read within one widget. A CROSS-ORIGIN frame (kind:\"cross_origin\", also reachable by its f<i> ref from brw_snapshot include_frames) cannot be scoped into at all — the browser isolates its DOM — so it is returned with switched:false plus its top-level box, and you act on it with brw_screenshot then brw_click_xy at the box center. The scope is per document: any navigation drops it back to main. Works on both transports.", object(map[string]any{
-			"target": stringSchema("Frame to scope to: a brw ref, a CSS selector for the iframe, an f<i> cross-origin frame ref, or \"main\" to clear the scope. Omitting it is the same as \"main\"."),
+		tool("brw_frame", "Switch the active FRAME scope, so brw_snapshot, brw_find, brw_get and every ref lookup afterwards see only that frame's document. Pass a brw ref or CSS selector for the iframe (a ref for an element INSIDE the frame selects that frame too), or target \"main\" to go back to the whole page. Returns {switched, scope, kind, url, origin, accessible, x, y, width, height, element_count}. You rarely need this to CLICK something: refs already resolve across same-origin iframes. Reach for it when the same selector exists in the page and in an embed and you mean the embedded one, or to count/read within one widget. A CROSS-ORIGIN frame (kind:\"cross_origin\", reachable by its f<i> ref from brw_snapshot include_frames, or by an f<i>:e<j> element ref whose :e<j> half is dropped) cannot be scoped into at all — the browser isolates its DOM — so it is returned with switched:false plus its top-level box, and you act on it with brw_screenshot then brw_click_xy at the box center. An f<i> index belongs to the snapshot that minted it: the two transports number cross-origin frames independently, so re-snapshot after switching transport. The scope is per document: any navigation drops it back to main. Works on both transports.", object(map[string]any{
+			"target": stringSchema("Frame to scope to: a brw ref, a CSS selector for the iframe, an f<i> or f<i>:e<j> cross-origin frame ref, or \"main\" to clear the scope. Omitting it is the same as \"main\"."),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
-		tool("brw_focus", "Give one element the keyboard focus by ref, without clicking it. Use it before brw_press when the keystroke must land on a specific field and you do not want the side effects of a click (a menu opening, a link following, a blur handler firing on the way). Resolves across same-origin iframes and open shadow roots. brw_type and brw_fill already focus the field they write to; this is for the case where the next thing you send is a key.", object(map[string]any{
+		tool("brw_focus", "Give one element the keyboard focus by ref, without clicking it. Use it before brw_press when the keystroke must land on a specific field and you do not want the side effects of a click (a menu opening, a link following, a blur handler firing on the way). Resolves across same-origin iframes and open shadow roots. brw_type and brw_fill already focus the field they write to; this is for the case where the next thing you send is a key. Returns the post-action observation, so `focus` in the result tells you where focus actually landed — a control that moves focus on its own is reported as a warning rather than passing silently.", object(map[string]any{
 			"ref":    stringSchema("Element ref from brw_snapshot."),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"ref"})),
-		tool("brw_key_down", "Press a key and HOLD it: the keyup is not sent until brw_key_up. That is what makes Ctrl+drag, Shift+click-range and Alt+click expressible — brw_press sends keydown and keyup back to back, so a page reading event.shiftKey during the drag in between sees nothing. While a key is held, every click, drag and mouse press brw dispatches on that tab carries its modifier mask. ALWAYS release what you hold (brw_key_up key=\"all\" releases everything the tab holds), or later clicks keep the modifier. Returns the keys still held. DIRECT-CDP TRANSPORT ONLY: the extension bridge returns a capability error — use brw_press for a discrete chord like Meta+Enter there.", object(map[string]any{
+		tool("brw_key_down", "Press a key and HOLD it: the keyup is not sent until brw_key_up. That is what makes Ctrl+drag, Shift+click-range and Alt+click expressible — brw_press sends keydown and keyup back to back, so a page reading event.shiftKey during the drag in between sees nothing. While a key is held, EVERY later input brw dispatches on that tab carries its modifier mask — brw_click, brw_click_text, brw_drag, brw_hover, brw_mouse_down/up, brw_press, and the click/click_text/press/hover steps of a brw_batch — and every action result warns that the keys are still held. Hold one key per call: a chord like \"ctrl+shift\" is refused, because one held key is one release. ALWAYS release what you hold (brw_key_up key=\"all\" releases everything the tab holds), or later clicks keep the modifier. Returns the keys still held. DIRECT-CDP TRANSPORT ONLY: the extension bridge returns a capability error — use brw_press for a discrete chord like Meta+Enter there.", object(map[string]any{
 			"key":    stringSchema("Key to hold. Modifiers by name: Shift, Control, Alt, Meta (ShiftRight/ControlRight etc. for the right-hand key). Ordinary keys work too, for a held character."),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"key"})),
@@ -2560,8 +2557,8 @@ func tools() []map[string]any {
 			"notify":  boolSchema("Dispatch popstate after the change. Defaults true; set false to change the URL and observe whether the router reacts on its own."),
 			"tab_id":  stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"url"})),
-		tool("brw_clipboard", "Read or write the system clipboard from the page's own origin, for copy/paste flows a page implements with the Clipboard API (a \"copy link\" button, a paste-to-import field). action=read returns {text}; action=write puts text on the clipboard so a later paste in the page picks it up. Chrome gates the clipboard on a user gesture and a permission, and brw cannot make a real gesture, so the permission is granted over CDP for this page's origin and the tab is brought to the front first (the Clipboard API refuses an unfocused document). Reading needs a secure context (https, or localhost); on a plain-http page a read returns a clear error and a write falls back to execCommand. Clipboard text is NOT written to the brw trace — it holds whatever the user last copied. DIRECT-CDP TRANSPORT ONLY: granting the permission needs a browser-level CDP command the extension bridge cannot send.", object(map[string]any{
-			"action": stringEnumSchema("read the clipboard, or write text to it.", "read", "write"),
+		tool("brw_clipboard", "Read or write the system clipboard from the page's own origin, for copy/paste flows a page implements with the Clipboard API (a \"copy link\" button, a paste-to-import field). action=read returns {text}; action=write puts text on the clipboard so a later paste in the page picks it up. Chrome gates the clipboard on a user gesture and a permission, and brw cannot make a real gesture, so the permission is granted over CDP for this page's origin and the tab is brought to the front first (the Clipboard API refuses an unfocused document). Reading needs a secure context (https, or localhost); on a plain-http page a read returns a clear error and a write falls back to execCommand. Clipboard text is NOT written to the brw trace — it holds whatever the user last copied. THE GRANT OUTLIVES THE CALL: only the permission the action needs is granted (read grants clipboard-read, write grants sanitized clipboard-write), but it stays until the browser closes, so after a read on an origin you do not control, call action=revoke. In headless Chrome the clipboard is in-process: a write is readable by the page and by a later brw read, and is NOT on the OS pasteboard a native paste in another application would find. DIRECT-CDP TRANSPORT ONLY: granting the permission needs a browser-level CDP command the extension bridge cannot send.", object(map[string]any{
+			"action": stringEnumSchema("read the clipboard, write text to it, or revoke the permission grant a previous read or write left behind.", "read", "write", "revoke"),
 			"text":   stringSchema("Text to put on the clipboard. Required for action=write."),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"action"})),

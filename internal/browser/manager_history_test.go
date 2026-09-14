@@ -163,6 +163,46 @@ func TestPushStateRefusedByNavigationPolicy(t *testing.T) {
 	}
 }
 
+// TestPushStateRefusedFromABlockedDocument is the case where the policy check
+// adds a refusal the History API's same-origin rule does not.
+//
+// While the current document is on-policy the two cannot disagree: a same-origin
+// target shares the current host and so passes an allowlist by construction, and
+// a cross-origin one fails both. The check earns its place when the tab is
+// ALREADY on an off-policy document — a blocklist, or a page opened before the
+// policy was set — where a same-origin route change would otherwise be waved
+// through as "same document, same origin, fine".
+func TestPushStateRefusedFromABlockedDocument(t *testing.T) {
+	m := newHeadlessManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	// Open first, then block: the tab is now sitting on a document the policy
+	// would not have let it reach.
+	tabCtx, _ := openRouterFixture(t, m, ctx)
+	m.SetNavigationPolicy(&navpolicy.Policy{Blocked: []string{"127.0.0.1"}})
+
+	_, err := m.PushState(tabCtx, HistoryStateOptions{URL: "/deeper-into-the-blocked-app"})
+	if err == nil {
+		t.Fatal("a same-origin route change on a blocked document should be refused; the same-origin rule alone would allow it")
+	}
+	if !strings.Contains(err.Error(), "navigation policy") {
+		t.Fatalf("error %q should say the navigation policy refused it", err)
+	}
+	if !strings.Contains(err.Error(), "blocked domain") {
+		t.Fatalf("error %q should name the blocked domain as the reason", err)
+	}
+	// The same-origin rule would have passed this target, so its complaint must
+	// not be what came back — that is the ordering the check buys.
+	if strings.Contains(err.Error(), "cannot change origin") {
+		t.Fatalf("error %q is the History API's same-origin complaint, not the policy's reason", err)
+	}
+	// Nothing was dispatched: the refusal happens before the page is touched, so
+	// the tab is still on the document it was on. Reading it back through the
+	// manager is not possible here — the URL guard evicts a tab sitting on a
+	// blocked document to about:blank the moment anything observes it, which is
+	// the outer layer this check backs up.
+}
+
 // TestPushStateRefusesCrossOrigin covers the API's own rule, with an
 // explanation instead of the SecurityError the page would throw.
 func TestPushStateRefusesCrossOrigin(t *testing.T) {

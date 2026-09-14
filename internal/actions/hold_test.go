@@ -49,32 +49,3 @@ func TestDescribeKeyResolvesStandaloneModifiers(t *testing.T) {
 		})
 	}
 }
-
-func TestIsModifierKey(t *testing.T) {
-	for _, raw := range []string{"shift", "Control", "ALT", "cmd", "MetaRight"} {
-		if !IsModifierKey(raw) {
-			t.Errorf("IsModifierKey(%q) = false, want true", raw)
-		}
-	}
-	for _, raw := range []string{"a", "Enter", "F5", "", "shifty"} {
-		if IsModifierKey(raw) {
-			t.Errorf("IsModifierKey(%q) = true, want false", raw)
-		}
-	}
-}
-
-func TestModifierNames(t *testing.T) {
-	got := ModifierNames(ModifierCtrl | ModifierShift)
-	want := []string{"Control", "Shift"}
-	if len(got) != len(want) {
-		t.Fatalf("ModifierNames = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("ModifierNames = %v, want %v", got, want)
-		}
-	}
-	if names := ModifierNames(0); len(names) != 0 {
-		t.Fatalf("ModifierNames(0) = %v, want empty", names)
-	}
-}

@@ -114,11 +114,18 @@ type HistoryController interface {
 }
 
 // ElementFocuser is an optional transport capability that gives one element the
-// document focus by ref. Both first-party transports implement it; the interface
-// exists so an upstream HTTP controller that has not been upgraded degrades to
-// "unsupported" instead of failing to compile.
+// document focus by ref and reports the page afterwards. Both first-party
+// transports implement it; the interface exists so an upstream HTTP controller
+// that has not been upgraded degrades to "unsupported" instead of failing to
+// compile.
+//
+// It returns an ActionResult rather than an error alone because focus is an
+// action tool, and every action tool answers with the post-action observation —
+// an agent that focuses a field has to be able to see from the result whether
+// focus landed and what the page did about it. FocusRef stays as the narrow
+// recipe-internal form.
 type ElementFocuser interface {
-	FocusRef(context.Context, string) error
+	Focus(context.Context, string) (ActionResult, error)
 }
 
 // WindowReader is an optional transport capability that applies page-content

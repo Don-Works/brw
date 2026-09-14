@@ -185,7 +185,14 @@ func TestFrameSwitchResolvesCrossOriginFrame(t *testing.T) {
 		t.Fatalf("no cross_origin_frames metadata; got %v", snap.Metadata)
 	}
 
-	for _, target := range []string{"f0", "#xframe"} {
+	// f0:e3 is the ref shape MergeCrossOriginFrames mints for one control inside
+	// a cross-origin frame over the extension bridge, and it is what an agent
+	// holding a bridge snapshot has. Its element half cannot be resolved from
+	// here, but the frame half can, and reporting the frame beats the old
+	// behaviour: the ref fell through to querySelector("f0:e3"), threw, and came
+	// back as "pass a brw ref, a CSS selector for the iframe, or main" — three
+	// things the agent was already holding one of.
+	for _, target := range []string{"f0", "f0:e3", "#xframe"} {
 		t.Run(target, func(t *testing.T) {
 			info, err := snapshot.SwitchFrame(ctx, target)
 			if err != nil {
@@ -200,6 +207,11 @@ func TestFrameSwitchResolvesCrossOriginFrame(t *testing.T) {
 			if info.Origin != other.URL {
 				t.Fatalf("origin = %q, want the embedded server's origin %q", info.Origin, other.URL)
 			}
+			// The element half is dropped rather than echoed, so the reported ref
+			// names something a later call can actually pass back.
+			if target == "f0:e3" && info.Ref != "f0" {
+				t.Fatalf("ref = %q for target %q, want the frame ref f0", info.Ref, target)
+			}
 			if info.Width <= 0 || info.Height <= 0 {
 				t.Fatalf("box = %.0fx%.0f at (%.0f,%.0f), want the frame's top-level box", info.Width, info.Height, info.X, info.Y)
 			}
@@ -213,8 +225,16 @@ func TestFrameSwitchResolvesCrossOriginFrame(t *testing.T) {
 	if got := getValue(t, ctx, "text", "#who", ""); got != "main document" {
 		t.Fatalf("get text #who after a cross-origin switch = %v, want the main document", got)
 	}
-	if _, err := snapshot.SwitchFrame(ctx, "f7"); err == nil {
-		t.Fatal("an f<i> ref with no matching frame should be an error, not a silent no-op")
+	for _, missing := range []string{"f7", "f7:e0"} {
+		_, err := snapshot.SwitchFrame(ctx, missing)
+		if err == nil {
+			t.Fatalf("%s names no frame on this page; want an error, not a silent no-op", missing)
+		}
+		// The refusal names the FRAME, because that is the part the agent can fix
+		// by re-snapshotting.
+		if !strings.Contains(err.Error(), `"f7"`) {
+			t.Fatalf("switching to %s failed with %q, want it to name the frame ref f7", missing, err)
+		}
 	}
 }
 

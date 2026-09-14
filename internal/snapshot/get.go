@@ -16,30 +16,13 @@ type GetRequest struct {
 	TabID  string `json:"tab_id,omitempty"`
 }
 
-// getKinds maps each accepted question to whether it needs a target element.
-var getKinds = map[string]bool{
-	"url":      false,
-	"title":    false,
-	"text":     false, // whole-page text without a target
-	"value":    true,
-	"attr":     true,
-	"count":    true,
-	"box":      true,
-	"styles":   true,
-	"visible":  true,
-	"hidden":   true,
-	"enabled":  true,
-	"disabled": true,
-	"checked":  true,
-}
-
 // Validate reports a usable error for a malformed question, instead of letting
 // the page script throw one an agent has to decode.
 func (r GetRequest) Validate() error {
 	what := strings.ToLower(strings.TrimSpace(r.What))
 	needsTarget, known := getKinds[what]
 	if !known {
-		return fmt.Errorf("unknown get target %q: use one of %s", r.What, strings.Join(getKindNames(), ", "))
+		return fmt.Errorf("unknown get target %q: use one of %s", r.What, strings.Join(GetKindNames(), ", "))
 	}
 	if needsTarget && strings.TrimSpace(r.Target) == "" {
 		if what == "count" {
@@ -53,12 +36,29 @@ func (r GetRequest) Validate() error {
 	return nil
 }
 
+// TraceLabel renders this question the way an operator reading brw_trace needs
+// to see it — what was asked of which target — rather than the ~10 KB walker
+// expression that answers it.
+func (r GetRequest) TraceLabel() string {
+	label := strings.ToLower(strings.TrimSpace(r.What))
+	if target := strings.TrimSpace(r.Target); target != "" {
+		label += " " + target
+	}
+	if name := strings.TrimSpace(r.Name); name != "" {
+		label += " " + name
+	}
+	return label
+}
+
 // Expression renders the in-page script for this question.
 func (r GetRequest) Expression() string {
 	return BuildGetExpression(strings.ToLower(strings.TrimSpace(r.What)), r.Target, r.Name)
 }
 
-func getKindNames() []string {
+// GetKindNames lists the accepted questions in sorted order. The MCP tool's
+// enum is built from it rather than from a hand-kept literal, so a kind the
+// schema advertises is always one Validate accepts.
+func GetKindNames() []string {
 	names := make([]string, 0, len(getKinds))
 	for name := range getKinds {
 		names = append(names, name)

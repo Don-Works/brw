@@ -98,6 +98,17 @@ func (m *Manager) PushState(ctx context.Context, opts HistoryStateOptions) (Hist
 	}
 	// Policy first, origin second: an off-allowlist target must be refused with
 	// the policy's own reason, not masked by the API's same-origin rule.
+	//
+	// Do not read this as the containment guarantee. While the current document
+	// is itself on-policy the check refuses nothing the same-origin rule below
+	// would not: a same-origin target shares the current host and so passes an
+	// allowlist by construction, and a cross-origin one fails both. It adds a
+	// refusal only when the tab is already on an OFF-policy document — a page
+	// opened before the policy was set — and the URL guard evicts such a tab to
+	// about:blank as soon as anything observes it, so this is the backstop for
+	// the window before that, not the containment boundary itself
+	// (TestPushStateRefusedFromABlockedDocument covers it). What it always buys
+	// is the truthful reason.
 	if err := m.navPolicy.Check(resolved); err != nil {
 		return HistoryStateResult{}, fmt.Errorf("pushstate refused by navigation policy: %w", err)
 	}

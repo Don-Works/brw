@@ -24,6 +24,31 @@ func WantSnapshotFromCtx(ctx context.Context) bool {
 	return v
 }
 
+type ctxKeyTraceLabel struct{}
+
+// TraceLabel names an evaluation by what it MEANT rather than by the script it
+// generated. brw_get and brw_frame both run machine-written walker expressions
+// through Evaluate; recorded as evaluate entries they are indistinguishable in
+// brw_trace from a hand-written brw_evaluate, which is the surface the two verbs
+// exist to avoid.
+type TraceLabel struct {
+	Action string
+	Value  string
+}
+
+// WithTraceLabel marks the evaluations made under ctx as one semantic action.
+// Both transports honour it, and the HTTP surface re-applies it on the daemon
+// side, so a proxied call is labelled the same way a local one is.
+func WithTraceLabel(ctx context.Context, action, value string) context.Context {
+	return context.WithValue(ctx, ctxKeyTraceLabel{}, TraceLabel{Action: action, Value: value})
+}
+
+// TraceLabelFromCtx returns the semantic label for an evaluation, if one was set.
+func TraceLabelFromCtx(ctx context.Context) (TraceLabel, bool) {
+	label, ok := ctx.Value(ctxKeyTraceLabel{}).(TraceLabel)
+	return label, ok && strings.TrimSpace(label.Action) != ""
+}
+
 type Config struct {
 	ChromePath       string
 	UserDataDir      string

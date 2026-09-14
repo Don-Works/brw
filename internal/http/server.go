@@ -1185,8 +1185,9 @@ func (s *Server) focusElement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Ref   string `json:"ref"`
-		TabID string `json:"tab_id"`
+		Ref      string `json:"ref"`
+		Snapshot bool   `json:"snapshot"`
+		TabID    string `json:"tab_id"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -1195,8 +1196,12 @@ func (s *Server) focusElement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errors.New("ref is required"))
 		return
 	}
-	err := focuser.FocusRef(s.contextWithTabID(r.Context(), req.TabID), req.Ref)
-	writeResult(w, map[string]any{"ok": err == nil, "ref": req.Ref}, err)
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if req.Snapshot {
+		ctx = browser.WithWantSnapshot(ctx)
+	}
+	result, err := focuser.Focus(ctx, req.Ref)
+	writeResult(w, result, err)
 }
 
 // get answers one typed question about the page. It shares snapshot.GetRequest
@@ -1218,7 +1223,8 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	value, err := s.manager.Evaluate(s.contextWithTabID(r.Context(), req.TabID), req.Expression())
+	ctx := browser.WithTraceLabel(s.contextWithTabID(r.Context(), req.TabID), browser.TraceActionGet, req.TraceLabel())
+	value, err := s.manager.Evaluate(ctx, req.Expression())
 	writeResult(w, value, err)
 }
 
@@ -1233,7 +1239,8 @@ func (s *Server) frame(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	value, err := s.manager.Evaluate(s.contextWithTabID(r.Context(), req.TabID), snapshot.BuildFrameSwitchExpression(req.Target))
+	ctx := browser.WithTraceLabel(s.contextWithTabID(r.Context(), req.TabID), browser.TraceActionFrame, req.Target)
+	value, err := s.manager.Evaluate(ctx, snapshot.BuildFrameSwitchExpression(req.Target))
 	writeResult(w, value, err)
 }
 

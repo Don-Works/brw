@@ -23,6 +23,21 @@ code-signed, so Gatekeeper reports an unidentified developer and SmartScreen
 warns. [`docs/release-signing.md`](docs/release-signing.md) records what that
 needs; the signing path is wired and waits on certificates.
 
+## Residual browser permission grants
+
+`brw_clipboard` grants a Chrome permission for the page's origin over CDP,
+because the Clipboard API refuses a page that has neither a user gesture nor a
+grant and brw cannot produce a gesture. Only the permission the action needs is
+granted: `action=read` grants `clipboard-read`, `action=write` grants sanitized
+`clipboard-write`. A read therefore leaves that origin able to call
+`navigator.clipboard.readText()` from its own scripts.
+
+The grant **outlives the call**. CDP offers no per-permission removal, so it
+stays until the browser context ends or `brw_clipboard action=revoke` clears it
+(`Browser.resetPermissions`, which drops every permission override in the
+context — the clipboard grant is the only override brw sets). On a signed-in
+profile, revoke after a clipboard read on an origin you do not control.
+
 ## Reporting a vulnerability
 
 Do not disclose a suspected vulnerability in a public issue. Use the

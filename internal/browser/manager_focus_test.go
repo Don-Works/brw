@@ -71,3 +71,74 @@ func TestFocusRefFocusesByRefAcrossFrames(t *testing.T) {
 		t.Fatal("focusing an unknown ref should fail rather than silently focus nothing")
 	}
 }
+
+// TestFocusObservesThePageAfterFocusing covers the tool-facing surface rather
+// than the recipe-internal FocusRef the test above drives. brw_focus is an
+// action tool, and every action tool answers with the post-action observation:
+// an agent that focuses a field and gets back {ok:true,ref:"e4"} cannot tell
+// whether focus landed there, on nothing, or on whatever the control moved it
+// to. result.Focus is what makes that checkable.
+func TestFocusObservesThePageAfterFocusing(t *testing.T) {
+	m := newHeadlessManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, focusFixture)
+	}))
+	defer srv.Close()
+	opened, err := m.Open(ctx, srv.URL)
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	tabCtx := WithTabID(ctx, opened.Tab.ID)
+
+	snap, err := m.Snapshot(tabCtx, snapshot.SnapshotOptions{Mode: "all"})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	ref := ""
+	for _, el := range snap.Elements {
+		if el.Name == "Outer Field" {
+			ref = el.Ref
+		}
+	}
+	if ref == "" {
+		t.Fatalf("no ref for the outer field; snapshot returned %d elements", len(snap.Elements))
+	}
+
+	result, err := m.Focus(tabCtx, ref)
+	if err != nil {
+		t.Fatalf("focus: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("focus result = %+v, want ok", result)
+	}
+	if result.Focus != ref {
+		t.Fatalf("focus result reported focus %q, want the ref it focused (%s)", result.Focus, ref)
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"message", result.Message},
+		{"url", result.URL},
+		{"title", result.Title},
+		{"tab_id", result.TabID},
+	} {
+		if field.value == "" {
+			t.Fatalf("focus result carried no %s: %+v", field.name, result)
+		}
+	}
+	// The observation has to agree with the document, not just with itself.
+	if active := evalString(t, m, tabCtx, "document.activeElement.id"); active != "outer" {
+		t.Fatalf("document.activeElement = %q, want outer", active)
+	}
+
+	if _, err := m.Focus(tabCtx, "  "); err == nil {
+		t.Fatal("focus with a blank ref should be rejected")
+	}
+	if _, err := m.Focus(tabCtx, "e-nonexistent"); err == nil {
+		t.Fatal("focusing an unknown ref should fail rather than report a successful no-op")
+	}
+}

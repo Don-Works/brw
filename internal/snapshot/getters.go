@@ -5,6 +5,33 @@ import (
 	"fmt"
 )
 
+// getKinds is the accepted vocabulary, mapped to whether the question needs a
+// target element. It lives here, immediately above GetScript, because it mirrors
+// that script's switch(what) and the two are only correct together: a kind
+// accepted here that the switch does not answer throws "unknown get target"
+// after the browser has already been driven, and a case added to the switch that
+// is missing here is refused before the page is touched. TestGetKindsMatchScript
+// compares the two sets and fails on either drift.
+var getKinds = map[string]bool{
+	"url":      false,
+	"title":    false,
+	"status":   false, // the document's own navigation status, not an element's
+	"text":     false, // whole-page text without a target
+	"value":    true,
+	"attr":     true,
+	"count":    true,
+	"box":      true,
+	"styles":   true,
+	"visible":  true,
+	"hidden":   true,
+	"enabled":  true,
+	"disabled": true,
+	"editable": true,
+	"checked":  true,
+	"focused":  true,
+	"state":    true, // every interaction flag for one element at once
+}
+
 // GetScript answers a single typed question about the page or one element.
 //
 // It exists so the separate "get X" / "is X" reads an agent needs (text, title,

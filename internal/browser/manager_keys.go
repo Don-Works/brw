@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Don-Works/brw/internal/actions"
 	"github.com/chromedp/cdproto/input"
@@ -146,10 +147,20 @@ func (m *Manager) KeyUp(ctx context.Context, opts KeyHoldOptions) (KeyHoldResult
 }
 
 func describeHoldKey(raw string) (actions.KeyDescriptor, error) {
-	if strings.TrimSpace(raw) == "" {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
 		return actions.KeyDescriptor{}, errors.New("key is required")
 	}
-	desc := actions.DescribeKey(raw)
+	// A chord collapses to ONE descriptor carrying every bit: "ctrl+shift"
+	// describes as key Shift with Ctrl|Shift set. Holding that would dispatch a
+	// single Shift keydown the page never sees a Control keydown for, stamp
+	// ctrlKey onto later mouse events anyway, and leave KeyUp "Control" with
+	// nothing under that name to release. The held set is keyed by key name, so
+	// one call must name one key.
+	if strings.Contains(trimmed, "+") && utf8.RuneCountInString(trimmed) > 1 {
+		return actions.KeyDescriptor{}, fmt.Errorf("hold one key at a time: %q is a chord, call key_down once per key", raw)
+	}
+	desc := actions.DescribeKey(trimmed)
 	if desc.Key == "" {
 		return actions.KeyDescriptor{}, fmt.Errorf("unrecognized key %q", raw)
 	}
@@ -223,6 +234,17 @@ func (m *Manager) heldKeyNames(tabID string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// warnHeldKeys reports the keys a tab is still holding on an action result.
+// Recovery is brw_key_up key="all", which the message names because a flow that
+// lost track of its holds cannot name them itself.
+func (m *Manager) warnHeldKeys(tabID string, result *ActionResult) {
+	held := m.heldKeyNames(tabID)
+	if len(held) == 0 {
+		return
+	}
+	appendWarning(result, fmt.Sprintf("keys still held on this tab: %s — every later click, drag and keystroke carries them until key_up (key \"all\" releases everything)", strings.Join(held, "+")))
 }
 
 func (m *Manager) heldDescriptors(tabID string) []actions.KeyDescriptor {

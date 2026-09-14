@@ -2589,8 +2589,11 @@ func (b *Bridge) Evaluate(ctx context.Context, expression string) (any, error) {
 		if strings.TrimSpace(tabID) == "" {
 			return
 		}
-		entry := browser.RedactTraceEntry(ctx, browser.NewObservationTrace(
-			browser.TraceActionEvaluate, expression, start, err))
+		action, text := browser.TraceActionEvaluate, expression
+		if label, ok := browser.TraceLabelFromCtx(ctx); ok {
+			action, text = label.Action, label.Value
+		}
+		entry := browser.RedactTraceEntry(ctx, browser.NewObservationTrace(action, text, start, err))
 		entry.TabID = tabID
 		b.appendTrace(entry)
 	}
@@ -2781,6 +2784,21 @@ func (b *Bridge) typeRef(ctx context.Context, ref, text string) error {
 	}
 	_, err := b.cdp(ctx, "", "Input.insertText", map[string]any{"text": text})
 	return err
+}
+
+// Focus gives one element the keyboard focus and reports the page afterwards,
+// matching the observation contract every action tool answers on.
+func (b *Bridge) Focus(ctx context.Context, ref string) (browser.ActionResult, error) {
+	if strings.TrimSpace(ref) == "" {
+		return browser.ActionResult{}, errors.New("ref is required")
+	}
+	before := b.captureSemanticState(ctx)
+	before.Trace = b.traceOperands(before, browser.RedactTraceEntry(ctx, browser.TraceEntry{Action: "focus", Ref: ref}))
+	if err := b.focus(ctx, ref); err != nil {
+		return browser.ActionResult{}, err
+	}
+	b.settle(ctx, observedActionSettle)
+	return b.observeActionWithBefore(ctx, "focused "+ref, before), nil
 }
 
 // FocusRef supports deterministic recipe key presses without exposing another
