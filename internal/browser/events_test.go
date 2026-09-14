@@ -369,49 +369,70 @@ func TestRecentReturnsOnlyMatchingEventsInsideTheWindow(t *testing.T) {
 	}
 }
 
+// unwatchedEventSettleGrace is how long an event the settle window does not watch
+// for is held against the window still being open. The window can only end early
+// by reading that event off its queue, and publish has already queued it by the
+// time it returns, so any wait long enough to schedule that read is enough.
+const unwatchedEventSettleGrace = 150 * time.Millisecond
+
 // TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation proves the settle window's
 // navigation branch comes from the event stream. The in-page promise it is
 // waiting on lives in the execution context the navigation is destroying, so
 // without the stream the settle waits for a reply that will never arrive.
 //
-// It also pins what happens to the abandoned await, in both directions. It must
-// NOT be cancelled when the window ends: that kills a CDP command in flight on a
-// live tab just as the next action is issued, which cost an inline upload its
-// file bytes on the very next submit. It must end with the tab, which is what
-// keeps one abandoned wait per action from outliving anything.
+// It pins every way the window can end — the settle answering, a navigation, the
+// cap, the tab dying — and, for all of them, that the await it leaves behind is
+// cancelled rather than left parked on a reply from a tab the next action is
+// about to drive.
 func TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation(t *testing.T) {
 	tests := []struct {
-		name      string
-		subscribe bool
-		event     *pageEvent
-		awaitFor  time.Duration
-		settleCap time.Duration
+		name string
+		// kinds is what the settle window's subscription asks for; nil subscribes
+		// to nothing, which is the no-event-stream fallback.
+		kinds []pageEventKind
+		event *pageEvent
+		// ignoresEvent requires the published event to leave the window open. The
+		// window then ends only once the test lets the in-page settle answer.
+		ignoresEvent  bool
+		closeTabEarly bool
+		awaitFor      time.Duration
+		settleCap     time.Duration
 	}{
 		{
 			name:      "the in-page settle resolving first wins",
-			subscribe: true,
+			kinds:     []pageEventKind{eventNavigated},
 			awaitFor:  10 * time.Millisecond,
 			settleCap: 5 * time.Second,
 		},
 		{
 			name:      "a navigation abandons an in-page settle that cannot answer",
-			subscribe: true,
+			kinds:     []pageEventKind{eventNavigated},
 			event:     &pageEvent{Kind: eventNavigated},
 			awaitFor:  time.Hour,
 			settleCap: 5 * time.Second,
 		},
 		{
-			name:      "an unrelated event does not end the settle window",
-			subscribe: true,
-			event:     &pageEvent{Kind: eventDialog},
-			awaitFor:  40 * time.Millisecond,
-			settleCap: 5 * time.Second,
+			// The queue carries every kind its subscription asked for, so the window
+			// has to decide on the kind and not on "something arrived".
+			name:         "an unrelated event does not end the settle window",
+			kinds:        everyKind,
+			event:        &pageEvent{Kind: eventDialog},
+			ignoresEvent: true,
+			awaitFor:     time.Hour,
+			settleCap:    5 * time.Second,
 		},
 		{
 			name:      "a renderer that never replies is bounded by the cap",
-			subscribe: true,
+			kinds:     []pageEventKind{eventNavigated},
 			awaitFor:  time.Hour,
 			settleCap: 50 * time.Millisecond,
+		},
+		{
+			name:          "the tab going away ends the window with it",
+			kinds:         []pageEventKind{eventNavigated},
+			closeTabEarly: true,
+			awaitFor:      time.Hour,
+			settleCap:     5 * time.Second,
 		},
 		{
 			name:      "no subscription still runs the in-page settle",
@@ -425,8 +446,8 @@ func TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation(t *testing.T) {
 			hub := &eventHub{}
 			attachScope(t, hub, "tab-1")
 			var sub <-chan pageEvent
-			if tt.subscribe {
-				stream, release := hub.subscribe([]pageEventKind{eventNavigated}, "tab-1")
+			if tt.kinds != nil {
+				stream, release := hub.subscribe(tt.kinds, "tab-1")
 				defer release()
 				sub = stream
 			}
@@ -436,14 +457,18 @@ func TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation(t *testing.T) {
 
 			started := make(chan struct{})
 			awaited := make(chan context.Context, 1)
+			liveAtStart := make(chan bool, 1)
+			answer := make(chan struct{})
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
 				awaitPrearmedSettle(tabCtx, sub, tt.settleCap, func(ctx context.Context) {
 					awaited <- ctx
+					liveAtStart <- ctx.Err() == nil
 					close(started)
 					select {
 					case <-ctx.Done():
+					case <-answer:
 					case <-time.After(tt.awaitFor):
 					}
 				})
@@ -452,6 +477,17 @@ func TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation(t *testing.T) {
 			if tt.event != nil {
 				hub.publish("tab-1", *tt.event)
 			}
+			if tt.ignoresEvent {
+				select {
+				case <-done:
+					t.Fatal("an event the settle window is not waiting for ended it")
+				case <-time.After(unwatchedEventSettleGrace):
+				}
+				close(answer)
+			}
+			if tt.closeTabEarly {
+				closeTab()
+			}
 
 			select {
 			case <-done:
@@ -459,18 +495,18 @@ func TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation(t *testing.T) {
 				t.Fatal("the settle window never ended")
 			}
 
-			// The abandoned evaluate is still a live CDP command on a live tab, and
-			// the caller is about to issue its post-action snapshot against that tab.
-			awaitCtx := <-awaited
-			if err := awaitCtx.Err(); err != nil {
-				t.Fatalf("the in-page settle was cancelled when the window ended: %v", err)
+			// A settle issued on a dead context returns at once having settled
+			// nothing, which would make the whole window a no-op.
+			if live := <-liveAtStart; !live {
+				t.Fatal("the in-page settle was issued on an already-cancelled context")
 			}
-			// It ends with the tab, so an abandoned wait cannot outlive it.
-			closeTab()
+			// However the window ended, the await must not be left waiting on a tab
+			// the caller is about to issue its post-action snapshot against.
+			awaitCtx := <-awaited
 			select {
 			case <-awaitCtx.Done():
 			case <-time.After(2 * time.Second):
-				t.Fatal("the abandoned in-page settle outlived the tab context it was issued on")
+				t.Fatal("the abandoned in-page settle outlived the settle window")
 			}
 		})
 	}

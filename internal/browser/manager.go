@@ -103,24 +103,23 @@ func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duratio
 // execution context holding the promise, so what is left to await is a reply
 // that will never come.
 //
-// The abandoned evaluate is left to finish, NOT cancelled. Cancelling it kills a
-// CDP command still in flight on a live tab at the moment the next action is
-// issued against that same tab, and that next action then misbehaves: with the
-// cancel in place, an inline upload followed by a form submit reproducibly lost
-// its file bytes (TestManagerInlineUploadSurvivesSubsequentFormSubmit). What
-// bounds the abandoned wait instead is the context it runs on — the tab's own,
-// so it ends when the tab does — plus the in-page promise, which caps itself and
-// drops its registry entry seconds later, so even a page that never settles
-// still replies.
+// The await gets its own cancellation and the window cancels it on the way out,
+// so nothing an action armed outlives that action: no goroutine parked on a
+// reply, no listener still registered for one. Cancelling ends the wait, not the
+// work — the evaluate was queued to the browser before the window closed, and
+// the in-page promise resolves and drops its own registry entry whether or not
+// anything is still listening — so a settle that is only slow is not aborted.
 func awaitPrearmedSettle(ctx context.Context, sub <-chan pageEvent, cap time.Duration, await func(context.Context)) {
+	awaitCtx, cancelAwait := context.WithCancel(ctx)
+	defer cancelAwait()
 	if sub == nil {
-		await(ctx)
+		await(awaitCtx)
 		return
 	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		await(ctx)
+		await(awaitCtx)
 	}()
 	// The in-page promise caps itself; this only bounds the wait on a renderer
 	// that never replies at all.
