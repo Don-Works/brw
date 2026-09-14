@@ -208,8 +208,18 @@ func TestPreArmedSettleCatchesSynchronousMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Reason != "quiesce" || result.SettledMS >= 100 || time.Since(started) >= 130*time.Millisecond {
+	// The bug under test is a MISSED mutation, which the script reports as
+	// reason "cap" (sawMutation false). Both "quiesce" and "quiesce_cap" mean
+	// the pre-armed observer saw it; they differ only in whether the 40ms quiet
+	// window closed before the 150ms cap, which is a property of how loaded the
+	// machine is, not of the observer. Asserting "quiesce" alone failed a CI run
+	// at SettledMS=151 against a 150ms cap — a green result reported as a
+	// regression. Assert the catch; bound the wait by the cap it was given.
+	if result.Reason != "quiesce" && result.Reason != "quiesce_cap" {
 		t.Fatalf("pre-armed settle missed synchronous mutation: result=%+v wall=%s", result, time.Since(started))
+	}
+	if result.SettledMS > 150+50 {
+		t.Fatalf("pre-armed settle overshot its 150ms cap: result=%+v wall=%s", result, time.Since(started))
 	}
 }
 
