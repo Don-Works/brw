@@ -622,21 +622,29 @@ browser attackers rather than assumed safe:
   cross-origin browser requests. CLI/MCP clients send no browser `Origin`, so
   they are unaffected.
 - **Extension bridge (`127.0.0.1:17311`)** authenticates the extension with a
-  per-launch token: the daemon mints it each start, persists it `0600` at
-  `~/.brw/bridge-token`, and serves it only over loopback to the extension (a web
-  page's cross-origin fetch gets an opaque response). The `0.2.0+` extension
-  presents it in its first frame. **The token is required.** A *wrong* token and a
-  *missing* token are both rejected: the `chrome-extension://` Origin that gets a
-  caller as far as the handshake is a header any local process can forge, so a
-  tokenless hello authenticates nothing. `BRW_BRIDGE_ALLOW_TOKENLESS=1` restores
-  the old permissive behaviour for a pre-`0.2.0` extension and logs a warning for
-  as long as it is set. Empty-Origin (non-browser) websocket clients are rejected
-  regardless.
+  per-launch token: the daemon mints it each start, keeps it in memory, and
+  serves it only over loopback to the extension (a web page's cross-origin fetch
+  gets an opaque response). The `0.2.0+` extension presents it in its first
+  frame. **The token is required.** A *wrong* token and a *missing* token are both
+  rejected: the `chrome-extension://` Origin that gets a caller as far as the
+  handshake is a header any local process can forge, so a tokenless hello
+  authenticates nothing. `BRW_BRIDGE_ALLOW_TOKENLESS=1` restores the old
+  permissive behaviour for a pre-`0.2.0` extension and logs a warning for as long
+  as it is set. Empty-Origin (non-browser) websocket clients are rejected
+  regardless. What excludes a web page and any *other* extension is that Origin
+  pin, which the browser sets and neither can change; the token's own job is
+  identity — it binds a connection to **this** daemon launch, so an extension
+  pointed at the wrong port is refused rather than silently driving another
+  profile's browser.
 
-  What this does *not* defend against: any process running as you can read the
-  token from the loopback `/status` endpoint or from `~/.brw/bridge-token`. The
-  bridge's boundary is the browser and the network, not other processes with your
-  uid.
+  What this does *not* defend against: anything that can send a loopback GET can
+  read the token off `/status`, exactly as the extension does — including any
+  process running as you. The bridge's boundary is the browser and the network,
+  not other processes with your uid; see
+  [docs/auth-model.md](docs/auth-model.md) for why moving it needs OS isolation
+  rather than a better protocol. The token is no longer written to
+  `~/.brw/bridge-token`; `BRW_BRIDGE_TOKEN_FILE=<path>` asks for that file back
+  and re-creates the copy at rest.
 - **Cookie/storage promise is enforced, not just asserted.** The extension
   refuses every cookie CDP method and the whole family of site-storage domains
   (`Storage`, `DOMStorage`, `IndexedDB`, `CacheStorage`, `Database`), so even a

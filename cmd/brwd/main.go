@@ -458,12 +458,8 @@ func main() {
 		}
 		bridge.SetAuthToken(token)
 		bridge.SetRequireToken(bridgeRequireToken())
-		if path := bridgeTokenPath(workspaceName); path != "" {
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				log.Printf("note: could not create bridge token dir %s: %v", filepath.Dir(path), err)
-			} else if err := os.WriteFile(path, []byte(token), 0o600); err != nil {
-				log.Printf("note: could not persist bridge token to %s: %v", path, err)
-			}
+		if err := persistBridgeToken(bridgeTokenFile(workspaceName), token); err != nil {
+			log.Printf("note: %v", err)
 		}
 		controller = bridge
 		defer gracefulShutdown("extension bridge", bridge.Shutdown)
@@ -1142,34 +1138,6 @@ func envDefault(name, fallback string) string {
 	return fallback
 }
 
-// bridgeTokenPath returns the 0600 file where the per-launch extension-bridge
-// handshake token is persisted (for operator inspection / future tooling), under
-// the brw state dir ~/.brw/. BRW_BRIDGE_TOKEN_FILE overrides it; an empty result
-// (no home dir resolvable) means "in-memory only". Workspace-bound daemons get a
-// per-workspace file (bridge-token-<workspace>) — multiple bridge daemons on one
-// machine previously clobbered a single shared file, last writer wins, so the
-// persisted token matched only one of the running daemons.
-func bridgeTokenPath(workspace string) string {
-	if override := strings.TrimSpace(os.Getenv("BRW_BRIDGE_TOKEN_FILE")); override != "" {
-		return override
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	name := "bridge-token"
-	if workspace != "" {
-		name += "-" + strings.Map(func(r rune) rune {
-			switch r {
-			case '/', '\\', ':':
-				return '-'
-			}
-			return r
-		}, workspace)
-	}
-	return filepath.Join(home, ".brw", name)
-}
-
 // watchParentExit polls the parent pid and calls stop when this process is
 // reparented (orphaned): the session that spawned us is gone, so a stdio MCP
 // child has nothing left to serve. Normally the parent's death also closes our
@@ -1213,8 +1181,6 @@ func envInt(name string, fallback int) int {
 	return fallback
 }
 
-// envBool reports whether an environment variable is set to a truthy value
-// (1/true/yes/on, case-insensitive). Unset or empty is false.
 // bridgeRequireToken reports whether the extension bridge must reject a hello
 // that carries no handshake token. It is on unless the operator opts out, which
 // only a pre-0.2.0 extension needs.
@@ -1222,6 +1188,8 @@ func bridgeRequireToken() bool {
 	return !envBool("BRW_BRIDGE_ALLOW_TOKENLESS")
 }
 
+// envBool reports whether an environment variable is set to a truthy value
+// (1/true/yes/on, case-insensitive). Unset or empty is false.
 func envBool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
 	case "1", "true", "yes", "on":

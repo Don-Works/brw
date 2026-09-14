@@ -65,6 +65,98 @@ extension with `--extension` does not change that on its own. File-chooser
 interception, the bridge's other exclusive, is plain CDP
 (`Page.setInterceptFileChooserDialog`) and works on this transport already.
 
+## The extension bridge boundary, and where it stops
+
+**Decision: the boundary is the browser and the network. A process running as
+your user is inside it, and `brw` does not claim otherwise.**
+
+### What actually excludes whom
+
+Two guards, and it is worth being exact about which one does the work.
+
+**The websocket Origin pin.** `/extension` accepts only a handshake whose
+`Origin` is `chrome-extension://<configured id>`. The browser sets that header
+and neither a page nor an extension can change it, so this is what excludes a
+**web page** (it cannot present any extension origin) and **another extension
+installed in the same browser** (it presents its own id). Pinned by
+`TestConfiguredExtensionOriginAcceptedAndOthersRejected`.
+
+**The per-launch token.** The daemon mints it each start, serves it on the
+loopback `/status` endpoint, and refuses any hello that does not present it.
+Against the two attackers above it adds nothing the Origin pin had not already
+stopped. What it does add is *identity*: a token binds a connection to **this**
+daemon launch, so an extension pointed at the wrong port is refused instead of
+silently driving somebody else's browser. That is why the refusal now carries the
+endpoint it tried, and why `brwctl doctor` can name it.
+
+`/status` serves the token to a request with a loopback Host whose `Origin` is
+absent or is exactly the configured extension's. That was a **prefix** match on
+`chrome-extension://` until this change; the exact comparison is hygiene — a
+prefix match on attacker-supplied input, removed — and not a new boundary, because
+no reachable caller was blocked by it. Measured on Chromium 152: an MV3 service
+worker fetching a loopback URL it holds `host_permissions` for sends **no `Origin`
+header at all** (`Sec-Fetch-Site: none`, no initiator origin). So the real
+extension sends none, any other extension with the same host permission also
+sends none — and one WITHOUT that permission is denied the body by CORS whatever
+this check says.
+
+### What it does not do
+
+Anything that can send a loopback GET can have the token: a process running as
+your user, and any other extension holding `http://127.0.0.1/*`. There is no
+request property that separates them from the extension, because every property
+of a request is chosen by whoever sends it. The guard would be something the
+attacker already controls.
+
+For another extension the token is inert — it still cannot open the websocket, and
+a token alone drives nothing. For a local process it is not: that process forges
+the Origin the browser would have set, presents the token, and takes the bridge.
+
+That is the argument, not severity. The comparable Claude-in-Chrome finding was
+closed by HackerOne as requiring local code execution, and this one has the same
+prerequisite. The reason to write it down anyway is that a guard an attacker
+supplies is not a boundary, and a product that describes one as a boundary is
+where the next person's threat model goes wrong.
+
+### Why the alternatives do not move it
+
+- **A unix socket with a peer-credential check.** Chrome extensions cannot open a
+  unix socket, so this needs a native-messaging host in front — which is where
+  Claude-in-Chrome's Windows named-pipe bug was. The host itself is a binary any
+  local process can execute directly, with the same argv Chrome passes it, so
+  `LOCAL_PEERCRED` on that channel identifies the attacker's own process. The
+  only credential that would actually separate them is the peer's **code
+  signature**, which is macOS-specific, needs cgo, and still admits an attacker
+  who launches their own Chrome with their own extension.
+- **Binding the token to the extension id plus a per-launch nonce.** The
+  extension has no private state to prove: its id is public, its directory is
+  readable by the same uid, and anything the daemon plants there is readable
+  before the extension ever reads it. Every secret in this scheme is stored on
+  the same disk, as the same user, as the attacker it is meant to exclude.
+
+Both of those describe the same wall. On a single-user desktop with no per-process
+isolation, there is no credential the extension can hold that a process running
+as that user cannot also hold. Moving this boundary requires OS-level isolation
+(an app sandbox, a keychain ACL bound to a code signature), not a better protocol.
+
+### What did change
+
+`/status` compares the `Origin` exactly instead of by prefix — hygiene, as above,
+with no path closed that was open.
+
+The token is no longer written to `~/.brw/bridge-token`. That file existed "for
+operator inspection"; nothing in the tree ever read it. What it did was keep a
+second copy of the secret at rest, outliving the daemon that minted it and
+readable even while `brwd` is not running — which `/status` is not. The daemon now
+deletes it on launch, so an upgrade cleans up after the versions that wrote it.
+`BRW_BRIDGE_TOKEN_FILE=<path>` asks for it back, and re-creates that exposure.
+
+### If you need the stronger boundary today
+
+Run the bridge daemon as a **separate uid** from the one your untrusted work runs
+as, or on a machine you do not run untrusted code on. Both put a real kernel
+boundary where this section says there is none.
+
 ## Non-Goals
 
 - No cookie extraction.

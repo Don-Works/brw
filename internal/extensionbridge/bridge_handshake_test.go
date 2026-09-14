@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
 // dialExtension opens a websocket to the bridge's /extension endpoint with the
@@ -257,8 +259,8 @@ func TestStatusTokenGating(t *testing.T) {
 	if got := statusToken("127.0.0.1:17311", ""); got != "s3cret-token" {
 		t.Errorf("extension (loopback, no origin) should receive the token, got %q", got)
 	}
-	if got := statusToken("localhost:17311", "chrome-extension://abc"); got != "s3cret-token" {
-		t.Errorf("extension origin over loopback should receive the token, got %q", got)
+	if got := statusToken("localhost:17311", "chrome-extension://"+profilepolicy.DefaultBridgeExtensionID); got != "s3cret-token" {
+		t.Errorf("the configured extension's origin over loopback should receive the token, got %q", got)
 	}
 	if got := statusToken("127.0.0.1:17311", "https://evil.com"); got != "" {
 		t.Errorf("web origin must NOT receive the token, got %q", got)

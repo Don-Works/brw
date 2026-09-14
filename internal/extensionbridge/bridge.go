@@ -134,6 +134,11 @@ type Bridge struct {
 	lastSeenAt       time.Time
 	disconnectedAt   time.Time
 	disconnectReason string
+	// lastHandshake is the endpoint config the most recent REFUSED handshake
+	// reported. A refused connection never becomes b.hello, so without this the
+	// only record of which status URL the extension tried is the extension's own
+	// storage — which nothing outside the browser can read. Guarded by mu.
+	lastHandshake handshakeReport
 
 	// cancels tracks in-flight long-running operations (plan / batch / wait
 	// loops) keyed by an operation token so Cancel can stop a specific run
@@ -344,6 +349,16 @@ type hello struct {
 	// "none" (0) from an older extension that omits the additive field. Both are
 	// accepted on the wire; omission fails closed by clearing cached ownership.
 	AgentTabID *int `json:"agent_tab_id,omitempty"`
+	// StatusURL and BridgeURL are the endpoints the extension is ACTUALLY using,
+	// and ConfigSource ("stored", "packaged" or "built-in") says which layer of
+	// its config supplied them. The extension's chrome.storage.local config
+	// silently overrides the packaged bridge-defaults.json, so nothing on disk
+	// tells `brwctl doctor` which endpoint is live; only the extension can say.
+	// Omitted by an extension older than 0.6.0, so an empty value means
+	// "unreported", never "none".
+	StatusURL    string `json:"status_url,omitempty"`
+	BridgeURL    string `json:"bridge_url,omitempty"`
+	ConfigSource string `json:"config_source,omitempty"`
 	// Token is the per-launch handshake secret. It is read off the hello for
 	// verification and then ZEROED before the hello is stored or echoed in
 	// /status, so the secret is never reflected back over an endpoint a web page
@@ -593,7 +608,12 @@ func (b *Bridge) Shutdown(ctx context.Context) error {
 // a bridge that is turning the extension away otherwise sees only "no extension
 // has connected" and reloads the same stale token. A live connection's reason is
 // left alone, because a rejected newcomer is not why that one ended.
-func (b *Bridge) recordHandshakeRejection(err error) {
+//
+// The rejected hello is recorded too (minus the token, which verifyHandshake has
+// already zeroed): the commonest reason a hello arrives without a token is that
+// the extension's status URL addresses a port nothing listens on, and that URL
+// is knowable only from the extension.
+func (b *Bridge) recordHandshakeRejection(h hello, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.conn != nil {
@@ -601,6 +621,13 @@ func (b *Bridge) recordHandshakeRejection(err error) {
 	}
 	b.disconnectReason = "handshake rejected: " + err.Error()
 	b.disconnectedAt = time.Now().UTC()
+	b.lastHandshake = handshakeReport{
+		StatusURL:    sanitizeHandshakeField(h.StatusURL),
+		BridgeURL:    sanitizeHandshakeField(h.BridgeURL),
+		ConfigSource: sanitizeHandshakeField(h.ConfigSource),
+		Reason:       err.Error(),
+		At:           formatStatusTime(b.disconnectedAt),
+	}
 }
 
 func (b *Bridge) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -615,6 +642,7 @@ func (b *Bridge) handleStatus(w http.ResponseWriter, r *http.Request) {
 	pending := len(b.pending)
 	identity := b.identity
 	token := b.authToken
+	lastHandshake := b.lastHandshake
 	b.mu.RUnlock()
 	status := map[string]any{
 		"connected":         connected,
@@ -637,25 +665,15 @@ func (b *Bridge) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if !identity.Empty() {
 		status["identity"] = identity
 	}
-	// Hand the handshake token to the extension over loopback only, and never
-	// to a browser web origin. The extension's same-origin GET carries no Origin
-	// header and reads the body (it has host_permissions); a malicious page's
-	// cross-origin fetch gets an opaque response AND is omitted here, and a
-	// DNS-rebinding page (no Origin, attacker Host) is excluded by the loopback
-	// Host check.
-	if token != "" && tokenServable(r) {
+	if !lastHandshake.Empty() {
+		status["last_handshake"] = lastHandshake
+	}
+	// See tokenServable (bridge_tokenissue.go) for exactly who this reaches and
+	// what it does not defend against.
+	if token != "" && b.tokenServable(r) {
 		status["token"] = token
 	}
 	writeJSON(w, http.StatusOK, status)
-}
-
-// tokenServable reports whether the handshake token may be included in a /status
-// response: only over a loopback Host and never to an http(s) browser Origin.
-func tokenServable(r *http.Request) bool {
-	if o := r.Header.Get("Origin"); o != "" && !strings.HasPrefix(o, "chrome-extension://") {
-		return false
-	}
-	return isLoopbackHostname(r.Host)
 }
 
 // isLoopbackHostname reports whether the Host header (with optional port) refers
@@ -733,7 +751,7 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		h, herr := b.verifyHandshake(r.Context(), conn)
 		if herr != nil {
 			log.Printf("extension bridge handshake rejected: %v", herr)
-			b.recordHandshakeRejection(herr)
+			b.recordHandshakeRejection(h, herr)
 			_ = conn.Close(websocket.StatusPolicyViolation, "handshake failed")
 			return
 		}
@@ -1423,6 +1441,10 @@ func (b *Bridge) keepAliveWithFailure(ctx context.Context, conn *websocket.Conn,
 // requireToken is set, which makes the token mandatory. Bounded by
 // handshakeTimeout so a silent client cannot hold the slot open. Only called
 // when b.authToken != "".
+//
+// A REFUSED hello is still returned alongside the error, with its token zeroed:
+// the caller records the endpoint config it reported, which is the only evidence
+// anywhere on the machine of which status URL the extension is really using.
 func (b *Bridge) verifyHandshake(ctx context.Context, conn *websocket.Conn) (hello, error) {
 	verifyCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
@@ -1434,28 +1456,32 @@ func (b *Bridge) verifyHandshake(ctx context.Context, conn *websocket.Conn) (hel
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return hello{}, fmt.Errorf("invalid hello frame: %w", err)
 	}
+	// Lift the secret out of the struct immediately: every path below returns
+	// resp.Hello, including the rejection paths whose value is recorded on
+	// /status, and a secret that is still in the struct is one refactor away from
+	// being echoed there.
+	presented := resp.Hello.Token
+	resp.Hello.Token = ""
 	if resp.Type != "hello" {
 		return hello{}, fmt.Errorf("expected hello as first frame, got %q", resp.Type)
 	}
 	switch {
-	case resp.Hello.Token == "":
+	case presented == "":
 		// No token. The Origin check above rejects browser web pages, but a local
 		// process running as this user can forge an Origin header, so without a
 		// token the bridge authenticates nothing: any such process can displace the
 		// real extension and drive the signed-in browser. Refuse by default.
 		if b.requireToken {
-			return hello{}, errors.New("missing handshake token: the extension must present the per-launch token from /status (set BRW_BRIDGE_ALLOW_TOKENLESS=1 only for a pre-0.2.0 extension)")
+			return resp.Hello, errors.New("missing handshake token: the extension must present the per-launch token from /status (set BRW_BRIDGE_ALLOW_TOKENLESS=1 only for a pre-0.2.0 extension)")
 		}
 		b.compatWarnOnce.Do(func() {
 			log.Printf("WARNING: extension connected without a handshake token and BRW_BRIDGE_ALLOW_TOKENLESS is set — the bridge is authenticating nothing and any local process can drive this browser. Reload the brw extension and unset the variable.")
 		})
-	case subtle.ConstantTimeCompare([]byte(resp.Hello.Token), []byte(b.authToken)) != 1:
+	case subtle.ConstantTimeCompare([]byte(presented), []byte(b.authToken)) != 1:
 		// A token was presented but does not match — tampering or a stale token.
-		return hello{}, errors.New("invalid handshake token")
+		return resp.Hello, errors.New("invalid handshake token")
 	}
-	h := resp.Hello
-	h.Token = "" // never store or echo the secret
-	return h, nil
+	return resp.Hello, nil
 }
 
 func (b *Bridge) readLoop(ctx context.Context, conn *websocket.Conn) error {
