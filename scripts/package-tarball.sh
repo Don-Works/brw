@@ -61,9 +61,9 @@ mkdir -p "$stage_dir/bin" "$stage_dir/doc" "$out_abs"
 cd "$repo_root"
 export COPYFILE_DISABLE=1
 
-for cmd in brwd brwctl brwcheck brw-devtools-mcp; do
+for cmd in brw brwd brwctl brwcheck brw-devtools-mcp; do
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-    go build -trimpath -ldflags="-s -w -X github.com/Don-Works/brw/internal/mcp.Version=$version" -o "$stage_dir/bin/$cmd" "./cmd/$cmd"
+    go build -trimpath -ldflags="-s -w -X github.com/Don-Works/brw/internal/mcp.Version=$version -X github.com/Don-Works/brw/internal/cli.Version=$version" -o "$stage_dir/bin/$cmd" "./cmd/$cmd"
   chmod 0755 "$stage_dir/bin/$cmd"
 done
 
@@ -84,7 +84,7 @@ if [ "$os" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
       sign_flags="$sign_flags --keychain ${MACOS_KEYCHAIN}"
     fi
   fi
-  for cmd in brwd brwctl brwcheck brw-devtools-mcp; do
+  for cmd in brw brwd brwctl brwcheck brw-devtools-mcp; do
     # shellcheck disable=SC2086 # sign_flags is a deliberate word list
     codesign --force --sign "$sign_identity" $sign_flags "$stage_dir/bin/$cmd" >/dev/null
   done

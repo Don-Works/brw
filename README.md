@@ -19,6 +19,7 @@ for normal web work.
 - Controls any headed Chromium browser through CDP.
 - Exposes stdio MCP tools for agent harnesses.
 - Exposes an HTTP JSON API for custom clients.
+- Drives that same API from a shell with `brw <verb>`, refs and all.
 - Returns semantic snapshots from DOM plus accessibility data.
 - Reads page prose, links, headings, forms, tables, and structured product data.
 - Clicks, types, fills, selects, scrolls, drags, uploads, waits, and asserts by ref.
@@ -158,6 +159,39 @@ curl -s 127.0.0.1:17310/api/browser/open \
   -d '{"url":"https://example.com"}'
 
 curl -s 127.0.0.1:17310/api/page/snapshot | jq
+```
+
+## CLI
+
+`brw` drives a running `brwd` from a shell: one process per action, over the
+same HTTP API. Refs print as `@e17`, so a line of output pastes straight into
+the next command.
+
+```sh
+brw open https://example.com
+brw find "sign in"                 # @e17  button  Sign in
+brw click @e17
+brw fill @e18 someone@example.test
+brw press Enter
+brw read                           # the page as text
+brw snapshot --limit 20            # refs for the whole page
+brw screenshot --out shot.png
+brw tabs
+brw artifact read art_01H...
+```
+
+`--json` prints the daemon's response envelope verbatim, for piping into `jq`.
+The daemon comes from the profile policy, the same discovery `brwctl daemons`
+reports; `--daemon <url>` or `BRW_URL` overrides it and `--profile <name>` picks
+between several. Exit codes are `0` success, `1` the action failed, `2` usage,
+`3` no daemon reachable — so a script can tell "start brwd" apart from "the page
+said no".
+
+Shell completion:
+
+```sh
+brw completion zsh > "${fpath[1]}/_brw"
+brw completion bash > /etc/bash_completion.d/brw
 ```
 
 ## SSH Runtime

@@ -53,9 +53,9 @@ mkdir -p "$root_dir/usr/bin" "$root_dir/usr/share/brw/doc" "$out_abs"
 cd "$repo_root"
 export COPYFILE_DISABLE=1
 
-for cmd in brwd brwctl brwcheck brw-devtools-mcp; do
+for cmd in brw brwd brwctl brwcheck brw-devtools-mcp; do
   CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" \
-    go build -trimpath -ldflags="-s -w -X github.com/Don-Works/brw/internal/mcp.Version=$version" -o "$root_dir/usr/bin/$cmd" "./cmd/$cmd"
+    go build -trimpath -ldflags="-s -w -X github.com/Don-Works/brw/internal/mcp.Version=$version -X github.com/Don-Works/brw/internal/cli.Version=$version" -o "$root_dir/usr/bin/$cmd" "./cmd/$cmd"
 done
 
 cp -R "$repo_root/extension" "$root_dir/usr/share/brw/extension"

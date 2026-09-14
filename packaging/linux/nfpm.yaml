@@ -11,6 +11,10 @@ vendor: Don Works
 homepage: https://brw.donworks.co.uk/
 license: AGPL-3.0
 contents:
+  - src: "@BRW_PACKAGE_ROOT@/usr/bin/brw"
+    dst: /usr/bin/brw
+    file_info:
+      mode: 0755
   - src: "@BRW_PACKAGE_ROOT@/usr/bin/brwd"
     dst: /usr/bin/brwd
     file_info:

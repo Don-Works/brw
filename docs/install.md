@@ -290,7 +290,7 @@ Linux:
 
 ```text
 ~/.local/share/brw/{bin,extension,skills,tests}
-~/.local/bin/{brwd,brwctl,brwcheck,brw-devtools-mcp}   # symlinks
+~/.local/bin/{brw,brwd,brwctl,brwcheck,brw-devtools-mcp}   # symlinks
 ```
 
 If `~/.local/bin` is not on your PATH, the installer prints the line to add.
@@ -306,7 +306,7 @@ task test
 task build
 ```
 
-Built binaries: `bin/brwd`, `bin/brwctl`, `bin/brwcheck`,
+Built binaries: `bin/brw`, `bin/brwd`, `bin/brwctl`, `bin/brwcheck`,
 `bin/brw-devtools-mcp`. `task install` puts them in the user-local layout above.
 `task package-tarballs` builds the archives the one-line installer consumes.
 

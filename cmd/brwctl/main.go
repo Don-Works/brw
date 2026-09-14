@@ -20,9 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/cdp"
-	"github.com/Don-Works/brw/internal/httpclient"
+	"github.com/Don-Works/brw/internal/discovery"
 	"github.com/Don-Works/brw/internal/mcp"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/recipe"
@@ -308,28 +307,10 @@ func installPrivateRecipe(root string, value recipe.Recipe) (recipeCommandResult
 	return recipeCommandResult{OK: true, Action: "installed", ID: value.ID, Version: value.Version, Digest: digest}, nil
 }
 
-// daemonRecord is one configured browser-profile bridge daemon, as emitted by
-// `brwctl daemons`. It is the discovery contract a gateway (e.g. mcplexer)
-// consumes to register one namespace per brw profile-daemon. http_addr/ws_addr
-// are the daemon's loopback control + extension-bridge addresses; identity is the
-// live /health identity when the daemon is reachable.
-type daemonRecord struct {
-	Name        string                `json:"name"`
-	Kind        string                `json:"kind,omitempty"`
-	Workspace   string                `json:"workspace,omitempty"`
-	Profile     string                `json:"profile"`
-	HTTPAddr    string                `json:"http_addr"`
-	WSAddr      string                `json:"ws_addr"`
-	ExtensionID string                `json:"extension_id,omitempty"`
-	Reachable   bool                  `json:"reachable"`
-	Identity    *brwidentity.Identity `json:"identity,omitempty"`
-	Error       string                `json:"error,omitempty"`
-}
-
 // daemons enumerates every extension-bridge profile in the profile policy and
-// probes each profile's daemon /health, emitting a JSON array of daemonRecord.
-// It iterates policy.Profiles directly (not ResolveProfile) because the point is
-// to list ALL configured daemons, not resolve one for a workspace.
+// probes each profile's daemon /health, emitting a JSON array of
+// discovery.Record. The discovery package is shared with the brw CLI so both
+// resolve a daemon the same way.
 func daemons(args []string) error {
 	fs := flag.NewFlagSet("daemons", flag.ContinueOnError)
 	var policyPath string
@@ -340,17 +321,9 @@ func daemons(args []string) error {
 		return err
 	}
 
-	policy, err := profilepolicy.Load(policyPath)
+	records, err := discovery.List(policyPath, timeout)
 	if err != nil {
 		return err
-	}
-
-	records := make([]daemonRecord, 0, len(policy.Profiles))
-	for _, profile := range policy.Profiles {
-		if !profile.ExtensionBridgeAllowed {
-			continue
-		}
-		records = append(records, probeDaemon(profile, timeout))
 	}
 
 	writeJSON(os.Stdout, records)
@@ -807,30 +780,12 @@ func runtimeArgs(mode string, profile profilepolicy.Profile) []string {
 	args := []string{"--mcp", "--http", "off"}
 	if mode == "bridge" {
 		args = append([]string{"--bridge"}, args...)
-		args = append(args, "--bridge-addr", defaultBridgeWSAddr(profile))
+		args = append(args, "--bridge-addr", discovery.WSAddr(profile))
 	}
 	if mode == "upstream-http" {
-		args = append(args, "--upstream-http", defaultBridgeHTTPURL(profile))
+		args = append(args, "--upstream-http", discovery.HTTPURL(profile))
 	}
 	return args
-}
-
-func defaultBridgeWSAddr(profile profilepolicy.Profile) string {
-	if strings.TrimSpace(profile.BridgeWSAddr) != "" {
-		return strings.TrimSpace(profile.BridgeWSAddr)
-	}
-	return "127.0.0.1:17311"
-}
-
-func defaultBridgeHTTPURL(profile profilepolicy.Profile) string {
-	addr := strings.TrimSpace(profile.BridgeHTTPAddr)
-	if addr == "" {
-		addr = "127.0.0.1:17310"
-	}
-	if strings.Contains(addr, "://") {
-		return addr
-	}
-	return "http://" + addr
 }
 
 func runtimeEnv(workspace, profile, policyPath string) map[string]string {

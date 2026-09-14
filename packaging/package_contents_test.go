@@ -43,6 +43,40 @@ func TestInstallersBundlePublicAgentSkill(t *testing.T) {
 	}
 }
 
+// A binary that ships from one installer and not the others is the failure
+// this guards: brw is a separate command from brwd/brwctl, so every packaging
+// target has to name it explicitly.
+func TestInstallersShipTheBrwCLI(t *testing.T) {
+	t.Parallel()
+
+	requireFileContains(t, "linux/nfpm.yaml",
+		`src: "@BRW_PACKAGE_ROOT@/usr/bin/brw"`,
+		"dst: /usr/bin/brw",
+	)
+	requireFileContains(t, "../scripts/package-linux.sh",
+		"for cmd in brw brwd brwctl brwcheck brw-devtools-mcp; do",
+	)
+	requireFileContains(t, "../scripts/package-macos.sh",
+		"binaries=(brw brwd brwctl brwcheck brw-devtools-mcp)",
+	)
+	requireFileContains(t, "../scripts/package-windows.ps1",
+		`foreach ($CommandName in @("brw", "brwd", "brwctl", "brwcheck", "brw-devtools-mcp")) {`,
+	)
+	requireFileContains(t, "../scripts/package-tarball.sh",
+		"for cmd in brw brwd brwctl brwcheck brw-devtools-mcp; do",
+	)
+	// The one-line installer links what it lists; a binary missing from
+	// COMMANDS is unpacked but never reaches PATH.
+	requireFileContains(t, "../scripts/install.sh",
+		`COMMANDS="brw brwd brwctl brwcheck brw-devtools-mcp"`,
+	)
+	requireFileContains(t, "../Taskfile.yml",
+		`- go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw ./cmd/brw`,
+		`- cp bin/brw "{{.DATADIR}}/bin/brw"`,
+		`- cp bin/brw "{{.MAC_APPDIR}}/bin/brw"`,
+	)
+}
+
 func requireFileContains(t *testing.T, path string, fragments ...string) {
 	t.Helper()
 	data, err := os.ReadFile(path)

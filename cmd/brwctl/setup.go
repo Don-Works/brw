@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Don-Works/brw/internal/discovery"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/setup"
 )
@@ -578,7 +579,7 @@ func (r *setupRunner) serviceParams() setup.ServiceParams {
 		Home:       r.opts.home,
 	}
 	if r.profile.ExtensionBridgeAllowed {
-		params.BridgeAddr = defaultBridgeWSAddr(r.profile)
+		params.BridgeAddr = discovery.WSAddr(r.profile)
 	}
 	return params
 }

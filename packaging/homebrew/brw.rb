@@ -60,5 +60,6 @@ class Brw < Formula
 
   test do
     assert_match "brwctl", shell_output("#{bin}/brwctl 2>&1", 2)
+    assert_match "brw <verb>", shell_output("#{bin}/brw 2>&1", 2)
   end
 end

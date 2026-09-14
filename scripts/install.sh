@@ -23,7 +23,7 @@ set -eu
 #                         SHA256 check still runs
 
 REPO="Don-Works/brw"
-COMMANDS="brwd brwctl brwcheck brw-devtools-mcp"
+COMMANDS="brw brwd brwctl brwcheck brw-devtools-mcp"
 # Everything the archive owns. The install replaces exactly these names and
 # nothing else, so a re-run cannot reach config/ or a per-profile extension copy.
 PAYLOAD="bin extension tests skills doc"

@@ -111,13 +111,13 @@ mkdir -p "$root_dir/usr/local/bin" "$root_dir/usr/local/share/brw/doc" "$out_abs
 cd "$repo_root"
 export COPYFILE_DISABLE=1
 
-binaries=(brwd brwctl brwcheck brw-devtools-mcp)
+binaries=(brw brwd brwctl brwcheck brw-devtools-mcp)
 
 for cmd in "${binaries[@]}"; do
   for arch in amd64 arm64; do
     mkdir -p "$work_dir/build/$arch"
     CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
-      go build -trimpath -ldflags="-s -w -X github.com/Don-Works/brw/internal/mcp.Version=$version" -o "$work_dir/build/$arch/$cmd" "./cmd/$cmd"
+      go build -trimpath -ldflags="-s -w -X github.com/Don-Works/brw/internal/mcp.Version=$version -X github.com/Don-Works/brw/internal/cli.Version=$version" -o "$work_dir/build/$arch/$cmd" "./cmd/$cmd"
   done
   lipo -create \
     "$work_dir/build/amd64/$cmd" \

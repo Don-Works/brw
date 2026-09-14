@@ -28,7 +28,7 @@ vars:
 
   # Inject the resolved version into the MCP serverInfo.version so the version an
   # agent sees over MCP always matches the binary, instead of a hand-edited constant.
-  GO_LDFLAGS: -X github.com/Don-Works/brw/internal/mcp.Version={{.VERSION}}
+  GO_LDFLAGS: -X github.com/Don-Works/brw/internal/mcp.Version={{.VERSION}} -X github.com/Don-Works/brw/internal/cli.Version={{.VERSION}}
 
   HOMEBREW_TAP: Don-Works/homebrew-tap
 
@@ -43,8 +43,9 @@ tasks:
     silent: true
 
   build:
-    desc: Build brwd, brwcheck, brwctl and brw-devtools-mcp into bin/
+    desc: Build brw, brwd, brwcheck, brwctl and brw-devtools-mcp into bin/
     cmds:
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw ./cmd/brw
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwd ./cmd/brwd
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwcheck ./cmd/brwcheck
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwctl ./cmd/brwctl
@@ -125,6 +126,7 @@ tasks:
     cmds:
       - task: build
       - mkdir -p "{{.BINDIR}}" "{{.DATADIR}}/bin" "{{.DATADIR}}/extension" "{{.DATADIR}}/tests" "{{.DATADIR}}/skills/brw"
+      - cp bin/brw "{{.DATADIR}}/bin/brw"
       - cp bin/brwd "{{.DATADIR}}/bin/brwd"
       - cp bin/brwcheck "{{.DATADIR}}/bin/brwcheck"
       - cp bin/brwctl "{{.DATADIR}}/bin/brwctl"
@@ -137,8 +139,9 @@ tasks:
       # signature and the OS then SIGKILLs it ("Killed: 9"); re-sign the copies.
       - |
         if [ "$(uname)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
-          codesign --force --sign - "{{.DATADIR}}/bin/brwd" "{{.DATADIR}}/bin/brwcheck" "{{.DATADIR}}/bin/brwctl" "{{.DATADIR}}/bin/brw-devtools-mcp"
+          codesign --force --sign - "{{.DATADIR}}/bin/brw" "{{.DATADIR}}/bin/brwd" "{{.DATADIR}}/bin/brwcheck" "{{.DATADIR}}/bin/brwctl" "{{.DATADIR}}/bin/brw-devtools-mcp"
         fi
+      - ln -sf "{{.DATADIR}}/bin/brw" "{{.BINDIR}}/brw"
       - ln -sf "{{.DATADIR}}/bin/brwd" "{{.BINDIR}}/brwd"
       - ln -sf "{{.DATADIR}}/bin/brwcheck" "{{.BINDIR}}/brwcheck"
       - ln -sf "{{.DATADIR}}/bin/brwctl" "{{.BINDIR}}/brwctl"
@@ -149,6 +152,7 @@ tasks:
     cmds:
       - task: build
       - mkdir -p "{{.MAC_APPDIR}}/bin" "{{.MAC_APPDIR}}/extension" "{{.MAC_APPDIR}}/tests" "{{.MAC_APPDIR}}/skills/brw" "{{.MAC_APPDIR}}/config"
+      - cp bin/brw "{{.MAC_APPDIR}}/bin/brw"
       - cp bin/brwd "{{.MAC_APPDIR}}/bin/brwd"
       - cp bin/brwcheck "{{.MAC_APPDIR}}/bin/brwcheck"
       - cp bin/brwctl "{{.MAC_APPDIR}}/bin/brwctl"
@@ -165,7 +169,7 @@ tasks:
       # and the OS SIGKILLs it on launch ("Killed: 9").
       - |
         if command -v codesign >/dev/null 2>&1; then
-          codesign --force --sign - "{{.MAC_APPDIR}}/bin/brwd" "{{.MAC_APPDIR}}/bin/brwcheck" "{{.MAC_APPDIR}}/bin/brwctl" "{{.MAC_APPDIR}}/bin/brw-devtools-mcp"
+          codesign --force --sign - "{{.MAC_APPDIR}}/bin/brw" "{{.MAC_APPDIR}}/bin/brwd" "{{.MAC_APPDIR}}/bin/brwcheck" "{{.MAC_APPDIR}}/bin/brwctl" "{{.MAC_APPDIR}}/bin/brw-devtools-mcp"
         fi
 
   # Keep every existing unpacked extension payload current. rsync's exclusion
@@ -234,6 +238,7 @@ tasks:
       GOOS: darwin
       GOARCH: arm64
     cmds:
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw-darwin-arm64 ./cmd/brw
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwd-darwin-arm64 ./cmd/brwd
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwcheck-darwin-arm64 ./cmd/brwcheck
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwctl-darwin-arm64 ./cmd/brwctl
