@@ -10,9 +10,13 @@ package credential
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -215,11 +219,49 @@ func Scrub(err error, secret Secret) error {
 	return scrubbedError{message: message}
 }
 
+// ScrubString removes the value from message in every form a transport is
+// likely to have written it in.
+//
+// A raw substring replace is not enough. The browser transports quote the text
+// they failed to type: internal/snapshot marshals it into a JSON expression,
+// and %q-formatted Go errors quote it too. A value containing a quote, a
+// backslash or a character a URL escapes appears in those forms in an encoded
+// shape that shares no substring with the raw one, and the raw replace walks
+// straight past it.
+//
+// This is a net, not a proof. An encoding nothing here anticipates still gets
+// through, which is why the value is also never given to anything that keeps it
+// — scrubbing is the last line, not the boundary.
 func ScrubString(message string, secret Secret) string {
 	if secret.Empty() {
 		return message
 	}
-	return strings.ReplaceAll(message, secret.Reveal(), Placeholder)
+	for _, form := range encodedForms(secret.Reveal()) {
+		message = strings.ReplaceAll(message, form, Placeholder)
+	}
+	return message
+}
+
+// encodedForms returns the distinct renderings of value, longest first so a
+// form that contains a shorter one is replaced before the placeholder breaks it
+// up.
+func encodedForms(value string) []string {
+	quoted := strconv.Quote(value)
+	candidates := []string{value, quoted[1 : len(quoted)-1], url.QueryEscape(value), url.PathEscape(value)}
+	if encoded, err := json.Marshal(value); err == nil && len(encoded) >= 2 {
+		candidates = append(candidates, string(encoded[1:len(encoded)-1]))
+	}
+	forms := make([]string, 0, len(candidates))
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		forms = append(forms, candidate)
+	}
+	sort.SliceStable(forms, func(i, j int) bool { return len(forms[i]) > len(forms[j]) })
+	return forms
 }
 
 type scrubbedError struct {

@@ -1,6 +1,8 @@
 package browser
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sort"
 	"strconv"
 	"strings"
@@ -11,9 +13,14 @@ import (
 const noSemanticStateChangeWarning = "action dispatched but no observable semantic state change"
 
 type SemanticState struct {
-	URL       string
-	Title     string
-	Focus     string
+	URL   string
+	Title string
+	Focus string
+	// Signature is a digest of every element's semantic fields, never those
+	// fields themselves. Equality is its only use, and Manager.storeState keeps
+	// the post-action state of every tab until that tab navigates: holding the
+	// raw values would park whatever was typed into a form — a credential a
+	// recipe resolved among them — in the daemon's heap for the life of the tab.
 	Signature string
 }
 
@@ -67,11 +74,12 @@ func NewSemanticState(snap snapshot.PageSnapshot) SemanticState {
 		}, "\x1f"))
 	}
 	sort.Strings(parts)
+	digest := sha256.Sum256([]byte(strings.Join(parts, "\x1e")))
 	return SemanticState{
 		URL:       snap.URL,
 		Title:     snap.Title,
 		Focus:     focus,
-		Signature: strings.Join(parts, "\x1e"),
+		Signature: hex.EncodeToString(digest[:]),
 	}
 }
 

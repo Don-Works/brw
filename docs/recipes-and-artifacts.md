@@ -165,8 +165,14 @@ target; persisted observation refs are rejected everywhere in the recipe ABI.
 Runtime inputs are declared by name and expanded only while running. Literal
 credentials, undeclared templates, raw refs, wildcard origins, unbounded waits,
 unbounded video, unknown fields, and oversized recipes are rejected. Inputs are
-not returned in run results or usage logs. Resolve secret references in the
-calling private system; never paste a secret into a recipe file.
+not returned in run results or usage logs.
+
+A credential is not an input. A recipe names it as `secret://<name>`, which is
+legal only as the *entire* value of that recipe's own `fill` or `type` step; the
+caller neither supplies the value nor receives it, and an input that expands to
+something shaped like a reference is typed literally. The value is resolved at
+the step by an operator-installed plugin holding `credential.read`, so a recipe
+file never contains one. See [plugins and capabilities](plugins.md).
 
 ## Timers, page events, cron, and webhooks
 

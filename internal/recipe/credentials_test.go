@@ -370,6 +370,26 @@ func TestRunWithNoProviderFailsBeforeTouchingTheBrowser(t *testing.T) {
 	}
 }
 
+// issuingResolver hands the run the registry's own answer and keeps the Secret
+// it issued.
+//
+// Copies of a Secret share one backing array by design, so this copy is the
+// daemon-side view of the value after the step. Without it the walk below is
+// insensitive to the wipe it is named for: the resolved Secret is a local in
+// actuateFromCredential and is unreachable from the objects the walker is
+// handed, so the walk would only catch a credential someone cached in the
+// registry, the service, the runner, the result, the recipe or the trace.
+type issuingResolver struct {
+	inner  credential.Resolver
+	issued credential.Secret
+}
+
+func (r *issuingResolver) Resolve(ctx context.Context, reference string) (credential.Secret, error) {
+	secret, err := r.inner.Resolve(ctx, reference)
+	r.issued = secret
+	return secret, err
+}
+
 // Acceptance criterion 4: after the fill returns, nothing the daemon retains
 // holds the value. The walk reads unexported fields on purpose — the claim is
 // about the daemon's heap, not about what it chooses to marshal.
@@ -377,8 +397,9 @@ func TestDaemonRetainsNoCredentialAfterTheFillReturns(t *testing.T) {
 	typed := &typedRecorder{}
 	surface := newCredentialSurface(typed.record)
 	registry := credentialRegistry(t)
+	resolver := &issuingResolver{inner: registry}
 	recipe := loginRecipe(credential.Scheme + fixtureReference)
-	runner := Runner{Surface: surface, Credentials: registry}
+	runner := Runner{Surface: surface, Credentials: resolver}
 	service, err := NewService(stubProvider{recipe: recipe}, runner)
 	if err != nil {
 		t.Fatal(err)
@@ -401,13 +422,20 @@ func TestDaemonRetainsNoCredentialAfterTheFillReturns(t *testing.T) {
 	// Everything brwd still owns once the run has returned.
 	retained := struct {
 		Registry *plugin.Registry
+		Resolver *issuingResolver
 		Service  *Service
 		Runner   Runner
 		Result   RunResult
 		Recipe   Recipe
 		Trace    []browser.TraceEntry
-	}{registry, service, runner, result, recipe, surface.trace}
+	}{registry, resolver, service, runner, result, recipe, surface.trace}
 
+	// The issued Secret must still be a full-length buffer, or the walk over it
+	// is vacuous: an empty slice cannot hold a credential whether or not the
+	// runner wiped one.
+	if got := len(resolver.issued.Reveal()); got != len(fixtureCredentialValue) {
+		t.Fatalf("the resolver issued %d bytes, want %d; the walk cannot see the wipe", got, len(fixtureCredentialValue))
+	}
 	if hits := findRetained(reflect.ValueOf(retained), fixtureCredentialValue); len(hits) > 0 {
 		t.Fatalf("the daemon still holds the credential at %v", hits)
 	}

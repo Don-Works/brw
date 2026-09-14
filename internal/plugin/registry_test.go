@@ -292,11 +292,15 @@ func TestExecProviderFailsClosedOnEveryProviderFailure(t *testing.T) {
 		program   string
 		arguments []string
 		timeoutMS int
+		atLoad    bool
 		wantErr   string
 	}{
+		// A program that is not there is a startup failure now that the loader
+		// pins the binary: a daemon that boots with a provider it can never run
+		// discovers that at the password field.
 		"program missing": {
 			program: filepath.Join(t.TempDir(), "no-such-vault-cli"), arguments: []string{ReferenceToken},
-			wantErr: "could not be run",
+			atLoad: true, wantErr: "resolve credential command program",
 		},
 		"non-zero exit":  {program: "false", arguments: []string{ReferenceToken}, wantErr: "exited with status"},
 		"prints nothing": {program: "true", arguments: []string{ReferenceToken}, wantErr: "empty value"},
@@ -322,6 +326,15 @@ func TestExecProviderFailsClosedOnEveryProviderFailure(t *testing.T) {
 			manifest["credential"] = spec
 			writeManifest(t, root, "exec.json", manifest)
 			registry, err := Load(root)
+			if test.atLoad {
+				if err == nil {
+					t.Fatalf("%s loaded", name)
+				}
+				if !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("%s load error = %q, want one containing %q", name, err, test.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -334,6 +347,113 @@ func TestExecProviderFailsClosedOnEveryProviderFailure(t *testing.T) {
 				t.Fatalf("%s error = %q, want one containing %q", name, err, test.wantErr)
 			}
 		})
+	}
+}
+
+// The manifest an operator reviewed has to determine which binary runs. A bare
+// name is resolved from the daemon's PATH at every call, and a group-writable
+// program is chosen by whoever can write it, not by the manifest.
+func TestLoadPinsTheBinaryAnExecProviderRuns(t *testing.T) {
+	// Chmod after the write, not a mode argument: the process umask clears the
+	// group and other bits this table is about.
+	writeProgram := func(t *testing.T, dir, name string, mode os.FileMode) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	makeDir := func(t *testing.T, path string, mode os.FileMode) {
+		t.Helper()
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, test := range map[string]struct {
+		program func(t *testing.T) string
+		wantErr string
+	}{
+		"bare name off the daemon PATH": {
+			program: func(*testing.T) string { return "vaultcli" },
+			wantErr: "must be an absolute path",
+		},
+		"absolute but unclean": {
+			program: func(t *testing.T) string {
+				dir := t.TempDir()
+				writeProgram(t, dir, "vaultcli", 0o700)
+				// Not filepath.Join, which would clean the path back out.
+				return dir + "/sub/../vaultcli"
+			},
+			wantErr: "must already be a clean path",
+		},
+		"group-writable program": {
+			program: func(t *testing.T) string { return writeProgram(t, t.TempDir(), "vaultcli", 0o720) },
+			wantErr: "writable by group or other",
+		},
+		"program in a world-writable directory": {
+			program: func(t *testing.T) string {
+				parent := filepath.Join(t.TempDir(), "bin")
+				makeDir(t, parent, 0o777)
+				return writeProgram(t, parent, "vaultcli", 0o700)
+			},
+			wantErr: "is writable by group or other",
+		},
+		"program is a directory": {
+			program: func(t *testing.T) string { return t.TempDir() },
+			wantErr: "not a regular file",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			manifest := fileManifest("")
+			manifest["credential"] = map[string]any{
+				"kind":    CredentialKindExec,
+				"command": []string{test.program(t), ReferenceToken},
+			}
+			writeManifest(t, root, "exec.json", manifest)
+			if _, err := Load(root); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Load error = %v, want one containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+// docs/plugins.md states the trust boundary as the filesystem permission on the
+// plugin directory. A 0700 directory inside a world-writable parent is not
+// protected by its own mode: the parent's writers rename it away and put their
+// own directory, with their own manifests, in its place.
+func TestLoadRefusesAPluginDirectoryInsideAWritableParent(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "outer")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(parent, "plugins")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Chmod after Mkdir: the process umask clears the bits under test.
+	if err := os.Chmod(parent, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	writeManifest(t, root, "a.json", fileManifest(t.TempDir()))
+	_, err := Load(root)
+	if err == nil || !strings.Contains(err.Error(), "ancestor") {
+		t.Fatalf("Load error = %v, want a refusal naming the writable ancestor", err)
+	}
+	// The sticky bit is what makes a shared temporary directory safe as a
+	// parent, and it is the reason the walk cannot simply refuse mode 0777.
+	if err := os.Chmod(parent, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(root); err != nil {
+		t.Fatalf("Load under a sticky world-writable parent = %v, want it accepted", err)
 	}
 }
 

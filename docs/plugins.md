@@ -30,7 +30,7 @@ rather than a silently ignored setting.
   "capabilities": ["credential.read"],
   "credential": {
     "kind": "exec",
-    "command": ["op", "read", "op://{reference}"],
+    "command": ["/usr/local/bin/op", "read", "op://{reference}"],
     "timeout_ms": 10000
   }
 }
@@ -47,18 +47,20 @@ rather than a silently ignored setting.
 
 The `credential` block has two kinds.
 
-`exec` runs a fixed argv. Exactly one argument must contain the token
-`{reference}`, which is replaced by the requested reference name. There is no
-shell: the argv is passed to `execve` as written, so a reference cannot inject a
-second command, a pipe, or a redirect. Zero occurrences of the token is a load
-error, because a provider that ignores the reference would answer every request
-with the same secret.
+`exec` runs a fixed argv. `command[0]` must be an absolute, already-clean path:
+a bare `op` is whatever `PATH` resolves at the moment of the call, and the point
+of the manifest is that an operator decided what runs. Exactly one argument must
+contain the token `{reference}`, which is replaced by the requested reference
+name. There is no shell: the argv is passed to `execve` as written, so a
+reference cannot inject a second command, a pipe, or a redirect. Zero
+occurrences of the token is a load error, because a provider that ignores the
+reference would answer every request with the same secret.
 
 `file` reads `<directory>/<reference>`. It is the reference implementation used
-by the test suite and by anyone who has no CLI vault. Each credential file is
-checked as it is read and refused if it is readable by group or other; the
-directory's own mode is not checked, so a shared-readable directory still leaks
-the NAMES of the credentials in it.
+by the test suite and by anyone who has no CLI vault. `timeout_ms` applies to it
+as well as to `exec`. Each credential file is checked as it is read and refused
+if it is readable by group or other; the directory's own mode is not checked, so
+a shared-readable directory still leaks the NAMES of the credentials in it.
 
 ```json
 {
@@ -84,10 +86,22 @@ box.
 **Can reach:** one reference name at a time, supplied by the daemon at the
 moment a recipe step is dispatched. The provider returns one value.
 
-**Cannot reach:** the page, the DOM, the recipe, the recipe's other steps, the
-element the value is typed into, cookies, storage, the trace, the artifact
-store, the usage ledger, or any brw HTTP or MCP route. Nothing calls the
-provider except the recipe runner, and it calls it with a name and nothing else.
+**Cannot reach through brw:** the page, the DOM, the recipe, the recipe's other
+steps, the element the value is typed into, cookies, storage, the trace, the
+artifact store, the usage ledger, or any brw HTTP or MCP route. Nothing calls
+the provider except the recipe runner, and it calls it with a name and nothing
+else.
+
+**What that does not mean.** The list above is what brw *hands* a provider. It
+is not a statement about what the provider's process can do, because brw does
+not sandbox one: an `exec` provider is a child of the daemon, running as the
+daemon's user with the daemon's environment and the daemon's network access. It
+can therefore open brw's own HTTP control plane on loopback — which enforces no
+authentication — and ask it for cookies, which is exactly what the refusal table
+below says `cookies.export` exists to prevent. A capability constrains what brw
+gives a plugin; nothing in brw constrains what a plugin process takes. That is
+why the trust boundary is the permission on the plugin directory, and why the
+loader spends its effort there. See [Trust and sandboxing](#trust-and-sandboxing).
 
 **Where the value goes:** into `Surface.Fill` or `Surface.Type` for that one
 step, and nowhere else. It is wiped from brw's own buffer when the step returns.
@@ -131,22 +145,42 @@ normalisation step for an attacker-supplied variant to pass through.
 Say it plainly: **brw does not sandbox a plugin.** An `exec` provider runs as the
 daemon's own user with the daemon's environment. Anyone who can write a manifest
 into the plugin directory can make brwd run a program as that user. The trust
-boundary is the filesystem permission on that directory, not a sandbox, and brw
-enforces the boundary it can:
+boundary is who can write that directory — its mode, its owner and its ancestors
+— not a sandbox, and brw enforces the boundary it can:
 
 - The plugin directory and every manifest in it are refused if group- or
-  other-writable.
+  other-writable, or if some other local user owns them. root is accepted as an
+  owner: a system install is a legitimate deployment, and root can replace the
+  daemon binary anyway.
+- Every ancestor of the plugin directory up to `/` is refused if group- or
+  other-writable, unless it carries the sticky bit. A 0700 directory inside a
+  world-writable parent is one rename away from being somebody else's directory,
+  and the sticky bit is the flag that stops that rename.
+- An `exec` provider's `command[0]` must be an absolute, already-clean path, and
+  the program it names is held to the same mode, owner and ancestor rules as the
+  manifest. A bare name would be resolved from the daemon's `PATH` at every
+  call, so the manifest an operator reviewed would not decide what runs.
 - A manifest is refused above 64 KiB, and unknown fields are refused.
 - `file` credential files are refused if group- or other-readable, and the
   resolved path (after symlinks) must stay inside the configured directory.
-- The provider is given no shell, no brw state, and no page data.
+- brw passes the provider no shell, no brw state and no page data. It does not
+  strip the environment: an `exec` child inherits the daemon's, which is what
+  `op` and `pass` need to find their own sessions.
 - Output is capped at 64 KiB, must be valid UTF-8, must be non-empty, and must
   not contain an embedded newline or NUL. A trailing newline is stripped so
   `op read` and `cat` behave.
 - A provider that exits non-zero fails the step. Its stderr is discarded rather
   than quoted into the error, because a program that prints the secret on the
   failure path would otherwise put it in the caller's transcript.
-- Every provider call has a deadline (default 10s, maximum 60s).
+- Every provider call has a deadline (default 10s, maximum 60s), on both kinds.
+  For `exec` that includes a provider that backgrounds a grandchild and exits: a
+  kill alone leaves the daemon waiting on the inherited stdout pipe, so the wait
+  is bounded too. For `file` it covers a read that cannot complete, such as a
+  wedged network mount or a named pipe with no writer.
+
+Ownership is the one check with a platform hole: Windows reports no uid through
+`os.FileInfo`, so there the mode is the whole check. Ancestor and mode rules
+apply everywhere.
 
 Two honest limits. `Secret.Reveal` hands the value to the browser transport as a
 Go string, and a Go string cannot be wiped; brw wipes its own buffer and lets

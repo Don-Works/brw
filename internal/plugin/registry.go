@@ -59,9 +59,11 @@ const MaxPlugins = 32
 
 // Load reads every *.json manifest directly inside root.
 //
-// It refuses a group- or other-writable directory or manifest: brw does not
-// sandbox a plugin, so who can write the manifest is the whole trust boundary,
-// and a writable one means anyone on the machine chooses what brwd executes.
+// It refuses a directory or manifest another local user could write: brw does
+// not sandbox a plugin, so who can write the manifest is the whole trust
+// boundary. That covers the mode, the owner, and every ancestor of the
+// directory, because a 0700 directory inside a world-writable parent is one
+// rename away from being somebody else's directory.
 func Load(root string) (*Registry, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -82,6 +84,12 @@ func Load(root string) (*Registry, error) {
 		return nil, errors.New("plugin directory is not a directory")
 	}
 	if err := refuseSharedWrite(info.Mode().Perm(), "plugin directory"); err != nil {
+		return nil, err
+	}
+	if err := refuseForeignOwner(info, "plugin directory"); err != nil {
+		return nil, err
+	}
+	if err := refuseWritableAncestors(absolute, "plugin directory"); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(absolute)
@@ -141,6 +149,9 @@ func loadManifestFile(path string) (Manifest, error) {
 	if err := refuseSharedWrite(info.Mode().Perm(), "manifest"); err != nil {
 		return Manifest{}, err
 	}
+	if err := refuseForeignOwner(info, "manifest"); err != nil {
+		return Manifest{}, err
+	}
 	if info.Size() > MaxManifestBytes {
 		return Manifest{}, fmt.Errorf("manifest exceeds %d bytes", MaxManifestBytes)
 	}
@@ -156,6 +167,51 @@ func refuseSharedWrite(mode fs.FileMode, what string) error {
 		return fmt.Errorf("%s is writable by group or other; brw does not sandbox a plugin, so anyone who can write it chooses what the daemon runs", what)
 	}
 	return nil
+}
+
+// refuseForeignOwner refuses a path some other local user owns. The mode alone
+// is not the boundary: a 0755 directory owned by another user still lets that
+// user drop a manifest in, and brwd would run its argv as brwd's own user. root
+// is allowed because a system install such as /etc/brw/plugins is a legitimate
+// deployment, and root can replace the daemon binary regardless.
+func refuseForeignOwner(info fs.FileInfo, what string) error {
+	owner, ok := fileOwner(info)
+	if !ok {
+		return nil
+	}
+	if owner == os.Getuid() || owner == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s is owned by uid %d rather than by the daemon's user or root; brw does not sandbox a plugin, so its owner chooses what the daemon runs", what, owner)
+}
+
+// refuseWritableAncestors walks from path's parent to the filesystem root.
+//
+// Checking only the leaf is not the trust boundary docs/plugins.md claims: a
+// 0700 plugin directory inside a world-writable parent can be renamed away and
+// replaced wholesale by anyone who can write that parent, and the replacement
+// passes every check on the leaf. The sticky bit is the exception, because it
+// is the flag that stops a non-owner renaming or unlinking an entry, which is
+// what makes a shared temporary directory usable as a parent at all.
+func refuseWritableAncestors(path, what string) error {
+	current := filepath.Dir(filepath.Clean(path))
+	for {
+		info, err := os.Stat(current)
+		if err != nil {
+			return fmt.Errorf("read %s ancestor %s: %w", what, current, err)
+		}
+		if info.Mode().Perm()&0o022 != 0 && info.Mode()&fs.ModeSticky == 0 {
+			return fmt.Errorf("%s ancestor %s is writable by group or other; anyone who can write it can replace the directory beneath it", what, current)
+		}
+		if err := refuseForeignOwner(info, fmt.Sprintf("%s ancestor %s", what, current)); err != nil {
+			return err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil
+		}
+		current = parent
+	}
 }
 
 func (r *Registry) Plugins() []Status {

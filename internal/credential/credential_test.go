@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -164,6 +166,78 @@ func TestScrubRemovesTheValueAndKeepsNoWrappedCopy(t *testing.T) {
 	if got := Scrub(nil, secret); got != nil {
 		t.Fatalf("Scrub(nil) = %v", got)
 	}
+}
+
+// fixtureAwkwardValue is low-entropy and obviously fabricated, and it carries
+// the characters that change under escaping. A fixture made only of letters and
+// dashes renders identically raw, quoted, JSON-encoded and percent-encoded, so
+// it cannot tell a scrubber that handles one form from a scrubber that handles
+// all of them.
+const fixtureAwkwardValue = `fixture-"quote\back one`
+
+// A transport does not have to write the value out raw. The snapshot scripts
+// marshal the text they are told to type into a JSON expression, and a %q-
+// formatted Go error quotes it — both of which leave a value containing a quote
+// or a backslash looking nothing like itself.
+func TestScrubRemovesTheValueInEveryFormATransportWritesIt(t *testing.T) {
+	secret := New(fixtureAwkwardValue)
+	for name, test := range map[string]struct {
+		message string
+		form    string
+	}{
+		"raw": {
+			message: "could not set field to " + fixtureAwkwardValue,
+			form:    fixtureAwkwardValue,
+		},
+		"go quoted": {
+			message: fmt.Sprintf("could not set field to %q", fixtureAwkwardValue),
+			form:    strconv.Quote(fixtureAwkwardValue)[1 : len(strconv.Quote(fixtureAwkwardValue))-1],
+		},
+		"json encoded": {
+			message: `evaluate failed: {"text":` + mustJSON(t, fixtureAwkwardValue) + `}`,
+			form:    mustJSON(t, fixtureAwkwardValue)[1 : len(mustJSON(t, fixtureAwkwardValue))-1],
+		},
+		"query escaped": {
+			message: "POST /fill?text=" + url.QueryEscape(fixtureAwkwardValue) + " failed",
+			form:    url.QueryEscape(fixtureAwkwardValue),
+		},
+		"path escaped": {
+			message: "GET /fill/" + url.PathEscape(fixtureAwkwardValue) + " failed",
+			form:    url.PathEscape(fixtureAwkwardValue),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Without this the case proves nothing: a form that is not in the
+			// message cannot be scrubbed out of it.
+			if !strings.Contains(test.message, test.form) {
+				t.Fatalf("the %s message %q does not contain the form under test", name, test.message)
+			}
+			got := ScrubString(test.message, secret)
+			if strings.Contains(got, test.form) {
+				t.Fatalf("scrubbed message still carries the %s form: %q", name, got)
+			}
+			if strings.Contains(got, fixtureAwkwardValue) {
+				t.Fatalf("scrubbed message still carries the raw value: %q", got)
+			}
+			if !strings.Contains(got, Placeholder) {
+				t.Fatalf("scrubbed message %q does not name the redaction", got)
+			}
+		})
+	}
+	// Scrub goes through ScrubString, so the error path gets the same net.
+	chatty := fmt.Errorf("could not set field to %q", fixtureAwkwardValue)
+	if got := Scrub(chatty, secret); strings.Contains(got.Error(), `fixture-\"quote`) {
+		t.Fatalf("Scrub left the quoted value in %q", got)
+	}
+}
+
+func mustJSON(t *testing.T, value string) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
 }
 
 func TestProbeTreatsAMissingResolverAsNoProvider(t *testing.T) {

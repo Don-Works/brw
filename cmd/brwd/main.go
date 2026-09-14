@@ -549,9 +549,12 @@ func main() {
 			log.Printf("WARNING: recipe provider flags are ignored in --upstream-http mode; configure them on the browser-host daemon")
 		}
 		if strings.TrimSpace(pluginDir) != "" {
-			// The recipe runner lives on the browser host, so that is where a
-			// credential is resolved. A provider loaded here would never be asked.
-			log.Printf("WARNING: --plugin-dir is ignored in --upstream-http mode; configure it on the browser-host daemon")
+			// Loaded and listed, because plugin.Load ran above and the registry is
+			// handed to the HTTP routes. What never happens in this mode is the
+			// wiring into recipe.Runner.Credentials, which is on the else branch:
+			// the recipe runner lives on the browser host, so that is where a
+			// credential is resolved.
+			log.Printf("WARNING: --plugin-dir manifests are loaded and listed by /api/plugins in --upstream-http mode, but never consulted; the recipe runner that resolves a credential lives on the browser-host daemon, so configure it there")
 		}
 	} else {
 		if !strings.EqualFold(strings.TrimSpace(artifactDir), "off") {

@@ -25,7 +25,6 @@ func (s *Server) listPlugins(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errNoPluginRegistry)
 		return
 	}
-	_ = r
 	writeJSON(w, http.StatusOK, map[string]any{
 		"plugins":                s.plugins.Plugins(),
 		"grantable_capabilities": plugin.GrantableCapabilities(),

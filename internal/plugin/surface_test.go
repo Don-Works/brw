@@ -42,6 +42,34 @@ func TestPluginDocsNameEveryCapabilityTheGateKnows(t *testing.T) {
 	}
 }
 
+// A capability section that lists what a plugin cannot reach, and leaves the
+// sandboxing caveat 40 lines further down under its own heading, reads as a
+// property of the plugin process. It is not one: brw does not sandbox an exec
+// provider, so the list is what brw HANDS a provider, and an operator deciding
+// whether to install one has to see both facts in the same place.
+func TestTheCredentialSectionSaysWhatTheCapabilityDoesNotCover(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/plugins.md")
+	if err != nil {
+		t.Fatalf("read docs/plugins.md: %v", err)
+	}
+	const heading = "### `" + CapabilityCredentialRead + "`"
+	start := strings.Index(string(doc), heading)
+	if start < 0 {
+		t.Fatalf("docs/plugins.md has no %s section", heading)
+	}
+	section := string(doc)[start+len(heading):]
+	if end := strings.Index(section, "\n### "); end >= 0 {
+		section = section[:end]
+	}
+	// Markdown wraps, so a phrase can straddle a line break.
+	section = strings.Join(strings.Fields(section), " ")
+	for _, phrase := range []string{"does not sandbox", "daemon's user"} {
+		if !strings.Contains(section, phrase) {
+			t.Errorf("the %s section does not say %q, so its boundary list reads as a property of the plugin process", heading, phrase)
+		}
+	}
+}
+
 // A granted plugin's ENTIRE runtime surface is the credential resolver. That is
 // why the capability table can be short: there is no second door to gate.
 //

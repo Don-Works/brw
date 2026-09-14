@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -164,24 +165,47 @@ func validateCredentialCommand(command []string) error {
 	if len(command) == 0 {
 		return errors.New("the exec credential kind requires a command")
 	}
+	var problems []error
 	if len(command) > 32 {
-		return errors.New("credential command has too many arguments")
+		problems = append(problems, errors.New("credential command has too many arguments"))
 	}
-	if strings.TrimSpace(command[0]) == "" {
-		return errors.New("credential command program is empty")
-	}
-	tokens := 0
+	problems = append(problems, validateCredentialProgram(command[0]))
+	tokens, oversized := 0, false
 	for _, argument := range command {
 		if len(argument) > 4096 {
-			return errors.New("credential command argument is too long")
+			oversized = true
 		}
 		tokens += strings.Count(argument, ReferenceToken)
+	}
+	if oversized {
+		problems = append(problems, errors.New("credential command argument is too long"))
 	}
 	if tokens != 1 {
 		// Zero is the dangerous one: a provider that never sees the reference
 		// answers every request with the same secret, and the recipe that asked
 		// for the staging password gets production's.
-		return fmt.Errorf("credential command must contain the %s token exactly once, found %d", ReferenceToken, tokens)
+		problems = append(problems, fmt.Errorf("credential command must contain the %s token exactly once, found %d", ReferenceToken, tokens))
+	}
+	return errors.Join(problems...)
+}
+
+// validateCredentialProgram pins which binary a manifest names.
+//
+// A bare name such as "op" is resolved from the daemon's PATH at every call, so
+// the manifest an operator reviewed does not decide what runs: whoever controls
+// PATH, or can write an earlier directory on it, does. The path must also be
+// already clean, because "/usr/bin/../../tmp/op" reads as a reviewed system
+// binary and is not one. The program's mode, owner and ancestors are checked
+// separately at load, where the filesystem is available.
+func validateCredentialProgram(program string) error {
+	if strings.TrimSpace(program) == "" {
+		return errors.New("credential command program is empty")
+	}
+	if !filepath.IsAbs(program) {
+		return fmt.Errorf("credential command program %q must be an absolute path, so the reviewed manifest decides which binary runs rather than the daemon's PATH", program)
+	}
+	if filepath.Clean(program) != program {
+		return fmt.Errorf("credential command program %q must already be a clean path, with no %q or %q segment", program, ".", "..")
 	}
 	return nil
 }

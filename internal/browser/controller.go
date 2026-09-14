@@ -240,7 +240,10 @@ func WithCredentialSourced(ctx context.Context) context.Context {
 	return context.WithValue(WithSensitiveAction(ctx), credentialSourcedContextKey{}, true)
 }
 
-// IsSensitiveAction reports the mark WithSensitiveAction applied.
+// IsSensitiveAction reports whether this actuation carries a caller-declared
+// secret. It is the ONLY reader of the mark: a transport that re-reads the
+// context key inline is a second definition of "sensitive" that can drift from
+// this one.
 func IsSensitiveAction(ctx context.Context) bool {
 	if ctx == nil {
 		return false
@@ -249,7 +252,9 @@ func IsSensitiveAction(ctx context.Context) bool {
 	return marked
 }
 
-// IsCredentialSourced reports the mark WithCredentialSourced applied.
+// IsCredentialSourced reports whether the typed value came from a
+// capability-gated provider rather than from the caller. Sole reader of its
+// key, for the reason above.
 func IsCredentialSourced(ctx context.Context) bool {
 	if ctx == nil {
 		return false
@@ -259,16 +264,13 @@ func IsCredentialSourced(ctx context.Context) bool {
 }
 
 func RedactTraceEntry(ctx context.Context, entry TraceEntry) TraceEntry {
-	if ctx != nil {
-		redact, _ := ctx.Value(sensitiveActionContextKey{}).(bool)
-		if redact {
-			entry.Text = ""
-			entry.Value = ""
-			entry.Redacted = true
-		}
-		if credentialSourced, _ := ctx.Value(credentialSourcedContextKey{}).(bool); credentialSourced {
-			entry.CredentialSourced = true
-		}
+	if IsSensitiveAction(ctx) {
+		entry.Text = ""
+		entry.Value = ""
+		entry.Redacted = true
+	}
+	if IsCredentialSourced(ctx) {
+		entry.CredentialSourced = true
 	}
 	return entry
 }

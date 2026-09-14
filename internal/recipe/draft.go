@@ -32,8 +32,8 @@ type TraceAction struct {
 // typed value came from a credential provider.
 var ErrCredentialSourcedAction = errors.New("trace action typed a value that came from a credential provider")
 
-// GuardTraceActionForCompilation is the hook every trace-to-recipe compilation
-// calls once per recorded action before emitting a step.
+// GuardTraceActionForCompilation is the refusal every trace-to-recipe
+// compilation must apply once per recorded action before emitting a step.
 //
 // A credential-sourced value is a compile FAILURE, not a placeholder to infer.
 // brw records that the value came from a provider and deliberately does not
@@ -42,8 +42,12 @@ var ErrCredentialSourcedAction = errors.New("trace action typed a value that cam
 // field. The human writes the secret:// reference by hand or the recipe does
 // not exist.
 //
-// Kept separate from DraftFromTrace so a compiler with its own step emitter can
-// adopt the same refusal without reimplementing it.
+// DraftFromTrace is its only caller today. It is kept separate from that
+// function so a compiler with its own step emitter adopts the same refusal
+// instead of reimplementing it, and
+// TestEveryTraceCompilerCallsTheCredentialGuard fails on a new entry point over
+// []TraceAction that does not call it — a second compiler that refuses a
+// credential action as a side effect of some other check is not this refusal.
 func GuardTraceActionForCompilation(index int, action TraceAction) error {
 	if !action.CredentialSourced {
 		return nil
