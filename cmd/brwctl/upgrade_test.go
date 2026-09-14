@@ -12,11 +12,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/setup"
 )
@@ -46,9 +49,18 @@ type upgradeFixture struct {
 	publishChecksum bool
 	tagName         string
 	requests        atomic.Int64
-	health          daemonHealth
-	daemon          *httptest.Server
-	release         *httptest.Server
+	// healthProbes counts what the daemon was asked, so a policy that names one
+	// daemon twice can be told from one that is probed twice.
+	healthProbes atomic.Int64
+	// busyAfterDownload makes the daemon pick up work while the archive is in
+	// flight, which is the window the second busy check exists to close.
+	busyAfterDownload atomic.Bool
+	health            daemonHealth
+	daemon            *httptest.Server
+	release           *httptest.Server
+	// onArchiveRequest runs when the release endpoint serves the tarball, so a
+	// test can change the machine mid-upgrade.
+	onArchiveRequest func()
 }
 
 func newUpgradeFixture(t *testing.T) *upgradeFixture {
@@ -85,7 +97,12 @@ func newUpgradeFixture(t *testing.T) *upgradeFixture {
 			http.NotFound(w, r)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(fx.health)
+		fx.healthProbes.Add(1)
+		health := fx.health
+		if fx.busyAfterDownload.Load() {
+			health.TabLeases = tabLeaseStats{ActiveTabs: 1, Owners: 1, InFlight: 1}
+		}
+		_ = json.NewEncoder(w).Encode(health)
 	}))
 	t.Cleanup(fx.daemon.Close)
 
@@ -96,6 +113,9 @@ func newUpgradeFixture(t *testing.T) *upgradeFixture {
 		case "/releases/latest":
 			_, _ = w.Write([]byte(`{"tag_name":"` + fx.tagName + `"}`))
 		case "/download/" + archiveName:
+			if fx.onArchiveRequest != nil {
+				fx.onArchiveRequest()
+			}
 			_, _ = w.Write(fx.archive)
 		case "/download/" + archiveName + ".sha256":
 			if !fx.publishChecksum {
@@ -109,25 +129,40 @@ func newUpgradeFixture(t *testing.T) *upgradeFixture {
 	}))
 	t.Cleanup(fx.release.Close)
 
-	policy := profilepolicy.Policy{Profiles: []profilepolicy.Profile{{
-		Name:                   fixtureProfile,
+	fx.writePolicy(fx.profile(fixtureProfile))
+	fx.installUnit(fixtureProfile)
+	return fx
+}
+
+// profile is a policy entry pointed at the fixture's daemon. Every profile
+// shares it, which is what a real multi-profile policy does whenever a profile
+// pins no HTTP address of its own.
+func (fx *upgradeFixture) profile(name string) profilepolicy.Profile {
+	return profilepolicy.Profile{
+		Name:                   name,
 		Kind:                   setup.BrowserChrome,
-		UserDataDir:            filepath.Join(home, "browser"),
+		UserDataDir:            filepath.Join(fx.home, "browser"),
 		ExtensionBridgeAllowed: true,
 		BridgeHTTPAddr:         fx.daemon.URL,
 		// No bridge WS address: the fixture's daemon serves /health only, and
 		// an unreachable bridge is correctly read as "no work in flight".
 		BridgeWSAddr: "127.0.0.1:1",
-	}}}
-	encoded, err := json.Marshal(policy)
+	}
+}
+
+func (fx *upgradeFixture) writePolicy(profiles ...profilepolicy.Profile) {
+	fx.t.Helper()
+	encoded, err := json.Marshal(profilepolicy.Policy{Profiles: profiles})
 	if err != nil {
-		t.Fatal(err)
+		fx.t.Fatal(err)
 	}
 	fx.write(fx.policyPath, string(encoded))
+}
 
-	params := setup.ServiceParams{GOOS: "linux", Profile: fixtureProfile, Home: home}
+func (fx *upgradeFixture) installUnit(profile string) {
+	fx.t.Helper()
+	params := setup.ServiceParams{GOOS: "linux", Profile: profile, Home: fx.home}
 	fx.write(params.UnitPath(), "[Service]\n")
-	return fx
 }
 
 func (fx *upgradeFixture) write(path, content string) {
@@ -489,6 +524,217 @@ func TestUpgradeRefreshExtensionsResyncsWithoutDownloading(t *testing.T) {
 	}
 }
 
+// TestUpgradeRefusesWhenADaemonPicksUpWorkDuringTheDownload: the first busy
+// check is a courtesy, answered before 50 MB is fetched. The one that protects
+// a running agent is the second, and an agent can start work at any point in
+// between.
+func TestUpgradeRefusesWhenADaemonPicksUpWorkDuringTheDownload(t *testing.T) {
+	fx := newUpgradeFixture(t)
+	fx.onArchiveRequest = func() { fx.busyAfterDownload.Store(true) }
+
+	_, err := runUpgrade(fx.options())
+	refusal := refusalFrom(t, err)
+	if refusal.Reason != "daemon_busy" {
+		t.Fatalf("refusal = %+v, want daemon_busy", refusal)
+	}
+	if got := fx.read(filepath.Join(fx.appDir, "bin", "brwd")); got != "old brwd" {
+		t.Fatalf("the binaries were replaced under a busy daemon: %q", got)
+	}
+	version, err := setup.ExtensionPayloadVersion(filepath.Join(fx.appDir, "extension"))
+	if err != nil || version != upgradeFromVersion {
+		t.Fatalf("extension payload = %q (%v), want the pre-upgrade version", version, err)
+	}
+}
+
+// TestUpgradeAsksOneDaemonOnce: profiles that pin no HTTP address of their own
+// share the default port, so a policy with several of them describes one daemon
+// several times. Probing per profile asks it the same question repeatedly and
+// can refuse in the name of a profile it does not serve.
+func TestUpgradeAsksOneDaemonOnce(t *testing.T) {
+	fx := newUpgradeFixture(t)
+	fx.writePolicy(fx.profile(fixtureProfile), fx.profile("second-profile"))
+	fx.health.Identity = brwidentity.Identity{Workspace: fixtureWorkspace, Profile: fixtureProfile}
+	fx.health.TabLeases = tabLeaseStats{ActiveTabs: 1, Owners: 1, InFlight: 1}
+
+	_, err := runUpgrade(fx.options())
+	refusal := refusalFrom(t, err)
+	if refusal.Reason != "daemon_busy" {
+		t.Fatalf("refusal = %+v, want daemon_busy", refusal)
+	}
+	if probes := fx.healthProbes.Load(); probes != 1 {
+		t.Fatalf("the same daemon was probed %d times", probes)
+	}
+	if strings.Contains(refusal.Detail, "second-profile") {
+		t.Fatalf("the refusal names a profile this daemon does not serve: %q", refusal.Detail)
+	}
+	if strings.Count(refusal.Detail, fixtureProfile) != 1 {
+		t.Fatalf("one busy daemon is reported more than once: %q", refusal.Detail)
+	}
+}
+
+// TestUpgradeRefusalNamesTheDaemonsOwnIdentity: the policy entry that happens to
+// name a port only says which daemon was asked for; /health says which one
+// answered, and that is the one holding the work.
+func TestUpgradeRefusalNamesTheDaemonsOwnIdentity(t *testing.T) {
+	fx := newUpgradeFixture(t)
+	fx.writePolicy(fx.profile("policy-name"))
+	fx.health.Identity = brwidentity.Identity{Workspace: fixtureWorkspace, Profile: "serving-profile"}
+	fx.health.TabLeases = tabLeaseStats{ActiveTabs: 1, Owners: 1, InFlight: 2}
+
+	_, err := runUpgrade(fx.options())
+	refusal := refusalFrom(t, err)
+	if !strings.Contains(refusal.Detail, "serving-profile") {
+		t.Fatalf("refusal %q does not name the profile the daemon reports serving", refusal.Detail)
+	}
+}
+
+// TestUpgradeRestartNotesOnlyWhatTheOperatorMustDo: a direct-CDP profile has no
+// daemon of its own and a stdio daemon is started by the agent client, so a
+// "start it yourself" line per unit-less profile is noise around the one case
+// that is real.
+func TestUpgradeRestartNotesOnlyWhatTheOperatorMustDo(t *testing.T) {
+	cases := []struct {
+		name          string
+		profiles      []string
+		units         []string
+		wantRestarted int
+		wantManualIn  string
+	}{
+		{
+			name:          "one profile of three runs a unit",
+			profiles:      []string{fixtureProfile, "second-profile", "third-profile"},
+			units:         []string{fixtureProfile},
+			wantRestarted: 1,
+		},
+		{
+			name:         "no profile runs a unit",
+			profiles:     []string{fixtureProfile, "second-profile"},
+			wantManualIn: "No profile has an installed service unit",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newUpgradeFixture(t)
+			if err := os.Remove(setup.ServiceParams{GOOS: "linux", Profile: fixtureProfile, Home: fx.home}.UnitPath()); err != nil {
+				t.Fatal(err)
+			}
+			profiles := make([]profilepolicy.Profile, 0, len(tc.profiles))
+			for _, name := range tc.profiles {
+				profiles = append(profiles, fx.profile(name))
+			}
+			fx.writePolicy(profiles...)
+			for _, name := range tc.units {
+				fx.installUnit(name)
+			}
+
+			result, err := runUpgrade(fx.options())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.RestartedServices) != tc.wantRestarted {
+				t.Fatalf("restarted = %v, want %d", result.RestartedServices, tc.wantRestarted)
+			}
+			joined := strings.Join(result.Manual, "\n")
+			if strings.Contains(joined, "has no installed service unit; start its daemon yourself") {
+				t.Fatalf("a line was emitted per unit-less profile:\n%s", joined)
+			}
+			if tc.wantManualIn != "" && !strings.Contains(joined, tc.wantManualIn) {
+				t.Fatalf("manual notes do not say nothing was restarted:\n%s", joined)
+			}
+		})
+	}
+}
+
+// TestUpgradeVerifiesBuildProvenance covers the four ways the attestation check
+// ends. gh reserves exit 4 for "not authenticated", which is an inability to
+// check rather than a failed check, and the two must not be confused: one lets
+// the upgrade through unverified and the other stops it.
+func TestUpgradeVerifiesBuildProvenance(t *testing.T) {
+	cases := []struct {
+		name           string
+		ghInstalled    bool
+		ghExitCode     int
+		ghOutput       string
+		wantProvenance string
+		wantRefusal    string
+	}{
+		{
+			name:           "gh is not installed",
+			wantProvenance: "gh is not installed",
+		},
+		{
+			name:           "gh verifies the archive",
+			ghInstalled:    true,
+			wantProvenance: "verified",
+		},
+		{
+			name:           "gh is not authenticated",
+			ghInstalled:    true,
+			ghExitCode:     4,
+			ghOutput:       "gh: To get started with GitHub CLI, please run: gh auth login",
+			wantProvenance: "gh is not authenticated",
+		},
+		{
+			name:        "verification fails",
+			ghInstalled: true,
+			ghExitCode:  1,
+			ghOutput:    "no attestations found for this artifact",
+			wantRefusal: "attestation_failed",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newUpgradeFixture(t)
+			fx.runner.onPath["gh"] = tc.ghInstalled
+			if tc.ghExitCode != 0 {
+				const prefix = "gh attestation verify"
+				fx.runner.failWith[prefix] = exitErrorWithCode(t, tc.ghExitCode)
+				fx.runner.output[prefix] = tc.ghOutput
+			}
+			opts := fx.options()
+			opts.skipAttestation = false
+
+			result, err := runUpgrade(opts)
+			if tc.wantRefusal != "" {
+				refusal := refusalFrom(t, err)
+				if refusal.Reason != tc.wantRefusal {
+					t.Fatalf("refusal = %+v, want %s", refusal, tc.wantRefusal)
+				}
+				if !strings.Contains(refusal.Detail, tc.ghOutput) {
+					t.Fatalf("refusal does not carry what gh said: %q", refusal.Detail)
+				}
+				if got := fx.read(filepath.Join(fx.appDir, "bin", "brwd")); got != "old brwd" {
+					t.Fatalf("an archive that failed provenance was installed anyway: %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(result.Provenance, tc.wantProvenance) {
+				t.Fatalf("provenance = %q, want it to name %q", result.Provenance, tc.wantProvenance)
+			}
+			if result.Action != "upgraded" {
+				t.Fatalf("action = %q; an unverifiable archive still upgrades, an unverified one does not", result.Action)
+			}
+		})
+	}
+}
+
+// exitErrorWithCode runs a command that exits with code, because the exit status
+// production code reads is only carried by a real *exec.ExitError.
+func exitErrorWithCode(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Skipf("no shell to produce an exit status with: %v", err)
+	}
+	return err
+}
+
 func TestCompareVersions(t *testing.T) {
 	cases := []struct {
 		a, b string
@@ -537,36 +783,92 @@ func TestExpectedSHA256(t *testing.T) {
 }
 
 // TestExtractTarGzRefusesToEscape: a release archive is remote input, and one
-// crafted entry name would otherwise write outside the unpack directory.
+// crafted entry - a name that climbs out, or a symlink that points out and is
+// then written through - would otherwise write outside the unpack directory.
 func TestExtractTarGzRefusesToEscape(t *testing.T) {
-	dir := t.TempDir()
-	var raw bytes.Buffer
-	zipped := gzip.NewWriter(&raw)
-	archive := tar.NewWriter(zipped)
-	body := "owned"
-	if err := archive.WriteHeader(&tar.Header{
-		Name: "../escaped.txt", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg,
-	}); err != nil {
-		t.Fatal(err)
+	const body = "pwned"
+
+	cases := []struct {
+		name string
+		// entries are written to the archive in order; escape is the path,
+		// relative to the test's temporary directory, that must not appear.
+		entries func(outside string) []tar.Header
+		escape  string
+		wantErr string
+	}{
+		{
+			name: "a name that climbs out of the unpack directory",
+			entries: func(string) []tar.Header {
+				return []tar.Header{{Name: "../escaped.txt", Mode: 0o644, Typeflag: tar.TypeReg}}
+			},
+			escape:  "escaped.txt",
+			wantErr: "escapes the unpack directory",
+		},
+		{
+			name: "a relative symlink that climbs out, written through",
+			entries: func(string) []tar.Header {
+				return []tar.Header{
+					{Name: "brw_1_linux_amd64/bin", Linkname: "../../..", Typeflag: tar.TypeSymlink},
+					{Name: "brw_1_linux_amd64/bin/escaped.txt", Mode: 0o644, Typeflag: tar.TypeReg},
+				}
+			},
+			escape:  "escaped.txt",
+			wantErr: "points outside the unpack directory",
+		},
+		{
+			name: "an absolute symlink, written through",
+			entries: func(outside string) []tar.Header {
+				return []tar.Header{
+					{Name: "brw_1_linux_amd64/bin", Linkname: outside, Typeflag: tar.TypeSymlink},
+					{Name: "brw_1_linux_amd64/bin/escaped.txt", Mode: 0o644, Typeflag: tar.TypeReg},
+				}
+			},
+			escape:  filepath.Join("outside", "escaped.txt"),
+			wantErr: "points outside the unpack directory",
+		},
 	}
-	if _, err := archive.Write([]byte(body)); err != nil {
-		t.Fatal(err)
-	}
-	if err := archive.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := zipped.Close(); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, "evil.tar.gz")
-	if err := os.WriteFile(path, raw.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	err := extractTarGz(path, filepath.Join(dir, "unpack"))
-	if err == nil || !strings.Contains(err.Error(), "escapes the unpack directory") {
-		t.Fatalf("extract error = %v, want a containment refusal", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "escaped.txt")); !os.IsNotExist(err) {
-		t.Fatalf("the archive wrote outside the unpack directory: %v", err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			outside := filepath.Join(dir, "outside")
+			if err := os.MkdirAll(outside, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			var raw bytes.Buffer
+			zipped := gzip.NewWriter(&raw)
+			archive := tar.NewWriter(zipped)
+			for _, header := range tc.entries(outside) {
+				if header.Typeflag == tar.TypeReg {
+					header.Size = int64(len(body))
+				}
+				if err := archive.WriteHeader(&header); err != nil {
+					t.Fatal(err)
+				}
+				if header.Typeflag == tar.TypeReg {
+					if _, err := archive.Write([]byte(body)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := archive.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := zipped.Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "evil.tar.gz")
+			if err := os.WriteFile(path, raw.Bytes(), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			err := extractTarGz(path, filepath.Join(dir, "unpack"))
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("extract error = %v, want a containment refusal (%q)", err, tc.wantErr)
+			}
+			if _, err := os.Stat(filepath.Join(dir, tc.escape)); !os.IsNotExist(err) {
+				t.Fatalf("the archive wrote outside the unpack directory: %v", err)
+			}
+		})
 	}
 }

@@ -142,9 +142,16 @@ func replacePayloadDir(src, dst string) error {
 	if err := copyTreeWithModes(src, dst); err != nil {
 		return err
 	}
-	// The source payload may carry its own bridge-defaults.json (a checkout
-	// that was used as a live install); the destination's is the one that
-	// matches the daemon this machine actually runs.
+	// The source payload carries a bridge-defaults.json of its own whenever it
+	// is a live install: RefreshExtensionPayloads copies from appDir/extension,
+	// which holds the default profile's endpoint and handshake token. Dropping
+	// the copied one unconditionally is what keeps that token out of every
+	// other profile's extension, which would otherwise connect to the wrong
+	// profile's daemon. scripts/install.sh and `task sync-installed-extensions`
+	// both drop it the same way.
+	if err := os.Remove(filepath.Join(dst, BridgeDefaultsFile)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if !hadDefaults {
 		return nil
 	}

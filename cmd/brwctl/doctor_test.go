@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -346,13 +347,40 @@ func TestDoctorNamesAFixForEveryBrokenCheck(t *testing.T) {
 			wantIn:  "extension-work",
 		},
 		{
-			name: "no MCP server is registered",
+			name: "Claude Code is installed and registers no brw server",
 			break_: func(fx *doctorFixture) {
+				fx.runner.onPath["claude"] = true
 				fx.writeFile(setup.ClaudeConfigPath(fx.home), `{"mcpServers":{}}`)
 			},
 			check:   "mcp_registration",
 			wantFix: "claude mcp add -s user brw",
 			wantIn:  "registers no MCP server",
+		},
+		{
+			name: "the extension is being turned away at the handshake",
+			break_: func(fx *doctorFixture) {
+				fx.status.Connected = false
+				fx.status.DisconnectReason = "handshake rejected: invalid handshake token"
+			},
+			check: "bridge_connected",
+			// Reloading presents the same token again; only setup rewrites it.
+			wantFix: "brwctl setup --workspace " + fixtureWorkspace,
+			wantIn:  "handshake rejected",
+		},
+		{
+			name:   "the configured transport has no live bridge",
+			break_: func(fx *doctorFixture) { fx.bridge.Close() },
+			check:  "transport",
+			// The lane is only as usable as the check it depends on.
+			wantFix: "systemctl --user restart brwd-chrome-profile.service",
+			wantIn:  "configured but not live",
+		},
+		{
+			name:    "the configured transport has no live daemon",
+			break_:  func(fx *doctorFixture) { fx.daemon.Close() },
+			check:   "transport",
+			wantFix: "systemctl --user restart brwd-chrome-profile.service",
+			wantIn:  "configured but not live",
 		},
 		{
 			name: "the registration points at a path that no longer exists",
@@ -450,6 +478,53 @@ func TestDoctorJSONSchemaIsStable(t *testing.T) {
 		}
 		assertDoctorSchema(t, fx.report(), false)
 	})
+	// Through the command, not doctorReport: a fresh machine with no policy to
+	// discover is where --json is read most, and where a hand-built result
+	// would quietly emit a different document.
+	t.Run("the command's own unresolvable-policy path", func(t *testing.T) {
+		dir := t.TempDir()
+		// The command reads its own environment and PATH, and this test asserts
+		// the document's shape rather than the machine it ran on: point all of
+		// it at an empty directory so no agent client, browser or policy of the
+		// operator's takes part.
+		t.Setenv("BRW_PROFILE", "")
+		t.Setenv("BRW_WORKSPACE", "")
+		t.Setenv("BRW_PROFILE_POLICY", "")
+		t.Setenv("HOME", dir)
+		t.Setenv("PATH", dir)
+		out, err := captureStdout(t, func() error {
+			return doctor([]string{"--json",
+				"--profile-policy", filepath.Join(dir, "missing", "browser-profiles.json"),
+				"--app-dir", filepath.Join(dir, "app")})
+		})
+		if err == nil {
+			t.Fatal("a machine with no readable policy exited zero")
+		}
+		assertDoctorSchemaJSON(t, out, false)
+	})
+}
+
+// captureStdout runs fn with os.Stdout redirected, so a command that prints its
+// report can be asserted on as the operator receives it.
+func captureStdout(t *testing.T, fn func() error) ([]byte, error) {
+	t.Helper()
+	read, write, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatal(pipeErr)
+	}
+	saved := os.Stdout
+	os.Stdout = write
+	done := make(chan []byte, 1)
+	go func() {
+		data, _ := io.ReadAll(read)
+		done <- data
+	}()
+	err := fn()
+	os.Stdout = saved
+	if closeErr := write.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	return <-done, err
 }
 
 func assertDoctorSchema(t *testing.T, report doctorResult, requireAll bool) {
@@ -458,9 +533,14 @@ func assertDoctorSchema(t *testing.T, report doctorResult, requireAll bool) {
 	if err := reportDoctor(&out, report, true); err == nil {
 		t.Fatal("expected a non-zero exit for a report with a failing check")
 	}
+	assertDoctorSchemaJSON(t, out.Bytes(), requireAll)
+}
+
+func assertDoctorSchemaJSON(t *testing.T, raw []byte, requireAll bool) {
+	t.Helper()
 	var decoded map[string]any
-	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
-		t.Fatalf("--json output is not JSON: %v\n%s", err, out.String())
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("--json output is not JSON: %v\n%s", err, raw)
 	}
 
 	// Documented keys. The always set has no omitempty and must be present in
@@ -477,7 +557,7 @@ func assertDoctorSchema(t *testing.T, report doctorResult, requireAll bool) {
 	for _, key := range always {
 		allowed[key] = true
 		if _, ok := decoded[key]; !ok {
-			t.Fatalf("--json lost the %q key: %s", key, out.String())
+			t.Fatalf("--json lost the %q key: %s", key, raw)
 		}
 	}
 	for key := range decoded {
@@ -488,7 +568,7 @@ func assertDoctorSchema(t *testing.T, report doctorResult, requireAll bool) {
 	if requireAll {
 		for key := range allowed {
 			if _, ok := decoded[key]; !ok {
-				t.Fatalf("--json lost the %q key on a fully resolved machine: %s", key, out.String())
+				t.Fatalf("--json lost the %q key on a fully resolved machine: %s", key, raw)
 			}
 		}
 	}
@@ -541,6 +621,67 @@ func assertDoctorSchema(t *testing.T, report doctorResult, requireAll bool) {
 	}
 }
 
+// TestDoctorAcceptsAMachineRegisteredWithAnotherClient: setup supports
+// --mcp-client codex and --mcp-client none, and ~/.claude.json exists on any
+// machine Claude Code has ever run on. Reporting either of those red sends the
+// operator to re-register a client they deliberately did not use.
+func TestDoctorAcceptsAMachineRegisteredWithAnotherClient(t *testing.T) {
+	cases := []struct {
+		name       string
+		machine    func(fx *doctorFixture)
+		wantStatus string
+		wantIn     string
+	}{
+		{
+			name: "registered with codex only",
+			machine: func(fx *doctorFixture) {
+				fx.runner.onPath["codex"] = true
+				fx.writeFile(setup.ClaudeConfigPath(fx.home), `{"mcpServers":{}}`)
+			},
+			wantStatus: checkOK,
+			wantIn:     "codex",
+		},
+		{
+			name: "no agent client CLI on this machine",
+			machine: func(fx *doctorFixture) {
+				fx.writeFile(setup.ClaudeConfigPath(fx.home), `{"mcpServers":{}}`)
+			},
+			wantStatus: checkWarn,
+			wantIn:     "no agent client CLI is on PATH",
+		},
+		{
+			name: "codex is installed but has no brw server either",
+			machine: func(fx *doctorFixture) {
+				fx.runner.onPath["claude"] = true
+				fx.runner.onPath["codex"] = true
+				fx.runner.failing = append(fx.runner.failing, "codex mcp get")
+				fx.writeFile(setup.ClaudeConfigPath(fx.home), `{"mcpServers":{}}`)
+			},
+			wantStatus: checkFail,
+			wantIn:     "the codex CLI has no brw server either",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newDoctorFixture(t)
+			tc.machine(fx)
+			report := fx.report()
+
+			got := checkByName(t, report, "mcp_registration")
+			if got.Status != tc.wantStatus {
+				t.Fatalf("mcp_registration = %+v, want status %q", got, tc.wantStatus)
+			}
+			if !strings.Contains(got.Detail, tc.wantIn) {
+				t.Fatalf("mcp_registration detail %q does not name %q", got.Detail, tc.wantIn)
+			}
+			if report.OK == (tc.wantStatus == checkFail) {
+				t.Fatalf("report.OK = %v for a %s check: %v", report.OK, tc.wantStatus, report.Failures)
+			}
+		})
+	}
+}
+
 // TestDoctorSkipsLiveChecksForSetup: `brwctl setup` verifies before the operator
 // has loaded the extension, so the probes must be skipped rather than red.
 func TestDoctorSkipsLiveChecksForSetup(t *testing.T) {
@@ -560,7 +701,7 @@ func TestDoctorSkipsLiveChecksForSetup(t *testing.T) {
 	if !report.OK {
 		t.Fatalf("skipping live checks still failed: %v", report.Failures)
 	}
-	for _, name := range []string{"daemon", "bridge_connected"} {
+	for _, name := range []string{"daemon", "bridge_connected", "transport"} {
 		if got := checkByName(t, report, name); got.Status != checkSkip {
 			t.Fatalf("check %s = %+v, want skipped", name, got)
 		}

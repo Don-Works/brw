@@ -279,11 +279,13 @@ func runUpgrade(opts upgradeOptions) (upgradeResult, error) {
 	if err != nil {
 		return result, err
 	}
-	result.Action = "upgraded"
 	result.RefreshedExtensions = refreshed
 	if err := finishBinaries(opts); err != nil {
+		// Unexecutable binaries are not an upgrade. Claiming one here would put
+		// action:"upgraded" in the same document as the error that stopped it.
 		return result, err
 	}
+	result.Action = "upgraded"
 	restarted, manual := restartServices(opts, policy)
 	result.RestartedServices = restarted
 	result.Manual = manual
@@ -617,8 +619,8 @@ func extractTarGz(archive, dest string) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			if _, err := containedPath(filepath.Dir(target), header.Linkname); err != nil {
-				return fmt.Errorf("archive symlink %s points outside the archive", header.Name)
+			if err := containedLink(dest, target, header.Linkname); err != nil {
+				return fmt.Errorf("archive symlink %s points outside the unpack directory", header.Name)
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
@@ -632,11 +634,34 @@ func extractTarGz(archive, dest string) error {
 
 func containedPath(root, name string) (string, error) {
 	target := filepath.Join(root, filepath.FromSlash(name))
-	cleanRoot := filepath.Clean(root) + string(filepath.Separator)
-	if !strings.HasPrefix(filepath.Clean(target)+string(filepath.Separator), cleanRoot) {
+	if !within(root, target) {
 		return "", fmt.Errorf("archive entry %q escapes the unpack directory", name)
 	}
 	return target, nil
+}
+
+func within(root, path string) bool {
+	cleanRoot := filepath.Clean(root) + string(filepath.Separator)
+	return strings.HasPrefix(filepath.Clean(path)+string(filepath.Separator), cleanRoot)
+}
+
+// containedLink rejects a symlink entry whose target leaves dest. An ABSOLUTE
+// linkname is the escape a containment check on the joined path misses: joining
+// "/etc" under the link's own directory lands back inside dest and reads as
+// contained, while the link written to disk points at the real /etc, and a
+// later regular entry under that name is opened through it with O_CREATE.
+func containedLink(dest, linkPath, linkname string) error {
+	local := filepath.FromSlash(linkname)
+	if local == "" {
+		return errors.New("empty link target")
+	}
+	if filepath.IsAbs(local) || strings.HasPrefix(linkname, "/") {
+		return errors.New("absolute link target")
+	}
+	if !within(dest, filepath.Join(filepath.Dir(linkPath), local)) {
+		return errors.New("link target outside the unpack directory")
+	}
+	return nil
 }
 
 // compareVersions orders two release versions: -1 when a is older than b. An
@@ -825,15 +850,30 @@ type busyDaemon struct {
 // cannot distinguish from a crash.
 func busyDaemons(policy profilepolicy.Policy, client *http.Client) []busyDaemon {
 	var busy []busyDaemon
+	// Profiles that pin no HTTP address share the default port, so probing per
+	// profile asks the same daemon the same question N times and can refuse in
+	// the name of a profile that daemon is not serving.
+	probed := map[string]bool{}
 	for _, profile := range policy.Profiles {
-		health, err := probeDaemonHealth(client, defaultBridgeHTTPURL(profile))
+		url := defaultBridgeHTTPURL(profile)
+		if probed[url] {
+			continue
+		}
+		probed[url] = true
+		health, err := probeDaemonHealth(client, url)
 		if err != nil {
 			// Not answering: there is no in-flight work to interrupt.
 			continue
 		}
+		// A daemon knows which profile it serves; the policy entry that happens
+		// to name this port only knows which one it asked for.
+		name := profile.Name
+		if health.Identity.Profile != "" {
+			name = health.Identity.Profile
+		}
 		if health.TabLeases.InFlight > 0 {
 			busy = append(busy, busyDaemon{
-				Profile: profile.Name,
+				Profile: name,
 				Detail: fmt.Sprintf("%d request(s) in flight across %d leased tab(s)",
 					health.TabLeases.InFlight, health.TabLeases.ActiveTabs),
 			})
@@ -848,7 +888,7 @@ func busyDaemons(policy profilepolicy.Policy, client *http.Client) []busyDaemon 
 		}
 		if pending := status.Inflight + status.Queued + status.Pending; pending > 0 {
 			busy = append(busy, busyDaemon{
-				Profile: profile.Name,
+				Profile: name,
 				Detail:  fmt.Sprintf("%d bridge operation(s) in flight or queued", pending),
 			})
 		}
@@ -858,20 +898,29 @@ func busyDaemons(policy profilepolicy.Policy, client *http.Client) []busyDaemon 
 
 // restartServices restarts the per-user daemon of every profile that has a unit
 // installed, so the upgraded binary is the one actually running afterwards.
+//
+// A profile with no unit is passed over in silence: a direct-CDP profile has no
+// daemon of its own, and a stdio daemon is launched by the agent client, so a
+// line per profile telling the operator to start something by hand is noise
+// around the one case that is real — no unit anywhere.
 func restartServices(opts upgradeOptions, policy profilepolicy.Policy) ([]string, []string) {
 	var restarted, manual []string
+	units := 0
 	for _, profile := range policy.Profiles {
 		params := setup.ServiceParams{GOOS: opts.goos, Profile: profile.Name, Home: opts.home}
 		if _, err := os.Stat(params.UnitPath()); err != nil {
-			manual = append(manual, fmt.Sprintf("profile %s has no installed service unit; start its daemon yourself or run brwctl setup --profile %s", profile.Name, profile.Name))
 			continue
 		}
+		units++
 		args := serviceRestartArgs(opts.goos, params)
 		if out, err := opts.runner.run(args[0], args[1:]...); err != nil {
 			manual = append(manual, fmt.Sprintf("%s failed (%v %s); run it yourself", setup.Command(args), err, out))
 			continue
 		}
 		restarted = append(restarted, params.Label())
+	}
+	if units == 0 && len(policy.Profiles) > 0 {
+		manual = append(manual, "No profile has an installed service unit, so nothing was restarted: restart the daemon yourself (or the agent client that launches it) to run the new binary.")
 	}
 	return restarted, manual
 }

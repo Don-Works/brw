@@ -145,6 +145,73 @@ func TestHandshakeTokenAcceptedAndRejected(t *testing.T) {
 	})
 }
 
+// TestRejectedHandshakeIsVisibleOnStatus: a refused handshake never becomes a
+// connection, so without this it appears nowhere but the daemon log, and
+// `brwctl doctor` can only report "no extension has connected" and offer a
+// reload that presents the same rejected token again.
+func TestRejectedHandshakeIsVisibleOnStatus(t *testing.T) {
+	cases := []struct {
+		name      string
+		strict    bool
+		presented string
+		wantIn    string
+		wantSeen  bool
+	}{
+		{name: "a wrong token", presented: "wrong-token", wantIn: "invalid handshake token", wantSeen: true},
+		{name: "no token in strict mode", strict: true, wantIn: "missing handshake token", wantSeen: true},
+		{name: "an accepted token records nothing", presented: "s3cret-token"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := New("", 5*time.Second, "")
+			b.SetAuthToken("s3cret-token")
+			b.SetRequireToken(tc.strict)
+			srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
+			defer srv.Close()
+			wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/extension"
+
+			conn, err := dialExtension(t, wsURL, testDefaultOrigin)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer conn.Close(websocket.StatusNormalClosure, "done")
+			sendHello(t, conn, tc.presented)
+			if !tc.wantSeen {
+				waitUntil(t, b.liveConn)
+			}
+
+			var reason string
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, "/status", nil)
+				req.Host = "127.0.0.1:17311"
+				b.handleStatus(rec, req)
+				var status map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+					t.Fatalf("decode status: %v", err)
+				}
+				reason, _ = status["disconnect_reason"].(string)
+				if !tc.wantSeen || strings.Contains(reason, "handshake") || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+
+			if !tc.wantSeen {
+				if reason != "" {
+					t.Fatalf("an accepted handshake recorded disconnect_reason %q", reason)
+				}
+				return
+			}
+			if !strings.Contains(reason, "handshake rejected") || !strings.Contains(reason, tc.wantIn) {
+				t.Fatalf("disconnect_reason = %q, want the handshake rejection naming %q", reason, tc.wantIn)
+			}
+		})
+	}
+}
+
 // TestEmptyOriginRejected proves a connection with no Origin header (a non-browser
 // local client) is refused at the upgrade, closing the coder/websocket gap.
 func TestEmptyOriginRejected(t *testing.T) {

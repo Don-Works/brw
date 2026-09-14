@@ -553,3 +553,14 @@ re-syncs the per-profile extension copies from the installed payload without
 downloading anything, which is what `doctor` sends you to when one has fallen
 behind. Reload the extension in the browser afterwards (`chrome://extensions`,
 Reload) so it runs the payload the upgrade wrote.
+
+Every refusal above happens before the swap, so the install is left exactly as
+it was. Once the swap has begun, each payload directory is removed and then
+rewritten, so a failure part-way through (a full disk, a permission change)
+leaves the app directory partly replaced — as `install.sh` does. Re-run
+`brwctl upgrade` or the one-line installer to finish it; the daemon keeps
+running the binary it started with until it is restarted either way.
+
+A profile's own `bridge-defaults.json` is install state, not payload: the
+upgrade carries each per-profile extension copy's own file across and never
+lets one profile's endpoint or handshake token reach another's copy.

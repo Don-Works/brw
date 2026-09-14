@@ -21,17 +21,32 @@ import (
 type fakeRunner struct {
 	onPath  map[string]bool
 	failing []string
-	output  map[string]string
-	calls   []string
+	// failWith returns one specific error for a matching call, with whatever
+	// output is filed under the same prefix. A command's exit status is only
+	// readable through a real *exec.ExitError, so code that switches on one
+	// cannot be exercised with errors.New.
+	failWith map[string]error
+	output   map[string]string
+	calls    []string
 }
 
 func newFakeRunner(failing ...string) *fakeRunner {
-	return &fakeRunner{onPath: map[string]bool{}, output: map[string]string{}, failing: failing}
+	return &fakeRunner{
+		onPath:   map[string]bool{},
+		output:   map[string]string{},
+		failWith: map[string]error{},
+		failing:  failing,
+	}
 }
 
 func (f *fakeRunner) run(name string, args ...string) (string, error) {
 	joined := strings.Join(append([]string{name}, args...), " ")
 	f.calls = append(f.calls, joined)
+	for prefix, err := range f.failWith {
+		if strings.HasPrefix(joined, prefix) {
+			return f.output[prefix], err
+		}
+	}
 	for _, prefix := range f.failing {
 		if strings.HasPrefix(joined, prefix) {
 			return "", errors.New("nothing there")

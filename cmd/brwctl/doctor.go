@@ -115,6 +115,10 @@ type doctorRequest struct {
 	// operator to do by hand afterwards: probing a bridge nothing has connected
 	// to yet would end every successful setup with a red check.
 	SkipLiveChecks bool
+	// ResolveError is why the caller could not name a workspace itself. It is
+	// reported as the profile check rather than returned, so a machine whose
+	// policy binds no workspace still gets the whole report.
+	ResolveError error
 }
 
 func doctor(args []string) error {
@@ -131,36 +135,29 @@ func doctor(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	var resolveErr error
 	if profileName == "" && workspaceName == "" {
 		// A machine configured by `brwctl setup` has exactly one binding, and
 		// making the operator retype its generated name is the kind of friction
 		// that sends people back to hand-editing the policy.
-		resolved, err := soleWorkspace(policyPath)
-		if err != nil {
-			// A policy that cannot be read is a diagnosis, not a usage error:
-			// report it as the red check it is, with the command that fixes it.
-			return reportDoctor(os.Stdout, doctorResult{
-				AppDir: appDir,
-				Checks: []doctorCheck{{
-					Name: "profile_policy", Title: "profile policy", Status: checkFail,
-					Detail: err.Error(),
-					Fix:    "brwctl setup",
-				}},
-				Failures: []string{err.Error()},
-			}, asJSON)
-		}
-		workspaceName = resolved
+		//
+		// Failing to pick one is a diagnosis, not a usage error, and it goes
+		// through the full report rather than a hand-built one: --json is a
+		// contract, and the commonest broken machine is exactly the one that
+		// lands here.
+		workspaceName, resolveErr = soleWorkspace(policyPath)
 	}
 	home, _ := os.UserHomeDir()
 	executable, _ := os.Executable()
 	report := doctorReport(doctorRequest{
-		Workspace:  workspaceName,
-		Profile:    profileName,
-		PolicyPath: policyPath,
-		AppDir:     appDir,
-		Home:       home,
-		Executable: executable,
-		Timeout:    timeout,
+		Workspace:    workspaceName,
+		Profile:      profileName,
+		PolicyPath:   policyPath,
+		AppDir:       appDir,
+		Home:         home,
+		Executable:   executable,
+		Timeout:      timeout,
+		ResolveError: resolveErr,
 	})
 	return reportDoctor(os.Stdout, report, asJSON)
 }
@@ -317,6 +314,11 @@ func (d *doctorRun) checkPolicy() {
 }
 
 func (d *doctorRun) resolveProfile() {
+	if d.req.ResolveError != nil {
+		d.add(checkFail, "profile_resolved", "profile", d.req.ResolveError.Error(),
+			"brwctl doctor --workspace <workspace>")
+		return
+	}
 	profile, err := d.policy.ResolveProfile(d.req.Workspace, d.req.Profile)
 	if err != nil {
 		names := make([]string, 0, len(d.policy.Profiles))
@@ -591,7 +593,14 @@ func (d *doctorRun) checkBridgeConnected() {
 		if status.DisconnectReason != "" {
 			detail += " (last disconnect: " + status.DisconnectReason + ")"
 		}
-		d.add(checkFail, "bridge_connected", "extension bridge", detail, d.reloadExtensionCommand())
+		fix := d.reloadExtensionCommand()
+		if handshakeRejected(status.DisconnectReason) {
+			// A reload re-presents the same token, so the reload command is a
+			// loop here. The token lives in the profile's own
+			// bridge-defaults.json, and setup is what writes it.
+			fix = "brwctl setup" + d.workspaceFlag() + "   # rewrites this profile's " + setup.BridgeDefaultsFile + ", then reload the extension"
+		}
+		d.add(checkFail, "bridge_connected", "extension bridge", detail, fix)
 		return
 	}
 	detail := fmt.Sprintf("connected since %s", status.ConnectedAt)
@@ -599,6 +608,16 @@ func (d *doctorRun) checkBridgeConnected() {
 		detail = "extension build " + status.Hello.Build + " " + detail
 	}
 	d.add(checkOK, "bridge_connected", "extension bridge", detail, "")
+}
+
+// handshakeRejected reports whether the bridge turned the extension away at the
+// handshake rather than losing a connection it had accepted. The two take
+// different fixes: a rejected handshake is a missing or stale token, which the
+// browser will present again unchanged however often it is reloaded. The prefix
+// is the one extensionbridge.recordHandshakeRejection writes; an older daemon
+// reports nothing here and gets the reload command, as before.
+func handshakeRejected(reason string) bool {
+	return strings.HasPrefix(reason, "handshake rejected")
 }
 
 func (d *doctorRun) checkExtensionVersion() {
@@ -680,20 +699,39 @@ func (d *doctorRun) checkMCPRegistration() {
 	}
 
 	servers, found, err := setup.ReadMCPServers(configPath)
-	switch {
-	case err != nil:
+	if err != nil {
 		d.add(checkFail, "mcp_registration", "MCP registration",
 			"cannot read "+configPath+": "+err.Error(), addCommand)
-		return
-	case !found:
-		d.add(checkWarn, "mcp_registration", "MCP registration",
-			"no agent client config at "+configPath+"; nothing on this machine is configured to launch brw", addCommand)
 		return
 	}
 	entry, ok := servers[name]
 	if !ok {
-		d.add(checkFail, "mcp_registration", "MCP registration",
-			fmt.Sprintf("%s registers no MCP server named %q", configPath, name), addCommand)
+		// Claude Code's JSON config is not the only place a registration can
+		// live: `brwctl setup --mcp-client codex` writes codex's TOML, which
+		// nothing here can parse, so ask codex itself. Reporting a codex-only
+		// machine red sends the operator to re-register a client they chose not
+		// to use.
+		if d.codexRegisters(name) {
+			d.add(checkOK, "mcp_registration", "MCP registration", name+" is registered with codex", "")
+			return
+		}
+		absent := fmt.Sprintf("%s registers no MCP server named %q", configPath, name)
+		if !found {
+			absent = "no agent client config at " + configPath + "; nothing on this machine is configured to launch brw"
+		}
+		_, claudeOnPath := d.req.Runner.look("claude")
+		if _, codexOnPath := d.req.Runner.look("codex"); codexOnPath {
+			absent += ", and the codex CLI has no brw server either"
+		} else if !claudeOnPath {
+			// With neither client installed there is nothing here to say brw is
+			// unregistered: ~/.claude.json outlives the install that wrote it,
+			// and setup's --mcp-client none hands the config to a client brw
+			// has no way to read.
+			d.add(checkWarn, "mcp_registration", "MCP registration",
+				absent+"; no agent client CLI is on PATH, so brw may be registered in one brw cannot see", addCommand)
+			return
+		}
+		d.add(checkFail, "mcp_registration", "MCP registration", absent, addCommand)
 		return
 	}
 	replace := "claude mcp remove -s user " + name + " && " + addCommand
@@ -708,6 +746,17 @@ func (d *doctorRun) checkMCPRegistration() {
 		return
 	}
 	d.add(checkOK, "mcp_registration", "MCP registration", name+" launches "+entry.Command+" (from "+configPath+")", "")
+}
+
+// codexRegisters asks the codex CLI whether it holds this server, the way
+// setup's own registration step does. codex keeps its MCP servers in TOML and
+// there is no TOML parser in this module, so the CLI is the only reader.
+func (d *doctorRun) codexRegisters(name string) bool {
+	if _, onPath := d.req.Runner.look("codex"); !onPath {
+		return false
+	}
+	_, err := d.req.Runner.run("codex", "mcp", "get", name)
+	return err == nil
 }
 
 // samePath compares two commands as the filesystem sees them, so a bin/
@@ -755,8 +804,46 @@ func (d *doctorRun) checkTransport() {
 	capabilities := setup.CapabilitiesFor(transport)
 	d.result.Transport = transport
 	d.result.Capabilities = &capabilities
-	d.add(checkOK, "transport", "transport capabilities",
-		transport+" — has "+capabilities.Has+"; lacks "+capabilities.Lacks, "")
+	summary := transport + " — has " + capabilities.Has + "; lacks " + capabilities.Lacks
+	if d.req.SkipLiveChecks {
+		d.add(checkSkip, "transport", "transport capabilities",
+			summary+"; live checks skipped, so nothing here says the lane is up", "")
+		return
+	}
+	// The lane the policy allows is not the lane that is carrying anything. A
+	// green capability list on a machine whose daemon or bridge is down reads
+	// as "these tools work here" when no tool can run at all.
+	if blocker, dead := d.deadLane(); dead {
+		d.add(checkFail, "transport", "transport capabilities",
+			transport+" is configured but not live: "+blocker.Detail, blocker.Fix)
+		return
+	}
+	d.add(checkOK, "transport", "transport capabilities", summary, "")
+}
+
+// deadLane names the failed check that stops this profile's transport carrying
+// a tool call. The bridge only counts on the lane that uses it.
+func (d *doctorRun) deadLane() (doctorCheck, bool) {
+	names := []string{"daemon"}
+	if d.profile.ExtensionBridgeAllowed {
+		names = append(names, "bridge_connected")
+	}
+	for _, name := range names {
+		if check, found := d.checkNamed(name); found && check.Status == checkFail {
+			return check, true
+		}
+	}
+	return doctorCheck{}, false
+}
+
+// checkNamed returns a check this run has already reported.
+func (d *doctorRun) checkNamed(name string) (doctorCheck, bool) {
+	for _, check := range d.result.Checks {
+		if check.Name == name {
+			return check, true
+		}
+	}
+	return doctorCheck{}, false
 }
 
 // daemonHealth is the part of brwd's /health that doctor and upgrade read.

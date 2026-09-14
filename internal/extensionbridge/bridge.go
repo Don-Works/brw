@@ -575,6 +575,21 @@ func (b *Bridge) Shutdown(ctx context.Context) error {
 	return b.server.Shutdown(ctx)
 }
 
+// recordHandshakeRejection publishes a refused handshake on /status. The
+// connection never goes live, so nothing else records it: an operator diagnosing
+// a bridge that is turning the extension away otherwise sees only "no extension
+// has connected" and reloads the same stale token. A live connection's reason is
+// left alone, because a rejected newcomer is not why that one ended.
+func (b *Bridge) recordHandshakeRejection(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.conn != nil {
+		return
+	}
+	b.disconnectReason = "handshake rejected: " + err.Error()
+	b.disconnectedAt = time.Now().UTC()
+}
+
 func (b *Bridge) handleStatus(w http.ResponseWriter, r *http.Request) {
 	b.mu.RLock()
 	connected := b.conn != nil
@@ -705,6 +720,7 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		h, herr := b.verifyHandshake(r.Context(), conn)
 		if herr != nil {
 			log.Printf("extension bridge handshake rejected: %v", herr)
+			b.recordHandshakeRejection(herr)
 			_ = conn.Close(websocket.StatusPolicyViolation, "handshake failed")
 			return
 		}
