@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Don-Works/brw/internal/actions"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -168,6 +169,24 @@ var compilableActions = map[string]string{
 	"select":      "select",
 	"press":       "press",
 	"navigate_to": "navigate_to",
+}
+
+// literalValueActions says, for every compilable action, whether the recording
+// carried literal typed characters into the page through it.
+//
+// It is the table the credential check is driven by, and it covers every entry
+// of compilableActions — a test enumerates them and fails on one with no entry,
+// because the default for an unclassified action is the default that leaks. A
+// press was the entry this table was written for: keystrokes entered one at a
+// time are the typed value, spelled differently, and the earlier check looked
+// only at fill, type and select.
+var literalValueActions = map[string]bool{
+	"click":       false,
+	"fill":        true,
+	"type":        true,
+	"select":      true,
+	"press":       true,
+	"navigate_to": false,
 }
 
 // credentialNamePattern recognises a field whose contents are a credential
@@ -420,6 +439,13 @@ func (c *compiler) compileStep(position int, verb string, traced TraceStep, befo
 		if key == "" {
 			return fail("recorded key press captured no key")
 		}
+		if !actions.IsNamedKey(key) {
+			// The key is not named in the refusal: a literal character press is
+			// one character of whatever was being entered, and a compile that
+			// failed by quoting it back would print the thing it refused to
+			// compile. A named key is a command; anything else is data.
+			return fail("recorded key press is a literal character rather than a named key such as Enter, Tab or ctrl+a; a value entered one keystroke at a time is data, and a recipe carries inputs instead")
+		}
 		step.Key = key
 	}
 
@@ -430,7 +456,7 @@ func (c *compiler) compileStep(position int, verb string, traced TraceStep, befo
 	step.Postcondition = postcondition
 	if isWrite {
 		step.Effect = "external_write"
-		step.IdempotencyKey = c.opts.ID + ":" + step.ID
+		step.IdempotencyKey = c.writeIdempotencyKey(step.ID)
 		if declaration.Nonce != nil {
 			// Copied, never aliased: the compiled recipe is hashed into a digest
 			// callers pin, and a plan the caller still holds must not be able to
@@ -453,9 +479,31 @@ func (c *compiler) compileStep(position int, verb string, traced TraceStep, befo
 		if err := validateAssertion(verification, c.inputs); err != nil {
 			return fail(fmt.Sprintf("declared verification is not a usable assertion: %v", err))
 		}
-		c.steps = append(c.steps, Step{ID: step.ID + "_verify", Action: "assert", Assert: &verification})
+		// Tagged, because the evidence assertion above is also an assert step
+		// after this write and nothing else distinguishes the two. An interrupted
+		// rerun reads the tag; a positional rule would read the cheap inferred
+		// assertion and commit a receipt for a write that never landed.
+		c.steps = append(c.steps, Step{
+			ID: step.ID + "_verify", Action: "assert", Assert: &verification, Verifies: step.ID,
+		})
 	}
 	return nil
+}
+
+// writeIdempotencyKey composes a write's key from the inputs the flow supplied
+// before it.
+//
+// A key naming only the recipe and the step is the same string for every run.
+// Service.acquireRunLocks singleflights on the expanded key, so two runs with
+// entirely different inputs would serialise on one another, and the key the
+// review body prints would read as though it identified one submission when it
+// identifies the recipe.
+func (c *compiler) writeIdempotencyKey(stepID string) string {
+	key := c.opts.ID + ":" + stepID
+	for _, name := range sortedInputNames(c.inputs) {
+		key += ":${input:" + name + "}"
+	}
+	return key
 }
 
 // checkCredentialField refuses to compile a write into a credential field.
@@ -464,8 +512,19 @@ func (c *compiler) compileStep(position int, verb string, traced TraceStep, befo
 // credential-bearing, the snapshot marks the element sensitive, and the
 // accessible name is read as a last resort. A recipe that types a password is
 // a recipe that needs one stored somewhere, which is the thing brw is not.
+//
+// Which actions are checked comes from literalValueActions rather than from a
+// list written out here, so a compilable action added without a classification
+// is refused instead of walking past the check.
 func (c *compiler) checkCredentialField(position int, traced TraceStep, before *TraceObservation) error {
-	if traced.Action != "fill" && traced.Action != "type" && traced.Action != "select" {
+	carries, classified := literalValueActions[traced.Action]
+	if !classified {
+		return CompileError{
+			StepIndex: position, Action: traced.Action,
+			Reason: "no classification says whether this action carried a typed value into the page, so brw cannot tell whether it was a credential field; refusing rather than guessing",
+		}
+	}
+	if !carries {
 		return nil
 	}
 	reason := ""
@@ -523,8 +582,8 @@ func (c *compiler) deriveTarget(position int, traced TraceStep, before *TraceObs
 		target.NameContains = name
 	case found && observed.TestID != "":
 		target.TestID = observed.TestID
-	case found && observed.Href != "":
-		target.HrefContains = observed.Href
+	case found && stableHref(observed.Href) != "":
+		target.HrefContains = stableHref(observed.Href)
 	default:
 		return nil, CompiledTarget{}, observed, fail("the acted element had no accessible name, test id or href to identify it by")
 	}
@@ -577,14 +636,31 @@ func narrowTarget(target Target, observed snapshot.Element, elements []snapshot.
 			return narrowed, true
 		}
 	}
-	if observed.Href != "" {
+	if href := stableHref(observed.Href); href != "" {
 		narrowed := target
-		narrowed.HrefContains = observed.Href
+		narrowed.HrefContains = href
 		if len(snapshot.RankTargetCandidates(elements, targetCriteria(narrowed))) == 1 {
 			return narrowed, true
 		}
 	}
 	return target, false
+}
+
+// stableHref keeps the part of a recorded href that identifies the link and
+// drops the part that identifies the recording.
+//
+// A query string and a fragment are where a session id, a one-time token or a
+// page cursor live. Matching on them publishes whatever the recording happened
+// to hold and makes the recipe unreplayable the moment the token expires, and
+// the compiler's rule is that what the recording contained stays in the
+// recording. An href that is nothing but a query yields no target at all, and
+// the caller falls through to its own refusal.
+func stableHref(href string) string {
+	trimmed := strings.TrimSpace(href)
+	if index := strings.IndexAny(trimmed, "?#"); index >= 0 {
+		trimmed = trimmed[:index]
+	}
+	return trimmed
 }
 
 func findObservedElement(elements []snapshot.Element, ref string) (snapshot.Element, bool) {
@@ -612,7 +688,13 @@ func (c *compiler) inferPostcondition(before, after *TraceObservation, isWrite b
 		return &Event{Kind: "url.matches", Match: url, TimeoutMS: postconditionTimeoutMS}, assertion, nil
 	}
 	if target, ok := introducedElement(before, after); ok {
-		return &Event{Kind: "element.visible", Target: &target, TimeoutMS: postconditionTimeoutMS}, nil, nil
+		// One element, not "at least one": the element was chosen because it
+		// resolves to exactly one candidate in the observation after the action,
+		// so a rerun that finds two has found a different page.
+		count := 1
+		asserted := target
+		return &Event{Kind: "element.visible", Target: &target, TimeoutMS: postconditionTimeoutMS},
+			&Assertion{Kind: browser.AssertionElementCount, Target: &asserted, Count: &count}, nil
 	}
 	if download, ok := newCompletedDownload(before, after); ok {
 		if isWrite {

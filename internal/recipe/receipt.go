@@ -53,12 +53,13 @@ type Receipt struct {
 	StepID        string `json:"step_id"`
 	Origin        string `json:"origin"`
 	Status        string `json:"status"`
-	// SiteNonce is the site's own per-submission token, when the step declared
-	// one. A rerun compares it: the same token means the site is in a position
-	// to reject a duplicate itself.
-	SiteNonce    string    `json:"site_nonce,omitempty"`
-	DispatchedAt time.Time `json:"dispatched_at"`
-	CommittedAt  time.Time `json:"committed_at,omitempty"`
+	// SiteNonceDigest is a digest of the site's own per-submission token, when
+	// the step declared one. The comparison a rerun makes needs only equality,
+	// and the receipt is stored by a third party, so the live token itself never
+	// leaves the machine.
+	SiteNonceDigest string    `json:"site_nonce_digest,omitempty"`
+	DispatchedAt    time.Time `json:"dispatched_at"`
+	CommittedAt     time.Time `json:"committed_at,omitempty"`
 	// Evidence names what was observed to pass. It is the postcondition's
 	// description, never page content: a receipt is a control record and lives
 	// with a third party.
@@ -70,11 +71,13 @@ type Receipt struct {
 type Receipts interface {
 	// Lookup reports the receipt held for key, if any.
 	Lookup(context.Context, string) (Receipt, bool, error)
-	// Begin records an in-flight receipt BEFORE the write is dispatched. When
-	// one already exists it is returned unchanged rather than overwritten: the
-	// existing record is the evidence, and losing it is how a duplicate write
-	// happens.
-	Begin(context.Context, Receipt) (Receipt, error)
+	// Begin records an in-flight receipt BEFORE the write is dispatched and
+	// reports whether THIS call created it. An existing record is returned
+	// unchanged rather than overwritten — the existing record is the evidence,
+	// and losing it is how a duplicate write happens — and the created flag is
+	// what lets the caller tell "nobody had dispatched this" from "somebody had,
+	// between our lookup and our begin".
+	Begin(context.Context, Receipt) (Receipt, bool, error)
 	// Commit records completion evidence. It is called only after the declared
 	// postcondition has passed.
 	Commit(context.Context, string, string) (Receipt, error)
@@ -157,6 +160,22 @@ func ReceiptKey(value Recipe, step Step, origin string, inputs map[string]string
 	return hex.EncodeToString(sum.Sum(nil)), nil
 }
 
+// hashSiteNonce reduces the page's live submission token to a digest.
+//
+// Equality is the whole of what a rerun asks of it, and the receipt is held by
+// the private provider, so shipping the token itself would put a live page
+// credential in somebody else's store for no gain. The domain tag separates
+// these digests from receipt keys computed over the same helper.
+func hashSiteNonce(nonce string) string {
+	if nonce == "" {
+		return ""
+	}
+	sum := sha256.New()
+	writeKeyField(sum, receiptKeyDomain+".nonce")
+	writeKeyField(sum, nonce)
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
 // writeKeyField length-prefixes one field so the concatenation is unambiguous.
 func writeKeyField(sum hash.Hash, field string) {
 	var length [binary.MaxVarintLen64]byte
@@ -222,21 +241,21 @@ func (m *MemoryReceipts) Lookup(_ context.Context, key string) (Receipt, bool, e
 	return record, ok, nil
 }
 
-func (m *MemoryReceipts) Begin(_ context.Context, receipt Receipt) (Receipt, error) {
+func (m *MemoryReceipts) Begin(_ context.Context, receipt Receipt) (Receipt, bool, error) {
 	if err := validateReceipt(receipt); err != nil {
-		return Receipt{}, err
+		return Receipt{}, false, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if existing, ok := m.records[receipt.Key]; ok {
-		return existing, nil
+		return existing, false, nil
 	}
 	receipt.Status = ReceiptInFlight
 	if receipt.DispatchedAt.IsZero() {
 		receipt.DispatchedAt = time.Now().UTC()
 	}
 	m.records[receipt.Key] = receipt
-	return receipt, nil
+	return receipt, true, nil
 }
 
 func (m *MemoryReceipts) Commit(_ context.Context, key, evidence string) (Receipt, error) {

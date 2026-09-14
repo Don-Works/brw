@@ -110,14 +110,21 @@ Follow every `external_write` action with an `assert` step that reads the state
 back. The runner refuses a recipe that does not have one, because the only
 record brw can write by itself says that brw dispatched something, not that the
 other side kept it. That assertion is also what an interrupted rerun consults.
+Where more than one `assert` follows a write, tag the read-back with
+`verifies: "<write step id>"`; an untagged pair is refused, because nothing says
+which of them proves the write landed.
 
 Against an HTTP recipe provider, brw records each external write with the
 provider before dispatching it and records completion only after the declared
 postcondition passes. A rerun finding an earlier run's in-flight record runs the
 verification step rather than re-submitting, and fails if it cannot confirm the
-write. Where the site mints its own per-submission token in a form field,
-declare it with `site_idempotency: {kind: "form_nonce", target: {...}}`; brw
-reads and records the token before dispatch and refuses to act without it.
+write — there is no case in which it dispatches again. Where the site mints its
+own per-submission token in a form field, declare it with
+`site_idempotency: {kind: "form_nonce", target: {...}}`; brw reads the token
+before dispatch, records a digest of it, and refuses to act without it. The
+token is evidence for whoever reads the failure, not a licence to re-submit: brw
+cannot tell a consumed per-submission token from a per-session CSRF value the
+site would accept twice.
 
 An `attempts: 0` outcome means only that the current UI already matched the
 postcondition. It is not a receipt proving that an earlier remote write took
@@ -152,12 +159,16 @@ the trace. The compiler re-derives each target from the recorded role and
 accessible name and accepts it only when it names exactly one element in the
 observation the action was aimed at, turns each typed value into a declared
 runtime input, infers each postcondition from the observation taken after the
-action, and prints a diff-able review body. It refuses — naming the trace step —
-a coordinate-driven action, a write into a credential field, an ambiguous
-target, a navigation to an undeclared origin, or a step with an empty
-post-action observation, and writes nothing when it refuses. `--out` must be
-outside every Git checkout; `--publish` sends the draft to the provider's write
-API instead.
+action, and prints a diff-able review body. A step whose after-observation shows
+no change compiles with no postcondition, and the review body says
+`postcondition none` for it. It refuses — naming the trace step — a
+coordinate-driven action, a write into a credential field (key presses
+included), a `press` whose key is a literal character rather than a named one,
+an ambiguous target, a navigation to an undeclared origin, or a step with an
+empty post-action observation, and writes nothing when it refuses. `--out` must
+be outside every Git checkout and is created with `O_EXCL`, so a symlink at that
+path is refused rather than followed; `--publish` sends the draft to the
+provider's write API instead.
 
 Without `--plan` the same command produces a skeleton carrying `TODO` markers
 for every judgement it refuses to make. Resolve all of them before validating.

@@ -185,4 +185,17 @@ func TestRecipeReceiptsOnlyComeFromAProviderThatOutlivesTheDaemon(t *testing.T) 
 	if got := recipeReceiptsFor(local); got != nil {
 		t.Fatalf("a local catalogue was used as a write ledger: %T", got)
 	}
+
+	// A deployment with no write ledger has to say so while it is starting.
+	// Otherwise the first anyone hears of it is a daemon that came back with no
+	// record of the write it was in the middle of.
+	line := recipeReceiptStatusLine(nil)
+	for _, want := range []string{"cannot hold external-write receipts", "--recipe-provider-url"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("startup line %q does not mention %q", line, want)
+		}
+	}
+	if enabled := recipeReceiptStatusLine(recipe.NewMemoryReceipts()); strings.Contains(enabled, "cannot hold") {
+		t.Fatalf("a deployment that does hold receipts reported %q", enabled)
+	}
 }

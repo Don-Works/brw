@@ -73,6 +73,17 @@ func writeReviewStep(body *strings.Builder, position int, step Step, derived Com
 	}
 	if step.URL != "" {
 		fmt.Fprintf(body, "  url %s\n", step.URL)
+		// On their own lines because a query string and a fragment are where a
+		// recording's one-time token ends up — a session id in the query, an
+		// implicit-flow token in the fragment — and buried at the end of a long
+		// URL a reviewer reads past them.
+		query, fragment := urlQueryAndFragment(step.URL)
+		if query != "" {
+			fmt.Fprintf(body, "  url_query %s\n", query)
+		}
+		if fragment != "" {
+			fmt.Fprintf(body, "  url_fragment %s\n", fragment)
+		}
 	}
 	if step.Value != "" {
 		fmt.Fprintf(body, "  value %s\n", step.Value)
@@ -93,20 +104,50 @@ func writeReviewStep(body *strings.Builder, position int, step Step, derived Com
 		fmt.Fprintf(body, "  idempotency_key %s\n", step.IdempotencyKey)
 	}
 	if step.SiteIdempotency != nil {
-		fmt.Fprintf(body, "  site_idempotency %s at %s\n", step.SiteIdempotency.Kind, describeTarget(*step.SiteIdempotency.Target))
+		// Guarded like every other optional pointer here: this renders a recipe
+		// that may not have been through Validate, and a reviewer reading a
+		// malformed one needs the rendering, not a panic.
+		fmt.Fprintf(body, "  site_idempotency %s\n", step.SiteIdempotency.Kind)
+		if step.SiteIdempotency.Target != nil {
+			fmt.Fprintf(body, "  site_idempotency target %s\n", describeTarget(*step.SiteIdempotency.Target))
+		}
 	}
 	if step.Event != nil {
 		fmt.Fprintf(body, "  wait %s\n", describeEvent(*step.Event))
 	}
 	if step.Postcondition != nil {
 		fmt.Fprintf(body, "  postcondition %s\n", describeEvent(*step.Postcondition))
+	} else if actuationActions[step.Action] {
+		// Stated rather than left blank. The compiler infers a postcondition
+		// from the observation after the action, and an observation showing no
+		// change yields none; a reviewer who is not told reads the absence as a
+		// rendering that omits it.
+		body.WriteString("  postcondition none\n")
 	}
 	if step.Assert != nil {
 		fmt.Fprintf(body, "  assert %s\n", describeAssertion(*step.Assert))
 	}
+	if step.Verifies != "" {
+		fmt.Fprintf(body, "  verifies %s\n", step.Verifies)
+	}
 	if step.Capture != nil {
 		fmt.Fprintf(body, "  capture %s\n", step.Capture.Kind)
 	}
+}
+
+// urlQueryAndFragment splits a URL's trailing query and fragment off, each
+// without its leading delimiter, and returns empty strings for the parts a URL
+// does not carry.
+func urlQueryAndFragment(raw string) (string, string) {
+	fragment := ""
+	if index := strings.Index(raw, "#"); index >= 0 {
+		fragment, raw = raw[index+1:], raw[:index]
+	}
+	query := ""
+	if index := strings.Index(raw, "?"); index >= 0 {
+		query = raw[index+1:]
+	}
+	return query, fragment
 }
 
 func describeEvent(event Event) string {

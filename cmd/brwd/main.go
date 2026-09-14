@@ -656,9 +656,7 @@ func main() {
 			}
 			recipeAPI = service
 			log.Printf("private recipe provider enabled (recipe bodies and inputs are never written to usage logs)")
-			if runner.Receipts != nil {
-				log.Printf("external-write receipts are recorded with the recipe provider, so an interrupted write survives a daemon restart")
-			}
+			log.Printf("%s", recipeReceiptStatusLine(runner.Receipts))
 		}
 	}
 
@@ -1005,6 +1003,20 @@ func recipeReceiptsFor(provider recipe.Provider) recipe.Receipts {
 		return receipts
 	}
 	return nil
+}
+
+// recipeReceiptStatusLine says at startup which of the two deployments this is.
+//
+// The absence of receipts is invisible at run time for any recipe that does not
+// declare a site nonce: writes still run, and the difference only shows up after
+// a crash, when there is no record of the one that was in flight. An operator
+// finding that out then is finding it out too late, so it is said here, with the
+// flag that changes it.
+func recipeReceiptStatusLine(receipts recipe.Receipts) string {
+	if receipts != nil {
+		return "external-write receipts are recorded with the recipe provider, so an interrupted write survives a daemon restart"
+	}
+	return "this recipe provider cannot hold external-write receipts: an interrupted write leaves no record a restarted daemon can find, and a recipe declaring a site idempotency nonce is refused; --recipe-provider-url configures a provider that can"
 }
 
 func configureRecipeProvider(ctx context.Context, directory, providerURL, tokenFile string) (recipe.Provider, error) {

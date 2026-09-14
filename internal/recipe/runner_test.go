@@ -17,28 +17,31 @@ import (
 )
 
 type fakeSurface struct {
-	mu         sync.Mutex
-	origin     string
-	elements   []ResolvedElement
-	events     map[string]bool
-	notify     chan struct{}
-	clicks     int
-	fills      int
-	presses    int
-	armCalls   int
-	lastFill   string
-	traceSafe  bool
-	eventSafe  bool
-	onClick    func(*fakeSurface) error
-	onPress    func(*fakeSurface) error
-	fillErr    error
-	artifact   artifact.Meta
-	captureErr error
-	captures   int
-	asserts    int
-	assertErr  error
-	nonce      string
-	nonceErr   error
+	mu          sync.Mutex
+	origin      string
+	elements    []ResolvedElement
+	events      map[string]bool
+	notify      chan struct{}
+	clicks      int
+	fills       int
+	presses     int
+	armCalls    int
+	lastFill    string
+	traceSafe   bool
+	eventSafe   bool
+	onClick     func(*fakeSurface) error
+	onPress     func(*fakeSurface) error
+	fillErr     error
+	artifact    artifact.Meta
+	captureErr  error
+	captures    int
+	asserts     int
+	assertErr   error
+	onAssert    func(Assertion) error
+	nonce       string
+	nonceErr    error
+	nonceReads  int
+	navigations int
 }
 
 type surfaceWithoutEventArmer struct{ Surface }
@@ -141,16 +144,25 @@ func (f *fakeSurface) Press(context.Context, string, string) error {
 	}
 	return nil
 }
-func (f *fakeSurface) NavigateTo(context.Context, string) error { return nil }
+func (f *fakeSurface) NavigateTo(context.Context, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.navigations++
+	return nil
+}
 func (f *fakeSurface) ElementValue(context.Context, Target) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.nonceReads++
 	return f.nonce, f.nonceErr
 }
-func (f *fakeSurface) Assert(context.Context, Assertion) error {
+func (f *fakeSurface) Assert(_ context.Context, assertion Assertion) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asserts++
+	if f.onAssert != nil {
+		return f.onAssert(assertion)
+	}
 	return f.assertErr
 }
 func (f *fakeSurface) Capture(context.Context, CaptureSpec) (artifact.Meta, error) {

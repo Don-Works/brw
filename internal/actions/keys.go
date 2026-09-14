@@ -87,71 +87,93 @@ func shiftRune(r rune) rune {
 	return r
 }
 
-func DescribeKey(raw string) KeyDescriptor {
-	parts := strings.Split(raw, "+")
-	if len(parts) > 1 {
-		var modifiers int64
-		for _, part := range parts[:len(parts)-1] {
-			switch strings.ToLower(strings.TrimSpace(part)) {
-			case "alt", "option":
-				modifiers |= ModifierAlt
-			case "ctrl", "control":
-				modifiers |= ModifierCtrl
-			case "meta", "cmd", "command":
-				modifiers |= ModifierMeta
-			case "shift":
-				modifiers |= ModifierShift
-			}
-		}
-		// ApplyModifiers ORs rather than assigns: the final part may itself be a
-		// modifier ("ctrl+shift"), and dropping its own bit would report a chord
-		// that never had Shift down.
-		return ApplyModifiers(DescribeKey(parts[len(parts)-1]), modifiers)
-	}
+// chordModifiers are the prefixes a chord may carry. DescribeKey and
+// IsNamedKey read the same table, so the set of chords brw dispatches and the
+// set it recognises as named cannot drift apart.
+var chordModifiers = map[string]int64{
+	"alt": ModifierAlt, "option": ModifierAlt,
+	"ctrl": ModifierCtrl, "control": ModifierCtrl,
+	"meta": ModifierMeta, "cmd": ModifierMeta, "command": ModifierMeta,
+	"shift": ModifierShift,
+}
 
+// namedKey resolves the keys brw names — Enter, Tab, the arrows, the function
+// keys, the modifiers — as opposed to a bare character, which a page receives
+// as inserted text rather than as a command. Returns nil for anything unnamed.
+func namedKey(raw string) *KeyDescriptor {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "enter", "return":
-		return KeyDescriptor{Key: "Enter", Code: "Enter", Text: "\r", WindowsVirtualKeyCode: 13}
+		return &KeyDescriptor{Key: "Enter", Code: "Enter", Text: "\r", WindowsVirtualKeyCode: 13}
 	case "tab":
-		return KeyDescriptor{Key: "Tab", Code: "Tab", WindowsVirtualKeyCode: 9}
+		return &KeyDescriptor{Key: "Tab", Code: "Tab", WindowsVirtualKeyCode: 9}
 	case "escape", "esc":
-		return KeyDescriptor{Key: "Escape", Code: "Escape", WindowsVirtualKeyCode: 27}
+		return &KeyDescriptor{Key: "Escape", Code: "Escape", WindowsVirtualKeyCode: 27}
 	case "backspace":
-		return KeyDescriptor{Key: "Backspace", Code: "Backspace", WindowsVirtualKeyCode: 8}
+		return &KeyDescriptor{Key: "Backspace", Code: "Backspace", WindowsVirtualKeyCode: 8}
 	case "delete":
-		return KeyDescriptor{Key: "Delete", Code: "Delete", WindowsVirtualKeyCode: 46}
+		return &KeyDescriptor{Key: "Delete", Code: "Delete", WindowsVirtualKeyCode: 46}
 	case "space", " ":
-		return KeyDescriptor{Key: " ", Code: "Space", Text: " ", WindowsVirtualKeyCode: 32}
+		return &KeyDescriptor{Key: " ", Code: "Space", Text: " ", WindowsVirtualKeyCode: 32}
 	case "arrowup":
-		return KeyDescriptor{Key: "ArrowUp", Code: "ArrowUp", WindowsVirtualKeyCode: 38}
+		return &KeyDescriptor{Key: "ArrowUp", Code: "ArrowUp", WindowsVirtualKeyCode: 38}
 	case "arrowdown":
-		return KeyDescriptor{Key: "ArrowDown", Code: "ArrowDown", WindowsVirtualKeyCode: 40}
+		return &KeyDescriptor{Key: "ArrowDown", Code: "ArrowDown", WindowsVirtualKeyCode: 40}
 	case "arrowleft":
-		return KeyDescriptor{Key: "ArrowLeft", Code: "ArrowLeft", WindowsVirtualKeyCode: 37}
+		return &KeyDescriptor{Key: "ArrowLeft", Code: "ArrowLeft", WindowsVirtualKeyCode: 37}
 	case "arrowright":
-		return KeyDescriptor{Key: "ArrowRight", Code: "ArrowRight", WindowsVirtualKeyCode: 39}
+		return &KeyDescriptor{Key: "ArrowRight", Code: "ArrowRight", WindowsVirtualKeyCode: 39}
 	case "home":
-		return KeyDescriptor{Key: "Home", Code: "Home", WindowsVirtualKeyCode: 36}
+		return &KeyDescriptor{Key: "Home", Code: "Home", WindowsVirtualKeyCode: 36}
 	case "end":
-		return KeyDescriptor{Key: "End", Code: "End", WindowsVirtualKeyCode: 35}
+		return &KeyDescriptor{Key: "End", Code: "End", WindowsVirtualKeyCode: 35}
 	case "pageup":
-		return KeyDescriptor{Key: "PageUp", Code: "PageUp", WindowsVirtualKeyCode: 33}
+		return &KeyDescriptor{Key: "PageUp", Code: "PageUp", WindowsVirtualKeyCode: 33}
 	case "pagedown":
-		return KeyDescriptor{Key: "PageDown", Code: "PageDown", WindowsVirtualKeyCode: 34}
+		return &KeyDescriptor{Key: "PageDown", Code: "PageDown", WindowsVirtualKeyCode: 34}
 	case "insert":
-		return KeyDescriptor{Key: "Insert", Code: "Insert", WindowsVirtualKeyCode: 45}
+		return &KeyDescriptor{Key: "Insert", Code: "Insert", WindowsVirtualKeyCode: 45}
 	}
 
 	if mk := modifierKey(raw); mk != nil {
-		return *mk
+		return mk
 	}
 
 	// Function keys F1–F24. event.key and code are both "F<n>", and the Windows
 	// virtual-key codes are contiguous from VK_F1 = 0x70 (112). Handled here rather
 	// than as 24 switch cases so a page listening on keyCode/which sees the right
 	// value instead of the raw-string fallback (VK 0), which silently no-ops.
-	if fk := functionKey(raw); fk != nil {
-		return *fk
+	return functionKey(raw)
+}
+
+// IsNamedKey reports whether raw names a key rather than a character to insert.
+//
+// A caller that persists a recorded keystroke needs the distinction: "Enter"
+// and "ctrl+shift+Tab" are commands, while "7" is one character of whatever was
+// being typed, and storing it stores the data.
+func IsNamedKey(raw string) bool {
+	parts := strings.Split(raw, "+")
+	for _, part := range parts[:len(parts)-1] {
+		if _, ok := chordModifiers[strings.ToLower(strings.TrimSpace(part))]; !ok {
+			return false
+		}
+	}
+	return namedKey(parts[len(parts)-1]) != nil
+}
+
+func DescribeKey(raw string) KeyDescriptor {
+	parts := strings.Split(raw, "+")
+	if len(parts) > 1 {
+		var modifiers int64
+		for _, part := range parts[:len(parts)-1] {
+			modifiers |= chordModifiers[strings.ToLower(strings.TrimSpace(part))]
+		}
+		// ApplyModifiers ORs rather than assigns: the final part may itself be a
+		// modifier ("ctrl+shift"), and dropping its own bit would report a chord
+		// that never had Shift down.
+		return ApplyModifiers(DescribeKey(parts[len(parts)-1]), modifiers)
+	}
+	if named := namedKey(raw); named != nil {
+		return *named
 	}
 
 	raw = strings.TrimSpace(raw)

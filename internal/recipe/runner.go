@@ -129,11 +129,13 @@ func (r Runner) Run(ctx context.Context, value Recipe, inputs map[string]string)
 	if err := RequireWriteVerification(value); err != nil {
 		return RunResult{}, err
 	}
-	if err := r.checkReceiptCapabilities(value); err != nil {
-		return RunResult{}, err
-	}
 	if r.Surface == nil {
 		return RunResult{}, errors.New("recipe runner needs a browser surface")
+	}
+	// After the surface is known, because the capability check asks the surface
+	// what it can do.
+	if err := r.checkReceiptCapabilities(value); err != nil {
+		return RunResult{}, err
 	}
 	if r.Clock == nil {
 		r.Clock = RealClock{}
@@ -438,6 +440,9 @@ func transientEvent(kind string) bool {
 func stepUsesSecret(step Step, declared map[string]Input) bool {
 	values := []string{step.Value, step.IdempotencyKey}
 	values = appendTargetTemplateValues(values, step.Target)
+	if step.SiteIdempotency != nil {
+		values = appendTargetTemplateValues(values, step.SiteIdempotency.Target)
+	}
 	if step.Event != nil {
 		values = append(values, step.Event.Match)
 		values = appendTargetTemplateValues(values, step.Event.Target)
@@ -545,6 +550,11 @@ func preflightRuntimePlan(value Recipe, inputs map[string]string) error {
 		}
 		if step.Capture != nil && step.Capture.Target != nil {
 			if _, err := expandTarget(*step.Capture.Target, inputs); err != nil {
+				return fail(err)
+			}
+		}
+		if step.SiteIdempotency != nil && step.SiteIdempotency.Target != nil {
+			if _, err := expandTarget(*step.SiteIdempotency.Target, inputs); err != nil {
 				return fail(err)
 			}
 		}

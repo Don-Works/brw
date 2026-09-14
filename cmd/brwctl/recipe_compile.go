@@ -71,7 +71,7 @@ func recipeCompile(fromTrace, planPath, out string, publish bool) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(destination, append(body, '\n'), 0o600); err != nil {
+		if err := writeDraftFile(destination, append(body, '\n')); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "wrote draft %s\n", destination)
@@ -111,6 +111,39 @@ func draftDestination(out string) (string, error) {
 	return absolute, nil
 }
 
+// writeDraftFile creates the draft without following a symlink and without
+// overwriting anything that is already there.
+//
+// draftDestination checks the path, but a check on a path is a check on what
+// that path resolved to at that moment: a dangling symlink at --out resolves to
+// nothing, so it passes the check, and a plain write then follows it into
+// whatever it names — a file inside this repository, for instance. O_EXCL
+// refuses a symlink of any kind and refuses an existing file, so the name that
+// was checked is the name that gets written, and the checkout rule is re-run
+// against the created file's own resolved path before a byte reaches it.
+func writeDraftFile(destination string, body []byte) error {
+	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create draft %s: %w", destination, err)
+	}
+	abandon := func(cause error) error {
+		file.Close()
+		os.Remove(destination)
+		return cause
+	}
+	if err := recipe.EnsureOutsideGitCheckout(destination); err != nil {
+		return abandon(fmt.Errorf("refusing to write a draft to %s: %w", destination, err))
+	}
+	if _, err := file.Write(body); err != nil {
+		return abandon(err)
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(destination)
+		return err
+	}
+	return nil
+}
+
 func publishDraft(draft recipe.Draft) (recipe.PublishedDraft, error) {
 	baseURL := strings.TrimSpace(os.Getenv(compilePlanEnvURL))
 	if baseURL == "" {
@@ -131,38 +164,80 @@ func publishDraft(draft recipe.Draft) (recipe.PublishedDraft, error) {
 // a plan whose "writes" key is misspelled would otherwise compile every write
 // in the flow as a read.
 func decodeCompilePlan(data []byte) (recipe.CompileOptions, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
 	var options recipe.CompileOptions
-	if err := decoder.Decode(&options); err != nil {
+	if err := decodeStrict(data, &options); err != nil {
 		return recipe.CompileOptions{}, fmt.Errorf("parse compile plan: %w", err)
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return recipe.CompileOptions{}, errors.New("compile plan contains trailing JSON")
-	}
 	return options, nil
+}
+
+// traceStepEnvelope is a scoped trace step plus the recorder's own bookkeeping
+// fields, which the compiler ignores. It exists so the trace can be decoded
+// strictly: the reason given for rejecting an unknown key in the plan applies
+// harder here, because among the keys the compiler reads is `redacted`, the
+// strongest of the three credential signals. A trace whose recorder spelled it
+// differently would be absorbed in silence, leaving an accessible-name regex as
+// the only thing between a password field and a publishable draft.
+type traceStepEnvelope struct {
+	recipe.TraceStep
+	TabID      string `json:"tab_id,omitempty"`
+	Repeat     int    `json:"repeat,omitempty"`
+	Error      string `json:"error,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+	Timestamp  string `json:"timestamp,omitempty"`
 }
 
 // decodeTraceSteps accepts a bare array of scoped trace steps, or the object a
 // scoped trace buffer is served as.
 func decodeTraceSteps(data []byte) ([]recipe.TraceStep, error) {
-	var direct []recipe.TraceStep
-	if err := json.Unmarshal(data, &direct); err == nil && len(direct) > 0 {
-		return direct, nil
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, errors.New("trace JSON is empty")
+	}
+	if trimmed[0] == '[' {
+		var direct []traceStepEnvelope
+		if err := decodeStrict(trimmed, &direct); err != nil {
+			return nil, fmt.Errorf("parse trace JSON: %w", err)
+		}
+		return unwrapTraceSteps(direct)
 	}
 	var wrapped struct {
-		Steps   []recipe.TraceStep `json:"steps"`
-		Entries []recipe.TraceStep `json:"entries"`
+		Steps    []traceStepEnvelope `json:"steps"`
+		Entries  []traceStepEnvelope `json:"entries"`
+		Count    int                 `json:"count"`
+		Withheld int                 `json:"withheld"`
 	}
-	if err := json.Unmarshal(data, &wrapped); err != nil {
+	if err := decodeStrict(trimmed, &wrapped); err != nil {
 		return nil, fmt.Errorf("parse trace JSON: %w", err)
 	}
 	if len(wrapped.Steps) > 0 {
-		return wrapped.Steps, nil
+		return unwrapTraceSteps(wrapped.Steps)
 	}
-	if len(wrapped.Entries) > 0 {
-		return wrapped.Entries, nil
+	return unwrapTraceSteps(wrapped.Entries)
+}
+
+func unwrapTraceSteps(envelopes []traceStepEnvelope) ([]recipe.TraceStep, error) {
+	if len(envelopes) == 0 {
+		return nil, errors.New("trace JSON contained no steps")
 	}
-	return nil, errors.New("trace JSON contained no steps")
+	steps := make([]recipe.TraceStep, 0, len(envelopes))
+	for _, envelope := range envelopes {
+		steps = append(steps, envelope.TraceStep)
+	}
+	return steps, nil
+}
+
+// decodeStrict refuses an unrecognised key and trailing JSON, so a shape
+// mismatch is reported rather than absorbed.
+func decodeStrict(data []byte, into any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(into); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("trailing JSON after the document")
+	}
+	return nil
 }

@@ -338,7 +338,7 @@ func TestCompileInfersPostconditionsFromTheObservation(t *testing.T) {
 		wantNext  string
 	}{
 		{"resulting url", navigated, "url.matches", compileOrigin + "/two", browser.AssertionURL},
-		{"element the step introduced", revealed, "element.visible", "", ""},
+		{"element the step introduced", revealed, "element.visible", "", browser.AssertionElementCount},
 		{"download completion", downloaded, "download.completed", "statement.csv", browser.AssertionDownload},
 	}
 	for _, test := range tests {
@@ -361,15 +361,16 @@ func TestCompileInfersPostconditionsFromTheObservation(t *testing.T) {
 					t.Fatalf("element postcondition target = %+v, want the element the step introduced", step.Postcondition.Target)
 				}
 			}
-			if test.wantNext == "" {
-				if len(result.Recipe.Steps) != 1 {
-					t.Fatalf("got %d steps, want no evidence assertion", len(result.Recipe.Steps))
-				}
-				return
-			}
 			if len(result.Recipe.Steps) != 2 || result.Recipe.Steps[1].Assert == nil ||
 				result.Recipe.Steps[1].Assert.Kind != test.wantNext {
 				t.Fatalf("steps = %+v, want a following %s assertion", result.Recipe.Steps, test.wantNext)
+			}
+			if test.wantKind == "element.visible" {
+				assertion := result.Recipe.Steps[1].Assert
+				if assertion.Target == nil || assertion.Target.Name != "Saved" ||
+					assertion.Count == nil || *assertion.Count != 1 {
+					t.Fatalf("element assertion = %+v, want exactly one of the introduced element", assertion)
+				}
 			}
 		})
 	}
@@ -662,5 +663,299 @@ func TestCompiledWriteCopiesTheDeclaredNonceRatherThanAliasingIt(t *testing.T) {
 	}
 	if before != after {
 		t.Fatalf("the pinned digest moved after the plan changed: %s then %s", before, after)
+	}
+}
+
+// The credential check is driven by a table rather than by a list of actions
+// written into the check, so the table has to cover every action that can be
+// compiled. An action added to compilableActions without a classification
+// reaches a page carrying whatever the recording typed, which is the failure
+// that let a keystroke-by-keystroke code through.
+func TestEveryCompilableActionIsClassifiedForCredentialChecking(t *testing.T) {
+	for action := range compilableActions {
+		if _, classified := literalValueActions[action]; !classified {
+			t.Errorf("compilable action %q has no entry in literalValueActions, so the credential check walks past it", action)
+		}
+	}
+	for action := range literalValueActions {
+		if _, compilable := compilableActions[action]; !compilable {
+			t.Errorf("literalValueActions classifies %q, which is not a compilable action", action)
+		}
+	}
+	// The classification only means something if an unclassified action is
+	// refused rather than waved through.
+	before := TraceObservation{URL: compileOrigin + "/one", Elements: []snapshot.Element{element("e1", "button", "Go")}}
+	compiler, err := newCompiler(compileOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = compiler.checkCredentialField(1, TraceStep{
+		TraceAction: TraceAction{Action: "an_action_nobody_classified", Ref: "e1"},
+	}, &before)
+	if err == nil || !strings.Contains(err.Error(), "no classification") {
+		t.Fatalf("err = %v, want an unclassified action refused", err)
+	}
+}
+
+// A code entered one keystroke at a time is the value, spelled differently:
+// every character reaches step.Key, and the schema bounds Key only by length.
+func TestCompileRefusesWhatAPressStepWouldCarry(t *testing.T) {
+	base := TraceObservation{URL: compileOrigin + "/one", Elements: []snapshot.Element{
+		{Ref: "e1", Role: "textbox", Name: "Notes", Tag: "input", Visible: true, InViewport: true},
+		{Ref: "e2", Role: "textbox", Name: "One-time code", Tag: "input", Visible: true, InViewport: true},
+	}}
+	after := TraceObservation{URL: compileOrigin + "/two", Elements: []snapshot.Element{element("e3", "heading", "Done")}}
+
+	tests := []struct {
+		name     string
+		traced   TraceAction
+		wantHint string
+	}{
+		{
+			name:     "a literal character press",
+			traced:   TraceAction{Action: "press", Ref: "e1", Role: "textbox", Name: "Notes", Text: "7", OK: true},
+			wantHint: "literal character rather than a named key",
+		},
+		{
+			name:     "a press into a credential field",
+			traced:   TraceAction{Action: "press", Ref: "e2", Role: "textbox", Name: "One-time code", Text: "Enter", OK: true},
+			wantHint: "credential field",
+		},
+		{
+			name:     "a press brw redacted",
+			traced:   TraceAction{Action: "press", Ref: "e1", Role: "textbox", Name: "Notes", Text: "Enter", Redacted: true, OK: true},
+			wantHint: "credential field",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Compile([]TraceStep{{TraceAction: test.traced, Before: &base, After: &after}}, compileOptions())
+			if err == nil || !strings.Contains(err.Error(), test.wantHint) {
+				t.Fatalf("err = %v, want it to mention %q", err, test.wantHint)
+			}
+			if err != nil && strings.Contains(err.Error(), "\"7\"") {
+				t.Fatalf("the refusal quoted the recorded keystroke back: %v", err)
+			}
+		})
+	}
+
+	// A named key is what press is for, and still compiles.
+	result := mustCompile(t, []TraceStep{{
+		TraceAction: TraceAction{Action: "press", Ref: "e1", Role: "textbox", Name: "Notes", Text: "Enter", OK: true},
+		Before:      &base, After: &after,
+	}}, compileOptions())
+	if step := result.Recipe.Steps[0]; step.Action != "press" || step.Key != "Enter" {
+		t.Fatalf("a named key press compiled as %+v", step)
+	}
+}
+
+// The compiler emits two assertions after a declared write, and which one reads
+// remote state back is not something their order says. An interrupted rerun
+// that consults the inferred evidence assertion commits a receipt for a write
+// nothing confirmed, and a committed receipt suppresses the write for good.
+func TestACompiledWriteTagsTheDeclaredReadBack(t *testing.T) {
+	count := 1
+	options := compileOptions()
+	options.Risk = "external_write"
+	options.Writes = map[int]WriteDeclaration{6: {Verify: Assertion{
+		Kind: browser.AssertionElementCount, Target: &Target{Role: "status", Name: "Export ready"}, Count: &count,
+	}}}
+	result := mustCompile(t, sixStepLoggedInTrace(), options)
+
+	write := stepByID(t, result.Recipe, "s6")
+	asserts := []string{}
+	for _, step := range result.Recipe.Steps {
+		if step.Action == "assert" && strings.HasPrefix(step.ID, "s6") {
+			asserts = append(asserts, step.ID)
+		}
+	}
+	if len(asserts) != 2 {
+		t.Fatalf("the write is followed by %v, want both the inferred evidence and the declared read-back", asserts)
+	}
+	verification, err := WriteVerification(result.Recipe, write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verification.ID != "s6_verify" {
+		t.Fatalf("the write is verified by %q, want the declared read-back s6_verify", verification.ID)
+	}
+	if verification.Assert.Kind != browser.AssertionElementCount {
+		t.Fatalf("the verification is a %s assertion, want the declared one", verification.Assert.Kind)
+	}
+	if stepByID(t, result.Recipe, "s6_verify").Verifies != "s6" {
+		t.Fatal("the declared read-back is not tagged with the write it verifies")
+	}
+}
+
+// Two untagged assertions after a write are two candidate read-backs and no way
+// to choose, so the recipe is refused rather than guessed at.
+func TestUntaggedAmbiguousVerificationIsRefused(t *testing.T) {
+	value := validRecipe(compileOrigin)
+	value.Risk = "external_write"
+	minimum := 1
+	assertion := func(id string) Step {
+		return Step{ID: id, Action: "assert", Assert: &Assertion{
+			Kind: browser.AssertionElementCount, Target: &Target{Role: "status", Name: "Sent"}, Min: &minimum,
+		}}
+	}
+	write := Step{
+		ID: "send", Action: "click", Effect: "external_write",
+		Target:         &Target{Role: "button", Name: "Send"},
+		IdempotencyKey: "send",
+		Postcondition:  &Event{Kind: "text.present", Match: "sent", TimeoutMS: 100},
+	}
+	value.Steps = []Step{write, assertion("evidence"), assertion("read_back")}
+	if err := RequireWriteVerification(value); err == nil || !strings.Contains(err.Error(), "untagged assert steps") {
+		t.Fatalf("err = %v, want the ambiguity refused", err)
+	}
+
+	tagged := value.Steps[2]
+	tagged.Verifies = "send"
+	value.Steps[2] = tagged
+	if err := RequireWriteVerification(value); err != nil {
+		t.Fatalf("a tagged read-back was refused: %v", err)
+	}
+	verification, err := WriteVerification(value, write)
+	if err != nil || verification.ID != "read_back" {
+		t.Fatalf("verification = %+v err = %v, want the tagged step", verification, err)
+	}
+}
+
+// Service.acquireRunLocks singleflights on the expanded idempotency key, so a
+// key that is the same string for every run makes two runs with unrelated
+// inputs one transaction, and prints as though it named a submission.
+func TestACompiledWriteKeyNamesTheInputsItDependsOn(t *testing.T) {
+	count := 1
+	options := compileOptions()
+	options.Risk = "external_write"
+	options.Writes = map[int]WriteDeclaration{6: {Verify: Assertion{
+		Kind: browser.AssertionElementCount, Target: &Target{Role: "status", Name: "Export ready"}, Count: &count,
+	}}}
+	result := mustCompile(t, sixStepLoggedInTrace(), options)
+	key := stepByID(t, result.Recipe, "s6").IdempotencyKey
+
+	for name := range result.Recipe.Inputs {
+		if !strings.Contains(key, "${input:"+name+"}") {
+			t.Fatalf("idempotency key %q does not depend on declared input %q", key, name)
+		}
+	}
+	first, err := Expand(key, map[string]string{"report_name": "one", "export_file_name": "a.csv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Expand(key, map[string]string{"report_name": "two", "export_file_name": "b.csv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("two runs with different inputs expand to one key %q, so they serialise on each other", first)
+	}
+}
+
+// A recorded href carries the recording's query string, and a query string is
+// where a session id or a one-time token lives. Matching on it publishes what
+// the recording held and stops replaying the moment the token expires.
+func TestCompiledHrefTargetsDropTheRecordingsQueryString(t *testing.T) {
+	const recordedQuery = "?session=fixture-token-value&page=2"
+	before := TraceObservation{URL: compileOrigin + "/one", Elements: []snapshot.Element{
+		{Ref: "e1", Role: "link", Name: "Open", Href: "/reports/quarterly" + recordedQuery, Visible: true, InViewport: true},
+		{Ref: "e2", Role: "link", Name: "Open", Href: "/reports/annual" + recordedQuery, Visible: true, InViewport: true},
+	}}
+	after := TraceObservation{URL: compileOrigin + "/two", Elements: []snapshot.Element{element("e3", "heading", "Quarterly")}}
+	result := mustCompile(t, []TraceStep{{
+		TraceAction: TraceAction{Action: "click", Ref: "e1", Role: "link", OK: true},
+		Before:      &before, After: &after,
+	}}, compileOptions())
+
+	target := result.Recipe.Steps[0].Target
+	if target == nil || target.HrefContains != "/reports/quarterly" {
+		t.Fatalf("target = %+v, want the href without the recording's query", target)
+	}
+	body, err := json.Marshal(result.Recipe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "fixture-token-value") {
+		t.Fatalf("the recording's one-time token reached the draft:\n%s", body)
+	}
+}
+
+// The review body is what a human approves before --publish sends the draft to
+// the provider. A navigation URL's query string is the other place a recording
+// hides a one-time token, and at the end of a long URL a reviewer reads past it.
+func TestReviewBodyShowsWhatARecordingCanHide(t *testing.T) {
+	const recorded = compileOrigin + "/reports?session=fixture-session-id#access=fixture-grant-value"
+	navigated := TraceObservation{URL: recorded, Elements: []snapshot.Element{element("e1", "button", "Go")}}
+	unchanged := TraceObservation{URL: recorded, Elements: []snapshot.Element{element("e1", "button", "Go")}}
+	result := mustCompile(t, []TraceStep{
+		{TraceAction: TraceAction{Action: "navigate_to", URL: recorded, OK: true}, After: &navigated},
+		{TraceAction: TraceAction{Action: "click", Ref: "e1", Role: "button", Name: "Go", NameIsVisibleText: true, OK: true}, Before: &navigated, After: &unchanged},
+	}, compileOptions())
+
+	// A session id in the query and an implicit-flow grant in the fragment are
+	// the two places a recorded navigation hides one.
+	for _, want := range []string{"url_query session=fixture-session-id", "url_fragment access=fixture-grant-value"} {
+		if !strings.Contains(result.Review, want) {
+			t.Fatalf("the review body does not isolate %q:\n%s", want, result.Review)
+		}
+	}
+	// The click changed nothing observable, so the compiler inferred no
+	// postcondition for it. Silence reads as a rendering that omits the line.
+	if !strings.Contains(result.Review, "postcondition none") {
+		t.Fatalf("the review body does not report the step with no postcondition:\n%s", result.Review)
+	}
+}
+
+// ReviewBody is exported and documented as a rendering. A recipe that has not
+// been through Validate is exactly the recipe somebody renders to find out what
+// is wrong with it.
+func TestReviewBodyRendersARecipeThatWouldNotValidate(t *testing.T) {
+	value := Recipe{
+		SchemaVersion: SchemaVersion, ID: "example.a.b", Version: "1.0.0",
+		Name: "n", Description: "d", Intents: []string{"i"}, Origins: []string{compileOrigin},
+		Risk: "external_write",
+		Steps: []Step{{
+			ID: "send", Action: "click", Effect: "external_write",
+			SiteIdempotency: &SiteIdempotency{Kind: SiteIdempotencyFormNonce},
+		}},
+	}
+	body := ReviewBody(value, nil)
+	if !strings.Contains(body, "site_idempotency "+SiteIdempotencyFormNonce) {
+		t.Fatalf("the rendering dropped the declared mechanism:\n%s", body)
+	}
+}
+
+// A target that is unique in the recording can be ambiguous on the page a rerun
+// meets. The replay must fail then, rather than pick one.
+func TestCompiledReplayFailsWhenAReplayedPageIsAmbiguous(t *testing.T) {
+	trace := sixStepLoggedInTrace()
+	result := mustCompile(t, trace, compileOptions())
+	inputs := map[string]string{
+		"report_name":      "fixture typed search phrase",
+		"export_file_name": "fixture-export-name.csv",
+	}
+	// The page a rerun meets has grown a second element with the same identity
+	// as the one the recording clicked. Observations are shared between the
+	// steps either side of an action, so each one is twinned exactly once.
+	twinned := sixStepLoggedInTrace()
+	seen := map[*TraceObservation]bool{}
+	for index := range twinned {
+		for _, observation := range []*TraceObservation{twinned[index].Before, twinned[index].After} {
+			if observation == nil || seen[observation] {
+				continue
+			}
+			seen[observation] = true
+			for _, candidate := range observation.Elements {
+				if candidate.Name == "Search reports" {
+					observation.Elements = append(observation.Elements,
+						element("e99", "button", "Search reports"))
+					break
+				}
+			}
+		}
+	}
+	_, err := (Runner{Surface: newReplaySurface(twinned)}).Run(context.Background(), result.Recipe, inputs)
+	if err == nil || !strings.Contains(err.Error(), "resolved to 2 elements") {
+		t.Fatalf("err = %v, want the replay to refuse an ambiguous target", err)
 	}
 }

@@ -182,3 +182,117 @@ func TestRecipePublishNeedsACompilePlanAndAProviderURL(t *testing.T) {
 		t.Fatalf("err = %v, want the missing provider write API named", err)
 	}
 }
+
+// The "never write a draft into this repository" rule is checked against the
+// path, and a check on a path is a check on what that path resolved to at that
+// moment. A dangling symlink at --out resolves to nothing, passes, and a plain
+// write then follows it into whatever it names.
+func TestRecipeCompileWillNotFollowASymlinkOutOfTheCheckedDestination(t *testing.T) {
+	checkout := t.TempDir()
+	if err := os.Mkdir(filepath.Join(checkout, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(checkout, "planted_draft.json")
+	trace, plan := compileTrace(t, false), compilePlan(t)
+
+	tests := []struct {
+		name   string
+		target string
+		setup  func(t *testing.T, link string)
+	}{
+		{
+			name: "a dangling symlink into a git checkout", target: planted,
+			setup: func(t *testing.T, link string) {
+				if err := os.Symlink(planted, link); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "a symlink to a file that already exists", target: planted,
+			setup: func(t *testing.T, link string) {
+				if err := os.WriteFile(planted, []byte("{}"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(planted, link); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_ = os.Remove(planted)
+			out := filepath.Join(t.TempDir(), "draft.json")
+			test.setup(t, out)
+			err := recipeDraft([]string{"--from-trace", trace, "--plan", plan, "--out", out})
+			if err == nil {
+				t.Fatal("the draft was written through a symlink")
+			}
+			body, readErr := os.ReadFile(test.target)
+			if readErr == nil && strings.Contains(string(body), "schema_version") {
+				t.Fatalf("a draft was written inside the git checkout at %s", test.target)
+			}
+		})
+	}
+}
+
+// An existing file at --out is somebody's file. Overwriting it is a second way
+// to write where the operator did not ask for a write.
+func TestRecipeCompileWillNotClobberAnExistingDestination(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "draft.json")
+	if err := os.WriteFile(out, []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := recipeDraft([]string{
+		"--from-trace", compileTrace(t, false), "--plan", compilePlan(t), "--out", out,
+	})
+	if err == nil {
+		t.Fatal("an existing file was overwritten")
+	}
+	body, readErr := os.ReadFile(out)
+	if readErr != nil || string(body) != "keep me" {
+		t.Fatalf("body = %q err = %v, want the existing file untouched", body, readErr)
+	}
+}
+
+// The plan is decoded strictly because a misspelled key compiles a write as a
+// read. The same argument applies harder to the trace: among the keys the
+// compiler reads is `redacted`, the strongest of the three credential signals,
+// and a recorder that spelled it differently leaves only a name regex.
+func TestRecipeCompileRejectsAnUnknownTraceField(t *testing.T) {
+	steps := []map[string]any{{
+		"action": "navigate_to", "url": compileTestList, "ok": true,
+		"after": map[string]any{"url": compileTestList},
+		// The recorder's own bookkeeping is accepted; a key nothing produces is not.
+		"tab_id": "t1", "duration_ms": 12, "redact": true,
+	}}
+	path := writeFixture(t, "trace.json", steps)
+	err := recipeDraft([]string{"--from-trace", path, "--plan", compilePlan(t), "--out", ""})
+	if err == nil || !strings.Contains(err.Error(), "redact") {
+		t.Fatalf("err = %v, want the unrecognised trace key named", err)
+	}
+}
+
+// The fields brw's own recorder emits alongside an action are not part of what
+// the compiler reads, and must not make a real trace unreadable.
+func TestRecipeCompileAcceptsTheRecordersOwnFields(t *testing.T) {
+	steps := []map[string]any{{
+		"action": "navigate_to", "url": compileTestList, "ok": true,
+		"after":     map[string]any{"url": compileTestList, "elements": []any{}},
+		"tab_id":    "t1",
+		"repeat":    2,
+		"error":     "",
+		"timestamp": "2026-09-14T00:00:00Z",
+	}}
+	steps[0]["after"] = map[string]any{
+		"url": compileTestList,
+		"elements": []any{map[string]any{
+			"ref": "e1", "role": "heading", "name": "Reports", "visible": true,
+		}},
+	}
+	path := writeFixture(t, "trace.json", steps)
+	if err := recipeDraft([]string{"--from-trace", path, "--plan", compilePlan(t), "--out", ""}); err != nil {
+		t.Fatalf("a trace carrying the recorder's own fields was refused: %v", err)
+	}
+}

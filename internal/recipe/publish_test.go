@@ -3,6 +3,7 @@ package recipe
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -184,9 +185,77 @@ func TestReceiptClientRefusesAProviderAnsweringAboutAnotherWrite(t *testing.T) {
 			body, _ := json.Marshal(map[string]any{"receipt": other})
 			return http.StatusOK, string(body)
 		})
-		if _, err := provider.Begin(context.Background(), receiptFixture(key)); err == nil ||
+		if _, _, err := provider.Begin(context.Background(), receiptFixture(key)); err == nil ||
 			!strings.Contains(err.Error(), "different write") {
 			t.Fatalf("err = %v, want the substitution refused", err)
+		}
+	})
+
+	// Begin is the only compare-and-set in the mechanism: two runners racing
+	// against one store both miss on lookup, so whether THIS call created the
+	// record is what separates a first dispatch from a duplicate. A provider
+	// that does not say reads as "not created", which refuses rather than
+	// duplicates.
+	t.Run("begin reports whether it created the record", func(t *testing.T) {
+		for _, test := range []struct {
+			name        string
+			body        string
+			wantCreated bool
+		}{
+			{"the provider created it", `{"receipt":%s,"created":true}`, true},
+			{"the provider already held it", `{"receipt":%s,"created":false}`, false},
+			{"the provider did not say", `{"receipt":%s}`, false},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				_, provider := newProviderStub(t, func(string, []byte) (int, string) {
+					receipt, _ := json.Marshal(receiptFixture(key))
+					return http.StatusOK, fmt.Sprintf(test.body, receipt)
+				})
+				_, created, err := provider.Begin(context.Background(), receiptFixture(key))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if created != test.wantCreated {
+					t.Fatalf("created = %v, want %v", created, test.wantCreated)
+				}
+			})
+		}
+	})
+
+	// A review URL is a link handed to a human. Prefix matching on
+	// "http://localhost" accepts http://localhost.example.test, which is a
+	// different host that anybody can register.
+	t.Run("review url is bounded by host, not by prefix", func(t *testing.T) {
+		for _, test := range []struct {
+			name      string
+			reviewURL string
+			ok        bool
+		}{
+			{"https", "https://recipes.example.test/drafts/1", true},
+			{"loopback over http", "http://127.0.0.1:8080/drafts/1", true},
+			{"localhost over http", "http://localhost:8080/drafts/1", true},
+			{"a host that merely starts with localhost", "http://localhost.example.test/drafts/1", false},
+			{"a host that merely starts with the loopback address", "http://127.0.0.1.example.test/x", false},
+			{"plain http elsewhere", "http://recipes.example.test/drafts/1", false},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				draft := compiledDraft(t)
+				digest, err := Digest(draft.Recipe)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, provider := newProviderStub(t, func(string, []byte) (int, string) {
+					body, _ := json.Marshal(map[string]any{"draft": map[string]any{
+						"id": draft.Recipe.ID, "version": draft.Recipe.Version,
+						"digest": digest, "review_url": test.reviewURL,
+					}})
+					return http.StatusOK, string(body)
+				})
+				_, err = provider.PublishDraft(context.Background(), draft)
+				if (err == nil) != test.ok {
+					t.Fatalf("review url %q: err = %v, want ok=%v", test.reviewURL, err, test.ok)
+				}
+			})
 		}
 	})
 

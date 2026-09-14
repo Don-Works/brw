@@ -65,6 +65,13 @@ type Step struct {
 	// for this write, when it exposes one. Omitted when absent, so adding it did
 	// not move any existing recipe digest.
 	SiteIdempotency *SiteIdempotency `json:"site_idempotency,omitempty"`
+	// Verifies names the external_write step this assertion reads back. A
+	// compiled write carries two assertions — the evidence the compiler infers
+	// from the recording, and the read-back the operator declared — and their
+	// order is an emission detail, so position cannot tell them apart. The tag
+	// is what an interrupted rerun consults. Omitted when absent, so adding it
+	// did not move any existing recipe digest.
+	Verifies string `json:"verifies,omitempty"`
 }
 
 // Target is resolved immediately before every action. Observation refs are
@@ -251,6 +258,31 @@ func StepCredentialReference(step Step) (string, bool) {
 		return "", false
 	}
 	return credential.Reference(step.Value)
+
+// actuationActions are the steps that do something to the page rather than read
+// it. One table, because "is this an action" decides what a step must declare,
+// and a second copy elsewhere is a second answer.
+var actuationActions = map[string]bool{
+	"click": true, "fill": true, "type": true, "select": true, "press": true, "navigate_to": true,
+}
+
+// checkVerifiesTarget requires a verifies tag to name an external_write step
+// that comes earlier in the recipe. A tag naming a step that does not exist, or
+// one after the assertion, would read as a declared read-back while pointing at
+// nothing a rerun can consult.
+func checkVerifiesTarget(recipe Recipe, step Step) error {
+	for _, candidate := range recipe.Steps {
+		if candidate.ID == step.ID {
+			break
+		}
+		if candidate.ID == step.Verifies {
+			if candidate.Effect != "external_write" {
+				return fmt.Errorf("verifies names step %q, which is not an external_write", step.Verifies)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("verifies names step %q, which does not appear before this assertion", step.Verifies)
 }
 
 func validateStep(recipe Recipe, step Step, seen map[string]bool) error {
@@ -317,7 +349,15 @@ func validateStep(recipe Recipe, step Step, seen map[string]bool) error {
 			problems = append(problems, err)
 		}
 	}
-	actuation := slices.Contains([]string{"click", "fill", "type", "select", "press", "navigate_to"}, step.Action)
+	if step.Verifies != "" {
+		if step.Action != "assert" {
+			problems = append(problems, errors.New("verifies is only valid on an assert step"))
+		}
+		if err := checkVerifiesTarget(recipe, step); err != nil {
+			problems = append(problems, err)
+		}
+	}
+	actuation := actuationActions[step.Action]
 	if actuation && step.Effect == "" {
 		problems = append(problems, errors.New("browser actions must explicitly declare effect read or external_write"))
 	}

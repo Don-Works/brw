@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -93,12 +95,34 @@ func (p *HTTPProvider) PublishDraft(ctx context.Context, draft Draft) (Published
 	if out.Draft.ID != draft.Recipe.ID || out.Draft.Version != draft.Recipe.Version || out.Draft.Digest != digest {
 		return PublishedDraft{}, errors.New("recipe provider acknowledged a draft that does not match the one published")
 	}
-	if url := strings.TrimSpace(out.Draft.ReviewURL); url != "" {
-		if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://127.0.0.1") && !strings.HasPrefix(url, "http://localhost") {
-			return PublishedDraft{}, errors.New("recipe provider returned a review URL that is not HTTPS")
-		}
+	if err := checkReviewURL(out.Draft.ReviewURL); err != nil {
+		return PublishedDraft{}, err
 	}
 	return out.Draft, nil
+}
+
+// checkReviewURL bounds where the provider may send a reviewer.
+//
+// Parsed rather than prefix-matched: "http://localhost.example.test/" has the
+// prefix "http://localhost" and is a different host entirely, so a prefix test
+// hands the operator a plaintext link to whoever registered that name.
+func checkReviewURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return errors.New("recipe provider returned an unusable review URL")
+	}
+	if strings.EqualFold(parsed.Scheme, "https") {
+		return nil
+	}
+	loopback := []string{"127.0.0.1", "::1", "localhost"}
+	if strings.EqualFold(parsed.Scheme, "http") && slices.Contains(loopback, strings.ToLower(parsed.Hostname())) {
+		return nil
+	}
+	return errors.New("recipe provider returned a review URL that is neither HTTPS nor loopback")
 }
 
 // Lookup reads the provider's receipt for key.
@@ -122,25 +146,34 @@ func (p *HTTPProvider) Lookup(ctx context.Context, key string) (Receipt, bool, e
 	return out.Receipt, true, nil
 }
 
-// Begin records an in-flight receipt with the provider before dispatch.
-func (p *HTTPProvider) Begin(ctx context.Context, receipt Receipt) (Receipt, error) {
+// Begin records an in-flight receipt with the provider before dispatch and
+// reports whether this call created it.
+//
+// The provider answers with `created`, which is the only compare-and-set in the
+// mechanism: two runners racing against one store both miss on lookup, and
+// without it the loser reads its rival's in-flight record as its own and
+// dispatches the duplicate. A reply that omits the flag reads as not created,
+// so a provider that has not implemented it refuses writes rather than
+// duplicating them.
+func (p *HTTPProvider) Begin(ctx context.Context, receipt Receipt) (Receipt, bool, error) {
 	receipt.Status = ReceiptInFlight
 	if err := validateReceipt(receipt); err != nil {
-		return Receipt{}, err
+		return Receipt{}, false, err
 	}
 	var out struct {
 		Receipt Receipt `json:"receipt"`
+		Created bool    `json:"created"`
 	}
 	if err := p.post(ctx, "/v1/receipts/begin", receipt, &out); err != nil {
-		return Receipt{}, err
+		return Receipt{}, false, err
 	}
 	if err := checkReceiptReply(out.Receipt, receipt.Key); err != nil {
-		return Receipt{}, err
+		return Receipt{}, false, err
 	}
 	if out.Receipt.StepID != receipt.StepID || out.Receipt.RecipeID != receipt.RecipeID {
-		return Receipt{}, errors.New("recipe provider acknowledged a receipt describing a different write")
+		return Receipt{}, false, errors.New("recipe provider acknowledged a receipt describing a different write")
 	}
-	return out.Receipt, nil
+	return out.Receipt, out.Created, nil
 }
 
 // Commit records completion evidence against an existing receipt.

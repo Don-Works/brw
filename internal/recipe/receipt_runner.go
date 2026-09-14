@@ -26,16 +26,26 @@ type NonceReader interface {
 // it without a receipt store and the declaration does nothing at all: the nonce
 // is never read, never recorded, and never compared on a rerun. That is a
 // silent degrade from the strong mechanism to none, so it is named instead.
+//
+// Both the store and the surface capability are checked here rather than where
+// they are used, because where they are used is the write step, and on a long
+// recipe that is after every earlier action has already run. A half-executed
+// flow that then discovers it cannot honour its own declaration is the failure
+// this function exists to prevent, so it has to see every step.
 func (r Runner) checkReceiptCapabilities(value Recipe) error {
-	if r.Receipts != nil {
-		return nil
-	}
+	var problems []error
 	for _, step := range value.Steps {
-		if step.SiteIdempotency != nil {
-			return fmt.Errorf("step %q declares a site idempotency nonce, but this runner has no write receipt store to record it against", step.ID)
+		if step.SiteIdempotency == nil {
+			continue
+		}
+		if r.Receipts == nil {
+			problems = append(problems, fmt.Errorf("step %q declares a site idempotency nonce, but this runner has no write receipt store to record it against", step.ID))
+		}
+		if _, ok := r.Surface.(NonceReader); !ok {
+			problems = append(problems, fmt.Errorf("step %q declares a site idempotency nonce, which this browser surface cannot read", step.ID))
 		}
 	}
-	return nil
+	return errors.Join(problems...)
 }
 
 // writeReceipt carries one external write's provider-side record through the
@@ -65,6 +75,12 @@ func (w *writeReceipt) commit(ctx context.Context) error {
 // or the provider has an in-flight record, which is what a daemon killed
 // between dispatch and acknowledgement leaves behind. Only the last needs
 // judgement, and the judgement is never "try again and see".
+//
+// Lookup is not the only way an existing record surfaces. Two runners racing
+// against one shared store both miss on Lookup, so Begin is the decision point:
+// it reports whether THIS call created the record, and a record it did not
+// create is handled exactly like a lookup hit. Without that, the loser of the
+// race dispatches the duplicate the receipt exists to prevent.
 func (r Runner) openWriteReceipt(ctx context.Context, value Recipe, step Step, inputs map[string]string) (*writeReceipt, error) {
 	origin, err := r.Surface.Origin(ctx)
 	if err != nil {
@@ -82,6 +98,7 @@ func (r Runner) openWriteReceipt(ctx context.Context, value Recipe, step Step, i
 	if err != nil {
 		return nil, err
 	}
+	nonceDigest := hashSiteNonce(nonce)
 	pending := &writeReceipt{receipts: r.Receipts, key: key}
 
 	existing, found, err := r.Receipts.Lookup(ctx, key)
@@ -89,39 +106,12 @@ func (r Runner) openWriteReceipt(ctx context.Context, value Recipe, step Step, i
 		return nil, fmt.Errorf("read write receipt: %w", err)
 	}
 	if found {
-		if err := receiptMatchesWrite(existing, key, value, step, origin); err != nil {
-			return nil, err
-		}
-		switch existing.Status {
-		case ReceiptCommitted:
-			pending.resolved = true
-			return pending, nil
-		case ReceiptInFlight:
-			verified, detail := r.verifyInterruptedWrite(ctx, value, step, inputs)
-			if verified {
-				pending.evidence = "verification step " + detail + " passed after an interrupted dispatch"
-				if err := pending.commit(ctx); err != nil {
-					return nil, err
-				}
-				pending.resolved = true
-				return pending, nil
-			}
-			if nonce != "" && existing.SiteNonce == nonce {
-				// The page still holds the token the interrupted attempt
-				// carried, and the recipe declares that the site rejects a
-				// second submission bearing it. brw defers to that mechanism
-				// rather than to its own, which is what declaring it means.
-				return pending, nil
-			}
-			return nil, fmt.Errorf(
-				"step %q was dispatched by an earlier run and its receipt is still in flight; re-reading remote state did not confirm it (%s), so brw refuses to re-submit an external write whose outcome is unknown",
-				step.ID, detail)
-		}
+		return r.reconcileExistingWrite(ctx, existing, pending, value, step, origin, inputs, nonceDigest)
 	}
 
-	begun, err := r.Receipts.Begin(ctx, Receipt{
+	begun, created, err := r.Receipts.Begin(ctx, Receipt{
 		Key: key, RecipeID: value.ID, RecipeVersion: value.Version, RecipeDigest: digest,
-		StepID: step.ID, Origin: origin, Status: ReceiptInFlight, SiteNonce: nonce,
+		StepID: step.ID, Origin: origin, Status: ReceiptInFlight, SiteNonceDigest: nonceDigest,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("record write receipt before dispatch: %w", err)
@@ -129,7 +119,53 @@ func (r Runner) openWriteReceipt(ctx context.Context, value Recipe, step Step, i
 	if begun.Key != key {
 		return nil, errors.New("write receipt store returned a receipt for a different key")
 	}
+	if !created {
+		return r.reconcileExistingWrite(ctx, begun, pending, value, step, origin, inputs, nonceDigest)
+	}
 	return pending, nil
+}
+
+// reconcileExistingWrite decides what a record somebody else already wrote
+// means for this attempt. It never ends in a dispatch: a committed record means
+// the write is done, and an in-flight record means its outcome is unknown,
+// which is the one thing an external write may not be retried on.
+func (r Runner) reconcileExistingWrite(
+	ctx context.Context, existing Receipt, pending *writeReceipt,
+	value Recipe, step Step, origin string, inputs map[string]string, nonceDigest string,
+) (*writeReceipt, error) {
+	if err := receiptMatchesWrite(existing, pending.key, value, step, origin); err != nil {
+		return nil, err
+	}
+	if existing.Status == ReceiptCommitted {
+		pending.resolved = true
+		return pending, nil
+	}
+	verified, detail := r.verifyInterruptedWrite(ctx, value, step, inputs)
+	if verified {
+		pending.evidence = "verification step " + detail + " passed after an interrupted dispatch"
+		if err := pending.commit(ctx); err != nil {
+			return nil, err
+		}
+		pending.resolved = true
+		return pending, nil
+	}
+	return nil, fmt.Errorf(
+		"step %q was dispatched by an earlier run and its receipt is still in flight; re-reading remote state did not confirm it (%s), so brw refuses to re-submit an external write whose outcome is unknown%s",
+		step.ID, detail, describeNonceComparison(existing.SiteNonceDigest, nonceDigest))
+}
+
+// describeNonceComparison reports what the site's own token says about the
+// interrupted attempt, for an operator deciding what to do by hand. It decides
+// nothing: an unchanged token is consistent both with the site having consumed
+// it and with it being a per-session value the site would accept again.
+func describeNonceComparison(recorded, current string) string {
+	if recorded == "" || current == "" {
+		return ""
+	}
+	if recorded == current {
+		return "; the page still carries the submission token that dispatch used"
+	}
+	return "; the page has since minted a different submission token"
 }
 
 // receiptMatchesWrite refuses a receipt that does not describe this write. The
@@ -159,9 +195,9 @@ func receiptMatchesWrite(receipt Receipt, key string, value Recipe, step Step, o
 // same way — neither is confirmation — and the detail is carried into the
 // refusal so an operator sees which it was.
 func (r Runner) verifyInterruptedWrite(ctx context.Context, value Recipe, step Step, inputs map[string]string) (bool, string) {
-	verification, ok := verificationStepFor(value, step)
-	if !ok {
-		return false, "the recipe declares no verification step"
+	verification, err := WriteVerification(value, step)
+	if err != nil {
+		return false, "the recipe declares no verification step brw can identify"
 	}
 	asserter, ok := r.Surface.(Asserter)
 	if !ok {
@@ -175,26 +211,6 @@ func (r Runner) verifyInterruptedWrite(ctx context.Context, value Recipe, step S
 		return false, "verification step " + verification.ID + " did not pass: " + redactInputs(err, inputs).Error()
 	}
 	return true, verification.ID
-}
-
-// verificationStepFor finds the assertion that reads back what a write did: the
-// first assert step after it, stopping at the next write because that assert
-// belongs to the next one.
-func verificationStepFor(value Recipe, step Step) (Step, bool) {
-	reached := false
-	for _, candidate := range value.Steps {
-		if !reached {
-			reached = candidate.ID == step.ID
-			continue
-		}
-		if candidate.Effect == "external_write" {
-			return Step{}, false
-		}
-		if candidate.Action == "assert" && candidate.Assert != nil {
-			return candidate, true
-		}
-	}
-	return Step{}, false
 }
 
 // readSiteNonce reads the site's own per-submission token, when the step

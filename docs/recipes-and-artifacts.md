@@ -201,7 +201,11 @@ commit an external write. None of it is inferred. An origin list derived from
 the trace would make the cross-origin check below check nothing, and a risk
 level guessed from a button's label would be a guess stamped on the field that
 exists to stop guessing. An unknown key in the plan is an error, so a
-misspelled `writes` cannot silently compile a write as a read.
+misspelled `writes` cannot silently compile a write as a read. The trace is
+decoded the same way, accepting the fields brw's recorder emits and nothing
+else, because among the keys the compiler reads is `redacted` — the strongest of
+the three credential signals — and one spelled differently would be absorbed in
+silence.
 
 What the compiler does:
 
@@ -214,9 +218,21 @@ What the compiler does:
 - Turns each typed value into a declared, required runtime input. The text that
   was typed during the recording stays in the recording.
 - Infers each step's postcondition from the observation taken after it: the
-  resulting URL, an element the step introduced, or a completed download. A
-  download also gets a following `download` assertion when the recording
-  captured a size or digest.
+  resulting URL, an element the step introduced, or a completed download. Each
+  gets a following assertion in the `brw_assert` vocabulary — `url`,
+  `element_count`, `download` — except a download the recording captured neither
+  a size nor a digest for. A step whose after-observation shows no change at all
+  — same URL, no new element, no new download — compiles with **no**
+  postcondition, and the review body says `postcondition none` for it.
+- Drops the query string and fragment from a recorded href before using it to
+  identify an element. That is where a session id or a one-time token lives, and
+  matching on it would both publish it and stop the recipe replaying once it
+  expired. A navigation URL keeps its query — it is what the step navigates to —
+  and the review body prints it on its own `url_query` line so a reviewer sees
+  it before publishing.
+- Composes an external write's `idempotency_key` from the recipe id, the step id
+  and the inputs declared up to that step, so two runs with different inputs are
+  two transactions rather than one.
 - Prints a diff-able review body — one fact per line, fixed order, no map
   iteration — so recompiling an unchanged trace produces byte-identical text
   and a changed trace produces a diff the size of the change.
@@ -225,7 +241,12 @@ What stops compilation dead, naming the trace step and the reason:
 
 - a coordinate-driven action such as `brw_click_xy`;
 - a write into a password or credential field, whether brw redacted the value,
-  the snapshot marked the field sensitive, or the accessible name says so;
+  the snapshot marked the field sensitive, or the accessible name says so —
+  checked for every action that carries typed characters into the page, key
+  presses included;
+- a `press` whose key is a literal character rather than a named key such as
+  `Enter` or `ctrl+a`, because a value entered one keystroke at a time is the
+  value, spelled differently;
 - a target that matches more than one element in the recorded observation;
 - a navigation to an origin the plan does not declare;
 - a step whose post-action observation is empty; and
@@ -238,6 +259,9 @@ which includes this repository. `--publish` sends the draft and its review body
 to the private provider's write API at `POST /v1/recipes/drafts`, configured
 through `BRW_RECIPE_PROVIDER_URL` and `BRW_RECIPE_PROVIDER_TOKEN`; the
 acknowledgement must name the same id, version and digest or the publish fails.
+The file at `--out` is created with `O_EXCL`, so a symlink already sitting at
+that path — dangling or not — is refused rather than followed, and an existing
+file is never overwritten.
 
 ## Write receipts
 
@@ -256,7 +280,8 @@ fixed and written down in `ReceiptKey`, because a key that cannot be reproduced
 after a restart produces a receipt nobody can find, which reads exactly like a
 write that never happened: only declared inputs take part, names are sorted by
 byte order, an unsupplied input is encoded as absent and is a different key from
-an empty one, CRLF and lone CR become LF, and nothing else is altered — no
+an empty one, CRLF and lone CR become LF, every field is length-prefixed so no
+field's bytes read as part of the next, and nothing else is altered — no
 trimming, no case folding. The key depends on no clock, host or session.
 
 The sequence around one write is: probe the durable postcondition and skip the
@@ -265,32 +290,53 @@ write entirely if it already holds; look the key up; record an in-flight receipt
 postcondition passes. A run that dies in between leaves an in-flight receipt and
 no completion.
 
-A rerun that finds an in-flight receipt does not re-submit. It runs the recipe's
-declared verification step against live remote state. If that confirms the write
-landed, the receipt is committed and no browser action is issued. If it does
-not, the run fails saying so.
+`POST /v1/receipts/begin` answers with `created`, and that flag is the only
+compare-and-set in the mechanism. Two runners against one shared store can both
+miss on lookup, so a record `begin` did not create belongs to somebody else's
+dispatch and is handled exactly as a lookup hit would be. A provider that omits
+the flag reads as "not created", which refuses the write rather than duplicating
+it.
+
+A rerun that finds an in-flight receipt does not re-submit, ever. It runs the
+recipe's declared verification step against live remote state. If that confirms
+the write landed, the receipt is committed and no browser action is issued. If it
+does not, the run fails saying so, and the receipt is left in flight for a human.
 
 Because a receipt is written on brw's side of the network, it is never proof the
 remote transaction committed — a process killed a millisecond after the request
 left writes the same receipt either way. So a recipe containing an
 `external_write` step is refused unless an `assert` step follows it. That
-assertion is the read-back, and it is what an interrupted rerun consults.
+assertion is the read-back, and it is what an interrupted rerun consults. A
+compiled write carries two assertions — the evidence the compiler inferred from
+the recording, and the read-back the operator declared — so the declared one
+carries `verifies: "<write step id>"` and the tag is what the rerun reads. Their
+order is an emission detail. A write followed by several `assert` steps none of
+which is tagged is refused: nothing says which one reads the write back.
 
 Where the site exposes its own duplicate suppression as a form nonce, the step
 declares it with a `site_idempotency` object naming `kind: form_nonce` and the
 semantic target of the token field. brw reads that field before dispatch and
-records the token on the receipt, and refuses to dispatch at all if the field
-cannot be read or is empty. On a rerun whose verification could not confirm the
-write, a page still carrying the same token means the site itself is positioned
-to reject the duplicate, so brw defers to the site's mechanism and re-dispatches;
-a fresh token means it is not, and brw stops. Only `form_nonce` exists: a request
-header is the same idea, but a recipe drives a page rather than an HTTP client,
-so declaring one would name a mechanism that never runs.
+records a digest of the token on the receipt — equality is all the comparison
+needs, and the receipt is held by a third party — and refuses to dispatch at all
+if the field cannot be read or is empty. The token is recorded, never acted on:
+a page still carrying the token an interrupted attempt used is equally consistent
+with the site having consumed it and with the token being a per-session CSRF
+value the site would accept again, and brw cannot tell those apart from outside,
+so an unchanged token is not grounds to dispatch again. The refusal reports the
+comparison so a human can use it. Only `form_nonce` exists: a request header is
+the same idea, but a recipe drives a page rather than an HTTP client, so
+declaring one would name a mechanism that never runs.
 
 The receipt endpoints extend the provider contract with `POST /v1/receipts/lookup`,
 `POST /v1/receipts/begin` and `POST /v1/receipts/commit`. As with search and
 fetch, every reply is revalidated: a receipt answering about another key, step or
 origin is refused rather than trusted.
+
+A deployment whose provider is a local directory gets no receipts at all: a
+receipt has to outlive the daemon that wrote it, and a file on the machine that
+crashed answers nothing. The daemon says so at startup, naming the flag that
+configures a provider that can hold them, and refuses any recipe declaring a
+site nonce rather than running it with the declaration switched off.
 
 ## Timers, page events, cron, and webhooks
 
