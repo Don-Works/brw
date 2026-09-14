@@ -276,11 +276,10 @@ func RedactCapturedCredentials(requests []CapturedRequest) []CapturedRequest {
 }
 
 // RedactSensitiveHeaders blanks sensitive header VALUES in place and returns the
-// same map, so any header block brw retains — a captured request, or a
-// Network.responseReceived event kept in the CDP event ring — carries the header
-// name without the credential. Set-Cookie on a retained response event is the
-// exact case this closes: a subscription that outlives one call must not become
-// the side door around the capture-path redaction.
+// same map, so a header block brw retains carries the header name without the
+// credential. Split out of RedactCapturedCredentials so any future retained
+// header block runs through the same denylist rather than growing a second,
+// weaker copy of it.
 func RedactSensitiveHeaders(headers map[string]string) map[string]string {
 	const placeholder = "[redacted]"
 	for name := range headers {

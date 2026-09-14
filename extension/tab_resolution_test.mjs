@@ -311,11 +311,35 @@ async function scenarioDownloadSnapshotsAndFailClosedProvenance() {
   check("extension download snapshot carries exact source tab",
     first?.count === 1 && first.downloads[0]?.guid === "42" && first.downloads[0]?.tab_id === "11");
 
+  const beforeCompletion = socket.sent.at(-1)?.result?.downloads[0]?.changed_at_ms;
   fireEvent("downloads.onChanged", { id: 42, state: { current: "complete" } });
   await T.handle({ id: "downloads-2", type: "get_downloads" });
   const completed = socket.sent.at(-1)?.result;
   await T.handle({ id: "downloads-3", type: "get_downloads" });
   const repeated = socket.sent.at(-1)?.result;
+
+  // changed_at_ms is what lets the daemon apply the same 15s recency window the
+  // direct-CDP transport applies, so a download that finished just before the
+  // wait was written still satisfies it. It must move on a state change and
+  // stand still otherwise, or every poll would churn the entry fingerprint.
+  const completedAt = completed?.downloads[0]?.changed_at_ms;
+  check("download completion is timestamped",
+    Number.isFinite(completedAt) && completedAt >= beforeCompletion && Math.abs(Date.now() - completedAt) < 60000);
+  check("a read that observes no state change does not move the timestamp",
+    repeated?.downloads[0]?.changed_at_ms === completedAt);
+
+  // A delta that carries no state change (a size correction, a renamed file)
+  // must not restamp the entry either: the daemon reads the stamp as "when this
+  // download finished", and a poll-driven restamp would make an old download
+  // look fresh forever.
+  // Far enough after the completion that a restamp would be visible: Date.now()
+  // inside the same millisecond would be indistinguishable from holding still.
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  fireEvent("downloads.onChanged", { id: 42, totalBytes: { current: 4096 } });
+  await T.handle({ id: "downloads-4", type: "get_downloads" });
+  const restated = socket.sent.at(-1)?.result;
+  check("a delta with no state change does not restamp the download",
+    restated?.downloads[0]?.total_bytes === 4096 && restated.downloads[0]?.changed_at_ms === completedAt);
   check("download completion retains begin-event identity",
     completed?.downloads[0]?.state === "completed" && completed.downloads[0]?.suggested_filename === "report.pdf" && completed.downloads[0]?.tab_id === "11");
   check("get_downloads is retained and non-draining",

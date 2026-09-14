@@ -118,7 +118,7 @@ func (m *Manager) waitForLoadEvent(ctx, tabCtx context.Context, tabID, condition
 		return WaitOutcome{}, nil, false
 	}
 
-	sub, release := m.events.subscribe(tabID)
+	sub, release := m.events.subscribe([]pageEventKind{eventLoad}, tabID)
 	defer release()
 	// The load may have landed between the state read above and the subscribe.
 	if _, loaded := m.events.loadState(tabID); loaded {
@@ -149,7 +149,7 @@ func (m *Manager) waitForDialog(ctx, tabCtx context.Context, tabID, match string
 
 	// Subscribe before reading the ring so a dialog opening between the two is
 	// delivered rather than falling into the gap.
-	sub, release := m.events.subscribe(tabID)
+	sub, release := m.events.subscribe([]pageEventKind{eventDialog}, tabID)
 	defer release()
 	for _, ev := range m.events.recent(tabID, eventDialog, time.Now().Add(-RecentDialogWindow)) {
 		if matches(ev) {
@@ -260,7 +260,7 @@ func (m *Manager) waitForDownload(ctx context.Context, match string, timeout tim
 
 	// Subscribe before the baseline so a completion landing between the two
 	// wakes the wait instead of being missed by both.
-	sub, release := m.events.subscribe(browserEventScope)
+	sub, release := m.events.subscribe([]pageEventKind{eventDownload}, browserEventScope)
 	defer release()
 
 	// Baseline: ignore downloads that finished before this action. A download

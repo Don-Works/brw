@@ -316,14 +316,30 @@ function recordDownload(item) {
     path ? downloadBasename(path) : (prev.suggested_filename || ""),
     MAX_DOWNLOAD_FILENAME_CHARS
   );
+  const nextState = item.state ? mapDownloadState(item.state) : (prev.state || "inProgress");
+  // changed_at_ms is what lets a download wait tell "this finished a second ago"
+  // from "this finished last week". The daemon applies the same 15s recency
+  // window to it that the direct-CDP transport applies to its own registry, so
+  // a fast download that beats the wait still satisfies it on this transport.
+  // It moves only when the state actually changes, so repeated polling does not
+  // churn the entry's change fingerprint; Chrome's own endTime wins for a
+  // terminal state so a service-worker restart cannot make an old download look
+  // freshly finished.
+  let changedAt = Number(prev.changed_at_ms) || 0;
+  if (!changedAt || nextState !== prev.state) changedAt = Date.now();
+  if (nextState === "completed" || nextState === "canceled") {
+    const ended = item.endTime ? Date.parse(item.endTime) : NaN;
+    if (Number.isFinite(ended)) changedAt = ended;
+  }
   const next = {
     guid,
     url,
     suggested_filename: suggestedFilename,
-    state: item.state ? mapDownloadState(item.state) : (prev.state || "inProgress"),
+    state: nextState,
     received_bytes: typeof item.bytesReceived === "number" ? item.bytesReceived : (prev.received_bytes || 0),
     total_bytes: typeof item.totalBytes === "number" && item.totalBytes > 0 ? item.totalBytes : (prev.total_bytes || (typeof item.fileSize === "number" && item.fileSize > 0 ? item.fileSize : 0)),
-    path: path || ""
+    path: path || "",
+    changed_at_ms: changedAt
   };
   const priorCorrelation = state.downloadCorrelation.get(guid);
   const urls = new Set(priorCorrelation?.urls || []);

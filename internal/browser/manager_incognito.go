@@ -56,7 +56,7 @@ func (m *Manager) OpenIncognito(ctx context.Context, url string) (OpenResult, er
 		m.recordObservation(tabID, TraceActionOpen, finalURL, start, err)
 	}
 	m.refs.SetActive(tabID)
-	ready := m.WaitFor(ctx, "load", 10*time.Second) == nil
+	ready := m.WaitFor(ctx, "ready", 10*time.Second) == nil
 	// As with Open, do NOT OS-activate the tab; foreground focus stays reserved
 	// for the explicit FocusTab tool.
 	tab, err := m.tabByID(ctx, tabID)

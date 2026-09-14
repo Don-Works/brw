@@ -5,10 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Don-Works/brw/internal/snapshot"
-	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
@@ -20,8 +17,7 @@ import (
 // extension bridge also a message-port wake.
 //
 // One subscription is installed per chromedp context — not per wait — carrying
-// Page.loadEventFired, Page.frameNavigated, Page.javascriptDialogOpening,
-// Network.responseReceived, Runtime.consoleAPICalled and
+// Page.loadEventFired, Page.frameNavigated, Page.javascriptDialogOpening and
 // Browser.downloadProgress. Every waiter reads that shared stream. The
 // subscription is scoped to the context that created it and the scope is dropped
 // when the context ends, so a closed tab leaves no listener, no ring and no
@@ -40,12 +36,13 @@ type eventHub struct {
 const browserEventScope = "*browser*"
 
 const (
-	// maxRetainedEventsPerScope bounds the per-scope ring. A wait reads the ring
-	// to answer "did this already happen just now?"; anything older is answered
-	// by the live stream. Network.responseReceived is why this is a ring and not
-	// a slice: unbounded retention would grow with the page's traffic for the
-	// life of the tab, which is a memory leak and a standing privacy surface.
-	maxRetainedEventsPerScope = 128
+	// maxRetainedEventsPerKind bounds the retained ring of ONE kind in one scope.
+	// A wait reads the ring to answer "did this already happen just now?";
+	// anything older is answered by the live stream. The cap is per kind and not
+	// per scope because a shared ring makes retention a race between kinds: a
+	// page that navigates repeatedly would evict the dialog a wait is about to
+	// look back for, and the wait would then sit out its whole timeout.
+	maxRetainedEventsPerKind = 32
 
 	// eventSubscriberBuffer is the per-waiter queue depth. Sends are
 	// non-blocking: a woken waiter re-reads authoritative state, so a dropped
@@ -55,21 +52,17 @@ const (
 
 	// maxEventTextBytes clips retained dialog text and URLs.
 	maxEventTextBytes = 400
-
-	// maxRetainedResponseHeaders bounds how much of a response header block is
-	// retained per event.
-	maxRetainedResponseHeaders = 16
 )
 
-// pageEventKind names one signal the wait and settle paths consume.
+// pageEventKind names one signal the wait and settle paths consume. Every kind
+// here has a consumer; a kind nothing reads is not published, because the queue
+// a waiter reads is finite and shared.
 type pageEventKind string
 
 const (
 	eventLoad      pageEventKind = "load"
 	eventNavigated pageEventKind = "navigated"
 	eventDialog    pageEventKind = "dialog"
-	eventResponse  pageEventKind = "response"
-	eventConsole   pageEventKind = "console"
 	eventDownload  pageEventKind = "download"
 )
 
@@ -77,20 +70,29 @@ const (
 // decide; the authoritative state (the download registry, the dialog ring) is
 // re-read by the waiter after it wakes.
 type pageEvent struct {
-	Kind    pageEventKind
-	Scope   string
-	At      time.Time
-	URL     string
-	Detail  string // dialog type, console level, or download state
-	Text    string // dialog message, clipped
-	ID      string // download guid
-	Status  int64  // response status
-	Headers map[string]string
+	Kind   pageEventKind
+	Scope  string
+	At     time.Time
+	URL    string
+	Detail string // dialog type or download state
+	Text   string // dialog message, clipped
+	ID     string // download guid
+}
+
+// eventSubscriber is one waiter's queue plus the kinds it asked for. The kind
+// filter is what keeps a finite queue honest: everything a waiter is sent but
+// does not want occupies a slot the awaited event may then not get.
+type eventSubscriber struct {
+	ch    chan pageEvent
+	kinds map[pageEventKind]bool
 }
 
 type eventScope struct {
-	ring     []pageEvent
-	subs     map[uint64]chan pageEvent
+	// rings is keyed by kind so one kind's traffic cannot evict another's.
+	rings map[pageEventKind][]pageEvent
+	subs  map[uint64]*eventSubscriber
+	// attached reports that a context installed this scope's subscription and
+	// will therefore drop the scope when it ends.
 	attached bool
 	// observed is true once the hub has seen a lifecycle event for this scope.
 	// Without it a wait cannot tell "this tab has not loaded" from "brw attached
@@ -106,7 +108,10 @@ func (h *eventHub) scopeLocked(name string) *eventScope {
 	}
 	scope, ok := h.scopes[name]
 	if !ok {
-		scope = &eventScope{subs: make(map[uint64]chan pageEvent)}
+		scope = &eventScope{
+			rings: make(map[pageEventKind][]pageEvent),
+			subs:  make(map[uint64]*eventSubscriber),
+		}
 		h.scopes[name] = scope
 	}
 	return scope
@@ -189,24 +194,20 @@ func (h *eventHub) ingest(scope string, ev any) {
 			Text:   clipEventText(e.Message),
 			URL:    clipEventText(e.URL),
 		})
-	case *network.EventResponseReceived:
-		if e.Response == nil {
-			return
-		}
-		h.publish(scope, pageEvent{
-			Kind:    eventResponse,
-			URL:     clipEventText(e.Response.URL),
-			Status:  e.Response.Status,
-			Headers: redactedResponseHeaders(e.Response.Headers),
-		})
-	case *runtime.EventConsoleAPICalled:
-		h.publish(scope, pageEvent{Kind: eventConsole, Detail: string(e.Type)})
 	}
-	// Browser.downloadProgress is deliberately absent: it is published by
-	// Manager.handleDownloadEventForTab, which is wired into this same
-	// subscription and writes the download registry first. Publishing it here as
-	// well would wake a waiter before the registry it re-reads had been updated,
-	// with no later event to correct it.
+	// Two absences are deliberate.
+	//
+	// Browser.downloadProgress is published by Manager.handleDownloadEventForTab,
+	// which is wired into this same subscription and writes the download registry
+	// first. Publishing it here as well would wake a waiter before the registry
+	// it re-reads had been updated, with no later event to correct it.
+	//
+	// Network.responseReceived and Runtime.consoleAPICalled are not carried at
+	// all. They are the two highest-volume kinds a page produces and no wait
+	// reads either; carrying them cost a retained copy of every response header
+	// block, and on any page loading more than a handful of subresources they
+	// could push a dialog out of a waiter's queue before that queue was filtered
+	// by kind.
 }
 
 func (h *eventHub) publish(scope string, ev pageEvent) {
@@ -216,14 +217,26 @@ func (h *eventHub) publish(scope string, ev pageEvent) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	sc := h.scopeLocked(scope)
-	sc.ring = append(sc.ring, ev)
-	if len(sc.ring) > maxRetainedEventsPerScope {
-		sc.ring = append(sc.ring[:0], sc.ring[len(sc.ring)-maxRetainedEventsPerScope:]...)
+	sc := h.scopes[scope]
+	if sc == nil {
+		// The scope is gone: the context that owned it ended and closeScope
+		// dropped it. chromedp tests each listener's context per event, so an
+		// event that passed that test can still arrive here afterwards. Creating
+		// the scope for it would resurrect a ring with nothing left to tear it
+		// down, and it would then live for the daemon's lifetime.
+		return
 	}
-	for _, ch := range sc.subs {
+	ring := append(sc.rings[ev.Kind], ev)
+	if len(ring) > maxRetainedEventsPerKind {
+		ring = append(ring[:0], ring[len(ring)-maxRetainedEventsPerKind:]...)
+	}
+	sc.rings[ev.Kind] = ring
+	for _, sub := range sc.subs {
+		if !sub.kinds[ev.Kind] {
+			continue
+		}
 		select {
-		case ch <- ev:
+		case sub.ch <- ev:
 		default:
 		}
 	}
@@ -232,7 +245,15 @@ func (h *eventHub) publish(scope string, ev pageEvent) {
 // subscribe returns one channel fed by every named scope, plus a release that
 // must be called when the wait ends. Subscribing is what a wait does instead of
 // opening its own poll loop.
-func (h *eventHub) subscribe(scopes ...string) (<-chan pageEvent, func()) {
+//
+// kinds is the filter, and it is not optional: the queue is finite and a full
+// queue drops what arrives next, so a waiter that is also sent the kinds it does
+// not care about can have the one it is waiting for pushed out by traffic.
+func (h *eventHub) subscribe(kinds []pageEventKind, scopes ...string) (<-chan pageEvent, func()) {
+	wanted := make(map[pageEventKind]bool, len(kinds))
+	for _, kind := range kinds {
+		wanted[kind] = true
+	}
 	ch := make(chan pageEvent, eventSubscriberBuffer)
 	ids := make(map[string]uint64, len(scopes))
 	h.mu.Lock()
@@ -242,7 +263,7 @@ func (h *eventHub) subscribe(scopes ...string) (<-chan pageEvent, func()) {
 		}
 		sc := h.scopeLocked(name)
 		h.nextSub++
-		sc.subs[h.nextSub] = ch
+		sc.subs[h.nextSub] = &eventSubscriber{ch: ch, kinds: wanted}
 		ids[name] = h.nextSub
 	}
 	h.mu.Unlock()
@@ -259,8 +280,10 @@ func (h *eventHub) subscribe(scopes ...string) (<-chan pageEvent, func()) {
 				}
 				delete(sc.subs, id)
 				// A scope conjured by a subscribe against a context that never
-				// attached has nothing to tear it down later; drop it here.
-				if !sc.attached && len(sc.subs) == 0 && len(sc.ring) == 0 {
+				// attached has nothing to tear it down later, and once its last
+				// subscriber is gone nothing can read what it retained either —
+				// so it goes here whether or not events landed in it.
+				if !sc.attached && len(sc.subs) == 0 {
 					delete(h.scopes, name)
 				}
 			}
@@ -280,8 +303,8 @@ func (h *eventHub) recent(scope string, kind pageEventKind, since time.Time) []p
 		return nil
 	}
 	var out []pageEvent
-	for _, ev := range sc.ring {
-		if ev.Kind == kind && !ev.At.Before(since) {
+	for _, ev := range sc.rings[kind] {
+		if !ev.At.Before(since) {
 			out = append(out, ev)
 		}
 	}
@@ -300,23 +323,27 @@ func (h *eventHub) loadState(tabID string) (observed, loaded bool) {
 	return sc.observed, sc.loaded
 }
 
+// markLoaded and markNavigated, like publish, refuse to recreate a scope whose
+// context has ended: a late event must not bring back state nothing will drop.
 func (h *eventHub) markLoaded(scope string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	sc := h.scopeLocked(scope)
-	sc.observed = true
-	sc.loaded = true
+	if sc := h.scopes[scope]; sc != nil {
+		sc.observed = true
+		sc.loaded = true
+	}
 }
 
 func (h *eventHub) markNavigated(scope string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	sc := h.scopeLocked(scope)
-	sc.observed = true
-	sc.loaded = false
+	if sc := h.scopes[scope]; sc != nil {
+		sc.observed = true
+		sc.loaded = false
+	}
 }
 
-// closeScope drops everything the hub holds for one context: the retained ring
+// closeScope drops everything the hub holds for one context: the retained rings
 // and every registered waiter. Waiters are not signalled here because a wait is
 // always bounded by a context descended from the one that just died.
 func (h *eventHub) closeScope(name string) {
@@ -341,28 +368,6 @@ func (h *eventHub) liveSubscribers() int {
 		total += len(sc.subs)
 	}
 	return total
-}
-
-// redactedResponseHeaders bounds and redacts a retained response header block.
-// brw_network_capture already refuses to hand back a live Authorization or
-// Set-Cookie value; a retained CDP event must not become the side door around
-// that, so it runs through the same denylist before anything is kept.
-func redactedResponseHeaders(headers network.Headers) map[string]string {
-	if len(headers) == 0 {
-		return nil
-	}
-	out := make(map[string]string, min(len(headers), maxRetainedResponseHeaders))
-	for name, value := range headers {
-		if len(out) >= maxRetainedResponseHeaders {
-			break
-		}
-		text, ok := value.(string)
-		if !ok {
-			continue
-		}
-		out[name] = clipEventText(text)
-	}
-	return snapshot.RedactSensitiveHeaders(out)
 }
 
 func clipEventText(s string) string {

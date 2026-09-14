@@ -3258,7 +3258,7 @@ func (b *Bridge) Navigate(ctx context.Context, direction string) (browser.Action
 	// A history move / reload may tear down and rebuild the document; give it a
 	// moment to settle, then wait for readiness before observing.
 	b.settle(ctx, observedActionSettle)
-	_ = b.WaitFor(ctx, "load", 10*time.Second)
+	_ = b.WaitFor(ctx, "ready", 10*time.Second)
 	return b.observeActionWithBefore(ctx, "navigated "+dir, before), nil
 }
 
@@ -5541,6 +5541,36 @@ type downloadSnapshotPayload struct {
 	Downloads []browser.DownloadEntry `json:"downloads"`
 	Supported bool                    `json:"supported"`
 	Note      string                  `json:"note"`
+	// ChangedAt maps a download guid to when the extension last saw that
+	// download change state. It is decoded separately from Downloads (see
+	// decodeDownloadChangeTimes) so the wire field does not widen
+	// browser.DownloadEntry, which is both the shape brw_downloads returns and
+	// the shape this bridge fingerprints for change detection.
+	ChangedAt map[string]time.Time `json:"-"`
+}
+
+// decodeDownloadChangeTimes reads the per-entry changed_at_ms the extension
+// sends alongside each download. An extension build that predates the field
+// reports nothing here, and a wait then treats every already-terminal download
+// as old news, exactly as it did before the field existed.
+func decodeDownloadChangeTimes(raw []byte) map[string]time.Time {
+	var timing struct {
+		Downloads []struct {
+			GUID        string `json:"guid"`
+			ChangedAtMS int64  `json:"changed_at_ms"`
+		} `json:"downloads"`
+	}
+	if err := json.Unmarshal(raw, &timing); err != nil {
+		return nil
+	}
+	out := make(map[string]time.Time, len(timing.Downloads))
+	for _, entry := range timing.Downloads {
+		if entry.GUID == "" || entry.ChangedAtMS <= 0 {
+			continue
+		}
+		out[entry.GUID] = time.UnixMilli(entry.ChangedAtMS)
+	}
+	return out
 }
 
 // downloadSnapshot performs the get_downloads RPC and updates the change
@@ -5564,6 +5594,7 @@ func (b *Bridge) downloadSnapshot(ctx context.Context) (downloadSnapshotPayload,
 		if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
 			return downloadSnapshotPayload{}, fmt.Errorf("parse downloads: %w", jsonErr)
 		}
+		payload.ChangedAt = decodeDownloadChangeTimes(raw)
 	}
 	if payload.Downloads == nil {
 		payload.Downloads = []browser.DownloadEntry{}

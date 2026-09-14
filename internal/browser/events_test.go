@@ -12,10 +12,26 @@ import (
 	"github.com/chromedp/cdproto/runtime"
 )
 
+// everyKind is what a test subscriber asks for when the point of the test is
+// something other than the kind filter.
+var everyKind = []pageEventKind{eventLoad, eventNavigated, eventDialog, eventDownload}
+
+// attachScope models what attachTab does before any event can arrive: the scope
+// exists and something is responsible for dropping it. publish and the load-state
+// marks deliberately refuse to create a scope, so a test that ingests without
+// this would be exercising the post-teardown path instead.
+func attachScope(t *testing.T, hub *eventHub, name string) {
+	t.Helper()
+	hub.mu.Lock()
+	hub.scopeLocked(name).attached = true
+	hub.mu.Unlock()
+}
+
 // TestEventHubClassifiesTheSubscribedEvents drives each CDP event the single
 // per-context subscription carries through ingest and checks what a waiter would
 // see. A kind that stops being classified here stops waking the wait that reads
-// it.
+// it — and a kind that starts being carried when nothing consumes it takes a slot
+// in every waiter's finite queue.
 func TestEventHubClassifiesTheSubscribedEvents(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -24,7 +40,6 @@ func TestEventHubClassifiesTheSubscribedEvents(t *testing.T) {
 		wantScope  string
 		wantDetail string
 		wantURL    string
-		wantStatus int64
 		wantNone   bool
 	}{
 		{
@@ -54,24 +69,21 @@ func TestEventHubClassifiesTheSubscribedEvents(t *testing.T) {
 			wantURL:    "https://example.test/",
 		},
 		{
-			name:       "Network.responseReceived",
-			event:      &network.EventResponseReceived{Response: &network.Response{URL: "https://example.test/api", Status: 503}},
-			wantKind:   eventResponse,
-			wantScope:  "tab-1",
-			wantURL:    "https://example.test/api",
-			wantStatus: 503,
-		},
-		{
-			name:     "Network.responseReceived with no response payload",
-			event:    &network.EventResponseReceived{},
+			name: "Network.responseReceived is not carried: no wait reads it",
+			event: &network.EventResponseReceived{Response: &network.Response{
+				URL:    "https://example.test/api",
+				Status: 503,
+				Headers: network.Headers{
+					"set-cookie":   "session=fixture-session-value-one",
+					"content-type": "application/json",
+				},
+			}},
 			wantNone: true,
 		},
 		{
-			name:       "Runtime.consoleAPICalled",
-			event:      &runtime.EventConsoleAPICalled{Type: runtime.APITypeError},
-			wantKind:   eventConsole,
-			wantScope:  "tab-1",
-			wantDetail: "error",
+			name:     "Runtime.consoleAPICalled is not carried: no wait reads it",
+			event:    &runtime.EventConsoleAPICalled{Type: runtime.APITypeError},
+			wantNone: true,
 		},
 		{
 			name:     "an event nothing waits on is dropped, not retained",
@@ -83,7 +95,8 @@ func TestEventHubClassifiesTheSubscribedEvents(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			hub := &eventHub{}
-			sub, release := hub.subscribe("tab-1")
+			attachScope(t, hub, "tab-1")
+			sub, release := hub.subscribe(everyKind, "tab-1")
 			defer release()
 
 			hub.ingest("tab-1", tt.event)
@@ -105,9 +118,6 @@ func TestEventHubClassifiesTheSubscribedEvents(t *testing.T) {
 				if got.URL != tt.wantURL {
 					t.Fatalf("url = %q, want %q", got.URL, tt.wantURL)
 				}
-				if got.Status != tt.wantStatus {
-					t.Fatalf("status = %d, want %d", got.Status, tt.wantStatus)
-				}
 				if got.At.IsZero() {
 					t.Fatal("event carries no timestamp, so no recency window can be applied to it")
 				}
@@ -116,7 +126,50 @@ func TestEventHubClassifiesTheSubscribedEvents(t *testing.T) {
 					t.Fatal("subscriber was never woken")
 				}
 			}
+
+			// What the hub declines to carry must not be retained either: the ring
+			// is the other half of the memory and privacy bound.
+			if tt.wantNone {
+				hub.mu.Lock()
+				retained := 0
+				if sc := hub.scopes["tab-1"]; sc != nil {
+					for _, ring := range sc.rings {
+						retained += len(ring)
+					}
+				}
+				hub.mu.Unlock()
+				if retained != 0 {
+					t.Fatalf("retained %d events of a kind nothing consumes", retained)
+				}
+			}
 		})
+	}
+}
+
+// TestASubscriberOnlyReceivesTheKindsItAskedFor is the queue-crowding guard. The
+// per-waiter queue is finite and a full one drops what lands next, so a waiter
+// also handed kinds it does not care about can have the event it is waiting for
+// pushed out by ordinary page traffic. Publishing the burst BEFORE the wait looks
+// is the real shape of it: the events are already queued when it does.
+func TestASubscriberOnlyReceivesTheKindsItAskedFor(t *testing.T) {
+	hub := &eventHub{}
+	attachScope(t, hub, "tab-1")
+	sub, release := hub.subscribe([]pageEventKind{eventDialog}, "tab-1")
+	defer release()
+
+	for range eventSubscriberBuffer * 2 {
+		hub.publish("tab-1", pageEvent{Kind: eventLoad})
+	}
+	hub.publish("tab-1", pageEvent{Kind: eventDialog, Text: "Delete this?"})
+
+	outcome, err := awaitEvent(context.Background(), context.Background(), sub, 2*time.Second, "dialog", func(ev pageEvent) bool {
+		return ev.Kind == eventDialog
+	})
+	if err != nil {
+		t.Fatalf("dialog wait: %v — a burst of another kind pushed the dialog out of the queue", err)
+	}
+	if outcome.Wakeups != 1 {
+		t.Fatalf("wakeups = %d, want 1: the wait was woken by events it never asked for", outcome.Wakeups)
 	}
 }
 
@@ -125,8 +178,9 @@ func TestEventHubClassifiesTheSubscribedEvents(t *testing.T) {
 // finished loading" from "brw attached after it already had".
 func TestLoadStateFollowsNavigationAndLoad(t *testing.T) {
 	hub := &eventHub{}
+	attachScope(t, hub, "tab-1")
 
-	if observed, loaded := hub.loadState("tab-1"); observed || loaded {
+	if observed, loaded := hub.loadState("tab-other"); observed || loaded {
 		t.Fatalf("a tab the hub has never seen must report observed=false loaded=false, got %v/%v", observed, loaded)
 	}
 
@@ -147,26 +201,24 @@ func TestLoadStateFollowsNavigationAndLoad(t *testing.T) {
 	}
 }
 
-// TestRetainedEventsAreCappedPerScope is the memory-leak guard. A busy page emits
-// a Network.responseReceived per request; retaining them all would grow the ring
-// with the page's traffic for the life of the tab.
-func TestRetainedEventsAreCappedPerScope(t *testing.T) {
+// TestRetainedEventsAreCappedPerKind is the memory-leak guard: retention must not
+// grow with how long a tab lives.
+func TestRetainedEventsAreCappedPerKind(t *testing.T) {
 	hub := &eventHub{}
-	const published = maxRetainedEventsPerScope * 3
+	attachScope(t, hub, "tab-1")
+	const published = maxRetainedEventsPerKind * 3
 	for i := range published {
-		hub.ingest("tab-1", &network.EventResponseReceived{
-			Response: &network.Response{URL: fmt.Sprintf("https://example.test/%d", i), Status: 200},
-		})
+		hub.publish("tab-1", pageEvent{Kind: eventNavigated, URL: fmt.Sprintf("https://example.test/%d", i)})
 	}
 
 	hub.mu.Lock()
-	scope := hub.scopes["tab-1"]
-	retained := len(scope.ring)
-	newest := scope.ring[len(scope.ring)-1].URL
+	ring := hub.scopes["tab-1"].rings[eventNavigated]
+	retained := len(ring)
+	newest := ring[len(ring)-1].URL
 	hub.mu.Unlock()
 
-	if retained != maxRetainedEventsPerScope {
-		t.Fatalf("retained %d events after publishing %d, want the %d cap", retained, published, maxRetainedEventsPerScope)
+	if retained != maxRetainedEventsPerKind {
+		t.Fatalf("retained %d events after publishing %d, want the %d cap", retained, published, maxRetainedEventsPerKind)
 	}
 	// The ring must keep the RECENT events; a wait asks about what just happened.
 	if want := fmt.Sprintf("https://example.test/%d", published-1); newest != want {
@@ -174,42 +226,24 @@ func TestRetainedEventsAreCappedPerScope(t *testing.T) {
 	}
 }
 
-// TestRetainedResponseHeadersAreRedacted is the privacy guard. brw_network_capture
-// refuses to hand back a live Authorization or Set-Cookie value; a retained CDP
-// event must not be the way around that.
-func TestRetainedResponseHeadersAreRedacted(t *testing.T) {
+// TestOneKindsTrafficDoesNotEvictAnother is the other half of that guard and the
+// reason retention is keyed by kind. brw answers a dialog the instant it opens,
+// so the wait written after the click looks the dialog up in the ring; one shared
+// ring makes that lookup a race against whatever else the page did in between.
+func TestOneKindsTrafficDoesNotEvictAnother(t *testing.T) {
 	hub := &eventHub{}
-	sub, release := hub.subscribe("tab-1")
-	defer release()
+	attachScope(t, hub, "tab-1")
+	since := time.Now().Add(-time.Minute)
 
-	hub.ingest("tab-1", &network.EventResponseReceived{Response: &network.Response{
-		URL:    "https://example.test/session",
-		Status: 200,
-		Headers: network.Headers{
-			"set-cookie":    "session=fixture-session-value-one; HttpOnly",
-			"Authorization": "Bearer fixture-bearer-value-one",
-			"content-type":  "application/json",
-		},
-	}})
-
-	var got pageEvent
-	select {
-	case got = <-sub:
-	case <-time.After(2 * time.Second):
-		t.Fatal("subscriber was never woken")
+	hub.publish("tab-1", pageEvent{Kind: eventDialog, Text: "Delete this?"})
+	for i := range maxRetainedEventsPerKind * 4 {
+		hub.publish("tab-1", pageEvent{Kind: eventNavigated, URL: fmt.Sprintf("https://example.test/%d", i)})
+		hub.publish("tab-1", pageEvent{Kind: eventLoad})
 	}
 
-	for _, name := range []string{"set-cookie", "Authorization"} {
-		value, ok := got.Headers[name]
-		if !ok {
-			t.Fatalf("header %q was dropped entirely; the name is useful for debugging and must survive", name)
-		}
-		if value != "[redacted]" {
-			t.Fatalf("header %q = %q, want it redacted", name, value)
-		}
-	}
-	if got.Headers["content-type"] != "application/json" {
-		t.Fatalf("content-type = %q, want it kept verbatim", got.Headers["content-type"])
+	got := hub.recent("tab-1", eventDialog, since)
+	if len(got) != 1 || got[0].Text != "Delete this?" {
+		t.Fatalf("recent dialogs = %+v, want the one dialog: other traffic evicted it", got)
 	}
 }
 
@@ -218,14 +252,15 @@ func TestRetainedResponseHeadersAreRedacted(t *testing.T) {
 // events behind the slowest waiter.
 func TestPublishNeverBlocksOnASlowSubscriber(t *testing.T) {
 	hub := &eventHub{}
-	_, release := hub.subscribe("tab-1")
+	attachScope(t, hub, "tab-1")
+	_, release := hub.subscribe([]pageEventKind{eventDialog}, "tab-1")
 	defer release()
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for range eventSubscriberBuffer * 4 {
-			hub.publish("tab-1", pageEvent{Kind: eventConsole})
+			hub.publish("tab-1", pageEvent{Kind: eventDialog})
 		}
 	}()
 	select {
@@ -237,17 +272,17 @@ func TestPublishNeverBlocksOnASlowSubscriber(t *testing.T) {
 
 // TestScopeIsDroppedWhenItsContextEnds is the teardown guard: cancelling the
 // context that owns a subscription must leave no scope, no retained event and no
-// registered waiter behind.
+// registered waiter behind — and must keep it that way. chromedp tests each
+// listener's context per event, so an event that passed that test can still
+// arrive after the scope is gone.
 func TestScopeIsDroppedWhenItsContextEnds(t *testing.T) {
 	hub := &eventHub{}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	hub.mu.Lock()
-	hub.scopeLocked("tab-1").attached = true
-	hub.mu.Unlock()
+	attachScope(t, hub, "tab-1")
 	hub.dropWhenDone("tab-1", ctx)
 
-	_, release := hub.subscribe("tab-1")
+	_, release := hub.subscribe(everyKind, "tab-1")
 	defer release()
 	hub.ingest("tab-1", &page.EventLoadEventFired{})
 
@@ -257,30 +292,61 @@ func TestScopeIsDroppedWhenItsContextEnds(t *testing.T) {
 
 	cancel()
 	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if hub.liveScopes() == 0 && hub.liveSubscribers() == 0 {
-			return
+	for hub.liveScopes() != 0 || hub.liveSubscribers() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("after teardown: scopes=%d subscribers=%d, want 0/0", hub.liveScopes(), hub.liveSubscribers())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("after teardown: scopes=%d subscribers=%d, want 0/0", hub.liveScopes(), hub.liveSubscribers())
+
+	// A late event must not bring the scope back. A resurrected scope has no
+	// context left to drop it, so it and everything it retains would then live for
+	// the daemon's lifetime.
+	hub.ingest("tab-1", &page.EventLoadEventFired{})
+	hub.ingest("tab-1", &page.EventFrameNavigated{Frame: &cdp.Frame{URL: "https://example.test/"}})
+	hub.publish("tab-1", pageEvent{Kind: eventDialog, Text: "after teardown"})
+	if hub.liveScopes() != 0 {
+		t.Fatalf("an event delivered after teardown resurrected the scope: scopes=%d, want 0", hub.liveScopes())
+	}
+	if observed, loaded := hub.loadState("tab-1"); observed || loaded {
+		t.Fatalf("load state survived teardown: observed=%v loaded=%v", observed, loaded)
+	}
 }
 
 // TestReleasedSubscriptionLeavesNoScopeBehind: a wait against a scope nothing has
 // attached to (no live tab context) conjures the scope. Releasing must take it
-// with it, or every such wait leaks one map entry.
+// with it, or every such wait leaks one map entry — including whatever landed in
+// it meanwhile, which nothing can read once the last subscriber is gone.
 func TestReleasedSubscriptionLeavesNoScopeBehind(t *testing.T) {
-	hub := &eventHub{}
-	_, release := hub.subscribe(browserEventScope)
-	if hub.liveScopes() != 1 {
-		t.Fatalf("scopes = %d, want 1 while subscribed", hub.liveScopes())
+	tests := []struct {
+		name    string
+		publish []pageEvent
+	}{
+		{name: "nothing arrived while it was subscribed"},
+		{
+			name:    "a download landed while it was subscribed",
+			publish: []pageEvent{{Kind: eventDownload, ID: "guid-1"}},
+		},
 	}
-	release()
-	if hub.liveScopes() != 0 {
-		t.Fatalf("scopes = %d after release, want 0", hub.liveScopes())
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hub := &eventHub{}
+			_, release := hub.subscribe([]pageEventKind{eventDownload}, browserEventScope)
+			if hub.liveScopes() != 1 {
+				t.Fatalf("scopes = %d, want 1 while subscribed", hub.liveScopes())
+			}
+			for _, ev := range tt.publish {
+				hub.publish(browserEventScope, ev)
+			}
+			release()
+			if hub.liveScopes() != 0 {
+				t.Fatalf("scopes = %d after release, want 0", hub.liveScopes())
+			}
+			// Release is idempotent.
+			release()
+		})
 	}
-	// Release is idempotent.
-	release()
 }
 
 // TestRecentReturnsOnlyMatchingEventsInsideTheWindow covers the "it already
@@ -288,9 +354,10 @@ func TestReleasedSubscriptionLeavesNoScopeBehind(t *testing.T) {
 // wait written after the click has to find it in the ring.
 func TestRecentReturnsOnlyMatchingEventsInsideTheWindow(t *testing.T) {
 	hub := &eventHub{}
+	attachScope(t, hub, "tab-1")
 	now := time.Now()
 	hub.publish("tab-1", pageEvent{Kind: eventDialog, Text: "old", At: now.Add(-time.Hour)})
-	hub.publish("tab-1", pageEvent{Kind: eventConsole, At: now})
+	hub.publish("tab-1", pageEvent{Kind: eventLoad, At: now})
 	hub.publish("tab-1", pageEvent{Kind: eventDialog, Text: "fresh", At: now})
 
 	got := hub.recent("tab-1", eventDialog, now.Add(-time.Minute))
@@ -303,47 +370,82 @@ func TestRecentReturnsOnlyMatchingEventsInsideTheWindow(t *testing.T) {
 }
 
 // TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation proves the settle window's
-// navigation branch now comes from the event stream. The in-page promise it is
+// navigation branch comes from the event stream. The in-page promise it is
 // waiting on lives in the execution context the navigation is destroying, so
 // without the stream the settle waits for a reply that will never arrive.
+//
+// It also pins what happens to the abandoned await, in both directions. It must
+// NOT be cancelled when the window ends: that kills a CDP command in flight on a
+// live tab just as the next action is issued, which cost an inline upload its
+// file bytes on the very next submit. It must end with the tab, which is what
+// keeps one abandoned wait per action from outliving anything.
 func TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation(t *testing.T) {
 	tests := []struct {
-		name     string
-		event    *pageEvent
-		want     string
-		awaitFor time.Duration
+		name      string
+		subscribe bool
+		event     *pageEvent
+		awaitFor  time.Duration
+		settleCap time.Duration
 	}{
 		{
-			name:     "the in-page settle resolving first wins",
-			awaitFor: 10 * time.Millisecond,
-			want:     settleSourceScript,
+			name:      "the in-page settle resolving first wins",
+			subscribe: true,
+			awaitFor:  10 * time.Millisecond,
+			settleCap: 5 * time.Second,
 		},
 		{
-			name:     "a navigation abandons an in-page settle that cannot answer",
-			event:    &pageEvent{Kind: eventNavigated},
-			awaitFor: time.Hour,
-			want:     settleSourceNavigation,
+			name:      "a navigation abandons an in-page settle that cannot answer",
+			subscribe: true,
+			event:     &pageEvent{Kind: eventNavigated},
+			awaitFor:  time.Hour,
+			settleCap: 5 * time.Second,
 		},
 		{
-			name:     "an unrelated event does not end the settle window",
-			event:    &pageEvent{Kind: eventConsole},
-			awaitFor: 40 * time.Millisecond,
-			want:     settleSourceScript,
+			name:      "an unrelated event does not end the settle window",
+			subscribe: true,
+			event:     &pageEvent{Kind: eventDialog},
+			awaitFor:  40 * time.Millisecond,
+			settleCap: 5 * time.Second,
+		},
+		{
+			name:      "a renderer that never replies is bounded by the cap",
+			subscribe: true,
+			awaitFor:  time.Hour,
+			settleCap: 50 * time.Millisecond,
+		},
+		{
+			name:      "no subscription still runs the in-page settle",
+			awaitFor:  10 * time.Millisecond,
+			settleCap: time.Second,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			hub := &eventHub{}
-			sub, release := hub.subscribe("tab-1")
-			defer release()
+			attachScope(t, hub, "tab-1")
+			var sub <-chan pageEvent
+			if tt.subscribe {
+				stream, release := hub.subscribe([]pageEventKind{eventNavigated}, "tab-1")
+				defer release()
+				sub = stream
+			}
+
+			tabCtx, closeTab := context.WithCancel(context.Background())
+			defer closeTab()
 
 			started := make(chan struct{})
-			done := make(chan string, 1)
+			awaited := make(chan context.Context, 1)
+			done := make(chan struct{})
 			go func() {
-				done <- awaitPrearmedSettle(sub, 5*time.Second, func() {
+				defer close(done)
+				awaitPrearmedSettle(tabCtx, sub, tt.settleCap, func(ctx context.Context) {
+					awaited <- ctx
 					close(started)
-					time.Sleep(tt.awaitFor)
+					select {
+					case <-ctx.Done():
+					case <-time.After(tt.awaitFor):
+					}
 				})
 			}()
 			<-started
@@ -352,28 +454,25 @@ func TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation(t *testing.T) {
 			}
 
 			select {
-			case got := <-done:
-				if got != tt.want {
-					t.Fatalf("settle source = %q, want %q", got, tt.want)
-				}
-			case <-time.After(4 * time.Second):
-				t.Fatalf("settle never returned; want source %q", tt.want)
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the settle window never ended")
+			}
+
+			// The abandoned evaluate is still a live CDP command on a live tab, and
+			// the caller is about to issue its post-action snapshot against that tab.
+			awaitCtx := <-awaited
+			if err := awaitCtx.Err(); err != nil {
+				t.Fatalf("the in-page settle was cancelled when the window ended: %v", err)
+			}
+			// It ends with the tab, so an abandoned wait cannot outlive it.
+			closeTab()
+			select {
+			case <-awaitCtx.Done():
+			case <-time.After(2 * time.Second):
+				t.Fatal("the abandoned in-page settle outlived the tab context it was issued on")
 			}
 		})
-	}
-}
-
-// TestAwaitPrearmedSettleWithoutASubscriptionStillResolves: a context with no
-// event scope (a tab brw has not bound) must degrade to the in-page settle
-// rather than hang or skip the window.
-func TestAwaitPrearmedSettleWithoutASubscriptionStillResolves(t *testing.T) {
-	awaited := false
-	got := awaitPrearmedSettle(nil, time.Second, func() { awaited = true })
-	if !awaited {
-		t.Fatal("the in-page settle was skipped when no subscription was available")
-	}
-	if got != settleSourceScript {
-		t.Fatalf("settle source = %q, want %q", got, settleSourceScript)
 	}
 }
 
@@ -399,7 +498,7 @@ func TestAwaitEventOutcomes(t *testing.T) {
 		},
 		{
 			name:      "events that do not match keep the wait open",
-			publish:   []pageEvent{{Kind: eventConsole}, {Kind: eventResponse}, {Kind: eventDialog}},
+			publish:   []pageEvent{{Kind: eventLoad}, {Kind: eventLoad}, {Kind: eventDialog}},
 			timeout:   5 * time.Second,
 			wantWakes: 3,
 		},
@@ -425,7 +524,8 @@ func TestAwaitEventOutcomes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			hub := &eventHub{}
-			sub, release := hub.subscribe("tab-1")
+			attachScope(t, hub, "tab-1")
+			sub, release := hub.subscribe([]pageEventKind{eventLoad, eventDialog}, "tab-1")
 			defer release()
 
 			ctx, cancelCall := context.WithCancel(context.Background())

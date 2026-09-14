@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/snapshot"
+	"github.com/chromedp/cdproto/page"
 )
 
 // waitFixture serves a page that can raise a dialog and start a download on
@@ -54,7 +55,11 @@ func TestWaitForResolvesFromTheEventStream(t *testing.T) {
 		timeout   time.Duration
 	}{
 		{
-			name:      "load resolves from Page.loadEventFired",
+			// The tab finished loading before this wait was written, so the
+			// subscription had already recorded it. The awaited arm — a load that
+			// lands while the wait is registered — is covered without a browser by
+			// TestReadinessWaitArms.
+			name:      "load resolves from the load the subscription already recorded",
 			condition: "load",
 			timeout:   10 * time.Second,
 		},
@@ -116,6 +121,104 @@ func TestWaitForResolvesFromTheEventStream(t *testing.T) {
 	}
 }
 
+// TestReadinessWaitArms covers the three ways a readiness wait can end before it
+// ever reaches the in-page script, including the one a live fixture cannot pin
+// deterministically: the load event arriving while the wait is registered. The
+// third return value is the one that matters for the other two — it says whether
+// the event path answered at all, and a false there is what sends the caller to
+// the document.
+func TestReadinessWaitArms(t *testing.T) {
+	tests := []struct {
+		name        string
+		condition   string
+		navigated   bool
+		loaded      bool
+		publishLoad bool
+		wantHandled bool
+		wantWakeups int
+	}{
+		{
+			name:        "the load event arriving during the wait resolves it",
+			condition:   "load",
+			navigated:   true,
+			publishLoad: true,
+			wantHandled: true,
+			wantWakeups: 1,
+		},
+		{
+			name:        "a document that already loaded is answered from recorded state",
+			condition:   "load",
+			navigated:   true,
+			loaded:      true,
+			wantHandled: true,
+		},
+		{
+			name:      "a tab with no observed lifecycle event goes to the document",
+			condition: "load",
+		},
+		{
+			name:      "ready on a navigated-but-unloaded tab goes to the document",
+			condition: "ready",
+			navigated: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Manager{}
+			if tt.navigated || tt.loaded {
+				attachScope(t, &m.events, "tab-1")
+				m.events.markNavigated("tab-1")
+			}
+			if tt.loaded {
+				m.events.markLoaded("tab-1")
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			type result struct {
+				outcome WaitOutcome
+				err     error
+				handled bool
+			}
+			done := make(chan result, 1)
+			go func() {
+				outcome, err, handled := m.waitForLoadEvent(ctx, ctx, "tab-1", tt.condition, 3*time.Second)
+				done <- result{outcome, err, handled}
+			}()
+
+			if tt.publishLoad {
+				// Long enough that the wait is parked on the stream rather than
+				// reading the state it was about to subscribe behind.
+				time.Sleep(150 * time.Millisecond)
+				m.events.ingest("tab-1", &page.EventLoadEventFired{})
+			}
+
+			select {
+			case got := <-done:
+				if got.handled != tt.wantHandled {
+					t.Fatalf("handled = %v, want %v (outcome %+v, err %v)", got.handled, tt.wantHandled, got.outcome, got.err)
+				}
+				if !tt.wantHandled {
+					return
+				}
+				if got.err != nil {
+					t.Fatalf("wait failed: %v", got.err)
+				}
+				if got.outcome.ResolvedBy != WaitResolvedByEvent {
+					t.Fatalf("resolved_by = %q, want %q", got.outcome.ResolvedBy, WaitResolvedByEvent)
+				}
+				if got.outcome.Wakeups != tt.wantWakeups {
+					t.Fatalf("wakeups = %d, want %d", got.outcome.Wakeups, tt.wantWakeups)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the readiness wait never returned")
+			}
+		})
+	}
+}
+
 // TestReadinessWaitFallsBackToTheDocumentWhenNoEventWasSeen: brw can attach to a
 // tab that loaded long before it arrived, and no load event is coming for that
 // document. The wait must read the document rather than block until its timeout.
@@ -150,8 +253,8 @@ func TestReadinessWaitFallsBackToTheDocumentWhenNoEventWasSeen(t *testing.T) {
 }
 
 // TestClosingATabLeavesNoLiveSubscription is the leak guard. A subscription that
-// outlived its tab would keep retaining that tab's events — including every
-// Network.responseReceived — for the life of the daemon.
+// outlived its tab would keep retaining that tab's events, and its waiters, for
+// the life of the daemon.
 func TestClosingATabLeavesNoLiveSubscription(t *testing.T) {
 	m := newHeadlessManager(t)
 	fixture := waitFixture(t)

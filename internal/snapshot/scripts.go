@@ -1857,11 +1857,16 @@ func RefDraggable(ctx context.Context, ref string) bool {
 
 // WaitConditionScript returns a Promise that resolves true as soon as the given
 // condition holds, or false after timeoutMs. It checks immediately, then re-checks
-// on DOM mutations (MutationObserver) and history events, with a 100ms safety
-// interval for signals those miss (e.g. pushState URL changes) — replacing a
-// fixed-interval CDP poll loop with a single awaited in-page promise.
+// on DOM mutations (MutationObserver), history events and document readiness
+// changes, with a 100ms safety interval for signals those miss (e.g. pushState
+// URL changes) — replacing a fixed-interval CDP poll loop with a single awaited
+// in-page promise.
 const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelpers + `
-  if (!condition || condition === 'load' || condition === 'page_ready') condition = 'ready';
+  // 'load' is NOT an alias of 'ready': a document is interactive (and satisfies
+  // 'ready') before its load event fires, and a caller that asked for the load
+  // event must not be told the page is loaded while its subresources are still
+  // arriving. Only the empty condition and 'page_ready' fold into 'ready'.
+  if (!condition || condition === 'page_ready') condition = 'ready';
   function roots(){
     return __abRootList();
   }
@@ -1899,6 +1904,7 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
   }
   function check(){
     if(condition==='ready') return document.readyState==='complete'||document.readyState==='interactive';
+    if(condition==='load') return document.readyState==='complete';
     if(condition==='committed') return (document.readyState==='complete'||document.readyState==='interactive') && location.href !== 'about:blank' && location.href !== '';
     if(condition.indexOf('url:')===0) return location.href.includes(condition.slice(4));
     if(condition.indexOf('not_url:')===0) return !location.href.includes(condition.slice(8));
@@ -1935,7 +1941,7 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
       try{ if(obs) obs.disconnect(); }catch(e){}
       if(iv) clearInterval(iv);
       if(to) clearTimeout(to);
-      try{ window.removeEventListener('popstate', recheck); window.removeEventListener('hashchange', recheck); }catch(e){}
+      try{ window.removeEventListener('popstate', recheck); window.removeEventListener('hashchange', recheck); window.removeEventListener('load', recheck); document.removeEventListener('readystatechange', recheck); }catch(e){}
       resolve(v);
     }
     // pending guards against stacking overlapping async predicate evaluations
@@ -1949,6 +1955,10 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
       if(ok){ resolve(true); return; }
       try{ obs=new MutationObserver(recheck); obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
       try{ window.addEventListener('popstate', recheck); window.addEventListener('hashchange', recheck); }catch(e){}
+      // readystatechange and load are what actually move 'ready' and 'load' from
+      // false to true; without them those two conditions would resolve on the
+      // safety interval below rather than on the event itself.
+      try{ window.addEventListener('load', recheck); document.addEventListener('readystatechange', recheck); }catch(e){}
       iv=setInterval(recheck, 100);
       to=setTimeout(function(){
         if(done) return;

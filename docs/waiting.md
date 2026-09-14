@@ -5,34 +5,47 @@ answered it in `resolved_by`:
 
 | `resolved_by` | What it means | Cost of noticing |
 | --- | --- | --- |
-| `event` | A browser event subscription delivered the signal. | None. The wait is parked on a stream that is already running. |
+| `event` | A browser event subscription delivered the signal, or had already recorded it when the wait registered. | None. The wait is parked on a stream that is already running. |
 | `script` | One awaited in-page promise, resolving on the DOM mutation or navigation that satisfies the predicate. | One round trip to arm, then nothing until it resolves. |
 | `poll` | The transport has no subscription for this signal and re-asks on a timer. | One request per check, for as long as the wait lasts. |
 
 `wakeups` in the same result counts how many times the wait re-evaluated. An
 event-driven wait wakes for the events that were actually delivered; a polled
 one wakes on a cadence, so its count grows with how long the wait ran.
+`wakeups: 0` alongside `resolved_by: "event"` means the subscription had already
+recorded the answer before the wait registered — a dialog brw answered a moment
+ago, a small download that finished first, a document that had already loaded.
 
 ## One subscription per context, not per wait
 
 On the direct-CDP transport each chromedp context gets a single subscription
 (`internal/browser/events.go`) carrying `Page.loadEventFired`,
-`Page.frameNavigated`, `Page.javascriptDialogOpening`,
-`Network.responseReceived`, `Runtime.consoleAPICalled` and
+`Page.frameNavigated`, `Page.javascriptDialogOpening` and
 `Browser.downloadProgress`. Every wait against that tab reads the shared stream,
 and the post-action settle takes its navigation signal from the same place.
 
-Two properties that are enforced by tests rather than by convention:
+`Network.responseReceived` and `Runtime.consoleAPICalled` are deliberately NOT
+carried. They are the highest-volume events a page produces and no wait reads
+either one, and a carried event is not free: it occupies a slot in every
+waiter's queue and a slot in the retained ring.
 
-- The scope is dropped when its context ends. Closing a tab leaves no listener,
-  no retained event and no registered waiter
-  (`TestClosingATabLeavesNoLiveSubscription`).
-- Retention is capped per scope and response headers are redacted on the way in.
-  A busy page emits a `Network.responseReceived` per request; keeping them all
-  would grow with the page's traffic for the life of the tab, and a retained
-  `Set-Cookie` would be a way around the redaction `brw_network_capture` already
-  applies (`TestRetainedEventsAreCappedPerScope`,
-  `TestRetainedResponseHeadersAreRedacted`).
+Four properties, enforced by tests rather than by convention:
+
+- A waiter is only sent the kinds it asked for. The per-waiter queue is finite
+  and a full one drops what lands next, so a dialog wait that was also handed
+  every page load could have its dialog pushed out by ordinary traffic
+  (`TestASubscriberOnlyReceivesTheKindsItAskedFor`).
+- Retention is capped per kind, not per scope, so one kind's traffic cannot
+  evict another's. The ring is what answers "did this already happen?", and a
+  shared ring made that answer a race against whatever else the page did in
+  between (`TestRetainedEventsAreCappedPerKind`,
+  `TestOneKindsTrafficDoesNotEvictAnother`).
+- The scope is dropped when its context ends, and a late event does not bring it
+  back. Closing a tab leaves no listener, no retained event and no registered
+  waiter (`TestClosingATabLeavesNoLiveSubscription`,
+  `TestScopeIsDroppedWhenItsContextEnds`).
+- A wait that conjured a scope takes it with it when it releases, whatever
+  landed in it meanwhile (`TestReleasedSubscriptionLeavesNoScopeBehind`).
 
 ## Per-transport matrix
 
@@ -49,10 +62,32 @@ on a bounded, backing-off cadence (60 ms rising to a 400 ms ceiling).
 | `dialog`, `dialog:<substring>` | `event` — `Page.javascriptDialogOpening`, including one already answered inside the recency window. | `poll` — `get_dialogs`, peeked so the wait does not consume the ring `brw_dialog` reads. |
 | `download`, `download:<substring>` | `event` — `Browser.downloadProgress`. | `poll` — `get_downloads`, which does not consume a recipe's change cursor. |
 
+`load` and `ready` are different conditions on BOTH transports. `ready` is
+satisfied as soon as the document is interactive; `load` is the load event, and
+the in-page script that answers it where no subscription can requires
+`document.readyState === 'complete'` (`TestWaitForLoadIsNotAnAliasForReady`).
+
 Both transports apply the same 15-second recency window, so "did my click cause
-this?" is answered identically on either. A wait the extension genuinely cannot
-answer — a build predating `chrome.downloads` or `brw_dialog` support — returns a
-named capability error rather than running out its timeout.
+this?" is answered the same way on either: the direct-CDP wait times a download
+from its own registry, and the extension bridge from the `changed_at_ms` the
+extension records on each state change. One exception, and it is a version skew
+rather than a transport limit: an extension build that predates `changed_at_ms`
+sends no completion times, and the bridge then treats every already-finished
+download as old news — a file that finished in the second before the wait was
+written is missed and the wait runs to its timeout. Reload the extension to fix
+it. A wait the extension genuinely cannot answer — a build predating
+`chrome.downloads` or `brw_dialog` support — returns a named capability error
+rather than running out its timeout.
+
+### The third transport: a remote `brwd` over HTTP
+
+`brw` can also drive a remote daemon (`internal/httpclient`). It owns no browser
+of its own, so every wait is whatever the upstream daemon's own transport does,
+and the row above that applies is the upstream's. `resolved_by` and `wakeups`
+are forwarded from that daemon; a daemon older than this change answers the
+route with a bare `{"ok": true}`, so both fields are absent. `condition`,
+`ok` and `waited_ms` are filled in locally and are always present. The same
+applies to `brw wait` on the command line, which reads the same route body.
 
 ## Why a dialog wait reports a dialog that is already gone
 

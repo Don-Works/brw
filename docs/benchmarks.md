@@ -41,17 +41,25 @@ contain no private site data. On an Apple M4 Max in September 2026:
 | Extension logical-response ceiling | 64 MiB in bounded chunks vs the former 4 MiB single-frame ceiling; **16x more serialized capacity without raising the per-frame cap** |
 | Extension close of a `beforeunload`-guarded page | 43 ms vs the previous 20,000+ ms timeout; **at least 465x faster, and now succeeds** |
 | Maximum 120 s element-event wait | about 483 semantic checks vs 1,200 fixed-100 ms checks; **59.8% fewer browser scans** |
-| Download-complete wait, event subscription vs the 50 ms registry poll it replaced | median 13.2 µs vs 32.2 ms from the download finishing to the wait returning; **~2,400x lower wait latency** |
-| Readiness wait on a loaded tab, event subscription vs the in-page readyState probe | median 417 ns vs 2.16 ms; **~5,100x lower wait latency, and no CDP round trip** |
+| Download-complete wait, event subscription vs the 50 ms registry poll it replaced | median 13.5 µs vs 32.2 ms from the registry recording completion to the wait returning; **~2,400x lower wait latency** |
+| Repeat readiness check on an already-loaded tab, event subscription vs the in-page readyState probe | median 459 ns vs 551 µs; **~1,200x lower wait latency, and no CDP round trip** |
 | In-memory 100,000-entry catalogue, rare intent | 740 ns indexed vs 5.64 ms linear control; **~7,631x faster** |
 | Local 100,000-entry catalogue, common intent top 50 | 5.78 ms, 14,240 B and 109 allocations |
 
 The two wait rows measure the same question asked two ways against the same
-state, so the ratio is the cost of asking rather than the cost of the answer.
-The polled control is not a strawman: it is the cadence the extension transport
-still runs, because it holds no debugger attachment to subscribe with. See
-[waiting.md](waiting.md) for which mechanism answers which condition on which
-transport.
+state, so each ratio is the cost of asking rather than the cost of the answer.
+Read them for exactly what they time. The download row starts when the registry
+records the completion, not when Chrome finishes writing the file: the
+completion is injected in-process, so the Chrome to websocket to chromedp
+dispatch hop that a real `Browser.downloadProgress` pays is outside both arms.
+The readiness row is a repeat check against a tab that has already loaded — a
+mutex-guarded map read against a CDP round trip — not the delivery of a load
+event. The in-page arm varies between roughly 0.5 ms and 3 ms run to run, and
+the figure above is from the fastest run of four, so the ratio is the
+conservative end. The polled control is not a strawman: it is the cadence the
+extension transport still runs, because it holds no debugger attachment to
+subscribe with. See [waiting.md](waiting.md) for which mechanism answers which
+condition on which transport.
 
 These are machine-local samples, not universal latency promises. Reproduce them
 with:

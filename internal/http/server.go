@@ -1312,7 +1312,18 @@ func (s *Server) waitFor(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	writeResult(w, browser.ActionResult{OK: true}, s.manager.WaitFor(s.contextWithTabID(r.Context(), req.TabID), req.Condition, time.Duration(req.TimeoutMS)*time.Millisecond))
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
+	// Report what answered the wait when the backend can say. This body is what
+	// `brw wait` prints and what a proxying brw reads back, so a bare {ok:true}
+	// here is the difference between a caller seeing resolved_by:"poll" and
+	// never learning the condition it picked costs a round trip per check.
+	if observer, ok := s.manager.(browser.WaitObserver); ok {
+		outcome, err := observer.WaitForOutcome(ctx, req.Condition, timeout)
+		writeResult(w, outcome, err)
+		return
+	}
+	writeResult(w, browser.ActionResult{OK: true}, s.manager.WaitFor(ctx, req.Condition, timeout))
 }
 
 func (s *Server) hover(w http.ResponseWriter, r *http.Request) {

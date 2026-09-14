@@ -67,7 +67,9 @@ func (m *Manager) Navigate(ctx context.Context, direction string) (ActionResult,
 	// Wait for the destination document to settle before observing. A history
 	// entry can resolve from bfcache instantly or trigger a full load, so the
 	// caller-side WaitFor handles both via the in-page readiness promise.
-	_ = m.WaitFor(ctx, "load", 10*time.Second)
+	// "ready", not "load": what the observation needs is a document it can read,
+	// and one slow subresource must not hold the result for the full timeout.
+	_ = m.WaitFor(ctx, "ready", 10*time.Second)
 
 	result := m.observeActionWithBefore(tabID, tabCtx, "navigated "+dir, before)
 	result.DurationMS = time.Since(start).Milliseconds()
@@ -105,7 +107,9 @@ func (m *Manager) NavigateTo(ctx context.Context, url string) (ActionResult, err
 		return ActionResult{}, err
 	}
 
-	_ = m.WaitFor(ctx, "load", 10*time.Second)
+	// Readiness, not the load event: the observation below needs a readable
+	// document, not every subresource.
+	_ = m.WaitFor(ctx, "ready", 10*time.Second)
 
 	result := m.observeActionWithBefore(tabID, tabCtx, "navigated to "+url, before)
 	result.DurationMS = time.Since(start).Milliseconds()

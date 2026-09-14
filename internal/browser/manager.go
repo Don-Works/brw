@@ -49,13 +49,6 @@ const (
 	fileChooserWaitTimeout = 5 * time.Second
 )
 
-// Where a post-action settle window ended.
-const (
-	settleSourceScript     = "script"
-	settleSourceNavigation = "navigation"
-	settleSourceCap        = "cap"
-)
-
 // runWithPrearmedSettle installs the page observer immediately before
 // actuation, then waits on that exact observer afterward. If arming is
 // unavailable, it falls back to the legacy post-action settle. Settle errors
@@ -85,7 +78,7 @@ func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duratio
 	// in the gap between the action returning and the await starting.
 	var sub <-chan pageEvent
 	if scope := eventScopeFromCtx(tabCtx); scope != "" {
-		stream, release := m.events.subscribe(scope)
+		stream, release := m.events.subscribe([]pageEventKind{eventNavigated}, scope)
 		defer release()
 		sub = stream
 	}
@@ -96,8 +89,8 @@ func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duratio
 		_, _ = snapshot.Settle(tabCtx, cap.Milliseconds())
 		return nil
 	}
-	awaitPrearmedSettle(sub, cap, func() {
-		_, _ = snapshot.AwaitSettle(tabCtx, handle)
+	awaitPrearmedSettle(tabCtx, sub, cap, func(ctx context.Context) {
+		_, _ = snapshot.AwaitSettle(ctx, handle)
 	})
 	return nil
 }
@@ -108,16 +101,26 @@ func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duratio
 //
 // Abandoning on navigation is not a shortcut: the navigation destroys the
 // execution context holding the promise, so what is left to await is a reply
-// that will never come. The in-page cap keeps the abandoned evaluate bounded.
-func awaitPrearmedSettle(sub <-chan pageEvent, cap time.Duration, await func()) string {
+// that will never come.
+//
+// The abandoned evaluate is left to finish, NOT cancelled. Cancelling it kills a
+// CDP command still in flight on a live tab at the moment the next action is
+// issued against that same tab, and that next action then misbehaves: with the
+// cancel in place, an inline upload followed by a form submit reproducibly lost
+// its file bytes (TestManagerInlineUploadSurvivesSubsequentFormSubmit). What
+// bounds the abandoned wait instead is the context it runs on — the tab's own,
+// so it ends when the tab does — plus the in-page promise, which caps itself and
+// drops its registry entry seconds later, so even a page that never settles
+// still replies.
+func awaitPrearmedSettle(ctx context.Context, sub <-chan pageEvent, cap time.Duration, await func(context.Context)) {
 	if sub == nil {
-		await()
-		return settleSourceScript
+		await(ctx)
+		return
 	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		await()
+		await(ctx)
 	}()
 	// The in-page promise caps itself; this only bounds the wait on a renderer
 	// that never replies at all.
@@ -126,13 +129,13 @@ func awaitPrearmedSettle(sub <-chan pageEvent, cap time.Duration, await func()) 
 	for {
 		select {
 		case <-done:
-			return settleSourceScript
+			return
 		case ev := <-sub:
 			if ev.Kind == eventNavigated {
-				return settleSourceNavigation
+				return
 			}
 		case <-backstop.C:
-			return settleSourceCap
+			return
 		}
 	}
 }

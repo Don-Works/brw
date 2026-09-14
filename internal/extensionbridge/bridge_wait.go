@@ -121,8 +121,8 @@ func (b *Bridge) waitForConditionInPage(ctx context.Context, condition string, t
 
 // waitForDownloadPolled re-reads the extension's chrome.downloads registry until
 // a download that was not already finished when the wait started completes.
-// Baseline and matching mirror the direct-CDP wait exactly (see
-// Manager.waitForDownload), so the same wait behaves the same on both
+// Baseline and matching mirror the direct-CDP wait (see Manager.waitForDownload)
+// down to the recency window, so the same wait answers the same way on both
 // transports; only the cost of noticing differs.
 func (b *Bridge) waitForDownloadPolled(ctx context.Context, match string, deadline time.Time) (browser.WaitOutcome, error) {
 	needle := strings.ToLower(strings.TrimSpace(match))
@@ -134,12 +134,16 @@ func (b *Bridge) waitForDownloadPolled(ctx context.Context, match string, deadli
 			strings.Contains(strings.ToLower(entry.URL), needle)
 	}
 
-	// Baseline: downloads already terminal at the first read are old news unless
-	// the wait's own first read is what discovered them. The extension registry
-	// carries no change timestamps, so "already finished before we looked" is the
-	// only recency signal available here.
+	// Baseline: a download that was already terminal when the wait started is old
+	// news, UNLESS it reached that state inside the recency window — a wait is
+	// written after the click that triggers it and a small file frequently
+	// finishes first. This is the direct-CDP rule (Manager.downloadSettledBefore)
+	// applied to the extension's own change timestamps; a build that sends none
+	// gives every already-terminal download the "old" reading, which is what a
+	// registry with no timestamp means on either transport.
 	baseline := map[string]bool{}
 	first := true
+	cutoff := time.Now().Add(-browser.RecentDownloadWindow)
 
 	return b.pollUntil(ctx, deadline, `download`, func() (bool, error) {
 		snapshot, err := b.downloadSnapshot(ctx)
@@ -151,7 +155,7 @@ func (b *Bridge) waitForDownloadPolled(ctx context.Context, match string, deadli
 		}
 		for _, entry := range snapshot.Downloads {
 			terminal := entry.State == "completed" || entry.State == "canceled"
-			if first && terminal {
+			if first && terminal && !settledInsideWindow(snapshot.ChangedAt, entry.GUID, cutoff) {
 				baseline[entry.GUID] = true
 				continue
 			}
@@ -168,6 +172,14 @@ func (b *Bridge) waitForDownloadPolled(ctx context.Context, match string, deadli
 		first = false
 		return false, nil
 	})
+}
+
+// settledInsideWindow reports whether the extension recorded this download
+// changing state at or after cutoff. An unknown time is old: it means the
+// extension never told us when, not that it just happened.
+func settledInsideWindow(changedAt map[string]time.Time, guid string, cutoff time.Time) bool {
+	at, known := changedAt[guid]
+	return known && !at.Before(cutoff)
 }
 
 // waitForDialogPolled re-reads the extension's answered-dialog ring. The read is

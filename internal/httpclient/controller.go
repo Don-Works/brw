@@ -351,11 +351,27 @@ func (c *Controller) Scroll(ctx context.Context, direction string) (browser.Acti
 }
 
 func (c *Controller) WaitFor(ctx context.Context, condition string, timeout time.Duration) error {
-	var out browser.ActionResult
-	return c.post(ctx, "/api/page/wait_for", map[string]any{
+	_, err := c.WaitForOutcome(ctx, condition, timeout)
+	return err
+}
+
+// WaitForOutcome runs the wait on the upstream daemon and reports how it
+// resolved, so brw_wait_for answers the same shape when it is proxying as when
+// it drives Chrome itself. Condition and the elapsed time are filled in here
+// because only this side knows what was asked and when; resolved_by and wakeups
+// can only come from the daemon that did the waiting, so an upstream too old to
+// report them leaves those two fields empty.
+func (c *Controller) WaitForOutcome(ctx context.Context, condition string, timeout time.Duration) (browser.WaitOutcome, error) {
+	started := time.Now()
+	var out browser.WaitOutcome
+	err := c.post(ctx, "/api/page/wait_for", map[string]any{
 		"condition":  condition,
 		"timeout_ms": int(timeout / time.Millisecond),
 	}, &out)
+	out.Condition = condition
+	out.OK = err == nil
+	out.WaitedMS = time.Since(started).Milliseconds()
+	return out, err
 }
 
 func (c *Controller) Screenshot(ctx context.Context) (browser.Screenshot, error) {
