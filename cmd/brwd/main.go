@@ -369,17 +369,21 @@ func main() {
 		// Provision a per-launch handshake secret so the real extension can prove
 		// itself: the daemon serves it over the loopback /status endpoint (a web
 		// page cannot read it cross-origin) and the 0.2.0+ extension presents it.
-		// This is NON-BREAKING by default — an older extension that sends no token
-		// still connects (logged once), so upgrading the daemon never bricks an
-		// already-installed extension; a WRONG token is always rejected. Once every
-		// extension is reloaded to 0.2.0, set BRW_BRIDGE_REQUIRE_TOKEN=1 to make the
-		// token mandatory.
+		//
+		// Required by default. The grace period was for extensions older than
+		// 0.2.0; the bundled extension is far past that and `brwctl setup` installs
+		// it, so the only remaining effect of accepting a tokenless hello was that
+		// every default install authenticated nothing. The Origin check rejects web
+		// pages but not a local process, which can forge that header — so tokenless
+		// meant any process running as this user could take the bridge and drive
+		// the signed-in browser. BRW_BRIDGE_ALLOW_TOKENLESS=1 restores the old
+		// behaviour for anyone genuinely pinned to a pre-0.2.0 extension.
 		token, err := extensionbridge.NewAuthToken()
 		if err != nil {
 			log.Fatalf("generate extension bridge auth token: %v", err)
 		}
 		bridge.SetAuthToken(token)
-		bridge.SetRequireToken(envBool("BRW_BRIDGE_REQUIRE_TOKEN"))
+		bridge.SetRequireToken(bridgeRequireToken())
 		if path := bridgeTokenPath(workspaceName); path != "" {
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				log.Printf("note: could not create bridge token dir %s: %v", filepath.Dir(path), err)
@@ -929,6 +933,13 @@ func envInt(name string, fallback int) int {
 
 // envBool reports whether an environment variable is set to a truthy value
 // (1/true/yes/on, case-insensitive). Unset or empty is false.
+// bridgeRequireToken reports whether the extension bridge must reject a hello
+// that carries no handshake token. It is on unless the operator opts out, which
+// only a pre-0.2.0 extension needs.
+func bridgeRequireToken() bool {
+	return !envBool("BRW_BRIDGE_ALLOW_TOKENLESS")
+}
+
 func envBool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
 	case "1", "true", "yes", "on":

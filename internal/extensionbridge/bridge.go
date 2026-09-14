@@ -58,12 +58,12 @@ type Bridge struct {
 	// present in its hello. The daemon serves it over the loopback /status
 	// endpoint (which a browser web page cannot read cross-origin), so the real
 	// 0.2.0+ extension can prove itself. A WRONG token is always rejected; a
-	// MISSING token is accepted unless requireToken is set (graceful: upgrading
+	// MISSING token is rejected unless requireToken is cleared (graceful: upgrading
 	// the daemon never bricks an already-installed pre-0.2.0 extension). Empty
 	// disables the check entirely (library/test/embedder use); the empty-Origin
 	// rejection still applies in all cases.
 	authToken string
-	// requireToken, when true, rejects a hello that carries no token (strict
+	// requireToken, when true (the default), rejects a hello that carries no token (strict
 	// mode). Default false keeps the bridge backward-compatible with an extension
 	// that has not yet been reloaded to 0.2.0.
 	requireToken bool
@@ -405,6 +405,7 @@ func NewWithIdentity(addr string, timeout time.Duration, allowedExtensionID stri
 		connReady:            make(chan struct{}),
 		tabLocks:             map[string]*tabLockEntry{},
 		maxInflight:          defaultBridgeMaxInflight,
+		requireToken:         true,
 		sema:                 make(chan struct{}, defaultBridgeMaxInflight),
 		// Library default preserves historical behaviour (focus raises the
 		// window); the daemon flips this to false for the seamless experience.
@@ -433,11 +434,14 @@ const handshakeTimeout = 5 * time.Second
 // the handshake check disabled (the empty-Origin rejection still applies).
 func (b *Bridge) SetAuthToken(token string) { b.authToken = strings.TrimSpace(token) }
 
-// SetRequireToken switches the bridge to strict mode, where a hello with no
+// SetRequireToken sets strict mode (the daemon's default), where a hello with no
 // token is rejected rather than accepted for backward-compatibility. Call once
 // before ListenAndServe. Default (false) keeps a not-yet-reloaded extension
 // working.
 func (b *Bridge) SetRequireToken(v bool) { b.requireToken = v }
+
+// RequireToken reports whether a tokenless hello is refused.
+func (b *Bridge) RequireToken() bool { return b.requireToken }
 
 // NewAuthToken returns a fresh 256-bit URL-safe random token suitable for
 // SetAuthToken. The daemon generates one per launch.
@@ -1401,14 +1405,15 @@ func (b *Bridge) verifyHandshake(ctx context.Context, conn *websocket.Conn) (hel
 	}
 	switch {
 	case resp.Hello.Token == "":
-		// No token: a pre-0.2.0 extension (or one that could not read /status).
-		// Accept for compatibility unless strict mode requires it. The empty-Origin
-		// rejection already blocks browser web pages regardless of the token.
+		// No token. The Origin check above rejects browser web pages, but a local
+		// process running as this user can forge an Origin header, so without a
+		// token the bridge authenticates nothing: any such process can displace the
+		// real extension and drive the signed-in browser. Refuse by default.
 		if b.requireToken {
-			return hello{}, errors.New("missing handshake token (BRW_BRIDGE_REQUIRE_TOKEN is set)")
+			return hello{}, errors.New("missing handshake token: the extension must present the per-launch token from /status (set BRW_BRIDGE_ALLOW_TOKENLESS=1 only for a pre-0.2.0 extension)")
 		}
 		b.compatWarnOnce.Do(func() {
-			log.Printf("NOTE: extension connected without a handshake token (pre-0.2.0 extension) — accepting for compatibility. Reload the brw extension to enable bridge authentication; set BRW_BRIDGE_REQUIRE_TOKEN=1 to require it.")
+			log.Printf("WARNING: extension connected without a handshake token and BRW_BRIDGE_ALLOW_TOKENLESS is set — the bridge is authenticating nothing and any local process can drive this browser. Reload the brw extension and unset the variable.")
 		})
 	case subtle.ConstantTimeCompare([]byte(resp.Hello.Token), []byte(b.authToken)) != 1:
 		// A token was presented but does not match — tampering or a stale token.

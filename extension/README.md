@@ -50,12 +50,11 @@ resolves to this id before publishing it.
 ### Upgrading to 0.2.0
 
 `0.2.0` adds the authenticated handshake plus the enforced cookie/Storage
-denylist and safer dialog handling. The daemon stays compatible with an older
-extension (it accepts a tokenless hello), so nothing breaks if you don't reload
-immediately — but **reload the unpacked extension** in `chrome://extensions` (or
-relaunch Chromium with `--load-extension`) to actually pick up the new
-protections. To then *require* the token, run the daemon with
-`BRW_BRIDGE_REQUIRE_TOKEN=1`.
+denylist and safer dialog handling. The daemon now **requires** the token, so an
+extension older than `0.2.0` will not connect: **reload the unpacked extension**
+in `chrome://extensions` (or relaunch Chromium with `--load-extension`). If you
+are pinned to an older build and accept that the bridge then authenticates
+nothing, run the daemon with `BRW_BRIDGE_ALLOW_TOKENLESS=1`.
 
 ## Install Modes
 

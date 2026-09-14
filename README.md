@@ -479,12 +479,18 @@ browser attackers rather than assumed safe:
   per-launch token: the daemon mints it each start, persists it `0600` at
   `~/.brw/bridge-token`, and serves it only over loopback to the extension (a web
   page's cross-origin fetch gets an opaque response). The `0.2.0+` extension
-  presents it in its first frame. **This is non-breaking:** a *wrong* token is
-  always rejected, but a not-yet-reloaded older extension that sends *no* token
-  still connects (logged once), so upgrading the daemon never bricks an installed
-  extension. Set `BRW_BRIDGE_REQUIRE_TOKEN=1` to make the token mandatory once
-  every extension is on `0.2.0`. Empty-Origin (non-browser) websocket clients are
-  rejected regardless.
+  presents it in its first frame. **The token is required.** A *wrong* token and a
+  *missing* token are both rejected: the `chrome-extension://` Origin that gets a
+  caller as far as the handshake is a header any local process can forge, so a
+  tokenless hello authenticates nothing. `BRW_BRIDGE_ALLOW_TOKENLESS=1` restores
+  the old permissive behaviour for a pre-`0.2.0` extension and logs a warning for
+  as long as it is set. Empty-Origin (non-browser) websocket clients are rejected
+  regardless.
+
+  What this does *not* defend against: any process running as you can read the
+  token from the loopback `/status` endpoint or from `~/.brw/bridge-token`. The
+  bridge's boundary is the browser and the network, not other processes with your
+  uid.
 - **Cookie/storage promise is enforced, not just asserted.** The extension
   refuses every cookie CDP method and the whole family of site-storage domains
   (`Storage`, `DOMStorage`, `IndexedDB`, `CacheStorage`, `Database`), so even a

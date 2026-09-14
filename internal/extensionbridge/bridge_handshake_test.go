@@ -85,11 +85,32 @@ func TestHandshakeTokenAcceptedAndRejected(t *testing.T) {
 		}
 	})
 
-	t.Run("missing token goes live (graceful compat)", func(t *testing.T) {
-		// Default (non-strict) mode keeps a not-yet-reloaded pre-0.2.0 extension
-		// working: a hello with no token still connects.
+	t.Run("missing token rejected by default", func(t *testing.T) {
+		// The daemon's default, and the constructor's: a hello with no token
+		// authenticates nothing, because a local process can forge the extension
+		// Origin that gets it this far.
 		b := New("", 5*time.Second, "")
 		b.SetAuthToken("s3cret-token")
+		srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
+		defer srv.Close()
+		wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/extension"
+
+		conn, err := dialExtension(t, wsURL, testDefaultOrigin)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		defer conn.Close(websocket.StatusPolicyViolation, "done")
+		sendHello(t, conn, "")
+		time.Sleep(300 * time.Millisecond)
+		if b.liveConn() {
+			t.Fatal("a tokenless hello must be rejected without an explicit opt-out")
+		}
+	})
+
+	t.Run("missing token accepted only when explicitly opted out", func(t *testing.T) {
+		b := New("", 5*time.Second, "")
+		b.SetAuthToken("s3cret-token")
+		b.SetRequireToken(false)
 		srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
 		defer srv.Close()
 		wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/extension"
