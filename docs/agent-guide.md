@@ -108,13 +108,23 @@ than embed the recipe. See [recipes and artifacts](recipes-and-artifacts.md).
   Reach for them on the steps of a flow you have already decided — a login, a
   known multi-page form, a replayed `brw_trace` batch — and stay on `full` for
   the step whose result you actually read. `brw_plan` already applies that split
-  for you: intermediate steps report `minimal`, the last step reports `full`.
+  for you: intermediate steps report `minimal`, the last step reports `full`,
+  and a `snapshot` or `read` step keeps what it fetched at every level.
+  Three tools qualify it: on `brw_batch` `minimal` is the same as `full`
+  (its one closing observation has no element list to drop), `brw_navigate` and
+  `brw_navigate_to` keep `url` at every level (their message names the url you
+  asked for, not the one the browser committed to), and on `brw_find` the
+  parameter needs `action` — a read-only find returns the match list, which is
+  the answer, so `minimal`/`none` are refused there rather than ignored.
+  `snapshot: true` and `observe: "minimal"/"none"` are refused together for the
+  same reason: one asks for the page and the other deletes it.
   Every level costs the same round trip. `observe` controls what brw *reports*,
   never whether it looks: the post-action observation is also where the
   navigation policy re-checks the committed destination, so a level that skipped
   the read would be an opt-out from a guard. What you save is tokens, not time.
-  Measured on a fixed ten-step flow: 4,950 bytes of result JSON at `full`,
-  2,674 at `minimal`, 1,181 at `none` (see
+  Measured over ten separate action-tool calls: ~4,951 bytes of result JSON at
+  `full`, ~2,676 at `minimal`, ~1,184 at `none` — and the same ten steps as one
+  `brw_batch` cost ~743 bytes, so batch first and trim second (see
   [benchmarks](benchmarks.md#observation-size)).
 
 ### MCPlexer and approval-bound harnesses

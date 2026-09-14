@@ -1139,6 +1139,12 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if hasAction {
 			return obs.findAct(browser.RunFindAct(ctx, s.manager, findAct))
 		}
+		// Without an action the match list is the whole payload, so a level
+		// that trims observations has nothing to apply. Refuse it by name
+		// rather than accept it and ignore it.
+		if err := obs.requireFindAction(); err != nil {
+			return nil, invalid(err)
+		}
 		req = normalizeMCPFindOptions(req)
 		found, err := s.manager.Find(ctx, req)
 		if err == nil {
@@ -1161,8 +1167,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		if req.Snapshot {
-			ctx = browser.WithWantSnapshot(ctx)
+		ctx, obsErr = obs.wantSnapshot(ctx, req.Snapshot)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
 		}
 		// Plain left single-click on a ref keeps the fast in-page click path.
 		// Any non-default button/count, or a coordinate target, routes through
@@ -1233,8 +1240,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		if snapReq.Snapshot {
-			ctx = browser.WithWantSnapshot(ctx)
+		ctx, obsErr = obs.wantSnapshot(ctx, snapReq.Snapshot)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
 		}
 		return obs.action(s.manager.ClickText(ctx, req))
 	case "brw_navigate":
@@ -1249,10 +1257,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		if req.Snapshot {
-			ctx = browser.WithWantSnapshot(ctx)
+		ctx, obsErr = obs.wantSnapshot(ctx, req.Snapshot)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
 		}
-		return obs.action(s.manager.Navigate(ctx, req.Direction))
+		return obs.navigation(s.manager.Navigate(ctx, req.Direction))
 	case "brw_navigate_to":
 		var req struct {
 			URL      string `json:"url"`
@@ -1270,10 +1279,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		if req.Snapshot {
-			ctx = browser.WithWantSnapshot(ctx)
+		ctx, obsErr = obs.wantSnapshot(ctx, req.Snapshot)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
 		}
-		return obs.action(s.manager.NavigateTo(ctx, req.URL))
+		return obs.navigation(s.manager.NavigateTo(ctx, req.URL))
 	case "brw_hover":
 		var req struct {
 			Ref      string `json:"ref"`
@@ -1286,8 +1296,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		if req.Snapshot {
-			ctx = browser.WithWantSnapshot(ctx)
+		ctx, obsErr = obs.wantSnapshot(ctx, req.Snapshot)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
 		}
 		return obs.action(s.manager.Hover(ctx, req.Ref))
 	case "brw_type":
@@ -1303,8 +1314,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		if req.Snapshot {
-			ctx = browser.WithWantSnapshot(ctx)
+		ctx, obsErr = obs.wantSnapshot(ctx, req.Snapshot)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
 		}
 		return obs.action(s.manager.Type(ctx, req.Ref, req.Text))
 	case "brw_fill":
@@ -1330,8 +1342,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		if snapReq.Snapshot {
-			ctx = browser.WithWantSnapshot(ctx)
+		ctx, obsErr = obs.wantSnapshot(ctx, snapReq.Snapshot)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
 		}
 		return obs.action(s.manager.Fill(ctx, req))
 	case "brw_upload_file":
@@ -1361,8 +1374,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		if req.Snapshot {
-			ctx = browser.WithWantSnapshot(ctx)
+		ctx, obsErr = obs.wantSnapshot(ctx, req.Snapshot)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
 		}
 		return obs.action(s.manager.Select(ctx, req.Ref, req.Value))
 	case "brw_press":
@@ -1382,8 +1396,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		if req.Snapshot {
-			ctx = browser.WithWantSnapshot(ctx)
+		ctx, obsErr = obs.wantSnapshot(ctx, req.Snapshot)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
 		}
 		return obs.action(repeatAction(ctx, repeat, func(ctx context.Context) (browser.ActionResult, error) {
 			return s.manager.Press(ctx, req.Key)
@@ -1405,8 +1420,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		if req.Snapshot {
-			ctx = browser.WithWantSnapshot(ctx)
+		ctx, obsErr = obs.wantSnapshot(ctx, req.Snapshot)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
 		}
 		return obs.action(repeatAction(ctx, repeat, func(ctx context.Context) (browser.ActionResult, error) {
 			return s.manager.Scroll(ctx, req.Direction)
@@ -1607,8 +1623,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		if req.Snapshot {
-			ctx = browser.WithWantSnapshot(ctx)
+		ctx, obsErr = obs.wantSnapshot(ctx, req.Snapshot)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
 		}
 		return obs.action(focuser.Focus(ctx, req.Ref))
 	case "brw_clipboard":
@@ -2537,7 +2554,7 @@ func tools() []map[string]any {
 			"action":         stringEnumSchema("Act on the single matching element instead of returning the match list. Omit for a read-only find.", browser.FindActActions()...),
 			"value":          stringSchema("Text to write for action fill or type, or the option value for action select. Required for those three and refused for the others."),
 			"exact":          boolSchema("With action: keep only elements whose accessible name (or value) EQUALS the query after collapsing case and whitespace, rather than containing it. The fastest way to resolve an ambiguous match."),
-			"observe":        observeSchema(),
+			"observe":        observeFindSchema(),
 		}, nil)),
 		tool("brw_click", "Click a semantic element ref (or x,y coordinates) from brw_snapshot. Defaults to a left single-click; set button to right (opens context menus) or middle, and click_count to 2 (double-click) or 3 (triple-click selects a line). When the click opens a new tab, the response includes new_tab_id with the freshly opened tab's id.", object(map[string]any{
 			"ref":         stringSchema("Element ref, for example e18. Provide ref or x,y."),
@@ -2829,7 +2846,7 @@ func tools() []map[string]any {
 					"required": []string{"action"},
 				},
 			},
-			"observe": observeSchema(),
+			"observe": observePlanSchema(),
 		}, []string{"steps"})),
 		tool("brw_batch", "PREFERRED for multi-step flows: chain click, click_text, find_act, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, and inline assertions (assert_visible, assert_text, assert_value, assert_hidden, plus the richer assert step) in ONE round-trip, returning a single observation at the end. Use this instead of individual brw_click/brw_type/brw_fill calls whenever you need 2+ actions. Steps run sequentially; interleave assertions to fail fast. A find_act step locates its own target by role and name, which is what lets a batch keep going past a step that changes the page: refs minted before the batch started do not exist on the new page, and a find_act step does not need them. Pass observe to shrink or drop the closing observation when you already know what comes next.", object(map[string]any{
 			"steps": map[string]any{
@@ -2864,7 +2881,7 @@ func tools() []map[string]any {
 					"required": []string{"action"},
 				},
 			},
-			"observe": observeSchema(),
+			"observe": observeBatchSchema(),
 		}, []string{"steps"})),
 		tool("brw_cancel", "Cooperatively stop in-flight long-running operations (brw_plan, brw_batch, and their waits) for an operation token. Omit token (or pass \"*\") to stop everything; pass tab_id to stop work targeting that tab. The cancelled operation returns a normal result reporting steps_completed and cancelled=true rather than erroring. Returns how many operations were signalled.", object(map[string]any{
 			"token":  stringSchema("Operation token to cancel. Omit or use \"*\" to cancel all in-flight operations."),

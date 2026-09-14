@@ -45,8 +45,9 @@ contain no private site data. On an Apple M4 Max in September 2026:
 | Repeat readiness check on an already-loaded tab, event subscription vs the in-page readyState probe | median 459 ns vs 551 µs; **~1,200x lower wait latency, and no CDP round trip** |
 | In-memory 100,000-entry catalogue, rare intent | 740 ns indexed vs 5.64 ms linear control; **~7,631x faster** |
 | Local 100,000-entry catalogue, common intent top 50 | 5.78 ms, 14,240 B and 109 allocations |
-| Post-action observation over a fixed ten-step flow, `observe:"minimal"` vs the `full` default | 2,674 B vs 4,950 B of result JSON; **46.0% fewer bytes** |
-| The same flow at `observe:"none"` | 1,181 B vs 4,950 B; **76.1% fewer bytes**, and every step still reports its outcome |
+| Post-action observation over ten separate action-tool calls, `observe:"minimal"` vs the `full` default | ~2,676 B vs ~4,951 B of result JSON; **46% fewer bytes** |
+| The same ten calls at `observe:"none"` | ~1,184 B vs ~4,951 B; **76% fewer bytes**, and every call still reports its outcome |
+| The same ten steps as one `brw_batch` (one closing observation), against those ten calls | ~743 B vs ~4,951 B; **85% fewer bytes**, and ~622 B at `observe:"none"` |
 
 The two wait rows measure the same question asked two ways against the same
 state, so each ratio is the cost of asking rather than the cost of the answer.
@@ -91,29 +92,48 @@ idle DOM scans on large inbox/message pages; the explicit tradeoff is up to
 ## Observation size
 
 `observe` on the action tools, `brw_batch` and `brw_plan` chooses how much of the
-post-action observation is reported. The table row above is one measurement:
-the same ten-step flow (five `brw_fill`s and five `brw_click_text`s against a
-twenty-control form) run three times against real headless Chrome, with each
-step's result JSON serialized and counted.
+post-action observation is reported. The measurement fills five fields and
+clicks five buttons on the same real headless Chrome page (a twenty-control
+form) two ways: as ten separate action-tool calls (five `brw_fill`, five
+`brw_click_text`), which observe once per call, and as one ten-step
+`brw_batch` of `find_act` steps, which observes once for the whole call. Each
+arm's result JSON is serialized and counted.
 
 ```
-observe=full (today's default on every step)                  4950 bytes  ~1238 tokens  100.0%
-sequence default (minimal for steps 1-9, full for step 10)    2902 bytes  ~ 726 tokens   58.6%
-observe=minimal on every step                                 2674 bytes  ~ 669 tokens   54.0%
-observe=none on every step                                    1181 bytes  ~ 296 tokens   23.9%
+ten separate calls, observe=full (the default on every call)   4951 bytes  ~1238 tokens  100.0%
+  sequence default (minimal for calls 1-9, full for call 10)   2907 bytes  ~ 727 tokens   58.7%
+  observe=minimal on every call                                2676 bytes  ~ 669 tokens   54.0%
+  observe=none on every call                                    1184 bytes  ~ 296 tokens   23.9%
+the same ten steps as one brw_batch, observe=full               743 bytes  ~ 186 tokens   15.0%
+  observe=none                                                  622 bytes  ~ 156 tokens   12.6%
 ```
+
+The two arms answer different questions. Batching is the larger saving by far,
+because nine of the ten observations stop existing rather than getting smaller;
+`observe` then trims what is left. On `brw_batch` there is only the one closing
+observation to trim, and it carries no element list, so `minimal` there is the
+same as `full` — that is why `brw_batch` advertises its own wording for the
+parameter instead of the shared one.
 
 Token figures use the same 4-chars-per-token estimator as
 `scripts/measure-tool-catalogue.py`; they compare arms, they are not a
-tokenizer. The absolute numbers are a property of this fixture — a denser page
-has a larger frontier element list and a larger saving — so read the ratios.
+tokenizer. Byte counts jitter by a few bytes between runs because each result
+carries its own `duration_ms`. The absolute numbers are a property of this
+fixture — a denser page has a larger frontier element list and a larger saving
+— so read the ratios.
 
 `none` is not free of meaning: every level still reports `ok`, `message`,
 `warning` and `changed_state`, so a flow can always tell whether a step worked.
-And no level skips the observation itself. The post-action read is where the
-navigation policy re-checks the committed destination, so `observe` buys tokens
-and never latency; a level that skipped the read would be an opt-out from a
-guard.
+`brw_navigate` and `brw_navigate_to` also keep `url` at every level, because
+their message names the url that was REQUESTED and the caller would otherwise
+be left holding a destination brw never verified. And no level skips the
+observation itself. The post-action read is where the navigation policy
+re-checks the committed destination, so `observe` buys tokens and never
+latency; a level that skipped the read would be an opt-out from a guard.
+
+A recipe run is already at the floor: `recipe.StepResult` reports `{id, status,
+attempts, duration_ms}` and no observation at all, so there is nothing for a
+level to trim.
 
 ## Tool catalogue
 

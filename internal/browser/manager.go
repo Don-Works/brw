@@ -2874,7 +2874,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 			break
 		}
 		var ref string
-		ref, actionErr = RunFindActStep(tabCtx, tabFinder(), m.findActuator(tabID), *step.Find)
+		ref, actionErr = RunFindActStep(tabCtx, m.tabFinder(tabID), m.findActuator(tabID), *step.Find)
 		if ref != "" {
 			sr.Ref = ref
 		}

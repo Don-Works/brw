@@ -2306,7 +2306,22 @@ func snapshotCacheKey(opts snapshot.SnapshotOptions) string {
 }
 
 func (b *Bridge) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
-	snap, err := b.Snapshot(ctx, snapshot.SnapshotOptions{
+	return b.find(ctx, opts, false)
+}
+
+// FindLive is Find without the tab's cached snapshot. It is what a
+// locate-and-act resolves through (see browser.LiveFinder): the extension's
+// cache-validity probe only sees DOM mutations, so after an earlier fill or
+// select in the same batch a cached element list is the PRE-action page, and
+// the decision to actuate, the exactly-one-match rule included, would be made
+// from a page that no longer exists. Post-action observation already re-walks
+// for the same reason.
+func (b *Bridge) FindLive(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
+	return b.find(ctx, opts, true)
+}
+
+func (b *Bridge) find(ctx context.Context, opts snapshot.FindOptions, live bool) (snapshot.FindResult, error) {
+	snapOpts := snapshot.SnapshotOptions{
 		Query:         opts.Query,
 		Text:          opts.Text,
 		Role:          opts.Role,
@@ -2317,7 +2332,8 @@ func (b *Bridge) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.
 		// here made the option a no-op on the extension bridge: the tool said it
 		// would match visible prose and then matched only element metadata.
 		TextContent: opts.TextContent,
-	})
+	}
+	snap, err := b.snapshot(ctx, snapOpts, live)
 	if err != nil {
 		return snapshot.FindResult{}, err
 	}

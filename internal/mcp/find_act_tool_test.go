@@ -54,8 +54,10 @@ func TestFindWithAnActionLocatesAndActs(t *testing.T) {
 			wantErr:   "refusing to guess",
 		},
 		{
-			name:      "no match is an error, not an empty success",
-			elements:  nil,
+			name: "no match is an error, not an empty success",
+			// Empty rather than nil: nil means "this test does not care which
+			// elements the page has" and gets the default fixture list.
+			elements:  []snapshot.Element{},
 			args:      `{"query":"Checkout","action":"click"}`,
 			wantActed: []string{"find:Checkout/"},
 			wantErr:   "no element matches",

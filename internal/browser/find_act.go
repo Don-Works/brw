@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -54,7 +55,7 @@ func (f FindAct) Validate() error {
 	if action == "" {
 		return errors.New("find action is required")
 	}
-	if !slicesContains(findActActions, action) {
+	if !slices.Contains(findActActions, action) {
 		return fmt.Errorf("unsupported find action %q; supported: %s", action, strings.Join(findActActions, ", "))
 	}
 	if f.searchTerm() == "" && strings.TrimSpace(f.Role) == "" {
@@ -217,13 +218,34 @@ type FindActFinder interface {
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
 }
 
+// LiveFinder is a searcher that can bypass its transport's snapshot cache. A
+// transport that may serve a cached element list implements it, and a
+// locate-and-act always resolves through it: the extension's cache-validity
+// probe only sees DOM MUTATIONS, and a fill, select or checkbox writes a DOM
+// property that mutates no node, so a cached read after such a step returns the
+// pre-action page. Deciding to actuate from that page means the exactly-one
+// rule confirms a uniqueness the page may no longer have.
+type LiveFinder interface {
+	FindLive(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
+}
+
+// findActSearcher picks the searcher a locate-and-act resolves with. Choosing
+// here rather than at each call site is what makes the rule transport-wide: the
+// standalone tool, a batch step and a plan step all go through ResolveFindAct.
+func findActSearcher(finder FindActFinder) FindActFinder {
+	if live, ok := finder.(LiveFinder); ok {
+		return findInTab(live.FindLive)
+	}
+	return finder
+}
+
 // ResolveFindAct validates the request, runs the search, and returns the one
 // element it names.
 func ResolveFindAct(ctx context.Context, finder FindActFinder, f FindAct) (snapshot.Element, error) {
 	if err := f.Validate(); err != nil {
 		return snapshot.Element{}, err
 	}
-	result, err := finder.Find(ctx, f.FindOptions())
+	result, err := findActSearcher(finder).Find(ctx, f.FindOptions())
 	if err != nil {
 		return snapshot.Element{}, err
 	}
@@ -298,13 +320,4 @@ func FindActActions() []string {
 	out := append([]string(nil), findActActions...)
 	sort.Strings(out)
 	return out
-}
-
-func slicesContains(list []string, want string) bool {
-	for _, item := range list {
-		if item == want {
-			return true
-		}
-	}
-	return false
 }

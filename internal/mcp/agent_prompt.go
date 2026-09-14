@@ -81,7 +81,9 @@ TOKEN DISCIPLINE:
   form, a replayed brw_trace batch. Reading the observation is still the way you
   verify an outcome, so do not drop it for the step whose result you care about.
   brw_plan already does this for you: its intermediate steps report minimal and
-  its last step reports full.
+  its last step reports full, and a snapshot step keeps its snapshot at every
+  level. On brw_batch minimal is the same as full (one closing observation, no
+  element list), and brw_find takes observe only with action.
 - On a long document, read { include: ["headings"] } for the outline and then
   { section: "<heading>" } for the part you need, instead of paging the prose.
 - If brw_tools is in your tool list, this session starts with a small catalogue

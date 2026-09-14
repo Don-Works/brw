@@ -72,9 +72,29 @@ func (l ObserveLevel) ApplyToAction(result ActionResult) ActionResult {
 	}
 }
 
+// ApplyToNavigation trims a navigation's observation and keeps url at every
+// level, because a navigation's outcome IS the destination.
+//
+// The message is written from the url that was REQUESTED, before the
+// observation reads the one the browser committed to. A result that kept that
+// message and dropped the observed url would assert a destination brw never
+// verified: after a redirect, an interstitial or a login wall the caller would
+// be told it arrived somewhere it did not.
+func (l ObserveLevel) ApplyToNavigation(result ActionResult) ActionResult {
+	committed := result.URL
+	trimmed := l.ApplyToAction(result)
+	trimmed.URL = committed
+	return trimmed
+}
+
 // ApplyToBatch trims a batch's single closing observation. The per-step results
 // are untouched at every level: they are the record of what ran, and a batch
 // that hid which step failed would be unusable.
+//
+// ObserveMinimal is deliberately the same as ObserveFull here. A BatchResult
+// carries no element list to drop — the whole point of a batch is one closing
+// observation — so minimal has nothing to trim, and brw_batch's own schema text
+// says so rather than advertising a saving that cannot happen.
 func (l ObserveLevel) ApplyToBatch(result BatchResult) BatchResult {
 	switch l {
 	case ObserveMinimal:
@@ -96,22 +116,28 @@ func (l ObserveLevel) ApplyToBatch(result BatchResult) BatchResult {
 // minimal, because a plan's intermediate observations are the ones nobody reads:
 // the flow has already committed to the next step before the model sees them.
 //
-// An explicit level applies to every step, including the last, so a caller that
-// asked for none gets none.
+// An explicit level applies to every step's OBSERVATION, including the last, so
+// a caller that asked for none gets none. It never touches a step's own
+// product: a `snapshot` or `read` step was written to fetch that payload, and a
+// level that deleted it would turn the step into a round trip that returns
+// nothing. SKILL.md sends agents to brw_plan for exactly that mid-flow
+// snapshot.
+//
+// The input is not modified: the trim writes into copies, so a caller that logs
+// or re-reads the untrimmed result still sees what the runner produced.
 func (l ObserveLevel) ApplyToPlan(result PlanResult, explicit bool) PlanResult {
 	if len(result.Steps) == 0 {
 		return result
 	}
-	last := len(result.Steps) - 1
-	for i := range result.Steps {
-		level := PlanStepObserveLevel(l, explicit, i, len(result.Steps))
+	steps := make([]PlanStepResult, len(result.Steps))
+	copy(steps, result.Steps)
+	result.Steps = steps
+	for i := range steps {
+		level := PlanStepObserveLevel(l, explicit, i, len(steps))
 		if level == ObserveFull {
 			continue
 		}
-		result.Steps[i].Result = trimStepResult(result.Steps[i].Result, level)
-		if i != last || level == ObserveNone {
-			result.Steps[i].Snapshot = nil
-		}
+		steps[i].Result = trimStepResult(steps[i].Action, steps[i].Result, level)
 	}
 	return result
 }
@@ -127,6 +153,68 @@ func PlanStepObserveLevel(level ObserveLevel, explicit bool, index, total int) O
 	return ObserveMinimal
 }
 
+// planStepPayload says what a plan step's result carries, which is what decides
+// whether an observe level may trim it.
+type planStepPayload int
+
+const (
+	// planStepProduct is the step's own product — a snapshot, a page read, the
+	// tab an open created. The caller wrote the step to get it, so no level
+	// drops it. It is the zero value on purpose: an unclassified verb reports in
+	// full rather than losing a payload nobody classified.
+	planStepProduct planStepPayload = iota
+	// planStepObservation is a post-action observation, the payload observe
+	// exists to trim.
+	planStepObservation
+	// planStepFindAct is a locate-and-act result: {matched, action, result},
+	// with the observation nested one level down and the matched element — the
+	// answer to "which one did you act on" — beside it.
+	planStepFindAct
+)
+
+// planStepPayloads classifies every brw_plan step verb. The trim is driven by
+// the verb the caller wrote rather than by sniffing the payload's shape: the
+// shape differs by transport (a typed struct in-process, a decoded object over
+// the upstream HTTP proxy), and the predicate that guessed from shape trimmed
+// neither find_act form. TestEveryPlanStepVerbIsClassifiedForObserve checks
+// this table against the advertised step enum in both directions, so a new verb
+// cannot quietly default its own level.
+var planStepPayloads = map[string]planStepPayload{
+	"click":       planStepObservation,
+	"click_text":  planStepObservation,
+	"type":        planStepObservation,
+	"fill":        planStepObservation,
+	"select":      planStepObservation,
+	"press":       planStepObservation,
+	"scroll":      planStepObservation,
+	"hover":       planStepObservation,
+	"navigate_to": planStepObservation,
+	"find_act":    planStepFindAct,
+	"snapshot":    planStepProduct,
+	"read":        planStepProduct,
+	"open":        planStepProduct,
+	"wait":        planStepProduct,
+	"focus_tab":   planStepProduct,
+}
+
+// PlanStepVerbIsClassified reports whether a plan step verb has an entry in the
+// observe classification. Exported for the catalogue test that checks the table
+// against the advertised step enum from the package that owns that enum.
+func PlanStepVerbIsClassified(action string) bool {
+	_, ok := planStepPayloads[action]
+	return ok
+}
+
+// ClassifiedPlanStepVerbs lists the verbs the observe classification knows, so
+// the same test can catch a table entry for a verb no longer advertised.
+func ClassifiedPlanStepVerbs() []string {
+	verbs := make([]string, 0, len(planStepPayloads))
+	for verb := range planStepPayloads {
+		verbs = append(verbs, verb)
+	}
+	return verbs
+}
+
 // observationOnlyKeys are the ActionResult fields an observe level drops. They
 // are listed by wire name so a plan step result that came back over HTTP as a
 // generic object trims to the same shape as one produced in-process.
@@ -135,11 +223,22 @@ var observationOnlyKeys = map[ObserveLevel][]string{
 	ObserveNone:    {"elements", "targets", "snapshot", "changed", "url", "title", "focus", "version"},
 }
 
-// trimStepResult trims one plan step payload. A step result is typed as any
-// because a plan carries read/snapshot payloads too; only an action observation
-// is trimmed, in whichever of its two shapes arrived — the concrete struct from
-// an in-process transport, or the decoded object from the upstream HTTP one.
-func trimStepResult(value any, level ObserveLevel) any {
+// trimStepResult trims one plan step payload to the level its verb allows.
+func trimStepResult(action string, value any, level ObserveLevel) any {
+	switch planStepPayloads[action] {
+	case planStepObservation:
+		return trimObservation(value, level)
+	case planStepFindAct:
+		return trimFindActResult(value, level)
+	default:
+		return value
+	}
+}
+
+// trimObservation trims an action observation in whichever of its two shapes
+// arrived: the concrete struct from an in-process transport, or the decoded
+// object from the upstream HTTP one.
+func trimObservation(value any, level ObserveLevel) any {
 	switch typed := value.(type) {
 	case ActionResult:
 		return level.ApplyToAction(typed)
@@ -150,27 +249,54 @@ func trimStepResult(value any, level ObserveLevel) any {
 		trimmed := level.ApplyToAction(*typed)
 		return &trimmed
 	case map[string]any:
-		if !looksLikeObservation(typed) {
-			return value
-		}
-		for _, key := range observationOnlyKeys[level] {
-			delete(typed, key)
-		}
-		return typed
+		return withoutKeys(typed, observationOnlyKeys[level])
 	default:
 		return value
 	}
 }
 
-// looksLikeObservation keeps the map branch from eating a step payload that is
-// not an action observation (a read, a structured-data extraction). Every
-// ActionResult carries ok and message; a read carries neither together.
-func looksLikeObservation(value map[string]any) bool {
-	if _, ok := value["ok"]; !ok {
-		return false
+// trimFindActResult trims the observation half of a locate-and-act step and
+// leaves `matched` alone: which element was chosen is the answer, not the
+// observation, and a step whose ref is gone cannot be followed up.
+func trimFindActResult(value any, level ObserveLevel) any {
+	switch typed := value.(type) {
+	case FindActResult:
+		typed.Result = level.ApplyToAction(typed.Result)
+		return typed
+	case *FindActResult:
+		if typed == nil {
+			return value
+		}
+		trimmed := *typed
+		trimmed.Result = level.ApplyToAction(trimmed.Result)
+		return &trimmed
+	case map[string]any:
+		nested, ok := typed["result"]
+		if !ok {
+			return value
+		}
+		out := withoutKeys(typed, nil)
+		out["result"] = trimObservation(nested, level)
+		return out
+	default:
+		return value
 	}
-	_, hasElements := value["elements"]
-	_, hasChanged := value["changed"]
-	_, hasURL := value["url"]
-	return hasElements || hasChanged || hasURL
+}
+
+// withoutKeys copies a decoded payload minus the named keys. It copies rather
+// than deleting in place because the map belongs to the result the runner
+// produced, which the caller may still read or log untrimmed.
+func withoutKeys(in map[string]any, keys []string) map[string]any {
+	drop := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		drop[key] = true
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		if drop[key] {
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }

@@ -50,6 +50,26 @@ func tenStepFlow(m *Manager, ctx context.Context) []func() (ActionResult, error)
 	return steps
 }
 
+// tenStepBatch is the same ten steps sent as ONE brw_batch: five fills that
+// locate their own field and five clicks. A batch answers with one closing
+// observation for the whole call rather than one per step, so it is a different
+// arm from ten separate tool calls and is measured separately.
+func tenStepBatch() []BatchStep {
+	steps := make([]BatchStep, 0, 10)
+	for i := 1; i <= 5; i++ {
+		steps = append(steps, BatchStep{Action: "find_act", Find: &FindAct{
+			Query: fmt.Sprintf("Field number %d", i), Role: "textbox", Exact: true,
+			Action: "fill", Value: fmt.Sprintf("fixture-value-%d", i),
+		}})
+	}
+	for i := 1; i <= 5; i++ {
+		steps = append(steps, BatchStep{Action: "find_act", Find: &FindAct{
+			Query: fmt.Sprintf("Action number %d", i), Role: "button", Exact: true, Action: "click",
+		}})
+	}
+	return steps
+}
+
 // estimatedTokens uses the same 4-chars-per-token estimator as
 // scripts/measure-tool-catalogue.py, so the figures in docs/benchmarks.md are
 // comparable across the two measurements. It is not a tokenizer.
@@ -98,10 +118,36 @@ func TestObserveLevelsShrinkATenStepFlow(t *testing.T) {
 		return total
 	}
 
+	measureBatch := func(t *testing.T, level ObserveLevel) int {
+		t.Helper()
+		m := newHeadlessManager(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		opened, err := m.Open(ctx, site.URL)
+		if err != nil {
+			t.Fatalf("open fixture: %v", err)
+		}
+		result, err := m.ExecuteBatch(WithTabID(ctx, opened.Tab.ID), tenStepBatch())
+		if err != nil {
+			t.Fatalf("batch: %v", err)
+		}
+		if !result.OK {
+			t.Fatalf("batch not ok: %+v", result)
+		}
+		data, err := json.Marshal(level.ApplyToBatch(result))
+		if err != nil {
+			t.Fatalf("marshal batch: %v", err)
+		}
+		return len(data)
+	}
+
 	full := measure(t, ObserveFull, true)
 	defaulted := measure(t, ObserveFull, false)
 	minimal := measure(t, ObserveMinimal, true)
 	none := measure(t, ObserveNone, true)
+	batchFull := measureBatch(t, ObserveFull)
+	batchMinimal := measureBatch(t, ObserveMinimal)
+	batchNone := measureBatch(t, ObserveNone)
 
 	t.Logf("ten-step flow observation cost (bytes of result JSON, ~tokens at 4 chars/token):")
 	for _, row := range []struct {
@@ -112,6 +158,8 @@ func TestObserveLevelsShrinkATenStepFlow(t *testing.T) {
 		{"sequence default (minimal for steps 1-9, full for step 10)", defaulted},
 		{"observe=minimal on every step", minimal},
 		{"observe=none on every step", none},
+		{"the same ten steps as one brw_batch, observe=full", batchFull},
+		{"the same ten steps as one brw_batch, observe=none", batchNone},
 	} {
 		t.Logf("  %-58s %7d bytes  ~%5d tokens  %5.1f%% of full",
 			row.name, row.bytes, estimatedTokens(row.bytes), 100*float64(row.bytes)/float64(full))
@@ -136,5 +184,22 @@ func TestObserveLevelsShrinkATenStepFlow(t *testing.T) {
 	// none is not free of meaning: every step still reports its outcome.
 	if none <= 0 {
 		t.Fatal("observe=none reported nothing at all, so a caller cannot tell whether the flow worked")
+	}
+
+	// A batch already pays for one observation rather than ten, so it starts
+	// where the per-call arm ends up; observe then trims that one.
+	if batchFull >= full {
+		t.Fatalf("a ten-step batch cost %d bytes against %d for ten separate calls: the single closing observation is not saving anything",
+			batchFull, full)
+	}
+	if batchNone >= batchFull {
+		t.Fatalf("observe=none cost %d bytes on a batch against full's %d", batchNone, batchFull)
+	}
+	// minimal has nothing to drop on a batch: the closing observation carries no
+	// element list. brw_batch's schema says so, and this is the measurement it
+	// rests on.
+	if batchMinimal != batchFull {
+		t.Fatalf("observe=minimal cost %d bytes on a batch against full's %d; brw_batch advertises them as the same",
+			batchMinimal, batchFull)
 	}
 }
