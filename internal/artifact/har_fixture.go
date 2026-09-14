@@ -108,6 +108,7 @@ func ParseHARFixture(data []byte) ([]browser.HAREntry, error) {
 		}
 		if entry.Request.PostData != nil {
 			replayable.RequestBody = entry.Request.PostData.Text
+			replayable.RequestBodyTruncated = requestBodyWasTruncated(entry.Request)
 		}
 		out = append(out, replayable)
 	}
@@ -155,6 +156,26 @@ func bodyWasTruncated(content harContent) bool {
 		return true
 	}
 	return content.Size > 0 && len(content.Text) > 0 && len(content.Text) < content.Size
+}
+
+// requestBodyWasTruncated reports whether a recorded request body is a clipped
+// prefix of what the page actually sent.
+//
+// The in-page capture clips a request body at the same cap as a response, and
+// BuildHAR writes the clipped string as postData.text with request.bodySize
+// describing only what it stored, so — as for a response — the marker is what
+// identifies a brw recording. An externally produced HAR states the real
+// bodySize, and a postData.text shorter than that is the same fact said the
+// other way.
+func requestBodyWasTruncated(request harRequest) bool {
+	if request.PostData == nil {
+		return false
+	}
+	text := request.PostData.Text
+	if strings.HasSuffix(text, snapshot.BodyTruncationMarker) {
+		return true
+	}
+	return request.BodySize > 0 && len(text) > 0 && len(text) < request.BodySize
 }
 
 var droppedReplayHeaders = map[string]bool{

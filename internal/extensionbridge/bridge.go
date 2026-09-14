@@ -5325,6 +5325,13 @@ func (b *Bridge) Observe(ctx context.Context) (browser.ObserveResult, error) {
 		Title:   snap.Title,
 		Focus:   focus,
 		Changed: changed,
+		// brw_route's description promises that active routes are reported here so
+		// mocked traffic is never invisible, and that promise is not about a
+		// transport: an abort rule is exactly as invisible in a transcript when a
+		// declarativeNetRequest rule enforces it as when Fetch does. A HAR
+		// fixture's miss counts have no equivalent, because this transport refuses
+		// a replay by name rather than installing one.
+		ActiveRoutes: len(b.routes.list(tabID)),
 	}, nil
 }
 

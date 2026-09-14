@@ -319,18 +319,33 @@ ordinary capture stores `[redacted by brw]` in place of every request body, so a
 body-keyed replay of one can never match. That combination is refused at install
 time with an error naming the capture that supports it.
 
+The same refusal covers a recording whose request bodies were **clipped**. The
+2 KiB cap below applies to what a page sent as well as to what it received,
+whatever the redaction setting, so an entry recording a larger request holds a
+prefix that the whole body the live page sends can never equal. A body-keyed
+replay of such a capture would miss every one of those requests, so it is
+refused at install time with an error naming the cap.
+
+One body-keyed miss is not preventable at install time: Chrome does not hand the
+interception a request body it judges too long, and a body made of file parts
+carries no bytes at all. brw will not match that against the empty string — a
+recording of a request that genuinely had no body would answer it — so the
+request is recorded as a miss whose reason says the body never arrived and that
+dropping `body` from `match` would answer it.
+
 Redaction happens at record time. A HAR captured with the default redaction
 carries `[redacted by brw]` where a credential header or a request body was, and
 replays with those values; there is no un-redacted replay mode.
 
-Response bodies in a brw-exported HAR are capture snippets clipped at 2 KiB.
-A recording of a larger response replays clipped — valid bytes, but a page
-parsing it as JSON gets a syntax error. brw does not hide that: the decoded
-fixture flags each clipped entry, the `action:"replay"` note says how many of the
-recordings are snippets, and the route reports `truncated_entries` and
-`served_truncated`. There is no import path for an externally produced HAR, so a
-fixture that needs whole bodies has to be recorded from endpoints whose responses
-fit under the cap.
+Bodies in a brw-exported HAR are capture snippets clipped at 2 KiB, requests and
+responses alike. A recording of a larger response replays clipped — valid bytes,
+but a page parsing it as JSON gets a syntax error. brw does not hide that: the
+decoded fixture flags each clipped entry, the `action:"replay"` note says how
+many of the recordings are snippets, and the route reports `truncated_entries`
+and `served_truncated`. A clipped request body is refused rather than reported,
+because it is a match key and nothing downstream can recover from it (above).
+There is no import path for an externally produced HAR, so a fixture that needs
+whole bodies has to be recorded from endpoints whose traffic fits under the cap.
 
 `brwctl setup --transport direct-cdp` configures the second lane. Running both
 against different profiles is supported: one `brwd` per profile, one MCP server

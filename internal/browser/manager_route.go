@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 )
@@ -468,26 +469,40 @@ func buildReplayRoute(opts RouteOptions) (*Route, error) {
 
 // checkHARMatchIsSatisfiable refuses a match key the recording cannot answer on.
 //
-// An export redacts request bodies unless it was taken with redaction:"none", so
-// every entry of an ordinary capture records the body as the placeholder. Keyed
-// on "body", such a fixture matches nothing: under the default
+// A request body reaches the recording through two lossy steps, and "body" as a
+// match key survives neither. An export redacts request bodies unless it was
+// taken with redaction:"none", so every entry of an ordinary capture records the
+// body as the placeholder; and the in-page capture clips a body at
+// snapshot.BodyCapBytes whatever the redaction setting, so an entry over the cap
+// records a prefix the live request's whole body can never equal. Keyed on
+// "body", such a fixture matches nothing: under the default
 // on_miss:"passthrough" every request would go to the real backend while the
 // caller believed it was mocked.
+//
+// Both are refused rather than counted, because a fixture that answers none of
+// the requests it was installed for is a broken fixture, not a partial one.
 func checkHARMatchIsSatisfiable(artifactID string, entries []HAREntry, match []string) error {
 	if !slices.Contains(match, HARMatchBody) {
 		return nil
 	}
-	redacted := 0
+	redacted, clipped := 0, 0
 	for _, entry := range entries {
-		if entry.RequestBody == HARRedactedPlaceholder {
+		switch {
+		case entry.RequestBody == HARRedactedPlaceholder:
 			redacted++
+		case entry.RequestBodyTruncated:
+			clipped++
 		}
 	}
-	if redacted == 0 {
-		return nil
+	if redacted > 0 {
+		return fmt.Errorf("match includes %q but %d of %d entries in HAR artifact %s record the request body as %q, so no request can ever match: recapture with brw_artifact_capture{kind:\"har\", redaction:\"none\"}, or drop %q from match",
+			HARMatchBody, redacted, len(entries), artifactID, HARRedactedPlaceholder, HARMatchBody)
 	}
-	return fmt.Errorf("match includes %q but %d of %d entries in HAR artifact %s record the request body as %q, so no request can ever match: recapture with brw_artifact_capture{kind:\"har\", redaction:\"none\"}, or drop %q from match",
-		HARMatchBody, redacted, len(entries), artifactID, HARRedactedPlaceholder, HARMatchBody)
+	if clipped > 0 {
+		return fmt.Errorf("match includes %q but %d of %d entries in HAR artifact %s record only the first %d characters of the request body (the capture clips at that cap and appends %q), so a request sending the whole body can never match: drop %q from match, or record against requests whose bodies fit under the cap",
+			HARMatchBody, clipped, len(entries), artifactID, snapshot.BodyCapBytes, snapshot.BodyTruncationMarker, HARMatchBody)
+	}
+	return nil
 }
 
 // harReplayNote describes the installed fixture, including the two ways it
@@ -567,7 +582,18 @@ func (m *Manager) answerRoute(ctx context.Context, tabID string, route *Route, p
 			// goroutine, which has no recover: a panic here takes the daemon down.
 			return m.continueWithEnvironmentHeaders(ctx, tabID, paused)
 		}
-		entry, found := route.har.find(harMethod(paused.Request.Method), paused.Request.URL, requestPostData(paused.Request))
+		body, readable := requestPostData(paused.Request)
+		if !readable && slices.Contains(route.har.match, HARMatchBody) {
+			// Matching an unreadable body as "" would key on the empty string and
+			// could serve the recording of a request that genuinely had no body —
+			// a wrong answer, which is worse than a named miss.
+			route.har.recordUnreadableBody(paused.Request.Method, paused.Request.URL)
+			if route.har.onMiss == HARMissFail {
+				return fetch.FailRequest(paused.RequestID, network.ErrorReasonFailed).Do(ctx)
+			}
+			return m.continueWithEnvironmentHeaders(ctx, tabID, paused)
+		}
+		entry, found := route.har.find(harMethod(paused.Request.Method), paused.Request.URL, body)
 		if !found {
 			route.har.recordMiss(paused.Request.Method, paused.Request.URL)
 			if route.har.onMiss == HARMissFail {
@@ -581,14 +607,20 @@ func (m *Manager) answerRoute(ctx context.Context, tabID string, route *Route, p
 	}
 }
 
-// requestPostData reassembles a paused request's body. CDP delivers it as
-// base64 chunks, and match:["body"] compares against the HAR's plain text, so
-// the chunks have to be decoded and joined before either is meaningful. Chrome
-// omits the entries entirely for a body it considers too long, which reads as an
-// empty body and simply will not match a recorded one.
-func requestPostData(req *network.Request) string {
-	if req == nil || len(req.PostDataEntries) == 0 {
-		return ""
+// requestPostData reassembles a paused request's body, and reports whether it
+// got the whole of it.
+//
+// CDP delivers the body as base64 chunks, and match:["body"] compares against
+// the HAR's plain text, so the chunks have to be decoded and joined before
+// either is meaningful. Chrome sets hasPostData but omits the chunks for a body
+// it considers too long, and a file element carries no bytes at all; both read
+// as an empty body. Returning that as a body would key the lookup on "" and
+// could answer with the recording of a request that really had none, so the
+// second return distinguishes "this request had no body" from "this request's
+// body did not reach brw" and the caller misses by name instead.
+func requestPostData(req *network.Request) (string, bool) {
+	if req == nil {
+		return "", true
 	}
 	var out strings.Builder
 	for _, entry := range req.PostDataEntries {
@@ -597,11 +629,14 @@ func requestPostData(req *network.Request) string {
 		}
 		decoded, err := base64.StdEncoding.DecodeString(entry.Bytes)
 		if err != nil {
-			return ""
+			return "", false
 		}
 		out.Write(decoded)
 	}
-	return out.String()
+	if out.Len() == 0 && req.HasPostData {
+		return "", false
+	}
+	return out.String(), true
 }
 
 func applyFulfill(ctx context.Context, route *Route, requestID fetch.RequestID) error {

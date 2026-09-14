@@ -35,6 +35,13 @@ type HAREntry struct {
 	// flag is what turns that from a parse error in the page into a number the
 	// agent is told at install time.
 	Truncated bool `json:"truncated,omitempty"`
+	// RequestBodyTruncated marks a recorded REQUEST body the recording clipped.
+	// The same 2 KiB cap applies to what a page sent as to what it received, and
+	// a clipped request body is worse than a clipped response one: it is a match
+	// key, so the whole body the live page sends can never equal the prefix the
+	// HAR holds and every such request misses. Flagged here so a body-keyed
+	// replay can be refused at install time rather than miss silently.
+	RequestBodyTruncated bool `json:"request_body_truncated,omitempty"`
 }
 
 // HARRedactedPlaceholder is what an exported HAR carries where a credential
@@ -247,6 +254,24 @@ func (f *harFixture) serveLocked(i int) HAREntry {
 // keys that were compared is the difference between "the fixture is incomplete"
 // and a page that mysteriously half-loads.
 func (f *harFixture) recordMiss(method, url string) RouteMiss {
+	return f.recordMissBecause(method, url, func(miss RouteMiss) string {
+		return fmt.Sprintf("no HAR entry matches %s %s on [%s]; the fixture holds %d entries",
+			miss.Method, miss.URL, strings.Join(f.match, " "), len(f.entries))
+	})
+}
+
+// recordUnreadableBody books a request that could not be looked up at all
+// because Chrome did not hand brw its body. Distinct from an ordinary miss: the
+// fixture may well hold the entry, and the caller's next move is to drop "body"
+// from match rather than to record more requests.
+func (f *harFixture) recordUnreadableBody(method, url string) RouteMiss {
+	return f.recordMissBecause(method, url, func(miss RouteMiss) string {
+		return fmt.Sprintf("%s %s was not matched: match includes %q but Chrome delivered no request body for it, which it does for a body over its interception limit or one made of file parts; drop %q from match to answer this request on [%s]",
+			miss.Method, miss.URL, HARMatchBody, HARMatchBody, strings.Join(f.match, " "))
+	})
+}
+
+func (f *harFixture) recordMissBecause(method, url string, reason func(RouteMiss) string) RouteMiss {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	miss := RouteMiss{
@@ -254,8 +279,7 @@ func (f *harFixture) recordMiss(method, url string) RouteMiss {
 		URL:    clipDialogText(url),
 		At:     time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	miss.Reason = fmt.Sprintf("no HAR entry matches %s %s on [%s]; the fixture holds %d entries",
-		miss.Method, miss.URL, strings.Join(f.match, " "), len(f.entries))
+	miss.Reason = reason(miss)
 	f.missed++
 	f.misses = append(f.misses, miss)
 	if len(f.misses) > maxRouteMisses {

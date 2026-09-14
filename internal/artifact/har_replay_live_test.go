@@ -218,6 +218,25 @@ func TestPageLoadsFromARecordedHARWithTheBackendDenied(t *testing.T) {
 	if !strings.Contains(miss.Reason, "GET") || !strings.Contains(miss.Reason, "/api/never-recorded") {
 		t.Fatalf("the miss reason names neither the method nor the URL: %q", miss.Reason)
 	}
+
+	// The miss has to reach brw_observe, not only brw_route{action:"list"}. An
+	// agent driving a page observes after each action and lists routes almost
+	// never, so a fixture that misses only in the route table leaves a
+	// half-loaded page pointing at nothing — which is the whole reason the
+	// observation carries the count and the reasons.
+	observed, err := m.Observe(browser.WithTabID(ctx, tabID))
+	if err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if observed.ActiveRoutes != 1 {
+		t.Fatalf("brw_observe reports %d active routes, want the installed replay", observed.ActiveRoutes)
+	}
+	if observed.RouteMisses != 1 {
+		t.Fatalf("brw_observe reports %d fixture misses, want the one the page just made", observed.RouteMisses)
+	}
+	if len(observed.RouteMissReasons) != 1 || !strings.Contains(observed.RouteMissReasons[0], "/api/never-recorded") {
+		t.Fatalf("brw_observe does not name what the fixture could not answer: %v", observed.RouteMissReasons)
+	}
 }
 
 // harDefaultPatternFixture is a page whose data comes from one API call and one

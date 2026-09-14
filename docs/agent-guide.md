@@ -292,12 +292,17 @@ was not recorded, and each refusal is named in `fixture.misses`.
 has to agree on (default `[method,url]`). Add `body` only for a fixture captured
 with `redaction:"none"` whose recordings differ by request body — an ordinary
 capture stores `[redacted by brw]` in place of every request body, so a
-body-keyed replay of one can never match and is refused at install time.
+body-keyed replay of one can never match and is refused at install time. A
+capture whose request bodies ran over the 2 KiB cap is refused for the same
+reason: the recording holds a prefix, the live request sends the whole thing.
 
-Response bodies in a brw HAR are 2 KiB capture snippets. A recording of a larger
-response replays clipped, which a page parsing JSON sees as a syntax error, so
-the fixture reports `truncated_entries` and `served_truncated` and the install
-note says how many of the recordings are snippets.
+Bodies in a brw HAR are 2 KiB capture snippets, requests and responses alike. A
+recording of a larger response replays clipped, which a page parsing JSON sees as
+a syntax error, so the fixture reports `truncated_entries` and `served_truncated`
+and the install note says how many of the recordings are snippets. A request body
+Chrome withholds from the interception — one over its own limit, or one made of
+file parts — is not matched against the empty string either; it is recorded as a
+miss saying the body never arrived.
 
 `brw_observe` reports `active_routes`, and `route_fixture_misses` with the most
 recent reasons when a replay could not answer something, so a half-loaded page

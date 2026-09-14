@@ -43,6 +43,16 @@ type CapturedRequest struct {
 // ever drift.
 const BodyTruncationMarker = "\u2026[truncated]"
 
+// BodyCapBytes is the per-body character cap the in-page capture clips at, the
+// BODY_CAP of NetworkCaptureInstallScript.
+//
+// Exported for the same reason as the marker, and for one more: a REQUEST body
+// over the cap is recorded clipped too, so a body-keyed HAR replay of such a
+// capture can never match the whole body the live page sends. The refusal names
+// this number, so it has to be the number the script actually uses;
+// TestNetworkCaptureScriptCarriesTheExportedBodyCap fails if the two drift.
+const BodyCapBytes = 2048
+
 // ReplayResult is the outcome of re-executing a single request in-page.
 type ReplayResult struct {
 	Status         int    `json:"status"`
