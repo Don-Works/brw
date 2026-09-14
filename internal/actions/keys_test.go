@@ -221,3 +221,75 @@ func toLowerASCII(s string) string {
 	}
 	return string(b)
 }
+
+// IsCommandKey splits recorded keystrokes into commands, which a compiled
+// recipe may carry, and characters, which are the data that was being typed.
+func TestIsCommandKeySeparatesCommandsFromTypedCharacters(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want bool
+	}{
+		{"Enter", true},
+		{"tab", true},
+		{"ArrowDown", true},
+		{"f5", true},
+		{"shift", true},
+		{"ctrl+shift+Tab", true},
+		// A Ctrl, Alt or Meta chord is an accelerator: Chrome attaches no text
+		// to it, so nothing of what was typed survives into the recipe.
+		{"ctrl+a", true},
+		{"meta+s", true},
+		{"Ctrl+C", true},
+		{"ctrl+shift+a", true},
+		{"alt+7", true},
+		// Shift is the modifier that still types, so shift+a is the letter "A".
+		{"shift+a", false},
+		{"shift+7", false},
+		{"a", false},
+		{"7", false},
+		{"", false},
+		{"ctrl+", false},
+		// Not a chord at all: "hyper" is no modifier brw dispatches, and "foo"
+		// names no key, so neither reaches the accelerator rule.
+		{"hyper+a", false},
+		{"ctrl+foo", false},
+	}
+	for _, test := range tests {
+		if got := IsCommandKey(test.raw); got != test.want {
+			t.Errorf("IsCommandKey(%q) = %v, want %v", test.raw, got, test.want)
+		}
+	}
+}
+
+// chordModifiers is the domain the accelerator rule runs over, and whether
+// "<modifier>+a" is a command or the letter "a" is decided one modifier at a
+// time. Enumerating the map is what stops the next modifier added to it from
+// inheriting a classification nobody made: ctrl was the reported case, meta and
+// alt are its siblings, and shift is the one that goes the other way.
+func TestEveryChordModifierIsClassifiedAsTypingOrNotTyping(t *testing.T) {
+	suppressesInsertion := map[string]bool{
+		"alt": true, "option": true,
+		"ctrl": true, "control": true,
+		"meta": true, "cmd": true, "command": true,
+		"shift": false,
+	}
+	for name := range chordModifiers {
+		suppresses, classified := suppressesInsertion[name]
+		if !classified {
+			t.Errorf("chord modifier %q is classified nowhere, so nothing decided whether %q+a is a command or the letter a", name, name)
+			continue
+		}
+		chord := name + "+a"
+		if got := DescribeKey(chord).Text; (got == "") != suppresses {
+			t.Errorf("DescribeKey(%q).Text = %q, want inserted text %v", chord, got, !suppresses)
+		}
+		if got := IsCommandKey(chord); got != suppresses {
+			t.Errorf("IsCommandKey(%q) = %v, want %v", chord, got, suppresses)
+		}
+	}
+	for name := range suppressesInsertion {
+		if _, ok := chordModifiers[name]; !ok {
+			t.Errorf("%q is classified here but is not a chord modifier, so the classification covers nothing", name)
+		}
+	}
+}

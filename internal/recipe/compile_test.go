@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -714,7 +715,14 @@ func TestCompileRefusesWhatAPressStepWouldCarry(t *testing.T) {
 		{
 			name:     "a literal character press",
 			traced:   TraceAction{Action: "press", Ref: "e1", Role: "textbox", Name: "Notes", Text: "7", OK: true},
-			wantHint: "literal character rather than a named key",
+			wantHint: "literal character rather than a key that issues a command",
+		},
+		{
+			// Shift is the modifier that still types: the page receives "A",
+			// which is the same character of the same value as a bare "a".
+			name:     "a shifted character press",
+			traced:   TraceAction{Action: "press", Ref: "e1", Role: "textbox", Name: "Notes", Text: "shift+a", OK: true},
+			wantHint: "literal character rather than a key that issues a command",
 		},
 		{
 			name:     "a press into a credential field",
@@ -733,19 +741,24 @@ func TestCompileRefusesWhatAPressStepWouldCarry(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), test.wantHint) {
 				t.Fatalf("err = %v, want it to mention %q", err, test.wantHint)
 			}
-			if err != nil && strings.Contains(err.Error(), "\"7\"") {
+			if strings.Contains(err.Error(), strconv.Quote(test.traced.Text)) {
 				t.Fatalf("the refusal quoted the recorded keystroke back: %v", err)
 			}
 		})
 	}
 
-	// A named key is what press is for, and still compiles.
-	result := mustCompile(t, []TraceStep{{
-		TraceAction: TraceAction{Action: "press", Ref: "e1", Role: "textbox", Name: "Notes", Text: "Enter", OK: true},
-		Before:      &base, After: &after,
-	}}, compileOptions())
-	if step := result.Recipe.Steps[0]; step.Action != "press" || step.Key != "Enter" {
-		t.Fatalf("a named key press compiled as %+v", step)
+	// Commands are what press is for, and still compile. A Ctrl, Alt or Meta
+	// chord is one of them: Chrome attaches no text to an accelerator, so
+	// ctrl+a carries away nothing of what was being typed. Refusing it would
+	// refuse select-all, the case the refusal message itself advertises.
+	for _, key := range []string{"Enter", "ctrl+a", "meta+s", "ctrl+shift+Tab"} {
+		result := mustCompile(t, []TraceStep{{
+			TraceAction: TraceAction{Action: "press", Ref: "e1", Role: "textbox", Name: "Notes", Text: key, OK: true},
+			Before:      &base, After: &after,
+		}}, compileOptions())
+		if step := result.Recipe.Steps[0]; step.Action != "press" || step.Key != key {
+			t.Fatalf("press %q compiled as %+v", key, step)
+		}
 	}
 }
 

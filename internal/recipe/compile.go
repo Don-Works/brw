@@ -439,12 +439,14 @@ func (c *compiler) compileStep(position int, verb string, traced TraceStep, befo
 		if key == "" {
 			return fail("recorded key press captured no key")
 		}
-		if !actions.IsNamedKey(key) {
+		if !actions.IsCommandKey(key) {
 			// The key is not named in the refusal: a literal character press is
 			// one character of whatever was being entered, and a compile that
 			// failed by quoting it back would print the thing it refused to
-			// compile. A named key is a command; anything else is data.
-			return fail("recorded key press is a literal character rather than a named key such as Enter, Tab or ctrl+a; a value entered one keystroke at a time is data, and a recipe carries inputs instead")
+			// compile. A keystroke that issues a command is a command; a
+			// keystroke that enters a character is data, and ctrl+a and shift+a
+			// land on opposite sides of that because only one of them types.
+			return fail("recorded key press is a literal character rather than a key that issues a command such as Enter, Tab or ctrl+a; a value entered one keystroke at a time is data, and a recipe carries inputs instead")
 		}
 		step.Key = key
 	}

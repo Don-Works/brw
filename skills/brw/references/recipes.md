@@ -163,12 +163,14 @@ action, and prints a diff-able review body. A step whose after-observation shows
 no change compiles with no postcondition, and the review body says
 `postcondition none` for it. It refuses — naming the trace step — a
 coordinate-driven action, a write into a credential field (key presses
-included), a `press` whose key is a literal character rather than a named one,
-an ambiguous target, a navigation to an undeclared origin, or a step with an
-empty post-action observation, and writes nothing when it refuses. `--out` must
-be outside every Git checkout and is created with `O_EXCL`, so a symlink at that
-path is refused rather than followed; `--publish` sends the draft to the
-provider's write API instead.
+included), a `press` whose key is a literal character rather than a command
+(`Enter`, `Tab` and `ctrl+a` are commands; `shift+a` is the letter `A`), an
+ambiguous target, a navigation to an undeclared origin, or a step with an empty
+post-action observation, and writes nothing when it refuses. `--out` must be
+outside every Git checkout and is created with `O_EXCL`, so anything already at
+that path — a symlink, dangling or live, or a second hard link to somebody
+else's file — is refused rather than written through; `--publish` sends the
+draft to the provider's write API instead.
 
 Without `--plan` the same command produces a skeleton carrying `TODO` markers
 for every judgement it refuses to make. Resolve all of them before validating.

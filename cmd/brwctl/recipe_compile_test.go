@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -183,55 +184,90 @@ func TestRecipePublishNeedsACompilePlanAndAProviderURL(t *testing.T) {
 	}
 }
 
-// The "never write a draft into this repository" rule is checked against the
-// path, and a check on a path is a check on what that path resolved to at that
-// moment. A dangling symlink at --out resolves to nothing, passes, and a plain
-// write then follows it into whatever it names.
-func TestRecipeCompileWillNotFollowASymlinkOutOfTheCheckedDestination(t *testing.T) {
-	checkout := t.TempDir()
-	if err := os.Mkdir(filepath.Join(checkout, ".git"), 0o700); err != nil {
+func gitCheckout(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	planted := filepath.Join(checkout, "planted_draft.json")
+	return root
+}
+
+// The "never write a draft into this repository" rule is checked against the
+// path, and a check on a path is a check on what that path resolved to at that
+// moment. Every row below puts a second name for some other file at --out, by a
+// route that check cannot see: a dangling symlink resolves to nothing so the
+// check reads the link's own directory, a live symlink resolves somewhere the
+// check accepts and is then followed into, and a hard link is a second name
+// EvalSymlinks does not resolve at all. Each row is a route, so each must fail
+// on its own: with the O_EXCL create replaced by a plain write, the first two
+// plant a draft where the check would have refused one and the third truncates
+// the file it shares an inode with.
+func TestRecipeCompileWritesOnlyToTheNameItChecked(t *testing.T) {
 	trace, plan := compileTrace(t, false), compilePlan(t)
 
 	tests := []struct {
-		name   string
-		target string
-		setup  func(t *testing.T, link string)
+		name string
+		// plant prepares --out at link and returns the file that must come
+		// through untouched together with the bytes it must still hold. A nil
+		// body means it must not exist at all.
+		plant func(t *testing.T, link string) (guarded string, body []byte)
 	}{
 		{
-			name: "a dangling symlink into a git checkout", target: planted,
-			setup: func(t *testing.T, link string) {
+			name: "a dangling symlink into a git checkout",
+			plant: func(t *testing.T, link string) (string, []byte) {
+				planted := filepath.Join(gitCheckout(t), "planted_draft.json")
 				if err := os.Symlink(planted, link); err != nil {
 					t.Fatal(err)
 				}
+				return planted, nil
 			},
 		},
 		{
-			name: "a symlink to a file that already exists", target: planted,
-			setup: func(t *testing.T, link string) {
-				if err := os.WriteFile(planted, []byte("{}"), 0o600); err != nil {
+			name: "a live symlink to somebody else's file",
+			plant: func(t *testing.T, link string) (string, []byte) {
+				existing := filepath.Join(t.TempDir(), "notes.json")
+				body := []byte("somebody else's file")
+				if err := os.WriteFile(existing, body, 0o600); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink(planted, link); err != nil {
+				if err := os.Symlink(existing, link); err != nil {
 					t.Fatal(err)
 				}
+				return existing, body
+			},
+		},
+		{
+			name: "a hard link to a file inside a git checkout",
+			plant: func(t *testing.T, link string) (string, []byte) {
+				planted := filepath.Join(gitCheckout(t), "planted_draft.json")
+				body := []byte("{}")
+				if err := os.WriteFile(planted, body, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Link(planted, link); err != nil {
+					t.Fatal(err)
+				}
+				return planted, body
 			},
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_ = os.Remove(planted)
 			out := filepath.Join(t.TempDir(), "draft.json")
-			test.setup(t, out)
-			err := recipeDraft([]string{"--from-trace", trace, "--plan", plan, "--out", out})
-			if err == nil {
-				t.Fatal("the draft was written through a symlink")
+			guarded, want := test.plant(t, out)
+			if err := recipeDraft([]string{"--from-trace", trace, "--plan", plan, "--out", out}); err == nil {
+				t.Fatalf("the draft was written through a second name for %s", guarded)
 			}
-			body, readErr := os.ReadFile(test.target)
-			if readErr == nil && strings.Contains(string(body), "schema_version") {
-				t.Fatalf("a draft was written inside the git checkout at %s", test.target)
+			body, readErr := os.ReadFile(guarded)
+			if want == nil {
+				if !os.IsNotExist(readErr) {
+					t.Fatalf("%s exists after a refused compile: body %q err %v", guarded, body, readErr)
+				}
+				return
+			}
+			if readErr != nil || !bytes.Equal(body, want) {
+				t.Fatalf("%s holds %q (err %v), want %q untouched", guarded, body, readErr, want)
 			}
 		})
 	}

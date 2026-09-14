@@ -88,8 +88,8 @@ func shiftRune(r rune) rune {
 }
 
 // chordModifiers are the prefixes a chord may carry. DescribeKey and
-// IsNamedKey read the same table, so the set of chords brw dispatches and the
-// set it recognises as named cannot drift apart.
+// IsCommandKey read the same table, so the set of chords brw dispatches and the
+// set it accepts as a command cannot drift apart.
 var chordModifiers = map[string]int64{
 	"alt": ModifierAlt, "option": ModifierAlt,
 	"ctrl": ModifierCtrl, "control": ModifierCtrl,
@@ -145,19 +145,38 @@ func namedKey(raw string) *KeyDescriptor {
 	return functionKey(raw)
 }
 
-// IsNamedKey reports whether raw names a key rather than a character to insert.
+// IsCommandKey reports whether raw names a keystroke that issues a command
+// rather than entering a character.
 //
-// A caller that persists a recorded keystroke needs the distinction: "Enter"
-// and "ctrl+shift+Tab" are commands, while "7" is one character of whatever was
-// being typed, and storing it stores the data.
-func IsNamedKey(raw string) bool {
+// A caller that persists a recorded keystroke needs the distinction: "Enter",
+// "ctrl+shift+Tab" and "meta+s" are commands, while "7" and "shift+a" are one
+// character of whatever was being typed, and storing the keystroke stores the
+// data.
+//
+// Two ways to be a command, and the second is why this is not a lookup in the
+// name table. Either the final part names a key — Enter, Tab, an arrow, F5, a
+// bare modifier — or the chord suppresses insertion, which is what makes ctrl+a
+// a command and shift+a the letter "A". Whether it suppresses is read off the
+// descriptor that actually gets dispatched rather than restated here, so a
+// modifier whose insertion behaviour changes moves both together.
+func IsCommandKey(raw string) bool {
 	parts := strings.Split(raw, "+")
 	for _, part := range parts[:len(parts)-1] {
 		if _, ok := chordModifiers[strings.ToLower(strings.TrimSpace(part))]; !ok {
 			return false
 		}
 	}
-	return namedKey(parts[len(parts)-1]) != nil
+	final := strings.TrimSpace(parts[len(parts)-1])
+	if namedKey(final) != nil {
+		return true
+	}
+	// Anything else is either one character or nothing brw can name: "ctrl+foo"
+	// dispatches a keystroke with no virtual key code, and accepting it because
+	// it inserts no text would accept a step that does nothing.
+	if r, size := utf8.DecodeRuneInString(final); r == utf8.RuneError || size != len(final) {
+		return false
+	}
+	return DescribeKey(raw).Text == ""
 }
 
 func DescribeKey(raw string) KeyDescriptor {

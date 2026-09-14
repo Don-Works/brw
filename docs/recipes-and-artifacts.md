@@ -244,9 +244,12 @@ What stops compilation dead, naming the trace step and the reason:
   the snapshot marked the field sensitive, or the accessible name says so —
   checked for every action that carries typed characters into the page, key
   presses included;
-- a `press` whose key is a literal character rather than a named key such as
-  `Enter` or `ctrl+a`, because a value entered one keystroke at a time is the
-  value, spelled differently;
+- a `press` whose key is a literal character rather than a key that issues a
+  command, because a value entered one keystroke at a time is the value, spelled
+  differently. A named key (`Enter`, `Tab`, an arrow, `F5`) and a Ctrl, Alt or
+  Meta chord (`ctrl+a`, `meta+s`) are commands — Chrome attaches no text to an
+  accelerator. `shift+a` is not: Shift is the modifier that still types, so it
+  is the letter `A`;
 - a target that matches more than one element in the recorded observation;
 - a navigation to an origin the plan does not declare;
 - a step whose post-action observation is empty; and
