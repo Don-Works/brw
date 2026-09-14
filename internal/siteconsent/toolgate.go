@@ -271,12 +271,16 @@ const (
 // case labels out of both backends' step switches and fails on any verb this map
 // does not name, and on any name here that no runner implements.
 var StepActions = map[string]StepClass{
-	"click":          StepAct,
-	"click_text":     StepAct,
-	"type":           StepAct,
-	"fill":           StepAct,
-	"select":         StepAct,
-	"press":          StepAct,
+	"click":      StepAct,
+	"click_text": StepAct,
+	"type":       StepAct,
+	"fill":       StepAct,
+	"select":     StepAct,
+	"press":      StepAct,
+	// find_act resolves a target and then actuates it in one step. It is classed
+	// by what it does, not by the find that precedes it: the action is the point,
+	// and a step that can click must be gated like a click.
+	"find_act":       StepAct,
 	"read":           StepPageRead,
 	"snapshot":       StepPageRead,
 	"scroll":         StepPageRead,

@@ -87,8 +87,11 @@ func (i agentIntent) fresh(now time.Time) bool {
 // a page that navigates because the agent scrolled is moving the agent on its
 // own initiative, which is what the boundary exists to catch.
 var agentInputActions = map[string]bool{
-	"click":        true,
-	"click_text":   true,
+	"click":      true,
+	"click_text": true,
+	// find_act resolves the target and actuates it in one step, so the navigation
+	// it causes is the agent's in exactly the way a two-call find-then-click is.
+	"find_act":     true,
 	"click_xy":     true,
 	"click_button": true,
 	"mouse_down":   true,
