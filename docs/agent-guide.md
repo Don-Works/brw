@@ -25,6 +25,16 @@ the why.
    Use `brw_fill { ref, text }` (Playwright-style `value` is also accepted as an
    alias for `text`). Prefer `brw_find { role: "textbox", query }` over bare
    name queries so you hit inputs, not labels.
+   When you know *what* you want rather than which ref it is, `brw_find
+   { role, query, action: "click" }` locates and acts in one call. It fails
+   rather than choosing when the search matches more than one element, and lists
+   the rivals (`ref role "name"`) so you can act on the right one without
+   searching again; narrow with `role` or `exact: true`, never with `limit`
+   (`limit` is ignored when `action` is set, so it cannot manufacture a unique
+   match). The same thing is a `find_act` step inside `brw_batch` and
+   `brw_plan`, which is what lets a batch keep going past a step that changed
+   the page: refs minted before the batch started do not exist on the new
+   page.
 4. **Read the observation the action returns** — `url`, `title`, `focus`,
    changed elements, `changed_state`. It already says what happened. Do **not**
    snapshot or screenshot again just to confirm. Re-snapshot only to get refs for
@@ -90,6 +100,22 @@ than embed the recipe. See [recipes and artifacts](recipes-and-artifacts.md).
 - `brw_snapshot { format: "compact" }` returns one terse line per element
   (`e17 button "Submit"`) instead of JSON — markedly fewer tokens for small
   models, same refs.
+- Every action tool, plus `brw_batch` and `brw_plan`, takes
+  `observe: "full" | "minimal" | "none"`. `full` is the default and is right
+  whenever the page decides your next move. `minimal` keeps the outcome, `url`,
+  `title` and the `changed` summary and drops the frontier element list;
+  `none` keeps the outcome alone (`ok`, `message`, `warning`, `changed_state`).
+  Reach for them on the steps of a flow you have already decided — a login, a
+  known multi-page form, a replayed `brw_trace` batch — and stay on `full` for
+  the step whose result you actually read. `brw_plan` already applies that split
+  for you: intermediate steps report `minimal`, the last step reports `full`.
+  Every level costs the same round trip. `observe` controls what brw *reports*,
+  never whether it looks: the post-action observation is also where the
+  navigation policy re-checks the committed destination, so a level that skipped
+  the read would be an opt-out from a guard. What you save is tokens, not time.
+  Measured on a fixed ten-step flow: 4,950 bytes of result JSON at `full`,
+  2,674 at `minimal`, 1,181 at `none` (see
+  [benchmarks](benchmarks.md#observation-size)).
 
 ### MCPlexer and approval-bound harnesses
 
@@ -462,10 +488,10 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` | 86 | ~23.6k tokens |
-| `core` | 26 | ~7.9k tokens |
-| `minimal` | 13 | ~4.3k tokens |
-| `auto` (default) | 14, growing | ~4.5k tokens to start |
+| `all` | 85 | ~28.4k tokens |
+| `core` | 26 | ~9.8k tokens |
+| `minimal` | 13 | ~5.7k tokens |
+| `auto` (default) | 14, growing | ~5.9k tokens to start |
 
 `core` advertises the common-flow tools (open/snapshot/find/click/type/fill/
 select/press/scroll/hover/drag/upload/navigate/wait/batch/observe/screenshot).

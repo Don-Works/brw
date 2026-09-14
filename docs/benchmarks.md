@@ -45,6 +45,8 @@ contain no private site data. On an Apple M4 Max in September 2026:
 | Repeat readiness check on an already-loaded tab, event subscription vs the in-page readyState probe | median 459 ns vs 551 µs; **~1,200x lower wait latency, and no CDP round trip** |
 | In-memory 100,000-entry catalogue, rare intent | 740 ns indexed vs 5.64 ms linear control; **~7,631x faster** |
 | Local 100,000-entry catalogue, common intent top 50 | 5.78 ms, 14,240 B and 109 allocations |
+| Post-action observation over a fixed ten-step flow, `observe:"minimal"` vs the `full` default | 2,674 B vs 4,950 B of result JSON; **46.0% fewer bytes** |
+| The same flow at `observe:"none"` | 1,181 B vs 4,950 B; **76.1% fewer bytes**, and every step still reports its outcome |
 
 The two wait rows measure the same question asked two ways against the same
 state, so each ratio is the cost of asking rather than the cost of the answer.
@@ -65,6 +67,7 @@ These are machine-local samples, not universal latency promises. Reproduce them
 with:
 
 ```sh
+go test -count=1 -v ./internal/browser -run TestObserveLevelsShrinkATenStepFlow
 go test -count=1 -v ./internal/browser -run TestPrearmedSettleIsMateriallyFaster
 go test -count=1 -v ./internal/browser -run 'TestEventWaitLatencyBeatsThePollingFallback|TestLoadWaitLatencyBeatsTheInPageProbe'
 go test -count=1 -v ./internal/httpclient -run TestReadWindowIsAppliedOnBrowserHost
@@ -85,12 +88,47 @@ Adaptive event polling checks again at 25, 50, 100, and 200 ms, then caps at
 idle DOM scans on large inbox/message pages; the explicit tradeoff is up to
 250 ms steady-state detection latency instead of 100 ms.
 
-The measured MCP catalogues are 86 tools / ~23.6k tokens for `all`, 26 / ~7.9k
-for `core`, 13 / ~4.3k for `minimal`, and 14 / ~4.5k initially for the default
+## Observation size
+
+`observe` on the action tools, `brw_batch` and `brw_plan` chooses how much of the
+post-action observation is reported. The table row above is one measurement:
+the same ten-step flow (five `brw_fill`s and five `brw_click_text`s against a
+twenty-control form) run three times against real headless Chrome, with each
+step's result JSON serialized and counted.
+
+```
+observe=full (today's default on every step)                  4950 bytes  ~1238 tokens  100.0%
+sequence default (minimal for steps 1-9, full for step 10)    2902 bytes  ~ 726 tokens   58.6%
+observe=minimal on every step                                 2674 bytes  ~ 669 tokens   54.0%
+observe=none on every step                                    1181 bytes  ~ 296 tokens   23.9%
+```
+
+Token figures use the same 4-chars-per-token estimator as
+`scripts/measure-tool-catalogue.py`; they compare arms, they are not a
+tokenizer. The absolute numbers are a property of this fixture — a denser page
+has a larger frontier element list and a larger saving — so read the ratios.
+
+`none` is not free of meaning: every level still reports `ok`, `message`,
+`warning` and `changed_state`, so a flow can always tell whether a step worked.
+And no level skips the observation itself. The post-action read is where the
+navigation policy re-checks the committed destination, so `observe` buys tokens
+and never latency; a level that skipped the read would be an opt-out from a
+guard.
+
+## Tool catalogue
+
+The measured MCP catalogues are 85 tools / ~28.4k tokens for `all`, 26 / ~9.8k
+for `core`, 13 / ~5.7k for `minimal`, and 14 / ~5.9k initially for the default
 `auto` profile — the same figures README.md and docs/agent-guide.md quote, from
-`scripts/measure-tool-catalogue.py`. Thus the default starts about 81% smaller
+`scripts/measure-tool-catalogue.py`. Thus the default starts about 79% smaller
 than advertising every tool, while every tool remains directly callable and
 discoverable through `brw_tools`.
+
+The `observe` parameter and the locate-and-act half of `brw_find` cost ~2.2k
+tokens of `all` (~26.1k before them) and ~1.2k of `minimal` (~4.5k before),
+because a parameter repeated across seventeen tools is paid for on every turn
+whether or not it is used. That is the trade: a fixed per-turn catalogue cost
+against a per-action saving that scales with the length of the flow.
 
 A daemon whose identity names a transport advertises fewer: the three
 extension-only tab-group tools drop on direct CDP, and the incognito, context

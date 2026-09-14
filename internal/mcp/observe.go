@@ -63,19 +63,15 @@ func (o observer) findAct(result browser.FindActResult, err error) (any, *rpcErr
 	return toolJSON(result, err)
 }
 
-// observeSchema is the shared parameter description. It says what each level
-// costs the caller in information, and says plainly that none does not skip the
-// look — the observation is also where the navigation policy re-checks the
-// committed destination, so the levels buy tokens, not latency.
+// observeSchema is the shared parameter description. It is repeated on every
+// action tool, so it is kept short: the catalogue is re-sent every turn, and the
+// longer form belongs in the agent system prompt and docs/agent-guide.md. It
+// still has to say that none does not skip the look, or a caller will read it as
+// a latency control and be wrong.
 func observeSchema() map[string]any {
-	return stringEnumSchema("How much of the post-action observation to return. full (default) is the whole thing: "+
-		"outcome, url, title, focus, changed summary and the frontier element list with refs to act on next. "+
-		"minimal drops the element list and keeps the outcome, url/title and changed summary — enough to confirm "+
-		"the step landed, not enough to pick the next ref. none reports only the outcome (ok, message, warning, "+
-		"changed_state). Reach for minimal or none when you already know the next step (a scripted flow, a login, a "+
-		"known multi-page form) and will not read the observation; stay on full when you are deciding what to do next "+
-		"from what the page did. Every level costs the same round trip — brw still looks, because that is where the "+
-		"navigation policy re-checks where the page ended up; what you save is tokens.",
+	return stringEnumSchema("How much post-action observation to return. full (default): outcome, url, title, focus, "+
+		"changed summary and the frontier element list. minimal: the same without the element list. none: the outcome "+
+		"alone. brw observes at every level, so this saves tokens, not time.",
 		browser.ObserveLevels()...)
 }
 
