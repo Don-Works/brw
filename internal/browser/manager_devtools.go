@@ -12,6 +12,11 @@ import (
 	"github.com/Don-Works/brw/internal/devtools"
 )
 
+// Every transport that can run these observations declares it here, so a
+// signature that drifts is a compile error rather than a tool that quietly
+// reports the capability missing.
+var _ devtools.Observer = (*Manager)(nil)
+
 // auditFloor is the minimum deadline an accessibility audit gets, regardless of
 // the manager's ordinary per-call timeout. axe evaluates every rule against
 // every node: on a large application that is seconds of renderer work, and a

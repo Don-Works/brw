@@ -7,6 +7,8 @@ import (
 	"github.com/Don-Works/brw/internal/devtools"
 )
 
+var _ devtools.Observer = (*Bridge)(nil)
+
 // Vitals reads the Core Web Vitals through the extension's debugger session.
 // It evaluates the same expression the direct-CDP transport does, so a reading
 // means the same thing on both.
