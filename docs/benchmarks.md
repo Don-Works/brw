@@ -137,15 +137,15 @@ level to trim.
 
 ## Tool catalogue
 
-The measured MCP catalogues are 85 tools / ~28.4k tokens for `all`, 26 / ~9.8k
-for `core`, 13 / ~5.7k for `minimal`, and 14 / ~5.9k initially for the default
+The measured MCP catalogues are 85 tools / ~28.8k tokens for `all`, 26 / ~10.1k
+for `core`, 13 / ~5.8k for `minimal`, and 14 / ~6.0k initially for the default
 `auto` profile — the same figures README.md and docs/agent-guide.md quote, from
 `scripts/measure-tool-catalogue.py`. Thus the default starts about 79% smaller
 than advertising every tool, while every tool remains directly callable and
 discoverable through `brw_tools`.
 
-The `observe` parameter and the locate-and-act half of `brw_find` cost ~2.2k
-tokens of `all` (~26.1k before them) and ~1.2k of `minimal` (~4.5k before),
+The `observe` parameter and the locate-and-act half of `brw_find` cost ~2.6k
+tokens of `all` (~26.1k before them) and ~1.3k of `minimal` (~4.5k before),
 because a parameter repeated across seventeen tools is paid for on every turn
 whether or not it is used. That is the trade: a fixed per-turn catalogue cost
 against a per-action saving that scales with the length of the flow.

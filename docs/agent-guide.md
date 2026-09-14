@@ -498,10 +498,10 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` | 85 | ~28.4k tokens |
-| `core` | 26 | ~9.8k tokens |
-| `minimal` | 13 | ~5.7k tokens |
-| `auto` (default) | 14, growing | ~5.9k tokens to start |
+| `all` | 85 | ~28.8k tokens |
+| `core` | 26 | ~10.1k tokens |
+| `minimal` | 13 | ~5.8k tokens |
+| `auto` (default) | 14, growing | ~6.0k tokens to start |
 
 `core` advertises the common-flow tools (open/snapshot/find/click/type/fill/
 select/press/scroll/hover/drag/upload/navigate/wait/batch/observe/screenshot).

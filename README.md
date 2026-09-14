@@ -68,8 +68,8 @@ The full MCP surface is large. For lean agent contexts, run:
 
 ```sh
 brwd --mcp --mcp-tools auto     # 14 tools to start, grows on demand
-brwd --mcp --mcp-tools core     # 26 tools, ~9.8k tokens of catalogue
-brwd --mcp --mcp-tools minimal  # 13 tools, ~5.7k tokens of catalogue
+brwd --mcp --mcp-tools core     # 26 tools, ~10.1k tokens of catalogue
+brwd --mcp --mcp-tools minimal  # 13 tools, ~5.8k tokens of catalogue
 ```
 
 For a ready-to-paste agent system prompt that encodes the fast, token-efficient
@@ -384,8 +384,8 @@ Core MCP tools include:
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: `all` costs ~28.4k tokens across 85 tools, `core` ~9.8k,
-`minimal` ~5.7k, and `auto` starts at ~5.9k and grows only as the agent
+tokens on every turn: `all` costs ~28.8k tokens across 85 tools, `core` ~10.1k,
+`minimal` ~5.8k, and `auto` starts at ~6.0k and grows only as the agent
 discovers tools it needs via `brw_tools` (measure with
 `scripts/measure-tool-catalogue.py`).
 
