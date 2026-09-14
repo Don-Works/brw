@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,18 +88,10 @@ func TestDoctorNamesTheLiveBridgeEndpoint(t *testing.T) {
 			wantReportOK: false, // bridge_connected is red: nothing is connected.
 		},
 		{
-			name:        "nothing on disk and nothing reported is not a diagnosis",
-			wantStatus:  checkSkip,
-			wantDetails: []string{"no installed bridge-defaults.json names one", "bridge_connected"},
-		},
-		{
-			// The third drift shape: a stored bridgeUrl or bridgePort moves the
-			// websocket URL too, so no handshake reaches this daemon to be
-			// refused and nothing here can name the endpoint. The skip has to
-			// send the operator to the check that does go red.
-			name:        "a stored config that moves the websocket URL leaves nothing to report",
-			wantStatus:  checkSkip,
-			wantDetails: []string{"no extension has reported", "bridge_connected is the check that says so"},
+			name:       "nothing on disk and nothing reported is not a diagnosis",
+			wantStatus: checkSkip,
+			wantDetails: []string{"no extension has reported", "no installed bridge-defaults.json names one",
+				"bridge_connected is the check that says so"},
 		},
 		{
 			// A 0.6.0+ extension whose hello omits status_url. Falling through to
@@ -281,6 +276,10 @@ func TestDoctorOnlyContactsALoopbackStatusURL(t *testing.T) {
 		{name: "IPv6 loopback", raw: "http://[::1]:17311/status", want: "http://[::1]:17311/status"},
 		{name: "a query is dropped rather than fetched", raw: "http://127.0.0.1:17311/status?token=fixture", want: "http://127.0.0.1:17311/status"},
 		{name: "another path on this very server is refused", raw: "http://" + host + "/exfil"},
+		{name: "a percent-encoded spelling of the path is refused", raw: "http://" + host + "/%73tatus"},
+		{name: "a trailing slash is a different path", raw: "http://" + host + "/status/"},
+		{name: "a path parameter is refused", raw: "http://" + host + "/status;x=1"},
+		{name: "a traversal out of the status path is refused", raw: "http://" + host + "/status/../../exfil"},
 		{name: "a public host is refused", raw: "http://brw-doctor-must-not-resolve.invalid:80/status"},
 		{name: "a hostname that merely contains a loopback address is refused", raw: "http://127.0.0.1.brw-doctor-must-not-resolve.invalid:80/status"},
 		{name: "a name that resolves to loopback is still not an address", raw: "http://localtest.brw-doctor-must-not-resolve.invalid:80/status"},
@@ -403,5 +402,287 @@ func TestDoctorNamesAnUnreadableAppDir(t *testing.T) {
 	}
 	if !strings.Contains(check.Detail, fx.appDir) {
 		t.Fatalf("bridge_config detail %q does not name the directory it could not read", check.Detail)
+	}
+}
+
+// TestDoctorFollowsNoRedirectAwayFromAGatedEndpoint: gating the URL gates one
+// request, and a redirect is the second. The actor the gate was built against —
+// a local process that forges a handshake on the unauthenticated websocket —
+// also binds a loopback port, so it can report an endpoint that PASSES the gate
+// and then answer doctor's GET with a 302 to anywhere. Go's default client
+// follows ten hops without re-gating, which hands back both halves of what the
+// gate denies: the operator's machine contacts a host the reporter chose, and
+// the reporter's string lands in the terminal through the url.Error of the hop
+// that actually failed.
+//
+// The counter is the assertion. A failed second request is still a second
+// request.
+func TestDoctorFollowsNoRedirectAwayFromAGatedEndpoint(t *testing.T) {
+	var reached int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&reached, 1)
+		_, _ = w.Write([]byte(`{"connected":true}`))
+	}))
+	defer target.Close()
+	// Loopback, so the hop would succeed if it were taken: the test must not be
+	// able to pass merely because a name failed to resolve.
+	exfil := target.URL + "/exfil?token=fixture-not-a-token"
+
+	hop := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, exfil, http.StatusFound)
+	}))
+	defer hop.Close()
+	hopStatus := hop.URL + "/status"
+
+	t.Run("probeStatusURL makes exactly one request", func(t *testing.T) {
+		client := &http.Client{Timeout: 2 * time.Second}
+		_, err := probeStatusURL(client, hopStatus)
+		if err == nil {
+			t.Fatal("probeStatusURL accepted a redirect as a brw bridge answering")
+		}
+		for _, leaked := range []string{"exfil", "fixture-not-a-token"} {
+			if strings.Contains(err.Error(), leaked) {
+				t.Fatalf("the probe error carries the redirect target: %v", err)
+			}
+		}
+		if got := atomic.LoadInt64(&reached); got != 0 {
+			t.Fatalf("the redirect target saw %d request(s); the gate was routed around by a 302", got)
+		}
+	})
+
+	t.Run("the report says so without repeating where it was sent", func(t *testing.T) {
+		fx := newDoctorFixture(t)
+		fx.status.Connected = false
+		fx.status.LastHandshake.StatusURL = hopStatus
+		fx.status.LastHandshake.ConfigSource = "stored"
+
+		check := checkByName(t, fx.report(), "bridge_config")
+		if check.Status != checkFail {
+			t.Fatalf("bridge_config = %s (%s), want fail", check.Status, check.Detail)
+		}
+		if !strings.Contains(check.Detail, "something other than a brw bridge answered") {
+			t.Fatalf("bridge_config detail %q does not say what answered", check.Detail)
+		}
+		for _, leaked := range []string{"exfil", "fixture-not-a-token"} {
+			if strings.Contains(check.Detail, leaked) {
+				t.Fatalf("bridge_config echoed the redirect target: %s", check.Detail)
+			}
+		}
+		if got := atomic.LoadInt64(&reached); got != 0 {
+			t.Fatalf("the redirect target saw %d request(s) during a doctor run", got)
+		}
+	})
+}
+
+// TestDoctorNeverPrintsAFailureAboutAnEndpointItDidNotContact: a *url.Error
+// names the URL whose request failed, which is only the gated one while nothing
+// moved the request. Anything that does move it — a redirect today, a transport
+// a later change installs — makes that URL a string the reporter chose, and
+// endpointFailureDetail is where it would reach a terminal.
+func TestDoctorNeverPrintsAFailureAboutAnEndpointItDidNotContact(t *testing.T) {
+	const contacted = "http://127.0.0.1:17311/status"
+	elsewhere := &url.Error{
+		Op:  "Get",
+		URL: "http://brw-doctor-must-not-resolve.invalid/exfil?token=fixture-not-a-token",
+		Err: errors.New("dial tcp: lookup brw-doctor-must-not-resolve.invalid: no such host"),
+	}
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "an unclassified transport failure", err: elsewhere},
+		{name: "an unexpected response", err: fmt.Errorf("%w: HTTP 302 from %s", errUnexpectedResponse, elsewhere.URL)},
+		{
+			// A failing URL that carries no scheme, so nothing in the message is
+			// URL-shaped. The request it names is still not the one that was
+			// gated, and that is the fact being checked.
+			name: "a failure whose endpoint does not look like a URL",
+			err: &url.Error{
+				Op:  "Get",
+				URL: "127.0.0.1:9/exfil",
+				Err: errors.New("dial tcp: connect: connection refused"),
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			detail := endpointFailureDetail(tc.err, contacted)
+			for _, leaked := range []string{"brw-doctor-must-not-resolve", "exfil", "fixture-not-a-token", "127.0.0.1:9"} {
+				if strings.Contains(detail, leaked) {
+					t.Fatalf("endpointFailureDetail echoed an endpoint doctor never contacted: %s", detail)
+				}
+			}
+		})
+	}
+
+	// The gated URL is still allowed to be described, or the check stops being
+	// able to say anything useful about the endpoint it did contact.
+	own := &url.Error{Op: "Get", URL: contacted, Err: errors.New("dial tcp: i/o timeout")}
+	if detail := endpointFailureDetail(own, contacted); !strings.Contains(detail, "i/o timeout") {
+		t.Fatalf("a failure about the gated endpoint was withheld: %s", detail)
+	}
+}
+
+// TestEndpointFailureDetailClassifiesEveryProbeFailure enumerates the ways
+// probeStatusURL can fail against a real listener and requires each to land on a
+// branch that names a fix. The default branch is the one that pastes a raw
+// transport error into the report, so a failure shape nobody classified is
+// exactly the shape this check should not be printing verbatim: a new one
+// arriving unclassified fails here rather than in a terminal.
+func TestEndpointFailureDetailClassifiesEveryProbeFailure(t *testing.T) {
+	hold := make(chan struct{})
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-hold:
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer silent.Close()
+	defer close(hold)
+
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer broken.Close()
+
+	notJSON := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("<html>a captive portal</html>"))
+	}))
+	defer notJSON.Close()
+
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://127.0.0.1:1/elsewhere", http.StatusFound)
+	}))
+	defer redirecting.Close()
+
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "an endpoint the gate refuses",
+			url:  "http://brw-doctor-must-not-resolve.invalid:80/status",
+			want: "it is not http:// on a loopback port, so it was not contacted",
+		},
+		{
+			name: "a loopback port nothing bound",
+			url:  "http://" + freeLoopbackAddr(t) + "/status",
+			want: "nothing is listening there",
+		},
+		{
+			name: "a listener that never answers",
+			url:  silent.URL + "/status",
+			want: "the connection was accepted but /status did not answer in time",
+		},
+		{
+			name: "a listener that is not a brw bridge",
+			url:  broken.URL + "/status",
+			want: "something other than a brw bridge answered",
+		},
+		{
+			name: "a listener that answers with something other than JSON",
+			url:  notJSON.URL + "/status",
+			want: "something other than a brw bridge answered",
+		},
+		{
+			name: "a listener that redirects",
+			url:  redirecting.URL + "/status",
+			want: "something other than a brw bridge answered",
+		},
+	}
+
+	// Long enough that a loaded machine cannot turn a local round trip into the
+	// timeout case, short enough that the one listener that never answers costs
+	// a second and a half.
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gated, _ := loopbackStatusURL(tc.url)
+			_, err := probeStatusURL(client, tc.url)
+			if err == nil {
+				t.Fatalf("probeStatusURL(%q) reported a healthy bridge", tc.url)
+			}
+			detail := endpointFailureDetail(err, gated)
+			if !strings.Contains(detail, tc.want) {
+				t.Fatalf("endpointFailureDetail(%v) = %q, want it to say %q", err, detail, tc.want)
+			}
+			if strings.HasPrefix(detail, "it is unreachable") {
+				t.Fatalf("%q fell through to the unclassified branch: %s", tc.url, detail)
+			}
+		})
+	}
+}
+
+// TestDoctorBridgeConfigDoesNotGoRedOverAnOverriddenFile: an installed
+// bridge-defaults.json loses to the extension's stored config, so a machine
+// whose extension is connected and working is working whatever that file says —
+// including when it names an endpoint this check may not contact. Deciding on
+// the file before reading the live report turns a working machine red, which is
+// the failure mode the whole check exists to avoid, just from the other side.
+func TestDoctorBridgeConfigDoesNotGoRedOverAnOverriddenFile(t *testing.T) {
+	const forged = "http://brw-doctor-must-not-resolve.invalid/exfil?token=fixture-not-a-token"
+	fx := newDoctorFixture(t)
+	fx.writeFile(filepath.Join(fx.appDir, "extension", setup.BridgeDefaultsFile),
+		`{"statusUrl":"`+forged+`"}`)
+	fx.status.Connected = true
+	fx.status.Hello.StatusURL = "http://" + strings.TrimPrefix(fx.bridge.URL, "http://") + "/status"
+	fx.status.Hello.ConfigSource = "stored"
+
+	report := fx.report()
+	check := checkByName(t, report, "bridge_config")
+	if check.Status != checkOK {
+		t.Fatalf("bridge_config = %s (%s), want ok: a connected extension overrides the file", check.Status, check.Detail)
+	}
+	for _, want := range []string{"the extension is using", setup.BridgeDefaultsFile, "not http:// on a loopback port", "overridden"} {
+		if !strings.Contains(check.Detail, want) {
+			t.Fatalf("bridge_config detail %q does not mention %q", check.Detail, want)
+		}
+	}
+	for _, leaked := range []string{"brw-doctor-must-not-resolve", "exfil", "fixture-not-a-token"} {
+		if strings.Contains(check.Detail, leaked) {
+			t.Fatalf("bridge_config echoed the file's endpoint: %s", check.Detail)
+		}
+	}
+	if !report.OK {
+		t.Fatalf("a working machine reported failures: %v", report.Failures)
+	}
+}
+
+// TestDoctorBridgeConfigSkipNamesACheckThatIsActuallyRed covers the third drift
+// shape: a stored bridgeUrl or bridgePort moves the websocket URL too, so no
+// handshake ever reaches this daemon to be refused and there is nothing here to
+// name. The skip is the honest answer, and it is only honest while the check it
+// sends the operator to is the one going red on the same machine — otherwise it
+// is a green-looking report on a machine that cannot drive a browser.
+//
+// The assertion is the report, not the wording: every check the skip detail
+// names has to be red in that same report.
+func TestDoctorBridgeConfigSkipNamesACheckThatIsActuallyRed(t *testing.T) {
+	fx := newDoctorFixture(t)
+	// What the shape looks like from here: the extension is talking to some other
+	// websocket URL, so this daemon has no connection, no hello and no refusal,
+	// and no file on disk names anything either.
+	fx.status = bridgeStatus{}
+
+	report := fx.report()
+	skip := checkByName(t, report, "bridge_config")
+	if skip.Status != checkSkip {
+		t.Fatalf("bridge_config = %s (%s), want skip", skip.Status, skip.Detail)
+	}
+	named := 0
+	for _, other := range report.Checks {
+		if other.Name == "bridge_config" || !strings.Contains(skip.Detail, other.Name) {
+			continue
+		}
+		named++
+		if other.Status != checkFail {
+			t.Fatalf("bridge_config skipped and sent the operator to %s, which is %s: %s",
+				other.Name, other.Status, other.Detail)
+		}
+	}
+	if named == 0 {
+		t.Fatalf("bridge_config skipped without naming a check that does go red: %s", skip.Detail)
 	}
 }

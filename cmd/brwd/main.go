@@ -387,6 +387,9 @@ func main() {
 	var controller browser.Controller
 	var bridge *extensionbridge.Bridge
 	var manager *browser.Manager
+	// bridgeHandshakeToken is empty on every mode but the extension bridge. The
+	// file it would live in is dealt with after the branch either way.
+	var bridgeHandshakeToken string
 
 	if upstreamHTTP != "" {
 		upstream, err := httpclient.New(upstreamHTTP, timeout)
@@ -458,9 +461,7 @@ func main() {
 		}
 		bridge.SetAuthToken(token)
 		bridge.SetRequireToken(bridgeRequireToken())
-		if err := persistBridgeToken(bridgeTokenFile(workspaceName), token); err != nil {
-			log.Printf("note: %v", err)
-		}
+		bridgeHandshakeToken = token
 		controller = bridge
 		defer gracefulShutdown("extension bridge", bridge.Shutdown)
 		go func() {
@@ -486,6 +487,17 @@ func main() {
 				log.Printf("close browser: %v", err)
 			}
 		}()
+	}
+
+	// Whatever mode this launch chose, deal with the handshake token on disk. It
+	// is deliberately outside the branch above: only the bridge mints a token,
+	// but a machine that upgrades and then runs direct-CDP or upstream-proxy
+	// still has the file the last bridge launch left in ~/.brw, and a launch is
+	// the only pass that will ever collect it. docs/auth-model.md says every
+	// launch sweeps, and one call site on the path every launch takes is what
+	// makes that true rather than aspirational.
+	if err := bridgeTokenAtLaunch(bridgeTokenFile(workspaceName), bridgeHandshakeToken); err != nil {
+		log.Printf("note: %v", err)
 	}
 
 	// Parse the navigation guardrail once and apply it to EVERY agent-facing

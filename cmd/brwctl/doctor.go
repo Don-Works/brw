@@ -230,7 +230,7 @@ func doctorReport(req doctorRequest) doctorResult {
 	d := &doctorRun{
 		req:    req,
 		result: doctorResult{AppDir: req.AppDir, ProfilePolicyPath: req.PolicyPath},
-		client: &http.Client{Timeout: req.Timeout},
+		client: doctorClient(req.Timeout),
 	}
 	d.checkPolicy()
 	d.checkAppFiles()
@@ -932,6 +932,39 @@ func probeBridgeStatus(client *http.Client, wsAddr string) (bridgeStatus, error)
 	}
 	err := fetchJSON(client, strings.TrimRight(url, "/")+"/status", &status)
 	return status, err
+}
+
+// doctorClient is the only client doctor GETs with, and it follows no redirect.
+//
+// Every URL handed to it has already passed a gate: loopbackStatusURL for the
+// two endpoints that come from outside this process, the profile policy for the
+// daemon's own address. A redirect is a request to a URL nothing gated, and Go's
+// default CheckRedirect follows ten of them — so one 302 from a loopback port a
+// local process bound turns a gated request into a request to any host that
+// process names, which is precisely the egress the gate exists to deny.
+//
+// It returns ErrUseLastResponse rather than an error so the 3xx comes back as a
+// response: an error from CheckRedirect is wrapped in a *url.Error carrying the
+// URL of the HOP, which would put an attacker-chosen string back in the report
+// the gate keeps it out of.
+func doctorClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, CheckRedirect: refuseRedirects}
+}
+
+func refuseRedirects(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
+// withoutRedirects is the same policy applied to a client this package was
+// handed rather than one it built, so the no-redirect rule holds at the probe
+// rather than only at the construction site a caller may not have used.
+func withoutRedirects(client *http.Client) *http.Client {
+	gated := http.Client{}
+	if client != nil {
+		gated = *client
+	}
+	gated.CheckRedirect = refuseRedirects
+	return &gated
 }
 
 func fetchJSON(client *http.Client, url string, out any) error {

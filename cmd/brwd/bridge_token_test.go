@@ -1,6 +1,9 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"sort"
@@ -88,8 +91,8 @@ func TestBridgeTokenIsNotWrittenByDefault(t *testing.T) {
 			if target.Path != path {
 				t.Fatalf("token path = %q, want %q", target.Path, path)
 			}
-			if err := persistBridgeToken(target, fixtureToken); err != nil {
-				t.Fatalf("persistBridgeToken: %v", err)
+			if err := bridgeTokenAtLaunch(target, fixtureToken); err != nil {
+				t.Fatalf("bridgeTokenAtLaunch: %v", err)
 			}
 
 			data, err := os.ReadFile(path)
@@ -195,8 +198,8 @@ func TestBridgeTokenSweepClearsEveryCopyAnOlderDaemonLeft(t *testing.T) {
 			}
 			t.Setenv("BRW_BRIDGE_TOKEN_FILE", optIn)
 
-			if err := persistBridgeToken(bridgeTokenFile(tc.workspace), fixtureToken); err != nil {
-				t.Fatalf("persistBridgeToken: %v", err)
+			if err := bridgeTokenAtLaunch(bridgeTokenFile(tc.workspace), fixtureToken); err != nil {
+				t.Fatalf("bridgeTokenAtLaunch: %v", err)
 			}
 
 			entries, err := os.ReadDir(dir)
@@ -225,5 +228,127 @@ func TestBridgeTokenSweepClearsEveryCopyAnOlderDaemonLeft(t *testing.T) {
 				t.Fatalf("opted-in token file = %q, want %q", data, fixtureToken)
 			}
 		})
+	}
+}
+
+// TestBridgeTokenSweepRunsOnALaunchThatMintsNoToken: only the extension-bridge
+// mode mints a handshake token, but the file is left behind by whichever mode
+// ran last. A machine that upgrades and then runs direct-CDP or upstream-proxy
+// used to keep ~/.brw/bridge-token forever, because the only code that cleaned
+// up sat inside the branch that no longer runs — and docs/auth-model.md promises
+// the operator that every launch sweeps.
+func TestBridgeTokenSweepRunsOnALaunchThatMintsNoToken(t *testing.T) {
+	tests := []struct {
+		name  string
+		optIn bool
+	}{
+		{name: "a launch with no opt-in"},
+		{name: "a launch whose opt-in has no token to honour", optIn: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			dir := filepath.Join(home, ".brw")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"bridge-token", "bridge-token-work"} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("fixture-token-an-older-daemon-left"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			optIn := ""
+			if tc.optIn {
+				optIn = filepath.Join(dir, "bridge-token")
+			}
+			t.Setenv("BRW_BRIDGE_TOKEN_FILE", optIn)
+
+			// The empty token is the launch that minted none.
+			if err := bridgeTokenAtLaunch(bridgeTokenFile(""), ""); err != nil {
+				t.Fatalf("bridgeTokenAtLaunch: %v", err)
+			}
+
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var left []string
+			for _, entry := range entries {
+				left = append(left, entry.Name())
+			}
+			if len(left) != 0 {
+				t.Fatalf("~/.brw still holds %v after a launch that minted no token", left)
+			}
+		})
+	}
+}
+
+// TestEveryLaunchSweepsTheBridgeTokenFile is the other half of the claim, and
+// the half a unit test on the sweep cannot reach: which launches call it.
+//
+// brwd picks one of three controllers, and the previous cleanup sat inside the
+// bridge one, so two of the three modes swept nothing while the documentation
+// said all of them did. Asserting the call is a statement of main's own body —
+// rather than of any branch inside it — is what closes that by construction: a
+// fourth mode added later cannot miss it either.
+func TestEveryLaunchSweepsTheBridgeTokenFile(t *testing.T) {
+	const call = "bridgeTokenAtLaunch"
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+
+	var body *ast.BlockStmt
+	for _, decl := range parsed.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "main" && fn.Recv == nil {
+			body = fn.Body
+		}
+	}
+	if body == nil {
+		t.Fatal("cmd/brwd/main.go has no func main")
+	}
+
+	calls := func(node ast.Node) int {
+		found := 0
+		ast.Inspect(node, func(n ast.Node) bool {
+			if expr, ok := n.(*ast.CallExpr); ok {
+				if ident, ok := expr.Fun.(*ast.Ident); ok && ident.Name == call {
+					found++
+				}
+			}
+			return true
+		})
+		return found
+	}
+
+	// Only a statement of main's own body counts, and for an `if err := ...`
+	// only its initialiser: a call in the BODY of a branch is exactly the shape
+	// this test exists to reject.
+	unconditional := 0
+	for _, stmt := range body.List {
+		switch typed := stmt.(type) {
+		case *ast.IfStmt:
+			if typed.Init != nil {
+				unconditional += calls(typed.Init)
+			}
+			if typed.Cond != nil {
+				unconditional += calls(typed.Cond)
+			}
+		case *ast.ExprStmt:
+			unconditional += calls(typed)
+		case *ast.AssignStmt:
+			unconditional += calls(typed)
+		}
+	}
+	total := calls(parsed)
+	switch {
+	case unconditional == 0:
+		t.Fatalf("no %s call runs on every path through main: a launch mode that skips it leaves the handshake token on disk", call)
+	case total != unconditional:
+		t.Fatalf("%s is called %d time(s) in cmd/brwd/main.go, %d of them on every path; the rest sit inside a branch some launch modes do not take",
+			call, total, unconditional)
 	}
 }

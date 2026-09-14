@@ -150,8 +150,13 @@ second copy of the secret at rest, outliving the daemon that minted it and
 readable even while `brwd` is not running — which `/status` is not. Every launch
 sweeps `~/.brw` for `bridge-token` and `bridge-token-<workspace>` and removes
 them all, not only the one this launch would have written, so an upgrade cleans
-up after whichever workspace wrote them. `BRW_BRIDGE_TOKEN_FILE=<path>` asks for
-one back, and re-creates that exposure; the rest are still swept.
+up after whichever workspace wrote them. The sweep runs on the path every launch
+takes rather than inside the extension-bridge branch: only that mode mints a
+token, but a machine that upgrades and then runs direct-CDP or upstream-proxy is
+exactly the one that would otherwise keep the last bridge launch's file forever.
+`BRW_BRIDGE_TOKEN_FILE=<path>` asks for one back, and re-creates that exposure;
+the rest are still swept, and so is that one on a launch that minted no token to
+put in it.
 
 `brwctl doctor` reads two endpoints that come from outside it — the one a refused
 handshake reported, which arrives on the unauthenticated websocket above, and the
@@ -161,6 +166,15 @@ loopback host that is an address rather than a name to resolve, an explicit port
 the `/status` path. Without it, a local process that can forge one handshake
 chooses a host this machine resolves and a URL it fetches, which is the network
 egress this boundary says brw holds and the local process does not.
+
+Gating a URL gates one request, so doctor follows no redirect. The same process
+that forges a handshake also binds a loopback port, and a gate applied once would
+let it report an endpoint that passes and then answer with `302 Location:
+http://anywhere` — Go's default client takes ten such hops without re-checking
+anything. Nothing reached that way is contacted, and nothing named by a failure
+of a request doctor did not make is printed: a `url.Error` carries the URL of the
+hop that failed, not the one that was gated, so the report is the other half of
+the same channel.
 
 ### The extension's consent record has no MAC, and cannot have one
 

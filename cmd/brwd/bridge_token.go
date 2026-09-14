@@ -56,21 +56,33 @@ func bridgeTokenFile(workspace string) bridgeTokenTarget {
 	return bridgeTokenTarget{Path: filepath.Join(home, ".brw", name)}
 }
 
-// persistBridgeToken writes the token 0600 when an operator opted in, and sweeps
-// every token file an older brwd left in ~/.brw either way.
+// bridgeTokenAtLaunch is what a brwd launch does about the handshake token on
+// disk: write it 0600 when an operator opted in, and sweep every token file an
+// older brwd left in ~/.brw either way.
+//
+// token is empty on a launch that minted none — direct CDP, upstream proxy, any
+// mode but the extension bridge. There is nothing to write then, and an opted-in
+// path holding some previous launch's token is a secret at rest for a daemon
+// that no longer exists, so it is swept like the rest rather than kept.
 //
 // The sweep is the point of the default path: a machine that ran an older brwd
 // has a bridge-token file sitting in ~/.brw containing a token that daemon
 // minted, and upgrading is exactly when nothing is left to notice it. A launch
-// is the only pass that will ever happen.
-func persistBridgeToken(target bridgeTokenTarget, token string) error {
-	if target.OptedIn && target.Path != "" {
+// is the only pass that will ever happen, which is why this is called on the
+// path EVERY launch takes and not from inside the bridge branch.
+func bridgeTokenAtLaunch(target bridgeTokenTarget, token string) error {
+	if token != "" && target.OptedIn && target.Path != "" {
 		if err := os.MkdirAll(filepath.Dir(target.Path), 0o700); err != nil {
 			return fmt.Errorf("could not create the bridge token dir %s: %w", filepath.Dir(target.Path), err)
 		}
 		if err := os.WriteFile(target.Path, []byte(token), 0o600); err != nil {
 			return fmt.Errorf("could not persist the bridge token to %s: %w", target.Path, err)
 		}
+	}
+	if token == "" {
+		// Nothing was minted, so nothing is kept: a stale opted-in file is the
+		// exposure the opt-in asked for, not one it is owed forever.
+		target.OptedIn = false
 	}
 	return sweepBridgeTokenFiles(target)
 }
