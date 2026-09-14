@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/artifact"
+	"github.com/Don-Works/brw/internal/baseline"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/navpolicy"
@@ -54,6 +55,10 @@ type Server struct {
 	refLabels refLabelStore
 	// diffs holds per-tab brw_diff baselines. Zero value is usable.
 	diffs diffStore
+	// baselines is the persistent regression-baseline set behind brw_baseline.
+	// Nil unless the operator configured a root; brw_baseline then refuses by
+	// name rather than gating against a store that forgets on restart.
+	baselines *baseline.Store
 
 	// notify pushes a JSON-RPC notification to the client. Serve installs it;
 	// it is nil before Serve runs and on transports that cannot push.
@@ -281,6 +286,10 @@ var transportUnsupported = map[string]string{
 	"brw_key_down":  brwidentity.TransportExtensionBridge,
 	"brw_key_up":    brwidentity.TransportExtensionBridge,
 	"brw_pushstate": brwidentity.TransportExtensionBridge,
+	// Session snapshots are refused on the extension bridge as policy, not as a
+	// capability gap: that transport drives the browser the user is personally
+	// signed into. See docs/auth-model.md.
+	"brw_state": brwidentity.TransportExtensionBridge,
 }
 
 // environmentController resolves the optional page-environment capability. A
@@ -829,6 +838,10 @@ var tabAgnosticTools = map[string]bool{
 	"brw_artifact_search": true,
 	"brw_artifact_delete": true,
 	"brw_recipe_search":   true,
+	// brw_state works at the BROWSER CONTEXT level (Storage.getCookies with a
+	// browserContextId), so resolving an active tab for it buys a round trip
+	// and changes nothing about what it reads.
+	"brw_state": true,
 }
 
 // pinActiveTabForTool resolves the active tab once (when the controller supports
@@ -1785,6 +1798,10 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			Offset:   req.Offset,
 			MaxBytes: req.MaxBytes,
 		}))
+	case "brw_state":
+		return s.callSessionState(ctx, args)
+	case "brw_baseline":
+		return s.callBaseline(ctx, args)
 	case "brw_cookies":
 		var req browser.CookieParams
 		if err := unmarshalArgs(args, &req); err != nil {
@@ -3050,6 +3067,8 @@ func tools() []map[string]any {
 			"include_failed": boolSchema("format:batch only. Keep steps whose action failed when recorded. Defaults true so the export is a faithful record; set false to export only what worked."),
 		}, nil)),
 		tool("brw_clear_trace", "Clear the action trace buffer.", object(nil, nil)),
+		sessionStateTool(),
+		baselineTool(),
 	}
 	// The developer-observation tools are defined beside their handlers in
 	// devtools.go rather than inline here, because each one carries a long

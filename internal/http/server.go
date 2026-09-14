@@ -348,6 +348,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/network_capture", s.networkCapture)
 	mux.HandleFunc("POST /api/page/replay_request", s.replayRequest)
 	mux.HandleFunc("POST /api/page/cookies", s.cookies)
+	mux.HandleFunc("POST /api/browser/state", s.sessionState)
 	mux.HandleFunc("POST /api/page/execute_plan", s.executePlan)
 	mux.HandleFunc("POST /api/page/batch", s.executeBatch)
 	mux.HandleFunc("POST /api/page/cancel", s.cancel)

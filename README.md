@@ -274,6 +274,7 @@ it with the capabilities it implies.
 | Chrome tab groups | Yes | No |
 | `brw_open_incognito` | No | Yes |
 | `brw_cookies`, incl. HttpOnly | No | Yes |
+| `brw_state` session snapshots | No | Yes |
 | Deterministic download capture | No | Yes |
 | Headless | No | Yes |
 
@@ -384,6 +385,15 @@ Core MCP tools include:
   state, attribute and download-digest checks
 - `brw_page_tools`, `brw_call_page_tool`, `brw_page_tool_result`,
   `brw_page_tool_cancel` (WebMCP)
+- `brw_state` — seal the cookies a brw-created context holds for the origins
+  you name and put them back into a later throwaway context, so a run does not
+  log in again. Save and restore only: no action returns a stored value.
+  Encrypted on the browser host, expiring, direct-CDP transport only
+  (see [docs/auth-model.md](docs/auth-model.md))
+- `brw_baseline` — gate a page against a stored regression baseline keyed by
+  recipe digest, step and an environment fingerprint, comparing pixels with a
+  tolerance and named ignore regions AND the page's ARIA structure. Updating a
+  baseline takes an explicit action; a check never writes
 - `brw_notify`, `brw_commit`
 - `brw_window_resize` (real OS window, unlike `brw_emulate_device`)
 - `brw_tools` (find and disclose a tool by describing the task)

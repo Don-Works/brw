@@ -389,6 +389,47 @@ discarded. A deliberately broken third-party controller that ignores context
 cancellation can also strand one screenshot goroutine, although the request,
 encoder process, and temporary file remain bounded.
 
+## Regression baselines
+
+`brw_diff` answers "did my click change the page" against a mark taken seconds
+ago. `brw_baseline` answers "did this page change since the last release", which
+needs three things a live comparison has none of.
+
+**A key that says what the stored capture was captured under.** A baseline is
+keyed by the recipe's content digest, the step index, and an environment
+fingerprint the daemon measures itself: browser build, viewport, device pixel
+ratio, locale and the browser host's operating system. Editing a recipe changes
+its digest and orphans its baselines rather than silently comparing new
+behaviour against old. Running on a different display reports
+`status: "environment_mismatch"` naming the fields that moved
+(`device_pixel_ratio 1 -> 2`), and compares no pixels — a diff that is real,
+meaningless and unactionable is how a visual gate gets switched off.
+
+**Two comparisons, because pixels miss things.** The visual half counts moved
+pixels with `pixel_tolerance` (a fraction of compared pixels),
+`channel_tolerance` (per-channel slack that absorbs anti-aliasing) and
+`ignore_regions` — named rectangles in CSS pixels for the clock, the avatar and
+the ad slot, scaled by the baseline's device pixel ratio and reported back by
+name so you can see which exclusion swallowed a change. The structural half
+diffs the page's ARIA structure, role and accessible name, with presentational
+wrappers flattened away. It carries no geometry: a button that loses its
+`aria-label` renders identically and fails the structural check, while a font
+bump or a colour change moves pixels and leaves the structure alone.
+
+**An update that is never implicit.** `action: "check"` writes nothing, ever,
+including on a passing run. `action: "update"` is the only thing that records or
+replaces a baseline, and it reports the differences it accepted.
+
+```sh
+brwd --baseline-root /var/lib/brw/baselines   # auto uses the user cache; off (default) disables
+```
+
+A baseline of a signed-in page is a screenshot of private content. The store
+refuses a root inside a Git working tree and writes an ignore-everything file
+into the root it does accept, so baselines cannot be committed to this
+repository or to yours. Keep the baselines for private pages where the private
+recipes live, alongside the provider, not in a source tree.
+
 ## Verification
 
 `task test-functional` launches a real headless browser and a private recipe

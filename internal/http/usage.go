@@ -28,6 +28,7 @@ var usageOperations = map[string]string{
 	"/api/browser/ungroup_tabs":      "brw_ungroup_tabs",
 	"/api/browser/resize_window":     "brw_window_resize",
 	"/api/browser/download_path":     "brw_set_download_path",
+	"/api/browser/state":             "brw_state",
 	"/api/page/snapshot":             "brw_snapshot",
 	"/api/page/find":                 "brw_find",
 	"/api/page/read":                 "brw_read",

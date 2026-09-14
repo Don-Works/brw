@@ -158,6 +158,16 @@ type HistoryController interface {
 	PushState(context.Context, HistoryStateOptions) (HistoryStateResult, error)
 }
 
+// SessionStateController is an optional transport capability for scoped
+// session snapshots (brw_state). Direct-CDP only by design, not by accident:
+// the extension bridge drives the browser the user is personally signed into,
+// and sealing its cookies is the "no cookie extraction" non-goal in
+// docs/auth-model.md. The bridge implements this interface so the refusal is a
+// named error rather than a missing method.
+type SessionStateController interface {
+	SessionState(context.Context, SessionStateOptions) (SessionStateResult, error)
+}
+
 // ElementFocuser is an optional transport capability that gives one element the
 // document focus by ref and reports the page afterwards. Both first-party
 // transports implement it; the interface exists so an upstream HTTP controller

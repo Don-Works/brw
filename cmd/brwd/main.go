@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/artifact"
+	"github.com/Don-Works/brw/internal/baseline"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	cdplaunch "github.com/Don-Works/brw/internal/cdp"
@@ -31,6 +32,7 @@ import (
 	"github.com/Don-Works/brw/internal/plugin"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/recipe"
+	"github.com/Don-Works/brw/internal/sessionstate"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
@@ -92,6 +94,9 @@ func main() {
 	var artifactTTL time.Duration
 	var artifactEncrypt string
 	var artifactKeyFile string
+	var stateRoot string
+	var stateKeyFile string
+	var baselineRoot string
 	var artifactFailureBundles string
 	var artifactFailureBundleTTL time.Duration
 	var recipeRoot string
@@ -149,6 +154,9 @@ func main() {
 	flag.StringVar(&artifactKeyFile, "artifact-key-file", os.Getenv("BRW_ARTIFACT_KEY_FILE"), "0600 regular file holding at least 32 bytes of artifact encryption key material. Must live outside the artifact directory; never logged.")
 	flag.StringVar(&artifactFailureBundles, "artifact-failure-bundles", envDefault("BRW_ARTIFACT_FAILURE_BUNDLES", "off"), "collect a failure evidence bundle (action trace, console summary, bounded network metadata, semantic snapshot, screenshot) when a recipe step fails: off (default), recipe (honour the recipe's capture_on_failure), or all. The failed call returns only the manifest artifact id.")
 	flag.DurationVar(&artifactFailureBundleTTL, "artifact-failure-bundle-ttl", envDuration("BRW_ARTIFACT_FAILURE_BUNDLE_TTL", time.Hour), "retention for failure evidence artifacts, clamped to --artifact-ttl. Evidence is the most sensitive thing the store holds, so it expires sooner than an ordinary capture.")
+	flag.StringVar(&stateRoot, "state-root", envDefault("BRW_STATE_ROOT", "auto"), "browser-host directory for brw_state session snapshots: auto uses the user cache, off disables. Snapshots never leave this host and are always encrypted, so this does nothing without --state-key-file.")
+	flag.StringVar(&stateKeyFile, "state-key-file", os.Getenv("BRW_STATE_KEY_FILE"), "0600 regular file holding at least 32 bytes of key material for brw_state session snapshots. Must live outside the state root; never logged. Without it brw_state refuses to save rather than writing a signed-in session in the clear.")
+	flag.StringVar(&baselineRoot, "baseline-root", envDefault("BRW_BASELINE_ROOT", "off"), "directory holding brw_baseline regression baselines: auto uses the user cache, off (default) disables. An explicit path must be absolute and outside any source checkout, because a baseline is a screenshot of a page and must never be committable.")
 	flag.StringVar(&recipeRoot, "recipe-root", os.Getenv("BRW_RECIPE_ROOT"), "absolute 0700 directory containing private 0600 recipe JSON files; must live outside the brw source repository")
 	flag.StringVar(&recipeProviderURL, "recipe-provider-url", os.Getenv("BRW_RECIPE_PROVIDER_URL"), "HTTPS private recipe-provider base URL (loopback HTTP allowed); use instead of --recipe-root")
 	flag.StringVar(&recipeProviderTokenFile, "recipe-provider-token-file", os.Getenv("BRW_RECIPE_PROVIDER_TOKEN_FILE"), "0600 regular file containing the private recipe-provider bearer token; never logged")
@@ -619,6 +627,19 @@ func main() {
 				store.Root(), artifactMaxMB, artifactTotalMB, artifactTTL, encryptionPolicy, failurePolicy)
 		}
 
+		if manager != nil && !strings.EqualFold(strings.TrimSpace(stateRoot), "off") {
+			store, err := configureSessionStateStore(stateRoot, stateKeyFile, runtimeIdentity)
+			if err != nil {
+				log.Fatalf("session state store: %v", err)
+			}
+			if store != nil {
+				manager.SetSessionStateStore(store)
+				// The janitor is what makes the TTL a property of the disk rather
+				// than of whoever happens to call brw_state next.
+				go runSessionStateJanitor(ctx, store)
+				log.Printf("browser-host session snapshots enabled at %s (ttl=%s, encrypted at rest)", store.Root(), store.TTL())
+			}
+		}
 		provider, err := configureRecipeProvider(ctx, recipeRoot, recipeProviderURL, recipeProviderTokenFile)
 		if err != nil {
 			log.Fatalf("recipe provider: %v", err)
@@ -694,6 +715,13 @@ func main() {
 		// brw_identity answer "which browser does this namespace drive?" without a
 		// live HTTP round-trip.
 		server.SetIdentity(usageIdentity)
+		if store, err := configureBaselineStore(baselineRoot); err != nil {
+			log.Fatalf("baseline store: %v", err)
+		} else if store != nil {
+			server.SetBaselineStore(store)
+			log.Printf("regression baselines enabled at %s", store.Root())
+		}
+
 		// A direct/bridge MCP process has no upstream HTTP middleware to record its
 		// calls, so record them here. Upstream proxies intentionally rely on the
 		// canonical daemon ledger and do not create duplicate local records.
@@ -873,14 +901,89 @@ func defaultArtifactRoot(identity brwidentity.Identity) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return filepath.Join(root, runtimeScopeDir(identity)), nil
+}
+
+// runtimeScopeDir names a per-runtime subdirectory so two daemons driving
+// different profiles never share a store.
+func runtimeScopeDir(identity brwidentity.Identity) string {
 	material := strings.Join([]string{
 		identity.Workspace, identity.Profile, identity.UserDataDir, identity.ProfileDirectory,
 	}, "\x00")
 	if strings.Trim(material, "\x00") == "" {
-		return filepath.Join(root, "default"), nil
+		return "default"
 	}
 	digest := sha256.Sum256([]byte(material))
-	return filepath.Join(root, "runtime-"+hex.EncodeToString(digest[:8])), nil
+	return "runtime-" + hex.EncodeToString(digest[:8])
+}
+
+// configureSessionStateStore builds the browser host's brw_state store. No key
+// means no store: a snapshot of a signed-in session is exactly the thing that
+// must not be written in the clear, so the absence of a key disables the
+// feature rather than degrading it.
+func configureSessionStateStore(root, keyFile string, identity brwidentity.Identity) (*sessionstate.Store, error) {
+	if strings.TrimSpace(keyFile) == "" {
+		return nil, nil
+	}
+	resolved := strings.TrimSpace(root)
+	if resolved == "" || strings.EqualFold(resolved, "auto") {
+		var err error
+		resolved, err = defaultSessionStateRoot(identity)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !filepath.IsAbs(resolved) {
+		return nil, errors.New("--state-root must be absolute")
+	}
+	key, err := sessionstate.LoadKey(keyFile, resolved)
+	if err != nil {
+		return nil, err
+	}
+	return sessionstate.NewStore(sessionstate.Config{Root: resolved, Key: key})
+}
+
+func defaultSessionStateRoot(identity brwidentity.Identity) (string, error) {
+	root, err := sessionstate.DefaultRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, runtimeScopeDir(identity)), nil
+}
+
+// runSessionStateJanitor expires lapsed snapshots on a timer.
+func runSessionStateJanitor(ctx context.Context, store *sessionstate.Store) {
+	interval := min(15*time.Minute, max(time.Minute, store.TTL()/4))
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := store.Sweep(); err != nil {
+				log.Printf("session snapshot retention janitor: %v", err)
+			}
+		}
+	}
+}
+
+func configureBaselineStore(root string) (*baseline.Store, error) {
+	resolved := strings.TrimSpace(root)
+	if resolved == "" || strings.EqualFold(resolved, "off") {
+		return nil, nil
+	}
+	if strings.EqualFold(resolved, "auto") {
+		var err error
+		resolved, err = baseline.DefaultRoot()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !filepath.IsAbs(resolved) {
+		return nil, errors.New("--baseline-root must be absolute")
+	}
+	return baseline.NewStore(resolved)
 }
 
 func configureRecipeProvider(ctx context.Context, directory, providerURL, tokenFile string) (recipe.Provider, error) {

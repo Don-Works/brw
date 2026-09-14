@@ -15,6 +15,7 @@ import (
 	cdplaunch "github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/readability"
+	"github.com/Don-Works/brw/internal/sessionstate"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/store"
 	"github.com/chromedp/cdproto/browser"
@@ -268,6 +269,12 @@ type Manager struct {
 	// leaking the isolated context (and its tabs/storage) until Chrome exits.
 	incognitoMu       sync.Mutex
 	incognitoContexts map[string]bool
+
+	// sessionState is the browser host's scoped session-snapshot store. Nil
+	// unless the operator supplied an at-rest key, in which case brw_state
+	// refuses by name instead of writing a snapshot in the clear.
+	sessionStateMu sync.Mutex
+	sessionState   *sessionstate.Store
 
 	// events is the CDP event stream every wait and post-action settle reads
 	// instead of re-asking the page. One subscription per context; see events.go.
