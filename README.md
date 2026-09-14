@@ -370,16 +370,17 @@ Core MCP tools include:
 - `brw_assert_visible`, `brw_assert_text`, `brw_assert_value`
 - `brw_assert` for deterministic URL, HTTP status, element count, element
   state, attribute and download-digest checks
-- `brw_page_tools`, `brw_call_page_tool` (WebMCP)
+- `brw_page_tools`, `brw_call_page_tool`, `brw_page_tool_result`,
+  `brw_page_tool_cancel` (WebMCP)
 - `brw_notify`, `brw_commit`
 - `brw_window_resize` (real OS window, unlike `brw_emulate_device`)
 - `brw_tools` (find and disclose a tool by describing the task)
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: `all` costs ~16.0k tokens, `core` ~7.7k, `minimal` ~4.1k,
-and `auto` starts at ~4.1k and grows only as the agent discovers tools it needs
-via `brw_tools`.
+tokens on every turn: `all` costs ~22.3k tokens, `core` ~7.9k, `minimal` ~4.3k,
+and `auto` starts at ~4.5k and grows only as the agent discovers tools it needs
+via `brw_tools` (measure with `scripts/measure-tool-catalogue.py`).
 
 MCP stdio lifecycle: `brwd --mcp` exits cleanly on SIGTERM/SIGINT (including
 while blocked waiting for input), when its stdin closes, and when it is orphaned
@@ -437,6 +438,13 @@ Backend-specific notes:
   W3C `navigator.modelContext` draft. Cooperating sites can register page tools
   that `brw_page_tools` lists and `brw_call_page_tool` invokes — more reliable and
   token-efficient than driving the DOM. Default off (it is observable to pages).
+  A tool slower than the caller's patience is started with `detach:true` and
+  collected by id with `brw_page_tool_result` / stopped with
+  `brw_page_tool_cancel`; a waited call that outlasts its timeout returns the
+  same id rather than abandoning the work. Tools are registered per document, so
+  `frame` targets a same-origin iframe's own tools. Arguments are capped at 64KB
+  and refused above it, never truncated, and an invocation whose page navigates
+  away is reported as `status:"lost"` instead of waiting out the timeout.
 - **Navigation guardrail**: `--blocked-domains` / `--allowed-domains` (or
   `BRW_BLOCKED_DOMAINS` / `BRW_ALLOWED_DOMAINS`) gate `brw_open`,
   `brw_open_incognito`, `brw_navigate_to`, plan/batch `open` steps,

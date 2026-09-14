@@ -2,8 +2,6 @@ package snapshot
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
@@ -60,57 +58,9 @@ const WebMCPInstallScript = `(function(){
   } catch (_) {}
 })()`
 
-// PageToolsScript returns { supported, tools:[{name,description,inputSchema}] },
-// merging brw's captured registry with any native navigator.modelContext tools.
-const PageToolsScript = `(function(){
-  var mc = (typeof navigator !== 'undefined') ? navigator.modelContext : null;
-  var reg = window.__brwWebMCPTools || [];
-  var tools = [];
-  function add(t){
-    if (!t || !t.name) return;
-    tools.push({ name: String(t.name), description: String(t.description || ''), inputSchema: t.inputSchema || t.input_schema || null });
-  }
-  if (reg && reg.forEach) reg.forEach(add);
-  try {
-    if (mc) {
-      var nt = mc.tools || (typeof mc.getTools === 'function' ? mc.getTools() : null) || (mc.context && mc.context.tools);
-      if (nt && nt.forEach) nt.forEach(add);
-    }
-  } catch (_) {}
-  var seen = {}, out = [];
-  for (var i=0;i<tools.length;i++){ if (!seen[tools[i].name]){ seen[tools[i].name]=1; out.push(tools[i]); } }
-  return { supported: !!(mc || out.length), tools: out };
-})()`
-
-// CallPageToolScript builds an async expression that invokes the named WebMCP
-// page tool with args (already a JSON value) and returns { ok, result } or
-// { ok:false, error }.
-func CallPageToolScript(name string, args json.RawMessage) string {
-	nameJSON, _ := json.Marshal(name)
-	argsRaw := string(args)
-	if len(args) == 0 || argsRaw == "null" {
-		argsRaw = "{}"
-	}
-	return fmt.Sprintf(`(async function(){
-  var NAME = %s;
-  var ARGS = %s;
-  var tool = null;
-  var reg = window.__brwWebMCPTools || [];
-  for (var i=0;i<reg.length;i++){ if (reg[i] && reg[i].name === NAME){ tool = reg[i]; break; } }
-  if (!tool) {
-    try {
-      var mc = navigator.modelContext;
-      var nt = mc && (mc.tools || (typeof mc.getTools === 'function' ? mc.getTools() : null));
-      if (nt) for (var j=0;j<nt.length;j++){ if (nt[j] && nt[j].name === NAME){ tool = nt[j]; break; } }
-    } catch (_) {}
-  }
-  if (!tool) return { ok:false, error: 'page tool not found: ' + NAME + ' (call brw_page_tools to list available tools)' };
-  var fn = tool.execute || tool.call || tool.run || tool.handler;
-  if (typeof fn !== 'function') return { ok:false, error: 'page tool has no callable execute: ' + NAME };
-  try { return { ok:true, result: await fn.call(tool, ARGS) }; }
-  catch (e) { return { ok:false, error: String(e && e.message || e) }; }
-})()`, string(nameJSON), argsRaw)
-}
+// BuildPageToolsExpression (webmcp_invoke.go) lists what a document exposes and
+// BuildPageToolInvokeExpression starts one of its tools; both read the registry
+// this shim fills as well as a native navigator.modelContext.
 
 // RegisterWebMCPOnNewDocument arms the WebMCP shim to install at document-start
 // on every future navigation (direct-CDP only) so it captures tool registrations

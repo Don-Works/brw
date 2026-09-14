@@ -2,6 +2,7 @@ package snapshot_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -65,7 +66,7 @@ func TestWebMCPRuntimeCapturesAndCallsPageTools(t *testing.T) {
 			Description string `json:"description"`
 		} `json:"tools"`
 	}
-	if err := chromedp.Run(ctx, chromedp.Evaluate(snapshot.PageToolsScript, &list, awaitPromise)); err != nil {
+	if err := chromedp.Run(ctx, chromedp.Evaluate(snapshot.BuildPageToolsExpression(""), &list, awaitPromise)); err != nil {
 		t.Fatalf("page tools eval: %v", err)
 	}
 	if !list.Supported || len(list.Tools) != 1 || list.Tools[0].Name != "add_to_cart" {
@@ -73,19 +74,23 @@ func TestWebMCPRuntimeCapturesAndCallsPageTools(t *testing.T) {
 	}
 
 	// Call the page tool and verify its result round-trips.
-	var call struct {
-		OK     bool `json:"ok"`
-		Result struct {
-			Added     string `json:"added"`
-			CartCount int    `json:"cartCount"`
-		} `json:"result"`
-		Error string `json:"error"`
+	call, err := snapshot.InvokePageTool(ctx, chromedpEvaluator(ctx), snapshot.PageToolInvokeOptions{
+		Name:      "add_to_cart",
+		Arguments: []byte(`{"id":"SKU-42"}`),
+		Validate:  true,
+		Timeout:   10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("call page tool: %v", err)
 	}
-	expr := snapshot.CallPageToolScript("add_to_cart", []byte(`{"id":"SKU-42"}`))
-	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &call, awaitPromise)); err != nil {
-		t.Fatalf("call page tool eval: %v", err)
+	var result struct {
+		Added     string `json:"added"`
+		CartCount int    `json:"cartCount"`
 	}
-	if !call.OK || call.Result.Added != "SKU-42" || call.Result.CartCount != 1 {
+	if err := json.Unmarshal(call.Result, &result); err != nil {
+		t.Fatalf("decode page tool result %s: %v", call.Result, err)
+	}
+	if !call.OK || call.Status != snapshot.PageToolDone || result.Added != "SKU-42" || result.CartCount != 1 {
 		t.Fatalf("unexpected page tool result: %+v (err=%q)", call, call.Error)
 	}
 }
@@ -114,7 +119,7 @@ func TestWebMCPUnsupportedWhenAbsent(t *testing.T) {
 	var list struct {
 		Supported bool `json:"supported"`
 	}
-	if err := chromedp.Run(ctx, chromedp.Evaluate(snapshot.PageToolsScript, &list, awaitPromise)); err != nil {
+	if err := chromedp.Run(ctx, chromedp.Evaluate(snapshot.BuildPageToolsExpression(""), &list, awaitPromise)); err != nil {
 		t.Fatalf("page tools eval: %v", err)
 	}
 	if list.Supported {

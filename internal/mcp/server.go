@@ -1728,19 +1728,19 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	case "brw_observe":
 		return toolJSON(s.manager.Observe(ctx))
 	case "brw_page_tools":
-		return toolJSON(s.manager.Evaluate(ctx, snapshot.PageToolsScript))
-	case "brw_call_page_tool":
 		var req struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
+			Frame string `json:"frame"`
 		}
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		if strings.TrimSpace(req.Name) == "" {
-			return toolError(errors.New("name is required; call brw_page_tools to list available page tools")), nil
-		}
-		return toolJSON(s.manager.Evaluate(ctx, snapshot.CallPageToolScript(req.Name, req.Arguments)))
+		return toolJSON(s.manager.Evaluate(ctx, snapshot.BuildPageToolsExpression(req.Frame)))
+	case "brw_call_page_tool":
+		return s.callPageTool(ctx, args)
+	case "brw_page_tool_result":
+		return s.pageToolResult(ctx, args)
+	case "brw_page_tool_cancel":
+		return s.cancelPageTool(ctx, args)
 	case "brw_group_tabs":
 		var req struct {
 			TabIDs  []string `json:"tab_ids"`
@@ -2726,14 +2726,28 @@ func tools() []map[string]any {
 		tool("brw_observe", "Lightweight change detector: returns version, URL, title, focused ref, and frontier element changes since last observe. Use this INSTEAD of brw_snapshot to check whether a page action had an effect — it's faster and returns fewer tokens. Call brw_snapshot only when you need fresh refs to act on.", object(map[string]any{
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
-		tool("brw_page_tools", "List WebMCP tools the current page exposes via navigator.modelContext (W3C Web Machine Context). When a site cooperates, calling its declared tools is far more reliable and token-efficient than driving the DOM — prefer them when present. Returns {supported, tools:[{name, description, inputSchema}]}; supported:false means the page exposes none (or brw's WebMCP runtime is not enabled with --enable-webmcp).", object(map[string]any{
+		tool("brw_page_tools", "List WebMCP tools a document exposes via navigator.modelContext (W3C Web Machine Context). When a site cooperates, calling its declared tools is far more reliable and token-efficient than driving the DOM — prefer them when present. Returns {supported, frame, tools:[{name, description, inputSchema}]}; supported:false means that document exposes none (or brw's WebMCP runtime is not enabled with --enable-webmcp). Tools are registered per document, so a widget embedded in an iframe declares its own: pass frame to list those instead of the top document's.", object(map[string]any{
+			"frame":  stringSchema("Same-origin iframe to list, as a brw ref or CSS selector (a ref for an element INSIDE the frame selects that frame too). Omit or pass \"main\" for the top document. A cross-origin frame is refused by name: the browser isolates its document."),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
-		tool("brw_call_page_tool", "Invoke a WebMCP page tool by name with arguments matching its inputSchema (discover them via brw_page_tools). Returns {ok, result} on success or {ok:false, error}. Use this instead of clicking through the UI when the page declares a tool for the task.", object(map[string]any{
-			"name":      stringSchema("The page tool name from brw_page_tools."),
-			"arguments": map[string]any{"type": "object", "description": "Arguments object passed to the tool, matching its inputSchema.", "additionalProperties": true},
-			"tab_id":    stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		tool("brw_call_page_tool", "Invoke a WebMCP page tool by name with arguments matching its inputSchema (discover them via brw_page_tools). Use this instead of clicking through the UI when the page declares a tool for the task. Waits up to timeout_ms (default 30000) and returns {ok:true, status:\"done\", id, result}, or {ok:false, status} for failed/cancelled/not_found/invalid_input with an error (not_found means list the page's tools again, invalid_input means fix the arguments). For work the page runs slowly — an export, a checkout, a remote search — pass detach:true to get {id, status:\"running\"} back immediately and collect it later with brw_page_tool_result; a waited call that outlasts timeout_ms returns timed_out:true and the SAME id, so the invocation is never abandoned, only stopped being waited on. Arguments are capped at 64KB and refused (never truncated) above it: pass a URL or record id the tool can fetch instead of inlining a payload.", object(map[string]any{
+			"name":           stringSchema("The page tool name from brw_page_tools."),
+			"arguments":      map[string]any{"type": "object", "description": "Arguments object passed to the tool, matching its inputSchema. Capped at 64KB of JSON.", "additionalProperties": true},
+			"frame":          stringSchema("Same-origin iframe declaring the tool, as a brw ref or CSS selector. Omit or pass \"main\" for the top document."),
+			"detach":         boolSchema("Start the tool and return an invocation id immediately instead of waiting. Default false."),
+			"timeout_ms":     integerSchema("How long to wait for a non-detached invocation. Defaults to 30000, capped at 600000."),
+			"validate_input": boolSchema("Check arguments against the tool's declared inputSchema before dispatch. Default true; set false when a page's schema is narrower than the tool it describes."),
+			"tab_id":         stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"name"})),
+		tool("brw_page_tool_result", "Collect a detached WebMCP invocation by the id brw_call_page_tool returned. With no timeout_ms it reports the current state in one round trip — {status:\"running\"} while the tool works, {ok:true, status:\"done\", result} once it finishes, or status failed/cancelled with an error — so you can interleave polls with other work. Pass timeout_ms to block until it settles instead. status:\"lost\" means the document that started it navigated away before the tool finished, which is reported as soon as it is noticed rather than waited out; status:\"unknown\" means that document is still there and never minted that id. A finished result stays collectable for five minutes.", object(map[string]any{
+			"invocation_id": stringSchema("Invocation id from brw_call_page_tool."),
+			"timeout_ms":    integerSchema("Wait up to this long for the invocation to settle. Omit for a single non-blocking read. Capped at 600000."),
+			"tab_id":        stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"invocation_id"})),
+		tool("brw_page_tool_cancel", "Stop waiting on a WebMCP invocation and signal the page tool to abort. brw passes every invocation an AbortSignal, so a cooperating tool stops its own work; one that ignores the signal keeps running in the page, but its result is no longer awaited and later polls report status:\"cancelled\". Cancelling an invocation that already finished is not an error — it returns that outcome with cancelled:false.", object(map[string]any{
+			"invocation_id": stringSchema("Invocation id from brw_call_page_tool."),
+			"tab_id":        stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"invocation_id"})),
 		tool("brw_group_tabs", "Group tabs into a named Chrome tab group, or move them into an existing group_id. Extension-bridge transport only; direct CDP cannot create Chrome tab groups.", object(map[string]any{
 			"tab_ids":  map[string]any{"type": "array", "items": stringSchema("Tab id."), "description": "Tab IDs to group."},
 			"name":     stringSchema("Group name shown in Chrome tab strip. Used when creating/reusing by title, or renaming a group_id target."),

@@ -58,7 +58,9 @@ TOKEN DISCIPLINE:
 - brw_snapshot { format: "compact" } returns one terse line per element
   (e17 button "Submit") instead of JSON — fewer tokens, same refs.
 - If brw_page_tools reports the page offers WebMCP tools, prefer
-  brw_call_page_tool over clicking — it is more reliable and cheaper.
+  brw_call_page_tool over clicking — it is more reliable and cheaper. For a tool
+  that runs long, pass detach:true and collect it with brw_page_tool_result
+  instead of holding the turn open.
 - brw_console { only_errors: true } or { pattern: "..." } instead of reading
   every log line. Messages a filter skips stay buffered, so a later wider read
   still sees them.

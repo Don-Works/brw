@@ -134,10 +134,23 @@ Some sites expose callable tools via the W3C WebMCP API (`navigator.modelContext
 — calling them is more reliable and far cheaper than driving the UI. With brw run
 under `--enable-webmcp`:
 
-- `brw_page_tools` lists what the page offers (`{supported, tools:[…]}`).
-- `brw_call_page_tool { name, arguments }` invokes one. Prefer this over clicking
-  when a tool matches your task. `supported:false` just means fall back to the
-  normal snapshot/act loop.
+- `brw_page_tools { frame? }` lists what a document offers
+  (`{supported, frame, tools:[…]}`). Tools are registered per document, so pass
+  `frame` (a brw ref or CSS selector for a same-origin iframe) to see an embedded
+  widget's own tools.
+- `brw_call_page_tool { name, arguments, frame?, detach?, timeout_ms? }` invokes
+  one. Prefer this over clicking when a tool matches your task. `supported:false`
+  just means fall back to the normal snapshot/act loop.
+- Long jobs: `detach:true` returns `{id, status:"running"}` straight away.
+  `brw_page_tool_result { invocation_id, timeout_ms? }` collects it — without a
+  timeout that is a single cheap poll you can interleave with other work — and
+  `brw_page_tool_cancel { invocation_id }` stops it, firing the tool's
+  `AbortSignal`. A waited call that outlasts `timeout_ms` comes back with
+  `timed_out:true` and the same id, so the work is never lost, only unwatched.
+- `status:"lost"` means the document that started the invocation navigated away
+  before the tool finished; it is reported as soon as it is noticed rather than
+  waited out. Arguments are capped at 64KB and refused above it — pass a URL or a
+  record id the tool can fetch instead of inlining a payload.
 
 ## Cookies: list, set, delete — HttpOnly included
 
