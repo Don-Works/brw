@@ -276,6 +276,21 @@ A route can never reach a host the navigation policy forbids — containment is
 evaluated first. `brw_observe` reports `active_routes`, so mocked traffic is
 never invisible in the transcript.
 
+`brw_route {action:"replay", har_artifact_id}` answers from a HAR captured with
+`brw_artifact_capture {kind:"har"}` instead of from a hand-written body, so a
+page can be driven against a recording of its own backend. `pattern` scopes which
+requests come from the recording (default `*`), `match` lists the properties an
+entry has to agree on (default `[method,url]`; add `body` only for a fixture
+whose recordings differ by request body), and `on_miss:"fail"` refuses anything
+the HAR does not hold and records the method and URL in the route's
+`fixture.misses` — which is what makes the fixture deterministic. A HAR captured
+with the default redaction replays the `[redacted by brw]` placeholder where a
+credential was.
+
+`fulfill` and `replay` are direct-CDP only. On the extension-bridge transport
+they return a named capability error and `abort` is what works; see the matrix in
+`docs/install.md`.
+
 ## When a page is contained
 
 With `--allowed-domains` the daemon confines subresources as well as navigation:

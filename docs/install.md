@@ -268,6 +268,53 @@ context (`brw_open_incognito`) and disposing it with `brw_close_context`, which
 discards the cache with the context; otherwise the credential lives until the
 browser restarts.
 
+### Request interception and HAR fixtures
+
+`brw_route` answers a request instead of letting it reach the network. The two
+transports intercept by completely different mechanisms, and only one of them
+can produce a response.
+
+Direct CDP pauses each request with the DevTools `Fetch` domain and answers it
+from the daemon, so it can supply a status, headers and a body. The extension
+bridge drives the user's real signed-in Chrome, where interception is a
+`declarativeNetRequest` session rule: the rule decides whether a request happens
+and Chrome never hands the extension the response. CDP's `Fetch` domain would,
+but only through the `chrome.debugger` session the extension attaches and
+detaches around each operation, and interception dropped at a detach is worse
+than none — the page would reach the real endpoint while the caller believed it
+was mocked. So each gap below is a named error, never a silent passthrough.
+
+| Capability | `brw_route` call | Extension bridge | Direct CDP |
+|---|---|---|---|
+| Refuse a request | `{action:"add", behaviour:"abort"}` | Yes, a `declarativeNetRequest` session rule scoped to the tab | Yes |
+| Answer from a body | `{action:"add", behaviour:"fulfill"}` | No | Yes |
+| Replay a recorded HAR | `{action:"replay", har_artifact_id}` | No | Yes |
+| Retire a rule after N matches | `times` | No, a declarative rule reports no match count | Yes |
+| Report how often a rule fired | `routes[].matched` | No, for the same reason | Yes |
+
+A HAR fixture is recorded and replayed with the ordinary artifact tools:
+
+```text
+brw_artifact_capture {kind:"har"}                  -> artifact_id
+brw_route {action:"replay", har_artifact_id, pattern:"*/api/*",
+           match:["method","url"], on_miss:"fail"}
+```
+
+`match` defaults to `[method,url]`. Add `body` only for a recording whose entries
+differ by request body; a fixture that includes it misses every request whose
+body was not recorded byte-for-byte. `on_miss:"fail"` refuses anything the HAR
+does not hold and records the unmatched method and URL in the route's
+`fixture.misses`, which is what makes the fixture deterministic — the page can
+reach nothing that was not recorded. `on_miss:"passthrough"` (the default) lets
+it go to the network.
+
+Redaction happens at record time. A HAR captured with the default redaction
+carries `[redacted by brw]` where a credential header or a request body was, and
+replays with those values; there is no un-redacted replay mode. Response bodies
+in a brw-exported HAR are capture snippets truncated at 2 KiB, so a fixture
+replaying a larger response replays the truncated one — capture the HAR from
+DevTools instead when full bodies matter.
+
 `brwctl setup --transport direct-cdp` configures the second lane. Running both
 against different profiles is supported: one `brwd` per profile, one MCP server
 per daemon. Testing several signed-in roles at once wants a second browser

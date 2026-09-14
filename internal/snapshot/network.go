@@ -118,6 +118,14 @@ const NetworkCaptureInstallScript = `(function() {
     s = (s === undefined || s === null) ? '' : String(s);
     return s.length > BODY_CAP ? s.slice(0, BODY_CAP) + '…[truncated]' : s;
   }
+  // Requests are recorded against the absolute URL the browser actually issued.
+  // A page fetching '/api/x' would otherwise be recorded as '/api/x', which is
+  // neither what HAR 1.2 defines request.url to be nor something a later
+  // consumer — a HAR replay matching on url, a filter, a human reading the
+  // capture — can resolve without knowing which document made the call.
+  function abs(u) {
+    try { return new URL(String(u), location.href).href; } catch (e) { return String(u); }
+  }
   function push(entry) {
     ensureCaptureID(entry);
     markPending(entry, true);
@@ -155,7 +163,7 @@ const NetworkCaptureInstallScript = `(function() {
       try { if (typeof init.body === 'string') reqBody = init.body; } catch (e) {}
       var started = (performance && performance.now) ? performance.now() : Date.now();
       var entry = {
-        method: method, url: String(url), request_headers: reqHeaders, request_body: clip(reqBody),
+        method: method, url: abs(url), request_headers: reqHeaders, request_body: clip(reqBody),
         status: 0, ok: false, response_snippet: '', transport: 'fetch', error: '',
         started_at: Date.now(), duration_ms: 0
       };
@@ -209,7 +217,7 @@ const NetworkCaptureInstallScript = `(function() {
       try { if (typeof body === 'string') reqBody = body; } catch (e) {}
       var started = (performance && performance.now) ? performance.now() : Date.now();
       var entry = {
-        method: xhr.__abMethod || 'GET', url: xhr.__abURL || '', request_headers: xhr.__abHeaders || {},
+        method: xhr.__abMethod || 'GET', url: abs(xhr.__abURL || ''), request_headers: xhr.__abHeaders || {},
         request_body: clip(reqBody), status: 0, ok: false, response_snippet: '', transport: 'xhr', error: '',
         started_at: Date.now(), duration_ms: 0
       };

@@ -3,8 +3,10 @@ package browser
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -12,9 +14,10 @@ import (
 	"github.com/chromedp/cdproto/network"
 )
 
-// maxRoutesPerTab bounds the route table so a runaway caller cannot make every
-// request walk an unbounded list.
-const maxRoutesPerTab = 50
+// MaxRoutesPerTab bounds the route table so a runaway caller cannot make every
+// request walk an unbounded list. Exported because the extension-bridge
+// transport keeps its own table and has to bound it the same way.
+const MaxRoutesPerTab = 50
 
 // RouteBehaviour selects what a matching request does instead of reaching the
 // network.
@@ -25,6 +28,8 @@ const (
 	RouteAbort RouteBehaviour = "abort"
 	// RouteFulfill answers the request from the route's own body/status.
 	RouteFulfill RouteBehaviour = "fulfill"
+	// RouteReplay answers the request from a recorded HAR.
+	RouteReplay RouteBehaviour = "replay"
 )
 
 // Route is one interception rule.
@@ -43,6 +48,23 @@ type Route struct {
 	// Matched counts how often the route fired, so a test can tell "the mock
 	// answered" from "the request never happened".
 	Matched int `json:"matched"`
+	// Fixture describes the HAR behind a replay rule. Filled only when a route
+	// is reported; the recorded exchanges themselves live in har.
+	Fixture *RouteFixture `json:"fixture,omitempty"`
+
+	har *harFixture
+}
+
+// view copies a stored route into the form a reply carries: the HAR's live
+// counters snapshotted, the fixture itself left behind.
+func (r *Route) view() Route {
+	out := *r
+	out.har = nil
+	if r.har != nil {
+		fixture := r.har.view()
+		out.Fixture = &fixture
+	}
+	return out
 }
 
 // RouteResult is the brw_route reply.
@@ -71,7 +93,7 @@ func (r *routeState) list(tabID string) []Route {
 	r.initLocked()
 	out := make([]Route, 0, len(r.routes[tabID]))
 	for _, route := range r.routes[tabID] {
-		out = append(out, *route)
+		out = append(out, route.view())
 	}
 	return out
 }
@@ -159,6 +181,37 @@ func matchURLGlob(pattern, url string) bool {
 	return true
 }
 
+// RoutePatternRegex renders a brw route pattern as an anchored regular
+// expression with the same meaning as matchURLGlob.
+//
+// The extension-bridge transport enforces routes with declarativeNetRequest,
+// whose urlFilter is a substring-with-wildcards language rather than brw's, so
+// the rule is expressed as a regexFilter instead. Deriving it here, next to the
+// matcher it has to agree with, is what keeps one pattern from meaning two
+// different things depending on which transport a namespace resolved to.
+func RoutePatternRegex(pattern string) string {
+	if pattern == "" || pattern == "*" {
+		return ".*"
+	}
+	if !strings.Contains(pattern, "*") {
+		return "^" + regexp.QuoteMeta(pattern)
+	}
+	parts := strings.Split(pattern, "*")
+	var out strings.Builder
+	out.WriteString("^")
+	out.WriteString(regexp.QuoteMeta(parts[0]))
+	for i := 1; i < len(parts); i++ {
+		out.WriteString(".*")
+		out.WriteString(regexp.QuoteMeta(parts[i]))
+	}
+	// A trailing non-empty segment must end the URL; a trailing "*" leaves the
+	// tail open.
+	if parts[len(parts)-1] != "" {
+		out.WriteString("$")
+	}
+	return out.String()
+}
+
 // Route adds, lists or clears interception rules for a tab.
 func (m *Manager) Route(ctx context.Context, opts RouteOptions) (RouteResult, error) {
 	tabID := strings.TrimSpace(opts.TabID)
@@ -184,31 +237,32 @@ func (m *Manager) Route(ctx context.Context, opts RouteOptions) (RouteResult, er
 		if err != nil {
 			return RouteResult{}, err
 		}
-		m.routes.mu.Lock()
-		m.routes.initLocked()
-		if len(m.routes.routes[tabID]) >= maxRoutesPerTab {
-			m.routes.mu.Unlock()
-			return RouteResult{}, fmt.Errorf("tab already has the maximum of %d routes; clear some first", maxRoutesPerTab)
+		routes, err := m.installRoute(tabID, tabCtx, route)
+		if err != nil {
+			return RouteResult{}, err
 		}
-		m.routes.routes[tabID] = append(m.routes.routes[tabID], route)
-		m.routes.mu.Unlock()
-		// Routes need request interception even when no navigation policy is
-		// configured, so arm it here rather than only at containment time.
-		m.armInterception(tabID, tabCtx)
-		// armInterception installs the tab's listener once and returns early ever
-		// after, so on a tab where interception was later turned back OFF — by a
-		// finished brw_authenticate or by brw_set_extra_headers{clear:true} — this
-		// sync is the only thing that turns it back on. Without it the route is
-		// accepted and listed while every matching request goes to the real
-		// network, which is a mocked test reporting green against production.
-		if err := m.syncFetchInterception(tabCtx, tabID); err != nil {
-			m.routes.remove(tabID, route)
-			return RouteResult{}, fmt.Errorf("arm request interception for this route: %w", err)
-		}
-		routes := m.routes.list(tabID)
 		return RouteResult{
 			Action: "add", TabID: tabID, Routes: routes, Count: len(routes),
 			Note: "requests matching this pattern no longer reach the network; active routes are reported in brw_observe so mocked traffic is never invisible",
+		}, nil
+
+	case "replay":
+		route, err := buildReplayRoute(opts)
+		if err != nil {
+			return RouteResult{}, err
+		}
+		routes, err := m.installRoute(tabID, tabCtx, route)
+		if err != nil {
+			return RouteResult{}, err
+		}
+		note := fmt.Sprintf("requests matching this pattern are answered from the %d recorded entries in %s; anything the HAR does not hold goes to the real network",
+			len(route.har.entries), route.har.artifactID)
+		if route.har.onMiss == HARMissFail {
+			note = fmt.Sprintf("requests matching this pattern are answered from the %d recorded entries in %s; anything the HAR does not hold is refused and reported in fixture.misses, so the page cannot reach the network behind the fixture",
+				len(route.har.entries), route.har.artifactID)
+		}
+		return RouteResult{
+			Action: "replay", TabID: tabID, Routes: routes, Count: len(routes), Note: note,
 		}, nil
 
 	case "clear":
@@ -238,8 +292,34 @@ func (m *Manager) Route(ctx context.Context, opts RouteOptions) (RouteResult, er
 		return result, nil
 
 	default:
-		return RouteResult{}, fmt.Errorf("unknown route action %q: use add, list, or clear", opts.Action)
+		return RouteResult{}, fmt.Errorf("unknown route action %q: use add, replay, list, or clear", opts.Action)
 	}
+}
+
+// installRoute appends a rule and makes sure the tab is actually intercepting.
+func (m *Manager) installRoute(tabID string, tabCtx context.Context, route *Route) ([]Route, error) {
+	m.routes.mu.Lock()
+	m.routes.initLocked()
+	if len(m.routes.routes[tabID]) >= MaxRoutesPerTab {
+		m.routes.mu.Unlock()
+		return nil, fmt.Errorf("tab already has the maximum of %d routes; clear some first", MaxRoutesPerTab)
+	}
+	m.routes.routes[tabID] = append(m.routes.routes[tabID], route)
+	m.routes.mu.Unlock()
+	// Routes need request interception even when no navigation policy is
+	// configured, so arm it here rather than only at containment time.
+	m.armInterception(tabID, tabCtx)
+	// armInterception installs the tab's listener once and returns early ever
+	// after, so on a tab where interception was later turned back OFF — by a
+	// finished brw_authenticate or by brw_set_extra_headers{clear:true} — this
+	// sync is the only thing that turns it back on. Without it the route is
+	// accepted and listed while every matching request goes to the real
+	// network, which is a mocked test reporting green against production.
+	if err := m.syncFetchInterception(tabCtx, tabID); err != nil {
+		m.routes.remove(tabID, route)
+		return nil, fmt.Errorf("arm request interception for this route: %w", err)
+	}
+	return m.routes.list(tabID), nil
 }
 
 // RouteOptions selects one brw_route operation.
@@ -253,6 +333,18 @@ type RouteOptions struct {
 	Headers     map[string]string `json:"headers"`
 	Times       int               `json:"times"`
 	TabID       string            `json:"tab_id"`
+
+	// HARArtifactID names the recorded HAR a replay answers from.
+	HARArtifactID string `json:"har_artifact_id"`
+	// Match lists the request properties an entry has to agree on. Empty means
+	// method and URL.
+	Match []string `json:"match"`
+	// OnMiss decides what a request the HAR does not hold does.
+	OnMiss string `json:"on_miss"`
+	// HAR carries the decoded recording. It is never part of the wire schema:
+	// the surface holding the artifact store reads the HAR and fills this in, so
+	// the transports need no access to artifact storage.
+	HAR []HAREntry `json:"-"`
 }
 
 func buildRoute(opts RouteOptions) (*Route, error) {
@@ -288,6 +380,43 @@ func buildRoute(opts RouteOptions) (*Route, error) {
 	return route, nil
 }
 
+// buildReplayRoute turns a recorded HAR into an interception rule.
+//
+// The pattern scopes the fixture rather than the fixture scoping itself: a HAR
+// holds the whole page's traffic, and a caller usually wants only part of it
+// replayed ("*/api/*") while the document and its assets still load normally.
+// The default "*" is the deterministic-fixture case.
+func buildReplayRoute(opts RouteOptions) (*Route, error) {
+	artifactID := strings.TrimSpace(opts.HARArtifactID)
+	if artifactID == "" {
+		return nil, errors.New("route replay requires har_artifact_id, the id of a HAR captured with brw_artifact_capture{kind:\"har\"}")
+	}
+	if len(opts.HAR) == 0 {
+		return nil, fmt.Errorf("HAR artifact %s holds no recorded requests to replay", artifactID)
+	}
+	if strings.TrimSpace(opts.Behaviour) != "" {
+		return nil, fmt.Errorf("route replay answers from the HAR, so behaviour %q does not apply; use action add for a hand-written mock", opts.Behaviour)
+	}
+	match, err := NormalizeHARMatch(opts.Match)
+	if err != nil {
+		return nil, err
+	}
+	onMiss, err := NormalizeHARMiss(opts.OnMiss)
+	if err != nil {
+		return nil, err
+	}
+	pattern := strings.TrimSpace(opts.Pattern)
+	if pattern == "" {
+		pattern = "*"
+	}
+	return &Route{
+		Pattern:   pattern,
+		Behaviour: RouteReplay,
+		Times:     opts.Times,
+		har:       newHARFixture(artifactID, opts.HAR, match, onMiss),
+	}, nil
+}
+
 // guessContentType picks a sensible default so the common case (mock a JSON
 // endpoint) does not require naming the type.
 func guessContentType(pattern, body string) string {
@@ -308,11 +437,54 @@ func guessContentType(pattern, body string) string {
 	return "text/plain"
 }
 
-// applyRoute answers an intercepted request from a route.
-func applyRoute(ctx context.Context, route *Route, requestID fetch.RequestID) error {
-	if route.Behaviour == RouteAbort {
-		return fetch.FailRequest(requestID, network.ErrorReasonFailed).Do(ctx)
+// answerRoute answers one intercepted request from a route.
+//
+// A replay that misses with on_miss:"passthrough" falls back to the ordinary
+// continue rather than to a bare fetch.ContinueRequest, so a tab that also has
+// per-origin extra headers keeps them on requests the fixture did not record.
+func (m *Manager) answerRoute(ctx context.Context, tabID string, route *Route, paused *fetch.EventRequestPaused) error {
+	switch route.Behaviour {
+	case RouteAbort:
+		return fetch.FailRequest(paused.RequestID, network.ErrorReasonFailed).Do(ctx)
+	case RouteReplay:
+		entry, found := route.har.find(harMethod(paused.Request.Method), paused.Request.URL, requestPostData(paused.Request))
+		if !found {
+			route.har.recordMiss(paused.Request.Method, paused.Request.URL)
+			if route.har.onMiss == HARMissFail {
+				return fetch.FailRequest(paused.RequestID, network.ErrorReasonFailed).Do(ctx)
+			}
+			return m.continueWithEnvironmentHeaders(ctx, tabID, paused)
+		}
+		return fulfillFromHAR(ctx, entry, paused.RequestID)
+	default:
+		return applyFulfill(ctx, route, paused.RequestID)
 	}
+}
+
+// requestPostData reassembles a paused request's body. CDP delivers it as
+// base64 chunks, and match:["body"] compares against the HAR's plain text, so
+// the chunks have to be decoded and joined before either is meaningful. Chrome
+// omits the entries entirely for a body it considers too long, which reads as an
+// empty body and simply will not match a recorded one.
+func requestPostData(req *network.Request) string {
+	if req == nil || len(req.PostDataEntries) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	for _, entry := range req.PostDataEntries {
+		if entry == nil {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(entry.Bytes)
+		if err != nil {
+			return ""
+		}
+		out.Write(decoded)
+	}
+	return out.String()
+}
+
+func applyFulfill(ctx context.Context, route *Route, requestID fetch.RequestID) error {
 	headers := []*fetch.HeaderEntry{{Name: "Content-Type", Value: route.ContentType}}
 	for name, value := range route.Headers {
 		headers = append(headers, &fetch.HeaderEntry{Name: name, Value: value})
@@ -322,4 +494,43 @@ func applyRoute(ctx context.Context, route *Route, requestID fetch.RequestID) er
 		WithResponseHeaders(headers).
 		WithBody(base64.StdEncoding.EncodeToString([]byte(route.Body))).
 		Do(ctx)
+}
+
+// fulfillFromHAR answers a request with a recorded exchange.
+func fulfillFromHAR(ctx context.Context, entry HAREntry, requestID fetch.RequestID) error {
+	status := int64(entry.Status)
+	if status == 0 {
+		// A capture records status 0 for a request that failed or returned an
+		// opaque response. Replaying that as a 0 is not expressible over CDP, and
+		// 502 is the honest reading: the recording did not get an answer either.
+		status = 502
+	}
+	headers := []*fetch.HeaderEntry{{Name: "Content-Type", Value: harContentType(entry)}}
+	for name, value := range entry.Headers {
+		// Content-Type comes from harContentType, which already prefers the
+		// recorded one; sending the recorded header too would send it twice.
+		if strings.EqualFold(name, "content-type") {
+			continue
+		}
+		headers = append(headers, &fetch.HeaderEntry{Name: name, Value: value})
+	}
+	return fetch.FulfillRequest(requestID, status).
+		WithResponseHeaders(headers).
+		WithBody(base64.StdEncoding.EncodeToString([]byte(entry.Body))).
+		Do(ctx)
+}
+
+// harContentType recovers a usable type for a recorded response.
+//
+// brw's own HAR export has no per-response content type to record — the in-page
+// capture never sees one — so every entry it writes is application/octet-stream.
+// Replaying a JSON endpoint as octet-stream breaks any page that branches on the
+// header, so an absent or placeholder type is re-derived from the URL and body
+// exactly as a hand-written mock's would be.
+func harContentType(entry HAREntry) string {
+	recorded := strings.TrimSpace(entry.ContentType)
+	if recorded != "" && !strings.EqualFold(recorded, "application/octet-stream") {
+		return recorded
+	}
+	return guessContentType(entry.URL, entry.Body)
 }

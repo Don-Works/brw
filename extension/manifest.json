@@ -8,7 +8,7 @@
   "minimum_chrome_version": "116",
   "homepage_url": "https://brw.donworks.co.uk",
   "incognito": "not_allowed",
-  "permissions": ["debugger", "tabs", "tabGroups", "alarms", "storage", "notifications", "webNavigation", "offscreen", "downloads"],
+  "permissions": ["debugger", "tabs", "tabGroups", "alarms", "storage", "notifications", "webNavigation", "offscreen", "downloads", "declarativeNetRequest"],
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",

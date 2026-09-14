@@ -147,7 +147,7 @@ func (m *Manager) armInterception(tabID string, tabCtx context.Context) {
 			}
 			if route != nil {
 				_ = chromedp.Run(answerCtx, chromedp.ActionFunc(func(runCtx context.Context) error {
-					return applyRoute(runCtx, route, paused.RequestID)
+					return m.answerRoute(runCtx, tabID, route, paused)
 				}))
 				return
 			}

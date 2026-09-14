@@ -175,6 +175,13 @@ const state = {
   containment: { allowed: [], blocked: [], enabled: false },
   containmentTabs: new Set(),
   blockedRequests: new Map(),
+  // routeRuleIds maps a tab to the declarativeNetRequest session rule ids brw
+  // installed for it. DNR is the only interception available here: the extension
+  // is never handed a response body, so a rule can refuse a request but cannot
+  // answer it. Rules live in the browser, not in this worker, so the ids have to
+  // be remembered or an MV3 restart would leave rules nothing can remove.
+  routeRuleIds: new Map(),
+  nextRouteRuleId: 1,
   dialogArm: new Map(),
   // dialogLog is a bounded per-tab ring of dialogs that were answered, so an
   // agent can see that a dialog happened and how it was resolved. Without this a
@@ -288,6 +295,77 @@ function recordBlockedRequest(tabId, record) {
   entries.push(record);
   if (entries.length > MAX_BLOCKED_REQUESTS) entries.splice(0, entries.length - MAX_BLOCKED_REQUESTS);
   state.blockedRequests.set(tabId, entries);
+}
+
+// MAX_ROUTE_RULES mirrors browser.MaxRoutesPerTab: the daemon bounds its own
+// table and the browser must not be asked to hold more than it agreed to.
+const MAX_ROUTE_RULES = 50;
+
+// setTabRouteRules replaces the declarativeNetRequest session rules brw holds
+// for one tab.
+//
+// Session rules (not dynamic ones) because a route is scoped to one automation
+// run: they live in memory, are dropped when the browser closes, and never
+// persist into the user's profile. condition.tabIds confines each rule to the
+// tab the agent is driving, so a route never touches the human's other tabs.
+//
+// Only "abort" is expressible. A DNR rule decides whether a request happens; it
+// is never given the response, so fulfilling from a body or a HAR is refused by
+// the daemon before it reaches here.
+async function setTabRouteRules(tabId, rules) {
+  if (!chrome.declarativeNetRequest || !chrome.declarativeNetRequest.updateSessionRules) {
+    throw new Error("this Chrome build has no chrome.declarativeNetRequest.updateSessionRules; request interception is unavailable");
+  }
+  if (!Number.isFinite(tabId) || tabId <= 0) throw new Error("set_routes needs a tab id");
+  if (rules.length > MAX_ROUTE_RULES) {
+    throw new Error(`at most ${MAX_ROUTE_RULES} routes per tab`);
+  }
+  const removeRuleIds = state.routeRuleIds.get(tabId) || [];
+  const addRules = [];
+  const addedIds = [];
+  for (const rule of rules) {
+    const regex = typeof rule?.regex === "string" ? rule.regex : "";
+    if (!regex) throw new Error("each route rule needs a regex");
+    if (rule?.behaviour !== "abort") {
+      throw new Error(`route behaviour ${JSON.stringify(rule?.behaviour)} cannot be enforced by declarativeNetRequest; only abort can`);
+    }
+    const id = state.nextRouteRuleId++;
+    addedIds.push(id);
+    addRules.push({
+      id,
+      // Rules are evaluated highest-priority-first and brw installs the tab's set
+      // in the daemon's order, so a rule added earlier has to win: descending
+      // priority reproduces the first-match-wins the direct-CDP backend gives.
+      priority: MAX_ROUTE_RULES - addRules.length,
+      action: { type: "block" },
+      condition: {
+        regexFilter: regex,
+        // The daemon's matcher is case-sensitive; DNR's default is not, and a
+        // pattern that meant two different things per transport would be worse
+        // than one that works on neither.
+        isUrlFilterCaseSensitive: true,
+        tabIds: [tabId]
+      }
+    });
+  }
+  await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds, addRules });
+  if (addedIds.length) state.routeRuleIds.set(tabId, addedIds);
+  else state.routeRuleIds.delete(tabId);
+  return { tabId, count: addedIds.length };
+}
+
+// clearTabRouteRules drops a closed tab's rules. Chrome reuses numeric tab ids,
+// so a rule left behind would start blocking requests in an unrelated tab.
+async function clearTabRouteRules(tabId) {
+  const removeRuleIds = state.routeRuleIds.get(tabId);
+  if (!removeRuleIds || !removeRuleIds.length) return;
+  state.routeRuleIds.delete(tabId);
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds, addRules: [] });
+  } catch (_) {
+    // The rules go with the browser session anyway; a failure here is not worth
+    // surfacing to the agent that closed the tab.
+  }
 }
 
 // mapDownloadState translates a chrome.downloads state to the wire vocabulary the
@@ -667,6 +745,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   state.forcedHoverNodes.delete(tabId);
   if (state.forcedHoverTimers.has(tabId)) clearTimeout(state.forcedHoverTimers.get(tabId));
   state.forcedHoverTimers.delete(tabId);
+  void clearTabRouteRules(tabId);
   if (state.activeTabId === tabId) state.activeTabId = null;
   // The agent's pinned tab was closed — drop the pin so resolution falls back to a
   // live tab instead of repeatedly probing a dead one.
@@ -1726,6 +1805,15 @@ async function handle(message) {
         state.containmentTabs.add(tabId);
       }
       send({ id: message.id, ok: true, result: { enabled: true, tabId } });
+      return;
+    }
+    if (message.type === "set_routes") {
+      // The daemon sends the tab's COMPLETE rule set every time, so this replaces
+      // rather than merges: a partial update that lost a frame would otherwise
+      // leave Chrome enforcing rules brw no longer believes in.
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      const result = await setTabRouteRules(tabId, Array.isArray(message.params?.rules) ? message.params.rules : []);
+      send({ id: message.id, ok: true, result });
       return;
     }
     if (message.type === "get_blocked_requests") {

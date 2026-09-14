@@ -1399,6 +1399,18 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
+		// The HAR is read here rather than inside a transport: the recording
+		// lives in the artifact store this surface owns, and decoding it here is
+		// what keeps every transport free of a dependency on artifact storage —
+		// including the --upstream-http proxy, where the store is on the browser
+		// host and reached through the same API.
+		if strings.EqualFold(strings.TrimSpace(req.Action), "replay") {
+			entries, err := artifact.LoadHARFixture(ctx, s.artifactService(), req.HARArtifactID)
+			if err != nil {
+				return toolError(err), nil
+			}
+			req.HAR = entries
+		}
 		result, err := router.Route(ctx, req)
 		return toolJSON(result, err)
 	case "brw_diff":
@@ -2525,16 +2537,23 @@ func tools() []map[string]any {
 			"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds. Defaults to the daemon timeout (typically 20s)."},
 			"tab_id":     stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"condition"})),
-		tool("brw_route", "Intercept matching requests and answer them without touching the network: mock an API response, force an error status, or abort a request entirely (analytics, a slow third party). pattern is a URL glob where * matches any run of characters; a pattern with no * matches as a prefix. First matching route wins, so add specific rules before general ones. Routes never widen what the page may reach: a request the navigation policy forbids stays blocked. Active routes are reported by brw_observe so mocked traffic is never invisible in the transcript.", object(map[string]any{
-			"action":       stringEnumSchema("add installs a rule, list shows the tab's rules, clear removes one pattern (or all rules when pattern is omitted).", "add", "list", "clear"),
-			"pattern":      stringSchema("URL glob, e.g. https://api.example.com/v1/* — required for add, optional for clear."),
-			"behaviour":    stringEnumSchema("fulfill answers from body/status (the default); abort fails the request as a network error.", "fulfill", "abort"),
-			"status":       map[string]any{"type": "integer", "description": "HTTP status for behaviour=fulfill. Defaults to 200."},
-			"body":         stringSchema("Response body for behaviour=fulfill."),
-			"content_type": stringSchema("Response Content-Type. Inferred from the body or the pattern's extension when omitted."),
-			"headers":      map[string]any{"type": "object", "description": "Extra response headers for behaviour=fulfill.", "additionalProperties": map[string]any{"type": "string"}},
-			"times":        map[string]any{"type": "integer", "description": "Retire the route after this many matches. Omit for a rule that applies until cleared."},
-			"tab_id":       stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		tool("brw_route", "Intercept matching requests and answer them without touching the network: mock an API response, force an error status, abort a request entirely (analytics, a slow third party), or REPLAY a whole recorded HAR so a page loads from a fixture instead of from a live backend. pattern is a URL glob where * matches any run of characters; a pattern with no * matches as a prefix. First matching route wins, so add specific rules before general ones. Routes never widen what the page may reach: a request the navigation policy forbids stays blocked. Active routes are reported by brw_observe so mocked traffic is never invisible in the transcript.\n\naction=replay takes a har_artifact_id from brw_artifact_capture{kind:\"har\"} and answers each matching request with the exchange recorded for it. match lists the request properties an entry has to agree on and defaults to [method,url]; add \"body\" only for a fixture whose recordings differ by request body, because a fixture that includes it misses every request whose body was not recorded byte-for-byte. on_miss decides what a request the HAR does not hold does: passthrough (the default) sends it to the real network, fail refuses it and records the unmatched method and URL in the route's fixture.misses, which is what makes a replay deterministic — the page under test can reach nothing that was not recorded. Entries are consumed in recorded order, so a URL recorded twice with different answers replays in sequence; once every matching entry is used the first answers again. Redaction happens at RECORD time: a HAR captured with the default redaction carries \"[redacted by brw]\" where a credential header or request body was, and replays with those values.\n\nTRANSPORT: fulfill and replay need response bodies and run on direct-CDP only; on the extension-bridge transport (the user's signed-in Chrome) they return a named capability error and behaviour=abort, enforced with a declarativeNetRequest session rule, is what works there.", object(map[string]any{
+			"action":          stringEnumSchema("add installs a rule, replay installs a HAR-backed fixture, list shows the tab's rules, clear removes one pattern (or all rules when pattern is omitted).", "add", "replay", "list", "clear"),
+			"pattern":         stringSchema("URL glob, e.g. https://api.example.com/v1/* — required for add, optional for clear, and for replay it scopes which requests come from the HAR (default * , every request)."),
+			"behaviour":       stringEnumSchema("fulfill answers from body/status (the default); abort fails the request as a network error. Does not apply to action=replay, which answers from the HAR.", "fulfill", "abort"),
+			"status":          map[string]any{"type": "integer", "description": "HTTP status for behaviour=fulfill. Defaults to 200."},
+			"body":            stringSchema("Response body for behaviour=fulfill."),
+			"content_type":    stringSchema("Response Content-Type. Inferred from the body or the pattern's extension when omitted."),
+			"headers":         map[string]any{"type": "object", "description": "Extra response headers for behaviour=fulfill.", "additionalProperties": map[string]any{"type": "string"}},
+			"times":           map[string]any{"type": "integer", "description": "Retire the route after this many matches. Omit for a rule that applies until cleared."},
+			"har_artifact_id": stringSchema("For action=replay: the artifact_id of a HAR captured with brw_artifact_capture{kind:\"har\"}."),
+			"match": map[string]any{
+				"type":        "array",
+				"description": "For action=replay: which request properties a recorded entry must agree on. Defaults to [method,url].",
+				"items":       stringEnumSchema("Match key.", browser.HARMatchMethod, browser.HARMatchURL, browser.HARMatchBody),
+			},
+			"on_miss": stringEnumSchema("For action=replay: what a request within the pattern that the HAR does not hold does. passthrough (default) sends it to the network; fail refuses it and records the method and URL.", browser.HARMissPassthrough, browser.HARMissFail),
+			"tab_id":  stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"action"})),
 		tool("brw_diff", "Answer \"did my action actually change the page?\" without re-reading the page. action=mark records the current state for the tab; action=compare reports what changed since that mark as counts plus named added/removed/updated elements, and says plainly when nothing changed. Elements are matched by identity, so a list that re-renders in place does not read as everything being replaced. Far cheaper than taking two full snapshots and comparing them in context.", object(map[string]any{
 			"action": stringEnumSchema("mark records the baseline; compare reports what changed since it.", "mark", "compare"),

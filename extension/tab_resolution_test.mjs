@@ -1275,6 +1275,58 @@ async function scenarioHandshakeTokenFailuresAreDistinguishable() {
   sandbox.fetch = originalFetch;
 }
 
+// brw_route on this transport is declarativeNetRequest, not Fetch interception:
+// the extension is never handed a response, so a rule can only refuse a request.
+// The daemon sends the tab's complete rule set and this asserts what actually
+// reaches Chrome — scoped to one tab, case-sensitive like the daemon's matcher,
+// and with the previous ids removed rather than accumulated.
+async function scenarioRouteRulesAreTabScopedAndReplaced() {
+  await reset();
+  T.state.routeRuleIds.clear();
+  T.state.nextRouteRuleId = 1;
+  const savedUpdate = overrides["declarativeNetRequest.updateSessionRules"];
+  const updates = [];
+  try {
+    overrides["declarativeNetRequest.updateSessionRules"] = async (arg) => { updates.push(arg); };
+    setWin({ id: 1, type: "normal", focused: true });
+    setTab({ id: 11, windowId: 1, active: true, url: "https://app.test/", title: "app" });
+    const socket = new MockWebSocket(); socket.readyState = MockWebSocket.OPEN; T.state.socket = socket;
+
+    await T.handle({ id: "routes-1", type: "set_routes", params: { tabId: 11, rules: [
+      { regex: "^https://tracker\\.test/.*", behaviour: "abort" },
+      { regex: "^https://ads\\.test/.*", behaviour: "abort" }
+    ] } });
+    const first = updates.at(-1);
+    check("both rules reach Chrome", first?.addRules?.length === 2);
+    check("a route rule blocks", first?.addRules?.every((r) => r.action?.type === "block"));
+    check("a route rule is scoped to the driven tab", first?.addRules?.every((r) => r.condition?.tabIds?.length === 1 && r.condition.tabIds[0] === 11));
+    check("the daemon's regex is passed through", first?.addRules?.[0]?.condition?.regexFilter === "^https://tracker\\.test/.*");
+    check("matching is case-sensitive like the daemon's matcher", first?.addRules?.every((r) => r.condition?.isUrlFilterCaseSensitive === true));
+    check("the earlier rule wins on priority", first.addRules[0].priority > first.addRules[1].priority);
+    check("the first push removes nothing", (first?.removeRuleIds || []).length === 0);
+    check("the reply reports what was installed", socket.sent.at(-1)?.result?.count === 2);
+
+    await T.handle({ id: "routes-2", type: "set_routes", params: { tabId: 11, rules: [
+      { regex: "^https://tracker\\.test/.*", behaviour: "abort" }
+    ] } });
+    const second = updates.at(-1);
+    check("a replacement removes the previous rule ids", JSON.stringify(second?.removeRuleIds) === JSON.stringify(first.addRules.map((r) => r.id)));
+    check("a replacement installs the new set", second?.addRules?.length === 1);
+
+    await T.handle({ id: "routes-3", type: "set_routes", params: { tabId: 11, rules: [] } });
+    check("an empty set clears the tab's rules", updates.at(-1)?.addRules?.length === 0 && T.state.routeRuleIds.has(11) === false);
+
+    await T.handle({ id: "routes-4", type: "set_routes", params: { tabId: 11, rules: [
+      { regex: "^https://api\\.test/.*", behaviour: "fulfill" }
+    ] } });
+    const refusal = socket.sent.at(-1);
+    check("a body-backed rule is refused, not silently blocked",
+      refusal?.ok === false && String(refusal?.error || "").includes("declarativeNetRequest"));
+  } finally {
+    overrides["declarativeNetRequest.updateSessionRules"] = savedUpdate;
+  }
+}
+
 (async () => {
   await scenarioConsentGateIsFailClosed();
   await scenarioPinBeatsForeground();
@@ -1297,6 +1349,7 @@ async function scenarioHandshakeTokenFailuresAreDistinguishable() {
   await scenarioCloseTabIsBoundedAndFailClosed();
   await scenarioDialogArmingAndSafeDefaults();
   await scenarioSubresourceContainment();
+  await scenarioRouteRulesAreTabScopedAndReplaced();
   await scenarioHandshakeTokenFailuresAreDistinguishable();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

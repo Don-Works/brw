@@ -51,8 +51,11 @@ type Bridge struct {
 	// containment records which tabs already have subresource containment
 	// installed, so arming costs one message per tab rather than one per action.
 	containment containmentArm
-	usage       *usagelog.Recorder
-	server      *http.Server
+	// routes mirrors the declarativeNetRequest session rules the extension holds
+	// per tab, so brw_route can list and rebuild them without asking Chrome.
+	routes bridgeRouteTable
+	usage  *usagelog.Recorder
+	server *http.Server
 
 	// authToken, when non-empty, is a per-launch shared secret the extension may
 	// present in its hello. The daemon serves it over the loopback /status
@@ -1317,6 +1320,11 @@ func (b *Bridge) invalidateTabStateLocked(tabID string) {
 	b.emulationMu.Lock()
 	delete(b.emulationStates, tabID)
 	b.emulationMu.Unlock()
+	// Chrome reuses numeric tab ids. The extension drops the closed tab's
+	// declarativeNetRequest rules, so keeping the daemon's copy would make the
+	// next brw_route on a replacement tab re-push a rule set the agent driving it
+	// never asked for.
+	b.routes.set(tabID, nil)
 }
 
 func (b *Bridge) invalidateTabState(tabID string) {
