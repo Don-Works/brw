@@ -185,6 +185,10 @@ grep '"error_class":"tab_not_drivable"' \
 
 ## Making a new extension build live
 
+> **Do not run this unattended.** `chrome.runtime.reload()` can leave the MV3
+> service worker unloaded with nothing able to wake it, and recovering needs a
+> human at the browser. Read the recovery note below before you start.
+
 `chrome.runtime.reload()` reloads an unpacked extension from disk without
 restarting the browser or losing tabs. Drive it with brw:
 
@@ -193,6 +197,38 @@ brw_open({url: "chrome-extension://amocjcgddnoakjijfggdpnefdnboilpe/options.html
 brw_evaluate({expression: "chrome.runtime.getManifest().version"})   // confirm what is RUNNING
 brw_evaluate({expression: "chrome.runtime.reload(); 'go'"})          // bridge drops; expected
 ```
+
+### When the bridge does not come back
+
+The reload unloads the extension, and an MV3 service worker only starts on an
+event. Reloading clears the extension's alarms, so the periodic reconnect alarm
+that would normally restart the worker no longer exists, and Chrome has no
+registered listeners left to wake it with. The bridge then stays disconnected
+indefinitely rather than for a moment.
+
+These do **not** recover it, so do not spend time on them:
+
+- Waiting. There is no alarm left to fire.
+- Creating or activating tabs. The worker has no live listeners to be woken by.
+- Opening the extension's options page from outside the browser
+  (`open`/`xdg-open` on a `chrome-extension://` URL). Chrome refuses external
+  navigation to extension pages.
+- Driving it with brw. The bridge it would travel over is the thing that is down.
+
+Recovery needs one of:
+
+- **A person clicking Reload** on the extension's card in `chrome://extensions`,
+  once per affected profile. This is the fast path and keeps every tab.
+- **Restarting the browser**, which reloads the extension from disk and fires
+  `chrome.runtime.onStartup`.
+
+Attaching a debugger port is not a way out either: a browser started without
+`--remote-debugging-port` cannot be given one without restarting it, and since
+Chrome 136 that flag is ignored against the default user-data directory anyway.
+
+So: reload only when someone can reach the browser, and prefer a browser restart
+when the session is unattended. Restarting the daemon alone is always safe — it
+reconnects to the running extension within seconds and never disturbs it.
 
 Then re-check `/status` (or the daemon log) for the new `build`. `make
 install-mac` refreshes the canonical extension and every existing

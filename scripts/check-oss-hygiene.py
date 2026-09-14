@@ -10,6 +10,10 @@ Executable recipe-shaped JSON and recipe-corpus paths are rejected across the
 entire tracked and untracked tree. PII and secret patterns are scanned in ADDED
 lines against a base ref; re-flagging already-released public install paths on
 every run would train people to ignore the scanner.
+
+COMMIT MESSAGES are scanned with the same patterns. A message is committed and
+published exactly like a file is, but it appears in no diff, so scanning only
+added lines let an operator machine name reach the public history of this repo.
 """
 import json
 import os
@@ -48,6 +52,9 @@ PATTERNS = [
     ("personal email", r"[a-zA-Z0-9._%+-]+@(?!example\.(com|org|net|edu)\b)(?![a-zA-Z0-9.-]*\.(test|invalid|example|localhost)\b)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"),
     ("local workspace or profile name", r"brw-chromium-work|chromium-work-profile"),
     ("launchd label", r"co\.revitt\."),
+    # Bare operator hostnames match none of the rules above: they carry no
+    # domain, no path and no label prefix. They still name a specific machine.
+    ("operator machine name", r"\bmax-(mac|air)\b"),
     ("tailscale host", r"[a-z0-9-]+\.ts\.net"),
     ("private network address", r"\b(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}(\.\d{1,3})?\b"),
     ("credential literal", r"(?i)\b(api[_-]?key|secret|token|passwd|password|bearer)\b\s*[:=]\s*['\"][^'\"]{8,}"),
@@ -107,6 +114,35 @@ def contains_recipe_document(value):
     return False
 
 
+# noreply forms cannot receive mail, so they are not a contact-detail leak.
+NON_ROUTABLE_EMAIL = re.compile(r"(?i)^no-?reply@|@([a-z0-9.-]*\.)?noreply\.[a-z0-9.-]+$")
+
+
+def is_non_routable_email(address):
+    """Report whether an address can never reach a mailbox.
+
+    Co-authorship and sign-off trailers are structured metadata that every commit
+    here carries, and the addresses in them are the provider's noreply forms.
+    Flagging those would fail every commit and train people to skip the gate —
+    the same reasoning that already exempts the RFC 2606 reserved domains. A real
+    address in a trailer is still a finding."""
+    return bool(NON_ROUTABLE_EMAIL.search(address))
+
+
+def commit_messages(base):
+    """Yield (ref, line) for every line of every commit message added over base.
+
+    A commit message is published as surely as a file is, and the docstring above
+    promises nothing committed carries local machine detail. added_lines() reads
+    diffs, and a message appears in no diff, so without this a hostname in a
+    commit message reached the public history unchallenged."""
+    revs = git(["log", f"{base}..HEAD", "--format=%H"], f"list commits since {base}").split()
+    for rev in revs:
+        body = git(["log", "-1", "--format=%B", rev], f"read commit message {rev[:12]}")
+        for line in body.splitlines():
+            yield f"commit {rev[:12]}", line
+
+
 def main():
     hits = []
     # Public brw owns the recipe ABI, never an operator's executable corpus.
@@ -145,6 +181,14 @@ def main():
         if contains_recipe_document(value):
             hits.append(("executable recipe JSON", repository_path, "move operational recipes to --recipe-root or the private provider"))
     scanned = 0
+    # Commit messages are scanned with the same patterns, but never with the
+    # per-file waivers: a synthetic-home fixture is a file, not a message.
+    for ref, line in commit_messages(BASE):
+        scanned += 1
+        for label, pattern in PATTERNS:
+            match = re.search(pattern, line)
+            if match and not (label == "personal email" and is_non_routable_email(match.group(0))):
+                hits.append((label, ref, line.strip()[:160]))
     for path, line in added_lines(BASE):
         # A scanner cannot scan its own rules: the patterns necessarily contain
         # the very strings they look for.
