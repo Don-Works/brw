@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -284,4 +285,117 @@ func TestRouteDefaultsContentType(t *testing.T) {
 			}
 		})
 	}
+}
+
+// routeInterceptionFixture is a plain page on the fixture's own origin, so the
+// fetch the assertions run is same-origin and cannot be refused by CORS.
+const routeInterceptionFixture = `<html><head><title>route</title></head><body><h1>route</h1></body></html>`
+
+// Request interception is turned back OFF once nothing on a tab needs it, and
+// armInterception installs a tab's listener once and returns early ever after.
+// So brw_route has to bring interception back itself: without that the route is
+// accepted, listed and reported as active while every matching request goes to
+// the real network — a mocked test passing against production.
+func TestRouteArmsInterceptionOnATabThatTurnedItOff(t *testing.T) {
+	const fixtureUser, fixturePassword = "fixture-user", "fixture-pw-a1b2"
+
+	tests := []struct {
+		name    string
+		turnOff func(t *testing.T, m *Manager, ctx context.Context, tabID, origin string)
+	}{
+		{
+			name: "after an authenticate that has finished",
+			turnOff: func(t *testing.T, m *Manager, ctx context.Context, tabID, origin string) {
+				t.Helper()
+				if _, err := m.Authenticate(ctx, CredentialsOptions{
+					TabID:    tabID,
+					Origin:   origin,
+					Username: fixtureUser,
+					Password: fixturePassword,
+					URL:      origin + "/protected",
+				}); err != nil {
+					t.Fatalf("authenticate: %v", err)
+				}
+			},
+		},
+		{
+			name: "after the extra header table is cleared",
+			turnOff: func(t *testing.T, m *Manager, ctx context.Context, tabID, origin string) {
+				t.Helper()
+				if _, err := m.SetExtraHeaders(ctx, ExtraHeadersOptions{
+					TabID:   tabID,
+					Origins: []OriginHeaders{{Origin: origin, Headers: map[string]string{"X-Fixture": "1"}}},
+				}); err != nil {
+					t.Fatalf("set extra headers: %v", err)
+				}
+				settleInterception()
+				if _, err := m.SetExtraHeaders(ctx, ExtraHeadersOptions{TabID: tabID, Clear: true}); err != nil {
+					t.Fatalf("clear extra headers: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var apiHits int64
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api", func(w http.ResponseWriter, _ *http.Request) {
+				atomic.AddInt64(&apiHits, 1)
+				w.Header().Set("Content-Type", "text/plain")
+				fmt.Fprint(w, "from-the-network")
+			})
+			mux.HandleFunc("/protected", func(w http.ResponseWriter, r *http.Request) {
+				user, password, ok := r.BasicAuth()
+				if !ok || user != fixtureUser || password != fixturePassword {
+					w.Header().Set("WWW-Authenticate", `Basic realm="fixture"`)
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				w.Header().Set("Content-Type", "text/html")
+				fmt.Fprint(w, routeInterceptionFixture)
+			})
+			mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				fmt.Fprint(w, routeInterceptionFixture)
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			m := newHeadlessManager(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			tabID := routeFixtureTab(t, m, ctx)
+			if _, err := m.NavigateTo(ctx, srv.URL); err != nil {
+				t.Fatalf("navigate: %v", err)
+			}
+
+			tt.turnOff(t, m, ctx, tabID, srv.URL)
+			settleInterception()
+
+			if _, err := m.Route(ctx, RouteOptions{
+				Action: "add", TabID: tabID,
+				Pattern: srv.URL + "/api", Behaviour: "fulfill",
+				Body: "mocked-by-brw", Status: 200,
+			}); err != nil {
+				t.Fatalf("route add: %v", err)
+			}
+
+			got := evaluateString(t, m, ctx, fmt.Sprintf(`fetch(%q).then(r => r.text())`, srv.URL+"/api"))
+			if got != "mocked-by-brw" {
+				t.Fatalf("the page read %q and the server was hit %d time(s); the route was accepted but never intercepted", got, atomic.LoadInt64(&apiHits))
+			}
+			if hits := atomic.LoadInt64(&apiHits); hits != 0 {
+				t.Fatalf("a fulfilled route still reached the server %d time(s)", hits)
+			}
+		})
+	}
+}
+
+// settleInterception waits for the enable armInterception schedules on its own
+// goroutine. It is the difference between this test observing "the route never
+// fired" and racing a late enable that would answer the request anyway and hide
+// the defect.
+func settleInterception() {
+	time.Sleep(1500 * time.Millisecond)
 }

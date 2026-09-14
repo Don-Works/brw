@@ -503,11 +503,22 @@ func boundedDownloadString(value string, limit int) string {
 func (m *Manager) retireDownloadStaging() {
 	m.downloadsMu.Lock()
 	defer m.downloadsMu.Unlock()
-	if m.downloadDirOwned && m.downloadDir != "" {
-		m.retiredDownloadDirs = append(m.retiredDownloadDirs, m.downloadDir)
-	}
+	dir, owned := m.downloadDir, m.downloadDirOwned
 	m.downloadDir = ""
 	m.downloadDirOwned = false
+	if !owned || dir == "" {
+		return
+	}
+	// An empty staging directory holds no file brw_downloads ever named, so it
+	// goes now rather than at Close. Toggling brw_set_download_path builds a
+	// fresh one on every restore, and keeping each would leave one directory per
+	// toggle on disk and one entry per toggle in this list until shutdown.
+	// os.Remove is the emptiness test: it refuses a directory still holding
+	// anything, which is exactly the directory that has to be kept.
+	if strings.HasPrefix(filepath.Base(dir), "session-") && os.Remove(dir) == nil {
+		return
+	}
+	m.retiredDownloadDirs = append(m.retiredDownloadDirs, dir)
 }
 
 func (m *Manager) cleanupDownloadStaging() error {

@@ -366,3 +366,91 @@ func TestManagerDownloadStagingRejectsSymlinkAndGitCheckout(t *testing.T) {
 		}
 	})
 }
+
+// Retiring keeps a staging directory because files already reported as living
+// there must stay readable. An EMPTY one has no such file, and brw_set_download_path
+// makes a fresh one on every clear:true, so keeping those would leave one
+// directory per toggle on disk and one entry per toggle in the retired list for
+// the life of the daemon.
+func TestRetireDownloadStagingKeepsOnlyWhatStillHoldsFiles(t *testing.T) {
+	tests := []struct {
+		name        string
+		owned       bool
+		file        string
+		rounds      int
+		wantOnDisk  bool
+		wantRetired int
+	}{
+		{
+			name:        "an empty staging directory brw made",
+			owned:       true,
+			rounds:      1,
+			wantOnDisk:  false,
+			wantRetired: 0,
+		},
+		{
+			name:        "toggling the download path repeatedly",
+			owned:       true,
+			rounds:      5,
+			wantOnDisk:  false,
+			wantRetired: 0,
+		},
+		{
+			name:        "a staging directory holding a download",
+			owned:       true,
+			file:        "report.pdf",
+			rounds:      1,
+			wantOnDisk:  true,
+			wantRetired: 1,
+		},
+		{
+			// brw removes only directories it created, so one the caller named is
+			// neither deleted nor queued for deletion at Close.
+			name:        "a directory the caller named",
+			rounds:      1,
+			wantOnDisk:  true,
+			wantRetired: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &Manager{}
+			base := t.TempDir()
+			var dirs []string
+			for i := 0; i < tt.rounds; i++ {
+				dir, err := os.MkdirTemp(base, "session-")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tt.file != "" {
+					if err := os.WriteFile(filepath.Join(dir, tt.file), []byte("staged"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				dirs = append(dirs, dir)
+				m.downloadsMu.Lock()
+				m.downloadDir = dir
+				m.downloadDirOwned = tt.owned
+				m.downloadsMu.Unlock()
+				m.retireDownloadStaging()
+			}
+
+			for _, dir := range dirs {
+				_, err := os.Stat(dir)
+				if tt.wantOnDisk && err != nil {
+					t.Fatalf("staging directory %s was removed although it still holds files: %v", filepath.Base(dir), err)
+				}
+				if !tt.wantOnDisk && err == nil {
+					t.Fatalf("empty staging directory %s was left behind", filepath.Base(dir))
+				}
+			}
+			if got := len(m.retiredDownloadDirs); got != tt.wantRetired*tt.rounds {
+				t.Fatalf("retired %d directories after %d round(s), want %d", got, tt.rounds, tt.wantRetired*tt.rounds)
+			}
+			if m.downloadDir != "" || m.downloadDirOwned {
+				t.Fatalf("retiring left the manager on %q (owned %v)", m.downloadDir, m.downloadDirOwned)
+			}
+		})
+	}
+}

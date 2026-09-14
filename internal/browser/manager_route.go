@@ -105,6 +105,22 @@ func (r *routeState) match(tabID, url string) *Route {
 	return nil
 }
 
+// remove drops one rule by identity, so an add whose interception could not be
+// armed leaves no route behind that would never fire.
+func (r *routeState) remove(tabID string, target *Route) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.initLocked()
+	routes := r.routes[tabID]
+	for i, route := range routes {
+		if route != target {
+			continue
+		}
+		r.routes[tabID] = append(routes[:i:i], routes[i+1:]...)
+		return
+	}
+}
+
 // matchURLGlob matches a URL against a "*" glob. path.Match is not used: it
 // treats "/" as a separator, so "https://host/*" would fail to match a nested
 // path, which is the opposite of what a URL pattern means to a caller.
@@ -179,6 +195,16 @@ func (m *Manager) Route(ctx context.Context, opts RouteOptions) (RouteResult, er
 		// Routes need request interception even when no navigation policy is
 		// configured, so arm it here rather than only at containment time.
 		m.armInterception(tabID, tabCtx)
+		// armInterception installs the tab's listener once and returns early ever
+		// after, so on a tab where interception was later turned back OFF — by a
+		// finished brw_authenticate or by brw_set_extra_headers{clear:true} — this
+		// sync is the only thing that turns it back on. Without it the route is
+		// accepted and listed while every matching request goes to the real
+		// network, which is a mocked test reporting green against production.
+		if err := m.syncFetchInterception(tabCtx, tabID); err != nil {
+			m.routes.remove(tabID, route)
+			return RouteResult{}, fmt.Errorf("arm request interception for this route: %w", err)
+		}
 		routes := m.routes.list(tabID)
 		return RouteResult{
 			Action: "add", TabID: tabID, Routes: routes, Count: len(routes),
@@ -201,7 +227,15 @@ func (m *Manager) Route(ctx context.Context, opts RouteOptions) (RouteResult, er
 		}
 		m.routes.mu.Unlock()
 		routes := m.routes.list(tabID)
-		return RouteResult{Action: "clear", TabID: tabID, Routes: routes, Count: len(routes)}, nil
+		result := RouteResult{Action: "clear", TabID: tabID, Routes: routes, Count: len(routes)}
+		// The route table is usually the only reason this tab was intercepting;
+		// left armed, every later request still pauses and crosses to the daemon
+		// for nothing. Whether it actually goes off is syncFetchInterception's
+		// decision: a credential, a header table or the navigation policy keeps it.
+		if err := m.syncFetchInterception(tabCtx, tabID); err != nil {
+			result.Note = "the routes are cleared; request interception could not be turned back off, so requests on this tab still pause at the daemon: " + err.Error()
+		}
+		return result, nil
 
 	default:
 		return RouteResult{}, fmt.Errorf("unknown route action %q: use add, list, or clear", opts.Action)

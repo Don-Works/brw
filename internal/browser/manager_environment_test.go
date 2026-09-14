@@ -9,6 +9,7 @@ import (
 
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/chromedp/cdproto"
+	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 )
@@ -245,5 +246,69 @@ func TestAuthLockKeepsTwoCallsCredentialsApart(t *testing.T) {
 	close(failures)
 	for err := range failures {
 		t.Fatal(err)
+	}
+}
+
+// What brw records before it grants geolocation is what clear puts back. Record
+// nothing and clear leaves brw's own grant standing on a persistent profile,
+// which is the one outcome a temporary override must never produce.
+func TestGeoPermissionToRestore(t *testing.T) {
+	tests := []struct {
+		name         string
+		previous     string
+		readErr      error
+		wantState    string
+		wantRemember bool
+	}{
+		{
+			name:         "a page that has never been asked",
+			previous:     permissionStatePrompt,
+			wantState:    permissionStatePrompt,
+			wantRemember: true,
+		},
+		{
+			name:         "a page that refused geolocation",
+			previous:     permissionStateDenied,
+			wantState:    permissionStateDenied,
+			wantRemember: true,
+		},
+		{
+			name:     "a grant that was already there is not brw's to take back",
+			previous: permissionStateGranted,
+		},
+		{
+			// navigator.permissions.query runs in the page and fails on one that is
+			// navigating or already gone. Recording nothing there is what turned a
+			// temporary grant into a standing one.
+			name:         "the state could not be read",
+			readErr:      errors.New("permissions query failed"),
+			wantState:    permissionStatePrompt,
+			wantRemember: true,
+		},
+		{
+			name:         "the state could not be read and the page had reported granted",
+			previous:     permissionStateGranted,
+			readErr:      errors.New("permissions query failed"),
+			wantState:    permissionStatePrompt,
+			wantRemember: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, remember := geoPermissionToRestore(tt.previous, tt.readErr)
+			if state != tt.wantState || remember != tt.wantRemember {
+				t.Fatalf("geoPermissionToRestore(%q, %v) = (%q, %v), want (%q, %v)",
+					tt.previous, tt.readErr, state, remember, tt.wantState, tt.wantRemember)
+			}
+			if !remember {
+				return
+			}
+			// A recorded state is only worth anything if it maps onto a CDP setting
+			// that actually undoes the grant.
+			if permissionSettingFor(state) == cdpbrowser.PermissionSettingGranted {
+				t.Fatalf("clear would restore %q as a grant, leaving brw's own grant in place", state)
+			}
+		})
 	}
 }

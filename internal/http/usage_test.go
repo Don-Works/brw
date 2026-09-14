@@ -98,15 +98,55 @@ func TestArtifactUsageLogNeverContainsHandleQueryOrBackingError(t *testing.T) {
 }
 
 // unloggedAPIRoutes are the /api/ routes deliberately outside usageOperations.
-// Everything else is a tool call and belongs in the ledger; two reviews in a row
-// found a newly added route missing from the allowlist, which is invisible
-// rather than noisy — the middleware simply skips an unknown path.
+// Everything else is a tool call and belongs in the ledger; three reviews in a
+// row found a newly added route missing from the allowlist, which is invisible
+// rather than noisy - the middleware simply skips an unknown path.
 var unloggedAPIRoutes = map[string]string{
 	"/api/artifacts/{id}":        "wildcard handle route, classified by the middleware's /api/artifacts/ prefix fallback",
 	"/api/artifacts/{id}/info":   "wildcard handle route, classified by the prefix fallback",
 	"/api/artifacts/{id}/read":   "wildcard handle route, classified by the prefix fallback",
 	"/api/artifacts/{id}/search": "wildcard handle route, classified by the prefix fallback",
 	"/api/session/stream":        "long-lived SSE connection, not one operation with an outcome",
+}
+
+// routePathFromPattern reduces a net/http mux pattern - "[METHOD ][HOST]/[PATH]"
+// - to the path the usage allowlist is keyed by.
+//
+// It reports failure rather than handing back the pattern unchanged because a
+// pattern this parser cannot read is precisely the case the caller must not pass
+// over: a shape it silently skipped would be a route missing from
+// usageOperations that the guard declared fine.
+func routePathFromPattern(pattern string) (string, bool) {
+	rest := strings.TrimSpace(pattern)
+	if method, after, found := strings.Cut(rest, " "); found {
+		// The grammar allows nothing but a method before that space, and every
+		// method this codebase registers is upper-case, which is also the only
+		// spelling net/http will ever match a request against.
+		if !isUpperCaseMethod(method) {
+			return "", false
+		}
+		rest = strings.TrimSpace(after)
+	}
+	// The host is optional and ends at the first "/", which begins the path.
+	if slash := strings.Index(rest, "/"); slash > 0 {
+		rest = rest[slash:]
+	}
+	if !strings.HasPrefix(rest, "/") {
+		return "", false
+	}
+	return rest, true
+}
+
+func isUpperCaseMethod(method string) bool {
+	if method == "" {
+		return false
+	}
+	for _, r := range method {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 // TestEveryAPIRouteIsInTheUsageAllowlist reads the route table out of server.go
@@ -139,11 +179,12 @@ func TestEveryAPIRouteIsInTheUsageAllowlist(t *testing.T) {
 		if err != nil {
 			return true
 		}
-		// "POST /api/page/assert" and "/api/page/assert" both register one path.
-		if _, path, found := strings.Cut(pattern, " "); found {
-			pattern = path
+		path, ok := routePathFromPattern(pattern)
+		if !ok {
+			t.Errorf("route pattern %q could not be read, so this guard would skip the very route it exists to catch", pattern)
+			return true
 		}
-		routes = append(routes, pattern)
+		routes = append(routes, path)
 		return true
 	})
 	if len(routes) < 50 {
@@ -165,5 +206,40 @@ func TestEveryAPIRouteIsInTheUsageAllowlist(t *testing.T) {
 		if !slices.Contains(routes, route) {
 			t.Errorf("usageOperations maps %s, which server.go no longer registers", route)
 		}
+	}
+}
+
+// The route guard is only as good as its reading of the mux patterns: a method
+// it does not know must not turn into a route it quietly skips.
+func TestRoutePathFromPattern(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    string
+		wantOK  bool
+	}{
+		{pattern: "GET /api/browser/tabs", want: "/api/browser/tabs", wantOK: true},
+		{pattern: "POST /api/page/fill", want: "/api/page/fill", wantOK: true},
+		{pattern: "DELETE /api/browser/tab", want: "/api/browser/tab", wantOK: true},
+		// Not registered today. Registered tomorrow, it has to reach the
+		// allowlist check rather than fall past both prefixes as "PUT /api/...".
+		{pattern: "PUT /api/browser/window", want: "/api/browser/window", wantOK: true},
+		{pattern: "PATCH /api/page/value", want: "/api/page/value", wantOK: true},
+		{pattern: "OPTIONS /api/page/probe", want: "/api/page/probe", wantOK: true},
+		{pattern: "/api/page/methodless", want: "/api/page/methodless", wantOK: true},
+		{pattern: "GET brw.test/api/page/hosted", want: "/api/page/hosted", wantOK: true},
+		{pattern: "  GET   /api/page/padded  ", want: "/api/page/padded", wantOK: true},
+		// net/http matches the method case-sensitively, so a lower-case one never
+		// serves anything; reading it as a path would hide that.
+		{pattern: "get /api/page/lower"},
+		{pattern: "GET nopathatall"},
+		{pattern: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pattern, func(t *testing.T) {
+			got, ok := routePathFromPattern(tt.pattern)
+			if ok != tt.wantOK || got != tt.want {
+				t.Fatalf("routePathFromPattern(%q) = (%q, %v), want (%q, %v)", tt.pattern, got, ok, tt.want, tt.wantOK)
+			}
+		})
 	}
 }

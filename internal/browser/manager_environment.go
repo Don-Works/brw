@@ -303,17 +303,16 @@ func (m *Manager) SetGeolocation(ctx context.Context, opts GeolocationOptions) (
 	// never reaches the overridden position at all.
 	granted := false
 	if originErr == nil {
-		if previous, err := m.geolocationPermissionState(tabCtx); err == nil && previous != permissionStateGranted {
-			m.env.rememberGeoPermission(origin, previous)
+		previous, readErr := m.geolocationPermissionState(tabCtx)
+		if restore, remember := geoPermissionToRestore(previous, readErr); remember {
+			m.env.rememberGeoPermission(origin, restore)
 		}
 		granted = m.setGeolocationPermission(ctx, origin, cdpbrowser.PermissionSettingGranted) == nil
 	}
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(runCtx context.Context) error {
-		return cdp.Execute(runCtx, cdpe.CommandSetGeolocationOverride, geolocationOverrideParams{
-			Latitude:  cfg.Latitude,
-			Longitude: cfg.Longitude,
-			Accuracy:  cfg.Accuracy,
-		}, nil)
+		// A conversion, not a rebuild: the JSON tags are the only difference
+		// between the two structs, and they are the reason this one exists.
+		return cdp.Execute(runCtx, cdpe.CommandSetGeolocationOverride, geolocationOverrideParams(cfg), nil)
 	})); err != nil {
 		return EnvironmentResult{}, err
 	}
@@ -852,7 +851,31 @@ func (m *Manager) pageOrigin(tabCtx context.Context) (string, error) {
 const (
 	permissionStateGranted = "granted"
 	permissionStateDenied  = "denied"
+	permissionStatePrompt  = "prompt"
 )
+
+// geoPermissionToRestore decides what clear has to put back for an origin whose
+// geolocation brw is about to grant, given the state the page reported first.
+//
+// An unreadable state resolves to prompt rather than to "record nothing".
+// navigator.permissions.query runs in the page and fails on one that is
+// navigating or already torn down, and recording nothing makes the clear path
+// take its "brw did not grant this" branch, which leaves brw's own grant
+// standing for the life of a persistent profile. Prompt is where a page starts,
+// so the cost of guessing wrong is that a human's earlier grant gets asked for
+// again; the cost of the other guess is a permanent grant nobody asked for.
+//
+// An already-granted state is recorded as nothing at all: that grant is not
+// brw's, so clear must not take it away.
+func geoPermissionToRestore(previous string, readErr error) (state string, remember bool) {
+	if readErr != nil {
+		return permissionStatePrompt, true
+	}
+	if previous == permissionStateGranted {
+		return "", false
+	}
+	return previous, true
+}
 
 // permissionSettingFor maps a Permissions API state onto the CDP setting that
 // reproduces it. Anything unrecognized falls to prompt, which is the state a
