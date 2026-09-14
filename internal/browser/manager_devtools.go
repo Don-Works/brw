@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/runtime"
@@ -25,18 +26,21 @@ const auditFloor = 90 * time.Second
 
 // Vitals reads the Core Web Vitals for the document in the target tab.
 func (m *Manager) Vitals(ctx context.Context, opts devtools.VitalsOptions) (devtools.Vitals, error) {
+	start := time.Now()
 	opts = opts.Normalize()
 	// The script waits out its own settle window inside the page, so the call
 	// deadline has to clear it with room for the round trip.
 	budget := m.timeout + time.Duration(opts.SettleMS)*time.Millisecond
-	_, tabCtx, cancel, err := m.devtoolsContext(ctx, budget)
+	tabID, tabCtx, cancel, err := m.devtoolsContext(ctx, budget)
 	if err != nil {
 		return devtools.Vitals{}, err
 	}
 	defer cancel()
 
 	var vitals devtools.Vitals
-	if err := evaluateAwait(tabCtx, devtools.BuildVitalsExpression(opts), &vitals); err != nil {
+	err = evaluateAwait(tabCtx, devtools.BuildVitalsExpression(opts), &vitals)
+	m.recordObservation(tabID, TraceActionVitals, vitals.URL, start, err)
+	if err != nil {
 		return devtools.Vitals{}, err
 	}
 	return vitals, nil
@@ -45,40 +49,67 @@ func (m *Manager) Vitals(ctx context.Context, opts devtools.VitalsOptions) (devt
 // AccessibilityAudit runs the embedded axe-core engine against the target tab.
 // The engine is injected from the binary; nothing is fetched over the network.
 func (m *Manager) AccessibilityAudit(ctx context.Context, opts devtools.AuditOptions) (devtools.AuditResult, error) {
+	start := time.Now()
 	opts = opts.Normalize()
-	_, tabCtx, cancel, err := m.devtoolsContext(ctx, auditFloor)
+	tabID, tabCtx, cancel, err := m.devtoolsContext(ctx, auditFloor)
 	if err != nil {
 		return devtools.AuditResult{}, err
 	}
 	defer cancel()
 
-	if err := ensureAxeInstalled(tabCtx); err != nil {
-		return devtools.AuditResult{}, err
-	}
-	var raw devtools.RawAudit
-	if err := evaluateAwait(tabCtx, devtools.BuildAuditExpression(opts), &raw); err != nil {
-		return devtools.AuditResult{}, err
-	}
-	return devtools.SummarizeAudit(raw, opts, time.Now())
+	result, err := func() (devtools.AuditResult, error) {
+		if err := ensureAxeInstalled(tabCtx); err != nil {
+			return devtools.AuditResult{}, err
+		}
+		var raw devtools.RawAudit
+		if err := evaluateAwait(tabCtx, devtools.BuildAuditExpression(opts), &raw); err != nil {
+			return devtools.AuditResult{}, err
+		}
+		return devtools.SummarizeAudit(raw, opts, time.Now())
+	}()
+	m.recordObservation(tabID, TraceActionAudit, result.URL, start, err)
+	return result, err
 }
 
 // Highlight draws or removes the brw overlay in the target tab.
 func (m *Manager) Highlight(ctx context.Context, opts devtools.HighlightOptions) (devtools.HighlightResult, error) {
+	start := time.Now()
 	opts, err := opts.Normalize()
 	if err != nil {
 		return devtools.HighlightResult{}, err
 	}
-	_, tabCtx, cancel, err := m.devtoolsContext(ctx, m.timeout)
+	tabID, tabCtx, cancel, err := m.devtoolsContext(ctx, m.timeout)
 	if err != nil {
 		return devtools.HighlightResult{}, err
 	}
 	defer cancel()
 
 	var result devtools.HighlightResult
-	if err := evaluateAwait(tabCtx, devtools.BuildHighlightExpression(opts), &result); err != nil {
+	err = evaluateAwait(tabCtx, devtools.BuildHighlightExpression(opts), &result)
+	// An input action, not an observation: this one appends an element to the
+	// document, so it belongs in the trace a human reads to see what brw did.
+	if tabID != "" {
+		entry := NewObservationTrace(TraceActionHighlight, HighlightTraceText(opts), start, err)
+		if len(opts.Refs) > 0 {
+			entry.Ref = opts.Refs[0]
+		}
+		m.recordTrace(tabID, entry)
+	}
+	if err != nil {
 		return devtools.HighlightResult{}, err
 	}
 	return result, nil
+}
+
+// HighlightTraceText renders what a highlight call did, for the trace. The
+// caller's label is left out on purpose: it is free text that has already been
+// drawn into the page, and the trace is served over the HTTP control plane to
+// every caller of a shared daemon.
+func HighlightTraceText(opts devtools.HighlightOptions) string {
+	if opts.Clear {
+		return "clear"
+	}
+	return strings.Join(opts.Refs, " ")
 }
 
 // devtoolsContext resolves the target tab with a deadline of its own. The
@@ -143,8 +174,12 @@ func evaluateAwait(tabCtx context.Context, expression string, dst any) error {
 			details, _ := json.Marshal(exception)
 			return fmt.Errorf("runtime exception: %s", details)
 		}
-		if obj == nil || len(obj.Value) == 0 {
-			return nil
+		if obj == nil || len(obj.Value) == 0 || string(obj.Value) == "null" {
+			// Every expression here resolves to an object. An undefined
+			// completion value means the evaluation did not reach the script —
+			// a detached target, a document swapped mid-call — and decoding it
+			// into a zero struct would report an unmeasured page as a clean one.
+			return devtools.ErrNoObservation
 		}
 		return json.Unmarshal(obj.Value, dst)
 	}))

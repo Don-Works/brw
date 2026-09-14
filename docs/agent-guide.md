@@ -462,18 +462,18 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` | 86 | ~24.0k tokens |
-| `core` | 26 | ~8.0k tokens |
-| `minimal` | 13 | ~4.4k tokens |
-| `auto` (default) | 14, growing | ~4.6k tokens to start |
+| `all` | 86 | ~23.6k tokens |
+| `core` | 26 | ~7.9k tokens |
+| `minimal` | 13 | ~4.3k tokens |
+| `auto` (default) | 14, growing | ~4.5k tokens to start |
 
 `core` advertises the common-flow tools (open/snapshot/find/click/type/fill/
 select/press/scroll/hover/drag/upload/navigate/wait/batch/observe/screenshot).
 
 `minimal` advertises only what ordinary web work needs — reach a page, see its
 controls, act on them, confirm the result: `brw_open`, `brw_navigate_to`,
-`brw_read`, `brw_snapshot`, `brw_find`, `brw_click`, `brw_fill`, `brw_select`,
-`brw_press`, `brw_wait_for`, `brw_observe`, `brw_batch`.
+`brw_read`, `brw_read_url`, `brw_snapshot`, `brw_find`, `brw_click`, `brw_fill`,
+`brw_select`, `brw_press`, `brw_wait_for`, `brw_observe`, `brw_batch`.
 
 `auto` starts from the minimal set plus `brw_tools` and grows as the agent
 discovers what it needs:
@@ -535,10 +535,17 @@ plus DOMContentLoaded, load and the navigation type. It works on a page brw did
 not open, because the browser buffers these entries from navigation start: the
 tool registers observers, drains the buffered timeline, disconnects and leaves
 nothing behind. `lcp_element` names the block that painted last, with its ref
-when it has one. Two limits worth knowing: LCP is provisional until the first
-user interaction, and INP is null until something has been interacted with —
-the browser only retains interactions of roughly 104 ms or slower, so a page
-whose interactions were all fast reports none rather than a small number.
+when it has one. `interactions` counts distinct interactions rather than timed
+events — one tap emits pointerdown, pointerup and click sharing an interaction
+id, and INP is the worst of that interaction.
+
+Three limits worth knowing: LCP is provisional until the first user
+interaction; INP is null until something has been interacted with — the browser
+only retains interactions of roughly 104 ms or slower, so a page whose
+interactions were all fast reports none rather than a small number; and a
+metric this browser cannot observe at all comes back null with its rating
+`unknown`, with the entry type named in `unavailable`. It is never 0 rated
+good, because "nothing moved" and "nobody was watching" are different facts.
 
 `brw_a11y_audit` runs axe-core and answers with the failures, worst impact
 first: rule id, impact, help text, help URL, how many elements failed, and brw
@@ -551,12 +558,26 @@ search it with `brw_artifact_search`. Scope a re-check after a fix with
 The engine is embedded in the brw binary and injected from there. brwd never
 pulls executable script off the network into a page it is driving on your
 behalf, so the audit also works offline and against an origin with a strict
-content security policy. Its only effect on the page is the `data-brw-ref`
-attribute `brw_snapshot` already writes, stamped on the elements that failed so
-they have refs to hand back.
+content security policy.
+
+The audit is read-shaped but it is not effect-free, and `page_effects` in the
+answer says what it left. Two things: the `data-brw-ref` attribute
+`brw_snapshot` already writes, stamped on the elements that failed so they have
+refs to hand back; and, unless the page shipped its own axe — which is kept, and
+named in `note` next to the embedded version — axe-core stays installed as
+`window.axe` for the life of the document. That is deliberate: re-checking one
+rule after a fix would otherwise re-inject half a megabyte of engine every time.
+It is not removed.
+
+`by_impact` counts failing **elements** at each element's own impact, so it
+sizes the work rather than the rule list. The stored report embeds the outer
+HTML of every failing element, form input values included, with no redaction;
+it is kept for the artifact store's retention unless you shorten that with
+`ttl_seconds`, and `brw_artifact_delete` removes it now.
 
 `brw_highlight` outlines an element for a human watching the browser. It is the
-one tool here that changes the page, so the change is confined and undoable: a
+one tool here that changes what the page LOOKS like, so the change is confined
+and undoable: a
 single `<div id="__brw_highlight_overlay">` with `pointer-events: none`, the
 target elements never restyled or moved, and `clear: true` to remove it. Pass
 `duration_ms` to have it remove itself, and `scroll: true` if the element

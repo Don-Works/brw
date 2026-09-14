@@ -251,6 +251,8 @@ func skipReason(action string) string {
 		return "coordinate-driven action, not ref-addressable, so not replayable"
 	case "navigate":
 		return "history navigation (back/forward/reload) depends on session history"
+	case TraceActionHighlight:
+		return "display-only overlay for a human watching the browser, nothing the page reacts to"
 	default:
 		// Observations (open, read, focus_tab, ...) are recorded so the activity
 		// stream can show a visit that performed no input action. They are not a

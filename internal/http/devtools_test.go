@@ -136,6 +136,24 @@ func TestDevtoolsRoutesAnswerFromTheRealBrowser(t *testing.T) {
 	if !strings.Contains(chunk.Text, "color-contrast") {
 		t.Errorf("stored report = %.300s, want the audit document", chunk.Text)
 	}
+	// The audit is read-shaped but not effect-free, and the route has to carry
+	// that out with the answer rather than leaving it to the tool description.
+	if !strings.Contains(audit.PageEffects, "data-brw-ref") || !strings.Contains(audit.PageEffects, "window.axe") {
+		t.Errorf("page_effects = %q, want it to name what the audit left in the page", audit.PageEffects)
+	}
+
+	// The stored report holds the raw HTML of every failing element, so a caller
+	// on a page carrying real data has to be able to bound its retention through
+	// this route — it is the one an upstream MCP process forwards to. The store
+	// behind these routes keeps artifacts for an hour.
+	var bounded devtools.AuditResult
+	postRoute(t, server, "/api/page/a11y", `{"rules":["color-contrast"],"ttl_seconds":120}`, &bounded)
+	if bounded.Artifact == nil {
+		t.Fatalf("no artifact handle came back with a ttl: %+v", bounded)
+	}
+	if left := time.Until(bounded.Artifact.ExpiresAt); left > 10*time.Minute {
+		t.Errorf("the report expires in %v with ttl_seconds:120; the route dropped the caller's retention", left)
+	}
 
 	ref := audit.Rules[0].Refs[0]
 	var marked devtools.HighlightResult
@@ -243,7 +261,7 @@ func TestUpstreamProxyGetsTheHandleAndNotTheReport(t *testing.T) {
 	// An upstream MCP process runs the same attach step, with its own artifact
 	// API being the proxy. It must leave the daemon's handle alone rather than
 	// reporting the report lost.
-	forwarded := artifact.AttachAuditReport(ctx, proxy, audit)
+	forwarded := artifact.AttachAuditReport(ctx, proxy, audit, 0)
 	if forwarded.Artifact == nil || forwarded.Artifact.ID != audit.Artifact.ID {
 		t.Fatalf("the upstream process lost the daemon's handle: %+v", forwarded.Artifact)
 	}

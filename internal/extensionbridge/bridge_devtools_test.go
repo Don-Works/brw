@@ -3,6 +3,7 @@ package extensionbridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,10 +17,38 @@ import (
 	"github.com/Don-Works/brw/internal/devtools/axe"
 )
 
+// sentExpressions collects what crossed the socket. The stub writes it from its
+// own goroutine and the test reads it from another, and a loopback write/read
+// pair orders bytes without ordering memory, so the slice needs a latch of its
+// own rather than the socket's apparent sequencing.
+type sentExpressions struct {
+	mu   chan struct{}
+	list []string
+}
+
+func newSentExpressions() *sentExpressions {
+	s := &sentExpressions{mu: make(chan struct{}, 1)}
+	s.mu <- struct{}{}
+	return s
+}
+
+func (s *sentExpressions) add(expression string) {
+	<-s.mu
+	s.list = append(s.list, expression)
+	s.mu <- struct{}{}
+}
+
+func (s *sentExpressions) all() []string {
+	<-s.mu
+	out := append([]string(nil), s.list...)
+	s.mu <- struct{}{}
+	return out
+}
+
 // serveEvaluateStub stands in for the extension: it answers every
 // Runtime.evaluate the bridge sends with whatever reply the test decides, and
 // records the expressions so a test can assert on what actually crossed.
-func serveEvaluateStub(t *testing.T, b *Bridge, reply func(expression string) any) (*[]string, func()) {
+func serveEvaluateStub(t *testing.T, b *Bridge, reply func(expression string) any) (*sentExpressions, func()) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/extension"
@@ -39,7 +68,7 @@ func serveEvaluateStub(t *testing.T, b *Bridge, reply func(expression string) an
 	conn.SetReadLimit(extensionFrameReadLimitBytes)
 	waitUntil(t, b.liveConn)
 
-	sent := &[]string{}
+	sent := newSentExpressions()
 	done := make(chan struct{})
 	serveCtx, serveCancel := context.WithCancel(context.Background())
 	go func() {
@@ -55,7 +84,7 @@ func serveEvaluateStub(t *testing.T, b *Bridge, reply func(expression string) an
 			}
 			params, _ := msg.Params["params"].(map[string]any)
 			expression, _ := params["expression"].(string)
-			*sent = append(*sent, expression)
+			sent.add(expression)
 			answer, _ := json.Marshal(map[string]any{
 				"id": msg.ID,
 				"ok": true,
@@ -96,16 +125,16 @@ func TestBridgeVitalsEvaluatesTheSharedScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vitals: %v", err)
 	}
-	if vitals.CLS != 0.25 || vitals.CLSShifts != 3 || vitals.TTFBMS == nil || *vitals.TTFBMS != 180.4 {
+	if vitals.CLS == nil || *vitals.CLS != 0.25 || vitals.CLSShifts != 3 || vitals.TTFBMS == nil || *vitals.TTFBMS != 180.4 {
 		t.Fatalf("decoded vitals = %+v", vitals)
 	}
 	if vitals.Ratings["cls"] != "poor" {
 		t.Errorf("ratings = %v, want the page's own labels carried through", vitals.Ratings)
 	}
-	if len(*sent) != 1 {
-		t.Fatalf("bridge sent %d expressions, want exactly one round trip", len(*sent))
+	if len(sent.all()) != 1 {
+		t.Fatalf("bridge sent %d expressions, want exactly one round trip", len(sent.all()))
 	}
-	if (*sent)[0] != devtools.BuildVitalsExpression(devtools.VitalsOptions{SettleMS: 400}) {
+	if sent.all()[0] != devtools.BuildVitalsExpression(devtools.VitalsOptions{SettleMS: 400}) {
 		t.Fatal("the bridge sent an expression the direct-CDP transport does not")
 	}
 }
@@ -129,7 +158,7 @@ func TestBridgeAccessibilityAuditInjectsTheEmbeddedEngine(t *testing.T) {
 			sent, cleanup := serveEvaluateStub(t, b, func(expression string) any {
 				switch {
 				case expression == devtools.AxeProbeScript:
-					return map[string]any{"present": tt.alreadyThere, "version": axe.Version, "ours": tt.alreadyThere}
+					return map[string]any{"present": tt.alreadyThere}
 				case strings.Contains(expression, axe.Source):
 					return map[string]any{"installed": true, "version": axe.Version}
 				default:
@@ -160,11 +189,11 @@ func TestBridgeAccessibilityAuditInjectsTheEmbeddedEngine(t *testing.T) {
 				t.Fatal("no full report was produced for the artifact")
 			}
 
-			if len(*sent) != tt.wantCalls {
-				t.Fatalf("bridge sent %d expressions, want %d", len(*sent), tt.wantCalls)
+			if len(sent.all()) != tt.wantCalls {
+				t.Fatalf("bridge sent %d expressions, want %d", len(sent.all()), tt.wantCalls)
 			}
 			injected := false
-			for _, expression := range *sent {
+			for _, expression := range sent.all() {
 				if strings.Contains(expression, axe.Source) {
 					injected = true
 				}
@@ -217,12 +246,12 @@ func TestBridgeHighlightRoundTripsTheOverlay(t *testing.T) {
 	if !cleared.Cleared || cleared.Active != 0 {
 		t.Fatalf("clear result = %+v", cleared)
 	}
-	if len(*sent) != 2 {
-		t.Fatalf("bridge sent %d expressions, want one per call", len(*sent))
+	if len(sent.all()) != 2 {
+		t.Fatalf("bridge sent %d expressions, want one per call", len(sent.all()))
 	}
 	// A colour is a value written into an inline style, so it must reach the
 	// page as the resolved hex from the closed set, never as caller text.
-	if strings.Contains((*sent)[0], "green") {
+	if strings.Contains(sent.all()[0], "green") {
 		t.Error("the colour name was passed into the page instead of the resolved value")
 	}
 }
@@ -238,7 +267,115 @@ func TestBridgeHighlightRefusesBadArgumentsBeforeTheRoundTrip(t *testing.T) {
 		!strings.Contains(err.Error(), "at least one ref") {
 		t.Fatalf("error = %v, want a refusal naming the missing ref", err)
 	}
-	if len(*sent) != 0 {
-		t.Fatalf("bridge sent %d expressions for an invalid call, want none", len(*sent))
+	if len(sent.all()) != 0 {
+		t.Fatalf("bridge sent %d expressions for an invalid call, want none", len(sent.all()))
+	}
+}
+
+// TestBridgeRefusesAnEmptyObservation: the generic evaluate path turns an
+// undefined completion value into JSON null on purpose, because a page script
+// that returns nothing is a successful evaluation. These three expressions
+// always resolve to an object, so the same null means the script never ran —
+// and a zero Vitals reads exactly like a clean page.
+func TestBridgeRefusesAnEmptyObservation(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Bridge) error
+	}{
+		{
+			name: "vitals",
+			call: func(b *Bridge) error {
+				_, err := b.Vitals(bridgeTabContext(), devtools.VitalsOptions{})
+				return err
+			},
+		},
+		{
+			name: "highlight",
+			call: func(b *Bridge) error {
+				_, err := b.Highlight(bridgeTabContext(), devtools.HighlightOptions{Ref: "e1"})
+				return err
+			},
+		},
+		{
+			name: "the audit, at the probe that decides whether to inject",
+			call: func(b *Bridge) error {
+				_, err := b.AccessibilityAudit(bridgeTabContext(), devtools.AuditOptions{})
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := New("", 5*time.Second, "")
+			_, cleanup := serveEvaluateStub(t, b, func(string) any { return nil })
+			defer cleanup()
+
+			err := tt.call(b)
+			if !errors.Is(err, devtools.ErrNoObservation) {
+				t.Fatalf("error = %v, want the named empty-observation error", err)
+			}
+		})
+	}
+}
+
+// TestBridgeRecordsTheDevtoolsActionsInTheTrace is the parity half of the
+// direct-CDP trace test: a human watching a bridged daemon has to see the same
+// three entries, or "what did brw do" depends on which transport answered.
+func TestBridgeRecordsTheDevtoolsActionsInTheTrace(t *testing.T) {
+	b := New("", 5*time.Second, "")
+	_, cleanup := serveEvaluateStub(t, b, func(expression string) any {
+		switch {
+		case expression == devtools.AxeProbeScript:
+			return map[string]any{"present": true}
+		case strings.Contains(expression, devtools.HighlightScript):
+			return map[string]any{"ok": true, "active": 1,
+				"marked": []any{map[string]any{"ref": "e9", "found": true}}}
+		case strings.Contains(expression, devtools.VitalsScript):
+			return map[string]any{"url": "https://example.test/page", "settled_ms": 250}
+		default:
+			return map[string]any{
+				"ok": true, "ours": true, "engine": "axe-core " + axe.Version,
+				"url": "https://example.test/page", "title": "Page",
+				"report": map[string]any{"violations": []any{}, "incomplete": []any{}, "passes": []any{}, "inapplicable": []any{}},
+			}
+		}
+	})
+	defer cleanup()
+
+	if _, err := b.Vitals(bridgeTabContext(), devtools.VitalsOptions{}); err != nil {
+		t.Fatalf("vitals: %v", err)
+	}
+	if _, err := b.AccessibilityAudit(bridgeTabContext(), devtools.AuditOptions{}); err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	if _, err := b.Highlight(bridgeTabContext(), devtools.HighlightOptions{Ref: "e9", Label: "look here"}); err != nil {
+		t.Fatalf("highlight: %v", err)
+	}
+
+	entries := b.GetTrace().Entries
+	byAction := map[string]browser.TraceEntry{}
+	actions := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		byAction[entry.Action] = entry
+		actions = append(actions, entry.Action)
+	}
+	for _, action := range []string{browser.TraceActionVitals, browser.TraceActionAudit, browser.TraceActionHighlight} {
+		entry, ok := byAction[action]
+		if !ok {
+			t.Fatalf("no %q entry in the bridge trace; it recorded %v", action, actions)
+		}
+		if entry.TabID != "42" {
+			t.Errorf("%q recorded tab %q, want the bridged tab", action, entry.TabID)
+		}
+		if !entry.OK {
+			t.Errorf("%q recorded as failed: %q", action, entry.Error)
+		}
+	}
+	if ref := byAction[browser.TraceActionHighlight].Ref; ref != "e9" {
+		t.Errorf("highlight recorded ref %q, want e9", ref)
+	}
+	// The caption is caller text and the trace is served over the control plane.
+	if strings.Contains(byAction[browser.TraceActionHighlight].Text, "look here") {
+		t.Errorf("the highlight caption reached the trace: %q", byAction[browser.TraceActionHighlight].Text)
 	}
 }

@@ -27,7 +27,10 @@ type ReportOptions struct {
 	// continuity check treats a report like any other artifact.
 	SourceURL   string
 	SourceTitle string
-	// TTL may shorten the store default; it can never lengthen it.
+	// TTL may shorten the store default; it can never lengthen it. A request
+	// longer than the store's own retention is clamped to it rather than
+	// refused, because the caller asking for a longer life is not a reason to
+	// throw the report away.
 	TTL time.Duration
 }
 
@@ -58,8 +61,19 @@ func (s *Service) PutReport(ctx context.Context, opts ReportOptions, data []byte
 		Kind:       opts.Kind,
 		MIMEType:   "application/json",
 		SourceHash: sourceHash(opts.SourceURL, opts.SourceTitle),
-		TTL:        opts.TTL,
+		TTL:        s.clampReportTTL(opts.TTL),
 	}, bytes.NewReader(data))
+}
+
+// clampReportTTL folds a caller's retention request into what the store will
+// accept. Zero, anything sub-second and anything past the store's own retention
+// all become the store default, so a caller asking for a week on a store that
+// keeps artifacts for a day still gets a report rather than an error.
+func (s *Service) clampReportTTL(ttl time.Duration) time.Duration {
+	if ttl < time.Second || ttl > s.store.ttl {
+		return 0
+	}
+	return ttl
 }
 
 // reportPutter is what AttachAuditReport needs and only the local Service has.
@@ -77,7 +91,7 @@ type reportPutter interface {
 // every failure here becomes a note saying the report is gone — never a larger
 // answer. It lives in this package because both the MCP tool and the HTTP route
 // have to do exactly this, and two copies would drift.
-func AttachAuditReport(ctx context.Context, api API, result devtools.AuditResult) devtools.AuditResult {
+func AttachAuditReport(ctx context.Context, api API, result devtools.AuditResult, ttl time.Duration) devtools.AuditResult {
 	report := result.Report
 	result.Report = nil
 	if result.Artifact != nil || len(report) == 0 {
@@ -92,6 +106,7 @@ func AttachAuditReport(ctx context.Context, api API, result devtools.AuditResult
 		Kind:        KindAccessibilityReport,
 		SourceURL:   result.URL,
 		SourceTitle: result.Title,
+		TTL:         ttl,
 	}, report)
 	if err != nil {
 		result.Note = noteAlso(result.Note, "the full report could not be stored: "+err.Error())

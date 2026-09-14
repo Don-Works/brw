@@ -11,9 +11,11 @@ package axe
 
 import _ "embed"
 
-// Version is the axe-core release Source was taken from. It is compared against
-// the axe.version the page reports, so a stale copy left over from another
-// tool's injection is replaced rather than silently used.
+// Version is the axe-core release Source was taken from. brw never replaces an
+// engine a document already has, so this is not a floor on what runs: it is the
+// version reported alongside the page engine's own whenever the two could
+// differ, which is what lets a caller tell whether a rule id or an impact label
+// came from this release or from whatever was already there.
 const Version = "4.10.2"
 
 // Source is the complete axe-core UMD bundle. Evaluating it in a page defines

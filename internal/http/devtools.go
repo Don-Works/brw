@@ -50,7 +50,7 @@ func (s *Server) accessibilityAudit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeResult(w, artifact.AttachAuditReport(ctx, s.artifacts, result), nil)
+	writeResult(w, artifact.AttachAuditReport(ctx, s.artifacts, result, req.ReportTTL()), nil)
 }
 
 func (s *Server) highlight(w http.ResponseWriter, r *http.Request) {

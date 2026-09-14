@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Don-Works/brw/internal/devtools"
 )
@@ -39,11 +40,37 @@ func TestAttachAuditReport(t *testing.T) {
 		name        string
 		api         API
 		in          devtools.AuditResult
+		ttl         time.Duration
 		wantStored  bool
 		wantNote    string
 		wantSummary bool
+		// wantExpiryWithin bounds how far past now the handle may expire. Zero
+		// skips the check.
+		wantExpiryWithin time.Duration
 	}{
 		{name: "a local store keeps the report and returns a handle", api: service, in: auditResult(), wantStored: true},
+		{
+			// The report holds the raw HTML of every failing element, so a
+			// caller on a page carrying real data has to be able to bound how
+			// long it is kept.
+			name:             "a caller's ttl shortens the store retention",
+			api:              service,
+			in:               auditResult(),
+			ttl:              90 * time.Second,
+			wantStored:       true,
+			wantExpiryWithin: 5 * time.Minute,
+		},
+		{
+			// A request longer than the store keeps anything is clamped to the
+			// store default, not refused: losing the report over it would be
+			// worse than keeping it for the shorter time.
+			name:             "a ttl past the store retention takes the store default",
+			api:              service,
+			in:               auditResult(),
+			ttl:              30 * 24 * time.Hour,
+			wantStored:       true,
+			wantExpiryWithin: 2 * time.Hour,
+		},
 		{
 			name:     "no store at all says the report is gone",
 			api:      nil,
@@ -70,12 +97,20 @@ func TestAttachAuditReport(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := AttachAuditReport(context.Background(), tt.api, tt.in)
+			got := AttachAuditReport(context.Background(), tt.api, tt.in, tt.ttl)
 			if len(got.Report) != 0 {
 				t.Fatal("the full report survived into the answer; it must never travel in a summary")
 			}
 			if (got.Artifact != nil) != tt.wantStored {
 				t.Fatalf("artifact = %+v, want stored = %v", got.Artifact, tt.wantStored)
+			}
+			if tt.wantExpiryWithin > 0 {
+				if got.Artifact.ExpiresAt.IsZero() {
+					t.Fatal("the handle carries no expiry, so a caller cannot tell how long the report is kept")
+				}
+				if left := time.Until(got.Artifact.ExpiresAt); left > tt.wantExpiryWithin {
+					t.Fatalf("report expires in %v, want at most %v for ttl %v", left, tt.wantExpiryWithin, tt.ttl)
+				}
 			}
 			if tt.wantNote != "" && !strings.Contains(got.Note, tt.wantNote) {
 				t.Fatalf("note = %q, want it to mention %q", got.Note, tt.wantNote)
@@ -93,7 +128,7 @@ func TestAttachAuditReport(t *testing.T) {
 
 	// And the stored bytes have to be the report, readable through the same
 	// windowed read every other artifact uses.
-	stored := AttachAuditReport(context.Background(), service, auditResult())
+	stored := AttachAuditReport(context.Background(), service, auditResult(), 0)
 	chunk, err := service.ReadArtifact(context.Background(), stored.Artifact.ID, 0, MaxReadBytes)
 	if err != nil {
 		t.Fatalf("read the stored report: %v", err)

@@ -26,7 +26,15 @@ const (
 	TraceActionGet      = "get"
 	TraceActionFrame    = "frame"
 	TraceActionPageTool = "page_tool"
+	TraceActionVitals   = "vitals"
+	TraceActionAudit    = "a11y_audit"
 )
+
+// TraceActionHighlight is deliberately not an observation: drawing the overlay
+// appends an element to the document. It is recorded as an action so a human
+// watching the daemon's activity sees the one developer tool that changes the
+// page, and skipReason explains why a replay does not repeat it.
+const TraceActionHighlight = "highlight"
 
 var observationActions = map[string]bool{
 	TraceActionOpen:     true,
@@ -43,6 +51,8 @@ var observationActions = map[string]bool{
 	// brw_trace format="batch" reported them as "not a replayable action:
 	// page_tool" — an unknown action an agent might try to fix.
 	TraceActionPageTool: true,
+	TraceActionVitals:   true,
+	TraceActionAudit:    true,
 }
 
 // IsObservationAction reports whether a traced action observed the page rather

@@ -15,6 +15,7 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/devtools"
+	"github.com/Don-Works/brw/internal/devtools/axe"
 )
 
 // auditFixture fails three axe rules on purpose. #bbbbbb on white is about
@@ -155,6 +156,38 @@ func TestAccessibilityAuditPutsTheReportInAnArtifactAndAnswersWithASummary(t *te
 	}
 }
 
+// TestAccessibilityAuditAnswersWithItsPageEffectsAndHonoursATTL: the audit is
+// read-shaped but it injects an engine and stores the raw HTML of every failing
+// element. Both are the caller's business, and neither is visible from the
+// counts.
+func TestAccessibilityAuditAnswersWithItsPageEffectsAndHonoursATTL(t *testing.T) {
+	server, _ := newLiveAuditServer(t)
+
+	answer := callToolJSON(t, server, "brw_a11y_audit", `{"rules":["color-contrast"]}`)
+	effects, _ := answer["page_effects"].(string)
+	for _, want := range []string{"data-brw-ref", "window.axe", axe.Version} {
+		if !strings.Contains(effects, want) {
+			t.Errorf("page_effects = %q, want it to mention %q", effects, want)
+		}
+	}
+
+	// A caller on a page holding real data has to be able to bound how long the
+	// report survives. The store here keeps artifacts for an hour.
+	bounded := callToolJSON(t, server, "brw_a11y_audit", `{"rules":["color-contrast"],"ttl_seconds":120}`)
+	handle, _ := bounded["artifact"].(map[string]any)
+	if handle == nil {
+		t.Fatalf("no artifact handle with a ttl: %v", bounded)
+	}
+	expires, _ := handle["expires_at"].(string)
+	at, err := time.Parse(time.RFC3339Nano, expires)
+	if err != nil {
+		t.Fatalf("expires_at = %q: %v", expires, err)
+	}
+	if left := time.Until(at); left > 10*time.Minute {
+		t.Fatalf("the report expires in %v with ttl_seconds:120; the caller's retention was ignored", left)
+	}
+}
+
 // TestAccessibilityAuditSaysSoWhenThereIsNowhereToStoreTheReport: a daemon run
 // with --artifact-dir off still has to answer, and has to say the full report
 // is gone rather than imply the summary is everything axe found.
@@ -231,12 +264,19 @@ func TestDevtoolsToolsAreAdvertisedWithWhatTheyPromise(t *testing.T) {
 		{
 			name:       "brw_vitals",
 			properties: []string{"settle_ms", "tab_id"},
-			claims:     []string{"LCP", "CLS", "INP", "TTFB"},
+			claims: []string{"LCP", "CLS", "INP", "TTFB",
+				// Both are things the code now does and an agent would
+				// otherwise have to discover from a surprising number.
+				"interactions counts distinct interactions", "named in unavailable"},
 		},
 		{
 			name:       "brw_a11y_audit",
-			properties: []string{"tags", "rules", "include_passes", "max_rules", "max_refs", "tab_id"},
-			claims:     []string{"artifact", "embedded in the brw binary", "fetches nothing over the network"},
+			properties: []string{"tags", "rules", "include_passes", "max_rules", "max_refs", "ttl_seconds", "tab_id"},
+			claims: []string{"artifact", "embedded in the brw binary", "fetches nothing over the network",
+				// The audit installs half a megabyte of engine and leaves it
+				// there, and stores the raw HTML of every failing element.
+				// Both were advertised away and are now stated.
+				"NOT effect-free", "left installed as window.axe", "no redaction"},
 		},
 		{
 			name:       "brw_highlight",
@@ -260,6 +300,22 @@ func TestDevtoolsToolsAreAdvertisedWithWhatTheyPromise(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	// The tag list belongs to one place. Burying it in prose while the sibling
+	// colour field is generated from HighlightColorNames() is how the two
+	// drift, and how AuditTagNames ends up exported and called from nowhere.
+	tagsSchema, _ := toolProperties(t, "brw_a11y_audit")["tags"].(map[string]any)
+	tagsDescription, _ := tagsSchema["description"].(string)
+	for _, tag := range devtools.AuditTagNames() {
+		if !strings.Contains(tagsDescription, tag) {
+			t.Errorf("the tags schema does not name %q: %q", tag, tagsDescription)
+		}
+	}
+	// Examples, not an enum: the run forwards any tag it is given, so a closed
+	// list in the schema would advertise a restriction the code does not have.
+	if _, closed := tagsSchema["enum"]; closed {
+		t.Error("the tags schema declares an enum, but the audit forwards any tag it is given")
 	}
 
 	// Every tool in the catalogue has to be reachable from the switch; these

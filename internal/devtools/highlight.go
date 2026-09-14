@@ -17,6 +17,10 @@ const MaxHighlightRefs = 12
 // the session it was drawn for is litter in someone's browser.
 const MaxHighlightDurationMS = 300000
 
+// MaxHighlightLabelBytes bounds the caption. It is drawn on one line above the
+// first box, so a caption longer than this is unreadable on screen anyway.
+const MaxHighlightLabelBytes = 120
+
 // highlightColors is a closed set because the value is written into an inline
 // style. A caller-supplied colour string would be caller-supplied CSS.
 var highlightColors = map[string]string{
@@ -90,9 +94,7 @@ func (o HighlightOptions) Normalize() (HighlightOptions, error) {
 	if o.DurationMS > MaxHighlightDurationMS {
 		o.DurationMS = MaxHighlightDurationMS
 	}
-	if len(o.Label) > 120 {
-		o.Label = o.Label[:120]
-	}
+	o.Label = boundedText(o.Label, MaxHighlightLabelBytes)
 	return o, nil
 }
 
@@ -139,8 +141,8 @@ const HighlightHostID = "__brw_highlight_overlay"
 
 // HighlightScript draws a pointer-events-none overlay over one or more refs.
 //
-// It is the one observation in this package that changes the page, so the
-// change is confined and undoable: a single fixed-position container with a
+// It is the one observation in this package that changes what the page looks
+// like, so the change is confined and undoable: a single fixed-position container with a
 // reserved id is appended to the top document, the target elements are never
 // touched, and a clear (or the duration timer, or any navigation) removes the
 // container and the two listeners that keep it aligned. Nothing else in the

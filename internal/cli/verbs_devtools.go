@@ -126,7 +126,7 @@ func renderVitals(w io.Writer, _ *options, body []byte) error {
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "LCP\t%s\t%s\t%s\n", millis(vitals.LCPMS), vitals.Ratings["lcp"], vitals.LCPElement)
-	fmt.Fprintf(tw, "CLS\t%.4f\t%s\t%d shift(s)\n", vitals.CLS, vitals.Ratings["cls"], vitals.CLSShifts)
+	fmt.Fprintf(tw, "CLS\t%s\t%s\t%d shift(s)\n", score(vitals.CLS), vitals.Ratings["cls"], vitals.CLSShifts)
 	fmt.Fprintf(tw, "INP\t%s\t%s\t%d interaction(s)\n", millis(vitals.INPMS), vitals.Ratings["inp"], vitals.Interactions)
 	fmt.Fprintf(tw, "TTFB\t%s\t%s\t\n", millis(vitals.TTFBMS), vitals.Ratings["ttfb"])
 	fmt.Fprintf(tw, "FCP\t%s\t\t\n", millis(vitals.FCPMS))
@@ -150,6 +150,15 @@ func millis(value *float64) string {
 	return fmt.Sprintf("%.0fms", *value)
 }
 
+// score prints the unitless metrics on the same rule: a browser that cannot
+// observe layout shift is not a browser that saw none.
+func score(value *float64) string {
+	if value == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%.4f", *value)
+}
+
 func renderAudit(w io.Writer, _ *options, body []byte) error {
 	var result devtools.AuditResult
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -165,13 +174,19 @@ func renderAudit(w io.Writer, _ *options, body []byte) error {
 	} else {
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		for _, rule := range result.Rules {
+			// refs and targets are parallel but both carry omitempty, and this
+			// decodes whatever the daemon sent rather than what the summarizer
+			// produced. Index the fallback only when it is there.
 			refs := make([]string, 0, len(rule.Refs))
 			for i, ref := range rule.Refs {
-				if ref == "" {
+				switch {
+				case ref != "":
+					refs = append(refs, "@"+ref)
+				case i < len(rule.Targets) && rule.Targets[i] != "":
 					refs = append(refs, rule.Targets[i])
-					continue
+				default:
+					refs = append(refs, "?")
 				}
-				refs = append(refs, "@"+ref)
 			}
 			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", rule.Impact, rule.ID, rule.Nodes,
 				strings.Join(refs, " "), truncate(rule.Help, maxNameChars))
@@ -184,6 +199,9 @@ func renderAudit(w io.Writer, _ *options, body []byte) error {
 	if result.Artifact != nil {
 		fmt.Fprintf(w, "\nfull report: %s (%d bytes) — brw artifact read %s\n",
 			result.Artifact.ID, result.Artifact.SizeBytes, result.Artifact.ID)
+	}
+	if result.PageEffects != "" {
+		fmt.Fprintf(w, "\nleft in the page: %s\n", result.PageEffects)
 	}
 	if result.Note != "" {
 		fmt.Fprintf(w, "\n%s\n", result.Note)

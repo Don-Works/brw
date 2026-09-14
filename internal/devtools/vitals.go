@@ -42,11 +42,15 @@ type Vitals struct {
 
 	LCPMS      *float64 `json:"lcp_ms"`
 	LCPElement string   `json:"lcp_element,omitempty"`
-	CLS        float64  `json:"cls"`
-	CLSShifts  int      `json:"cls_shifts"`
-	INPMS      *float64 `json:"inp_ms"`
-	// Interactions is how many interaction events the timeline retained. INP is
-	// null when it is zero: a page nobody has touched has no interaction latency.
+	// CLS is null, not zero, when this browser cannot observe layout-shift at
+	// all: "nothing moved" and "nobody was watching" are different facts, and
+	// only one of them deserves a "good" rating.
+	CLS       *float64 `json:"cls"`
+	CLSShifts int      `json:"cls_shifts"`
+	INPMS     *float64 `json:"inp_ms"`
+	// Interactions is how many distinct interactions the timeline retained, not
+	// how many event-timing entries: one tap emits pointerdown, pointerup and
+	// click sharing a single interactionId and counts once.
 	Interactions int      `json:"interactions"`
 	TTFBMS       *float64 `json:"ttfb_ms"`
 	FCPMS        *float64 `json:"fcp_ms"`
@@ -57,17 +61,22 @@ type Vitals struct {
 	TransferBytes      int64    `json:"transfer_bytes,omitempty"`
 
 	// Ratings label each metric against the published Core Web Vitals
-	// thresholds, so a caller does not have to carry the numbers.
+	// thresholds, so a caller does not have to carry the numbers. A metric this
+	// browser could not observe is rated "unknown".
 	Ratings map[string]string `json:"ratings,omitempty"`
-	// Unavailable names the metrics this browser could not observe at all.
+	// Unavailable names the entry types this browser does not support, taken
+	// from PerformanceObserver.supportedEntryTypes. Every metric derived from
+	// one of them is null.
 	Unavailable []string `json:"unavailable,omitempty"`
 	SettledMS   int      `json:"settled_ms"`
 	Note        string   `json:"note,omitempty"`
 }
 
-// BuildVitalsExpression renders the read for one settle window.
+// BuildVitalsExpression renders the read for one settle window. Only the
+// fields the in-page script reads are marshalled into the argument: tab_id is
+// daemon-side routing and has no business crossing into the document.
 func BuildVitalsExpression(opts VitalsOptions) string {
-	args, _ := json.Marshal(opts.Normalize())
+	args, _ := json.Marshal(map[string]any{"settle_ms": opts.Normalize().SettleMS})
 	return fmt.Sprintf("%s(%s)", VitalsScript, args)
 }
 
@@ -85,13 +94,27 @@ const VitalsScript = `(function(opts) {
     var settleMs = (opts && opts.settle_ms) || 250;
     var observers = [];
     var unavailable = [];
+    var watching = {};
     var lcpEntry = null;
     var sessions = [];
     var shiftCount = 0;
-    var interactions = [];
+    var interactionMax = {};
     var fcp = null;
 
+    // observe() reports whether the metric is being watched at all. The
+    // Performance Timeline spec says observe() with one unsupported type warns
+    // and returns rather than throwing, so a try/catch alone would leave
+    // unavailable permanently empty and an unobservable metric reading as zero.
     function observe(type, init, onEntry) {
+      var supported = false;
+      try {
+        var types = PerformanceObserver.supportedEntryTypes || [];
+        supported = Array.prototype.indexOf.call(types, type) >= 0;
+      } catch (_) { supported = false; }
+      if (!supported) {
+        unavailable.push(type);
+        return false;
+      }
       try {
         var po = new PerformanceObserver(function(list) {
           var entries = list.getEntries();
@@ -108,13 +131,13 @@ const VitalsScript = `(function(opts) {
       }
     }
 
-    observe('largest-contentful-paint', null, function(e) {
+    watching.lcp = observe('largest-contentful-paint', null, function(e) {
       if (!lcpEntry || e.startTime >= lcpEntry.startTime) lcpEntry = e;
     });
     // The session-window algorithm the Core Web Vitals definition uses: shifts
     // group into a window that ends after a 1s gap or 5s of elapsed time, and
     // CLS is the worst window, not the sum of everything the page ever did.
-    observe('layout-shift', null, function(e) {
+    watching.cls = observe('layout-shift', null, function(e) {
       if (e.hadRecentInput) return;
       shiftCount++;
       var last = sessions.length ? sessions[sessions.length - 1] : null;
@@ -125,10 +148,19 @@ const VitalsScript = `(function(opts) {
         sessions.push({ value: e.value, first: e.startTime, last: e.startTime });
       }
     });
-    observe('event', { durationThreshold: 16 }, function(e) {
-      if (e.interactionId) interactions.push(e.duration);
+    // One interaction emits several timed events — pointerdown, pointerup and
+    // click all carry the same interactionId — and the spec's INP is the worst
+    // duration per interaction, not per event. Keying by interactionId is what
+    // stops one tap being counted three times and dragging the percentile down
+    // onto a faster event than the slowest one.
+    watching.inp = observe('event', { durationThreshold: 16 }, function(e) {
+      if (!e.interactionId) return;
+      var id = String(e.interactionId);
+      if (interactionMax[id] === undefined || e.duration > interactionMax[id]) {
+        interactionMax[id] = e.duration;
+      }
     });
-    observe('paint', null, function(e) {
+    watching.fcp = observe('paint', null, function(e) {
       if (e.name === 'first-contentful-paint' && fcp === null) fcp = e.startTime;
     });
 
@@ -150,7 +182,7 @@ const VitalsScript = `(function(opts) {
       return Math.round(value * 10) / 10;
     }
     function rate(value, good, poor) {
-      if (value === null) return 'unknown';
+      if (value === null || value === undefined) return 'unknown';
       if (value <= good) return 'good';
       if (value <= poor) return 'needs-improvement';
       return 'poor';
@@ -160,9 +192,12 @@ const VitalsScript = `(function(opts) {
       for (var i = 0; i < observers.length; i++) {
         try { observers[i].disconnect(); } catch (_) {}
       }
-      var cls = 0;
-      for (var s = 0; s < sessions.length; s++) if (sessions[s].value > cls) cls = sessions[s].value;
-      cls = Math.round(cls * 10000) / 10000;
+      var cls = null;
+      if (watching.cls) {
+        cls = 0;
+        for (var s = 0; s < sessions.length; s++) if (sessions[s].value > cls) cls = sessions[s].value;
+        cls = Math.round(cls * 10000) / 10000;
+      }
 
       var nav = (performance.getEntriesByType('navigation') || [])[0] || null;
       var activation = nav && nav.activationStart ? nav.activationStart : 0;
@@ -172,11 +207,13 @@ const VitalsScript = `(function(opts) {
       var dcl = nav && nav.domContentLoadedEventEnd ? nav.domContentLoadedEventEnd - activation : null;
       var load = nav && nav.loadEventEnd ? nav.loadEventEnd - activation : null;
 
-      interactions.sort(function(a, b) { return b - a; });
+      var durations = [];
+      for (var id in interactionMax) durations.push(interactionMax[id]);
+      durations.sort(function(a, b) { return b - a; });
       // INP is the 98th percentile of interaction latency. With few
       // interactions that is the slowest one, which is what the spec's index
       // formula degenerates to below fifty.
-      var inp = interactions.length ? interactions[Math.floor(interactions.length / 50)] : null;
+      var inp = durations.length ? durations[Math.floor(durations.length / 50)] : null;
       var lcp = lcpEntry ? lcpEntry.startTime : null;
 
       resolve({
@@ -187,7 +224,7 @@ const VitalsScript = `(function(opts) {
         cls: cls,
         cls_shifts: shiftCount,
         inp_ms: ms(inp),
-        interactions: interactions.length,
+        interactions: durations.length,
         ttfb_ms: ms(ttfb),
         fcp_ms: ms(fcp),
         dom_content_loaded_ms: ms(dcl),

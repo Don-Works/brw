@@ -85,15 +85,23 @@ Adaptive event polling checks again at 25, 50, 100, and 200 ms, then caps at
 idle DOM scans on large inbox/message pages; the explicit tradeoff is up to
 250 ms steady-state detection latency instead of 100 ms.
 
-The measured MCP catalogues are 69 tools / ~16.0k tokens for `all`, 26 / ~7.7k
-for `core`, 13 / ~4.1k for `minimal`, and 14 / ~4.4k initially for the default
-`auto` profile. Thus the default starts about 69.9% smaller than advertising every
-tool, while every tool remains directly callable and discoverable through
-`brw_tools`.
+The measured MCP catalogues are 86 tools / ~23.6k tokens for `all`, 26 / ~7.9k
+for `core`, 13 / ~4.3k for `minimal`, and 14 / ~4.5k initially for the default
+`auto` profile — the same figures README.md and docs/agent-guide.md quote, from
+`scripts/measure-tool-catalogue.py`. Thus the default starts about 81% smaller
+than advertising every tool, while every tool remains directly callable and
+discoverable through `brw_tools`.
 
-For the exact pre-change commit, the CLI default was `all`: 55 tools and about
-12,109 tokens. The new default `auto` starts at 13 tools and about 4,060 tokens,
-which is **66.5% less catalogue context than the old default**. The opt-in full
+A daemon whose identity names a transport advertises fewer: the three
+extension-only tab-group tools drop on direct CDP, and the incognito, context
+and cookie tools drop on the extension bridge. The numbers above are the
+unfiltered catalogue, which is the ceiling.
+
+The figures in the rest of this paragraph are historical: they measure the
+release that introduced the `auto` default, not this tree, and the catalogue has
+grown since. At that point the CLI default was `all`: 55 tools and about
+12,109 tokens. The new default `auto` started at 13 tools and about 4,060 tokens,
+which was **66.5% less catalogue context than the old default**. The opt-in full
 surface grew by seven tools and about 11.4% (12,109 to 13,488 tokens) because it
 now describes the recipe and artifact APIs; MCPlexer installations continue to
 index that full surface once and expose individual tools through semantic tool

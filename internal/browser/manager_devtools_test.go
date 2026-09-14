@@ -60,8 +60,36 @@ const a11yFixture = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <div id="ok" style="color:#111111;background-color:#ffffff">Readable paragraph.</div>
 </body></html>`
 
-// devtoolsFixtureServer serves the three fixtures and records every path it is
-// asked for, which is how the audit test proves nothing was fetched for axe.
+// interactiveFixture blocks its click handler long enough that every event in
+// the interaction clears the 16 ms event-timing threshold. That is what makes
+// the INP grouping observable: pointerdown, pointerup and click are all
+// reported, and all three share one interactionId.
+const interactiveFixture = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Interactive fixture</title></head><body style="margin:0">
+<button id="slow" style="width:240px;height:80px;font-size:24px">Press me</button>
+<div id="log"></div>
+<script>
+document.getElementById('slow').addEventListener('click', function () {
+  var until = performance.now() + 220;
+  while (performance.now() < until) {}
+  var done = document.createElement('p');
+  done.id = 'pressed';
+  done.textContent = 'handler finished';
+  document.getElementById('log').appendChild(done);
+});
+</script>
+</body></html>`
+
+// scrollTargetFixture puts its marker far below the fold, so "did the page move" is a
+// question with an answer.
+const scrollTargetFixture = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Tall fixture</title></head><body style="margin:0">
+<div style="height:4000px;background:#f0f0f0">Filler</div>
+<p id="bottom" style="font-size:20px">Bottom marker</p>
+</body></html>`
+
+// devtoolsFixtureServer serves the fixtures and records every path it is asked
+// for, which is how the audit test proves nothing was fetched for axe.
 type devtoolsFixtureServer struct {
 	*httptest.Server
 	mu    chan struct{}
@@ -73,9 +101,11 @@ func newDevtoolsFixtureServer(t *testing.T) *devtoolsFixtureServer {
 	fixture := &devtoolsFixtureServer{mu: make(chan struct{}, 1)}
 	fixture.mu <- struct{}{}
 	pages := map[string]string{
-		"/stable": stableVitalsFixture,
-		"/shift":  shiftingVitalsFixture,
-		"/a11y":   a11yFixture,
+		"/stable":      stableVitalsFixture,
+		"/shift":       shiftingVitalsFixture,
+		"/a11y":        a11yFixture,
+		"/interactive": interactiveFixture,
+		"/tall":        scrollTargetFixture,
 	}
 	fixture.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fixture.record(r.URL.Path)
@@ -111,6 +141,32 @@ func (f *devtoolsFixtureServer) requested() []string {
 	out := append([]string(nil), f.paths...)
 	f.mu <- struct{}{}
 	return out
+}
+
+// vitalsUntil reads the vitals repeatedly until the browser has produced the
+// metrics the caller is about to assert on.
+//
+// LCP and FCP exist only once a frame has been presented, and a headless Chrome
+// sharing a machine with the rest of this package's live-browser tests can take
+// longer than one settle window to get there — the read that ran first then
+// reports null and the assertion fails on the machine's load rather than on
+// brw. Re-reading costs nothing and hides nothing: every observer is created
+// with buffered:true and replays from navigation start, so a later read sees
+// exactly what an earlier one would have. A metric brw never reports still
+// fails, at the deadline.
+func vitalsUntil(t *testing.T, manager *Manager, ctx context.Context, settleMS int, ready func(devtools.Vitals) bool) devtools.Vitals {
+	t.Helper()
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		vitals, err := manager.Vitals(ctx, devtools.VitalsOptions{SettleMS: settleMS})
+		if err != nil {
+			t.Fatalf("vitals: %v", err)
+		}
+		if ready(vitals) || time.Now().After(deadline) {
+			return vitals
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 func openFixture(t *testing.T, manager *Manager, url string) context.Context {
@@ -150,10 +206,9 @@ func TestVitalsAgainstRealChrome(t *testing.T) {
 					t.Fatalf("wait for %s: %v", tt.waitFor, err)
 				}
 			}
-			vitals, err := manager.Vitals(ctx, devtools.VitalsOptions{SettleMS: 400})
-			if err != nil {
-				t.Fatalf("vitals: %v", err)
-			}
+			vitals := vitalsUntil(t, manager, ctx, 400, func(v devtools.Vitals) bool {
+				return v.LCPMS != nil && v.FCPMS != nil
+			})
 
 			if vitals.LCPMS == nil || *vitals.LCPMS <= 0 {
 				t.Fatalf("lcp_ms = %v, want a positive largest-contentful-paint time", vitals.LCPMS)
@@ -173,13 +228,21 @@ func TestVitalsAgainstRealChrome(t *testing.T) {
 			if vitals.FCPMS == nil || *vitals.FCPMS <= 0 {
 				t.Errorf("fcp_ms = %v, want a positive first-contentful-paint time", vitals.FCPMS)
 			}
+			// Headless Chrome observes layout-shift, so a null here is the
+			// unavailable path firing on a browser that does support it.
+			if vitals.CLS == nil {
+				t.Fatalf("cls is null but unavailable = %v; headless Chrome observes layout-shift", vitals.Unavailable)
+			}
 			switch {
-			case tt.wantShifts && vitals.CLS <= 0:
-				t.Errorf("cls = %v with %d shifts, want a non-zero score for the injected banner", vitals.CLS, vitals.CLSShifts)
+			case tt.wantShifts && *vitals.CLS <= 0:
+				t.Errorf("cls = %v with %d shifts, want a non-zero score for the injected banner", *vitals.CLS, vitals.CLSShifts)
 			case tt.wantShifts && vitals.CLSShifts == 0:
 				t.Errorf("cls_shifts = 0, want the injected banner to be counted")
-			case !tt.wantShifts && vitals.CLS != 0:
-				t.Errorf("cls = %v on a page that never moves, want 0", vitals.CLS)
+			case !tt.wantShifts && *vitals.CLS != 0:
+				t.Errorf("cls = %v on a page that never moves, want 0", *vitals.CLS)
+			}
+			if len(vitals.Unavailable) != 0 {
+				t.Errorf("unavailable = %v, want nothing on a browser that supports every entry type", vitals.Unavailable)
 			}
 			if vitals.SettledMS != 400 {
 				t.Errorf("settled_ms = %d, want the requested 400", vitals.SettledMS)

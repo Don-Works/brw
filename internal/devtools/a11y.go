@@ -25,8 +25,11 @@ const (
 // rules in axe's own order would bury a critical failure under three minor ones.
 var impactOrder = map[string]int{"critical": 0, "serious": 1, "moderate": 2, "minor": 3}
 
-// AuditTagNames are the axe rule tags worth naming in a tool schema: the WCAG
-// conformance levels and the best-practice set. axe accepts many more.
+// AuditTagNames are the axe rule tags the brw_a11y_audit schema names as
+// examples: the WCAG conformance levels and the best-practice set. They are
+// examples rather than a schema enum because axe accepts many more tags and the
+// run forwards whatever it is given, so a closed list would advertise a
+// restriction the code does not impose.
 func AuditTagNames() []string {
 	return []string{"wcag2a", "wcag2aa", "wcag2aaa", "wcag21a", "wcag21aa", "wcag22aa", "best-practice"}
 }
@@ -40,10 +43,16 @@ type AuditOptions struct {
 	Rules []string `json:"rules,omitempty"`
 	// IncludePasses keeps the passing nodes in the stored report. Off by
 	// default: on a large page the passes outweigh everything else combined.
-	IncludePasses bool   `json:"include_passes,omitempty"`
-	MaxRules      int    `json:"max_rules,omitempty"`
-	MaxRefs       int    `json:"max_refs,omitempty"`
-	TabID         string `json:"tab_id,omitempty"`
+	IncludePasses bool `json:"include_passes,omitempty"`
+	MaxRules      int  `json:"max_rules,omitempty"`
+	MaxRefs       int  `json:"max_refs,omitempty"`
+	// TTLSeconds shortens how long the stored report is kept. Zero takes the
+	// artifact store's own retention, and a value past that retention is
+	// clamped down to it: this can shorten the store default, never extend it.
+	// The report carries the raw outerHTML of every failing element, so a
+	// caller auditing a page that holds real data needs a way to bound it.
+	TTLSeconds int    `json:"ttl_seconds,omitempty"`
+	TabID      string `json:"tab_id,omitempty"`
 }
 
 func (o AuditOptions) Normalize() AuditOptions {
@@ -59,9 +68,21 @@ func (o AuditOptions) Normalize() AuditOptions {
 	if o.MaxRefs > MaxAuditMaxRefs {
 		o.MaxRefs = MaxAuditMaxRefs
 	}
+	if o.TTLSeconds < 0 {
+		o.TTLSeconds = 0
+	}
 	o.Tags = trimmedList(o.Tags)
 	o.Rules = trimmedList(o.Rules)
 	return o
+}
+
+// ReportTTL is the retention the caller asked for on the stored report. Zero
+// means the artifact store's own default.
+func (o AuditOptions) ReportTTL() time.Duration {
+	if o.TTLSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(o.TTLSeconds) * time.Second
 }
 
 func trimmedList(in []string) []string {
@@ -114,8 +135,12 @@ type AuditResult struct {
 	Title  string `json:"title"`
 	Engine string `json:"engine"`
 
-	Violations      int            `json:"violations"`
-	ViolationNodes  int            `json:"violation_nodes"`
+	Violations     int `json:"violations"`
+	ViolationNodes int `json:"violation_nodes"`
+	// ByImpact counts failing ELEMENTS, not rules, and each element is counted
+	// at its own node impact where axe gave it one. A rule whose nodes differ
+	// in severity therefore spreads across buckets instead of putting its whole
+	// node count under the rule's worst label.
 	ByImpact        map[string]int `json:"by_impact,omitempty"`
 	Rules           []AuditRule    `json:"rules,omitempty"`
 	Incomplete      int            `json:"incomplete"`
@@ -125,22 +150,28 @@ type AuditResult struct {
 	Truncated       bool           `json:"truncated,omitempty"`
 
 	Artifact *ArtifactRef `json:"artifact,omitempty"`
-	Note     string       `json:"note,omitempty"`
+	// PageEffects names what the audit left behind in the document, the way
+	// HighlightResult.Reversible does for the overlay. The audit is read-shaped
+	// but it is not effect-free, and a caller should not have to read the
+	// source to find that out.
+	PageEffects string `json:"page_effects"`
+	Note        string `json:"note,omitempty"`
 
 	// Report is the complete audit document destined for the artifact store. It
 	// is never serialized into a response.
 	Report json.RawMessage `json:"-"`
 }
 
-// AxeProbeScript reports whether a usable axe is already in the document, and
-// whether brw is the one that put it there.
+// AxeProbeScript reports whether a usable axe is already in the document.
+//
+// It answers only that, because a document that ships its own engine keeps it:
+// replacing another script's global is a side effect an audit has no business
+// having. What actually ran is read off the run instead — RawAudit.Engine
+// carries the page engine's version and RawAudit.Ours says whether brw put it
+// there — and SummarizeAudit names both in the answer, so a stale copy is
+// visible to the caller rather than silently passed off as the embedded one.
 const AxeProbeScript = `(function() {
-  var present = !!(window.axe && typeof window.axe.run === 'function');
-  return {
-    present: present,
-    version: present ? String(window.axe.version || '') : '',
-    ours: present && window.__brwAxeInstalled === true
-  };
+  return { present: !!(window.axe && typeof window.axe.run === 'function') };
 })()`
 
 // AxeInstallExpression wraps the embedded bundle so evaluating it returns a
@@ -171,8 +202,13 @@ func BuildAuditExpression(opts AuditOptions) string {
 //
 // Stamping reuses the data-brw-ref attribute brw_snapshot already writes, and
 // the same window.__brw counter, so a ref minted here is the same ref a later
-// snapshot reports for that element. That attribute is the audit's only effect
-// on the page.
+// snapshot reports for that element.
+//
+// That attribute is not the audit's only effect on the page. Whichever
+// transport ran this had to define window.axe first, and the engine stays
+// installed for the life of the document so that re-checking one rule after a
+// fix does not pay the half-megabyte injection again. AuditResult.PageEffects
+// states that in the answer rather than leaving it to be discovered.
 const AuditScript = `(function(opts) {
   if (!window.axe || typeof window.axe.run !== 'function') {
     return Promise.resolve({ ok: false, error: 'axe-core is not installed in this document' });
@@ -318,8 +354,18 @@ func SummarizeAudit(raw RawAudit, opts AuditOptions, now time.Time) (AuditResult
 	for _, rule := range report.Violations {
 		result.ViolationNodes += len(rule.Nodes)
 		impact := impactOf(rule)
-		if impact != "" {
-			result.ByImpact[impact] += len(rule.Nodes)
+		// Per node, not per rule: axe labels each node it found, and a rule
+		// holding one minor and one critical element is one of each. Bucketing
+		// both under the rule's worst label would tell a caller sizing the work
+		// that there are two critical elements to fix.
+		for _, node := range rule.Nodes {
+			bucket := node.Impact
+			if bucket == "" {
+				bucket = impact
+			}
+			if bucket != "" {
+				result.ByImpact[bucket]++
+			}
 		}
 		summarized := AuditRule{
 			ID:      rule.ID,
@@ -361,8 +407,19 @@ func SummarizeAudit(raw RawAudit, opts AuditOptions, now time.Time) (AuditResult
 	if len(result.ByImpact) == 0 {
 		result.ByImpact = nil
 	}
+	result.PageEffects = pageEffects(raw)
 	if !raw.Ours {
-		result.Note = "audited with the page's own axe-core, not the copy embedded in brw"
+		// Name both versions. The engine already in the document may be older
+		// than the embedded one, and axe moves rule ids and impact labels
+		// between majors, so "which engine produced this" is part of the answer
+		// rather than something a caller has to infer.
+		engine := result.Engine
+		if engine == "" {
+			engine = "an unidentified axe-core"
+		}
+		result.Note = fmt.Sprintf(
+			"audited with the page's own engine (%s), not the axe-core %s embedded in brw; rule ids and impact labels can differ between axe majors",
+			engine, axe.Version)
 	}
 
 	document, err := json.Marshal(struct {
@@ -389,6 +446,18 @@ func SummarizeAudit(raw RawAudit, opts AuditOptions, now time.Time) (AuditResult
 	}
 	result.Report = document
 	return result, nil
+}
+
+// pageEffects describes what the audit left in the document. The stamped refs
+// are the point of the tool; the engine staying installed is the cost of not
+// re-injecting half a megabyte on every re-check, and it is stated rather than
+// glossed as a pure read.
+func pageEffects(raw RawAudit) string {
+	stamped := "data-brw-ref attributes stamped on the failing elements, the same attribute brw_snapshot writes"
+	if !raw.Ours {
+		return stamped + "; the page's own axe-core was used and nothing else was added"
+	}
+	return stamped + "; axe-core " + axe.Version + " is left installed as window.axe for the life of this document, so a re-check does not re-inject it"
 }
 
 // impactOf prefers the rule's own impact and falls back to the worst impact any
@@ -443,8 +512,5 @@ func firstLine(text string) string {
 	if index := strings.IndexByte(text, '\n'); index >= 0 {
 		text = strings.TrimSpace(text[:index])
 	}
-	if len(text) > auditSampleLimit {
-		text = text[:auditSampleLimit]
-	}
-	return text
+	return boundedText(text, auditSampleLimit)
 }

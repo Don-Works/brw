@@ -88,12 +88,26 @@ func TestSummarizeAudit(t *testing.T) {
 			wantRefs:  []string{"e1", "e2"},
 		},
 		{
+			// The rule is ranked by the worst node so it sorts first, but
+			// by_impact counts elements: one minor element and one critical
+			// element is one of each. Bucketing both as critical would tell a
+			// caller sizing the work there are two critical elements to fix.
 			name: "a rule with no impact of its own takes the worst its nodes carry",
 			document: axeDocument(
 				`{"id":"mixed","impact":"","help":"h","helpUrl":"","tags":[],"nodes":[{"target":["#a"],"impact":"minor","brw_ref":"e1"},{"target":["#b"],"impact":"critical","brw_ref":"e2"}]}`),
 			wantOrder:  []string{"mixed"},
 			wantNodes:  2,
-			wantImpact: map[string]int{"critical": 2},
+			wantImpact: map[string]int{"critical": 1, "minor": 1},
+		},
+		{
+			// Same rule for a rule that does carry an impact: axe labels nodes
+			// individually and the per-element count follows the node.
+			name: "nodes are counted at their own impact under a labelled rule",
+			document: axeDocument(
+				`{"id":"labelled","impact":"serious","help":"h","helpUrl":"","tags":[],"nodes":[{"target":["#a"],"impact":"moderate","brw_ref":"e1"},{"target":["#b"],"impact":"serious","brw_ref":"e2"},{"target":["#c"],"brw_ref":"e3"}]}`),
+			wantOrder:  []string{"labelled"},
+			wantNodes:  3,
+			wantImpact: map[string]int{"moderate": 1, "serious": 2},
 		},
 		{
 			name: "a frame and shadow target chain reads as one selector",
@@ -165,15 +179,73 @@ func TestSummarizeAudit(t *testing.T) {
 	}
 }
 
-func TestSummarizeAuditReportsAPageEngineAndAFailedRun(t *testing.T) {
-	borrowed, err := SummarizeAudit(RawAudit{OK: true, Ours: false, Engine: "axe-core 3.5.5", Report: axeDocument("")}, AuditOptions{}, time.Unix(0, 0))
-	if err != nil {
-		t.Fatalf("summarize: %v", err)
+// TestSummarizeAuditNamesWhatRanAndWhatItLeft: an audit is read-shaped but not
+// effect-free, and the engine that produced a rule id may not be the embedded
+// one. Both facts belong in the answer, because a caller cannot see either.
+func TestSummarizeAuditNamesWhatRanAndWhatItLeft(t *testing.T) {
+	tests := []struct {
+		name            string
+		raw             RawAudit
+		wantEffects     []string
+		wantNotEffects  []string
+		wantNote        []string
+		wantNoteAbsent  bool
+		wantEngineNamed string
+	}{
+		{
+			// brw injected the engine, and it stays: the probe on the next
+			// audit finds it and skips the half-megabyte re-injection.
+			name:        "brw's own engine is left installed and the answer says so",
+			raw:         RawAudit{OK: true, Ours: true, Engine: "axe-core " + axe.Version, Report: axeDocument("")},
+			wantEffects: []string{"data-brw-ref", "axe-core " + axe.Version, "window.axe"},
+			// Nothing to warn about: the embedded engine is what ran.
+			wantNoteAbsent: true,
+		},
+		{
+			// The page shipped its own engine, so brw added nothing beyond the
+			// refs — and the rule ids came from a version that is not this one.
+			name:           "a borrowed engine is named next to the embedded version",
+			raw:            RawAudit{OK: true, Ours: false, Engine: "axe-core 3.5.5", Report: axeDocument("")},
+			wantEffects:    []string{"data-brw-ref", "the page's own axe-core"},
+			wantNotEffects: []string{"window.axe"},
+			wantNote:       []string{"axe-core 3.5.5", axe.Version},
+		},
+		{
+			name:        "an engine that would not name itself still reports the embedded version",
+			raw:         RawAudit{OK: true, Ours: false, Engine: "", Report: axeDocument("")},
+			wantEffects: []string{"data-brw-ref"},
+			wantNote:    []string{"unidentified", axe.Version},
+		},
 	}
-	if !strings.Contains(borrowed.Note, "page's own axe-core") {
-		t.Errorf("note = %q, want it to say whose engine ran", borrowed.Note)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := SummarizeAudit(tt.raw, AuditOptions{}, time.Unix(0, 0))
+			if err != nil {
+				t.Fatalf("summarize: %v", err)
+			}
+			for _, want := range tt.wantEffects {
+				if !strings.Contains(got.PageEffects, want) {
+					t.Errorf("page_effects = %q, want it to mention %q", got.PageEffects, want)
+				}
+			}
+			for _, unwanted := range tt.wantNotEffects {
+				if strings.Contains(got.PageEffects, unwanted) {
+					t.Errorf("page_effects = %q, want it not to claim %q", got.PageEffects, unwanted)
+				}
+			}
+			for _, want := range tt.wantNote {
+				if !strings.Contains(got.Note, want) {
+					t.Errorf("note = %q, want it to mention %q", got.Note, want)
+				}
+			}
+			if tt.wantNoteAbsent && got.Note != "" {
+				t.Errorf("note = %q, want none when brw's own engine ran", got.Note)
+			}
+		})
 	}
+}
 
+func TestSummarizeAuditReportsAFailedRun(t *testing.T) {
 	if _, err := SummarizeAudit(RawAudit{OK: false, Error: "axe crashed"}, AuditOptions{}, time.Unix(0, 0)); err == nil ||
 		!strings.Contains(err.Error(), "axe crashed") {
 		t.Fatalf("error = %v, want the page's own failure carried out", err)
