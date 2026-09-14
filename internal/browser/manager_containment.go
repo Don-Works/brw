@@ -92,7 +92,10 @@ func (c *containmentState) enableLock(tabID string) *sync.Mutex {
 //     the network without an interceptable request; a brw-launched browser gets
 //     that closed at launch instead (see the --allowed-domains launch flags).
 func (m *Manager) ensureContainment(tabID string, tabCtx context.Context) {
-	if !m.navPolicy.Confines() {
+	// The content boundary rides the same interception, so it arms it too: with
+	// no navigation policy configured there is otherwise nothing intercepting
+	// document requests and the boundary would silently do nothing.
+	if !m.navPolicy.Confines() && !m.contentNavGuard {
 		return
 	}
 	m.armInterception(tabID, tabCtx)
@@ -119,6 +122,9 @@ func (m *Manager) armInterception(tabID string, tabCtx context.Context) {
 	m.containment.mu.Unlock()
 
 	chromedp.ListenTarget(tabCtx, func(ev any) {
+		// Where the tab actually landed, for the content boundary. Delivered on
+		// this same subscription rather than a second one.
+		m.listenContentNavigation(tabID, ev)
 		// An auth challenge is answered from the credential armed for this tab, or
 		// deferred to Chrome when none is. It shares this listener because CDP
 		// delivers it on the same connection as requestPaused and a second
@@ -136,7 +142,7 @@ func (m *Manager) armInterception(tabID string, tabCtx context.Context) {
 		if !ok {
 			return
 		}
-		allow, reason := m.containmentVerdict(paused)
+		allow, reason, errorReason := m.containmentVerdict(tabID, paused)
 		if !allow {
 			m.recordBlockedRequest(tabID, BlockedRequest{
 				URL:          clipDialogText(paused.Request.URL),
@@ -153,7 +159,7 @@ func (m *Manager) armInterception(tabID string, tabCtx context.Context) {
 			answerCtx, cancel := context.WithTimeout(tabCtx, 10*time.Second)
 			defer cancel()
 			if !allow {
-				_ = chromedp.Run(answerCtx, fetch.FailRequest(paused.RequestID, network.ErrorReasonBlockedByClient))
+				_ = chromedp.Run(answerCtx, fetch.FailRequest(paused.RequestID, errorReason))
 				return
 			}
 			if route != nil {
@@ -207,10 +213,22 @@ func (m *Manager) armInterception(tabID string, tabCtx context.Context) {
 // Gating the document request here is not redundant with the MCP-layer check: a
 // permitted URL that redirects off the allowlist produces a document request
 // that the MCP check never sees.
-func (m *Manager) containmentVerdict(paused *fetch.EventRequestPaused) (allow bool, reason string) {
+// The third return value is the network error Chrome should report for a
+// refusal. It is not cosmetic: ERR_BLOCKED_BY_CLIENT on a top-level navigation
+// makes Chrome commit an error page AT the refused URL, so refusing a
+// content-initiated navigation that way still moved the agent — to a Chrome
+// error page on the attacker's URL. ERR_ABORTED leaves the current document in
+// place, which is what "this navigation does not happen" has to mean.
+func (m *Manager) containmentVerdict(tabID string, paused *fetch.EventRequestPaused) (allow bool, reason string, errorReason network.ErrorReason) {
+	// The content boundary is checked first and independently of the domain
+	// policy: "this page tried to steer the agent" is refused whether or not the
+	// destination would otherwise have been reachable.
+	if allowed, why := m.contentNavigationVerdict(tabID, paused); !allowed {
+		return false, why, network.ErrorReasonAborted
+	}
 	// Interception may be armed for routes alone, with no policy to enforce.
 	if !m.navPolicy.Confines() {
-		return true, ""
+		return true, "", ""
 	}
 	url := paused.Request.URL
 	var err error
@@ -220,9 +238,9 @@ func (m *Manager) containmentVerdict(paused *fetch.EventRequestPaused) (allow bo
 		err = m.navPolicy.CheckSubresource(url)
 	}
 	if err != nil {
-		return false, err.Error()
+		return false, err.Error(), network.ErrorReasonBlockedByClient
 	}
-	return true, ""
+	return true, "", ""
 }
 
 func (m *Manager) recordBlockedRequest(tabID string, record BlockedRequest) {

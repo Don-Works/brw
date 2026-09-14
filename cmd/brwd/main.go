@@ -100,6 +100,11 @@ func main() {
 	var proxyBypassList string
 	var ignoreHTTPSErrors bool
 	var caCertFile string
+	var siteConsent bool
+	var siteConsentConfig string
+	var siteConsentPrompt bool
+	var confirmActions bool
+	var contentNavGuard bool
 
 	flag.StringVar(&httpAddr, "http", envDefault("BRW_HTTP_ADDR", "127.0.0.1:17310"), "HTTP listen address, or off. Defaults to loopback; bind a non-loopback address only behind SSH/Tailscale with caller auth.")
 	flag.BoolVar(&mcpMode, "mcp", false, "run MCP stdio server")
@@ -149,6 +154,11 @@ func main() {
 	flag.StringVar(&proxyBypassList, "proxy-bypass-list", os.Getenv("BRW_PROXY_BYPASS_LIST"), "direct CDP: semicolon-separated hosts that bypass --proxy-server and go direct, for example \"<local>;*.internal\". Requires --proxy-server.")
 	flag.BoolVar(&ignoreHTTPSErrors, "ignore-https-errors", envBool("BRW_IGNORE_HTTPS_ERRORS"), "direct CDP: launch Chrome with certificate validation OFF for every site. Opt-in per launch and reported by brw_identity as ignore_https_errors, because an agent reading a page over this daemon otherwise cannot tell a valid site from an intercepted one. Prefer --ca-cert, which trusts one private CA instead of everything.")
 	flag.StringVar(&caCertFile, "ca-cert", os.Getenv("BRW_CA_CERT"), "direct CDP: PEM bundle whose certificates' public keys Chrome should stop reporting errors for, so a private-CA site loads without turning validation off everywhere. It does NOT install the CA anywhere: nothing outside this browser instance is affected, and the connection remains an error Chrome was told to overlook rather than a validated one.")
+	flag.BoolVar(&siteConsent, "site-consent", envBool("BRW_SITE_CONSENT"), "require a recorded per-origin grant before brw opens or acts on a site. Grants live beside the profile policy, are MAC'd against a 0600 key so a local process cannot write itself one, and are listed/revoked with `brwctl grants`. Without a grant the daemon refuses and names the origin and the missing scope.")
+	flag.StringVar(&siteConsentConfig, "site-consent-config", os.Getenv("BRW_SITE_CONSENT_CONFIG"), "admin consent config JSON (allowed_origins, blocked_origins, category_domains, confirm_actions, default_grant_ttl). Defaults to site-consent.json beside the profile policy, so a managed machine needs no UI.")
+	flag.BoolVar(&siteConsentPrompt, "site-consent-prompt", envBool("BRW_SITE_CONSENT_PROMPT"), "ask on this terminal when an un-granted origin comes up, and record the answer. Requires a terminal on stdin and is incompatible with --mcp (which owns stdin); without it the daemon is non-interactive and refuses instead of asking.")
+	flag.BoolVar(&confirmActions, "confirm-actions", envBool("BRW_CONFIRM_ACTIONS"), "require confirmation before a high-risk action (publishing, purchasing, submitting a form carrying personal data, anything on a blocklisted category). Fails CLOSED: with nobody to ask, the action is refused rather than approved. Requires --site-consent.")
+	flag.BoolVar(&contentNavGuard, "content-nav-guard", envBool("BRW_CONTENT_NAV_GUARD"), "refuse a top-level navigation that page content initiated to another site (an injected link click, a meta refresh, a script location assignment). The same destination requested by the agent still works. Direct CDP only.")
 	flag.Parse()
 
 	mcpIdleExit = effectiveMCPIdleExit(
@@ -485,6 +495,35 @@ func main() {
 		bridge.SetNavigationPolicy(navPolicy)
 	}
 
+	if contentNavGuard {
+		if manager == nil {
+			// Named, not silently ignored. The boundary is implemented on the
+			// direct-CDP transport's request interception; the extension bridge
+			// has no equivalent, and a flag that quietly does nothing is worse
+			// than one that refuses.
+			log.Fatalf("--content-nav-guard needs the direct-CDP transport: it is enforced on CDP request interception, which the extension bridge and the upstream HTTP proxy do not have")
+		}
+		manager.SetContentNavigationGuard(true)
+		log.Printf("content navigation boundary active: a page-initiated top-level navigation to another site is refused")
+	}
+
+	consentGuard, err := buildSiteConsent(siteConsentOptions{
+		enabled:    siteConsent,
+		configPath: siteConsentConfig,
+		policyPath: profilePolicyPath,
+		prompt:     siteConsentPrompt,
+		mcpMode:    mcpMode,
+		confirm:    confirmActions,
+	})
+	if err != nil {
+		log.Fatalf("site consent: %v", err)
+	}
+	if bridge != nil {
+		// The extension's options page is the only consent surface a user of the
+		// signed-in browser has, and it reaches the daemon through the bridge.
+		bridge.SetSiteConsent(consentGuard)
+	}
+
 	var artifactAPI artifact.API
 	var recipeAPI recipe.API
 	if upstreamHTTP != "" {
@@ -583,6 +622,7 @@ func main() {
 		// and a caller gating on transport silently got no answer.
 		api = httpapi.NewWithIdentity(httpAddr, controller, usageIdentity)
 		api.SetNavigationPolicy(navPolicy)
+		api.SetSiteConsent(consentGuard)
 		api.SetUsageRecorder(usage)
 		api.SetArtifactAPI(artifactAPI)
 		api.SetRecipeAPI(recipeAPI)
@@ -619,6 +659,7 @@ func main() {
 		go watchParentExit(stop)
 		server := mcp.NewWithToolProfile(controller, mcpToolProfile)
 		server.SetNavigationPolicy(navPolicy)
+		server.SetSiteConsent(consentGuard)
 		server.SetArtifactAPI(artifactAPI)
 		server.SetRecipeAPI(recipeAPI)
 		// usageIdentity is the fully-resolved workspace/profile/mode for this

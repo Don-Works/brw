@@ -56,6 +56,9 @@ func (m *Manager) Navigate(ctx context.Context, direction string) (ActionResult,
 
 	before := m.cachedBefore(tabID, tabCtx)
 
+	// A history move is the agent's navigation even though the agent never named
+	// the destination, so the intent is recorded without a host.
+	m.recordAgentNavigation(tabID, "")
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		switch dir {
 		case NavigateReload:
@@ -109,6 +112,10 @@ func (m *Manager) NavigateTo(ctx context.Context, url string) (ActionResult, err
 
 	before := m.cachedBefore(tabID, tabCtx)
 
+	// Record the destination BEFORE the navigation starts: the document request
+	// arrives while this call is still in flight, and the content boundary has to
+	// already know the agent asked for it.
+	m.recordAgentNavigation(tabID, url)
 	if err := chromedp.Run(tabCtx, chromedp.Navigate(url)); err != nil {
 		return ActionResult{}, err
 	}

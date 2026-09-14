@@ -1,0 +1,74 @@
+{
+  "version": "2026-09-01",
+  "source": "Hand-curated seed list maintained in this repository at internal/siteconsent/categories.json. brw does not subscribe to a commercial categorisation feed and does not fetch this list at runtime; what ships in the binary is exactly what is in this file.",
+  "update": "Edit this file and open a pull request against Don-Works/brw. TestCategoryDataIsWellFormed gates the shape. Operators who need a different list on their own machines extend or replace it through the admin config's category_domains map rather than waiting on a release.",
+  "coverage": "A seed list of well-known hosts per category, not an exhaustive classification of the web. An origin absent from it is NOT thereby known to be outside the category - it is only unlisted. Treat a hit as reliable and a miss as unknown.",
+  "categories": [
+    {
+      "name": "financial-services",
+      "title": "Financial services",
+      "why": "A mistaken action here moves money and cannot be undone by closing the tab.",
+      "domains": [
+        "americanexpress.com",
+        "barclays.co.uk",
+        "bankofamerica.com",
+        "binance.com",
+        "chase.com",
+        "citi.com",
+        "coinbase.com",
+        "halifax.co.uk",
+        "hsbc.co.uk",
+        "lloydsbank.com",
+        "monzo.com",
+        "nationwide.co.uk",
+        "natwest.com",
+        "paypal.com",
+        "revolut.com",
+        "santander.co.uk",
+        "schwab.com",
+        "starlingbank.com",
+        "stripe.com",
+        "transferwise.com",
+        "wise.com",
+        "wellsfargo.com"
+      ]
+    },
+    {
+      "name": "adult",
+      "title": "Adult content",
+      "why": "Not somewhere an agent should take a browser on its own initiative, and a signed-in profile makes the visit attributable to the user.",
+      "domains": [
+        "adultfriendfinder.com",
+        "chaturbate.com",
+        "fansly.com",
+        "onlyfans.com",
+        "pornhub.com",
+        "redtube.com",
+        "stripchat.com",
+        "xhamster.com",
+        "xnxx.com",
+        "xvideos.com",
+        "youporn.com"
+      ]
+    },
+    {
+      "name": "pirated",
+      "title": "Pirated media and paywalled works",
+      "why": "Fetching from these makes the user the one who downloaded it, from their own address, on their signed-in profile.",
+      "domains": [
+        "1337x.to",
+        "annas-archive.org",
+        "fmovies.to",
+        "libgen.is",
+        "nyaa.si",
+        "rarbg.to",
+        "sci-hub.se",
+        "soap2day.to",
+        "thepiratebay.org",
+        "torrentgalaxy.to",
+        "yts.mx",
+        "zlibrary.to"
+      ]
+    }
+  ]
+}

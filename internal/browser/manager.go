@@ -205,6 +205,12 @@ type Manager struct {
 	// containment enforces the navigation policy on SUBRESOURCES, not just on
 	// the URL an agent asks to open. Zero value is usable.
 	containment containmentState
+	// contentNavGuard arms the content boundary: a top-level navigation the
+	// PAGE initiated to another site is refused, while the same destination
+	// requested by the agent is allowed. Off by default.
+	contentNavGuard bool
+	// contentNav is the bookkeeping that separates the two. Zero value is usable.
+	contentNav contentNavState
 	// routes holds per-tab request interception rules. Zero value is usable.
 	routes routeState
 
@@ -557,6 +563,9 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	// that loaded.
 	var navErr error
 	if url != "about:blank" {
+		// The agent asked for this destination, so the content boundary must not
+		// mistake the tab's first document for something the page initiated.
+		m.recordAgentNavigation(tabID, url)
 		// tabContext publishes the target's context and arms console capture on it.
 		if tabCtx, ctxErr := m.tabContext(tabID); ctxErr == nil {
 			navCtx, cancelNav := context.WithTimeout(tabCtx, openNavigateTimeout)
@@ -785,6 +794,7 @@ func (m *Manager) forgetTabCaches(id string) {
 	m.env.forget(id)
 	m.routes.forget(id)
 	m.containment.forget(id)
+	m.contentNav.forget(id)
 	m.heldMu.Lock()
 	delete(m.heldKeys, id)
 	m.heldMu.Unlock()

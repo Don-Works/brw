@@ -465,6 +465,23 @@ Backend-specific notes:
   agent guardrail, not a network firewall: the final-destination check happens
   after Chrome commits, so use DNS/firewall controls when the request itself must
   never leave the machine.
+- **Site permissions**: `--site-consent` records what the user actually allowed,
+  per origin, with a scope (`read` / `act`), a grantor and an expiry, stored with
+  the profile policy. Every record carries an HMAC over its own authorising
+  fields keyed by a 0600 file, so a local process cannot write itself a grant;
+  a record that does not verify is discarded and reported. Un-granted origins are
+  refused by name and scope, revocation applies on the next action with no daemon
+  restart, and a shipped `financial-services` / `adult` / `pirated` category
+  blocklist needs an explicit `--override-category` that is written to the
+  consent ledger. `--confirm-actions` gates publishing, purchasing, personal-data
+  form submissions and anything on a blocklisted category, and fails CLOSED when
+  nobody is there to confirm. List and revoke with `brwctl grants`, the extension
+  options page, or `brw grants`. Opt-in; off by default.
+  See [docs/site-permissions.md](docs/site-permissions.md).
+- **Content-boundary navigation guard**: `--content-nav-guard` (direct CDP only)
+  refuses a top-level navigation that page content initiated to another site — an
+  injected link click, a meta refresh, a script `location` assignment — while the
+  same destination requested by the agent still works. Opt-in; off by default.
 
 With the extension bridge, each agent session automatically gets its own
 **per-agent tab group**: tabs opened without an explicit `group` land in a

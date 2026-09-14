@@ -766,6 +766,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     });
     return true;
   }
+  if (message?.type === "BRW_GET_CONSENT") {
+    fetchSiteConsent().then((consent) => sendResponse({ ok: true, consent }))
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
+  if (message?.type === "BRW_REVOKE_CONSENT") {
+    revokeSiteConsent(message.request || {}).then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
+  }
   if (message?.type === "BRW_CONFIGURE") {
     configureBridge(message.config || {}).then((config) => {
       sendResponse({ ok: true, config });
@@ -3287,6 +3297,46 @@ function send(payload) {
 // refused connection rather than a tokenless one - and a caller that cannot
 // tell "the daemon offered none" from "I never reached the daemon" reports a
 // bridge that will not come up with the cause three layers away.
+// consentURL derives the daemon's consent surface from the configured status
+// endpoint. It is derived rather than configured so there is one address to get
+// wrong, and normalizeStatusURL has already pinned that address to loopback.
+function consentURL(config, path) {
+  const url = new URL(config.statusUrl);
+  url.pathname = path;
+  url.search = "";
+  return url.toString();
+}
+
+// fetchSiteConsent reads the per-origin grants the daemon holds, for the options
+// page. The page cannot fetch this itself: it runs on a chrome-extension origin
+// and the daemon serves the surface only to a request with host_permissions
+// behind it, which is what the service worker has.
+async function fetchSiteConsent() {
+  const config = await loadBridgeConfig();
+  const response = await fetch(consentURL(config, "/consent"), {
+    cache: "no-store",
+    signal: AbortSignal.timeout(DAEMON_STATUS_TIMEOUT_MS)
+  });
+  if (!response.ok) throw new Error(`the daemon consent endpoint answered HTTP ${response.status}`);
+  return response.json();
+}
+
+async function revokeSiteConsent(request) {
+  const config = await loadBridgeConfig();
+  const body = request.all ? { all: true } : { origin: String(request.origin || "") };
+  if (!request.all && request.scope) body.scope = String(request.scope);
+  const response = await fetch(consentURL(config, "/consent/revoke"), {
+    method: "POST",
+    cache: "no-store",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(DAEMON_STATUS_TIMEOUT_MS)
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result?.error || `the daemon refused the revocation (HTTP ${response.status})`);
+  return result;
+}
+
 async function fetchBridgeToken(config) {
   try {
     // Bounded so a hung /status can never block hello indefinitely; the bridge's

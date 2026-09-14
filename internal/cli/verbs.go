@@ -319,6 +319,48 @@ func verbs() []verb {
 			},
 			render: renderHealth,
 		},
+		{
+			name:    "grants",
+			summary: "list the site permission grants this profile holds",
+			method:  http.MethodGet,
+			path:    "/api/consent/grants",
+			build: func(_ *options, args []string) (request, error) {
+				return request{}, noArgs(args)
+			},
+			render: renderGrants,
+		},
+		{
+			name:      "grants revoke",
+			usage:     "<origin>|--all",
+			summary:   "revoke a site permission grant; takes effect on the next action",
+			method:    http.MethodPost,
+			path:      "/api/consent/revoke",
+			exactBody: true,
+			flags: func(fs *flag.FlagSet, opts *options) {
+				fs.BoolVar(&opts.clear, "all", false, "revoke every grant this profile holds")
+				fs.StringVar(&opts.scope, "scope", "", "revoke only this scope (read or act); default revokes both")
+			},
+			build: func(opts *options, args []string) (request, error) {
+				body := map[string]any{}
+				if opts.clear {
+					if len(args) != 0 {
+						return request{}, errors.New("--all revokes everything, so it takes no origin")
+					}
+					body["all"] = true
+					return request{Body: body}, nil
+				}
+				origin, err := oneArg(args, "origin")
+				if err != nil {
+					return request{}, err
+				}
+				body["origin"] = origin
+				if opts.scope != "" {
+					body["scope"] = opts.scope
+				}
+				return request{Body: body}, nil
+			},
+			render: renderRevoke,
+		},
 	}
 	// The developer observations are defined beside their renderers in
 	// verbs_devtools.go; the completion scripts and the route test read this

@@ -796,6 +796,9 @@ func (m *Manager) fetchInterceptionCommand(tabID string) (enable, handleAuth boo
 	handleAuth = m.env.authArmed(tabID)
 	enable = handleAuth ||
 		m.navPolicy.Confines() ||
+		// The content boundary decides document requests, which it can only do
+		// while Chrome is pausing them.
+		m.contentNavGuard ||
 		m.routes.count(tabID) > 0 ||
 		len(m.env.listHeaders(tabID)) > 0
 	return enable, handleAuth

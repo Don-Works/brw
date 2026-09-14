@@ -704,6 +704,69 @@ footer a {
     padding-right: 18px;
     padding-left: 18px;
   }
+
+  .grants {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+}
+
+.grants {
+  padding: 0 26px 20px;
+}
+
+.grants-empty,
+.grants-source {
+  margin: 0 0 8px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.grants-source {
+  margin-top: 10px;
+  font-size: .82rem;
+  color: var(--faint);
+}
+
+.grants-list,
+.grants-rejected {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.grants-list li {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.grants-list li:last-child {
+  border-bottom: 0;
+}
+
+.grants-list strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.grants-list small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.grants-rejected li {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--danger-soft, var(--surface-2));
+  color: var(--danger);
+  line-height: 1.45;
 }
 
 @media (prefers-color-scheme: dark) {

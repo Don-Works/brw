@@ -20,6 +20,7 @@ import (
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/recipe"
+	"github.com/Don-Works/brw/internal/siteconsent"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
@@ -30,9 +31,12 @@ type Server struct {
 	recipes   recipe.API
 	identity  brwidentity.Identity
 	navPolicy *navpolicy.Policy
-	usage     *usagelog.Recorder
-	leases    *tabLeaseManager
-	server    *http.Server
+	// consent is the per-origin grant guard behind /api/consent/*. Nil means the
+	// daemon was started without site consent.
+	consent *siteconsent.Guard
+	usage   *usagelog.Recorder
+	leases  *tabLeaseManager
+	server  *http.Server
 
 	// loopbackBind records that the daemon listens on loopback only. It gates
 	// the dashboard's takeover surface, which forwards input to a signed-in
@@ -91,7 +95,9 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	// Wrap the router so every request first passes the same-machine browser
 	// guard (DNS-rebinding + cross-origin CSRF). A loopback CLI/MCP client sends
 	// a loopback Host and no browser Origin, so it is untouched.
-	s.server.Handler = s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.leaseMiddleware(mux))))
+	// Site consent sits INSIDE the host guard (a rejected cross-origin request
+	// never reaches it) and OUTSIDE the mux, so a refusal means no handler ran.
+	s.server.Handler = s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.consentMiddleware(s.leaseMiddleware(mux)))))
 	return s
 }
 
@@ -380,6 +386,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/artifacts/{id}", s.deleteArtifactLegacy)
 	mux.HandleFunc("POST /api/recipes/search", s.searchRecipes)
 	mux.HandleFunc("POST /api/recipes/run", s.runRecipe)
+	mux.HandleFunc("GET /api/consent/grants", s.consentGrants)
+	mux.HandleFunc("POST /api/consent/revoke", s.consentRevoke)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {

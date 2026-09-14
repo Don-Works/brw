@@ -145,6 +145,23 @@
         </div>
       </form>
 
+      <div class="divider"></div>
+
+      <div class="section-heading">
+        <div>
+          <h2>Site permissions</h2>
+          <p>The sites this profile has been allowed to read or act on. Revoking takes effect on the agent's next action.</p>
+        </div>
+        <button class="button secondary" id="revokeAllGrants" type="button">Revoke all</button>
+      </div>
+
+      <div class="grants" id="grantsPanel" aria-live="polite">
+        <p class="grants-empty" id="grantsEmpty">Loading site permissions…</p>
+        <ul class="grants-list" id="grantsList"></ul>
+        <ul class="grants-rejected" id="grantsRejected" hidden></ul>
+        <p class="grants-source" id="grantsSource"></p>
+      </div>
+
       <details class="diagnostics">
         <summary>Diagnostic details</summary>
         <pre id="rawStatus" tabindex="0">Waiting for status…</pre>

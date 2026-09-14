@@ -20,6 +20,7 @@ import (
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/recipe"
+	"github.com/Don-Works/brw/internal/siteconsent"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/urlread"
 	"github.com/Don-Works/brw/internal/usagelog"
@@ -45,6 +46,12 @@ type Server struct {
 	identity    brwidentity.Identity
 	console     consoleBuffer
 	unlocked    unlockedTools
+	// consent gates tools behind a persistent per-origin grant. Nil (the
+	// default) leaves every tool ungated: site consent is opt-in.
+	consent *siteconsent.Guard
+	// refLabels remembers the accessible name brw last reported for each ref, so
+	// a click addressed by ref can still be classified for the confirmation gate.
+	refLabels refLabelStore
 	// diffs holds per-tab brw_diff baselines. Zero value is usable.
 	diffs diffStore
 
@@ -863,6 +870,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		// excluded: they manage focus themselves or pin internally per step.
 		ctx = pinActiveTabForTool(ctx, s.manager, name)
 	}
+	// Site consent runs before the switch, so a refused call dispatches nothing.
+	// It is a no-op unless a consent store was configured.
+	if err := s.enforceSiteConsent(ctx, name, args); err != nil {
+		return toolError(err), nil
+	}
 	switch name {
 	case discoveryToolName:
 		var req struct {
@@ -1097,6 +1109,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err != nil {
 			return toolError(err), nil
 		}
+		s.refLabels.record(browser.TabIDFromContext(ctx), snap.Elements)
 		if strings.EqualFold(req.Format, "compact") {
 			return map[string]any{"content": []toolContent{{Type: "text", Text: snapshot.RenderCompact(snap)}}}, nil
 		}
@@ -1107,7 +1120,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		req = normalizeMCPFindOptions(req)
-		return toolJSON(s.manager.Find(ctx, req))
+		found, err := s.manager.Find(ctx, req)
+		if err == nil {
+			s.refLabels.record(browser.TabIDFromContext(ctx), found.Elements)
+		}
+		return toolJSON(found, err)
 	case "brw_click":
 		var req struct {
 			Ref        string   `json:"ref"`

@@ -205,15 +205,21 @@ func zshCompletion(all []verb) string {
 	globals, valueGlobals := globalFlagNames()
 	var b strings.Builder
 	b.WriteString("#compdef brw\n# brw zsh completion. Regenerate with: brw completion zsh\n_brw() {\n    local -a _brw_verbs _brw_subs _brw_flags\n    local -i _brw_verb_index\n    _brw_verbs=(\n")
+	// A word may be BOTH a verb of its own and the first token of a two-word
+	// verb ("grants" and "grants revoke"). Emitting it from both loops offered
+	// it to the shell twice, so the first word is recorded here and the group
+	// loop skips what the verb loop already described.
+	described := map[string]bool{}
 	for _, v := range all {
 		tokens := strings.Fields(v.name)
 		if len(tokens) != 1 {
 			continue
 		}
+		described[tokens[0]] = true
 		fmt.Fprintf(&b, "        '%s:%s'\n", tokens[0], describeForZsh(v.summary))
 	}
 	for _, word := range sortedKeys(subWords(all)) {
-		if word == "completion" {
+		if word == "completion" || described[word] {
 			continue
 		}
 		fmt.Fprintf(&b, "        '%s:%s'\n", word, describeForZsh(groupSummary(all, word)))

@@ -91,6 +91,7 @@ type options struct {
 	durationMS int
 	clear      bool
 	scroll     bool
+	scope      string
 }
 
 // Run executes one brw invocation and returns its process exit code. args

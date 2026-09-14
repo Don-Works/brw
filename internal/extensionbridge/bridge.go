@@ -23,6 +23,7 @@ import (
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/readability"
+	"github.com/Don-Works/brw/internal/siteconsent"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/usagelog"
 	"github.com/coder/websocket"
@@ -48,6 +49,9 @@ type Bridge struct {
 	allowedExtensionID string
 	identity           brwidentity.Identity
 	navPolicy          *navpolicy.Policy
+	// consent backs the /consent surface the extension's options page reads and
+	// revokes through. Nil means the daemon was started without site consent.
+	consent *siteconsent.Guard
 	// containment records which tabs already have subresource containment
 	// installed, so arming costs one message per tab rather than one per action.
 	containment containmentArm
@@ -421,6 +425,12 @@ func NewWithIdentity(addr string, timeout time.Duration, allowedExtensionID stri
 	mux := http.NewServeMux()
 	mux.HandleFunc("/extension", b.handleExtension)
 	mux.HandleFunc("/status", b.handleStatus)
+	// The options page is the only surface a user of the signed-in browser has,
+	// so the grant list and its revocations are served here beside /status
+	// rather than only on the control-plane API, which the extension's page
+	// cannot reach across the control plane's cross-origin guard.
+	mux.HandleFunc("/consent", b.handleConsent)
+	mux.HandleFunc("/consent/revoke", b.handleConsentRevoke)
 	// Bound the websocket-upgrade handshake against slow-header clients; the
 	// connection is hijacked into a long-lived WS afterward, so no read/write
 	// timeout that would sever the live bridge.

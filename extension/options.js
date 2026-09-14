@@ -9,6 +9,11 @@ const advanced = document.getElementById("advancedConfig");
 const consentPanel = document.getElementById("consentPanel");
 const grantConsentButton = document.getElementById("grantConsent");
 const revokeConsentButton = document.getElementById("revokeConsent");
+const grantsList = document.getElementById("grantsList");
+const grantsEmpty = document.getElementById("grantsEmpty");
+const grantsRejected = document.getElementById("grantsRejected");
+const grantsSource = document.getElementById("grantsSource");
+const revokeAllGrantsButton = document.getElementById("revokeAllGrants");
 let refreshTimer = 0;
 let refreshing = false;
 let consentGranted = false;
@@ -32,12 +37,115 @@ for (const button of document.querySelectorAll("[data-port]")) {
 
 init();
 
+revokeAllGrantsButton.addEventListener("click", () => {
+  if (window.confirm("Revoke every site permission this profile holds? Agents will be refused until each site is granted again.")) {
+    revokeGrant({ all: true });
+  }
+});
+
 async function init() {
   await refreshStatus({ populate: true });
+  await refreshGrants();
   refreshTimer = window.setInterval(() => {
     if (!document.hidden) refreshStatus();
   }, 3000);
   window.addEventListener("pagehide", () => window.clearInterval(refreshTimer), { once: true });
+}
+
+// refreshGrants renders the per-origin permissions the daemon holds. It is a
+// separate, on-demand read rather than part of the 3-second status poll: the
+// list changes when a person changes it, and polling it would put the sites the
+// user has visited through the message channel every few seconds for nothing.
+async function refreshGrants() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "BRW_GET_CONSENT" });
+    if (!response?.ok) throw new Error(response?.error || "Site permissions unavailable");
+    renderGrants(response.consent || {});
+  } catch (error) {
+    grantsList.replaceChildren();
+    grantsRejected.hidden = true;
+    grantsEmpty.hidden = false;
+    grantsEmpty.textContent = humanizeError(error);
+    grantsSource.textContent = "";
+  }
+}
+
+function renderGrants(consent) {
+  grantsList.replaceChildren();
+  grantsRejected.replaceChildren();
+  grantsRejected.hidden = true;
+
+  if (!consent.enabled) {
+    grantsEmpty.hidden = false;
+    grantsEmpty.textContent = "This daemon runs without site permissions, so every site an agent reaches is allowed.";
+    grantsSource.textContent = "";
+    revokeAllGrantsButton.disabled = true;
+    return;
+  }
+  const grants = Array.isArray(consent.grants) ? consent.grants : [];
+  revokeAllGrantsButton.disabled = grants.length === 0;
+  grantsEmpty.hidden = grants.length > 0;
+  if (grants.length === 0) {
+    grantsEmpty.textContent = "No sites have been granted yet. An agent will be refused until one is.";
+  }
+  for (const grant of grants) {
+    grantsList.appendChild(grantRow(grant));
+  }
+  const rejected = Array.isArray(consent.rejected) ? consent.rejected : [];
+  if (rejected.length > 0) {
+    grantsRejected.hidden = false;
+    for (const record of rejected) {
+      const item = document.createElement("li");
+      item.textContent = `Refused record for ${record.origin}: ${record.reason}`;
+      grantsRejected.appendChild(item);
+    }
+  }
+  grantsSource.textContent = consent.category_source
+    ? `Category blocklist ${consent.category_version || ""}. ${consent.category_source} ${consent.category_update || ""}`.trim()
+    : "";
+}
+
+function grantRow(grant) {
+  const item = document.createElement("li");
+  const text = document.createElement("div");
+
+  const origin = document.createElement("strong");
+  origin.textContent = grant.origin;
+  text.appendChild(origin);
+
+  const facts = [grant.scope === "act" ? "may act" : "may read"];
+  if (grant.decision === "deny") facts.push("refused");
+  if (grant.granted_by) facts.push(`by ${grant.granted_by}`);
+  if (grant.granted_at) facts.push(`on ${grant.granted_at}`);
+  if (grant.expiry) facts.push(grant.expired ? `expired ${grant.expiry}` : `expires ${grant.expiry}`);
+  if (grant.override_category) facts.push(`category override: ${grant.override_category}`);
+  const detail = document.createElement("small");
+  detail.textContent = facts.join(" · ");
+  text.appendChild(detail);
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "button secondary";
+  button.textContent = "Revoke";
+  button.addEventListener("click", () => revokeGrant({ origin: grant.origin, scope: grant.scope }));
+
+  item.appendChild(text);
+  item.appendChild(button);
+  return item;
+}
+
+async function revokeGrant(request) {
+  revokeAllGrantsButton.disabled = true;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "BRW_REVOKE_CONSENT", request });
+    if (!response?.ok) throw new Error(response?.error || "Could not revoke");
+    const removed = response.result?.removed ?? 0;
+    setFormMessage(`Revoked ${removed} site permission${removed === 1 ? "" : "s"}. This applies to the agent's next action.`, "success");
+  } catch (error) {
+    setFormMessage(humanizeError(error), "error");
+  } finally {
+    await refreshGrants();
+  }
 }
 
 async function save(event) {

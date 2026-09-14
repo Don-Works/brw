@@ -154,6 +154,9 @@ src += `
   waitForTabGone,
   agentOwnedTabIdForHello,
   fetchBridgeToken,
+  consentURL,
+  fetchSiteConsent,
+  revokeSiteConsent,
   ensureObserver,
   handle,
   send,
@@ -1278,6 +1281,64 @@ async function scenarioHandshakeTokenFailuresAreDistinguishable() {
   sandbox.fetch = originalFetch;
 }
 
+// The options page reads and revokes site permissions through the worker,
+// because a chrome-extension page cannot reach the daemon surface itself. What
+// matters is the address it derives and that a refusal reaches the page as an
+// error rather than as a silent success.
+async function scenarioSiteConsentSurface() {
+  await reset();
+  const originalFetch = sandbox.fetch;
+  const config = { statusUrl: "http://127.0.0.1:17311/status" };
+
+  check("the consent address is derived from the status endpoint",
+    T.consentURL(config, "/consent") === "http://127.0.0.1:17311/consent");
+  check("a query string on the status endpoint is not carried over",
+    T.consentURL({ statusUrl: "http://127.0.0.1:17311/status?x=1" }, "/consent/revoke") === "http://127.0.0.1:17311/consent/revoke");
+
+  let requested = null;
+  sandbox.fetch = async (url, init) => {
+    requested = { url, init };
+    return { ok: true, status: 200, json: async () => ({ enabled: true, grants: [{ origin: "https://one.test", scope: "act" }] }) };
+  };
+  const consent = await T.fetchSiteConsent();
+  check("the grant list is read from /consent", String(requested.url).endsWith("/consent"));
+  check("the grant list reaches the page", consent.enabled === true && consent.grants[0].origin === "https://one.test");
+
+  sandbox.fetch = async (url, init) => {
+    requested = { url, init };
+    return { ok: true, status: 200, json: async () => ({ ok: true, removed: 1 }) };
+  };
+  const revoked = await T.revokeSiteConsent({ origin: "https://one.test", scope: "act" });
+  check("a revocation POSTs to /consent/revoke", String(requested.url).endsWith("/consent/revoke") && requested.init.method === "POST");
+  check("the revocation body carries the origin and scope",
+    JSON.parse(requested.init.body).origin === "https://one.test" && JSON.parse(requested.init.body).scope === "act");
+  check("the revocation result reaches the page", revoked.removed === 1);
+
+  const all = await T.revokeSiteConsent({ all: true });
+  const allBody = JSON.parse(requested.init.body);
+  check("revoke all sends only the all flag", allBody.all === true && !("origin" in allBody) && all.removed === 1);
+
+  sandbox.fetch = async () => ({ ok: false, status: 400, json: async () => ({ error: "site consent is not configured on this daemon" }) });
+  let refused = "";
+  try {
+    await T.revokeSiteConsent({ all: true });
+  } catch (error) {
+    refused = String(error?.message || error);
+  }
+  check("a refused revocation surfaces the daemon's reason", refused.includes("not configured"));
+
+  sandbox.fetch = async () => ({ ok: false, status: 403, json: async () => ({}) });
+  let unreadable = "";
+  try {
+    await T.fetchSiteConsent();
+  } catch (error) {
+    unreadable = String(error?.message || error);
+  }
+  check("an unreadable grant list is an error, not an empty list", unreadable.includes("403"));
+
+  sandbox.fetch = originalFetch;
+}
+
 // brw_route on this transport is declarativeNetRequest, not Fetch interception:
 // the extension is never handed a response, so a rule can only refuse a request.
 //
@@ -1472,6 +1533,7 @@ async function scenarioRouteResourceTypesFollowTheBuild() {
   await scenarioRouteRulesSurviveAServiceWorkerRestart();
   await scenarioRouteResourceTypesFollowTheBuild();
   await scenarioHandshakeTokenFailuresAreDistinguishable();
+  await scenarioSiteConsentSurface();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })();

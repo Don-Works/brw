@@ -284,3 +284,71 @@ func truncate(value string, max int) string {
 	}
 	return string(runes[:max-1]) + "…"
 }
+
+// renderGrants prints the site permission records a profile holds. Expired and
+// override records are labelled rather than filtered out: a user looking for
+// "why is it asking me again" needs to see the lapsed record, and a user
+// auditing what was crossed needs to see the override.
+func renderGrants(w io.Writer, _ *options, body []byte) error {
+	var response struct {
+		Enabled bool   `json:"enabled"`
+		Path    string `json:"path"`
+		Grants  []struct {
+			Origin           string `json:"origin"`
+			Scope            string `json:"scope"`
+			Decision         string `json:"decision"`
+			GrantedAt        string `json:"granted_at"`
+			GrantedBy        string `json:"granted_by"`
+			Expiry           string `json:"expiry"`
+			OverrideCategory string `json:"override_category"`
+			Expired          bool   `json:"expired"`
+		} `json:"grants"`
+		Rejected []struct {
+			Origin string `json:"origin"`
+			Scope  string `json:"scope"`
+			Reason string `json:"reason"`
+		} `json:"rejected"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return err
+	}
+	if !response.Enabled {
+		fmt.Fprintln(w, "site consent is not configured on this daemon")
+		return nil
+	}
+	if len(response.Grants) == 0 {
+		fmt.Fprintln(w, "no site permission grants")
+	}
+	for _, grant := range response.Grants {
+		fields := []string{grant.Origin, grant.Scope, grant.Decision, "by " + grant.GrantedBy, "at " + grant.GrantedAt}
+		if grant.Expiry != "" {
+			fields = append(fields, "expires "+grant.Expiry)
+		}
+		if grant.Expired {
+			fields = append(fields, "EXPIRED")
+		}
+		if grant.OverrideCategory != "" {
+			fields = append(fields, "override:"+grant.OverrideCategory)
+		}
+		fmt.Fprintln(w, strings.Join(fields, "  "))
+	}
+	for _, rejected := range response.Rejected {
+		fmt.Fprintf(w, "refused record %s %s: %s\n", rejected.Origin, rejected.Scope, rejected.Reason)
+	}
+	if response.Path != "" {
+		fmt.Fprintf(w, "store: %s\n", response.Path)
+	}
+	return nil
+}
+
+func renderRevoke(w io.Writer, _ *options, body []byte) error {
+	var response struct {
+		OK      bool `json:"ok"`
+		Removed int  `json:"removed"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "revoked %d grant(s)\n", response.Removed)
+	return nil
+}

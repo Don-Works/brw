@@ -58,6 +58,8 @@ func main() {
 		err = daemons(os.Args[2:])
 	case "recipe":
 		err = recipeCommand(os.Args[2:])
+	case "grants":
+		err = grantsCommand(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -82,7 +84,9 @@ commands:
   pack-extension  pack the brw Chrome extension as a CRX using installed Chrome
   update-xml      write a Chrome extension update manifest XML
   daemons         list configured bridge profile-daemons + probe each /health (JSON)
-  recipe          draft, validate or atomically install a private deterministic recipe`)
+  recipe          draft, validate or atomically install a private deterministic recipe
+  grants          list, allow or revoke the per-origin site permissions this profile holds
+                  (list | allow <origin> | revoke <origin> | revoke-all | ledger)`)
 }
 
 func recipeCommand(args []string) error {
