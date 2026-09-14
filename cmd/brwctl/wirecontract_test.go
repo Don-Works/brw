@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,7 +67,9 @@ func TestDaemonHealthContract(t *testing.T) {
 
 const (
 	fixtureReportedStatusURL    = "http://127.0.0.1:17311/status"
+	fixtureReportedBridgeURL    = "ws://127.0.0.1:17311/extension"
 	fixtureReportedConfigSource = "stored"
+	fixtureHandshakeToken       = "fixture-wirecontract-handshake-token"
 )
 
 func TestBridgeStatusContract(t *testing.T) {
@@ -126,6 +129,80 @@ func TestBridgeStatusContract(t *testing.T) {
 	}
 }
 
+// TestBridgeLastHandshakeContract pins the other half of the document doctor's
+// bridge_config check reads. The happy path never carries last_handshake, so the
+// required-keys list in TestBridgeStatusContract cannot cover it, and every
+// other test here encodes its fixture with the same bridgeStatus struct it
+// decodes with — so a rename on either side round-trips green while production
+// decodes an empty record, reportedBridgeConfig returns "", and the check falls
+// back to guessing from a file. That file-guessing false green is the whole
+// reason the check exists.
+//
+// A refused hello is the only producer: an extension pointed at a dead status
+// URL has no token to present, and the endpoint it tried is stated nowhere else
+// on the machine.
+func TestBridgeLastHandshakeContract(t *testing.T) {
+	addr := freeLoopbackAddr(t)
+	bridge := extensionbridge.New(addr, 5*time.Second, "")
+	bridge.SetAuthToken(fixtureHandshakeToken)
+	go func() { _ = bridge.ListenAndServe() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = bridge.Shutdown(ctx)
+	})
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	waitFor(t, "the bridge to answer /status", func() bool {
+		_, err := probeBridgeStatus(client, addr)
+		return err == nil
+	})
+
+	// No token in the hello: the bridge refuses it and records what it reported.
+	dialBridge(t, addr, "1.4.0")
+	var status bridgeStatus
+	waitFor(t, "the refused handshake to be recorded", func() bool {
+		var err error
+		status, err = probeBridgeStatus(client, addr)
+		return err == nil && status.LastHandshake.StatusURL != ""
+	})
+
+	if status.Connected {
+		t.Fatal("a tokenless hello was accepted")
+	}
+	if status.LastHandshake.StatusURL != fixtureReportedStatusURL {
+		t.Fatalf("last_handshake.status_url = %q, want %q", status.LastHandshake.StatusURL, fixtureReportedStatusURL)
+	}
+	if status.LastHandshake.BridgeURL != fixtureReportedBridgeURL {
+		t.Fatalf("last_handshake.bridge_url = %q, want %q", status.LastHandshake.BridgeURL, fixtureReportedBridgeURL)
+	}
+	if status.LastHandshake.ConfigSource != fixtureReportedConfigSource {
+		t.Fatalf("last_handshake.config_source = %q, want %q", status.LastHandshake.ConfigSource, fixtureReportedConfigSource)
+	}
+	if status.LastHandshake.Reason == "" {
+		t.Fatal("last_handshake.reason is empty; doctor has nothing to say why the handshake was turned away")
+	}
+	if status.LastHandshake.At == "" {
+		t.Fatal("last_handshake.at is empty; nothing says the refusal is history rather than now")
+	}
+	if strings.Contains(status.LastHandshake.Reason, fixtureHandshakeToken) {
+		t.Fatalf("last_handshake.reason echoed the token: %q", status.LastHandshake.Reason)
+	}
+
+	// The struct above is doctor's copy. This is the producer's own document, so
+	// the two are compared rather than round-tripped.
+	raw := fetchRaw(t, client, "http://"+addr+"/status")
+	last, ok := raw["last_handshake"].(map[string]any)
+	if !ok {
+		t.Fatalf("/status has no last_handshake object: %v", raw)
+	}
+	for _, key := range []string{"status_url", "bridge_url", "config_source", "reason", "at"} {
+		if _, present := last[key]; !present {
+			t.Fatalf("last_handshake lost the %q key: %v", key, last)
+		}
+	}
+}
+
 // dialBridge connects as the extension does: a chrome-extension Origin the
 // bridge accepts, and a hello frame naming the loaded build.
 func dialBridge(t *testing.T, addr, build string) *websocket.Conn {
@@ -146,6 +223,7 @@ func dialBridge(t *testing.T, addr, build string) *websocket.Conn {
 			"build":         build,
 			"chrome":        fixtureChromeVersion,
 			"status_url":    fixtureReportedStatusURL,
+			"bridge_url":    fixtureReportedBridgeURL,
 			"config_source": fixtureReportedConfigSource,
 		},
 	})

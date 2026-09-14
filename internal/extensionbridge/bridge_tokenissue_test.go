@@ -2,11 +2,14 @@ package extensionbridge
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 
@@ -209,6 +212,14 @@ func TestHandshakeReportIsSanitized(t *testing.T) {
 		{name: "a long field is truncated", value: strings.Repeat("a", handshakeFieldLimit+50), want: strings.Repeat("a", handshakeFieldLimit)},
 		{name: "truncation does not split a rune", value: strings.Repeat("é", handshakeFieldLimit+10), want: strings.Repeat("é", handshakeFieldLimit)},
 		{name: "empty stays empty", value: "", want: ""},
+		// The websocket read limit is 4 MiB and this runs before the client has
+		// presented anything, so the whole value must never be mapped or turned
+		// into a []rune: that is a multi-megabyte copy plus one four times the
+		// size, per field, per refused handshake, chosen by the caller.
+		{name: "a field the size of the read limit still lands at the limit", value: strings.Repeat("a", 4<<20), want: strings.Repeat("a", handshakeFieldLimit)},
+		// 3-byte runes put the byte cut mid-character, which must not leave a
+		// replacement character where the URL used to be.
+		{name: "the byte cut does not split a rune either", value: strings.Repeat("€", 4<<18), want: strings.Repeat("€", handshakeFieldLimit)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -252,5 +263,193 @@ func TestRefusedHelloNeverEchoesTheToken(t *testing.T) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestSanitizeHandshakeFieldIsBoundedBeforeItMaps: the byte cut is the part with
+// a cost attached, so assert on the work rather than only the result — a value
+// at the websocket read limit must not be walked rune by rune to produce 256
+// runes, and whatever survives must still be valid UTF-8.
+func TestSanitizeHandshakeFieldIsBoundedBeforeItMaps(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "ascii at the read limit", value: strings.Repeat("a", 4<<20)},
+		{name: "multi-byte runes at the read limit", value: strings.Repeat("€", 4<<18)},
+		{name: "control characters that map away, then a split rune", value: strings.Repeat("\x01", handshakeFieldLimit*utf8.UTFMax-1) + "€"},
+		{name: "trailing bytes that never decoded", value: strings.Repeat("a", handshakeFieldLimit*utf8.UTFMax) + "\xff\xff\xff"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			// The cost is the assertion, not just the result: a value that is
+			// mapped and rune-converted before it is truncated allocates the
+			// whole input plus a []rune four times its size. At 4 MiB that is
+			// ~16 MiB the caller chose, so a megabyte bound fails on that and
+			// passes with three orders of magnitude to spare on 256 runes.
+			used := allocatedBytes(func() { got = sanitizeHandshakeField(tc.value) })
+			if used > 1<<20 {
+				t.Fatalf("sanitizeHandshakeField allocated %d bytes for a %d-byte field cut to %d runes",
+					used, len(tc.value), handshakeFieldLimit)
+			}
+			if n := utf8.RuneCountInString(got); n > handshakeFieldLimit {
+				t.Fatalf("sanitizeHandshakeField kept %d runes, want at most %d", n, handshakeFieldLimit)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("sanitizeHandshakeField returned invalid UTF-8: %q", got)
+			}
+			if strings.ContainsRune(got, utf8.RuneError) {
+				t.Fatalf("the byte cut left a replacement character: %q", got)
+			}
+		})
+	}
+}
+
+// allocatedBytes reports what one call added to the process total. TotalAlloc is
+// cumulative and unaffected by collection, so this measures the work done rather
+// than what survived it.
+func allocatedBytes(call func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	call()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// TestRefusedHandshakeReasonIsSanitized: the reason is the one recorded field
+// built from an error rather than from a fixed string, and it is published
+// TWICE — as last_handshake.reason, and as disconnect_reason, which `brwctl
+// doctor` prints on its bridge_connected line. The error paths that can reach
+// here today quote their input, but the record exists precisely because this
+// connection has presented nothing, so the field that is one wrapped
+// json.Unmarshal away from carrying the caller's bytes cannot be the raw one.
+func TestRefusedHandshakeReasonIsSanitized(t *testing.T) {
+	const hostile = "invalid hello frame: \x1b[2Jcleared\r\ndisconnect_reason: all good"
+
+	b := New("", 5*time.Second, "")
+	b.SetAuthToken(tokenIssueSecret)
+	b.recordHandshakeRejection(hello{}, errors.New(hostile))
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req.Host = tokenIssueLoopback
+	rec := httptest.NewRecorder()
+	b.handleStatus(rec, req)
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	last, ok := body["last_handshake"].(map[string]any)
+	if !ok {
+		t.Fatalf("/status published no last_handshake: %s", rec.Body.String())
+	}
+	reason, _ := last["reason"].(string)
+	disconnect, _ := body["disconnect_reason"].(string)
+
+	for _, field := range []struct{ name, value string }{
+		{"last_handshake.reason", reason},
+		{"disconnect_reason", disconnect},
+	} {
+		if field.value == "" {
+			t.Fatalf("%s is empty; the refusal says nothing", field.name)
+		}
+		if strings.ContainsAny(field.value, "\x1b\r\n") {
+			t.Fatalf("%s carries control characters an operator's terminal would act on: %q", field.name, field.value)
+		}
+		if !strings.Contains(field.value, "invalid hello frame") {
+			t.Fatalf("%s lost the reason it was recording: %q", field.name, field.value)
+		}
+	}
+}
+
+// tokenCallerHosts and tokenCallerOrigins enumerate every shape of caller that
+// can reach /status. The cross product below must have a verdict for each: a new
+// Origin class added without one fails the test rather than inheriting whatever
+// the last condition in tokenServable happens to do.
+var (
+	tokenCallerHosts = []struct{ name, host string }{
+		{"loopback", tokenIssueLoopback},
+		{"loopback by name", "localhost:17311"},
+		{"a rebinding host", "evil.example:17311"},
+	}
+	tokenCallerOrigins = []struct{ name, origin string }{
+		{"no Origin at all", ""},
+		{"the configured extension", "chrome-extension://" + configuredExtnID},
+		{"another extension", "chrome-extension://" + otherExtensionID},
+		{"an id the configured one is a prefix of", "chrome-extension://" + configuredExtnID + ".evil"},
+		{"a web page", "https://evil.example"},
+		{"the null origin", "null"},
+		{"an extension scheme with no id", "chrome-extension://"},
+	}
+)
+
+// TestStatusTokenCallerMatrixIsExhaustive states who gets the token, for every
+// caller shape rather than for the three that were interesting when the guard
+// was written.
+//
+// The two true rows on loopback are the boundary, and the second of them is the
+// one to read carefully: a caller that sends NO Origin is served, because that
+// is what the real extension's privileged loopback fetch looks like (measured on
+// Chromium 152: an MV3 service worker fetching a URL it holds host_permissions
+// for sends no Origin and Sec-Fetch-Site: none). Requiring the header would
+// refuse the only client this endpoint exists for. So any local process gets the
+// token by simply omitting a header, and no property of the request separates it
+// from the extension — every property of a request is chosen by whoever sends
+// it. docs/auth-model.md argues that boundary instead of pretending this
+// function moves it.
+func TestStatusTokenCallerMatrixIsExhaustive(t *testing.T) {
+	// key is "<host>/<origin>"; every combination of the two lists above must
+	// appear exactly once.
+	served := map[string]bool{
+		"loopback/no Origin at all":                        true,
+		"loopback/the configured extension":                true,
+		"loopback/another extension":                       false,
+		"loopback/an id the configured one is a prefix of": false,
+		"loopback/a web page":                              false,
+		"loopback/the null origin":                         false,
+		"loopback/an extension scheme with no id":          false,
+
+		"loopback by name/no Origin at all":                        true,
+		"loopback by name/the configured extension":                true,
+		"loopback by name/another extension":                       false,
+		"loopback by name/an id the configured one is a prefix of": false,
+		"loopback by name/a web page":                              false,
+		"loopback by name/the null origin":                         false,
+		"loopback by name/an extension scheme with no id":          false,
+
+		// A DNS-rebinding page reaches the daemon with an attacker Host and no
+		// Origin. The Host check is the guard that does work no other guard does.
+		"a rebinding host/no Origin at all":                        false,
+		"a rebinding host/the configured extension":                false,
+		"a rebinding host/another extension":                       false,
+		"a rebinding host/an id the configured one is a prefix of": false,
+		"a rebinding host/a web page":                              false,
+		"a rebinding host/the null origin":                         false,
+		"a rebinding host/an extension scheme with no id":          false,
+	}
+
+	seen := map[string]bool{}
+	for _, host := range tokenCallerHosts {
+		for _, origin := range tokenCallerOrigins {
+			key := host.name + "/" + origin.name
+			want, listed := served[key]
+			if !listed {
+				t.Fatalf("caller shape %q has no verdict: add it to served, deciding deliberately whether it may have the token", key)
+			}
+			seen[key] = true
+			t.Run(key, func(t *testing.T) {
+				b := New("", 5*time.Second, configuredExtnID)
+				b.SetAuthToken(tokenIssueSecret)
+				got := statusTokenFor(t, b, host.host, origin.origin) != ""
+				if got != want {
+					t.Fatalf("token served = %v, want %v", got, want)
+				}
+			})
+		}
+	}
+	for key := range served {
+		if !seen[key] {
+			t.Fatalf("served lists %q, which is no longer a caller shape this matrix produces", key)
+		}
 	}
 }

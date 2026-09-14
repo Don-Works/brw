@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -24,8 +25,20 @@ import (
 // handshake token is mandatory (the extension could not fetch a token from a
 // dead status URL, so it presented none and was turned away).
 //
+// A refusal needs the websocket URL to still reach this daemon. Drift that moves
+// the websocket URL too — a stored bridgeUrl or bridgePort, from which the
+// status URL is derived — reaches no daemon at all, so nothing is recorded
+// anywhere and this check cannot name it. bridge_connected is the check that
+// fails on that machine; the skip detail below points at it rather than reading
+// as a clean bill.
+//
 // The packaged file is consulted only as a fallback, when no extension has
 // reported anything at all, and the detail says so.
+//
+// Every endpoint this check reads comes from outside the process: a handshake
+// report arrives on an unauthenticated websocket, and bridge-defaults.json is a
+// file no release ever rewrites. probeStatusURL is what keeps either from
+// choosing a URL this machine resolves and fetches.
 func (d *doctorRun) checkBridgeConfig() {
 	const name, title = "bridge_config", "bridge endpoint"
 	if !d.resolved {
@@ -42,11 +55,39 @@ func (d *doctorRun) checkBridgeConfig() {
 	}
 
 	addr := d.result.BridgeWSAddr
-	packaged, _ := setup.InstalledBridgeDefaults(d.req.AppDir)
+	packaged, err := setup.InstalledBridgeDefaults(d.req.AppDir)
+	if err != nil {
+		// An unreadable app directory returns the same empty list as a machine
+		// with no file, and that reads as "nothing to correct". Name it instead.
+		d.add(checkWarn, name, title,
+			"cannot read the installed extension copies under "+d.req.AppDir+": "+err.Error(), "")
+		return
+	}
+	usable, unusable := loopbackBridgeDefaults(packaged)
+	if len(unusable) > 0 {
+		d.add(checkFail, name, title,
+			unusable[0]+" names an endpoint that is not http:// on a loopback port; it was neither contacted nor printed",
+			d.bridgeSettingsCommand(addr))
+		return
+	}
 
 	live, source, reporter := d.reportedBridgeConfig()
+	if live != "" {
+		safe, ok := loopbackStatusURL(live)
+		if !ok {
+			// Refuse the whole report rather than the URL alone: echoing it would
+			// put a string of the reporter's choosing in an operator's terminal,
+			// and a report is only evidence at all while it names somewhere the
+			// extension could actually have been talking to.
+			d.add(checkFail, name, title,
+				"the endpoint named by "+reporter+" is not http:// on a loopback port; it was neither contacted nor printed",
+				d.bridgeSettingsCommand(addr))
+			return
+		}
+		live = safe
+	}
 	if live == "" {
-		d.checkPackagedBridgeConfig(name, title, addr, packaged)
+		d.checkPackagedBridgeConfig(name, title, addr, usable)
 		return
 	}
 
@@ -55,7 +96,7 @@ func (d *doctorRun) checkBridgeConfig() {
 		// The extension is connected to THIS bridge, which means it reached this
 		// status URL and was served a token this daemon minted. Whatever a file on
 		// disk says is not what is running.
-		if drift := packagedDisagreeing(packaged, live); drift != "" {
+		if drift := packagedDisagreeing(usable, live); drift != "" {
 			detail += "; " + drift + ", and is overridden"
 		}
 		d.add(checkOK, name, title, detail, "")
@@ -90,7 +131,10 @@ func (d *doctorRun) checkPackagedBridgeConfig(name, title, addr string, packaged
 		}
 	}
 	if len(named) == 0 {
-		d.add(checkSkip, name, title, unreported+", and no installed bridge-defaults.json names one", "")
+		// Not a clean bill: an extension whose stored bridgeUrl points at a dead
+		// port never reaches this daemon, so it reports nothing from here either.
+		d.add(checkSkip, name, title,
+			unreported+", and no installed bridge-defaults.json names one — if the extension is pointed at a dead port, bridge_connected is the check that says so", "")
 		return
 	}
 	for _, file := range named {
@@ -117,7 +161,10 @@ func (d *doctorRun) reportedBridgeConfig() (statusURL, source, reporter string) 
 	if d.bridge == nil {
 		return "", "", ""
 	}
-	if d.bridge.Connected && d.bridge.Hello.StatusURL != "" {
+	if d.bridge.Connected {
+		// A connected extension that names no endpoint has not reported one. The
+		// stale refusal below would still be printed as "the extension is using",
+		// which asserts the wrong URL on a green line.
 		return d.bridge.Hello.StatusURL, d.bridge.Hello.ConfigSource, "the connected extension"
 	}
 	if d.bridge.LastHandshake.StatusURL != "" {
@@ -141,6 +188,68 @@ func packagedDisagreeing(packaged []setup.InstalledBridgeDefault, live string) s
 
 func statusURLFor(wsAddr string) string {
 	return "http://" + wsAddr + "/status"
+}
+
+// errNotLoopbackEndpoint marks a status URL this process will not contact.
+var errNotLoopbackEndpoint = errors.New("not an http:// status URL on a loopback port")
+
+// loopbackStatusURL is the one gate every endpoint from outside this process
+// passes. It accepts what the extension itself would accept — http, a loopback
+// host, an explicit port, the /status path (extension/service_worker.js
+// normalizeStatusURL) — and returns the URL stripped of userinfo, query and
+// fragment so what is fetched is also what is printed.
+//
+// Without it, one forged handshake on the bridge's unauthenticated websocket
+// picks a hostname the operator's machine resolves and a URL it GETs, which is
+// network egress the extension bridge's own boundary (docs/auth-model.md) says
+// belongs to brw and not to the local process on the other end of that socket.
+func loopbackStatusURL(raw string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme != "http" || parsed.Port() == "" {
+		return "", false
+	}
+	host := parsed.Hostname()
+	if host != "localhost" {
+		// A name is never resolved to decide this: a hostname that resolves to a
+		// loopback address today is an attacker's DNS record tomorrow.
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			return "", false
+		}
+	}
+	switch parsed.Path {
+	case "", "/":
+		parsed.Path = "/status"
+	case "/status":
+	default:
+		return "", false
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	return parsed.String(), true
+}
+
+// loopbackBridgeDefaults splits the installed files into the ones naming an
+// endpoint this check may contact and the paths of the ones naming something
+// else. A file that names no endpoint at all is not drift and stays.
+func loopbackBridgeDefaults(files []setup.InstalledBridgeDefault) ([]setup.InstalledBridgeDefault, []string) {
+	var usable []setup.InstalledBridgeDefault
+	var unusable []string
+	for _, file := range files {
+		if file.StatusURL == "" {
+			usable = append(usable, file)
+			continue
+		}
+		safe, ok := loopbackStatusURL(file.StatusURL)
+		if !ok {
+			unusable = append(unusable, file.Path)
+			continue
+		}
+		file.StatusURL = safe
+		usable = append(usable, file)
+	}
+	return usable, unusable
 }
 
 // sameEndpoint compares two status URLs by host and port only. "localhost" and
@@ -190,6 +299,8 @@ func configSourcePhrase(source string) string {
 // daemon that is already running on another port.
 func endpointFailureDetail(err error) string {
 	switch {
+	case errors.Is(err, errNotLoopbackEndpoint):
+		return "it is not http:// on a loopback port, so it was not contacted"
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return "nothing is listening there"
 	case isTimeout(err):
@@ -205,7 +316,13 @@ func endpointFailureDetail(err error) string {
 // takes the URL as the extension holds it, rather than a host:port, so the thing
 // doctor reports on is the thing it tested.
 func probeStatusURL(client *http.Client, statusURL string) (bridgeStatus, error) {
+	// The gate lives here rather than only at the call sites so that a later
+	// caller cannot reach the network with an endpoint it was handed.
+	target, ok := loopbackStatusURL(statusURL)
+	if !ok {
+		return bridgeStatus{}, errNotLoopbackEndpoint
+	}
 	var status bridgeStatus
-	err := fetchJSON(client, statusURL, &status)
+	err := fetchJSON(client, target, &status)
 	return status, err
 }

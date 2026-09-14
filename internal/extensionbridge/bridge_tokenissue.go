@@ -3,6 +3,7 @@ package extensionbridge
 import (
 	"net/http"
 	"strings"
+	"unicode/utf8"
 )
 
 // handshakeReport is the endpoint config a refused handshake reported, published
@@ -44,6 +45,15 @@ const handshakeFieldLimit = 256
 // presented the per-launch token, and its other fields (the Chrome UA, the
 // profile label) have always been echoed as sent.
 func sanitizeHandshakeField(value string) string {
+	// Cut to bytes BEFORE mapping. This runs before the client has presented
+	// anything and the websocket read limit is 4 MiB, so mapping first would let
+	// a caller choose a multi-megabyte string copy plus a []rune four times that
+	// size, per field, per refused handshake, for a record that is then cut to
+	// handshakeFieldLimit runes anyway. That many runes cannot occupy more than
+	// handshakeFieldLimit*utf8.UTFMax bytes, so nothing that survives is lost.
+	if len(value) > handshakeFieldLimit*utf8.UTFMax {
+		value = trimPartialRune(value[:handshakeFieldLimit*utf8.UTFMax])
+	}
 	cleaned := strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {
 			return -1
@@ -57,6 +67,20 @@ func sanitizeHandshakeField(value string) string {
 		return string(runes[:handshakeFieldLimit])
 	}
 	return cleaned
+}
+
+// trimPartialRune drops trailing bytes that do not decode, so the byte cut above
+// cannot turn a multi-byte character into a replacement character that the rune
+// truncation would then keep.
+func trimPartialRune(value string) string {
+	for value != "" {
+		r, size := utf8.DecodeLastRuneInString(value)
+		if r != utf8.RuneError || size > 1 {
+			return value
+		}
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 // tokenServable reports whether the handshake token may be included in a /status

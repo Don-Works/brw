@@ -189,6 +189,12 @@ function fireEvent(path, ...args) {
   for (const listener of model.events[path]?._l || []) listener(...args);
 }
 
+// settle drains the microtask queue, which is where an event listener that
+// returns void but continues in a .then() does the rest of its work.
+function settle() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 async function reset() {
   model.tabs.clear(); model.windows.clear();
   T.state.activeTabId = null; T.state.agentTabId = null;
@@ -1582,6 +1588,76 @@ async function scenarioHelloReportsTheEndpointActuallyInUse() {
   }
 }
 
+// A stored bridge config is a PARTIAL override of the packaged bridge-defaults.
+// chrome.storage.onChanged carries the stored RECORD, not the resolved config,
+// so normalising that record on its own drops whatever only the packaged file
+// set and leaves the worker naming an endpoint it would never have picked at
+// startup — which is exactly the drift the daemon-side bridge_config check has
+// to be able to trust the hello about.
+//
+// Consent is withheld throughout, because that is where the difference is
+// durable: connect() returns before it re-resolves the config, so what the
+// handler worked out is what the worker keeps and what markBridgeStatus
+// publishes for the popup to show.
+async function scenarioStoredConfigChangeKeepsThePackagedEndpoint() {
+  await reset();
+  const savedGet = overrides["storage.local.get"];
+  const savedSet = overrides["storage.local.set"];
+  const savedFetch = sandbox.fetch;
+  const packaged = { bridgeUrl: "ws://127.0.0.1:19311/extension" };
+  const published = {};
+  let stored = null;
+
+  try {
+    T.setPackagedDefaults(packaged);
+    overrides["storage.local.get"] = async (key) => {
+      if (key === "brwBridgeConfig") return stored ? { brwBridgeConfig: stored } : {};
+      return {};
+    };
+    overrides["storage.local.set"] = async (value) => { Object.assign(published, value); };
+    sandbox.fetch = async () => ({ ok: true, json: async () => ({}) });
+
+    await T.loadBridgeConfig();
+    check("the packaged file decides the endpoint while nothing is stored",
+      T.state.bridgeConfig?.statusUrl === "http://127.0.0.1:19311/status");
+
+    // The options page saved a label. Nothing about the endpoint changed.
+    stored = { label: "desk" };
+    fireEvent("storage.onChanged", { brwBridgeConfig: { newValue: stored } }, "local");
+    await settle();
+    check("a label-only save leaves the packaged endpoint in charge",
+      T.state.bridgeConfig?.statusUrl === "http://127.0.0.1:19311/status");
+    check("and the popup is told the packaged endpoint, not the built-in one",
+      published.brwBridge?.statusUrl === "http://127.0.0.1:19311/status");
+    check("and the endpoint is still attributed to the packaged file",
+      T.state.bridgeConfigSource === "packaged");
+
+    // A stored endpoint still takes over: the re-resolve is a merge, not a
+    // refusal to read the record.
+    stored = { label: "desk", bridgeUrl: "ws://127.0.0.1:17311/extension" };
+    fireEvent("storage.onChanged", { brwBridgeConfig: { newValue: stored } }, "local");
+    await settle();
+    check("a stored endpoint does take over",
+      T.state.bridgeConfig?.statusUrl === "http://127.0.0.1:17311/status" &&
+      T.state.bridgeConfigSource === "stored");
+
+    // An unparseable record must not leave the worker on a half-applied config.
+    stored = { bridgeUrl: "ws://evil.example:17311/extension" };
+    fireEvent("storage.onChanged", { brwBridgeConfig: { newValue: stored } }, "local");
+    await settle();
+    check("a record naming a non-loopback endpoint is refused, not adopted",
+      T.state.bridgeConfig?.statusUrl === "http://127.0.0.1:17311/status" &&
+      String(T.state.lastError).includes("invalid bridge config"));
+  } finally {
+    overrides["storage.local.get"] = savedGet;
+    overrides["storage.local.set"] = savedSet;
+    sandbox.fetch = savedFetch;
+    T.setPackagedDefaults(null);
+    T.state.socket = null;
+    T.state.lastError = "";
+  }
+}
+
 (async () => {
   await scenarioConsentGateIsFailClosed();
   await scenarioPinBeatsForeground();
@@ -1610,6 +1686,7 @@ async function scenarioHelloReportsTheEndpointActuallyInUse() {
   await scenarioHandshakeTokenFailuresAreDistinguishable();
   await scenarioSiteConsentSurface();
   await scenarioHelloReportsTheEndpointActuallyInUse();
+  await scenarioStoredConfigChangeKeepsThePackagedEndpoint();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })();

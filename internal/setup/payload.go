@@ -11,11 +11,12 @@ import (
 	"strings"
 )
 
-// BridgeDefaultsFile carries the bridge endpoint and handshake token for one
-// installed extension copy. It is per-install state rather than payload: an
-// upgrade that replaces a payload directory wholesale has to carry it across,
-// or the browser keeps presenting a token the daemon no longer knows and the
-// bridge never reconnects.
+// BridgeDefaultsFile carries the bridge endpoint for one installed extension
+// copy, and nothing secret: the handshake token is minted per launch and stays
+// in the daemon's memory. It is per-install state rather than payload, so an
+// upgrade that replaces a payload directory wholesale has to carry it across, or
+// the copy falls back to the built-in endpoint and a profile bound to another
+// port stops connecting.
 const BridgeDefaultsFile = "bridge-defaults.json"
 
 // PayloadItems are the top-level names a release archive owns. An install or
@@ -25,8 +26,7 @@ var PayloadItems = []string{"bin", "extension", "tests", "skills", "doc"}
 
 // perProfileExtensionPrefix names the per-profile unpacked extension copies. A
 // machine driving more than one browser profile has one per profile, each with
-// its own bridge endpoint and token, and each loaded unpacked from its own
-// directory.
+// its own bridge endpoint, and each loaded unpacked from its own directory.
 const perProfileExtensionPrefix = "extension-"
 
 // ExtensionPayloadVersion is the manifest version of an unpacked extension
@@ -144,11 +144,11 @@ func replacePayloadDir(src, dst string) error {
 	}
 	// The source payload carries a bridge-defaults.json of its own whenever it
 	// is a live install: RefreshExtensionPayloads copies from appDir/extension,
-	// which holds the default profile's endpoint and handshake token. Dropping
-	// the copied one unconditionally is what keeps that token out of every
-	// other profile's extension, which would otherwise connect to the wrong
-	// profile's daemon. scripts/install.sh and `task sync-installed-extensions`
-	// both drop it the same way.
+	// which holds the DEFAULT profile's endpoint. Dropping the copied one
+	// unconditionally is what keeps that endpoint out of every other profile's
+	// extension, which would otherwise connect to the wrong profile's daemon.
+	// scripts/install.sh and `task sync-installed-extensions` both drop it the
+	// same way.
 	if err := os.Remove(filepath.Join(dst, BridgeDefaultsFile)); err != nil && !os.IsNotExist(err) {
 		return err
 	}

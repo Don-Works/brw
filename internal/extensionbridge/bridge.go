@@ -619,13 +619,18 @@ func (b *Bridge) recordHandshakeRejection(h hello, err error) {
 	if b.conn != nil {
 		return
 	}
-	b.disconnectReason = "handshake rejected: " + err.Error()
+	// The reason is built from the refused frame, and it reaches an operator's
+	// terminal twice: as last_handshake.reason, and as disconnect_reason, which
+	// brwctl doctor prints on the bridge_connected line. One sanitize covers
+	// both; leaving either raw hands a rogue local client the escape sequences.
+	reason := sanitizeHandshakeField(err.Error())
+	b.disconnectReason = "handshake rejected: " + reason
 	b.disconnectedAt = time.Now().UTC()
 	b.lastHandshake = handshakeReport{
 		StatusURL:    sanitizeHandshakeField(h.StatusURL),
 		BridgeURL:    sanitizeHandshakeField(h.BridgeURL),
 		ConfigSource: sanitizeHandshakeField(h.ConfigSource),
-		Reason:       err.Error(),
+		Reason:       reason,
 		At:           formatStatusTime(b.disconnectedAt),
 	}
 }

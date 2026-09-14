@@ -609,7 +609,7 @@ the command that fixes it. `doctor` exits non-zero if any check failed.
 | `bridge_extension` | the brw extension is installed in that browser profile |
 | `daemon` | the daemon answers on its loopback port — and serves *this* workspace, not another one |
 | `bridge_connected` | an extension has completed the handshake, not merely been installed |
-| `bridge_config` | the bridge endpoint the extension is *actually* using answers, and which config layer supplied it |
+| `bridge_config` | the bridge endpoint the extension *reports* it is using answers, and which config layer supplied it — falling back to the installed `bridge-defaults.json` when nothing has reported |
 | `extension_version` | the loaded build matches the installed payload, and no per-profile copy has fallen behind |
 | `mcp_registration` | the agent client launches this install's `brwd`, not a path left by an older one |
 | `claude_in_chrome` | Claude Code's own Chrome integration is not competing for the browser |
@@ -649,16 +649,29 @@ leaves the app directory partly replaced — as `install.sh` does. Re-run
 running the binary it started with until it is restarted either way.
 
 A profile's own `bridge-defaults.json` is install state, not payload: the
-upgrade carries each per-profile extension copy's own file across and never
-lets one profile's endpoint or handshake token reach another's copy.
+upgrade carries each per-profile extension copy's own file across and never lets
+one profile's endpoint reach another's copy. The file holds an endpoint and
+nothing secret — the handshake token is minted per daemon launch and never
+written there.
 
 The cost of carrying it across is that a machine which once had one keeps it,
 including after the daemon's port moved. No release archive contains the file, so
 nothing ever corrects it. `doctor`'s `bridge_config` check is what names that: it
 asks the extension which endpoint it is using — a connected extension reports it
 in its hello, and so does one whose handshake was refused for having no token,
-which is what an endpoint pointing at a dead port now produces — and falls back to
-reading the file only when no extension has reported anything. The file alone is
-never the verdict: the extension's `chrome.storage.local` config silently
-overrides it, so a stale file next to a working stored config is drift worth
-printing, not a fault.
+which is what a dead *status* URL produces — and falls back to reading the file
+only when no extension has reported anything. The file alone is never the
+verdict: the extension's `chrome.storage.local` config silently overrides it, so
+a stale file next to a working stored config is drift worth printing, not a
+fault.
+
+Drift that moves the *websocket* URL (a stored `bridgeUrl` or `bridgePort`, which
+the status URL is derived from) reaches no daemon at all, so no handshake is
+recorded and `bridge_config` has nothing to name. `bridge_connected` is the check
+that goes red on that machine, and the `bridge_config` skip says so.
+
+Both endpoints `bridge_config` reads come from outside `brwctl` — a handshake
+report arrives on the bridge's unauthenticated websocket, and
+`bridge-defaults.json` is a file no release rewrites — so both must be `http://`
+on a loopback port before the check fetches or prints them. One that is not is
+its own red line, naming the fault without repeating the value.

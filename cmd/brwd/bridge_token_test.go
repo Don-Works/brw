@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -119,5 +120,110 @@ func TestBridgeTokenFileIsPerWorkspace(t *testing.T) {
 	}
 	if strings.ContainsAny(filepath.Base(first.Path), `/\:`) {
 		t.Fatalf("workspace separators leaked into the file name: %s", first.Path)
+	}
+}
+
+// TestBridgeTokenSweepClearsEveryCopyAnOlderDaemonLeft: the cleanup used to be
+// os.Remove on the single path THIS launch resolved to, which left two files at
+// rest that nothing would ever collect. A machine that once ran a
+// default-workspace brwd and now runs only workspace-bound ones kept
+// ~/.brw/bridge-token forever, and BRW_BRIDGE_TOKEN_FILE pointing anywhere else
+// meant the default path was never visited at all. docs/auth-model.md says a
+// launch cleans up after the versions that wrote it, so the sweep is the
+// directory, not one name.
+func TestBridgeTokenSweepClearsEveryCopyAnOlderDaemonLeft(t *testing.T) {
+	const fixtureToken = "fixture-bridge-token-value-three"
+	const stale = "fixture-bridge-token-value-four"
+
+	tests := []struct {
+		name      string
+		workspace string
+		// optIn is BRW_BRIDGE_TOKEN_FILE: "" unset, "~/<name>" inside ~/.brw,
+		// anything else a path outside it.
+		optIn    string
+		existing []string
+		wantKept []string
+	}{
+		{
+			name:      "a workspace-bound daemon still clears the default path",
+			workspace: "work",
+			existing:  []string{"bridge-token", "bridge-token-work"},
+		},
+		{
+			name:     "the default daemon clears every workspace copy",
+			existing: []string{"bridge-token", "bridge-token-work", "bridge-token-other"},
+		},
+		{
+			name:     "an opt-in somewhere else does not excuse the default path",
+			optIn:    "elsewhere",
+			existing: []string{"bridge-token", "bridge-token-work"},
+		},
+		{
+			name:      "an opt-in inside the directory keeps only that file",
+			workspace: "work",
+			optIn:     "~/bridge-token-work",
+			existing:  []string{"bridge-token", "bridge-token-work", "bridge-token-other"},
+			wantKept:  []string{"bridge-token-work"},
+		},
+		{
+			name:     "a file the daemon never wrote is left alone",
+			existing: []string{"bridge-token", "notes.txt", "bridge-tokens-backup"},
+			wantKept: []string{"notes.txt", "bridge-tokens-backup"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			dir := filepath.Join(home, ".brw")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range tc.existing {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(stale), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			optIn := ""
+			switch {
+			case strings.HasPrefix(tc.optIn, "~/"):
+				optIn = filepath.Join(dir, strings.TrimPrefix(tc.optIn, "~/"))
+			case tc.optIn != "":
+				optIn = filepath.Join(home, tc.optIn, "bridge-token")
+			}
+			t.Setenv("BRW_BRIDGE_TOKEN_FILE", optIn)
+
+			if err := persistBridgeToken(bridgeTokenFile(tc.workspace), fixtureToken); err != nil {
+				t.Fatalf("persistBridgeToken: %v", err)
+			}
+
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var left []string
+			for _, entry := range entries {
+				left = append(left, entry.Name())
+			}
+			sort.Strings(left)
+			want := append([]string(nil), tc.wantKept...)
+			sort.Strings(want)
+			if strings.Join(left, ",") != strings.Join(want, ",") {
+				t.Fatalf("~/.brw holds %v, want %v", left, want)
+			}
+
+			if optIn == "" {
+				return
+			}
+			data, err := os.ReadFile(optIn)
+			if err != nil {
+				t.Fatalf("the opted-in token file: %v", err)
+			}
+			if string(data) != fixtureToken {
+				t.Fatalf("opted-in token file = %q, want %q", data, fixtureToken)
+			}
+		})
 	}
 }

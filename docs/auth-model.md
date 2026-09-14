@@ -147,9 +147,38 @@ with no path closed that was open.
 The token is no longer written to `~/.brw/bridge-token`. That file existed "for
 operator inspection"; nothing in the tree ever read it. What it did was keep a
 second copy of the secret at rest, outliving the daemon that minted it and
-readable even while `brwd` is not running — which `/status` is not. The daemon now
-deletes it on launch, so an upgrade cleans up after the versions that wrote it.
-`BRW_BRIDGE_TOKEN_FILE=<path>` asks for it back, and re-creates that exposure.
+readable even while `brwd` is not running — which `/status` is not. Every launch
+sweeps `~/.brw` for `bridge-token` and `bridge-token-<workspace>` and removes
+them all, not only the one this launch would have written, so an upgrade cleans
+up after whichever workspace wrote them. `BRW_BRIDGE_TOKEN_FILE=<path>` asks for
+one back, and re-creates that exposure; the rest are still swept.
+
+`brwctl doctor` reads two endpoints that come from outside it — the one a refused
+handshake reported, which arrives on the unauthenticated websocket above, and the
+one in an installed `bridge-defaults.json` — and it both GETs and prints them.
+Both now pass the same gate the extension applies to its own config: `http://`, a
+loopback host that is an address rather than a name to resolve, an explicit port,
+the `/status` path. Without it, a local process that can forge one handshake
+chooses a host this machine resolves and a URL it fetches, which is the network
+egress this boundary says brw holds and the local process does not.
+
+### The extension's consent record has no MAC, and cannot have one
+
+Browser control is gated on `brwBrowserControlConsent` in `chrome.storage.local`,
+and `isGrantedConsent` validates its shape only. Writing the profile's LevelDB
+while Chrome is down forges it.
+
+There is no key to sign it with. Any key the extension could check the record
+against would sit in the same `chrome.storage.local`, in the same profile
+directory, readable and writable by the same uid as the record it authenticates —
+so a forger writes both. A daemon-held key is no better: the daemon serves it to
+anything on loopback, which is the same attacker. This is the same wall as the
+section above, and it moves for the same reason: OS-level isolation, not a better
+record format.
+
+The consent record defends against the case it was built for — the extension
+driving a browser before its owner has agreed — which is a question about the
+person at the keyboard, not about a local attacker who has already won.
 
 ### If you need the stronger boundary today
 
