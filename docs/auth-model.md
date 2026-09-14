@@ -100,12 +100,18 @@ on the same browser host.
   rather than writing a plaintext snapshot. Each file is sealed with AES-256-GCM
   under a per-file key derived from the store key and a random salt, with the
   snapshot id as additional data, so a file cannot be renamed onto another id.
-- **Per-origin allowlist.** `origins` is required and must be a non-empty list
-  of exact `scheme://host[:port]` origins. A cookie is sealed only if its domain
-  matches one of them by the ordinary cookie domain-match rule. The same filter
-  runs again on `restore`, against the origins the *restoring* caller named — so
-  a snapshot file cannot inject a cookie for an origin the restore did not ask
-  for, even if the file contains one.
+- **Per-origin allowlist.** `origins` is required on `save` **and** on
+  `restore`, and must be a non-empty list of exact `scheme://host[:port]`
+  origins. A cookie is sealed only if its domain matches one of them by the
+  ordinary cookie domain-match rule. The same filter runs again on `restore`,
+  against the origins the *restoring* caller named — so a snapshot file cannot
+  inject a cookie for an origin the restore did not ask for, even if the file
+  contains one. A restore that names no origins is refused rather than
+  defaulting to the origins recorded inside the snapshot: that default would
+  check the file against itself and the second pass would guarantee nothing.
+  What is applied is the intersection of the restoring caller's origins and the
+  snapshot's own, so the origins `list` reports for a snapshot bound what any
+  restore of it can install.
 - **Minimised by default.** A snapshot carries cookies and nothing else. It does
   not capture `localStorage`, `sessionStorage`, IndexedDB, cache, or the
   profile's password or passkey stores. An application that keeps its session in

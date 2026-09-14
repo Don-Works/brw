@@ -120,6 +120,7 @@ func TestSessionStateNeverPutsCookieMaterialOnTheWire(t *testing.T) {
 	if _, err := client.SessionState(ctx, browser.SessionStateOptions{
 		Action:     browser.SessionStateActionRestore,
 		SnapshotID: "st_00000000000000000000000000000000",
+		Origins:    []string{"https://app.example.test"},
 	}); err == nil {
 		t.Fatal("restoring an unknown snapshot id must fail")
 	}

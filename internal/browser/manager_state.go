@@ -60,9 +60,10 @@ type SessionStateResult struct {
 	Snapshots []sessionstate.Meta `json:"snapshots,omitempty"`
 	// RestoredCookies is how many cookies the restore put into the browser.
 	RestoredCookies int `json:"restored_cookies,omitempty"`
-	// SkippedOffAllowlist counts cookies the origin allowlist refused. On a
-	// restore a non-zero value means the snapshot carried material for an
-	// origin this caller did not ask for, and it was not applied.
+	// SkippedOffAllowlist counts cookies an origin allowlist refused. On a
+	// restore a non-zero value means the snapshot carried material outside what
+	// this caller asked for, or outside what the snapshot was sealed with, and
+	// it was not applied.
 	SkippedOffAllowlist int    `json:"skipped_off_allowlist,omitempty"`
 	Note                string `json:"note,omitempty"`
 }
@@ -75,7 +76,16 @@ func (o SessionStateOptions) Validate() error {
 		if len(o.Origins) == 0 {
 			return sessionstate.ErrNoOrigins
 		}
-	case SessionStateActionRestore, SessionStateActionDelete:
+	case SessionStateActionRestore:
+		if strings.TrimSpace(o.SnapshotID) == "" {
+			return fmt.Errorf("snapshot_id is required for %s", o.action())
+		}
+		// The restore-side allowlist is the whole guarantee; see
+		// ErrNoRestoreOrigins for why it has no default.
+		if len(o.Origins) == 0 {
+			return sessionstate.ErrNoRestoreOrigins
+		}
+	case SessionStateActionDelete:
 		if strings.TrimSpace(o.SnapshotID) == "" {
 			return fmt.Errorf("snapshot_id is required for %s", o.action())
 		}
@@ -175,23 +185,31 @@ func (m *Manager) SessionState(ctx context.Context, opts SessionStateOptions) (S
 		if err != nil {
 			return SessionStateResult{}, err
 		}
-		// The allowlist is applied AGAIN here, against the origins this caller
-		// named (or, absent those, the ones the snapshot was sealed with). A
+		// The allowlist is applied AGAIN here, against the origins THIS caller
+		// named — Validate refuses a restore that names none, because reading
+		// them out of the decrypted file would check the file against itself. A
 		// snapshot that carries a cookie for some other origin therefore cannot
-		// put it into a browser — the filter is on the restore side, not only
-		// the capture side.
-		requested := opts.Origins
-		if len(requested) == 0 {
-			requested = snapshot.Origins
-		}
-		allow, err := sessionstate.ParseAllowlist(requested)
+		// put it into a browser.
+		allow, err := sessionstate.ParseAllowlist(opts.Origins)
 		if err != nil {
 			return SessionStateResult{}, err
+		}
+		// The snapshot's own sealed origins narrow it a second time, so the
+		// origins a list reports for a snapshot bound what any restore of it can
+		// install rather than merely describing what the capture saw.
+		sealed, err := sessionstate.ParseAllowlist(snapshot.Origins)
+		if err != nil {
+			return SessionStateResult{}, fmt.Errorf("snapshot %s names no usable origins: %w", meta.ID, err)
 		}
 		kept, skipped, err := sessionstate.Restrict(snapshot.Cookies, allow, nil)
 		if err != nil {
 			return SessionStateResult{}, err
 		}
+		kept, offSealed, err := sessionstate.Restrict(kept, sealed, nil)
+		if err != nil {
+			return SessionStateResult{}, err
+		}
+		skipped += offSealed
 		if len(kept) == 0 {
 			return SessionStateResult{}, fmt.Errorf("snapshot %s carries no cookie for the requested origins, so nothing was restored", meta.ID)
 		}

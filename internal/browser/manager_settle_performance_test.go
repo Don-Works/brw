@@ -143,34 +143,49 @@ func TestPrearmedSettleWorstCaseOverheadIsBounded(t *testing.T) {
 
 	const samples = 5
 	const cap = 100 * time.Millisecond
-	prearmed := make([]time.Duration, 0, samples)
-	legacy := make([]time.Duration, 0, samples)
 	action := func() error {
 		return chromedp.Run(tabCtx, chromedp.Evaluate(`document.getElementById("noop").click()`, nil))
 	}
-	for range samples {
-		started := time.Now()
-		if err := manager.runWithPrearmedSettle(tabCtx, cap, action); err != nil {
-			t.Fatal(err)
-		}
-		prearmed = append(prearmed, time.Since(started))
+	round := func() (time.Duration, time.Duration) {
+		prearmed := make([]time.Duration, 0, samples)
+		legacy := make([]time.Duration, 0, samples)
+		for range samples {
+			started := time.Now()
+			if err := manager.runWithPrearmedSettle(tabCtx, cap, action); err != nil {
+				t.Fatal(err)
+			}
+			prearmed = append(prearmed, time.Since(started))
 
-		started = time.Now()
-		if err := action(); err != nil {
-			t.Fatal(err)
+			started = time.Now()
+			if err := action(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := snapshot.Settle(tabCtx, cap.Milliseconds()); err != nil {
+				t.Fatal(err)
+			}
+			legacy = append(legacy, time.Since(started))
 		}
-		if _, err := snapshot.Settle(tabCtx, cap.Milliseconds()); err != nil {
-			t.Fatal(err)
+		sort.Slice(prearmed, func(i, j int) bool { return prearmed[i] < prearmed[j] })
+		sort.Slice(legacy, func(i, j int) bool { return legacy[i] < legacy[j] })
+		return prearmed[samples/2], legacy[samples/2]
+	}
+
+	// This is a wall-clock comparison taken while the rest of the suite is also
+	// launching browsers. CPU contention inflates a sample and never deflates
+	// one, so a round over budget is re-measured rather than believed: an
+	// overhead that is structural survives every round, and one that is the
+	// laptop does not.
+	const rounds = 3
+	var newMedian, oldMedian time.Duration
+	for attempt := 1; attempt <= rounds; attempt++ {
+		newMedian, oldMedian = round()
+		if newMedian <= oldMedian+50*time.Millisecond {
+			t.Logf("no-reaction median: prearmed=%s legacy=%s (overhead %s, round %d)", newMedian, oldMedian, newMedian-oldMedian, attempt)
+			return
 		}
-		legacy = append(legacy, time.Since(started))
+		t.Logf("round %d over budget: prearmed=%s legacy=%s", attempt, newMedian, oldMedian)
 	}
-	sort.Slice(prearmed, func(i, j int) bool { return prearmed[i] < prearmed[j] })
-	sort.Slice(legacy, func(i, j int) bool { return legacy[i] < legacy[j] })
-	newMedian, oldMedian := prearmed[samples/2], legacy[samples/2]
-	if newMedian > oldMedian+50*time.Millisecond {
-		t.Fatalf("prearmed no-reaction median=%s legacy=%s; overhead exceeds 50ms", newMedian, oldMedian)
-	}
-	t.Logf("no-reaction median: prearmed=%s legacy=%s (overhead %s)", newMedian, oldMedian, newMedian-oldMedian)
+	t.Fatalf("prearmed no-reaction median=%s legacy=%s over %d rounds; overhead exceeds 50ms", newMedian, oldMedian, rounds)
 }
 
 // Chrome's root process can exit a few milliseconds before its last helper

@@ -2,14 +2,24 @@ package baseline
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/chromedp/chromedp"
 
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -446,5 +456,327 @@ func TestCheckRefusesIncompleteInput(t *testing.T) {
 	}
 	if err := store.Delete(key); err == nil {
 		t.Fatal("deleting a baseline that was never recorded must be an error")
+	}
+}
+
+// solidJPEG is what both transports actually hand back: Manager.Screenshot and
+// Bridge.Screenshot both ask Page.captureScreenshot for jpeg.
+func solidJPEG(t *testing.T, width, height int, base color.RGBA, patch image.Rectangle, patchColor color.RGBA) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			pixel := base
+			if patch.Dx() > 0 && image.Pt(x, y).In(patch) {
+				pixel = patchColor
+			}
+			img.SetRGBA(x, y, pixel)
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatalf("encode jpeg: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// A baseline is stored and compared as PNG, but neither transport captures PNG:
+// without normalization every check on a real daemon dies on the encoding
+// instead of comparing the page, and the store holds JPEG bytes in a .png file.
+func TestABrowserCaptureIsNormalizedToPNG(t *testing.T) {
+	store := newBaselineStore(t)
+	key := Key{RecipeDigest: fixtureDigest, StepIndex: 0, Environment: fixtureEnvironment()}
+
+	shot, err := NormalizePNG(solidJPEG(t, 40, 20, pageWhite, image.Rectangle{}, pageWhite))
+	if err != nil {
+		t.Fatalf("NormalizePNG: %v", err)
+	}
+	if _, decodeErr := png.Decode(bytes.NewReader(shot)); decodeErr != nil {
+		t.Fatalf("a normalized capture is not a PNG: %v", decodeErr)
+	}
+
+	recorded, err := Check(store, CheckOptions{Key: key, Screenshot: shot, Tree: treeWithButtonNamed("Pay invoice"), Update: true})
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if recorded.Status != StatusRecorded {
+		t.Fatalf("record = %+v, want %q", recorded, StatusRecorded)
+	}
+
+	// The same page captured again produces the same bytes, so the gate passes.
+	again, err := NormalizePNG(solidJPEG(t, 40, 20, pageWhite, image.Rectangle{}, pageWhite))
+	if err != nil {
+		t.Fatalf("NormalizePNG: %v", err)
+	}
+	matched, err := Check(store, CheckOptions{Key: key, Screenshot: again, Tree: treeWithButtonNamed("Pay invoice")})
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if matched.Status != StatusMatch || matched.Failed {
+		t.Fatalf("unchanged page = %+v, want a passing %q", matched, StatusMatch)
+	}
+
+	// A real change still fails, so the normalization did not flatten the gate.
+	changed, err := NormalizePNG(solidJPEG(t, 40, 20, pageWhite, image.Rect(0, 0, 20, 10), brandBlue))
+	if err != nil {
+		t.Fatalf("NormalizePNG: %v", err)
+	}
+	failed, err := Check(store, CheckOptions{Key: key, Screenshot: changed, Tree: treeWithButtonNamed("Pay invoice"), ChannelTolerance: 8})
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if failed.Status != StatusDiff || !failed.Failed {
+		t.Fatalf("restyled page = %+v, want a failing %q", failed, StatusDiff)
+	}
+
+	// The file on disk is what its name says it is.
+	stored, found, err := store.Load(key)
+	if err != nil || !found {
+		t.Fatalf("load: (%v, %v)", found, err)
+	}
+	if _, err := png.Decode(bytes.NewReader(stored.Screenshot)); err != nil {
+		t.Fatalf("the stored screenshot.png is not a PNG: %v", err)
+	}
+}
+
+// EnvironmentsFor is the one Store method a caller reaches without a Key, and
+// the digest it takes becomes a directory name. Anything that is not the pinned
+// 64-hex digest is either a typo or a traversal out of the store root.
+func TestStoreRefusesADigestThatIsNotAPinnedDigest(t *testing.T) {
+	store := newBaselineStore(t)
+	outside := filepath.Join(filepath.Dir(store.Root()), "secret", "step-0", "env")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("seed a directory outside the store: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		digest string
+		step   int
+	}{
+		{name: "parent traversal", digest: "../secret", step: 0},
+		{name: "deep traversal", digest: "../../etc", step: 0},
+		{name: "absolute path", digest: "/etc", step: 0},
+		{name: "empty", digest: "", step: 0},
+		{name: "short hex", digest: "0123456789abcdef", step: 0},
+		{name: "non hex", digest: strings.Repeat("z", 64), step: 0},
+		{name: "negative step", digest: fixtureDigest, step: -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := store.EnvironmentsFor(tc.digest, tc.step)
+			if err == nil {
+				t.Fatalf("EnvironmentsFor(%q, %d) = %v, want a refusal", tc.digest, tc.step, got)
+			}
+			if got != nil {
+				t.Fatalf("a refused lookup returned %v", got)
+			}
+		})
+	}
+
+	// The valid shape still works, so the guard is not simply refusing
+	// everything.
+	if _, err := store.EnvironmentsFor(strings.ToUpper(fixtureDigest), 0); err != nil {
+		t.Fatalf("EnvironmentsFor with a valid digest: %v", err)
+	}
+}
+
+// A symlinked root defeats a lexical ancestor walk: the check has to run over
+// where the directory really lands, or --baseline-root /tmp/bl pointed three
+// levels inside a working tree is accepted and the tool description's "cannot
+// end up committed" is false.
+func TestStoreRefusesARootSymlinkedIntoARepository(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs a privilege this test does not assume on windows")
+	}
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("seed repository marker: %v", err)
+	}
+	inside := filepath.Join(repo, "nested", "baselines")
+	if err := os.MkdirAll(inside, 0o700); err != nil {
+		t.Fatalf("seed the real location: %v", err)
+	}
+
+	elsewhere := t.TempDir()
+	link := filepath.Join(elsewhere, "baselines")
+	if err := os.Symlink(inside, link); err != nil {
+		t.Skipf("symlinks unavailable here: %v", err)
+	}
+	if _, err := NewStore(link); !errors.Is(err, ErrRootInsideRepository) {
+		t.Fatalf("NewStore through a symlink into a checkout = %v, want ErrRootInsideRepository", err)
+	}
+
+	// A link whose parent is the repository counts too: the root itself need
+	// not exist yet, so the check resolves the deepest ancestor that does.
+	parentLink := filepath.Join(elsewhere, "parent")
+	if err := os.Symlink(filepath.Join(repo, "nested"), parentLink); err != nil {
+		t.Skipf("symlinks unavailable here: %v", err)
+	}
+	if _, err := NewStore(filepath.Join(parentLink, "not-yet")); !errors.Is(err, ErrRootInsideRepository) {
+		t.Fatalf("NewStore under a symlinked parent = %v, want ErrRootInsideRepository", err)
+	}
+}
+
+// A baseline holds a screenshot of a signed-in page. A root any local account
+// can walk is refused rather than silently tightened, exactly as
+// internal/sessionstate treats its own root.
+func TestStoreRefusesAWorldReachableRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "baselines")
+	if err := os.MkdirAll(root, 0o777); err != nil {
+		t.Fatalf("seed a permissive root: %v", err)
+	}
+	if err := os.Chmod(root, 0o777); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	_, err := NewStore(root)
+	if err == nil || !strings.Contains(err.Error(), "reachable beyond its owner") {
+		t.Fatalf("NewStore on a 0777 root = %v, want a refusal naming the mode", err)
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if _, err := NewStore(root); err != nil {
+		t.Fatalf("NewStore on an owner-only root: %v", err)
+	}
+}
+
+// An ignore region the size of the capture turns the visual half into a no-op.
+// Reporting that as a pass is the worst outcome available: unionRegions keeps a
+// region recorded with the baseline for every later check, so nothing would ever
+// say the pixel comparison stopped looking.
+func TestAnIgnoreRegionCoveringEverythingIsNotAPass(t *testing.T) {
+	store := newBaselineStore(t)
+	key := Key{RecipeDigest: fixtureDigest, StepIndex: 0, Environment: fixtureEnvironment()}
+	everything := []IgnoreRegion{{Name: "everything", X: 0, Y: 0, Width: 40, Height: 20}}
+
+	if _, err := Check(store, CheckOptions{
+		Key:           key,
+		Screenshot:    solidPNG(t, 40, 20, pageWhite, image.Rectangle{}, pageWhite),
+		Tree:          treeWithButtonNamed("Pay invoice"),
+		IgnoreRegions: everything,
+		Update:        true,
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	// The region is now recorded with the baseline, so this check never names it.
+	result, err := Check(store, CheckOptions{
+		Key:        key,
+		Screenshot: solidPNG(t, 40, 20, brandBlue, image.Rectangle{}, brandBlue),
+		Tree:       treeWithButtonNamed("Pay invoice"),
+	})
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if result.Status != StatusDiff || !result.Failed {
+		t.Fatalf("a wholly ignored capture = %+v, want a failing %q", result, StatusDiff)
+	}
+	if result.Visual == nil || result.Visual.ComparedPixels != 0 {
+		t.Fatalf("visual = %+v, want zero compared pixels", result.Visual)
+	}
+	for _, note := range []string{result.Note, result.Visual.Note} {
+		if !strings.Contains(note, "compared nothing") {
+			t.Fatalf("note = %q, want it to say the visual half checked nothing", note)
+		}
+	}
+	if !strings.Contains(result.Note, "everything") {
+		t.Fatalf("note = %q, want it to name the ignore region that swallowed the page", result.Note)
+	}
+}
+
+// A resized capture is not compared at all, so counting the pixels that moved
+// produces "0 of 0 compared pixels moved" — true about nothing, and printed
+// over the sentence that says what happened.
+func TestAResizedCaptureReportsTheResizeRatherThanAPixelCount(t *testing.T) {
+	store := newBaselineStore(t)
+	key := Key{RecipeDigest: fixtureDigest, StepIndex: 0, Environment: fixtureEnvironment()}
+	if _, err := Check(store, CheckOptions{
+		Key:        key,
+		Screenshot: solidPNG(t, 40, 20, pageWhite, image.Rectangle{}, pageWhite),
+		Tree:       treeWithButtonNamed("Pay invoice"),
+		Update:     true,
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	result, err := Check(store, CheckOptions{
+		Key:        key,
+		Screenshot: solidPNG(t, 40, 30, pageWhite, image.Rectangle{}, pageWhite),
+		Tree:       treeWithButtonNamed("Pay invoice"),
+	})
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if result.Status != StatusDiff || !result.Failed {
+		t.Fatalf("a resized capture = %+v, want a failing %q", result, StatusDiff)
+	}
+	if strings.Contains(result.Note, "0 of 0 compared pixels") {
+		t.Fatalf("note = %q, want the reason the comparison could not run", result.Note)
+	}
+	if !strings.Contains(result.Note, "40x30") || !strings.Contains(result.Note, "40x20") {
+		t.Fatalf("note = %q, want both capture sizes named", result.Note)
+	}
+	if !strings.Contains(result.Note, "ARIA structure is unchanged") {
+		t.Fatalf("note = %q, want the structural half reported too", result.Note)
+	}
+}
+
+// EnvironmentExpression only ever runs in a browser, so that is the only place
+// it can be checked. A user-agent regex that stopped matching would fall back to
+// a UA prefix, which still fingerprints — the failure is quiet, which is the
+// argument for pinning it.
+func TestEnvironmentExpressionMeasuresARealBrowser(t *testing.T) {
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.WindowSize(1024, 768),
+		chromedp.WSURLReadTimeout(45*time.Second),
+	)
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer allocCancel()
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	defer browserCancel()
+	ctx, cancel := context.WithTimeout(browserCtx, 60*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/html")
+		_, _ = w.Write([]byte(`<!doctype html><title>Environment Fixture</title><p>page</p>`))
+	}))
+	defer srv.Close()
+
+	var raw map[string]any
+	if err := chromedp.Run(ctx,
+		chromedp.Navigate(srv.URL),
+		chromedp.Evaluate(EnvironmentExpression, &raw),
+	); err != nil {
+		t.Skipf("headless Chrome unavailable: %v", err)
+	}
+
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var environment Environment
+	if err := json.Unmarshal(encoded, &environment); err != nil {
+		t.Fatalf("decode the environment: %v", err)
+	}
+	environment.OS = runtime.GOOS
+	if err := environment.Validate(); err != nil {
+		t.Fatalf("a real browser produced an incomplete fingerprint (%+v): %v", environment, err)
+	}
+	// The point of the regex is a browser BUILD, not a user-agent prefix: the
+	// fallback still fingerprints, so a silent fall-through would key baselines
+	// on a 120-character string nobody notices is wrong.
+	build := regexp.MustCompile(`^(?:Chrome|Chromium|Edg|Firefox|Version)/[0-9][0-9.]*$`)
+	if !build.MatchString(environment.BrowserBuild) {
+		t.Fatalf("browser_build = %q, want a Name/version pair rather than a user-agent prefix", environment.BrowserBuild)
+	}
+	if environment.ViewportWidth <= 0 || environment.ViewportHeight <= 0 {
+		t.Fatalf("viewport = %dx%d, want the real one", environment.ViewportWidth, environment.ViewportHeight)
+	}
+	if environment.DevicePixelRatio <= 0 {
+		t.Fatalf("device_pixel_ratio = %v, want a positive ratio", environment.DevicePixelRatio)
 	}
 }

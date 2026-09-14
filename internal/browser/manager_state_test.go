@@ -43,6 +43,8 @@ func TestSessionStateOptionsValidate(t *testing.T) {
 		{name: "save needs origins", opts: SessionStateOptions{Action: "save"}, want: "origins is required"},
 		{name: "save with origins", opts: SessionStateOptions{Action: "save", Origins: []string{"https://app.example.test"}}},
 		{name: "restore needs an id", opts: SessionStateOptions{Action: "restore"}, want: "snapshot_id is required for restore"},
+		{name: "restore needs origins", opts: SessionStateOptions{Action: "restore", SnapshotID: "st_1"}, want: "origins is required on restore"},
+		{name: "restore with both", opts: SessionStateOptions{Action: "restore", SnapshotID: "st_1", Origins: []string{"https://app.example.test"}}},
 		{name: "delete needs an id", opts: SessionStateOptions{Action: "delete"}, want: "snapshot_id is required for delete"},
 		{name: "list needs nothing", opts: SessionStateOptions{Action: "list"}},
 		{name: "case and space tolerant", opts: SessionStateOptions{Action: " List "}},
@@ -172,6 +174,7 @@ func TestSessionStateRoundTripsAcrossIncognitoContexts(t *testing.T) {
 	restored, err := m.SessionState(ctx, SessionStateOptions{
 		Action:     SessionStateActionRestore,
 		SnapshotID: saved.Snapshot.ID,
+		Origins:    []string{srv.URL},
 		ContextID:  fresh.Tab.BrowserContextID,
 	})
 	if err != nil {
@@ -251,6 +254,130 @@ func TestRestoreRefusesToInstallAnOffAllowlistCookie(t *testing.T) {
 	for _, cookie := range cookies {
 		if strings.Contains(cookie.Domain, "other.example.test") {
 			t.Fatalf("the restore installed an off-allowlist cookie on %q", cookie.Domain)
+		}
+	}
+}
+
+// The restore-side allowlist is only a guard if it comes from the CALLER. A
+// restore that names no origins used to take them out of the decrypted file,
+// which checked the file against itself; this drives the default path against a
+// hostile sealed snapshot and asks the live browser what it holds afterwards.
+func TestRestoreWithoutOriginsIsRefusedAndInstallsNothing(t *testing.T) {
+	m := newHeadlessManager(t)
+	store := newStateStore(t)
+	m.SetSessionStateStore(store)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/html")
+		_, _ = w.Write([]byte(`<!doctype html><title>Default Restore Fixture</title><p>page</p>`))
+	}))
+	defer srv.Close()
+
+	host := strings.TrimPrefix(srv.URL, "http://")
+	if idx := strings.LastIndex(host, ":"); idx > 0 {
+		host = host[:idx]
+	}
+	// A snapshot whose own origins are wide open: the file says it covers the
+	// fixture origin as well as a foreign one, so a restore that trusted the
+	// file would install both.
+	meta, err := store.Save(sessionstate.Snapshot{
+		Origins: []string{srv.URL, "https://other.example.test"},
+		Cookies: []sessionstate.Cookie{
+			{Name: fixtureStateCookieName, Value: fixtureStateCookieValue, Domain: host, Path: "/"},
+			{Name: "fixture-foreign-cookie-one", Value: "fixture-foreign-value-one", Domain: "other.example.test", Path: "/"},
+		},
+	}, sessionstate.SaveOptions{})
+	if err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	opened, err := m.OpenIncognito(ctx, srv.URL)
+	if err != nil {
+		t.Fatalf("open incognito: %v", err)
+	}
+	defer func() { _ = m.CloseContext(context.Background(), opened.Tab.BrowserContextID) }()
+
+	result, err := m.SessionState(ctx, SessionStateOptions{
+		Action:     SessionStateActionRestore,
+		SnapshotID: meta.ID,
+		ContextID:  opened.Tab.BrowserContextID,
+	})
+	if !errors.Is(err, sessionstate.ErrNoRestoreOrigins) {
+		t.Fatalf("restore without origins = (%+v, %v), want ErrNoRestoreOrigins", result, err)
+	}
+	if result.RestoredCookies != 0 {
+		t.Fatalf("a refused restore reported %d applied cookies", result.RestoredCookies)
+	}
+	cookies, err := m.contextCookies(ctx, opened.Tab.BrowserContextID)
+	if err != nil {
+		t.Fatalf("read back the context's cookies: %v", err)
+	}
+	for _, cookie := range cookies {
+		if cookie.Name == fixtureStateCookieName || strings.Contains(cookie.Domain, "other.example.test") {
+			t.Fatalf("a refused restore still installed %q on %q", cookie.Name, cookie.Domain)
+		}
+	}
+}
+
+// Naming an origin the snapshot was never sealed for must not widen it: what is
+// applied is the intersection, so the origins a list reports bound every restore.
+func TestRestoreCannotWidenBeyondTheSealedOrigins(t *testing.T) {
+	m := newHeadlessManager(t)
+	store := newStateStore(t)
+	m.SetSessionStateStore(store)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/html")
+		_, _ = w.Write([]byte(`<!doctype html><title>Sealed Origins Fixture</title><p>page</p>`))
+	}))
+	defer srv.Close()
+
+	host := strings.TrimPrefix(srv.URL, "http://")
+	if idx := strings.LastIndex(host, ":"); idx > 0 {
+		host = host[:idx]
+	}
+	// Sealed for the fixture origin only, but carrying a cookie for another —
+	// the shape a tampered or hand-written store file would have.
+	meta, err := store.Save(sessionstate.Snapshot{
+		Origins: []string{srv.URL},
+		Cookies: []sessionstate.Cookie{
+			{Name: fixtureStateCookieName, Value: fixtureStateCookieValue, Domain: host, Path: "/"},
+			{Name: "fixture-foreign-cookie-one", Value: "fixture-foreign-value-one", Domain: "other.example.test", Path: "/"},
+		},
+	}, sessionstate.SaveOptions{})
+	if err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	opened, err := m.OpenIncognito(ctx, srv.URL)
+	if err != nil {
+		t.Fatalf("open incognito: %v", err)
+	}
+	defer func() { _ = m.CloseContext(context.Background(), opened.Tab.BrowserContextID) }()
+
+	restored, err := m.SessionState(ctx, SessionStateOptions{
+		Action:     SessionStateActionRestore,
+		SnapshotID: meta.ID,
+		Origins:    []string{srv.URL, "https://other.example.test"},
+		ContextID:  opened.Tab.BrowserContextID,
+	})
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if restored.RestoredCookies != 1 || restored.SkippedOffAllowlist != 1 {
+		t.Fatalf("restore = %+v, want only the sealed origin applied and the other counted as skipped", restored)
+	}
+	cookies, err := m.contextCookies(ctx, opened.Tab.BrowserContextID)
+	if err != nil {
+		t.Fatalf("read back the context's cookies: %v", err)
+	}
+	for _, cookie := range cookies {
+		if strings.Contains(cookie.Domain, "other.example.test") {
+			t.Fatalf("the restore installed a cookie for an origin the snapshot was not sealed for: %q", cookie.Domain)
 		}
 	}
 }

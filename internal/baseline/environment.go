@@ -25,6 +25,26 @@ import (
 	"strings"
 )
 
+// EnvironmentExpression reports the capture conditions that belong in a
+// baseline key, measured from inside the page so every transport can answer it
+// through the ordinary evaluate path. It is an expression, not a function
+// declaration, for the same reason snapshot.AriaTreeExpression is.
+//
+// The operating system is deliberately absent: it is the browser HOST's, which
+// the daemon knows and the page does not (a page's platform string is spoofable
+// and, under the extension bridge, says nothing about where the daemon runs).
+const EnvironmentExpression = `(function(){
+  var ua = navigator.userAgent || '';
+  var build = (ua.match(/(?:Chrome|Chromium|Edg|Firefox|Version)\/[0-9][0-9.]*/) || [''])[0];
+  return {
+    browser_build: build || ua.slice(0, 120),
+    viewport_width: Math.round(window.innerWidth || 0),
+    viewport_height: Math.round(window.innerHeight || 0),
+    device_pixel_ratio: window.devicePixelRatio || 1,
+    locale: navigator.language || ''
+  };
+})()`
+
 // Environment is the fingerprinted capture condition.
 type Environment struct {
 	// BrowserBuild is the browser's version string, for example "Chrome/141.0.0.0".
@@ -120,6 +140,22 @@ func (e Environment) Differences(other Environment) []string {
 
 var recipeDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// ErrRecipeDigest is the single refusal every digest-shaped input gets. It is a
+// named error because the digest is also a path component: anything that is not
+// 64 hex characters is either a typo or a traversal.
+var ErrRecipeDigest = errors.New("recipe_digest must be the 64-character hex content digest of a pinned recipe version")
+
+// normalizeRecipeDigest is the one gate. Key.Validate and Store.scopeDir both
+// call it, so there is no way to reach the filesystem with a digest that was
+// never checked.
+func normalizeRecipeDigest(digest string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(digest))
+	if !recipeDigestPattern.MatchString(normalized) {
+		return "", ErrRecipeDigest
+	}
+	return normalized, nil
+}
+
 // Key identifies one baseline: which recipe, which step of it, under which
 // environment.
 type Key struct {
@@ -132,8 +168,8 @@ type Key struct {
 }
 
 func (k Key) Validate() error {
-	if !recipeDigestPattern.MatchString(strings.ToLower(strings.TrimSpace(k.RecipeDigest))) {
-		return errors.New("recipe_digest must be the 64-character hex content digest of a pinned recipe version")
+	if _, err := normalizeRecipeDigest(k.RecipeDigest); err != nil {
+		return err
 	}
 	if k.StepIndex < 0 {
 		return errors.New("step_index must not be negative")

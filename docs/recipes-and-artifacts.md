@@ -410,7 +410,10 @@ pixels with `pixel_tolerance` (a fraction of compared pixels),
 `channel_tolerance` (per-channel slack that absorbs anti-aliasing) and
 `ignore_regions` — named rectangles in CSS pixels for the clock, the avatar and
 the ad slot, scaled by the baseline's device pixel ratio and reported back by
-name so you can see which exclusion swallowed a change. The structural half
+name so you can see which exclusion swallowed a change. Regions recorded with a
+baseline keep applying to every later check, so a region that ends up covering
+the whole capture fails with "the visual half compared nothing" rather than
+passing: a comparison that covered no pixels is not a pass. The structural half
 diffs the page's ARIA structure, role and accessible name, with presentational
 wrappers flattened away. It carries no geometry: a button that loses its
 `aria-label` renders identically and fails the structural check, while a font
@@ -419,6 +422,12 @@ bump or a colour change moves pixels and leaves the structure alone.
 **An update that is never implicit.** `action: "check"` writes nothing, ever,
 including on a passing run. `action: "update"` is the only thing that records or
 replaces a baseline, and it reports the differences it accepted.
+
+Both transports work. The ARIA structure is computed in the page rather than
+read from a browser-level Accessibility domain the extension bridge does not
+have, and the viewport capture — which both transports take as JPEG for wire
+size — is re-encoded losslessly before it is stored or compared, so a baseline
+directory holds the PNG its file name claims.
 
 ```sh
 brwd --baseline-root /var/lib/brw/baselines   # auto uses the user cache; off (default) disables

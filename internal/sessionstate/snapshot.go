@@ -55,6 +55,11 @@ var (
 	// ErrNoOrigins is the refusal that makes the allowlist mandatory. There is
 	// deliberately no "everything" mode: a snapshot always names what it seals.
 	ErrNoOrigins = errors.New("origins is required: a session snapshot always names the exact origins it seals, and there is no capture-everything mode")
+	// ErrNoRestoreOrigins is what keeps the restore-side filter from checking
+	// the file against itself. Defaulting to the origins recorded IN the
+	// snapshot would make the second pass a no-op, so the restoring caller
+	// always names what it is willing to have installed.
+	ErrNoRestoreOrigins = errors.New("origins is required on restore: the allowlist is applied again against the origins the restoring call names, and reading them out of the snapshot would check the file against itself — list the snapshot to see which origins it covers")
 	// ErrExpired is returned by Load once a snapshot outlives its TTL. The file
 	// is deleted on the way out.
 	ErrExpired = errors.New("session snapshot has expired and was deleted; save a new one")

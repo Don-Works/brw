@@ -1,8 +1,10 @@
 package snapshot
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/chromedp/chromedp"
@@ -171,5 +173,144 @@ func TestAriaTreeScriptReadsRolesAndNamesFromARealPage(t *testing.T) {
 	}
 	if tree.Truncated {
 		t.Fatal("a six-element fixture must not hit the node cap")
+	}
+}
+
+// countStyleReads replaces window.getComputedStyle with a counting wrapper, so
+// a test can measure the forced style reads the walk causes instead of timing
+// it. The walk runs on every baseline check, on whatever page the recipe left
+// open.
+const countStyleReads = `(function(){
+  var real = window.getComputedStyle;
+  window.__brwStyleReads = 0;
+  window.getComputedStyle = function(){ window.__brwStyleReads++; return real.apply(window, arguments); };
+  return true;
+})()`
+
+// MAX_NODES caps the emitted nodes. It has to cap the traversal too: a role-less
+// wrapper is recursed into without incrementing the count, so a walk that only
+// returned from one level would keep reading styles across the rest of the
+// document to build nodes it then discards. And an element with no role and no
+// element children contributes nothing either way, so it must never cost a
+// style read at all.
+func TestAriaTreeWalkDoesNotReadStylesItCannotUse(t *testing.T) {
+	var presentational strings.Builder
+	for i := 0; i < 500; i++ {
+		presentational.WriteString(`<span class="pres">text</span>`)
+	}
+	var overCap strings.Builder
+	for i := 0; i < 2100; i++ {
+		fmt.Fprintf(&overCap, `<div class="w"><button>Button %d</button></div>`, i)
+	}
+	// The tail sits after the node cap is reached and is nested, so the
+	// role-less-leaf shortcut cannot account for it: only stopping the walk can.
+	for i := 0; i < 5000; i++ {
+		overCap.WriteString(`<div class="tail"><span>tail</span></div>`)
+	}
+
+	cases := []struct {
+		name          string
+		body          string
+		maxStyleReads int
+		wantNodes     int
+		wantTruncated bool
+	}{
+		{
+			name:          "presentational leaves cost nothing",
+			body:          `<main>` + presentational.String() + `<button>Pay invoice</button></main>`,
+			maxStyleReads: 20,
+			wantNodes:     2,
+		},
+		{
+			name:          "the node cap stops the walk",
+			body:          `<main>` + overCap.String() + `</main>`,
+			maxStyleReads: 5000,
+			wantNodes:     2000,
+			wantTruncated: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("content-type", "text/html")
+				_, _ = w.Write([]byte(`<!doctype html><title>Walk Cost Fixture</title>` + tc.body))
+			}))
+			defer srv.Close()
+
+			ctx, cancel := structuredTestContext(t)
+			defer cancel()
+
+			var installed bool
+			var raw any
+			var reads int
+			if err := chromedp.Run(ctx,
+				chromedp.Navigate(srv.URL),
+				chromedp.Evaluate(countStyleReads, &installed),
+				chromedp.Evaluate(AriaTreeExpression, &raw),
+				chromedp.Evaluate(`window.__brwStyleReads`, &reads),
+			); err != nil {
+				t.Skipf("headless Chrome unavailable: %v", err)
+			}
+			if !installed {
+				t.Fatal("the getComputedStyle counter was not installed")
+			}
+			tree, err := ParseAriaTree(raw)
+			if err != nil {
+				t.Fatalf("ParseAriaTree: %v", err)
+			}
+			if tree.Count() != tc.wantNodes {
+				t.Fatalf("tree holds %d nodes, want %d", tree.Count(), tc.wantNodes)
+			}
+			if tree.Truncated != tc.wantTruncated {
+				t.Fatalf("truncated = %v, want %v", tree.Truncated, tc.wantTruncated)
+			}
+			if reads > tc.maxStyleReads {
+				t.Fatalf("the walk forced %d style reads, want at most %d", reads, tc.maxStyleReads)
+			}
+		})
+	}
+}
+
+// The editable HOST is the one textbox. Naming every descendant of an editor a
+// textbox makes an ordinary paragraph edit read as a structural regression, and
+// the inherited-editability property that produced those nodes forces a style
+// update on every element the walk asks.
+func TestAriaTreeNamesTheContentEditableHostOnly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/html")
+		_, _ = w.Write([]byte(`<!doctype html><title>Editable Fixture</title>
+<main>
+  <div contenteditable="true" aria-label="Message body"><p>one</p><p>two</p></div>
+  <div contenteditable="false"><p>not editable</p></div>
+</main>`))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := structuredTestContext(t)
+	defer cancel()
+
+	var raw any
+	if err := chromedp.Run(ctx,
+		chromedp.Navigate(srv.URL),
+		chromedp.Evaluate(AriaTreeExpression, &raw),
+	); err != nil {
+		t.Skipf("headless Chrome unavailable: %v", err)
+	}
+	tree, err := ParseAriaTree(raw)
+	if err != nil {
+		t.Fatalf("ParseAriaTree: %v", err)
+	}
+	if len(tree.Nodes) != 1 || tree.Nodes[0].Role != "main" {
+		t.Fatalf("tree roots = %+v, want a single main landmark", tree.Nodes)
+	}
+	children := tree.Nodes[0].Children
+	if len(children) != 1 {
+		t.Fatalf("main holds %+v, want only the editable host", children)
+	}
+	if children[0].Role != "textbox" || children[0].Name != "Message body" {
+		t.Fatalf("editable host = %+v, want a named textbox", children[0])
+	}
+	if len(children[0].Children) != 0 {
+		t.Fatalf("the editor's paragraphs reached the tree as %+v", children[0].Children)
 	}
 }

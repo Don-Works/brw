@@ -21,23 +21,6 @@ var errBaselinesDisabled = errors.New("regression baselines are not enabled on t
 // SetBaselineStore installs the regression-baseline store.
 func (s *Server) SetBaselineStore(store *baseline.Store) { s.baselines = store }
 
-// baselineEnvironmentExpression reports the capture conditions that belong in a
-// baseline key, from inside the page, so every transport can answer it. The
-// operating system is not in here: it is the browser HOST's, which the daemon
-// knows and the page does not (a page's platform string is spoofable and, under
-// the extension bridge, says nothing about where the daemon runs).
-const baselineEnvironmentExpression = `(function(){
-  var ua = navigator.userAgent || '';
-  var build = (ua.match(/(?:Chrome|Chromium|Edg|Firefox|Version)\/[0-9][0-9.]*/) || [''])[0];
-  return {
-    browser_build: build || ua.slice(0, 120),
-    viewport_width: Math.round(window.innerWidth || 0),
-    viewport_height: Math.round(window.innerHeight || 0),
-    device_pixel_ratio: window.devicePixelRatio || 1,
-    locale: navigator.language || ''
-  };
-})()`
-
 type baselineRequest struct {
 	Action           string                  `json:"action"`
 	RecipeDigest     string                  `json:"recipe_digest"`
@@ -113,6 +96,13 @@ func (s *Server) callBaseline(ctx context.Context, args json.RawMessage) (any, *
 				return toolError(fmt.Errorf("decode screenshot: %w", err)), nil
 			}
 		}
+		// Both transports capture the viewport as JPEG for wire size. A baseline
+		// is stored and compared as PNG, so the encoding is normalized once here
+		// rather than leaving half the store holding JPEG bytes in a .png file.
+		pixels, err = baseline.NormalizePNG(pixels)
+		if err != nil {
+			return toolError(err), nil
+		}
 		tree, err := s.ariaTree(ctx)
 		if err != nil {
 			return toolError(err), nil
@@ -151,7 +141,7 @@ func (s *Server) callBaseline(ctx context.Context, args json.RawMessage) (any, *
 }
 
 func (s *Server) baselineEnvironment(ctx context.Context) (baseline.Environment, error) {
-	raw, err := s.manager.Evaluate(ctx, baselineEnvironmentExpression)
+	raw, err := s.manager.Evaluate(ctx, baseline.EnvironmentExpression)
 	if err != nil {
 		return baseline.Environment{}, fmt.Errorf("read the environment fingerprint from the page: %w", err)
 	}

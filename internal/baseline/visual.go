@@ -8,6 +8,12 @@ import (
 	"math"
 	"sort"
 	"strings"
+
+	// Both transports capture the viewport as JPEG (internal/browser
+	// Manager.Screenshot and internal/extensionbridge Bridge.Screenshot both ask
+	// Page.captureScreenshot for jpeg), so the decoder has to be registered or a
+	// baseline check dies on the encoding instead of comparing the page.
+	_ "image/jpeg"
 )
 
 // IgnoreRegion is a rectangle whose pixels are not compared, named so a report
@@ -67,14 +73,16 @@ type VisualDiff struct {
 // memory exhaustion by pointing it at a very tall page.
 const maxComparedPixels = 64 << 20
 
-// CompareImages decodes two PNGs and counts the pixels that moved outside the
-// ignore regions.
-func CompareImages(baselinePNG, currentPNG []byte, opts VisualOptions) (VisualDiff, error) {
-	before, err := decodePNG(baselinePNG, "baseline")
+// CompareImages decodes two captures and counts the pixels that moved outside
+// the ignore regions. A stored baseline is always PNG (see NormalizePNG); the
+// decoder accepts what the browser produces so a comparison fails on the page
+// rather than on the encoding.
+func CompareImages(baselineCapture, currentCapture []byte, opts VisualOptions) (VisualDiff, error) {
+	before, _, err := decodeCapture(baselineCapture, "baseline")
 	if err != nil {
 		return VisualDiff{}, err
 	}
-	after, err := decodePNG(currentPNG, "current")
+	after, _, err := decodeCapture(currentCapture, "current")
 	if err != nil {
 		return VisualDiff{}, err
 	}
@@ -128,6 +136,20 @@ func CompareImages(baselinePNG, currentPNG []byte, opts VisualOptions) (VisualDi
 	if differing > 0 && !diff.Changed {
 		diff.Note = fmt.Sprintf("%d of %d compared pixels differ, within the %g tolerance", differing, compared, opts.PixelTolerance)
 	}
+	// Comparing nothing is not a pass. An ignore region the size of the capture
+	// leaves compared == 0 and differing == 0, which the line above reads as
+	// "unchanged" — and unionRegions keeps a region recorded with the baseline
+	// for every later check, so the visual half would stay switched off with
+	// nothing in the report saying so.
+	if compared == 0 {
+		diff.Changed = true
+		if ignored > 0 {
+			diff.Note = fmt.Sprintf("all %d pixels of the capture are inside an ignore region (%s), so the visual half compared nothing",
+				ignored, strings.Join(names, ", "))
+		} else {
+			diff.Note = "the capture has no pixels, so the visual half compared nothing"
+		}
+	}
 	return diff, nil
 }
 
@@ -137,22 +159,46 @@ func channelDelta(a, b uint32) int {
 	return int(math.Abs(float64(int(a>>8) - int(b>>8))))
 }
 
-func decodePNG(data []byte, which string) (image.Image, error) {
+// decodeCapture decodes whatever the browser handed back. The pixel cap is
+// applied from the header before the pixels are allocated, so an oversized
+// capture is refused rather than decoded.
+func decodeCapture(data []byte, which string) (image.Image, string, error) {
 	if len(data) == 0 {
-		return nil, fmt.Errorf("%s capture is empty", which)
+		return nil, "", fmt.Errorf("%s capture is empty", which)
 	}
-	config, err := png.DecodeConfig(bytes.NewReader(data))
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("decode %s capture: %w", which, err)
+		return nil, "", fmt.Errorf("decode %s capture: %w", which, err)
 	}
 	if int64(config.Width)*int64(config.Height) > maxComparedPixels {
-		return nil, fmt.Errorf("%s capture is %dx%d, over the pixel cap for a baseline comparison", which, config.Width, config.Height)
+		return nil, "", fmt.Errorf("%s capture is %dx%d, over the pixel cap for a baseline comparison", which, config.Width, config.Height)
 	}
-	img, err := png.Decode(bytes.NewReader(data))
+	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("decode %s capture: %w", which, err)
+		return nil, "", fmt.Errorf("decode %s capture: %w", which, err)
 	}
-	return img, nil
+	return img, format, nil
+}
+
+// NormalizePNG re-encodes a browser capture as PNG so a stored baseline is
+// always lossless and always the format its file name claims. Both transports
+// capture the viewport as JPEG, so without this the visual half of the gate
+// never runs anywhere: the store would hold JPEG bytes in a .png file and the
+// comparison would refuse them. A capture that is already PNG is returned
+// unchanged rather than round-tripped.
+func NormalizePNG(data []byte) ([]byte, error) {
+	img, format, err := decodeCapture(data, "current")
+	if err != nil {
+		return nil, err
+	}
+	if format == "png" {
+		return data, nil
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, fmt.Errorf("re-encode the %s capture as png: %w", format, err)
+	}
+	return buf.Bytes(), nil
 }
 
 // buildIgnoreMask paints the named regions, scaled from CSS pixels into image

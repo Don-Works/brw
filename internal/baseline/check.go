@@ -193,14 +193,28 @@ func mismatchSummary(mismatches []EnvironmentMismatch) []string {
 // diffNote says which of the two checks failed, because they mean different
 // things: pixels moved is a rendering change, and the ARIA structure moving is
 // a semantic one that a pixel diff can miss entirely.
+//
+// The visual half's own note wins whenever it has one. A resized capture and a
+// capture covered by an ignore region both fail with DiffPixels and
+// ComparedPixels at zero, and a count computed over a comparison that never ran
+// reads as "0 of 0 compared pixels moved" — a true sentence about nothing,
+// talking over the one that says what actually happened.
 func diffNote(visual VisualDiff, aria snapshot.AriaDiff) string {
+	pixels := ""
 	switch {
-	case visual.Changed && aria.Changed:
-		return fmt.Sprintf("%d pixels moved and the ARIA structure changed in %d place(s)", visual.DiffPixels, aria.Count)
+	case visual.Changed && visual.Note != "":
+		pixels = visual.Note
 	case visual.Changed:
-		return fmt.Sprintf("%d of %d compared pixels moved, over the %g tolerance; the ARIA structure is unchanged", visual.DiffPixels, visual.ComparedPixels, visual.Tolerance)
+		pixels = fmt.Sprintf("%d of %d compared pixels moved, over the %g tolerance", visual.DiffPixels, visual.ComparedPixels, visual.Tolerance)
+	}
+	structure := fmt.Sprintf("the ARIA structure changed in %d place(s) — a role or accessible name moved, which a pixel diff does not see", aria.Count)
+	switch {
+	case pixels != "" && aria.Changed:
+		return pixels + "; " + structure
+	case pixels != "":
+		return pixels + "; the ARIA structure is unchanged"
 	default:
-		return fmt.Sprintf("the pixels are within tolerance but the ARIA structure changed in %d place(s) — a role or accessible name moved, which a pixel diff does not see", aria.Count)
+		return "the pixels are within tolerance but " + structure
 	}
 }
 

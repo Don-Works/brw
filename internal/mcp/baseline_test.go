@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -28,11 +30,17 @@ const fixtureBaselineDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0
 // with an optional patch, and answers the two expressions brw_baseline
 // evaluates. Everything under test — the environment fingerprint, the
 // screenshot decode, the check/update routing and the comparison — is real.
+//
+// encoding is a real transport difference, not a knob: internal/browser
+// Manager.Screenshot and internal/extensionbridge Bridge.Screenshot both ask
+// Page.captureScreenshot for JPEG, so a controller that only ever produced PNG
+// would test a capture no deployment hands back.
 type pageController struct {
 	browser.Controller
-	patched bool
-	label   string
-	dpr     float64
+	patched  bool
+	label    string
+	dpr      float64
+	encoding string
 }
 
 func (c *pageController) Screenshot(context.Context) (browser.Screenshot, error) {
@@ -40,17 +48,23 @@ func (c *pageController) Screenshot(context.Context) (browser.Screenshot, error)
 	for y := 0; y < 10; y++ {
 		for x := 0; x < 20; x++ {
 			pixel := color.RGBA{R: 255, G: 255, B: 255, A: 255}
-			if c.patched && x < 5 && y < 5 {
+			if c.patched && x < 10 && y < 10 {
 				pixel = color.RGBA{R: 20, G: 80, B: 190, A: 255}
 			}
 			img.SetRGBA(x, y, pixel)
 		}
 	}
 	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
+	mime := "image/png"
+	if c.encoding == "jpeg" {
+		mime = "image/jpeg"
+		if err := jpeg.Encode(&buf, img, nil); err != nil {
+			return browser.Screenshot{}, err
+		}
+	} else if err := png.Encode(&buf, img); err != nil {
 		return browser.Screenshot{}, err
 	}
-	return browser.Screenshot{MIMEType: "image/png", Data: buf.Bytes(), Base64: base64.StdEncoding.EncodeToString(buf.Bytes())}, nil
+	return browser.Screenshot{MIMEType: mime, Data: buf.Bytes(), Base64: base64.StdEncoding.EncodeToString(buf.Bytes())}, nil
 }
 
 func (c *pageController) Evaluate(_ context.Context, expression string) (any, error) {
@@ -58,6 +72,9 @@ func (c *pageController) Evaluate(_ context.Context, expression string) (any, er
 		return map[string]any{"nodes": []any{
 			map[string]any{"role": "button", "name": c.label},
 		}}, nil
+	}
+	if expression != baseline.EnvironmentExpression {
+		return nil, fmt.Errorf("unexpected expression: %s", expression)
 	}
 	dpr := c.dpr
 	if dpr == 0 {
@@ -122,45 +139,52 @@ func callBaselineTool(t *testing.T, s *Server, args string) map[string]any {
 // The whole point of the tool: check never writes, update does, and the
 // environment the daemon measures is what the baseline is keyed on.
 func TestBaselineToolChecksUpdatesAndNeverWritesOnACheck(t *testing.T) {
-	controller := &pageController{label: "Pay invoice"}
-	s := baselineServer(t, controller)
-	args := `{"action":"%s","recipe_digest":"` + fixtureBaselineDigest + `","step_index":2}`
+	// Both transports capture JPEG; the PNG case is the one a caller gets from
+	// a ref-clipped capture. The gate has to hold for whatever arrives, or half
+	// the deployments get a decode error instead of a comparison.
+	for _, encoding := range []string{"png", "jpeg"} {
+		t.Run(encoding, func(t *testing.T) {
+			controller := &pageController{label: "Pay invoice", encoding: encoding}
+			s := baselineServer(t, controller)
+			args := `{"action":"%s","recipe_digest":"` + fixtureBaselineDigest + `","step_index":2}`
 
-	missing := callBaselineTool(t, s, strings.Replace(args, "%s", "check", 1))
-	if missing["status"] != baseline.StatusMissing || missing["failed"] != true {
-		t.Fatalf("first check = %v, want a failing %q", missing, baseline.StatusMissing)
-	}
-	if entries, _ := os.ReadDir(filepath.Join(s.baselines.Root(), fixtureBaselineDigest)); len(entries) != 0 {
-		t.Fatal("a check wrote to the baseline store; only update may write")
-	}
+			missing := callBaselineTool(t, s, strings.Replace(args, "%s", "check", 1))
+			if missing["status"] != baseline.StatusMissing || missing["failed"] != true {
+				t.Fatalf("first check = %v, want a failing %q", missing, baseline.StatusMissing)
+			}
+			if entries, _ := os.ReadDir(filepath.Join(s.baselines.Root(), fixtureBaselineDigest)); len(entries) != 0 {
+				t.Fatal("a check wrote to the baseline store; only update may write")
+			}
 
-	recorded := callBaselineTool(t, s, strings.Replace(args, "%s", "update", 1))
-	if recorded["status"] != baseline.StatusRecorded {
-		t.Fatalf("update = %v, want %q", recorded, baseline.StatusRecorded)
-	}
+			recorded := callBaselineTool(t, s, strings.Replace(args, "%s", "update", 1))
+			if recorded["status"] != baseline.StatusRecorded {
+				t.Fatalf("update = %v, want %q", recorded, baseline.StatusRecorded)
+			}
 
-	matched := callBaselineTool(t, s, strings.Replace(args, "%s", "check", 1))
-	if matched["status"] != baseline.StatusMatch || matched["failed"] != false {
-		t.Fatalf("unchanged page = %v, want a passing %q", matched, baseline.StatusMatch)
-	}
+			matched := callBaselineTool(t, s, strings.Replace(args, "%s", "check", 1))
+			if matched["status"] != baseline.StatusMatch || matched["failed"] != false {
+				t.Fatalf("unchanged page = %v, want a passing %q", matched, baseline.StatusMatch)
+			}
 
-	controller.patched = true
-	failed := callBaselineTool(t, s, strings.Replace(args, "%s", "check", 1))
-	if failed["status"] != baseline.StatusDiff || failed["failed"] != true {
-		t.Fatalf("restyled page = %v, want a failing %q", failed, baseline.StatusDiff)
-	}
+			controller.patched = true
+			failed := callBaselineTool(t, s, strings.Replace(args, "%s", "check", 1))
+			if failed["status"] != baseline.StatusDiff || failed["failed"] != true {
+				t.Fatalf("restyled page = %v, want a failing %q", failed, baseline.StatusDiff)
+			}
 
-	listed := callBaselineTool(t, s, strings.Replace(args, "%s", "list", 1))
-	environments, _ := listed["environments"].([]any)
-	if len(environments) != 1 {
-		t.Fatalf("list = %v, want the one recorded environment", listed)
-	}
-	first, _ := environments[0].(map[string]any)
-	if first["os"] != runtime.GOOS {
-		t.Fatalf("recorded os = %v, want the browser host's %q", first["os"], runtime.GOOS)
-	}
-	if first["locale"] != "en-gb" {
-		t.Fatalf("recorded locale = %v, want the normalized page locale", first["locale"])
+			listed := callBaselineTool(t, s, strings.Replace(args, "%s", "list", 1))
+			environments, _ := listed["environments"].([]any)
+			if len(environments) != 1 {
+				t.Fatalf("list = %v, want the one recorded environment", listed)
+			}
+			first, _ := environments[0].(map[string]any)
+			if first["os"] != runtime.GOOS {
+				t.Fatalf("recorded os = %v, want the browser host's %q", first["os"], runtime.GOOS)
+			}
+			if first["locale"] != "en-gb" {
+				t.Fatalf("recorded locale = %v, want the normalized page locale", first["locale"])
+			}
+		})
 	}
 }
 
@@ -222,6 +246,11 @@ func TestBaselineToolRefusesBadInput(t *testing.T) {
 		{"unknown action", `{"action":"accept","recipe_digest":"` + fixtureBaselineDigest + `","step_index":0}`, "unknown action"},
 		{"missing action", `{"recipe_digest":"` + fixtureBaselineDigest + `","step_index":0}`, "action is required"},
 		{"loose digest", `{"action":"check","recipe_digest":"not-a-digest","step_index":0}`, "64-character hex"},
+		// list is the one action that reaches the store without a Key to
+		// validate, and the digest it takes becomes a directory name.
+		{"traversal digest on list", `{"action":"list","recipe_digest":"../..","step_index":0}`, "64-character hex"},
+		{"traversal digest on delete", `{"action":"delete","recipe_digest":"../..","step_index":0}`, "64-character hex"},
+		{"negative step on list", `{"action":"list","recipe_digest":"` + fixtureBaselineDigest + `","step_index":-1}`, "must not be negative"},
 		{"tolerance out of range", `{"action":"check","recipe_digest":"` + fixtureBaselineDigest + `","step_index":0,"pixel_tolerance":2}`, "between 0 and 1"},
 		{"channel tolerance out of range", `{"action":"check","recipe_digest":"` + fixtureBaselineDigest + `","step_index":0,"channel_tolerance":900}`, "between 0 and 255"},
 	}

@@ -59,6 +59,7 @@ const AriaTreeExpression = `(function(){
   var MAX_DEPTH = 40;
   var count = 0;
   var truncated = false;
+  var stopped = false;
   function clean(s){ return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, 200); }
   function labelText(el){
     if (el.labels && el.labels.length) {
@@ -112,7 +113,13 @@ const AriaTreeExpression = `(function(){
     var type = (el.getAttribute('type') || '').toLowerCase();
     if (tag === 'a' && el.hasAttribute('href')) return 'link';
     if (tag === 'button' || type === 'button' || type === 'submit' || type === 'reset') return 'button';
-    if (tag === 'textarea' || el.isContentEditable) return 'textbox';
+    if (tag === 'textarea') return 'textbox';
+    // The contenteditable ATTRIBUTE, not el.isContentEditable: the property
+    // resolves inherited editability and forces a style update on every element
+    // the walk asks, and it names each descendant of an editor a textbox when
+    // the editable host is the one control.
+    var editable = el.getAttribute('contenteditable');
+    if (editable !== null && editable.toLowerCase() !== 'false') return 'textbox';
     if (tag === 'select') return el.multiple ? 'listbox' : 'combobox';
     if (tag === 'input') {
       if (type === 'hidden') return '';
@@ -149,13 +156,21 @@ const AriaTreeExpression = `(function(){
   }
   function walk(el, depth){
     var out = [];
+    if (stopped) return out;
     if (depth > MAX_DEPTH) { truncated = true; return out; }
-    for (var i = 0; i < el.children.length; i++) {
-      var child = el.children[i];
+    var siblings = el.children;
+    for (var i = 0; i < siblings.length; i++) {
+      if (stopped) return out;
+      var child = siblings[i];
       var tag = child.tagName.toLowerCase();
       if (tag === 'script' || tag === 'style' || tag === 'template' || tag === 'noscript') continue;
-      if (hidden(child)) continue;
       var role = roleFor(child);
+      // A role-less element with no element children contributes nothing to the
+      // tree whether it is rendered or not, so it never pays for the forced
+      // style read in hidden(). On a page built out of presentational spans that
+      // is most of the document, and this walk runs on every baseline check.
+      if (!role && child.children.length === 0) continue;
+      if (hidden(child)) continue;
       if (!role) {
         // An untyped wrapper contributes no structure: splice its children in
         // so a purely presentational nesting change is not a regression.
@@ -163,7 +178,14 @@ const AriaTreeExpression = `(function(){
         for (var j = 0; j < inner.length; j++) out.push(inner[j]);
         continue;
       }
-      if (count >= MAX_NODES) { truncated = true; return out; }
+      if (count >= MAX_NODES) {
+        // The cap has to stop the WALK, not only the emission. Returning from
+        // one level leaves every ancestor's loop reading styles across the rest
+        // of the document to build nodes that are discarded on arrival.
+        truncated = true;
+        stopped = true;
+        return out;
+      }
       count++;
       var node = { role: role };
       var name = nameFor(child);

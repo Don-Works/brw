@@ -71,6 +71,17 @@ func NewStore(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create baseline root: %w", err)
 	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, err
+	}
+	// A baseline holds a screenshot of a signed-in page and an ARIA tree whose
+	// accessible names carry whatever the page rendered. A root any local
+	// account can walk is refused rather than silently tightened under the
+	// operator, the same way internal/sessionstate treats its own root.
+	if info.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("baseline root %s is reachable beyond its owner (mode %04o); chmod 700 it", root, info.Mode().Perm())
+	}
 	// Belt and braces for the case the refusal above cannot see: a repository
 	// initialised around the root later. An ignore-everything file means a
 	// `git add -A` in that repository still picks up nothing.
@@ -85,16 +96,48 @@ func (s *Store) Root() string { return s.root }
 // rejectRootInsideRepository walks up from the root looking for a .git entry.
 // It checks the root itself and every ancestor, because a baseline written
 // three directories below a repository root is just as committable.
+//
+// The walk runs over the REAL path as well as the one the operator typed: a
+// lexical walk of /tmp/bl finds no .git above /tmp even when /tmp/bl is a
+// symlink into a working tree three levels down, which is the whole check
+// defeated by one ln -s.
 func rejectRootInsideRepository(root string) error {
-	current := filepath.Clean(root)
+	clean := filepath.Clean(root)
+	candidates := []string{clean}
+	if real := resolveThroughSymlinks(clean); real != clean {
+		candidates = append(candidates, real)
+	}
+	for _, candidate := range candidates {
+		current := candidate
+		for {
+			if _, err := os.Lstat(filepath.Join(current, ".git")); err == nil {
+				return fmt.Errorf("%w (found %s)", ErrRootInsideRepository, filepath.Join(current, ".git"))
+			}
+			parent := filepath.Dir(current)
+			if parent == current {
+				break
+			}
+			current = parent
+		}
+	}
+	return nil
+}
+
+// resolveThroughSymlinks returns where a path really lands. The root need not
+// exist yet, so the deepest ancestor that does is resolved and the missing tail
+// re-appended: a link anywhere above the root is still followed.
+func resolveThroughSymlinks(path string) string {
+	clean := filepath.Clean(path)
+	current, tail := clean, ""
 	for {
-		if _, err := os.Lstat(filepath.Join(current, ".git")); err == nil {
-			return fmt.Errorf("%w (found %s)", ErrRootInsideRepository, filepath.Join(current, ".git"))
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			return filepath.Join(resolved, tail)
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
-			return nil
+			return clean
 		}
+		tail = filepath.Join(filepath.Base(current), tail)
 		current = parent
 	}
 }
@@ -116,8 +159,19 @@ func (s *Store) dirFor(key Key) string {
 	return filepath.Join(s.root, key.digest(), fmt.Sprintf("step-%d", key.StepIndex), key.Environment.Fingerprint())
 }
 
-func (s *Store) scopeDir(digest string, step int) string {
-	return filepath.Join(s.root, strings.ToLower(strings.TrimSpace(digest)), fmt.Sprintf("step-%d", step))
+// scopeDir is the only place a caller-supplied digest becomes a path, so the
+// validation lives here rather than in each entry point: an unchecked digest is
+// a directory traversal ("../..") out of the store root, and EnvironmentsFor is
+// reachable from brw_baseline without a Key to validate.
+func (s *Store) scopeDir(digest string, step int) (string, error) {
+	normalized, err := normalizeRecipeDigest(digest)
+	if err != nil {
+		return "", err
+	}
+	if step < 0 {
+		return "", errors.New("step_index must not be negative")
+	}
+	return filepath.Join(s.root, normalized, fmt.Sprintf("step-%d", step)), nil
 }
 
 // Load returns the baseline stored for this exact key.
@@ -198,9 +252,13 @@ func writeAtomic(path string, data []byte) error {
 // this recipe step. It is what turns "no baseline for this key" into "you have
 // a baseline, but it was captured at a different device pixel ratio".
 func (s *Store) EnvironmentsFor(digest string, step int) ([]Environment, error) {
+	scope, err := s.scopeDir(digest, step)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entries, err := os.ReadDir(s.scopeDir(digest, step))
+	entries, err := os.ReadDir(scope)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -212,7 +270,7 @@ func (s *Store) EnvironmentsFor(digest string, step int) ([]Environment, error) 
 		if !entry.IsDir() {
 			continue
 		}
-		record, ok, err := s.loadLocked(filepath.Join(s.scopeDir(digest, step), entry.Name()))
+		record, ok, err := s.loadLocked(filepath.Join(scope, entry.Name()))
 		if err != nil || !ok {
 			continue
 		}
