@@ -151,6 +151,13 @@ const state = {
   // resolves connected→used from it without rewriting storage on every pulse.
   reportedStatus: "starting",
   bridgeConfig: null,
+  // Which layer of the config supplied the endpoint currently in use: "stored"
+  // (chrome.storage.local, written by the options page), "packaged"
+  // (bridge-defaults.json inside the extension directory) or "built-in". Nothing
+  // outside the browser can read chrome.storage.local, so a machine can hold a
+  // packaged file pointing at a dead port AND a working stored config; this is
+  // what lets the daemon side say which one is live.
+  bridgeConfigSource: "built-in",
   snapshotCache: new Map(),
   observerInjected: new Set(),
   // Monotonic committed replacement-document count per main-frame tab. It is
@@ -823,19 +830,22 @@ chrome.storage.onChanged.addListener((changes, area) => {
     return;
   }
   if (!changes[BRIDGE_CONFIG_KEY]) return;
-  try {
-    state.bridgeConfig = normalizeBridgeConfig(changes[BRIDGE_CONFIG_KEY].newValue || {});
-  } catch (error) {
+  // Re-resolve through loadBridgeConfig rather than normalising the changed
+  // value alone: the stored record is a PARTIAL override of the packaged
+  // defaults, so normalising it by itself drops whatever only the packaged file
+  // sets and leaves the running worker on a different endpoint than the one it
+  // would pick after a restart.
+  loadBridgeConfig().then(() => {
+    state.lastError = "";
+    if (state.socket) {
+      try { state.socket.close(); } catch (_) {}
+      state.socket = null;
+    }
+    connect({ probe: true });
+  }).catch((error) => {
     state.lastError = `invalid bridge config: ${String(error?.message || error)}`;
     markBridgeStatus("error", state.lastError).catch(() => {});
-    return;
-  }
-  state.lastError = "";
-  if (state.socket) {
-    try { state.socket.close(); } catch (_) {}
-    state.socket = null;
-  }
-  connect({ probe: true });
+  });
 });
 // Toolbar click is handled by default_popup (popup.html). With a popup set,
 // chrome.action.onClicked does not fire — reconnect lives in the popup actions.
@@ -1138,6 +1148,15 @@ async function connectOnce() {
         // so a tab_removed control frame lost during the disconnect gap cannot
         // leave a stale numeric tab id pointing at an unrelated replacement.
         agent_tab_id: agentOwnedTabIdForHello(),
+        // The endpoints this worker is ACTUALLY using and which config layer
+        // supplied them. They are reported even on a hello that is about to be
+        // refused (no token, because status_url could not be reached): that
+        // rejection is the only moment a daemon ever learns the URL a
+        // misconfigured extension is trying, and `brwctl doctor` reads it back
+        // off /status to name the fault from the daemon side.
+        status_url: config.statusUrl,
+        bridge_url: config.bridgeUrl,
+        config_source: state.bridgeConfigSource,
         token
       }
     });
@@ -1192,8 +1211,38 @@ function agentOwnedTabIdForHello() {
 async function loadBridgeConfig() {
   const defaults = await packagedDefaultBridgeConfig();
   const data = await chrome.storage.local.get(BRIDGE_CONFIG_KEY).catch(() => ({}));
-  state.bridgeConfig = normalizeBridgeConfig({ ...defaults, ...(data[BRIDGE_CONFIG_KEY] || {}) });
+  const stored = data[BRIDGE_CONFIG_KEY] || {};
+  state.bridgeConfig = normalizeBridgeConfig({ ...defaults, ...stored });
+  state.bridgeConfigSource = bridgeConfigSource(defaults, stored);
   return state.bridgeConfig;
+}
+
+// BRIDGE_ENDPOINT_KEYS are the config keys that decide which daemon this
+// extension talks to, in the order normalizeBridgeConfig consults them:
+// statusUrl wins outright, otherwise it is derived from bridgeUrl / url /
+// bridgePort.
+const BRIDGE_ENDPOINT_KEYS = ["statusUrl", "bridgeUrl", "url", "bridgePort"];
+
+function hasConfigValue(layer, key) {
+  const value = layer && typeof layer === "object" ? layer[key] : undefined;
+  return value !== undefined && value !== null && value !== "";
+}
+
+// bridgeConfigSource names the layer that supplied the endpoint in use. The
+// stored record is a per-key override of the packaged file, so provenance is
+// resolved per key in the same order the endpoint itself is: the first key
+// either layer sets is the one that decided the URL.
+//
+// This is the only way the fault is nameable at all. An upgrade preserves each
+// profile's bridge-defaults.json, so a machine that once had one keeps it even
+// after its port moved — and reading that file is not an answer, because a
+// stored config silently overrides it. On disk the two cases are identical.
+function bridgeConfigSource(defaults, stored) {
+  for (const key of BRIDGE_ENDPOINT_KEYS) {
+    if (hasConfigValue(stored, key)) return "stored";
+    if (hasConfigValue(defaults, key)) return "packaged";
+  }
+  return "built-in";
 }
 
 function isGrantedConsent(value) {
@@ -1258,6 +1307,8 @@ async function packagedDefaultBridgeConfig() {
 async function configureBridge(config) {
   const normalized = normalizeBridgeConfig(config || {});
   state.bridgeConfig = normalized;
+  // Everything configureBridge writes is a stored override, endpoint included.
+  state.bridgeConfigSource = "stored";
   await chrome.storage.local.set({ [BRIDGE_CONFIG_KEY]: normalized });
   state.lastError = "";
   if (state.socket) {
@@ -1279,6 +1330,7 @@ async function bridgeDebugStatus() {
   const badge = resolveBadgeMode(state.reportedStatus || "disconnected");
   return {
     config,
+    configSource: state.bridgeConfigSource,
     consent,
     bridge: data[BRIDGE_STATUS_KEY] || null,
     socket: isSocketOpen() ? "open" : (isSocketConnecting() ? "connecting" : "closed"),

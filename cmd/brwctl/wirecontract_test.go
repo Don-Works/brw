@@ -64,6 +64,11 @@ func TestDaemonHealthContract(t *testing.T) {
 	}
 }
 
+const (
+	fixtureReportedStatusURL    = "http://127.0.0.1:17311/status"
+	fixtureReportedConfigSource = "stored"
+)
+
 func TestBridgeStatusContract(t *testing.T) {
 	const build = "1.4.0"
 	addr := freeLoopbackAddr(t)
@@ -90,6 +95,16 @@ func TestBridgeStatusContract(t *testing.T) {
 	})
 	if status.Hello.Build != build {
 		t.Fatalf("hello.build = %q, want %q; doctor compares it against the payload on disk", status.Hello.Build, build)
+	}
+	// The endpoint the extension reports is what doctor's bridge_config check
+	// reads instead of guessing from a packaged file that may be overridden. A
+	// renamed tag on either side decodes as empty and the check silently falls
+	// back to the file, which is the false-green this pins shut.
+	if status.Hello.StatusURL != fixtureReportedStatusURL {
+		t.Fatalf("hello.status_url = %q, want %q", status.Hello.StatusURL, fixtureReportedStatusURL)
+	}
+	if status.Hello.ConfigSource != fixtureReportedConfigSource {
+		t.Fatalf("hello.config_source = %q, want %q", status.Hello.ConfigSource, fixtureReportedConfigSource)
 	}
 	if status.ConnectedAt == "" {
 		t.Fatal("connected_at is empty on a live connection")
@@ -125,8 +140,14 @@ func dialBridge(t *testing.T, addr, build string) *websocket.Conn {
 	}
 	t.Cleanup(func() { _ = conn.CloseNow() })
 	hello, err := json.Marshal(map[string]any{
-		"type":  "hello",
-		"hello": map[string]any{"source": "brw-extension", "build": build, "chrome": fixtureChromeVersion},
+		"type": "hello",
+		"hello": map[string]any{
+			"source":        "brw-extension",
+			"build":         build,
+			"chrome":        fixtureChromeVersion,
+			"status_url":    fixtureReportedStatusURL,
+			"config_source": fixtureReportedConfigSource,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

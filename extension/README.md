@@ -21,8 +21,15 @@ resolves to this id before publishing it.
 - Connects to `ws://127.0.0.1:17311/extension` and authenticates with the
   daemon's per-launch handshake token (read over loopback `/status`, which a web
   page cannot read cross-origin) as the first frame (extension `0.2.0`+). The
-  daemon rejects a wrong token but, by default, still accepts an older extension
-  that sends none, so upgrades are non-breaking.
+  daemon rejects a wrong token **and a missing one**: an extension older than
+  `0.2.0` does not connect until it is reloaded, unless the daemon is run with
+  `BRW_BRIDGE_ALLOW_TOKENLESS=1`.
+- States the bridge endpoint it is actually using, and which config layer
+  supplied it — its stored config, the packaged `bridge-defaults.json`, or the
+  built-in default — in every hello, including one the daemon is about to refuse
+  (extension `0.6.0`+). Nothing outside the browser can read the stored config,
+  so this is what lets `brwctl doctor` name an endpoint pointing at a port
+  nothing listens on instead of reporting a bridge that is simply down.
 - Uses `chrome.debugger` as a CDP transport for visible tabs.
 - Sends tab summaries and CDP results to `brwd --bridge`.
 - Raises desktop notifications (via `chrome.notifications`, requires the

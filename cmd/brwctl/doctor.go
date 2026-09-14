@@ -43,6 +43,7 @@ var doctorCheckNames = []string{
 	"bridge_extension",
 	"daemon",
 	"bridge_connected",
+	"bridge_config",
 	"extension_version",
 	"mcp_registration",
 	"claude_in_chrome",
@@ -238,6 +239,7 @@ func doctorReport(req doctorRequest) doctorResult {
 	d.checkBridgeExtension()
 	d.checkDaemon()
 	d.checkBridgeConnected()
+	d.checkBridgeConfig()
 	d.checkExtensionVersion()
 	d.checkMCPRegistration()
 	d.checkClaudeInChrome()
@@ -881,7 +883,24 @@ type bridgeStatus struct {
 		Build  string `json:"build"`
 		Chrome string `json:"chrome"`
 		Label  string `json:"label"`
+		// StatusURL and ConfigSource are the endpoint the connected extension is
+		// using and the config layer that supplied it. Nothing outside the browser
+		// can read the extension's stored config, so this is the only statement of
+		// which endpoint is live rather than merely installed.
+		StatusURL    string `json:"status_url"`
+		ConfigSource string `json:"config_source"`
 	} `json:"hello"`
+	// LastHandshake is what a REFUSED hello reported. Since the handshake token
+	// became mandatory, an extension pointed at a dead status URL has no token to
+	// present and is turned away — so the refusal is the only place the endpoint
+	// it was trying is ever stated.
+	LastHandshake struct {
+		StatusURL    string `json:"status_url"`
+		BridgeURL    string `json:"bridge_url"`
+		ConfigSource string `json:"config_source"`
+		Reason       string `json:"reason"`
+		At           string `json:"at"`
+	} `json:"last_handshake"`
 	Pending          int    `json:"pending"`
 	Inflight         int    `json:"inflight"`
 	Queued           int    `json:"queued"`

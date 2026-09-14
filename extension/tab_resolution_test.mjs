@@ -128,6 +128,7 @@ const sandbox = {
   WebSocket: MockWebSocket,
   fetch: async () => ({ ok: true, json: async () => ({}), text: async () => "" }),
   setInterval: () => 0, clearInterval: () => {}, setTimeout: () => 0, clearTimeout: () => {},
+  navigator: { userAgent: "Mozilla/5.0 (harness) Chrome/152.0.0.0" },
   AbortSignal, URL, TextEncoder: HarnessTextEncoder,
   btoa: (value) => Buffer.from(value, "latin1").toString("base64"),
   console,
@@ -157,6 +158,12 @@ src += `
   consentURL,
   fetchSiteConsent,
   revokeSiteConsent,
+  loadBridgeConfig,
+  bridgeConfigSource,
+  // The packaged bridge-defaults.json is fetched once and memoised for the life
+  // of the worker, so a scenario cannot supply one through the fetch mock after
+  // any earlier scenario has already resolved it.
+  setPackagedDefaults(value) { packagedDefaultConfigPromise = value === null ? null : Promise.resolve(value); },
   ensureObserver,
   handle,
   send,
@@ -1507,6 +1514,74 @@ async function scenarioRouteResourceTypesFollowTheBuild() {
   }
 }
 
+// An upgrade carries each profile's bridge-defaults.json across, so a machine
+// that once had one keeps it — including when its port moved. The stored config
+// written by the options page silently overrides that file, so the packaged file
+// on disk says nothing about which endpoint is live. The hello is where the
+// extension states it, and it states it even on a hello that is about to be
+// refused, which is the only case where the daemon would otherwise learn nothing.
+async function scenarioHelloReportsTheEndpointActuallyInUse() {
+  await reset();
+  const savedGet = overrides["storage.local.get"];
+  const savedFetch = sandbox.fetch;
+  const consent = { granted: true, version: 1, grantedAt: "2026-09-10T00:00:00.000Z" };
+  const stalePackaged = { bridgeUrl: "ws://127.0.0.1:19999/extension" };
+  const liveStored = { bridgeUrl: "ws://127.0.0.1:17311/extension" };
+
+  const helloFor = async ({ packaged, stored, token }) => {
+    T.setPackagedDefaults(packaged);
+    overrides["storage.local.get"] = async (key) => {
+      if (key === "brwBrowserControlConsent") return { brwBrowserControlConsent: consent };
+      if (key === "brwBridgeConfig") return stored ? { brwBridgeConfig: stored } : {};
+      return {};
+    };
+    sandbox.fetch = async () => ({ ok: true, json: async () => (token ? { token } : {}) });
+    T.state.socket = null;
+    await T.connect({ probe: true });
+    const socket = T.state.socket;
+    socket.readyState = MockWebSocket.OPEN;
+    await socket.onopen();
+    return socket.sent.find((frame) => frame.type === "hello")?.hello;
+  };
+
+  try {
+    const overridden = await helloFor({
+      packaged: stalePackaged,
+      stored: liveStored,
+      token: ["fixture", "live", "token"].join("-")
+    });
+    check("the hello names the stored endpoint, not the stale packaged one",
+      overridden?.status_url === "http://127.0.0.1:17311/status" &&
+      overridden?.bridge_url === "ws://127.0.0.1:17311/extension");
+    check("the hello says the live endpoint came from the stored config",
+      overridden?.config_source === "stored");
+
+    // Nothing stored: the packaged file IS the live config, and a daemon that
+    // sees this endpoint named is seeing the real fault rather than a file.
+    const packagedOnly = await helloFor({ packaged: stalePackaged, stored: null, token: "" });
+    check("with nothing stored the hello names the packaged endpoint",
+      packagedOnly?.status_url === "http://127.0.0.1:19999/status");
+    check("a refused (tokenless) hello still reports its endpoint",
+      packagedOnly?.config_source === "packaged" && !packagedOnly?.token);
+
+    const builtIn = await helloFor({ packaged: {}, stored: null, token: "" });
+    check("no config anywhere reports the built-in default",
+      builtIn?.config_source === "built-in" && builtIn?.status_url === "http://127.0.0.1:17311/status");
+
+    // Provenance is resolved per key, in the order the endpoint itself is: a
+    // stored record that sets only a label has not chosen an endpoint.
+    check("a stored record with no endpoint leaves the packaged file in charge",
+      T.bridgeConfigSource(stalePackaged, { label: "desk" }) === "packaged");
+    check("a stored statusUrl outranks a packaged bridgeUrl",
+      T.bridgeConfigSource(stalePackaged, { statusUrl: "http://127.0.0.1:17311/status" }) === "stored");
+  } finally {
+    overrides["storage.local.get"] = savedGet;
+    sandbox.fetch = savedFetch;
+    T.setPackagedDefaults(null);
+    T.state.socket = null;
+  }
+}
+
 (async () => {
   await scenarioConsentGateIsFailClosed();
   await scenarioPinBeatsForeground();
@@ -1534,6 +1609,7 @@ async function scenarioRouteResourceTypesFollowTheBuild() {
   await scenarioRouteResourceTypesFollowTheBuild();
   await scenarioHandshakeTokenFailuresAreDistinguishable();
   await scenarioSiteConsentSurface();
+  await scenarioHelloReportsTheEndpointActuallyInUse();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })();

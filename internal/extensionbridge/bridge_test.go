@@ -875,15 +875,20 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// WebSocket/EventSource/sendBeacon/WebRTC guard so --allowed-domains confines
 	// subresources rather than only navigation, and get_blocked_requests reports
 	// what was refused so a contained page is explainable instead of mysteriously
-	// half-rendered.
+	// half-rendered. 0.6.0 states the bridge endpoint it is actually using, and
+	// which config layer supplied it, in every hello — including a hello that is
+	// about to be refused, which is what a bridge config pointing at a dead port
+	// now produces. Nothing outside the browser can read chrome.storage.local, so
+	// without this the endpoint in use is unknowable and `brwctl doctor` can only
+	// read a packaged file that may be overridden.
 	// It is DECOUPLED from the wire PROTOCOL_VERSION below: the manifest moves
 	// with every feature release, while PROTOCOL_VERSION only moves on a breaking
-	// bridge-handshake change. 0.4.0-0.5.0 add fields, message types and
+	// bridge-handshake change. 0.4.0-0.6.0 add fields, message types and
 	// in-extension behaviour only. A new message type is additive in both
 	// directions: an older extension answers resize_window with "unknown message
 	// type", which the daemon reports as an upgrade note rather than a failure.
 	// So the protocol stays 0.2.0 (the daemon still accepts it).
-	const wantManifest = "0.5.0"
+	const wantManifest = "0.6.0"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}
