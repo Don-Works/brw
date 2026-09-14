@@ -357,14 +357,27 @@ func TestDoctorNamesAFixForEveryBrokenCheck(t *testing.T) {
 			wantIn:  "registers no MCP server",
 		},
 		{
-			name: "the extension is being turned away at the handshake",
+			name: "the extension presents a token this bridge does not know",
 			break_: func(fx *doctorFixture) {
 				fx.status.Connected = false
 				fx.status.DisconnectReason = "handshake rejected: invalid handshake token"
 			},
 			check: "bridge_connected",
-			// Reloading presents the same token again; only setup rewrites it.
-			wantFix: "brwctl setup --workspace " + fixtureWorkspace,
+			// A reload re-reads the same wrong token from the same status URL,
+			// so the fix has to name the setting that is wrong.
+			wantFix: "Extension options: set Bridge URL to ws://",
+			wantIn:  "handshake rejected",
+		},
+		{
+			name: "the extension presents no token at all",
+			break_: func(fx *doctorFixture) {
+				fx.status.Connected = false
+				fx.status.DisconnectReason = "handshake rejected: missing handshake token (BRW_BRIDGE_REQUIRE_TOKEN is set)"
+			},
+			check: "bridge_connected",
+			// A build too old to read /status starts presenting one as soon as
+			// the browser picks up the installed payload.
+			wantFix: "click Reload under brw",
 			wantIn:  "handshake rejected",
 		},
 		{
@@ -433,6 +446,47 @@ func TestDoctorNamesAFixForEveryBrokenCheck(t *testing.T) {
 				t.Fatal("failures list is empty on a failing report")
 			}
 		})
+	}
+}
+
+// TestDoctorAcceptsAMachineThatRegistersNothing: `brwctl setup --mcp-client
+// none` prints the server config for the operator to paste into a client brw
+// cannot read, so an absent registration is what they asked for. Reporting it
+// red sends them to re-register a client they chose not to use, and exits 1 on
+// a machine that works.
+func TestDoctorAcceptsAMachineThatRegistersNothing(t *testing.T) {
+	fx := newDoctorFixture(t)
+	fx.policy.MCPClient = "none"
+	fx.writePolicy()
+	fx.runner.onPath["claude"] = true
+	fx.writeFile(setup.ClaudeConfigPath(fx.home), `{"mcpServers":{}}`)
+
+	report := fx.report()
+	got := checkByName(t, report, "mcp_registration")
+	if got.Status != checkWarn {
+		t.Fatalf("mcp_registration = %+v, want a warning", got)
+	}
+	if !report.OK {
+		t.Fatalf("a machine set up with --mcp-client none reported failures: %v", report.Failures)
+	}
+}
+
+// TestDoctorJudgesTheTransportOnTheResolvedLane: a hand-edited policy can allow
+// both lanes, and such a profile runs on direct CDP. A dead bridge is then not
+// what stops it carrying a call, so it must not be reported as the transport's
+// blocker.
+func TestDoctorJudgesTheTransportOnTheResolvedLane(t *testing.T) {
+	fx := newDoctorFixture(t)
+	fx.policy.Profiles[0].DirectCDPAllowed = true
+	fx.writePolicy()
+	fx.bridge.Close()
+
+	report := fx.report()
+	if report.Transport != setup.ResolvedDirectCDP {
+		t.Fatalf("transport = %q, want %q", report.Transport, setup.ResolvedDirectCDP)
+	}
+	if got := checkByName(t, report, "transport"); got.Status != checkOK {
+		t.Fatalf("transport check = %+v, want OK: the bridge is not this lane", got)
 	}
 }
 

@@ -571,9 +571,9 @@ func renderUpgrade(w io.Writer, result upgradeResult, err error) {
 }
 
 // extractTarGz unpacks a release archive into dest. Every entry is contained
-// inside dest before anything is written: an archive is remote input, and one
-// crafted entry name would otherwise let a mirror write outside the app
-// directory entirely.
+// inside dest before anything is written, and link entries are refused
+// outright: an archive is remote input, and one crafted entry would otherwise
+// let a mirror write outside the app directory entirely.
 func extractTarGz(archive, dest string) error {
 	file, err := os.Open(archive)
 	if err != nil {
@@ -618,16 +618,15 @@ func extractTarGz(archive, dest string) error {
 			if err := out.Close(); err != nil {
 				return err
 			}
-		case tar.TypeSymlink:
-			if err := containedLink(dest, target, header.Linkname); err != nil {
-				return fmt.Errorf("archive symlink %s points outside the unpack directory", header.Name)
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			if err := os.Symlink(header.Linkname, target); err != nil {
-				return err
-			}
+		case tar.TypeSymlink, tar.TypeLink:
+			// A containment check on a link entry can only read the linkname
+			// lexically, against the parent the entry DECLARES. Two links that
+			// each read as contained still chain into an escape, because the
+			// second is created THROUGH the first and so lands somewhere else
+			// entirely; repeating the hop climbs to the root. Refusal is the
+			// only check that holds, and scripts/package-tarball.sh stages a
+			// tree with no links, so a link entry is a mirror's invention.
+			return fmt.Errorf("archive entry %q is a link, and a release archive contains none", header.Name)
 		}
 	}
 }
@@ -643,25 +642,6 @@ func containedPath(root, name string) (string, error) {
 func within(root, path string) bool {
 	cleanRoot := filepath.Clean(root) + string(filepath.Separator)
 	return strings.HasPrefix(filepath.Clean(path)+string(filepath.Separator), cleanRoot)
-}
-
-// containedLink rejects a symlink entry whose target leaves dest. An ABSOLUTE
-// linkname is the escape a containment check on the joined path misses: joining
-// "/etc" under the link's own directory lands back inside dest and reads as
-// contained, while the link written to disk points at the real /etc, and a
-// later regular entry under that name is opened through it with O_CREATE.
-func containedLink(dest, linkPath, linkname string) error {
-	local := filepath.FromSlash(linkname)
-	if local == "" {
-		return errors.New("empty link target")
-	}
-	if filepath.IsAbs(local) || strings.HasPrefix(linkname, "/") {
-		return errors.New("absolute link target")
-	}
-	if !within(dest, filepath.Join(filepath.Dir(linkPath), local)) {
-		return errors.New("link target outside the unpack directory")
-	}
-	return nil
 }
 
 // compareVersions orders two release versions: -1 when a is older than b. An

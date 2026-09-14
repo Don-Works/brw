@@ -457,35 +457,36 @@ func (d *doctorRun) checkBridgeExtension() {
 	d.add(checkOK, "bridge_extension", "brw extension installed", id+" is present in "+source, "")
 }
 
-// loadUnpackedCommand opens the page the operator loads the unpacked extension
-// from. There is no CLI that can install an unpacked extension into a running
-// browser profile, so the closest thing to a next command is opening the page
-// with the directory to select already named.
-func (d *doctorRun) loadUnpackedCommand() string {
-	payload := filepath.Join(d.req.AppDir, "extension")
+// extensionsPageCommand opens the browser's extensions page with the step to
+// take on it spelled out. No CLI can install, reload or reconfigure an
+// extension in a running browser profile, so the closest thing to a next
+// command is opening the page with the work already named.
+func (d *doctorRun) extensionsPageCommand(note string) string {
 	if d.req.GOOS == "darwin" {
-		return fmt.Sprintf("open -a %q chrome://extensions   # Developer mode, Load unpacked, select %s",
-			setup.BrowserDisplayName(d.profile.Kind), payload)
+		return fmt.Sprintf("open -a %q chrome://extensions   # %s", setup.BrowserDisplayName(d.profile.Kind), note)
 	}
 	exe := d.result.BrowserExecutable
 	if exe == "" {
 		exe = d.profile.Kind
 	}
-	return fmt.Sprintf("%s chrome://extensions   # Developer mode, Load unpacked, select %s", exe, payload)
+	return exe + " chrome://extensions   # " + note
 }
 
-// reloadExtensionCommand opens the page whose Reload button makes a browser
-// pick up an extension payload that has changed on disk.
+func (d *doctorRun) loadUnpackedCommand() string {
+	return d.extensionsPageCommand("Developer mode, Load unpacked, select " + filepath.Join(d.req.AppDir, "extension"))
+}
+
 func (d *doctorRun) reloadExtensionCommand() string {
-	if d.req.GOOS == "darwin" {
-		return fmt.Sprintf("open -a %q chrome://extensions   # click Reload under brw",
-			setup.BrowserDisplayName(d.profile.Kind))
-	}
-	exe := d.result.BrowserExecutable
-	if exe == "" {
-		exe = d.profile.Kind
-	}
-	return exe + " chrome://extensions   # click Reload under brw"
+	return d.extensionsPageCommand("click Reload under brw")
+}
+
+// bridgeSettingsCommand repoints the extension at this profile's bridge. The
+// two URLs live in the extension's own storage, which nothing outside the
+// browser can write, so both values go in the note.
+func (d *doctorRun) bridgeSettingsCommand(addr string) string {
+	return d.extensionsPageCommand(fmt.Sprintf(
+		"brw > Details > Extension options: set Bridge URL to ws://%s/extension and Status URL to http://%s/status",
+		addr, addr))
 }
 
 func (d *doctorRun) serviceParams() setup.ServiceParams {
@@ -594,11 +595,8 @@ func (d *doctorRun) checkBridgeConnected() {
 			detail += " (last disconnect: " + status.DisconnectReason + ")"
 		}
 		fix := d.reloadExtensionCommand()
-		if handshakeRejected(status.DisconnectReason) {
-			// A reload re-presents the same token, so the reload command is a
-			// loop here. The token lives in the profile's own
-			// bridge-defaults.json, and setup is what writes it.
-			fix = "brwctl setup" + d.workspaceFlag() + "   # rewrites this profile's " + setup.BridgeDefaultsFile + ", then reload the extension"
+		if staleHandshakeToken(status.DisconnectReason) {
+			fix = d.bridgeSettingsCommand(addr)
 		}
 		d.add(checkFail, "bridge_connected", "extension bridge", detail, fix)
 		return
@@ -610,14 +608,16 @@ func (d *doctorRun) checkBridgeConnected() {
 	d.add(checkOK, "bridge_connected", "extension bridge", detail, "")
 }
 
-// handshakeRejected reports whether the bridge turned the extension away at the
-// handshake rather than losing a connection it had accepted. The two take
-// different fixes: a rejected handshake is a missing or stale token, which the
-// browser will present again unchanged however often it is reloaded. The prefix
-// is the one extensionbridge.recordHandshakeRejection writes; an older daemon
-// reports nothing here and gets the reload command, as before.
-func handshakeRejected(reason string) bool {
-	return strings.HasPrefix(reason, "handshake rejected")
+// staleHandshakeToken reports whether the bridge refused a token the extension
+// actually presented. The extension re-reads its token from the status URL it
+// is configured with on every hello, so a token this bridge does not know means
+// that URL addresses another daemon: reloading fetches the same wrong token
+// again, and the settings are what have to change. A hello carrying NO token is
+// a different fault — a pre-0.2.0 build, or one that could not reach /status at
+// all — and a reload is the fix for that one. The wording is what
+// extensionbridge.verifyHandshake returns.
+func staleHandshakeToken(reason string) bool {
+	return strings.Contains(reason, "invalid handshake token")
 }
 
 func (d *doctorRun) checkExtensionVersion() {
@@ -719,6 +719,14 @@ func (d *doctorRun) checkMCPRegistration() {
 		if !found {
 			absent = "no agent client config at " + configPath + "; nothing on this machine is configured to launch brw"
 		}
+		if d.policy.MCPClient == "none" {
+			// setup was told to register nothing and printed the server config
+			// for the operator to paste into a client brw cannot read. An
+			// absent registration here is what they asked for.
+			d.add(checkWarn, "mcp_registration", "MCP registration",
+				absent+"; this machine was set up with --mcp-client none, so brw cannot see where it is registered", addCommand)
+			return
+		}
 		_, claudeOnPath := d.req.Runner.look("claude")
 		if _, codexOnPath := d.req.Runner.look("codex"); codexOnPath {
 			absent += ", and the codex CLI has no brw server either"
@@ -813,7 +821,7 @@ func (d *doctorRun) checkTransport() {
 	// The lane the policy allows is not the lane that is carrying anything. A
 	// green capability list on a machine whose daemon or bridge is down reads
 	// as "these tools work here" when no tool can run at all.
-	if blocker, dead := d.deadLane(); dead {
+	if blocker, dead := d.deadLane(transport); dead {
 		d.add(checkFail, "transport", "transport capabilities",
 			transport+" is configured but not live: "+blocker.Detail, blocker.Fix)
 		return
@@ -822,10 +830,12 @@ func (d *doctorRun) checkTransport() {
 }
 
 // deadLane names the failed check that stops this profile's transport carrying
-// a tool call. The bridge only counts on the lane that uses it.
-func (d *doctorRun) deadLane() (doctorCheck, bool) {
+// a tool call. The bridge only counts on the lane that uses it, which is the
+// lane the profile resolves to and not everything its policy also permits: a
+// profile that allows both runs on direct CDP, where no bridge is involved.
+func (d *doctorRun) deadLane(transport string) (doctorCheck, bool) {
 	names := []string{"daemon"}
-	if d.profile.ExtensionBridgeAllowed {
+	if transport == setup.ResolvedExtensionBridge {
 		names = append(names, "bridge_connected")
 	}
 	for _, name := range names {

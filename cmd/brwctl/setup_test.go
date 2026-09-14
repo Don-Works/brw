@@ -171,6 +171,35 @@ func TestSetupFromZeroConfig(t *testing.T) {
 	}
 }
 
+// TestSetupRecordsAnExplicitMCPClientChoice: doctor has to be able to read
+// `--mcp-client none` back, or it reports a machine that deliberately registers
+// nothing as unregistered and exits 1.
+func TestSetupRecordsAnExplicitMCPClientChoice(t *testing.T) {
+	runner := newFakeRunner("defaults read", "launchctl print", "claude mcp get")
+	runner.onPath["claude"] = true
+	var out bytes.Buffer
+	opts := newTestOptions(t, runner, &out)
+	opts.mcpClient = "none"
+	if err := opts.normalise(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runSetup(opts); err != nil {
+		t.Fatal(err)
+	}
+
+	policy, found, err := setup.LoadPolicyFile(opts.policyPath)
+	if err != nil || !found {
+		t.Fatalf("policy not written: found=%v err=%v", found, err)
+	}
+	if policy.MCPClient != "none" {
+		t.Fatalf("policy mcp_client = %q, want %q", policy.MCPClient, "none")
+	}
+	if runner.called("claude mcp add") {
+		t.Fatalf("--mcp-client none registered a client anyway: %v", runner.calls)
+	}
+}
+
 // TestSetupIsIdempotent locks the re-run contract end to end: the second run
 // writes nothing, reloads nothing, and re-registers nothing.
 func TestSetupIsIdempotent(t *testing.T) {
@@ -389,6 +418,24 @@ func TestSetupOptionValidation(t *testing.T) {
 		},
 		{name: "unknown lane", mutate: func(o *setupOptions) { o.transport = "websocket" }, wantErr: true},
 		{name: "unknown mcp client", mutate: func(o *setupOptions) { o.mcpClient = "cursor" }, wantErr: true},
+		{
+			name:   "a named client is remembered as named",
+			mutate: func(o *setupOptions) { o.mcpClient = "none" },
+			check: func(t *testing.T, o setupOptions) {
+				if o.mcpClient != "none" || !o.mcpClientNamed {
+					t.Fatalf("mcp client = %q named=%v", o.mcpClient, o.mcpClientNamed)
+				}
+			},
+		},
+		{
+			name:   "an unnamed client defaults to claude without being recorded",
+			mutate: func(o *setupOptions) { o.mcpClient = "" },
+			check: func(t *testing.T, o setupOptions) {
+				if o.mcpClient != "claude" || o.mcpClientNamed {
+					t.Fatalf("mcp client = %q named=%v", o.mcpClient, o.mcpClientNamed)
+				}
+			},
+		},
 		{name: "unknown browser", mutate: func(o *setupOptions) { o.browser = "safari" }, wantErr: true},
 		{name: "port out of range", mutate: func(o *setupOptions) { o.httpPort = 70000 }, wantErr: true},
 		{name: "port would overflow the bridge", mutate: func(o *setupOptions) { o.httpPort = 65535 }, wantErr: true},

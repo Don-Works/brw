@@ -61,9 +61,14 @@ type PolicyRequest struct {
 	// path is what makes the MCP server start under a client that does not
 	// inherit the user's PATH; "brwd" is the degraded fallback.
 	BRWDPath string
-	HTTPPort int
-	Home     string
-	GOOS     string
+	// MCPClient is the agent client the operator named on the command line.
+	// Empty means they named no client at all, and Merge then records nothing
+	// rather than the default: a plain re-run must not overwrite an earlier
+	// deliberate `--mcp-client none`.
+	MCPClient string
+	HTTPPort  int
+	Home      string
+	GOOS      string
 }
 
 // Change is one finding about a policy: either an edit setup will make, or a
@@ -171,6 +176,11 @@ func Merge(existing profilepolicy.Policy, req PolicyRequest) (profilepolicy.Poli
 		changes = append(changes, Change{Kind: "profile", Detail: fmt.Sprintf("add profile %q (%s, %s)", req.Profile, BrowserDisplayName(req.Browser), laneLabel(req.Transport)), Edit: true})
 	} else {
 		changes = append(changes, Change{Kind: "profile", Detail: fmt.Sprintf("profile %q already defined", req.Profile)})
+	}
+
+	if req.MCPClient != "" && merged.MCPClient != req.MCPClient {
+		merged.MCPClient = req.MCPClient
+		changes = append(changes, Change{Kind: "mcp_client", Detail: fmt.Sprintf("record agent client choice %q", req.MCPClient), Edit: true})
 	}
 
 	index := -1
@@ -395,12 +405,14 @@ func HasProfiles(userDataDir string) bool {
 	return len(ProfileDirectories(userDataDir)) > 0
 }
 
+// clonePolicy copies the value and then replaces every slice in it, so a scalar
+// field added to Policy later is carried across rather than silently dropped
+// here and erased from the file Merge writes back.
 func clonePolicy(policy profilepolicy.Policy) profilepolicy.Policy {
-	clone := profilepolicy.Policy{
-		WorkspaceBindings: append([]profilepolicy.WorkspaceBinding(nil), policy.WorkspaceBindings...),
-		Profiles:          append([]profilepolicy.Profile(nil), policy.Profiles...),
-		Transports:        append([]profilepolicy.Transport(nil), policy.Transports...),
-	}
+	clone := policy
+	clone.WorkspaceBindings = append([]profilepolicy.WorkspaceBinding(nil), policy.WorkspaceBindings...)
+	clone.Profiles = append([]profilepolicy.Profile(nil), policy.Profiles...)
+	clone.Transports = append([]profilepolicy.Transport(nil), policy.Transports...)
 	for i := range clone.WorkspaceBindings {
 		clone.WorkspaceBindings[i].AllowedProfiles = append([]string(nil), clone.WorkspaceBindings[i].AllowedProfiles...)
 		clone.WorkspaceBindings[i].AllowedTransports = append([]string(nil), clone.WorkspaceBindings[i].AllowedTransports...)

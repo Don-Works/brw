@@ -84,6 +84,41 @@ func TestMergeIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestMergeRecordsOnlyANamedMCPClient: the recorded choice is the only trace
+// `--mcp-client` leaves, and it is what lets doctor tell a machine that
+// deliberately registers nothing from one whose registration went missing. A
+// re-run that names no client must leave an earlier choice standing.
+func TestMergeRecordsOnlyANamedMCPClient(t *testing.T) {
+	cases := []struct {
+		name      string
+		existing  string
+		requested string
+		want      string
+		wantEdit  bool
+	}{
+		{name: "a named client is recorded", requested: "none", want: "none", wantEdit: true},
+		{name: "naming no client records nothing", want: "", wantEdit: false},
+		{name: "a re-run that names no client keeps the recorded choice", existing: "none", want: "none", wantEdit: false},
+		{name: "naming another client replaces the recorded one", existing: "none", requested: "codex", want: "codex", wantEdit: true},
+		{name: "re-naming the same client is not an edit", existing: "codex", requested: "codex", want: "codex", wantEdit: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base, _ := Merge(profilepolicy.Policy{}, bridgeRequest())
+			base.MCPClient = tc.existing
+			req := bridgeRequest()
+			req.MCPClient = tc.requested
+			merged, changes := Merge(base, req)
+			if merged.MCPClient != tc.want {
+				t.Fatalf("mcp_client = %q, want %q", merged.MCPClient, tc.want)
+			}
+			if Changed(changes) != tc.wantEdit {
+				t.Fatalf("Changed(changes) = %v, want %v: %+v", Changed(changes), tc.wantEdit, changes)
+			}
+		})
+	}
+}
+
 func TestMergeExistingPolicy(t *testing.T) {
 	// A hand-written policy in exactly the shape that made mcp-config fail:
 	// bindings that name a profile but no transport, and no transports array.

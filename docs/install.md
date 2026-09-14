@@ -108,6 +108,9 @@ prints the whole plan and performs none of it.
    the same code as `brwctl mcp-config`. brw never edits `~/.claude.json`
    directly, because Claude Code rewrites that file while it runs. Codex with
    `--mcp-client codex|both`; `--mcp-client none` prints the `mcpServers` block.
+   A named client is recorded as `mcp_client` in the policy. `brwctl doctor`
+   reads it: with `none` recorded, an absent registration is a warning rather
+   than a failure, because the config went to a client brw cannot read.
 5. **Agent skill.** Copies `skills/brw` into `~/.claude/skills/brw`,
    `~/.agents/skills/brw` and `~/.codex/skills/brw`.
 6. **Verify.** Runs the doctor checks and prints what is left to do by hand.
@@ -545,7 +548,11 @@ when `gh` is installed, then replaces the binaries and the extension payload,
 refreshes every per-profile extension copy, and restarts the per-user daemons.
 The verification rules are the ones `install.sh` uses: an archive with no
 published checksum, a checksum that does not match, or a provenance check that
-runs and fails all abort before anything on disk is replaced.
+runs and fails all abort before anything on disk is replaced. Unpacking also
+refuses any entry whose name climbs out of the unpack directory, and any
+symbolic- or hard-link entry at all: the release archive carries no links, so a
+link entry only ever exists to have a later entry written through it and land
+outside the app directory.
 
 It refuses while a daemon reports work in flight rather than pulling the binary
 out from under a running agent; `--force` overrides that. `--refresh-extensions`

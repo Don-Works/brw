@@ -783,8 +783,10 @@ func TestExpectedSHA256(t *testing.T) {
 }
 
 // TestExtractTarGzRefusesToEscape: a release archive is remote input, and one
-// crafted entry - a name that climbs out, or a symlink that points out and is
-// then written through - would otherwise write outside the unpack directory.
+// crafted entry - a name that climbs out, or a link that is then written
+// through - would otherwise write outside the unpack directory. The chained
+// case is why link entries are refused rather than contained: each link in it
+// is contained when read on its own.
 func TestExtractTarGzRefusesToEscape(t *testing.T) {
 	const body = "pwned"
 
@@ -813,7 +815,7 @@ func TestExtractTarGzRefusesToEscape(t *testing.T) {
 				}
 			},
 			escape:  "escaped.txt",
-			wantErr: "points outside the unpack directory",
+			wantErr: "is a link",
 		},
 		{
 			name: "an absolute symlink, written through",
@@ -824,7 +826,35 @@ func TestExtractTarGzRefusesToEscape(t *testing.T) {
 				}
 			},
 			escape:  filepath.Join("outside", "escaped.txt"),
-			wantErr: "points outside the unpack directory",
+			wantErr: "is a link",
+		},
+		{
+			// Each hop is contained when judged against the parent its own name
+			// declares, but the second is created through the first, so the pair
+			// leaves a link to dest's parent sitting inside dest.
+			name: "two symlinks that are each contained, chained",
+			entries: func(string) []tar.Header {
+				return []tar.Header{
+					{Name: "d", Mode: 0o755, Typeflag: tar.TypeDir},
+					{Name: "d/s", Linkname: "..", Typeflag: tar.TypeSymlink},
+					{Name: "d/s/t", Linkname: "..", Typeflag: tar.TypeSymlink},
+					{Name: "d/s/t/escaped.txt", Mode: 0o644, Typeflag: tar.TypeReg},
+				}
+			},
+			escape:  "escaped.txt",
+			wantErr: "is a link",
+		},
+		{
+			// A hard link entry was silently dropped, so the file it named was
+			// missing from the install with nothing said about it.
+			name: "a hard link out of the unpack directory",
+			entries: func(outside string) []tar.Header {
+				return []tar.Header{
+					{Name: "brw_1_linux_amd64/bin/brwd", Linkname: filepath.Join(outside, "escaped.txt"), Typeflag: tar.TypeLink},
+				}
+			},
+			escape:  filepath.Join("outside", "escaped.txt"),
+			wantErr: "is a link",
 		},
 	}
 

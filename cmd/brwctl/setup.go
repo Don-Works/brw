@@ -50,7 +50,8 @@ options:
   --transport NAME      bridge or direct-cdp (default: bridge). This is the runtime lane, not an
                         entry in the policy's "transports" array; setup writes a policy transport
                         named "local" either way.
-  --mcp-client NAME     claude, codex, both, or none (default: claude)
+  --mcp-client NAME     claude, codex, both, or none (default: claude). A named client is recorded
+                        in the policy, which is how doctor reads back a deliberate "none"
   --http-port N         loopback control port; the bridge WebSocket uses N+1 (default: 17310)
   --profile-policy PATH profile policy JSON to create or merge into
   --app-dir PATH        brw app install directory
@@ -68,19 +69,22 @@ type setupOptions struct {
 	profileDirectory string
 	userDataDir      string
 	mcpClient        string
-	policyPath       string
-	appDir           string
-	skillsDir        string
-	httpPort         int
-	noService        bool
-	dryRun           bool
-	assumeYes        bool
-	home             string
-	goos             string
-	executable       string
-	workingDir       string
-	out              io.Writer
-	runner           commandRunner
+	// mcpClientNamed separates the default from an operator who named a client.
+	// Only a named choice is written to the policy.
+	mcpClientNamed bool
+	policyPath     string
+	appDir         string
+	skillsDir      string
+	httpPort       int
+	noService      bool
+	dryRun         bool
+	assumeYes      bool
+	home           string
+	goos           string
+	executable     string
+	workingDir     string
+	out            io.Writer
+	runner         commandRunner
 }
 
 // commandRunner is how setup reaches external tools (defaults, launchctl,
@@ -141,7 +145,7 @@ func setupCommand(args []string) error {
 	fs.StringVar(&opts.profileDirectory, "profile-directory", "", `browser profile directory inside the user data dir, for example "Profile 1"`)
 	fs.StringVar(&opts.userDataDir, "user-data-dir", "", "browser user data directory, for a Chromium build brw does not know")
 	fs.StringVar(&opts.transport, "transport", setup.TransportBridge, "bridge or direct-cdp")
-	fs.StringVar(&opts.mcpClient, "mcp-client", "claude", "claude, codex, both, or none")
+	fs.StringVar(&opts.mcpClient, "mcp-client", "", "claude (default), codex, both, or none")
 	fs.StringVar(&opts.policyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path")
 	fs.StringVar(&opts.appDir, "app-dir", defaultAppDir(), "brw app install directory")
 	fs.StringVar(&opts.skillsDir, "skills-dir", "", "skills/brw source directory")
@@ -223,6 +227,7 @@ func (o *setupOptions) normalise() error {
 	}
 	switch o.mcpClient {
 	case "claude", "codex", "both", "none":
+		o.mcpClientNamed = true
 	case "":
 		o.mcpClient = "claude"
 	default:
@@ -412,6 +417,16 @@ func brwdPath(appDir, executable, goos string, lookPath func(string) (string, bo
 	return "brwd"
 }
 
+// recordedMCPClient is the client choice to persist in the policy. Nothing is
+// recorded for a run that named none, so doctor keeps reading whatever an
+// earlier run was told.
+func (r *setupRunner) recordedMCPClient() string {
+	if !r.opts.mcpClientNamed {
+		return ""
+	}
+	return r.opts.mcpClient
+}
+
 func (r *setupRunner) stepConfig() error {
 	r.begin("profile policy")
 	path := r.opts.policyPath
@@ -452,6 +467,7 @@ func (r *setupRunner) stepConfig() error {
 		ProfileDirectory: profileDirectory,
 		UserDataDir:      r.opts.userDataDir,
 		BRWDPath:         r.brwdPath(),
+		MCPClient:        r.recordedMCPClient(),
 		HTTPPort:         r.opts.httpPort,
 		Home:             r.opts.home,
 		GOOS:             r.opts.goos,

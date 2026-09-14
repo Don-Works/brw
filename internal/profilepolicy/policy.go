@@ -21,6 +21,11 @@ type Policy struct {
 	WorkspaceBindings []WorkspaceBinding `json:"workspace_bindings,omitempty"`
 	Profiles          []Profile          `json:"profiles"`
 	Transports        []Transport        `json:"transports,omitempty"`
+	// MCPClient records which agent client `brwctl setup --mcp-client` was told
+	// to register brw with: claude, codex, both, or none. It is the only trace
+	// that choice leaves, and without it a machine that deliberately registers
+	// nothing cannot be told from one whose registration went missing.
+	MCPClient string `json:"mcp_client,omitempty"`
 }
 
 type WorkspaceBinding struct {
