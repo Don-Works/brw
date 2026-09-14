@@ -89,6 +89,38 @@ type RouteController interface {
 	Route(context.Context, RouteOptions) (RouteResult, error)
 }
 
+// ClipboardController is an optional transport capability for the system
+// clipboard. Direct-CDP only: reading the clipboard needs a permission granted
+// through the browser-level Browser.setPermission command, which is not
+// reachable from the extension bridge's per-tab chrome.debugger session.
+type ClipboardController interface {
+	Clipboard(context.Context, ClipboardOptions) (ClipboardResult, error)
+}
+
+// KeyHoldController is an optional transport capability for press-and-hold keys:
+// a keydown whose keyup comes later, so Ctrl+drag and Shift+click-range are
+// expressible. Direct-CDP only, because holding a key means the transport must
+// stamp the modifier mask onto every input event it dispatches afterwards.
+type KeyHoldController interface {
+	KeyDown(context.Context, KeyHoldOptions) (KeyHoldResult, error)
+	KeyUp(context.Context, KeyHoldOptions) (KeyHoldResult, error)
+}
+
+// HistoryController is an optional transport capability for same-document
+// history changes (pushState/replaceState), which drive a client-side router
+// without loading a new document. Direct-CDP only.
+type HistoryController interface {
+	PushState(context.Context, HistoryStateOptions) (HistoryStateResult, error)
+}
+
+// ElementFocuser is an optional transport capability that gives one element the
+// document focus by ref. Both first-party transports implement it; the interface
+// exists so an upstream HTTP controller that has not been upgraded degrades to
+// "unsupported" instead of failing to compile.
+type ElementFocuser interface {
+	FocusRef(context.Context, string) error
+}
+
 // WindowReader is an optional transport capability that applies page-content
 // filtering on the browser host. The upstream HTTP controller implements it so
 // a 20 KiB MCP read does not transfer and materialize an entire megabyte-scale

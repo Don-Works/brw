@@ -142,6 +142,10 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `brw_type({ref,text})`, `brw_fill({ref|query, text|value, replace?, role?})` (also sets range/number/date inputs to an exact value in one call), `brw_select({ref,value})` (option value or visible label), `brw_press({key, repeat?})`, `brw_scroll({direction, repeat?})`, `brw_hover({ref})`, `brw_commit({ref})` (submit the enclosing form), `brw_drag({from:{ref|x,y}, to:{ref|x,y}, steps?})`, `brw_mouse_down/brw_mouse_up({ref|x,y})`.
 - `brw_upload_file({ref|query, path|paths|bytes_base64|url, filename?, click_ref?, click_text?})` — exactly one source.
 - `brw_navigate({direction:"back"|"forward"|"reload"})`, `brw_navigate_to({url})` (reuses this session's working tab).
+- `brw_focus({ref})` gives one element the keyboard focus without clicking it — use it before `brw_press` when a click's side effects (a menu opening, a link following) would get in the way.
+- `brw_key_down({key})` / `brw_key_up({key})` hold a key instead of tapping it, so `Ctrl+drag` and `Shift+click-range` are expressible: every click, drag and mouse press while a key is held carries its modifier. Always release (`brw_key_up({key:"all"})` releases everything). Direct-CDP transport only.
+- `brw_pushstate({url, state?, replace?, notify?})` changes the URL through the History API with no reload, to drive a client-side router straight to a route. A `popstate` is dispatched unless `notify:false`. Same origin only, and the target passes the same navigation policy a real navigation does. Direct-CDP transport only.
+- `brw_clipboard({action:"read"|"write", text?})` reads or writes the system clipboard for copy/paste flows. Reading needs a secure context (https or localhost); clipboard text is never written to the trace. Direct-CDP transport only.
 - Action tools return a post-action observation: `{ok,message,tab_id,version,url,title,focus,changed_state,changed[],elements[],warning?}`.
 
 **Waiting and asserting**
@@ -208,6 +212,7 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 **Small reads and page storage**
 - `brw_get({what, target?, name?})` — one typed fact, no hand-written JS. `what` is `url|title|status|text|value|attr|count|box|styles|visible|hidden|enabled|disabled|editable|checked|focused|state`. `status` is the current document's navigation HTTP status (0 when there was none); `state` returns `{found,visible,enabled,editable,checked,focused}` for one element in a single call. `target` is a ref or a CSS selector and resolves across same-origin iframes and open shadow roots. Use this instead of `brw_evaluate` for simple reads.
 - `brw_storage({action:"get"|"set"|"remove"|"clear", kind?:"local"|"session", key?, value?})` — localStorage/sessionStorage for the current origin. `get` with no `key` returns everything. Not a cookie or credential surface.
+- `brw_frame({target})` scopes every later lookup — snapshot, find, get, refs — to one iframe. `target` is a ref, a CSS selector for the frame, or an element ref inside it; `"main"` clears the scope, and any navigation clears it too. You rarely need it to click something (refs already cross same-origin frames); reach for it when the same selector exists in the page and in an embed. A cross-origin frame (`kind:"cross_origin"`, or its `f<i>` ref) cannot be scoped into and comes back with its top-level box for `brw_click_xy`.
 
 **Did my action change anything?**
 - `brw_diff({action:"mark"})` before, `brw_diff({action:"compare"})` after → `{changed, summary, added/removed/updated[], *_count, url_changed, …}`. Elements match on identity, so a list that re-renders in place does not read as everything being replaced. Counts stay exact even when the lists are capped.

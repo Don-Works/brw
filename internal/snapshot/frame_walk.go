@@ -21,7 +21,13 @@ package snapshot
 // All public walker scripts (SnapshotFunctionScript, ResolveBoxScript, etc.)
 // prepend this block and call __abRoots()/__abFindDeep() instead of redefining a
 // shadow-only roots()/findByRef() locally.
-const FrameWalkHelpers = `
+//
+// It is frameWalkCore + frameScopeHelpers (frames.go): an explicit frame switch
+// narrows the root list every walker sees, so one definition of "which roots am
+// I looking at" serves snapshot, find, resolve, get and the waiters alike.
+const FrameWalkHelpers = frameWalkCore + frameScopeHelpers
+
+const frameWalkCore = `
   var MAX_FRAME_DEPTH = 8;
   // __abRoots memoizes its frame/shadow walk, but ONLY while armed. The
   // synchronous snapshot walk (SnapshotFunctionScript) sets __abRootsCacheArmed so
@@ -64,7 +70,9 @@ const FrameWalkHelpers = `
   }
   function __abRoots() {
     if (__abRootsCacheArmed && __abRootsCache) return __abRootsCache;
-    var computed = __abRootsCompute();
+    // The scope filter runs before the memo so an armed walk caches the roots it
+    // will actually use, not the full tree it then re-filters per call.
+    var computed = __abApplyFrameScope(__abRootsCompute());
     if (__abRootsCacheArmed) __abRootsCache = computed;
     return computed;
   }

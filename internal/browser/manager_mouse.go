@@ -122,7 +122,7 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 	before := m.cachedBefore(tabID, tabCtx)
 	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			return dispatchClick(ctx, x, y, button, clickCount)
+			return dispatchClick(ctx, x, y, button, clickCount, input.Modifier(m.heldModifierMask(tabID)))
 		}))
 	}); err != nil {
 		return ActionResult{}, err
@@ -189,6 +189,7 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 			return input.DispatchMouseEvent(eventType, x, y).
 				WithButton(button).
 				WithButtons(buttons).
+				WithModifiers(input.Modifier(m.heldModifierMask(tabID))).
 				WithClickCount(1).
 				Do(ctx)
 		}))
@@ -238,7 +239,11 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	// drag-event sequence between the two refs first; if the target accepts the
 	// drop we are done, otherwise fall through to the coordinate drag (which covers
 	// pointer-based libraries like jQuery UI sortable that listen on mousedown).
-	if opts.From.HasRef() && opts.To.HasRef() && snapshot.RefDraggable(tabCtx, opts.From.Ref) {
+	//
+	// Held modifiers skip this fast path: the HTML5 sequence is synthesised in
+	// page script, where the DragEvents it constructs carry no ctrlKey/shiftKey
+	// state, so a Ctrl+drag would arrive as a plain drag.
+	if opts.From.HasRef() && opts.To.HasRef() && m.heldModifierMask(tabID) == 0 && snapshot.RefDraggable(tabCtx, opts.From.Ref) {
 		before := m.cachedBefore(tabID, tabCtx)
 		var dropped bool
 		dErr := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
@@ -281,7 +286,7 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	before := m.cachedBefore(tabID, tabCtx)
 	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			return dispatchDrag(ctx, fromX, fromY, toX, toY, steps, button)
+			return dispatchDrag(ctx, fromX, fromY, toX, toY, steps, button, input.Modifier(m.heldModifierMask(tabID)))
 		}))
 	}); err != nil {
 		return ActionResult{}, err
@@ -306,15 +311,17 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 
 // dispatchClick presses then releases at (x,y) with the given button and click
 // count. A double/triple click is a single dispatch with clickCount 2/3, which
-// is how Chromium itself models repeated clicks.
-func dispatchClick(ctx context.Context, x, y float64, button input.MouseButton, clickCount int) error {
+// is how Chromium itself models repeated clicks. modifiers carries the keys the
+// tab is holding (see Manager.KeyDown) so a Ctrl+click arrives as one.
+func dispatchClick(ctx context.Context, x, y float64, button input.MouseButton, clickCount int, modifiers input.Modifier) error {
 	buttons := buttonsMask(button)
-	if err := input.DispatchMouseEvent(input.MouseMoved, x, y).Do(ctx); err != nil {
+	if err := input.DispatchMouseEvent(input.MouseMoved, x, y).WithModifiers(modifiers).Do(ctx); err != nil {
 		return err
 	}
 	if err := input.DispatchMouseEvent(input.MousePressed, x, y).
 		WithButton(button).
 		WithButtons(buttons).
+		WithModifiers(modifiers).
 		WithClickCount(int64(clickCount)).
 		Do(ctx); err != nil {
 		return err
@@ -322,21 +329,25 @@ func dispatchClick(ctx context.Context, x, y float64, button input.MouseButton, 
 	return input.DispatchMouseEvent(input.MouseReleased, x, y).
 		WithButton(button).
 		WithButtons(0).
+		WithModifiers(modifiers).
 		WithClickCount(int64(clickCount)).
 		Do(ctx)
 }
 
 // dispatchDrag emits mousePressed at the source, a series of mouseMoved events
 // interpolated toward the target (with the button held in the buttons mask),
-// then mouseReleased at the target.
-func dispatchDrag(ctx context.Context, fromX, fromY, toX, toY float64, steps int, button input.MouseButton) error {
+// then mouseReleased at the target. Every event repeats modifiers, because CDP
+// carries no keyboard state of its own: a Ctrl+drag is the mask on each move,
+// not the earlier keydown.
+func dispatchDrag(ctx context.Context, fromX, fromY, toX, toY float64, steps int, button input.MouseButton, modifiers input.Modifier) error {
 	buttons := buttonsMask(button)
-	if err := input.DispatchMouseEvent(input.MouseMoved, fromX, fromY).Do(ctx); err != nil {
+	if err := input.DispatchMouseEvent(input.MouseMoved, fromX, fromY).WithModifiers(modifiers).Do(ctx); err != nil {
 		return err
 	}
 	if err := input.DispatchMouseEvent(input.MousePressed, fromX, fromY).
 		WithButton(button).
 		WithButtons(buttons).
+		WithModifiers(modifiers).
 		WithClickCount(1).
 		Do(ctx); err != nil {
 		return err
@@ -351,6 +362,7 @@ func dispatchDrag(ctx context.Context, fromX, fromY, toX, toY float64, steps int
 		if err := input.DispatchMouseEvent(input.MouseMoved, mx, my).
 			WithButton(button).
 			WithButtons(buttons).
+			WithModifiers(modifiers).
 			Do(ctx); err != nil {
 			return err
 		}
@@ -358,6 +370,7 @@ func dispatchDrag(ctx context.Context, fromX, fromY, toX, toY float64, steps int
 	return input.DispatchMouseEvent(input.MouseReleased, toX, toY).
 		WithButton(button).
 		WithButtons(0).
+		WithModifiers(modifiers).
 		WithClickCount(1).
 		Do(ctx)
 }

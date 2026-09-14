@@ -264,6 +264,16 @@ var transportUnsupported = map[string]string{
 	"brw_set_user_agent":         brwidentity.TransportExtensionBridge,
 	"brw_authenticate":           brwidentity.TransportExtensionBridge,
 	"brw_set_download_path":      brwidentity.TransportExtensionBridge,
+	// Clipboard access needs the browser-level Browser.setPermission command,
+	// held keys need the transport to stamp a modifier mask onto every later
+	// input event, and a policy-checked same-document history change needs the
+	// controller to resolve the target against the live document. None of the
+	// three is implemented over the extension bridge's per-tab chrome.debugger
+	// session, so each returns a named capability error there.
+	"brw_clipboard": brwidentity.TransportExtensionBridge,
+	"brw_key_down":  brwidentity.TransportExtensionBridge,
+	"brw_key_up":    brwidentity.TransportExtensionBridge,
+	"brw_pushstate": brwidentity.TransportExtensionBridge,
 }
 
 // environmentController resolves the optional page-environment capability. A
@@ -1428,28 +1438,92 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return toolError(fmt.Errorf("unknown diff action %q: use mark or compare", req.Action)), nil
 		}
 	case "brw_get":
+		// TabID is declared on GetRequest so strict unmarshalling accepts it;
+		// callTool has already put it on the context, which is what actually
+		// targets the tab.
+		var req snapshot.GetRequest
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		if err := req.Validate(); err != nil {
+			return toolError(err), nil
+		}
+		value, err := s.manager.Evaluate(ctx, req.Expression())
+		if err != nil {
+			return toolError(err), nil
+		}
+		return toolJSON(value, nil)
+	case "brw_frame":
 		var req struct {
-			What   string `json:"what"`
 			Target string `json:"target"`
-			Name   string `json:"name"`
-			// Declared so strict unmarshalling accepts it; callTool has already
-			// put it on the context, which is what actually targets the tab.
+			TabID  string `json:"tab_id"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		value, err := s.manager.Evaluate(ctx, snapshot.BuildFrameSwitchExpression(req.Target))
+		if err != nil {
+			return toolError(err), nil
+		}
+		return toolJSON(value, nil)
+	case "brw_focus":
+		focuser, ok := s.manager.(browser.ElementFocuser)
+		if !ok {
+			return toolError(errors.New("this browser transport does not support explicit element focus")), nil
+		}
+		var req struct {
+			Ref   string `json:"ref"`
 			TabID string `json:"tab_id"`
 		}
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		if req.What == "count" && strings.TrimSpace(req.Target) == "" {
-			return toolError(errors.New("brw_get what=count requires target: the CSS selector to count")), nil
+		if strings.TrimSpace(req.Ref) == "" {
+			return toolError(errors.New("ref is required")), nil
 		}
-		if req.What == "attr" && strings.TrimSpace(req.Name) == "" {
-			return toolError(errors.New("brw_get what=attr requires name: the attribute to read")), nil
-		}
-		value, err := s.manager.Evaluate(ctx, snapshot.BuildGetExpression(req.What, req.Target, req.Name))
-		if err != nil {
+		if err := focuser.FocusRef(ctx, req.Ref); err != nil {
 			return toolError(err), nil
 		}
-		return toolJSON(value, nil)
+		return toolJSON(map[string]any{"ok": true, "ref": req.Ref}, nil)
+	case "brw_clipboard":
+		clipboard, ok := s.manager.(browser.ClipboardController)
+		if !ok {
+			return toolError(errors.New("this browser transport does not support clipboard access: granting the clipboard permission needs a browser-level CDP command the extension bridge cannot send")), nil
+		}
+		var req browser.ClipboardOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(clipboard.Clipboard(ctx, req))
+	case "brw_key_down", "brw_key_up":
+		keys, ok := s.manager.(browser.KeyHoldController)
+		if !ok {
+			return toolError(errors.New("this browser transport does not support held keys: use brw_press for a discrete keystroke")), nil
+		}
+		var req browser.KeyHoldOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		if name == "brw_key_down" {
+			return toolJSON(keys.KeyDown(ctx, req))
+		}
+		return toolJSON(keys.KeyUp(ctx, req))
+	case "brw_pushstate":
+		history, ok := s.manager.(browser.HistoryController)
+		if !ok {
+			return toolError(errors.New("this browser transport does not support same-document history changes")), nil
+		}
+		var req browser.HistoryStateOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		// Defense in depth: the controller re-checks the target resolved against
+		// the live document, but an absolute off-policy URL is refused here
+		// before it reaches the browser at all.
+		if err := s.checkNavPolicy(req.URL); err != nil {
+			return toolError(err), nil
+		}
+		return toolJSON(history.PushState(ctx, req))
 	case "brw_storage":
 		var req struct {
 			Kind   string `json:"kind"`
@@ -2463,6 +2537,34 @@ func tools() []map[string]any {
 			"name":   stringSchema("Attribute name for what=attr, or a single CSS property name for what=styles. Omitting it for styles returns the properties that explain layout and appearance rather than every property."),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"what"})),
+		tool("brw_frame", "Switch the active FRAME scope, so brw_snapshot, brw_find, brw_get and every ref lookup afterwards see only that frame's document. Pass a brw ref or CSS selector for the iframe (a ref for an element INSIDE the frame selects that frame too), or target \"main\" to go back to the whole page. Returns {switched, scope, kind, url, origin, accessible, x, y, width, height, element_count}. You rarely need this to CLICK something: refs already resolve across same-origin iframes. Reach for it when the same selector exists in the page and in an embed and you mean the embedded one, or to count/read within one widget. A CROSS-ORIGIN frame (kind:\"cross_origin\", also reachable by its f<i> ref from brw_snapshot include_frames) cannot be scoped into at all — the browser isolates its DOM — so it is returned with switched:false plus its top-level box, and you act on it with brw_screenshot then brw_click_xy at the box center. The scope is per document: any navigation drops it back to main. Works on both transports.", object(map[string]any{
+			"target": stringSchema("Frame to scope to: a brw ref, a CSS selector for the iframe, an f<i> cross-origin frame ref, or \"main\" to clear the scope. Omitting it is the same as \"main\"."),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, nil)),
+		tool("brw_focus", "Give one element the keyboard focus by ref, without clicking it. Use it before brw_press when the keystroke must land on a specific field and you do not want the side effects of a click (a menu opening, a link following, a blur handler firing on the way). Resolves across same-origin iframes and open shadow roots. brw_type and brw_fill already focus the field they write to; this is for the case where the next thing you send is a key.", object(map[string]any{
+			"ref":    stringSchema("Element ref from brw_snapshot."),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"ref"})),
+		tool("brw_key_down", "Press a key and HOLD it: the keyup is not sent until brw_key_up. That is what makes Ctrl+drag, Shift+click-range and Alt+click expressible — brw_press sends keydown and keyup back to back, so a page reading event.shiftKey during the drag in between sees nothing. While a key is held, every click, drag and mouse press brw dispatches on that tab carries its modifier mask. ALWAYS release what you hold (brw_key_up key=\"all\" releases everything the tab holds), or later clicks keep the modifier. Returns the keys still held. DIRECT-CDP TRANSPORT ONLY: the extension bridge returns a capability error — use brw_press for a discrete chord like Meta+Enter there.", object(map[string]any{
+			"key":    stringSchema("Key to hold. Modifiers by name: Shift, Control, Alt, Meta (ShiftRight/ControlRight etc. for the right-hand key). Ordinary keys work too, for a held character."),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"key"})),
+		tool("brw_key_up", "Release a key held by brw_key_down, or pass key=\"all\" to release every key this tab is holding. Returns the keys still held after it. Direct-CDP transport only.", object(map[string]any{
+			"key":    stringSchema("Key to release, or \"all\" for every held key."),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"key"})),
+		tool("brw_pushstate", "Change the page URL through the History API WITHOUT loading a new document, to drive a client-side router directly. The JS heap, open sockets and in-memory state all survive — this is how you test that a SPA route renders correctly without paying for a reload, and how you reach a route that has no link on the current view. A popstate event is dispatched afterwards by default, because pushState alone changes the address bar and nothing else, so a router subscribed to popstate would keep showing the old view. The target goes through the SAME navigation policy as a real navigation, resolved against the current page, and cannot change origin (the History API forbids that; use brw_navigate_to). Direct-CDP transport only.", object(map[string]any{
+			"url":     stringSchema("Target URL. Usually a same-origin path like /app/settings; relative values resolve against the current page."),
+			"state":   stringSchema("Optional history state object as a JSON string. Defaults to null, which is what a router that reads only the URL sees anyway."),
+			"replace": boolSchema("Use history.replaceState instead of pushState: swap the current entry rather than adding one, for an in-place redirect. Defaults false."),
+			"notify":  boolSchema("Dispatch popstate after the change. Defaults true; set false to change the URL and observe whether the router reacts on its own."),
+			"tab_id":  stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"url"})),
+		tool("brw_clipboard", "Read or write the system clipboard from the page's own origin, for copy/paste flows a page implements with the Clipboard API (a \"copy link\" button, a paste-to-import field). action=read returns {text}; action=write puts text on the clipboard so a later paste in the page picks it up. Chrome gates the clipboard on a user gesture and a permission, and brw cannot make a real gesture, so the permission is granted over CDP for this page's origin and the tab is brought to the front first (the Clipboard API refuses an unfocused document). Reading needs a secure context (https, or localhost); on a plain-http page a read returns a clear error and a write falls back to execCommand. Clipboard text is NOT written to the brw trace — it holds whatever the user last copied. DIRECT-CDP TRANSPORT ONLY: granting the permission needs a browser-level CDP command the extension bridge cannot send.", object(map[string]any{
+			"action": stringEnumSchema("read the clipboard, or write text to it.", "read", "write"),
+			"text":   stringSchema("Text to put on the clipboard. Required for action=write."),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"action"})),
 		tool("brw_storage", "Read and write the page's localStorage or sessionStorage for the current origin. Inspect feature flags and app state, or seed a value for a test. This is web storage only: it is not a cookie or credential surface and never exposes HttpOnly state.", object(map[string]any{
 			"kind":   stringEnumSchema("Which store. Defaults to local.", "local", "session"),
 			"action": stringEnumSchema("get (one key, or every key when key is omitted), set, remove, or clear.", "get", "set", "remove", "clear"),

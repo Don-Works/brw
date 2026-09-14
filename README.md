@@ -302,6 +302,11 @@ Core MCP tools include:
 - `brw_get` — one typed fact (text, value, attr, box, count, visible, …) without
   hand-written JS, resolved across iframes and open shadow roots
 - `brw_storage` — localStorage / sessionStorage for the current origin
+- `brw_frame` — scope snapshot/find/get to one iframe, or back to `main`
+- `brw_focus` — focus an element by ref without clicking it
+- `brw_key_down`, `brw_key_up` — hold a key, so Ctrl+drag and Shift+click work
+- `brw_pushstate` — change the route through the History API with no reload
+- `brw_clipboard` — read or write the system clipboard
 - `brw_dialog` — pre-arm the answer to a confirm/prompt before the click that
   raises it, and see which dialogs were answered
 - `brw_diff` — mark, act, compare: did the page actually change?

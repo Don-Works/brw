@@ -116,7 +116,7 @@ func TestDispatchDragChangesRangeInputValue(t *testing.T) {
 	toX := box.ViewportX + box.Width/2 - 2
 	y := box.ViewportY
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return dispatchDrag(ctx, fromX, y, toX, y, 15, input.Left)
+		return dispatchDrag(ctx, fromX, y, toX, y, 15, input.Left, 0)
 	})); err != nil {
 		t.Fatalf("dispatchDrag: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestDispatchClickDoubleClickSelectsWord(t *testing.T) {
 	evalJSON(t, ctx, `(function(){var r=document.getElementById('p').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`, &box)
 
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return dispatchClick(ctx, box.X, box.Y, input.Left, 2)
+		return dispatchClick(ctx, box.X, box.Y, input.Left, 2, 0)
 	})); err != nil {
 		t.Fatalf("dispatchClick double: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestDispatchClickRightFiresContextMenu(t *testing.T) {
 	evalJSON(t, ctx, `(function(){var r=document.getElementById('d').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`, &box)
 
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return dispatchClick(ctx, box.X, box.Y, input.Right, 1)
+		return dispatchClick(ctx, box.X, box.Y, input.Right, 1, 0)
 	})); err != nil {
 		t.Fatalf("dispatchClick right: %v", err)
 	}

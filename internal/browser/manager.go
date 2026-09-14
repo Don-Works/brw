@@ -185,6 +185,14 @@ type Manager struct {
 	emulationMu     sync.Mutex
 	emulationStates map[string]deviceEmulationState
 
+	// heldKeys records, per tab, the keys a caller pressed with KeyDown and has
+	// not yet released. CDP keeps no keyboard state between calls: every
+	// dispatched input event carries its own modifier mask, so a Ctrl+drag is
+	// only a Ctrl+drag while brw keeps stamping modifiers:2 onto each mouse
+	// event. This map is what the later events read.
+	heldMu   sync.Mutex
+	heldKeys map[string]map[string]actions.KeyDescriptor
+
 	// incognitoContexts tracks BrowserContextIDs created by OpenIncognito so
 	// Close can dispose any the caller never closed with CloseContext, instead of
 	// leaking the isolated context (and its tabs/storage) until Chrome exits.
@@ -675,6 +683,9 @@ func (m *Manager) forgetTabCaches(id string) {
 	delete(m.emulationStates, id)
 	m.emulationMu.Unlock()
 	m.env.forget(id)
+	m.heldMu.Lock()
+	delete(m.heldKeys, id)
+	m.heldMu.Unlock()
 }
 
 // ensureWebMCP arms the opt-in WebMCP runtime shim to install at document-start
@@ -840,7 +851,19 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 	// clickElementCenter already actuates by coordinate (in-page ClickXY at the
 	// element box, CDP MouseClickXY fallback), which is the correct path for an
 	// AX-invisible custom component resolved by hit-test.
-	warning, clickErr := clickElementCenter(tabCtx, ref, 150*time.Millisecond)
+	//
+	// Its fast path builds the MouseEvent in page script, and a synthesised
+	// MouseEvent has ctrlKey/shiftKey false whatever the caller is holding. So a
+	// tab with keys held takes the trusted CDP dispatch instead, which stamps the
+	// modifier mask onto each event — otherwise Shift+click would silently be an
+	// ordinary click.
+	var warning string
+	var clickErr error
+	if modifiers := m.heldModifierMask(tabID); modifiers != 0 {
+		warning, clickErr = clickElementCenterWithModifiers(tabCtx, ref, input.Modifier(modifiers))
+	} else {
+		warning, clickErr = clickElementCenter(tabCtx, ref, 150*time.Millisecond)
+	}
 	if clickErr != nil {
 		return ActionResult{}, clickErr
 	}
@@ -1460,6 +1483,28 @@ func clickElementCenter(tabCtx context.Context, ref string, delay time.Duration)
 	// fast single-evaluate path for ordinary clicks.
 	if err := runWithPrearmedSettle(tabCtx, delay, func() error {
 		return chromedp.Run(tabCtx, chromedp.MouseClickXY(box.ViewportX, box.ViewportY))
+	}); err != nil {
+		return "", err
+	}
+	return warning, nil
+}
+
+// clickElementCenterWithModifiers clicks a ref through the trusted CDP input
+// path with an explicit modifier mask. Kept separate from clickElementCenter so
+// the common no-modifier click keeps its single-evaluate fast path.
+func clickElementCenterWithModifiers(tabCtx context.Context, ref string, modifiers input.Modifier) (string, error) {
+	box, err := snapshot.ResolveOrRecoverBox(tabCtx, ref)
+	if err != nil {
+		return "", err
+	}
+	warning := ""
+	if box.Recovered {
+		warning = fmt.Sprintf("ref recovered: %s -> %s", box.OldRef, box.Ref)
+	}
+	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return dispatchClick(ctx, box.ViewportX, box.ViewportY, input.Left, 1, modifiers)
+		}))
 	}); err != nil {
 		return "", err
 	}

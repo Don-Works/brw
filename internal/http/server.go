@@ -302,6 +302,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/upload_file", s.uploadFile)
 	mux.HandleFunc("POST /api/page/select", s.selectValue)
 	mux.HandleFunc("POST /api/page/press", s.press)
+	mux.HandleFunc("POST /api/page/key_down", s.keyDown)
+	mux.HandleFunc("POST /api/page/key_up", s.keyUp)
+	mux.HandleFunc("POST /api/page/focus", s.focusElement)
+	mux.HandleFunc("GET /api/page/get", s.get)
+	mux.HandleFunc("POST /api/page/get", s.get)
+	mux.HandleFunc("POST /api/page/frame", s.frame)
+	mux.HandleFunc("POST /api/page/clipboard", s.clipboard)
+	mux.HandleFunc("POST /api/page/pushstate", s.pushState)
 	mux.HandleFunc("POST /api/page/scroll", s.scroll)
 	mux.HandleFunc("POST /api/page/wait_for", s.waitFor)
 	mux.HandleFunc("POST /api/page/hover", s.hover)
@@ -1136,6 +1144,131 @@ func (s *Server) press(w http.ResponseWriter, r *http.Request) {
 		ctx = browser.WithWantSnapshot(ctx)
 	}
 	result, err := s.manager.Press(ctx, req.Key)
+	writeResult(w, result, err)
+}
+
+// keyDown and keyUp are the two halves of a press-and-hold. They are separate
+// routes rather than one with a direction flag because the CLI verbs are
+// separate, and a half that silently did the wrong one would be invisible.
+func (s *Server) keyDown(w http.ResponseWriter, r *http.Request) {
+	s.keyHalf(w, r, true)
+}
+
+func (s *Server) keyUp(w http.ResponseWriter, r *http.Request) {
+	s.keyHalf(w, r, false)
+}
+
+func (s *Server) keyHalf(w http.ResponseWriter, r *http.Request, down bool) {
+	keys, ok := s.manager.(browser.KeyHoldController)
+	if !ok {
+		writeError(w, errors.New("this browser transport does not support held keys: use /api/page/press for a discrete keystroke"))
+		return
+	}
+	var req browser.KeyHoldOptions
+	if !decode(w, r, &req) {
+		return
+	}
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if down {
+		result, err := keys.KeyDown(ctx, req)
+		writeResult(w, result, err)
+		return
+	}
+	result, err := keys.KeyUp(ctx, req)
+	writeResult(w, result, err)
+}
+
+func (s *Server) focusElement(w http.ResponseWriter, r *http.Request) {
+	focuser, ok := s.manager.(browser.ElementFocuser)
+	if !ok {
+		writeError(w, errors.New("this browser transport does not support explicit element focus"))
+		return
+	}
+	var req struct {
+		Ref   string `json:"ref"`
+		TabID string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Ref) == "" {
+		writeError(w, errors.New("ref is required"))
+		return
+	}
+	err := focuser.FocusRef(s.contextWithTabID(r.Context(), req.TabID), req.Ref)
+	writeResult(w, map[string]any{"ok": err == nil, "ref": req.Ref}, err)
+}
+
+// get answers one typed question about the page. It shares snapshot.GetRequest
+// with the MCP tool so both surfaces accept exactly the same vocabulary.
+func (s *Server) get(w http.ResponseWriter, r *http.Request) {
+	var req snapshot.GetRequest
+	if r.Method == http.MethodGet {
+		query := r.URL.Query()
+		req = snapshot.GetRequest{
+			What:   query.Get("what"),
+			Target: query.Get("target"),
+			Name:   query.Get("name"),
+			TabID:  query.Get("tab_id"),
+		}
+	} else if !decode(w, r, &req) {
+		return
+	}
+	if err := req.Validate(); err != nil {
+		writeError(w, err)
+		return
+	}
+	value, err := s.manager.Evaluate(s.contextWithTabID(r.Context(), req.TabID), req.Expression())
+	writeResult(w, value, err)
+}
+
+// frame switches the page's frame scope. It runs through Evaluate rather than a
+// controller method because the scope lives in the page, which is what lets both
+// transports honour it with one implementation.
+func (s *Server) frame(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Target string `json:"target"`
+		TabID  string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	value, err := s.manager.Evaluate(s.contextWithTabID(r.Context(), req.TabID), snapshot.BuildFrameSwitchExpression(req.Target))
+	writeResult(w, value, err)
+}
+
+func (s *Server) clipboard(w http.ResponseWriter, r *http.Request) {
+	clipboard, ok := s.manager.(browser.ClipboardController)
+	if !ok {
+		writeError(w, errors.New("this browser transport does not support clipboard access: granting the clipboard permission needs a browser-level CDP command the extension bridge cannot send"))
+		return
+	}
+	var req browser.ClipboardOptions
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := clipboard.Clipboard(s.contextWithTabID(r.Context(), req.TabID), req)
+	writeResult(w, result, err)
+}
+
+func (s *Server) pushState(w http.ResponseWriter, r *http.Request) {
+	history, ok := s.manager.(browser.HistoryController)
+	if !ok {
+		writeError(w, errors.New("this browser transport does not support same-document history changes"))
+		return
+	}
+	var req browser.HistoryStateOptions
+	if !decode(w, r, &req) {
+		return
+	}
+	// Defense in depth: the controller re-checks the target resolved against the
+	// live document, and an absolute off-policy URL is refused here before it
+	// reaches the browser at all. denyNav tolerates the relative paths that are
+	// the normal shape of a route.
+	if s.denyNav(w, req.URL) {
+		return
+	}
+	result, err := history.PushState(s.contextWithTabID(r.Context(), req.TabID), req)
 	writeResult(w, result, err)
 }
 

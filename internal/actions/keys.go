@@ -48,7 +48,10 @@ func DescribeKey(raw string) KeyDescriptor {
 			}
 		}
 		desc := DescribeKey(parts[len(parts)-1])
-		desc.Modifiers = modifiers
+		// OR rather than assign: the final part may itself be a modifier
+		// ("ctrl+shift"), and dropping its own bit would report a chord that
+		// never had Shift down.
+		desc.Modifiers |= modifiers
 		if modifiers != 0 {
 			desc.Text = ""
 		}
@@ -86,6 +89,10 @@ func DescribeKey(raw string) KeyDescriptor {
 		return KeyDescriptor{Key: "PageDown", Code: "PageDown", WindowsVirtualKeyCode: 34}
 	case "insert":
 		return KeyDescriptor{Key: "Insert", Code: "Insert", WindowsVirtualKeyCode: 45}
+	}
+
+	if mk := modifierKey(raw); mk != nil {
+		return *mk
 	}
 
 	// Function keys F1–F24. event.key and code are both "F<n>", and the Windows
