@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	"github.com/Don-Works/brw/internal/credential"
 )
 
 // TraceAction is one entry of brw_trace, reduced to the fields a draft can use.
@@ -22,7 +24,32 @@ type TraceAction struct {
 	URL               string `json:"url,omitempty"`
 	NameIsVisibleText bool   `json:"name_is_visible_text,omitempty"`
 	Redacted          bool   `json:"redacted,omitempty"`
+	CredentialSourced bool   `json:"credential_sourced,omitempty"`
 	OK                bool   `json:"ok"`
+}
+
+// ErrCredentialSourcedAction is the compile failure for a recorded action whose
+// typed value came from a credential provider.
+var ErrCredentialSourcedAction = errors.New("trace action typed a value that came from a credential provider")
+
+// GuardTraceActionForCompilation is the hook every trace-to-recipe compilation
+// calls once per recorded action before emitting a step.
+//
+// A credential-sourced value is a compile FAILURE, not a placeholder to infer.
+// brw records that the value came from a provider and deliberately does not
+// record which reference produced it, so there is nothing to infer from — and a
+// guess would produce a recipe that types the wrong secret into the right
+// field. The human writes the secret:// reference by hand or the recipe does
+// not exist.
+//
+// Kept separate from DraftFromTrace so a compiler with its own step emitter can
+// adopt the same refusal without reimplementing it.
+func GuardTraceActionForCompilation(index int, action TraceAction) error {
+	if !action.CredentialSourced {
+		return nil
+	}
+	return fmt.Errorf("action %d (%s): %w: write the step by hand with value %s<name>",
+		index+1, action.Action, ErrCredentialSourcedAction, credential.Scheme)
 }
 
 // DraftOptions parameterises a draft. Everything a human must decide is either
@@ -66,7 +93,13 @@ var sendishNames = []string{"send", "post", "submit", "publish", "reply", "confi
 // keep them separate.
 func DraftFromTrace(actions []TraceAction, opts DraftOptions) ([]Recipe, error) {
 	usable := make([]TraceAction, 0, len(actions))
-	for _, a := range actions {
+	for index, a := range actions {
+		// Checked before the OK filter: a credential fill that failed still says
+		// a credential was in this flow, and a draft that silently dropped it
+		// would look complete while missing the login.
+		if err := GuardTraceActionForCompilation(index, a); err != nil {
+			return nil, err
+		}
 		// A failed action is not evidence of a working flow.
 		if !a.OK {
 			continue

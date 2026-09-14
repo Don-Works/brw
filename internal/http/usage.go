@@ -96,6 +96,8 @@ var usageOperations = map[string]string{
 	"/api/recipes/run":               "brw_recipe_run",
 	"/api/consent/grants":            "brw_consent_grants",
 	"/api/consent/revoke":            "brw_consent_revoke",
+	"/api/plugins":                   "brw_plugins",
+	"/api/plugins/revoke":            "brw_plugin_revoke",
 }
 
 type usageResponseWriter struct {

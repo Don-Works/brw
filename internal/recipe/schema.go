@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/Don-Works/brw/internal/credential"
 )
 
 const SchemaVersion = 1
@@ -185,10 +187,66 @@ func Validate(value Recipe) error {
 	if refPattern.Match(encoded) {
 		problems = append(problems, errors.New("persisted observation refs are forbidden; use a semantic target"))
 	}
-	if secretPattern.Match(encoded) {
+	if err := validateCredentialReferences(value, encoded); err != nil {
+		problems = append(problems, err)
+	}
+	// The literal-secret heuristic below matches a credential-ish word, a colon
+	// and a value, which is the exact shape of the reference scheme itself.
+	// Neutralise the scheme before that scan so a legal reference is not
+	// reported as an embedded credential.
+	if secretPattern.Match(bytes.ReplaceAll(encoded, []byte(credential.Scheme), []byte("credential-reference-"))) {
 		problems = append(problems, errors.New("recipe appears to contain a literal secret"))
 	}
 	return errors.Join(problems...)
+}
+
+// CredentialActions are the only actions whose value may be a credential
+// reference. Both write the value into one form field and nothing else; every
+// other action's value ends up in a selector, a URL, an assertion or an error
+// message, each of which is read back by a caller.
+var CredentialActions = []string{"fill", "type"}
+
+// validateCredentialReferences keeps a secret:// reference to the one place it
+// can safely go: the ENTIRE value of a fill or type step.
+//
+// The check counts occurrences across the whole encoded recipe rather than
+// walking the fields anyone happened to remember, so a field added to the
+// schema later cannot quietly become a second place a reference is accepted,
+// and an attacker-supplied variant ("secret://x.png" inside a longer value, a
+// reference in a target name, a reference in the description) fails the count
+// instead of finding a gap in a per-field list.
+func validateCredentialReferences(value Recipe, encoded []byte) error {
+	total := bytes.Count(encoded, []byte(credential.Scheme))
+	if total == 0 {
+		return nil
+	}
+	allowed := 0
+	for _, step := range value.Steps {
+		if !slices.Contains(CredentialActions, step.Action) {
+			continue
+		}
+		if _, ok := credential.Reference(step.Value); ok {
+			allowed++
+		}
+	}
+	if total != allowed {
+		return fmt.Errorf("a %s reference is only valid as the entire value of a %s step", credential.Scheme, strings.Join(CredentialActions, " or "))
+	}
+	return nil
+}
+
+// StepCredentialReference returns the credential reference a step resolves at
+// execution, if it has one.
+//
+// It reads the recipe's own declared value, deliberately BEFORE input
+// expansion. An input that expands to "secret://x" is ordinary text and is
+// typed literally, so a caller cannot use an input to name a credential the
+// reviewed recipe did not.
+func StepCredentialReference(step Step) (string, bool) {
+	if !slices.Contains(CredentialActions, step.Action) {
+		return "", false
+	}
+	return credential.Reference(step.Value)
 }
 
 func validateStep(recipe Recipe, step Step, seen map[string]bool) error {

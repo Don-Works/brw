@@ -13,6 +13,7 @@ import (
 
 	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/credential"
 )
 
 type ResolvedElement struct {
@@ -98,8 +99,13 @@ type StepResult struct {
 }
 
 type Runner struct {
-	Surface     Surface
-	Clock       Clock
+	Surface Surface
+	Clock   Clock
+	// Credentials resolves a step's secret:// reference at the moment that step
+	// is dispatched. It is the daemon's plugin registry in production and nil
+	// when no plugin holds credential.read, in which case a recipe that names a
+	// credential fails before it touches the browser.
+	Credentials credential.Resolver
 	MaxDuration time.Duration
 }
 
@@ -132,6 +138,11 @@ func (r Runner) Run(ctx context.Context, value Recipe, inputs map[string]string)
 	// missing optional input or an expansion that erases/overgrows a selector in
 	// a later step could fail only after earlier browser actions had already run.
 	if err := preflightRuntimePlan(value, inputs); err != nil {
+		return RunResult{}, err
+	}
+	// Refuse a credential-bearing recipe with no provider before step one, so a
+	// login flow does not half-run and leave a partly filled form behind.
+	if err := preflightCredentials(value, r.Credentials); err != nil {
 		return RunResult{}, err
 	}
 	digest, err := Digest(value)
@@ -186,6 +197,13 @@ func (r Runner) runStep(ctx context.Context, value Recipe, step Step, inputs map
 	// wait_event cannot leak a declared secret through transport tracing either.
 	if stepUsesSecret(step, value.Inputs) {
 		ctx = browser.WithSensitiveAction(ctx)
+	}
+	// A provider-sourced value is a stronger statement than a caller-declared
+	// secret: brw knows the caller never saw it. The mark implies sensitivity,
+	// and it is what makes a later trace-to-recipe compilation refuse the step
+	// instead of inventing a placeholder for the value it cannot see.
+	if _, ok := StepCredentialReference(step); ok {
+		ctx = browser.WithCredentialSourced(ctx)
 	}
 	if err := r.checkOrigin(ctx, value.Origins); err != nil {
 		return 0, err
@@ -337,6 +355,10 @@ func (r Runner) runActuation(ctx context.Context, recipe Recipe, step Step, inpu
 		case "click":
 			lastErr = r.Surface.Click(ctx, ref)
 		case "fill", "type", "select":
+			if reference, ok := StepCredentialReference(step); ok {
+				lastErr = r.actuateFromCredential(ctx, step.Action, ref, reference)
+				break
+			}
 			value, err := Expand(step.Value, inputs)
 			if err != nil {
 				return attempt, err

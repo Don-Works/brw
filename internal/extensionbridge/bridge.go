@@ -5761,15 +5761,13 @@ func (b *Bridge) finishObservedTrace(before bridgeActionBaseline, message string
 	entry := bridgeTraceEntry(message)
 	// Structured operands from the call site win over anything parsed out of the
 	// display message; the parse remains the fallback for actions supplying none.
+	//
+	// Taken as a whole struct rather than field by field. The field list this
+	// replaced silently dropped every TraceEntry field added after it was
+	// written, which is how the credential-sourced mark reached the direct-CDP
+	// trace and not this one. Everything the outcome owns is assigned below.
 	if before.Trace.Action != "" {
-		entry.Action = before.Trace.Action
-		entry.Ref = before.Trace.Ref
-		entry.Text = before.Trace.Text
-		entry.Value = before.Trace.Value
-		entry.Name = before.Trace.Name
-		entry.Role = before.Trace.Role
-		entry.NameIsVisibleText = before.Trace.NameIsVisibleText
-		entry.Redacted = before.Trace.Redacted
+		entry = before.Trace
 	}
 	entry.TabID = result.TabID
 	entry.OK = result.OK

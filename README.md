@@ -87,6 +87,12 @@ See [docs/benchmarks.md](docs/benchmarks.md). For what answers a
 For repeated site workflows and large observations, see
 [Private recipes and browser-host artifacts](docs/recipes-and-artifacts.md).
 
+brw stores no secret. When a recipe has to sign in, it names a credential
+(`secret://<name>`) and an operator-installed plugin resolves it at the moment
+that step runs — see [plugins and capabilities](docs/plugins.md), which also
+states what a capability can and cannot reach and why the list is as short as
+it is.
+
 ## Quick Start
 
 ```sh

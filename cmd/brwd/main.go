@@ -28,6 +28,7 @@ import (
 	"github.com/Don-Works/brw/internal/httpclient"
 	"github.com/Don-Works/brw/internal/mcp"
 	"github.com/Don-Works/brw/internal/navpolicy"
+	"github.com/Don-Works/brw/internal/plugin"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/recipe"
 	"github.com/Don-Works/brw/internal/usagelog"
@@ -96,6 +97,7 @@ func main() {
 	var recipeRoot string
 	var recipeProviderURL string
 	var recipeProviderTokenFile string
+	var pluginDir string
 	var proxyServer string
 	var proxyBypassList string
 	var ignoreHTTPSErrors bool
@@ -150,6 +152,7 @@ func main() {
 	flag.StringVar(&recipeRoot, "recipe-root", os.Getenv("BRW_RECIPE_ROOT"), "absolute 0700 directory containing private 0600 recipe JSON files; must live outside the brw source repository")
 	flag.StringVar(&recipeProviderURL, "recipe-provider-url", os.Getenv("BRW_RECIPE_PROVIDER_URL"), "HTTPS private recipe-provider base URL (loopback HTTP allowed); use instead of --recipe-root")
 	flag.StringVar(&recipeProviderTokenFile, "recipe-provider-token-file", os.Getenv("BRW_RECIPE_PROVIDER_TOKEN_FILE"), "0600 regular file containing the private recipe-provider bearer token; never logged")
+	flag.StringVar(&pluginDir, "plugin-dir", os.Getenv("BRW_PLUGIN_DIR"), "directory of *.json plugin manifests. brw does not sandbox a plugin, so the directory and its manifests must not be group- or other-writable. Grants only the capabilities in docs/plugins.md; today that is credential.read, which lets a recipe resolve a secret:// reference at execution.")
 	flag.StringVar(&proxyServer, "proxy-server", os.Getenv("BRW_PROXY_SERVER"), "direct CDP: route the launched browser through this proxy, for example http://127.0.0.1:8080 or socks5://127.0.0.1:1080. Chrome takes a proxy only at launch, so this cannot be changed on a running browser.")
 	flag.StringVar(&proxyBypassList, "proxy-bypass-list", os.Getenv("BRW_PROXY_BYPASS_LIST"), "direct CDP: semicolon-separated hosts that bypass --proxy-server and go direct, for example \"<local>;*.internal\". Requires --proxy-server.")
 	flag.BoolVar(&ignoreHTTPSErrors, "ignore-https-errors", envBool("BRW_IGNORE_HTTPS_ERRORS"), "direct CDP: launch Chrome with certificate validation OFF for every site. Opt-in per launch and reported by brw_identity as ignore_https_errors, because an agent reading a page over this daemon otherwise cannot tell a valid site from an intercepted one. Prefer --ca-cert, which trusts one private CA instead of everything.")
@@ -524,6 +527,17 @@ func main() {
 		bridge.SetSiteConsent(consentGuard)
 	}
 
+	// Loaded before anything can call it. A misconfigured plugin directory is a
+	// startup failure, never a daemon that silently holds no provider and then
+	// fails a login three steps into a recipe.
+	plugins, err := plugin.Load(pluginDir)
+	if err != nil {
+		log.Fatalf("plugin directory: %v", err)
+	}
+	for _, status := range plugins.Plugins() {
+		log.Printf("plugin %s %s loaded with capabilities %v", status.ID, status.Version, status.Capabilities)
+	}
+
 	var artifactAPI artifact.API
 	var recipeAPI recipe.API
 	if upstreamHTTP != "" {
@@ -533,6 +547,11 @@ func main() {
 		recipeAPI, _ = controller.(recipe.API)
 		if strings.TrimSpace(recipeRoot) != "" || strings.TrimSpace(recipeProviderURL) != "" || strings.TrimSpace(recipeProviderTokenFile) != "" {
 			log.Printf("WARNING: recipe provider flags are ignored in --upstream-http mode; configure them on the browser-host daemon")
+		}
+		if strings.TrimSpace(pluginDir) != "" {
+			// The recipe runner lives on the browser host, so that is where a
+			// credential is resolved. A provider loaded here would never be asked.
+			log.Printf("WARNING: --plugin-dir is ignored in --upstream-http mode; configure it on the browser-host daemon")
 		}
 	} else {
 		if !strings.EqualFold(strings.TrimSpace(artifactDir), "off") {
@@ -602,7 +621,10 @@ func main() {
 			log.Fatalf("recipe provider: %v", err)
 		}
 		if provider != nil {
-			service, err := recipe.NewService(provider, recipe.Runner{Surface: &recipe.BrowserSurface{Browser: controller, Artifacts: artifactAPI}})
+			service, err := recipe.NewService(provider, recipe.Runner{
+				Surface:     &recipe.BrowserSurface{Browser: controller, Artifacts: artifactAPI},
+				Credentials: plugins,
+			})
 			if err != nil {
 				log.Fatalf("recipe service: %v", err)
 			}
@@ -626,6 +648,7 @@ func main() {
 		api.SetUsageRecorder(usage)
 		api.SetArtifactAPI(artifactAPI)
 		api.SetRecipeAPI(recipeAPI)
+		api.SetPluginRegistry(plugins)
 		defer gracefulShutdown("HTTP API", api.Shutdown)
 		if !isLoopback(httpAddr) {
 			log.Printf("WARNING: HTTP API bound to non-loopback address %s; no authentication is enforced — ensure caller auth is in place (SSH/Tailscale)", httpAddr)

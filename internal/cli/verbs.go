@@ -365,7 +365,8 @@ func verbs() []verb {
 	// The developer observations are defined beside their renderers in
 	// verbs_devtools.go; the completion scripts and the route test read this
 	// table, so they are covered the same way every verb above is.
-	return append(table, devtoolsVerbs()...)
+	table = append(table, devtoolsVerbs()...)
+	return append(table, pluginVerbs()...)
 }
 
 // downloadsUnsupported reads the flag the downloads route sets when the active

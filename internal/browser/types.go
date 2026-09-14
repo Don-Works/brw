@@ -437,6 +437,13 @@ type TraceEntry struct {
 	// password field was filled is useful — but the value never enters the
 	// trace, which is readable over the HTTP control plane.
 	Redacted bool `json:"redacted,omitempty"`
+	// CredentialSourced marks an action whose typed value came from a
+	// capability-gated credential provider, not from the caller. It is a
+	// stronger statement than Redacted: brw knows the value, knows it never
+	// passed through the caller, and does not record which reference produced
+	// it. Trace-to-recipe compilation must refuse such an action rather than
+	// emit a placeholder — see recipe.GuardTraceActionForCompilation.
+	CredentialSourced bool `json:"credential_sourced,omitempty"`
 
 	// Repeat counts the EXTRA times a collapsible action repeated identically
 	// before anything else was recorded; absent means it ran once. DurationMS

@@ -218,6 +218,7 @@ type DocumentIdentityProvider interface {
 }
 
 type sensitiveActionContextKey struct{}
+type credentialSourcedContextKey struct{}
 type allowedOriginsContextKey struct{}
 
 // WithSensitiveAction marks one browser actuation as carrying a caller-declared
@@ -228,6 +229,35 @@ func WithSensitiveAction(ctx context.Context) context.Context {
 	return context.WithValue(ctx, sensitiveActionContextKey{}, true)
 }
 
+// WithCredentialSourced marks one actuation whose typed value came from a
+// capability-gated credential provider rather than from the caller. It implies
+// WithSensitiveAction, so no transport has to remember to set both.
+//
+// The mark carries no reference name on purpose. A trace-to-recipe compiler
+// must fail on such an action rather than infer a placeholder for it, and a
+// name in the trace is exactly the material that would tempt an inference.
+func WithCredentialSourced(ctx context.Context) context.Context {
+	return context.WithValue(WithSensitiveAction(ctx), credentialSourcedContextKey{}, true)
+}
+
+// IsSensitiveAction reports the mark WithSensitiveAction applied.
+func IsSensitiveAction(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	marked, _ := ctx.Value(sensitiveActionContextKey{}).(bool)
+	return marked
+}
+
+// IsCredentialSourced reports the mark WithCredentialSourced applied.
+func IsCredentialSourced(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	marked, _ := ctx.Value(credentialSourcedContextKey{}).(bool)
+	return marked
+}
+
 func RedactTraceEntry(ctx context.Context, entry TraceEntry) TraceEntry {
 	if ctx != nil {
 		redact, _ := ctx.Value(sensitiveActionContextKey{}).(bool)
@@ -235,6 +265,9 @@ func RedactTraceEntry(ctx context.Context, entry TraceEntry) TraceEntry {
 			entry.Text = ""
 			entry.Value = ""
 			entry.Redacted = true
+		}
+		if credentialSourced, _ := ctx.Value(credentialSourcedContextKey{}).(bool); credentialSourced {
+			entry.CredentialSourced = true
 		}
 	}
 	return entry

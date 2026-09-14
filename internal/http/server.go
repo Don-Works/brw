@@ -18,6 +18,7 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/navpolicy"
+	"github.com/Don-Works/brw/internal/plugin"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/recipe"
 	"github.com/Don-Works/brw/internal/siteconsent"
@@ -37,6 +38,7 @@ type Server struct {
 	usage   *usagelog.Recorder
 	leases  *tabLeaseManager
 	server  *http.Server
+	plugins *plugin.Registry
 
 	// loopbackBind records that the daemon listens on loopback only. It gates
 	// the dashboard's takeover surface, which forwards input to a signed-in
@@ -384,6 +386,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/artifacts/{id}/read", s.readArtifactLegacy)
 	mux.HandleFunc("GET /api/artifacts/{id}/search", s.searchArtifactLegacy)
 	mux.HandleFunc("DELETE /api/artifacts/{id}", s.deleteArtifactLegacy)
+	mux.HandleFunc("GET /api/plugins", s.listPlugins)
+	mux.HandleFunc("POST /api/plugins/revoke", s.revokePlugin)
 	mux.HandleFunc("POST /api/recipes/search", s.searchRecipes)
 	mux.HandleFunc("POST /api/recipes/run", s.runRecipe)
 	mux.HandleFunc("GET /api/consent/grants", s.consentGrants)
