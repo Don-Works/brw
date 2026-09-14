@@ -19,21 +19,24 @@ import (
 //
 // Encrypted blobs are never deduplicated. Recognising a duplicate requires
 // producing identical ciphertext for identical plaintext, and that equivalence
-// is exactly what encrypting a sensitive capture is supposed to hide.
-func (s *Store) commitBlobLocked(tmpName, id, digest string, encrypted bool, live map[string]Meta) error {
+// is exactly what encrypting a sensitive capture is supposed to hide — which is
+// also why an encrypted handle records no plaintext digest, so dedupSource can
+// never find one.
+func (s *Store) commitBlobLocked(tmpName, id, source string) error {
 	target := s.blobPath(id)
-	if !encrypted {
-		if source, ok := dedupSource(s, digest, live); ok {
-			if err := os.Link(source, target); err == nil {
-				return os.Remove(tmpName)
-			}
-			// A filesystem without hard links, or a source removed by a concurrent
-			// daemon between the scan and here, simply costs a second copy.
+	if source != "" {
+		if err := os.Link(source, target); err == nil {
+			return os.Remove(tmpName)
 		}
+		// A filesystem without hard links, or a source removed by a concurrent
+		// daemon between the scan and here, simply costs a second copy — which
+		// bytesUsedLocked charges, because it counts inodes rather than digests.
 	}
 	return os.Rename(tmpName, target)
 }
 
+// dedupSource names a live blob holding exactly these bytes, or reports that
+// there is none. An empty digest (every encrypted blob) never matches.
 func dedupSource(s *Store, digest string, live map[string]Meta) (string, bool) {
 	if digest == "" {
 		return "", false

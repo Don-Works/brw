@@ -106,12 +106,17 @@ func (r *bridgeStreamReader) Read(p []byte) (int, error) {
 
 // Close releases the browser-side handle. A stream left open pins the rendered
 // document in the browser process for the life of the tab.
+//
+// The close deliberately does NOT inherit the caller's cancellation. A capture
+// that was cancelled or timed out mid-copy is exactly when the handle is most
+// likely to leak, and issuing IO.close on the context that just died would
+// guarantee it does. Bridge.call still bounds this with its own timeout.
 func (r *bridgeStreamReader) Close() error {
 	if r.closed {
 		return nil
 	}
 	r.closed = true
 	r.pending = nil
-	_, err := r.bridge.cdp(r.ctx, r.tabID, "IO.close", map[string]any{"handle": r.handle})
+	_, err := r.bridge.cdp(context.WithoutCancel(r.ctx), r.tabID, "IO.close", map[string]any{"handle": r.handle})
 	return err
 }

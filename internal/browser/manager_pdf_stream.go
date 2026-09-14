@@ -20,29 +20,26 @@ import (
 // 100 MiB of heap. Reading in chunks holds one chunk.
 const PDFStreamChunkBytes = 256 << 10
 
-// pdfStreamChunkBytes is the value actually used, so a test can lower it and
-// drive the multi-chunk path against a real browser without having to render a
-// quarter-megabyte document first.
-var pdfStreamChunkBytes = int64(PDFStreamChunkBytes)
-
 // CapturePDFStream renders the active page and returns the PDF as a stream.
 // Page.printToPDF is asked for a stream handle and IO.read pulls it one bounded
 // chunk at a time. The caller MUST Close the reader: until then it owns the
-// browser-side stream handle and the tab context.
+// browser-side stream handle, and a handle that is never closed pins the whole
+// rendered document in the browser process for the life of the tab.
+//
+// Every CDP round trip here gets its own deadline derived from the tab context,
+// rather than one deadline covering the render and the whole transfer. A 50 MiB
+// print is hundreds of IO.read calls plus the store's disk writes; charging all
+// of that to the single per-operation timeout would fail exactly the documents
+// streaming exists for, and would fail them with the browser-side handle still
+// held, because the close would run on the context that had just expired.
 func (m *Manager) CapturePDFStream(ctx context.Context) (io.ReadCloser, error) {
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabCtx, err := m.tabContextFor(ctx)
 	if err != nil {
 		return nil, err
 	}
-	released := false
-	defer func() {
-		if !released {
-			cancel()
-		}
-	}()
 
 	var handle cdpio.StreamHandle
-	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(runCtx context.Context) error {
+	if err := m.runPDFStreamOp(tabCtx, func(runCtx context.Context) error {
 		_, stream, printErr := page.PrintToPDF().
 			WithPrintBackground(true).
 			WithTransferMode(page.PrintToPDFTransferModeReturnAsStream).
@@ -52,15 +49,15 @@ func (m *Manager) CapturePDFStream(ctx context.Context) (io.ReadCloser, error) {
 		}
 		handle = stream
 		return nil
-	})); err != nil {
+	}); err != nil {
 		return nil, err
 	}
 	if handle == "" {
 		return nil, errors.New("browser returned no PDF stream handle")
 	}
-	released = true
 	return &cdpStreamReader{
 		handle: handle,
+		chunk:  m.pdfStreamChunkBytes(),
 		read: func(h cdpio.StreamHandle, size int64) (string, bool, bool, error) {
 			// IO.read is executed directly rather than through the generated
 			// helper, whose Do discards the base64Encoded flag. A PDF stream is
@@ -68,20 +65,41 @@ func (m *Manager) CapturePDFStream(ctx context.Context) (io.ReadCloser, error) {
 			// reported keeps this correct for any stream that is not.
 			var result cdpio.ReadReturns
 			params := cdpio.Read(h).WithSize(size)
-			if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(c context.Context) error {
+			if err := m.runPDFStreamOp(tabCtx, func(c context.Context) error {
 				return cdp.Execute(c, cdpio.CommandRead, params, &result)
-			})); err != nil {
+			}); err != nil {
 				return "", false, false, err
 			}
 			return result.Data, result.Base64encoded, result.EOF, nil
 		},
 		closeStream: func() error {
-			return chromedp.Run(tabCtx, chromedp.ActionFunc(func(runCtx context.Context) error {
+			// A fresh budget on the tab context, never the one the failed read ran
+			// under: a capture that timed out or was cancelled must still release
+			// the handle, which is precisely when it is most likely to leak.
+			return m.runPDFStreamOp(tabCtx, func(runCtx context.Context) error {
 				return cdpio.Close(handle).Do(runCtx)
-			}))
+			})
 		},
-		release: cancel,
 	}, nil
+}
+
+// runPDFStreamOp executes one CDP round trip under its own deadline derived
+// from the tab context.
+func (m *Manager) runPDFStreamOp(tabCtx context.Context, fn func(context.Context) error) error {
+	opCtx, cancel := context.WithTimeout(tabCtx, m.timeout)
+	defer cancel()
+	return chromedp.Run(opCtx, chromedp.ActionFunc(fn))
+}
+
+// pdfStreamChunkBytes is the chunk size this manager uses. It is a field rather
+// than a package variable so a test can lower it on its own manager and drive
+// the multi-chunk path without a quarter-megabyte document, and without racing
+// any other capture in the process.
+func (m *Manager) pdfStreamChunkBytes() int64 {
+	if m.pdfStreamChunk > 0 {
+		return m.pdfStreamChunk
+	}
+	return PDFStreamChunkBytes
 }
 
 // cdpStreamReader turns a CDP IO stream handle into an io.ReadCloser holding at
@@ -89,9 +107,9 @@ func (m *Manager) CapturePDFStream(ctx context.Context) (io.ReadCloser, error) {
 // large capture without the payload ever existing whole in the daemon heap.
 type cdpStreamReader struct {
 	handle      cdpio.StreamHandle
+	chunk       int64
 	read        func(cdpio.StreamHandle, int64) (string, bool, bool, error)
 	closeStream func() error
-	release     func()
 
 	pending []byte
 	eof     bool
@@ -113,7 +131,7 @@ func (r *cdpStreamReader) Read(p []byte) (int, error) {
 		if r.eof {
 			return 0, io.EOF
 		}
-		data, encoded, eof, err := r.read(r.handle, pdfStreamChunkBytes)
+		data, encoded, eof, err := r.read(r.handle, r.chunk)
 		if err != nil {
 			r.err = err
 			return 0, err
@@ -144,12 +162,8 @@ func (r *cdpStreamReader) Close() error {
 	}
 	r.closed = true
 	r.pending = nil
-	var closeErr error
-	if r.closeStream != nil {
-		closeErr = r.closeStream()
+	if r.closeStream == nil {
+		return nil
 	}
-	if r.release != nil {
-		r.release()
-	}
-	return closeErr
+	return r.closeStream()
 }

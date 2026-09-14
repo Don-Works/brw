@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/chromedp/cdproto/page"
@@ -299,15 +300,92 @@ func SensitiveHeader(name string) bool {
 	return sensitiveHeaderNames[strings.ToLower(strings.TrimSpace(name))]
 }
 
+const redactedValue = "[redacted]"
+
+// sensitiveQueryKeys are query-parameter names whose VALUE is a bare credential.
+// A pre-signed URL carries its credential in the query string rather than in a
+// header, so blanking Authorization while copying ?access_token= verbatim only
+// moves the leak — and the failure evidence bundle is the first path that
+// persists a captured URL to disk. Compared case-insensitively.
+var sensitiveQueryKeys = map[string]bool{
+	"access_token":         true,
+	"refresh_token":        true,
+	"id_token":             true,
+	"auth_token":           true,
+	"session_token":        true,
+	"token":                true,
+	"api_key":              true,
+	"apikey":               true,
+	"client_secret":        true,
+	"password":             true,
+	"passwd":               true,
+	"pwd":                  true,
+	"secret":               true,
+	"signature":            true,
+	"sig":                  true,
+	"sas":                  true,
+	"x-amz-security-token": true,
+	"x-amz-signature":      true,
+	"x-amz-credential":     true,
+	"x-goog-signature":     true,
+}
+
+// redactURLCredentials blanks credentials carried in the URL itself: userinfo,
+// and the value of any query parameter on the denylist. The parameter NAME
+// survives, for the same reason the header name does — that the request was
+// signed is usually the diagnosis; the signature never is.
+func redactURLCredentials(raw string) string {
+	if !strings.ContainsAny(raw, "?@") {
+		return raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		// Its structure cannot be reasoned about, so keep only the part in front
+		// of the query string, which is where a signed URL puts its credential.
+		if cut := strings.IndexByte(raw, '?'); cut >= 0 {
+			return raw[:cut] + "?" + redactedValue
+		}
+		return raw
+	}
+	changed := false
+	if parsed.User != nil {
+		parsed.User = url.User(redactedValue)
+		changed = true
+	}
+	if parsed.RawQuery != "" {
+		query := parsed.Query()
+		for key, values := range query {
+			if !sensitiveQueryKeys[strings.ToLower(strings.TrimSpace(key))] {
+				continue
+			}
+			for index := range values {
+				values[index] = redactedValue
+			}
+			changed = true
+		}
+		if changed {
+			// Encoding reorders and re-escapes, so it runs only when something was
+			// actually redacted; an ordinary URL comes back byte-identical.
+			parsed.RawQuery = query.Encode()
+		}
+	}
+	if !changed {
+		return raw
+	}
+	return parsed.String()
+}
+
 // RedactCapturedCredentials blanks the VALUE of any sensitive request header in
 // place while keeping the header NAME, so a captured request still shows that it
 // carried e.g. an Authorization header (useful for debugging) without exposing the
-// credential itself. Applied by both transports before captured requests leave the
-// process. The request body is intentionally left untouched — it is the payload
-// the caller explicitly asked to inspect, and field-level body redaction cannot be
-// done safely without a schema.
+// credential itself, and does the same for a credential carried in the URL's
+// userinfo or query string. Applied by both transports before captured requests
+// leave the process. The request body is intentionally left untouched — it is the
+// payload the caller explicitly asked to inspect, and field-level body redaction
+// cannot be done safely without a schema.
 func RedactCapturedCredentials(requests []CapturedRequest) []CapturedRequest {
 	for i := range requests {
+		requests[i].URL = redactURLCredentials(requests[i].URL)
 		RedactSensitiveHeaders(requests[i].RequestHeaders)
 	}
 	return requests

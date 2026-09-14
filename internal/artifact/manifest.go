@@ -49,7 +49,13 @@ const maxManifestReasonBytes = 500
 
 // PutManifest stores a manifest as its own artifact. The manifest expires with
 // the parts it names, so a handle can never outlive the evidence it points at.
-func (s *Store) PutManifest(ctx context.Context, manifest Manifest, ttl time.Duration) (Meta, error) {
+//
+// encrypt is the same per-capture decision the parts were stored under. The
+// manifest is not an index of harmless names: Reason carries up to 500 bytes of
+// the failing step's error text, alongside the recipe id, version and step. A
+// bundle whose parts are encrypted and whose manifest is not is not an
+// encrypted bundle.
+func (s *Store) PutManifest(ctx context.Context, manifest Manifest, ttl time.Duration, encrypt bool) (Meta, error) {
 	if len(manifest.Entries) == 0 && len(manifest.Missing) == 0 {
 		return Meta{}, errors.New("failure manifest has no entries")
 	}
@@ -60,6 +66,6 @@ func (s *Store) PutManifest(ctx context.Context, manifest Manifest, ttl time.Dur
 	}
 	return s.PutContext(ctx, PutOptions{
 		Kind: "manifest", MIMEType: "application/json", TTL: ttl,
-		Redaction: "failure-bundle",
+		Redaction: "failure-bundle", Encrypt: encrypt,
 	}, bytes.NewReader(data))
 }

@@ -1972,7 +1972,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		return toolJSON(api.RunRecipe(ctx, req.RunRequest))
+		return toolJSONWithFailureDetail(api.RunRecipe(ctx, req.RunRequest))
 	case "brw_trace":
 		var req struct {
 			Format        string `json:"format"`
@@ -2141,6 +2141,46 @@ func evaluateResult(value any, err error, offset, maxBytes int) (any, *rpcError)
 	return map[string]any{
 		"content": []toolContent{{Type: "text", Text: window + marker}},
 	}, nil
+}
+
+// toolJSONWithFailureDetail is toolJSON for a tool whose failure still carries a
+// structured result. brw_recipe_run's failure_bundle_artifact_id exists only on
+// the error path, so returning the message alone — which is all toolError does —
+// would leave the field the tool description promises unreachable over MCP. The
+// text content stays the error message; the result is attached as
+// structuredContent alongside any transport classification.
+func toolJSONWithFailureDetail[T any](value T, err error) (any, *rpcError) {
+	if err == nil {
+		return toolJSON(value, nil)
+	}
+	out, ok := toolError(err).(map[string]any)
+	if !ok {
+		return toolError(err), nil
+	}
+	data, marshalErr := json.Marshal(value)
+	if marshalErr != nil || !isJSONObject(data) {
+		return out, nil
+	}
+	var fields map[string]any
+	if json.Unmarshal(data, &fields) != nil {
+		return out, nil
+	}
+	structured, _ := out["structuredContent"].(map[string]any)
+	if structured == nil {
+		structured = map[string]any{}
+	}
+	// The classification toolError attached wins: "error" there is a stable
+	// machine code, not the message.
+	for name, field := range fields {
+		if _, taken := structured[name]; !taken {
+			structured[name] = field
+		}
+	}
+	if _, taken := structured["message"]; !taken {
+		structured["message"] = err.Error()
+	}
+	out["structuredContent"] = structured
+	return out, nil
 }
 
 func toolJSON[T any](value T, err error) (any, *rpcError) {
@@ -2792,7 +2832,7 @@ func tools() []map[string]any {
 			"ttl_seconds":   integerSchema("Optional shorter retention. Cannot exceed the browser-host store policy."),
 			"tab_id":        stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"kind"})),
-		tool("brw_artifact_info", "Return payload-free metadata for an artifact: kind, MIME type, byte size, SHA-256, creation/expiry, source hash, and whether the blob is encrypted at rest. Kind manifest is a failure evidence bundle index and kind evidence is one collected part of one; both are produced by a failed recipe run, not by brw_artifact_capture.", object(map[string]any{
+		tool("brw_artifact_info", "Return payload-free metadata for an artifact: kind, MIME type, byte size, creation/expiry, source hash, and whether the blob is encrypted at rest. sha256 is the digest of the stored bytes and is present only when the blob is NOT encrypted: a plaintext digest beside a ciphertext would let anyone who can read the store confirm a guessed payload. Kind manifest is a failure evidence bundle index and kind evidence is one collected part of one; both are produced by a failed recipe run, not by brw_artifact_capture.", object(map[string]any{
 			"artifact_id": stringSchema("Opaque artifact_id returned by brw_artifact_capture."),
 		}, []string{"artifact_id"})),
 		tool("brw_artifact_read", "Read one bounded window from a browser-host artifact. Text/JSON returns UTF-8; binary returns base64 only when explicitly requested here. Page with next_offset instead of loading the whole artifact into context.", object(map[string]any{

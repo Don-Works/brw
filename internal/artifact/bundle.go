@@ -202,9 +202,26 @@ func (s *Service) CaptureFailureBundle(ctx context.Context, opts FailureBundleOp
 		RecipeVersion: opts.RecipeVersion,
 		FailedStep:    opts.FailedStep,
 	}
+	// One main-document probe for the whole bundle. Every part below whose bytes
+	// come from the loaded document is checked against the recipe origin
+	// boundary, so a run that navigated off the allowlist before failing cannot
+	// have that page's console lines or request URLs collected into evidence.
+	// Probing once costs one round trip instead of one per part.
+	capture := bundleCapture{ttl: ttl, encrypt: encrypt}
+	continuity, continuityErr := s.beginRecipeCapture(ctx)
+	capture.continuity = continuity
+
 	var parts []bundlePart
 	for _, collector := range s.bundleCollectors() {
-		meta, err := collector.collect(s, ctx, ttl, encrypt)
+		if collector.pageDerived && continuityErr != nil {
+			// Do not even ask the browser: the answer would be bytes from a
+			// document this run is not allowed to capture.
+			manifest.Missing = append(manifest.Missing, MissingPart{
+				Role: collector.role, Reason: bundleFailureReason(continuityErr),
+			})
+			continue
+		}
+		meta, err := collector.collect(s, ctx, capture)
 		if err != nil {
 			manifest.Missing = append(manifest.Missing, MissingPart{
 				Role: collector.role, Reason: bundleFailureReason(err),
@@ -217,7 +234,7 @@ func (s *Service) CaptureFailureBundle(ctx context.Context, opts FailureBundleOp
 			MIMEType: meta.MIMEType, SizeBytes: meta.SizeBytes, ExpiresAt: meta.ExpiresAt,
 		})
 	}
-	meta, err := s.store.PutManifest(ctx, manifest, ttl)
+	meta, err := s.store.PutManifest(ctx, manifest, ttl, encrypt)
 	if err != nil {
 		// Parts with no manifest are unreachable bytes that would sit out their
 		// whole TTL: nothing knows their ids.
@@ -229,29 +246,43 @@ func (s *Service) CaptureFailureBundle(ctx context.Context, opts FailureBundleOp
 	return meta, nil
 }
 
+// bundleCapture is what every collector needs: the evidence retention, the
+// at-rest decision, and the main-document identity the page-derived parts are
+// checked against.
+type bundleCapture struct {
+	ttl        time.Duration
+	encrypt    bool
+	continuity *recipeCaptureContinuity
+}
+
 type bundleCollector struct {
-	role    string
-	collect func(*Service, context.Context, time.Duration, bool) (Meta, error)
+	role string
+	// pageDerived marks a part whose bytes come out of the loaded document, so
+	// it is subject to the recipe origin boundary. The action trace is brw's own
+	// record of the actions it performed and is not gated on where the page
+	// ended up.
+	pageDerived bool
+	collect     func(*Service, context.Context, bundleCapture) (Meta, error)
 }
 
 func (s *Service) bundleCollectors() []bundleCollector {
 	return []bundleCollector{
 		{role: "action_trace", collect: (*Service).captureBundleTrace},
-		{role: "console", collect: (*Service).captureBundleConsole},
-		{role: "network", collect: (*Service).captureBundleNetwork},
-		{role: "semantic_snapshot", collect: (*Service).captureBundleSnapshot},
-		{role: "screenshot", collect: (*Service).captureBundleScreenshot},
+		{role: "console", pageDerived: true, collect: (*Service).captureBundleConsole},
+		{role: "network", pageDerived: true, collect: (*Service).captureBundleNetwork},
+		{role: "semantic_snapshot", pageDerived: true, collect: (*Service).captureBundleSnapshot},
+		{role: "screenshot", pageDerived: true, collect: (*Service).captureBundleScreenshot},
 	}
 }
 
-func (s *Service) putEvidence(ctx context.Context, value any, ttl time.Duration, encrypt bool) (Meta, error) {
+func (s *Service) putEvidence(ctx context.Context, value any, capture bundleCapture) (Meta, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return Meta{}, err
 	}
 	return s.store.PutContext(ctx, PutOptions{
-		Kind: "evidence", MIMEType: "application/json", TTL: ttl,
-		Redaction: "failure-bundle", Encrypt: encrypt,
+		Kind: "evidence", MIMEType: "application/json", TTL: capture.ttl,
+		Redaction: "failure-bundle", Encrypt: capture.encrypt,
 	}, bytes.NewReader(data))
 }
 
@@ -263,7 +294,7 @@ type BundleTrace struct {
 	Returned int                  `json:"returned"`
 }
 
-func (s *Service) captureBundleTrace(ctx context.Context, ttl time.Duration, encrypt bool) (Meta, error) {
+func (s *Service) captureBundleTrace(ctx context.Context, capture bundleCapture) (Meta, error) {
 	trace := s.browser.GetTrace()
 	tabID := browser.TabIDFromContext(ctx)
 	entries := make([]browser.TraceEntry, 0, len(trace.Entries))
@@ -285,7 +316,7 @@ func (s *Service) captureBundleTrace(ctx context.Context, ttl time.Duration, enc
 	if len(entries) > maxBundleTraceEntries {
 		entries = entries[len(entries)-maxBundleTraceEntries:]
 	}
-	return s.putEvidence(ctx, BundleTrace{Entries: entries, Total: total, Returned: len(entries)}, ttl, encrypt)
+	return s.putEvidence(ctx, BundleTrace{Entries: entries, Total: total, Returned: len(entries)}, capture)
 }
 
 // BundleConsole is a summary, not a dump: level counts for the whole buffer and
@@ -297,9 +328,15 @@ type BundleConsole struct {
 	Messages []browser.ConsoleMessage `json:"messages"`
 }
 
-func (s *Service) captureBundleConsole(ctx context.Context, ttl time.Duration, encrypt bool) (Meta, error) {
+func (s *Service) captureBundleConsole(ctx context.Context, capture bundleCapture) (Meta, error) {
 	messages, err := s.browser.ConsoleMessages(ctx)
 	if err != nil {
+		return Meta{}, err
+	}
+	// Console text is whatever document is loaded now, and it arrives with no URL
+	// of its own, so the boundary is checked the only way it can be: the main
+	// document was in bounds before the collectors ran and still is.
+	if err := capture.continuity.verify(ctx); err != nil {
 		return Meta{}, err
 	}
 	counts := map[string]int{}
@@ -313,7 +350,7 @@ func (s *Service) captureBundleConsole(ctx context.Context, ttl time.Duration, e
 	}
 	return s.putEvidence(ctx, BundleConsole{
 		Counts: counts, Total: total, Returned: len(messages), Messages: messages,
-	}, ttl, encrypt)
+	}, capture)
 }
 
 // BundleNetworkEntry is metadata only. Request and response bodies are dropped
@@ -340,9 +377,14 @@ type BundleNetwork struct {
 	Returned int                  `json:"returned"`
 }
 
-func (s *Service) captureBundleNetwork(ctx context.Context, ttl time.Duration, encrypt bool) (Meta, error) {
+func (s *Service) captureBundleNetwork(ctx context.Context, capture bundleCapture) (Meta, error) {
 	captured, err := s.browser.NetworkCapture(ctx, "")
 	if err != nil {
+		return Meta{}, err
+	}
+	// Request URLs are page-derived bytes like any other, so they are gated on
+	// the same main-document boundary as the snapshot and the screenshot.
+	if err := capture.continuity.verify(ctx); err != nil {
 		return Meta{}, err
 	}
 	// The shared denylist first, so a header this bundle chooses to keep can
@@ -374,10 +416,10 @@ func (s *Service) captureBundleNetwork(ctx context.Context, ttl time.Duration, e
 	}
 	return s.putEvidence(ctx, BundleNetwork{
 		Requests: requests, Total: total, Returned: len(requests),
-	}, ttl, encrypt)
+	}, capture)
 }
 
-func (s *Service) captureBundleSnapshot(ctx context.Context, ttl time.Duration, encrypt bool) (Meta, error) {
+func (s *Service) captureBundleSnapshot(ctx context.Context, capture bundleCapture) (Meta, error) {
 	snap, err := s.browser.Snapshot(ctx, snapshot.SnapshotOptions{Mode: "all", ViewportOnly: false})
 	if err != nil {
 		return Meta{}, err
@@ -390,22 +432,19 @@ func (s *Service) captureBundleSnapshot(ctx context.Context, ttl time.Duration, 
 		return Meta{}, err
 	}
 	return s.store.PutContext(ctx, PutOptions{
-		Kind: "semantic_json", MIMEType: "application/json", TTL: ttl,
+		Kind: "semantic_json", MIMEType: "application/json", TTL: capture.ttl,
 		SourceHash: sourceHash(snap.URL, snap.Title), Redaction: "failure-bundle",
-		Encrypt: encrypt,
+		Encrypt: capture.encrypt,
 	}, bytes.NewReader(data))
 }
 
-func (s *Service) captureBundleScreenshot(ctx context.Context, ttl time.Duration, encrypt bool) (Meta, error) {
-	// The screenshot carries no URL of its own, so the recipe origin boundary is
-	// checked the only way it can be: identity before and after the capture.
-	continuity, err := s.beginRecipeCapture(ctx)
-	if err != nil {
-		return Meta{}, err
-	}
-	var shot browser.Screenshot
-	if capture, ok := s.browser.(rawScreenshotCapturer); ok {
-		shot, err = capture.CaptureArtifactScreenshot(ctx, "")
+func (s *Service) captureBundleScreenshot(ctx context.Context, capture bundleCapture) (Meta, error) {
+	var (
+		shot browser.Screenshot
+		err  error
+	)
+	if capturer, ok := s.browser.(rawScreenshotCapturer); ok {
+		shot, err = capturer.CaptureArtifactScreenshot(ctx, "")
 	} else {
 		shot, err = s.browser.Screenshot(ctx)
 	}
@@ -416,12 +455,14 @@ func (s *Service) captureBundleScreenshot(ctx context.Context, ttl time.Duration
 	if err != nil {
 		return Meta{}, err
 	}
-	if err := continuity.verify(ctx); err != nil {
+	// The screenshot carries no URL of its own, so the recipe origin boundary is
+	// checked the only way it can be: identity before and after the capture.
+	if err := capture.continuity.verify(ctx); err != nil {
 		return Meta{}, err
 	}
 	return s.store.PutContext(ctx, PutOptions{
-		Kind: "screenshot", MIMEType: shot.MIMEType, TTL: ttl,
-		Redaction: "failure-bundle", Encrypt: encrypt,
+		Kind: "screenshot", MIMEType: shot.MIMEType, TTL: capture.ttl,
+		Redaction: "failure-bundle", Encrypt: capture.encrypt,
 	}, bytes.NewReader(data))
 }
 

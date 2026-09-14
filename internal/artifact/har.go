@@ -215,11 +215,17 @@ func BuildHAR(requests []snapshot.CapturedRequest, pageURL, pageTitle, version s
 		entries = append(entries, entry)
 	}
 
-	comment := "Exported by brw. Response bodies are capture snippets, not full bodies."
+	// The transport blanks credential headers and URL-borne credentials before a
+	// capture ever reaches here, so redaction=none cannot restore those; it
+	// restores the request BODY, which the transport does not touch. Saying
+	// otherwise would tell a reader a redacted export is safer than it is, and a
+	// raw one more complete than it is.
+	comment := "Exported by brw. Response bodies are capture snippets, not full bodies. " +
+		"Credential-bearing request headers and credentials carried in a URL are always withheld by the capture transport."
 	if redact {
-		comment += " Credential-bearing headers and request bodies are redacted; pass redaction=none to export them."
+		comment += " Request bodies are redacted too; pass redaction=none to export them."
 	} else {
-		comment += " REDACTION DISABLED: this file may contain cookies, tokens and request bodies."
+		comment += " REDACTION DISABLED: request bodies are exported in full and may contain credentials."
 	}
 	return harLog{Log: harLogBody{
 		Version: "1.2",

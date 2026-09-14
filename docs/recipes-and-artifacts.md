@@ -243,20 +243,34 @@ or temporary directory are rejected: give the store a dedicated subdirectory.
 
 Identical payloads are stored once. A second capture of the same bytes adopts
 the copy already on disk, so repeating a capture costs a handle rather than the
-payload again, and the quota is charged once. The handles stay separate objects:
-each keeps its own random id, its own metadata and its own expiry, and deleting
-one does not disturb the other. Ids are random 128-bit values either way, so
-dedup does not make the store answer "have these bytes been captured?" to anyone
-who can guess a payload.
+payload again. The handles stay separate objects: each keeps its own random id,
+its own metadata and its own expiry, and deleting one does not disturb the other.
+Ids are random 128-bit values either way, so dedup does not make the store answer
+"have these bytes been captured?" to anyone who can guess a payload.
+
+The quota charges by on-disk identity rather than by digest, so a copy that could
+not be shared — a filesystem without hard links, or a store written before dedup
+existed — is charged for what it really occupies, as is a blob a crash stranded
+without its metadata. A capture the store can adopt is admitted even when the
+quota has no room for a second copy, because adopting it costs nothing. Deciding
+that needs the payload hashed, so a capture is written to a staging file before
+the quota rules on it: the root can transiently hold one `--artifact-max-mb` more
+than `--artifact-total-mb`.
 
 A rendered PDF is pulled from the browser as a stream (`Page.printToPDF` with
 `transferMode=ReturnAsStream`, then chunked `IO.read`) and written straight to
-the store, so the daemon holds one chunk rather than the whole document. A 50 MiB
-capture measured 61 KiB of heap growth against 52 MiB for the buffered path. A
-captured download is streamed from its completed file for the same reason; CDP
-has no stream handle for downloads, so the staged file is the stream. Both
-first-party transports implement the streaming capability; an upstream
-controller that cannot stream still produces a PDF through the buffered path.
+the store, so the daemon holds one chunk rather than the whole document. Driving
+a 50 MiB payload through the capture path from a synthetic in-process source
+measured 61 KiB of Go heap growth, against 52 MiB for the buffered path on the
+same payload; the CDP transport itself is exercised chunk by chunk against real
+Chrome rather than at that size. Each CDP round trip carries its own deadline,
+so a long transfer is bounded per read rather than by one wall clock covering
+the render and the whole document, and the browser-side stream handle is
+released even when the capture was cancelled or timed out. A captured download
+is streamed from its completed file for the same reason; CDP has no stream
+handle for downloads, so the staged file is the stream. Both first-party
+transports implement the streaming capability; an upstream controller that
+cannot stream still produces a PDF through the buffered path.
 
 Artifacts can be encrypted at rest with `--artifact-encrypt off|recipe|all` and
 an operator key file given by `--artifact-key-file`. The default is off, and
@@ -268,7 +282,12 @@ derived from the store key, so a bounded read decrypts only its window and a
 truncated or modified blob fails authentication rather than returning a prefix.
 Encrypted blobs are deliberately excluded from dedup: recognising a duplicate
 would mean producing identical ciphertext for identical plaintext, which is the
-equivalence encrypting a sensitive capture exists to hide.
+equivalence encrypting a sensitive capture exists to hide. For the same reason
+an encrypted artifact records no plaintext SHA-256 — `brw_artifact_info` returns
+none for it — because a digest sitting unencrypted beside the ciphertext would
+let anyone who can read the store confirm a payload they can guess, and see that
+two encrypted artifacts hold the same bytes. The AEAD already authenticates the
+blob chunk by chunk, so the digest bought nothing it does not already provide.
 
 ## Failure evidence bundles
 
@@ -279,21 +298,31 @@ running the recipe again with tracing on and hoping the failure reproduces. With
 just failed: the redacted action trace, a console summary, bounded network
 metadata, the semantic snapshot, and a screenshot. Each part is a separate
 artifact with its own expiry, and the failed call returns only the manifest
-artifact id — in `failure_bundle_artifact_id` and named in the error text.
+artifact id. It arrives as `failure_bundle_artifact_id` on the run result — which
+a failed call returns alongside its error on every transport — and is named in
+the error text as well.
 
 Read the manifest with `brw_artifact_read`; it lists artifact ids, kinds, sizes
 and expiries, never payloads. Parts that could not be collected are listed too,
 with the class of failure, so a bundle missing its screenshot cannot be mistaken
-for a page that had none. Network metadata drops request and response bodies
-outright and removes every header on the shared credential denylist, recording
-only that such a header was present. The collection runs on its own 20-second
+for a page that had none. Every part whose bytes come out of the loaded document
+— the console summary, the network metadata, the snapshot and the screenshot —
+is checked against the recipe's origin allowlist before it is collected, so a
+run that navigated away before failing records those parts as uncollected rather
+than capturing the page it ended up on. The action trace is brw's own record of
+what it did and is always collected. Network metadata drops request and response
+bodies outright, removes every header on the shared credential denylist
+(recording only that such a header was present), and blanks a credential carried
+in a URL's userinfo or query string. The collection runs on its own 20-second
 budget detached from the run's deadline, because a run that timed out is a
 common reason to want the evidence.
 
 Evidence retention is `--artifact-failure-bundle-ttl` (default one hour,
 clamped to `--artifact-ttl`), shorter than an ordinary capture because it is the
 most sensitive thing the store holds. Under `--artifact-encrypt recipe` the
-whole bundle from a private-recipe run is encrypted at rest.
+whole bundle from a private-recipe run is encrypted at rest, the manifest
+included: it carries the failing step's error text, so a bundle whose parts are
+encrypted and whose manifest is not is not an encrypted bundle.
 
 Both switches are off by default and both must agree: collection costs a browser
 round trip per part on a page that has just misbehaved, and the daemon policy

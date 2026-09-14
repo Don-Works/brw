@@ -59,9 +59,10 @@ a tool returns `ref not found` or `not actionable`, the page changed — call
   browser host without returning it. Search it with `brw_artifact_search`, or
   page only the needed bytes with `brw_artifact_read`. The same pattern works
   for semantic JSON, screenshots, PDF, downloads, bounded video, and `har`
-  (the tab's captured traffic as a HAR 1.2 file for DevTools or a bug report,
-  with credential headers and request bodies redacted unless you pass
-  `redaction:"none"`).
+  (the tab's captured traffic as a HAR 1.2 file for DevTools or a bug report;
+  credential headers and credentials carried in a URL are withheld by the
+  capture itself and `redaction:"none"` cannot restore them, request bodies are
+  redacted unless you pass it).
 
 ## Reusing a known site workflow
 

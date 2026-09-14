@@ -554,7 +554,25 @@ func (s *Server) runRecipe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.recipes.RunRecipe(s.contextWithTabID(r.Context(), req.TabID), req.RunRequest)
-	writeResult(w, result, err)
+	writeRunResult(w, result, err)
+}
+
+// writeRunResult keeps the run result in the failure body. A failed run is the
+// ONLY run that carries failure_bundle_artifact_id, so reducing the failure to
+// its message — which is what the ordinary error writer does — would make the
+// evidence bundle unreachable through this transport while the tool description
+// says it is reported.
+func writeRunResult(w http.ResponseWriter, result recipe.RunResult, err error) {
+	if err == nil {
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	w.Header().Set(usagelog.HeaderErrorClass, usagelog.ClassifyError(err))
+	w.Header().Set(usagelog.HeaderErrorFingerprint, usagelog.Fingerprint(err.Error()))
+	writeJSON(w, http.StatusBadRequest, struct {
+		recipe.RunResult
+		Error string `json:"error"`
+	}{RunResult: result, Error: err.Error()})
 }
 
 func (s *Server) requestContext(r *http.Request) context.Context {

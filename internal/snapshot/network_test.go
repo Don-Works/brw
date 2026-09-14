@@ -708,3 +708,53 @@ func TestRedactCapturedCredentials(t *testing.T) {
 	// A nil-headers request must not panic.
 	_ = RedactCapturedCredentials([]CapturedRequest{{URL: "https://x/"}})
 }
+
+// TestRedactCapturedCredentialsBlanksURLBorneCredentials covers the other place
+// a credential travels. A pre-signed URL carries it in the query string, and the
+// failure evidence bundle persists captured URLs to disk with a TTL, so a URL
+// copied verbatim is a credential written to the filesystem.
+func TestRedactCapturedCredentialsBlanksURLBorneCredentials(t *testing.T) {
+	const credential = "fixture-url-credential-one"
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "ordinary url is byte-identical",
+			url:  "https://api.example.com/v1/orders?page=2&sort=date",
+			want: "https://api.example.com/v1/orders?page=2&sort=date",
+		},
+		{
+			name: "signed query parameter",
+			url:  "https://files.example.com/statement.pdf?access_token=" + credential + "&page=1",
+			want: "https://files.example.com/statement.pdf?access_token=%5Bredacted%5D&page=1",
+		},
+		{
+			name: "case-insensitive key",
+			url:  "https://files.example.com/x?Sig=" + credential,
+			want: "https://files.example.com/x?Sig=%5Bredacted%5D",
+		},
+		{
+			name: "userinfo",
+			url:  "https://user:" + credential + "@api.example.com/v1",
+			want: "https://%5Bredacted%5D@api.example.com/v1",
+		},
+		{
+			name: "unparseable url keeps nothing after the query",
+			url:  "https://exa mple.com/x?access_token=" + credential,
+			want: "https://exa mple.com/x?[redacted]",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			out := RedactCapturedCredentials([]CapturedRequest{{Method: "GET", URL: test.url}})
+			if out[0].URL != test.want {
+				t.Fatalf("url = %q, want %q", out[0].URL, test.want)
+			}
+			if strings.Contains(out[0].URL, credential) {
+				t.Fatalf("credential survived into the captured url: %q", out[0].URL)
+			}
+		})
+	}
+}

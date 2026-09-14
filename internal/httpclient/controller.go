@@ -27,8 +27,14 @@ import (
 )
 
 const (
-	maxUpstreamResponseBytes       = int64(64 << 20)
-	maxUpstreamErrorBytes          = 8 << 10
+	maxUpstreamResponseBytes = int64(64 << 20)
+	maxUpstreamErrorBytes    = 8 << 10
+	// maxCapturedFailureBytes bounds a refused body that carries a structured
+	// verdict rather than a message. 8 KiB is the right ceiling for error text
+	// but truncates a 500-step run result, and a truncated body is not decoded
+	// at all — which is how failure_bundle_artifact_id would go missing on
+	// exactly the long runs most worth diagnosing.
+	maxCapturedFailureBytes        = 256 << 10
 	maxArtifactInfoResponseBytes   = int64(64 << 10)
 	maxArtifactReadResponseBytes   = int64(8 << 20)
 	maxArtifactSearchResponseBytes = int64(1 << 20)
@@ -693,7 +699,11 @@ func (c *Controller) RunRecipe(ctx context.Context, request recipe.RunRequest) (
 	// Keep caller context cancellation authoritative while preventing the proxy
 	// client from terminating a still-valid recipe at 20 seconds.
 	client := withMinimumTimeout(c.client, recipe.DefaultMaxRunDuration+30*time.Second)
-	err := c.postWithClient(ctx, client, "/api/recipes/run", request, &out)
+	// A failed run answers 400 with the result still in the body, because that is
+	// where failure_bundle_artifact_id lives. Decoding it keeps the RunResult
+	// contract — a populated result AND an error — the same on both sides of the
+	// proxy as it is on direct CDP.
+	err := c.postWithClient(ctx, client, "/api/recipes/run", request, failureCapture{Into: &out})
 	return out, err
 }
 
@@ -800,6 +810,9 @@ func (c *Controller) doRequestWithLimit(client *http.Client, req *http.Request, 
 		// Error text is diagnostic, not a data result. Never read tens of MiB only
 		// to throw almost all of it away after allocation.
 		limit = maxUpstreamErrorBytes
+		if capturing {
+			limit = maxCapturedFailureBytes
+		}
 	}
 	if resp.ContentLength > limit && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return upstreamResponseBoundError(maxResponseBytes)

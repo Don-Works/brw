@@ -281,6 +281,10 @@ type Manager struct {
 	// write by ReleaseTakeover, so a release cannot land between the token check
 	// and the event reaching the renderer.
 	takeoverDispatchMu sync.RWMutex
+
+	// pdfStreamChunk overrides PDFStreamChunkBytes for this manager. Zero means
+	// the default; see Manager.pdfStreamChunkBytes.
+	pdfStreamChunk int64
 }
 
 // SetNavigationPolicy installs the controller-level policy used for defense in
@@ -3224,6 +3228,22 @@ func (m *Manager) runBrowser(ctx context.Context, fn func(context.Context) error
 		}
 		return fn(cdp.WithExecutor(ctx, c.Browser))
 	}))
+}
+
+// tabContextFor resolves the target tab and returns the manager-owned context
+// for it, with no wall-clock deadline of its own. It is for an operation that
+// spans many CDP round trips (a streamed capture) and must budget each one
+// separately; everything else wants activeContext, which adds the standard
+// per-operation timeout.
+func (m *Manager) tabContextFor(ctx context.Context) (context.Context, error) {
+	tabID := tabIDFromCtx(ctx)
+	if tabID == "" {
+		var err error
+		if tabID, err = m.ensureActive(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return m.tabContext(tabID)
 }
 
 func (m *Manager) activeContext(ctx context.Context) (string, context.Context, context.CancelFunc, error) {

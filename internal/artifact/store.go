@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"mime"
 	"os"
@@ -34,11 +35,17 @@ const (
 
 // Meta is deliberately payload-free and safe to return from MCP and HTTP.
 type Meta struct {
-	ID        string    `json:"artifact_id"`
-	Kind      string    `json:"kind"`
-	MIMEType  string    `json:"mime_type"`
-	SizeBytes int64     `json:"size_bytes"`
-	SHA256    string    `json:"sha256"`
+	ID        string `json:"artifact_id"`
+	Kind      string `json:"kind"`
+	MIMEType  string `json:"mime_type"`
+	SizeBytes int64  `json:"size_bytes"`
+	// SHA256 is the digest of the PLAINTEXT, and is recorded only for a blob
+	// stored in the clear. Beside a ciphertext it is an oracle: anyone who can
+	// read the artifact root could confirm a guessed payload, and could see that
+	// two encrypted artifacts hold identical bytes — the equality that excluding
+	// encrypted blobs from dedup exists to hide. An encrypted blob is
+	// authenticated chunk by chunk by its AEAD tags, so nothing is lost.
+	SHA256    string    `json:"sha256,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	// Encrypted reports at-rest encryption. It is metadata about storage, not
@@ -111,6 +118,10 @@ type Store struct {
 	key              []byte
 	now              func() time.Time
 	mu               sync.Mutex
+	// staging names the temporary files a Put is currently writing. The payload
+	// is copied outside the lock, so without this reconcileOrphansLocked would be
+	// free to reclaim a live staging file once a slow transfer passed orphanGrace.
+	staging map[string]bool
 }
 
 var artifactIDPattern = regexp.MustCompile(`^art_[0-9a-f]{32}$`)
@@ -194,6 +205,7 @@ func NewStore(config Config) (*Store, error) {
 	store := &Store{
 		root: resolved, maxArtifactBytes: config.MaxArtifactBytes,
 		maxTotalBytes: config.MaxTotalBytes, ttl: config.TTL, key: key, now: time.Now,
+		staging: map[string]bool{},
 	}
 	if err := store.reconcileOrphansLocked(); err != nil {
 		return nil, fmt.Errorf("reconcile artifact cache: %w", err)
@@ -247,6 +259,22 @@ func (s *Store) PutContext(ctx context.Context, opts PutOptions, src io.Reader) 
 		return Meta{}, errors.New("artifact encryption was requested but this store has no encryption key")
 	}
 
+	// The payload is written OUTSIDE the store lock. A capture source is a
+	// browser round trip — a CDP PDF stream, a staged download — so holding the
+	// lock across the copy would stall every Info, Delete, purge and janitor pass
+	// for the whole render-and-transfer.
+	staged, err := s.stagePayload(ctx, opts, src)
+	if err != nil {
+		return Meta{}, err
+	}
+	committed := false
+	defer func() {
+		s.releaseStaging(staged.name)
+		if !committed {
+			_ = os.Remove(staged.name)
+		}
+	}()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.reconcileOrphansLocked(); err != nil {
@@ -256,89 +284,122 @@ func (s *Store) PutContext(ctx context.Context, opts PutOptions, src io.Reader) 
 	if err != nil {
 		return Meta{}, err
 	}
-	remaining := s.maxTotalBytes - bytesUsed(live)
-	if remaining <= 0 {
+	// Quota is enforced here rather than as a read ceiling, so a capture of bytes
+	// the store already holds is admitted even on a full store: committing it is
+	// a hard link and costs nothing. Deciding that needs the digest, and the
+	// digest needs the payload read.
+	source, shared := dedupSource(s, staged.digest, live)
+	if !shared && staged.stored > s.maxTotalBytes-s.bytesUsedLocked(live) {
 		return Meta{}, errors.New("artifact store quota exhausted")
 	}
-	limit := min(s.maxArtifactBytes, remaining)
-
-	tmp, err := os.CreateTemp(s.root, ".artifact-*")
-	if err != nil {
-		return Meta{}, err
-	}
-	tmpName := tmp.Name()
-	committed := false
-	defer func() {
-		_ = tmp.Close()
-		if !committed {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		return Meta{}, err
-	}
-	// The hash always covers the PLAINTEXT, so a handle's sha256 keeps meaning
-	// what a caller expects whether or not the blob is encrypted at rest, and
-	// dedup compares payloads rather than ciphertexts.
-	hash := sha256.New()
-	var sink io.Writer = tmp
-	var encrypter *blobEncrypter
-	if opts.Encrypt {
-		encrypter, err = newBlobEncrypter(tmp, s.key)
-		if err != nil {
-			return Meta{}, err
-		}
-		sink = encrypter
-	}
-	written, err := io.Copy(io.MultiWriter(sink, hash), io.LimitReader(contextReader{ctx: ctx, reader: src}, limit+1))
-	if err != nil {
-		return Meta{}, err
-	}
-	if written > limit {
-		if limit < s.maxArtifactBytes {
-			return Meta{}, errors.New("artifact store quota exhausted")
-		}
-		return Meta{}, fmt.Errorf("artifact exceeds %d-byte limit", s.maxArtifactBytes)
-	}
-	if encrypter != nil {
-		if err := encrypter.Close(); err != nil {
-			return Meta{}, err
-		}
-	}
-	if err := tmp.Sync(); err != nil {
-		return Meta{}, err
-	}
-	stored := written
-	if opts.Encrypt {
-		info, err := tmp.Stat()
-		if err != nil {
-			return Meta{}, err
-		}
-		stored = info.Size()
-	}
-	if err := tmp.Close(); err != nil {
-		return Meta{}, err
-	}
-	digest := hex.EncodeToString(hash.Sum(nil))
-	if err := s.commitBlobLocked(tmpName, id, digest, opts.Encrypt, live); err != nil {
+	if err := s.commitBlobLocked(staged.name, id, source); err != nil {
 		return Meta{}, err
 	}
 	committed = true
 	created := s.now().UTC()
 	meta := Meta{
-		ID: id, Kind: opts.Kind, MIMEType: mediaType, SizeBytes: written,
-		SHA256: digest, CreatedAt: created,
+		ID: id, Kind: opts.Kind, MIMEType: mediaType, SizeBytes: staged.written,
+		SHA256: staged.digest, CreatedAt: created,
 		ExpiresAt: created.Add(retention), SourceHash: opts.SourceHash,
 		Redaction: opts.Redaction, Encrypted: opts.Encrypt,
 	}
-	if stored != written {
-		meta.StoredBytes = stored
+	if staged.stored != staged.written {
+		meta.StoredBytes = staged.stored
 	}
 	if err := s.writeMetaLocked(meta); err != nil {
 		_ = os.Remove(s.blobPath(id))
 		return Meta{}, err
 	}
 	return meta, nil
+}
+
+// stagedPayload is what one unlocked copy produced: the temporary file holding
+// it, the plaintext length, the on-disk length, and the plaintext digest (empty
+// for an encrypted blob, which records none — see Meta.SHA256).
+type stagedPayload struct {
+	name    string
+	written int64
+	stored  int64
+	digest  string
+}
+
+func (s *Store) stagePayload(ctx context.Context, opts PutOptions, src io.Reader) (stagedPayload, error) {
+	tmp, err := os.CreateTemp(s.root, ".artifact-*")
+	if err != nil {
+		return stagedPayload{}, err
+	}
+	name := tmp.Name()
+	s.holdStaging(name)
+	done := false
+	defer func() {
+		_ = tmp.Close()
+		if !done {
+			s.releaseStaging(name)
+			_ = os.Remove(name)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		return stagedPayload{}, err
+	}
+	var sink io.Writer = tmp
+	var encrypter *blobEncrypter
+	var digester hash.Hash
+	if opts.Encrypt {
+		encrypter, err = newBlobEncrypter(tmp, s.key)
+		if err != nil {
+			return stagedPayload{}, err
+		}
+		sink = encrypter
+	} else {
+		digester = sha256.New()
+		sink = io.MultiWriter(tmp, digester)
+	}
+	written, err := io.Copy(sink, io.LimitReader(contextReader{ctx: ctx, reader: src}, s.maxArtifactBytes+1))
+	if err != nil {
+		return stagedPayload{}, err
+	}
+	if written > s.maxArtifactBytes {
+		return stagedPayload{}, fmt.Errorf("artifact exceeds %d-byte limit", s.maxArtifactBytes)
+	}
+	if encrypter != nil {
+		if err := encrypter.Close(); err != nil {
+			return stagedPayload{}, err
+		}
+	}
+	if err := tmp.Sync(); err != nil {
+		return stagedPayload{}, err
+	}
+	stored := written
+	if opts.Encrypt {
+		info, statErr := tmp.Stat()
+		if statErr != nil {
+			return stagedPayload{}, statErr
+		}
+		stored = info.Size()
+	}
+	if err := tmp.Close(); err != nil {
+		return stagedPayload{}, err
+	}
+	staged := stagedPayload{name: name, written: written, stored: stored}
+	if digester != nil {
+		staged.digest = hex.EncodeToString(digester.Sum(nil))
+	}
+	done = true
+	return staged, nil
+}
+
+// holdStaging and releaseStaging bracket a staging file's life so
+// reconcileOrphansLocked can tell a live transfer from crash debris.
+func (s *Store) holdStaging(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.staging[name] = true
+}
+
+func (s *Store) releaseStaging(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.staging, name)
 }
 
 type contextReader struct {
@@ -575,24 +636,60 @@ func validStoredMeta(meta Meta, id string) bool {
 	return meta.ID == id && meta.SizeBytes >= 0 && !meta.ExpiresAt.IsZero()
 }
 
-// bytesUsed charges each distinct stored payload once. Deduplicated handles
-// share one on-disk copy, so summing per-handle sizes would bill the quota for
-// bytes that were never written and would shrink the store for no reason.
-// Blobs whose metadata has already gone (a crash orphan inside its grace
-// window) are not counted; reconcileOrphansLocked reclaims them.
-func bytesUsed(live map[string]Meta) int64 {
-	var total int64
-	counted := make(map[string]bool, len(live))
-	for id, meta := range live {
-		key := "id:" + id
-		if !meta.Encrypted && meta.SHA256 != "" {
-			key = "sha:" + meta.SHA256
+// bytesUsedLocked charges each distinct on-disk object once, asking the
+// filesystem which handles actually share bytes rather than inferring it from
+// digest equality. Dedup is a hard link, so two handles can share one inode —
+// but a link that could not be made (no hard-link support, a source removed
+// under us, a pair written by a brw that predates dedup) is a second real file
+// and has to be charged, or the store believes it holds less than it does and
+// keeps accepting writes past the configured total. A blob whose metadata has
+// gone occupies disk too, and is charged until reconcileOrphansLocked reclaims
+// it.
+func (s *Store) bytesUsedLocked(live map[string]Meta) int64 {
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		// An unreadable root must not read as unlimited free space.
+		var total int64
+		for _, meta := range live {
+			total += meta.storedSize()
 		}
-		if counted[key] {
+		return total
+	}
+	var total int64
+	shared := make(map[string][]os.FileInfo, len(live))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".blob") {
 			continue
 		}
-		counted[key] = true
-		total += meta.storedSize()
+		id := strings.TrimSuffix(name, ".blob")
+		if !artifactIDPattern.MatchString(id) {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			continue
+		}
+		meta, known := live[id]
+		if !known || meta.Encrypted || meta.SHA256 == "" {
+			// Nothing can be hard-linked to these: an orphan has no digest to match
+			// on, and an encrypted blob is never deduplicated.
+			total += info.Size()
+			continue
+		}
+		group := shared[meta.SHA256]
+		duplicate := false
+		for _, existing := range group {
+			if os.SameFile(existing, info) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		shared[meta.SHA256] = append(group, info)
+		total += info.Size()
 	}
 	return total
 }
@@ -628,6 +725,11 @@ func (s *Store) reconcileOrphansLocked() error {
 	for _, entry := range entries {
 		name := entry.Name()
 		path := filepath.Join(s.root, name)
+		if s.staging[path] {
+			// A live transfer, not debris: the payload is copied outside the store
+			// lock, so a slow one can outlive orphanGrace while still being written.
+			continue
+		}
 		stale := false
 		if strings.HasPrefix(name, ".artifact-") || strings.HasPrefix(name, ".meta-") || strings.HasPrefix(name, ".video-") {
 			stale = true

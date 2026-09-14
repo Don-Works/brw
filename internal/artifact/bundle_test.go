@@ -67,6 +67,9 @@ const (
 	bundleCredentialValue   = "fixture-authorization-value-one"
 	bundleBenignHeaderName  = "X-Request-Id"
 	bundleBenignHeaderValue = "fixture-request-id-one"
+	// bundleReasonSentinel stands in for the failing step's error text, which is
+	// the one payload the manifest itself carries.
+	bundleReasonSentinel = "FAILED-STEP-REASON-SENTINEL"
 )
 
 func newBundleService(t *testing.T, store *Store, policy FailureCapturePolicy) (*Service, *bundleFakeBrowser) {
@@ -347,7 +350,7 @@ func TestFailureBundleEncryptsRecipeEvidenceWhenConfigured(t *testing.T) {
 	}
 	ctx := browser.WithAllowedOrigins(context.Background(), []string{"https://billing.example.test"})
 
-	meta, err := service.CaptureFailureBundle(ctx, FailureBundleOptions{Reason: "forced failure"})
+	meta, err := service.CaptureFailureBundle(ctx, FailureBundleOptions{Reason: bundleReasonSentinel})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +367,13 @@ func TestFailureBundleEncryptsRecipeEvidenceWhenConfigured(t *testing.T) {
 			t.Fatalf("recipe evidence part %q was stored in the clear", entry.Role)
 		}
 	}
+	// The manifest is part of the bundle, not an index of harmless names: it
+	// carries the failing step's error text, the recipe id and the step.
+	if info, infoErr := store.Info(meta.ID); infoErr != nil || !info.Encrypted {
+		t.Fatalf("bundle manifest encrypted = %v (err %v), want the whole bundle encrypted", info.Encrypted, infoErr)
+	}
 	assertNoPlaintextOnDisk(t, store.Root(), "Uncaught TypeError")
+	assertNoPlaintextOnDisk(t, store.Root(), bundleReasonSentinel)
 
 	// A capture outside a recipe run is untouched by the recipe policy.
 	plain, err := service.CaptureFailureBundle(context.Background(), FailureBundleOptions{Reason: "manual"})
@@ -373,5 +382,55 @@ func TestFailureBundleEncryptsRecipeEvidenceWhenConfigured(t *testing.T) {
 	}
 	if info, err := store.Info(plain.ID); err != nil || info.Encrypted {
 		t.Fatalf("non-recipe bundle encrypted = %v (err %v), want false under the recipe policy", info.Encrypted, err)
+	}
+}
+
+// TestFailureBundleWillNotCollectPageBytesFromADisallowedOrigin is the origin
+// boundary applied to every page-derived part, not only the ones that report a
+// URL. Console text and request URLs come out of whatever document is loaded
+// when the collector runs, so a run that left the allowlist before failing must
+// not have them captured into evidence that outlives it.
+func TestFailureBundleWillNotCollectPageBytesFromADisallowedOrigin(t *testing.T) {
+	store := newTestStore(t, 1<<20, 8<<20)
+	service, fake := newBundleService(t, store, FailureCaptureAll)
+	// The run navigated off the allowlist before it failed.
+	fake.origin = "https://elsewhere.example.test"
+	fake.page = snapshot.PageSnapshot{URL: "https://elsewhere.example.test/", Title: bundlePageSentinel}
+	fake.console = []browser.ConsoleMessage{{Level: "error", Text: bundlePageSentinel}}
+	fake.network = []snapshot.CapturedRequest{{
+		Method: "GET", URL: "https://elsewhere.example.test/api/" + bundlePageSentinel, Status: 200,
+	}}
+	ctx := browser.WithAllowedOrigins(context.Background(), []string{"https://billing.example.test"})
+
+	meta, err := service.CaptureFailureBundle(ctx, FailureBundleOptions{Reason: "forced failure"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.consoleN != 0 || fake.networkN != 0 {
+		t.Fatalf("the browser was probed for page bytes outside the allowlist (console=%d network=%d)",
+			fake.consoleN, fake.networkN)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(readWholeArtifact(t, store, meta.ID), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	missing := map[string]bool{}
+	for _, part := range manifest.Missing {
+		missing[part.Role] = true
+	}
+	for _, role := range []string{"console", "network", "semantic_snapshot", "screenshot"} {
+		if !missing[role] {
+			t.Fatalf("%q was collected from a disallowed origin; missing = %+v", role, manifest.Missing)
+		}
+	}
+	// The action trace is brw's own record of what it did, so it survives and the
+	// bundle is not simply empty.
+	if len(manifest.Entries) != 1 || manifest.Entries[0].Role != "action_trace" {
+		t.Fatalf("entries = %+v, want only the action trace", manifest.Entries)
+	}
+	for _, entry := range manifest.Entries {
+		if bytes.Contains(readWholeArtifact(t, store, entry.ArtifactID), []byte("elsewhere.example.test")) {
+			t.Fatalf("part %q carries bytes from the disallowed origin", entry.Role)
+		}
 	}
 }

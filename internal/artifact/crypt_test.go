@@ -3,6 +3,9 @@ package artifact
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,8 +103,10 @@ func TestEncryptedArtifactRoundTripsWithNoPlaintextOnDisk(t *testing.T) {
 }
 
 // assertNoPlaintextOnDisk walks every file the store owns, temporary files
-// included: "encrypted at rest" is worth nothing if the plaintext is staged in
-// the clear first and only encrypted on commit.
+// included. It is called after the write as well as from inside it — see
+// TestEncryptedCaptureIsNeverStagedInTheClear, which scans the root while the
+// capture is mid-copy, because "encrypted at rest" is worth nothing if the
+// plaintext is staged in the clear first and only encrypted on commit.
 func assertNoPlaintextOnDisk(t *testing.T, root, sentinel string) {
 	t.Helper()
 	entries, err := os.ReadDir(root)
@@ -240,5 +245,134 @@ func TestLoadEncryptionKeyRejectsUnsafeSources(t *testing.T) {
 				t.Fatalf("key = %q", key)
 			}
 		})
+	}
+}
+
+// TestEncryptedCaptureIsNeverStagedInTheClear asserts the transient half of the
+// at-rest claim. The scan runs from inside the source reader, so the store is
+// caught mid-copy with its staging file open and unrenamed — the one moment a
+// plaintext staging bug would be visible, and the moment every after-the-fact
+// scan misses.
+func TestEncryptedCaptureIsNeverStagedInTheClear(t *testing.T) {
+	const sentinel = "mid-copy-plaintext-sentinel"
+	store := newEncryptedTestStore(t, 8<<20, 16<<20)
+	payload := bytes.Repeat([]byte(sentinel), 4096/len(sentinel)+1)
+
+	scans := 0
+	source := &probeReader{
+		body: payload,
+		// Small enough that the scan happens with most of the payload still to
+		// come, so the staging file is genuinely partial and still open.
+		chunk: 1024,
+		probe: func() {
+			scans++
+			assertNoPlaintextOnDisk(t, store.Root(), sentinel)
+			assertStagingFileExists(t, store.Root())
+		},
+	}
+	meta, err := store.PutContext(context.Background(),
+		PutOptions{Kind: "text", MIMEType: "text/plain", Encrypt: true}, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scans < 2 {
+		t.Fatalf("the store was only caught mid-copy %d times; the probe is not exercising the staging path", scans)
+	}
+	if !meta.Encrypted || meta.SizeBytes != int64(len(payload)) {
+		t.Fatalf("meta = %+v", meta)
+	}
+	assertNoPlaintextOnDisk(t, store.Root(), sentinel)
+}
+
+// probeReader hands the store one bounded chunk at a time and runs probe before
+// each one, so an assertion can observe the store's directory part-way through a
+// capture rather than only after it.
+type probeReader struct {
+	body   []byte
+	chunk  int
+	offset int
+	probe  func()
+}
+
+func (r *probeReader) Read(p []byte) (int, error) {
+	if r.offset >= len(r.body) {
+		return 0, io.EOF
+	}
+	r.probe()
+	n := copy(p, r.body[r.offset:min(len(r.body), r.offset+r.chunk)])
+	r.offset += n
+	return n, nil
+}
+
+func assertStagingFileExists(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".artifact-") {
+			return
+		}
+	}
+	t.Fatal("no staging file mid-capture, so the scan above proves nothing")
+}
+
+// TestEncryptedArtifactRecordsNoPlaintextDigest closes the oracle the ciphertext
+// exists to shut. A plaintext SHA-256 sitting beside the blob lets anyone who can
+// read the artifact root confirm a payload they can guess, and lets them see that
+// two encrypted artifacts hold the same bytes — the equivalence that keeps
+// encrypted blobs out of dedup in the first place.
+func TestEncryptedArtifactRecordsNoPlaintextDigest(t *testing.T) {
+	store := newEncryptedTestStore(t, 1<<20, 8<<20)
+	payload := []byte("guessable-encrypted-payload")
+	digest := sha256.Sum256(payload)
+	contentAddress := hex.EncodeToString(digest[:])
+
+	first, err := store.Put(PutOptions{Kind: "text", MIMEType: "text/plain", Encrypt: true}, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Put(PutOptions{Kind: "text", MIMEType: "text/plain", Encrypt: true}, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, meta := range []Meta{first, second} {
+		if meta.SHA256 != "" {
+			t.Fatalf("encrypted artifact %s carries a plaintext digest %q", meta.ID, meta.SHA256)
+		}
+		stored, infoErr := store.Info(meta.ID)
+		if infoErr != nil {
+			t.Fatal(infoErr)
+		}
+		if stored.SHA256 != "" {
+			t.Fatalf("artifact info returned a plaintext digest for encrypted artifact %s", meta.ID)
+		}
+	}
+	// Nothing on disk answers "are these the bytes?" either.
+	assertNoPlaintextOnDisk(t, store.Root(), contentAddress)
+
+	// The two encrypted copies must not be linkable to each other, and must not
+	// have been deduplicated into one blob.
+	firstInfo, err := os.Stat(store.blobPath(first.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondInfo, err := os.Stat(store.blobPath(second.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(firstInfo, secondInfo) {
+		t.Fatal("two encrypted captures share a blob, which is the equality encryption is meant to hide")
+	}
+
+	// An unencrypted capture still records its digest: the assertions above are
+	// about ciphertext, not about the digest disappearing everywhere.
+	plain, err := store.Put(PutOptions{Kind: "text", MIMEType: "text/plain"}, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.SHA256 != contentAddress {
+		t.Fatalf("unencrypted digest = %q, want %q", plain.SHA256, contentAddress)
 	}
 }
