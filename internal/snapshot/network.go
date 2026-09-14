@@ -269,19 +269,26 @@ var sensitiveHeaderNames = map[string]bool{
 // the caller explicitly asked to inspect, and field-level body redaction cannot be
 // done safely without a schema.
 func RedactCapturedCredentials(requests []CapturedRequest) []CapturedRequest {
-	const placeholder = "[redacted]"
 	for i := range requests {
-		h := requests[i].RequestHeaders
-		if h == nil {
-			continue
-		}
-		for name := range h {
-			if sensitiveHeaderNames[strings.ToLower(strings.TrimSpace(name))] {
-				h[name] = placeholder
-			}
-		}
+		RedactSensitiveHeaders(requests[i].RequestHeaders)
 	}
 	return requests
+}
+
+// RedactSensitiveHeaders blanks sensitive header VALUES in place and returns the
+// same map, so any header block brw retains — a captured request, or a
+// Network.responseReceived event kept in the CDP event ring — carries the header
+// name without the credential. Set-Cookie on a retained response event is the
+// exact case this closes: a subscription that outlives one call must not become
+// the side door around the capture-path redaction.
+func RedactSensitiveHeaders(headers map[string]string) map[string]string {
+	const placeholder = "[redacted]"
+	for name := range headers {
+		if sensitiveHeaderNames[strings.ToLower(strings.TrimSpace(name))] {
+			headers[name] = placeholder
+		}
+	}
+	return headers
 }
 
 // NetworkCaptureDrainScript returns a bounded snapshot of recorded requests.

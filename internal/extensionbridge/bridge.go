@@ -3871,53 +3871,6 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 	return sr, retargetTo
 }
 
-func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Duration) error {
-	if timeout == 0 {
-		timeout = b.timeout
-	}
-	deadline := time.Now().Add(timeout)
-	// Wait via a SINGLE in-page promise (WaitConditionScript) that resolves the
-	// instant the condition holds — a MutationObserver/history-driven check running
-	// inside the renderer — instead of re-evaluating a heavy condition script across
-	// the CDP boundary every 25-250ms. The old cross-process poll made each tick a
-	// full document.body.innerText / shadow-DOM walk; ten concurrent waits against a
-	// large (10k-row) page flooded the extension's debugger with hundreds of heavy
-	// evaluates a second and wedged the whole bridge until the waits expired. One
-	// awaited in-page promise per wait keeps bridge load flat no matter how many
-	// waits run concurrently. The await is chunked under b.timeout and re-armed, so a
-	// navigation that destroys the execution context simply continues against the new
-	// document.
-	for {
-		// Cooperative cancellation: a Cancel on the surrounding plan/batch (or this
-		// tab) cancels ctx, unblocking a long wait promptly.
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("wait for %q cancelled", condition)
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return fmt.Errorf("timed out waiting for %q after %s; the condition was never met — check that the page is loaded and the condition is correct (valid: ready, committed, text:..., url:..., title:..., ref:..., page_ready)", condition, timeout)
-		}
-		chunk := remaining
-		if limit := b.waitChunkLimit(); chunk > limit {
-			chunk = limit
-		}
-		matched, err := b.waitConditionOnce(ctx, condition, chunk)
-		if err == nil && matched {
-			return nil
-		}
-		if err != nil {
-			// A navigation can destroy the in-page execution context mid-await; pause
-			// briefly, then re-arm the promise against the new document rather than
-			// hot-looping on the transient "context was destroyed" error.
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("wait for %q cancelled", condition)
-			case <-time.After(waitForErrBackoff):
-			}
-		}
-	}
-}
-
 // waitChunkLimit bounds a single in-page wait await so the held Runtime.evaluate
 // resolves (false at the chunk timeout) before the bridge request timeout would
 // cancel it, leaving headroom for the WS round-trip.
@@ -5540,30 +5493,9 @@ const downloadsUnsupportedNote = "Download capture is unavailable: the connected
 // calls receive the complete bounded snapshot. An extension too old to know the
 // message returns the legacy Supported=false note rather than erroring.
 func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error) {
-	raw, err := b.call(ctx, "get_downloads", nil)
+	payload, err := b.downloadSnapshot(ctx)
 	if err != nil {
-		if isUnknownMessageTypeErr(err) {
-			return browser.DownloadsResult{
-				Downloads: []browser.DownloadEntry{},
-				Count:     0,
-				Supported: false,
-				Note:      downloadsUnsupportedNote,
-			}, nil
-		}
 		return browser.DownloadsResult{}, err
-	}
-	var payload struct {
-		Downloads []browser.DownloadEntry `json:"downloads"`
-		Supported bool                    `json:"supported"`
-		Note      string                  `json:"note"`
-	}
-	if len(raw) > 0 {
-		if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
-			return browser.DownloadsResult{}, fmt.Errorf("parse downloads: %w", jsonErr)
-		}
-	}
-	if payload.Downloads == nil {
-		payload.Downloads = []browser.DownloadEntry{}
 	}
 	if !payload.Supported {
 		return browser.DownloadsResult{
@@ -5573,13 +5505,8 @@ func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error)
 			Note:      payload.Note,
 		}, nil
 	}
-	if len(payload.Downloads) > maxBridgeTrackedDownloads {
-		payload.Downloads = append([]browser.DownloadEntry(nil), payload.Downloads[len(payload.Downloads)-maxBridgeTrackedDownloads:]...)
-	}
 
 	b.downloadsMu.Lock()
-	b.ensureDownloadTrackingMapsLocked()
-	b.ingestDownloadSnapshotLocked(payload.Downloads)
 	result := append([]browser.DownloadEntry(nil), payload.Downloads...)
 	if _, recipeScoped := browser.AllowedOriginsFromContext(ctx); recipeScoped {
 		tabID := browser.TabIDFromContext(ctx)
@@ -5606,6 +5533,52 @@ func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error)
 		Supported: payload.Supported,
 		Note:      payload.Note,
 	}, nil
+}
+
+// downloadSnapshotPayload is the extension's bounded registry as it arrives,
+// before any caller-scoped filtering.
+type downloadSnapshotPayload struct {
+	Downloads []browser.DownloadEntry `json:"downloads"`
+	Supported bool                    `json:"supported"`
+	Note      string                  `json:"note"`
+}
+
+// downloadSnapshot performs the get_downloads RPC and updates the change
+// bookkeeping, without applying a recipe context's per-tab cursor. A download
+// wait polls through here so repeatedly asking "has it finished yet?" cannot
+// consume the baseline a recipe's own download polling depends on.
+func (b *Bridge) downloadSnapshot(ctx context.Context) (downloadSnapshotPayload, error) {
+	var payload downloadSnapshotPayload
+	raw, err := b.call(ctx, "get_downloads", nil)
+	if err != nil {
+		if isUnknownMessageTypeErr(err) {
+			return downloadSnapshotPayload{
+				Downloads: []browser.DownloadEntry{},
+				Supported: false,
+				Note:      downloadsUnsupportedNote,
+			}, nil
+		}
+		return downloadSnapshotPayload{}, err
+	}
+	if len(raw) > 0 {
+		if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
+			return downloadSnapshotPayload{}, fmt.Errorf("parse downloads: %w", jsonErr)
+		}
+	}
+	if payload.Downloads == nil {
+		payload.Downloads = []browser.DownloadEntry{}
+	}
+	if !payload.Supported {
+		return payload, nil
+	}
+	if len(payload.Downloads) > maxBridgeTrackedDownloads {
+		payload.Downloads = append([]browser.DownloadEntry(nil), payload.Downloads[len(payload.Downloads)-maxBridgeTrackedDownloads:]...)
+	}
+	b.downloadsMu.Lock()
+	b.ensureDownloadTrackingMapsLocked()
+	b.ingestDownloadSnapshotLocked(payload.Downloads)
+	b.downloadsMu.Unlock()
+	return payload, nil
 }
 
 const maxBridgeTrackedDownloads = 200

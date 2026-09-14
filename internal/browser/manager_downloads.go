@@ -11,7 +11,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/chromedp/cdproto/browser"
-	"github.com/chromedp/chromedp"
 )
 
 // maxTrackedDownloads bounds the in-memory download buffer so a long-lived
@@ -67,10 +66,10 @@ type DownloadsResult struct {
 // buffer. Subsequent calls are no-ops.
 //
 // With Chrome's flat session protocol the Browser.downloadWillBegin /
-// downloadProgress events are delivered to the *target* (page) session, so we
-// register the handler via ListenTarget on every known tab context as well as
-// ListenBrowser on the root browser context as a fallback. New tab contexts
-// created later pick up the listener in tabContext().
+// downloadProgress events are delivered to the *target* (page) session, so every
+// tab context forwards them from its own subscription (see tabContext); this
+// adds the browser-connection subscription as the fallback for a download no
+// page session claims.
 func (m *Manager) ensureDownloadTracking(ctx context.Context) error {
 	m.downloadsMu.Lock()
 	if m.downloadsEnabled {
@@ -88,12 +87,12 @@ func (m *Manager) ensureDownloadTracking(ctx context.Context) error {
 	m.downloadDir = dir
 	m.downloadsMu.Unlock()
 
-	// Browser-level fallback listener.
-	chromedp.ListenBrowser(m.browserCtx, m.handleDownloadEvent)
+	// Browser-connection fallback subscription.
+	m.events.attachBrowser(m.browserCtx, m.handleDownloadEvent)
 
-	// Make sure the active tab has a live context, then attach a target-level
-	// listener to it (and to any other contexts already open). This is where
-	// the download events actually arrive for page-initiated downloads.
+	// Make sure the active tab has a live context: creating it installs the tab
+	// subscription, which is where page-initiated download events actually
+	// arrive.
 	if _, err := m.ensureActive(ctx); err == nil {
 		if tabID := m.refs.Active(); tabID != "" {
 			if _, terr := m.tabContext(tabID); terr != nil {
@@ -102,7 +101,6 @@ func (m *Manager) ensureDownloadTracking(ctx context.Context) error {
 			}
 		}
 	}
-	m.attachDownloadListenersToOpenTabs()
 
 	// Browser.setDownloadBehavior is a browser-domain command; run it against
 	// the browser executor like connect() does. allowAndName names completed
@@ -135,6 +133,12 @@ func (m *Manager) handleDownloadEvent(ev any) {
 // handleDownloadEventForTab retains the target that delivered an event. CDP's
 // progress event does not carry a frame/target id, so provenance has to come
 // from the per-target listener closure rather than from the event payload.
+//
+// It is the sole consumer of Browser.downloadProgress and the sole publisher of
+// the download signal a wait subscribes to, which is what guarantees the order
+// the wait depends on: the registry is written, THEN waiters are woken to
+// re-read it. Waking first would hand a waiter the pre-change state with no
+// further event coming to correct it.
 func (m *Manager) handleDownloadEventForTab(tabID string, ev any) {
 	switch e := ev.(type) {
 	case *browser.EventDownloadWillBegin:
@@ -153,45 +157,10 @@ func (m *Manager) handleDownloadEventForTab(tabID string, ev any) {
 			}
 		}
 		m.recordDownloadBeginForTab(tabID, e)
+		m.events.publish(browserEventScope, pageEvent{Kind: eventDownload, ID: e.GUID, URL: e.URL})
 	case *browser.EventDownloadProgress:
 		m.recordDownloadProgressForTab(tabID, e)
-	}
-}
-
-// attachDownloadListenersToOpenTabs registers the target-level download
-// listener on every currently-open tab context.
-func (m *Manager) attachDownloadListenersToOpenTabs() {
-	m.mu.RLock()
-	tabs := make([]struct {
-		id  string
-		ctx context.Context
-	}, 0, len(m.tabContexts))
-	for id, tc := range m.tabContexts {
-		tabs = append(tabs, struct {
-			id  string
-			ctx context.Context
-		}{id: id, ctx: tc.ctx})
-	}
-	m.mu.RUnlock()
-	for _, tab := range tabs {
-		tab := tab
-		chromedp.ListenTarget(tab.ctx, func(ev any) {
-			m.handleDownloadEventForTab(tab.id, ev)
-		})
-	}
-}
-
-// attachDownloadListenerIfEnabled wires the target-level download listener onto
-// a freshly created tab context when download tracking is already active.
-// Called from tabContext under no lock.
-func (m *Manager) attachDownloadListenerIfEnabled(tabID string, tabCtx context.Context) {
-	m.downloadsMu.Lock()
-	enabled := m.downloadsEnabled
-	m.downloadsMu.Unlock()
-	if enabled {
-		chromedp.ListenTarget(tabCtx, func(ev any) {
-			m.handleDownloadEventForTab(tabID, ev)
-		})
+		m.events.publish(browserEventScope, pageEvent{Kind: eventDownload, ID: e.GUID, Detail: string(e.State)})
 	}
 }
 

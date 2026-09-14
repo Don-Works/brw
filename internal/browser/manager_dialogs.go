@@ -79,14 +79,12 @@ type dialogArm struct {
 // dialogState is a VALUE on Manager, not a pointer, and its maps are created on
 // first use under the lock. Manager is constructed in more than one place (New,
 // plus test harnesses that list fields by hand), so a state that needs a
-// constructor call would be nil in some of them — and a nil dialog state means
-// no dialog listener, which means a wedged renderer. Lazy init makes the
-// zero value correct everywhere.
+// constructor call would be nil in some of them. Lazy init makes the zero value
+// correct everywhere.
 type dialogState struct {
-	mu   sync.Mutex
-	arm  map[string]*dialogArm
-	log  map[string][]DialogRecord
-	seen map[string]bool
+	mu  sync.Mutex
+	arm map[string]*dialogArm
+	log map[string][]DialogRecord
 }
 
 // initLocked must be called with mu held.
@@ -97,60 +95,46 @@ func (d *dialogState) initLocked() {
 	if d.log == nil {
 		d.log = make(map[string][]DialogRecord)
 	}
-	if d.seen == nil {
-		d.seen = make(map[string]bool)
-	}
 }
 
-// ensureDialogHandling installs the per-tab JavaScript-dialog listener exactly
-// once per tab context.
+// handleDialogEvent answers and records one JavaScript dialog. It is called from
+// the tab's single event subscription (see eventHub.attachTab), which is why
+// there is no per-tab arming step and no feature flag.
 //
-// This is NOT optional and is not gated on a feature flag. chromedp enables the
-// Page domain on every target it attaches, and an enabled Page domain suppresses
-// Chrome's native dialog UI: the dialog is delivered as
-// Page.javascriptDialogOpening and the renderer BLOCKS until
-// Page.handleJavaScriptDialog answers it. With no listener, a single alert()
-// wedges the tab permanently — the triggering action times out and so does every
-// later evaluate against that tab.
-func (m *Manager) ensureDialogHandling(tabID string, tabCtx context.Context) {
-	m.dialogs.mu.Lock()
-	m.dialogs.initLocked()
-	if m.dialogs.seen[tabID] {
-		m.dialogs.mu.Unlock()
+// Answering is NOT optional. chromedp enables the Page domain on every target it
+// attaches, and an enabled Page domain suppresses Chrome's native dialog UI: the
+// dialog arrives as Page.javascriptDialogOpening and the renderer BLOCKS until
+// Page.handleJavaScriptDialog answers it. With nothing answering, a single
+// alert() wedges the tab permanently — the triggering action times out and so
+// does every later evaluate against that tab.
+func (m *Manager) handleDialogEvent(tabID string, tabCtx context.Context, ev any) {
+	opening, ok := ev.(*page.EventJavascriptDialogOpening)
+	if !ok {
 		return
 	}
-	m.dialogs.seen[tabID] = true
-	m.dialogs.mu.Unlock()
-
-	chromedp.ListenTarget(tabCtx, func(ev any) {
-		opening, ok := ev.(*page.EventJavascriptDialogOpening)
-		if !ok {
-			return
-		}
-		accept, promptText, hasPrompt, decidedBy := m.decideDialog(tabID, string(opening.Type))
-		m.recordDialog(tabID, DialogRecord{
-			Type:          string(opening.Type),
-			Message:       clipDialogText(opening.Message),
-			DefaultPrompt: clipDialogText(opening.DefaultPrompt),
-			URL:           clipDialogText(opening.URL),
-			Accepted:      accept,
-			PromptText:    promptText,
-			DecidedBy:     decidedBy,
-			At:            time.Now().UTC().Format(time.RFC3339Nano),
-		})
-		// A CDP command must not be issued from inside the event loop that
-		// delivered the event, so answer from a goroutine. The renderer stays
-		// blocked only for this hop.
-		go func() {
-			action := page.HandleJavaScriptDialog(accept)
-			if hasPrompt && opening.Type == page.DialogTypePrompt {
-				action = action.WithPromptText(promptText)
-			}
-			answerCtx, cancel := context.WithTimeout(tabCtx, 5*time.Second)
-			defer cancel()
-			_ = chromedp.Run(answerCtx, action)
-		}()
+	accept, promptText, hasPrompt, decidedBy := m.decideDialog(tabID, string(opening.Type))
+	m.recordDialog(tabID, DialogRecord{
+		Type:          string(opening.Type),
+		Message:       clipDialogText(opening.Message),
+		DefaultPrompt: clipDialogText(opening.DefaultPrompt),
+		URL:           clipDialogText(opening.URL),
+		Accepted:      accept,
+		PromptText:    promptText,
+		DecidedBy:     decidedBy,
+		At:            time.Now().UTC().Format(time.RFC3339Nano),
 	})
+	// A CDP command must not be issued from inside the event loop that delivered
+	// the event, so answer from a goroutine. The renderer stays blocked only for
+	// this hop.
+	go func() {
+		action := page.HandleJavaScriptDialog(accept)
+		if hasPrompt && opening.Type == page.DialogTypePrompt {
+			action = action.WithPromptText(promptText)
+		}
+		answerCtx, cancel := context.WithTimeout(tabCtx, 5*time.Second)
+		defer cancel()
+		_ = chromedp.Run(answerCtx, action)
+	}()
 }
 
 // decideDialog resolves the answer for one dialog, consuming a pending arm.

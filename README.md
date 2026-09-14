@@ -80,7 +80,8 @@ Raw private benchmark transcripts are not shipped in this repository because
 they can contain prompts, machine paths, and session metadata. Treat the public
 benchmark note as directional until a reproducible public harness lands.
 
-See [docs/benchmarks.md](docs/benchmarks.md).
+See [docs/benchmarks.md](docs/benchmarks.md). For what answers a
+`brw_wait_for` on each transport, see [docs/waiting.md](docs/waiting.md).
 
 For repeated site workflows and large observations, see
 [Private recipes and browser-host artifacts](docs/recipes-and-artifacts.md).

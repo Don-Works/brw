@@ -1381,7 +1381,15 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		return toolOK(s.manager.WaitFor(ctx, req.Condition, time.Duration(req.TimeoutMS)*time.Millisecond))
+		timeout := time.Duration(req.TimeoutMS) * time.Millisecond
+		// Report which source answered the wait when the transport can say. A
+		// caller that sees resolved_by:"poll" knows the condition it picked has
+		// no subscription behind it on this transport and costs a round trip per
+		// check; an upstream controller too old to report degrades to {ok:true}.
+		if observer, ok := s.manager.(browser.WaitObserver); ok {
+			return toolJSON(observer.WaitForOutcome(ctx, req.Condition, timeout))
+		}
+		return toolOK(s.manager.WaitFor(ctx, req.Condition, timeout))
 	case "brw_route":
 		router, ok := s.manager.(browser.RouteController)
 		if !ok {
@@ -2512,8 +2520,8 @@ func tools() []map[string]any {
 			"ref":    stringSchema("Element ref from brw_snapshot."),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"ref"})),
-		tool("brw_wait_for", "Wait for page readiness, a URL/title/text substring, a ref or CSS selector, the page's own JS predicate (fn:), or a file download to complete.", object(map[string]any{
-			"condition":  stringSchema("Condition to wait for: ready or page_ready (document interactive/complete), load (alias of ready), committed (interactive/complete AND a real navigated URL, not about:blank), text:<substring>, not_text:<substring>, url:<substring>, not_url:<substring>, title:<substring>, not_title:<substring>, ref:<brw-ref>, not_ref:<brw-ref>, selector:<css>, not_selector:<css>, fn:<js> (the page's own predicate; an expression or a statement body ending in return; may be async; re-run on every DOM mutation and nav event, not polled), download or download:<substring> (a download that starts after the wait begins reaching completed; matched on suggested filename or URL), or a plain text substring of body innerText."),
+		tool("brw_wait_for", "Wait for page readiness, a URL/title/text substring, a ref or CSS selector, the page's own JS predicate (fn:), a JavaScript dialog, or a file download to complete. Returns {ok, condition, resolved_by, waited_ms, wakeups}. resolved_by says what answered: \"event\" is a browser event subscription (no round trip and no latency floor — load, dialog and download resolve this way on the direct-CDP transport), \"script\" is one awaited in-page promise that resolves on the DOM mutation or navigation satisfying it, \"poll\" is a re-ask on a timer, which is how the extension transport answers dialog and download waits because it has no debugger attached to subscribe with. Every condition works on both transports; only the cost differs.", object(map[string]any{
+			"condition":  stringSchema("Condition to wait for: load (the document's load event), ready or page_ready (document interactive/complete, which a document reaches BEFORE its load event), committed (interactive/complete AND a real navigated URL, not about:blank), text:<substring>, not_text:<substring>, url:<substring>, not_url:<substring>, title:<substring>, not_title:<substring>, ref:<brw-ref>, not_ref:<brw-ref>, selector:<css>, not_selector:<css>, fn:<js> (the page's own predicate; an expression or a statement body ending in return; may be async; re-run on every DOM mutation and nav event, not polled), dialog or dialog:<substring> (an alert/confirm/prompt/beforeunload opening, matched on its message or its type; brw answers dialogs automatically, so this reports one that opened rather than leaving it on screen), download or download:<substring> (a download that starts after the wait begins reaching completed; matched on suggested filename or URL), or a plain text substring of body innerText."),
 			"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds. Defaults to the daemon timeout (typically 20s)."},
 			"tab_id":     stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"condition"})),

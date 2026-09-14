@@ -82,7 +82,8 @@ func TestRunWithPrearmedSettleDoesNotActuateCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	called := false
-	err := runWithPrearmedSettle(ctx, time.Second, func() error {
+	m := &Manager{}
+	err := m.runWithPrearmedSettle(ctx, time.Second, func() error {
 		called = true
 		return nil
 	})

@@ -120,7 +120,7 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			return dispatchClick(ctx, x, y, button, clickCount, input.Modifier(m.heldModifierMask(tabID)))
 		}))
@@ -184,7 +184,7 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
-	if err := runWithPrearmedSettle(tabCtx, mouseHalfSettleDelay, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, mouseHalfSettleDelay, func() error {
 		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			return input.DispatchMouseEvent(eventType, x, y).
 				WithButton(button).
@@ -246,7 +246,7 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	if opts.From.HasRef() && opts.To.HasRef() && m.heldModifierMask(tabID) == 0 && snapshot.RefDraggable(tabCtx, opts.From.Ref) {
 		before := m.cachedBefore(tabID, tabCtx)
 		var dropped bool
-		dErr := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+		dErr := m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 			var dragErr error
 			dropped, dragErr = snapshot.DragHtml5(tabCtx, opts.From.Ref, opts.To.Ref)
 			return dragErr
@@ -284,7 +284,7 @@ func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, err
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			return dispatchDrag(ctx, fromX, fromY, toX, toY, steps, button, input.Modifier(m.heldModifierMask(tabID)))
 		}))

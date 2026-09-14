@@ -89,9 +89,9 @@ MCPLEXER/HARNESS EXECUTION (when brw is routed through execute_code):
   the script; if body_truncated is true, continue from next_offset with
   offset/max_bytes.
 
-WAITING: use brw_wait_for {condition} (ready, text:..., url:..., ref:...) and
-the brw_assert_* tools — they retry until the condition holds or time out. Do
-not poll with manual sleep/snapshot loops.
+WAITING: use brw_wait_for {condition} (load, ready, text:..., url:..., ref:...,
+dialog, download) and the brw_assert_* tools — they retry until the condition
+holds or time out. Do not poll with manual sleep/snapshot loops.
 
 SCREENSHOTS ARE A FALLBACK, not a verification step. Use brw_screenshot only for
 opaque visual content with no DOM text: canvas, maps, charts, games, image-only

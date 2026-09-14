@@ -132,7 +132,7 @@ func (m *Manager) PushState(ctx context.Context, opts HistoryStateOptions) (Hist
 		Previous string `json:"previous"`
 		Length   int    `json:"history_length"`
 	}
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
 		return chromedp.Run(tabCtx, chromedp.Evaluate(expr, &out))
 	}); err != nil {
 		return HistoryStateResult{}, err

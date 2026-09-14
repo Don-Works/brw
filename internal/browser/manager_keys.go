@@ -56,7 +56,7 @@ func (m *Manager) KeyDown(ctx context.Context, opts KeyHoldOptions) (KeyHoldResu
 	// modifier bit a real Shift/Control keydown reports.
 	m.holdKey(tabID, desc)
 	mask := m.heldModifierMask(tabID)
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(c context.Context) error {
 			return dispatchKeyHalf(c, desc, mask, true)
 		}))
@@ -109,7 +109,7 @@ func (m *Manager) KeyUp(ctx context.Context, opts KeyHoldOptions) (KeyHoldResult
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(c context.Context) error {
 			for _, d := range release {
 				// Drop the key from the held set first: the keyup for Shift

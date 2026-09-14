@@ -49,12 +49,25 @@ const (
 	fileChooserWaitTimeout = 5 * time.Second
 )
 
+// Where a post-action settle window ended.
+const (
+	settleSourceScript     = "script"
+	settleSourceNavigation = "navigation"
+	settleSourceCap        = "cap"
+)
+
 // runWithPrearmedSettle installs the page observer immediately before
 // actuation, then waits on that exact observer afterward. If arming is
 // unavailable, it falls back to the legacy post-action settle. Settle errors
 // remain non-fatal because navigation commonly destroys the old context after
 // the browser action has already succeeded.
-func runWithPrearmedSettle(tabCtx context.Context, cap time.Duration, action func() error) error {
+//
+// The adaptive heuristics are unchanged — quiesce window, network signal, hard
+// cap all still live in SettleScript. What changed is where the NAVIGATION
+// branch gets its truth: from Page.frameNavigated on the tab's event
+// subscription rather than only from the in-page listener, which dies with the
+// execution context the navigation is destroying and so cannot report it.
+func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duration, action func() error) error {
 	// Never actuate after the owning tab/request has already been cancelled. In
 	// particular, an ArmSettle failure caused by cancellation must not be treated
 	// like an ordinary "observer unavailable" fallback.
@@ -68,6 +81,14 @@ func runWithPrearmedSettle(tabCtx context.Context, cap time.Duration, action fun
 	if err := tabCtx.Err(); err != nil {
 		return err
 	}
+	// Subscribe before actuating so a navigation the action causes cannot land
+	// in the gap between the action returning and the await starting.
+	var sub <-chan pageEvent
+	if scope := eventScopeFromCtx(tabCtx); scope != "" {
+		stream, release := m.events.subscribe(scope)
+		defer release()
+		sub = stream
+	}
 	if err := action(); err != nil {
 		return err
 	}
@@ -75,9 +96,50 @@ func runWithPrearmedSettle(tabCtx context.Context, cap time.Duration, action fun
 		_, _ = snapshot.Settle(tabCtx, cap.Milliseconds())
 		return nil
 	}
-	_, _ = snapshot.AwaitSettle(tabCtx, handle)
+	awaitPrearmedSettle(sub, cap, func() {
+		_, _ = snapshot.AwaitSettle(tabCtx, handle)
+	})
 	return nil
 }
+
+// awaitPrearmedSettle resolves the pre-armed in-page settle, or abandons it the
+// moment the event stream reports the action navigated the page. await is
+// injected so the wiring is testable without a browser.
+//
+// Abandoning on navigation is not a shortcut: the navigation destroys the
+// execution context holding the promise, so what is left to await is a reply
+// that will never come. The in-page cap keeps the abandoned evaluate bounded.
+func awaitPrearmedSettle(sub <-chan pageEvent, cap time.Duration, await func()) string {
+	if sub == nil {
+		await()
+		return settleSourceScript
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		await()
+	}()
+	// The in-page promise caps itself; this only bounds the wait on a renderer
+	// that never replies at all.
+	backstop := time.NewTimer(cap + settleAwaitGrace)
+	defer backstop.Stop()
+	for {
+		select {
+		case <-done:
+			return settleSourceScript
+		case ev := <-sub:
+			if ev.Kind == eventNavigated {
+				return settleSourceNavigation
+			}
+		case <-backstop.C:
+			return settleSourceCap
+		}
+	}
+}
+
+// settleAwaitGrace is the headroom the Go-side backstop allows over the in-page
+// cap, covering the CDP round trip that carries the promise's resolution back.
+const settleAwaitGrace = 250 * time.Millisecond
 
 type Manager struct {
 	mu            sync.RWMutex
@@ -198,6 +260,12 @@ type Manager struct {
 	// leaking the isolated context (and its tabs/storage) until Chrome exits.
 	incognitoMu       sync.Mutex
 	incognitoContexts map[string]bool
+
+	// events is the CDP event stream every wait and post-action settle reads
+	// instead of re-asking the page. One subscription per context; see events.go.
+	// Zero value is usable, which matters because Manager is also built field by
+	// field in tests.
+	events eventHub
 }
 
 // SetNavigationPolicy installs the controller-level policy used for defense in
@@ -686,6 +754,25 @@ func (m *Manager) forgetTabCaches(id string) {
 	m.heldMu.Lock()
 	delete(m.heldKeys, id)
 	m.heldMu.Unlock()
+	// The tab context's own cancellation also drops this scope; doing it here as
+	// well means a tab forgotten before its context finishes unwinding does not
+	// keep its retained event ring alive in the meantime.
+	m.events.closeScope(id)
+}
+
+// ctxKeyEventScope tags a tab's chromedp context with the hub scope that carries
+// its events. Deliberately separate from ctxKeyTabID: that key also records
+// whether the caller SELECTED the tab, which a context brw built for itself must
+// not claim.
+type ctxKeyEventScope struct{}
+
+func withEventScope(ctx context.Context, tabID string) context.Context {
+	return context.WithValue(ctx, ctxKeyEventScope{}, tabID)
+}
+
+func eventScopeFromCtx(ctx context.Context) string {
+	scope, _ := ctx.Value(ctxKeyEventScope{}).(string)
+	return scope
 }
 
 // ensureWebMCP arms the opt-in WebMCP runtime shim to install at document-start
@@ -860,9 +947,9 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 	var warning string
 	var clickErr error
 	if modifiers := m.heldModifierMask(tabID); modifiers != 0 {
-		warning, clickErr = clickElementCenterWithModifiers(tabCtx, ref, input.Modifier(modifiers))
+		warning, clickErr = m.clickElementCenterWithModifiers(tabCtx, ref, input.Modifier(modifiers))
 	} else {
-		warning, clickErr = clickElementCenter(tabCtx, ref, 150*time.Millisecond)
+		warning, clickErr = m.clickElementCenter(tabCtx, ref, 150*time.Millisecond)
 	}
 	if clickErr != nil {
 		return ActionResult{}, clickErr
@@ -912,7 +999,7 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 		opts.Locate = true
 	}
 	var clicked snapshot.ClickXYResult
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 		var clickErr error
 		clicked, clickErr = snapshot.ClickText(tabCtx, opts)
 		if clickErr != nil {
@@ -1003,7 +1090,7 @@ func (m *Manager) hoverRef(tabCtx context.Context, tabID, ref string) (string, e
 	if box.DelayedHover {
 		settleCap += menuHoverSettleDelay
 	}
-	if err := runWithPrearmedSettle(tabCtx, settleCap, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, settleCap, func() error {
 		if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			return input.DispatchMouseEvent(input.MouseMoved, box.ViewportX, box.ViewportY).
 				WithModifiers(input.Modifier(m.heldModifierMask(tabID))).
@@ -1170,7 +1257,7 @@ func (m *Manager) typeRef(tabCtx context.Context, ref, text string) error {
 	if err := snapshot.Focus(tabCtx, ref); err != nil {
 		return err
 	}
-	return runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+	return m.runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
 		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			return input.InsertText(text).Do(ctx)
 		}))
@@ -1196,7 +1283,7 @@ func (m *Manager) Focus(ctx context.Context, ref string) (ActionResult, error) {
 	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
 		return ActionResult{}, err
 	}
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
 		return snapshot.Focus(tabCtx, ref)
 	}); err != nil {
 		return ActionResult{}, err
@@ -1282,7 +1369,7 @@ func (m *Manager) fillRef(tabCtx context.Context, ref, text string, replace bool
 	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
 		return err
 	}
-	return runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+	return m.runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
 		return snapshot.Fill(tabCtx, ref, text, replace)
 	})
 }
@@ -1351,7 +1438,7 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 	}
 
 	before := m.cachedBefore(tabID, tabCtx)
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
 		return snapshot.SetFileInputFiles(tabCtx, ref, paths)
 	}); err != nil {
 		return ActionResult{}, err
@@ -1400,7 +1487,7 @@ func (m *Manager) uploadFileViaChooser(tabID string, tabCtx context.Context, opt
 		if err := snapshot.WaitForActionable(tabCtx, opts.ClickRef, 5000); err != nil {
 			return ActionResult{}, err
 		}
-		if _, err := clickElementCenter(tabCtx, opts.ClickRef, 150*time.Millisecond); err != nil {
+		if _, err := m.clickElementCenter(tabCtx, opts.ClickRef, 150*time.Millisecond); err != nil {
 			return ActionResult{}, fmt.Errorf("click upload trigger %s: %w", opts.ClickRef, err)
 		}
 	} else {
@@ -1422,7 +1509,7 @@ func (m *Manager) uploadFileViaChooser(tabID string, tabCtx context.Context, opt
 		return ActionResult{}, errors.New("file chooser opened but reported no backendNodeId")
 	}
 
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
 		return chromedp.Run(tabCtx, dom.SetFileInputFiles(paths).WithBackendNodeID(backendNodeID))
 	}); err != nil {
 		return ActionResult{}, err
@@ -1462,7 +1549,7 @@ func (m *Manager) selectValue(tabCtx context.Context, ref, value string) (string
 	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
 		return "", err
 	}
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
 		return snapshot.Select(tabCtx, ref, value)
 	}); err == nil {
 		// Native selects do not pass through clickElementCenter, so settle here.
@@ -1478,7 +1565,7 @@ func (m *Manager) selectValue(tabCtx context.Context, ref, value string) (string
 	}
 	option, err := findOptionCandidate(tabCtx, value)
 	if err != nil {
-		if _, clickErr := clickElementCenter(tabCtx, ref, 125*time.Millisecond); clickErr != nil {
+		if _, clickErr := m.clickElementCenter(tabCtx, ref, 125*time.Millisecond); clickErr != nil {
 			return "", fmt.Errorf("open custom select %s: %w", ref, clickErr)
 		}
 		option, err = findOptionCandidate(tabCtx, value)
@@ -1486,7 +1573,7 @@ func (m *Manager) selectValue(tabCtx context.Context, ref, value string) (string
 			return "", err
 		}
 	}
-	if _, clickErr := clickElementCenter(tabCtx, option.Ref, 150*time.Millisecond); clickErr != nil {
+	if _, clickErr := m.clickElementCenter(tabCtx, option.Ref, 150*time.Millisecond); clickErr != nil {
 		return "", fmt.Errorf("select option %s: %w", option.Ref, clickErr)
 	}
 	return "selected " + ref + " via option " + option.Ref, nil
@@ -1505,7 +1592,7 @@ func elementValueMatches(tabCtx context.Context, ref, value string) bool {
 	return false
 }
 
-func clickElementCenter(tabCtx context.Context, ref string, delay time.Duration) (string, error) {
+func (m *Manager) clickElementCenter(tabCtx context.Context, ref string, delay time.Duration) (string, error) {
 	box, err := snapshot.ResolveOrRecoverBox(tabCtx, ref)
 	if err != nil {
 		return "", err
@@ -1523,7 +1610,7 @@ func clickElementCenter(tabCtx context.Context, ref string, delay time.Duration)
 	// dispatch stays as the fallback when the point is not hit-testable in-page
 	// (e.g. element scrolled out of the layout viewport, elementFromPoint null).
 	if !box.RequiresTrusted {
-		if err := runWithPrearmedSettle(tabCtx, delay, func() error {
+		if err := m.runWithPrearmedSettle(tabCtx, delay, func() error {
 			inPage, evalErr := snapshot.ClickXY(tabCtx, box.ViewportX, box.ViewportY)
 			if evalErr != nil {
 				return evalErr
@@ -1539,7 +1626,7 @@ func clickElementCenter(tabCtx context.Context, ref string, delay time.Duration)
 	// Popup/download/fullscreen-style controls need a genuine browser input
 	// gesture. ResolveOrRecoverBox marks only those uncommon shapes, keeping the
 	// fast single-evaluate path for ordinary clicks.
-	if err := runWithPrearmedSettle(tabCtx, delay, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, delay, func() error {
 		return chromedp.Run(tabCtx, chromedp.MouseClickXY(box.ViewportX, box.ViewportY))
 	}); err != nil {
 		return "", err
@@ -1550,7 +1637,7 @@ func clickElementCenter(tabCtx context.Context, ref string, delay time.Duration)
 // clickElementCenterWithModifiers clicks a ref through the trusted CDP input
 // path with an explicit modifier mask. Kept separate from clickElementCenter so
 // the common no-modifier click keeps its single-evaluate fast path.
-func clickElementCenterWithModifiers(tabCtx context.Context, ref string, modifiers input.Modifier) (string, error) {
+func (m *Manager) clickElementCenterWithModifiers(tabCtx context.Context, ref string, modifiers input.Modifier) (string, error) {
 	box, err := snapshot.ResolveOrRecoverBox(tabCtx, ref)
 	if err != nil {
 		return "", err
@@ -1559,7 +1646,7 @@ func clickElementCenterWithModifiers(tabCtx context.Context, ref string, modifie
 	if box.Recovered {
 		warning = fmt.Sprintf("ref recovered: %s -> %s", box.OldRef, box.Ref)
 	}
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			return dispatchClick(ctx, box.ViewportX, box.ViewportY, input.Left, 1, modifiers)
 		}))
@@ -1595,7 +1682,7 @@ func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
 	}
 	defer cancel()
 	before := m.cachedBefore(tabID, tabCtx)
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 		return m.pressKey(tabCtx, tabID, key)
 	}); err != nil {
 		return ActionResult{}, err
@@ -1664,7 +1751,7 @@ func (m *Manager) Scroll(ctx context.Context, direction string) (ActionResult, e
 
 	before := m.cachedBefore(tabID, tabCtx)
 	var message string
-	if err := runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
 		var scrollErr error
 		message, scrollErr = m.scrollDirection(tabCtx, direction)
 		return scrollErr
@@ -1697,146 +1784,6 @@ func (m *Manager) scrollDirection(tabCtx context.Context, direction string) (str
 		message += " " + strconv.Quote(scroll.Name)
 	}
 	return message, nil
-}
-
-func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Duration) error {
-	if timeout == 0 {
-		timeout = m.timeout
-	}
-	// A download never touches the DOM, so it cannot be observed by the in-page
-	// condition script. It is resolved against the manager's own download
-	// registry instead, which is in-process: each re-check costs a mutex, not a
-	// CDP round trip.
-	if condition == "download" || strings.HasPrefix(condition, "download:") {
-		return m.waitForDownload(ctx, strings.TrimPrefix(strings.TrimPrefix(condition, "download"), ":"), timeout)
-	}
-	// Buffer the Go-side context slightly beyond the in-page timeout so the
-	// page's own timer resolves the wait before the CDP call is cancelled.
-	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
-	if err != nil {
-		return err
-	}
-	defer cancel()
-
-	deadline := time.Now().Add(timeout)
-	for {
-		// Cooperative cancellation: a brw_cancel on the surrounding plan/batch
-		// (or this tab) cancels the caller-supplied ctx, which unblocks a long
-		// wait promptly instead of running it out to the full timeout.
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("wait for %q cancelled", condition)
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return fmt.Errorf("timed out waiting for %q", condition)
-		}
-		// Event-driven: one awaited in-page promise that resolves the moment a
-		// MutationObserver / nav event satisfies the condition. If Chrome tears
-		// down the execution context during navigation, retry inside the same
-		// caller-supplied deadline.
-		matched, err := snapshot.WaitForCondition(tabCtx, condition, remaining.Milliseconds())
-		if err == nil {
-			if matched {
-				return nil
-			}
-			return fmt.Errorf("timed out waiting for %q", condition)
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("wait for %q cancelled", condition)
-		}
-		if !isTransientNavigationError(err) {
-			return err
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-// recentDownloadWindow is how far back a finished download still counts as
-// belonging to the caller's most recent action. Long enough to cover a click
-// whose download completes before the following wait call is issued, short
-// enough that an unrelated download from earlier in the session does not
-// satisfy the wait.
-const recentDownloadWindow = 15 * time.Second
-
-// waitForDownload blocks until a download that was not already finished when the
-// wait started reaches the completed state. match, when non-empty, is a
-// case-insensitive substring tested against the suggested filename and the URL,
-// so a caller can wait for one specific file among several in flight.
-//
-// Only downloads that start (or are still running) after the baseline is taken
-// can satisfy the wait. Without that, a wait placed after a click would return
-// instantly on an unrelated download completed minutes earlier.
-func (m *Manager) waitForDownload(ctx context.Context, match string, timeout time.Duration) error {
-	if timeout == 0 {
-		timeout = m.timeout
-	}
-	if err := m.ensureDownloadTracking(ctx); err != nil {
-		return err
-	}
-	needle := strings.ToLower(strings.TrimSpace(match))
-	matches := func(entry DownloadEntry) bool {
-		if needle == "" {
-			return true
-		}
-		return strings.Contains(strings.ToLower(entry.SuggestedFilename), needle) ||
-			strings.Contains(strings.ToLower(entry.URL), needle)
-	}
-
-	// Baseline: ignore downloads that finished before this action. A download
-	// that completed moments ago is the one the caller just triggered — waits are
-	// written after the click, and a small file frequently beats the wait — so it
-	// counts, while anything older is treated as already dealt with.
-	cutoff := time.Now().Add(-recentDownloadWindow)
-	settled := make(map[string]bool)
-	m.downloadsMu.Lock()
-	m.ensureDownloadMapsLocked()
-	for _, entry := range m.downloads {
-		terminal := entry.State == string(downloadStateCompleted) || entry.State == string(downloadStateCanceled)
-		if terminal && m.downloadSettledBefore(entry.GUID, cutoff) {
-			settled[entry.GUID] = true
-		}
-	}
-	m.downloadsMu.Unlock()
-
-	deadline := time.Now().Add(timeout)
-	for {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("wait for %q cancelled", "download")
-		}
-		var cancelled string
-		m.downloadsMu.Lock()
-		for _, entry := range m.downloads {
-			if settled[entry.GUID] || !matches(entry) {
-				continue
-			}
-			if entry.State == string(downloadStateCompleted) {
-				m.downloadsMu.Unlock()
-				return nil
-			}
-			if entry.State == string(downloadStateCanceled) {
-				cancelled = entry.SuggestedFilename
-			}
-		}
-		m.downloadsMu.Unlock()
-		if cancelled != "" {
-			return fmt.Errorf("download %q was cancelled by the browser before it completed", cancelled)
-		}
-		if remaining := time.Until(deadline); remaining <= 0 {
-			if needle == "" {
-				return errors.New("timed out waiting for a download to complete")
-			}
-			return fmt.Errorf("timed out waiting for a download matching %q to complete", match)
-		}
-		timer := time.NewTimer(50 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return fmt.Errorf("wait for %q cancelled", "download")
-		case <-timer.C:
-		}
-	}
 }
 
 func isTransientNavigationError(err error) bool {
@@ -1992,31 +1939,40 @@ func (m *Manager) ensureConsoleCapture(tabID string, tabCtx context.Context) {
 
 	// CDP's native console event is non-invasive (no monkey-patching page
 	// globals), captures objects with previews, and automatically survives every
-	// navigation on the target. Listen before enabling Runtime so no event in the
-	// enable handshake window is missed.
-	chromedp.ListenTarget(tabCtx, func(event any) {
-		var message ConsoleMessage
-		switch typed := event.(type) {
-		case *runtime.EventConsoleAPICalled:
-			message = consoleMessageFromEvent(typed)
-		case *runtime.EventExceptionThrown:
-			message = consoleMessageFromException(typed)
-		default:
-			return
-		}
-		m.consoleCaptureMu.Lock()
-		messages := append(m.consoleMessages[tabID], message)
-		if len(messages) > 200 {
-			messages = messages[len(messages)-200:]
-		}
-		m.consoleMessages[tabID] = messages
-		m.consoleCaptureMu.Unlock()
-	})
+	// navigation on the target. It arrives on the tab's single event
+	// subscription, which is installed with the context and therefore already
+	// running before Runtime is enabled here — no event in the enable handshake
+	// window is missed.
 	if err := chromedp.Run(tabCtx, runtime.Enable()); err != nil {
 		m.consoleCaptureMu.Lock()
 		delete(m.consoleCaptureTabs, tabID)
 		m.consoleCaptureMu.Unlock()
 	}
+}
+
+// recordConsoleEvent buffers one console line for a tab that has capture armed.
+// Called for every event on the tab subscription, so it must be cheap and must
+// ignore tabs that never asked for capture.
+func (m *Manager) recordConsoleEvent(tabID string, event any) {
+	var message ConsoleMessage
+	switch typed := event.(type) {
+	case *runtime.EventConsoleAPICalled:
+		message = consoleMessageFromEvent(typed)
+	case *runtime.EventExceptionThrown:
+		message = consoleMessageFromException(typed)
+	default:
+		return
+	}
+	m.consoleCaptureMu.Lock()
+	defer m.consoleCaptureMu.Unlock()
+	if !m.consoleCaptureTabs[tabID] {
+		return
+	}
+	messages := append(m.consoleMessages[tabID], message)
+	if len(messages) > 200 {
+		messages = messages[len(messages)-200:]
+	}
+	m.consoleMessages[tabID] = messages
 }
 
 func consoleMessageFromEvent(event *runtime.EventConsoleAPICalled) ConsoleMessage {
@@ -2729,9 +2685,9 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 		actionErr = snapshot.WaitForActionable(tabCtx, step.Ref, 5000)
 		if actionErr == nil {
 			if modifiers := input.Modifier(m.heldModifierMask(tabID)); modifiers != 0 {
-				_, actionErr = clickElementCenterWithModifiers(tabCtx, step.Ref, modifiers)
+				_, actionErr = m.clickElementCenterWithModifiers(tabCtx, step.Ref, modifiers)
 			} else {
-				_, actionErr = clickElementCenter(tabCtx, step.Ref, actionSettleDelay)
+				_, actionErr = m.clickElementCenter(tabCtx, step.Ref, actionSettleDelay)
 			}
 		}
 	case "click_text":
@@ -2742,7 +2698,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 			actionErr = errors.New("click_text requires text")
 			break
 		}
-		actionErr = runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+		actionErr = m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 			modifiers := input.Modifier(m.heldModifierMask(tabID))
 			clicked, clickErr := snapshot.ClickText(tabCtx, snapshot.ClickTextOptions{Text: step.Text, Locate: modifiers != 0})
 			if clickErr != nil || !clicked.Deferred {
@@ -2775,11 +2731,11 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 			actionErr = errors.New("press requires key")
 			break
 		}
-		actionErr = runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+		actionErr = m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
 			return m.pressKey(tabCtx, tabID, step.Key)
 		})
 	case "scroll":
-		actionErr = runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
+		actionErr = m.runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
 			_, scrollErr := m.scrollDirection(tabCtx, step.Direction)
 			return scrollErr
 		})
@@ -3223,6 +3179,11 @@ func (m *Manager) tabContext(tabID string) (context.Context, error) {
 		return nil, err
 	}
 
+	// Tag the tab's own context with its id so the post-action settle can find
+	// this tab's event subscription from the context it already holds, instead of
+	// threading the id through every action helper.
+	ctx = withEventScope(ctx, tabID)
+
 	m.mu.Lock()
 	// A concurrent call may have validated and inserted while we were unlocked;
 	// prefer the first-writer's context and discard ours.
@@ -3234,12 +3195,18 @@ func (m *Manager) tabContext(tabID string) (context.Context, error) {
 	m.tabContexts[tabID] = tabContext{ctx: ctx, cancel: cancel}
 	m.mu.Unlock()
 
-	// If download tracking is already armed, attach the target-level listener to
-	// this newly created tab context so page-initiated downloads are observed.
-	m.attachDownloadListenerIfEnabled(tabID, ctx)
+	// ONE subscription for this context, carrying every event brw waits on. The
+	// raw hook runs before the hub publishes, so the state a woken waiter
+	// re-reads (download registry, dialog ring, console buffer) is already
+	// current. Dialog answering in particular is not optional and not gated on a
+	// flag: an enabled Page domain suppresses Chrome's native dialog UI and the
+	// renderer blocks until Page.handleJavaScriptDialog answers.
+	m.events.attachTab(tabID, ctx, func(ev any) {
+		m.handleDownloadEventForTab(tabID, ev)
+		m.handleDialogEvent(tabID, ctx, ev)
+		m.recordConsoleEvent(tabID, ev)
+	})
 	m.ensureConsoleCapture(tabID, ctx)
-	// Unconditional: an unanswered JS dialog blocks the renderer outright.
-	m.ensureDialogHandling(tabID, ctx)
 	// No-op unless a navigation policy is configured.
 	m.ensureContainment(tabID, ctx)
 	return ctx, nil

@@ -71,6 +71,36 @@ type Controller interface {
 	Notify(context.Context, NotifyOptions) (NotifyResult, error)
 }
 
+// Sources a wait can resolve from. "event" means a CDP (or, on the extension
+// bridge, an extension-side) subscription delivered the signal; "script" means
+// the answer came from an awaited in-page promise; "poll" means the transport
+// had to re-ask on a timer because it has no subscription for that signal.
+const (
+	WaitResolvedByEvent  = "event"
+	WaitResolvedByScript = "script"
+	WaitResolvedByPoll   = "poll"
+)
+
+// WaitOutcome reports how one wait resolved. ResolvedBy names the source of
+// truth and Wakeups counts how many times the wait re-evaluated: an event-driven
+// resolve wakes once for the event that satisfied it, while anything polling
+// wakes on a cadence and its count grows with how long the wait lasted.
+type WaitOutcome struct {
+	OK         bool   `json:"ok"`
+	Condition  string `json:"condition"`
+	ResolvedBy string `json:"resolved_by,omitempty"`
+	WaitedMS   int64  `json:"waited_ms"`
+	Wakeups    int    `json:"wakeups"`
+}
+
+// WaitObserver is the optional capability of reporting a wait's outcome rather
+// than just its error. Both first-party transports implement it; the interface
+// exists so an upstream HTTP controller that has not been upgraded degrades to
+// the plain WaitFor instead of failing to compile.
+type WaitObserver interface {
+	WaitForOutcome(ctx context.Context, condition string, timeout time.Duration) (WaitOutcome, error)
+}
+
 // DialogController is an optional transport capability for JavaScript dialogs
 // (alert / confirm / prompt / beforeunload). Both first-party transports
 // implement it; the interface exists so an upstream HTTP controller that has not

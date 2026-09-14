@@ -245,7 +245,7 @@ func verbs() []verb {
 		{
 			name:          "wait",
 			usage:         "<condition>",
-			summary:       "wait for load, idle, a URL/title/text substring, a ref, a selector or download",
+			summary:       "wait for load, idle, a URL/title/text substring, a ref, a selector, a dialog or a download",
 			method:        http.MethodPost,
 			path:          "/api/page/wait_for",
 			serverTimeout: true,

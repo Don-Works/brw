@@ -66,7 +66,7 @@ func TestPrearmedSettleIsMateriallyFaster(t *testing.T) {
 	legacy := make([]time.Duration, 0, samples)
 	for range samples {
 		started := time.Now()
-		if err := runWithPrearmedSettle(tabCtx, benchmarkCap, action); err != nil {
+		if err := manager.runWithPrearmedSettle(tabCtx, benchmarkCap, action); err != nil {
 			t.Fatal(err)
 		}
 		production = append(production, time.Since(started))
@@ -131,7 +131,7 @@ func TestPrearmedSettleWorstCaseOverheadIsBounded(t *testing.T) {
 	}
 	for range samples {
 		started := time.Now()
-		if err := runWithPrearmedSettle(tabCtx, cap, action); err != nil {
+		if err := manager.runWithPrearmedSettle(tabCtx, cap, action); err != nil {
 			t.Fatal(err)
 		}
 		prearmed = append(prearmed, time.Since(started))
