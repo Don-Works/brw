@@ -180,7 +180,7 @@ func baselineTool() map[string]any {
 		"channel_tolerance": integerSchema("Per-channel 8-bit difference treated as identical, 0 to 255. A small value (2-4) absorbs anti-aliasing without hiding a real change. Defaults to 0."),
 		"ignore_regions": map[string]any{
 			"type":        "array",
-			"description": "Named rectangles excluded from the pixel comparison, in CSS pixels. Regions recorded with a baseline keep applying to later checks.",
+			"description": "Named rectangles excluded from the pixel comparison, in CSS pixels — the page's own coordinates, as you would read them off the layout. The capture itself is downscaled, and brw places each rectangle from the capture's width against the viewport in the key, so you never convert. A region that lands off the capture excluded nothing and is reported under regions_outside_capture instead of ignored_regions. Regions recorded with a baseline keep applying to later checks.",
 			"items": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

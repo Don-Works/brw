@@ -2,6 +2,7 @@ package baseline
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -22,8 +23,8 @@ import (
 // fails on every run.
 //
 // Coordinates are CSS pixels — the units the page is laid out in and the only
-// ones a caller can write down from a screenshot without knowing the device
-// pixel ratio. They are scaled by the environment's DPR before comparison.
+// ones a caller can write down from a screenshot without knowing how the
+// capture was scaled. Placing them is CompareImages' job; see VisualOptions.
 type IgnoreRegion struct {
 	Name   string `json:"name"`
 	X      int    `json:"x"`
@@ -44,9 +45,24 @@ type VisualOptions struct {
 	// a re-render of unchanged content.
 	ChannelTolerance uint8
 	IgnoreRegions    []IgnoreRegion
-	// DevicePixelRatio scales the CSS-pixel ignore regions into image pixels.
-	// Zero is read as 1.
-	DevicePixelRatio float64
+	// ViewportWidth is the CSS width the capture covers, from the environment
+	// fingerprint. It is what places the CSS-pixel ignore regions: the factor
+	// is measured as image width / viewport width rather than assumed to be the
+	// device pixel ratio.
+	//
+	// The DPR is NOT that factor. Both transports clip-capture the viewport at
+	// scale = min(1, 800/viewport_width) on top of the DPR (internal/browser
+	// screenshotMaxWidth, internal/extensionbridge bridgeScreenshotMaxWidth), so
+	// on a 1400 CSS px viewport the true factor is 0.571 at DPR 1 and 1.143 at
+	// DPR 2. Measuring it from the image that is actually being compared holds
+	// for every capture path there is — clipped, capped, unclipped fallback —
+	// and for any cap a transport picks later.
+	//
+	// Required whenever IgnoreRegions is non-empty: a region placed by a guessed
+	// factor fails silently in both directions at once (the clock you named is
+	// still compared, and pixels you never named stop being compared), so the
+	// comparison is refused instead.
+	ViewportWidth int
 }
 
 // VisualDiff is the pixel verdict.
@@ -63,9 +79,17 @@ type VisualDiff struct {
 	BaselineHeight int     `json:"baseline_height"`
 	// DimensionsChanged is reported separately because a resized capture cannot
 	// be compared pixel by pixel at all; the fraction would be meaningless.
-	DimensionsChanged bool     `json:"dimensions_changed,omitempty"`
-	IgnoredRegions    []string `json:"ignored_regions,omitempty"`
-	Note              string   `json:"note,omitempty"`
+	DimensionsChanged bool `json:"dimensions_changed,omitempty"`
+	// IgnoredRegions names the regions that actually covered pixels. A region
+	// that covered none is in RegionsOutsideCapture instead, so the report never
+	// claims an exclusion swallowed something when it landed off the capture.
+	IgnoredRegions        []string `json:"ignored_regions,omitempty"`
+	RegionsOutsideCapture []string `json:"regions_outside_capture,omitempty"`
+	// RegionScale is the CSS-pixel-to-image-pixel factor the regions were placed
+	// with, reported so a wrong placement is visible in the result rather than
+	// only in the pixels.
+	RegionScale float64 `json:"region_scale,omitempty"`
+	Note        string  `json:"note,omitempty"`
 }
 
 // maxComparedPixels bounds one comparison. A capture larger than this is
@@ -102,13 +126,17 @@ func CompareImages(baselineCapture, currentCapture []byte, opts VisualOptions) (
 		return diff, nil
 	}
 
-	scale := opts.DevicePixelRatio
-	if scale <= 0 {
-		scale = 1
+	scale, err := regionScale(afterBounds.Dx(), opts)
+	if err != nil {
+		return VisualDiff{}, err
 	}
-	mask, ignored, names := buildIgnoreMask(afterBounds, opts.IgnoreRegions, scale)
+	mask, ignored, names, outside := buildIgnoreMask(afterBounds, opts.IgnoreRegions, scale)
 	diff.IgnoredPixels = ignored
 	diff.IgnoredRegions = names
+	diff.RegionsOutsideCapture = outside
+	if len(names)+len(outside) > 0 {
+		diff.RegionScale = scale
+	}
 
 	tolerance := int(opts.ChannelTolerance)
 	compared := 0
@@ -135,6 +163,13 @@ func CompareImages(baselineCapture, currentCapture []byte, opts VisualOptions) (
 	diff.Changed = differing > 0 && diff.Fraction > opts.PixelTolerance
 	if differing > 0 && !diff.Changed {
 		diff.Note = fmt.Sprintf("%d of %d compared pixels differ, within the %g tolerance", differing, compared, opts.PixelTolerance)
+	}
+	// A region that covered no pixels is reported in RegionsOutsideCapture in
+	// every case; the note only picks it up when there is no pixel verdict to
+	// talk over, because diffNote prefers this note over its own count.
+	if len(outside) > 0 && diff.Note == "" && !diff.Changed {
+		diff.Note = fmt.Sprintf("ignore region(s) %s fall outside the %dx%d capture at scale %.3f and excluded nothing",
+			strings.Join(outside, ", "), diff.Width, diff.Height, scale)
 	}
 	// Comparing nothing is not a pass. An ignore region the size of the capture
 	// leaves compared == 0 and differing == 0, which the line above reads as
@@ -201,41 +236,72 @@ func NormalizePNG(data []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// regionScale is the CSS-pixel-to-image-pixel factor for this capture, measured
+// rather than assumed: the capture covers the environment's CSS viewport width,
+// so the factor is the image's pixel width divided by it. The same number
+// applies to both axes because every capture path scales uniformly (CDP's clip
+// takes one Scale), which is also why a capture taller than the viewport is
+// still placed correctly.
+//
+// With no regions to place the factor is irrelevant; with regions and no
+// viewport there is no factor to measure, and that fails the comparison rather
+// than guessing one.
+func regionScale(imageWidth int, opts VisualOptions) (float64, error) {
+	placeable := false
+	for _, region := range opts.IgnoreRegions {
+		if region.valid() {
+			placeable = true
+			break
+		}
+	}
+	if !placeable {
+		return 1, nil
+	}
+	if opts.ViewportWidth <= 0 {
+		return 0, errors.New("ignore regions are CSS pixels and need the capture's CSS viewport width to place; VisualOptions.ViewportWidth is unset")
+	}
+	if imageWidth <= 0 {
+		return 0, errors.New("the capture has no width, so CSS-pixel ignore regions cannot be placed")
+	}
+	return float64(imageWidth) / float64(opts.ViewportWidth), nil
+}
+
 // buildIgnoreMask paints the named regions, scaled from CSS pixels into image
 // pixels, and reports how many pixels they cover. Overlapping regions are
-// counted once.
-func buildIgnoreMask(bounds image.Rectangle, regions []IgnoreRegion, scale float64) ([]bool, int, []string) {
+// counted once. A region that covers no pixels of this capture is returned
+// separately rather than listed as ignored: the report exists to say which
+// exclusion swallowed a change, and one that landed off the capture swallowed
+// nothing.
+func buildIgnoreMask(bounds image.Rectangle, regions []IgnoreRegion, scale float64) (mask []bool, covered int, ignored, outside []string) {
 	usable := make([]IgnoreRegion, 0, len(regions))
-	names := make([]string, 0, len(regions))
-	seen := map[string]bool{}
 	for _, region := range regions {
-		if !region.valid() {
-			continue
+		if region.valid() {
+			usable = append(usable, region)
 		}
-		usable = append(usable, region)
+	}
+	if len(usable) == 0 {
+		return nil, 0, nil, nil
+	}
+	width, height := bounds.Dx(), bounds.Dy()
+	mask = make([]bool, width*height)
+	covers := map[string]bool{}
+	for _, region := range usable {
 		name := strings.TrimSpace(region.Name)
 		if name == "" {
 			name = "unnamed"
 		}
-		if !seen[name] {
-			seen[name] = true
-			names = append(names, name)
+		if _, seen := covers[name]; !seen {
+			covers[name] = false
 		}
-	}
-	if len(usable) == 0 {
-		return nil, 0, nil
-	}
-	sort.Strings(names)
-	width, height := bounds.Dx(), bounds.Dy()
-	mask := make([]bool, width*height)
-	covered := 0
-	for _, region := range usable {
 		x0 := int(math.Floor(float64(region.X) * scale))
 		y0 := int(math.Floor(float64(region.Y) * scale))
 		x1 := int(math.Ceil(float64(region.X+region.Width) * scale))
 		y1 := int(math.Ceil(float64(region.Y+region.Height) * scale))
 		x0, y0 = max(x0, 0), max(y0, 0)
 		x1, y1 = min(x1, width), min(y1, height)
+		if x1 > x0 && y1 > y0 {
+			covers[name] = true
+		}
 		for y := y0; y < y1; y++ {
 			for x := x0; x < x1; x++ {
 				if !mask[y*width+x] {
@@ -245,5 +311,14 @@ func buildIgnoreMask(bounds image.Rectangle, regions []IgnoreRegion, scale float
 			}
 		}
 	}
-	return mask, covered, names
+	for name, hit := range covers {
+		if hit {
+			ignored = append(ignored, name)
+		} else {
+			outside = append(outside, name)
+		}
+	}
+	sort.Strings(ignored)
+	sort.Strings(outside)
+	return mask, covered, ignored, outside
 }

@@ -409,11 +409,16 @@ meaningless and unactionable is how a visual gate gets switched off.
 pixels with `pixel_tolerance` (a fraction of compared pixels),
 `channel_tolerance` (per-channel slack that absorbs anti-aliasing) and
 `ignore_regions` — named rectangles in CSS pixels for the clock, the avatar and
-the ad slot, scaled by the baseline's device pixel ratio and reported back by
-name so you can see which exclusion swallowed a change. Regions recorded with a
-baseline keep applying to every later check, so a region that ends up covering
-the whole capture fails with "the visual half compared nothing" rather than
-passing: a comparison that covered no pixels is not a pass. The structural half
+the ad slot, reported back by name so you can see which exclusion swallowed a
+change. CSS pixels are not capture pixels: both transports clip-capture the
+viewport at `min(1, 800/viewport_width)` on top of the device pixel ratio, so a
+rectangle is placed by the capture's own width divided by the viewport width in
+the key — measured, not assumed to be the DPR, which on a 1400px viewport is
+wrong by a factor of 1.75. A region that lands off the capture excluded nothing
+and is reported under `regions_outside_capture` rather than counted as applied.
+Regions recorded with a baseline keep applying to every later check, so a region
+that ends up covering the whole capture fails with "the visual half compared
+nothing" rather than passing: a comparison that covered no pixels is not a pass. The structural half
 diffs the page's ARIA structure, role and accessible name, with presentational
 wrappers flattened away. It carries no geometry: a button that loses its
 `aria-label` renders identically and fails the structural check, while a font

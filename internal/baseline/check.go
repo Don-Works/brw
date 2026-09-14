@@ -65,7 +65,11 @@ type CheckResult struct {
 	ARIA                *snapshot.AriaDiff    `json:"aria,omitempty"`
 	BaselineCreatedAt   *time.Time            `json:"baseline_created_at,omitempty"`
 	IgnoredRegions      []string              `json:"ignored_regions,omitempty"`
-	Note                string                `json:"note,omitempty"`
+	// RegionsOutsideCapture names regions that excluded nothing because they
+	// land off this capture. Without it a mis-typed rectangle looks identical to
+	// a working one in the result.
+	RegionsOutsideCapture []string `json:"regions_outside_capture,omitempty"`
+	Note                  string   `json:"note,omitempty"`
 }
 
 // Check compares one capture against its baseline.
@@ -129,11 +133,15 @@ func Check(store *Store, opts CheckOptions) (CheckResult, error) {
 	}
 
 	regions := unionRegions(stored.IgnoreRegions, opts.IgnoreRegions)
+	// The ignore regions are CSS pixels and the capture is not: place them from
+	// the viewport in the key, which is the CSS width this capture covers, and
+	// never from the device pixel ratio. Both are in the environment and only
+	// one of them is the scale the transport actually captured at.
 	visual, err := CompareImages(stored.Screenshot, opts.Screenshot, VisualOptions{
 		PixelTolerance:   opts.PixelTolerance,
 		ChannelTolerance: opts.ChannelTolerance,
 		IgnoreRegions:    regions,
-		DevicePixelRatio: key.Environment.DevicePixelRatio,
+		ViewportWidth:    key.Environment.ViewportWidth,
 	})
 	if err != nil {
 		return CheckResult{}, err
@@ -144,6 +152,7 @@ func Check(store *Store, opts CheckOptions) (CheckResult, error) {
 	result.ARIA = &aria
 	result.BaselineCreatedAt = &created
 	result.IgnoredRegions = visual.IgnoredRegions
+	result.RegionsOutsideCapture = visual.RegionsOutsideCapture
 
 	if opts.Update {
 		if err := writeBaseline(store, key, CheckOptions{

@@ -212,9 +212,11 @@ func TestCompareImagesCountsOnlyWhatMoved(t *testing.T) {
 	})
 
 	t.Run("a named ignore region excludes its pixels", func(t *testing.T) {
+		// The capture is 40 image pixels wide and covers 40 CSS pixels, so a CSS
+		// rectangle is an image rectangle here.
 		diff, err := CompareImages(before, after, VisualOptions{
-			IgnoreRegions:    []IgnoreRegion{{Name: "clock", X: 0, Y: 0, Width: 4, Height: 5}},
-			DevicePixelRatio: 1,
+			IgnoreRegions: []IgnoreRegion{{Name: "clock", X: 0, Y: 0, Width: 4, Height: 5}},
+			ViewportWidth: 40,
 		})
 		if err != nil {
 			t.Fatalf("CompareImages: %v", err)
@@ -230,27 +232,40 @@ func TestCompareImagesCountsOnlyWhatMoved(t *testing.T) {
 		}
 	})
 
-	t.Run("ignore regions are CSS pixels scaled by the device pixel ratio", func(t *testing.T) {
-		// At DPR 2 the same 2x2.5 CSS rectangle covers the 4x5 image rectangle.
+	t.Run("a comparison with regions and no viewport is refused", func(t *testing.T) {
+		// Fail closed. A guessed factor is wrong in both directions at once: the
+		// region a caller named is still compared, and pixels nobody named stop
+		// being compared, with nothing in the result saying either happened.
+		if _, err := CompareImages(before, after, VisualOptions{
+			IgnoreRegions: []IgnoreRegion{{Name: "clock", X: 0, Y: 0, Width: 4, Height: 5}},
+		}); err == nil || !strings.Contains(err.Error(), "ViewportWidth") {
+			t.Fatalf("error = %v, want a refusal naming the missing viewport width", err)
+		}
+		// With nothing to place, the viewport is not needed and not demanded.
+		if _, err := CompareImages(before, after, VisualOptions{}); err != nil {
+			t.Fatalf("CompareImages with no regions: %v", err)
+		}
+	})
+
+	t.Run("a region that lands off the capture is not reported as ignored", func(t *testing.T) {
 		diff, err := CompareImages(before, after, VisualOptions{
-			IgnoreRegions:    []IgnoreRegion{{Name: "clock", X: 0, Y: 0, Width: 2, Height: 3}},
-			DevicePixelRatio: 2,
+			IgnoreRegions: []IgnoreRegion{
+				{Name: "clock", X: 0, Y: 0, Width: 4, Height: 5},
+				{Name: "ad slot", X: 400, Y: 0, Width: 40, Height: 10},
+			},
+			ViewportWidth: 40,
 		})
 		if err != nil {
 			t.Fatalf("CompareImages: %v", err)
 		}
-		if diff.Changed {
-			t.Fatalf("diff = %+v, want the scaled region to cover the change", diff)
+		if len(diff.IgnoredRegions) != 1 || diff.IgnoredRegions[0] != "clock" {
+			t.Fatalf("ignored_regions = %v, want only the region that covered pixels", diff.IgnoredRegions)
 		}
-		unscaled, err := CompareImages(before, after, VisualOptions{
-			IgnoreRegions:    []IgnoreRegion{{Name: "clock", X: 0, Y: 0, Width: 2, Height: 3}},
-			DevicePixelRatio: 1,
-		})
-		if err != nil {
-			t.Fatalf("CompareImages: %v", err)
+		if len(diff.RegionsOutsideCapture) != 1 || diff.RegionsOutsideCapture[0] != "ad slot" {
+			t.Fatalf("regions_outside_capture = %v, want the region that excluded nothing", diff.RegionsOutsideCapture)
 		}
-		if !unscaled.Changed {
-			t.Fatal("at DPR 1 the same CSS rectangle is too small to cover the change, so this must still fail")
+		if !strings.Contains(diff.Note, "ad slot") {
+			t.Fatalf("note = %q, want the region that excluded nothing named", diff.Note)
 		}
 	})
 
@@ -480,10 +495,15 @@ func solidJPEG(t *testing.T, width, height int, base color.RGBA, patch image.Rec
 	return buf.Bytes()
 }
 
-// A baseline is stored and compared as PNG, but neither transport captures PNG:
-// without normalization every check on a real daemon dies on the encoding
-// instead of comparing the page, and the store holds JPEG bytes in a .png file.
-func TestABrowserCaptureIsNormalizedToPNG(t *testing.T) {
+// NormalizePNG's own behaviour: a JPEG capture becomes a PNG that still gates.
+//
+// This calls NormalizePNG directly, so it says nothing about whether anything in
+// production does. The call site is pinned separately, on the bytes the tool
+// writes to the store, by internal/mcp
+// TestBaselineToolStoresLosslessPNGWhateverTheTransportCaptured — the
+// comparison path decodes JPEG happily, so dropping the production call breaks
+// only the file on disk.
+func TestNormalizePNGTurnsABrowserCaptureIntoAPNGThatStillGates(t *testing.T) {
 	store := newBaselineStore(t)
 	key := Key{RecipeDigest: fixtureDigest, StepIndex: 0, Environment: fixtureEnvironment()}
 
@@ -648,7 +668,9 @@ func TestStoreRefusesAWorldReachableRoot(t *testing.T) {
 func TestAnIgnoreRegionCoveringEverythingIsNotAPass(t *testing.T) {
 	store := newBaselineStore(t)
 	key := Key{RecipeDigest: fixtureDigest, StepIndex: 0, Environment: fixtureEnvironment()}
-	everything := []IgnoreRegion{{Name: "everything", X: 0, Y: 0, Width: 40, Height: 20}}
+	// The whole CSS viewport, which is what a caller writes down: the capture
+	// covering it is 40x20 image pixels.
+	everything := []IgnoreRegion{{Name: "everything", X: 0, Y: 0, Width: 1280, Height: 800}}
 
 	if _, err := Check(store, CheckOptions{
 		Key:           key,

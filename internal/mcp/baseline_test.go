@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,18 +38,27 @@ const fixtureBaselineDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0
 // would test a capture no deployment hands back.
 type pageController struct {
 	browser.Controller
-	patched  bool
+	patched bool
+	// patch repaints an exact rectangle of the capture, in image pixels, so a
+	// test can place a change relative to an ignore region instead of relative
+	// to the whole left half.
+	patch    image.Rectangle
 	label    string
 	dpr      float64
 	encoding string
 }
 
+// Screenshot renders the 1280x800 CSS viewport its Evaluate reports into a 20x10
+// image. That is not an arbitrary shrink: both transports clip-capture at
+// scale = min(1, 800/viewport_width) on top of the device pixel ratio, so a
+// capture whose pixels are not CSS pixels is what a real daemon produces on any
+// viewport past 800 CSS px.
 func (c *pageController) Screenshot(context.Context) (browser.Screenshot, error) {
 	img := image.NewRGBA(image.Rect(0, 0, 20, 10))
 	for y := 0; y < 10; y++ {
 		for x := 0; x < 20; x++ {
 			pixel := color.RGBA{R: 255, G: 255, B: 255, A: 255}
-			if c.patched && x < 10 && y < 10 {
+			if (c.patched && x < 10) || image.Pt(x, y).In(c.patch) {
 				pixel = color.RGBA{R: 20, G: 80, B: 190, A: 255}
 			}
 			img.SetRGBA(x, y, pixel)
@@ -188,6 +198,77 @@ func TestBaselineToolChecksUpdatesAndNeverWritesOnACheck(t *testing.T) {
 	}
 }
 
+// storedScreenshots returns every screenshot a baseline store holds, keyed by
+// its path under the root.
+func storedScreenshots(t *testing.T, root string) map[string][]byte {
+	t.Helper()
+	out := map[string][]byte{}
+	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || entry.Name() != "screenshot.png" {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		relative, _ := filepath.Rel(root, path)
+		out[relative] = data
+		return nil
+	}); err != nil {
+		t.Fatalf("walk the baseline store: %v", err)
+	}
+	return out
+}
+
+// Both transports capture the viewport as JPEG. The tool re-encodes that once,
+// on the way in, so the store holds the PNG its file name claims — losslessly,
+// which is what makes a stored baseline comparable at all rather than a
+// re-compressed approximation of the page.
+//
+// This asserts on the file the tool actually wrote. Calling baseline.NormalizePNG
+// from a test says nothing about whether the tool calls it: the comparison path
+// decodes JPEG happily, so dropping the call leaves every other test green and
+// only the bytes on disk disagree with the .png on the end of their name.
+func TestBaselineToolStoresLosslessPNGWhateverTheTransportCaptured(t *testing.T) {
+	controller := &pageController{label: "Pay invoice", encoding: "jpeg"}
+	s := baselineServer(t, controller)
+	args := `{"action":"%s","recipe_digest":"` + fixtureBaselineDigest + `","step_index":4}`
+
+	captured, err := controller.Screenshot(context.Background())
+	if err != nil {
+		t.Fatalf("screenshot: %v", err)
+	}
+	if _, format, decodeErr := image.Decode(bytes.NewReader(captured.Data)); decodeErr != nil || format != "jpeg" {
+		t.Fatalf("the controller captured %q (%v); this test exists because the transports capture JPEG", format, decodeErr)
+	}
+
+	recorded := callBaselineTool(t, s, strings.Replace(args, "%s", "update", 1))
+	if recorded["status"] != baseline.StatusRecorded {
+		t.Fatalf("update = %v, want %q", recorded, baseline.StatusRecorded)
+	}
+
+	stored := storedScreenshots(t, s.baselines.Root())
+	if len(stored) != 1 {
+		t.Fatalf("the store holds %d screenshots, want the one just recorded", len(stored))
+	}
+	for name, data := range stored {
+		if _, err := png.Decode(bytes.NewReader(data)); err != nil {
+			t.Fatalf("%s is not a PNG: %v", name, err)
+		}
+	}
+
+	// Lossless, not merely PNG-shaped: the decoded pixels are the ones the
+	// browser handed over, so the first check after a record cannot fail on the
+	// re-encoding.
+	matched := callBaselineTool(t, s, strings.Replace(args, "%s", "check", 1))
+	if matched["status"] != baseline.StatusMatch || matched["failed"] != false {
+		t.Fatalf("the check straight after a record = %v, want a passing %q", matched, baseline.StatusMatch)
+	}
+}
+
 // A retina run must report the display, not a screen full of moved pixels.
 func TestBaselineToolReportsAnEnvironmentMismatchAcrossDevicePixelRatios(t *testing.T) {
 	controller := &pageController{label: "Pay invoice"}
@@ -233,6 +314,101 @@ func TestBaselineToolFailsOnAnARIAOnlyRegression(t *testing.T) {
 	aria, _ := result["aria"].(map[string]any)
 	if aria == nil || aria["changed"] != true {
 		t.Fatalf("aria = %v, want the structural change reported", aria)
+	}
+}
+
+// An ignore_regions rectangle is written in CSS pixels by someone reading the
+// page, and applied to a capture that is not in CSS pixels: pageController
+// renders a 1280 CSS px viewport into a 20px-wide image, the same shape the
+// 800px capture cap produces on any real wide viewport. Placing the rectangle by
+// the device pixel ratio instead scales it 64x, so the named clock swallows the
+// whole capture and the visual half compares nothing — while a caller whose
+// region does not start at the left edge gets the opposite, a clock that is
+// still compared. Both fail silently.
+func TestBaselineToolPlacesIgnoreRegionsInCSSPixels(t *testing.T) {
+	controller := &pageController{label: "Pay invoice", encoding: "jpeg"}
+	s := baselineServer(t, controller)
+	// CSS x 0..512 of a 1280px viewport is image x 0..8 of the 20px capture.
+	const args = `{"action":"%s","recipe_digest":"` + fixtureBaselineDigest + `","step_index":5,` +
+		`"ignore_regions":[{"name":"clock","x":0,"y":0,"width":512,"height":800}],"channel_tolerance":8}`
+
+	recorded := callBaselineTool(t, s, strings.Replace(args, "%s", "update", 1))
+	if recorded["status"] != baseline.StatusRecorded {
+		t.Fatalf("update = %v, want %q", recorded, baseline.StatusRecorded)
+	}
+
+	controller.patch = image.Rect(0, 0, 8, 10)
+	ignored := callBaselineTool(t, s, strings.Replace(args, "%s", "check", 1))
+	if ignored["status"] != baseline.StatusMatch || ignored["failed"] != false {
+		t.Fatalf("a repaint inside the named clock = %v, want a passing %q", ignored, baseline.StatusMatch)
+	}
+	names, _ := ignored["ignored_regions"].([]any)
+	if len(names) != 1 || names[0] != "clock" {
+		t.Fatalf("ignored_regions = %v, want the clock, which is the exclusion that applied", ignored["ignored_regions"])
+	}
+	if _, present := ignored["regions_outside_capture"]; present {
+		t.Fatalf("result = %v, want the clock placed inside the capture", ignored)
+	}
+	visual, _ := ignored["visual"].(map[string]any)
+	if visual == nil || visual["compared_pixels"] == float64(0) {
+		t.Fatalf("visual = %v, want the rest of the page still compared", ignored["visual"])
+	}
+
+	// The same rectangle must not swallow the whole capture either: a change
+	// outside it still fails.
+	controller.patch = image.Rect(12, 0, 20, 10)
+	moved := callBaselineTool(t, s, strings.Replace(args, "%s", "check", 1))
+	if moved["status"] != baseline.StatusDiff || moved["failed"] != true {
+		t.Fatalf("a repaint outside the named clock = %v, want a failing %q", moved, baseline.StatusDiff)
+	}
+}
+
+// The actions are a closed set in three places: the schema's enum, the switch in
+// callBaseline, and the refusal for everything else. Enumerating the enum rather
+// than listing the verbs here is what stops the next one being added to the
+// schema and never reaching the switch — an advertised action that answers
+// "unknown action" is a tool lying about itself.
+func TestBaselineToolHandlesEveryActionItAdvertises(t *testing.T) {
+	schema, _ := baselineTool()["inputSchema"].(map[string]any)
+	properties, _ := schema["properties"].(map[string]any)
+	action, _ := properties["action"].(map[string]any)
+	advertised, _ := action["enum"].([]string)
+	if len(advertised) == 0 {
+		t.Fatal("the action enum is empty, so this test would pass by vacuum")
+	}
+
+	for _, name := range advertised {
+		t.Run(name, func(t *testing.T) {
+			s := baselineServer(t, &pageController{label: "Pay invoice", encoding: "jpeg"})
+			// delete needs something to delete; every other action stands alone.
+			if name == "delete" {
+				callBaselineTool(t, s, `{"action":"update","recipe_digest":"`+fixtureBaselineDigest+`","step_index":0}`)
+			}
+			args := `{"action":"` + name + `","recipe_digest":"` + fixtureBaselineDigest + `","step_index":0}`
+			result, rpcErr := s.callTool(context.Background(), baselineToolName, json.RawMessage(args))
+			if rpcErr != nil {
+				t.Fatalf("callTool: %+v", rpcErr)
+			}
+			encoded, _ := json.Marshal(result)
+			for _, refusal := range []string{"unknown action", "action is required"} {
+				if strings.Contains(string(encoded), refusal) {
+					t.Fatalf("%q is advertised in the schema but callBaseline answers %q: %s", name, refusal, encoded)
+				}
+			}
+		})
+	}
+
+	// And the set really is closed: an action outside the enum is refused rather
+	// than falling through to one of the handled ones.
+	s := baselineServer(t, &pageController{label: "Pay invoice"})
+	result, rpcErr := s.callTool(context.Background(), baselineToolName,
+		json.RawMessage(`{"action":"accept","recipe_digest":"`+fixtureBaselineDigest+`","step_index":0}`))
+	if rpcErr != nil {
+		t.Fatalf("callTool: %+v", rpcErr)
+	}
+	encoded, _ := json.Marshal(result)
+	if !strings.Contains(string(encoded), "unknown action") {
+		t.Fatalf("an action outside the enum = %s, want a refusal", encoded)
 	}
 }
 

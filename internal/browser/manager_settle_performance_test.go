@@ -171,21 +171,28 @@ func TestPrearmedSettleWorstCaseOverheadIsBounded(t *testing.T) {
 	}
 
 	// This is a wall-clock comparison taken while the rest of the suite is also
-	// launching browsers. CPU contention inflates a sample and never deflates
-	// one, so a round over budget is re-measured rather than believed: an
-	// overhead that is structural survives every round, and one that is the
-	// laptop does not.
+	// launching browsers, so one round is noisy. Every round is measured and the
+	// MIDDLE overhead has to be within budget.
+	//
+	// Stopping at the first round under budget would be a weaker gate, not a
+	// steadier one. Contention inflates BOTH paths, and it is the legacy path
+	// being inflated that makes the difference look small — so three chances to
+	// catch the legacy path on a slow round is three chances for a real overhead
+	// to be masked. The median needs two rounds out of three to agree, which one
+	// unlucky round cannot buy and a structural regression never gets.
 	const rounds = 3
-	var newMedian, oldMedian time.Duration
+	overheads := make([]time.Duration, 0, rounds)
 	for attempt := 1; attempt <= rounds; attempt++ {
-		newMedian, oldMedian = round()
-		if newMedian <= oldMedian+50*time.Millisecond {
-			t.Logf("no-reaction median: prearmed=%s legacy=%s (overhead %s, round %d)", newMedian, oldMedian, newMedian-oldMedian, attempt)
-			return
-		}
-		t.Logf("round %d over budget: prearmed=%s legacy=%s", attempt, newMedian, oldMedian)
+		newMedian, oldMedian := round()
+		overheads = append(overheads, newMedian-oldMedian)
+		t.Logf("round %d: prearmed=%s legacy=%s (overhead %s)", attempt, newMedian, oldMedian, newMedian-oldMedian)
 	}
-	t.Fatalf("prearmed no-reaction median=%s legacy=%s over %d rounds; overhead exceeds 50ms", newMedian, oldMedian, rounds)
+	sorted := append([]time.Duration(nil), overheads...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	if median := sorted[rounds/2]; median > 50*time.Millisecond {
+		t.Fatalf("prearmed no-reaction overhead median=%s over %d rounds (%v); overhead exceeds 50ms", median, rounds, overheads)
+	}
+	t.Logf("no-reaction overhead median=%s over %d rounds (%v)", sorted[rounds/2], rounds, overheads)
 }
 
 // Chrome's root process can exit a few milliseconds before its last helper
