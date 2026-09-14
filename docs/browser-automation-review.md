@@ -207,6 +207,10 @@ Agents score around 70% on sandboxed Online-Mind2Web and 33.3% on ClawBench —
 153 everyday tasks across 144 live production sites, scored by intercepting the
 final submission request. The sandbox-to-live gap is the product.
 
+Stagehand's 65.0% on Online-Mind2Web is independently verified, and is the only
+top-ten row that is both independent and from a framework rather than a
+foundation model. That is the Stagehand number to carry.
+
 Vendor numbers that should not go in a matrix: Stagehand's "2x faster, ~80% more
 token-efficient" rests on one 50-action crawl the authors themselves label a
 single run rather than a benchmark; browser-use's 97.0% Online-Mind2Web is

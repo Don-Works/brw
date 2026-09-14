@@ -153,6 +153,7 @@ src += `
   ensureTabDrivable,
   waitForTabGone,
   agentOwnedTabIdForHello,
+  fetchBridgeToken,
   ensureObserver,
   handle,
   send,
@@ -1216,6 +1217,40 @@ async function scenarioSubresourceContainment() {
   }
 }
 
+
+// Regression for the failure mode the required-token default introduced: an
+// empty token used to mean "connect anyway" and now means "refused", so the
+// extension has to be able to say which of the three causes it hit.
+async function scenarioHandshakeTokenFailuresAreDistinguishable() {
+  await reset();
+  const originalFetch = sandbox.fetch;
+  const config = { statusUrl: "http://127.0.0.1:9/status" };
+  const fixtureHandshake = ["fixture", "handshake", "value"].join("-");
+
+  sandbox.fetch = async () => ({ ok: true, json: async () => ({ token: fixtureHandshake }) });
+  let got = await T.fetchBridgeToken(config);
+  check("a served token is returned and marked reachable", got.token === fixtureHandshake && got.reachable === true && got.detail === "");
+
+  sandbox.fetch = async () => ({ ok: true, json: async () => ({}) });
+  got = await T.fetchBridgeToken(config);
+  check("a daemon offering no token is reachable, not an error", got.token === "" && got.reachable === true && got.detail.includes("offered no handshake token"));
+
+  sandbox.fetch = async () => ({ ok: false, status: 404, json: async () => ({}) });
+  got = await T.fetchBridgeToken(config);
+  check("a non-ok status is NOT reported as reachable", got.token === "" && got.reachable === false && got.detail.includes("404"));
+
+  sandbox.fetch = async () => { throw new Error("connection refused"); };
+  got = await T.fetchBridgeToken(config);
+  check("an unreachable endpoint carries the underlying cause", got.token === "" && got.reachable === false && got.detail.includes("connection refused"));
+
+  sandbox.fetch = async () => ({ ok: true, json: async () => ({}) });
+  const offered = await T.fetchBridgeToken(config);
+  sandbox.fetch = async () => { throw new Error("connection refused"); };
+  const unreached = await T.fetchBridgeToken(config);
+  check("the two empty-token causes do not look alike", offered.token === unreached.token && offered.reachable !== unreached.reachable && offered.detail !== unreached.detail);
+  sandbox.fetch = originalFetch;
+}
+
 (async () => {
   await scenarioConsentGateIsFailClosed();
   await scenarioPinBeatsForeground();
@@ -1238,6 +1273,7 @@ async function scenarioSubresourceContainment() {
   await scenarioCloseTabIsBoundedAndFailClosed();
   await scenarioDialogArmingAndSafeDefaults();
   await scenarioSubresourceContainment();
+  await scenarioHandshakeTokenFailuresAreDistinguishable();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })();

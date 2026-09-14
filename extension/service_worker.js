@@ -885,7 +885,17 @@ async function connectOnce() {
     // gets an opaque response) and present it as the FIRST frame. The daemon
     // refuses any connection whose hello lacks the token, so a malicious page or a
     // rogue local client that opened this socket cannot drive the bridge.
-    const token = await fetchBridgeToken(config);
+    const auth = await fetchBridgeToken(config);
+    const token = auth.token;
+    if (!token) {
+      // The daemon refuses a tokenless hello, so this connection is about to be
+      // closed. Say why HERE: the daemon logs its rejection, the extension logs
+      // nothing, and neither half of that diagnosis is conclusive alone.
+      state.lastError = auth.reachable
+        ? `${auth.detail} at ${config.statusUrl}. A daemon that requires the token will refuse this connection; it is probably older than the extension.`
+        : `${auth.detail} at ${config.statusUrl}. The connection will be refused. Check the bridge address on the options page.`;
+      await markBridgeStatus("connected", state.lastError);
+    }
     send({
       type: "hello",
       hello: {
@@ -3048,20 +3058,28 @@ function send(payload) {
 }
 
 // fetchBridgeToken reads the per-launch handshake token from the daemon's
-// loopback /status endpoint. Returns "" when the daemon serves no token (an
-// older/no-auth daemon), so the extension stays compatible: such a daemon also
-// skips verification. The extension can read the response body because the
-// loopback origin is in host_permissions; a web page cannot.
+// loopback /status endpoint. The extension can read the response body because
+// the loopback origin is in host_permissions; a web page cannot.
+//
+// It returns {token, reachable, detail} rather than a bare string because the
+// three ways of ending up with no token are no longer equivalent. The daemon
+// now requires the token, so an unreachable or wrong statusUrl produces a
+// refused connection rather than a tokenless one - and a caller that cannot
+// tell "the daemon offered none" from "I never reached the daemon" reports a
+// bridge that will not come up with the cause three layers away.
 async function fetchBridgeToken(config) {
   try {
     // Bounded so a hung /status can never block hello indefinitely; the bridge's
     // own handshake timeout would otherwise drop us and force a reconnect loop.
     const response = await fetch(config.statusUrl, { cache: "no-store", signal: AbortSignal.timeout(DAEMON_STATUS_TIMEOUT_MS) });
-    if (!response.ok) return "";
+    if (!response.ok) {
+      return { token: "", reachable: false, detail: `the daemon status endpoint answered HTTP ${response.status}` };
+    }
     const status = await response.json().catch(() => ({}));
-    return typeof status?.token === "string" ? status.token : "";
-  } catch (_) {
-    return "";
+    const token = typeof status?.token === "string" ? status.token : "";
+    return { token, reachable: true, detail: token ? "" : "the daemon offered no handshake token" };
+  } catch (err) {
+    return { token: "", reachable: false, detail: `the daemon status endpoint could not be reached (${err?.message || err})` };
   }
 }
 
