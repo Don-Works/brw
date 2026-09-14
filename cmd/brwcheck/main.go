@@ -83,12 +83,10 @@ type step struct {
 // catch a tool that marshals correctly and then fails against real Chrome.
 
 type groupTabsStep struct {
-	Tabs      []string `json:"tabs,omitempty"`
-	Title     string   `json:"title,omitempty"`
-	Color     string   `json:"color,omitempty"`
-	GroupID   string   `json:"group_id,omitempty"`
-	SaveAs    string   `json:"save_as,omitempty"`
-	WantTitle string   `json:"want_title,omitempty"`
+	Tabs    []string `json:"tabs,omitempty"`
+	Title   string   `json:"title,omitempty"`
+	Color   string   `json:"color,omitempty"`
+	GroupID string   `json:"group_id,omitempty"`
 }
 
 type ungroupTabsStep struct {

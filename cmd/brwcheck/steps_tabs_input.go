@@ -35,9 +35,12 @@ func (r *runner) runGroupTabsStep(st groupTabsStep) error {
 	if len(ids) == 0 {
 		return fmt.Errorf("group_tabs needs tabs or a current tab")
 	}
+	// The API names a group with "name"; TabGroup.Title reads it back. Grouping
+	// returns only ok, so the group itself is verified by a following
+	// list_tab_groups step rather than from this response.
 	body := map[string]any{"tab_ids": ids}
 	if st.Title != "" {
-		body["title"] = st.Title
+		body["name"] = st.Title
 	}
 	if st.Color != "" {
 		body["color"] = st.Color
@@ -45,21 +48,12 @@ func (r *runner) runGroupTabsStep(st groupTabsStep) error {
 	if st.GroupID != "" {
 		body["group_id"] = r.resolveTabRef(st.GroupID)
 	}
-	var result struct {
-		GroupID string `json:"group_id"`
-		Title   string `json:"title"`
-	}
+	var result browser.ActionResult
 	if err := r.client.postJSON("/api/browser/group_tabs", body, &result); err != nil {
 		return err
 	}
-	if result.GroupID == "" {
-		return fmt.Errorf("group_tabs returned no group_id")
-	}
-	if st.WantTitle != "" && result.Title != st.WantTitle {
-		return fmt.Errorf("group title = %q, want %q", result.Title, st.WantTitle)
-	}
-	if st.SaveAs != "" {
-		r.tabRefs[st.SaveAs] = result.GroupID
+	if !result.OK {
+		return fmt.Errorf("group_tabs reported not ok")
 	}
 	return nil
 }
