@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/brwidentity"
+	"github.com/Don-Works/brw/internal/discovery"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/setup"
 )
@@ -336,9 +337,9 @@ func (d *doctorRun) resolveProfile() {
 	d.resolved = true
 	d.result.Profile = profile.Name
 	d.result.Kind = profile.Kind
-	d.result.DaemonHTTPURL = defaultBridgeHTTPURL(profile)
+	d.result.DaemonHTTPURL = discovery.HTTPURL(profile)
 	if profile.ExtensionBridgeAllowed {
-		d.result.BridgeWSAddr = defaultBridgeWSAddr(profile)
+		d.result.BridgeWSAddr = discovery.WSAddr(profile)
 	}
 	d.add(checkOK, "profile_resolved", "profile",
 		fmt.Sprintf("%s (%s), user data %s", profile.Name, setup.ResolvedTransport(profile), profile.UserDataDir), "")

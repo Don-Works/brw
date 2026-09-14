@@ -330,46 +330,6 @@ func daemons(args []string) error {
 	return nil
 }
 
-// probeDaemon builds the discovery record for one bridge profile: it derives the
-// daemon's loopback addresses and extension id from the profile, then GETs the
-// daemon's /health to fill in reachability and live identity. A probe failure is
-// recorded (reachable=false + error), never fatal — an offline daemon must still
-// appear in the listing so a consumer can decide whether to register it.
-func probeDaemon(profile profilepolicy.Profile, timeout time.Duration) daemonRecord {
-	extID := profile.BridgeExtensionID
-	if extID == "" {
-		extID = profilepolicy.DefaultBridgeExtensionID
-	}
-	httpURL := defaultBridgeHTTPURL(profile)
-	rec := daemonRecord{
-		Name:        profile.Name,
-		Kind:        profile.Kind,
-		Profile:     profile.Name,
-		HTTPAddr:    httpURL,
-		WSAddr:      defaultBridgeWSAddr(profile),
-		ExtensionID: extID,
-	}
-	ctrl, cerr := httpclient.New(httpURL, timeout)
-	if cerr != nil {
-		rec.Error = cerr.Error()
-		return rec
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	health, herr := ctrl.Health(ctx)
-	if herr != nil {
-		rec.Error = herr.Error()
-		return rec
-	}
-	rec.Reachable = true
-	if !health.Identity.Empty() {
-		id := health.Identity
-		rec.Identity = &id
-		rec.Workspace = health.Identity.Workspace
-	}
-	return rec
-}
-
 // mcpConfigRequest is one resolved MCP server derivation. `brwctl setup` builds
 // the same request so the command it registers with an MCP client is byte-for-byte
 // what `brwctl mcp-config` prints.

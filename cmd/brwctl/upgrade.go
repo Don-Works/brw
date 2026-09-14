@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Don-Works/brw/internal/discovery"
 	"github.com/Don-Works/brw/internal/mcp"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/setup"
@@ -835,7 +836,7 @@ func busyDaemons(policy profilepolicy.Policy, client *http.Client) []busyDaemon 
 	// the name of a profile that daemon is not serving.
 	probed := map[string]bool{}
 	for _, profile := range policy.Profiles {
-		url := defaultBridgeHTTPURL(profile)
+		url := discovery.HTTPURL(profile)
 		if probed[url] {
 			continue
 		}
@@ -862,7 +863,7 @@ func busyDaemons(policy profilepolicy.Policy, client *http.Client) []busyDaemon 
 		if !profile.ExtensionBridgeAllowed {
 			continue
 		}
-		status, err := probeBridgeStatus(client, defaultBridgeWSAddr(profile))
+		status, err := probeBridgeStatus(client, discovery.WSAddr(profile))
 		if err != nil {
 			continue
 		}
