@@ -97,6 +97,9 @@ func pointDescriptor(point MousePoint) string {
 // button and click count: right-click opens context menus, click_count:2 is a
 // double-click, click_count:3 selects a line, button:middle is a middle-click.
 func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (ActionResult, error) {
+	if err := m.guardTakeover("click_button"); err != nil {
+		return ActionResult{}, err
+	}
 	start := time.Now()
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
@@ -161,6 +164,9 @@ func (m *Manager) MouseUp(ctx context.Context, opts MouseButtonOptions) (ActionR
 }
 
 func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventType input.MouseType, action string) (ActionResult, error) {
+	if err := m.guardTakeover(action); err != nil {
+		return ActionResult{}, err
+	}
 	start := time.Now()
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
@@ -218,6 +224,9 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 // intermediate steps, then releases — covering sliders/range inputs,
 // drag-and-drop reorder, and canvas/map panning. Pure CDP Input domain.
 func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, error) {
+	if err := m.guardTakeover("drag"); err != nil {
+		return ActionResult{}, err
+	}
 	if err := opts.Validate(); err != nil {
 		return ActionResult{}, err
 	}

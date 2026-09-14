@@ -41,6 +41,9 @@ type KeyHoldResult struct {
 // keydown and keyup back to back, which cannot express a held key, and a page
 // that reads event.ctrlKey during a drag sees nothing.
 func (m *Manager) KeyDown(ctx context.Context, opts KeyHoldOptions) (KeyHoldResult, error) {
+	if err := m.guardTakeover("key_down"); err != nil {
+		return KeyHoldResult{}, err
+	}
 	desc, err := describeHoldKey(opts.Key)
 	if err != nil {
 		return KeyHoldResult{}, err
@@ -83,6 +86,9 @@ func (m *Manager) KeyDown(ctx context.Context, opts KeyHoldOptions) (KeyHoldResu
 // KeyUp releases a key held by KeyDown. Pass key "all" to release everything
 // this tab is holding, in reverse press order.
 func (m *Manager) KeyUp(ctx context.Context, opts KeyHoldOptions) (KeyHoldResult, error) {
+	if err := m.guardTakeover("key_up"); err != nil {
+		return KeyHoldResult{}, err
+	}
 	releaseAll := strings.EqualFold(strings.TrimSpace(opts.Key), releaseAllKeyword)
 	var desc actions.KeyDescriptor
 	if !releaseAll {

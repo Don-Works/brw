@@ -31,6 +31,7 @@ for normal web work.
 - Bundles an agent skill that searches before repeating work, promotes stable reusable flows, and repairs failures as new immutable recipe versions.
 - Stores page text, semantic JSON, screenshots, PDFs, downloads, and short video as browser-host artifacts instead of flooding model context.
 - Grows its advertised tool catalogue on demand instead of shipping all of it every turn.
+- Serves an opt-in loopback dashboard: the live viewport, an activity feed of every step, and gated human takeover.
 - Reuses a persistent non-default Chrome profile for signed-in flows.
 - Bridges to an already-authenticated installed Chrome profile through a Chrome extension.
 - Runs cleanly over SSH so the browser profile stays on the machine that owns it.
@@ -506,6 +507,31 @@ response bodies, screenshots, paths, cookies, or credentials. Raw error text is
 also excluded. The default is 20 MiB with seven rotated backups; configure it
 with `--usage-log`, `--usage-log-max-mb`, and `--usage-log-backups`, or disable it
 with `--usage-log off`. See [docs/usage-logs.md](docs/usage-logs.md).
+
+## Live dashboard
+
+`BRW_DASHBOARD=1` turns on `/dashboard`, a loopback-only page that shows the
+browser `brw` is driving. It is off by default and refuses non-loopback clients
+even when the daemon is bound wider: it streams the rendered pixels of a
+signed-in session. To watch a remote browser, forward the port
+(`ssh -L 17310:127.0.0.1:17310`) so the pixels travel inside the tunnel.
+
+- **Viewport.** Frames come from Chrome's compositor (`Page.startScreencast`)
+  on the direct-CDP transport, so an idle page costs nothing. The extension
+  bridge has no compositor stream and polls screenshots instead.
+- **Activity feed.** One line per step — action, the ref and accessible name it
+  acted on, outcome, latency — off the same trace stream `/api/session/stream`
+  publishes, after credential redaction. A typed password reaches the feed as a
+  redacted action with no value.
+- **Takeover.** A human can drive the tab directly; pointer and keyboard events
+  are forwarded as `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent`. It
+  needs an explicit per-session enable and it exists only when `brwd` is bound
+  to loopback — on a wider bind the control is not rendered and the routes
+  answer 404. While a human holds takeover, agent input actions are refused by
+  name (`click refused: … holds takeover …`) rather than racing for the tab;
+  reads and snapshots continue, so the agent can see what the human did. The
+  hold expires if the page stops renewing it, so a closed tab does not lock the
+  agent out.
 
 ## Safety
 

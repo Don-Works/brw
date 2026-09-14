@@ -39,6 +39,9 @@ func normalizeNavigateDirection(direction string) (string, error) {
 // Page domain: GetNavigationHistory + NavigateToHistoryEntry for back/forward
 // and Reload for reload.
 func (m *Manager) Navigate(ctx context.Context, direction string) (ActionResult, error) {
+	if err := m.guardTakeover("navigate"); err != nil {
+		return ActionResult{}, err
+	}
 	start := time.Now()
 	dir, err := normalizeNavigateDirection(direction)
 	if err != nil {
@@ -88,6 +91,9 @@ func (m *Manager) Navigate(ctx context.Context, direction string) (ActionResult,
 // and returns a post-navigation observation. Unlike Open, this does NOT create
 // a new tab — it navigates the existing active tab.
 func (m *Manager) NavigateTo(ctx context.Context, url string) (ActionResult, error) {
+	if err := m.guardTakeover("navigate_to"); err != nil {
+		return ActionResult{}, err
+	}
 	start := time.Now()
 	var err error
 	url, err = m.prepareNavigationURL(url)

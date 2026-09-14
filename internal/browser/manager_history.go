@@ -78,6 +78,9 @@ const pushStateScript = `(function(url, state, replace, notify){
 //
 // Direct-CDP transport only.
 func (m *Manager) PushState(ctx context.Context, opts HistoryStateOptions) (HistoryStateResult, error) {
+	if err := m.guardTakeover("pushstate"); err != nil {
+		return HistoryStateResult{}, err
+	}
 	if strings.TrimSpace(opts.URL) == "" {
 		return HistoryStateResult{}, errors.New("url is required")
 	}

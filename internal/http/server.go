@@ -34,6 +34,12 @@ type Server struct {
 	leases    *tabLeaseManager
 	server    *http.Server
 
+	// loopbackBind records that the daemon listens on loopback only. It gates
+	// the dashboard's takeover surface, which forwards input to a signed-in
+	// browser: a wider bind is the operator exposing the daemon to other
+	// machines, and remote control is not something that decision consents to.
+	loopbackBind bool
+
 	// allowedHosts is the set of Host header values accepted when host
 	// enforcement is on (loopback names plus the configured bind host).
 	// enforceHost is true only for a loopback bind, where DNS-rebinding is the
@@ -80,6 +86,7 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 		IdleTimeout:       120 * time.Second,
 	}}
 	s.allowedHosts, s.enforceHost = computeAllowedHosts(addr)
+	s.loopbackBind = isLoopbackHost(bindHost(addr))
 	s.routes(mux)
 	// Wrap the router so every request first passes the same-machine browser
 	// guard (DNS-rebinding + cross-origin CSRF). A loopback CLI/MCP client sends
@@ -276,6 +283,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// rendered pixels of a signed-in browser.
 	mux.HandleFunc("GET /dashboard", s.dashboardPage)
 	mux.HandleFunc("GET /dashboard/stream", s.dashboardStream)
+	mux.HandleFunc("GET /dashboard/activity", s.dashboardActivity)
+	// Present on every daemon, absent in effect on any bound beyond loopback:
+	// takeoverGuard answers 404 there, and the page omits the control.
+	mux.HandleFunc("POST /dashboard/takeover", s.dashboardTakeover)
+	mux.HandleFunc("POST /dashboard/input", s.dashboardInput)
 	mux.HandleFunc("GET /api/session/stream", s.sessionStream)
 	mux.HandleFunc("POST /api/browser/open", s.open)
 	mux.HandleFunc("POST /api/browser/open_incognito", s.openIncognito)

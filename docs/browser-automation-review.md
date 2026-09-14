@@ -136,12 +136,12 @@ and `vercel-labs/agent-browser` (Apache-2.0, Rust CLI + daemon + MCP). Status is
 | Cloud browser providers | no | no | 6 providers | open, `VXK4XY`, after `J3YFH0` |
 | Remote operation over SSH | yes | no | no | shipped |
 | WebMCP page-declared tools | list and synchronous invoke | no | detach, poll, cancel | open, `HG5BY9` |
-| Live dashboard | read-only screencast | side panel | viewport, activity feed, chat | open, `AEKG25` |
+| Live dashboard | viewport, activity feed, gated human takeover | side panel | viewport, activity feed, chat | shipped; chat is not a goal |
 | Per-origin grants and revocation | domain containment only | per-site grant/revoke | domain allowlist | open, `PBZHK0` |
 | Confirmation before high-risk actions | no | yes | no | open, `27GN96` |
 | Category blocklist | no | financial, adult, pirated | no | open, `PBZHK0` |
 | Cross-device session continuity | no | desktop, web, mobile | no | non-goal, see remote control |
-| Video capture | WebM from streamed screenshots | no | `record` | shipped; native screencast `ZHPD1N` |
+| Video capture | WebM from native compositor frames | no | `record` | shipped |
 | Assertion vocabulary | text, value, visible, hidden | n/a | `is`/`get` family | open, `H1BSQJ` |
 | Event-driven waits | polling on some conditions | n/a | yes | open, `FAXZ21` |
 | Failure evidence bundle | no | no | no | open, `05FQQF` |
@@ -274,10 +274,13 @@ parity argument alone:
   conditions. A BiDi backend would broaden browser coverage and make event
   subscriptions cheaper. See
   [Selenium WebDriver BiDi](https://www.selenium.dev/documentation/webdriver/bidi/).
-- Puppeteer exposes native page screencasting. `brw` now writes bounded WebM
-  artifacts without MCP payload expansion, but constructs them from streamed
-  screenshots and `ffmpeg`; native screencast frames should be evaluated for
-  lower overhead. See
+- Puppeteer exposes native page screencasting. `brw` now builds its bounded WebM
+  artifacts from `Page.startScreencast` frames with `Page.screencastFrameAck`
+  backpressure, keeping the screenshot loop only for transports with no
+  compositor stream (the extension bridge, and the locked-session print-renderer
+  case). Measured over a 20s capture at 5fps of a page repainting twice a second:
+  100 CDP round trips and 277 KB against 43 round trips and 98 KB, and 50ms of
+  daemon CPU against 15ms. See
   [Puppeteer screencast](https://pptr.dev/api/puppeteer.page.screencast).
 
 ## Prioritized next level

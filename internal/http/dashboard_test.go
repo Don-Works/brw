@@ -139,7 +139,7 @@ func TestClampAndQueryInt(t *testing.T) {
 // The frame payload is the SSE wire contract, so its shape is pinned here.
 func TestDashboardFrameWireShape(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	if !writeFrame(recorder, recorder, 7, []byte{0xff, 0xd8, 0xff}) {
+	if !writeFrame(recorder, recorder, 7, []byte{0xff, 0xd8, 0xff}, 1280, 720) {
 		t.Fatal("writeFrame reported failure on a healthy writer")
 	}
 	body := recorder.Body.String()
@@ -156,6 +156,10 @@ func TestDashboardFrameWireShape(t *testing.T) {
 	}
 	if frame.At == "" {
 		t.Error("frame must carry a timestamp")
+	}
+	// Takeover maps a click on the rendered image back onto these.
+	if frame.Width != 1280 || frame.Height != 720 {
+		t.Errorf("frame geometry = %vx%v, want 1280x720", frame.Width, frame.Height)
 	}
 	decoded, err := base64.StdEncoding.DecodeString(frame.JPEGBase64)
 	if err != nil {

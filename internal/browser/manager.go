@@ -268,6 +268,14 @@ type Manager struct {
 	// Zero value is usable, which matters because Manager is also built field by
 	// field in tests.
 	events eventHub
+
+	// takeover is the human's exclusive hold on the browser (see takeover.go).
+	// It expires rather than persisting, so a dashboard tab closed without a
+	// release cannot leave the agent locked out forever.
+	takeoverMu     sync.Mutex
+	takeoverToken  string
+	takeoverHolder string
+	takeoverExpiry time.Time
 }
 
 // SetNavigationPolicy installs the controller-level policy used for defense in
@@ -915,6 +923,9 @@ func (m *Manager) ReadData(ctx context.Context) (snapshot.StructuredData, error)
 }
 
 func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
+	if err := m.guardTakeover("click"); err != nil {
+		return ActionResult{}, err
+	}
 	start := time.Now()
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
@@ -984,6 +995,9 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 }
 
 func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) (ActionResult, error) {
+	if err := m.guardTakeover("click_text"); err != nil {
+		return ActionResult{}, err
+	}
 	start := time.Now()
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
@@ -1038,6 +1052,9 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 }
 
 func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
+	if err := m.guardTakeover("hover"); err != nil {
+		return ActionResult{}, err
+	}
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return ActionResult{}, err
@@ -1225,6 +1242,9 @@ func (m *Manager) NetworkRequests(ctx context.Context, filter string) ([]Network
 }
 
 func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, error) {
+	if err := m.guardTakeover("type"); err != nil {
+		return ActionResult{}, err
+	}
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return ActionResult{}, err
@@ -1271,6 +1291,9 @@ func (m *Manager) typeRef(tabCtx context.Context, ref, text string) error {
 // point: focusing is only useful if the caller can tell that focus landed where
 // it asked, and result.Focus carries the ref the document ended up on.
 func (m *Manager) Focus(ctx context.Context, ref string) (ActionResult, error) {
+	if err := m.guardTakeover("focus"); err != nil {
+		return ActionResult{}, err
+	}
 	if strings.TrimSpace(ref) == "" {
 		return ActionResult{}, errors.New("ref is required")
 	}
@@ -1312,6 +1335,9 @@ func (m *Manager) Focus(ctx context.Context, ref string) (ActionResult, error) {
 // a key press. It avoids relying on whichever element happened to retain focus
 // from a previous browser action.
 func (m *Manager) FocusRef(ctx context.Context, ref string) error {
+	if err := m.guardTakeover("focus"); err != nil {
+		return err
+	}
 	_, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return err
@@ -1324,6 +1350,9 @@ func (m *Manager) FocusRef(ctx context.Context, ref string) error {
 }
 
 func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionResult, error) {
+	if err := m.guardTakeover("fill"); err != nil {
+		return ActionResult{}, err
+	}
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return ActionResult{}, err
@@ -1377,6 +1406,9 @@ func (m *Manager) fillRef(tabCtx context.Context, ref, text string, replace bool
 }
 
 func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (ActionResult, error) {
+	if err := m.guardTakeover("upload_file"); err != nil {
+		return ActionResult{}, err
+	}
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return ActionResult{}, err
@@ -1520,6 +1552,9 @@ func (m *Manager) uploadFileViaChooser(tabID string, tabCtx context.Context, opt
 }
 
 func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, error) {
+	if err := m.guardTakeover("select"); err != nil {
+		return ActionResult{}, err
+	}
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return ActionResult{}, err
@@ -1675,6 +1710,9 @@ func findOptionCandidate(tabCtx context.Context, value string) (snapshot.Element
 }
 
 func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
+	if err := m.guardTakeover("press"); err != nil {
+		return ActionResult{}, err
+	}
 	if key == "" {
 		return ActionResult{}, errors.New("key is required")
 	}
@@ -1745,6 +1783,9 @@ func (m *Manager) pressKey(tabCtx context.Context, tabID, key string) error {
 }
 
 func (m *Manager) Scroll(ctx context.Context, direction string) (ActionResult, error) {
+	if err := m.guardTakeover("scroll"); err != nil {
+		return ActionResult{}, err
+	}
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return ActionResult{}, err
@@ -1878,6 +1919,9 @@ func (m *Manager) AssertHidden(ctx context.Context, ref string, timeout time.Dur
 }
 
 func (m *Manager) CommitField(ctx context.Context, ref string) error {
+	if err := m.guardTakeover("commit"); err != nil {
+		return err
+	}
 	_, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return err
@@ -1887,6 +1931,9 @@ func (m *Manager) CommitField(ctx context.Context, ref string) error {
 }
 
 func (m *Manager) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYResult, error) {
+	if err := m.guardTakeover("click_xy"); err != nil {
+		return snapshot.ClickXYResult{}, err
+	}
 	_, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return snapshot.ClickXYResult{}, err
@@ -2383,6 +2430,9 @@ func (m *Manager) ScreenshotElement(ctx context.Context, ref string) (Screenshot
 }
 
 func (m *Manager) ExecutePlan(ctx context.Context, steps []PlanStep) (PlanResult, error) {
+	if err := m.guardTakeover("plan"); err != nil {
+		return PlanResult{}, err
+	}
 	entry, release := m.cancels.register(ctx, cancelToken(ctx, ""))
 	defer release()
 	return runPlanSteps(entry.ctx, entry, steps, m.executePlanStep), nil
@@ -2581,6 +2631,9 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 // observations, then returns a single compact observation at the end. This is
 // much more token-efficient than calling individual tools or brw_plan.
 func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchResult, error) {
+	if err := m.guardTakeover("batch"); err != nil {
+		return BatchResult{}, err
+	}
 	entry, release := m.cancels.register(ctx, cancelToken(ctx, ""))
 	defer release()
 	// Carry the tab id into the cancel-aware context so per-step tab resolution
