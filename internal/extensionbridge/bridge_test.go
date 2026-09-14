@@ -237,55 +237,69 @@ func TestBatchAndPlanUseFastPrimitives(t *testing.T) {
 	}
 }
 
-func TestBatchBackendsImplementTheSameActions(t *testing.T) {
-	parseCases := func(path string) map[string]bool {
-		t.Helper()
-		fset := token.NewFileSet()
-		file, err := parser.ParseFile(fset, path, nil, 0)
-		if err != nil {
-			t.Fatal(err)
+// stepActionCases reports the step.Action case labels one runner implements, so
+// a parity test compares the two transports' switches instead of trusting that
+// whoever added an action to one remembered the other.
+func stepActionCases(t *testing.T, path, funcName string) map[string]bool {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := findFunc(file, funcName)
+	if fn == nil {
+		t.Fatalf("missing %s in %s", funcName, path)
+	}
+	cases := map[string]bool{}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		stmt, ok := n.(*ast.SwitchStmt)
+		if !ok {
+			return true
 		}
-		fn := findFunc(file, "executeBatchStep")
-		if fn == nil {
-			t.Fatalf("missing executeBatchStep in %s", path)
+		selector, ok := stmt.Tag.(*ast.SelectorExpr)
+		ident, identOK := selector.X.(*ast.Ident)
+		if !ok || !identOK || ident.Name != "step" || selector.Sel.Name != "Action" {
+			return true
 		}
-		cases := map[string]bool{}
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			stmt, ok := n.(*ast.SwitchStmt)
+		for _, item := range stmt.Body.List {
+			clause, ok := item.(*ast.CaseClause)
 			if !ok {
-				return true
+				continue
 			}
-			selector, ok := stmt.Tag.(*ast.SelectorExpr)
-			ident, identOK := selector.X.(*ast.Ident)
-			if !ok || !identOK || ident.Name != "step" || selector.Sel.Name != "Action" {
-				return true
-			}
-			for _, item := range stmt.Body.List {
-				clause, ok := item.(*ast.CaseClause)
-				if !ok {
-					continue
-				}
-				for _, expr := range clause.List {
-					literal, ok := expr.(*ast.BasicLit)
-					if ok && literal.Kind == token.STRING {
-						cases[strings.Trim(literal.Value, `"`)] = true
-					}
+			for _, expr := range clause.List {
+				literal, ok := expr.(*ast.BasicLit)
+				if ok && literal.Kind == token.STRING {
+					cases[strings.Trim(literal.Value, `"`)] = true
 				}
 			}
-			return false
-		})
-		return cases
-	}
-
-	direct := parseCases(filepath.Join("..", "browser", "manager.go"))
-	bridge := parseCases(filepath.Join("bridge.go"))
-	if !reflect.DeepEqual(direct, bridge) {
-		t.Fatalf("batch action parity drift: direct-CDP=%v extension=%v", direct, bridge)
-	}
-	for _, action := range []string{"navigate_to", "click_text"} {
-		if !bridge[action] {
-			t.Fatalf("batch backends do not implement advertised action %q", action)
 		}
+		return false
+	})
+	return cases
+}
+
+func TestBatchAndPlanBackendsImplementTheSameActions(t *testing.T) {
+	for _, tc := range []struct {
+		runner   string
+		funcName string
+		required []string
+	}{
+		{runner: "batch", funcName: "executeBatchStep", required: []string{"navigate_to", "click_text", "assert"}},
+		{runner: "plan", funcName: "executePlanStep", required: []string{"navigate_to", "click_text"}},
+	} {
+		t.Run(tc.runner, func(t *testing.T) {
+			direct := stepActionCases(t, filepath.Join("..", "browser", "manager.go"), tc.funcName)
+			bridge := stepActionCases(t, "bridge.go", tc.funcName)
+			if !reflect.DeepEqual(direct, bridge) {
+				t.Fatalf("%s action parity drift: direct-CDP=%v extension=%v", tc.runner, direct, bridge)
+			}
+			for _, action := range tc.required {
+				if !bridge[action] {
+					t.Fatalf("%s backends do not implement advertised action %q", tc.runner, action)
+				}
+			}
+		})
 	}
 }
 

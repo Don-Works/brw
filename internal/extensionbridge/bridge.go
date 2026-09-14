@@ -5270,6 +5270,16 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 			timeout = 5 * time.Second
 		}
 		actionErr = b.AssertHidden(ctx, step.Ref, timeout)
+	case "assert":
+		// Deliberately has no timeout, matching the direct-CDP runner: these
+		// assertions read current state once. A batch that needs the page to
+		// settle first puts a wait step in front of the assertion, where the
+		// wait is visible in the replayable flow.
+		if step.Assertion == nil {
+			actionErr = errors.New("assert requires assertion")
+			break
+		}
+		_, actionErr = browser.Assert(ctx, b, *step.Assertion)
 	default:
 		actionErr = fmt.Errorf("unknown action %q", step.Action)
 	}

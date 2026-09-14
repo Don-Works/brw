@@ -2381,6 +2381,14 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 		var actionResult ActionResult
 		actionResult, actionErr = m.Click(ctx, step.Ref)
 		sr.Result = actionResult
+	case "click_text":
+		if step.Text == "" {
+			actionErr = errors.New("click_text requires text")
+			break
+		}
+		var actionResult ActionResult
+		actionResult, actionErr = m.ClickText(ctx, snapshot.ClickTextOptions{Text: step.Text})
+		sr.Result = actionResult
 	case "type":
 		if step.Ref == "" || step.Text == "" {
 			actionErr = errors.New("type requires ref and text")

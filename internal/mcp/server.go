@@ -2340,9 +2340,9 @@ func tools() []map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"action":      stringEnumSchema("One of: click, type, fill, select, press, scroll, hover, wait, snapshot, read, open, navigate_to, focus_tab. open spawns a new tab; navigate_to drives the plan's existing working tab.", "click", "type", "fill", "select", "press", "scroll", "hover", "wait", "snapshot", "read", "open", "navigate_to", "focus_tab"),
+						"action":      stringEnumSchema("One of: click, click_text, type, fill, select, press, scroll, hover, wait, snapshot, read, open, navigate_to, focus_tab. open spawns a new tab; navigate_to drives the plan's existing working tab.", "click", "click_text", "type", "fill", "select", "press", "scroll", "hover", "wait", "snapshot", "read", "open", "navigate_to", "focus_tab"),
 						"ref":         stringSchema("Element ref for click, type, fill, select, hover."),
-						"text":        stringSchema("Text for type and fill actions."),
+						"text":        stringSchema("Text for click_text, type and fill actions."),
 						"value":       stringSchema("Option value for select. For fill, also accepted as a Playwright-style alias for text."),
 						"direction":   stringEnumSchema("Scroll direction: up, down, left, right.", "up", "down", "left", "right"),
 						"condition":   stringSchema("Wait condition (load, text:..., ref:..., url:..., selector:..., fn:..., download, etc)."),

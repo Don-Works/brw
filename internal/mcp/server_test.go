@@ -439,7 +439,7 @@ func TestPlanAndBatchActionSchemasExposeEnums(t *testing.T) {
 	}
 	planProps := planTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	planStepProps := planProps["steps"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
-	assertSchemaEnumIncludes(t, planStepProps["action"].(map[string]any), "click", "snapshot", "read", "navigate_to", "focus_tab")
+	assertSchemaEnumIncludes(t, planStepProps["action"].(map[string]any), "click", "click_text", "snapshot", "read", "navigate_to", "focus_tab")
 	assertSchemaEnumIncludes(t, planStepProps["direction"].(map[string]any), "up", "down", "left", "right")
 	urlDescription := planStepProps["url"].(map[string]any)["description"].(string)
 	if !strings.Contains(urlDescription, "navigate_to") {
