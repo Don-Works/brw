@@ -2278,6 +2278,25 @@ func writeResult(w http.ResponseWriter, value any, err error) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
+	var refused *browser.TakeoverRefusedError
+	if errors.As(err, &refused) {
+		w.Header().Set(usagelog.HeaderErrorClass, usagelog.ClassifyError(err))
+		// Fingerprint the condition, not the instance: the holder label and the
+		// expiry are different on every refusal and would give the ledger a new
+		// fingerprint each time the same contention recurred.
+		w.Header().Set(usagelog.HeaderErrorFingerprint, usagelog.Fingerprint("takeover held"))
+		// 409 rather than 400: the request was well formed and arrived at a
+		// browser someone else is holding, which is a conflict that resolves
+		// itself when the hold ends. 400 would read as "fix your arguments".
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":      err.Error(),
+			"code":       browser.TakeoverRefusedCode,
+			"action":     refused.Action,
+			"holder":     refused.Holder,
+			"expires_at": refused.ExpiresAt,
+		})
+		return
+	}
 	w.Header().Set(usagelog.HeaderErrorClass, usagelog.ClassifyError(err))
 	w.Header().Set(usagelog.HeaderErrorFingerprint, usagelog.Fingerprint(err.Error()))
 	writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})

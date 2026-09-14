@@ -20,8 +20,11 @@ import (
 )
 
 // starvedScreencastBrowser delivers fewer compositor frames than the encoder
-// asks for, which is what a dropped frame looks like from downstream: the stream
-// stays open and healthy, it just has nothing new to hand over on this tick.
+// asks for and then has nothing left: a quiet page, or a compositor that has
+// stopped repainting. It is NOT the backpressure drop — that happens inside the
+// stream, where a full consumer channel discards the surplus, and is covered
+// against real Chrome in internal/browser. Downstream the two look alike, which
+// is why this fixture is named for what it actually produces.
 type starvedScreencastBrowser struct {
 	serviceFakeBrowser
 	delivered   int
@@ -56,10 +59,14 @@ func (f *starvedScreencastBrowser) CaptureArtifactScreenshot(context.Context, st
 }
 
 // A capture that receives fewer frames than it encodes still produces the
-// requested frame count and a file a decoder accepts. The lost frames cost
+// requested frame count and a file a decoder accepts. The missing frames cost
 // smoothness — the last one is held — and nothing else; a stream that truncated
 // the encode instead would leave a short or unreadable webm.
-func TestDroppedScreencastFramesDegradeFramerateWithoutCorruptingTheFile(t *testing.T) {
+//
+// Regression coverage for captureVideo's drain loop, which predates the native
+// screencast: it passes with or without that work. What it does not cover is a
+// backpressure drop reaching the encoded file; nothing connects the two.
+func TestAStarvedCompositorDegradesFramerateWithoutCorruptingTheFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("video fixtures are POSIX")
 	}
@@ -93,7 +100,7 @@ func TestDroppedScreencastFramesDegradeFramerateWithoutCorruptingTheFile(t *test
 		Kind: "video", DurationMS: durationMS, FPS: fps,
 	})
 	if err != nil {
-		t.Fatalf("capture with a starved screencast: %v", err)
+		t.Fatalf("capture from a starved compositor: %v", err)
 	}
 	if meta.MIMEType != "video/webm" || meta.SizeBytes == 0 {
 		t.Fatalf("meta = %+v, want a non-empty webm", meta)
@@ -108,7 +115,7 @@ func TestDroppedScreencastFramesDegradeFramerateWithoutCorruptingTheFile(t *test
 	blob := filepath.Join(service.Store().Root(), meta.ID+".blob")
 	frames := probeFrameCount(t, probe, blob)
 	if frames != wantFrames {
-		t.Fatalf("encoded %d frames, want %d: a dropped frame must cost smoothness, not length", frames, wantFrames)
+		t.Fatalf("encoded %d frames, want %d: a missing frame must cost smoothness, not length", frames, wantFrames)
 	}
 	// Real time, not compressed time: 20 frames at 10fps is two seconds of
 	// playback whether the compositor sent 20 frames or 3.
@@ -123,6 +130,9 @@ func TestDroppedScreencastFramesDegradeFramerateWithoutCorruptingTheFile(t *test
 // ScreencastFrames. That transport, and the locked-session print-renderer case
 // README.md documents, keep the screenshot loop — and it still has to produce a
 // file a decoder accepts, not merely an error-free return.
+//
+// Regression coverage for the pre-existing fallback path: it passes whether or
+// not the compositor lane exists at all, which is the point of a fallback.
 func TestVideoFallbackProducesADecodableFileWithoutAScreencast(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("video fixtures are POSIX")

@@ -822,9 +822,23 @@ func (c *Controller) doRequestWithLimit(client *http.Client, req *http.Request, 
 			_ = json.Unmarshal(data, out)
 		}
 		var payload struct {
-			Error string `json:"error"`
+			Error     string `json:"error"`
+			Code      string `json:"code"`
+			Action    string `json:"action"`
+			Holder    string `json:"holder"`
+			ExpiresAt string `json:"expires_at"`
 		}
 		if err := json.Unmarshal(data, &payload); err == nil && payload.Error != "" {
+			// A refusal a human's hold produced has to stay a typed refusal
+			// across the proxy hop. errors.As is the contract an agent branches
+			// on, and it is exactly what flattening this to prose would break.
+			if payload.Code == browser.TakeoverRefusedCode {
+				return &browser.TakeoverRefusedError{
+					Action:    payload.Action,
+					Holder:    payload.Holder,
+					ExpiresAt: payload.ExpiresAt,
+				}
+			}
 			return errors.New(boundedUpstreamError(payload.Error))
 		}
 		message := boundedUpstreamError(string(data))

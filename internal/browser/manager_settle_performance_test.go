@@ -15,6 +15,15 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
+// These two tests each launch Chrome and then take ten timed samples under one
+// tab context. Both budgets are deliberately far above what the work costs: they
+// exist to stop an unrelated deadline ending a run, not to bound the timings,
+// which the tests assert on directly.
+const (
+	settlePerformanceBudget = 120 * time.Second
+	settleMeasurementBudget = 90 * time.Second
+)
+
 // TestPrearmedSettleIsMateriallyFaster is a regression/benchmark gate for the
 // observer-ordering bug: a settle observer installed after a synchronous DOM
 // change cannot see it and burns the full cap. Measure the settle mechanism
@@ -32,7 +41,10 @@ func TestPrearmedSettleIsMateriallyFaster(t *testing.T) {
 	}))
 	defer fixture.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Sized for a Chrome launch plus the whole measurement loop on a loaded
+	// machine, not for one action: a sample that dies on a deadline reports a
+	// context error instead of the timing the test exists to record.
+	ctx, cancel := context.WithTimeout(context.Background(), settlePerformanceBudget)
 	defer cancel()
 	profileDir := t.TempDir()
 	manager, err := New(ctx, Config{
@@ -46,7 +58,9 @@ func TestPrearmedSettleIsMateriallyFaster(t *testing.T) {
 	if _, err := manager.Open(ctx, fixture.URL); err != nil {
 		t.Fatal(err)
 	}
-	_, tabCtx, release, err := manager.activeContext(ctx)
+	// Every sample shares this context, so it carries the loop's budget rather
+	// than Manager.timeout, which is the allowance for a single round trip.
+	_, tabCtx, release, err := manager.activeContextWithTimeout(ctx, settleMeasurementBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +116,10 @@ func TestPrearmedSettleWorstCaseOverheadIsBounded(t *testing.T) {
 	}))
 	defer fixture.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Sized for a Chrome launch plus the whole measurement loop on a loaded
+	// machine, not for one action: a sample that dies on a deadline reports a
+	// context error instead of the timing the test exists to record.
+	ctx, cancel := context.WithTimeout(context.Background(), settlePerformanceBudget)
 	defer cancel()
 	profileDir := t.TempDir()
 	manager, err := New(ctx, Config{
@@ -116,7 +133,9 @@ func TestPrearmedSettleWorstCaseOverheadIsBounded(t *testing.T) {
 	if _, err := manager.Open(ctx, fixture.URL); err != nil {
 		t.Fatal(err)
 	}
-	_, tabCtx, release, err := manager.activeContext(ctx)
+	// Every sample shares this context, so it carries the loop's budget rather
+	// than Manager.timeout, which is the allowance for a single round trip.
+	_, tabCtx, release, err := manager.activeContextWithTimeout(ctx, settleMeasurementBudget)
 	if err != nil {
 		t.Fatal(err)
 	}

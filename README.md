@@ -519,19 +519,30 @@ signed-in session. To watch a remote browser, forward the port
 - **Viewport.** Frames come from Chrome's compositor (`Page.startScreencast`)
   on the direct-CDP transport, so an idle page costs nothing. The extension
   bridge has no compositor stream and polls screenshots instead.
-- **Activity feed.** One line per step — action, the ref and accessible name it
+- **Activity feed.** A line per step — action, the ref and accessible name it
   acted on, outcome, latency — off the same trace stream `/api/session/stream`
   publishes, after credential redaction. A typed password reaches the feed as a
-  redacted action with no value.
+  redacted action with no value, and a failure's reason reaches it with any URL
+  in it replaced. It is a live view rather than a log: a watcher that falls
+  behind during a fast plan or batch loses its oldest queued lines, so read the
+  feed as what is happening now and `brw_trace` as the record.
 - **Takeover.** A human can drive the tab directly; pointer and keyboard events
   are forwarded as `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent`. It
   needs an explicit per-session enable and it exists only when `brwd` is bound
   to loopback — on a wider bind the control is not rendered and the routes
-  answer 404. While a human holds takeover, agent input actions are refused by
-  name (`click refused: … holds takeover …`) rather than racing for the tab;
-  reads and snapshots continue, so the agent can see what the human did. The
-  hold expires if the page stops renewing it, so a closed tab does not lock the
-  agent out.
+  answer 404. The hold is bound to the tab it was taken on, so the human's next
+  click cannot land in a tab the agent moved to since, and it expires if the
+  page stops renewing it, so a closed tab does not lock the agent out.
+
+  While a human holds takeover, every agent action that would touch that
+  browser is refused by name: the input verbs, `brw_evaluate` with a caller's own
+  expression, each step of a plan or batch already in flight, and the tab verbs
+  (`brw_open`, `brw_focus_tab`, `brw_close_tab`) that would move the target out
+  from under them. Over HTTP the refusal is `409` with `"code":
+  "takeover_held"` and the holder and expiry alongside it, and the usage log
+  counts it under that same class, so an agent never has to match on prose.
+  Reads continue — snapshots, `brw_read`, `brw_get`, `brw_frame` — so the agent
+  can see what the human did before it resumes.
 
 ## Safety
 

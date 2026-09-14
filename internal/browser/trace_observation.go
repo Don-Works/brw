@@ -1,9 +1,12 @@
 package browser
 
 import (
+	"context"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Don-Works/brw/internal/snapshot"
 )
 
 // Observation actions record how a session reached a page and what it read
@@ -54,6 +57,35 @@ var generatedScriptVerbs = map[string]bool{
 // surface as an evaluation's trace label.
 func IsGeneratedScriptVerb(action string) bool {
 	return generatedScriptVerbs[strings.TrimSpace(action)]
+}
+
+// isGeneratedReadExpression reports whether expression is one of brw's own read
+// scripts rather than a caller's JavaScript.
+//
+// The label alone cannot answer this. It crosses the HTTP surface as a request
+// field, so an --upstream-http client — or anything else posting to
+// /api/page/evaluate — can name arbitrary JavaScript a typed read. What cannot
+// be forged is the script: brw builds both generated reads as one constant
+// followed by JSON-encoded arguments, so a prefix match means the code that will
+// run is brw's, with the caller controlling only string arguments to it.
+func isGeneratedReadExpression(action, expression string) bool {
+	switch strings.TrimSpace(action) {
+	case TraceActionGet:
+		return strings.HasPrefix(expression, snapshot.GetScript+"(")
+	case TraceActionFrame:
+		return strings.HasPrefix(expression, snapshot.FrameSwitchScript+"(")
+	default:
+		return false
+	}
+}
+
+// traceLabelAction is the semantic verb an evaluation was made under, or
+// "evaluate" when the caller set none.
+func traceLabelAction(ctx context.Context) string {
+	if label, ok := TraceLabelFromCtx(ctx); ok {
+		return label.Action
+	}
+	return TraceActionEvaluate
 }
 
 // maxTraceTextBytes bounds an observation's text. A URL is comfortably under

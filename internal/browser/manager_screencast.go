@@ -23,12 +23,14 @@ type ScreencastOptions struct {
 // ScreencastFrame is one JPEG the compositor produced, with the metadata Chrome
 // swapped it with.
 //
-// Timestamp is Chrome's frame-swap time, not the time brw read the event, so a
-// consumer that encodes on this stream is pacing against when the page actually
-// repainted. Width and Height are the page's own DIP viewport, which is what
-// makes a frame addressable: a viewer scaling the JPEG into a smaller element
-// can map a click back onto page coordinates only if it knows what the frame
-// covers.
+// Timestamp is Chrome's frame-swap time — when the page repainted, not when brw
+// read the event — and is ZERO when Chrome sent no usable one. The two are
+// different clocks and only one of them orders the stream, which is why the
+// fallback is a zero value a consumer can test rather than our own clock reading
+// dressed up as the compositor's. Width and Height are the page's own DIP
+// viewport, which is what makes a frame addressable: a viewer scaling the JPEG
+// into a smaller element can map a click back onto page coordinates only if it
+// knows what the frame covers.
 type ScreencastFrame struct {
 	Data      []byte
 	Timestamp time.Time
@@ -38,18 +40,23 @@ type ScreencastFrame struct {
 	ScrollY   float64
 }
 
-// ScreencastStats counts what the stream cost and what it discarded. Dropping is
-// normal under backpressure and is the reason the encoder degrades framerate
-// instead of stalling the compositor; counting it is what lets a caller tell a
-// slow consumer from an idle page.
-type ScreencastStats struct {
+// screencastStats counts what one stream cost and what it discarded. Unexported
+// on purpose: it measures a single run rather than describing the transport
+// capability, and an exported type no consumer reads is API that only looks like
+// a promise. Dropping is normal under backpressure and is the reason the encoder
+// degrades framerate instead of stalling the compositor.
+type screencastStats struct {
 	Frames  int64
 	Bytes   int64
 	Dropped int64
-	// OutOfOrder counts frames Chrome delivered with a timestamp at or before
-	// the previous one. They are discarded: a consumer encoding at real time
-	// must never see the clock go backwards.
+	// OutOfOrder counts frames Chrome stamped at or before the previous frame's
+	// swap. They are discarded: a consumer pacing on swap time must never see
+	// the compositor's clock go backwards.
 	OutOfOrder int64
+	// UnstampedFrames counts frames delivered with no swap time brw could use —
+	// no metadata, no timestamp in it, or one that is not behind the moment we
+	// read the event. They are forwarded, but they set no ordering floor.
+	UnstampedFrames int64
 }
 
 // screencastCounters is written from the CDP event goroutine and read by the
@@ -60,14 +67,16 @@ type screencastCounters struct {
 	bytes      atomic.Int64
 	dropped    atomic.Int64
 	outOfOrder atomic.Int64
+	unstamped  atomic.Int64
 }
 
-func (c *screencastCounters) snapshot() ScreencastStats {
-	return ScreencastStats{
-		Frames:     c.frames.Load(),
-		Bytes:      c.bytes.Load(),
-		Dropped:    c.dropped.Load(),
-		OutOfOrder: c.outOfOrder.Load(),
+func (c *screencastCounters) snapshot() screencastStats {
+	return screencastStats{
+		Frames:          c.frames.Load(),
+		Bytes:           c.bytes.Load(),
+		Dropped:         c.dropped.Load(),
+		OutOfOrder:      c.outOfOrder.Load(),
+		UnstampedFrames: c.unstamped.Load(),
 	}
 }
 
@@ -94,7 +103,7 @@ func (m *Manager) ScreencastFrames(ctx context.Context, opts ScreencastOptions) 
 // screencastFrames is ScreencastFrames plus the counters. Kept unexported
 // because the counts are a measurement of one run, not part of the transport
 // capability every consumer has to implement.
-func (m *Manager) screencastFrames(ctx context.Context, opts ScreencastOptions) (<-chan ScreencastFrame, func(), func() ScreencastStats, error) {
+func (m *Manager) screencastFrames(ctx context.Context, opts ScreencastOptions) (<-chan ScreencastFrame, func(), func() screencastStats, error) {
 	_, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return nil, nil, nil, err
@@ -128,6 +137,9 @@ func (m *Manager) screencastFrames(ctx context.Context, opts ScreencastOptions) 
 		if !ok {
 			return
 		}
+		// Taken before anything else in the handler, so it is genuinely "when brw
+		// read the event" and can be used to sanity-check Chrome's own clock.
+		arrivedAt := time.Now()
 		// Ack first and unconditionally: an unacked frame stops the stream, so
 		// a full consumer channel must never also cost us the screencast.
 		go func() {
@@ -149,18 +161,32 @@ func (m *Manager) screencastFrames(ctx context.Context, opts ScreencastOptions) 
 				frame.Timestamp = time.Time(*e.Metadata.Timestamp)
 			}
 		}
-		if frame.Timestamp.IsZero() {
-			frame.Timestamp = time.Now()
+		// A frame's swap time is when the page repainted, so it is necessarily
+		// behind the moment we read the event about it. A value that is not is
+		// either a clock the browser process does not share with us or our own
+		// clock wearing the compositor's name; either way it must not set the
+		// ordering floor, which it would push into the future and take every real
+		// frame behind it down with it.
+		if !frame.Timestamp.IsZero() && !frame.Timestamp.Before(arrivedAt) {
+			frame.Timestamp = time.Time{}
 		}
-		swap := frame.Timestamp.UnixNano()
-		for {
-			previous := lastSwap.Load()
-			if swap <= previous {
-				counters.outOfOrder.Add(1)
-				return
-			}
-			if lastSwap.CompareAndSwap(previous, swap) {
-				break
+		if frame.Timestamp.IsZero() {
+			// Forward it, but leave the ordering floor alone. The CDP event stream
+			// is ordered, so a frame with no usable swap time is already in order;
+			// substituting our own clock is what would start discarding the frames
+			// behind it.
+			counters.unstamped.Add(1)
+		} else {
+			swap := frame.Timestamp.UnixNano()
+			for {
+				previous := lastSwap.Load()
+				if swap <= previous {
+					counters.outOfOrder.Add(1)
+					return
+				}
+				if lastSwap.CompareAndSwap(previous, swap) {
+					break
+				}
 			}
 		}
 		sendMu.RLock()

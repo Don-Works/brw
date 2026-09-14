@@ -20,13 +20,27 @@ import (
 // did not make, on an element that may no longer be where the agent believed.
 //
 // So the two are mutually exclusive rather than interleaved. While a human
-// holds takeover, every agent input action is REFUSED with an error that names
-// the action and the hold, and the agent decides what to do about it. Refusing
-// is deliberate: a queue would replay the agent's plan against a page the human
-// has since changed, and a silent drop would have the agent believe it clicked.
+// holds takeover, every agent action that could reach that browser is REFUSED
+// with an error that names the action and the hold, and the agent decides what
+// to do about it. Refusing is deliberate: a queue would replay the agent's plan
+// against a page the human has since changed, and a silent drop would have the
+// agent believe it clicked.
 //
-// Reads are not refused. An agent that can still snapshot and read is one that
-// can tell what the human did, which is what it needs in order to resume.
+// "Could reach that browser" is wider than the input verbs, and each of the
+// three additions is a way the guard was escaped rather than a theory:
+//
+//   - A caller's own expression through brw_evaluate, which can click and type in
+//     one string. Only the read scripts brw generates itself stay allowed, and
+//     that is decided from the expression, never from a label a caller supplies.
+//   - Every step of a plan or a batch, not only its first. A batch already in
+//     flight when the human takes over would otherwise drive the page for the
+//     whole of its remaining length.
+//   - The tab verbs. Opening, focusing or closing moves or destroys the tab the
+//     human is aiming at, so their next click lands somewhere they did not look.
+//
+// Reads are not refused. An agent that can still snapshot, read, get and wait is
+// one that can tell what the human did, which is what it needs in order to
+// resume. The hold is bound to one tab for the same reason it exists at all.
 const (
 	// TraceActionHumanInput labels a human's forwarded event in the trace, so
 	// the activity feed shows who acted rather than presenting a person's click
@@ -37,11 +51,16 @@ const (
 	maxTakeoverTTL     = 10 * time.Minute
 )
 
-// takeoverGuardedActions is the declared inventory of actions that change the
-// page. The guard itself does not consult it — it fails closed on anything that
-// is not an observation — but the parity test does: a new action that records a
-// trace entry must appear here or be declared an observation, and every name
-// here must have a method that provably refuses.
+// takeoverActionEvaluateScript is the guarded name for a caller-supplied
+// expression. It is deliberately not the "evaluate" trace label: that label also
+// covers the read scripts brw writes for brw_get and brw_frame, which stay
+// allowed during a hold because refusing them would blind the agent.
+const takeoverActionEvaluateScript = "evaluate_script"
+
+// takeoverGuardedActions is the declared inventory of actions a hold refuses.
+// Most of them change the page. The parity test reads it: a new action that
+// records a trace entry must appear here or be declared an observation, and
+// every name here must have a method that provably refuses.
 var takeoverGuardedActions = map[string]bool{
 	"click":        true,
 	"click_text":   true,
@@ -67,6 +86,28 @@ var takeoverGuardedActions = map[string]bool{
 	"commit":       true,
 	"plan":         true,
 	"batch":        true,
+
+	takeoverActionEvaluateScript: true,
+
+	// The tab verbs are observations to a replayer — they record how a session
+	// reached a page — but during a hold they move or destroy the tab the human
+	// is aiming at, which is the same two-actor race a click is.
+	TraceActionOpen:     true,
+	TraceActionFocusTab: true,
+	TraceActionCloseTab: true,
+}
+
+// takeoverReadOnlySteps are the batch and plan step verbs that only look at the
+// page. They are step names rather than trace actions, so guardTakeover's
+// fail-closed default would refuse them; a hold that stopped an agent waiting or
+// asserting would stop it finding out what the human did.
+var takeoverReadOnlySteps = map[string]bool{
+	"wait":           true,
+	"assert":         true,
+	"assert_visible": true,
+	"assert_text":    true,
+	"assert_value":   true,
+	"assert_hidden":  true,
 }
 
 // takeoverExemptActions change the page but are the human's own input, so they
@@ -79,8 +120,12 @@ var takeoverExemptActions = map[string]bool{
 // input carrying it is the human's, input without it is refused, and releasing
 // needs it too so a second viewer cannot end someone else's hold.
 type TakeoverGrant struct {
-	Token     string `json:"token"`
-	Holder    string `json:"holder,omitempty"`
+	Token  string `json:"token"`
+	Holder string `json:"holder,omitempty"`
+	// TabID is the tab the hold is bound to. Input is dispatched there rather
+	// than to whatever is active at dispatch time, so an agent that moves the
+	// active tab cannot redirect the human's next click into another page.
+	TabID     string `json:"tab_id,omitempty"`
 	GrantedAt string `json:"granted_at"`
 	ExpiresAt string `json:"expires_at"`
 }
@@ -92,6 +137,12 @@ type TakeoverStatus struct {
 	Holder    string `json:"holder,omitempty"`
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
+
+// TakeoverRefusedCode is the stable machine-readable name for this refusal. It
+// travels as the "code" field of the HTTP error body and as the usage log's
+// error class, so an agent on any transport can tell "a human has the browser,
+// back off" from "your snapshot is stale, re-read" without reading prose.
+const TakeoverRefusedCode = "takeover_held"
 
 // TakeoverRefusedError is the named refusal an agent gets for an action a human
 // currently owns. Named rather than a bare string so a caller can branch on it
@@ -188,9 +239,17 @@ func (m *Manager) AcquireTakeover(holder string, ttl time.Duration) (TakeoverGra
 	m.takeoverToken = token
 	m.takeoverHolder = strings.TrimSpace(holder)
 	m.takeoverExpiry = now.Add(ttl)
+	// Bind the hold to the tab that is active now. The human aimed at the tab on
+	// their screen; resolving the target again at dispatch time would send their
+	// click wherever the browser had drifted to since. A Manager with no ref
+	// store yet has no active tab to name; the first forwarded event pins it.
+	if m.refs != nil {
+		m.takeoverTab = m.refs.Active()
+	}
 	return TakeoverGrant{
 		Token:     token,
 		Holder:    m.takeoverHolder,
+		TabID:     m.takeoverTab,
 		GrantedAt: now.UTC().Format(time.RFC3339),
 		ExpiresAt: m.takeoverExpiry.UTC().Format(time.RFC3339),
 	}, nil
@@ -212,13 +271,20 @@ func (m *Manager) RenewTakeover(token string, ttl time.Duration) (TakeoverGrant,
 	return TakeoverGrant{
 		Token:     m.takeoverToken,
 		Holder:    m.takeoverHolder,
+		TabID:     m.takeoverTab,
 		GrantedAt: now.UTC().Format(time.RFC3339),
 		ExpiresAt: m.takeoverExpiry.UTC().Format(time.RFC3339),
 	}, nil
 }
 
 // ReleaseTakeover ends the hold and lets agent actions through again.
+//
+// It waits for any human event already on its way to the renderer. Releasing
+// out from under one would put the human's click on a page the agent had just
+// been told it may drive again, which is the two-actor race running backwards.
 func (m *Manager) ReleaseTakeover(token string) error {
+	m.takeoverDispatchMu.Lock()
+	defer m.takeoverDispatchMu.Unlock()
 	m.takeoverMu.Lock()
 	defer m.takeoverMu.Unlock()
 	if !m.takeoverTokenValidLocked(token, time.Now()) {
@@ -226,6 +292,7 @@ func (m *Manager) ReleaseTakeover(token string) error {
 	}
 	m.takeoverToken = ""
 	m.takeoverHolder = ""
+	m.takeoverTab = ""
 	m.takeoverExpiry = time.Time{}
 	return nil
 }
@@ -252,8 +319,12 @@ func (m *Manager) TakeoverState() TakeoverStatus {
 func (m *Manager) guardTakeover(action string) error {
 	// Fails closed: anything that is not a declared observation is treated as
 	// input. A mistyped action name at a call site then still refuses, rather
-	// than becoming the one input path takeover does not cover.
-	if observationActions[action] || takeoverExemptActions[action] {
+	// than becoming the one input path takeover does not cover. The guarded set
+	// wins over the observation set, because the tab verbs are in both.
+	if takeoverExemptActions[action] {
+		return nil
+	}
+	if observationActions[action] && !takeoverGuardedActions[action] {
 		return nil
 	}
 	m.takeoverMu.Lock()
@@ -268,35 +339,80 @@ func (m *Manager) guardTakeover(action string) error {
 	}
 }
 
-// DispatchTakeoverInput forwards one human event to the active tab. The token
+// guardTakeoverStep is guardTakeover for one step of a batch or a plan. Step
+// verbs are not trace actions, so the read-only ones have to be named here or
+// the fail-closed default would refuse an agent's wait and assert steps too.
+func (m *Manager) guardTakeoverStep(action string) error {
+	if takeoverReadOnlySteps[action] {
+		return nil
+	}
+	return m.guardTakeover(action)
+}
+
+// DispatchTakeoverInput forwards one human event to the held tab. The token
 // is checked HERE, not only at the HTTP edge: this is the method that reaches
 // the renderer, so it is the one that has to be unreachable without a grant.
 func (m *Manager) DispatchTakeoverInput(ctx context.Context, token string, event TakeoverInput) error {
 	if err := event.validate(); err != nil {
 		return err
 	}
+	// Read-held for the whole dispatch; ReleaseTakeover takes it for write. The
+	// token check and the CDP call are then one step as far as a release is
+	// concerned, rather than a window a release can land in.
+	m.takeoverDispatchMu.RLock()
+	defer m.takeoverDispatchMu.RUnlock()
+
 	m.takeoverMu.Lock()
 	valid := m.takeoverTokenValidLocked(token, time.Now())
+	pinned := m.takeoverTab
 	m.takeoverMu.Unlock()
 	if !valid {
 		return ErrTakeoverNotHeld
 	}
 
 	start := time.Now()
-	tabID, tabCtx, cancel, err := m.activeContext(ctx)
+	// The tab the hold was taken on, not whichever one is active now.
+	tabID, tabCtx, cancel, err := m.contextForTab(ctx, pinned)
 	if err != nil {
 		return err
 	}
 	defer cancel()
+	if pinned == "" {
+		m.bindTakeoverTab(token, tabID)
+	}
 
 	err = chromedp.Run(tabCtx, chromedp.ActionFunc(func(c context.Context) error {
 		return dispatchTakeoverEvent(c, event)
 	}))
+	// The hold can still expire mid-dispatch, which no mutex can hold off. Say
+	// so rather than report the event as delivered under a hold that had already
+	// ended: the caller's next act is to stop forwarding and re-acquire.
+	if err == nil {
+		m.takeoverMu.Lock()
+		stillHeld := m.takeoverTokenValidLocked(token, time.Now())
+		m.takeoverMu.Unlock()
+		if !stillHeld {
+			err = ErrTakeoverNotHeld
+		}
+	}
 	// A human's input belongs in the same feed the agent's actions appear in.
 	// Without it the page changes under the operator's own hands with nothing
 	// in the record saying which of the two actors did it.
 	m.recordTrace(tabID, NewObservationTrace(TraceActionHumanInput, takeoverInputLabel(event), start, err))
 	return err
+}
+
+// bindTakeoverTab pins a grant that was taken before any tab existed to the
+// first tab it reached, so every later event goes to that same tab.
+func (m *Manager) bindTakeoverTab(token, tabID string) {
+	if tabID == "" {
+		return
+	}
+	m.takeoverMu.Lock()
+	defer m.takeoverMu.Unlock()
+	if m.takeoverTab == "" && m.takeoverTokenValidLocked(token, time.Now()) {
+		m.takeoverTab = tabID
+	}
 }
 
 func dispatchTakeoverEvent(ctx context.Context, event TakeoverInput) error {

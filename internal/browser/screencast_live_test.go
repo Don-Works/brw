@@ -57,6 +57,11 @@ func screencastFixtureServer(t *testing.T) *httptest.Server {
 // Frames must keep arriving (which only happens if every frame is acked), carry
 // Chrome's own swap timestamp in strictly increasing order, and stop when the
 // stream does.
+//
+// "Chrome's own" is asserted rather than assumed: a frame's swap time is when
+// the page repainted, so it is always BEHIND the moment brw read the event about
+// it. brw's own clock reading never is, which is what tells a real compositor
+// timestamp apart from a fallback wearing its name.
 func TestScreencastDeliversAckedMonotonicFrames(t *testing.T) {
 	manager := newHeadlessManager(t)
 	srv := screencastFixtureServer(t)
@@ -132,10 +137,18 @@ collect:
 	}
 
 	counts := stats()
-	t.Logf("screencast: %d frames, %d bytes, %d dropped, %d out of order",
-		counts.Frames, counts.Bytes, counts.Dropped, counts.OutOfOrder)
+	t.Logf("screencast: %d frames, %d bytes, %d dropped, %d out of order, %d unstamped",
+		counts.Frames, counts.Bytes, counts.Dropped, counts.OutOfOrder, counts.UnstampedFrames)
 	if counts.Frames == 0 {
 		t.Error("the stream reported no frames")
+	}
+	// Every frame headless Chrome delivers carries a swap time, and every one of
+	// them swapped before we read it. A frame counted here is one whose stamp brw
+	// could not use — including one that came from our own clock instead of the
+	// compositor's, which is the shape a deleted swap-timestamp read takes.
+	if counts.UnstampedFrames != 0 {
+		t.Errorf("%d of %d frames carried no usable swap time; these are timestamps from brw's clock, not Chrome's",
+			counts.UnstampedFrames, counts.Frames+counts.UnstampedFrames)
 	}
 }
 
@@ -181,13 +194,29 @@ func TestScreencastDropsFramesUnderBackpressureWithoutStalling(t *testing.T) {
 		}
 	}
 	counts := stats()
-	t.Logf("backpressure: %d frames delivered, %d dropped, %d out of order", counts.Frames, counts.Dropped, counts.OutOfOrder)
+	t.Logf("backpressure: %d frames delivered, %d dropped, %d out of order, %d unstamped",
+		counts.Frames, counts.Dropped, counts.OutOfOrder, counts.UnstampedFrames)
+	// Dropping frames must not cost the ordering floor. An out-of-order count
+	// climbing with the drop count would mean the gate was discarding real frames
+	// rather than reordered ones.
+	if counts.OutOfOrder > counts.Frames {
+		t.Errorf("discarded %d frames as out of order against %d delivered; the ordering gate is eating the stream",
+			counts.OutOfOrder, counts.Frames)
+	}
 }
 
 // The compositor stream has to be measurably cheaper than the screenshot loop it
 // replaces, on the page shape brw actually captures: one an agent is working,
 // which repaints occasionally rather than continuously. Both numbers are logged
 // so a regression is visible as a number rather than as a pass/fail.
+//
+// Two limits on what these numbers are. The screencast round-trip figure is
+// DERIVED from the frame counters — start, stop and one ack per frame event —
+// not observed on the wire, and the screenshot side counts calls rather than the
+// commands each one issues, so it is a floor. Both biases favour the screenshot
+// path, which is the side the assertion has to beat. CPU is not asserted at all:
+// processCPU covers this process only, and the compositing the screencast moves
+// the work to happens in Chrome.
 func TestScreencastCostsLessThanTheScreenshotLoop(t *testing.T) {
 	if testing.Short() {
 		t.Skip("the cost comparison records two 20s captures")
@@ -259,13 +288,18 @@ func TestScreencastCostsLessThanTheScreenshotLoop(t *testing.T) {
 	castCPUEnd, _ := processCPU()
 	counts := stats()
 
-	// Two CDP commands to start and stop, plus one ack per delivered frame.
-	castRoundTrips := counts.Frames + counts.Dropped + counts.OutOfOrder + 2
+	// Derived, not observed: start, stop, and one ack per frame event Chrome
+	// delivered, whether it was forwarded, dropped or discarded.
+	castRoundTrips := counts.Frames + counts.Dropped + counts.OutOfOrder + counts.UnstampedFrames + 2
 
-	t.Logf("screenshot loop over %s: %d frames, %d CDP round trips, %d bytes, %v CPU",
-		window, shotFrames, shotRoundTrips, shotBytes, shotCPUEnd-shotCPUStart)
-	t.Logf("native screencast over %s: %d frames, %d CDP round trips, %d bytes, %v CPU (%d dropped)",
-		window, counts.Frames, castRoundTrips, counts.Bytes, castCPUEnd-castCPUStart, counts.Dropped)
+	t.Logf("screenshot loop over %s: %d frames, %d capture calls, %d bytes",
+		window, shotFrames, shotRoundTrips, shotBytes)
+	t.Logf("native screencast over %s: %d frames, %d CDP round trips (derived from the frame counters), %d bytes (%d dropped)",
+		window, counts.Frames, castRoundTrips, counts.Bytes, counts.Dropped)
+	if cpuAvailable {
+		t.Logf("daemon CPU: screenshot loop %v, screencast %v — this process only, so the Chrome compositing the screencast moves the work to is not in either number",
+			shotCPUEnd-shotCPUStart, castCPUEnd-castCPUStart)
+	}
 
 	if counts.Bytes >= shotBytes {
 		t.Errorf("screencast transferred %d bytes, screenshot loop %d: the compositor stream must move less over CDP",
@@ -273,13 +307,6 @@ func TestScreencastCostsLessThanTheScreenshotLoop(t *testing.T) {
 	}
 	if castRoundTrips >= shotRoundTrips {
 		t.Errorf("screencast made %d CDP round trips, screenshot loop %d", castRoundTrips, shotRoundTrips)
-	}
-	if !cpuAvailable {
-		t.Log("process CPU accounting is unavailable on this platform; compared transferred bytes only")
-		return
-	}
-	if castCPUEnd-castCPUStart >= shotCPUEnd-shotCPUStart {
-		t.Errorf("screencast burned %v CPU, screenshot loop %v", castCPUEnd-castCPUStart, shotCPUEnd-shotCPUStart)
 	}
 }
 

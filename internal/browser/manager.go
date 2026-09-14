@@ -275,7 +275,12 @@ type Manager struct {
 	takeoverMu     sync.Mutex
 	takeoverToken  string
 	takeoverHolder string
+	takeoverTab    string
 	takeoverExpiry time.Time
+	// takeoverDispatchMu is held for read across a forwarded human event and for
+	// write by ReleaseTakeover, so a release cannot land between the token check
+	// and the event reaching the renderer.
+	takeoverDispatchMu sync.RWMutex
 }
 
 // SetNavigationPolicy installs the controller-level policy used for defense in
@@ -501,6 +506,11 @@ func (m *Manager) connect() error {
 const openNavigateTimeout = 10 * time.Second
 
 func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
+	// A new tab becomes the active one, so opening during a hold moves the target
+	// out from under the human mid-gesture. Refused like any other input action.
+	if err := m.guardTakeover(TraceActionOpen); err != nil {
+		return OpenResult{}, err
+	}
 	start := time.Now()
 	var err error
 	url, err = m.prepareNavigationURL(url)
@@ -650,6 +660,9 @@ func (m *Manager) ListTabs(ctx context.Context) ([]Tab, error) {
 }
 
 func (m *Manager) FocusTab(ctx context.Context, id string) error {
+	if err := m.guardTakeover(TraceActionFocusTab); err != nil {
+		return err
+	}
 	if id == "" {
 		return errors.New("tab id is required")
 	}
@@ -666,6 +679,11 @@ func (m *Manager) FocusTab(ctx context.Context, id string) error {
 }
 
 func (m *Manager) CloseTab(ctx context.Context, id string) error {
+	// Closing the tab the human is driving is the most complete form of racing
+	// them for it: their next click lands in a tab that no longer exists.
+	if err := m.guardTakeover(TraceActionCloseTab); err != nil {
+		return err
+	}
 	if id == "" {
 		return errors.New("tab id is required")
 	}
@@ -1135,6 +1153,18 @@ func (m *Manager) hoverRef(tabCtx context.Context, tabID, ref string) (string, e
 }
 
 func (m *Manager) Evaluate(ctx context.Context, expression string) (any, error) {
+	// The most capable page-acting route in the product: an expression can click,
+	// type and navigate, so it is refused during a hold like any other input.
+	//
+	// The exemption is decided from the EXPRESSION, not from the trace label. The
+	// label crosses HTTP as a request field an --upstream-http client supplies,
+	// so a caller could name its own script a read; a generated read script is a
+	// constant of brw's carrying JSON-encoded arguments and cannot be forged.
+	if !isGeneratedReadExpression(traceLabelAction(ctx), expression) {
+		if err := m.guardTakeover(takeoverActionEvaluateScript); err != nil {
+			return nil, err
+		}
+	}
 	start := time.Now()
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
@@ -2729,6 +2759,16 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 // report a successful ordinary click.
 func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index int, step BatchStep) BatchStepResult {
 	sr := BatchStepResult{Index: index, Action: step.Action, OK: true}
+
+	// Guarded per step, not only once at the top of ExecuteBatch: a batch that
+	// was already running when the human took over would otherwise keep driving
+	// the page for the whole of its remaining length. The steps below reach the
+	// low-level helpers directly, so this is their only guard.
+	if err := m.guardTakeoverStep(step.Action); err != nil {
+		sr.OK = false
+		sr.Error = err.Error()
+		return sr
+	}
 
 	var actionErr error
 	switch step.Action {

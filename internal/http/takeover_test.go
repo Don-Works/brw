@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/httpclient"
+	"github.com/Don-Works/brw/internal/usagelog"
 )
 
 // takeoverFake is a controller that can take over and can stream. The grant
@@ -44,6 +47,14 @@ func (f *takeoverFake) TakeoverState() browser.TakeoverStatus { return f.manager
 
 func (f *takeoverFake) DispatchTakeoverInput(ctx context.Context, token string, event browser.TakeoverInput) error {
 	return f.manager.DispatchTakeoverInput(ctx, token, event)
+}
+
+// Click is delegated to the same Manager, so the refusal an /api/page route
+// renders is the one an agent would actually receive rather than a stub's idea
+// of one. Without a hold this Manager has no browser and never gets that far,
+// which is fine: the refusal is what these tests are about.
+func (f *takeoverFake) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
+	return f.manager.Click(ctx, ref)
 }
 
 func (f *takeoverFake) SubscribeTrace() (<-chan browser.TraceEntry, func()) {
@@ -92,10 +103,10 @@ func TestTakeoverSurfaceIsAbsentWhenBoundBeyondLoopback(t *testing.T) {
 		{"loopback v6", "[::1]:17310", true},
 		{"wildcard", ":17310", false},
 		{"all interfaces", "0.0.0.0:17310", false},
-		// Built rather than written as a literal so the hygiene scanner does not
-		// read a test table as a leaked internal address.
+		// Both built rather than written as literals, so the hygiene scanner does
+		// not read a test table as a leaked internal address.
 		{"lan address", net.JoinHostPort(net.IPv4(192, 168, 1, 44).String(), "17310"), false},
-		{"tailscale address", "100.101.102.103:17310", false},
+		{"tailscale address", net.JoinHostPort(net.IPv4(100, 101, 102, 103).String(), "17310"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -384,6 +395,31 @@ func TestActivityLineProjection(t *testing.T) {
 			want:  ActivityLine{Seq: 1, Action: "fill", Ref: "e2", Outcome: "failed", Error: "ref not found", DurationMS: 8, At: "2026-01-01T00:00:01Z"},
 		},
 		{
+			// The reason is the failing action's own error string, so a failed
+			// navigate embeds the address it was aimed at. The row keeps the
+			// reason and loses the address.
+			name: "a failed navigation keeps its reason and loses its address",
+			entry: browser.TraceEntry{
+				Action: "navigate_to", OK: false, DurationMS: 12, Timestamp: "2026-01-01T00:00:04Z",
+				Error: `navigate to https://intranet.example.test/hr/reviews?id=7 failed: net::ERR_NAME_NOT_RESOLVED`,
+			},
+			want: ActivityLine{
+				Seq: 1, Action: "navigate_to", Outcome: "failed", DurationMS: 12, At: "2026-01-01T00:00:04Z",
+				Error: "navigate to <url> failed: net::ERR_NAME_NOT_RESOLVED",
+			},
+		},
+		{
+			name: "an open that failed on the way out loses its address too",
+			entry: browser.TraceEntry{
+				Action: "open", OK: false, DurationMS: 3, Timestamp: "2026-01-01T00:00:05Z",
+				Error: `open "http://intranet.example.test:8080/admin" refused by navigation policy`,
+			},
+			want: ActivityLine{
+				Seq: 1, Action: "open", Outcome: "failed", DurationMS: 3, At: "2026-01-01T00:00:05Z",
+				Error: `open "<url>" refused by navigation policy`,
+			},
+		},
+		{
 			name:  "a redacted fill says so and carries no value",
 			entry: browser.TraceEntry{Action: "fill", Ref: "e3", Name: "Password", OK: true, Redacted: true, DurationMS: 5, Timestamp: "2026-01-01T00:00:02Z"},
 			want:  ActivityLine{Seq: 1, Action: "fill", Ref: "e3", Name: "Password", Outcome: "ok", Redacted: true, DurationMS: 5, At: "2026-01-01T00:00:02Z"},
@@ -400,7 +436,9 @@ func TestActivityLineProjection(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("line = %+v, want %+v", got, tt.want)
 			}
-			// The feed never carries what the page said or what was typed into it.
+			// The feed never carries what the page said or what was typed into
+			// it — not as a field, and not inside a failure reason either, which
+			// is the half a field-name check cannot see.
 			payload, err := json.Marshal(got)
 			if err != nil {
 				t.Fatal(err)
@@ -408,6 +446,11 @@ func TestActivityLineProjection(t *testing.T) {
 			for _, field := range []string{`"text"`, `"value"`, `"url"`} {
 				if strings.Contains(string(payload), field) {
 					t.Errorf("feed line carries %s: %s", field, payload)
+				}
+			}
+			for _, address := range []string{"://"} {
+				if strings.Contains(string(payload), address) {
+					t.Errorf("feed line carries an address in its failure reason: %s", payload)
 				}
 			}
 		})
@@ -418,4 +461,88 @@ func TestActivityLineProjection(t *testing.T) {
 			t.Fatal("a feed row with no time cannot be read against the frames beside it")
 		}
 	})
+}
+
+// An agent that hits a browser a human is holding has to be able to tell that
+// apart from a stale ref without reading prose. Same status and same error class
+// as "ref not found" would leave it with nothing to branch on but the message.
+func TestAnAgentRouteReportsAHumanHoldAsAConflictWithAStableCode(t *testing.T) {
+	fake := newTakeoverFake()
+	server := New("127.0.0.1:17310", fake)
+	if _, err := fake.AcquireTakeover("dashboard", time.Minute); err != nil {
+		t.Fatalf("acquire takeover: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/page/click", strings.NewReader(`{"ref":"e1"}`))
+	request.RemoteAddr = "127.0.0.1:54321"
+	server.click(recorder, request)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("click during a hold = %d, want 409 (%s)", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Error     string `json:"error"`
+		Code      string `json:"code"`
+		Action    string `json:"action"`
+		Holder    string `json:"holder"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode refusal: %v (%s)", err, recorder.Body.String())
+	}
+	if body.Code != browser.TakeoverRefusedCode {
+		t.Errorf("refusal code = %q, want %q", body.Code, browser.TakeoverRefusedCode)
+	}
+	if body.Action != "click" {
+		t.Errorf("refusal names action %q, want \"click\"", body.Action)
+	}
+	if body.Holder != "dashboard" {
+		t.Errorf("refusal names holder %q, want \"dashboard\"", body.Holder)
+	}
+	if body.ExpiresAt == "" {
+		t.Error("refusal carries no expiry; an agent has nothing to wait for")
+	}
+	// The usage log has to be able to count this condition, which is what
+	// distinguishes a recurring human hold from a run of bad refs.
+	if class := recorder.Header().Get(usagelog.HeaderErrorClass); class != "takeover_held" {
+		t.Errorf("error class = %q, want \"takeover_held\"", class)
+	}
+	// And the fingerprint is of the condition, not of this instance: the holder
+	// and the expiry differ on every refusal.
+	first := recorder.Header().Get(usagelog.HeaderErrorFingerprint)
+	if first == "" {
+		t.Fatal("refusal carries no error fingerprint")
+	}
+
+	second := httptest.NewRecorder()
+	again := httptest.NewRequest(http.MethodPost, "/api/page/click", strings.NewReader(`{"ref":"e2"}`))
+	again.RemoteAddr = "127.0.0.1:54321"
+	server.click(second, again)
+	if got := second.Header().Get(usagelog.HeaderErrorFingerprint); got != first {
+		t.Errorf("two refusals fingerprinted differently (%q, %q); the ledger cannot count the condition", first, got)
+	}
+}
+
+// The same refusal has to survive the --upstream-http hop. An agent branching on
+// errors.As must not have to know which transport it is talking through.
+func TestARefusalStaysTypedAcrossTheUpstreamHTTPHop(t *testing.T) {
+	refusal := &browser.TakeoverRefusedError{Action: "click", Holder: "dashboard", ExpiresAt: "2026-01-01T00:01:00Z"}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, refusal)
+	}))
+	defer upstream.Close()
+
+	controller, err := httpclient.New(upstream.URL, 0)
+	if err != nil {
+		t.Fatalf("build upstream controller: %v", err)
+	}
+	_, err = controller.Click(context.Background(), "e1")
+	var refused *browser.TakeoverRefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("proxied click = %v (%T), want a *browser.TakeoverRefusedError", err, err)
+	}
+	if refused.Action != "click" || refused.Holder != "dashboard" {
+		t.Errorf("proxied refusal = %+v, want the upstream's action and holder", refused)
+	}
 }

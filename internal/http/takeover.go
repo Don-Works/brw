@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -238,6 +239,11 @@ func (s *Server) dashboardActivity(w http.ResponseWriter, r *http.Request) {
 // rather than the entry itself: the feed is read by a person at a glance, and a
 // row that carried the entry's page text would put page content on a surface
 // whose job is to say what happened, not what the page said.
+//
+// Error is the one field whose CONTENT is not chosen here — it is whatever the
+// failing action said — so a failed navigate_to or open would otherwise carry
+// its target URL into the row. Addresses are replaced before the row is built;
+// see scrubActivityError.
 type ActivityLine struct {
 	Seq        uint64 `json:"seq"`
 	Action     string `json:"action"`
@@ -249,6 +255,19 @@ type ActivityLine struct {
 	DurationMS int64  `json:"duration_ms"`
 	Redacted   bool   `json:"redacted,omitempty"`
 	At         string `json:"at"`
+}
+
+// activityURL matches an absolute URL anywhere in a failure reason. Deliberately
+// greedy about schemes rather than about hosts: the point is that no address
+// reaches the row, not that the row explains which one it was.
+var activityURL = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"'<>)\]]+`)
+
+// scrubActivityError keeps a failure's reason and drops the address in it. An
+// operator needs to know a navigate failed and why; the URL it was aimed at is
+// page-derived and belongs to the tab they are already watching, not to a feed
+// served beside it.
+func scrubActivityError(message string) string {
+	return activityURL.ReplaceAllString(message, "<url>")
 }
 
 func activityLine(seq uint64, entry browser.TraceEntry) ActivityLine {
@@ -267,7 +286,7 @@ func activityLine(seq uint64, entry browser.TraceEntry) ActivityLine {
 		Name:       entry.Name,
 		Role:       entry.Role,
 		Outcome:    outcome,
-		Error:      entry.Error,
+		Error:      scrubActivityError(entry.Error),
 		DurationMS: entry.DurationMS,
 		Redacted:   entry.Redacted,
 		At:         at,

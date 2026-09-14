@@ -465,6 +465,11 @@ func ClassifyError(err error) string {
 	switch {
 	case strings.Contains(msg, "tab is leased by another browser session"):
 		return "tab_contended"
+	// A human holds the browser through the dashboard. Kept distinct from
+	// tab_contended: the other actor is a person, and the agent's answer is to
+	// wait for them rather than to retry against another lease.
+	case strings.Contains(msg, "holds takeover of this browser"):
+		return "takeover_held"
 	// Not retryable and not a bridge fault: the tab itself cannot be driven.
 	// Kept distinct from "tool" so a recurring foreground hijack is countable.
 	case strings.Contains(msg, "cannot access a chrome-extension"),
@@ -531,7 +536,9 @@ func ClassifyError(err error) string {
 
 func Retryable(class string) bool {
 	switch class {
-	case "timeout", "busy", "transport":
+	// takeover_held is retryable in the same sense busy is: nothing about the
+	// call was wrong, another actor has the browser, and the hold expires.
+	case "timeout", "busy", "transport", "takeover_held":
 		return true
 	default:
 		return false

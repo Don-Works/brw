@@ -278,9 +278,13 @@ parity argument alone:
   artifacts from `Page.startScreencast` frames with `Page.screencastFrameAck`
   backpressure, keeping the screenshot loop only for transports with no
   compositor stream (the extension bridge, and the locked-session print-renderer
-  case). Measured over a 20s capture at 5fps of a page repainting twice a second:
-  100 CDP round trips and 277 KB against 43 round trips and 98 KB, and 50ms of
-  daemon CPU against 15ms. See
+  case). Over a 20s capture at 5fps of a page repainting twice a second the
+  screenshot loop moved 277 KB against the compositor stream's 98 KB. The
+  round-trip figures — 100 against 43 — are counted rather than observed on the
+  wire: one capture call per tick on one side, start plus stop plus one ack per
+  compositor frame on the other, so each is a floor for its own path. CPU is not
+  compared: the daemon-process figure excludes the Chrome process doing the
+  compositing, which is where the work the screencast saves actually moves. See
   [Puppeteer screencast](https://pptr.dev/api/puppeteer.page.screencast).
 
 ## Prioritized next level

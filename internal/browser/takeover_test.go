@@ -100,6 +100,22 @@ func TestTakeoverRefusesEveryAgentInputAction(t *testing.T) {
 			return err
 		}},
 		{"commit", func(m *Manager) error { return m.CommitField(ctx, "e1") }},
+		// A caller-supplied expression is the most capable page-acting route in
+		// the product: brw_evaluate can click, type and navigate in one string.
+		{takeoverActionEvaluateScript, func(m *Manager) error {
+			_, err := m.Evaluate(ctx, "document.querySelector('button').click()")
+			return err
+		}},
+		// A forged trace label must not buy an exemption. The label crosses HTTP
+		// as a request field, so only the expression can decide.
+		{takeoverActionEvaluateScript, func(m *Manager) error {
+			_, err := m.Evaluate(WithTraceLabel(ctx, TraceActionGet, "text #go"), "document.querySelector('button').click()")
+			return err
+		}},
+		{"open", func(m *Manager) error { _, err := m.Open(ctx, "https://example.test/"); return err }},
+		{"open", func(m *Manager) error { _, err := m.OpenIncognito(ctx, "https://example.test/"); return err }},
+		{"focus_tab", func(m *Manager) error { return m.FocusTab(ctx, "tab-1") }},
+		{"close_tab", func(m *Manager) error { return m.CloseTab(ctx, "tab-1") }},
 		{"plan", func(m *Manager) error {
 			_, err := m.ExecutePlan(ctx, []PlanStep{{Action: "click", Ref: "e1"}})
 			return err
@@ -166,7 +182,8 @@ func TestEveryRecordedTraceActionIsClassified(t *testing.T) {
 		t.Fatalf("read package dir: %v", err)
 	}
 	fset := token.NewFileSet()
-	actions := map[string]string{}
+	var files []*ast.File
+	names := map[*ast.File]string{}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -176,20 +193,43 @@ func TestEveryRecordedTraceActionIsClassified(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
-		for action := range recordedTraceActions(file) {
-			actions[action] = name
+		files = append(files, file)
+		names[file] = name
+	}
+	// The action is nearly always a package constant rather than a string in the
+	// call, so the constants have to be resolved before the call sites are read.
+	constants := packageStringConstants(files)
+
+	actions := map[string]recordedAction{}
+	// Tracked as the files are read, not derived from the map above: an action
+	// both idioms record would otherwise collapse into whichever was seen last.
+	seen := map[string]bool{}
+	for _, file := range files {
+		for action, via := range recordedTraceActions(file, constants) {
+			actions[action] = recordedAction{file: names[file], via: via}
+			seen[via] = true
 		}
 	}
 	if len(actions) == 0 {
-		t.Fatal("found no recordTrace call with a literal action: the shape this test reads has changed")
+		t.Fatal("found no recorded action with a readable name: the shape this test reads has changed")
+	}
+	// Both idioms have to be reachable. recordTrace with a TraceEntry literal is
+	// how the input actions record; recordObservation is how Open, FocusTab,
+	// CloseTab and the reads do. A parser that can only see the first half
+	// silently stops covering exactly the call sites this classification exists
+	// to catch — which is what it did.
+	for _, idiom := range []string{"recordTrace", "recordObservation"} {
+		if !seen[idiom] {
+			t.Fatalf("no %s call site was read; half the inventory is invisible to this test", idiom)
+		}
 	}
 
 	var unclassified []string
-	for action, file := range actions {
+	for action, recorded := range actions {
 		if observationActions[action] || takeoverGuardedActions[action] || takeoverExemptActions[action] {
 			continue
 		}
-		unclassified = append(unclassified, action+" ("+file+")")
+		unclassified = append(unclassified, action+" ("+recorded.file+", via "+recorded.via+")")
 	}
 	sort.Strings(unclassified)
 	if len(unclassified) > 0 {
@@ -197,34 +237,88 @@ func TestEveryRecordedTraceActionIsClassified(t *testing.T) {
 	}
 }
 
-// recordedTraceActions returns the literal Action values passed to recordTrace
-// in one file. A computed action (mouseHalf passes its parameter through) has no
-// literal to read and is covered by the refusal table instead.
-func recordedTraceActions(file *ast.File) map[string]bool {
-	found := map[string]bool{}
+// recordedAction is where one action name was found and which recording idiom
+// carried it, so a failure names the call site to fix.
+type recordedAction struct {
+	file string
+	via  string
+}
+
+// packageStringConstants maps every package-level untyped string constant to its
+// value, so a call site passing TraceActionOpen reads the same as one passing
+// "open".
+func packageStringConstants(files []*ast.File) map[string]string {
+	values := map[string]string{}
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				value, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range value.Names {
+					if i >= len(value.Values) {
+						continue
+					}
+					lit, ok := value.Values[i].(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						continue
+					}
+					if text, err := strconv.Unquote(lit.Value); err == nil {
+						values[name.Name] = text
+					}
+				}
+			}
+		}
+	}
+	return values
+}
+
+// recordedTraceActions returns the action names one file records, mapped to the
+// idiom that recorded them. A computed action (mouseHalf passes its parameter
+// through) has no name to read here and is covered by the refusal table instead.
+func recordedTraceActions(file *ast.File, constants map[string]string) map[string]string {
+	found := map[string]string{}
 	ast.Inspect(file, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "recordTrace" || len(call.Args) < 2 {
+		if !ok || len(call.Args) < 2 {
 			return true
 		}
-		if action, ok := traceEntryAction(call.Args[1]); ok {
-			found[action] = true
+		switch sel.Sel.Name {
+		case "recordTrace":
+			if action, ok := traceEntryAction(call.Args[1], constants); ok {
+				found[action] = "recordTrace"
+			}
+		case "recordObservation":
+			// recordObservation(tabID, action, text, start, err): the action is a
+			// plain argument, not a field of a struct literal.
+			if action, ok := actionName(call.Args[1], constants); ok {
+				found[action] = "recordObservation"
+			}
 		}
 		return true
 	})
 	return found
 }
 
-// traceEntryAction digs the Action string out of a TraceEntry literal, which may
-// be wrapped in RedactTraceEntry(ctx, TraceEntry{...}).
-func traceEntryAction(expr ast.Expr) (string, bool) {
+// traceEntryAction digs the Action string out of what recordTrace was handed:
+// a TraceEntry literal, possibly wrapped in RedactTraceEntry(ctx, ...), or a
+// NewObservationTrace(action, ...) call that builds one.
+func traceEntryAction(expr ast.Expr, constants map[string]string) (string, bool) {
 	if wrapper, ok := expr.(*ast.CallExpr); ok {
+		if fun, ok := wrapper.Fun.(*ast.Ident); ok && fun.Name == "NewObservationTrace" && len(wrapper.Args) > 0 {
+			return actionName(wrapper.Args[0], constants)
+		}
 		for _, arg := range wrapper.Args {
-			if action, ok := traceEntryAction(arg); ok {
+			if action, ok := traceEntryAction(arg, constants); ok {
 				return action, true
 			}
 		}
@@ -243,15 +337,24 @@ func traceEntryAction(expr ast.Expr) (string, bool) {
 		if !ok || key.Name != "Action" {
 			continue
 		}
-		value, ok := kv.Value.(*ast.BasicLit)
-		if !ok || value.Kind != token.STRING {
+		return actionName(kv.Value, constants)
+	}
+	return "", false
+}
+
+// actionName reads an action argument written either as a string literal or as
+// one of the package's own constants.
+func actionName(expr ast.Expr, constants map[string]string) (string, bool) {
+	switch value := expr.(type) {
+	case *ast.BasicLit:
+		if value.Kind != token.STRING {
 			return "", false
 		}
 		action, err := strconv.Unquote(value.Value)
-		if err != nil {
-			return "", false
-		}
-		return action, true
+		return action, err == nil
+	case *ast.Ident:
+		action, ok := constants[value.Name]
+		return action, ok
 	}
 	return "", false
 }
@@ -265,10 +368,148 @@ func TestTakeoverDoesNotRefuseObservations(t *testing.T) {
 		t.Fatalf("acquire takeover: %v", err)
 	}
 	for action := range observationActions {
+		// The tab verbs are observations to a replayer and input to a hold; they
+		// have their own case below.
+		if takeoverGuardedActions[action] {
+			continue
+		}
 		if err := m.guardTakeover(action); err != nil {
 			t.Errorf("observation %q was refused during takeover: %v", action, err)
 		}
 	}
+	for _, action := range []string{TraceActionOpen, TraceActionFocusTab, TraceActionCloseTab} {
+		if err := m.guardTakeover(action); err == nil {
+			t.Errorf("%q was allowed during a hold; it moves or destroys the tab the human is aiming at", action)
+		}
+	}
+	// A generated read script is still a read, whatever the hold says. brw_get
+	// and brw_frame are how the agent finds out what the human changed.
+	for _, expression := range []string{
+		snapshot.BuildGetExpression("text", "#go", ""),
+		snapshot.BuildFrameSwitchExpression("main"),
+	} {
+		action := TraceActionGet
+		if strings.HasPrefix(expression, snapshot.FrameSwitchScript) {
+			action = TraceActionFrame
+		}
+		if !isGeneratedReadExpression(action, expression) {
+			t.Errorf("a %s script brw generated is not recognised as one; the agent would be blinded during a hold", action)
+		}
+	}
+	// And a caller's own JavaScript is not a read however it is labelled.
+	for _, action := range []string{TraceActionGet, TraceActionFrame, TraceActionEvaluate} {
+		if isGeneratedReadExpression(action, "document.querySelector('button').click()") {
+			t.Errorf("hand-written JavaScript passed as a generated %s read", action)
+		}
+	}
+}
+
+// A batch that was already running when the human took over must stop driving
+// the page. ExecuteBatch guards once at entry; its steps reach the low-level
+// helpers directly, so each step has to be guarded in its own right.
+func TestBatchStepsRefuseOnceAHumanHoldsTakeover(t *testing.T) {
+	tests := []struct {
+		name    string
+		step    BatchStep
+		refused bool
+	}{
+		{"click", BatchStep{Action: "click", Ref: "e1"}, true},
+		{"click_text", BatchStep{Action: "click_text", Text: "Go"}, true},
+		{"type", BatchStep{Action: "type", Ref: "e1", Text: "hello"}, true},
+		{"fill", BatchStep{Action: "fill", Ref: "e1", Text: "hello"}, true},
+		{"select", BatchStep{Action: "select", Ref: "e1", Value: "one"}, true},
+		{"press", BatchStep{Action: "press", Key: "Enter"}, true},
+		{"scroll", BatchStep{Action: "scroll", Direction: "down"}, true},
+		{"hover", BatchStep{Action: "hover", Ref: "e1"}, true},
+		{"open", BatchStep{Action: "open", URL: "https://example.test/"}, true},
+		{"navigate_to", BatchStep{Action: "navigate_to", URL: "https://example.test/"}, true},
+		{"focus_tab", BatchStep{Action: "focus_tab", ID: "tab-1"}, true},
+		// Read-only steps stay allowed, or an agent could not find out what the
+		// human did without starting a fresh batch.
+		{"wait", BatchStep{Action: "wait", Condition: "idle"}, false},
+		{"assert_visible", BatchStep{Action: "assert_visible", Ref: "e1"}, false},
+		{"assert_text", BatchStep{Action: "assert_text", Ref: "e1", Text: "Go"}, false},
+		{"assert_value", BatchStep{Action: "assert_value", Ref: "e1", Value: "one"}, false},
+		{"assert_hidden", BatchStep{Action: "assert_hidden", Ref: "e1"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newBrowserlessManager()
+			if _, err := m.AcquireTakeover("operator", time.Minute); err != nil {
+				t.Fatalf("acquire takeover: %v", err)
+			}
+			sr := m.executeBatchStep(context.Background(), "tab-1", 3, tt.step)
+			refused := strings.Contains(sr.Error, "holds takeover of this browser")
+			if refused != tt.refused {
+				t.Fatalf("step %q refused = %v (%q), want %v", tt.step.Action, refused, sr.Error, tt.refused)
+			}
+			if !tt.refused {
+				return
+			}
+			if sr.OK {
+				t.Error("a refused step reported OK; the batch would run on to the next one")
+			}
+			if sr.Index != 3 || sr.Action != tt.step.Action {
+				t.Errorf("refusal reported as step %d %q, want 3 %q", sr.Index, sr.Action, tt.step.Action)
+			}
+		})
+	}
+}
+
+// Every step verb a batch accepts must be classified, or the fail-closed guard
+// refuses a read-only step and a batch stops working during a hold for no reason.
+func TestEveryBatchStepVerbIsClassifiedForTakeover(t *testing.T) {
+	source, err := os.ReadFile("manager.go")
+	if err != nil {
+		t.Fatalf("read manager.go: %v", err)
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "manager.go", source, 0)
+	if err != nil {
+		t.Fatalf("parse manager.go: %v", err)
+	}
+	verbs := batchStepVerbs(file)
+	if len(verbs) == 0 {
+		t.Fatal("found no batch step verbs: the shape this test reads has changed")
+	}
+	var unclassified []string
+	for _, verb := range verbs {
+		if takeoverReadOnlySteps[verb] || takeoverGuardedActions[verb] || observationActions[verb] {
+			continue
+		}
+		unclassified = append(unclassified, verb)
+	}
+	sort.Strings(unclassified)
+	if len(unclassified) > 0 {
+		t.Errorf("batch step verbs in no takeover class: %v — name the read-only ones in takeoverReadOnlySteps, guard the rest", unclassified)
+	}
+}
+
+// batchStepVerbs returns the case labels of executeBatchStep's action switch.
+func batchStepVerbs(file *ast.File) []string {
+	var verbs []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		decl, ok := node.(*ast.FuncDecl)
+		if !ok || decl.Name.Name != "executeBatchStep" {
+			return true
+		}
+		ast.Inspect(decl.Body, func(inner ast.Node) bool {
+			clause, ok := inner.(*ast.CaseClause)
+			if !ok {
+				return true
+			}
+			for _, expr := range clause.List {
+				if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					if value, err := strconv.Unquote(lit.Value); err == nil {
+						verbs = append(verbs, value)
+					}
+				}
+			}
+			return true
+		})
+		return false
+	})
+	return verbs
 }
 
 func TestTakeoverGrantLifecycle(t *testing.T) {

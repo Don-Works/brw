@@ -20,6 +20,9 @@ import (
 // (closing every tab in it and discarding its data) when the throwaway session
 // is done.
 func (m *Manager) OpenIncognito(ctx context.Context, url string) (OpenResult, error) {
+	if err := m.guardTakeover(TraceActionOpen); err != nil {
+		return OpenResult{}, err
+	}
 	start := time.Now()
 	var err error
 	url, err = m.prepareNavigationURL(url)
