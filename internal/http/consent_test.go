@@ -226,12 +226,17 @@ func registeredMethods(t *testing.T, route string) []string {
 // exhaustiveness rule: an /api/ route whose operation is in neither half of the
 // consent table is a route nothing decided about.
 func TestEveryAPIRouteIsClassifiedForConsent(t *testing.T) {
-	// The consent surface itself: these routes list and revoke grants rather
-	// than drive a site, and gating them behind a grant would make a user unable
-	// to revoke without first granting.
+	// brw's own administration surface: HTTP-only routes that configure or
+	// inspect the daemon rather than drive a site, and which therefore have no
+	// MCP tool to classify in siteconsent. Gating the consent routes behind a
+	// grant would make a user unable to revoke without first granting; the same
+	// argument covers withdrawing a plugin capability, which only ever narrows
+	// what brw can do.
 	surface := map[string]string{
 		"brw_consent_grants": "lists this profile's own grants; it touches no site",
 		"brw_consent_revoke": "revokes this profile's own grants; it touches no site",
+		"brw_plugins":        "reports which plugins are loaded and what capabilities they hold; it names no origin",
+		"brw_plugin_revoke":  "withdraws a capability from a loaded plugin, which narrows brw rather than reaching a site",
 	}
 	for route, operation := range usageOperations {
 		_, gated := siteconsent.ToolRules[operation]
