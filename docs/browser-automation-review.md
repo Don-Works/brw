@@ -108,6 +108,73 @@ permissions.
 
 The comparison is against documented capabilities, not marketing claims.
 
+### Parity matrix: Claude-in-Chrome and Vercel agent-browser
+
+Audited 2026-09-14 against Claude-in-Chrome (support.claude.com article 12012173)
+and `vercel-labs/agent-browser` (Apache-2.0, Rust CLI + daemon + MCP). Status is
+`brw`'s: shipped, open with its ledger row, or a deliberate non-goal.
+
+| Feature | brw | Claude-in-Chrome | agent-browser | Status |
+| --- | --- | --- | --- | --- |
+| Semantic snapshot and stable refs | DOM + accessibility | internal | accessibility tree | shipped |
+| Post-action observation | every action | n/a | partial | shipped |
+| Browser coverage | 7 Chromium builds | Chrome only | Chrome, Lightpanda, cloud | shipped |
+| MCP server | stdio, catalogue grows on demand | native messaging | stdio, fixed profiles | shipped |
+| HTTP JSON API | yes | no | no | shipped |
+| Per-action CLI | no | no | ~120 verbs | open, `2AR4JB` |
+| Artifacts held off model context | store, search, TTL | no | files on disk | shipped |
+| Deterministic replay | immutable recipes, digest and origin guard | recorded workflows | batch JSON | shipped |
+| Promote a successful run to a recipe | no | yes, side-panel recording | no | open, `E8X4QH` |
+| Scheduled and recurring runs | no | daily/weekly/monthly | no | non-goal; trigger contract `5SFWAD` |
+| Network interception | isolated contexts only | read-only | route, unroute | open, `GX7V7R` |
+| HAR record and replay as a fixture | record only | no | start/stop, replay | open, `GX7V7R` |
+| Device and environment emulation | viewport only | no | viewport, device, geo, media, offline | open, `5K6NVM` |
+| Storage and auth state save/load | denylisted on the signed-in transport | n/a | `state save`, `auth save` | open, `S1JX0S`, host-only and redacted |
+| Credential manager integration | no | 1Password, macOS beta | plugin capability | open, `FGYDV6` |
+| Accessibility audit, React, Web Vitals | no | no | axe-core, react, vitals | open, `M7T2Z7` |
+| Cloud browser providers | no | no | 6 providers | open, `VXK4XY`, after `J3YFH0` |
+| Remote operation over SSH | yes | no | no | shipped |
+| WebMCP page-declared tools | list and synchronous invoke | no | detach, poll, cancel | open, `HG5BY9` |
+| Live dashboard | read-only screencast | side panel | viewport, activity feed, chat | open, `AEKG25` |
+| Per-origin grants and revocation | domain containment only | per-site grant/revoke | domain allowlist | open, `PBZHK0` |
+| Confirmation before high-risk actions | no | yes | no | open, `27GN96` |
+| Category blocklist | no | financial, adult, pirated | no | open, `PBZHK0` |
+| Cross-device session continuity | no | desktop, web, mobile | no | non-goal, see remote control |
+| Video capture | WebM from streamed screenshots | no | `record` | shipped; native screencast `ZHPD1N` |
+| Assertion vocabulary | text, value, visible, hidden | n/a | `is`/`get` family | open, `H1BSQJ` |
+| Event-driven waits | polling on some conditions | n/a | yes | open, `FAXZ21` |
+| Failure evidence bundle | no | no | no | open, `05FQQF` |
+| Operation receipts for writes | no | no | no | open, `MVJT36` |
+| Regression baselines | `brw_diff` against one artifact | no | no | open, `RKXE53` |
+| Non-Chromium browsers | no | no | no | open, `6QWNYJ` |
+| Plugin and capability model | no | no | manifest + capabilities | open, `J3YFH0` |
+| Licence | AGPL-3.0 | closed | Apache-2.0 | — |
+
+agent-browser's headline "93% fewer tokens" is measured against Playwright's MCP
+server, not against `brw`. The two projects reach the same conclusion from the
+same premise: an accessibility-derived snapshot with stable refs costs far less
+than screenshots or raw DOM.
+
+### Deliberate non-goals
+
+These are absent by decision, not by omission, and will not be closed by a
+parity argument alone:
+
+- **Scheduling.** An external scheduler decides *when* to run. `brw`
+  deterministically controls one authorized browser and returns bounded
+  evidence. What `brw` owes a scheduler is a stable non-interactive contract:
+  exit codes, structured output, and per-profile run serialization.
+- **A secret store.** Credentials reach the browser through a provider
+  capability at dispatch and are never persisted by the daemon.
+- **Bulk cookie and storage export.** The signed-in extension transport
+  denylists it. State save/restore, when it lands, stays on the browser host,
+  scoped per origin, redacted and expiring.
+- **Fleet and session orchestration.** One daemon drives one authorized browser.
+- **Cross-device session continuity.** The answer is to keep the browser on the
+  machine that owns it and reach it over SSH, not to replicate a session.
+
+### Library and protocol comparison
+
 - Stagehand caches inferred actions locally or server-side so repeat calls can
   avoid another model invocation. `brw` recipes take the stronger route for a
   promoted workflow: an explicit reviewed program, immutable identity/digest,

@@ -53,10 +53,14 @@ less token spend, less wall time, and lower estimated cost. The main reason:
 agents act from refs and action observations instead of repeatedly interpreting
 screenshots.
 
-Claude-in-Chrome's durable advantage was installed-profile auth. `brw` answers
-that with the `brw` Chrome extension and SSH-first remote runtime: keep Chrome,
-cookies, passkeys, downloads, and human takeover on the browser machine, while
-MCP runs over stdio through SSH.
+Claude-in-Chrome's advantages at the time were installed-profile auth,
+scheduled and recurring runs, a credential-manager integration, and sessions
+that carry across desktop, web and mobile. `brw` answers the first with the
+`brw` Chrome extension and SSH-first remote runtime: keep Chrome, cookies,
+passkeys, downloads, and human takeover on the browser machine, while MCP runs
+over stdio through SSH. The rest are tracked in the parity matrix in
+[docs/browser-automation-review.md](docs/browser-automation-review.md);
+scheduling is deliberately external.
 
 The full MCP surface is large. For lean agent contexts, run:
 
