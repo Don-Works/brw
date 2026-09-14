@@ -29,6 +29,7 @@ func observeFixtureResult() browser.ActionResult {
 		Title:        "Cart",
 		Focus:        "e9",
 		ChangedState: &changed,
+		Targets:      []browser.Tab{{ID: "tab1", URL: "https://fixture.test/cart", Title: "Cart"}},
 		Changed:      []string{"e9 button \"Checkout\""},
 		Elements:     []snapshot.Element{{Ref: "e9", Role: "button", Name: "Checkout", Visible: true, InViewport: true, Source: []string{"dom"}}},
 		DurationMS:   42,
@@ -116,6 +117,7 @@ func toolText(t *testing.T, result map[string]any) string {
 // starts dropping a field would otherwise agree with whatever it now produces.
 const observeDefaultActionJSON = `{"ok":true,"message":"clicked e4","tab_id":"tab1","version":7,` +
 	`"url":"https://fixture.test/cart","title":"Cart","focus":"e9","changed_state":true,` +
+	`"targets":[{"id":"tab1","url":"https://fixture.test/cart","title":"Cart","type":""}],` +
 	`"changed":["e9 button \"Checkout\""],` +
 	`"elements":[{"ref":"e9","role":"button","name":"Checkout","tag":"","visible":true,"in_viewport":true,"disabled":false,"source":["dom"]}],` +
 	`"duration_ms":42}`
