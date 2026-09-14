@@ -50,6 +50,17 @@ func TestReplayRefusesABodyKeyedMatchOnAClippedCapture(t *testing.T) {
 			match: []string{HARMatchMethod, HARMatchURL, HARMatchBody},
 		},
 		{
+			// The flag is set by whoever decoded the HAR. A body still carrying the
+			// capture's marker is clipped whether or not that flag came with it,
+			// and the guard has to see it either way.
+			name: "a clipped body is caught by its marker with no flag set",
+			entries: []HAREntry{
+				{Method: "POST", URL: "https://x.test/a", RequestBody: clipped},
+			},
+			match:   []string{HARMatchMethod, HARMatchURL, HARMatchBody},
+			wantErr: []string{"body", "1 of 1", "2048"},
+		},
+		{
 			// A redacted capture is also clipped when it is large, and the caller's
 			// next move differs: recapture with redaction:"none" rather than give up
 			// on body matching, so the redaction is what gets named.

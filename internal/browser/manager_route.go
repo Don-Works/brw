@@ -490,7 +490,11 @@ func checkHARMatchIsSatisfiable(artifactID string, entries []HAREntry, match []s
 		switch {
 		case entry.RequestBody == HARRedactedPlaceholder:
 			redacted++
-		case entry.RequestBodyTruncated:
+		// The marker is checked as well as the flag, not instead of it: the flag
+		// is set by whoever decoded the HAR, and a guard that a caller can slip
+		// past by building an entry without it is not a guard. An external HAR
+		// that declared a larger bodySize has only the flag, so both are needed.
+		case entry.RequestBodyTruncated || strings.HasSuffix(entry.RequestBody, snapshot.BodyTruncationMarker):
 			clipped++
 		}
 	}
