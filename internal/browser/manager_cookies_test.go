@@ -100,6 +100,17 @@ func TestCookieDomainMatches(t *testing.T) {
 		{"shop.example.test", "example.test", false},
 		{"other.test", "example.test", false},
 		{"EXAMPLE.test", "example.TEST", true},
+		// The suffix is a DOMAIN suffix, not a string suffix. These four are
+		// different sites that end in the same letters, and an unanchored match
+		// handed one site's cookies to a filter naming another.
+		{".bank.test", "notbank.test", false},
+		{".example.test", "notexample.test", false},
+		{".example.test", "myexample.test", false},
+		{".test", "example.test", true},
+		// A cookie domain that is nothing but a dot matches nothing.
+		{".", "example.test", false},
+		{"", "example.test", false},
+		{"example.test", "", false},
 	}
 	for _, tc := range cases {
 		if got := cookieDomainMatches(tc.cookie, tc.host); got != tc.want {

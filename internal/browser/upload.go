@@ -235,10 +235,27 @@ func writeUploadTemp(b64, filename string) (string, error) {
 // including a 302 to http://169.254.169.254/, is re-resolved and re-checked, so
 // neither a redirect nor a hostname that resolves to an internal IP can reach
 // cloud metadata or internal services.
-func ssrfSafeClient() *http.Client {
+func ssrfSafeClient(check FetchCheck) *http.Client {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	return &http.Client{
 		Timeout: uploadFetchTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+				return fmt.Errorf("redirect to unsupported scheme %q refused", req.URL.Scheme)
+			}
+			// The SSRF dialer re-checks the ADDRESS on every hop; this re-checks
+			// the SITE. They answer different questions: one keeps the daemon off
+			// internal infrastructure, the other keeps it off origins the user
+			// never consented to, and a 302 is where a grant for one becomes a
+			// fetch from the other.
+			if check != nil {
+				return check(req.URL.String())
+			}
+			return nil
+		},
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				host, port, err := net.SplitHostPort(addr)
@@ -303,7 +320,7 @@ func fetchUploadTemp(ctx context.Context, rawURL, filename string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	resp, err := ssrfSafeClient().Do(req)
+	resp, err := ssrfSafeClient(FetchCheckFromContext(ctx)).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch url: %w", err)
 	}

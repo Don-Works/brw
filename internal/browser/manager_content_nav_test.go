@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Don-Works/brw/internal/siteconsent"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/fetch"
@@ -491,18 +492,24 @@ func TestAgentInputRecordsAnIntent(t *testing.T) {
 // step verb that actuates input but is missing from agentInputActions records no
 // intent, so the navigation it causes is refused as the page's.
 func TestAgentInputActionsCoverEveryInputStep(t *testing.T) {
-	// The step verbs that only observe. Everything else a batch can run is
-	// input, or navigation that records its own intent.
-	observation := map[string]bool{
-		"read": true, "snapshot": true, "scroll": true, "hover": true, "wait": true,
-		"assert": true, "assert_visible": true, "assert_text": true,
-		"assert_value": true, "assert_hidden": true,
-		"open": true, "navigate_to": true, "focus_tab": true,
-	}
+	// Which verbs actuate input is not decided twice. siteconsent.StepActions
+	// already classifies every verb the runners implement, and is itself checked
+	// against their switches, so a new verb arrives here classified or fails
+	// there. A second hand-written list of the observing verbs was the hole: a
+	// new input verb added to the runner AND to that list passed this test while
+	// recording no intent.
 	for _, action := range planAndBatchStepActions(t) {
-		if observation[action] || agentInputActions[action] {
+		class, classified := siteconsent.StepActions[action]
+		if !classified {
+			t.Errorf("step %q is implemented but siteconsent.StepActions does not classify it, so nothing decides whether it actuates input", action)
 			continue
 		}
-		t.Errorf("step %q actuates input but is not in agentInputActions, so the navigation it causes is refused as content-initiated", action)
+		input := agentInputActions[action]
+		if class == siteconsent.StepAct && !input {
+			t.Errorf("step %q actuates input but is not in agentInputActions, so the navigation it causes is refused as content-initiated", action)
+		}
+		if class != siteconsent.StepAct && input {
+			t.Errorf("step %q only observes or steers the tab itself, but agentInputActions treats it as the agent driving the page; a page that navigates because the agent scrolled would then be allowed", action)
+		}
 	}
 }

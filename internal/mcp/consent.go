@@ -35,6 +35,54 @@ func (s *Server) enforceSiteConsent(ctx context.Context, name string, args json.
 	)
 }
 
+// withConsentHooks installs the two consent checks that cannot be answered
+// before dispatch: the per-step re-check a plan or batch needs once its own
+// steps start moving the page, and the fetch check a daemon-side retrieval needs
+// once a server answers with a redirect.
+//
+// Both are no-ops on a daemon with no consent store, so a controller reached
+// through this path behaves exactly as it did before consent existed.
+func (s *Server) withConsentHooks(ctx context.Context, name string, args json.RawMessage) context.Context {
+	if !s.consent.Enabled() {
+		return ctx
+	}
+	ctx = browser.WithFetchCheck(ctx, s.checkFetchDestination)
+	gate := s.consent.NewStepGate(name, args)
+	if gate == nil {
+		return ctx
+	}
+	tabID := browser.TabIDFromContext(ctx)
+	return browser.WithSequenceGate(ctx, func(index int, stepTabID string, step siteconsent.StepProbe) error {
+		return gate.Check(index, step,
+			func(want string) (string, error) {
+				if want == "" {
+					want = stepTabID
+				}
+				return s.currentPageOrigin(ctx, want)
+			},
+			func(ref string) string {
+				if label := s.refLabels.label(stepTabID, ref); label != "" {
+					return label
+				}
+				return s.refLabels.label(tabID, ref)
+			},
+		)
+	})
+}
+
+// checkFetchDestination gates a URL the DAEMON retrieves itself rather than the
+// page: the one the call named, and every redirect hop after it.
+//
+// A grant is for an origin, not for a request. Gating only the first URL made a
+// 302 from a granted site into a read of whatever it pointed at, which is the
+// document brw never asked for that the read scope exists to cover.
+func (s *Server) checkFetchDestination(rawURL string) error {
+	if err := s.checkNavPolicy(rawURL); err != nil {
+		return err
+	}
+	return s.consent.Authorize(rawURL, siteconsent.ScopeRead)
+}
+
 // currentPageOrigin resolves the origin a tab is showing. An empty want is the
 // tab this call targets; a named one is a tab the call moves to, which a plan's
 // focus_tab step does mid-sequence.

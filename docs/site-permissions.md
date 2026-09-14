@@ -71,21 +71,45 @@ that has neither, so a new tool cannot ship ungated by being forgotten.
   transport round trip to resolve the tab's URL, the same one `act` pays.
 - `act` is checked on the **action**, against the tab's live URL, because
   between the navigation and the click the page may have moved.
+- A URL the **daemon itself** fetches (`brw_read_url`, and the `url` a
+  `brw_upload_file` pulls its file from) is checked on the URL the call named
+  **and on every redirect hop after it**. A grant is for an origin, not for a
+  request: gating only the first URL made a read grant on one site a read of
+  whatever that site chose to point at.
 
 A tool is checked in the argument it really uses, not in a field named `url`:
 `brw_authenticate` is addressed by `origin`, `brw_cookies` by `url` or `domain`
-or neither (and then by the tab's own URL), `brw_set_extra_headers` by a list of
-origins. A call whose own arguments can escalate it does:
+or neither, `brw_set_extra_headers` by a list of origins. A named argument does
+not always replace the tab, either. `brw_cookies action=list` reads the cookies
+the **tab's** scope returns and uses `domain` only to filter them, so both are
+checked; `action=set` and `action=delete` address the cookie by domain directly
+and never consult the tab. That rule has one definition, `CookieScopeIsTab`,
+which the cookie implementation and the gate both call, so neither can decide
+something the other does not do. A call whose own arguments can escalate it does:
 `brw_cookies action=set`, `brw_storage action=set`, a non-GET
 `brw_replay_request` and a `fn:` predicate in `brw_wait_for` all need `act`, not
 `read`.
 
-A plan or batch is walked in step order. `open` and `navigate_to` move the
-working tab, so the steps after one of them are checked against the destination
-that step named, and `focus_tab` against the tab it moves to. Every step verb
-both runners implement is classified; `TestEveryPlanAndBatchStepActionIsClassified`
-reads the verbs out of the runners themselves, so a step kind that reaches the
-controller with no rule fails that test rather than walking through the gate.
+A plan or batch is gated twice. Before anything is dispatched it is walked in
+step order: `open` and `navigate_to` move the working tab, so the steps after one
+of them are checked against the destination that step named, and `focus_tab`
+against the tab it moves to. That walk is refused before any step runs, which is
+where a refusal costs nothing.
+
+The walk stops being true the moment a step **acts**. A click on a link is a
+navigation, so the steps after it can land on an origin the arguments never
+named. Each step is therefore re-checked by the runner immediately before it
+runs, against the origin the tab is showing at that moment — on both transports,
+since a gate one runner honours and the other does not is a bypass by choice of
+transport. The high-risk confirmation for a step the walk could not place is
+asked there too, so a person is asked once per action and about the origin it
+really runs on.
+
+Every step verb both runners implement is classified;
+`TestEveryPlanAndBatchStepActionIsClassified` reads the verbs out of the runners
+themselves, so a step kind that reaches the controller with no rule fails that
+test rather than walking through the gate, and
+`TestEveryRunnerConsultsTheStepGate` fails on a runner that skips the re-check.
 
 If the live URL cannot be resolved, or the arguments do not say where a step
 lands, the call is refused. There is no "allow because we could not tell".

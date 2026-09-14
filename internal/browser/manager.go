@@ -2538,6 +2538,15 @@ func runPlanSteps(ctx context.Context, c interface{ Cancelled() bool }, steps []
 func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep) PlanStepResult {
 	sr := PlanStepResult{Index: index, Action: step.Action, OK: true}
 
+	// Site consent, re-checked against where the tab is NOW. The plan was gated
+	// once from its arguments, and an earlier step may since have navigated the
+	// tab somewhere those arguments never named.
+	if err := GateSequenceStep(ctx, index, TabIDFromContext(ctx), step.ConsentProbe()); err != nil {
+		sr.OK = false
+		sr.Error = err.Error()
+		return sr
+	}
+
 	if step.ExpectRef != "" {
 		findResult, err := m.Find(ctx, snapshot.FindOptions{Query: step.ExpectRef, Limit: 1})
 		if err != nil {
@@ -2701,6 +2710,7 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 		return BatchResult{}, err
 	}
 	defer func() { cancel() }()
+	tabCtx = carryConsentHooks(ctx, tabCtx)
 
 	result := BatchResult{OK: true, Steps: make([]BatchStepResult, 0, len(steps)), TabID: tabID}
 	for i, step := range steps {
@@ -2732,7 +2742,7 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 			if newTabID, newTabCtx, newCancel, err := m.activeContext(ctx); err == nil {
 				cancel()
 				tabID = newTabID
-				tabCtx = newTabCtx
+				tabCtx = carryConsentHooks(ctx, newTabCtx)
 				cancel = newCancel
 				result.TabID = tabID
 				result.Steps[len(result.Steps)-1].TabID = tabID
@@ -2791,6 +2801,14 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 	// the page for the whole of its remaining length. The steps below reach the
 	// low-level helpers directly, so this is their only guard.
 	if err := m.guardTakeoverStep(step.Action); err != nil {
+		sr.OK = false
+		sr.Error = err.Error()
+		return sr
+	}
+	// Site consent, re-checked against where the tab is NOW, for the same reason
+	// the takeover guard is per step: the batch was gated once from arguments
+	// that stopped being true as soon as a step navigated.
+	if err := GateSequenceStep(tabCtx, index, tabID, step.ConsentProbe()); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
 		return sr

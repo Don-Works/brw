@@ -23,6 +23,31 @@ type consentController struct {
 	fakeController
 	tabURL  string
 	clicked bool
+	// tabURLAfterStep moves the tab once a sequence step has run, which is what
+	// a click on a cross-site link does to the steps that follow it.
+	tabURLAfterStep map[int]string
+	ranSteps        int
+}
+
+// ExecuteBatch runs the steps the way the real runners do: ask the installed
+// per-step consent gate BEFORE each step, and stop on a refusal. Without this
+// the fake would pass a batch the real runner refuses, and whether this surface
+// installs the gate at all would be untested.
+func (c *consentController) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
+	result := browser.BatchResult{OK: true, TabID: "tab1"}
+	for index, step := range steps {
+		if err := browser.GateSequenceStep(ctx, index, "tab1", step.ConsentProbe()); err != nil {
+			result.OK = false
+			result.Error = err.Error()
+			return result, nil
+		}
+		c.ranSteps++
+		if moved, ok := c.tabURLAfterStep[index+1]; ok {
+			c.tabURL = moved
+		}
+	}
+	result.StepsCompleted = len(steps)
+	return result, nil
 }
 
 func (c *consentController) ListTabs(context.Context) ([]browser.Tab, error) {
@@ -369,5 +394,43 @@ func TestConsentRoutesWithoutAGuard(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "not configured") {
 		t.Fatalf("the error does not say consent is unconfigured: %s", rec.Body.String())
+	}
+}
+
+// TestASequenceIsRegatedInsideTheRunnerOverHTTP is the same wiring proof as the
+// MCP surface's: this API drives the same controller, so a step gate installed
+// on one dispatch path and not the other is a bypass by choice of surface.
+func TestASequenceIsRegatedInsideTheRunnerOverHTTP(t *testing.T) {
+	ctrl := &consentController{
+		tabURL: "https://start.test/",
+		// The click lands somewhere else, which is what a cross-site link does
+		// to the steps that follow it.
+		tabURLAfterStep: map[int]string{1: "https://elsewhere.test/inbox"},
+	}
+	server, guard, _ := newConsentServerWithController(t, ctrl)
+	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://start.test", Scope: siteconsent.ScopeAct, Actor: "fixture-user"}); err != nil {
+		t.Fatal(err)
+	}
+
+	const steps = `{"steps":[{"action":"click","ref":"e1"},{"action":"read"}]}`
+	rec := doJSON(t, server, http.MethodPost, "/api/page/batch", steps)
+	if !strings.Contains(rec.Body.String(), "https://elsewhere.test") {
+		t.Fatalf("a batch read an origin the click navigated to, with no grant there: %s", rec.Body.String())
+	}
+	if ctrl.ranSteps != 1 {
+		t.Fatalf("the runner ran %d steps; the read must be refused before it runs", ctrl.ranSteps)
+	}
+
+	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://elsewhere.test", Scope: siteconsent.ScopeRead, Actor: "fixture-user"}); err != nil {
+		t.Fatal(err)
+	}
+	ctrl.tabURL = "https://start.test/"
+	ctrl.ranSteps = 0
+	rec = doJSON(t, server, http.MethodPost, "/api/page/batch", steps)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the granted batch was refused: %d %s", rec.Code, rec.Body.String())
+	}
+	if ctrl.ranSteps != 2 {
+		t.Fatalf("the granted batch ran %d steps, want 2", ctrl.ranSteps)
 	}
 }

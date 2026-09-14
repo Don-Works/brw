@@ -65,10 +65,16 @@ type ToolRule struct {
 	// Fetches name arguments carrying a URL the DAEMON retrieves itself rather
 	// than the page. Those always need read, whatever the tool's own scope is.
 	Fetches []DestinationField
-	// PageWhenUnaddressed makes a TargetURL call whose destination arguments are
-	// all absent fall back to the tab's live origin. Without it, leaving the
-	// optional argument out is the whole bypass.
-	PageWhenUnaddressed bool
+	// PageAlso decides, from the call's own arguments, whether the call ALSO
+	// reaches the tab's live origin. A TargetURL rule without it is checked
+	// against its named destinations alone.
+	//
+	// It takes the arguments rather than a bool because "does this reach the
+	// tab" is not always answered by "did the call name a destination": a
+	// brw_cookies list addressed by domain reads the TAB's cookies and uses the
+	// domain as a filter over them, so the named destination is an extra
+	// requirement, not a substitute for the tab.
+	PageAlso func(Probe) bool
 	// Escalate raises Scope to act for the calls its Field/Values name.
 	Escalate *Escalation
 	// ScriptCondition marks a tool whose "condition" argument can carry page
@@ -96,6 +102,12 @@ type ToolRule struct {
 //     given for, and reading them is what this scope exists to gate.
 //   - act is enforced on the ACTION, against the tab's live URL, because
 //     between the navigation and the click the page may have moved.
+//
+// Two things this table cannot answer are answered while the call runs, and both
+// are the same rule applied where the destination is a fact rather than a
+// prediction: StepGate re-checks each plan or batch step against the tab's live
+// origin, and the daemon-side fetch check re-checks every redirect hop of a URL
+// brw retrieves itself.
 var ToolRules = map[string]ToolRule{
 	// Navigation and daemon-side fetches: the destination is the origin.
 	"brw_open":           {Scope: ScopeRead, Target: TargetURL, Fields: []DestinationField{FieldURL}},
@@ -109,13 +121,16 @@ var ToolRules = map[string]ToolRule{
 		Escalate: &Escalation{Field: "method", Values: []string{"post", "put", "patch", "delete"}},
 	},
 	// Cookies are addressed by url OR by bare domain, and with neither by the
-	// tab's own URL. All three are the same site, so all three are checked.
-	// Writing or deleting one is not a read of the site.
+	// tab's own URL. All three are the same site, so all three are checked -
+	// and for a LIST the domain does not replace the tab, it narrows it: the
+	// cookies come out of the tab's own scope and the domain only filters them.
+	// Checking the named field and stopping there read one site's cookies on a
+	// grant for another. Writing or deleting a cookie is not a read of the site.
 	"brw_cookies": {
 		Scope: ScopeRead, Target: TargetURL,
-		Fields:              []DestinationField{FieldURL, FieldDomain},
-		PageWhenUnaddressed: true,
-		Escalate:            &Escalation{Field: "action", Values: []string{"set", "delete"}},
+		Fields:   []DestinationField{FieldURL, FieldDomain},
+		PageAlso: cookiesReachTheTab,
+		Escalate: &Escalation{Field: "action", Values: []string{"set", "delete"}},
 	},
 	// Authenticating hands an HTTP credential to an origin. That is not reading
 	// it, so it needs the act scope. The required argument is origin; url is
@@ -424,14 +439,12 @@ func Checks(tool string, probe Probe) ([]OriginCheck, error) {
 		scope = ScopeAct
 	}
 	if rule.Target == TargetURL {
-		named := 0
 		for _, field := range rule.Fields {
 			for _, destination := range probe.destinations(field) {
-				named++
 				checks = append(checks, OriginCheck{URL: destination, Scope: scope})
 			}
 		}
-		if named > 0 || !rule.PageWhenUnaddressed {
+		if rule.PageAlso == nil || !rule.PageAlso(probe) {
 			return checks, nil
 		}
 	}
@@ -475,7 +488,17 @@ func sequenceChecks(tool string, probe Probe) ([]OriginCheck, error) {
 	// undecidable records a segment brw cannot resolve, so it is refused only if
 	// a later step actually needs that origin.
 	undecidable := map[int]bool{}
-	for _, step := range probe.Steps {
+	deferred := deferredStepActions(probe)
+	classify := func(index int, action PageAction) {
+		if deferred[index] {
+			// The preflight would be classifying this action against the origin
+			// the sequence has already left. StepGate asks about it at the step,
+			// where the origin is the one it actually runs on.
+			return
+		}
+		current().Actions = append(current().Actions, action)
+	}
+	for index, step := range probe.Steps {
 		verb := strings.ToLower(strings.TrimSpace(step.Action))
 		class, known := StepActions[verb]
 		if !known {
@@ -487,13 +510,13 @@ func sequenceChecks(tool string, probe Probe) ([]OriginCheck, error) {
 		switch class {
 		case StepAct:
 			raise(current(), ScopeAct)
-			current().Actions = append(current().Actions, stepAction(tool, verb, step))
+			classify(index, stepAction(tool, verb, step))
 		case StepPageRead:
 			if verb == "wait" && isScript(step.Condition) {
 				// An "fn:" wait condition runs in the page, so it is script, not
 				// a read.
 				raise(current(), ScopeAct)
-				current().Actions = append(current().Actions, stepAction(tool, verb, step))
+				classify(index, stepAction(tool, verb, step))
 				continue
 			}
 			raise(current(), ScopeRead)
@@ -539,6 +562,89 @@ func sequenceChecks(tool string, probe Probe) ([]OriginCheck, error) {
 		}
 	}
 	return sorted, nil
+}
+
+// deferredStepActions returns the step indexes whose high-risk classification
+// the PREFLIGHT must not ask about.
+//
+// The preflight runs before any step does, so it can place a step only while the
+// page is still where the call's arguments say it is. That holds for the first
+// acting step of a segment and for nothing after it: a click can navigate, so
+// every following step may run somewhere the arguments never named. Asking the
+// user to confirm one of those at dispatch would be asking about the origin the
+// sequence left, so it is asked at the step instead, by StepGate.
+func deferredStepActions(probe Probe) map[int]bool {
+	deferred := map[int]bool{}
+	acted := false
+	for index, step := range probe.Steps {
+		verb := strings.ToLower(strings.TrimSpace(step.Action))
+		class, known := StepActions[verb]
+		if !known {
+			continue
+		}
+		scripted := class == StepPageRead && verb == "wait" && isScript(step.Condition)
+		switch {
+		case class == StepNavigate || class == StepRetarget:
+			// A new segment lands on a page this sequence has not touched, and
+			// the preflight can name it again.
+			acted = false
+		case class == StepAct || scripted:
+			if acted {
+				deferred[index] = true
+			}
+			acted = true
+		}
+	}
+	return deferred
+}
+
+// StepGate re-checks the steps of ONE plan or batch call as they run.
+//
+// It exists because a sequence is dispatched once and lands in several places.
+// The preflight decides from the arguments, and the arguments stop being true
+// the moment a step acts: a click on a link is a navigation, so the snapshot
+// after it reads whatever the click reached. Gating that at dispatch gates it
+// against the origin the sequence started on, which is a grant for one site
+// answering for another. The runner consults this immediately before each step,
+// when the tab's origin is a fact rather than a prediction.
+//
+// A nil StepGate passes everything, so a daemon with no consent store and a
+// runner reached without one behave identically.
+type StepGate struct {
+	guard   *Guard
+	tool    string
+	confirm map[int]bool
+}
+
+// NewStepGate builds the runtime half of a sequence's gate from the same
+// arguments its preflight read. It returns nil for anything that is not a
+// sequence, and for a guard that gates nothing.
+func (g *Guard) NewStepGate(tool string, args []byte) *StepGate {
+	if !g.Enabled() || !SequenceTools[tool] {
+		return nil
+	}
+	return &StepGate{guard: g, tool: tool, confirm: deferredStepActions(ParseProbe(args))}
+}
+
+// Check re-gates the step at index against the origin the tab is showing now.
+//
+// The high-risk confirmation is asked here only for the steps the preflight
+// deferred, so a person is asked once per action and against the origin it runs
+// on.
+func (s *StepGate) Check(index int, step StepProbe, pageOrigin PageOriginFunc, label LabelFunc) error {
+	if s == nil {
+		return nil
+	}
+	checks, err := Checks(s.tool, Probe{Steps: []StepProbe{step}})
+	if err != nil {
+		return err
+	}
+	if !s.confirm[index] {
+		for i := range checks {
+			checks[i].Actions = nil
+		}
+	}
+	return s.guard.runChecks(s.tool, checks, pageOrigin, label)
 }
 
 // raise widens a segment's scope, never narrows it.
@@ -600,6 +706,13 @@ func (g *Guard) CheckTool(tool string, args []byte, pageOrigin PageOriginFunc, l
 	if err != nil {
 		return err
 	}
+	return g.runChecks(tool, checks, pageOrigin, label)
+}
+
+// runChecks resolves each origin a call reaches and authorizes it, then asks
+// about the actions that run there. It is shared by the dispatch-time gate and
+// the per-step one so both decide by exactly the same rules.
+func (g *Guard) runChecks(tool string, checks []OriginCheck, pageOrigin PageOriginFunc, label LabelFunc) error {
 	for _, check := range checks {
 		origin := check.URL
 		if check.FromTab {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
 
@@ -179,8 +180,49 @@ func (s *Server) consentMiddleware(next http.Handler) http.Handler {
 			writeError(w, err)
 			return
 		}
-		next.ServeHTTP(w, r)
+		// The checks that cannot be made here: a plan or batch step lands where
+		// an earlier step left the tab, and a daemon-side fetch lands where a
+		// redirect sends it. Both are decided while the handler runs, against the
+		// origin it actually reaches.
+		next.ServeHTTP(w, r.WithContext(s.withConsentHooks(r.Context(), operation, body, tabID)))
 	})
+}
+
+// withConsentHooks installs the runtime half of the gate on the request
+// context, exactly as the MCP surface does. A rule enforced on one surface and
+// not the other is a bypass by choice of surface, which is the shape of hole
+// this whole table exists to close.
+func (s *Server) withConsentHooks(ctx context.Context, operation string, body []byte, tabID string) context.Context {
+	if !s.consent.Enabled() {
+		return ctx
+	}
+	ctx = browser.WithFetchCheck(ctx, s.checkFetchDestination)
+	gate := s.consent.NewStepGate(operation, body)
+	if gate == nil {
+		return ctx
+	}
+	return browser.WithSequenceGate(ctx, func(index int, stepTabID string, step siteconsent.StepProbe) error {
+		// The label lookup is nil for the same reason it is nil above: this
+		// surface never returned a snapshot through a per-session cache.
+		return gate.Check(index, step, func(want string) (string, error) {
+			if want == "" {
+				want = stepTabID
+			}
+			if want == "" {
+				want = tabID
+			}
+			return s.currentPageOrigin(ctx, want)
+		}, nil)
+	})
+}
+
+// checkFetchDestination gates a URL the daemon retrieves itself, on the call's
+// own URL and on every redirect hop after it.
+func (s *Server) checkFetchDestination(rawURL string) error {
+	if err := s.checkNavPolicy(rawURL); err != nil {
+		return err
+	}
+	return s.consent.Authorize(rawURL, siteconsent.ScopeRead)
 }
 
 // readConsentBody buffers a request body so the gate can read it and the handler

@@ -875,6 +875,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	if err := s.enforceSiteConsent(ctx, name, args); err != nil {
 		return toolError(err), nil
 	}
+	// The checks the dispatch-time gate cannot make: a step lands where an
+	// earlier step left the tab, and a daemon-side fetch lands where a redirect
+	// sends it. Both are decided while the call runs, against the origin it
+	// actually reaches.
+	ctx = s.withConsentHooks(ctx, name, args)
 	switch name {
 	case discoveryToolName:
 		var req struct {
@@ -1598,8 +1603,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		// The no-browser read is a network destination like any other, so it is
-		// gated by exactly the same navigation policy as a tab navigation.
-		req.PolicyCheck = s.checkNavPolicy
+		// gated by exactly the same navigation policy AND the same site consent
+		// as a tab navigation - on the URL the call named and on every redirect
+		// hop after it, which is where a grant for one origin was reading
+		// another's pages.
+		req.PolicyCheck = s.checkFetchDestination
 		result, err := urlread.Fetch(ctx, req)
 		if err != nil {
 			return toolError(err), nil

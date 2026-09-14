@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -340,5 +341,61 @@ func TestFetchUploadTempBlocksSSRFTargets(t *testing.T) {
 	}
 	if !errors.Is(err, errBlockedUploadHost) && !strings.Contains(err.Error(), "blocked") {
 		t.Fatalf("error should identify the SSRF block, got: %v", err)
+	}
+}
+
+// TestFetchUploadTempGatesEveryRedirectHop proves the daemon-side fetch check
+// runs on the hops, not only on the URL the call named.
+//
+// The SSRF dialer already re-checks the ADDRESS on every hop. It answers a
+// different question from the site check: one keeps the daemon off internal
+// infrastructure, the other keeps it off origins the user never consented to,
+// and a 302 is where a grant for one becomes a fetch from the other.
+func TestFetchUploadTempGatesEveryRedirectHop(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	orig := blockedFetchIP
+	blockedFetchIP = func(net.IP) bool { return false }
+	defer func() { blockedFetchIP = orig }()
+
+	var elsewhereHits int64
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt64(&elsewhereHits, 1)
+		_, _ = w.Write([]byte("a file from an origin nobody granted"))
+	}))
+	defer elsewhere.Close()
+	entry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+"/file.bin", http.StatusFound)
+	}))
+	defer entry.Close()
+
+	var seen []string
+	ctx := WithFetchCheck(context.Background(), func(rawURL string) error {
+		seen = append(seen, rawURL)
+		if strings.HasPrefix(rawURL, elsewhere.URL) {
+			return errors.New("fixture gate: no grant for this origin")
+		}
+		return nil
+	})
+	if _, err := fetchUploadTemp(ctx, entry.URL+"/file.bin", ""); err == nil {
+		t.Fatal("the redirected fetch was allowed")
+	} else if !strings.Contains(err.Error(), "fixture gate") {
+		t.Fatalf("the fetch failed with %v, not the gate's refusal", err)
+	}
+	if len(seen) != 1 || !strings.HasPrefix(seen[0], elsewhere.URL) {
+		t.Fatalf("the gate saw %v; it must be asked about the hop", seen)
+	}
+	if got := atomic.LoadInt64(&elsewhereHits); got != 0 {
+		t.Fatalf("the un-granted origin was fetched %d times", got)
+	}
+
+	// With no check installed the same chain is followed, so a daemon without
+	// consent behaves exactly as it did.
+	path, err := fetchUploadTemp(context.Background(), entry.URL+"/file.bin", "")
+	if err != nil {
+		t.Fatalf("an ungated redirect chain failed: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(body), "nobody granted") {
+		t.Fatalf("the ungated fetch returned %q (%v)", body, err)
 	}
 }

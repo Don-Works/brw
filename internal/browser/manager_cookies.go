@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Don-Works/brw/internal/siteconsent"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
@@ -163,12 +164,21 @@ func sameSiteFromUser(v string) (network.CookieSameSite, bool, error) {
 // domainMatches reports whether a stored cookie domain applies to the scope:
 // either the exact host, or a registrable parent (a leading-dot ".example.com"
 // cookie matches "shop.example.com").
+//
+// The suffix is anchored on the dot. A bare strings.HasSuffix made ".bank.test"
+// match "notbank.test", which is a different site that happens to end in the
+// same letters, and the filter is what decides whose cookies come back.
 func cookieDomainMatches(cookieDomain, host string) bool {
 	cookieDomain = strings.ToLower(strings.TrimSpace(cookieDomain))
 	host = strings.ToLower(strings.TrimSpace(host))
 	trimmed := strings.TrimPrefix(cookieDomain, ".")
-	return cookieDomain == host || trimmed == host ||
-		(strings.HasPrefix(cookieDomain, ".") && strings.HasSuffix(host, trimmed))
+	if trimmed == "" || host == "" {
+		return false
+	}
+	if cookieDomain == host || trimmed == host {
+		return true
+	}
+	return strings.HasPrefix(cookieDomain, ".") && strings.HasSuffix(host, "."+trimmed)
 }
 
 // fromCDPCookie converts the cdproto wire cookie into the stable tool shape
@@ -241,10 +251,11 @@ func (m *Manager) Cookies(ctx context.Context, params CookieParams) (CookieResul
 	defer cancel()
 
 	// Resolve the scope: explicit url wins, else the tab's current origin. For
-	// set/delete an explicit domain may substitute for a URL.
+	// set/delete an explicit domain may substitute for a URL. The predicate is
+	// shared with the consent gate so the gate cannot check one site while the
+	// operation reads another.
 	scopeURL := strings.TrimSpace(params.URL)
-	if scopeURL == "" && strings.TrimSpace(params.Domain) != "" &&
-		strings.ToLower(strings.TrimSpace(params.Action)) != CookieActionList {
+	if !siteconsent.CookieScopeIsTab(params.URL, params.Domain, params.Action) && scopeURL == "" {
 		// Domain-scoped set/delete: build a synthetic scope URL for the verification
 		// read. The cookie itself is addressed by domain/path directly; the scope
 		// only decides which stored cookies getCookies returns. Loopback hosts keep

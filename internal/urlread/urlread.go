@@ -49,8 +49,11 @@ type Options struct {
 	UserAgent string `json:"user_agent"`
 	MaxBytes  int64  `json:"-"`
 	Timeout   time.Duration
-	// PolicyCheck, when set, gates the initial URL and EVERY redirect hop
-	// against the daemon's navigation policy.
+	// PolicyCheck, when set, gates the initial URL and EVERY redirect hop.
+	// The caller decides what that means - the daemon applies its navigation
+	// policy and its site-permission grants - and it must be the SAME predicate
+	// on every hop: a check that only sees the first URL is a check a 302 walks
+	// straight past.
 	PolicyCheck func(string) error `json:"-"`
 }
 

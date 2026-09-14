@@ -38,6 +38,7 @@ func SwitchCases(path, function, field string) ([]string, error) {
 	if found == nil {
 		return nil, fmt.Errorf("%s declares no function %s; the source this table is checked against has moved", path, function)
 	}
+	constants := stringConstants(parsed)
 	var labels []string
 	ast.Inspect(found, func(node ast.Node) bool {
 		stmt, ok := node.(*ast.SwitchStmt)
@@ -50,12 +51,7 @@ func SwitchCases(path, function, field string) ([]string, error) {
 				continue
 			}
 			for _, expr := range clause.List {
-				literal, ok := expr.(*ast.BasicLit)
-				if !ok || literal.Kind != token.STRING {
-					continue
-				}
-				value, err := strconv.Unquote(literal.Value)
-				if err == nil {
+				if value, ok := caseValue(expr, constants); ok {
 					labels = append(labels, value)
 				}
 			}
@@ -68,9 +64,73 @@ func SwitchCases(path, function, field string) ([]string, error) {
 	return labels, nil
 }
 
+// caseValue resolves one case label to the string it matches: a literal
+// directly, or a named string constant declared in the same file. A switch that
+// names its verbs as constants is the same list as one that spells them inline,
+// and a scan that only reads literals would report such a switch as empty -
+// which reads as "nothing to classify" rather than as "the source moved".
+func caseValue(expr ast.Expr, constants map[string]string) (string, bool) {
+	switch node := expr.(type) {
+	case *ast.BasicLit:
+		if node.Kind != token.STRING {
+			return "", false
+		}
+		value, err := strconv.Unquote(node.Value)
+		return value, err == nil
+	case *ast.Ident:
+		value, ok := constants[node.Name]
+		return value, ok
+	}
+	return "", false
+}
+
+// stringConstants collects the file's top-level string constants by name.
+func stringConstants(file *ast.File) map[string]string {
+	out := map[string]string{}
+	for _, decl := range file.Decls {
+		group, ok := decl.(*ast.GenDecl)
+		if !ok || group.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range group.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for index, name := range value.Names {
+				if index >= len(value.Values) {
+					continue
+				}
+				literal, ok := value.Values[index].(*ast.BasicLit)
+				if !ok || literal.Kind != token.STRING {
+					continue
+				}
+				if unquoted, err := strconv.Unquote(literal.Value); err == nil {
+					out[name.Name] = unquoted
+				}
+			}
+		}
+	}
+	return out
+}
+
 // switchesOn reports whether a switch tag selects the named field, whatever the
-// receiver is called (step.Action, st.Action).
+// receiver is called (step.Action, st.Action) and through whatever normalising
+// calls wrap it (strings.ToLower(strings.TrimSpace(p.Action))). Unwrapping the
+// calls is what lets a table be checked against a switch that lowercases its
+// subject first, which every verb a user types goes through.
 func switchesOn(tag ast.Expr, field string) bool {
-	selector, ok := tag.(*ast.SelectorExpr)
-	return ok && strings.EqualFold(selector.Sel.Name, field)
+	switch node := tag.(type) {
+	case *ast.SelectorExpr:
+		return strings.EqualFold(node.Sel.Name, field)
+	case *ast.CallExpr:
+		for _, arg := range node.Args {
+			if switchesOn(arg, field) {
+				return true
+			}
+		}
+	case *ast.ParenExpr:
+		return switchesOn(node.X, field)
+	}
+	return false
 }

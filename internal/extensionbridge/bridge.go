@@ -3716,6 +3716,15 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 	sr := browser.PlanStepResult{Index: index, Action: step.Action, OK: true}
 	retargetTo := ""
 
+	// Site consent, re-checked against where the tab is NOW. The plan was gated
+	// once from its arguments, and an earlier step may since have navigated the
+	// tab somewhere those arguments never named.
+	if err := browser.GateSequenceStep(ctx, index, b.contextTabID(ctx), step.ConsentProbe()); err != nil {
+		sr.OK = false
+		sr.Error = err.Error()
+		return sr, retargetTo
+	}
+
 	if step.ExpectRef != "" {
 		findResult, err := b.Find(ctx, snapshot.FindOptions{Query: step.ExpectRef, Limit: 1})
 		if err != nil {
@@ -5150,6 +5159,14 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 	sr := browser.BatchStepResult{Index: index, Action: step.Action, OK: true}
 	var actionErr error
 	retargetTo := ""
+
+	// Site consent, re-checked against where the tab is NOW: the batch was gated
+	// once from arguments that stopped being true as soon as a step navigated.
+	if err := browser.GateSequenceStep(ctx, index, b.contextTabID(ctx), step.ConsentProbe()); err != nil {
+		sr.OK = false
+		sr.Error = err.Error()
+		return sr, retargetTo
+	}
 	switch step.Action {
 	case "click":
 		if step.Ref == "" {
