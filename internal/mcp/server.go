@@ -234,6 +234,55 @@ func NewWithToolProfile(manager browser.Controller, profile string) *Server {
 	return &Server{manager: manager, toolProfile: profile, sessionID: usagelog.NewID()}
 }
 
+// transportUnsupported maps a tool to the transport on which it can never
+// succeed. Each entry mirrors a controller method that returns an
+// Err*Unsupported sentinel unconditionally: incognito needs the CDP target
+// isolation the extension APIs do not expose, cookies are blocked by the
+// extension's own security policy, and Chrome tab groups exist only in the
+// extension APIs, not in CDP.
+//
+// brwidentity.Identity.Transport was added so an agent could choose between
+// incognito (direct-CDP only) and tab groups (extension-bridge only) without
+// grepping ps for the upstream's flags, but tools/list never consulted it, so
+// each daemon advertised six tools of which three could only ever return an
+// error. An advertised tool that always fails costs a round trip and a recovery
+// path for a capability that was never there.
+var transportUnsupported = map[string]string{
+	"brw_open_incognito":  brwidentity.TransportExtensionBridge,
+	"brw_close_context":   brwidentity.TransportExtensionBridge,
+	"brw_cookies":         brwidentity.TransportExtensionBridge,
+	"brw_group_tabs":      brwidentity.TransportDirectCDP,
+	"brw_ungroup_tabs":    brwidentity.TransportDirectCDP,
+	"brw_list_tab_groups": brwidentity.TransportDirectCDP,
+}
+
+// supportedOnTransport reports whether a tool can succeed on this server's
+// transport. An unset Transport (a daemon that never recorded its identity)
+// advertises everything: hiding a tool because the transport is merely unknown
+// is a worse failure than advertising one that errors.
+func (s *Server) supportedOnTransport(name string) bool {
+	if s.identity.Transport == "" {
+		return true
+	}
+	bad, ok := transportUnsupported[name]
+	return !ok || bad != s.identity.Transport
+}
+
+// dropUnsupported narrows a full catalogue to what this transport can run.
+func (s *Server) dropUnsupported(all []map[string]any) []map[string]any {
+	if s.identity.Transport == "" {
+		return all
+	}
+	kept := make([]map[string]any, 0, len(all))
+	for _, t := range all {
+		name, _ := t["name"].(string)
+		if s.supportedOnTransport(name) {
+			kept = append(kept, t)
+		}
+	}
+	return kept
+}
+
 // advertisedTools returns tools/list narrowed to the active profile. Unknown
 // profiles fall back to the complete surface for compatibility.
 func (s *Server) advertisedTools() []map[string]any {
@@ -242,7 +291,7 @@ func (s *Server) advertisedTools() []map[string]any {
 	// An unknown profile advertises everything rather than nothing: a typo in a
 	// client config should degrade to the full surface, never to a mute server.
 	if !known || allowed == nil {
-		return all
+		return s.dropUnsupported(all)
 	}
 	auto := s.toolProfile == autoProfile
 	// Snapshot the unlocked set once. Taking the lock per tool let an unlock
@@ -259,7 +308,7 @@ func (s *Server) advertisedTools() []map[string]any {
 	}
 	for _, t := range all {
 		name, _ := t["name"].(string)
-		if allowed[name] || unlocked[name] {
+		if (allowed[name] || unlocked[name]) && s.supportedOnTransport(name) {
 			filtered = append(filtered, t)
 		}
 	}
@@ -1991,7 +2040,7 @@ func tools() []map[string]any {
 			"group_id":    stringSchema("Optional existing Chrome tab group id from brw_list_tabs or brw_list_tab_groups. When set, the new tab is added to that group."),
 			"group_color": stringSchema("Optional group color: grey, blue, red, yellow, green, pink, purple, cyan, orange."),
 		}, []string{"url"})),
-		tool("brw_open_incognito", "Open a URL in a brand-new INCOGNITO browser context: a fully isolated session with its own cookies, storage, and cache that shares nothing with the normal profile or other contexts (the CDP equivalent of an incognito window). Returns the new tab including its context_id. WHEN DONE, call brw_close_context with that context_id to dispose the whole context (closes every tab in it and discards its data). DIRECT-CDP TRANSPORT ONLY: on the extension-bridge transport (driving the user's existing signed-in Chrome) this returns an error — use a dedicated direct-CDP profile for incognito. Ideal for clean-room / logged-out internal testing.", object(map[string]any{
+		tool("brw_open_incognito", "Open a URL in a brand-new INCOGNITO browser context: a fully isolated session with its own cookies, storage, and cache that shares nothing with the normal profile or other contexts (the CDP equivalent of an incognito window). Direct-CDP transport only: the extension-bridge transport cannot create an isolated context and returns an error. Returns the new tab including its context_id. WHEN DONE, call brw_close_context with that context_id to dispose the whole context (closes every tab in it and discards its data). DIRECT-CDP TRANSPORT ONLY: on the extension-bridge transport (driving the user's existing signed-in Chrome) this returns an error — use a dedicated direct-CDP profile for incognito. Ideal for clean-room / logged-out internal testing.", object(map[string]any{
 			"url": stringSchema("URL to open in the new incognito context. Scheme defaults to https."),
 		}, []string{"url"})),
 		tool("brw_close_context", "Dispose an incognito browser context created by brw_open_incognito: closes every tab inside it and discards its isolated cookies/storage. Pass the context_id returned by brw_open_incognito. Direct-CDP transport only.", object(map[string]any{
@@ -2334,13 +2383,13 @@ func tools() []map[string]any {
 			"arguments": map[string]any{"type": "object", "description": "Arguments object passed to the tool, matching its inputSchema.", "additionalProperties": true},
 			"tab_id":    stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"name"})),
-		tool("brw_group_tabs", "Group tabs into a named Chrome tab group, or move them into an existing group_id.", object(map[string]any{
+		tool("brw_group_tabs", "Group tabs into a named Chrome tab group, or move them into an existing group_id. Extension-bridge transport only; direct CDP cannot create Chrome tab groups.", object(map[string]any{
 			"tab_ids":  map[string]any{"type": "array", "items": stringSchema("Tab id."), "description": "Tab IDs to group."},
 			"name":     stringSchema("Group name shown in Chrome tab strip. Used when creating/reusing by title, or renaming a group_id target."),
 			"color":    stringSchema("Group color: grey, blue, red, yellow, green, pink, purple, cyan, orange."),
 			"group_id": stringSchema("Optional existing Chrome tab group id. When set, the tabs are moved into that group."),
 		}, []string{"tab_ids"})),
-		tool("brw_ungroup_tabs", "Remove tabs from their Chrome tab group.", object(map[string]any{
+		tool("brw_ungroup_tabs", "Remove tabs from their Chrome tab group. Extension-bridge transport only; direct CDP cannot inspect or change Chrome tab groups.", object(map[string]any{
 			"tab_ids": map[string]any{"type": "array", "items": stringSchema("Tab id."), "description": "Tab IDs to ungroup."},
 		}, []string{"tab_ids"})),
 		tool("brw_assert_visible", "Assert that an element ref is visible. Retries until visible or timeout (web-first assertion).", object(map[string]any{
