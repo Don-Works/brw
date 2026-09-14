@@ -14,6 +14,12 @@ every run would train people to ignore the scanner.
 COMMIT MESSAGES are scanned with the same patterns. A message is committed and
 published exactly like a file is, but it appears in no diff, so scanning only
 added lines let an operator machine name reach the public history of this repo.
+
+`--full` scans EVERY tracked file instead of added lines only. The default is
+deliberately incremental so CI stays fast and so an already-published install
+path is not re-reported on every run, but that also means anything committed
+before its rule existed is grandfathered in forever and no build will ever
+mention it. Run the full scan before a release to see that backlog.
 """
 import json
 import os
@@ -21,7 +27,9 @@ import re
 import subprocess
 import sys
 
-BASE = sys.argv[1] if len(sys.argv) > 1 else "origin/main"
+ARGS = [a for a in sys.argv[1:] if a != "--full"]
+FULL = "--full" in sys.argv[1:]
+BASE = ARGS[0] if ARGS else "origin/main"
 SELF = "scripts/check-oss-hygiene.py"
 PUBLIC_SYNTHETIC_FIXTURES = {
     SELF,
@@ -40,9 +48,25 @@ SYNTHETIC_HOME_FIXTURES = {
     "internal/setup/claudechrome_test.go",
 }
 
+# Deliberately fabricated test vectors. Without these, --full drowns a real
+# finding in intentional fixture data and stops being read. Each entry waives
+# ONLY the named rule for that path; every other rule still applies to it.
+SYNTHETIC_VECTOR_WAIVERS = {
+    "internal/http/server_guard_test.go": {"tailscale host"},
+    "internal/browser/upload_test.go": {"private network address"},
+    "internal/extensionbridge/bridge_release_conn_test.go": {"credential literal"},
+    "cmd/brwctl/main_test.go": {"personal email"},  # aes256-gcm@openssh.com is a cipher
+    "packaging/linux/nfpm.yaml": {"personal email"},  # package maintainer contact
+}
+
 RECIPE_CORPUS_PATH = re.compile(
     r"(^|/)(recipes|private-recipes|recipe-bank|recipe-cache)(/|$)|\.recipe\.json$",
     re.IGNORECASE,
+)
+
+BINARY_SUFFIXES = (
+    ".png", ".jpg", ".jpeg", ".ico", ".gz", ".zip", ".webm", ".mp4",
+    ".pdf", ".woff", ".woff2", ".ttf", ".icns", ".wasm",
 )
 
 PATTERNS = [
@@ -97,6 +121,24 @@ def added_lines(base):
                 for line in fh:
                     yield new_path, line.rstrip("\n")
         except (IsADirectoryError, FileNotFoundError):
+            continue
+
+
+def tracked_lines():
+    """Yield (path, line) for every line of every tracked text file.
+
+    This is what --full scans. It reports the backlog the incremental default
+    can never surface: a string committed before the rule that would flag it."""
+    for path in git(["ls-files"], "list tracked paths").splitlines():
+        if path == SELF or path.endswith(BINARY_SUFFIXES):
+            continue
+        try:
+            if os.path.getsize(path) > 2 << 20:
+                continue
+            with open(path, encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    yield path, line.rstrip("\n")
+        except (FileNotFoundError, IsADirectoryError, OSError):
             continue
 
 
@@ -189,7 +231,7 @@ def main():
             match = re.search(pattern, line)
             if match and not (label == "personal email" and is_non_routable_email(match.group(0))):
                 hits.append((label, ref, line.strip()[:160]))
-    for path, line in added_lines(BASE):
+    for path, line in (tracked_lines() if FULL else added_lines(BASE)):
         # A scanner cannot scan its own rules: the patterns necessarily contain
         # the very strings they look for.
         if path.startswith(".scratch") or path == SELF:
@@ -198,13 +240,16 @@ def main():
         for label, pattern in PATTERNS:
             if label == "home directory path" and path in SYNTHETIC_HOME_FIXTURES:
                 continue
+            if label in SYNTHETIC_VECTOR_WAIVERS.get(path, ()):
+                continue
             if re.search(pattern, line):
                 hits.append((label, path, line.strip()[:160]))
 
+    scope = "tracked lines (full tree)" if FULL else "added lines"
     if not hits:
-        print(f"clean: {scanned} added lines carry no PII, secrets, or local-only detail")
+        print(f"clean: {scanned} {scope} carry no PII, secrets, or local-only detail")
         return
-    print(f"{len(hits)} issue(s) in added lines:\n")
+    print(f"{len(hits)} issue(s) in {scope}:\n")
     for label, path, text in hits:
         print(f"  [{label}] {path}\n      {text}")
     sys.exit(1)

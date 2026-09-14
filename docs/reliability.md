@@ -91,13 +91,17 @@ hs -c 'brwWatchdog.start()'    # resume
 ## Verify
 
 Each daemon serves `/status` on its **bridge** port (not the HTTP-API port).
-On max-mac the two Chromium profiles are the only bridges (the Chrome work
-profile was retired 2026-07-21 in favour of Chromium-only):
+One daemon runs per bridged profile, each with its own port pair: the
+HTTP API on `--http` and the bridge on `--bridge-addr`. A two-profile machine
+therefore has two `/status` endpoints, for example:
 
-| Profile              | bridge `/status`            |
-|----------------------|-----------------------------|
-| Chromium scratch     | `http://127.0.0.1:17411/status` |
-| Chromium work        | `http://127.0.0.1:17511/status` |
+| Profile   | bridge `/status`                |
+|-----------|---------------------------------|
+| first     | `http://127.0.0.1:17411/status` |
+| second    | `http://127.0.0.1:17511/status` |
+
+Your own ports come from the profile policy: each profile's `bridge_ws_addr`
+is the one to curl.
 
 ```sh
 curl -s http://127.0.0.1:17411/status | python3 -m json.tool | grep -E 'connected|build'

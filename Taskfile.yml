@@ -76,6 +76,15 @@ tasks:
       - go run github.com/zricethezav/gitleaks/v8@v8.30.1 git . --redact --no-banner
       - go test -race ./internal/artifact ./internal/recipe ./internal/mcp ./internal/http ./internal/httpclient ./internal/navpolicy ./internal/extensionbridge
 
+  # The incremental hygiene gate in `check` only sees lines a change adds, so
+  # anything committed before its rule existed is grandfathered in and no build
+  # will ever mention it. This scans every tracked file instead. Run it before a
+  # release; it reports a backlog rather than gating merges.
+  hygiene-full:
+    desc: Scan every tracked file for PII, secrets and local-only detail
+    cmds:
+      - python3 scripts/check-oss-hygiene.py --full
+
   # The static half of `check`, fast enough to run on every save.
   lint:
     desc: Static half of check (fmt, vet, staticcheck, govulncheck, actionlint)
