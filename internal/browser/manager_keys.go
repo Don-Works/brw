@@ -171,6 +171,7 @@ func describeHoldKey(raw string) (actions.KeyDescriptor, error) {
 // text uses rawKeyDown for the same reason pressKey does: Chrome only performs
 // native default actions from rawKeyDown.
 func dispatchKeyHalf(ctx context.Context, desc actions.KeyDescriptor, modifiers int64, down bool) error {
+	desc = actions.ApplyModifiers(desc, modifiers)
 	eventType := input.KeyUp
 	if down {
 		eventType = input.KeyDown

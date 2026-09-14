@@ -134,6 +134,67 @@ func TestHeldModifierReachesEveryActuationPath(t *testing.T) {
 	}
 }
 
+// TestPressTypesTheCharacterTheModifiersProduce: Chrome inserts the text of the
+// key event exactly as it is sent and applies no keyboard layout of its own, so
+// the modifier mask alone decides nothing about what appears in the field. A
+// held Shift used to type the UNSHIFTED character with shiftKey true, and the
+// chord form typed nothing at all — two different wrong answers for the same
+// keystroke. The assertion is on the value the field ends up holding, because
+// that is the thing an agent is wrong about.
+func TestPressTypesTheCharacterTheModifiersProduce(t *testing.T) {
+	tests := []struct {
+		name string
+		hold string
+		key  string
+		want string
+	}{
+		{name: "plain letter", key: "a", want: "a"},
+		{name: "held shift", hold: "Shift", key: "a", want: "A"},
+		{name: "shift chord", key: "shift+a", want: "A"},
+		{name: "held shift on a digit", hold: "Shift", key: "1", want: "!"},
+		{name: "shift chord on a digit", key: "shift+1", want: "!"},
+		// Chrome suppresses insertion for a real accelerator, so an empty field
+		// is the right answer here rather than a stray character.
+		{name: "held control", hold: "Control", key: "a", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newHeadlessManager(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			opened, err := m.Open(ctx, `data:text/html,<input id="f">`)
+			if err != nil {
+				t.Fatalf("open fixture: %v", err)
+			}
+			tabCtx := WithTabID(ctx, opened.Tab.ID)
+			if _, err := m.Evaluate(tabCtx, `document.querySelector('#f').focus(); true`); err != nil {
+				t.Fatalf("focus the field: %v", err)
+			}
+			if tt.hold != "" {
+				if _, err := m.KeyDown(tabCtx, KeyHoldOptions{Key: tt.hold}); err != nil {
+					t.Fatalf("hold %s: %v", tt.hold, err)
+				}
+				defer func() {
+					if _, err := m.KeyUp(tabCtx, KeyHoldOptions{Key: releaseAllKeyword}); err != nil {
+						t.Fatalf("release held keys: %v", err)
+					}
+				}()
+			}
+			if _, err := m.Press(tabCtx, tt.key); err != nil {
+				t.Fatalf("press %q: %v", tt.key, err)
+			}
+			value, err := m.Evaluate(tabCtx, `document.querySelector('#f').value`)
+			if err != nil {
+				t.Fatalf("read the field: %v", err)
+			}
+			if value != tt.want {
+				t.Fatalf("press %q with %q held typed %#v, want %q", tt.key, tt.hold, value, tt.want)
+			}
+		})
+	}
+}
+
 func assertBatchOK(t *testing.T, result BatchResult, err error) {
 	t.Helper()
 	if err != nil {

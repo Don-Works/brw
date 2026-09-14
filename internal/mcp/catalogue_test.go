@@ -37,6 +37,7 @@ func TestAdvertisedSchemasCoverHandlerParameters(t *testing.T) {
 		"brw_network_requests": {"filter", "pattern", "limit"},
 		"brw_network_capture":  {"filter", "pattern", "limit"},
 		"brw_press":            {"repeat"},
+		"brw_focus":            {"snapshot"},
 		"brw_scroll":           {"repeat"},
 		"brw_trace":            {"format", "guards", "include_failed"},
 		"brw_window_resize":    {"width", "height", "left", "top", "state"},

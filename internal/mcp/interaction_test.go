@@ -23,6 +23,7 @@ type interactionController struct {
 	keyUp      browser.KeyHoldOptions
 	pushState  browser.HistoryStateOptions
 	focusedRef string
+	focusSnap  bool
 	evaluated  int
 }
 
@@ -52,8 +53,9 @@ func (c *interactionController) PushState(_ context.Context, opts browser.Histor
 	return browser.HistoryStateResult{OK: true, URL: "https://corp.example.com" + opts.URL}, nil
 }
 
-func (c *interactionController) Focus(_ context.Context, ref string) (browser.ActionResult, error) {
+func (c *interactionController) Focus(ctx context.Context, ref string) (browser.ActionResult, error) {
 	c.focusedRef = ref
+	c.focusSnap = browser.WantSnapshotFromCtx(ctx)
 	return browser.ActionResult{OK: true, Message: "focused " + ref, Focus: ref}, nil
 }
 
@@ -130,6 +132,32 @@ func TestInteractionToolsForwardToTheController(t *testing.T) {
 				t.Fatalf("%s returned an error: %s", tc.tool, encoded)
 			}
 			tc.check(t)
+		})
+	}
+}
+
+// TestFocusToolPassesTheSnapshotRequest: brw_focus exists to be the step before
+// a keystroke, which is exactly when an agent wants the page back in the same
+// round trip. The HTTP route accepts snapshot, so a request the MCP tool cannot
+// express is a capability that exists on one surface only.
+func TestFocusToolPassesTheSnapshotRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args string
+		want bool
+	}{
+		{name: "omitted", args: `{"ref":"e12"}`},
+		{name: "requested", args: `{"ref":"e12","snapshot":true}`, want: true},
+		{name: "declined", args: `{"ref":"e12","snapshot":false}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := &interactionController{}
+			if response := callInteraction(t, ctrl, "brw_focus", tc.args); strings.Contains(response, `"isError":true`) {
+				t.Fatalf("brw_focus %s returned an error: %s", tc.args, response)
+			}
+			if ctrl.focusSnap != tc.want {
+				t.Fatalf("brw_focus %s reached the controller wanting a snapshot = %v, want %v", tc.args, ctrl.focusSnap, tc.want)
+			}
 		})
 	}
 }

@@ -37,8 +37,9 @@ type TraceLabel struct {
 }
 
 // WithTraceLabel marks the evaluations made under ctx as one semantic action.
-// Both transports honour it, and the HTTP surface re-applies it on the daemon
-// side, so a proxied call is labelled the same way a local one is.
+// Both transports honour it, and the HTTP client sends it as trace_action /
+// trace_value on /api/page/evaluate for the daemon to re-apply, so a call
+// proxied through --upstream-http is labelled the way a local one is.
 func WithTraceLabel(ctx context.Context, action, value string) context.Context {
 	return context.WithValue(ctx, ctxKeyTraceLabel{}, TraceLabel{Action: action, Value: value})
 }

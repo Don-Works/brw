@@ -31,6 +31,62 @@ func functionKey(raw string) *KeyDescriptor {
 	return &KeyDescriptor{Key: name, Code: name, WindowsVirtualKeyCode: int64(0x70 + n - 1)}
 }
 
+// ApplyModifiers folds extra modifier bits into desc and re-derives the text the
+// keystroke inserts. Chrome types the event's text verbatim and applies no
+// layout of its own, so a modifier the text does not reflect types the wrong
+// character: "shift+a" inserted nothing at all, and pressing "a" while Shift was
+// held through key_down inserted a lowercase "a" the page saw with shiftKey
+// true. Ctrl, Alt and Meta suppress insertion instead, which is what Chrome does
+// for a real accelerator.
+func ApplyModifiers(desc KeyDescriptor, extra int64) KeyDescriptor {
+	desc.Modifiers |= extra
+	if desc.Text == "" {
+		return desc
+	}
+	if desc.Modifiers&(ModifierAlt|ModifierCtrl|ModifierMeta) != 0 {
+		desc.Text = ""
+		return desc
+	}
+	if desc.Modifiers&ModifierShift == 0 {
+		return desc
+	}
+	r, size := utf8.DecodeRuneInString(desc.Text)
+	if size != len(desc.Text) {
+		return desc
+	}
+	shifted := shiftRune(r)
+	if shifted == r {
+		return desc
+	}
+	// event.key carries the generated character, so it moves with the text. A
+	// named key ("Enter", "Space") keeps the name it already has.
+	if desc.Key == desc.Text {
+		desc.Key = string(shifted)
+	}
+	desc.Text = string(shifted)
+	return desc
+}
+
+// shiftedPunctuation is the US layout, which is the one a synthesised CDP key
+// event describes: the virtual key codes DescribeKey emits are US codes, so the
+// character Shift produces has to be read off the same layout.
+var shiftedPunctuation = map[rune]rune{
+	'1': '!', '2': '@', '3': '#', '4': '$', '5': '%',
+	'6': '^', '7': '&', '8': '*', '9': '(', '0': ')',
+	'-': '_', '=': '+', '[': '{', ']': '}', '\\': '|',
+	';': ':', '\'': '"', ',': '<', '.': '>', '/': '?', '`': '~',
+}
+
+func shiftRune(r rune) rune {
+	if unicode.IsLetter(r) {
+		return unicode.ToUpper(r)
+	}
+	if shifted, ok := shiftedPunctuation[r]; ok {
+		return shifted
+	}
+	return r
+}
+
 func DescribeKey(raw string) KeyDescriptor {
 	parts := strings.Split(raw, "+")
 	if len(parts) > 1 {
@@ -38,24 +94,19 @@ func DescribeKey(raw string) KeyDescriptor {
 		for _, part := range parts[:len(parts)-1] {
 			switch strings.ToLower(strings.TrimSpace(part)) {
 			case "alt", "option":
-				modifiers |= 1
+				modifiers |= ModifierAlt
 			case "ctrl", "control":
-				modifiers |= 2
+				modifiers |= ModifierCtrl
 			case "meta", "cmd", "command":
-				modifiers |= 4
+				modifiers |= ModifierMeta
 			case "shift":
-				modifiers |= 8
+				modifiers |= ModifierShift
 			}
 		}
-		desc := DescribeKey(parts[len(parts)-1])
-		// OR rather than assign: the final part may itself be a modifier
-		// ("ctrl+shift"), and dropping its own bit would report a chord that
-		// never had Shift down.
-		desc.Modifiers |= modifiers
-		if modifiers != 0 {
-			desc.Text = ""
-		}
-		return desc
+		// ApplyModifiers ORs rather than assigns: the final part may itself be a
+		// modifier ("ctrl+shift"), and dropping its own bit would report a chord
+		// that never had Shift down.
+		return ApplyModifiers(DescribeKey(parts[len(parts)-1]), modifiers)
 	}
 
 	switch strings.ToLower(strings.TrimSpace(raw)) {

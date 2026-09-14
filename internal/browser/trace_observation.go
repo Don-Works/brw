@@ -41,6 +41,21 @@ func IsObservationAction(action string) bool {
 	return observationActions[strings.TrimSpace(action)]
 }
 
+// generatedScriptVerbs are the actions whose page script brw writes itself, and
+// so the only labels the HTTP surface accepts from a caller. Letting a request
+// name any action would let hand-written JavaScript record itself in the trace
+// as a typed read, which is the distinction the label exists to draw.
+var generatedScriptVerbs = map[string]bool{
+	TraceActionGet:   true,
+	TraceActionFrame: true,
+}
+
+// IsGeneratedScriptVerb reports whether action may be carried across the HTTP
+// surface as an evaluation's trace label.
+func IsGeneratedScriptVerb(action string) bool {
+	return generatedScriptVerbs[strings.TrimSpace(action)]
+}
+
 // maxTraceTextBytes bounds an observation's text. A URL is comfortably under
 // it; an evaluate expression is frequently not, and the trace is a 500-entry
 // ring buffer served over the HTTP control plane, so the whole script does not

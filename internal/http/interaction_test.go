@@ -27,11 +27,14 @@ type interactionController struct {
 	focusedRef   string
 	focusSnap    bool
 	evaluateCall int
+	traceLabel   browser.TraceLabel
+	traceLabeled bool
 }
 
-func (c *interactionController) Evaluate(_ context.Context, expression string) (any, error) {
+func (c *interactionController) Evaluate(ctx context.Context, expression string) (any, error) {
 	c.expression = expression
 	c.evaluateCall++
+	c.traceLabel, c.traceLabeled = browser.TraceLabelFromCtx(ctx)
 	return map[string]any{"value": "stub"}, nil
 }
 
@@ -230,6 +233,60 @@ func TestGetRouteAcceptsQueryAndBody(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "requires target") {
 		t.Fatalf("refusal %q should say what is missing", rec.Body.String())
+	}
+}
+
+// TestEvaluateRouteReappliesAProxiedTraceLabel: with --upstream-http the MCP
+// server's controller is the HTTP client, so brw_get and brw_frame reach the
+// daemon as /api/page/evaluate and their label — a context value — cannot come
+// with them. The daemon recorded the generated walker script as a hand-written
+// evaluate, which is exactly the confusion the two verbs exist to prevent. The
+// label crosses as body fields, and only for the verbs whose script brw writes:
+// an arbitrary expression must not be able to name itself something else.
+func TestEvaluateRouteReappliesAProxiedTraceLabel(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantLabel  bool
+		wantAction string
+		wantValue  string
+	}{
+		{
+			name:       "a proxied get",
+			body:       `{"expression":"1","trace_action":"get","trace_value":"text #pad"}`,
+			wantLabel:  true,
+			wantAction: browser.TraceActionGet,
+			wantValue:  "text #pad",
+		},
+		{
+			name:       "a proxied frame switch",
+			body:       `{"expression":"1","trace_action":"frame","trace_value":"main"}`,
+			wantLabel:  true,
+			wantAction: browser.TraceActionFrame,
+			wantValue:  "main",
+		},
+		{name: "an unlabelled evaluation", body: `{"expression":"1"}`},
+		{name: "a caller cannot claim an input action", body: `{"expression":"1","trace_action":"click","trace_value":"e3"}`},
+		{name: "a caller cannot claim an open", body: `{"expression":"1","trace_action":"open","trace_value":"https://elsewhere.test/"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, ctrl := newInteractionServer()
+			rec := call(t, server, http.MethodPost, "/api/page/evaluate", tt.body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			if ctrl.traceLabeled != tt.wantLabel {
+				t.Fatalf("evaluate reached the controller with label %+v (labelled %v), want labelled %v", ctrl.traceLabel, ctrl.traceLabeled, tt.wantLabel)
+			}
+			if !tt.wantLabel {
+				return
+			}
+			if ctrl.traceLabel.Action != tt.wantAction || ctrl.traceLabel.Value != tt.wantValue {
+				t.Fatalf("evaluate label = %+v, want {%s %s}", ctrl.traceLabel, tt.wantAction, tt.wantValue)
+			}
+		})
 	}
 }
 

@@ -1472,14 +1472,18 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return toolError(errors.New("this browser transport does not support explicit element focus")), nil
 		}
 		var req struct {
-			Ref   string `json:"ref"`
-			TabID string `json:"tab_id"`
+			Ref      string `json:"ref"`
+			Snapshot bool   `json:"snapshot"`
+			TabID    string `json:"tab_id"`
 		}
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
 		if strings.TrimSpace(req.Ref) == "" {
 			return toolError(errors.New("ref is required")), nil
+		}
+		if req.Snapshot {
+			ctx = browser.WithWantSnapshot(ctx)
 		}
 		return toolJSON(focuser.Focus(ctx, req.Ref))
 	case "brw_clipboard":
@@ -2528,7 +2532,10 @@ func tools() []map[string]any {
 			"action": stringEnumSchema("mark records the baseline; compare reports what changed since it.", "mark", "compare"),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"action"})),
-		tool("brw_get", "Read ONE typed fact about the page or an element, without writing JavaScript. what=url|title|status|text|value|attr|count|box|styles|visible|hidden|enabled|disabled|editable|checked|focused|state. status is the HTTP status of the current document's last cross-document navigation (0 when there was none, as for a data: or about: document). state returns every interaction flag for one element at once — {found, visible, enabled, editable, checked, focused} — and is the cheap way to ask several of those questions together. target is a brw ref from brw_snapshot or a CSS selector, and resolves across same-origin iframes and open shadow roots (plain document.querySelector does not). Use this instead of brw_evaluate for simple reads: it is one round trip, it needs no hand-written JS, and it cannot be tripped up by a value that will not serialize. To CHECK one of these rather than read it, use brw_assert: it returns expected against actual when the check does not hold.", object(map[string]any{
+		// The vocabulary is spelled out in the description as well as the enum
+		// because agents read prose; deriving both from GetKindNames is what stops
+		// the sentence naming a kind the enum no longer offers.
+		tool("brw_get", "Read ONE typed fact about the page or an element, without writing JavaScript. what="+strings.Join(snapshot.GetKindNames(), "|")+". status is the HTTP status of the current document's last cross-document navigation (0 when there was none, as for a data: or about: document). state returns every interaction flag for one element at once — {found, visible, enabled, editable, checked, focused} — and is the cheap way to ask several of those questions together. target is a brw ref from brw_snapshot or a CSS selector, and resolves across same-origin iframes and open shadow roots (plain document.querySelector does not). Use this instead of brw_evaluate for simple reads: it is one round trip, it needs no hand-written JS, and it cannot be tripped up by a value that will not serialize. To CHECK one of these rather than read it, use brw_assert: it returns expected against actual when the check does not hold.", object(map[string]any{
 			"what":   stringEnumSchema("Which fact to read.", snapshot.GetKindNames()...),
 			"target": stringSchema("Element ref from brw_snapshot, or a CSS selector. Omit for page-level facts (url, title, and text of the whole body). Required for count as the selector to count."),
 			"name":   stringSchema("Attribute name for what=attr, or a single CSS property name for what=styles. Omitting it for styles returns the properties that explain layout and appearance rather than every property."),
@@ -2539,8 +2546,9 @@ func tools() []map[string]any {
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
 		tool("brw_focus", "Give one element the keyboard focus by ref, without clicking it. Use it before brw_press when the keystroke must land on a specific field and you do not want the side effects of a click (a menu opening, a link following, a blur handler firing on the way). Resolves across same-origin iframes and open shadow roots. brw_type and brw_fill already focus the field they write to; this is for the case where the next thing you send is a key. Returns the post-action observation, so `focus` in the result tells you where focus actually landed — a control that moves focus on its own is reported as a warning rather than passing silently.", object(map[string]any{
-			"ref":    stringSchema("Element ref from brw_snapshot."),
-			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+			"ref":      stringSchema("Element ref from brw_snapshot."),
+			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"ref"})),
 		tool("brw_key_down", "Press a key and HOLD it: the keyup is not sent until brw_key_up. That is what makes Ctrl+drag, Shift+click-range and Alt+click expressible — brw_press sends keydown and keyup back to back, so a page reading event.shiftKey during the drag in between sees nothing. While a key is held, EVERY later input brw dispatches on that tab carries its modifier mask — brw_click, brw_click_text, brw_drag, brw_hover, brw_mouse_down/up, brw_press, and the click/click_text/press/hover steps of a brw_batch — and every action result warns that the keys are still held. Hold one key per call: a chord like \"ctrl+shift\" is refused, because one held key is one release. ALWAYS release what you hold (brw_key_up key=\"all\" releases everything the tab holds), or later clicks keep the modifier. Returns the keys still held. DIRECT-CDP TRANSPORT ONLY: the extension bridge returns a capability error — use brw_press for a discrete chord like Meta+Enter there.", object(map[string]any{
 			"key":    stringSchema("Key to hold. Modifiers by name: Shift, Control, Alt, Meta (ShiftRight/ControlRight etc. for the right-hand key). Ordinary keys work too, for a held character."),

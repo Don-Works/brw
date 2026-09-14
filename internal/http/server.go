@@ -1329,11 +1329,21 @@ func (s *Server) evaluate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Expression string `json:"expression"`
 		TabID      string `json:"tab_id"`
+		// TraceAction/TraceValue carry the label a proxied brw_get or brw_frame
+		// applied on its own side. A context value cannot cross HTTP, so without
+		// them an --upstream-http client's typed read is recorded here as a
+		// hand-written evaluate carrying the generated walker script.
+		TraceAction string `json:"trace_action"`
+		TraceValue  string `json:"trace_value"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := s.manager.Evaluate(s.contextWithTabID(r.Context(), req.TabID), req.Expression)
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	if browser.IsGeneratedScriptVerb(req.TraceAction) {
+		ctx = browser.WithTraceLabel(ctx, req.TraceAction, req.TraceValue)
+	}
+	result, err := s.manager.Evaluate(ctx, req.Expression)
 	writeResult(w, result, err)
 }
 

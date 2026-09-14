@@ -30,7 +30,9 @@ func TestDescribeKeyResolvesStandaloneModifiers(t *testing.T) {
 		// Ordinary keys are untouched by the modifier table.
 		{name: "letter", raw: "a", key: "a", code: "KeyA", vk: 65, text: "a"},
 		{name: "named key", raw: "Enter", key: "Enter", code: "Enter", vk: 13, text: "\r"},
-		{name: "chord over a letter", raw: "shift+a", key: "a", code: "KeyA", vk: 65, modifiers: ModifierShift},
+		// event.key is the character the keystroke PRODUCES, so a shifted letter
+		// reports "A"; code stays with the physical key.
+		{name: "chord over a letter", raw: "shift+a", key: "A", code: "KeyA", vk: 65, modifiers: ModifierShift, text: "A"},
 	}
 
 	for _, tt := range tests {

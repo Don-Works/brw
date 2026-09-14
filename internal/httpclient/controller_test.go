@@ -574,3 +574,64 @@ func TestReadWindowSendsZeroToSelectHostDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestEvaluateForwardsTheTraceLabel: the MCP server labels the generated script
+// behind brw_get and brw_frame so the trace names the verb rather than the
+// walker expression. With --upstream-http the evaluation happens on the daemon,
+// and a context value does not cross HTTP — so the label rides in the body or it
+// is lost, and every proxied typed read looks like hand-written JavaScript.
+func TestEvaluateForwardsTheTraceLabel(t *testing.T) {
+	tests := []struct {
+		name       string
+		ctx        func() context.Context
+		wantAction any
+		wantValue  any
+	}{
+		{
+			name: "a labelled get",
+			ctx: func() context.Context {
+				return browser.WithTraceLabel(context.Background(), browser.TraceActionGet, "text #pad")
+			},
+			wantAction: browser.TraceActionGet,
+			wantValue:  "text #pad",
+		},
+		{
+			name: "a labelled frame switch",
+			ctx: func() context.Context {
+				return browser.WithTraceLabel(context.Background(), browser.TraceActionFrame, "main")
+			},
+			wantAction: browser.TraceActionFrame,
+			wantValue:  "main",
+		},
+		{
+			name: "an unlabelled evaluation sends no label",
+			ctx:  context.Background,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/page/evaluate" {
+					t.Errorf("path = %s", r.URL.Path)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode body: %v", err)
+				}
+				_ = json.NewEncoder(w).Encode("ok")
+			}))
+			defer srv.Close()
+			c, _ := New(srv.URL, 5*time.Second)
+			if _, err := c.Evaluate(tt.ctx(), "1 + 1"); err != nil {
+				t.Fatalf("evaluate: %v", err)
+			}
+			if body["expression"] != "1 + 1" {
+				t.Fatalf("expression = %#v", body["expression"])
+			}
+			if body["trace_action"] != tt.wantAction || body["trace_value"] != tt.wantValue {
+				t.Fatalf("trace label sent as {%#v %#v}, want {%#v %#v}", body["trace_action"], body["trace_value"], tt.wantAction, tt.wantValue)
+			}
+		})
+	}
+}

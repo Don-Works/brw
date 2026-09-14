@@ -1620,7 +1620,11 @@ func (m *Manager) pressKey(tabCtx context.Context, tabID, key string) error {
 	if desc.Key == "" {
 		return errors.New("key is required")
 	}
-	modifiers := input.Modifier(desc.Modifiers | m.heldModifierMask(tabID))
+	// The held mask has to reach the descriptor, not just the dispatched event:
+	// Chrome inserts the event's text as given, so a held Shift that only sets
+	// the mask types the unshifted character with shiftKey true.
+	desc = actions.ApplyModifiers(desc, m.heldModifierMask(tabID))
+	modifiers := input.Modifier(desc.Modifiers)
 	return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		keyType := input.KeyDown
 		if desc.Text == "" {

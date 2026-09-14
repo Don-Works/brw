@@ -3050,6 +3050,27 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
     var doc = el && el.ownerDocument;
     return (doc && doc.defaultView) || window;
   }
+  // A match inside a same-origin iframe measures itself in ITS OWN frame's
+  // coordinates, so every viewport test has to ask that frame how big it is and
+  // every reported point has to be translated back to the top document before
+  // CDP actuates it. offsetFor supplies the translation the frame walker already
+  // computed; viewportFor supplies the frame's own bounds.
+  function offsetFor(el) {
+    var root = (el && el.getRootNode && el.getRootNode()) || document;
+    var entries = __abRoots();
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].root === root) return { ox: entries[i].ox, oy: entries[i].oy };
+    }
+    return { ox: 0, oy: 0 };
+  }
+  function viewportFor(el) {
+    var win = winFor(el);
+    var doc = (el && el.ownerDocument) || document;
+    return {
+      w: win.innerWidth || doc.documentElement.clientWidth,
+      h: win.innerHeight || doc.documentElement.clientHeight
+    };
+  }
   function visible(el) {
     if (!el || el.nodeType !== 1) return false;
     if (el.closest('[hidden],[aria-hidden="true"]')) return false;
@@ -3100,7 +3121,8 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
   }
   function clickableAncestor(el) {
     let n = el;
-    while (n && n !== document.body && n.nodeType === Node.ELEMENT_NODE) {
+    const stop = (el && el.ownerDocument && el.ownerDocument.body) || document.body;
+    while (n && n !== stop && n.nodeType === Node.ELEMENT_NODE) {
       const role = roleFor(n);
       const tag = n.tagName.toLowerCase();
       if (tag === 'button' || tag === 'a' || role === 'button' || role === 'link' || role === 'option' || role === 'menuitem' || n.onclick || n.tabIndex >= 0) return n;
@@ -3136,7 +3158,8 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
     else continue;
     if (['button','link','option','menuitem'].includes(role)) score += 20;
     const r = el.getBoundingClientRect();
-    const inViewport = r.bottom >= 0 && r.right >= 0 && r.top <= window.innerHeight && r.left <= window.innerWidth;
+    const vp = viewportFor(el);
+    const inViewport = r.bottom >= 0 && r.right >= 0 && r.top <= vp.h && r.left <= vp.w;
     if (inViewport) score += 10;
     score -= Math.min(20, Math.round((r.width * r.height) / 50000));
     candidates.push({ el, role, label, text, score });
@@ -3156,7 +3179,8 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
 	    const childRepeats = Array.from(base.children || []).some(child => textFor(child).toLowerCase() === normalized);
 	    if (childRepeats) continue;
 	    const r = base.getBoundingClientRect();
-	    const inViewport = r.bottom >= 0 && r.right >= 0 && r.top <= window.innerHeight && r.left <= window.innerWidth;
+	    const vp = viewportFor(base);
+	    const inViewport = r.bottom >= 0 && r.right >= 0 && r.top <= vp.h && r.left <= vp.w;
 	    let score = exact ? 105 : 65;
 	    if (inViewport) score += 10;
 	    score -= Math.min(25, Math.round((r.width * r.height) / 20000));
@@ -3170,7 +3194,8 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
   const autoScroll = opts.auto_scroll !== false;
   function inViewportNow(el) {
     const r = el.getBoundingClientRect();
-    return r.bottom >= 0 && r.right >= 0 && r.top <= (window.innerHeight || document.documentElement.clientHeight) && r.left <= (window.innerWidth || document.documentElement.clientWidth);
+    const vp = viewportFor(el);
+    return r.bottom >= 0 && r.right >= 0 && r.top <= vp.h && r.left <= vp.w;
   }
   candidates.sort((a, b) => b.score - a.score);
   let hit = candidates[0];
@@ -3190,14 +3215,23 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   }
   const r = el.getBoundingClientRect();
+  const doc = el.ownerDocument || document;
+  const offset = offsetFor(el);
   // Clamp the click point into the viewport so elementFromPoint resolves the
-  // element even when it is taller than the viewport after scrolling.
-  const vw = window.innerWidth || document.documentElement.clientWidth;
-  const vh = window.innerHeight || document.documentElement.clientHeight;
-  const x = Math.max(1, Math.min(vw - 1, r.left + r.width / 2));
-  const y = Math.max(1, Math.min(vh - 1, r.top + r.height / 2));
-  let target = document.elementFromPoint(x, y) || el;
+  // element even when it is taller than the viewport after scrolling. The rect
+  // and the hit-test both belong to the element's OWN document: hit-testing a
+  // frame-local point against the top document resolves whatever sits at that
+  // point in the PARENT page, which is how a match inside an iframe used to
+  // click an unrelated element and report it as a success.
+  const vp = viewportFor(el);
+  const localX = Math.max(1, Math.min(vp.w - 1, r.left + r.width / 2));
+  const localY = Math.max(1, Math.min(vp.h - 1, r.top + r.height / 2));
+  let target = doc.elementFromPoint(localX, localY) || el;
   target = clickableAncestor(target) || el;
+  // Reported in TOP-LEVEL viewport space, which is what the caller's CDP input
+  // dispatch expects when the click is deferred.
+  const x = localX + offset.ox;
+  const y = localY + offset.oy;
   const clickedRoleEarly = roleFor(target);
   const clickedNameEarly = nameFor(target);
   // Some controls only work for a REAL browser input gesture: a target="_blank"
@@ -3228,12 +3262,14 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
       href: target.href || target.getAttribute('href') || ''
     };
   }
-  target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
-  target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
-  target.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
-  target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  // clientX/clientY on a dispatched event are read in the receiving document's
+  // own coordinate space, so the in-page dispatch uses the frame-local point.
+  target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: localX, clientY: localY }));
+  target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: localX, clientY: localY }));
+  target.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: localX, clientY: localY }));
+  target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: localX, clientY: localY }));
   if (typeof target.click === 'function') target.click();
-  else target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  else target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: localX, clientY: localY }));
   const clickedRole = roleFor(target);
   const clickedName = nameFor(target);
   return {

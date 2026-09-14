@@ -415,7 +415,16 @@ func (c *Controller) Hover(ctx context.Context, ref string) (browser.ActionResul
 
 func (c *Controller) Evaluate(ctx context.Context, expression string) (any, error) {
 	var out any
-	err := c.post(ctx, "/api/page/evaluate", map[string]string{"expression": expression}, &out)
+	body := map[string]any{"expression": expression}
+	// brw_get and brw_frame label their generated script so the daemon's trace
+	// names the verb instead of the walker expression. The label is a context
+	// value and cannot cross HTTP, so re-materialize it as body fields the
+	// daemon reads back — the same trick withSnapshot uses.
+	if label, ok := browser.TraceLabelFromCtx(ctx); ok {
+		body["trace_action"] = label.Action
+		body["trace_value"] = label.Value
+	}
+	err := c.post(ctx, "/api/page/evaluate", body, &out)
 	return out, err
 }
 

@@ -163,6 +163,55 @@ func TestDescribeKey_FunctionKeys(t *testing.T) {
 	}
 }
 
+// TestModifiersDecideTheInsertedCharacter covers both halves of what a modifier
+// does to a keystroke: Shift changes which character the key inserts, and
+// Ctrl/Alt/Meta stop it inserting one. Chrome types the event's text verbatim,
+// so a descriptor that carries the mask but not the matching text drives the
+// wrong character into the page.
+func TestModifiersDecideTheInsertedCharacter(t *testing.T) {
+	tests := []struct {
+		name      string
+		key       string
+		held      int64
+		wantKey   string
+		wantCode  string
+		wantText  string
+		wantMasks int64
+	}{
+		{name: "plain letter", key: "a", wantKey: "a", wantCode: "KeyA", wantText: "a"},
+		{name: "shift chord on a letter", key: "shift+a", wantKey: "A", wantCode: "KeyA", wantText: "A", wantMasks: ModifierShift},
+		{name: "held shift on a letter", key: "a", held: ModifierShift, wantKey: "A", wantCode: "KeyA", wantText: "A", wantMasks: ModifierShift},
+		{name: "held shift on an already upper letter", key: "A", held: ModifierShift, wantKey: "A", wantCode: "KeyA", wantText: "A", wantMasks: ModifierShift},
+		{name: "shift chord on a digit", key: "shift+1", wantKey: "!", wantCode: "Digit1", wantText: "!", wantMasks: ModifierShift},
+		{name: "held shift on punctuation", key: "/", held: ModifierShift, wantKey: "?", wantCode: "/", wantText: "?", wantMasks: ModifierShift},
+		// A named key has no character to shift, and its name must survive.
+		{name: "shift chord on a named key", key: "shift+Enter", wantKey: "Enter", wantCode: "Enter", wantText: "\r", wantMasks: ModifierShift},
+		{name: "held shift on Tab", key: "Tab", held: ModifierShift, wantKey: "Tab", wantCode: "Tab", wantMasks: ModifierShift},
+		{name: "ctrl chord inserts nothing", key: "ctrl+a", wantKey: "a", wantCode: "KeyA", wantMasks: ModifierCtrl},
+		{name: "held ctrl inserts nothing", key: "a", held: ModifierCtrl, wantKey: "a", wantCode: "KeyA", wantMasks: ModifierCtrl},
+		{name: "ctrl and shift together insert nothing", key: "ctrl+shift+a", wantKey: "a", wantCode: "KeyA", wantMasks: ModifierCtrl | ModifierShift},
+		{name: "meta chord inserts nothing", key: "meta+s", wantKey: "s", wantCode: "KeyS", wantMasks: ModifierMeta},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desc := ApplyModifiers(DescribeKey(tt.key), tt.held)
+			if desc.Key != tt.wantKey {
+				t.Errorf("key = %q, want %q", desc.Key, tt.wantKey)
+			}
+			if desc.Code != tt.wantCode {
+				t.Errorf("code = %q, want %q", desc.Code, tt.wantCode)
+			}
+			if desc.Text != tt.wantText {
+				t.Errorf("text = %q, want %q", desc.Text, tt.wantText)
+			}
+			if desc.Modifiers != tt.wantMasks {
+				t.Errorf("modifiers = %d, want %d", desc.Modifiers, tt.wantMasks)
+			}
+		})
+	}
+}
+
 func toLowerASCII(s string) string {
 	b := []byte(s)
 	for i := range b {
