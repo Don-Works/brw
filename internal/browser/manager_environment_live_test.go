@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	cdpbrowser "github.com/chromedp/cdproto/browser"
 )
 
 // environmentFixture is a plain page. Every environment assertion below is made
@@ -367,6 +369,9 @@ func TestAuthenticateAnswersTheChallengeAndRetainsNothing(t *testing.T) {
 		user              = "fixture-user"
 		fixtureCredential = "fixture-basic-auth-value-one"
 		body              = "authenticated-fixture-content"
+		// Carried in the credentialed URL's query string, which is exactly what a
+		// replayable trace must not keep.
+		urlMarker = "fixture-url-marker-3d5a"
 	)
 	var challenges int
 	var mu sync.Mutex
@@ -387,11 +392,17 @@ func TestAuthenticateAnswersTheChallengeAndRetainsNothing(t *testing.T) {
 
 	emulationTab(t, m, ctx, "about:blank")
 
-	result, err := m.Authenticate(ctx, CredentialsOptions{
+	credentialedURL := srv.URL + "/protected?grant=" + urlMarker
+	// Dropped so the only navigate_to entry left is the credentialed one; opening
+	// the tab above made an ordinary, deliberately unredacted one.
+	m.ClearTrace()
+	// The MCP and HTTP layers both mark this call sensitive; the trace redaction
+	// under test is what that mark is for, so the test supplies it too.
+	result, err := m.Authenticate(WithSensitiveAction(ctx), CredentialsOptions{
 		Origin:   srv.URL,
 		Username: user,
 		Password: fixtureCredential,
-		URL:      srv.URL + "/protected",
+		URL:      credentialedURL,
 	})
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
@@ -401,6 +412,9 @@ func TestAuthenticateAnswersTheChallengeAndRetainsNothing(t *testing.T) {
 	}
 	if result.Authenticated.Answered == 0 {
 		t.Fatal("no challenge was answered, so the credentials never reached the server")
+	}
+	if !result.Authenticated.BrowserCached {
+		t.Fatal("browser_cached is false after an answered challenge; the browser keeps the credential and the result has to say so")
 	}
 
 	// The page loaded the protected body, which only a correctly answered
@@ -424,11 +438,217 @@ func TestAuthenticateAnswersTheChallengeAndRetainsNothing(t *testing.T) {
 	if m.env.authArmed(m.refs.Active()) {
 		t.Fatal("authentication handling is still armed for the tab after the call returned")
 	}
+	// The trace is replayable and long-lived, and a credentialed URL is the kind
+	// that carries a token in its query string.
+	var sawNavigation bool
 	for _, entry := range m.GetTrace().Entries {
 		if strings.Contains(entry.Text, fixtureCredential) || strings.Contains(entry.Value, fixtureCredential) {
 			t.Fatal("the password was recorded in the replayable action trace")
 		}
+		if strings.Contains(entry.Text, urlMarker) || strings.Contains(entry.Value, urlMarker) {
+			t.Fatalf("the credentialed URL's query string reached the trace as %q; a sensitive navigation must record that it happened, not where it went", entry.Text)
+		}
+		if entry.Action == "navigate_to" {
+			sawNavigation = true
+			if !entry.Redacted {
+				t.Fatalf("the credentialed navigation is in the trace unredacted as %q", entry.Text)
+			}
+		}
 	}
+	if !sawNavigation {
+		t.Fatal("no navigate_to entry reached the trace, so the redaction assertion above proves nothing")
+	}
+}
+
+// brw drops its own copy of the credential, but Chrome keeps one: an answered
+// challenge goes into the browser's HTTP-auth cache for the rest of the session
+// and no CDP command empties it. The tool description, the docs and the result
+// all say so now, so the behaviour they describe is pinned here.
+func TestTheBrowserKeepsTheCredentialAfterAuthenticateReturns(t *testing.T) {
+	m := newHeadlessManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	const (
+		user              = "fixture-user"
+		fixtureCredential = "fixture-basic-auth-value-two"
+		body              = "authenticated-fixture-content"
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUser, gotPass, ok := r.BasicAuth()
+		if !ok || gotUser != user || gotPass != fixtureCredential {
+			w.Header().Set("WWW-Authenticate", `Basic realm="fixture"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<html><body><p id="content">%s</p></body></html>`, body)
+	}))
+	t.Cleanup(srv.Close)
+
+	emulationTab(t, m, ctx, "about:blank")
+
+	if _, err := m.Authenticate(ctx, CredentialsOptions{
+		Origin:   srv.URL,
+		Username: user,
+		Password: fixtureCredential,
+		URL:      srv.URL + "/protected",
+	}); err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	// Nothing is armed now: dropCredential ran and the deferred sync turned
+	// interception off. A plain navigation is the same one an agent or a human
+	// would make next.
+	if m.env.authArmed(m.refs.Active()) {
+		t.Fatal("a credential is still armed, so the next navigation proves nothing about the browser's own cache")
+	}
+	if _, err := m.NavigateTo(ctx, srv.URL+"/another-protected-page"); err != nil {
+		t.Fatalf("navigate to a second protected path: %v", err)
+	}
+	content := evaluateString(t, m, ctx, `document.getElementById("content") ? document.getElementById("content").textContent : "unauthenticated"`)
+	if content != body {
+		t.Fatalf("a second protected path loaded %q rather than the protected body; if the browser has stopped caching the credential, brw_authenticate's description, docs/install.md and AuthenticationOutcome.BrowserCached all need correcting the other way", content)
+	}
+}
+
+// Chrome has no getPermission, so brw remembers what it found. Resetting to
+// prompt regardless would revoke a grant the human made, on a persistent profile
+// they keep using, as a side effect of clearing an override brw installed.
+func TestClearingGeolocationRestoresThePermissionBrwFound(t *testing.T) {
+	m := newHeadlessManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	emulationTab(t, m, ctx, serveEnvironmentFixture(t))
+	permissionState := func() string {
+		return evaluateString(t, m, ctx, `navigator.permissions.query({name:"geolocation"}).then(status => status.state)`)
+	}
+	lat, lng := 51.5007, -0.1246
+
+	if got := permissionState(); got != "prompt" {
+		t.Fatalf("a fresh origin starts at %q, want prompt; the rest of this test reads from that baseline", got)
+	}
+	if _, err := m.SetGeolocation(ctx, GeolocationOptions{Latitude: &lat, Longitude: &lng}); err != nil {
+		t.Fatalf("SetGeolocation: %v", err)
+	}
+	if got := permissionState(); got != "granted" {
+		t.Fatalf("permission = %q after an override, want granted — the override would be invisible to the page", got)
+	}
+	if _, err := m.SetGeolocation(ctx, GeolocationOptions{Clear: true}); err != nil {
+		t.Fatalf("clear geolocation: %v", err)
+	}
+	if got := permissionState(); got != "prompt" {
+		t.Fatalf("permission = %q after clearing an override brw granted, want prompt", got)
+	}
+
+	// Now the case that matters: the site already had geolocation before brw
+	// touched it.
+	origin := evaluateString(t, m, ctx, `location.origin`)
+	if err := m.setGeolocationPermission(ctx, origin, cdpbrowser.PermissionSettingGranted); err != nil {
+		t.Fatalf("grant geolocation the way a human would have: %v", err)
+	}
+	if got := permissionState(); got != "granted" {
+		t.Fatalf("permission = %q after the standing grant, want granted", got)
+	}
+	if _, err := m.SetGeolocation(ctx, GeolocationOptions{Latitude: &lat, Longitude: &lng}); err != nil {
+		t.Fatalf("SetGeolocation over a standing grant: %v", err)
+	}
+	if _, err := m.SetGeolocation(ctx, GeolocationOptions{Clear: true}); err != nil {
+		t.Fatalf("clear geolocation over a standing grant: %v", err)
+	}
+	if got := permissionState(); got != "granted" {
+		t.Fatalf("permission = %q after clearing, want the standing grant back; brw revoked a permission it did not grant", got)
+	}
+}
+
+// Switching the download directory must not take away files that are already on
+// disk: their recorded paths point inside the staging directory, and
+// brw_downloads goes on reporting them.
+func TestSetDownloadPathKeepsFilesDownloadedBeforeIt(t *testing.T) {
+	m := newHeadlessManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	emulationTab(t, m, ctx, "data:text/html,<html><body>download</body></html>")
+	// Arms tracking and the managed staging directory, which is where this first
+	// download has to land for the test to mean anything.
+	if _, err := m.Downloads(ctx); err != nil {
+		t.Fatalf("downloads: %v", err)
+	}
+
+	const staged = "staged-before-the-switch"
+	triggerEnvironmentDownload(t, m, ctx, staged, "staged.txt")
+	first := awaitCompletedDownload(t, m, ctx, "")
+	m.downloadsMu.Lock()
+	stagingDir := m.downloadDir
+	m.downloadsMu.Unlock()
+	if filepath.Dir(first.Path) != stagingDir {
+		t.Fatalf("the first download landed at %q, want it inside the managed staging directory %q", first.Path, stagingDir)
+	}
+
+	target := filepath.Join(t.TempDir(), "brw-download-target")
+	if _, err := m.SetDownloadPath(ctx, DownloadPathOptions{Path: target}); err != nil {
+		t.Fatalf("SetDownloadPath: %v", err)
+	}
+
+	contents, err := os.ReadFile(first.Path)
+	if err != nil {
+		t.Fatalf("the file downloaded before the switch was deleted by it, at the path brw_downloads still reports: %v", err)
+	}
+	if string(contents) != staged {
+		t.Fatalf("the earlier download now reads %q, want %q", contents, staged)
+	}
+	snapshot, err := m.Downloads(ctx)
+	if err != nil {
+		t.Fatalf("downloads after the switch: %v", err)
+	}
+	for _, entry := range snapshot.Downloads {
+		if entry.GUID != first.GUID {
+			continue
+		}
+		if entry.Path != first.Path {
+			t.Fatalf("brw_downloads now reports %q for the earlier download, want the unchanged %q", entry.Path, first.Path)
+		}
+	}
+}
+
+// triggerEnvironmentDownload downloads a blob from the page, which is the
+// cheapest way to make a real Chrome download without a fixture server.
+func triggerEnvironmentDownload(t *testing.T, m *Manager, ctx context.Context, body, filename string) {
+	t.Helper()
+	trigger := fmt.Sprintf(`(function(){
+		var blob = new Blob([%q], {type:"text/plain"});
+		var a = document.createElement("a");
+		a.href = URL.createObjectURL(blob);
+		a.download = %q;
+		document.body.appendChild(a);
+		a.click();
+		return true;
+	})()`, body, filename)
+	if _, err := m.Evaluate(ctx, trigger); err != nil {
+		t.Fatalf("trigger download: %v", err)
+	}
+}
+
+// awaitCompletedDownload waits for a completed entry other than skipGUID.
+func awaitCompletedDownload(t *testing.T, m *Manager, ctx context.Context, skipGUID string) DownloadEntry {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot, err := m.Downloads(ctx)
+		if err != nil {
+			t.Fatalf("downloads: %v", err)
+		}
+		for _, entry := range snapshot.Downloads {
+			if entry.State == string(downloadStateCompleted) && entry.GUID != skipGUID {
+				return entry
+			}
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	t.Fatal("no download completed within the deadline")
+	return DownloadEntry{}
 }
 
 // holdsSecret walks a value looking for the secret in any reachable string. It
@@ -546,5 +766,83 @@ func TestSetDownloadPathPutsTheFileWhereTheCallerAsked(t *testing.T) {
 	}
 	if _, err := os.Stat(done.Path); err != nil {
 		t.Fatalf("the caller's downloaded file was removed when the path was cleared: %v", err)
+	}
+}
+
+// The armed credential is keyed by tab. Two Authenticate calls landing on one
+// tab at once would overwrite each other's entry, and the first to finish would
+// drop the second's while its navigation was still in flight, so each one's
+// challenge has to be answered with its own password.
+func TestTwoAuthenticateCallsOnOneTabDoNotClobberEachOther(t *testing.T) {
+	m := newHeadlessManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	credentials := map[string]struct{ user, password string }{
+		"/first":  {"user-a", "fixture-pw-a-24d9"},
+		"/second": {"user-b", "fixture-pw-b-7c03"},
+	}
+	var mu sync.Mutex
+	authenticated := map[string]bool{}
+	challengedFirst := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		want, known := credentials[r.URL.Path]
+		gotUser, gotPass, ok := r.BasicAuth()
+		if !known || !ok || gotUser != want.user || gotPass != want.password {
+			if r.URL.Path == "/first" {
+				// Held open so that an unserialised second call would have armed its
+				// own credential before Chrome ever raises this challenge.
+				once.Do(func() { close(challengedFirst) })
+				time.Sleep(250 * time.Millisecond)
+			}
+			w.Header().Set("WWW-Authenticate", `Basic realm="fixture"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		mu.Lock()
+		authenticated[r.URL.Path] = true
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, environmentFixture)
+	}))
+	t.Cleanup(srv.Close)
+
+	emulationTab(t, m, ctx, "about:blank")
+
+	authenticate := func(path string) error {
+		want := credentials[path]
+		_, err := m.Authenticate(ctx, CredentialsOptions{
+			Origin:   srv.URL,
+			Username: want.user,
+			Password: want.password,
+			URL:      srv.URL + path,
+		})
+		return err
+	}
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- authenticate("/first") }()
+
+	select {
+	case <-challengedFirst:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the first call never reached the fixture")
+	}
+	secondErr := authenticate("/second")
+	firstErr := <-firstDone
+	if firstErr != nil {
+		t.Fatalf("the first Authenticate failed: %v", firstErr)
+	}
+	if secondErr != nil {
+		t.Fatalf("the second Authenticate failed: %v", secondErr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for path := range credentials {
+		if !authenticated[path] {
+			t.Fatalf("%s was never reached with its own credentials; a concurrent call on the same tab answered or dropped this one's", path)
+		}
 	}
 }

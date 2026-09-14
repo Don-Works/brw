@@ -1,6 +1,10 @@
 package brwidentity
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestIdentityMismatchesComparesOnlyExpectedFields(t *testing.T) {
 	got := Identity{
@@ -75,7 +79,7 @@ func TestIgnoreHTTPSErrorsIsReportedAndCountsAsIdentity(t *testing.T) {
 	tests := []struct {
 		name       string
 		id         Identity
-		wantReport bool
+		wantInJSON bool
 		wantEmpty  bool
 	}{
 		{"zero value", Identity{}, false, true},
@@ -84,8 +88,14 @@ func TestIgnoreHTTPSErrorsIsReportedAndCountsAsIdentity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.id.IgnoreHTTPSErrors != tt.wantReport {
-				t.Fatalf("IgnoreHTTPSErrors = %v, want %v", tt.id.IgnoreHTTPSErrors, tt.wantReport)
+			// /health serves this struct as JSON, so the encoded form is where a
+			// caller either learns that validation is off or does not.
+			encoded, err := json.Marshal(tt.id)
+			if err != nil {
+				t.Fatalf("marshal identity: %v", err)
+			}
+			if got := strings.Contains(string(encoded), `"ignore_https_errors":true`); got != tt.wantInJSON {
+				t.Fatalf("identity JSON %s carries ignore_https_errors = %v, want %v", encoded, got, tt.wantInJSON)
 			}
 			if got := tt.id.Empty(); got != tt.wantEmpty {
 				t.Fatalf("Empty() = %v, want %v; an identity reported as empty is omitted from /health entirely", got, tt.wantEmpty)

@@ -252,8 +252,18 @@ request interceptor instead, per request, after checking the request's origin.
 Header values are never echoed back in results.
 
 `brw_authenticate` takes the credentials for one navigation and drops them before
-it returns. There is no "store these credentials" call and no credential state to
-clear afterwards.
+it returns. There is no "store these credentials" call and no brw-side credential
+state to clear afterwards.
+
+The browser keeps its own copy. Once a challenge has been answered, Chrome holds
+that credential in its HTTP-auth cache and re-sends it for that origin for the
+rest of the browser session, and CDP has no command to empty that cache. On a
+persistent profile that means every later load of the origin is authenticated,
+including one a human makes in a visible window. The result says so as
+`authentication.browser_cached`. Bound it by authenticating in an incognito
+context (`brw_open_incognito`) and disposing it with `brw_close_context`, which
+discards the cache with the context; otherwise the credential lives until the
+browser restarts.
 
 `brwctl setup --transport direct-cdp` configures the second lane. Running both
 against different profiles is supported: one `brwd` per profile, one MCP server

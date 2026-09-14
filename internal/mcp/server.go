@@ -1011,10 +1011,12 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return toolError(browser.ErrEnvironmentUnsupported), nil
 		}
 		var req browser.CredentialsOptions
-		// Not unmarshalStrictArgs: its error quotes the offending JSON, and this
-		// body is the one that carries a password.
-		if err := unmarshalArgs(args, &req); err != nil {
-			return nil, invalid(errors.New("arguments are not valid JSON for this tool"))
+		// Strict like every other tool — a typo in "password" must be an argument
+		// error, not an empty password and a puzzling "the server never asked".
+		// The decoder's own message quotes the offending JSON, which here is the
+		// credential, so only this constant reaches the caller.
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(errors.New("arguments are not valid JSON for this tool, or carry a field this tool does not define; check the names against the schema"))
 		}
 		// Marked sensitive so the replayable trace records that a navigation
 		// happened without recording the URL it went to: a credentialed URL is
@@ -2199,7 +2201,7 @@ func tools() []map[string]any {
 			"clear":          boolSchema("Remove the media override and go back to the browser's own media type and user preferences."),
 			"tab_id":         stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
-		tool("brw_set_extra_headers", "Attach extra request headers to the origins you name, and to nothing else. Each entry binds a header set to one origin (scheme://host[:port]); a request to any other origin is left exactly as the page made it. That scoping is the point: the browser-wide way to add headers puts them on every request a page makes, so an Authorization header set that way also reaches the page's analytics beacons, font CDNs and tracking pixels. Header VALUES are never echoed back - the result lists only origins and header names. clear:true removes the table. Returns {ok, tab_id, extra_headers:[{origin, headers:[name]}], message}. DIRECT-CDP TRANSPORT ONLY: on the extension bridge this returns a named capability error.", object(map[string]any{
+		tool("brw_set_extra_headers", "Attach extra request headers to the origins you name, and to nothing else. Each entry binds a header set to one origin (scheme://host[:port]); a request to any other origin is left exactly as the page made it. That scoping is the point: the browser-wide way to add headers puts them on every request a page makes, so an Authorization header set that way also reaches the page's analytics beacons, font CDNs and tracking pixels. Header VALUES are never echoed back - the result lists only origins and header names. Host, Content-Length and Transfer-Encoding are refused: they change which server or which body the request is for, behind the checks the navigation policy already made. clear:true removes the table and turns request interception back off when nothing else on the tab needs it. Returns {ok, tab_id, extra_headers:[{origin, headers:[name]}], message}. DIRECT-CDP TRANSPORT ONLY: on the extension bridge this returns a named capability error.", object(map[string]any{
 			"origins": map[string]any{
 				"type":        "array",
 				"description": "Origins allowed to receive extra headers, each with its own header set.",
@@ -2222,14 +2224,14 @@ func tools() []map[string]any {
 			"clear":           boolSchema("Restore the user agent brw captured before the first override on this tab."),
 			"tab_id":          stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
-		tool("brw_authenticate", "Load one URL with HTTP authentication (Basic/Digest/NTLM challenges) armed for a single origin, then drop the credentials. The credentials exist only for the duration of this call: brw arms them, answers challenges from the declared origin, and overwrites them before returning, so nothing keeps a password between calls and there is no stored-credential state to forget about. A challenge from any other origin is left to the browser's default handling rather than being offered the password. url must be on origin; omit it to load the origin itself. Returns {ok, tab_id, authentication:{origin, url, challenged, answered}, message} - challenged:false means the server never asked and the credentials went unused. DIRECT-CDP TRANSPORT ONLY: on the extension bridge this returns a named capability error.", object(map[string]any{
+		tool("brw_authenticate", "Load one URL with HTTP authentication (Basic/Digest/NTLM challenges) armed for a single origin, then drop the credentials. brw holds them only for the duration of this call: it arms them, answers challenges from the declared origin, and overwrites them before returning, so no brw state keeps a password between calls. THE BROWSER IS A DIFFERENT MATTER: once a challenge has been answered, Chrome caches that credential for the origin for the rest of the browser session and re-sends it on every later request there - yours, or a human's in the same profile - and no CDP command can clear it. authentication.browser_cached:true says that has happened. To bound it, authenticate inside a context from brw_open_incognito and dispose it with brw_close_context, which discards the cache with it. A challenge from any other origin is left to the browser's default handling rather than being offered the password. url must be on origin; omit it to load the origin itself. Returns {ok, tab_id, authentication:{origin, url, challenged, answered, browser_cached}, message} - challenged:false means the server never asked, the credentials went unused and nothing was cached. DIRECT-CDP TRANSPORT ONLY: on the extension bridge this returns a named capability error.", object(map[string]any{
 			"origin":   stringSchema("Origin the credentials are valid for, for example https://staging.example.com. Challenges from any other origin are not answered with them."),
 			"username": stringSchema("Username to supply when that origin challenges."),
 			"password": stringSchema("Password to supply when that origin challenges. Dropped before this call returns."),
 			"url":      stringSchema("URL to load with the credentials armed. Must be on origin. Omit to load the origin itself."),
 			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"origin"})),
-		tool("brw_set_download_path", "Send completed downloads to a directory you name instead of brw's private staging directory, so a downloaded file is somewhere you can open it. The path must be absolute; brw creates it if needed and never deletes it. Files are named by their brw download id rather than the server's suggested filename, which is what keeps the path brw_downloads reports exact - a suggested filename is chosen by the site and Chrome silently renames collisions. Pair with brw_downloads to find the id, state and path of each file. clear:true goes back to the managed staging directory. Returns {ok, download_path, message}. DIRECT-CDP TRANSPORT ONLY: the extension bridge uses the browser's own download folder and returns a named capability error.", object(map[string]any{
+		tool("brw_set_download_path", "Send completed downloads to a directory you name instead of brw's private staging directory, so a downloaded file is somewhere you can open it. BROWSER-WIDE: it applies to every tab, which is why there is no tab_id. The path must be absolute; brw creates it if needed and never deletes it, and unlike its own staging directory it does not refuse a path inside a Git checkout - you named this directory deliberately and brw removes nothing from it. Downloads that already completed stay where they are, at the paths brw_downloads already reported. Files are named by their brw download id rather than the server's suggested filename, which is what keeps the path brw_downloads reports exact - a suggested filename is chosen by the site and Chrome silently renames collisions. Pair with brw_downloads to find the id, state and path of each file. clear:true goes back to the managed staging directory. Returns {ok, download_path, message}. DIRECT-CDP TRANSPORT ONLY: the extension bridge uses the browser's own download folder and returns a named capability error.", object(map[string]any{
 			"path":  stringSchema("Absolute directory for completed downloads."),
 			"clear": boolSchema("Go back to brw's private staging directory, which is removed on shutdown."),
 		}, nil)),

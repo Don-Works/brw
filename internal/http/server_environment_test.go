@@ -23,6 +23,10 @@ type environmentRecorder struct {
 	userAgent   browser.UserAgentOptions
 	credentials browser.CredentialsOptions
 	download    browser.DownloadPathOptions
+	// authSensitive records whether the handler marked the call as carrying a
+	// caller-declared secret, which is what keeps the credentialed URL out of the
+	// daemon's replayable trace.
+	authSensitive bool
 }
 
 func (c *environmentRecorder) SetGeolocation(_ context.Context, opts browser.GeolocationOptions) (browser.EnvironmentResult, error) {
@@ -50,8 +54,9 @@ func (c *environmentRecorder) SetUserAgent(_ context.Context, opts browser.UserA
 	return browser.EnvironmentResult{OK: true}, nil
 }
 
-func (c *environmentRecorder) Authenticate(_ context.Context, opts browser.CredentialsOptions) (browser.EnvironmentResult, error) {
+func (c *environmentRecorder) Authenticate(ctx context.Context, opts browser.CredentialsOptions) (browser.EnvironmentResult, error) {
 	c.credentials = opts
+	c.authSensitive = browser.RedactTraceEntry(ctx, browser.TraceEntry{Text: opts.URL}).Redacted
 	return browser.EnvironmentResult{OK: true}, nil
 }
 
@@ -219,5 +224,28 @@ func TestAuthenticateRouteDoesNotEchoTheBodyOnADecodeError(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), fixtureCredential) {
 		t.Fatalf("the rejected body was echoed back: %s", rec.Body.String())
+	}
+}
+
+// The MCP layer marks brw_authenticate sensitive so the credentialed URL stays
+// out of the replayable trace. Under --upstream-http that mark is applied in one
+// process and the trace is kept in another, so the HTTP route has to apply it
+// too or the proxy topology is unredacted by construction.
+func TestAuthenticateRouteMarksTheCallSensitive(t *testing.T) {
+	ctrl := &environmentRecorder{}
+	server := &Server{manager: ctrl}
+	mux := http.NewServeMux()
+	server.routes(mux)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/page/authenticate",
+		strings.NewReader(`{"origin":"https://staging.example.com","username":"u","password":"p","url":"https://staging.example.com/x?token=fabricated"}`))
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", recorder.Code, recorder.Body.String())
+	}
+	if !ctrl.authSensitive {
+		t.Fatal("the authenticate route did not mark the call sensitive, so the credentialed URL reaches the daemon's trace verbatim")
 	}
 }

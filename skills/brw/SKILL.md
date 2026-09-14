@@ -48,13 +48,17 @@ capabilities.
 | `brw_open_incognito` / `brw_close_context` | error: *"incognito browser contexts are not supported on the extension-bridge transport"* | works; `tab.context_id` comes back on open |
 | `brw_cookies` | error: *"cookie access is not supported on the extension-bridge transport"* | works, including HttpOnly |
 | `brw_list_tab_groups` / `brw_group_tabs` / `brw_ungroup_tabs` | works | error: *"tab grouping is not supported on the direct-CDP transport"* |
+| `brw_set_geolocation` / `brw_set_network_conditions` / `brw_emulate_media` / `brw_set_extra_headers` / `brw_set_user_agent` / `brw_authenticate` / `brw_set_download_path` | not advertised at all; calling one anyway errors: *"page environment overrides … are not supported on the extension-bridge transport"* | works |
 | `brw_snapshot {include_ax:true}` | no AX tree | AX enrichment available |
 | tab ids | Chrome tab ids, e.g. `"235935869"` | CDP target ids, e.g. `"79F95D14…"` |
 
-Both transports ship in brw. Every tool above is listed and fully described in
-`tools/list` on both, and fails only when called, so an unavailable capability is a
-property of this profile's lane, not of the product; an operator can run a second
-daemon on the other transport.
+Both transports ship in brw, and an unavailable capability is a property of this
+profile's lane, not of the product; an operator can run a second daemon on the
+other transport. Most tools are listed and fully described in `tools/list` on both
+and fail only when called. The seven page-environment tools are the exception: they
+are DevTools session overrides that the bridge's attach/detach cycle would silently
+drop between calls, so on the bridge they are not advertised and an agent never
+spends a call finding out.
 
 When incognito is unavailable and you need isolation: use a second brw profile (two
 signed-in identities), or ask the operator for a direct-CDP profile (`brwd` without
@@ -178,6 +182,15 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `brw_emulate_device({device?, clear?, width?, height?, device_scale_factor?, mobile?, touch?, user_agent?, platform?, orientation?, max_touch_points?, tab_id?})` — real DevTools emulation (presets `iphone_se`, `pixel_7`, `ipad`, …), not OS resizing. Reload after applying if the app decides layout at load.
   The reply carries `layout_viewport_width`: the width the page ACTUALLY laid out at, measured after the override. Check it rather than assuming you got the width you asked for. `mobile_layout_fallback:true` means the mobile flag was dropped to get that width — Chrome ignores a page's viewport meta tag under mobile emulation and would otherwise lay the page out at a fixed 980px, so every width-based media query would evaluate against 980. Screen size, pixel ratio, user agent and touch points are still emulated.
 - `brw_window_bounds({tab_id?})` → `{device_pixel_ratio,screen_x,screen_y,inner_*,outer_*,scroll_*,screen_*}`; `brw_window_resize({width?,height?,left?,top?,state?})` moves the real OS window.
+- `brw_set_download_path({path|clear})` → `{ok,download_path}`. Sends completed downloads somewhere you can open them instead of brw's private staging directory. Browser-wide, so there is no `tab_id`; files are named by download id, and files already downloaded stay where they were.
+
+**Faking the page's surroundings** (direct-CDP only; each returns a named capability error on the extension bridge and is not advertised there)
+- `brw_set_geolocation({latitude,longitude,accuracy?,clear?,tab_id?})` — what `navigator.geolocation` reports. brw grants the page's geolocation permission so the override is reachable, and puts the permission back as it found it on `clear`.
+- `brw_set_network_conditions({offline?,latency_ms?,download_throughput?,upload_throughput?,clear?,tab_id?})` — `offline:true` actually fails the page's requests, which is what enters an app's offline path; throughputs are bytes/second and `-1` is no limit.
+- `brw_emulate_media({media?:"screen"|"print", color_scheme?:"light"|"dark"|"no-preference", reduced_motion?:"reduce"|"no-preference", clear?, tab_id?})` — media queries re-evaluate immediately; a page that reads the preference once at startup needs a reload.
+- `brw_set_extra_headers({origins:[{origin,headers}],clear?,tab_id?})` — extra request headers for the origins you name **and nothing else**, attached per request from the interceptor. The browser-wide way would put a bearer token on every analytics beacon and font CDN the page touches. Values are never echoed back; `Host`, `Content-Length` and `Transfer-Encoding` are refused.
+- `brw_set_user_agent({user_agent,accept_language?,platform?,clear?,tab_id?})` — the request header as well as `navigator.userAgent`. `Sec-CH-UA` client hints still report the real browser. For phone/tablet work prefer `brw_emulate_device`, which sets the UA together with viewport, DPR and touch.
+- `brw_authenticate({origin,username,password,url?,tab_id?})` → `{authentication:{origin,url,challenged,answered,browser_cached}}`. Loads one URL with HTTP auth armed for one origin; `challenged:false` means the server never asked. brw drops its copy before returning, but **Chrome caches an answered credential for that origin for the rest of the browser session** and no CDP command clears it — `browser_cached:true` says so. Do it inside `brw_open_incognito` and dispose the context if that matters.
 - `brw_notify({title?, message?, kind?})` — desktop notification. `kind` is `needs_input`, `done`, or `error`; anything else is rejected. Use `needs_input` at MFA/CAPTCHA/payment and stop.
 
 **Dialogs**

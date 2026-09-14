@@ -220,6 +220,50 @@ the non-destructive answer — brw will not auto-confirm "Delete this account?".
 `{"action":"status"}` lists the dialogs that were answered and why, which is
 where to look when a flow did something you did not expect.
 
+## Faking the page's surroundings
+
+Seven tools override what a page believes about where it is and what it is
+talking to. All of them are DevTools session overrides, so they need the
+direct-CDP transport; on the extension bridge they are not advertised and return
+a named capability error if called anyway.
+
+`brw_set_geolocation {latitude, longitude, accuracy?}` is what
+`navigator.geolocation` reports. brw grants the page's geolocation permission so
+the override is reachable at all, and puts the permission back as it found it
+when you clear.
+
+`brw_set_network_conditions {offline, latency_ms?, download_throughput?,
+upload_throughput?}` throttles or disconnects. `offline:true` actually fails the
+page's requests, which is what enters an app's offline path — a flag the page can
+read but that still serves it data would just look like a passing test.
+
+`brw_emulate_media {media?, color_scheme?, reduced_motion?}` forces the CSS media
+type and the `prefers-*` features. Media queries re-evaluate immediately, but a
+page that reads the preference once at startup needs a reload.
+
+`brw_set_extra_headers {origins:[{origin, headers}]}` attaches headers to the
+origins you name and to nothing else. The browser-wide way to add a header puts
+it on every request the page makes, so an `Authorization` header set that way
+also reaches the page's analytics beacons and font CDNs. Values are never echoed
+back; `Host`, `Content-Length` and `Transfer-Encoding` are refused because they
+change which server or which body the request is for.
+
+`brw_set_user_agent {user_agent, accept_language?, platform?}` changes the
+request header as well as `navigator.userAgent`. `Sec-CH-UA` client hints still
+report the real browser.
+
+`brw_authenticate {origin, username, password, url?}` loads one URL with HTTP
+authentication armed for one origin. `challenged:false` means the server never
+asked and the credentials went unused. brw drops its copy before returning, but
+Chrome keeps an answered credential in its own HTTP-auth cache for the rest of
+the browser session and no CDP command clears it — the result says so as
+`browser_cached`. Authenticate inside `brw_open_incognito` and dispose the
+context when that matters.
+
+`brw_set_download_path {path}` sends completed downloads to a directory you name.
+It is browser-wide rather than per tab, files are named by download id, and files
+already downloaded stay where they were.
+
 ## Mocking requests
 
 `brw_route {action:"add", pattern, behaviour}` answers matching requests without

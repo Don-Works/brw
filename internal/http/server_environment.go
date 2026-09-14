@@ -97,7 +97,11 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	result, err := env.Authenticate(s.contextWithTabID(r.Context(), req.TabID), req)
+	// Marked sensitive here as well as in the MCP layer: with --upstream-http the
+	// MCP wrapper and the daemon holding the trace are different processes, so a
+	// mark applied only there never reaches the trace this navigation writes.
+	ctx := browser.WithSensitiveAction(s.contextWithTabID(r.Context(), req.TabID))
+	result, err := env.Authenticate(ctx, req)
 	writeResult(w, result, err)
 }
 

@@ -109,14 +109,17 @@ func (m *Manager) NavigateTo(ctx context.Context, url string) (ActionResult, err
 
 	result := m.observeActionWithBefore(tabID, tabCtx, "navigated to "+url, before)
 	result.DurationMS = time.Since(start).Milliseconds()
-	m.recordTrace(tabID, TraceEntry{
+	// Redacted when the caller declared this navigation sensitive: a credentialed
+	// URL is the kind that carries a token in its query string, and the trace is
+	// replayable and readable long after the call.
+	m.recordTrace(tabID, RedactTraceEntry(ctx, TraceEntry{
 		Action:     "navigate_to",
 		Text:       url,
 		OK:         result.OK,
 		Error:      result.Warning,
 		DurationMS: result.DurationMS,
 		Timestamp:  time.Now().Format(time.RFC3339),
-	})
+	}))
 	return result, nil
 }
 

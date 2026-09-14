@@ -128,8 +128,12 @@ type Manager struct {
 	downloadSequence  uint64
 	downloadDir       string
 	downloadDirOwned  bool
-	userDataDir       string
-	downloadsEnabled  bool
+	// retiredDownloadDirs are managed staging directories brw has stepped off but
+	// still owns. Completed downloads recorded paths inside them, so they outlive
+	// the switch and are removed at Close.
+	retiredDownloadDirs []string
+	userDataDir         string
+	downloadsEnabled    bool
 	// dialogs holds per-tab JavaScript-dialog arms and the answered-dialog ring.
 	// The listener it backs is mandatory: see ensureDialogHandling. Zero value is
 	// usable; its maps are created on first use.

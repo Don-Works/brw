@@ -85,6 +85,34 @@ func TestNormalizeExtraHeaders(t *testing.T) {
 			opts:    ExtraHeadersOptions{Origins: []OriginHeaders{{Origin: "https://api.example.com", Headers: map[string]string{"X-Test": "a\r\nX-Injected: b"}}}},
 			wantErr: "newline",
 		},
+		{
+			// Host is evaluated by containmentVerdict out of the request URL, so a
+			// forged one reaches a virtual host the policy was asked to confine.
+			name:    "host",
+			opts:    ExtraHeadersOptions{Origins: []OriginHeaders{{Origin: "https://api.example.com", Headers: map[string]string{"Host": "internal.example.test"}}}},
+			wantErr: "cannot be set from the per-origin header table",
+		},
+		{
+			name:    "host in any spelling",
+			opts:    ExtraHeadersOptions{Origins: []OriginHeaders{{Origin: "https://api.example.com", Headers: map[string]string{"hOsT": "internal.example.test"}}}},
+			wantErr: "cannot be set from the per-origin header table",
+		},
+		{
+			name:    "content-length",
+			opts:    ExtraHeadersOptions{Origins: []OriginHeaders{{Origin: "https://api.example.com", Headers: map[string]string{"Content-Length": "0"}}}},
+			wantErr: "cannot be set from the per-origin header table",
+		},
+		{
+			name:    "transfer-encoding",
+			opts:    ExtraHeadersOptions{Origins: []OriginHeaders{{Origin: "https://api.example.com", Headers: map[string]string{"Transfer-Encoding": "chunked"}}}},
+			wantErr: "cannot be set from the per-origin header table",
+		},
+		{
+			// Content-Type describes the body the page already built; it forges
+			// nothing and is one of the common reasons to declare a header at all.
+			name: "content-type is still allowed",
+			opts: ExtraHeadersOptions{Origins: []OriginHeaders{{Origin: "https://api.example.com", Headers: map[string]string{"Content-Type": "application/json"}}}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

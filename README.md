@@ -312,6 +312,13 @@ Core MCP tools include:
   `brw_artifact_search`, `brw_artifact_delete`
 - `brw_recipe_search`, `brw_recipe_run` (only when a private provider is configured)
 - `brw_emulate_device` for DevTools mobile/responsive emulation
+- `brw_set_geolocation`, `brw_set_network_conditions`, `brw_emulate_media` —
+  what the page believes about where it is, whether it has a network, and which
+  media it renders for (direct-CDP transport only)
+- `brw_set_extra_headers` — extra request headers for the origins you name and
+  nothing else; `brw_set_user_agent`; `brw_authenticate` for one credentialed
+  navigation (direct-CDP transport only)
+- `brw_set_download_path` — send completed downloads somewhere you can open them
 - `brw_network_requests`, `brw_network_capture`, `brw_replay_request`
 - `brw_console`, `brw_downloads`, `brw_trace`
 - `brw_assert_visible`, `brw_assert_text`, `brw_assert_value`

@@ -248,3 +248,58 @@ func TestEnvironmentToolsForwardTheirArguments(t *testing.T) {
 		})
 	}
 }
+
+// brw_authenticate decodes strictly like every other tool: a misspelled
+// "password" has to be an argument error, not an empty password, a challenge
+// that is never answered and a caller left to work out why the server "never
+// asked". Strictness and not echoing the body are independent, so the error is
+// still the constant one rather than the decoder's, which quotes the JSON it
+// choked on — and here that JSON is the credential.
+func TestAuthenticateIsStrictAboutFieldsAndStillNeverEchoesThem(t *testing.T) {
+	const fixtureCredential = "fabricated-pw-8f14"
+	tests := []struct {
+		name      string
+		args      map[string]any
+		wantError bool
+	}{
+		{
+			name: "a misspelled password",
+			args: map[string]any{"origin": "https://staging.example.com", "username": "u", "passwrd": fixtureCredential},
+			// A field this tool does not define cannot be silently dropped: the
+			// call would load the page unauthenticated and say so obscurely.
+			wantError: true,
+		},
+		{
+			name:      "the fields the tool defines",
+			args:      map[string]any{"origin": "https://staging.example.com", "username": "u", "password": fixtureCredential},
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := &recordingEnvironmentController{}
+			input := lineJSON(t, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"method":  "tools/call",
+				"params":  map[string]any{"name": "brw_authenticate", "arguments": tt.args},
+			})
+			var output bytes.Buffer
+			if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(output.String(), fixtureCredential) {
+				t.Fatalf("the password was echoed back to the caller in %s", output.String())
+			}
+			resp := parseLineResponse(t, output.Bytes())
+			_, failed := resp["error"]
+			if failed != tt.wantError {
+				t.Fatalf("response = %#v, want error %v", resp, tt.wantError)
+			}
+			if tt.wantError && ctrl.credentials.Origin != "" {
+				t.Fatalf("the call reached the controller as %+v despite the unknown field", ctrl.credentials)
+			}
+		})
+	}
+}

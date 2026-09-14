@@ -126,6 +126,11 @@ func TestEveryAPIRouteIsInTheUsageAllowlist(t *testing.T) {
 		if !ok || selector.Sel.Name != "HandleFunc" {
 			return true
 		}
+		// Only the mux registrations: a HandleFunc called on anything else is
+		// not a route this server serves.
+		if receiver, ok := selector.X.(*ast.Ident); !ok || receiver.Name != "mux" {
+			return true
+		}
 		literal, ok := call.Args[0].(*ast.BasicLit)
 		if !ok || literal.Kind != token.STRING {
 			return true

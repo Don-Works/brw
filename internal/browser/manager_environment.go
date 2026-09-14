@@ -9,11 +9,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/chromedp/cdproto"
 	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	cdpe "github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
@@ -33,6 +35,12 @@ type environmentState struct {
 	headers     map[string][]OriginHeaders
 	credentials map[string]*armedCredential
 	uaBaselines map[string]string
+	authCalls   map[string]*sync.Mutex
+	// geoPermissions remembers, per ORIGIN, the geolocation permission that was
+	// in force before brw granted its own. Chrome has no getPermission, and the
+	// permission is browser-wide rather than per tab, so clearing an override
+	// would otherwise revoke a grant the human made themselves.
+	geoPermissions map[string]string
 }
 
 // armedCredential is alive only between Authenticate arming it and the deferred
@@ -56,6 +64,49 @@ func (e *environmentState) initLocked() {
 	if e.uaBaselines == nil {
 		e.uaBaselines = map[string]string{}
 	}
+	if e.authCalls == nil {
+		e.authCalls = map[string]*sync.Mutex{}
+	}
+	if e.geoPermissions == nil {
+		e.geoPermissions = map[string]string{}
+	}
+}
+
+// authLock serialises Authenticate calls on one tab.
+func (e *environmentState) authLock(tabID string) *sync.Mutex {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.initLocked()
+	lock, ok := e.authCalls[tabID]
+	if !ok {
+		lock = &sync.Mutex{}
+		e.authCalls[tabID] = lock
+	}
+	return lock
+}
+
+// rememberGeoPermission records the permission state an origin had before brw
+// granted its own, once. A second override on the same origin must not overwrite
+// the first recording with the granted state brw itself installed.
+func (e *environmentState) rememberGeoPermission(origin, state string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.initLocked()
+	if _, ok := e.geoPermissions[origin]; !ok {
+		e.geoPermissions[origin] = state
+	}
+}
+
+// takeGeoPermission returns the state to restore for an origin, and whether brw
+// is the one that changed it. Not ok means brw granted nothing here and must
+// leave the permission alone.
+func (e *environmentState) takeGeoPermission(origin string) (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.initLocked()
+	state, ok := e.geoPermissions[origin]
+	delete(e.geoPermissions, origin)
+	return state, ok
 }
 
 func (e *environmentState) setHeaders(tabID string, entries []OriginHeaders) {
@@ -188,6 +239,7 @@ func (e *environmentState) forget(tabID string) {
 	e.initLocked()
 	delete(e.headers, tabID)
 	delete(e.uaBaselines, tabID)
+	delete(e.authCalls, tabID)
 	if armed, ok := e.credentials[tabID]; ok {
 		armed.origin = ""
 		armed.username = ""
@@ -226,14 +278,23 @@ func (m *Manager) SetGeolocation(ctx context.Context, opts GeolocationOptions) (
 		})); err != nil {
 			return EnvironmentResult{}, err
 		}
+		message := "cleared the geolocation override; the page is back on the browser's own location service"
 		if originErr == nil {
-			_ = m.setGeolocationPermission(ctx, origin, cdpbrowser.PermissionSettingPrompt)
+			// Only what brw changed is changed back. On a persistent profile the
+			// site may have been granted geolocation by the human long before this
+			// session, and resetting to Prompt regardless would revoke it for them.
+			if previous, ours := m.env.takeGeoPermission(origin); ours {
+				_ = m.setGeolocationPermission(ctx, origin, permissionSettingFor(previous))
+				message += "; the page's geolocation permission is back at " + previous
+			} else {
+				message += "; the page's geolocation permission is untouched because brw did not grant it"
+			}
 		}
 		return EnvironmentResult{
 			OK:      true,
 			TabID:   tabID,
 			Cleared: true,
-			Message: "cleared the geolocation override; the page is back on the browser's own location service",
+			Message: message,
 		}, nil
 	}
 
@@ -242,6 +303,9 @@ func (m *Manager) SetGeolocation(ctx context.Context, opts GeolocationOptions) (
 	// never reaches the overridden position at all.
 	granted := false
 	if originErr == nil {
+		if previous, err := m.geolocationPermissionState(tabCtx); err == nil && previous != permissionStateGranted {
+			m.env.rememberGeoPermission(origin, previous)
+		}
 		granted = m.setGeolocationPermission(ctx, origin, cdpbrowser.PermissionSettingGranted) == nil
 	}
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(runCtx context.Context) error {
@@ -321,6 +385,10 @@ type networkConditionsParams struct {
 // The rename means a future Chrome may drop the old name, so the new one is the
 // fallback rather than a missing capability. When the fallback is what runs, say
 // so: the caller is getting a reported-offline browser that is still online.
+//
+// The fallback is chosen on the JSON-RPC error CODE, not on Chrome's wording for
+// it: matching the message would turn a graceful degrade into a hard failure for
+// every caller the day that sentence is reworded.
 func applyNetworkConditions(ctx context.Context, cfg NetworkConditionsConfig) (degraded bool, err error) {
 	params := networkConditionsParams{
 		Offline:            cfg.Offline,
@@ -329,10 +397,19 @@ func applyNetworkConditions(ctx context.Context, cfg NetworkConditionsConfig) (d
 		UploadThroughput:   cfg.UploadThroughput,
 	}
 	err = cdp.Execute(ctx, "Network.emulateNetworkConditions", params, nil)
-	if err == nil || !strings.Contains(err.Error(), "wasn't found") {
+	if err == nil || !isMethodNotFound(err) {
 		return false, err
 	}
 	return true, cdp.Execute(ctx, network.CommandOverrideNetworkState, params, nil)
+}
+
+// cdpMethodNotFound is JSON-RPC's method-not-found code, which is what Chrome
+// answers a command it no longer implements.
+const cdpMethodNotFound = -32601
+
+func isMethodNotFound(err error) bool {
+	var protocolErr *cdproto.Error
+	return errors.As(err, &protocolErr) && protocolErr.Code == cdpMethodNotFound
 }
 
 // EmulateMedia forces the CSS media type and user-preference media features.
@@ -388,12 +465,21 @@ func (m *Manager) SetExtraHeaders(ctx context.Context, opts ExtraHeadersOptions)
 	if clear {
 		removed := HeaderNames(m.env.listHeaders(tabID))
 		m.env.setHeaders(tabID, nil)
+		message := "cleared the per-origin extra headers listed here, and turned request interception back off: nothing else on this tab needs it"
+		liveCtx, err := m.tabContext(tabID)
+		if err == nil {
+			if syncErr := m.syncFetchInterception(liveCtx, tabID); syncErr != nil {
+				message = "cleared the per-origin extra headers listed here; request interception could not be turned back off, so requests on this tab still pause at the daemon: " + syncErr.Error()
+			} else if m.navPolicy.Confines() || m.routes.count(tabID) > 0 {
+				message = "cleared the per-origin extra headers listed here; request interception stays armed because routes or the navigation policy still need it"
+			}
+		}
 		return EnvironmentResult{
 			OK:           true,
 			TabID:        tabID,
 			Cleared:      true,
 			ExtraHeaders: removed,
-			Message:      "cleared the per-origin extra headers listed here; request interception stays armed because routes and the navigation policy share it",
+			Message:      message,
 		}, nil
 	}
 
@@ -411,7 +497,7 @@ func (m *Manager) SetExtraHeaders(ctx context.Context, opts ExtraHeadersOptions)
 	// Headers are attached from the interception handler, so interception has to
 	// be armed even when no route and no navigation policy asked for it.
 	m.armInterception(tabID, liveCtx)
-	if err := m.enableFetchInterception(liveCtx, tabID); err != nil {
+	if err := m.syncFetchInterception(liveCtx, tabID); err != nil {
 		m.env.setHeaders(tabID, previous)
 		return EnvironmentResult{}, fmt.Errorf("arm request interception for per-origin headers: %w", err)
 	}
@@ -503,17 +589,28 @@ func (m *Manager) Authenticate(ctx context.Context, opts CredentialsOptions) (En
 	if err != nil {
 		return EnvironmentResult{}, err
 	}
-	m.armInterception(tabID, liveCtx)
+
+	// The armed credential is keyed by tab, so two concurrent calls on one tab
+	// would overwrite each other's entry and the first to finish would drop the
+	// second's while its navigation was still in flight. They queue instead.
+	call := m.env.authLock(tabID)
+	call.Lock()
+	defer call.Unlock()
+
+	// Armed before the listener is installed, so the enable that armInterception
+	// schedules already sees a credential and asks for authRequired events.
 	m.env.armCredential(tabID, origin, opts.Username, opts.Password)
 	// The drop runs whatever happens below, including a panic unwinding through
 	// here: the credential must not outlive this call on any path.
 	defer func() {
 		m.env.dropCredential(tabID)
-		// Re-enable without auth handling so a later 401 on this tab falls back
-		// to Chrome's own behaviour instead of a silently dead interception.
-		_ = m.enableFetchInterception(liveCtx, tabID)
+		// Back to whatever this tab still needs: interception without auth
+		// handling when routes, headers or a policy want it, and off when nothing
+		// does, so a later 401 falls to Chrome rather than a dead interception.
+		_ = m.syncFetchInterception(liveCtx, tabID)
 	}()
-	if err := m.enableFetchInterception(liveCtx, tabID); err != nil {
+	m.armInterception(tabID, liveCtx)
+	if err := m.syncFetchInterception(liveCtx, tabID); err != nil {
 		return EnvironmentResult{}, fmt.Errorf("arm authentication handling: %w", err)
 	}
 
@@ -523,10 +620,16 @@ func (m *Manager) Authenticate(ctx context.Context, opts CredentialsOptions) (En
 		return EnvironmentResult{}, navErr
 	}
 
-	outcome := &AuthenticationOutcome{Origin: origin, URL: target, Challenged: challenged, Answered: answered}
-	message := fmt.Sprintf("answered %d authentication challenge(s) from %s and dropped the credentials before returning", answered, origin)
+	outcome := &AuthenticationOutcome{
+		Origin:        origin,
+		URL:           target,
+		Challenged:    challenged,
+		Answered:      answered,
+		BrowserCached: answered > 0,
+	}
+	message := fmt.Sprintf("answered %d authentication challenge(s) from %s and dropped brw's copy of the credentials before returning. The BROWSER now holds them: Chrome caches an answered credential for that origin for the rest of the browser session and no CDP command clears it, so every later load of %s in this browser is authenticated. Do this in an incognito context and dispose it when you are done if that is not what you want", answered, origin, origin)
 	if !challenged {
-		message = fmt.Sprintf("loaded %s without the server ever asking for authentication; the credentials were dropped unused", target)
+		message = fmt.Sprintf("loaded %s without the server ever asking for authentication; the credentials were dropped unused and the browser cached nothing", target)
 	}
 	return EnvironmentResult{
 		OK:            navResult.OK,
@@ -579,7 +682,7 @@ func (m *Manager) SetDownloadPath(ctx context.Context, opts DownloadPathOptions)
 	return EnvironmentResult{
 		OK:           true,
 		DownloadPath: dir,
-		Message:      "downloads now land in this directory, named by their brw download id rather than the server's suggested filename. That is what keeps the path brw_downloads reports exact: a suggested filename is attacker-controlled and Chrome silently renames collisions. brw will not delete this directory",
+		Message:      "downloads now land in this directory, named by their brw download id rather than the server's suggested filename. That is what keeps the path brw_downloads reports exact: a suggested filename is attacker-controlled and Chrome silently renames collisions. brw will not delete this directory. The setting is browser-wide, so every tab downloads here, and files that completed before this call stay where they were at the paths brw_downloads already reported",
 	}, nil
 }
 
@@ -594,9 +697,12 @@ func (m *Manager) applyDownloadBehavior(ctx context.Context, dir string) error {
 	})
 }
 
-// adoptDownloadDir switches tracking to a caller-owned directory, removing the
-// managed staging directory it replaces so an abandoned one does not sit in the
-// cache for the life of the session.
+// adoptDownloadDir switches tracking to a caller-owned directory.
+//
+// The managed staging directory it replaces is RETIRED rather than removed:
+// downloads that already completed recorded paths inside it, and deleting it
+// here would take those files away while brw_downloads went on reporting where
+// they used to be. Manager.Close removes every retired directory.
 func (m *Manager) adoptDownloadDir(path string) (string, error) {
 	dir := filepath.Clean(path)
 	if info, err := os.Lstat(dir); err == nil {
@@ -612,9 +718,22 @@ func (m *Manager) adoptDownloadDir(path string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	if err := m.cleanupDownloadStaging(); err != nil {
+	// A symlinked PARENT passes the Lstat above, so resolve the whole path and
+	// check what the caller's directory actually lands on. The caller's own
+	// spelling is what is recorded and echoed back; both name the same directory,
+	// and echoing the resolved one would answer a question they did not ask.
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
 		return "", err
 	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("download path %q resolves to %q, which is not a directory", dir, resolved)
+	}
+	m.retireDownloadStaging()
 	m.downloadsMu.Lock()
 	m.downloadDir = dir
 	// Never owned: brw removes only directories it created, so a caller pointing
@@ -624,11 +743,11 @@ func (m *Manager) adoptDownloadDir(path string) (string, error) {
 	return dir, nil
 }
 
-// restoreManagedDownloadDir goes back to a fresh private staging directory.
+// restoreManagedDownloadDir goes back to a fresh private staging directory. The
+// previous one is retired rather than removed, for the same reason adoption
+// retires it: files already reported as living there.
 func (m *Manager) restoreManagedDownloadDir() (string, error) {
-	if err := m.cleanupDownloadStaging(); err != nil {
-		return "", err
-	}
+	m.retireDownloadStaging()
 	m.downloadsMu.Lock()
 	defer m.downloadsMu.Unlock()
 	dir, err := m.resolveDownloadDir()
@@ -639,18 +758,48 @@ func (m *Manager) restoreManagedDownloadDir() (string, error) {
 	return dir, nil
 }
 
-// enableFetchInterception (re-)runs Fetch.enable with the flags this tab needs
-// right now. It is the only caller of Fetch.enable that matters for auth:
+// syncFetchInterception brings Chrome's request interception on this tab in line
+// with what the tab needs right now, and is the only place Fetch.enable or
+// Fetch.disable is sent.
+//
 // handleAuthRequests is a property of the enable call, so arming a credential
-// after interception was already enabled has to re-enable it, and disarming has
-// to re-enable it again without auth.
-func (m *Manager) enableFetchInterception(tabCtx context.Context, tabID string) error {
-	handleAuth := m.env.authArmed(tabID)
+// after interception was already enabled has to re-enable it and dropping one has
+// to re-enable it without auth. Turning it OFF again matters as much: every
+// intercepted request pauses, crosses to the daemon and is continued from a
+// goroutine, so a tab left armed after its one brw_authenticate or its cleared
+// header table pays that cost on every request for the life of the tab.
+//
+// The decision and the command are taken under one per-tab lock. Without it the
+// late enable armInterception schedules could read "no credential", be overtaken
+// by Authenticate's own enable, and land last — leaving interception armed with
+// auth handling off while a credential was armed.
+func (m *Manager) syncFetchInterception(tabCtx context.Context, tabID string) error {
+	lock := m.containment.enableLock(tabID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	enable, handleAuth := m.fetchInterceptionCommand(tabID)
 	runCtx, cancel := context.WithTimeout(tabCtx, m.timeout)
 	defer cancel()
+	if !enable {
+		return chromedp.Run(runCtx, fetch.Disable())
+	}
 	return chromedp.Run(runCtx, fetch.Enable().
 		WithPatterns([]*fetch.RequestPattern{{URLPattern: "*"}}).
 		WithHandleAuthRequests(handleAuth))
+}
+
+// fetchInterceptionCommand answers what Chrome should be told about this tab:
+// whether to intercept at all, and whether to deliver authRequired events while
+// it does. Separate from the command that carries it so the decision can be
+// exercised without a browser.
+func (m *Manager) fetchInterceptionCommand(tabID string) (enable, handleAuth bool) {
+	handleAuth = m.env.authArmed(tabID)
+	enable = handleAuth ||
+		m.navPolicy.Confines() ||
+		m.routes.count(tabID) > 0 ||
+		len(m.env.listHeaders(tabID)) > 0
+	return enable, handleAuth
 }
 
 // continueWithEnvironmentHeaders answers one paused request, attaching the
@@ -697,6 +846,44 @@ func (m *Manager) pageOrigin(tabCtx context.Context) (string, error) {
 		return "", fmt.Errorf("tab has no security origin to grant permissions to")
 	}
 	return origin, nil
+}
+
+// Permission states as the Permissions API spells them.
+const (
+	permissionStateGranted = "granted"
+	permissionStateDenied  = "denied"
+)
+
+// permissionSettingFor maps a Permissions API state onto the CDP setting that
+// reproduces it. Anything unrecognized falls to prompt, which is the state a
+// page starts in and the safe one to leave behind.
+func permissionSettingFor(state string) cdpbrowser.PermissionSetting {
+	switch state {
+	case permissionStateGranted:
+		return cdpbrowser.PermissionSettingGranted
+	case permissionStateDenied:
+		return cdpbrowser.PermissionSettingDenied
+	default:
+		return cdpbrowser.PermissionSettingPrompt
+	}
+}
+
+// geolocationPermissionState reads the page's current geolocation permission.
+// Browser.getPermission does not exist, so the page's own Permissions API is the
+// only way to learn what the state was before brw overwrote it.
+func (m *Manager) geolocationPermissionState(tabCtx context.Context) (string, error) {
+	var state string
+	err := chromedp.Run(tabCtx, chromedp.Evaluate(
+		`navigator.permissions.query({name:"geolocation"}).then(status => status.state)`,
+		&state,
+		func(params *runtime.EvaluateParams) *runtime.EvaluateParams {
+			return params.WithAwaitPromise(true)
+		},
+	))
+	if err != nil {
+		return "", err
+	}
+	return state, nil
 }
 
 func (m *Manager) setGeolocationPermission(ctx context.Context, origin string, setting cdpbrowser.PermissionSetting) error {

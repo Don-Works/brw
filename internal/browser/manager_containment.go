@@ -24,8 +24,14 @@ type BlockedRequest struct {
 }
 
 type containmentState struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// armed records that the tab's single requestPaused/authRequired listener is
+	// installed. It is never cleared while the tab lives: the listener is bound to
+	// the tab context and a second one would answer each event twice. Whether
+	// Chrome is currently PAUSING requests is a separate question, decided by
+	// syncFetchInterception on every call that changes what the tab needs.
 	armed   map[string]bool
+	enables map[string]*sync.Mutex
 	blocked map[string][]BlockedRequest
 }
 
@@ -33,9 +39,29 @@ func (c *containmentState) initLocked() {
 	if c.armed == nil {
 		c.armed = make(map[string]bool)
 	}
+	if c.enables == nil {
+		c.enables = make(map[string]*sync.Mutex)
+	}
 	if c.blocked == nil {
 		c.blocked = make(map[string][]BlockedRequest)
 	}
+}
+
+// enableLock serialises Fetch.enable and Fetch.disable for one tab. Both the
+// flags an enable carries and the enable/disable choice itself are read from
+// state that other calls mutate, so the read and the command it produces have to
+// happen under one lock or two callers can land in an order that leaves the tab
+// enabled without auth handling while a credential is armed.
+func (c *containmentState) enableLock(tabID string) *sync.Mutex {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.initLocked()
+	lock, ok := c.enables[tabID]
+	if !ok {
+		lock = &sync.Mutex{}
+		c.enables[tabID] = lock
+	}
+	return lock
 }
 
 // ensureContainment installs subresource containment on a tab when a navigation
@@ -144,9 +170,10 @@ func (m *Manager) armInterception(tabID string, tabCtx context.Context) {
 		defer cancel()
 		// One pattern matching everything: the allow/deny decision is ours, not
 		// Chrome's, because an allowlist cannot be expressed as a URL blocklist.
-		// Routed through enableFetchInterception so this late-landing enable
+		// Routed through syncFetchInterception, which reads the tab's needs and
+		// sends the command under one per-tab lock, so this late-landing enable
 		// cannot clear the handleAuthRequests flag a credential armed meanwhile.
-		_ = m.enableFetchInterception(enableCtx, tabID)
+		_ = m.syncFetchInterception(enableCtx, tabID)
 		if guardErr != nil || !confines {
 			return
 		}

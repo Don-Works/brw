@@ -497,20 +497,38 @@ func boundedDownloadString(value string, limit int) string {
 	return value
 }
 
+// retireDownloadStaging steps off the managed staging directory without deleting
+// it, so files already downloaded into it stay where brw_downloads says they
+// are. cleanupDownloadStaging removes every retired directory at Close.
+func (m *Manager) retireDownloadStaging() {
+	m.downloadsMu.Lock()
+	defer m.downloadsMu.Unlock()
+	if m.downloadDirOwned && m.downloadDir != "" {
+		m.retiredDownloadDirs = append(m.retiredDownloadDirs, m.downloadDir)
+	}
+	m.downloadDir = ""
+	m.downloadDirOwned = false
+}
+
 func (m *Manager) cleanupDownloadStaging() error {
 	m.downloadsMu.Lock()
-	dir := m.downloadDir
-	owned := m.downloadDirOwned
+	dirs := m.retiredDownloadDirs
+	m.retiredDownloadDirs = nil
+	if m.downloadDirOwned && m.downloadDir != "" {
+		dirs = append(dirs, m.downloadDir)
+	}
 	m.downloadDir = ""
 	m.downloadDirOwned = false
 	m.downloadsMu.Unlock()
-	if !owned || dir == "" {
-		return nil
+	var failures error
+	for _, dir := range dirs {
+		if !strings.HasPrefix(filepath.Base(dir), "session-") {
+			failures = errors.Join(failures, errors.New("refusing to remove unrecognized browser download staging directory"))
+			continue
+		}
+		failures = errors.Join(failures, os.RemoveAll(dir))
 	}
-	if !strings.HasPrefix(filepath.Base(dir), "session-") {
-		return errors.New("refusing to remove unrecognized browser download staging directory")
-	}
-	return os.RemoveAll(dir)
+	return failures
 }
 
 func rejectDownloadGitCheckout(path string) error {

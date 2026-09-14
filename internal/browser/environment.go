@@ -284,6 +284,9 @@ func NormalizeExtraHeaders(opts ExtraHeadersOptions) ([]OriginHeaders, bool, err
 			if err := validHeaderName(trimmed); err != nil {
 				return nil, false, err
 			}
+			if forgeableHeaders[strings.ToLower(trimmed)] {
+				return nil, false, fmt.Errorf("%w: %s", ErrForgeableHeader, trimmed)
+			}
 			if strings.ContainsAny(value, "\r\n") {
 				return nil, false, fmt.Errorf("header %s carries a newline, which would let it inject a second header", trimmed)
 			}
@@ -292,6 +295,21 @@ func NormalizeExtraHeaders(opts ExtraHeadersOptions) ([]OriginHeaders, bool, err
 		out = append(out, OriginHeaders{Origin: origin, Headers: headers})
 	}
 	return out, false, nil
+}
+
+// ErrForgeableHeader names the headers the per-origin table must not carry.
+var ErrForgeableHeader = errors.New("this header cannot be set from the per-origin header table: it changes which server or which request body the message is for, behind the checks the navigation policy already made")
+
+// forgeableHeaders are the headers Fetch.continueRequest sends verbatim and that
+// change what the request MEANS rather than what it carries. Host picks a
+// different virtual host from the one containmentVerdict evaluated out of the
+// request URL, so the table would be a way around a confining navigation policy;
+// Content-Length and Transfer-Encoding desynchronise the body brw's interceptor
+// forwards from the one the server reads.
+var forgeableHeaders = map[string]bool{
+	"host":              true,
+	"content-length":    true,
+	"transfer-encoding": true,
 }
 
 // validHeaderName rejects anything outside RFC 7230's token grammar. A header
@@ -372,6 +390,13 @@ func NormalizeUserAgent(opts UserAgentOptions) (UserAgentConfig, bool, error) {
 // session, hand it to every 401 the page provoked, and survive in a heap dump —
 // so the credential is armed for the navigation this call performs and dropped
 // before the call returns.
+//
+// That covers the DAEMON only. Once a challenge has been answered, Chrome keeps
+// the credential in its own HTTP-auth cache and re-sends it for that origin for
+// the rest of the browser session, including for pages a human opens in a
+// visible profile; CDP has no command to clear that cache. An incognito context
+// is the only way to bound it, because disposing the context discards the cache
+// with it.
 type CredentialsOptions struct {
 	Origin   string `json:"origin"`
 	Username string `json:"username"`
@@ -389,7 +414,12 @@ type AuthenticationOutcome struct {
 	URL        string `json:"url"`
 	Challenged bool   `json:"challenged"`
 	Answered   int    `json:"answered"`
-	Retained   bool   `json:"retained"`
+	// BrowserCached says the browser now holds the credential itself. brw's copy
+	// is already gone when this result is built; Chrome's HTTP-auth cache is not,
+	// and nothing in CDP can empty it. Reported rather than hidden because on a
+	// persistent profile it means every later load of that origin is
+	// authenticated, by this agent or by a human in the same browser.
+	BrowserCached bool `json:"browser_cached"`
 }
 
 // NormalizeCredentials validates the credential request and returns the
