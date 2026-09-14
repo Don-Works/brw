@@ -13,7 +13,7 @@ downloads support, current safety boundaries, and affirmative consent screen.
 Build the current package from the repository root:
 
 ```sh
-make package-web-store
+task package-web-store
 unzip -l dist/web-store/brw-extension-0.5.0.zip
 ```
 
@@ -22,7 +22,7 @@ files. It excludes tests, development notes, dotfiles, and local
 `bridge-defaults.json` configuration.
 
 Before uploading, load `extension/` unpacked into a clean Chrome profile and
-run `make test-extension`. Check that install opens Options, no daemon
+run `task test-extension`. Check that install opens Options, no daemon
 connection is attempted before the user clicks **Enable local browser
 control**, Disable releases debugger attachments, and the popup explains every
 state.
@@ -205,7 +205,7 @@ reviewer infer that architecture is avoidable delay.
 2. If the currently pending package is the stale `0.1.0` build or its privacy
    answers say “no data,” stop that submission and replace it with the current
    package and disclosures rather than waiting for a predictable rejection.
-3. Run `make test-extension package-web-store`; load the exact staged runtime
+3. Run `task test-extension package-web-store`; load the exact staged runtime
    files unpacked in a clean profile and complete the reviewer flow above.
 4. Upload `dist/web-store/brw-extension-0.5.0.zip` to the matching draft item.
 5. Add the icon, 440×280 promo, and 3–5 real 1280×800 screenshots. Fill the

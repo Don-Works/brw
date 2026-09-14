@@ -265,7 +265,7 @@ fi
 # holding its own bridge endpoint and token. Refreshing only extension/ leaves
 # every one of those profiles running the previous extension after an upgrade,
 # with nothing to say so: the daemon moves, the browser does not. This is the
-# same refresh `make sync-installed-extensions` performs.
+# same refresh `task sync-installed-extensions` performs.
 synced=""
 for extdir in "$install_dir"/extension-*; do
   [ -d "$extdir" ] || continue

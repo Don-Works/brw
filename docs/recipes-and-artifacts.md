@@ -298,7 +298,7 @@ encoder process, and temporary file remain bounded.
 
 ## Verification
 
-`make test-functional` launches a real headless browser and a private recipe
+`task test-functional` launches a real headless browser and a private recipe
 directory created under a temporary path. It exercises semantic search,
 id/version/digest pinning, a guarded write, a pre-armed event, a timer, secret
 input non-disclosure, an idempotent zero-write rerun, text search, screenshot,

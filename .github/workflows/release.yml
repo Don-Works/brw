@@ -51,12 +51,17 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+      - name: Install Task
+        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+        with:
+          version: 3.50.0
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Verify dependency checksums
         run: go mod verify
       - name: Test
-        run: make test
+        run: task test
       - name: Run deterministic real-browser functional suite
-        run: make test-functional
+        run: task test-functional
       - name: Enforce open-source privacy boundary
         shell: bash
         run: |

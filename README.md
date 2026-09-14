@@ -121,10 +121,13 @@ gh attestation verify <artifact> --repo Don-Works/brw
 
 ## Build From Source
 
+Builds run through [Task](https://taskfile.dev) (`brew install go-task`,
+or see the Task install docs). `task --list` shows every target.
+
 ```sh
 git clone https://github.com/Don-Works/brw.git
 cd brw
-make build
+task build
 ```
 
 Run as an MCP server:
@@ -269,7 +272,7 @@ and served with the correct content-types.
 
 ### Chrome (also works)
 
-- **Load unpacked:** run `make install-extension` to print the folder and open
+- **Load unpacked:** run `task install-extension` to print the folder and open
   `chrome://extensions`, then enable Developer mode → Load unpacked → select
   `extension/`.
 - **Chrome Web Store (one-click):** the store package and listing are prepared

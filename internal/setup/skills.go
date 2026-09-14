@@ -18,7 +18,7 @@ func SkillDestinations(home string) []string {
 }
 
 // FindSkillSource locates the shipped skills/brw directory: the app directory a
-// package installer or `make install-mac` wrote, the platform share directory a
+// package installer or `task install-mac` wrote, the platform share directory a
 // native installer wrote, the directory the running brwctl sits in, or the
 // working directory of a source checkout. The first that holds a SKILL.md wins.
 func FindSkillSource(appDir, executable, workingDir string) (string, error) {

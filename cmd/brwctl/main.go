@@ -534,7 +534,7 @@ func doctorReport(req doctorRequest) (doctorResult, error) {
 			failures = append(failures, "missing "+path)
 		}
 	}
-	// The app-directory copy of the policy is what `make install-mac` syncs for
+	// The app-directory copy of the policy is what `task install-mac` syncs for
 	// a remote push; it is not the policy this run loaded, and a machine set up
 	// by `brwctl setup` legitimately has none. Report it, do not fail on it.
 	appPolicy := filepath.Join(req.AppDir, "config", "browser-profiles.json")

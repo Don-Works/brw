@@ -229,14 +229,18 @@ If `~/.local/bin` is not on your PATH, the installer prints the line to add.
 
 ## Build from source
 
+Builds run through [Task](https://taskfile.dev) rather than Make:
+`brew install go-task` on macOS, or see the Task install docs. `task --list`
+shows every target; `task check` is the full release gate CI runs.
+
 ```sh
-make test
-make build
+task test
+task build
 ```
 
 Built binaries: `bin/brwd`, `bin/brwctl`, `bin/brwcheck`,
-`bin/brw-devtools-mcp`. `make install` puts them in the user-local layout above.
-`make package-tarballs` builds the archives the one-line installer consumes.
+`bin/brw-devtools-mcp`. `task install` puts them in the user-local layout above.
+`task package-tarballs` builds the archives the one-line installer consumes.
 
 ## Remote install
 
@@ -379,7 +383,7 @@ reliable support for it, so use one of the Chrome paths below instead.
 Load unpacked (works today):
 
 ```sh
-make install-extension   # prints the folder + opens chrome://extensions
+task install-extension   # prints the folder + opens chrome://extensions
 ```
 
 1. Open `chrome://extensions` in the target Chrome profile.
@@ -399,11 +403,11 @@ profile policy's `bridge_extension_id` before switching users to it.
 Set `bridge_extension_id` in the profile policy only when you ship your own
 re-signed build with a different id; the default published id is built in.
 
-For a local multi-profile installation, `make install-mac` also refreshes every
+For a local multi-profile installation, `task install-mac` also refreshes every
 existing `~/Library/Application Support/brw/extension-*` payload without
 overwriting its private `bridge-defaults.json`. Install the bundled operating
 skill into `~/.claude/skills/brw`, `~/.agents/skills/brw` and
-`~/.codex/skills/brw` with `make install-agent-skills`; this
+`~/.codex/skills/brw` with `task install-agent-skills`; this
 copies instructions only, never the private recipe corpus.
 
 ## Keep the browser awake (macOS)

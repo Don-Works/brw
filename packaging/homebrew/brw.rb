@@ -1,5 +1,5 @@
 # Template for the Don-Works/homebrew-tap formula. The @...@ placeholders are
-# filled in by packaging/homebrew/render-formula.sh (make homebrew-formula),
+# filled in by packaging/homebrew/render-formula.sh (task homebrew-formula),
 # matching the placeholder convention in packaging/linux/nfpm.yaml.
 #
 # A formula, not a cask: the release tarballs are relocatable and need no

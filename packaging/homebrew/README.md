@@ -34,7 +34,7 @@ were just built locally, and otherwise from the published release's
 `SHA256SUMS.txt`.
 
 ```sh
-make homebrew-formula VERSION=0.11.0 > /path/to/homebrew-tap/Formula/brw.rb
+task homebrew-formula VERSION=0.11.0 > /path/to/homebrew-tap/Formula/brw.rb
 ```
 
 Then commit and push that file in the tap repository. Nothing else in the tap

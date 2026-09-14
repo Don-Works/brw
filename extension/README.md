@@ -112,7 +112,7 @@ served with correct content-types.
 
 ### Chrome (also works)
 
-For development, run `make install-extension` from the repo root (it prints the
+For development, run `task install-extension` from the repo root (it prints the
 folder and opens `chrome://extensions`), then Developer mode → Load unpacked →
 select this directory.
 

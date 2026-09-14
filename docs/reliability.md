@@ -196,6 +196,6 @@ brw_evaluate({expression: "chrome.runtime.reload(); 'go'"})          // bridge d
 
 Then re-check `/status` (or the daemon log) for the new `build`. `make
 install-mac` refreshes the canonical extension and every existing
-`extension-*` profile copy with `make sync-installed-extensions`. The sync
+`extension-*` profile copy with `task sync-installed-extensions`. The sync
 preserves each copy's local `bridge-defaults.json` while deleting stale source
 files. Run the sync target directly after an extension-only development change.

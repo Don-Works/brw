@@ -27,7 +27,7 @@ import (
 
 // Version is the build version reported over MCP initialize (serverInfo.version).
 // It is injected at build time via -ldflags "-X .../internal/mcp.Version=<v>"
-// (see the Makefile and scripts/package-*), so the version an agent sees always
+// (see Taskfile.yml and scripts/package-*), so the version an agent sees always
 // matches the binary it is talking to instead of a hand-edited constant that
 // silently drifts from the released build. Defaults to "dev" for a plain
 // `go build` / `go test`.

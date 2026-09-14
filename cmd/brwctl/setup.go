@@ -377,7 +377,7 @@ func (r *setupRunner) header() {
 // brwdPath resolves the daemon an MCP client and the background service will
 // launch. An absolute path is what makes brw start under a client that does not
 // inherit a login shell's PATH; the app directory is checked first because that
-// is where `make install-mac` and the macOS package put it, and it is not on
+// is where `task install-mac` and the macOS package put it, and it is not on
 // PATH.
 func (r *setupRunner) brwdPath() string {
 	name := "brwd"

@@ -1,0 +1,268 @@
+version: '3'
+
+# Task replaces the former Makefile. Two semantics differ from Make and both
+# matter here:
+#
+#   - `deps:` runs in PARALLEL. Every ordered pipeline below therefore uses
+#     serial `cmds: - task: ...` instead. `check` in particular must stay
+#     ordered, and the test tasks must not overlap: they launch real headless
+#     Chrome, and running them concurrently turns the Manager's intentional 20s
+#     operation timeout into a load race.
+#   - Task vars do not inherit the environment the way Make's `?=` does, so each
+#     overridable var reads its env counterpart explicitly via `default`.
+#     `task homebrew-formula VERSION=0.11.0` still works: CLI vars win.
+
+vars:
+  BINDIR: '{{.BINDIR | default (printf "%s/.local/bin" .HOME)}}'
+  DATADIR: '{{.DATADIR | default (printf "%s/.local/share/brw" .HOME)}}'
+  MAC_APPDIR: '{{.MAC_APPDIR | default (printf "%s/Library/Application Support/brw" .HOME)}}'
+
+  EXTENSION_ID: amocjcgddnoakjijfggdpnefdnboilpe
+
+  VERSION:
+    sh: git describe --tags --always --dirty | sed 's/^v//'
+  GOARCH:
+    sh: go env GOARCH
+  TARBALL_OS:
+    sh: go env GOOS
+
+  # Inject the resolved version into the MCP serverInfo.version so the version an
+  # agent sees over MCP always matches the binary, instead of a hand-edited constant.
+  GO_LDFLAGS: -X github.com/Don-Works/brw/internal/mcp.Version={{.VERSION}}
+
+  HOMEBREW_TAP: Don-Works/homebrew-tap
+
+env:
+  HOME:
+    sh: echo "$HOME"
+
+tasks:
+  default:
+    cmds:
+      - task --list
+    silent: true
+
+  build:
+    desc: Build brwd, brwcheck, brwctl and brw-devtools-mcp into bin/
+    cmds:
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwd ./cmd/brwd
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwcheck ./cmd/brwcheck
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwctl ./cmd/brwctl
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw-devtools-mcp ./cmd/brw-devtools-mcp
+
+  test:
+    desc: Run every Go package test plus the extension service-worker tests
+    # browser, snapshot, and readability tests each launch real headless Chrome.
+    # Serialize package test binaries so CI does not run dozens of Chrome roots at
+    # once and turn the Manager's intentional 20s operation timeout into a load race.
+    cmds:
+      - task: test-extension
+      - go test -p=1 ./...
+
+  # Everything CI runs, in CI's order, so a release cannot fail on a check that
+  # was never run locally. `go vet` alone is not the gate: staticcheck catches
+  # unused declarations and error-string style that vet does not, and a v0.13.0
+  # release job failed on exactly those two after a local vet-only pass.
+  #
+  # Tool versions are pinned to the same ones .github/workflows/ci.yml uses; when
+  # you bump one there, bump it here in the same commit or this stops predicting CI.
+  check:
+    desc: The full release gate, in CI's order — run this before any tag
+    cmds:
+      - task: lint
+      - task: test
+      - task: test-functional
+      - python3 scripts/check-oss-hygiene.py
+      - go run github.com/zricethezav/gitleaks/v8@v8.30.1 git . --redact --no-banner
+      - go test -race ./internal/artifact ./internal/recipe ./internal/mcp ./internal/http ./internal/httpclient ./internal/navpolicy ./internal/extensionbridge
+
+  # The static half of `check`, fast enough to run on every save.
+  lint:
+    desc: Static half of check (fmt, vet, staticcheck, govulncheck, actionlint)
+    cmds:
+      - go mod verify
+      - gofmt -l cmd internal packaging | tee /dev/stderr | (! read)
+      - go vet ./...
+      - go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+      - go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+      - go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+  # Extension service-worker regression tests (run the real service_worker.js in a
+  # vm with a mocked chrome API). Skipped — not failed — when node is unavailable.
+  test-extension:
+    desc: Extension service-worker regression tests (skipped without node)
+    cmds:
+      - |
+        if command -v node >/dev/null 2>&1; then
+          node extension/tab_resolution_test.mjs
+        else
+          echo "node not found; skipping extension tests"
+        fi
+
+  # End-to-end gate against a real headless browser and the deterministic local
+  # fixture suite. Artifacts/profile live in a disposable directory outside git.
+  test-functional:
+    desc: Deterministic end-to-end suite against a real headless browser
+    cmds:
+      - task: build
+      - ./scripts/test-functional.sh
+
+  # The binaries live under DATADIR and reach PATH through BINDIR symlinks, the
+  # same shape scripts/install.sh produces. brwctl doctor's default --app-dir on
+  # Linux is DATADIR and it looks for bin/brwd there, so binaries installed only
+  # into BINDIR would leave doctor reporting a broken install.
+  install:
+    desc: Install into DATADIR with BINDIR symlinks (the Linux shape)
+    cmds:
+      - task: build
+      - mkdir -p "{{.BINDIR}}" "{{.DATADIR}}/bin" "{{.DATADIR}}/extension" "{{.DATADIR}}/tests" "{{.DATADIR}}/skills/brw"
+      - cp bin/brwd "{{.DATADIR}}/bin/brwd"
+      - cp bin/brwcheck "{{.DATADIR}}/bin/brwcheck"
+      - cp bin/brwctl "{{.DATADIR}}/bin/brwctl"
+      - cp bin/brw-devtools-mcp "{{.DATADIR}}/bin/brw-devtools-mcp"
+      - cp -R extension/. "{{.DATADIR}}/extension/"
+      - cp -R tests/. "{{.DATADIR}}/tests/"
+      - cp -R skills/brw/. "{{.DATADIR}}/skills/brw/"
+      - task: sync-installed-extensions
+      # On Apple Silicon, copying a Go binary invalidates its ad-hoc code
+      # signature and the OS then SIGKILLs it ("Killed: 9"); re-sign the copies.
+      - |
+        if [ "$(uname)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
+          codesign --force --sign - "{{.DATADIR}}/bin/brwd" "{{.DATADIR}}/bin/brwcheck" "{{.DATADIR}}/bin/brwctl" "{{.DATADIR}}/bin/brw-devtools-mcp"
+        fi
+      - ln -sf "{{.DATADIR}}/bin/brwd" "{{.BINDIR}}/brwd"
+      - ln -sf "{{.DATADIR}}/bin/brwcheck" "{{.BINDIR}}/brwcheck"
+      - ln -sf "{{.DATADIR}}/bin/brwctl" "{{.BINDIR}}/brwctl"
+      - ln -sf "{{.DATADIR}}/bin/brw-devtools-mcp" "{{.BINDIR}}/brw-devtools-mcp"
+
+  install-mac:
+    desc: Install into the macOS Application Support app dir
+    cmds:
+      - task: build
+      - mkdir -p "{{.MAC_APPDIR}}/bin" "{{.MAC_APPDIR}}/extension" "{{.MAC_APPDIR}}/tests" "{{.MAC_APPDIR}}/skills/brw" "{{.MAC_APPDIR}}/config"
+      - cp bin/brwd "{{.MAC_APPDIR}}/bin/brwd"
+      - cp bin/brwcheck "{{.MAC_APPDIR}}/bin/brwcheck"
+      - cp bin/brwctl "{{.MAC_APPDIR}}/bin/brwctl"
+      - cp bin/brw-devtools-mcp "{{.MAC_APPDIR}}/bin/brw-devtools-mcp"
+      - cp -R extension/. "{{.MAC_APPDIR}}/extension/"
+      - cp -R tests/. "{{.MAC_APPDIR}}/tests/"
+      - cp -R skills/brw/. "{{.MAC_APPDIR}}/skills/brw/"
+      - task: sync-installed-extensions
+      - |
+        if [ -f "$HOME/.config/brw/browser-profiles.json" ]; then
+          cp "$HOME/.config/brw/browser-profiles.json" "{{.MAC_APPDIR}}/config/browser-profiles.json"
+        fi
+      # Re-sign: copying a Go binary on Apple Silicon breaks its ad-hoc signature
+      # and the OS SIGKILLs it on launch ("Killed: 9").
+      - |
+        if command -v codesign >/dev/null 2>&1; then
+          codesign --force --sign - "{{.MAC_APPDIR}}/bin/brwd" "{{.MAC_APPDIR}}/bin/brwcheck" "{{.MAC_APPDIR}}/bin/brwctl" "{{.MAC_APPDIR}}/bin/brw-devtools-mcp"
+        fi
+
+  # Keep every existing unpacked extension payload current. rsync's exclusion
+  # preserves the local bridge endpoint/token file in each copy while --delete
+  # prevents removed source files from lingering as executable code.
+  #
+  # DATADIR is listed alongside MAC_APPDIR because install-mac writes only
+  # MAC_APPDIR: a DATADIR left behind by an earlier `install` survived every
+  # subsequent install untouched. On one machine that copy sat at extension
+  # 0.4.14 while the loaded one was 0.5.0 — stale executable code that no install
+  # target could reach. Both dirs are globbed so whichever exist are refreshed.
+  sync-installed-extensions:
+    desc: Refresh every unpacked extension copy on disk from extension/
+    cmds:
+      - command -v rsync >/dev/null 2>&1 || { echo "rsync is required to sync installed extension copies" >&2; exit 1; }
+      - |
+        for extdir in "{{.MAC_APPDIR}}/extension" "{{.MAC_APPDIR}}"/extension-* "{{.DATADIR}}/extension" "{{.DATADIR}}"/extension-*; do
+          if [ -d "$extdir" ] && [ ! -L "$extdir" ]; then
+            rsync -a --delete --exclude '/bridge-defaults.json' extension/ "$extdir"/
+          fi
+        done
+
+  # Install the public operating skill where the common agent harnesses discover
+  # it globally. Operational recipes remain in the private provider, never here.
+  # Claude Code reads ~/.claude/skills; omitting it is why a Claude Code user found
+  # no brw skill installed and wrote their own.
+  install-agent-skills:
+    desc: Install the public brw skill for Claude, Codex and agents harnesses
+    cmds:
+      - mkdir -p "$HOME/.claude/skills/brw" "$HOME/.agents/skills/brw" "$HOME/.codex/skills/brw"
+      - rsync -a --delete skills/brw/ "$HOME/.claude/skills/brw"/
+      - rsync -a --delete skills/brw/ "$HOME/.agents/skills/brw"/
+      - rsync -a --delete skills/brw/ "$HOME/.codex/skills/brw"/
+
+  # Streamline the one-time load-unpacked install of the brw Chrome extension.
+  # Prints the exact folder + stable id, then (best-effort on macOS) opens
+  # chrome://extensions and reveals the folder in Finder so you can pick it.
+  install-extension:
+    desc: Print the load-unpacked folder and extension id for a one-time install
+    silent: true
+    cmds:
+      - |
+        echo ""
+        echo "  Load the brw Chrome extension (one-time, Developer Mode):"
+        echo ""
+        echo "    1. In chrome://extensions, enable Developer mode (top right)."
+        echo "    2. Click 'Load unpacked'."
+        echo "    3. Select this folder:"
+        echo ""
+        echo "         {{.TASKFILE_DIR}}/extension"
+        echo ""
+        echo "    The extension id will be: {{.EXTENSION_ID}}"
+        echo "    (matches DefaultBridgeExtensionID, so the bridge trusts it with no config)"
+        echo ""
+      - open -a "Google Chrome" "chrome://extensions" 2>/dev/null || true
+      - open -R "{{.TASKFILE_DIR}}/extension" 2>/dev/null || true
+
+  package-web-store:
+    desc: Stage the Chrome Web Store extension bundle into dist/web-store
+    cmds:
+      - scripts/package-web-store.sh dist/web-store
+
+  package-darwin-arm64:
+    desc: Cross-build the darwin/arm64 binaries into bin/
+    env:
+      GOOS: darwin
+      GOARCH: arm64
+    cmds:
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwd-darwin-arm64 ./cmd/brwd
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwcheck-darwin-arm64 ./cmd/brwcheck
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwctl-darwin-arm64 ./cmd/brwctl
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw-devtools-mcp-darwin-arm64 ./cmd/brw-devtools-mcp
+
+  package-linux:
+    desc: Build the Linux .deb and .rpm into dist/release
+    cmds:
+      - scripts/package-linux.sh "{{.VERSION}}" "{{.GOARCH}}" dist/release
+
+  package-macos:
+    desc: Build the macOS universal .pkg into dist/release
+    cmds:
+      - scripts/package-macos.sh "{{.VERSION}}" dist/release
+
+  # The sudo-free install path: relocatable archives for scripts/install.sh and
+  # the Homebrew formula. One OS/arch, defaulting to the host.
+  package-tarball:
+    desc: Build one relocatable tarball for the host OS/arch
+    cmds:
+      - scripts/package-tarball.sh "{{.VERSION}}" "{{.TARBALL_OS}}" "{{.GOARCH}}" dist/release
+
+  # darwin/arm64 is built last so a macOS host leaves a natively signable archive
+  # in place; cross-built darwin binaries cannot be ad-hoc signed off a Mac.
+  package-tarballs:
+    desc: Build the four release tarballs (linux/darwin x amd64/arm64)
+    cmds:
+      - scripts/package-tarball.sh "{{.VERSION}}" linux amd64 dist/release
+      - scripts/package-tarball.sh "{{.VERSION}}" linux arm64 dist/release
+      - scripts/package-tarball.sh "{{.VERSION}}" darwin amd64 dist/release
+      - scripts/package-tarball.sh "{{.VERSION}}" darwin arm64 dist/release
+
+  # Print the tap formula for VERSION with the four release sha256 sums filled in,
+  # so a release bumps the tap mechanically rather than by hand. Reads the sums
+  # from dist/release when the archives are local, otherwise from the published
+  # release. Redirect into the tap checkout's Formula/brw.rb.
+  homebrew-formula:
+    desc: Print the Homebrew tap formula for VERSION with sha256 sums filled in
+    silent: true
+    cmds:
+      - packaging/homebrew/render-formula.sh "{{.VERSION}}"
