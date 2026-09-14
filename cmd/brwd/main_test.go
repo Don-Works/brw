@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/brwidentity"
+	"github.com/Don-Works/brw/internal/recipe"
 )
 
 func TestEffectiveMCPIdleExitDefaultsOnlyDisposableUpstreamProxy(t *testing.T) {
@@ -161,5 +163,26 @@ func TestFindInstalledExtensionNeedsAManifest(t *testing.T) {
 	extensionSearchPaths = func() []string { return []string{bare} }
 	if got, ok := findInstalledExtension(); ok {
 		t.Fatalf("findInstalledExtension() = %q,true; want not found", got)
+	}
+}
+
+// A receipt only means something if it outlives the daemon that wrote it, so
+// the write ledger is the provider — and only when the provider is a remote
+// party. A directory of local JSON files is this machine, so it gets none.
+func TestRecipeReceiptsOnlyComeFromAProviderThatOutlivesTheDaemon(t *testing.T) {
+	remote, err := recipe.NewHTTPProvider(recipe.HTTPProviderConfig{BaseURL: "https://recipes.example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recipeReceiptsFor(remote) == nil {
+		t.Fatal("an HTTP recipe provider is a write ledger and was not used as one")
+	}
+
+	local, err := recipe.NewCatalog(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := recipeReceiptsFor(local); got != nil {
+		t.Fatalf("a local catalogue was used as a write ledger: %T", got)
 	}
 }

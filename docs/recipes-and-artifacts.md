@@ -129,6 +129,8 @@ gap between clicking and waiting. Retried read actions require an idempotency ke
 and a bounded postcondition. Externally mutating actions require the same
 declarations but are never automatically retried: their pre-armed postcondition
 is used only to reconcile a lost acknowledgement after the one allowed attempt.
+A recipe carrying an external write must also carry an `assert` step after it;
+see "Write receipts" below for why a receipt cannot stand in for that read-back.
 Before that attempt, the runner probes durable desired state; if it already
 holds, the step reports zero attempts and issues no write. A generic page-ready
 condition and transient network/download/tab events cannot prove a rerun safe,
@@ -173,6 +175,122 @@ caller neither supplies the value nor receives it, and an input that expands to
 something shaped like a reference is typed literally. The value is resolved at
 the step by an operator-installed plugin holding `credential.read`, so a recipe
 file never contains one. See [plugins and capabilities](plugins.md).
+
+## Compiling a recipe from a trace
+
+Hand-authoring a recipe means reading a trace and writing the schema by hand.
+`brwctl recipe draft` has two modes for turning a recorded run into one.
+
+Without `--plan` it produces a skeleton: the mechanical parts filled in, a
+`TODO` marker everywhere a human must decide, and `brwctl recipe validate`
+failing until every marker is resolved.
+
+With `--plan` it compiles instead. The compiler needs more than a bare trace —
+it needs the page state observed either side of every action — and in exchange
+it emits a recipe that parses and validates with no markers left:
+
+```sh
+brwctl recipe draft --from-trace /absolute/private/trace.json \
+  --plan /absolute/private/plan.json \
+  --out /absolute/private/draft.json
+```
+
+The plan carries what a recording cannot: the id, version, name, description,
+intents, the exact origin allowlist, the risk level, and which recorded steps
+commit an external write. None of it is inferred. An origin list derived from
+the trace would make the cross-origin check below check nothing, and a risk
+level guessed from a button's label would be a guess stamped on the field that
+exists to stop guessing. An unknown key in the plan is an error, so a
+misspelled `writes` cannot silently compile a write as a read.
+
+What the compiler does:
+
+- Re-derives every element identity from the role and accessible name brw
+  recorded, ranks it against the observation the action was aimed at, and
+  accepts it only when it names exactly one element and that element is the one
+  the recording acted on. A test id or href fragment is added when a name alone
+  matches more than one. Refs, CSS selectors and coordinates never appear in the
+  output.
+- Turns each typed value into a declared, required runtime input. The text that
+  was typed during the recording stays in the recording.
+- Infers each step's postcondition from the observation taken after it: the
+  resulting URL, an element the step introduced, or a completed download. A
+  download also gets a following `download` assertion when the recording
+  captured a size or digest.
+- Prints a diff-able review body — one fact per line, fixed order, no map
+  iteration — so recompiling an unchanged trace produces byte-identical text
+  and a changed trace produces a diff the size of the change.
+
+What stops compilation dead, naming the trace step and the reason:
+
+- a coordinate-driven action such as `brw_click_xy`;
+- a write into a password or credential field, whether brw redacted the value,
+  the snapshot marked the field sensitive, or the accessible name says so;
+- a target that matches more than one element in the recorded observation;
+- a navigation to an origin the plan does not declare;
+- a step whose post-action observation is empty; and
+- an action with no deterministic recipe equivalent, or one that failed when
+  recorded.
+
+Nothing is written until the whole trace has compiled, so a refused trace leaves
+no file to clean up. `--out` is refused unless it is outside every Git checkout,
+which includes this repository. `--publish` sends the draft and its review body
+to the private provider's write API at `POST /v1/recipes/drafts`, configured
+through `BRW_RECIPE_PROVIDER_URL` and `BRW_RECIPE_PROVIDER_TOKEN`; the
+acknowledgement must name the same id, version and digest or the publish fails.
+
+## Write receipts
+
+A recipe that submits a form and then loses its daemon cannot tell, on restart,
+whether the remote side committed. Retrying blind double-submits.
+
+When the recipe provider is an HTTP provider, the runner records external writes
+with it. A local directory provider gets no receipts: a receipt exists to be
+read after the daemon that wrote it died, and a file on that same machine
+answers nothing. A recipe that declares a mechanism the runner cannot honour is
+refused by name rather than run with the mechanism quietly switched off.
+
+The idempotency key is `sha256` over the recipe's content digest, the step id,
+the exact origin, and the normalized declared inputs. The normalization is
+fixed and written down in `ReceiptKey`, because a key that cannot be reproduced
+after a restart produces a receipt nobody can find, which reads exactly like a
+write that never happened: only declared inputs take part, names are sorted by
+byte order, an unsupplied input is encoded as absent and is a different key from
+an empty one, CRLF and lone CR become LF, and nothing else is altered — no
+trimming, no case folding. The key depends on no clock, host or session.
+
+The sequence around one write is: probe the durable postcondition and skip the
+write entirely if it already holds; look the key up; record an in-flight receipt
+**before** dispatching; and record completion **only** after the declared
+postcondition passes. A run that dies in between leaves an in-flight receipt and
+no completion.
+
+A rerun that finds an in-flight receipt does not re-submit. It runs the recipe's
+declared verification step against live remote state. If that confirms the write
+landed, the receipt is committed and no browser action is issued. If it does
+not, the run fails saying so.
+
+Because a receipt is written on brw's side of the network, it is never proof the
+remote transaction committed — a process killed a millisecond after the request
+left writes the same receipt either way. So a recipe containing an
+`external_write` step is refused unless an `assert` step follows it. That
+assertion is the read-back, and it is what an interrupted rerun consults.
+
+Where the site exposes its own duplicate suppression as a form nonce, the step
+declares it with a `site_idempotency` object naming `kind: form_nonce` and the
+semantic target of the token field. brw reads that field before dispatch and
+records the token on the receipt, and refuses to dispatch at all if the field
+cannot be read or is empty. On a rerun whose verification could not confirm the
+write, a page still carrying the same token means the site itself is positioned
+to reject the duplicate, so brw defers to the site's mechanism and re-dispatches;
+a fresh token means it is not, and brw stops. Only `form_nonce` exists: a request
+header is the same idea, but a recipe drives a page rather than an HTTP client,
+so declaring one would name a mechanism that never runs.
+
+The receipt endpoints extend the provider contract with `POST /v1/receipts/lookup`,
+`POST /v1/receipts/begin` and `POST /v1/receipts/commit`. As with search and
+fetch, every reply is revalidated: a receipt answering about another key, step or
+origin is refused rather than trusted.
 
 ## Timers, page events, cron, and webhooks
 

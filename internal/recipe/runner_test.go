@@ -35,6 +35,10 @@ type fakeSurface struct {
 	artifact   artifact.Meta
 	captureErr error
 	captures   int
+	asserts    int
+	assertErr  error
+	nonce      string
+	nonceErr   error
 }
 
 type surfaceWithoutEventArmer struct{ Surface }
@@ -138,6 +142,17 @@ func (f *fakeSurface) Press(context.Context, string, string) error {
 	return nil
 }
 func (f *fakeSurface) NavigateTo(context.Context, string) error { return nil }
+func (f *fakeSurface) ElementValue(context.Context, Target) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nonce, f.nonceErr
+}
+func (f *fakeSurface) Assert(context.Context, Assertion) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asserts++
+	return f.assertErr
+}
 func (f *fakeSurface) Capture(context.Context, CaptureSpec) (artifact.Meta, error) {
 	f.mu.Lock()
 	f.captures++
@@ -185,6 +200,21 @@ func (f *fakeSurface) emit(kind, match string) {
 	select {
 	case f.notify <- struct{}{}:
 	default:
+	}
+}
+
+// verifyWriteStep is the read-back an external write must declare. The runner
+// refuses a recipe whose write is not followed by one, so every write recipe in
+// these tests carries it.
+func verifyWriteStep() Step {
+	minimum := 1
+	return Step{
+		ID: "verify_write", Action: "assert",
+		Assert: &Assertion{
+			Kind:   browser.AssertionElementCount,
+			Target: &Target{Role: "button", Name: "Download invoices"},
+			Min:    &minimum,
+		},
 	}
 }
 
@@ -328,7 +358,7 @@ func TestExternalWriteWithEmptyComposerPostconditionIsReplaySafe(t *testing.T) {
 			Kind: "element.value", Match: "", TimeoutMS: 500,
 			Target: &Target{Role: "textbox", Name: "Month"},
 		},
-	}}
+	}, verifyWriteStep()}
 	runner := Runner{Surface: surface}
 	first, err := runner.Run(context.Background(), value, nil)
 	if err != nil || first.Status != "done" || surface.presses != 1 || first.Steps[0].Attempts != 1 {
@@ -472,7 +502,7 @@ func TestRunnerReconcilesLostAcknowledgementWithoutDuplicateWrite(t *testing.T) 
 		ID: "send", Action: "click", Target: &Target{Role: "button", Name: "Download invoices"},
 		Effect: "external_write", MaxAttempts: 1, IdempotencyKey: "invoice:${input:month}",
 		Postcondition: &Event{Kind: "text.present", Match: "sent", TimeoutMS: 100},
-	}}
+	}, verifyWriteStep()}
 	surface.onClick = func(f *fakeSurface) error {
 		if f.armCalls == 0 {
 			return errors.New("postcondition was not armed before click")
@@ -508,7 +538,7 @@ func TestRunnerSkipsExternalWriteWhenDesiredStateAlreadyExists(t *testing.T) {
 		ID: "send", Action: "click", Target: &Target{Role: "button", Name: "Download invoices"},
 		Effect: "external_write", IdempotencyKey: "invoice:${input:month}",
 		Postcondition: &Event{Kind: "text.present", Match: "sent ${input:month}", TimeoutMS: 100},
-	}}
+	}, verifyWriteStep()}
 	result, err := (Runner{Surface: surface}).Run(context.Background(), value, map[string]string{"month": "2026-09"})
 	if err != nil || surface.clicks != 0 || surface.armCalls != 0 || result.Steps[0].Attempts != 0 {
 		t.Fatalf("result=%+v clicks=%d arms=%d err=%v", result, surface.clicks, surface.armCalls, err)
@@ -523,7 +553,7 @@ func TestRunnerAppliesPostconditionsToPressAndExpandsEventInputs(t *testing.T) {
 		ID: "submit", Action: "press", Key: "Enter", Target: &Target{Role: "textbox", Name: "Month"}, Effect: "external_write",
 		IdempotencyKey: "submit:${input:month}",
 		Postcondition:  &Event{Kind: "text.present", Match: "saved ${input:month}", TimeoutMS: 100},
-	}}
+	}, verifyWriteStep()}
 	surface.onPress = func(f *fakeSurface) error {
 		f.emit("text.present", "saved September")
 		return errors.New("lost press acknowledgement")
@@ -654,7 +684,7 @@ func TestServiceSerializesSameIdempotencyKeyAcrossTabs(t *testing.T) {
 		Target:         &Target{Role: "button", Name: "Download invoices"},
 		IdempotencyKey: "send:conversation-42:message-7",
 		Postcondition:  &Event{Kind: "text.present", Match: "Message sent", TimeoutMS: 500},
-	}}
+	}, verifyWriteStep()}
 	catalog, err := NewCatalog(context.Background(), []Recipe{value}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -697,7 +727,7 @@ func TestServiceSerializesSameIdempotencyKeyAcrossTabs(t *testing.T) {
 		if outcome.err != nil {
 			t.Fatal(outcome.err)
 		}
-		if len(outcome.result.Steps) != 1 {
+		if len(outcome.result.Steps) != 2 {
 			t.Fatalf("unexpected result: %+v", outcome.result)
 		}
 		attempts = append(attempts, outcome.result.Steps[0].Attempts)

@@ -75,6 +75,21 @@ func (s *BrowserSurface) Origin(ctx context.Context) (string, error) {
 }
 
 func (s *BrowserSurface) Resolve(ctx context.Context, target Target) ([]ResolvedElement, error) {
+	elements, err := s.findSemantic(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	matches := make([]ResolvedElement, 0, len(elements))
+	for _, element := range elements {
+		matches = append(matches, ResolvedElement{Ref: element.Ref, Role: element.Role, Name: element.Name})
+	}
+	return matches, nil
+}
+
+// findSemantic is the one place a semantic target becomes live page elements.
+// ElementValue needs fields ResolvedElement does not carry, and a second search
+// path would be a second set of rules about what a target matches.
+func (s *BrowserSurface) findSemantic(ctx context.Context, target Target) ([]snapshot.Element, error) {
 	query := target.Name
 	if query == "" {
 		query = target.NameContains
@@ -95,19 +110,44 @@ func (s *BrowserSurface) Resolve(ctx context.Context, target Target) ([]Resolved
 	if truncated, _ := result.Metadata["truncated"].(bool); truncated {
 		return nil, errSemanticSearchTruncated
 	}
-	matches := make([]ResolvedElement, 0, len(result.Elements))
+	criteria := targetCriteria(target)
+	matches := make([]snapshot.Element, 0, len(result.Elements))
 	for _, element := range result.Elements {
-		if element.Role != target.Role ||
-			target.Name != "" && element.Name != target.Name ||
-			target.NameContains != "" && !strings.Contains(element.Name, target.NameContains) ||
-			target.TestID != "" && element.TestID != target.TestID ||
-			target.HrefContains != "" && !strings.Contains(element.Href, target.HrefContains) ||
-			target.Visible != nil && element.Visible != *target.Visible {
-			continue
+		if criteria.Matches(element) {
+			matches = append(matches, element)
 		}
-		matches = append(matches, ResolvedElement{Ref: element.Ref, Role: element.Role, Name: element.Name})
 	}
 	return matches, nil
+}
+
+// ElementValue reads the current value of exactly one element, which is how a
+// step's declared site idempotency nonce is obtained. Anything other than one
+// match is refused: a nonce read off whichever of several fields happened to
+// come first is not the site's token, it is a coin toss.
+func (s *BrowserSurface) ElementValue(ctx context.Context, target Target) (string, error) {
+	matches, err := s.findSemantic(ctx, target)
+	if err != nil {
+		return "", err
+	}
+	if len(matches) != 1 {
+		return "", fmt.Errorf("value target resolved to %d elements; refusing to guess", len(matches))
+	}
+	return matches[0].Value, nil
+}
+
+// targetCriteria renders a recipe target as the snapshot-level identity the
+// element filter understands. The compiler derives targets against the same
+// type, so a target that compiles as unambiguous is unambiguous for the exact
+// predicate the runner will apply.
+func targetCriteria(target Target) snapshot.TargetCriteria {
+	return snapshot.TargetCriteria{
+		Role:         target.Role,
+		Name:         target.Name,
+		NameContains: target.NameContains,
+		TestID:       target.TestID,
+		HrefContains: target.HrefContains,
+		Visible:      target.Visible,
+	}
 }
 
 func (s *BrowserSurface) Click(ctx context.Context, ref string) error {

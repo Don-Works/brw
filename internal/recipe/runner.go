@@ -107,6 +107,12 @@ type Runner struct {
 	// credential fails before it touches the browser.
 	Credentials credential.Resolver
 	MaxDuration time.Duration
+	// Receipts records external writes with the provider before they are
+	// dispatched, so a daemon that dies mid-write leaves evidence the next run
+	// can find. Nil disables the mechanism: the runner then still refuses a
+	// write whose desired state already holds, but a run interrupted between
+	// dispatch and acknowledgement leaves nothing behind.
+	Receipts Receipts
 }
 
 // DefaultMaxRunDuration is shared with remote transports so their connection
@@ -115,6 +121,15 @@ const DefaultMaxRunDuration = 30 * time.Minute
 
 func (r Runner) Run(ctx context.Context, value Recipe, inputs map[string]string) (result RunResult, runErr error) {
 	if err := Validate(value); err != nil {
+		return RunResult{}, err
+	}
+	// Checked here rather than in Validate so an already-published recipe stays
+	// parseable and keeps its digest, while nothing brw executes can commit an
+	// external write it never reads back.
+	if err := RequireWriteVerification(value); err != nil {
+		return RunResult{}, err
+	}
+	if err := r.checkReceiptCapabilities(value); err != nil {
 		return RunResult{}, err
 	}
 	if r.Surface == nil {
@@ -294,6 +309,7 @@ func (r Runner) runActuation(ctx context.Context, recipe Recipe, step Step, inpu
 		}
 		target = &expanded
 	}
+	var receipt *writeReceipt
 	if step.Effect == "external_write" {
 		prober, ok := r.Surface.(EventProber)
 		if !ok {
@@ -307,6 +323,15 @@ func (r Runner) runActuation(ctx context.Context, recipe Recipe, step Step, inpu
 			// Zero attempts is intentional and visible in the result: the desired
 			// state was already present, so no browser write was issued.
 			return 0, nil
+		}
+		if r.Receipts != nil {
+			receipt, err = r.openWriteReceipt(ctx, recipe, step, inputs)
+			if err != nil {
+				return 0, err
+			}
+			if receipt.resolved {
+				return 0, nil
+			}
 		}
 	}
 	var lastErr error
@@ -391,6 +416,15 @@ func (r Runner) runActuation(ctx context.Context, recipe Recipe, step Step, inpu
 			}
 		}
 		if acknowledged {
+			if receipt != nil {
+				// Completion evidence is recorded here and nowhere earlier: the
+				// postcondition passing is the only thing that distinguishes a
+				// write that landed from a request that left the machine.
+				receipt.evidence = "postcondition " + postcondition.Kind + " passed"
+				if err := receipt.commit(ctx); err != nil {
+					return attempt, fmt.Errorf("record write completion: %w", err)
+				}
+			}
 			return attempt, nil
 		}
 	}

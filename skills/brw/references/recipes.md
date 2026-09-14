@@ -106,6 +106,19 @@ page-ready state or transient event cannot prove a write safe on rerun. Do not
 execute a write merely to test the recipe; use an approved sandbox or an
 already-satisfied durable state that exercises the zero-write preflight.
 
+Follow every `external_write` action with an `assert` step that reads the state
+back. The runner refuses a recipe that does not have one, because the only
+record brw can write by itself says that brw dispatched something, not that the
+other side kept it. That assertion is also what an interrupted rerun consults.
+
+Against an HTTP recipe provider, brw records each external write with the
+provider before dispatching it and records completion only after the declared
+postcondition passes. A rerun finding an earlier run's in-flight record runs the
+verification step rather than re-submitting, and fails if it cannot confirm the
+write. Where the site mints its own per-submission token in a form field,
+declare it with `site_idempotency: {kind: "form_nonce", target: {...}}`; brw
+reads and records the token before dispatch and refuses to act without it.
+
 An `attempts: 0` outcome means only that the current UI already matched the
 postcondition. It is not a receipt proving that an earlier remote write took
 place. Negative conditions such as `element.hidden` and `text.absent` are
@@ -121,6 +134,33 @@ prove the same composer is exactly empty. This split permits inspection before
 delivery and prevents a stored recipe from turning prior authorization into
 standing permission. It does not prove provider-side exactly-once delivery, so
 never blindly retry an ambiguous failed send.
+
+## Compile a draft from a scoped trace
+
+When the recording captured the page state either side of every action, compile
+it instead of writing the schema by hand:
+
+```sh
+brwctl recipe draft --from-trace /absolute/private/trace.json \
+  --plan /absolute/private/plan.json \
+  --out /absolute/private/draft.json
+```
+
+The plan declares the id, version, name, description, intents, exact origins,
+risk, and which steps commit an external write; nothing in it is inferred from
+the trace. The compiler re-derives each target from the recorded role and
+accessible name and accepts it only when it names exactly one element in the
+observation the action was aimed at, turns each typed value into a declared
+runtime input, infers each postcondition from the observation taken after the
+action, and prints a diff-able review body. It refuses — naming the trace step —
+a coordinate-driven action, a write into a credential field, an ambiguous
+target, a navigation to an undeclared origin, or a step with an empty
+post-action observation, and writes nothing when it refuses. `--out` must be
+outside every Git checkout; `--publish` sends the draft to the provider's write
+API instead.
+
+Without `--plan` the same command produces a skeleton carrying `TODO` markers
+for every judgement it refuses to make. Resolve all of them before validating.
 
 ## Validate and install locally
 

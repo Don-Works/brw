@@ -645,15 +645,20 @@ func main() {
 			log.Fatalf("recipe provider: %v", err)
 		}
 		if provider != nil {
-			service, err := recipe.NewService(provider, recipe.Runner{
+			runner := recipe.Runner{
 				Surface:     &recipe.BrowserSurface{Browser: controller, Artifacts: artifactAPI},
 				Credentials: plugins,
-			})
+				Receipts:    recipeReceiptsFor(provider),
+			}
+			service, err := recipe.NewService(provider, runner)
 			if err != nil {
 				log.Fatalf("recipe service: %v", err)
 			}
 			recipeAPI = service
 			log.Printf("private recipe provider enabled (recipe bodies and inputs are never written to usage logs)")
+			if runner.Receipts != nil {
+				log.Printf("external-write receipts are recorded with the recipe provider, so an interrupted write survives a daemon restart")
+			}
 		}
 	}
 
@@ -984,6 +989,22 @@ func configureBaselineStore(root string) (*baseline.Store, error) {
 		return nil, errors.New("--baseline-root must be absolute")
 	}
 	return baseline.NewStore(resolved)
+}
+
+// recipeReceiptsFor returns the write ledger for this deployment, or nil.
+//
+// A receipt exists to be readable after the daemon that wrote it has died, so
+// it has to live with a party that outlives the daemon. An HTTP provider is
+// one; a local directory of JSON files is not — it is this machine, and a
+// receipt kept on the machine that crashed answers nothing. Those deployments
+// therefore run without receipts rather than with a record that only looks
+// like one, and the runner refuses any recipe declaring a mechanism it cannot
+// honour instead of running it with the mechanism quietly switched off.
+func recipeReceiptsFor(provider recipe.Provider) recipe.Receipts {
+	if receipts, ok := provider.(recipe.Receipts); ok {
+		return receipts
+	}
+	return nil
 }
 
 func configureRecipeProvider(ctx context.Context, directory, providerURL, tokenFile string) (recipe.Provider, error) {

@@ -84,7 +84,7 @@ commands:
   pack-extension  pack the brw Chrome extension as a CRX using installed Chrome
   update-xml      write a Chrome extension update manifest XML
   daemons         list configured bridge profile-daemons + probe each /health (JSON)
-  recipe          draft, validate or atomically install a private deterministic recipe
+  recipe          draft or compile, validate, and atomically install a private deterministic recipe
   grants          list, allow or revoke the per-origin site permissions this profile holds
                   (list | allow <origin> | revoke <origin> | revoke-all | ledger)`)
 }

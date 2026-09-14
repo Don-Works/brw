@@ -61,6 +61,10 @@ type Step struct {
 	IdempotencyKey string       `json:"idempotency_key,omitempty"`
 	Postcondition  *Event       `json:"postcondition,omitempty"`
 	Assert         *Assertion   `json:"assert,omitempty"`
+	// SiteIdempotency names the target site's own duplicate-suppression token
+	// for this write, when it exposes one. Omitted when absent, so adding it did
+	// not move any existing recipe digest.
+	SiteIdempotency *SiteIdempotency `json:"site_idempotency,omitempty"`
 }
 
 // Target is resolved immediately before every action. Observation refs are
@@ -380,6 +384,16 @@ func validateStep(recipe Recipe, step Step, seen map[string]bool) error {
 	}
 	if step.Effect == "external_write" && step.Postcondition != nil && slices.Contains([]string{"network.response", "download.completed", "tab.opened"}, step.Postcondition.Kind) {
 		problems = append(problems, errors.New("external_write requires a durable state postcondition that can be preflighted on rerun; transient events cannot prevent duplicate writes"))
+	}
+	if step.SiteIdempotency != nil {
+		if step.Effect != "external_write" {
+			problems = append(problems, errors.New("site_idempotency is only valid on an external_write step"))
+		}
+		if err := validateSiteIdempotency(*step.SiteIdempotency); err != nil {
+			problems = append(problems, err)
+		} else if err := validateTargetTemplates(*step.SiteIdempotency.Target, recipe.Inputs); err != nil {
+			problems = append(problems, fmt.Errorf("invalid site idempotency target: %w", err))
+		}
 	}
 	return errors.Join(problems...)
 }

@@ -19,7 +19,8 @@ import (
 // becomes.
 func recipeDraft(args []string) error {
 	fs := flag.NewFlagSet("recipe draft", flag.ContinueOnError)
-	var fromTrace, out, id, version, name, description, origins string
+	var fromTrace, out, id, version, name, description, origins, plan string
+	var publish bool
 	fs.StringVar(&fromTrace, "from-trace", "", "brw_trace JSON path, or - for stdin")
 	fs.StringVar(&out, "out", "", "draft output path; a split flow writes <out> and <out> with -send before the extension")
 	fs.StringVar(&id, "id", "", "dotted recipe id, e.g. google.chat.search-conversations")
@@ -27,11 +28,24 @@ func recipeDraft(args []string) error {
 	fs.StringVar(&name, "name", "", "human-readable name")
 	fs.StringVar(&description, "description", "", "what this recipe does")
 	fs.StringVar(&origins, "origins", "", "comma-separated exact origins; inferred from the trace when omitted")
+	fs.StringVar(&plan, "plan", "", "compile plan JSON: identity, origins, risk and the steps that commit external writes; switches --from-trace to the compiler, which needs a scoped trace carrying the observation around each action")
+	fs.BoolVar(&publish, "publish", false, "publish the compiled draft through the private provider's write API (compile mode only)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fromTrace == "" || out == "" || fs.NArg() != 0 {
-		return errors.New("recipe draft requires --from-trace and --out")
+	if fromTrace == "" || fs.NArg() != 0 {
+		return errors.New("recipe draft requires --from-trace")
+	}
+	if plan != "" {
+		// Compile mode makes its own decision about --out, including refusing a
+		// path inside a Git checkout, so it is not required here.
+		return recipeCompile(fromTrace, plan, out, publish)
+	}
+	if publish {
+		return errors.New("--publish needs --plan: a skeleton draft still carries TODO markers and is not publishable")
+	}
+	if out == "" {
+		return errors.New("recipe draft requires --out")
 	}
 
 	data, err := readRecipeSource(fromTrace, false)
