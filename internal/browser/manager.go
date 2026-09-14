@@ -2584,6 +2584,19 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 		var actionResult ActionResult
 		actionResult, actionErr = m.ClickText(ctx, snapshot.ClickTextOptions{Text: step.Text})
 		sr.Result = actionResult
+	case "find_act":
+		// Locate and act in one step, with the same exactly-one-match rule the
+		// standalone tool enforces: several matches is an error, never a guess.
+		if step.Find == nil {
+			actionErr = errors.New("find_act requires find")
+			break
+		}
+		var findResult FindActResult
+		findResult, actionErr = RunFindAct(ctx, m, *step.Find)
+		if actionErr == nil {
+			sr.Result = findResult
+			sr.Message = "find_act " + findResult.Action + " " + findResult.Matched.Ref
+		}
 	case "type":
 		if step.Ref == "" || step.Text == "" {
 			actionErr = errors.New("type requires ref and text")
@@ -2800,7 +2813,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 	// was already running when the human took over would otherwise keep driving
 	// the page for the whole of its remaining length. The steps below reach the
 	// low-level helpers directly, so this is their only guard.
-	if err := m.guardTakeoverStep(step.Action); err != nil {
+	if err := m.guardTakeoverStep(step); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
 		return sr
@@ -2852,6 +2865,19 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 				return dispatchClick(c, clicked.X, clicked.Y, input.Left, 1, modifiers)
 			}))
 		})
+	case "find_act":
+		// Locate and act in one step. The search is deliberately not a ref
+		// lookup: it must resolve to exactly one element or the step fails, so a
+		// batch can never act on the highest-ranked of several rivals.
+		if step.Find == nil {
+			actionErr = errors.New("find_act requires find")
+			break
+		}
+		var ref string
+		ref, actionErr = RunFindActStep(tabCtx, tabFinder(), m.findActuator(tabID), *step.Find)
+		if ref != "" {
+			sr.Ref = ref
+		}
 	case "type":
 		if step.Ref == "" || step.Text == "" {
 			actionErr = errors.New("type requires ref and text")

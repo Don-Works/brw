@@ -1124,6 +1124,21 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
+		// An action turns the search into a locate-and-act: one call instead of
+		// find-then-click, with the exactly-one-match rule enforced in the
+		// daemon. The search options are rebuilt from the request, so a caller
+		// cannot pass limit:1 and have the rule confirm a uniqueness it created.
+		findAct, hasAction, actErr := parseFindAct(args, req)
+		if actErr != nil {
+			return nil, invalid(actErr)
+		}
+		if hasAction {
+			return obs.findAct(browser.RunFindAct(ctx, s.manager, findAct))
+		}
 		req = normalizeMCPFindOptions(req)
 		found, err := s.manager.Find(ctx, req)
 		if err == nil {
@@ -1142,6 +1157,10 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
 		if req.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
 		}
@@ -1150,9 +1169,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		// the decomposed CDP click so right/double/triple/middle clicks and
 		// canvas coordinate clicks all share one tool.
 		if browser.IsDefaultLeftSingleRefClick(req.Button, req.ClickCount, req.Ref, req.X, req.Y) {
-			return toolJSON(s.manager.Click(ctx, req.Ref))
+			return obs.action(s.manager.Click(ctx, req.Ref))
 		}
-		return toolJSON(s.manager.ClickButton(ctx, browser.ClickButtonOptions{
+		return obs.action(s.manager.ClickButton(ctx, browser.ClickButtonOptions{
 			MousePoint: browser.MousePoint{Ref: req.Ref, X: req.X, Y: req.Y},
 			Button:     req.Button,
 			ClickCount: req.ClickCount,
@@ -1176,19 +1195,31 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := opts.Validate(); err != nil {
 			return toolError(err), nil
 		}
-		return toolJSON(s.manager.Drag(ctx, opts))
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
+		return obs.action(s.manager.Drag(ctx, opts))
 	case "brw_mouse_down":
 		opts, err := parseMouseButtonArgs(args)
 		if err != nil {
 			return nil, invalid(err)
 		}
-		return toolJSON(s.manager.MouseDown(ctx, opts))
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
+		return obs.action(s.manager.MouseDown(ctx, opts))
 	case "brw_mouse_up":
 		opts, err := parseMouseButtonArgs(args)
 		if err != nil {
 			return nil, invalid(err)
 		}
-		return toolJSON(s.manager.MouseUp(ctx, opts))
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
+		return obs.action(s.manager.MouseUp(ctx, opts))
 	case "brw_click_text":
 		var req snapshot.ClickTextOptions
 		if err := unmarshalArgs(args, &req); err != nil {
@@ -1198,10 +1229,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			Snapshot bool `json:"snapshot"`
 		}
 		_ = json.Unmarshal(args, &snapReq)
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
 		if snapReq.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
 		}
-		return toolJSON(s.manager.ClickText(ctx, req))
+		return obs.action(s.manager.ClickText(ctx, req))
 	case "brw_navigate":
 		var req struct {
 			Direction string `json:"direction"`
@@ -1210,10 +1245,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
 		if req.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
 		}
-		return toolJSON(s.manager.Navigate(ctx, req.Direction))
+		return obs.action(s.manager.Navigate(ctx, req.Direction))
 	case "brw_navigate_to":
 		var req struct {
 			URL      string `json:"url"`
@@ -1227,10 +1266,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return toolError(err), nil
 		}
 		req.URL = normalizedURL
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
 		if req.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
 		}
-		return toolJSON(s.manager.NavigateTo(ctx, req.URL))
+		return obs.action(s.manager.NavigateTo(ctx, req.URL))
 	case "brw_hover":
 		var req struct {
 			Ref      string `json:"ref"`
@@ -1239,10 +1282,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
 		if req.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
 		}
-		return toolJSON(s.manager.Hover(ctx, req.Ref))
+		return obs.action(s.manager.Hover(ctx, req.Ref))
 	case "brw_type":
 		var req struct {
 			Ref      string `json:"ref"`
@@ -1252,10 +1299,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
 		if req.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
 		}
-		return toolJSON(s.manager.Type(ctx, req.Ref, req.Text))
+		return obs.action(s.manager.Type(ctx, req.Ref, req.Text))
 	case "brw_fill":
 		req := snapshot.FillOptions{Replace: true}
 		if err := unmarshalArgs(args, &req); err != nil {
@@ -1275,10 +1326,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			Snapshot bool `json:"snapshot"`
 		}
 		_ = json.Unmarshal(args, &snapReq)
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
 		if snapReq.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
 		}
-		return toolJSON(s.manager.Fill(ctx, req))
+		return obs.action(s.manager.Fill(ctx, req))
 	case "brw_upload_file":
 		var req snapshot.UploadOptions
 		if err := unmarshalArgs(args, &req); err != nil {
@@ -1302,10 +1357,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
 		if req.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
 		}
-		return toolJSON(s.manager.Select(ctx, req.Ref, req.Value))
+		return obs.action(s.manager.Select(ctx, req.Ref, req.Value))
 	case "brw_press":
 		var req struct {
 			Key      string `json:"key"`
@@ -1319,10 +1378,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err != nil {
 			return nil, invalid(err)
 		}
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
 		if req.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
 		}
-		return toolJSON(repeatAction(ctx, repeat, func(ctx context.Context) (browser.ActionResult, error) {
+		return obs.action(repeatAction(ctx, repeat, func(ctx context.Context) (browser.ActionResult, error) {
 			return s.manager.Press(ctx, req.Key)
 		}))
 	case "brw_scroll":
@@ -1338,10 +1401,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err != nil {
 			return nil, invalid(err)
 		}
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
 		if req.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
 		}
-		return toolJSON(repeatAction(ctx, repeat, func(ctx context.Context) (browser.ActionResult, error) {
+		return obs.action(repeatAction(ctx, repeat, func(ctx context.Context) (browser.ActionResult, error) {
 			return s.manager.Scroll(ctx, req.Direction)
 		}))
 	case "brw_screenshot":
@@ -1526,6 +1593,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			Ref      string `json:"ref"`
 			Snapshot bool   `json:"snapshot"`
 			TabID    string `json:"tab_id"`
+			// Declared so strict decoding accepts it; the level itself is read by
+			// observerFromArgs, which every action tool shares.
+			Observe string `json:"observe"`
 		}
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
@@ -1533,10 +1603,14 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if strings.TrimSpace(req.Ref) == "" {
 			return toolError(errors.New("ref is required")), nil
 		}
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
 		if req.Snapshot {
 			ctx = browser.WithWantSnapshot(ctx)
 		}
-		return toolJSON(focuser.Focus(ctx, req.Ref))
+		return obs.action(focuser.Focus(ctx, req.Ref))
 	case "brw_clipboard":
 		clipboard, ok := s.manager.(browser.ClipboardController)
 		if !ok {
@@ -1721,7 +1795,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 				st.URL = normalizedURL
 			}
 		}
-		return toolJSON(s.manager.ExecutePlan(ctx, req.Steps))
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
+		return obs.plan(s.manager.ExecutePlan(ctx, req.Steps))
 	case "brw_batch":
 		var req struct {
 			Steps []browser.BatchStep `json:"steps"`
@@ -1741,7 +1819,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 				st.URL = normalizedURL
 			}
 		}
-		return toolJSON(s.manager.ExecuteBatch(ctx, req.Steps))
+		obs, obsErr := observerFromArgs(args)
+		if obsErr != nil {
+			return nil, invalid(obsErr)
+		}
+		return obs.batch(s.manager.ExecuteBatch(ctx, req.Steps))
 	case "brw_cancel":
 		var req struct {
 			Token string `json:"token"`
@@ -2443,15 +2525,19 @@ func tools() []map[string]any {
 			"since":                integerSchema("Pass a prior snapshot's metadata.version for a DELTA: 'elements' carries ONLY added+changed elements, metadata.delta=true, and a 'delta' object lists {added, removed, changed} refs. Any mismatch (version, options, navigation) returns a full snapshot. Omit for a full snapshot."),
 			"format":               stringEnumSchema("Output shape: json (default, structured object) or compact (one terse text line per element: ref role \"name\" + key state). compact uses markedly fewer tokens — prefer it for small models. Presentation only; element selection and deltas are unchanged.", "json", "compact"),
 		}, nil)),
-		tool("brw_find", "Find matching semantic element refs without dumping the full page.", object(map[string]any{
+		tool("brw_find", "Find matching semantic element refs without dumping the full page. Pass action to LOCATE AND ACT in one call — find+click, find+fill, find+type, find+select, find+hover — instead of a find followed by a brw_click. The search must resolve to EXACTLY ONE element or the call fails and names the rivals it found (ref, role and name for each, so you can act on the right one without searching again); it never acts on the best of several, which is the whole point of semantic refs. limit is ignored when action is set, so a narrow limit cannot manufacture uniqueness — narrow with role, a longer query, or exact:true instead. Returns {matched:{ref,role,name,...}, action, result:<the same post-action observation the standalone tool returns>}. The same step is available inside brw_batch and brw_plan as action:\"find_act\" with a find object, on both transports.", object(map[string]any{
 			"tab_id":         stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 			"query":          stringSchema("Case-insensitive substring match across ref, role, name, tag, type, href, and value. Set text_content:true to also match visible prose text."),
 			"text":           stringSchema("Alias for query-style text filtering."),
 			"role":           stringSchema("ARIA/semantic role to include, for example button or textbox."),
-			"limit":          integerSchema("Maximum number of elements to return."),
+			"limit":          integerSchema("Maximum number of elements to return. Ignored when action is set."),
 			"viewport_only":  boolSchema("Only return elements intersecting the viewport."),
 			"include_hidden": boolSchema("Include input[type=hidden] fields as role hidden for explicit debugging. Defaults false."),
 			"text_content":   boolSchema("Also match against full visible text content (innerText), surfacing prose-bearing elements like headings, paragraphs, and list items — not just interactive-element metadata. Opt-in; defaults false."),
+			"action":         stringEnumSchema("Act on the single matching element instead of returning the match list. Omit for a read-only find.", browser.FindActActions()...),
+			"value":          stringSchema("Text to write for action fill or type, or the option value for action select. Required for those three and refused for the others."),
+			"exact":          boolSchema("With action: keep only elements whose accessible name (or value) EQUALS the query after collapsing case and whitespace, rather than containing it. The fastest way to resolve an ambiguous match."),
+			"observe":        observeSchema(),
 		}, nil)),
 		tool("brw_click", "Click a semantic element ref (or x,y coordinates) from brw_snapshot. Defaults to a left single-click; set button to right (opens context menus) or middle, and click_count to 2 (double-click) or 3 (triple-click selects a line). When the click opens a new tab, the response includes new_tab_id with the freshly opened tab's id.", object(map[string]any{
 			"ref":         stringSchema("Element ref, for example e18. Provide ref or x,y."),
@@ -2460,28 +2546,32 @@ func tools() []map[string]any {
 			"button":      stringEnumSchema("Mouse button: left (default), right, or middle.", "left", "right", "middle"),
 			"click_count": integerSchema("Click count: 1 (default), 2 for double-click, 3 to triple-click (select a line)."),
 			"snapshot":    boolSchema("Include a full page snapshot in the response. Use this to avoid a separate brw_snapshot call after the action — the response gains a 'snapshot' field with the same structure as brw_snapshot output."),
+			"observe":     observeSchema(),
 			"tab_id":      stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
 		tool("brw_drag", "Press at a source (ref or x,y), move to a target (ref or x,y) over several steps, then release. Use for sliders/range inputs, drag-and-drop reorder, and canvas/map panning.", object(map[string]any{
-			"from":   mousePointSchema("Drag source. Provide either ref or x and y."),
-			"to":     mousePointSchema("Drag target. Provide either ref or x and y."),
-			"steps":  integerSchema("Number of intermediate mouse-move steps between source and target. Defaults to 12."),
-			"button": stringEnumSchema("Mouse button held during the drag: left (default), right, or middle.", "left", "right", "middle"),
-			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+			"from":    mousePointSchema("Drag source. Provide either ref or x and y."),
+			"to":      mousePointSchema("Drag target. Provide either ref or x and y."),
+			"steps":   integerSchema("Number of intermediate mouse-move steps between source and target. Defaults to 12."),
+			"button":  stringEnumSchema("Mouse button held during the drag: left (default), right, or middle.", "left", "right", "middle"),
+			"observe": observeSchema(),
+			"tab_id":  stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"from", "to"})),
 		tool("brw_mouse_down", "Press and hold a mouse button at a ref or x,y without releasing (the press half of a press-and-hold). Pair with brw_mouse_up.", object(map[string]any{
-			"ref":    stringSchema("Element ref to press at. Provide ref or x,y."),
-			"x":      map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
-			"y":      map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
-			"button": stringEnumSchema("Mouse button: left (default), right, or middle.", "left", "right", "middle"),
-			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+			"ref":     stringSchema("Element ref to press at. Provide ref or x,y."),
+			"x":       map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
+			"y":       map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
+			"button":  stringEnumSchema("Mouse button: left (default), right, or middle.", "left", "right", "middle"),
+			"observe": observeSchema(),
+			"tab_id":  stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
 		tool("brw_mouse_up", "Release a held mouse button at a ref or x,y (the release half of a press-and-hold). Pair with brw_mouse_down.", object(map[string]any{
-			"ref":    stringSchema("Element ref to release at. Provide ref or x,y."),
-			"x":      map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
-			"y":      map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
-			"button": stringEnumSchema("Mouse button: left (default), right, or middle.", "left", "right", "middle"),
-			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+			"ref":     stringSchema("Element ref to release at. Provide ref or x,y."),
+			"x":       map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
+			"y":       map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
+			"button":  stringEnumSchema("Mouse button: left (default), right, or middle.", "left", "right", "middle"),
+			"observe": observeSchema(),
+			"tab_id":  stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
 		tool("brw_click_text", "Click the best visible actionable element whose accessible name or visible text matches text. Useful for controls like \"Check out\" when refs are stale or custom components hide internals. Below-fold matches are scrolled into view before clicking by default. When the click opens a new tab, the response includes new_tab_id.", object(map[string]any{
 			"text":        stringSchema("Visible text or accessible name to click."),
@@ -2489,21 +2579,25 @@ func tools() []map[string]any {
 			"exact":       boolSchema("Require an exact normalized text/name match instead of allowing substring matches."),
 			"auto_scroll": boolSchema("Scroll a below-fold match into view before clicking (default true). Set false to click only elements already in the viewport."),
 			"snapshot":    boolSchema("Include a full page snapshot in the response."),
+			"observe":     observeSchema(),
 			"tab_id":      stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"text"})),
 		tool("brw_navigate", "Navigate the active tab's session history: back, forward, or reload. Uses the page navigation history (no URL needed); returns a post-navigation observation.", object(map[string]any{
 			"direction": stringEnumSchema("back (previous history entry), forward (next history entry), or reload (re-fetch the current document).", "back", "forward", "reload"),
 			"snapshot":  boolSchema("Include a full page snapshot in the response."),
+			"observe":   observeSchema(),
 			"tab_id":    stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"direction"})),
 		tool("brw_navigate_to", "Navigate brw's current working tab to a URL, wait for the page to load, and return a post-navigation observation. Unlike brw_open, this reuses the working tab instead of creating another. In the default isolation mode brw operates in its OWN tab(s): if it has not opened one yet, this opens a fresh tab rather than navigating whatever tab you are on. To navigate one of YOUR existing tabs, pass its tab_id (from brw_list_tabs).", object(map[string]any{
 			"url":      stringSchema("URL to navigate to. Scheme defaults to https."),
 			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"observe":  observeSchema(),
 			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"url"})),
 		tool("brw_hover", "Hover over a semantic element ref to trigger mouseenter/mouseover/pointermove events.", object(map[string]any{
 			"ref":      stringSchema("Element ref, for example e18."),
 			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"observe":  observeSchema(),
 			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"ref"})),
 		tool("brw_evaluate", "Run arbitrary JavaScript in the page context and return the JSON-serializable result. Supports async expressions. Large results are TRUNCATED with an explicit '…[truncated: returned N of M bytes]' marker (never silently empty); use offset/max_bytes to page through them. Note: fetch() runs under the current page's Content-Security-Policy, so cross-origin calls must be made from a tab whose origin permits them (otherwise they fail with a CSP/'Failed to fetch' error).", object(map[string]any{
@@ -2550,6 +2644,7 @@ func tools() []map[string]any {
 			"ref":      stringSchema("Element ref, for example e17."),
 			"text":     stringSchema("Text to insert."),
 			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"observe":  observeSchema(),
 			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"ref", "text"})),
 		tool("brw_fill", "Replace or append text in a semantic text field by ref or query and return a post-action observation. Also sets a native range slider (<input type=range>), number, or date input to an exact value in ONE call (prefer this over repeated brw_press arrow keys for sliders). If the ref exists but is not a text input, the error suggests using brw_type instead.", object(map[string]any{
@@ -2560,6 +2655,7 @@ func tools() []map[string]any {
 			"value":    stringSchema("Playwright-style alias for text. Accepted so {value:\"…\"} fills the field instead of silently clearing it."),
 			"replace":  boolSchema("Replace existing field content instead of appending. Defaults to true."),
 			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"observe":  observeSchema(),
 			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
 		tool("brw_upload_file", "Set a file on a semantic file input by ref or query and return a post-action observation. Provide the file from EXACTLY ONE source: path/paths (already on the browser host), bytes_base64 (inline contents), or url (the daemon fetches it). Temp files are cleaned up automatically after a grace period.", object(map[string]any{
@@ -2579,18 +2675,21 @@ func tools() []map[string]any {
 			"ref":      stringSchema("Element ref for a select, combobox, or listbox trigger."),
 			"value":    stringSchema("Option value, data-value, or visible option label to select."),
 			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"observe":  observeSchema(),
 			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"ref", "value"})),
 		tool("brw_press", "Press a keyboard key in the active tab.", object(map[string]any{
 			"key":      stringSchema("Key name or chord, for example Enter, Tab, Escape, ArrowDown, Meta+Enter."),
 			"repeat":   integerSchema("Press the key this many times (1-100) in one call, instead of one call per press. Only the final observation is returned."),
 			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"observe":  observeSchema(),
 			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"key"})),
 		tool("brw_scroll", "Scroll the active page or scroll container in a direction.", object(map[string]any{
 			"direction": stringEnumSchema("up, down, left, or right.", "up", "down", "left", "right"),
 			"repeat":    integerSchema("Scroll this many times (1-100) in one call, instead of one call per scroll. Only the final observation is returned."),
 			"snapshot":  boolSchema("Include a full page snapshot in the response."),
+			"observe":   observeSchema(),
 			"tab_id":    stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"direction"})),
 		tool("brw_screenshot", "Visual fallback — you almost never need this. brw is semantic-first: brw_snapshot/brw_find expose every control with a ref, brw_read returns page prose/result/status/badge text, and EVERY action (click/type/fill/select/press/drag) returns a post-action observation that confirms its effect (changed elements, new values, navigation). To VERIFY an outcome (a cart badge, a result message, a swapped item, an editor's text), read that observation or call brw_read — do NOT screenshot to check. Reserve brw_screenshot for opaque visual content with no DOM text (canvas, maps, charts, image-only widgets). Set annotate:true for a Set-of-Marks capture: in-viewport elements get labelled boxes carrying the SAME refs brw_snapshot returns, plus a legend mapping each ref to its box, role, and name — so you can read a label off the image and act on it with brw_click. Pass ref OR region for a tight annotated crop (far fewer vision tokens on a dense page); both imply annotate. The overlay never mutates the page.", object(map[string]any{
@@ -2655,6 +2754,7 @@ func tools() []map[string]any {
 		tool("brw_focus", "Give one element the keyboard focus by ref, without clicking it. Use it before brw_press when the keystroke must land on a specific field and you do not want the side effects of a click (a menu opening, a link following, a blur handler firing on the way). Resolves across same-origin iframes and open shadow roots. brw_type and brw_fill already focus the field they write to; this is for the case where the next thing you send is a key. Returns the post-action observation, so `focus` in the result tells you where focus actually landed — a control that moves focus on its own is reported as a warning rather than passing silently.", object(map[string]any{
 			"ref":      stringSchema("Element ref from brw_snapshot."),
 			"snapshot": boolSchema("Include a full page snapshot in the response."),
+			"observe":  observeSchema(),
 			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"ref"})),
 		tool("brw_key_down", "Press a key and HOLD it: the keyup is not sent until brw_key_up. That is what makes Ctrl+drag, Shift+click-range and Alt+click expressible — brw_press sends keydown and keyup back to back, so a page reading event.shiftKey during the drag in between sees nothing. While a key is held, EVERY later input brw dispatches on that tab carries its modifier mask — brw_click, brw_click_text, brw_drag, brw_hover, brw_mouse_down/up, brw_press, and the click/click_text/press/hover steps of a brw_batch — and every action result warns that the keys are still held. Hold one key per call: a chord like \"ctrl+shift\" is refused, because one held key is one release. ALWAYS release what you hold (brw_key_up key=\"all\" releases everything the tab holds), or later clicks keep the modifier. Returns the keys still held. DIRECT-CDP TRANSPORT ONLY: the extension bridge returns a capability error — use brw_press for a discrete chord like Meta+Enter there.", object(map[string]any{
@@ -2699,14 +2799,14 @@ func tools() []map[string]any {
 			"peek":        map[string]any{"type": "boolean", "description": "For status: do not consume the list."},
 			"tab_id":      stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
-		tool("brw_plan", "Execute a sequence of browser operations in one round-trip. Steps run sequentially and stop on first failure. Steps that produce data carry it under result; snapshot steps also populate snapshot. Prefer brw_batch, which returns one observation instead of per-step payloads.", object(map[string]any{
+		tool("brw_plan", "Execute a sequence of browser operations in one round-trip. Steps run sequentially and stop on first failure. Steps that produce data carry it under result; snapshot steps also populate snapshot. Intermediate action steps report a MINIMAL observation (outcome, url/title, what changed — no element list) and the last step reports the full one, because by the time you read an intermediate observation its step has already been followed by the next; pass observe to set every step level yourself. Prefer brw_batch, which returns one observation instead of per-step payloads.", object(map[string]any{
 			"steps": map[string]any{
 				"type":        "array",
 				"description": "Ordered list of steps to execute.",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"action":      stringEnumSchema("One of: click, click_text, type, fill, select, press, scroll, hover, wait, snapshot, read, open, navigate_to, focus_tab. open spawns a new tab; navigate_to drives the plan's existing working tab.", "click", "click_text", "type", "fill", "select", "press", "scroll", "hover", "wait", "snapshot", "read", "open", "navigate_to", "focus_tab"),
+						"action":      stringEnumSchema("One of: click, click_text, find_act, type, fill, select, press, scroll, hover, wait, snapshot, read, open, navigate_to, focus_tab. open spawns a new tab; navigate_to drives the plan's existing working tab; find_act locates its own target from the find field.", "click", "click_text", "find_act", "type", "fill", "select", "press", "scroll", "hover", "wait", "snapshot", "read", "open", "navigate_to", "focus_tab"),
 						"ref":         stringSchema("Element ref for click, type, fill, select, hover."),
 						"text":        stringSchema("Text for click_text, type and fill actions."),
 						"value":       stringSchema("Option value for select. For fill, also accepted as a Playwright-style alias for text."),
@@ -2718,19 +2818,27 @@ func tools() []map[string]any {
 						"key":         stringSchema("Key name for press action (Enter, Tab, Escape, etc)."),
 						"expect_ref":  stringSchema("Validate this ref exists before running the action (fail-fast)."),
 						"expect_role": stringSchema("Validate the expect_ref element has this role."),
+						"find": map[string]any{
+							"type": "object",
+							"description": "For the find_act action: {query|text, role, exact, action:\"click\"|\"fill\"|\"type\"|\"select\"|\"hover\", value}. " +
+								"Locates and acts in one step. The search must resolve to EXACTLY ONE element or the step fails and names the rivals; it never acts on the best of several. " +
+								"Use it when the ref you would click has not been minted yet — after a navigation, or after an earlier step in this same sequence changed the page.",
+							"additionalProperties": true,
+						},
 					},
 					"required": []string{"action"},
 				},
 			},
+			"observe": observeSchema(),
 		}, []string{"steps"})),
-		tool("brw_batch", "PREFERRED for multi-step flows: chain click, click_text, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, and inline assertions (assert_visible, assert_text, assert_value, assert_hidden, plus the richer assert step) in ONE round-trip, returning a single observation at the end. Use this instead of individual brw_click/brw_type/brw_fill calls whenever you need 2+ actions. Steps run sequentially; interleave assertions to fail fast.", object(map[string]any{
+		tool("brw_batch", "PREFERRED for multi-step flows: chain click, click_text, find_act, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, and inline assertions (assert_visible, assert_text, assert_value, assert_hidden, plus the richer assert step) in ONE round-trip, returning a single observation at the end. Use this instead of individual brw_click/brw_type/brw_fill calls whenever you need 2+ actions. Steps run sequentially; interleave assertions to fail fast. A find_act step locates its own target by role and name, which is what lets a batch keep going past a step that changes the page: refs minted before the batch started do not exist on the new page, and a find_act step does not need them. Pass observe to shrink or drop the closing observation when you already know what comes next.", object(map[string]any{
 			"steps": map[string]any{
 				"type":        "array",
 				"description": "Ordered list of actions and assertions to execute.",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"action":     stringEnumSchema("One of: click, click_text, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, assert_visible, assert_text, assert_value, assert_hidden, assert. open spawns a new tab; navigate_to drives the batch's existing working tab; assert carries a brw_assert request in the assertion field.", "click", "click_text", "type", "fill", "select", "press", "scroll", "hover", "wait", "open", "navigate_to", "focus_tab", "assert_visible", "assert_text", "assert_value", "assert_hidden", "assert"),
+						"action":     stringEnumSchema("One of: click, click_text, find_act, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, assert_visible, assert_text, assert_value, assert_hidden, assert. open spawns a new tab; navigate_to drives the batch's existing working tab; assert carries a brw_assert request in the assertion field; find_act locates its own target from the find field.", "click", "click_text", "find_act", "type", "fill", "select", "press", "scroll", "hover", "wait", "open", "navigate_to", "focus_tab", "assert_visible", "assert_text", "assert_value", "assert_hidden", "assert"),
 						"ref":        stringSchema("Element ref for click, type, fill, select, hover, and assert_* actions."),
 						"text":       stringSchema("Text for type and fill actions, or expected text for assert_text."),
 						"value":      stringSchema("Option value for select / assert_value. For fill, also accepted as a Playwright-style alias for text."),
@@ -2745,10 +2853,18 @@ func tools() []map[string]any {
 							"description":          "For the assert action: a brw_assert request ({assertion:\"url\"|\"http_status\"|\"element_count\"|\"element_state\"|\"attribute\"|\"download\", ...}). The step fails with expected-vs-actual text when it does not hold.",
 							"additionalProperties": true,
 						},
+						"find": map[string]any{
+							"type": "object",
+							"description": "For the find_act action: {query|text, role, exact, action:\"click\"|\"fill\"|\"type\"|\"select\"|\"hover\", value}. " +
+								"Locates and acts in one step. The search must resolve to EXACTLY ONE element or the step fails and names the rivals; it never acts on the best of several. " +
+								"Use it when the ref you would click has not been minted yet — after a navigation, or after an earlier step in this same sequence changed the page.",
+							"additionalProperties": true,
+						},
 					},
 					"required": []string{"action"},
 				},
 			},
+			"observe": observeSchema(),
 		}, []string{"steps"})),
 		tool("brw_cancel", "Cooperatively stop in-flight long-running operations (brw_plan, brw_batch, and their waits) for an operation token. Omit token (or pass \"*\") to stop everything; pass tab_id to stop work targeting that tab. The cancelled operation returns a normal result reporting steps_completed and cancelled=true rather than erroring. Returns how many operations were signalled.", object(map[string]any{
 			"token":  stringSchema("Operation token to cancel. Omit or use \"*\" to cancel all in-flight operations."),

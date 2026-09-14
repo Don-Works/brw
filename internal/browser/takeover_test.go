@@ -516,14 +516,16 @@ func TestEveryBatchStepVerbIsClassifiedForTakeover(t *testing.T) {
 	}
 	var unclassified []string
 	for _, verb := range verbs {
-		if takeoverReadOnlySteps[verb] || takeoverGuardedActions[verb] || observationActions[verb] {
+		if takeoverReadOnlySteps[verb] || takeoverGuardedActions[verb] ||
+			observationActions[verb] || takeoverDelegatingSteps[verb] {
 			continue
 		}
 		unclassified = append(unclassified, verb)
 	}
 	sort.Strings(unclassified)
 	if len(unclassified) > 0 {
-		t.Errorf("batch step verbs in no takeover class: %v — name the read-only ones in takeoverReadOnlySteps, guard the rest", unclassified)
+		t.Errorf("batch step verbs in no takeover class: %v — name the read-only ones in takeoverReadOnlySteps, "+
+			"the ones guarded under an inner verb in takeoverDelegatingSteps, and guard the rest", unclassified)
 	}
 }
 

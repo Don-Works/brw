@@ -24,6 +24,16 @@ import (
 // which is slow/fragile under headless CI on this platform.
 func newHeadlessManager(t *testing.T) *Manager {
 	t.Helper()
+	return newHeadlessManagerWith(t)
+}
+
+// newHeadlessManagerWith is newHeadlessManager with extra allocator options
+// appended last, so a test can override one of chromedp's defaults. The one that
+// matters for gesture semantics is --disable-popup-blocking, which chromedp sets
+// by default: with it on, window.open succeeds without user activation and a
+// fixture meant to prove activation proves nothing.
+func newHeadlessManagerWith(t *testing.T, extra ...chromedp.ExecAllocatorOption) *Manager {
+	t.Helper()
 	chromePath, err := cdp.FindChrome("")
 	if err != nil {
 		t.Skipf("Chrome/Chromium not available: %v", err)
@@ -35,6 +45,7 @@ func newHeadlessManager(t *testing.T) *Manager {
 		chromedp.UserDataDir(t.TempDir()),
 		chromedp.WSURLReadTimeout(45*time.Second),
 	)
+	opts = append(opts, extra...)
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 	if err := chromedp.Run(browserCtx); err != nil {

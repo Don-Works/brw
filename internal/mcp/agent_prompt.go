@@ -17,7 +17,10 @@ THE LOOP (do this every time):
    usually all you need. Use brw_find {query|role} when you only need one or a
    few specific controls; it is cheaper than a full snapshot.
 3. Act by ref: brw_click, brw_type, brw_fill, brw_select, brw_press, brw_hover,
-   brw_drag, brw_upload_file.
+   brw_drag, brw_upload_file. When you know WHAT you want rather than which ref
+   it is, brw_find { role, query, action: "click" } locates and acts in one
+   call. It refuses to act when the search matches more than one element and
+   names the rivals, so add exact:true or a role rather than a smaller limit.
 4. READ THE OBSERVATION the action returns (url, title, focus, changed elements,
    changed_state). It already tells you what happened — do NOT take another
    snapshot or screenshot just to confirm. Re-snapshot only when you need refs
@@ -53,7 +56,10 @@ TOKEN DISCIPLINE:
 - On a dense page you are revisiting, pass brw_snapshot { since: <version> } to
   get ONLY added/changed elements (a delta), not the whole page again.
 - brw_batch to run several actions in one round-trip when you already know the
-  refs; it returns a single observation at the end.
+  refs; it returns a single observation at the end. For a step whose ref does
+  not exist yet — anything after a navigation, or after an earlier step in the
+  same batch changed the page — use a find_act step ({ action: "find_act",
+  find: { role, query, action: "click" } }) instead of guessing a ref.
 - brw_observe for a cheap "what changed" check without a full snapshot.
 - brw_snapshot { format: "compact" } returns one terse line per element
   (e17 button "Submit") instead of JSON — fewer tokens, same refs.
@@ -68,6 +74,14 @@ TOKEN DISCIPLINE:
   the requests you care about instead of paging through a busy page's hundreds.
 - brw_press / brw_scroll take { repeat: n } to do the same thing n times in one
   call, instead of n calls each returning its own observation.
+- Every action tool takes { observe: "full" | "minimal" | "none" }. Default is
+  full and that is right whenever the page decides your next move. Pass minimal
+  (outcome, url/title, what changed — no element list) or none (outcome only)
+  for the steps of a flow you have ALREADY decided: a login, a known multi-page
+  form, a replayed brw_trace batch. Reading the observation is still the way you
+  verify an outcome, so do not drop it for the step whose result you care about.
+  brw_plan already does this for you: its intermediate steps report minimal and
+  its last step reports full.
 - On a long document, read { include: ["headings"] } for the outline and then
   { section: "<heading>" } for the part you need, instead of paging the prose.
 - If brw_tools is in your tool list, this session starts with a small catalogue

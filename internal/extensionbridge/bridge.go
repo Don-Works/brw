@@ -2313,6 +2313,10 @@ func (b *Bridge) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.
 		Limit:         opts.Limit,
 		ViewportOnly:  opts.ViewportOnly,
 		IncludeHidden: opts.IncludeHidden,
+		// text_content is advertised by brw_find on every transport. Dropping it
+		// here made the option a no-op on the extension bridge: the tool said it
+		// would match visible prose and then matched only element metadata.
+		TextContent: opts.TextContent,
 	})
 	if err != nil {
 		return snapshot.FindResult{}, err
@@ -2525,7 +2529,11 @@ func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) 
 func (b *Bridge) clickTextRaw(ctx context.Context, opts snapshot.ClickTextOptions) (string, error) {
 	optsJSON, _ := json.Marshal(opts)
 	var clicked snapshot.ClickXYResult
-	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s)", snapshot.ClickTextScript, optsJSON), "", &clicked); err != nil {
+	// User gesture on the FIRST evaluation, not only on the deferred retry: a
+	// gesture-gated handler registered with addEventListener is invisible to the
+	// deferral check, so it never reached the retry and its window.open was
+	// dropped under a click that reported success.
+	if err := b.evaluateWithUserGesture(ctx, fmt.Sprintf("%s(%s)", snapshot.ClickTextScript, optsJSON), "", &clicked); err != nil {
 		return "", err
 	}
 	if !clicked.OK {
@@ -2689,16 +2697,14 @@ func (b *Bridge) clickRef(ctx context.Context, ref string) error {
 	yJSON, _ := json.Marshal(box.ViewportY)
 	var inPage snapshot.ClickXYResult
 	expression := fmt.Sprintf("%s(%s,%s)", snapshot.ClickXYScript, xJSON, yJSON)
-	var evalErr error
-	if box.RequiresTrusted {
-		// Runtime.evaluate's userGesture flag grants the transient activation that
-		// window.open/download/fullscreen controls require, while retaining the
-		// one-round-trip in-page click path. Ordinary controls stay on the cheaper
-		// default evaluation below.
-		evalErr = b.evaluateWithUserGesture(ctx, expression, "", &inPage)
-	} else {
-		evalErr = b.evaluate(ctx, expression, "", &inPage)
-	}
+	// Runtime.evaluate's userGesture flag grants the transient activation that
+	// window.open/download/fullscreen controls require, while retaining the
+	// one-round-trip in-page click path. It is applied to EVERY click, not only
+	// the shapes resolveBox could recognise: a listener registered with
+	// addEventListener cannot be read back from page script, so "this control is
+	// gesture-gated" is not decidable in advance. Predicting it wrongly meant a
+	// dropped window.open under a click that reported success.
+	evalErr := b.evaluateWithUserGesture(ctx, expression, "", &inPage)
 	if evalErr == nil && inPage.OK {
 		return nil
 	}
@@ -3754,6 +3760,19 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 		actionErr = b.clickRef(ctx, step.Ref)
 		if actionErr == nil {
 			sr.Result = map[string]any{"ok": true, "message": "clicked " + step.Ref, "ref": step.Ref}
+		}
+		b.settle(ctx, batchActionSettle)
+	case "find_act":
+		// Locate and act in one step, with the same exactly-one-match rule the
+		// standalone tool enforces: several matches is an error, never a guess.
+		if step.Find == nil {
+			actionErr = errors.New("find_act requires find")
+			break
+		}
+		var findRef string
+		findRef, actionErr = browser.RunFindActStep(ctx, b, b.findActuator(), *step.Find)
+		if actionErr == nil {
+			sr.Result = map[string]any{"ok": true, "message": "find_act " + step.Find.Action + " " + findRef, "ref": findRef}
 		}
 		b.settle(ctx, batchActionSettle)
 	case "type":
@@ -5188,6 +5207,18 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 			break
 		}
 		_, actionErr = b.clickTextRaw(ctx, snapshot.ClickTextOptions{Text: step.Text})
+		b.settle(ctx, batchActionSettle)
+	case "find_act":
+		// Locate and act in one step. The search must resolve to exactly one
+		// element or the step fails, so a batch can never act on the
+		// highest-ranked of several rivals.
+		if step.Find == nil {
+			actionErr = errors.New("find_act requires find")
+			break
+		}
+		var findRef string
+		findRef, actionErr = browser.RunFindActStep(ctx, b, b.findActuator(), *step.Find)
+		sr.Ref = findRef
 		b.settle(ctx, batchActionSettle)
 	case "type":
 		if step.Ref == "" || step.Text == "" {

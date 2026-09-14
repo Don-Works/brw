@@ -285,8 +285,8 @@ func TestBatchAndPlanBackendsImplementTheSameActions(t *testing.T) {
 		funcName string
 		required []string
 	}{
-		{runner: "batch", funcName: "executeBatchStep", required: []string{"navigate_to", "click_text", "assert"}},
-		{runner: "plan", funcName: "executePlanStep", required: []string{"navigate_to", "click_text"}},
+		{runner: "batch", funcName: "executeBatchStep", required: []string{"navigate_to", "click_text", "assert", "find_act"}},
+		{runner: "plan", funcName: "executePlanStep", required: []string{"navigate_to", "click_text", "find_act"}},
 	} {
 		t.Run(tc.runner, func(t *testing.T) {
 			direct := stepActionCases(t, filepath.Join("..", "browser", "manager.go"), tc.funcName)

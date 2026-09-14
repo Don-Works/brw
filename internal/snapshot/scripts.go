@@ -3370,7 +3370,10 @@ func ClickXY(ctx context.Context, x, y float64) (ClickXYResult, error) {
 	xJSON, _ := json.Marshal(x)
 	yJSON, _ := json.Marshal(y)
 	expr := fmt.Sprintf("%s(%s,%s)", ClickXYScript, xJSON, yJSON)
-	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result)); err != nil {
+	// Same reason as ClickText: the in-page dispatch is the fast path for EVERY
+	// ordinary click, and a gesture-gated listener brw cannot see is dropped
+	// without activation while the click still reports ok.
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result, EvalWithUserGesture)); err != nil {
 		return ClickXYResult{}, err
 	}
 	if !result.OK {
@@ -3395,11 +3398,27 @@ type MouseActionResult struct {
 	Error string  `json:"error,omitempty"`
 }
 
+// EvalWithUserGesture runs the evaluation inside a transient user-activation
+// window. A handler registered with addEventListener cannot be read back from
+// page script — no API hands back a node's listeners — so brw cannot tell in
+// advance that a click will reach a gesture-gated call (window.open, a download,
+// fullscreen, the clipboard, a file picker). Without activation those calls are
+// dropped while the click itself still reports success, which is the failure an
+// agent cannot detect. Carrying activation on the dispatch removes the need to
+// predict: the handler runs inside the window whether or not brw could see it.
+//
+// This grants activation, not event.isTrusted. A handler that tests isTrusted
+// still rejects an in-page dispatch; that is what the deferred/CDP-input path is
+// for, and why brw_click_text's description promises activation and not trust.
+func EvalWithUserGesture(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+	return p.WithUserGesture(true)
+}
+
 func ClickText(ctx context.Context, opts ClickTextOptions) (ClickXYResult, error) {
 	var result ClickXYResult
 	args, _ := json.Marshal(opts)
 	expr := fmt.Sprintf("%s(%s)", ClickTextScript, args)
-	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result)); err != nil {
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result, EvalWithUserGesture)); err != nil {
 		return ClickXYResult{}, err
 	}
 	if !result.OK {

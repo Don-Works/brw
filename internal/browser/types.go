@@ -277,6 +277,9 @@ type PlanStep struct {
 	Key        string `json:"key,omitempty"`
 	ExpectRef  string `json:"expect_ref,omitempty"`
 	ExpectRole string `json:"expect_role,omitempty"`
+	// Find carries the locate-and-act step ("find_act"): one semantic search that
+	// must resolve to exactly one element, then one action on it.
+	Find *FindAct `json:"find,omitempty"`
 }
 
 type PlanStepResult struct {
@@ -317,13 +320,20 @@ type BatchStep struct {
 	// Assertion carries the richer deterministic checks (url, http_status,
 	// element_count, element_state, attribute, download) for the "assert" action.
 	Assertion *AssertRequest `json:"assertion,omitempty"`
+	// Find carries the locate-and-act step ("find_act"): one semantic search that
+	// must resolve to exactly one element, then one action on it.
+	Find *FindAct `json:"find,omitempty"`
 }
 
 type BatchStepResult struct {
-	Index    int    `json:"index"`
-	Action   string `json:"action"`
-	OK       bool   `json:"ok"`
-	Error    string `json:"error,omitempty"`
+	Index  int    `json:"index"`
+	Action string `json:"action"`
+	OK     bool   `json:"ok"`
+	Error  string `json:"error,omitempty"`
+	// Ref names the element a step resolved for itself. A find_act step is the
+	// only one that picks its own target, and without this the caller cannot tell
+	// which element the batch acted on.
+	Ref      string `json:"ref,omitempty"`
 	TabID    string `json:"tab_id,omitempty"`
 	NewTabID string `json:"new_tab_id,omitempty"`
 }

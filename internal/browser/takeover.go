@@ -110,6 +110,15 @@ var takeoverReadOnlySteps = map[string]bool{
 	"assert_hidden":  true,
 }
 
+// takeoverDelegatingSteps are step verbs guarded under the verb they will
+// actually run rather than under their own name. A find_act step performs a
+// click, fill, type, select or hover once its search resolves, and that is what
+// a hold has to refuse; naming the refusal "find_act" would report a verb the
+// operator never wrote and one that has no method of its own to refuse in.
+var takeoverDelegatingSteps = map[string]bool{
+	"find_act": true,
+}
+
 // takeoverExemptActions change the page but are the human's own input, so they
 // are the one thing takeover must not refuse.
 var takeoverExemptActions = map[string]bool{
@@ -342,9 +351,17 @@ func (m *Manager) guardTakeover(action string) error {
 // guardTakeoverStep is guardTakeover for one step of a batch or a plan. Step
 // verbs are not trace actions, so the read-only ones have to be named here or
 // the fail-closed default would refuse an agent's wait and assert steps too.
-func (m *Manager) guardTakeoverStep(action string) error {
+//
+// A delegating step (find_act) is guarded under the verb it will run. That is
+// fail-closed in both directions: an unset or unknown inner verb falls through
+// to guardTakeover, whose default is to refuse.
+func (m *Manager) guardTakeoverStep(step BatchStep) error {
+	action := step.Action
 	if takeoverReadOnlySteps[action] {
 		return nil
+	}
+	if takeoverDelegatingSteps[action] && step.Find != nil {
+		return m.guardTakeover(step.Find.Action)
 	}
 	return m.guardTakeover(action)
 }
