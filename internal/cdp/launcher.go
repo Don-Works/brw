@@ -32,6 +32,9 @@ type LaunchConfig struct {
 	// AllowRealProfile overrides the refusal to launch against the user's real
 	// browser profile (see EnsureSafeUserDataDir). Diagnostics only.
 	AllowRealProfile bool
+	// Network carries the launch-only network settings: proxy, certificate-error
+	// policy, and any privately trusted keys. See launch_env.go.
+	Network NetworkEnvironment
 	// Headless launches Chrome with --headless=new. Chrome 132 removed old
 	// headless entirely (it ships separately as chrome-headless-shell), so
 	// --headless and --headless=new are the same browser now; brw emits the
@@ -64,6 +67,9 @@ func Launch(ctx context.Context, cfg LaunchConfig) (*Launcher, error) {
 	// validated path below, so a --user-data-dir smuggled through cfg.Args would
 	// otherwise silently override the checked dir and defeat this guard.
 	if err := EnsureSafeUserDataDir(effectiveUserDataDir(cfg.UserDataDir, cfg.Args), cfg.AllowRealProfile); err != nil {
+		return nil, err
+	}
+	if err := cfg.Network.Validate(); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(cfg.UserDataDir, 0o700); err != nil {
@@ -120,6 +126,9 @@ func launchArgs(cfg LaunchConfig, port int) []string {
 	if len(cfg.Extensions) > 0 {
 		args = append(args, "--load-extension="+strings.Join(cfg.Extensions, ","))
 	}
+	// Before cfg.Args so an operator's explicit --chrome-arg still has the last
+	// word: Chrome keeps the last value of a repeated switch.
+	args = append(args, networkArgs(cfg.Network)...)
 	args = append(args, cfg.Args...)
 	args = append(args, "about:blank")
 	return args

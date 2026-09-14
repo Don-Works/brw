@@ -200,6 +200,61 @@ names it with the capabilities it implies.
 | Deterministic download capture | No, uses the browser's download folder | Yes, staged in brw's cache |
 | Headless | No | Yes |
 
+### Page environment and launch flags
+
+These override what a page believes about its surroundings. All of them are
+DevTools Protocol session overrides or Chrome launch switches, and the extension
+bridge holds neither: it attaches and detaches `chrome.debugger` around each
+operation, and a detach drops every override that session installed. On the
+bridge each tool returns a named capability error and is not advertised in
+`tools/list` at all, so an agent never spends a call finding out.
+
+| Capability | Tool | Extension bridge | Direct CDP |
+|---|---|---|---|
+| Geolocation override | `brw_set_geolocation` | No | Yes |
+| Offline / latency / throughput | `brw_set_network_conditions` | No | Yes |
+| Media type and `prefers-*` features | `brw_emulate_media` | No | Yes |
+| Per-origin extra request headers | `brw_set_extra_headers` | No | Yes |
+| User agent, Accept-Language, platform | `brw_set_user_agent` | No | Yes |
+| Per-call HTTP credentials | `brw_authenticate` | No | Yes |
+| Download directory | `brw_set_download_path` | No | Yes |
+| Proxy | `--proxy-server`, `--proxy-bypass-list` | No | Yes, at launch |
+| Certificate errors ignored | `--ignore-https-errors` | No | Yes, at launch |
+| Private CA accepted | `--ca-cert` | No | Yes, at launch |
+| Viewport / device emulation | `brw_emulate_device` | Yes | Yes |
+
+The four launch switches are read once, when Chrome starts, so `brwd` refuses
+them alongside `--bridge`, `--remote` and `--upstream-http`, which all attach to
+a browser someone else launched.
+
+`--ignore-https-errors` turns certificate validation off for the whole browser.
+It is opt-in per launch and `brw_identity` reports it as `ignore_https_errors`,
+because an agent reading a page over that daemon otherwise has no way to tell a
+real site from an intercepted one. A proxy that adopts an upstream daemon's
+identity reports its upstream's value.
+
+`--ca-cert <bundle.pem>` is the narrow alternative: brw hashes each certificate's
+SubjectPublicKeyInfo and passes the hashes to Chrome's
+`--ignore-certificate-errors-spki-list`, so a site behind that private CA loads
+while every other certificate error in the session is still a real error. It does
+NOT install the CA: nothing outside this browser instance is affected, and the
+connection remains an error Chrome was told to overlook rather than a validated
+one. Adding a root to the profile's NSS database or the OS keychain is the only
+way to make a CA genuinely trusted, and brw deliberately does not write to
+either — a tool that silently adds roots to your trust store is a tool that can
+silently intercept your traffic long after it exits.
+
+`brw_set_extra_headers` binds a header set to named origins and attaches it to
+nothing else. The browser-wide way to add headers puts them on every request a
+page makes, so an `Authorization` header set that way also reaches the page's
+analytics beacons, font CDNs and tracking pixels; brw attaches them from the
+request interceptor instead, per request, after checking the request's origin.
+Header values are never echoed back in results.
+
+`brw_authenticate` takes the credentials for one navigation and drops them before
+it returns. There is no "store these credentials" call and no credential state to
+clear afterwards.
+
 `brwctl setup --transport direct-cdp` configures the second lane. Running both
 against different profiles is supported: one `brwd` per profile, one MCP server
 per daemon. Testing several signed-in roles at once wants a second browser

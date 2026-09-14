@@ -140,6 +140,11 @@ type Manager struct {
 	// routes holds per-tab request interception rules. Zero value is usable.
 	routes routeState
 
+	// env holds per-tab page-environment overrides CDP cannot report back: the
+	// scoped extra-header table, the credential armed for one in-flight
+	// navigation, and the user-agent baseline. Zero value is usable.
+	env environmentState
+
 	// cancels tracks in-flight long-running operations (plan / batch / wait
 	// loops) keyed by an operation token so brw_cancel can stop a specific
 	// run cooperatively instead of killing the whole daemon.
@@ -305,6 +310,7 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 			Extensions:       cfg.Extensions,
 			Args:             cfg.ChromeArgs,
 			AllowRealProfile: cfg.AllowRealProfile,
+			Network:          cfg.Network,
 			Headless:         cfg.Headless,
 		})
 		if err != nil {
@@ -664,6 +670,7 @@ func (m *Manager) forgetTabCaches(id string) {
 	m.emulationMu.Lock()
 	delete(m.emulationStates, id)
 	m.emulationMu.Unlock()
+	m.env.forget(id)
 }
 
 // ensureWebMCP arms the opt-in WebMCP runtime shim to install at document-start

@@ -67,3 +67,35 @@ func TestMismatchesIgnoresTransportAndHeadless(t *testing.T) {
 		t.Fatalf("expected exactly the workspace mismatch, got %v", mismatches)
 	}
 }
+
+// A daemon that launched Chrome with certificate validation off has to say so:
+// an agent reading a page over it cannot otherwise tell a real site from an
+// intercepted one, and there is no other surface that would reveal it.
+func TestIgnoreHTTPSErrorsIsReportedAndCountsAsIdentity(t *testing.T) {
+	tests := []struct {
+		name       string
+		id         Identity
+		wantReport bool
+		wantEmpty  bool
+	}{
+		{"zero value", Identity{}, false, true},
+		{"certificate validation off", Identity{IgnoreHTTPSErrors: true}, true, false},
+		{"an ordinary daemon", Identity{Workspace: "brw-agent"}, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.id.IgnoreHTTPSErrors != tt.wantReport {
+				t.Fatalf("IgnoreHTTPSErrors = %v, want %v", tt.id.IgnoreHTTPSErrors, tt.wantReport)
+			}
+			if got := tt.id.Empty(); got != tt.wantEmpty {
+				t.Fatalf("Empty() = %v, want %v; an identity reported as empty is omitted from /health entirely", got, tt.wantEmpty)
+			}
+		})
+	}
+	// It is a property of the daemon answering, not of the workspace binding, so
+	// pinning a profile must not reject a daemon over it.
+	upstream := Identity{Workspace: "brw-agent", Profile: "chromium-agent", IgnoreHTTPSErrors: true}
+	if mismatches := upstream.Mismatches(Identity{Workspace: "brw-agent", Profile: "chromium-agent"}); len(mismatches) != 0 {
+		t.Fatalf("unexpected mismatches: %v", mismatches)
+	}
+}

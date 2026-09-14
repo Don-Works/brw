@@ -92,6 +92,10 @@ func main() {
 	var recipeRoot string
 	var recipeProviderURL string
 	var recipeProviderTokenFile string
+	var proxyServer string
+	var proxyBypassList string
+	var ignoreHTTPSErrors bool
+	var caCertFile string
 
 	flag.StringVar(&httpAddr, "http", envDefault("BRW_HTTP_ADDR", "127.0.0.1:17310"), "HTTP listen address, or off. Defaults to loopback; bind a non-loopback address only behind SSH/Tailscale with caller auth.")
 	flag.BoolVar(&mcpMode, "mcp", false, "run MCP stdio server")
@@ -133,6 +137,10 @@ func main() {
 	flag.StringVar(&recipeRoot, "recipe-root", os.Getenv("BRW_RECIPE_ROOT"), "absolute 0700 directory containing private 0600 recipe JSON files; must live outside the brw source repository")
 	flag.StringVar(&recipeProviderURL, "recipe-provider-url", os.Getenv("BRW_RECIPE_PROVIDER_URL"), "HTTPS private recipe-provider base URL (loopback HTTP allowed); use instead of --recipe-root")
 	flag.StringVar(&recipeProviderTokenFile, "recipe-provider-token-file", os.Getenv("BRW_RECIPE_PROVIDER_TOKEN_FILE"), "0600 regular file containing the private recipe-provider bearer token; never logged")
+	flag.StringVar(&proxyServer, "proxy-server", os.Getenv("BRW_PROXY_SERVER"), "direct CDP: route the launched browser through this proxy, for example http://127.0.0.1:8080 or socks5://127.0.0.1:1080. Chrome takes a proxy only at launch, so this cannot be changed on a running browser.")
+	flag.StringVar(&proxyBypassList, "proxy-bypass-list", os.Getenv("BRW_PROXY_BYPASS_LIST"), "direct CDP: semicolon-separated hosts that bypass --proxy-server and go direct, for example \"<local>;*.internal\". Requires --proxy-server.")
+	flag.BoolVar(&ignoreHTTPSErrors, "ignore-https-errors", envBool("BRW_IGNORE_HTTPS_ERRORS"), "direct CDP: launch Chrome with certificate validation OFF for every site. Opt-in per launch and reported by brw_identity as ignore_https_errors, because an agent reading a page over this daemon otherwise cannot tell a valid site from an intercepted one. Prefer --ca-cert, which trusts one private CA instead of everything.")
+	flag.StringVar(&caCertFile, "ca-cert", os.Getenv("BRW_CA_CERT"), "direct CDP: PEM bundle whose certificates' public keys Chrome should stop reporting errors for, so a private-CA site loads without turning validation off everywhere. It does NOT install the CA anywhere: nothing outside this browser instance is affected, and the connection remains an error Chrome was told to overlook rather than a validated one.")
 	flag.Parse()
 
 	mcpIdleExit = effectiveMCPIdleExit(
@@ -151,6 +159,28 @@ func main() {
 	cfg.ChromeArgs = chromeArgs
 	cfg.Timeout = timeout
 	cfg.WebMCP = enableWebMCP
+	cfg.Network = cdplaunch.NetworkEnvironment{
+		ProxyServer:       proxyServer,
+		ProxyBypassList:   proxyBypassList,
+		IgnoreHTTPSErrors: ignoreHTTPSErrors,
+	}
+	if caCertFile != "" {
+		bundle, err := os.ReadFile(caCertFile)
+		if err != nil {
+			log.Fatalf("read --ca-cert %s: %v", caCertFile, err)
+		}
+		fingerprints, err := cdplaunch.SPKIFingerprintsFromPEM(bundle)
+		if err != nil {
+			log.Fatalf("--ca-cert %s: %v", caCertFile, err)
+		}
+		cfg.Network.TrustedSPKI = fingerprints
+	}
+	if err := cfg.Network.Validate(); err != nil {
+		log.Fatalf("launch network settings: %v", err)
+	}
+	if ignoreHTTPSErrors {
+		log.Printf("WARNING: --ignore-https-errors is active; this browser accepts ANY certificate, so an intercepted or impostor site is indistinguishable from a real one")
+	}
 	cfg.AllowRealProfile = unsafeRealProfile
 	if unsafeRealProfile {
 		log.Printf("WARNING: --unsafe-real-profile is active; brw may launch Chrome against your real browser profile, which can corrupt it (lost logins, won't reopen)")
@@ -205,22 +235,24 @@ func main() {
 			mode = "bridge"
 		}
 		runtimeIdentity = brwidentity.Identity{
-			Workspace:        workspaceName,
-			Profile:          profile.Name,
-			UserDataDir:      profile.UserDataDir,
-			ProfileDirectory: profile.ProfileDirectory,
-			Mode:             mode,
-			Transport:        localTransport(upstreamHTTP, bridgeMode),
-			Headless:         headless,
+			Workspace:         workspaceName,
+			Profile:           profile.Name,
+			UserDataDir:       profile.UserDataDir,
+			ProfileDirectory:  profile.ProfileDirectory,
+			Mode:              mode,
+			Transport:         localTransport(upstreamHTTP, bridgeMode),
+			Headless:          headless,
+			IgnoreHTTPSErrors: ignoreHTTPSErrors,
 		}
 		identityExpected = runtimeIdentity
-		// Mode, Transport and Headless are all properties of the daemon
-		// answering, not of the workspace/profile binding being verified. A
-		// proxy learns the last two from its upstream rather than asserting
-		// them, so pinning them here would reject every healthy upstream.
+		// Mode, Transport, Headless and the certificate policy are all properties
+		// of the daemon answering, not of the workspace/profile binding being
+		// verified. A proxy learns the last three from its upstream rather than
+		// asserting them, so pinning them here would reject every healthy upstream.
 		identityExpected.Mode = ""
 		identityExpected.Transport = ""
 		identityExpected.Headless = false
+		identityExpected.IgnoreHTTPSErrors = false
 		log.Printf("using workspace profile %q (%s)", profile.Name, profile.Kind)
 	}
 	if loginMode {
@@ -243,6 +275,16 @@ func main() {
 			log.Fatalf("--headless cannot be combined with --upstream-http: this process proxies to a daemon that already launched the browser; set --headless on that daemon")
 		}
 	}
+	if !cfg.Network.Empty() {
+		switch {
+		case bridgeMode:
+			log.Fatalf("--proxy-server, --ignore-https-errors and --ca-cert cannot be combined with --bridge: they are Chrome launch switches, and the bridge drives a browser you started yourself")
+		case cfg.RemoteURL != "":
+			log.Fatalf("--proxy-server, --ignore-https-errors and --ca-cert cannot be combined with --remote: brw attaches to a browser it did not launch, so its proxy and certificate policy were fixed by whoever started it")
+		case upstreamHTTP != "":
+			log.Fatalf("--proxy-server, --ignore-https-errors and --ca-cert cannot be combined with --upstream-http: set them on the daemon that launches the browser")
+		}
+	}
 	cfg.Headless = headless
 	usageIdentity := runtimeIdentity
 	if usageIdentity.Mode == "" {
@@ -259,6 +301,7 @@ func main() {
 		usageIdentity.Transport = localTransport(upstreamHTTP, bridgeMode)
 	}
 	usageIdentity.Headless = headless
+	usageIdentity.IgnoreHTTPSErrors = ignoreHTTPSErrors
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -344,8 +387,10 @@ func main() {
 		if healthErr == nil && !health.Identity.Empty() {
 			runtimeIdentity.Transport = health.Identity.Transport
 			runtimeIdentity.Headless = health.Identity.Headless
+			runtimeIdentity.IgnoreHTTPSErrors = health.Identity.IgnoreHTTPSErrors
 			usageIdentity.Transport = health.Identity.Transport
 			usageIdentity.Headless = health.Identity.Headless
+			usageIdentity.IgnoreHTTPSErrors = health.Identity.IgnoreHTTPSErrors
 		} else if healthErr != nil {
 			log.Printf("WARNING: upstream %s health unavailable (%v); transport and headless state will be reported empty", upstreamHTTP, healthErr)
 		}

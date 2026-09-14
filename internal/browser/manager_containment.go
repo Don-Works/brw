@@ -82,6 +82,19 @@ func (m *Manager) armInterception(tabID string, tabCtx context.Context) {
 	m.containment.mu.Unlock()
 
 	chromedp.ListenTarget(tabCtx, func(ev any) {
+		// An auth challenge is answered from the credential armed for this tab, or
+		// deferred to Chrome when none is. It shares this listener because CDP
+		// delivers it on the same connection as requestPaused and a second
+		// listener would be a second answer to the same event.
+		if auth, isAuth := ev.(*fetch.EventAuthRequired); isAuth {
+			response := m.env.authResponse(tabID, auth.Request.URL)
+			go func() {
+				answerCtx, cancel := context.WithTimeout(tabCtx, 10*time.Second)
+				defer cancel()
+				_ = chromedp.Run(answerCtx, fetch.ContinueWithAuth(auth.RequestID, response))
+			}()
+			return
+		}
 		paused, ok := ev.(*fetch.EventRequestPaused)
 		if !ok {
 			return
@@ -112,7 +125,9 @@ func (m *Manager) armInterception(tabID string, tabCtx context.Context) {
 				}))
 				return
 			}
-			_ = chromedp.Run(answerCtx, fetch.ContinueRequest(paused.RequestID))
+			_ = chromedp.Run(answerCtx, chromedp.ActionFunc(func(runCtx context.Context) error {
+				return m.continueWithEnvironmentHeaders(runCtx, tabID, paused)
+			}))
 		}()
 	})
 
@@ -129,7 +144,9 @@ func (m *Manager) armInterception(tabID string, tabCtx context.Context) {
 		defer cancel()
 		// One pattern matching everything: the allow/deny decision is ours, not
 		// Chrome's, because an allowlist cannot be expressed as a URL blocklist.
-		_ = chromedp.Run(enableCtx, fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: "*"}}))
+		// Routed through enableFetchInterception so this late-landing enable
+		// cannot clear the handleAuthRequests flag a credential armed meanwhile.
+		_ = m.enableFetchInterception(enableCtx, tabID)
 		if guardErr != nil || !confines {
 			return
 		}

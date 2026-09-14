@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	cdplaunch "github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
@@ -43,6 +44,11 @@ type Config struct {
 	// Headless launches Chrome with --headless=new. Extensions, persistent
 	// profiles and the whole CDP surface still work; only the window is gone.
 	Headless bool
+	// Network carries settings Chrome can only take at launch: the proxy, the
+	// certificate-error policy and any privately trusted keys. Ignored when
+	// brw attaches to a browser it did not start (RemoteURL, the bridge, or an
+	// upstream proxy), because that browser was launched by someone else.
+	Network cdplaunch.NetworkEnvironment
 }
 
 type Tab struct {

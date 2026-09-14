@@ -23,6 +23,12 @@ type Identity struct {
 	// Headless reports whether the browser this daemon drives has no visible
 	// window. Propagated through a proxy the same way Transport is.
 	Headless bool `json:"headless,omitempty"`
+	// IgnoreHTTPSErrors reports that this daemon launched Chrome with
+	// certificate validation off. Every https page it loads may be
+	// intercepted or served by an impostor and the browser will not say so,
+	// so a caller reading a page over this daemon has to be able to find out
+	// from the daemon itself. Propagated through a proxy like Transport.
+	IgnoreHTTPSErrors bool `json:"ignore_https_errors,omitempty"`
 }
 
 // Transport values. These name how brw reaches the browser, not how a client
@@ -39,7 +45,8 @@ func (i Identity) Empty() bool {
 		i.ProfileDirectory == "" &&
 		i.Mode == "" &&
 		i.Transport == "" &&
-		!i.Headless
+		!i.Headless &&
+		!i.IgnoreHTTPSErrors
 }
 
 // Mismatches compares non-empty expected fields. Empty expected fields are

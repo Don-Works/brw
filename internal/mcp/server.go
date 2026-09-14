@@ -254,6 +254,25 @@ var transportUnsupported = map[string]string{
 	"brw_group_tabs":      brwidentity.TransportDirectCDP,
 	"brw_ungroup_tabs":    brwidentity.TransportDirectCDP,
 	"brw_list_tab_groups": brwidentity.TransportDirectCDP,
+	// Page-environment overrides are DevTools Protocol session state. The
+	// extension bridge attaches and detaches chrome.debugger around operations
+	// and a detach drops them, so they can never hold there.
+	"brw_set_geolocation":        brwidentity.TransportExtensionBridge,
+	"brw_set_network_conditions": brwidentity.TransportExtensionBridge,
+	"brw_emulate_media":          brwidentity.TransportExtensionBridge,
+	"brw_set_extra_headers":      brwidentity.TransportExtensionBridge,
+	"brw_set_user_agent":         brwidentity.TransportExtensionBridge,
+	"brw_authenticate":           brwidentity.TransportExtensionBridge,
+	"brw_set_download_path":      brwidentity.TransportExtensionBridge,
+}
+
+// environmentController resolves the optional page-environment capability. A
+// transport that cannot hold DevTools session overrides fails the assertion and
+// the caller answers with browser.ErrEnvironmentUnsupported, which names the
+// transport and the reason rather than saying only "unsupported".
+func (s *Server) environmentController() (browser.EnvironmentController, bool) {
+	env, ok := s.manager.(browser.EnvironmentController)
+	return env, ok
 }
 
 // supportedOnTransport reports whether a tool can succeed on this server's
@@ -936,6 +955,81 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(s.manager.EmulateDevice(ctx, req))
+	case "brw_set_geolocation":
+		env, ok := s.environmentController()
+		if !ok {
+			return toolError(browser.ErrEnvironmentUnsupported), nil
+		}
+		var req browser.GeolocationOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(env.SetGeolocation(ctx, req))
+	case "brw_set_network_conditions":
+		env, ok := s.environmentController()
+		if !ok {
+			return toolError(browser.ErrEnvironmentUnsupported), nil
+		}
+		var req browser.NetworkConditionsOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(env.SetNetworkConditions(ctx, req))
+	case "brw_emulate_media":
+		env, ok := s.environmentController()
+		if !ok {
+			return toolError(browser.ErrEnvironmentUnsupported), nil
+		}
+		var req browser.MediaEmulationOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(env.EmulateMedia(ctx, req))
+	case "brw_set_extra_headers":
+		env, ok := s.environmentController()
+		if !ok {
+			return toolError(browser.ErrEnvironmentUnsupported), nil
+		}
+		var req browser.ExtraHeadersOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(env.SetExtraHeaders(ctx, req))
+	case "brw_set_user_agent":
+		env, ok := s.environmentController()
+		if !ok {
+			return toolError(browser.ErrEnvironmentUnsupported), nil
+		}
+		var req browser.UserAgentOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(env.SetUserAgent(ctx, req))
+	case "brw_authenticate":
+		env, ok := s.environmentController()
+		if !ok {
+			return toolError(browser.ErrEnvironmentUnsupported), nil
+		}
+		var req browser.CredentialsOptions
+		// Not unmarshalStrictArgs: its error quotes the offending JSON, and this
+		// body is the one that carries a password.
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(errors.New("arguments are not valid JSON for this tool"))
+		}
+		// Marked sensitive so the replayable trace records that a navigation
+		// happened without recording the URL it went to: a credentialed URL is
+		// the kind that carries a token in its query string.
+		return toolJSON(env.Authenticate(browser.WithSensitiveAction(ctx), req))
+	case "brw_set_download_path":
+		env, ok := s.environmentController()
+		if !ok {
+			return toolError(browser.ErrEnvironmentUnsupported), nil
+		}
+		var req browser.DownloadPathOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(env.SetDownloadPath(ctx, req))
 	case "brw_read":
 		var req readability.ReadOptions
 		if err := unmarshalArgs(args, &req); err != nil {
@@ -2082,6 +2176,62 @@ func tools() []map[string]any {
 			"orientation":         stringEnumSchema("portrait or landscape. When set, preset dimensions are swapped as needed.", "portrait", "landscape"),
 			"clear":               boolSchema("Reset DevTools device metrics/touch emulation for this tab and restore original user agent/platform if brw captured them before applying emulation."),
 			"tab_id":              stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, nil)),
+		tool("brw_set_geolocation", "Override the position navigator.geolocation reports to a tab, for testing location-gated behaviour without moving. Pass latitude and longitude (accuracy defaults to 100 metres), or clear:true to restore the browser's own location service. brw also grants the page's geolocation permission, because a page that has never been allowed geolocation gets PERMISSION_DENIED and never reaches the override at all. Returns {ok, tab_id, geolocation:{latitude, longitude, accuracy}, message}. DIRECT-CDP TRANSPORT ONLY: this is a DevTools Protocol session override, which the extension bridge's attach/detach cycle drops; on the extension bridge it returns a named capability error.", object(map[string]any{
+			"latitude":  map[string]any{"type": "number", "description": "Latitude in degrees, -90 to 90."},
+			"longitude": map[string]any{"type": "number", "description": "Longitude in degrees, -180 to 180."},
+			"accuracy":  map[string]any{"type": "number", "description": "Accuracy radius in metres. Defaults to 100, which is what Chrome DevTools uses."},
+			"clear":     boolSchema("Remove the override and hand the page back to the browser's own location service."),
+			"tab_id":    stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, nil)),
+		tool("brw_set_network_conditions", "Throttle or disconnect a tab's network. offline:true makes navigator.onLine false and fails every new request as if the network were gone - the way to test an app's offline path without unplugging anything. latency_ms adds a fixed delay before response headers; download_throughput/upload_throughput cap bytes per second (-1 for no cap). Requests already in flight are not cancelled. clear:true restores a normal network. Returns {ok, tab_id, network_conditions:{offline, latency_ms, download_throughput, upload_throughput}, message}. DIRECT-CDP TRANSPORT ONLY: on the extension bridge this returns a named capability error.", object(map[string]any{
+			"offline":             boolSchema("Emulate a disconnected network for this tab."),
+			"latency_ms":          map[string]any{"type": "number", "description": "Minimum delay in milliseconds from request sent to response headers received."},
+			"download_throughput": map[string]any{"type": "number", "description": "Maximum download bytes per second. -1 for no limit."},
+			"upload_throughput":   map[string]any{"type": "number", "description": "Maximum upload bytes per second. -1 for no limit."},
+			"clear":               boolSchema("Restore a normal network: online, no added latency, no throughput cap."),
+			"tab_id":              stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, nil)),
+		tool("brw_emulate_media", "Force the CSS media type and user-preference media features a tab renders against: media screen/print for print-stylesheet checks, color_scheme light/dark to flip prefers-color-scheme without touching OS settings, reduced_motion reduce to check the motion-safe path. Media queries re-evaluate immediately; a page that reads the preference once at startup needs a reload. clear:true drops the whole override. Returns {ok, tab_id, media:{media, color_scheme, reduced_motion}, message}. DIRECT-CDP TRANSPORT ONLY: on the extension bridge this returns a named capability error.", object(map[string]any{
+			"media":          stringEnumSchema("CSS media type to emulate.", "screen", "print"),
+			"color_scheme":   stringEnumSchema("Value for the prefers-color-scheme media feature.", "light", "dark", "no-preference"),
+			"reduced_motion": stringEnumSchema("Value for the prefers-reduced-motion media feature.", "reduce", "no-preference"),
+			"clear":          boolSchema("Remove the media override and go back to the browser's own media type and user preferences."),
+			"tab_id":         stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, nil)),
+		tool("brw_set_extra_headers", "Attach extra request headers to the origins you name, and to nothing else. Each entry binds a header set to one origin (scheme://host[:port]); a request to any other origin is left exactly as the page made it. That scoping is the point: the browser-wide way to add headers puts them on every request a page makes, so an Authorization header set that way also reaches the page's analytics beacons, font CDNs and tracking pixels. Header VALUES are never echoed back - the result lists only origins and header names. clear:true removes the table. Returns {ok, tab_id, extra_headers:[{origin, headers:[name]}], message}. DIRECT-CDP TRANSPORT ONLY: on the extension bridge this returns a named capability error.", object(map[string]any{
+			"origins": map[string]any{
+				"type":        "array",
+				"description": "Origins allowed to receive extra headers, each with its own header set.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"origin":  stringSchema("Exact origin, for example https://api.example.com or http://127.0.0.1:8080. Default ports are normalized away."),
+						"headers": map[string]any{"type": "object", "description": "Header name to value. Names must be valid header tokens; values must not contain newlines.", "additionalProperties": map[string]any{"type": "string"}},
+					},
+					"required": []string{"origin", "headers"},
+				},
+			},
+			"clear":  boolSchema("Remove every per-origin header set for this tab."),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, nil)),
+		tool("brw_set_user_agent", "Override what a tab calls itself: the User-Agent request header and navigator.userAgent, plus optional Accept-Language and navigator.platform. Sec-CH-UA client hints still report the real browser, so a site that reads client hints rather than the UA string is unaffected. brw captures the original user agent before the first override so clear:true can put it back - CDP has no command to clear one. For phone/tablet testing prefer brw_emulate_device, which sets the UA together with viewport, DPR and touch. Returns {ok, tab_id, user_agent:{user_agent, accept_language, platform}, message}. DIRECT-CDP TRANSPORT ONLY: on the extension bridge this returns a named capability error.", object(map[string]any{
+			"user_agent":      stringSchema("Full user-agent string to report."),
+			"accept_language": stringSchema("Accept-Language header value to send, for example en-GB,en;q=0.9."),
+			"platform":        stringSchema("Value navigator.platform should return, for example MacIntel or Linux x86_64."),
+			"clear":           boolSchema("Restore the user agent brw captured before the first override on this tab."),
+			"tab_id":          stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, nil)),
+		tool("brw_authenticate", "Load one URL with HTTP authentication (Basic/Digest/NTLM challenges) armed for a single origin, then drop the credentials. The credentials exist only for the duration of this call: brw arms them, answers challenges from the declared origin, and overwrites them before returning, so nothing keeps a password between calls and there is no stored-credential state to forget about. A challenge from any other origin is left to the browser's default handling rather than being offered the password. url must be on origin; omit it to load the origin itself. Returns {ok, tab_id, authentication:{origin, url, challenged, answered}, message} - challenged:false means the server never asked and the credentials went unused. DIRECT-CDP TRANSPORT ONLY: on the extension bridge this returns a named capability error.", object(map[string]any{
+			"origin":   stringSchema("Origin the credentials are valid for, for example https://staging.example.com. Challenges from any other origin are not answered with them."),
+			"username": stringSchema("Username to supply when that origin challenges."),
+			"password": stringSchema("Password to supply when that origin challenges. Dropped before this call returns."),
+			"url":      stringSchema("URL to load with the credentials armed. Must be on origin. Omit to load the origin itself."),
+			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"origin"})),
+		tool("brw_set_download_path", "Send completed downloads to a directory you name instead of brw's private staging directory, so a downloaded file is somewhere you can open it. The path must be absolute; brw creates it if needed and never deletes it. Files are named by their brw download id rather than the server's suggested filename, which is what keeps the path brw_downloads reports exact - a suggested filename is chosen by the site and Chrome silently renames collisions. Pair with brw_downloads to find the id, state and path of each file. clear:true goes back to the managed staging directory. Returns {ok, download_path, message}. DIRECT-CDP TRANSPORT ONLY: the extension bridge uses the browser's own download folder and returns a named capability error.", object(map[string]any{
+			"path":  stringSchema("Absolute directory for completed downloads."),
+			"clear": boolSchema("Go back to brw's private staging directory, which is removed on shutdown."),
 		}, nil)),
 		tool("brw_read", "Return semantic page content: main text, headings, links, forms, tables, and metadata. Prose is bounded by default and paged via next_offset — a long article is several cheap reads, not one huge one. Narrow with include to skip what you do not need (include:[\"headings\",\"links\"] is a cheap page map).", object(map[string]any{
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
