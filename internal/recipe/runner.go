@@ -84,6 +84,10 @@ type RunResult struct {
 	DurationMS    int64           `json:"duration_ms"`
 	Steps         []StepResult    `json:"steps"`
 	Artifacts     []artifact.Meta `json:"artifacts,omitempty"`
+	// FailureBundle is the manifest artifact id for a failed run, when the
+	// browser host collected evidence. The manifest lists artifact ids only, so
+	// this stays a handle-sized addition to a result, never a payload.
+	FailureBundle string `json:"failure_bundle_artifact_id,omitempty"`
 }
 
 type StepResult struct {
@@ -156,7 +160,16 @@ func (r Runner) Run(ctx context.Context, value Recipe, inputs map[string]string)
 			stepResult.Status = "failed"
 			result.Steps = append(result.Steps, stepResult)
 			result.Status = "failed"
-			return result, fmt.Errorf("step %q: %w", step.ID, redactInputs(err, inputs))
+			failure := fmt.Errorf("step %q: %w", step.ID, redactInputs(err, inputs))
+			// The evidence is collected from the already-redacted failure, so the
+			// manifest cannot reintroduce an input the error text withheld.
+			if bundle := r.captureFailureEvidence(ctx, value, step.ID, failure.Error()); bundle != "" {
+				result.FailureBundle = bundle
+				// The id and nothing else. Whoever reads it decides which of the
+				// bundled artifacts is worth pulling into context.
+				failure = fmt.Errorf("%w; failure evidence bundle %s", failure, bundle)
+			}
+			return result, failure
 		}
 		stepResult.Status = "done"
 		result.Steps = append(result.Steps, stepResult)

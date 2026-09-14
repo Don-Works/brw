@@ -31,6 +31,11 @@ type Recipe struct {
 	Inputs        map[string]Input  `json:"inputs,omitempty"`
 	Steps         []Step            `json:"steps"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
+	// CaptureOnFailure asks the browser host to collect a failure evidence
+	// bundle when a step fails. It is a request, not a guarantee: the host
+	// decides, and its default is to collect nothing. Omitted when false, so
+	// adding it did not move any existing recipe digest.
+	CaptureOnFailure bool `json:"capture_on_failure,omitempty"`
 }
 
 type Input struct {

@@ -53,6 +53,14 @@ type pdfCapturer interface {
 	CapturePDF(context.Context) ([]byte, error)
 }
 
+// pdfStreamCapturer is the preferred PDF capability. Both first-party
+// transports implement it; the buffered pdfCapturer stays as the fallback for a
+// controller (an upstream HTTP proxy, a custom implementation) that has not got
+// a stream to offer.
+type pdfStreamCapturer interface {
+	CapturePDFStream(context.Context) (io.ReadCloser, error)
+}
+
 type rawScreenshotCapturer interface {
 	CaptureArtifactScreenshot(context.Context, string) (browser.Screenshot, error)
 }
@@ -80,6 +88,13 @@ type Service struct {
 	downloadOpenGate          chan struct{}
 	downloadSourceOpener      func(string) (*os.File, error)
 	downloadSourceOpenTimeout time.Duration
+
+	// Both policies default to their zero value, which is off. Evidence capture
+	// and at-rest encryption are opt-in because one is expensive and the other
+	// needs an operator-supplied key.
+	failureCapture   FailureCapturePolicy
+	failureBundleTTL time.Duration
+	encryption       EncryptionPolicy
 }
 
 type recipeCaptureContinuity struct {
@@ -136,13 +151,16 @@ func NewService(store *Store, controller browser.Controller) (*Service, error) {
 		downloadOpenGate:          make(chan struct{}, 1),
 		downloadSourceOpener:      os.Open,
 		downloadSourceOpenTimeout: defaultDownloadSourceOpenTimeout,
+		failureCapture:            FailureCaptureOff,
+		failureBundleTTL:          defaultFailureBundleTTL,
+		encryption:                EncryptOff,
 	}, nil
 }
 
 func (s *Service) Store() *Store { return s.store }
 
 func (s *Service) CaptureArtifact(ctx context.Context, opts CaptureOptions) (Meta, error) {
-	put, err := s.putOptions(opts)
+	put, err := s.putOptionsFor(ctx, opts)
 	if err != nil {
 		return Meta{}, err
 	}
@@ -236,6 +254,19 @@ func (s *Service) captureArtifact(ctx context.Context, opts CaptureOptions, put 
 		put.SourceHash = s.currentSourceHash(ctx)
 		return s.store.PutContext(ctx, put, bytes.NewReader(data))
 	case "pdf":
+		put.MIMEType = "application/pdf"
+		// The source hash is taken BEFORE the render so the streaming and
+		// buffered paths describe the same page: a stream is still open while
+		// the store consumes it, and probing the page then would race the read.
+		put.SourceHash = s.currentSourceHash(ctx)
+		if capture, ok := s.browser.(pdfStreamCapturer); ok {
+			stream, err := capture.CapturePDFStream(ctx)
+			if err != nil {
+				return Meta{}, err
+			}
+			defer stream.Close()
+			return s.store.PutContext(ctx, put, stream)
+		}
 		capture, ok := s.browser.(pdfCapturer)
 		if !ok {
 			return Meta{}, errors.New("PDF capture is unavailable on this browser transport")
@@ -244,8 +275,6 @@ func (s *Service) captureArtifact(ctx context.Context, opts CaptureOptions, put 
 		if err != nil {
 			return Meta{}, err
 		}
-		put.MIMEType = "application/pdf"
-		put.SourceHash = s.currentSourceHash(ctx)
 		return s.store.PutContext(ctx, put, bytes.NewReader(data))
 	case "download":
 		return s.captureDownload(ctx, opts, put)
@@ -268,6 +297,17 @@ func (s *Service) putOptions(opts CaptureOptions) (PutOptions, error) {
 		opts.TTL = time.Duration(opts.TTLSeconds) * time.Second
 	}
 	return PutOptions{Kind: opts.Kind, Redaction: opts.Redaction, TTL: opts.TTL}, nil
+}
+
+// putOptionsFor is putOptions plus the per-context encryption decision, which
+// needs the recipe origin allowlist that only the request context carries.
+func (s *Service) putOptionsFor(ctx context.Context, opts CaptureOptions) (PutOptions, error) {
+	put, err := s.putOptions(opts)
+	if err != nil {
+		return PutOptions{}, err
+	}
+	put.Encrypt = s.shouldEncrypt(ctx)
+	return put, nil
 }
 
 func (s *Service) ArtifactInfo(_ context.Context, id string) (Meta, error) {
@@ -366,7 +406,7 @@ func (s *Service) captureDownload(ctx context.Context, opts CaptureOptions, put 
 // hands the exact completed entry it observed to this browser-host-only method
 // instead of reselecting from a registry that may contain same-name downloads.
 func (s *Service) CaptureCompletedDownload(ctx context.Context, item browser.DownloadEntry, opts CaptureOptions) (Meta, error) {
-	put, err := s.putOptions(opts)
+	put, err := s.putOptionsFor(ctx, opts)
 	if err != nil {
 		return Meta{}, err
 	}

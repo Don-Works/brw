@@ -89,6 +89,10 @@ func main() {
 	var artifactMaxMB int
 	var artifactTotalMB int
 	var artifactTTL time.Duration
+	var artifactEncrypt string
+	var artifactKeyFile string
+	var artifactFailureBundles string
+	var artifactFailureBundleTTL time.Duration
 	var recipeRoot string
 	var recipeProviderURL string
 	var recipeProviderTokenFile string
@@ -134,6 +138,10 @@ func main() {
 	flag.IntVar(&artifactMaxMB, "artifact-max-mb", envInt("BRW_ARTIFACT_MAX_MB", 128), "maximum size of one browser artifact in MiB")
 	flag.IntVar(&artifactTotalMB, "artifact-total-mb", envInt("BRW_ARTIFACT_TOTAL_MB", 2048), "maximum total browser artifact cache size in MiB")
 	flag.DurationVar(&artifactTTL, "artifact-ttl", envDuration("BRW_ARTIFACT_TTL", 24*time.Hour), "maximum artifact retention; individual captures may request a shorter TTL")
+	flag.StringVar(&artifactEncrypt, "artifact-encrypt", envDefault("BRW_ARTIFACT_ENCRYPT", "off"), "encrypt stored artifacts at rest: off (default), recipe (only captures made during a private-recipe run), or all. Anything but off requires --artifact-key-file.")
+	flag.StringVar(&artifactKeyFile, "artifact-key-file", os.Getenv("BRW_ARTIFACT_KEY_FILE"), "0600 regular file holding at least 32 bytes of artifact encryption key material. Must live outside the artifact directory; never logged.")
+	flag.StringVar(&artifactFailureBundles, "artifact-failure-bundles", envDefault("BRW_ARTIFACT_FAILURE_BUNDLES", "off"), "collect a failure evidence bundle (action trace, console summary, bounded network metadata, semantic snapshot, screenshot) when a recipe step fails: off (default), recipe (honour the recipe's capture_on_failure), or all. The failed call returns only the manifest artifact id.")
+	flag.DurationVar(&artifactFailureBundleTTL, "artifact-failure-bundle-ttl", envDuration("BRW_ARTIFACT_FAILURE_BUNDLE_TTL", time.Hour), "retention for failure evidence artifacts, clamped to --artifact-ttl. Evidence is the most sensitive thing the store holds, so it expires sooner than an ordinary capture.")
 	flag.StringVar(&recipeRoot, "recipe-root", os.Getenv("BRW_RECIPE_ROOT"), "absolute 0700 directory containing private 0600 recipe JSON files; must live outside the brw source repository")
 	flag.StringVar(&recipeProviderURL, "recipe-provider-url", os.Getenv("BRW_RECIPE_PROVIDER_URL"), "HTTPS private recipe-provider base URL (loopback HTTP allowed); use instead of --recipe-root")
 	flag.StringVar(&recipeProviderTokenFile, "recipe-provider-token-file", os.Getenv("BRW_RECIPE_PROVIDER_TOKEN_FILE"), "0600 regular file containing the private recipe-provider bearer token; never logged")
@@ -505,9 +513,21 @@ func main() {
 			if err != nil {
 				log.Fatalf("artifact store: %v", err)
 			}
+			encryptionPolicy, err := artifact.ParseEncryptionPolicy(artifactEncrypt)
+			if err != nil {
+				log.Fatalf("artifact store: %v", err)
+			}
+			var encryptionKey []byte
+			if strings.TrimSpace(artifactKeyFile) != "" {
+				encryptionKey, err = artifact.LoadEncryptionKey(artifactKeyFile, root)
+				if err != nil {
+					log.Fatalf("artifact encryption key: %v", err)
+				}
+			}
 			store, err := artifact.NewStore(artifact.Config{
 				Root: root, MaxArtifactBytes: maxArtifactBytes,
 				MaxTotalBytes: maxTotalBytes, TTL: artifactTTL,
+				EncryptionKey: encryptionKey,
 			})
 			if err != nil {
 				log.Fatalf("artifact store: %v", err)
@@ -516,12 +536,26 @@ func main() {
 			if err != nil {
 				log.Fatalf("artifact service: %v", err)
 			}
+			if err := service.SetEncryptionPolicy(encryptionPolicy); err != nil {
+				log.Fatalf("artifact encryption: %v", err)
+			}
+			failurePolicy, err := artifact.ParseFailureCapturePolicy(artifactFailureBundles)
+			if err != nil {
+				log.Fatalf("artifact failure bundles: %v", err)
+			}
+			if err := service.SetFailureCapturePolicy(failurePolicy); err != nil {
+				log.Fatalf("artifact failure bundles: %v", err)
+			}
+			if err := service.SetFailureBundleTTL(artifactFailureBundleTTL); err != nil {
+				log.Fatalf("artifact failure bundles: %v", err)
+			}
 			artifactAPI = service
 			janitorInterval := min(5*time.Minute, max(time.Second, artifactTTL/2))
 			go store.RunJanitor(ctx, janitorInterval, func(err error) {
 				log.Printf("artifact retention janitor: %v", err)
 			})
-			log.Printf("browser-host artifact store enabled at %s (max=%d MiB, total=%d MiB, ttl=%s)", store.Root(), artifactMaxMB, artifactTotalMB, artifactTTL)
+			log.Printf("browser-host artifact store enabled at %s (max=%d MiB, total=%d MiB, ttl=%s, encryption=%s, failure-bundles=%s)",
+				store.Root(), artifactMaxMB, artifactTotalMB, artifactTTL, encryptionPolicy, failurePolicy)
 		}
 
 		provider, err := configureRecipeProvider(ctx, recipeRoot, recipeProviderURL, recipeProviderTokenFile)

@@ -34,15 +34,31 @@ const (
 
 // Meta is deliberately payload-free and safe to return from MCP and HTTP.
 type Meta struct {
-	ID         string    `json:"artifact_id"`
-	Kind       string    `json:"kind"`
-	MIMEType   string    `json:"mime_type"`
-	SizeBytes  int64     `json:"size_bytes"`
-	SHA256     string    `json:"sha256"`
-	CreatedAt  time.Time `json:"created_at"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	SourceHash string    `json:"source_hash,omitempty"`
-	Redaction  string    `json:"redaction,omitempty"`
+	ID        string    `json:"artifact_id"`
+	Kind      string    `json:"kind"`
+	MIMEType  string    `json:"mime_type"`
+	SizeBytes int64     `json:"size_bytes"`
+	SHA256    string    `json:"sha256"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	// Encrypted reports at-rest encryption. It is metadata about storage, not
+	// about the payload, so it stays safe to return alongside the handle.
+	Encrypted bool `json:"encrypted,omitempty"`
+	// StoredBytes is the on-disk length when it differs from SizeBytes, which
+	// happens only for an encrypted blob (chunk tags plus a key-derivation
+	// header). Zero means the blob is exactly SizeBytes long.
+	StoredBytes int64  `json:"stored_bytes,omitempty"`
+	SourceHash  string `json:"source_hash,omitempty"`
+	Redaction   string `json:"redaction,omitempty"`
+}
+
+// storedSize is what this artifact actually occupies, which is what the quota
+// has to be computed from.
+func (m Meta) storedSize() int64 {
+	if m.StoredBytes > 0 {
+		return m.StoredBytes
+	}
+	return m.SizeBytes
 }
 
 type PutOptions struct {
@@ -50,6 +66,10 @@ type PutOptions struct {
 	MIMEType   string
 	SourceHash string
 	Redaction  string
+	// Encrypt turns on at-rest encryption for this artifact. It requires a
+	// configured store key and, deliberately, opts the blob out of content
+	// dedup — see commitBlobLocked.
+	Encrypt bool
 	// TTL may shorten the configured retention for a particularly sensitive
 	// artifact. Zero uses the store default; it may never lengthen retention.
 	TTL time.Duration
@@ -77,6 +97,10 @@ type Config struct {
 	MaxArtifactBytes int64
 	MaxTotalBytes    int64
 	TTL              time.Duration
+	// EncryptionKey enables at-rest encryption for artifacts that ask for it.
+	// It is supplied by the operator, never generated next to the ciphertext:
+	// a key stored inside the artifact root would protect nothing.
+	EncryptionKey []byte
 }
 
 type Store struct {
@@ -84,6 +108,7 @@ type Store struct {
 	maxArtifactBytes int64
 	maxTotalBytes    int64
 	ttl              time.Duration
+	key              []byte
 	now              func() time.Time
 	mu               sync.Mutex
 }
@@ -162,9 +187,13 @@ func NewStore(config Config) (*Store, error) {
 	if err := os.Chmod(resolved, 0o700); err != nil {
 		return nil, err
 	}
+	key, err := normalizeEncryptionKey(config.EncryptionKey)
+	if err != nil {
+		return nil, err
+	}
 	store := &Store{
 		root: resolved, maxArtifactBytes: config.MaxArtifactBytes,
-		maxTotalBytes: config.MaxTotalBytes, ttl: config.TTL, now: time.Now,
+		maxTotalBytes: config.MaxTotalBytes, ttl: config.TTL, key: key, now: time.Now,
 	}
 	if err := store.reconcileOrphansLocked(); err != nil {
 		return nil, fmt.Errorf("reconcile artifact cache: %w", err)
@@ -176,6 +205,10 @@ func NewStore(config Config) (*Store, error) {
 }
 
 func (s *Store) Root() string { return s.root }
+
+// TTL is the store's maximum retention. A caller that wants a shorter life for
+// one artifact clamps against this rather than guessing the daemon's config.
+func (s *Store) TTL() time.Duration { return s.ttl }
 
 func (s *Store) Put(opts PutOptions, src io.Reader) (Meta, error) {
 	return s.PutContext(context.Background(), opts, src)
@@ -210,19 +243,20 @@ func (s *Store) PutContext(ctx context.Context, opts PutOptions, src io.Reader) 
 		return Meta{}, err
 	}
 
+	if opts.Encrypt && len(s.key) == 0 {
+		return Meta{}, errors.New("artifact encryption was requested but this store has no encryption key")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.reconcileOrphansLocked(); err != nil {
 		return Meta{}, err
 	}
-	if _, err := s.purgeExpiredLocked(); err != nil {
-		return Meta{}, err
-	}
-	used, err := s.bytesUsedLocked()
+	live, _, err := s.scanLocked()
 	if err != nil {
 		return Meta{}, err
 	}
-	remaining := s.maxTotalBytes - used
+	remaining := s.maxTotalBytes - bytesUsed(live)
 	if remaining <= 0 {
 		return Meta{}, errors.New("artifact store quota exhausted")
 	}
@@ -243,8 +277,20 @@ func (s *Store) PutContext(ctx context.Context, opts PutOptions, src io.Reader) 
 	if err := tmp.Chmod(0o600); err != nil {
 		return Meta{}, err
 	}
+	// The hash always covers the PLAINTEXT, so a handle's sha256 keeps meaning
+	// what a caller expects whether or not the blob is encrypted at rest, and
+	// dedup compares payloads rather than ciphertexts.
 	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(tmp, hash), io.LimitReader(contextReader{ctx: ctx, reader: src}, limit+1))
+	var sink io.Writer = tmp
+	var encrypter *blobEncrypter
+	if opts.Encrypt {
+		encrypter, err = newBlobEncrypter(tmp, s.key)
+		if err != nil {
+			return Meta{}, err
+		}
+		sink = encrypter
+	}
+	written, err := io.Copy(io.MultiWriter(sink, hash), io.LimitReader(contextReader{ctx: ctx, reader: src}, limit+1))
 	if err != nil {
 		return Meta{}, err
 	}
@@ -254,22 +300,39 @@ func (s *Store) PutContext(ctx context.Context, opts PutOptions, src io.Reader) 
 		}
 		return Meta{}, fmt.Errorf("artifact exceeds %d-byte limit", s.maxArtifactBytes)
 	}
+	if encrypter != nil {
+		if err := encrypter.Close(); err != nil {
+			return Meta{}, err
+		}
+	}
 	if err := tmp.Sync(); err != nil {
 		return Meta{}, err
+	}
+	stored := written
+	if opts.Encrypt {
+		info, err := tmp.Stat()
+		if err != nil {
+			return Meta{}, err
+		}
+		stored = info.Size()
 	}
 	if err := tmp.Close(); err != nil {
 		return Meta{}, err
 	}
-	if err := os.Rename(tmpName, s.blobPath(id)); err != nil {
+	digest := hex.EncodeToString(hash.Sum(nil))
+	if err := s.commitBlobLocked(tmpName, id, digest, opts.Encrypt, live); err != nil {
 		return Meta{}, err
 	}
 	committed = true
 	created := s.now().UTC()
 	meta := Meta{
 		ID: id, Kind: opts.Kind, MIMEType: mediaType, SizeBytes: written,
-		SHA256: hex.EncodeToString(hash.Sum(nil)), CreatedAt: created,
+		SHA256: digest, CreatedAt: created,
 		ExpiresAt: created.Add(retention), SourceHash: opts.SourceHash,
-		Redaction: opts.Redaction,
+		Redaction: opts.Redaction, Encrypted: opts.Encrypt,
+	}
+	if stored != written {
+		meta.StoredBytes = stored
 	}
 	if err := s.writeMetaLocked(meta); err != nil {
 		_ = os.Remove(s.blobPath(id))
@@ -320,7 +383,7 @@ func (s *Store) Read(id string, offset int64, maxBytes int) ([]byte, Meta, bool,
 	if err != nil {
 		return nil, Meta{}, false, err
 	}
-	f, err := s.openBlob(id)
+	f, err := s.openPayload(id, meta)
 	if err != nil {
 		return nil, Meta{}, false, err
 	}
@@ -329,8 +392,11 @@ func (s *Store) Read(id string, offset int64, maxBytes int) ([]byte, Meta, bool,
 		return nil, Meta{}, false, err
 	}
 	buf := make([]byte, maxBytes+1)
-	n, err := f.Read(buf)
-	if err != nil && !errors.Is(err, io.EOF) {
+	// ReadFull, not a single Read: a decrypting reader returns one chunk at a
+	// time, and a short read would otherwise report "no more bytes" in the
+	// middle of an artifact.
+	n, err := io.ReadFull(f, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return nil, Meta{}, false, err
 	}
 	more := n > maxBytes
@@ -360,7 +426,7 @@ func (s *Store) SearchTextContext(ctx context.Context, id, query string, limit i
 	if !strings.HasPrefix(meta.MIMEType, "text/") && meta.MIMEType != "application/json" {
 		return nil, errors.New("artifact is not searchable text")
 	}
-	f, err := s.openBlob(id)
+	f, err := s.openPayload(id, meta)
 	if err != nil {
 		return nil, err
 	}
@@ -454,12 +520,22 @@ func (s *Store) RunJanitor(ctx context.Context, interval time.Duration, report f
 }
 
 func (s *Store) purgeExpiredLocked() (int, error) {
+	_, purged, err := s.scanLocked()
+	return purged, err
+}
+
+// scanLocked reads every committed metadata file exactly once, removing expired
+// and corrupt pairs, and returns the artifacts that survive. Put needs all three
+// answers from that single pass — what retention removed, what the quota is now,
+// and which live blob a new payload can be deduplicated against.
+func (s *Store) scanLocked() (map[string]Meta, int, error) {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
-		return 0, err
+		return nil, 0, err
 	}
 	now := s.now()
 	purged := 0
+	live := make(map[string]Meta, len(entries)/2+1)
 	var errs []error
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
@@ -488,34 +564,37 @@ func (s *Store) purgeExpiredLocked() (int, error) {
 			} else {
 				purged++
 			}
+			continue
 		}
+		live[id] = meta
 	}
-	return purged, errors.Join(errs...)
+	return live, purged, errors.Join(errs...)
 }
 
 func validStoredMeta(meta Meta, id string) bool {
 	return meta.ID == id && meta.SizeBytes >= 0 && !meta.ExpiresAt.IsZero()
 }
 
-func (s *Store) bytesUsedLocked() (int64, error) {
-	entries, err := os.ReadDir(s.root)
-	if err != nil {
-		return 0, err
-	}
+// bytesUsed charges each distinct stored payload once. Deduplicated handles
+// share one on-disk copy, so summing per-handle sizes would bill the quota for
+// bytes that were never written and would shrink the store for no reason.
+// Blobs whose metadata has already gone (a crash orphan inside its grace
+// window) are not counted; reconcileOrphansLocked reclaims them.
+func bytesUsed(live map[string]Meta) int64 {
 	var total int64
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".blob") {
+	counted := make(map[string]bool, len(live))
+	for id, meta := range live {
+		key := "id:" + id
+		if !meta.Encrypted && meta.SHA256 != "" {
+			key = "sha:" + meta.SHA256
+		}
+		if counted[key] {
 			continue
 		}
-		info, err := entry.Info()
-		if err != nil {
-			return 0, err
-		}
-		if info.Mode().IsRegular() {
-			total += info.Size()
-		}
+		counted[key] = true
+		total += meta.storedSize()
 	}
-	return total, nil
+	return total
 }
 
 // reconcileOrphansLocked repairs the only unavoidable gap in the two-file
@@ -686,6 +765,12 @@ func validateKind(kind, rawMIME string) (string, error) {
 		"pdf":           {"application/pdf"},
 		"video":         {"video/webm", "video/mp4"},
 		"download":      nil,
+		// manifest holds artifact IDs and never a payload; evidence holds one
+		// bounded diagnostic part of a failure bundle. Neither is reachable from
+		// brw_artifact_capture: captureArtifact has no case for them, so they can
+		// only be produced by the bundle path that owns their retention.
+		"manifest": {"application/json"},
+		"evidence": {"application/json", "text/plain"},
 	}
 	mimes, ok := allowed[kind]
 	if !ok {

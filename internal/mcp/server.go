@@ -2792,7 +2792,7 @@ func tools() []map[string]any {
 			"ttl_seconds":   integerSchema("Optional shorter retention. Cannot exceed the browser-host store policy."),
 			"tab_id":        stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"kind"})),
-		tool("brw_artifact_info", "Return payload-free metadata for an artifact: kind, MIME type, byte size, SHA-256, creation/expiry, and source hash.", object(map[string]any{
+		tool("brw_artifact_info", "Return payload-free metadata for an artifact: kind, MIME type, byte size, SHA-256, creation/expiry, source hash, and whether the blob is encrypted at rest. Kind manifest is a failure evidence bundle index and kind evidence is one collected part of one; both are produced by a failed recipe run, not by brw_artifact_capture.", object(map[string]any{
 			"artifact_id": stringSchema("Opaque artifact_id returned by brw_artifact_capture."),
 		}, []string{"artifact_id"})),
 		tool("brw_artifact_read", "Read one bounded window from a browser-host artifact. Text/JSON returns UTF-8; binary returns base64 only when explicitly requested here. Page with next_offset instead of loading the whole artifact into context.", object(map[string]any{
@@ -2813,7 +2813,7 @@ func tools() []map[string]any {
 			"origin": stringSchema("Optional exact page origin, such as https://billing.example.com, to filter candidates."),
 			"limit":  integerSchema("Maximum metadata matches. Defaults to 10."),
 		}, []string{"query"})),
-		tool("brw_recipe_run", "Run one exact immutable recipe selected by brw_recipe_search. You MUST pass the returned id, version and digest together; brw fetches that pinned private recipe and executes deterministic semantic actions, timers and browser/page events with exact-origin checks. Inputs are never echoed in the result. External writes require recipe-declared risk/idempotency/postconditions.", object(map[string]any{
+		tool("brw_recipe_run", "Run one exact immutable recipe selected by brw_recipe_search. You MUST pass the returned id, version and digest together; brw fetches that pinned private recipe and executes deterministic semantic actions, timers and browser/page events with exact-origin checks. Inputs are never echoed in the result. External writes require recipe-declared risk/idempotency/postconditions. When the browser host has failure evidence bundles enabled, a failed run additionally reports failure_bundle_artifact_id and names it in the error: that id is a manifest artifact holding ONLY the artifact ids of the evidence collected at the moment of failure (action trace, console summary, credential-free network metadata, semantic snapshot, screenshot). Read the manifest with brw_artifact_read, then pull only the parts you actually need — the evidence expires sooner than an ordinary capture, so diagnose the failure in the same session rather than re-running the recipe to reproduce it.", object(map[string]any{
 			"id":      stringSchema("Recipe id returned by search."),
 			"version": stringSchema("Exact recipe version returned by search."),
 			"digest":  stringSchema("Exact content digest returned by search."),

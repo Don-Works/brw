@@ -290,6 +290,15 @@ var sensitiveHeaderNames = map[string]bool{
 	"x-goog-api-key":       true,
 }
 
+// SensitiveHeader reports whether a request-header name is on the shared
+// credential denylist. Exported so a consumer that drops the header outright —
+// a failure evidence bundle keeps no credential-bearing header at all, not even
+// a blanked one — classifies from the same list as the redactor below, instead
+// of growing a second list that can drift out of step with it.
+func SensitiveHeader(name string) bool {
+	return sensitiveHeaderNames[strings.ToLower(strings.TrimSpace(name))]
+}
+
 // RedactCapturedCredentials blanks the VALUE of any sensitive request header in
 // place while keeping the header NAME, so a captured request still shows that it
 // carried e.g. an Authorization header (useful for debugging) without exposing the
