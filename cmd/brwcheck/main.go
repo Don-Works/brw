@@ -60,6 +60,7 @@ type step struct {
 	AssertHidden      *assertRefStep         `json:"assert_hidden,omitempty"`
 	AssertText        *assertTextStep        `json:"assert_text,omitempty"`
 	AssertValue       *assertValueStep       `json:"assert_value,omitempty"`
+	Assert            *assertStep            `json:"assert,omitempty"`
 	Cookies           *cookiesStep           `json:"cookies,omitempty"`
 	GroupTabs         *groupTabsStep         `json:"group_tabs,omitempty"`
 	UngroupTabs       *ungroupTabsStep       `json:"ungroup_tabs,omitempty"`
@@ -158,6 +159,15 @@ type assertValueStep struct {
 	Target    string `json:"target,omitempty"`
 	Value     string `json:"value"`
 	TimeoutMS int    `json:"timeout_ms,omitempty"`
+}
+
+// assertStep drives brw_assert. The assertion is carried as the raw object a
+// caller would send, so the suite exercises the published field names against
+// real Chrome rather than a Go struct that happens to marshal. want_error is the
+// other half of the contract: a deterministic check that cannot fail is not one.
+type assertStep struct {
+	Assertion map[string]any `json:"assertion"`
+	WantError bool           `json:"want_error,omitempty"`
 }
 
 // cookiesStep drives brw_cookies over the daemon's HTTP API: set a cookie
@@ -750,6 +760,8 @@ func (r *runner) runStep(st step) error {
 		body := map[string]any{"ref": ref, "value": st.AssertValue.Value, "timeout_ms": timeout}
 		r.addTabID(body)
 		return r.client.postJSON("/api/page/assert_value", body, nil)
+	case st.Assert != nil:
+		return r.runAssertStep(*st.Assert)
 	case st.Cookies != nil:
 		return r.runCookiesStep(*st.Cookies)
 	case st.GroupTabs != nil:

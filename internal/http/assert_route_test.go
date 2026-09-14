@@ -70,16 +70,36 @@ func TestAssertRouteEvaluatesAndReportsExpectedAgainstActual(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
 	}
-	var failed struct {
-		Error string `json:"error"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&failed); err != nil {
-		t.Fatal(err)
-	}
+	failed := decodeAssertFailure(t, rec)
 	want := `url assertion failed: expected exact "https://example.test/settings", actual "https://example.test/dashboard"`
 	if failed.Error != want {
 		t.Fatalf("error = %q, want %q", failed.Error, want)
 	}
+	// The failure body carries the comparison as well as the message. Without
+	// it, browser.AssertResult's contract would hold on direct CDP and quietly
+	// not hold for anything reading this route.
+	if failed.OK || failed.Assertion != browser.AssertionURL {
+		t.Fatalf("failure body = %+v, want a populated failed result", failed)
+	}
+	if failed.Expected != `exact "https://example.test/settings"` || failed.Actual != `"https://example.test/dashboard"` {
+		t.Fatalf("failure body = %+v, want expected against actual", failed)
+	}
+}
+
+// assertFailureBody is the shape of a refused assertion: the comparison, plus
+// the message a caller that only checks err sees.
+type assertFailureBody struct {
+	browser.AssertResult
+	Error string `json:"error"`
+}
+
+func decodeAssertFailure(t *testing.T, rec *httptest.ResponseRecorder) assertFailureBody {
+	t.Helper()
+	var failed assertFailureBody
+	if err := json.NewDecoder(rec.Body).Decode(&failed); err != nil {
+		t.Fatal(err)
+	}
+	return failed
 }
 
 func TestAssertRouteCarriesElementStateFailures(t *testing.T) {
@@ -89,15 +109,13 @@ func TestAssertRouteCarriesElementStateFailures(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
 	}
-	var failed struct {
-		Error string `json:"error"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&failed); err != nil {
-		t.Fatal(err)
-	}
+	failed := decodeAssertFailure(t, rec)
 	want := `element state assertion failed: expected ref "e4" to be enabled, actual not enabled`
 	if failed.Error != want {
 		t.Fatalf("error = %q, want %q", failed.Error, want)
+	}
+	if failed.Actual != "not enabled" {
+		t.Fatalf("failure body = %+v, want the observed state", failed)
 	}
 
 	rec = postAssert(t, server, `{"assertion":"element_state","ref":"e4","state":"enabled","negate":true}`)

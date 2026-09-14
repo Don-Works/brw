@@ -1639,6 +1639,160 @@
           }
         }
       ]
+    },
+    {
+      "id": "fixture-deterministic-assertions",
+      "name": "Deterministic url, status, count, state and attribute assertions",
+      "tags": [
+        "local",
+        "assertions"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${HTTP_FIXTURES}/forms.html",
+            "save_as": "assert"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Form Interaction Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "mode": "all",
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Email",
+                "save_as": "email"
+              },
+              {
+                "role": "checkbox",
+                "name_contains": "Accept terms",
+                "save_as": "terms"
+              }
+            ]
+          }
+        },
+        {
+          "assert": {
+            "assertion": {
+              "assertion": "url",
+              "mode": "prefix",
+              "expected": "${HTTP_FIXTURES}/forms.html"
+            }
+          }
+        },
+        {
+          "assert": {
+            "assertion": {
+              "assertion": "url",
+              "mode": "exact",
+              "expected": "https://absent.example.invalid/"
+            },
+            "want_error": true
+          }
+        },
+        {
+          "assert": {
+            "assertion": {
+              "assertion": "http_status",
+              "status": 200
+            }
+          }
+        },
+        {
+          "assert": {
+            "assertion": {
+              "assertion": "http_status",
+              "status": 404
+            },
+            "want_error": true
+          }
+        },
+        {
+          "assert": {
+            "assertion": {
+              "assertion": "element_count",
+              "selector": "input",
+              "count": 4
+            }
+          }
+        },
+        {
+          "assert": {
+            "assertion": {
+              "assertion": "element_count",
+              "selector": "input",
+              "min": 9
+            },
+            "want_error": true
+          }
+        },
+        {
+          "assert": {
+            "assertion": {
+              "assertion": "element_state",
+              "ref": "terms",
+              "state": "checked",
+              "negate": true
+            }
+          }
+        },
+        {
+          "assert": {
+            "assertion": {
+              "assertion": "element_state",
+              "ref": "terms",
+              "state": "checked"
+            },
+            "want_error": true
+          }
+        },
+        {
+          "click": {
+            "target": "terms"
+          }
+        },
+        {
+          "assert": {
+            "assertion": {
+              "assertion": "element_state",
+              "ref": "terms",
+              "state": "checked"
+            }
+          }
+        },
+        {
+          "assert": {
+            "assertion": {
+              "assertion": "attribute",
+              "ref": "email",
+              "attribute": "type",
+              "expected": "email"
+            }
+          }
+        },
+        {
+          "assert": {
+            "assertion": {
+              "assertion": "attribute",
+              "ref": "email",
+              "attribute": "type",
+              "expected": "password"
+            },
+            "want_error": true
+          }
+        },
+        {
+          "close_tab": {
+            "target": "assert"
+          }
+        }
+      ]
     }
   ]
 }

@@ -1539,7 +1539,24 @@ func (s *Server) assertPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := browser.Assert(s.contextWithTabID(r.Context(), req.TabID), s.manager, req.AssertRequest)
-	writeResult(w, result, err)
+	writeAssertResult(w, result, err)
+}
+
+// writeAssertResult keeps expected against actual in the failure body. The
+// ordinary error writer reduces a failure to its message, which would make
+// browser.AssertResult's contract — a populated result AND an error — hold on
+// direct CDP and quietly not hold through the upstream proxy.
+func writeAssertResult(w http.ResponseWriter, result browser.AssertResult, err error) {
+	if err == nil {
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	w.Header().Set(usagelog.HeaderErrorClass, usagelog.ClassifyError(err))
+	w.Header().Set(usagelog.HeaderErrorFingerprint, usagelog.Fingerprint(err.Error()))
+	writeJSON(w, http.StatusBadRequest, struct {
+		browser.AssertResult
+		Error string `json:"error"`
+	}{AssertResult: result, Error: err.Error()})
 }
 
 func (s *Server) clickXY(w http.ResponseWriter, r *http.Request) {

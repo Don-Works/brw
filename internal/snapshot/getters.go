@@ -85,8 +85,10 @@ const GetScript = `(function(what, target, name){` + FrameWalkHelpers + `
     case 'status': {
       // responseStatus is the only in-page reading of the MAIN DOCUMENT's HTTP
       // status. It is absent for documents that never made a network request
-      // (data:, about:blank) and for a same-document history change, so zero
-      // means "no navigation status to report", not "status 0".
+      // (data:, about:blank), so zero means "no navigation status to report",
+      // not "status 0". The entry belongs to the last CROSS-document navigation
+      // and survives history.pushState, so an SPA route change still reports the
+      // status of the document that was fetched.
       var nav = null;
       try { nav = (performance.getEntriesByType('navigation') || [])[0]; } catch(e){}
       return {value: nav && typeof nav.responseStatus === 'number' ? nav.responseStatus : 0};

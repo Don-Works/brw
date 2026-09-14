@@ -244,14 +244,20 @@ func assertURL(ctx context.Context, src AssertSource, req AssertRequest) (Assert
 	if err := probeGetter(ctx, src, "url", "", "", &actual); err != nil {
 		return AssertResult{Assertion: req.Assertion}, err
 	}
-	compared, expected := actual, req.Expected
-	if !req.IncludeFragment {
-		compared = trimFragment(compared)
-		expected = trimFragment(expected)
-	}
 	mode := req.Mode
 	if mode == "" {
 		mode = AssertModeExact
+	}
+	compared, expected := actual, req.Expected
+	if !req.IncludeFragment {
+		compared = trimFragment(compared)
+		// A regex is not a URL. Its '#' can open an optional fragment group or
+		// sit inside an alternation branch, so cutting the pattern there either
+		// stops it compiling — after validation compiled the whole pattern and
+		// accepted it — or silently changes which URLs it matches.
+		if mode != AssertModeRegex {
+			expected = trimFragment(expected)
+		}
 	}
 	matched := false
 	switch mode {
@@ -279,7 +285,7 @@ func assertHTTPStatus(ctx context.Context, src AssertSource, req AssertRequest) 
 	}
 	if actual == 0 {
 		return AssertResult{Assertion: req.Assertion, Expected: strconv.Itoa(req.Status)},
-			errors.New("http status assertion is unavailable here: the current document reports no navigation status, which is what a data:, blob: or about: document and a same-document history change look like")
+			errors.New("http status assertion is unavailable here: the current document reports no navigation status, which is what a data:, blob: or about: document looks like")
 	}
 	if actual != req.Status {
 		return assertionFailed(req.Assertion, strconv.Itoa(req.Status), strconv.Itoa(actual))
@@ -460,16 +466,24 @@ func assertDownload(ctx context.Context, src AssertSource, req AssertRequest) (A
 	if err != nil {
 		return AssertResult{Assertion: req.Assertion}, err
 	}
+	return AssertDownloadFrom(result, req)
+}
+
+// AssertDownloadFrom checks the named download against a downloads read the
+// caller already performed. The recipe surface has to read the ledger itself —
+// that read consumes the run's delta cursor, so it must keep the entries — and
+// calls this so both paths produce one capability error and one failure text.
+func AssertDownloadFrom(result DownloadsResult, req AssertRequest) (AssertResult, error) {
 	if !result.Supported {
 		note := strings.TrimSpace(result.Note)
 		if note == "" {
 			note = "this browser transport does not record downloads"
 		}
-		return AssertResult{Assertion: req.Assertion}, fmt.Errorf("download digest assertions are unavailable on this transport: %s", note)
+		return AssertResult{Assertion: AssertionDownload}, fmt.Errorf("download digest assertions are unavailable on this transport: %s", note)
 	}
 	entry, found := SelectDownloadEntry(result.Downloads, req.DownloadGUID, req.Filename)
 	if !found {
-		return assertionFailed(req.Assertion, describeDownloadExpectation(req), "no download matched "+quote(downloadSelector(req)))
+		return assertionFailed(AssertionDownload, describeDownloadExpectation(req), "no download matched "+quote(downloadSelector(req)))
 	}
 	return AssertDownloadEntry(entry, req)
 }

@@ -21,6 +21,12 @@ import (
 // does not wait. wait_event polls to a timeout; an assertion reads once and says
 // what it saw. Folding the two together would give every assertion an implicit
 // sleep that no reviewer could see in the recipe.
+//
+// element_count counts what the step's Target resolves to, which is not the set
+// brw_assert's element_count counts: a recipe target reaches hidden elements
+// only when it asks for them with visible:false, and the search is capped at
+// semanticResolveLimit matches. A recipe asserts over the elements it could act
+// on; the tool asserts over the document.
 type Assertion struct {
 	Kind string `json:"kind"`
 	Mode string `json:"mode,omitempty"`
@@ -258,10 +264,23 @@ func assertionTemplateValues(values []string, assertion *Assertion) []string {
 // the browser host. Resolution happens here rather than in the browser package
 // so a recipe never has to name an observation ref.
 func (s *BrowserSurface) Assert(ctx context.Context, assertion Assertion) error {
+	// Assert is exported and satisfies the exported Asserter interface, so it
+	// cannot rely on Runner having validated the step: a nil target is named
+	// rather than dereferenced.
+	if assertion.Target == nil && slices.Contains([]string{
+		browser.AssertionElementCount, browser.AssertionElementState, browser.AssertionAttribute,
+	}, assertion.Kind) {
+		return fmt.Errorf("%s assertion requires a semantic target", assertion.Kind)
+	}
 	switch assertion.Kind {
 	case browser.AssertionElementCount:
 		matches, err := s.Resolve(ctx, *assertion.Target)
 		if err != nil {
+			// Resolve's cap is an acting limit; a caller who asked for a count
+			// needs to be told the count is what could not be produced.
+			if errors.Is(err, errSemanticSearchTruncated) {
+				return fmt.Errorf("element_count assertion cannot count past %d matching elements: %w", semanticResolveLimit, err)
+			}
 			return err
 		}
 		description := "role " + strconv.Quote(assertion.Target.Role)
@@ -290,6 +309,16 @@ func (s *BrowserSurface) Assert(ctx context.Context, assertion Assertion) error 
 			_, err := browser.AssertDownloadEntry(entry, assertionRequest(assertion, ""))
 			return err
 		}
+		// That ledger read consumes this tab's delta window, so its entries are
+		// cached here before they are used. Reading it through browser.Assert
+		// instead would leave a later capture step with nothing to capture.
+		result, err := s.Browser.Downloads(ctx)
+		if err != nil {
+			return err
+		}
+		s.cacheCompletedDownloads(ctx, result.Downloads)
+		_, err = browser.AssertDownloadFrom(result, assertionRequest(assertion, ""))
+		return err
 	}
 	_, err := browser.Assert(ctx, s.Browser, assertionRequest(assertion, ""))
 	return err

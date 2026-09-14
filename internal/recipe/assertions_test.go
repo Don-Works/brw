@@ -2,7 +2,11 @@ package recipe
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -157,7 +161,7 @@ func TestRunnerFailsTheRunOnAFailedAssertion(t *testing.T) {
 	value.Steps = []Step{{ID: "status_ok", Action: "assert", Assert: &Assertion{Kind: "http_status", Status: 200}}}
 	surface := &assertingSurface{
 		fakeSurface: newFakeSurface(),
-		err:         errHTTPStatusMismatch,
+		err:         errSurfaceAssertionFailure,
 	}
 
 	result, err := Runner{Surface: surface}.Run(context.Background(), value, nil)
@@ -233,4 +237,121 @@ func TestBrowserSurfaceAssertRefusesAnAmbiguousTarget(t *testing.T) {
 
 func intPointer(value int) *int { return &value }
 
-var errHTTPStatusMismatch = errors.New("http status assertion failed: expected 200, actual 404")
+// errSurfaceAssertionFailure stands in for whatever the surface reports. The
+// production wording of each kind is pinned in internal/browser against the real
+// formatter; this file only proves the runner carries a failure out intact.
+var errSurfaceAssertionFailure = errors.New("http status assertion failed: expected 200, actual 404")
+
+// TestBrowserSurfaceDownloadAssertionKeepsTheEntryForALaterCapture pins the
+// ledger read a download assertion makes when no postcondition cached the entry.
+// Downloads() is delta-scoped inside a recipe run: reading it consumes this
+// tab's window, so an assertion that read and discarded would leave a following
+// capture step with nothing to capture.
+func TestBrowserSurfaceDownloadAssertionKeepsTheEntryForALaterCapture(t *testing.T) {
+	payload := []byte("invoice bytes")
+	path := filepath.Join(t.TempDir(), "invoice.pdf")
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	entry := browser.DownloadEntry{GUID: "download-1", SuggestedFilename: "invoice.pdf", State: "completed", Path: path}
+	controller := &downloadOnlyController{results: []browser.DownloadsResult{
+		{Supported: true, Downloads: []browser.DownloadEntry{entry}},
+		{Supported: true},
+	}}
+	artifacts := &completedDownloadArtifacts{}
+	surface := &BrowserSurface{Browser: controller, Artifacts: artifacts}
+	ctx := browser.WithTabID(context.Background(), "tab-7")
+
+	size := int64(len(payload))
+	if err := surface.Assert(ctx, Assertion{
+		Kind: browser.AssertionDownload, Filename: "invoice.pdf",
+		SHA256: hex.EncodeToString(digest[:]), Bytes: &size,
+	}); err != nil {
+		t.Fatalf("download assertion: %v", err)
+	}
+
+	meta, err := surface.Capture(ctx, CaptureSpec{Kind: "download", Filename: "invoice.pdf"})
+	if err != nil {
+		t.Fatalf("capture after assertion: %v", err)
+	}
+	if artifacts.completed.GUID != "download-1" || meta.ID == "" {
+		t.Fatalf("capture saw %+v (meta %+v), want the asserted download", artifacts.completed, meta)
+	}
+	if artifacts.directCalls != 0 {
+		t.Fatalf("capture fell through to a live artifact capture %d time(s); the assertion consumed the ledger entry", artifacts.directCalls)
+	}
+}
+
+// TestBrowserSurfaceDownloadAssertionNamesAnUnsupportedTransport keeps the
+// capability failure named on the recipe path too, in the words the tool surface
+// uses.
+func TestBrowserSurfaceDownloadAssertionNamesAnUnsupportedTransport(t *testing.T) {
+	controller := &downloadOnlyController{results: []browser.DownloadsResult{
+		{Supported: false, Note: "the extension bridge cannot observe downloads"},
+	}}
+	surface := &BrowserSurface{Browser: controller}
+	size := int64(4)
+	err := surface.Assert(browser.WithTabID(context.Background(), "tab-7"), Assertion{
+		Kind: browser.AssertionDownload, Filename: "invoice.pdf", Bytes: &size,
+	})
+	want := "download digest assertions are unavailable on this transport: the extension bridge cannot observe downloads"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+}
+
+// TestBrowserSurfaceAssertRejectsAMissingTarget covers the exported entry point
+// directly: Assert satisfies the exported Asserter interface, so it cannot
+// assume a Runner validated the step first.
+func TestBrowserSurfaceAssertRejectsAMissingTarget(t *testing.T) {
+	surface := &BrowserSurface{Browser: &findOnlyController{}}
+	tests := []struct {
+		name      string
+		assertion Assertion
+		want      string
+	}{
+		{
+			name:      "element_count",
+			assertion: Assertion{Kind: browser.AssertionElementCount, Count: intPointer(1)},
+			want:      "element_count assertion requires a semantic target",
+		},
+		{
+			name:      "element_state",
+			assertion: Assertion{Kind: browser.AssertionElementState, State: browser.AssertStateEnabled},
+			want:      "element_state assertion requires a semantic target",
+		},
+		{
+			name:      "attribute",
+			assertion: Assertion{Kind: browser.AssertionAttribute, Attribute: "aria-disabled", Expected: "false"},
+			want:      "attribute assertion requires a semantic target",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := surface.Assert(context.Background(), tt.assertion)
+			if err == nil || err.Error() != tt.want {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// TestBrowserSurfaceCountReportsTruncationAsACountingFailure pins the wording a
+// recipe author sees when the target matches more elements than the surface
+// resolves: "refine the target before acting" alone does not read as an answer
+// to a count.
+func TestBrowserSurfaceCountReportsTruncationAsACountingFailure(t *testing.T) {
+	controller := &findOnlyController{result: snapshot.FindResult{
+		Elements: []snapshot.Element{{Ref: "e1", Role: "row", Name: "Invoice 1", Visible: true}},
+		Metadata: map[string]any{"truncated": true},
+	}}
+	surface := &BrowserSurface{Browser: controller}
+	err := surface.Assert(context.Background(), Assertion{
+		Kind: browser.AssertionElementCount, Target: &Target{Role: "row"}, Min: intPointer(1),
+	})
+	want := "element_count assertion cannot count past 200 matching elements: semantic target search was truncated; refine the recipe target before acting"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+}

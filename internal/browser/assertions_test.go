@@ -275,6 +275,19 @@ func TestHTTPStatusAssertionReadsTheDocumentNavigation(t *testing.T) {
 	if want := "http status assertion failed: expected 200, actual 404"; err.Error() != want {
 		t.Fatalf("message = %q, want %q", err.Error(), want)
 	}
+
+	// A same-document history change creates no navigation entry, so the status
+	// stays the fetched document's while the URL moves on. The tool description
+	// says so; this is what it is describing.
+	if _, err := manager.Evaluate(ctx, `history.pushState({}, '', '/spa-route')`); err != nil {
+		t.Fatalf("push a same-document route: %v", err)
+	}
+	if _, err := Assert(ctx, manager, AssertRequest{Assertion: AssertionURL, Expected: srv.URL + "/spa-route"}); err != nil {
+		t.Fatalf("url after the route change: %v", err)
+	}
+	if _, err := Assert(ctx, manager, AssertRequest{Assertion: AssertionHTTPStatus, Status: 404}); err != nil {
+		t.Fatalf("http status after the route change: %v", err)
+	}
 }
 
 // TestBatchRunsAssertSteps proves the assertion vocabulary is reachable from a
@@ -502,6 +515,173 @@ func TestAssertRequestValidation(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %q, want it to contain %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+// TestURLAssertionModesWithoutChrome covers the comparison rules against a
+// stubbed page value. TestAssertionsAgainstRealChrome skips where Chrome is
+// absent, and the fragment/regex interaction is exactly where a silently wrong
+// answer would hide: a pattern that validates and then behaves differently.
+func TestURLAssertionModesWithoutChrome(t *testing.T) {
+	const page = "https://app.test/report/42#tab-summary"
+	tests := []struct {
+		name    string
+		req     AssertRequest
+		wantErr string
+	}{
+		{
+			name: "regex keeps an optional fragment group the trimmed url does not use",
+			req:  AssertRequest{Assertion: AssertionURL, Mode: AssertModeRegex, Expected: `https://app\.test/report/\d+(#tab-\w+)?`},
+		},
+		{
+			name: "regex keeps an alternation branch that carries a fragment",
+			req:  AssertRequest{Assertion: AssertionURL, Mode: AssertModeRegex, Expected: `https://app\.test/a#x|https://app\.test/report/42`},
+		},
+		{
+			name: "regex compares the fragment when asked",
+			req:  AssertRequest{Assertion: AssertionURL, Mode: AssertModeRegex, IncludeFragment: true, Expected: `https://app\.test/report/\d+#tab-\w+`},
+		},
+		{
+			name:    "regex failure names the whole pattern",
+			req:     AssertRequest{Assertion: AssertionURL, Mode: AssertModeRegex, Expected: `https://app\.test/other(#tab-\w+)?`},
+			wantErr: `url assertion failed: expected regex "https://app\\.test/other(#tab-\\w+)?", actual "https://app.test/report/42"`,
+		},
+		{
+			name: "exact ignores a fragment on both sides by default",
+			req:  AssertRequest{Assertion: AssertionURL, Expected: "https://app.test/report/42#tab-other"},
+		},
+		{
+			name:    "exact compares the fragment when asked",
+			req:     AssertRequest{Assertion: AssertionURL, IncludeFragment: true, Expected: "https://app.test/report/42#tab-other"},
+			wantErr: `url assertion failed: expected exact "https://app.test/report/42#tab-other", actual "https://app.test/report/42#tab-summary"`,
+		},
+		{
+			name: "prefix drops the fragment from both sides",
+			req:  AssertRequest{Assertion: AssertionURL, Mode: AssertModePrefix, Expected: "https://app.test/report#anything"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := &stubAssertSource{values: map[string]any{
+				snapshot.BuildGetExpression("url", "", ""): map[string]any{"value": page},
+			}}
+			result, err := evaluateAssertion(context.Background(), src, tt.req)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("assertion failed: %v", err)
+				}
+				if !result.OK {
+					t.Fatalf("result = %+v, want ok", result)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("assertion passed, want %q", tt.wantErr)
+			}
+			if err.Error() != tt.wantErr {
+				t.Fatalf("message = %q, want %q", err.Error(), tt.wantErr)
+			}
+			if result.OK {
+				t.Fatalf("result = %+v, want a failed result alongside the error", result)
+			}
+		})
+	}
+}
+
+// TestHTTPStatusAssertionMessagesWithoutChrome pins the http_status wording off
+// the Chrome path: a mismatch and the no-navigation case, which reports what the
+// document actually is rather than claiming status zero.
+func TestHTTPStatusAssertionMessagesWithoutChrome(t *testing.T) {
+	statusExpr := snapshot.BuildGetExpression("status", "", "")
+	tests := []struct {
+		name    string
+		status  any
+		req     AssertRequest
+		wantErr string
+	}{
+		{name: "match", status: 200, req: AssertRequest{Assertion: AssertionHTTPStatus, Status: 200}},
+		{
+			name: "mismatch", status: 404, req: AssertRequest{Assertion: AssertionHTTPStatus, Status: 200},
+			wantErr: "http status assertion failed: expected 200, actual 404",
+		},
+		{
+			name: "no navigation status", status: 0, req: AssertRequest{Assertion: AssertionHTTPStatus, Status: 200},
+			wantErr: "http status assertion is unavailable here: the current document reports no navigation status, which is what a data:, blob: or about: document looks like",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := &stubAssertSource{values: map[string]any{statusExpr: map[string]any{"value": tt.status}}}
+			_, err := evaluateAssertion(context.Background(), src, tt.req)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("assertion failed: %v", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tt.wantErr {
+				t.Fatalf("error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestAttributeAssertionMessagesWithoutChrome covers the attribute wording off
+// the Chrome path, including the distinction the double read exists for: an
+// absent attribute and an absent element are different failures.
+func TestAttributeAssertionMessagesWithoutChrome(t *testing.T) {
+	stateExpr := snapshot.BuildGetExpression("state", "e7", "")
+	attrExpr := snapshot.BuildGetExpression("attr", "e7", "aria-expanded")
+	present := map[string]any{"value": map[string]any{"found": true}}
+	tests := []struct {
+		name    string
+		values  map[string]any
+		req     AssertRequest
+		wantErr string
+	}{
+		{
+			name:   "exact match",
+			values: map[string]any{stateExpr: present, attrExpr: map[string]any{"value": "true"}},
+			req:    AssertRequest{Assertion: AssertionAttribute, Ref: "e7", Attribute: "aria-expanded", Expected: "true"},
+		},
+		{
+			name:   "contains match",
+			values: map[string]any{stateExpr: present, attrExpr: map[string]any{"value": "menu expanded"}},
+			req:    AssertRequest{Assertion: AssertionAttribute, Ref: "e7", Attribute: "aria-expanded", Mode: AssertModeContains, Expected: "expanded"},
+		},
+		{
+			name:    "value mismatch",
+			values:  map[string]any{stateExpr: present, attrExpr: map[string]any{"value": "false"}},
+			req:     AssertRequest{Assertion: AssertionAttribute, Ref: "e7", Attribute: "aria-expanded", Expected: "true"},
+			wantErr: `attribute assertion failed: expected attribute "aria-expanded" on ref "e7" to equal "true", actual "false"`,
+		},
+		{
+			name:    "attribute absent",
+			values:  map[string]any{stateExpr: present},
+			req:     AssertRequest{Assertion: AssertionAttribute, Ref: "e7", Attribute: "aria-expanded", Expected: "true"},
+			wantErr: `attribute assertion failed: expected attribute "aria-expanded" on ref "e7" to equal "true", actual attribute is absent`,
+		},
+		{
+			name:    "element absent",
+			values:  map[string]any{stateExpr: map[string]any{"value": map[string]any{"found": false}}},
+			req:     AssertRequest{Assertion: AssertionAttribute, Ref: "e7", Attribute: "aria-expanded", Mode: AssertModeContains, Expected: "true"},
+			wantErr: `attribute assertion failed: expected attribute "aria-expanded" on ref "e7" to contain "true", actual no element matched "e7"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := &stubAssertSource{values: tt.values}
+			_, err := evaluateAssertion(context.Background(), src, tt.req)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("assertion failed: %v", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tt.wantErr {
+				t.Fatalf("error = %v, want %q", err, tt.wantErr)
 			}
 		})
 	}

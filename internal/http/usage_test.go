@@ -2,11 +2,16 @@ package httpapi
 
 import (
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -89,5 +94,71 @@ func TestArtifactUsageLogNeverContainsHandleQueryOrBackingError(t *testing.T) {
 	if !strings.Contains(string(data), `"error_class":"artifact_error"`) ||
 		!strings.Contains(string(data), `"error_fingerprint":"`+usagelog.Fingerprint("artifact operation failed")+`"`) {
 		t.Fatalf("artifact failure telemetry is not specific and stable: %s", data)
+	}
+}
+
+// unloggedAPIRoutes are the /api/ routes deliberately outside usageOperations.
+// Everything else is a tool call and belongs in the ledger; two reviews in a row
+// found a newly added route missing from the allowlist, which is invisible
+// rather than noisy — the middleware simply skips an unknown path.
+var unloggedAPIRoutes = map[string]string{
+	"/api/artifacts/{id}":        "wildcard handle route, classified by the middleware's /api/artifacts/ prefix fallback",
+	"/api/artifacts/{id}/info":   "wildcard handle route, classified by the prefix fallback",
+	"/api/artifacts/{id}/read":   "wildcard handle route, classified by the prefix fallback",
+	"/api/artifacts/{id}/search": "wildcard handle route, classified by the prefix fallback",
+	"/api/session/stream":        "long-lived SSE connection, not one operation with an outcome",
+}
+
+// TestEveryAPIRouteIsInTheUsageAllowlist reads the route table out of server.go
+// rather than a hand-kept list, so a route added tomorrow is covered too.
+func TestEveryAPIRouteIsInTheUsageAllowlist(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "server.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var routes []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "HandleFunc" {
+			return true
+		}
+		literal, ok := call.Args[0].(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			return true
+		}
+		pattern, err := strconv.Unquote(literal.Value)
+		if err != nil {
+			return true
+		}
+		// "POST /api/page/assert" and "/api/page/assert" both register one path.
+		if _, path, found := strings.Cut(pattern, " "); found {
+			pattern = path
+		}
+		routes = append(routes, pattern)
+		return true
+	})
+	if len(routes) < 50 {
+		t.Fatalf("found %d routes in server.go, want the whole table; the parse is wrong", len(routes))
+	}
+	for _, route := range routes {
+		if !strings.HasPrefix(route, "/api/") {
+			continue
+		}
+		if usageOperations[route] != "" {
+			continue
+		}
+		if reason := unloggedAPIRoutes[route]; reason != "" {
+			continue
+		}
+		t.Errorf("route %s is in neither usageOperations nor unloggedAPIRoutes: every call to it is missing from the usage ledger", route)
+	}
+	for route := range usageOperations {
+		if !slices.Contains(routes, route) {
+			t.Errorf("usageOperations maps %s, which server.go no longer registers", route)
+		}
 	}
 }

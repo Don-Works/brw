@@ -34,6 +34,13 @@ type cachedDownload struct {
 
 const maxCachedRecipeDownloads = 200
 
+// semanticResolveLimit bounds every semantic target search a recipe makes. A
+// truncated search answers a different question than the one the recipe asked,
+// so it is refused by name rather than silently reported short.
+const semanticResolveLimit = 200
+
+var errSemanticSearchTruncated = errors.New("semantic target search was truncated; refine the recipe target before acting")
+
 const (
 	initialEventPollInterval = 25 * time.Millisecond
 	maximumEventPollInterval = 250 * time.Millisecond
@@ -79,14 +86,14 @@ func (s *BrowserSurface) Resolve(ctx context.Context, target Target) ([]Resolved
 		query = target.HrefContains
 	}
 	result, err := s.Browser.Find(ctx, snapshot.FindOptions{
-		Query: query, Role: target.Role, Limit: 200, ViewportOnly: false,
+		Query: query, Role: target.Role, Limit: semanticResolveLimit, ViewportOnly: false,
 		IncludeHidden: target.Visible != nil && !*target.Visible,
 	})
 	if err != nil {
 		return nil, err
 	}
 	if truncated, _ := result.Metadata["truncated"].(bool); truncated {
-		return nil, errors.New("semantic target search was truncated; refine the recipe target before acting")
+		return nil, errSemanticSearchTruncated
 	}
 	matches := make([]ResolvedElement, 0, len(result.Elements))
 	for _, element := range result.Elements {

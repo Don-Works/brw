@@ -149,11 +149,11 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - Never poll with sleep loops. These retry for you.
 - `brw_assert({assertion, …})` is the deterministic, one-shot family — use it instead of a `brw_evaluate` snippet:
   - `url` — `{expected, mode?:"exact"|"prefix"|"regex", include_fragment?}`. The regex is anchored to the whole URL; the `#fragment` is ignored unless you ask for it.
-  - `http_status` — `{status}` for the current document's navigation.
+  - `http_status` — `{status}` for the current document's last cross-document navigation. An SPA route change through `history.pushState` does not alter it.
   - `element_count` — `{selector | role (+name?), count | min | max}`.
   - `element_state` — `{ref, state:"enabled"|"editable"|"checked"|"focused", negate?}`.
   - `attribute` — `{ref, attribute, expected, mode?:"exact"|"contains"}`.
-  - `download` — `{download_guid | filename, sha256?, bytes?}`, hashing a file `brw_downloads` recorded. Direct-CDP transport only; the extension bridge says so by name.
+  - `download` — `{download_guid | filename, sha256?, bytes?}`, hashing a file `brw_downloads` recorded. Needs a transport that records downloads; one that cannot (an extension too old for `chrome.downloads`) returns a named capability error.
   - Passing returns `{ok:true, assertion, expected, actual}`; failing is a tool error naming expected against actual. Nothing here retries — put `brw_wait_for` in front of it when the page needs to settle.
 
 **Batching**

@@ -100,14 +100,18 @@ func TestBrwAssertReportsAnInvalidRequest(t *testing.T) {
 }
 
 // TestBatchAcceptsAnAssertStep proves the assertion vocabulary reaches brw_batch
-// through the MCP surface: the step decodes into the controller's BatchStep with
-// its assertion intact.
+// through the MCP surface: the step decodes into the controller's BatchStep and
+// the decoded request is one the evaluator accepts and answers. Recording the
+// fields alone would pass for a step that decodes and then evaluates to nothing.
 func TestBatchAcceptsAnAssertStep(t *testing.T) {
 	controller := &batchRecordingController{gettersController: newGettersController()}
 	server := New(controller)
 
-	callToolJSON(t, server, "brw_batch",
+	passing := callToolJSON(t, server, "brw_batch",
 		`{"steps":[{"action":"assert","assertion":{"assertion":"element_count","selector":".row","count":3}}]}`)
+	if passing["ok"] != true {
+		t.Fatalf("batch = %#v, want the assert step to pass", passing)
+	}
 
 	if len(controller.steps) != 1 {
 		t.Fatalf("controller saw %d steps, want 1", len(controller.steps))
@@ -122,6 +126,16 @@ func TestBatchAcceptsAnAssertStep(t *testing.T) {
 	if step.Assertion.Count == nil || *step.Assertion.Count != 3 {
 		t.Fatalf("count = %v, want 3", step.Assertion.Count)
 	}
+
+	failing := callToolJSON(t, server, "brw_batch",
+		`{"steps":[{"action":"assert","assertion":{"assertion":"element_count","selector":".row","count":99}}]}`)
+	if failing["ok"] == true {
+		t.Fatalf("batch = %#v, want the failing assert step to stop it", failing)
+	}
+	want := `element count assertion failed: expected exactly 99 elements matching ".row", actual 3`
+	if failing["error"] != want {
+		t.Fatalf("batch error = %#v, want %q", failing["error"], want)
+	}
 }
 
 type batchRecordingController struct {
@@ -129,7 +143,18 @@ type batchRecordingController struct {
 	steps []browser.BatchStep
 }
 
-func (c *batchRecordingController) ExecuteBatch(_ context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
+// ExecuteBatch evaluates each decoded assertion instead of only recording it.
+// The production Manager does the same thing; a step that decodes into fields
+// the evaluator would reject has not actually reached the feature.
+func (c *batchRecordingController) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
 	c.steps = steps
+	for index, step := range steps {
+		if step.Action != "assert" || step.Assertion == nil {
+			continue
+		}
+		if _, err := browser.Assert(ctx, c.gettersController, *step.Assertion); err != nil {
+			return browser.BatchResult{StepsCompleted: index, Error: err.Error()}, nil
+		}
+	}
 	return browser.BatchResult{OK: true, StepsCompleted: len(steps)}, nil
 }

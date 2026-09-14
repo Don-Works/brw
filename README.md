@@ -315,6 +315,8 @@ Core MCP tools include:
 - `brw_network_requests`, `brw_network_capture`, `brw_replay_request`
 - `brw_console`, `brw_downloads`, `brw_trace`
 - `brw_assert_visible`, `brw_assert_text`, `brw_assert_value`
+- `brw_assert` for deterministic URL, HTTP status, element count, element
+  state, attribute and download-digest checks
 - `brw_page_tools`, `brw_call_page_tool` (WebMCP)
 - `brw_notify`, `brw_commit`
 - `brw_window_resize` (real OS window, unlike `brw_emulate_device`)

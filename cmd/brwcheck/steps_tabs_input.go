@@ -220,3 +220,39 @@ func (r *runner) runBatchStep(st batchStep) error {
 	}
 	return nil
 }
+
+// runAssertStep posts one brw_assert request. A passing assertion answers 200
+// with ok=true; a failing one answers 400 with the expected-against-actual text,
+// which is what want_error scenarios exist to reach.
+func (r *runner) runAssertStep(st assertStep) error {
+	body := make(map[string]any, len(st.Assertion)+1)
+	for key, value := range st.Assertion {
+		body[key] = value
+	}
+	if key, ok := body["ref"].(string); ok {
+		if ref, found := r.refs[key]; found {
+			body["ref"] = ref
+		}
+	}
+	if body["assertion"] == "url" {
+		if expected, ok := body["expected"].(string); ok {
+			body["expected"] = r.expandURL(expected)
+		}
+	}
+	r.addTabID(body)
+	var result browser.AssertResult
+	err := r.client.postJSON("/api/page/assert", body, &result)
+	if st.WantError {
+		if err == nil {
+			return fmt.Errorf("assertion %v was expected to fail and passed", body["assertion"])
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("assertion %q reported ok=false: expected %s, actual %s", result.Assertion, result.Expected, result.Actual)
+	}
+	return nil
+}

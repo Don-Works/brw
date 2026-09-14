@@ -80,7 +80,10 @@ An `assert` step carries a deterministic check in `assert`, with `kind` one of
 every other step, never a ref. `url` takes `expected` plus
 `mode: exact|prefix|regex` (anchored to the whole URL) and compares the
 `#fragment` only when `include_fragment` is set; `element_count` takes
-`count`, or `min`/`max`; `element_state` takes `state: enabled|editable|checked|focused`
+`count`, or `min`/`max`, and counts what its `target` resolves to — visible
+matches unless the target sets `visible: false`, capped at 200, which is
+narrower than `brw_assert`'s document-wide count; `element_state` takes
+`state: enabled|editable|checked|focused`
 with optional `negate`; `attribute` takes `attribute`, `expected`, and
 `mode: exact|contains`; `download` takes `filename` plus `sha256` and/or `bytes`
 and hashes the file the run produced. An assertion never retries and has no

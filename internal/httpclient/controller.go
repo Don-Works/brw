@@ -561,9 +561,14 @@ func (c *Controller) AssertHidden(ctx context.Context, ref string, timeout time.
 // Assert forwards the whole assertion to the browser host rather than
 // re-deriving it here. A download digest hashes a file that exists only on that
 // host, so an assertion evaluated on this side of the proxy would hash nothing.
+//
+// A failed assertion answers 400 with expected against actual still in the body,
+// which is decoded so this transport honours the same AssertResult contract as
+// direct CDP: a caller that renders the result and one that only checks err both
+// see what the page said.
 func (c *Controller) Assert(ctx context.Context, req browser.AssertRequest) (browser.AssertResult, error) {
 	var out browser.AssertResult
-	err := c.post(ctx, "/api/page/assert", req, &out)
+	err := c.post(ctx, "/api/page/assert", req, failureCapture{Into: &out})
 	return out, err
 }
 
@@ -746,7 +751,17 @@ func (c *Controller) doWithClientLimit(client *http.Client, req *http.Request, o
 	return c.doRequestWithLimit(client, req, out, maxResponseBytes)
 }
 
+// failureCapture wraps an out value whose caller also wants the body of a
+// refused (non-2xx) response decoded into it. Only a response that carries a
+// structured verdict alongside its message uses it; everything else keeps the
+// rule that a failed request yields an error and no data.
+type failureCapture struct{ Into any }
+
 func (c *Controller) doRequestWithLimit(client *http.Client, req *http.Request, out any, maxResponseBytes int64) error {
+	capture, capturing := out.(failureCapture)
+	if capturing {
+		out = capture.Into
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -775,6 +790,11 @@ func (c *Controller) doRequestWithLimit(client *http.Client, req *http.Request, 
 		truncated := int64(len(data)) > limit
 		if truncated {
 			data = data[:limit]
+		}
+		if capturing && !truncated {
+			// Best effort: the error below is the result either way, and a body
+			// that does not carry the structured verdict leaves out zero-valued.
+			_ = json.Unmarshal(data, out)
 		}
 		var payload struct {
 			Error string `json:"error"`

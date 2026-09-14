@@ -64,6 +64,7 @@ local cache and the provider-backed huge bank.
 | Closed | Upstream proxies inherited the ordinary 20-second HTTP timeout even though a bounded recipe may legitimately run for 30 minutes. Recipe calls now share the runner's maximum duration plus transport headroom while caller cancellation remains authoritative. | `internal/httpclient/artifact_recipe_test.go` |
 | Closed | Secret runtime templates in event/postcondition matches were redacted from returned errors but did not mark browser inspection as sensitive. Sensitivity now covers every runtime template a step can send to the browser, not only fill/type/select values. | `internal/recipe/runner_test.go` |
 | Closed | More than 200 matching controls could make a visible candidate look uniquely safe. Truncated semantic resolution now fails closed. | `internal/recipe/browser_surface_test.go` |
+| Closed | Checking a URL, HTTP status, element count, element state, attribute, or a downloaded file's digest required hand-written `brw_evaluate` JavaScript, which each caller rewrote and none of which reported expected against actual. `brw_assert` and the recipe `assert` step now run those six checks once, with no retry, through the shared getters script; a download digest is evaluated on the browser host so the proxy hashes the real file. | `internal/browser/assertions_test.go`, `internal/recipe/assertions_test.go`, `internal/http/assert_route_test.go`, `internal/httpclient/assert_test.go` |
 | Closed | Long element waits scanned Gmail/LinkedIn-scale DOMs every 100 ms (up to about 1,200 scans). Bounded adaptive polling makes the first recheck faster and cuts a 120-second idle wait to about 483 scans. | `internal/recipe/browser_surface_test.go`, `docs/benchmarks.md` |
 | Closed | Provider redirects could forward its bearer token. Redirects, URL credentials, query strings, fragments, downgrade, oversized responses, malformed metadata, and body substitution are rejected. | `internal/recipe/schema_test.go` |
 | Closed | A custom provider implementation could bypass the HTTPS provider's validation and substitute a recipe after discovery. The service boundary now validates every search result and revalidates exact `id + version + digest` after fetch, independent of provider implementation. | `internal/recipe/runner_test.go` |
@@ -248,7 +249,8 @@ parity argument alone:
 - Playwright waits for uniqueness, visibility, stability, hit targeting,
   enabled state, and editability. `brw` already implements the important click
   actionability checks plus semantic uniqueness and transport-specific adaptive
-  settling; the recipe assertion vocabulary remains narrower. See
+  settling, and recipes now carry the same deterministic assertion vocabulary as
+  the tool surface. See
   [Playwright actionability](https://playwright.dev/docs/actionability).
 - Playwright traces combine actions, DOM snapshots, screenshots, and network
   activity into a time-travel debugging bundle. `brw_trace` is scoped and can
@@ -295,24 +297,21 @@ parity argument alone:
    evidence across daemon restarts. Prefer the site's native idempotency API
    where one exists; never mistake a local receipt for proof that the remote
    transaction committed.
-4. **Richer deterministic assertions.** Add exact URL/status, element count,
-   enabled/editable/checked state, attribute, and download digest/size assertions.
-   This improves correctness more than adding blind retries.
-5. **Event stream and network fixtures.** Replace polling with one scoped event
+4. **Event stream and network fixtures.** Replace polling with one scoped event
    subscription where transports support it; then add privacy-filtered HAR
    capture/replay and request interception as explicitly opt-in capabilities.
-6. **Artifact efficiency.** Use CDP stream mode for PDFs/downloads where
+5. **Artifact efficiency.** Use CDP stream mode for PDFs/downloads where
    available, content-addressed deduplication under opaque per-capture handles,
    optional at-rest encryption, and a manifest artifact that links related
    captures without inlining them.
-7. **Environment profiles.** Add controlled locale/timezone/media/permission
+6. **Environment profiles.** Add controlled locale/timezone/media/permission
    emulation for direct-CDP contexts. Any auth-state import/export must remain a
    separately permissioned feature and must not weaken the cookie/storage
    denylist of the signed-in extension bridge.
-8. **Cross-browser backend.** Prototype WebDriver BiDi after its required event,
+7. **Cross-browser backend.** Prototype WebDriver BiDi after its required event,
    actionability, download, and artifact primitives are stable enough to retain
    the same fail-closed recipe guarantees.
-9. **Regression comparison.** Add opt-in visual and ARIA artifact comparisons
+8. **Regression comparison.** Add opt-in visual and ARIA artifact comparisons
    with environment fingerprints and tolerances. Keep baselines in the private
    provider when they expose private pages.
 
