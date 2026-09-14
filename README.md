@@ -367,6 +367,12 @@ Core MCP tools include:
 - `brw_set_download_path` — send completed downloads somewhere you can open them
 - `brw_network_requests`, `brw_network_capture`, `brw_replay_request`
 - `brw_console`, `brw_downloads`, `brw_trace`
+- `brw_vitals` — LCP, CLS, INP, TTFB and FCP for the current navigation, each
+  rated against the published thresholds
+- `brw_a11y_audit` — axe-core, embedded in the binary rather than fetched, with
+  the failures summarised by impact and the full report written to an artifact
+- `brw_highlight` — outline an element for a human watching the browser;
+  `clear:true` undoes it
 - `brw_assert_visible`, `brw_assert_text`, `brw_assert_value`
 - `brw_assert` for deterministic URL, HTTP status, element count, element
   state, attribute and download-digest checks

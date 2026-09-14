@@ -1881,6 +1881,12 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		}, nil)
 	case "brw_downloads":
 		return toolJSON(s.manager.Downloads(ctx))
+	case "brw_vitals":
+		return s.callVitals(ctx, args)
+	case "brw_a11y_audit":
+		return s.callAccessibilityAudit(ctx, args)
+	case "brw_highlight":
+		return s.callHighlight(ctx, args)
 	case "brw_artifact_capture":
 		api := s.artifactService()
 		if api == nil {
@@ -2284,7 +2290,7 @@ func canonicalToolName(name string) string {
 }
 
 func tools() []map[string]any {
-	return []map[string]any{
+	catalogue := []map[string]any{
 		tool("brw_open", "Open a URL in a visible Chrome/Chromium tab and exclusively lease it to this session. With no group/group_id the tab lands in this session's per-agent tab group automatically; pass group only for a deliberately different run-scoped group. Close every tab you opened before finishing unless handing it to the human; never close pre-existing tabs. On the extension bridge tabs open in the BACKGROUND, so brw never stomps the human's current tab. To use an existing tab, pass the tab_id of one brw_list_tabs marks available — never one marked leased.", object(map[string]any{
 			"url":         stringSchema("URL to open. Scheme defaults to https."),
 			"group":       stringSchema("Optional Chrome tab group title overriding the automatic per-agent group. Keep it short, run-scoped, and free of secrets; when set without group_id, the extension reuses an existing same-title group or creates one."),
@@ -2887,6 +2893,10 @@ func tools() []map[string]any {
 		}, nil)),
 		tool("brw_clear_trace", "Clear the action trace buffer.", object(nil, nil)),
 	}
+	// The developer-observation tools are defined beside their handlers in
+	// devtools.go rather than inline here, because each one carries a long
+	// description that only makes sense next to what it actually does.
+	return append(catalogue, devtoolsTools()...)
 }
 
 func tool(name, description string, schema map[string]any) map[string]any {

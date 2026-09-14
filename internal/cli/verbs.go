@@ -43,7 +43,7 @@ type verb struct {
 }
 
 func verbs() []verb {
-	return []verb{
+	table := []verb{
 		{
 			name:    "open",
 			usage:   "<url>",
@@ -320,6 +320,10 @@ func verbs() []verb {
 			render: renderHealth,
 		},
 	}
+	// The developer observations are defined beside their renderers in
+	// verbs_devtools.go; the completion scripts and the route test read this
+	// table, so they are covered the same way every verb above is.
+	return append(table, devtoolsVerbs()...)
 }
 
 // downloadsUnsupported reads the flag the downloads route sets when the active

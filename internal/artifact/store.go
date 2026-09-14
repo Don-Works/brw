@@ -873,6 +873,9 @@ func validateKind(kind, rawMIME string) (string, error) {
 		// only be produced by the bundle path that owns their retention.
 		"manifest": {"application/json"},
 		"evidence": {"application/json", "text/plain"},
+		// Produced by brw_a11y_audit rather than by a capture request; it is in
+		// this table because the store still has to validate what it is given.
+		"a11y_report": {"application/json"},
 	}
 	mimes, ok := allowed[kind]
 	if !ok {

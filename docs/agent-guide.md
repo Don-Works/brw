@@ -462,10 +462,10 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` | 69 | ~16.0k tokens |
-| `core` | 26 | ~7.7k tokens |
-| `minimal` | 13 | ~4.1k tokens |
-| `auto` (default) | 14, growing | ~4.4k tokens to start |
+| `all` | 86 | ~24.0k tokens |
+| `core` | 26 | ~8.0k tokens |
+| `minimal` | 13 | ~4.4k tokens |
+| `auto` (default) | 14, growing | ~4.6k tokens to start |
 
 `core` advertises the common-flow tools (open/snapshot/find/click/type/fill/
 select/press/scroll/hover/drag/upload/navigate/wait/batch/observe/screenshot).
@@ -523,6 +523,45 @@ alongside the existing substring `filter`.
 
 `brw_press` and `brw_scroll` take `repeat` (1-100), which performs the action n
 times in one round-trip and returns only the final observation.
+
+## Page health: vitals, accessibility, highlight
+
+Three read-shaped tools answer "is this page any good?" rather than "what does
+it say".
+
+`brw_vitals` reports LCP, CLS, INP, TTFB and FCP for the current navigation,
+each labelled good / needs-improvement / poor against the published thresholds,
+plus DOMContentLoaded, load and the navigation type. It works on a page brw did
+not open, because the browser buffers these entries from navigation start: the
+tool registers observers, drains the buffered timeline, disconnects and leaves
+nothing behind. `lcp_element` names the block that painted last, with its ref
+when it has one. Two limits worth knowing: LCP is provisional until the first
+user interaction, and INP is null until something has been interacted with —
+the browser only retains interactions of roughly 104 ms or slower, so a page
+whose interactions were all fast reports none rather than a small number.
+
+`brw_a11y_audit` runs axe-core and answers with the failures, worst impact
+first: rule id, impact, help text, help URL, how many elements failed, and brw
+refs for the offending elements. The refs are the point — feed one straight to
+`brw_highlight` or `brw_click` instead of re-resolving a CSS selector. The
+complete axe document goes to an artifact; read it with `brw_artifact_read` or
+search it with `brw_artifact_search`. Scope a re-check after a fix with
+`rules: ["color-contrast"]`, or a conformance pass with `tags: ["wcag2aa"]`.
+
+The engine is embedded in the brw binary and injected from there. brwd never
+pulls executable script off the network into a page it is driving on your
+behalf, so the audit also works offline and against an origin with a strict
+content security policy. Its only effect on the page is the `data-brw-ref`
+attribute `brw_snapshot` already writes, stamped on the elements that failed so
+they have refs to hand back.
+
+`brw_highlight` outlines an element for a human watching the browser. It is the
+one tool here that changes the page, so the change is confined and undoable: a
+single `<div id="__brw_highlight_overlay">` with `pointer-events: none`, the
+target elements never restyled or moved, and `clear: true` to remove it. Pass
+`duration_ms` to have it remove itself, and `scroll: true` if the element
+should be brought into view — off by default, because moving someone's page is
+a side effect a read-shaped call should not take uninvited.
 
 ## Addressing a section instead of paging
 

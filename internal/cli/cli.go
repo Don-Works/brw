@@ -82,6 +82,15 @@ type options struct {
 	offset       int64
 	viewportOnly bool
 	appendText   bool
+
+	settleMS   int
+	tags       string
+	rule       string
+	color      string
+	label      string
+	durationMS int
+	clear      bool
+	scroll     bool
 }
 
 // Run executes one brw invocation and returns its process exit code. args
