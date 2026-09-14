@@ -1401,10 +1401,19 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		}
 		// The HAR is read here rather than inside a transport: the recording
 		// lives in the artifact store this surface owns, and decoding it here is
-		// what keeps every transport free of a dependency on artifact storage —
-		// including the --upstream-http proxy, where the store is on the browser
-		// host and reached through the same API.
+		// what keeps every transport free of a dependency on artifact storage.
+		// (--upstream-http is out of scope either way: internal/httpclient has no
+		// Route method, so brw_route on a proxying daemon fails the assertion
+		// above and never reaches this.)
 		if strings.EqualFold(strings.TrimSpace(req.Action), "replay") {
+			// Asked before the read, not after: a transport that cannot replay
+			// should answer with its own named capability error rather than with
+			// whatever a 32 MiB artifact read happened to produce.
+			if replayer, canReplay := router.(browser.RouteReplayer); canReplay {
+				if err := replayer.CheckRouteReplay(); err != nil {
+					return toolError(err), nil
+				}
+			}
 			entries, err := artifact.LoadHARFixture(ctx, s.artifactService(), req.HARArtifactID)
 			if err != nil {
 				return toolError(err), nil
@@ -2537,9 +2546,9 @@ func tools() []map[string]any {
 			"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds. Defaults to the daemon timeout (typically 20s)."},
 			"tab_id":     stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"condition"})),
-		tool("brw_route", "Intercept matching requests and answer them without touching the network: mock an API response, force an error status, abort a request entirely (analytics, a slow third party), or REPLAY a whole recorded HAR so a page loads from a fixture instead of from a live backend. pattern is a URL glob where * matches any run of characters; a pattern with no * matches as a prefix. First matching route wins, so add specific rules before general ones. Routes never widen what the page may reach: a request the navigation policy forbids stays blocked. Active routes are reported by brw_observe so mocked traffic is never invisible in the transcript.\n\naction=replay takes a har_artifact_id from brw_artifact_capture{kind:\"har\"} and answers each matching request with the exchange recorded for it. match lists the request properties an entry has to agree on and defaults to [method,url]; add \"body\" only for a fixture whose recordings differ by request body, because a fixture that includes it misses every request whose body was not recorded byte-for-byte. on_miss decides what a request the HAR does not hold does: passthrough (the default) sends it to the real network, fail refuses it and records the unmatched method and URL in the route's fixture.misses, which is what makes a replay deterministic — the page under test can reach nothing that was not recorded. Entries are consumed in recorded order, so a URL recorded twice with different answers replays in sequence; once every matching entry is used the first answers again. Redaction happens at RECORD time: a HAR captured with the default redaction carries \"[redacted by brw]\" where a credential header or request body was, and replays with those values.\n\nTRANSPORT: fulfill and replay need response bodies and run on direct-CDP only; on the extension-bridge transport (the user's signed-in Chrome) they return a named capability error and behaviour=abort, enforced with a declarativeNetRequest session rule, is what works there.", object(map[string]any{
+		tool("brw_route", "Intercept matching requests and answer them without touching the network: mock an API response, force an error status, abort a request entirely (analytics, a slow third party), or REPLAY a whole recorded HAR so a page loads from a fixture instead of from a live backend. pattern is a URL glob where * matches any run of characters; a pattern with no * matches as a prefix. First matching route wins, so add specific rules before general ones. Routes never widen what the page may reach: a request the navigation policy forbids stays blocked. Active routes are reported by brw_observe so mocked traffic is never invisible in the transcript.\n\naction=replay takes a har_artifact_id from brw_artifact_capture{kind:\"har\"} and answers each matching request with the exchange recorded for it. A brw HAR records FETCH AND XHR ONLY (it comes from the in-page wrappers), so a replay answers those and nothing else: the document, scripts, stylesheets and images always load from the network whatever pattern says, and the count let through that way is reported as fixture.not_replayable. on_miss therefore scopes the page's API calls, not the page: passthrough (the default) sends an unrecorded call to the real network, fail refuses it; either way the unmatched method and URL are recorded in the route's fixture.misses and reported by brw_observe. match lists the request properties an entry has to agree on and defaults to [method,url]; add \"body\" only for a fixture captured with redaction:\"none\" whose recordings differ by request body, because an ordinary capture stores \"[redacted by brw]\" in place of every request body and a body-keyed replay of one is refused at install time. Entries are consumed in recorded order, so a URL recorded twice with different answers replays in sequence; once every matching entry is used the first answers again. Recorded response bodies are 2 KiB capture snippets: a larger response replays clipped, and the reply reports truncated_entries and served_truncated rather than passing a half body off as a whole one. Redaction happens at RECORD time and there is no un-redacted replay mode.\n\nTRANSPORT: fulfill and replay need response bodies and run on direct-CDP only; on the extension-bridge transport (the user's signed-in Chrome) they return a named capability error and behaviour=abort, enforced with a declarativeNetRequest session rule, is what works there.", object(map[string]any{
 			"action":          stringEnumSchema("add installs a rule, replay installs a HAR-backed fixture, list shows the tab's rules, clear removes one pattern (or all rules when pattern is omitted).", "add", "replay", "list", "clear"),
-			"pattern":         stringSchema("URL glob, e.g. https://api.example.com/v1/* — required for add, optional for clear, and for replay it scopes which requests come from the HAR (default * , every request)."),
+			"pattern":         stringSchema("URL glob, e.g. https://api.example.com/v1/* — required for add, optional for clear, and for replay it narrows which fetch/XHR requests come from the HAR (default *, every recordable request)."),
 			"behaviour":       stringEnumSchema("fulfill answers from body/status (the default); abort fails the request as a network error. Does not apply to action=replay, which answers from the HAR.", "fulfill", "abort"),
 			"status":          map[string]any{"type": "integer", "description": "HTTP status for behaviour=fulfill. Defaults to 200."},
 			"body":            stringSchema("Response body for behaviour=fulfill."),
@@ -2549,10 +2558,10 @@ func tools() []map[string]any {
 			"har_artifact_id": stringSchema("For action=replay: the artifact_id of a HAR captured with brw_artifact_capture{kind:\"har\"}."),
 			"match": map[string]any{
 				"type":        "array",
-				"description": "For action=replay: which request properties a recorded entry must agree on. Defaults to [method,url].",
+				"description": "For action=replay: which request properties a recorded entry must agree on. Defaults to [method,url]. \"body\" needs a capture taken with redaction:\"none\"; on any other capture it is refused.",
 				"items":       stringEnumSchema("Match key.", browser.HARMatchMethod, browser.HARMatchURL, browser.HARMatchBody),
 			},
-			"on_miss": stringEnumSchema("For action=replay: what a request within the pattern that the HAR does not hold does. passthrough (default) sends it to the network; fail refuses it and records the method and URL.", browser.HARMissPassthrough, browser.HARMissFail),
+			"on_miss": stringEnumSchema("For action=replay: what a fetch or XHR within the pattern that the HAR does not hold does. passthrough (default) sends it to the network; fail refuses it. Both record the method and URL. Neither applies to the document or the page's assets, which a brw HAR never contains.", browser.HARMissPassthrough, browser.HARMissFail),
 			"tab_id":  stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"action"})),
 		tool("brw_diff", "Answer \"did my action actually change the page?\" without re-reading the page. action=mark records the current state for the tab; action=compare reports what changed since that mark as counts plus named added/removed/updated elements, and says plainly when nothing changed. Elements are matched by identity, so a list that re-renders in place does not read as everything being replaced. Far cheaper than taking two full snapshots and comparing them in context.", object(map[string]any{

@@ -278,14 +278,30 @@ never invisible in the transcript.
 
 `brw_route {action:"replay", har_artifact_id}` answers from a HAR captured with
 `brw_artifact_capture {kind:"har"}` instead of from a hand-written body, so a
-page can be driven against a recording of its own backend. `pattern` scopes which
-requests come from the recording (default `*`), `match` lists the properties an
-entry has to agree on (default `[method,url]`; add `body` only for a fixture
-whose recordings differ by request body), and `on_miss:"fail"` refuses anything
-the HAR does not hold and records the method and URL in the route's
-`fixture.misses` — which is what makes the fixture deterministic. A HAR captured
-with the default redaction replays the `[redacted by brw]` placeholder where a
-credential was.
+page can be driven against a recording of its own backend.
+
+A brw HAR records **fetch and XHR only** — it comes from the in-page wrappers, so
+the document, scripts, stylesheets and images are not in it. A replay answers
+those request kinds and no others: the navigation and the page's assets always
+load from the network, whatever `pattern` says, and the count of requests let
+through that way is reported as `fixture.not_replayable`. So `on_miss:"fail"` is
+not a fully offline page; it means the page's API calls can reach nothing that
+was not recorded, and each refusal is named in `fixture.misses`.
+
+`pattern` narrows further (default `*`). `match` lists the properties an entry
+has to agree on (default `[method,url]`). Add `body` only for a fixture captured
+with `redaction:"none"` whose recordings differ by request body — an ordinary
+capture stores `[redacted by brw]` in place of every request body, so a
+body-keyed replay of one can never match and is refused at install time.
+
+Response bodies in a brw HAR are 2 KiB capture snippets. A recording of a larger
+response replays clipped, which a page parsing JSON sees as a syntax error, so
+the fixture reports `truncated_entries` and `served_truncated` and the install
+note says how many of the recordings are snippets.
+
+`brw_observe` reports `active_routes`, and `route_fixture_misses` with the most
+recent reasons when a replay could not answer something, so a half-loaded page
+points at the fixture rather than at nothing.
 
 `fulfill` and `replay` are direct-CDP only. On the extension-bridge transport
 they return a named capability error and `abort` is what works; see the matrix in

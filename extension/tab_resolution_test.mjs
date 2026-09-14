@@ -157,6 +157,9 @@ src += `
   ensureObserver,
   handle,
   send,
+  clearTabRouteRules,
+  dropOrphanedRouteRules,
+  routeResourceTypes,
   RESPONSE_DIRECT_MAX_BYTES,
   RESPONSE_CHUNK_BYTES,
   RESPONSE_TOTAL_MAX_BYTES
@@ -1277,53 +1280,169 @@ async function scenarioHandshakeTokenFailuresAreDistinguishable() {
 
 // brw_route on this transport is declarativeNetRequest, not Fetch interception:
 // the extension is never handed a response, so a rule can only refuse a request.
-// The daemon sends the tab's complete rule set and this asserts what actually
+//
+// The mock below is a real session-rule store rather than the harness auto-mock,
+// because everything worth asserting here is about what Chrome ends up holding:
+// which resource types a rule covers, and whether the previous ids were removed.
+// A store that swallows updateSessionRules and answers getSessionRules with
+// undefined would pass whatever this file claimed.
+function installDeclarativeNetRequestMock() {
+  const store = { rules: [], updates: [], rejected: [] };
+  const saved = {
+    get: overrides["declarativeNetRequest.getSessionRules"],
+    update: overrides["declarativeNetRequest.updateSessionRules"],
+    types: overrides["declarativeNetRequest.ResourceType"]
+  };
+  overrides["declarativeNetRequest.getSessionRules"] = async () => store.rules.map((rule) => JSON.parse(JSON.stringify(rule)));
+  overrides["declarativeNetRequest.updateSessionRules"] = async (arg) => {
+    store.updates.push(JSON.parse(JSON.stringify(arg || {})));
+    const removeRuleIds = new Set(arg?.removeRuleIds || []);
+    const kept = store.rules.filter((rule) => !removeRuleIds.has(rule.id));
+    for (const rule of arg?.addRules || []) {
+      // Chrome rejects the WHOLE update when an added id already exists. That is
+      // exactly the failure a worker restart used to cause, so the mock has to
+      // reproduce it rather than quietly accept the duplicate.
+      if (kept.some((existing) => existing.id === rule.id)) {
+        store.rejected.push(rule.id);
+        throw new Error(`rule with id ${rule.id} does not have a unique ID`);
+      }
+      kept.push(JSON.parse(JSON.stringify(rule)));
+    }
+    store.rules = kept;
+  };
+  store.restore = () => {
+    overrides["declarativeNetRequest.getSessionRules"] = saved.get;
+    overrides["declarativeNetRequest.updateSessionRules"] = saved.update;
+    overrides["declarativeNetRequest.ResourceType"] = saved.types;
+  };
+  return store;
+}
+
+const ABORT_TRACKER = { regex: "^https://tracker\\.test/.*", behaviour: "abort" };
+const ABORT_ADS = { regex: "^https://ads\\.test/.*", behaviour: "abort" };
+
+// The daemon sends the tab's complete rule set; this asserts what actually
 // reaches Chrome — scoped to one tab, case-sensitive like the daemon's matcher,
-// and with the previous ids removed rather than accumulated.
+// covering a top-level navigation, and with the previous ids removed rather than
+// accumulated.
 async function scenarioRouteRulesAreTabScopedAndReplaced() {
   await reset();
   T.state.routeRuleIds.clear();
-  T.state.nextRouteRuleId = 1;
-  const savedUpdate = overrides["declarativeNetRequest.updateSessionRules"];
-  const updates = [];
+  const dnr = installDeclarativeNetRequestMock();
   try {
-    overrides["declarativeNetRequest.updateSessionRules"] = async (arg) => { updates.push(arg); };
     setWin({ id: 1, type: "normal", focused: true });
     setTab({ id: 11, windowId: 1, active: true, url: "https://app.test/", title: "app" });
     const socket = new MockWebSocket(); socket.readyState = MockWebSocket.OPEN; T.state.socket = socket;
 
-    await T.handle({ id: "routes-1", type: "set_routes", params: { tabId: 11, rules: [
-      { regex: "^https://tracker\\.test/.*", behaviour: "abort" },
-      { regex: "^https://ads\\.test/.*", behaviour: "abort" }
-    ] } });
-    const first = updates.at(-1);
+    await T.handle({ id: "routes-1", type: "set_routes", params: { tabId: 11, rules: [ABORT_TRACKER, ABORT_ADS] } });
+    const first = dnr.updates.at(-1);
     check("both rules reach Chrome", first?.addRules?.length === 2);
     check("a route rule blocks", first?.addRules?.every((r) => r.action?.type === "block"));
     check("a route rule is scoped to the driven tab", first?.addRules?.every((r) => r.condition?.tabIds?.length === 1 && r.condition.tabIds[0] === 11));
-    check("the daemon's regex is passed through", first?.addRules?.[0]?.condition?.regexFilter === "^https://tracker\\.test/.*");
+    check("the daemon's regex is passed through", first?.addRules?.[0]?.condition?.regexFilter === ABORT_TRACKER.regex);
     check("matching is case-sensitive like the daemon's matcher", first?.addRules?.every((r) => r.condition?.isUrlFilterCaseSensitive === true));
     check("the earlier rule wins on priority", first.addRules[0].priority > first.addRules[1].priority);
     check("the first push removes nothing", (first?.removeRuleIds || []).length === 0);
     check("the reply reports what was installed", socket.sent.at(-1)?.result?.count === 2);
 
-    await T.handle({ id: "routes-2", type: "set_routes", params: { tabId: 11, rules: [
-      { regex: "^https://tracker\\.test/.*", behaviour: "abort" }
-    ] } });
-    const second = updates.at(-1);
-    check("a replacement removes the previous rule ids", JSON.stringify(second?.removeRuleIds) === JSON.stringify(first.addRules.map((r) => r.id)));
+    // Without an explicit list a DNR condition matches everything EXCEPT
+    // main_frame, so an abort route would let the navigation through while the
+    // same route on direct CDP fails it.
+    check("a route rule names its resource types explicitly",
+      first?.addRules?.every((r) => Array.isArray(r.condition?.resourceTypes) && r.condition.resourceTypes.length > 0));
+    check("a route rule refuses a top-level navigation too",
+      first?.addRules?.every((r) => r.condition.resourceTypes.includes("main_frame")));
+    check("a route rule still covers subresources",
+      first?.addRules?.every((r) => ["sub_frame", "script", "xmlhttprequest", "image", "websocket"].every((type) => r.condition.resourceTypes.includes(type))));
+
+    const firstIds = first.addRules.map((r) => r.id);
+    await T.handle({ id: "routes-2", type: "set_routes", params: { tabId: 11, rules: [ABORT_TRACKER] } });
+    const second = dnr.updates.at(-1);
+    check("a replacement removes the previous rule ids",
+      firstIds.every((id) => (second?.removeRuleIds || []).includes(id)));
     check("a replacement installs the new set", second?.addRules?.length === 1);
+    check("only the replacement rule is left in the browser", dnr.rules.length === 1);
 
     await T.handle({ id: "routes-3", type: "set_routes", params: { tabId: 11, rules: [] } });
-    check("an empty set clears the tab's rules", updates.at(-1)?.addRules?.length === 0 && T.state.routeRuleIds.has(11) === false);
+    check("an empty set clears the tab's rules",
+      dnr.rules.length === 0 && T.state.routeRuleIds.has(11) === false);
 
-    await T.handle({ id: "routes-4", type: "set_routes", params: { tabId: 11, rules: [
-      { regex: "^https://api\\.test/.*", behaviour: "fulfill" }
-    ] } });
+    await T.handle({ id: "routes-4", type: "set_routes", params: { tabId: 11, rules: [{ regex: "^https://api\\.test/.*", behaviour: "fulfill" }] } });
     const refusal = socket.sent.at(-1);
     check("a body-backed rule is refused, not silently blocked",
       refusal?.ok === false && String(refusal?.error || "").includes("declarativeNetRequest"));
+    check("a refused rule leaves the browser untouched", dnr.rules.length === 0);
   } finally {
-    overrides["declarativeNetRequest.updateSessionRules"] = savedUpdate;
+    dnr.restore();
+  }
+}
+
+// Session rules live for the browser session; an MV3 service worker does not.
+// A restart therefore arrives with rules still enforcing and no memory of them,
+// which is where ids allocated from a worker counter start colliding.
+async function scenarioRouteRulesSurviveAServiceWorkerRestart() {
+  await reset();
+  T.state.routeRuleIds.clear();
+  const dnr = installDeclarativeNetRequestMock();
+  try {
+    setWin({ id: 1, type: "normal", focused: true });
+    setTab({ id: 11, windowId: 1, active: true, url: "https://app.test/", title: "app" });
+    setTab({ id: 12, windowId: 1, active: false, url: "https://other.test/", title: "other" });
+    const socket = new MockWebSocket(); socket.readyState = MockWebSocket.OPEN; T.state.socket = socket;
+
+    await T.handle({ id: "restart-1", type: "set_routes", params: { tabId: 11, rules: [ABORT_TRACKER, ABORT_ADS] } });
+    await T.handle({ id: "restart-2", type: "set_routes", params: { tabId: 12, rules: [ABORT_ADS] } });
+    const installed = dnr.rules.length;
+    check("three rules are installed across two tabs", installed === 3);
+
+    // The worker restart: the browser keeps its rules, this map does not.
+    T.state.routeRuleIds.clear();
+
+    await T.handle({ id: "restart-3", type: "set_routes", params: { tabId: 11, rules: [ABORT_TRACKER] } });
+    const reply = socket.sent.at(-1);
+    check("a set_routes after a restart is accepted", reply?.ok === true);
+    check("Chrome rejected nothing for a duplicate id", dnr.rejected.length === 0);
+    check("the restarted worker removed the tab's stale rules",
+      dnr.rules.filter((rule) => rule.condition.tabIds.includes(11)).length === 1);
+    check("another tab's rules are left alone",
+      dnr.rules.filter((rule) => rule.condition.tabIds.includes(12)).length === 1);
+    check("every installed rule id is unique",
+      new Set(dnr.rules.map((rule) => rule.id)).size === dnr.rules.length);
+
+    // Closing a tab has to remove its rules even when the worker never saw them
+    // installed: Chrome reuses numeric tab ids.
+    T.state.routeRuleIds.clear();
+    await T.clearTabRouteRules(11);
+    check("a closed tab's rules are removed from memory brw does not hold",
+      dnr.rules.every((rule) => !rule.condition.tabIds.includes(11)));
+
+    // And a rule whose tab is already gone is swept at worker start.
+    T.state.routeRuleIds.clear();
+    model.tabs.delete(12);
+    await T.dropOrphanedRouteRules();
+    check("a rule for a closed tab is swept at worker start", dnr.rules.length === 0);
+  } finally {
+    dnr.restore();
+  }
+}
+
+// An unknown resource-type string makes Chrome reject the whole update, taking
+// every route on the tab with it.
+async function scenarioRouteResourceTypesFollowTheBuild() {
+  await reset();
+  const dnr = installDeclarativeNetRequestMock();
+  try {
+    check("an undeclared enum falls back to the full list",
+      T.routeResourceTypes().includes("main_frame"));
+    overrides["declarativeNetRequest.ResourceType"] = {
+      MAIN_FRAME: "main_frame", SUB_FRAME: "sub_frame", SCRIPT: "script", XMLHTTPREQUEST: "xmlhttprequest"
+    };
+    const narrowed = T.routeResourceTypes();
+    check("a build declaring fewer types gets only those", narrowed.length === 4);
+    check("the narrowed list still refuses a navigation", narrowed.includes("main_frame"));
+    check("a type this build does not know is dropped", !narrowed.includes("webtransport"));
+  } finally {
+    dnr.restore();
   }
 }
 
@@ -1350,6 +1469,8 @@ async function scenarioRouteRulesAreTabScopedAndReplaced() {
   await scenarioDialogArmingAndSafeDefaults();
   await scenarioSubresourceContainment();
   await scenarioRouteRulesAreTabScopedAndReplaced();
+  await scenarioRouteRulesSurviveAServiceWorkerRestart();
+  await scenarioRouteResourceTypesFollowTheBuild();
   await scenarioHandshakeTokenFailuresAreDistinguishable();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

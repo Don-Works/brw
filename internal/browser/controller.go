@@ -119,6 +119,16 @@ type RouteController interface {
 	Route(context.Context, RouteOptions) (RouteResult, error)
 }
 
+// RouteReplayer is the half of RouteController that answers from a recorded
+// HAR. A transport implements it to say in advance whether it can, so the
+// surface holding the artifact store can refuse with the transport's own named
+// error instead of reading and decoding a recording the transport will reject
+// anyway — and so a bad artifact id on that transport reports the capability
+// gap rather than an artifact error.
+type RouteReplayer interface {
+	CheckRouteReplay() error
+}
+
 // ClipboardController is an optional transport capability for the system
 // clipboard. Direct-CDP only: reading the clipboard needs a permission granted
 // through the browser-level Browser.setPermission command, which is not

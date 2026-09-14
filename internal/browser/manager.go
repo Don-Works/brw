@@ -779,6 +779,8 @@ func (m *Manager) forgetTabCaches(id string) {
 	delete(m.emulationStates, id)
 	m.emulationMu.Unlock()
 	m.env.forget(id)
+	m.routes.forget(id)
+	m.containment.forget(id)
 	m.heldMu.Lock()
 	delete(m.heldKeys, id)
 	m.heldMu.Unlock()
@@ -3104,6 +3106,12 @@ type ObserveResult struct {
 	// this tab. Omitted when there are none. Mocked traffic that is invisible in
 	// the observation is how an agent ends up trusting a response brw invented.
 	ActiveRoutes int `json:"active_routes,omitempty"`
+	// RouteMisses reports requests a HAR-backed route had no recorded answer
+	// for, with the most recent reasons. A fixture that silently misses is how a
+	// replayed page turns into an unexplained broken one, the same way a
+	// contained page does without Blocked.
+	RouteMisses      int      `json:"route_fixture_misses,omitempty"`
+	RouteMissReasons []string `json:"route_fixture_miss_reasons,omitempty"`
 }
 
 func (m *Manager) Observe(ctx context.Context) (ObserveResult, error) {
@@ -3154,6 +3162,7 @@ func (m *Manager) Observe(ctx context.Context) (ObserveResult, error) {
 		result.Blocked = blocked
 	}
 	result.ActiveRoutes = m.routes.count(tabID)
+	result.RouteMisses, result.RouteMissReasons = m.routes.missSummary(tabID, maxObservedRouteMissReasons)
 	return result, nil
 }
 

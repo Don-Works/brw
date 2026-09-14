@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/navpolicy"
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/target"
 )
 
@@ -206,10 +207,10 @@ func TestRouteTimesRetiresTheRule(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if hit := m.routes.match(tabID, "https://x/once"); hit == nil {
+	if hit := m.routes.match(tabID, "https://x/once", network.ResourceTypeXHR); hit == nil {
 		t.Fatal("first match should hit")
 	}
-	if hit := m.routes.match(tabID, "https://x/once"); hit != nil {
+	if hit := m.routes.match(tabID, "https://x/once", network.ResourceTypeXHR); hit != nil {
 		t.Fatal("a times=1 route must retire after one match")
 	}
 	if m.routes.count(tabID) != 0 {

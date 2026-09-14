@@ -32,6 +32,17 @@ type CapturedRequest struct {
 	DurationMS      float64           `json:"duration_ms"`
 }
 
+// BodyTruncationMarker is what the in-page capture appends to a request body or
+// response snippet it clipped at BODY_CAP.
+//
+// Exported because a HAR replay has to recognise a recorded snippet as
+// incomplete: served as though it were the whole body, a clipped JSON response
+// reaches the page as a syntax error that points at the page rather than at the
+// fixture. NetworkCaptureInstallScript carries the same literal, and
+// TestNetworkCaptureScriptCarriesTheExportedTruncationMarker fails if the two
+// ever drift.
+const BodyTruncationMarker = "\u2026[truncated]"
+
 // ReplayResult is the outcome of re-executing a single request in-page.
 type ReplayResult struct {
 	Status         int    `json:"status"`

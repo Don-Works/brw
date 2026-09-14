@@ -31,6 +31,14 @@ var ErrRouteResponseBodyUnsupported = errors.New("answering a request from a bod
 // believing one request was blocked when every later one was too.
 var ErrRouteTimesUnsupported = errors.New("times is not supported on the extension-bridge transport: a declarativeNetRequest rule applies until it is cleared and reports no match count; use a direct-CDP profile, or clear the route when you are done with it")
 
+// CheckRouteReplay implements browser.RouteReplayer. It always refuses: the
+// answer is a property of the transport, not of the request, so the surface
+// holding the artifact store can skip reading a recording this bridge would
+// reject anyway.
+func (b *Bridge) CheckRouteReplay() error {
+	return ErrRouteResponseBodyUnsupported
+}
+
 // bridgeRouteTable holds the rules the daemon believes are installed, per tab.
 // The extension owns the live declarativeNetRequest rule set; this is the copy
 // brw_route lists and rebuilds from.

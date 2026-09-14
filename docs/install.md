@@ -286,9 +286,10 @@ was mocked. So each gap below is a named error, never a silent passthrough.
 
 | Capability | `brw_route` call | Extension bridge | Direct CDP |
 |---|---|---|---|
-| Refuse a request | `{action:"add", behaviour:"abort"}` | Yes, a `declarativeNetRequest` session rule scoped to the tab | Yes |
+| Refuse a request | `{action:"add", behaviour:"abort"}` | Yes, a `declarativeNetRequest` session rule scoped to the tab, covering every resource type including the top-level navigation | Yes |
 | Answer from a body | `{action:"add", behaviour:"fulfill"}` | No | Yes |
-| Replay a recorded HAR | `{action:"replay", har_artifact_id}` | No | Yes |
+| Replay a recorded HAR | `{action:"replay", har_artifact_id}` | No | Yes, fetch and XHR only |
+| Redirect a request | none — there is no redirect behaviour | No. A `declarativeNetRequest` redirect needs host permissions for both the request URL and its initiator, which brw's extension deliberately does not hold, and Chrome declines such a rule silently rather than erroring | No, not implemented |
 | Retire a rule after N matches | `times` | No, a declarative rule reports no match count | Yes |
 | Report how often a rule fired | `routes[].matched` | No, for the same reason | Yes |
 
@@ -300,20 +301,36 @@ brw_route {action:"replay", har_artifact_id, pattern:"*/api/*",
            match:["method","url"], on_miss:"fail"}
 ```
 
+**A replay answers fetch and XHR, and nothing else.** brw builds a HAR from the
+in-page `fetch`/`XMLHttpRequest` wrappers, so the recording holds no document, no
+script, no stylesheet and no image. Those requests always go to the network, even
+under `pattern:"*"` with `on_miss:"fail"`, because refusing the navigation would
+leave a page that never loads; the route reports how many it let through as
+`fixture.not_replayable`. `on_miss:"fail"` therefore means the page's API calls
+can reach nothing that was not recorded, not that the page is offline.
+`on_miss:"passthrough"` (the default) sends an unrecorded call to the network.
+Either way the unmatched method and URL are recorded in `fixture.misses`, and
+`brw_observe` reports the count and the most recent reasons alongside
+`active_routes`.
+
 `match` defaults to `[method,url]`. Add `body` only for a recording whose entries
-differ by request body; a fixture that includes it misses every request whose
-body was not recorded byte-for-byte. `on_miss:"fail"` refuses anything the HAR
-does not hold and records the unmatched method and URL in the route's
-`fixture.misses`, which is what makes the fixture deterministic — the page can
-reach nothing that was not recorded. `on_miss:"passthrough"` (the default) lets
-it go to the network.
+differ by request body — and only for one captured with `redaction:"none"`: an
+ordinary capture stores `[redacted by brw]` in place of every request body, so a
+body-keyed replay of one can never match. That combination is refused at install
+time with an error naming the capture that supports it.
 
 Redaction happens at record time. A HAR captured with the default redaction
 carries `[redacted by brw]` where a credential header or a request body was, and
-replays with those values; there is no un-redacted replay mode. Response bodies
-in a brw-exported HAR are capture snippets truncated at 2 KiB, so a fixture
-replaying a larger response replays the truncated one — capture the HAR from
-DevTools instead when full bodies matter.
+replays with those values; there is no un-redacted replay mode.
+
+Response bodies in a brw-exported HAR are capture snippets clipped at 2 KiB.
+A recording of a larger response replays clipped — valid bytes, but a page
+parsing it as JSON gets a syntax error. brw does not hide that: the decoded
+fixture flags each clipped entry, the `action:"replay"` note says how many of the
+recordings are snippets, and the route reports `truncated_entries` and
+`served_truncated`. There is no import path for an externally produced HAR, so a
+fixture that needs whole bodies has to be recorded from endpoints whose responses
+fit under the cap.
 
 `brwctl setup --transport direct-cdp` configures the second lane. Running both
 against different profiles is supported: one `brwd` per profile, one MCP server

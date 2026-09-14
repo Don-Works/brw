@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -18,6 +19,11 @@ import (
 // request walk an unbounded list. Exported because the extension-bridge
 // transport keeps its own table and has to bound it the same way.
 const MaxRoutesPerTab = 50
+
+// maxObservedRouteMissReasons bounds what brw_observe repeats from a fixture's
+// miss list: enough to name the endpoint a page is stuck on, not the whole list
+// that brw_route{action:"list"} already carries.
+const maxObservedRouteMissReasons = 3
 
 // RouteBehaviour selects what a matching request does instead of reaching the
 // network.
@@ -108,13 +114,24 @@ func (r *routeState) count(tabID string) int {
 // match returns the first route whose pattern matches, consuming one of its
 // remaining uses. First-match-wins makes the table readable: a specific rule
 // added before a general one takes precedence.
-func (r *routeState) match(tabID, url string) *Route {
+//
+// resource is the kind of request Chrome paused. A replay route declines
+// anything a brw HAR cannot hold and lets the scan continue, so the rule is not
+// counted as matched and a times budget is not spent on a document request the
+// fixture was never going to answer.
+func (r *routeState) match(tabID, url string, resource network.ResourceType) *Route {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.initLocked()
 	routes := r.routes[tabID]
 	for i, route := range routes {
 		if !matchURLGlob(route.Pattern, url) {
+			continue
+		}
+		if route.Behaviour == RouteReplay && !harReplayableResourceType(resource) {
+			if route.har != nil {
+				route.har.recordNotReplayable()
+			}
 			continue
 		}
 		route.Matched++
@@ -125,6 +142,34 @@ func (r *routeState) match(tabID, url string) *Route {
 		return &hit
 	}
 	return nil
+}
+
+// forget drops every rule for a tab. A replay route holds its whole decoded HAR
+// — up to the replay size limit in entries and bodies — so a table left behind
+// after the tab closed pins the recording for the life of the daemon.
+func (r *routeState) forget(tabID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.routes, tabID)
+}
+
+// missSummary reports the tab's HAR-fixture misses and the most recent reasons,
+// so brw_observe can say why a routed page is half-loaded.
+func (r *routeState) missSummary(tabID string, limit int) (int, []string) {
+	r.mu.Lock()
+	routes := append([]*Route(nil), r.routes[tabID]...)
+	r.mu.Unlock()
+	total := 0
+	var reasons []string
+	for _, route := range routes {
+		if route.har == nil {
+			continue
+		}
+		missed, latest := route.har.missSummary(limit - len(reasons))
+		total += missed
+		reasons = append(reasons, latest...)
+	}
+	return total, reasons
 }
 
 // remove drops one rule by identity, so an add whose interception could not be
@@ -255,14 +300,8 @@ func (m *Manager) Route(ctx context.Context, opts RouteOptions) (RouteResult, er
 		if err != nil {
 			return RouteResult{}, err
 		}
-		note := fmt.Sprintf("requests matching this pattern are answered from the %d recorded entries in %s; anything the HAR does not hold goes to the real network",
-			len(route.har.entries), route.har.artifactID)
-		if route.har.onMiss == HARMissFail {
-			note = fmt.Sprintf("requests matching this pattern are answered from the %d recorded entries in %s; anything the HAR does not hold is refused and reported in fixture.misses, so the page cannot reach the network behind the fixture",
-				len(route.har.entries), route.har.artifactID)
-		}
 		return RouteResult{
-			Action: "replay", TabID: tabID, Routes: routes, Count: len(routes), Note: note,
+			Action: "replay", TabID: tabID, Routes: routes, Count: len(routes), Note: harReplayNote(route.har),
 		}, nil
 
 	case "clear":
@@ -295,6 +334,11 @@ func (m *Manager) Route(ctx context.Context, opts RouteOptions) (RouteResult, er
 		return RouteResult{}, fmt.Errorf("unknown route action %q: use add, replay, list, or clear", opts.Action)
 	}
 }
+
+// CheckRouteReplay implements browser.RouteReplayer. Direct CDP pauses requests
+// with the Fetch domain and writes the response itself, so a recorded exchange
+// can be served.
+func (m *Manager) CheckRouteReplay() error { return nil }
 
 // installRoute appends a rule and makes sure the tab is actually intercepting.
 func (m *Manager) installRoute(tabID string, tabCtx context.Context, route *Route) ([]Route, error) {
@@ -384,8 +428,10 @@ func buildRoute(opts RouteOptions) (*Route, error) {
 //
 // The pattern scopes the fixture rather than the fixture scoping itself: a HAR
 // holds the whole page's traffic, and a caller usually wants only part of it
-// replayed ("*/api/*") while the document and its assets still load normally.
-// The default "*" is the deterministic-fixture case.
+// replayed ("*/api/*"). The default "*" narrows to the same thing in practice,
+// because a replay only ever answers the request kinds a brw HAR can hold (see
+// harReplayableResourceType) and the document and its assets load normally
+// whatever the pattern says.
 func buildReplayRoute(opts RouteOptions) (*Route, error) {
 	artifactID := strings.TrimSpace(opts.HARArtifactID)
 	if artifactID == "" {
@@ -405,6 +451,9 @@ func buildReplayRoute(opts RouteOptions) (*Route, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkHARMatchIsSatisfiable(artifactID, opts.HAR, match); err != nil {
+		return nil, err
+	}
 	pattern := strings.TrimSpace(opts.Pattern)
 	if pattern == "" {
 		pattern = "*"
@@ -415,6 +464,71 @@ func buildReplayRoute(opts RouteOptions) (*Route, error) {
 		Times:     opts.Times,
 		har:       newHARFixture(artifactID, opts.HAR, match, onMiss),
 	}, nil
+}
+
+// checkHARMatchIsSatisfiable refuses a match key the recording cannot answer on.
+//
+// An export redacts request bodies unless it was taken with redaction:"none", so
+// every entry of an ordinary capture records the body as the placeholder. Keyed
+// on "body", such a fixture matches nothing: under the default
+// on_miss:"passthrough" every request would go to the real backend while the
+// caller believed it was mocked.
+func checkHARMatchIsSatisfiable(artifactID string, entries []HAREntry, match []string) error {
+	if !slices.Contains(match, HARMatchBody) {
+		return nil
+	}
+	redacted := 0
+	for _, entry := range entries {
+		if entry.RequestBody == HARRedactedPlaceholder {
+			redacted++
+		}
+	}
+	if redacted == 0 {
+		return nil
+	}
+	return fmt.Errorf("match includes %q but %d of %d entries in HAR artifact %s record the request body as %q, so no request can ever match: recapture with brw_artifact_capture{kind:\"har\", redaction:\"none\"}, or drop %q from match",
+		HARMatchBody, redacted, len(entries), artifactID, HARRedactedPlaceholder, HARMatchBody)
+}
+
+// harReplayNote describes the installed fixture, including the two ways it
+// answers less than a caller reading "replay the whole recording" would expect:
+// brw's HAR holds fetch/XHR only, and its response bodies are capture snippets.
+func harReplayNote(fixture *harFixture) string {
+	view := fixture.view()
+	note := fmt.Sprintf("fetch and XHR requests matching this pattern are answered from the %d recorded entries in %s; the document and its scripts, stylesheets and images always load from the network, because brw records a HAR from the in-page fetch/XHR wrappers and never captures them",
+		view.Entries, view.ArtifactID)
+	if fixture.onMiss == HARMissFail {
+		note += ". A fetch or XHR the HAR does not hold is refused and reported in fixture.misses"
+	} else {
+		note += ". A fetch or XHR the HAR does not hold goes to the real network"
+	}
+	if view.Truncated > 0 {
+		note += fmt.Sprintf(". %d of %d recorded responses are truncated capture snippets rather than whole bodies, so a page parsing one will see it cut short; fixture.served_truncated counts the ones actually replayed",
+			view.Truncated, view.Entries)
+	}
+	return note
+}
+
+// harReplayableResourceType reports whether a paused request is one a brw HAR
+// could have recorded.
+//
+// The recording comes from the in-page fetch/XHR wrappers
+// (internal/snapshot/network.go), so it never holds the navigation, a script, a
+// stylesheet, an image or a CORS preflight. A replay route leaves those to the
+// network even under on_miss:"fail": refusing them would mean the documented
+// default pattern "*" kills the navigation that loads the page under test, and
+// the count is reported as fixture.not_replayable so the passthrough is visible.
+func harReplayableResourceType(resource network.ResourceType) bool {
+	switch resource {
+	case network.ResourceTypeXHR, network.ResourceTypeFetch:
+		return true
+	case "":
+		// An event brw could not classify: treated as replayable so a request
+		// goes through the fixture rather than silently past it.
+		return true
+	default:
+		return false
+	}
 }
 
 // guessContentType picks a sensible default so the common case (mock a JSON
@@ -447,6 +561,12 @@ func (m *Manager) answerRoute(ctx context.Context, tabID string, route *Route, p
 	case RouteAbort:
 		return fetch.FailRequest(paused.RequestID, network.ErrorReasonFailed).Do(ctx)
 	case RouteReplay:
+		if route.har == nil {
+			// Unreachable through brw_route, which refuses a replay without a
+			// fixture. Guarded anyway because this runs on the Fetch.requestPaused
+			// goroutine, which has no recover: a panic here takes the daemon down.
+			return m.continueWithEnvironmentHeaders(ctx, tabID, paused)
+		}
 		entry, found := route.har.find(harMethod(paused.Request.Method), paused.Request.URL, requestPostData(paused.Request))
 		if !found {
 			route.har.recordMiss(paused.Request.Method, paused.Request.URL)
@@ -506,13 +626,13 @@ func fulfillFromHAR(ctx context.Context, entry HAREntry, requestID fetch.Request
 		status = 502
 	}
 	headers := []*fetch.HeaderEntry{{Name: "Content-Type", Value: harContentType(entry)}}
-	for name, value := range entry.Headers {
+	for _, header := range entry.Headers {
 		// Content-Type comes from harContentType, which already prefers the
 		// recorded one; sending the recorded header too would send it twice.
-		if strings.EqualFold(name, "content-type") {
+		if strings.EqualFold(header.Name, "content-type") {
 			continue
 		}
-		headers = append(headers, &fetch.HeaderEntry{Name: name, Value: value})
+		headers = append(headers, &fetch.HeaderEntry{Name: header.Name, Value: header.Value})
 	}
 	return fetch.FulfillRequest(requestID, status).
 		WithResponseHeaders(headers).

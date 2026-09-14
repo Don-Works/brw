@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/snapshot"
 )
 
 // maxHARFixtureBytes bounds what a replay will pull out of the store. A HAR is
@@ -102,7 +103,8 @@ func ParseHARFixture(data []byte) ([]browser.HAREntry, error) {
 			Status:      entry.Response.Status,
 			ContentType: entry.Response.Content.MIMEType,
 			Body:        entry.Response.Content.Text,
-			Headers:     responseHeaderMap(entry.Response.Headers),
+			Headers:     replayableHeaders(entry.Response.Headers),
+			Truncated:   bodyWasTruncated(entry.Response.Content),
 		}
 		if entry.Request.PostData != nil {
 			replayable.RequestBody = entry.Request.PostData.Text
@@ -115,25 +117,44 @@ func ParseHARFixture(data []byte) ([]browser.HAREntry, error) {
 	return out, nil
 }
 
-// responseHeaderMap keeps only headers that are safe to hand back to a page.
+// replayableHeaders keeps only headers that are safe to hand back to a page.
 //
 // A HAR records what the server sent, including hop-by-hop and framing headers.
 // Replaying Content-Length or Content-Encoding against a body brw re-encodes
 // itself would describe the response wrongly and the renderer would reject it,
 // and Set-Cookie from a recording would write real cookies into the profile
 // running the fixture.
-func responseHeaderMap(headers []harHeader) map[string]string {
-	out := make(map[string]string, len(headers))
+//
+// The order and the repeats of what survives are preserved: HAR 1.2 stores
+// headers as a list because Link, Vary and Www-Authenticate may legally appear
+// more than once, and Fetch.fulfillRequest takes a list too.
+func replayableHeaders(headers []harHeader) []browser.HARHeader {
+	out := make([]browser.HARHeader, 0, len(headers))
 	for _, header := range headers {
 		if droppedReplayHeaders[strings.ToLower(strings.TrimSpace(header.Name))] {
 			continue
 		}
-		out[header.Name] = header.Value
+		out = append(out, browser.HARHeader{Name: header.Name, Value: header.Value})
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// bodyWasTruncated reports whether a recorded response body is a clipped
+// snippet rather than the whole thing.
+//
+// brw's in-page capture keeps the first 2 KiB of each response and appends a
+// marker, and BuildHAR writes the clipped string as content.text while
+// content.size describes only what it stored, so the marker is what identifies
+// it. An externally produced HAR states the real size instead, and a text
+// shorter than the size it declares is the same fact said the other way.
+func bodyWasTruncated(content harContent) bool {
+	if strings.HasSuffix(content.Text, snapshot.BodyTruncationMarker) {
+		return true
+	}
+	return content.Size > 0 && len(content.Text) > 0 && len(content.Text) < content.Size
 }
 
 var droppedReplayHeaders = map[string]bool{

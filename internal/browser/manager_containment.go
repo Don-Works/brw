@@ -35,6 +35,17 @@ type containmentState struct {
 	blocked map[string][]BlockedRequest
 }
 
+// forget drops a closed tab's containment bookkeeping. Safe only once the tab is
+// gone: clearing armed for a live tab would let a second listener be installed
+// and every paused request would then be answered twice.
+func (c *containmentState) forget(tabID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.armed, tabID)
+	delete(c.enables, tabID)
+	delete(c.blocked, tabID)
+}
+
 func (c *containmentState) initLocked() {
 	if c.armed == nil {
 		c.armed = make(map[string]bool)
@@ -136,7 +147,7 @@ func (m *Manager) armInterception(tabID string, tabCtx context.Context) {
 		}
 		var route *Route
 		if allow {
-			route = m.routes.match(tabID, paused.Request.URL)
+			route = m.routes.match(tabID, paused.Request.URL, paused.ResourceType)
 		}
 		go func() {
 			answerCtx, cancel := context.WithTimeout(tabCtx, 10*time.Second)

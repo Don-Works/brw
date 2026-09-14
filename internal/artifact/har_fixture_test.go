@@ -79,13 +79,17 @@ func TestParseHARFixtureDropsHeadersThatMustNotBeReplayed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	for name := range entries[0].Headers {
-		switch strings.ToLower(name) {
+	kept := 0
+	for _, header := range entries[0].Headers {
+		switch strings.ToLower(header.Name) {
 		case "content-length", "content-encoding", "set-cookie":
-			t.Fatalf("header %q must not be replayed", name)
+			t.Fatalf("header %q must not be replayed", header.Name)
+		}
+		if header.Name == "X-Fixture" && header.Value == "kept" {
+			kept++
 		}
 	}
-	if entries[0].Headers["X-Fixture"] != "kept" {
+	if kept != 1 {
 		t.Fatalf("ordinary headers should survive: %+v", entries[0].Headers)
 	}
 }

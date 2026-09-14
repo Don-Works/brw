@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
@@ -121,7 +122,10 @@ var redactedHeaderNames = map[string]bool{
 	"auth-token":          true,
 }
 
-const redactedPlaceholder = "[redacted by brw]"
+// The replay side has to recognise this value to refuse a body-keyed fixture
+// built from a redacted capture, so the constant is declared next to the replay
+// and referenced here rather than spelled twice.
+const redactedPlaceholder = browser.HARRedactedPlaceholder
 
 func redactHeaders(headers map[string]string, redact bool) []harHeader {
 	out := make([]harHeader, 0, len(headers))

@@ -63,6 +63,24 @@ func TestBridgeRouteRefusesBodyBackedRoutesByName(t *testing.T) {
 	}
 }
 
+// The surface that owns the artifact store asks before it reads: a 32 MiB HAR
+// decoded only to be refused is wasted, and an unreachable store would otherwise
+// answer a capability question with an artifact error.
+func TestBridgeAnswersTheReplayCapabilityWithoutBeingHandedAHAR(t *testing.T) {
+	b := New("", time.Second, "fake")
+	var replayer browser.RouteReplayer = b
+	err := replayer.CheckRouteReplay()
+	if !errors.Is(err, ErrRouteResponseBodyUnsupported) {
+		t.Fatalf("error = %v, want %v", err, ErrRouteResponseBodyUnsupported)
+	}
+	// The same error the installation path gives, so an agent never sees two
+	// spellings of one gap.
+	_, routeErr := b.Route(context.Background(), browser.RouteOptions{Action: "replay", TabID: "42", HARArtifactID: "art-1"})
+	if routeErr.Error() != err.Error() {
+		t.Fatalf("the capability check says %q and the install says %q", err, routeErr)
+	}
+}
+
 // routeFakeExtension records the declarativeNetRequest rule sets the daemon
 // pushes, which is the only observable the extension side has: the rules live in
 // Chrome, not in the daemon.
