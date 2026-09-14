@@ -20,12 +20,12 @@ func TestCompletionScriptsCoverTheVerbTable(t *testing.T) {
 			// Comments are stripped first: a script gutted down to a no-op body
 			// that still carries the verb list in a comment passed this check.
 			code := withoutComments(script)
-			for _, word := range topLevelWords() {
+			for _, word := range topLevelWords(verbs()) {
 				if !mentionsWord(code, word) {
 					t.Errorf("%s completion does not mention %q outside its comments", shell, word)
 				}
 			}
-			for first, subs := range subWords() {
+			for first, subs := range subWords(verbs()) {
 				for _, sub := range subs {
 					if !mentionsWord(code, sub) {
 						t.Errorf("%s completion does not mention %q under %q", shell, sub, first)
@@ -112,13 +112,13 @@ func completionCases() []completionCase {
 			current: 2,
 			// Every verb, not a sample: a script that offers a stale subset is
 			// the failure this catches.
-			wantAll: topLevelWords(),
+			wantAll: topLevelWords(verbs()),
 		},
 		{
 			name:    "a two-word verb",
 			words:   []string{"artifact", ""},
 			current: 3,
-			wantAll: subWords()["artifact"],
+			wantAll: subWords(verbs())["artifact"],
 		},
 		{
 			name:    "flags for a verb",
@@ -132,19 +132,19 @@ func completionCases() []completionCase {
 			// completion has to find the verb position rather than assume it.
 			words:   []string{"--json", ""},
 			current: 3,
-			wantAll: topLevelWords(),
+			wantAll: topLevelWords(verbs()),
 		},
 		{
 			name:    "the verb list after a global flag and its value",
 			words:   []string{"--profile", "work", ""},
 			current: 4,
-			wantAll: topLevelWords(),
+			wantAll: topLevelWords(verbs()),
 		},
 		{
 			name:    "a two-word verb after a global flag",
 			words:   []string{"--json", "artifact", ""},
 			current: 4,
-			wantAll: subWords()["artifact"],
+			wantAll: subWords(verbs())["artifact"],
 		},
 		{
 			name:    "flags for a verb reached past a global flag",
@@ -313,4 +313,44 @@ func withoutComments(script string) string {
 
 func mentionsWord(script, word string) bool {
 	return regexp.MustCompile(`(^|[^A-Za-z0-9_-])` + regexp.QuoteMeta(word) + `([^A-Za-z0-9_-]|$)`).MatchString(script)
+}
+
+// A blank verb name is a malformed table entry that TestVerbTableIsWellFormed
+// reports. It must not take the binary down before that report: every consumer
+// here indexes the first token, and lookupVerb matching zero tokens would
+// dispatch the nameless entry for any argument list at all.
+func TestAMalformedVerbNameIsSkippedNotIndexed(t *testing.T) {
+	table := []verb{
+		{name: "", summary: "a malformed entry"},
+		{name: "open", summary: "open a URL"},
+		{name: "artifact read", summary: "read an artifact"},
+	}
+	tests := []struct {
+		name string
+		got  func() []string
+	}{
+		{name: "topLevelWords", got: func() []string { return topLevelWords(table) }},
+		{name: "subWords", got: func() []string { return sortedKeys(subWords(table)) }},
+		{name: "flagsByFirstWord", got: func() []string { return sortedKeys(flagsByFirstWord(table)) }},
+		{name: "bashCompletion", got: func() []string { return []string{bashCompletion(table)} }},
+		{name: "zshCompletion", got: func() []string { return []string{zshCompletion(table)} }},
+		{name: "groupSummary", got: func() []string { return []string{groupSummary(table, "artifact")} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, word := range tt.got() {
+				if strings.TrimSpace(word) == "" {
+					t.Fatalf("%s produced an empty word from the blank entry", tt.name)
+				}
+			}
+		})
+	}
+
+	if v, _, ok := lookupVerb(table, []string{"no-such-verb"}); ok {
+		t.Fatalf("lookupVerb dispatched %q for an unknown verb", v.name)
+	}
+	v, rest, ok := lookupVerb(table, []string{"artifact", "read", "art_1"})
+	if !ok || v.name != "artifact read" || len(rest) != 1 || rest[0] != "art_1" {
+		t.Fatalf("lookupVerb = %q %v %v, want the two-word verb and its argument", v.name, rest, ok)
+	}
 }

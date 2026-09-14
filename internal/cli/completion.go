@@ -30,11 +30,15 @@ func runCompletion(args []string, stdout, stderr io.Writer) int {
 
 // topLevelWords is what a user can type as the first word: every verb's first
 // token plus the built-ins that carry no route.
-func topLevelWords() []string {
+func topLevelWords(all []verb) []string {
 	seen := map[string]bool{}
 	var words []string
-	for _, v := range verbs() {
-		first := strings.Fields(v.name)[0]
+	for _, v := range all {
+		tokens := strings.Fields(v.name)
+		if len(tokens) == 0 {
+			continue
+		}
+		first := tokens[0]
 		if seen[first] {
 			continue
 		}
@@ -65,9 +69,9 @@ func globalFlagNames() (all, withValue []string) {
 
 // subWords maps a first token to its second tokens, for the verbs whose name is
 // two words.
-func subWords() map[string][]string {
+func subWords(all []verb) map[string][]string {
 	subs := map[string][]string{}
-	for _, v := range verbs() {
+	for _, v := range all {
 		tokens := strings.Fields(v.name)
 		if len(tokens) < 2 {
 			continue
@@ -98,10 +102,14 @@ func verbFlags(v verb) []string {
 
 // flagsByFirstWord collapses flags onto the first word of each verb name, which
 // is what a shell has in hand when completing.
-func flagsByFirstWord() map[string][]string {
+func flagsByFirstWord(all []verb) map[string][]string {
 	byWord := map[string][]string{}
-	for _, v := range verbs() {
-		first := strings.Fields(v.name)[0]
+	for _, v := range all {
+		tokens := strings.Fields(v.name)
+		if len(tokens) == 0 {
+			continue
+		}
+		first := tokens[0]
 		seen := map[string]bool{}
 		for _, name := range append(byWord[first], verbFlags(v)...) {
 			seen[name] = true
@@ -126,7 +134,9 @@ func sortedKeys(values map[string][]string) []string {
 }
 
 // BashCompletion returns the bash completion script for brw.
-func BashCompletion() string {
+func BashCompletion() string { return bashCompletion(verbs()) }
+
+func bashCompletion(all []verb) string {
 	globals, valueGlobals := globalFlagNames()
 	var b strings.Builder
 	b.WriteString(`# brw bash completion. Regenerate with: brw completion bash
@@ -152,14 +162,14 @@ _brw() {
 
     if [ "$COMP_CWORD" -eq "$verb_index" ]; then
         COMPREPLY=( $(compgen -W "`)
-	b.WriteString(strings.Join(topLevelWords(), " "))
+	b.WriteString(strings.Join(topLevelWords(all), " "))
 	b.WriteString(`" -- "$cur") )
         return 0
     fi
 
     case "$verb" in
 `)
-	subs := subWords()
+	subs := subWords(all)
 	for _, word := range sortedKeys(subs) {
 		fmt.Fprintf(&b, "        %s)\n            if [ \"$COMP_CWORD\" -eq \"$((verb_index + 1))\" ]; then\n                COMPREPLY=( $(compgen -W \"%s\" -- \"$cur\") )\n                return 0\n            fi\n            ;;\n",
 			word, strings.Join(subs[word], " "))
@@ -170,7 +180,7 @@ _brw() {
         -*)
             case "$verb" in
 `)
-	byWord := flagsByFirstWord()
+	byWord := flagsByFirstWord(all)
 	for _, word := range sortedKeys(byWord) {
 		fmt.Fprintf(&b, "                %s) flags=\"%s\" ;;\n", word, strings.Join(byWord[word], " "))
 	}
@@ -189,22 +199,24 @@ complete -F _brw brw
 
 // ZshCompletion returns the zsh completion script for brw. It works both when
 // dropped into fpath as _brw and when sourced directly from a shell rc.
-func ZshCompletion() string {
+func ZshCompletion() string { return zshCompletion(verbs()) }
+
+func zshCompletion(all []verb) string {
 	globals, valueGlobals := globalFlagNames()
 	var b strings.Builder
 	b.WriteString("#compdef brw\n# brw zsh completion. Regenerate with: brw completion zsh\n_brw() {\n    local -a _brw_verbs _brw_subs _brw_flags\n    local -i _brw_verb_index\n    _brw_verbs=(\n")
-	for _, v := range verbs() {
+	for _, v := range all {
 		tokens := strings.Fields(v.name)
-		if len(tokens) > 1 {
+		if len(tokens) != 1 {
 			continue
 		}
 		fmt.Fprintf(&b, "        '%s:%s'\n", tokens[0], describeForZsh(v.summary))
 	}
-	for _, word := range sortedKeys(subWords()) {
+	for _, word := range sortedKeys(subWords(all)) {
 		if word == "completion" {
 			continue
 		}
-		fmt.Fprintf(&b, "        '%s:%s'\n", word, describeForZsh(groupSummary(word)))
+		fmt.Fprintf(&b, "        '%s:%s'\n", word, describeForZsh(groupSummary(all, word)))
 	}
 	b.WriteString("        'completion:print the shell completion script'\n")
 	b.WriteString("        'help:print the verb list'\n")
@@ -232,7 +244,7 @@ func ZshCompletion() string {
 
     case "${words[_brw_verb_index]}" in
 `)
-	subs := subWords()
+	subs := subWords(all)
 	for _, word := range sortedKeys(subs) {
 		fmt.Fprintf(&b, "        %s)\n            if (( CURRENT == _brw_verb_index + 1 )); then\n                _brw_subs=(%s)\n                compadd -- $_brw_subs\n                return\n            fi\n            ;;\n",
 			word, strings.Join(subs[word], " "))
@@ -241,7 +253,7 @@ func ZshCompletion() string {
 
     case "${words[_brw_verb_index]}" in
 `)
-	byWord := flagsByFirstWord()
+	byWord := flagsByFirstWord(all)
 	for _, word := range sortedKeys(byWord) {
 		fmt.Fprintf(&b, "        %s) _brw_flags=(%s) ;;\n", word, strings.Join(byWord[word], " "))
 	}
@@ -265,9 +277,9 @@ fi
 }
 
 // groupSummary describes a first word that is shared by two-word verbs.
-func groupSummary(word string) string {
+func groupSummary(all []verb, word string) string {
 	var summaries []string
-	for _, v := range verbs() {
+	for _, v := range all {
 		tokens := strings.Fields(v.name)
 		if len(tokens) > 1 && tokens[0] == word {
 			summaries = append(summaries, tokens[1])

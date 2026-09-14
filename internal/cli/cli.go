@@ -115,7 +115,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runCompletion(rest[1:], stdout, stderr)
 	}
 
-	v, verbArgs, ok := lookupVerb(rest)
+	v, verbArgs, ok := lookupVerb(verbs(), rest)
 	if !ok {
 		fmt.Fprintf(stderr, "brw: unknown command %q\n\n", rest[0])
 		usage(stderr)
@@ -170,14 +170,17 @@ func hoistGlobalFlags(args []string) (leading, rest []string, err error) {
 
 // lookupVerb matches the longest verb name against the leading arguments, so a
 // two-word verb ("artifact read") wins over any one-word prefix of it.
-func lookupVerb(args []string) (verb, []string, bool) {
-	all := verbs()
+func lookupVerb(all []verb, args []string) (verb, []string, bool) {
+	// Ordering is this lookup's own business; the caller's table keeps its shape.
+	all = append([]verb(nil), all...)
 	sort.SliceStable(all, func(i, j int) bool {
 		return len(strings.Fields(all[i].name)) > len(strings.Fields(all[j].name))
 	})
 	for _, v := range all {
 		tokens := strings.Fields(v.name)
-		if len(args) < len(tokens) {
+		// A malformed entry with a blank name has no tokens, and matching zero
+		// tokens would dispatch it for any argument list at all.
+		if len(tokens) == 0 || len(args) < len(tokens) {
 			continue
 		}
 		matched := true

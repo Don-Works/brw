@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"io"
 	"net/http"
@@ -641,6 +642,50 @@ func TestScreenshotNarrowsAnExistingFile(t *testing.T) {
 	want, _ := base64.StdEncoding.DecodeString("aGVsbG8=")
 	if !bytes.Equal(data, want) {
 		t.Fatalf("file = %q, want the new PNG bytes %q", data, want)
+	}
+}
+
+// The write narrows an existing file before it truncates it, so a filesystem
+// that rejects fchmod costs the caller this screenshot rather than the one
+// already on disk.
+func TestScreenshotSurvivesAFilesystemThatRejectsTheMode(t *testing.T) {
+	const previous = "older screenshot"
+	wanted, _ := base64.StdEncoding.DecodeString("aGVsbG8=")
+	tests := []struct {
+		name     string
+		narrow   error
+		wantCode int
+		wantFile []byte
+	}{
+		{name: "the mode is accepted", wantCode: ExitOK, wantFile: wanted},
+		{name: "the filesystem rejects the mode", narrow: errors.New("operation not supported"), wantCode: ExitActionFailed, wantFile: []byte(previous)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _ := fakeDaemon(t, daemonResponses())
+			t.Setenv("BRW_URL", srv.URL)
+			out := filepath.Join(t.TempDir(), "shot.png")
+			if err := os.WriteFile(out, []byte(previous), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tt.narrow != nil {
+				restore := narrowToOwner
+				narrowToOwner = func(*os.File) error { return tt.narrow }
+				t.Cleanup(func() { narrowToOwner = restore })
+			}
+
+			var stdout, stderr bytes.Buffer
+			if code := Run(context.Background(), []string{"screenshot", "--out", out}, &stdout, &stderr); code != tt.wantCode {
+				t.Fatalf("exit=%d, want %d (stderr=%q)", code, tt.wantCode, stderr.String())
+			}
+			data, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(data, tt.wantFile) {
+				t.Fatalf("file = %q, want %q", data, tt.wantFile)
+			}
+		})
 	}
 }
 

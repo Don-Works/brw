@@ -187,28 +187,45 @@ func renderScreenshot(w io.Writer, opts *options, body []byte) error {
 	if strings.TrimSpace(path) == "" {
 		path = "screenshot.png"
 	}
-	// A screenshot of a signed-in browser is as sensitive as the session it
-	// shows, so it lands owner-only rather than at the process umask. The mode
-	// passed to a create applies only when the file is new, and the default
-	// --out is a fixed name in the working directory, so re-use is the common
-	// case: narrow an existing file explicitly.
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	if err := file.Chmod(0o600); err != nil {
-		file.Close()
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
+	if err := writeOwnerOnly(path, data); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "wrote %s (%d bytes, %s)\n", path, len(data), shot.MIMEType)
 	return nil
+}
+
+// narrowToOwner is a variable because the only filesystems that reject fchmod
+// (exFAT, msdos, some bind mounts) cannot be mounted from a test, and the
+// ordering in writeOwnerOnly is only correct if a rejection there leaves the
+// previous file whole.
+var narrowToOwner = func(file *os.File) error { return file.Chmod(0o600) }
+
+// writeOwnerOnly replaces path's contents with data at mode 0600.
+//
+// A screenshot of a signed-in browser is as sensitive as the session it shows,
+// so it lands owner-only rather than at the process umask. The mode passed to a
+// create applies only when the file is new, and the default --out is a fixed
+// name in the working directory, so re-use is the common case: an existing file
+// is narrowed explicitly. The narrowing happens before the truncate so that a
+// filesystem which cannot represent the mode costs the caller a screenshot
+// rather than yesterday's, and before the write so that no open descriptor ever
+// holds screenshot bytes at a wider mode.
+func writeOwnerOnly(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := narrowToOwner(file); err != nil {
+		return err
+	}
+	if err := file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func renderArtifactChunk(w io.Writer, _ *options, body []byte) error {

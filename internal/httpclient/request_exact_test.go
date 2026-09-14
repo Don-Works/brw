@@ -2,7 +2,10 @@ package httpclient
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -95,5 +98,90 @@ func TestExactResponseBoundMatchesTheTypedMethods(t *testing.T) {
 				t.Fatalf("bound = %d, want it below the generic upstream bound %d", got, maxUpstreamResponseBytes)
 			}
 		})
+	}
+}
+
+// queryRecorder answers every request with an empty envelope and keeps the
+// query string it was reached with.
+func queryRecorder(t *testing.T) (*Controller, *url.Values) {
+	t.Helper()
+	var seen url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.URL.Query()
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(server.Close)
+	client, err := New(server.URL, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client, &seen
+}
+
+// A strict route that takes its arguments in the query rejects a parameter it
+// does not declare for the same reason it rejects a body field, so the GET half
+// of RequestExact has to leave the query as the caller built it.
+func TestRequestExactKeepsTheContextTabOutOfTheQuery(t *testing.T) {
+	tests := []struct {
+		name    string
+		exact   bool
+		wantTab string
+	}{
+		{name: "the generic path folds the context tab in", wantTab: "77"},
+		{name: "the exact path sends the caller's query verbatim", exact: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, seen := queryRecorder(t)
+			send := client.Request
+			if tt.exact {
+				send = client.RequestExact
+			}
+			ctx := browser.WithTabID(context.Background(), "77")
+			if _, err := send(ctx, "GET", "/api/artifacts/info", url.Values{"artifact_id": {"art_1"}}, nil); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if got := seen.Get("tab_id"); got != tt.wantTab {
+				t.Fatalf("tab_id = %q, want %q", got, tt.wantTab)
+			}
+			if got := seen.Get("artifact_id"); got != "art_1" {
+				t.Fatalf("artifact_id = %q, want the caller's own parameter", got)
+			}
+		})
+	}
+}
+
+// The GET half of RequestExact applies the route's own response bound, the same
+// as the POST half; an unrecognised strict route gets the smallest of them.
+func TestRequestExactGETHoldsTheResponseToTheRouteBound(t *testing.T) {
+	payload := `{"padding":"` + strings.Repeat("x", int(maxArtifactDeleteResponseBytes)) + `"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, payload)
+	}))
+	t.Cleanup(server.Close)
+	client, err := New(server.URL, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.RequestExact(context.Background(), "GET", "/api/artifacts/unknown", nil, nil); err == nil {
+		t.Fatal("RequestExact accepted a response past the artifact bound")
+	} else if !strings.Contains(err.Error(), "artifact operation bound") {
+		t.Fatalf("RequestExact error = %v, want the artifact bound refusal", err)
+	}
+	if _, err := client.Request(context.Background(), "GET", "/api/artifacts/unknown", nil, nil); err != nil {
+		t.Fatalf("Request: %v, want the generic bound to accept the same body", err)
+	}
+}
+
+// Neither entry point invents a verb the daemon does not serve.
+func TestRequestExactRefusesAnUnsupportedMethod(t *testing.T) {
+	client, _ := queryRecorder(t)
+	if _, err := client.RequestExact(context.Background(), "DELETE", "/api/artifacts/delete", nil, nil); err == nil {
+		t.Fatal("RequestExact accepted DELETE")
+	} else if !strings.Contains(err.Error(), "unsupported method") {
+		t.Fatalf("error = %v, want an unsupported-method refusal", err)
 	}
 }
