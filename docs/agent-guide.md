@@ -110,10 +110,11 @@ than embed the recipe. See [recipes and artifacts](recipes-and-artifacts.md).
   the step whose result you actually read. `brw_plan` already applies that split
   for you: intermediate steps report `minimal`, the last step reports `full`,
   and a `snapshot` or `read` step keeps what it fetched at every level.
-  Three tools qualify it: on `brw_batch` `minimal` is the same as `full`
-  (its one closing observation has no element list to drop), `brw_navigate` and
-  `brw_navigate_to` keep `url` at every level (their message names the url you
-  asked for, not the one the browser committed to), and on `brw_find` the
+  Three cases qualify it: on `brw_batch` `minimal` is the same as `full`
+  (its one closing observation has no element list to drop), a navigation keeps
+  `url` at every level — `brw_navigate`, `brw_navigate_to` and a `navigate_to`
+  step inside `brw_plan`, all of which report a message naming the url you asked
+  for rather than the one the browser committed to — and on `brw_find` the
   parameter needs `action` — a read-only find returns the match list, which is
   the answer, so `minimal`/`none` are refused there rather than ignored.
   `snapshot: true` and `observe: "minimal"/"none"` are refused together for the
@@ -553,6 +554,14 @@ The HTTP API bounds a read only when asked to: `/api/page/read` with no bounding
 parameter returns the whole document. The default bound exists to protect a
 model's context, so it is applied by the MCP layer rather than by the raw
 control plane, where it would silently truncate clients that cannot page.
+
+`/api/page/find` takes `live` (query string or POST body). A plain find may be
+served from the browser host's snapshot cache; `live: true` re-reads the page and
+the answer carries `metadata.live: true` to say it did. That is what a
+locate-and-act asks for, on every transport: the caller is deciding whether to
+act from that element list, so it has to be the page as it is now. A `brwd --mcp
+--upstream-http` proxy sends it and refuses to resolve a locate-and-act through
+a daemon whose answer does not carry the mark.
 
 `brw_network_requests` and `brw_network_capture` take `pattern` and `limit`
 alongside the existing substring `filter`.

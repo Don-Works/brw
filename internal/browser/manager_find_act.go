@@ -17,6 +17,14 @@ func (f findInTab) Find(ctx context.Context, opts snapshot.FindOptions) (snapsho
 	return f(ctx, opts)
 }
 
+// FindLive is the same search: a findInTab is either a transport's live search
+// or the live half of one that has a cache, so there is nothing here to bypass.
+// Declaring it is what lets ResolveFindAct refuse a searcher that makes no such
+// promise instead of resolving from whatever that searcher happens to hold.
+func (f findInTab) FindLive(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
+	return f(ctx, opts)
+}
+
 // tabFinder is the searcher a batch find_act step uses: everything Manager.Find
 // does, against the tab the step already resolved.
 //

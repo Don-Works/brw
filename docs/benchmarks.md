@@ -124,12 +124,13 @@ fixture — a denser page has a larger frontier element list and a larger saving
 
 `none` is not free of meaning: every level still reports `ok`, `message`,
 `warning` and `changed_state`, so a flow can always tell whether a step worked.
-`brw_navigate` and `brw_navigate_to` also keep `url` at every level, because
-their message names the url that was REQUESTED and the caller would otherwise
-be left holding a destination brw never verified. And no level skips the
-observation itself. The post-action read is where the navigation policy
-re-checks the committed destination, so `observe` buys tokens and never
-latency; a level that skipped the read would be an opt-out from a guard.
+A navigation also keeps `url` at every level — `brw_navigate`, `brw_navigate_to`
+and a `navigate_to` step inside `brw_plan` — because the message names the url
+that was REQUESTED and the caller would otherwise be left holding a destination
+brw never verified. And no level skips the observation itself. The post-action
+read is where the navigation policy re-checks the committed destination, so
+`observe` buys tokens and never latency; a level that skipped the read would be
+an opt-out from a guard.
 
 A recipe run is already at the floor: `recipe.StepResult` reports `{id, status,
 attempts, duration_ms}` and no observation at all, so there is nothing for a

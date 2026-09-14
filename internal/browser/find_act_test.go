@@ -178,15 +178,70 @@ func TestResolveFindActTargetCountsTheRivalsItDoesNotList(t *testing.T) {
 	}
 }
 
+// stubFinder is a transport that can search live, and records which of the two
+// searches a locate-and-act reached for.
 type stubFinder struct {
-	result snapshot.FindResult
-	err    error
-	opts   snapshot.FindOptions
+	result    snapshot.FindResult
+	err       error
+	opts      snapshot.FindOptions
+	liveCalls int
 }
 
 func (s *stubFinder) Find(_ context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
 	s.opts = opts
 	return s.result, s.err
+}
+
+func (s *stubFinder) FindLive(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
+	s.liveCalls++
+	return s.Find(ctx, opts)
+}
+
+// cacheOnlyFinder is a transport that can only answer from whatever it already
+// has — the shape the upstream-HTTP proxy had before it grew a live search.
+type cacheOnlyFinder struct {
+	calls int
+}
+
+func (c *cacheOnlyFinder) Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error) {
+	c.calls++
+	return snapshot.FindResult{Elements: []snapshot.Element{element("e4", "button", "Add to cart")}}, nil
+}
+
+// A locate-and-act decides whether to ACT from the element list it searched, so
+// a searcher that cannot promise the page as it is now is refused rather than
+// used as it is. The old fallback returned such a finder unchanged, which is how
+// the proxy topology went on resolving from the daemon's cached snapshot after
+// the bridge itself was fixed: it looked identical to a transport that has no
+// cache at all.
+func TestFindActRefusesASearcherThatCannotReadTheLivePage(t *testing.T) {
+	finder := &cacheOnlyFinder{}
+	actuator := FindActuator{
+		Click: func(context.Context, string) error {
+			t.Fatal("a locate-and-act actuated an element it resolved from a cache")
+			return nil
+		},
+	}
+
+	_, err := RunFindActStep(context.Background(), finder, actuator, FindAct{Query: "Add to cart", Action: "click"})
+	if !errors.Is(err, ErrFinderNotLive) {
+		t.Fatalf("RunFindActStep() = %v, want ErrFinderNotLive", err)
+	}
+	if finder.calls != 0 {
+		t.Fatalf("the cached search ran %d times; the refusal has to come before the search, not after it", finder.calls)
+	}
+	if _, err := ResolveFindAct(context.Background(), finder, FindAct{Query: "Add to cart", Action: "click"}); !errors.Is(err, ErrFinderNotLive) {
+		t.Fatalf("ResolveFindAct() = %v, want ErrFinderNotLive", err)
+	}
+	// The same finder with a live search resolves, so the refusal is about
+	// liveness and not about the fixture.
+	live := &stubFinder{result: snapshot.FindResult{Elements: []snapshot.Element{element("e4", "button", "Add to cart")}}}
+	if _, err := ResolveFindAct(context.Background(), live, FindAct{Query: "Add to cart", Action: "click"}); err != nil {
+		t.Fatalf("ResolveFindAct() with a live searcher = %v", err)
+	}
+	if live.liveCalls != 1 {
+		t.Fatalf("live searches = %d, want the locate-and-act to have gone through FindLive", live.liveCalls)
+	}
 }
 
 func TestRunFindActStepActuatesOnlyTheResolvedRef(t *testing.T) {
@@ -284,6 +339,9 @@ func TestRunFindActStepActuatesOnlyTheResolvedRef(t *testing.T) {
 			}
 			if finder.opts.Limit != FindActResolveLimit {
 				t.Fatalf("searched with limit %d, want %d", finder.opts.Limit, FindActResolveLimit)
+			}
+			if finder.liveCalls != 1 {
+				t.Fatalf("live searches = %d, want the step to have resolved through FindLive", finder.liveCalls)
 			}
 		})
 	}

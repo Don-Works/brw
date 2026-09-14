@@ -28,6 +28,11 @@ type Controller interface {
 	ReadData(context.Context) (snapshot.StructuredData, error)
 	Snapshot(context.Context, snapshot.SnapshotOptions) (snapshot.PageSnapshot, error)
 	Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
+	// FindLive is the search a locate-and-act resolves through: see LiveFinder.
+	// It is required of every transport rather than probed for, because the one
+	// that did not have it (the upstream-HTTP proxy) silently fell back to the
+	// cached Find and resolved brw_find-with-action from a stale element list.
+	FindLive(context.Context, snapshot.FindOptions) (snapshot.FindResult, error)
 	Click(context.Context, string) (ActionResult, error)
 	ClickText(context.Context, snapshot.ClickTextOptions) (ActionResult, error)
 	Navigate(context.Context, string) (ActionResult, error)

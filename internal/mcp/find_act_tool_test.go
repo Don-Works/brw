@@ -124,6 +124,54 @@ func TestFindWithAnActionLocatesAndActs(t *testing.T) {
 	}
 }
 
+// The standalone brw_find-with-action decides whether to ACT from the element
+// list it searched, so it resolves through the transport's LIVE search. A
+// transport whose plain Find may answer from a snapshot cache would otherwise
+// let the exactly-one-match rule confirm a uniqueness the page no longer has —
+// here the cached page has one "Add" button and the live page has two.
+func TestFindWithAnActionResolvesFromTheLiveSearch(t *testing.T) {
+	controller := &observeController{
+		findElements: []snapshot.Element{findFixtureElement("e4", "button", "Add to cart")},
+		liveElements: []snapshot.Element{
+			findFixtureElement("e4", "button", "Add to cart"),
+			findFixtureElement("e9", "button", "Add to wishlist"),
+		},
+	}
+	raw, rpcErr := New(controller).callTool(context.Background(), "brw_find", json.RawMessage(`{"query":"Add","action":"click"}`))
+
+	message := ""
+	if rpcErr != nil {
+		message = rpcErr.Message
+	} else if result, ok := raw.(map[string]any); ok {
+		message = toolText(t, result)
+	}
+	if !strings.Contains(message, "refusing to guess") {
+		t.Fatalf("brw_find with an action resolved %q from the cached page, which the live page says is ambiguous", message)
+	}
+	if controller.liveSearches != 1 {
+		t.Fatalf("live searches = %d, want the locate-and-act to have gone through FindLive", controller.liveSearches)
+	}
+	for _, call := range controller.acted {
+		if strings.HasPrefix(call, "click:") {
+			t.Fatalf("brw_find actuated %q after refusing to guess", call)
+		}
+	}
+
+	// A read-only find is unchanged: it may still answer from the cache, because
+	// nothing is being decided from it.
+	readOnly := &observeController{
+		findElements: []snapshot.Element{findFixtureElement("e4", "button", "Add to cart")},
+		liveElements: []snapshot.Element{findFixtureElement("e9", "button", "Add to wishlist")},
+	}
+	response := toolText(t, observeCallTool(t, readOnly, "brw_find", `{"query":"Add"}`))
+	if !strings.Contains(response, `"ref":"e4"`) {
+		t.Fatalf("a read-only brw_find stopped answering from the cached search: %s", response)
+	}
+	if readOnly.liveSearches != 0 {
+		t.Fatalf("a read-only brw_find forced %d live searches", readOnly.liveSearches)
+	}
+}
+
 // The locate-and-act response has to name the element it picked: the caller
 // never saw the search result, so without it a follow-up would have to search
 // again — which is the round trip this feature exists to remove.

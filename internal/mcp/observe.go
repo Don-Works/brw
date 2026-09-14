@@ -198,6 +198,15 @@ func observeToolNames() []string {
 
 // navigationToolNames are the tools whose result message names the url that was
 // REQUESTED, so their observation has to keep the one that was committed.
+//
+// Derived from browser.NavigationActions() rather than written out again: the
+// same verbs reach the same primitive as brw_plan steps, and a second list is
+// how the plan step went on dropping the url after these two were fixed.
 func navigationToolNames() []string {
-	return []string{"brw_navigate", "brw_navigate_to"}
+	verbs := browser.NavigationActions()
+	names := make([]string, 0, len(verbs))
+	for _, verb := range verbs {
+		names = append(names, "brw_"+verb)
+	}
+	return names
 }

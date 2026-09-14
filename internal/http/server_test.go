@@ -87,6 +87,79 @@ func TestFindForwardsQueryParams(t *testing.T) {
 	}
 }
 
+// A locate-and-act over the upstream-HTTP proxy asks this route for a search
+// that bypasses the browser host's snapshot cache. The route has to honour it on
+// EVERY shape it accepts — it is registered for GET and POST — and has to say in
+// the answer that it did, because a daemon that predates the parameter returns
+// its cached list with the same 200 and the proxy cannot otherwise tell.
+func TestFindLiveBypassesTheCacheOnEveryRequestShape(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		request func() *http.Request
+	}{
+		{
+			name: "query string",
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodGet, "/api/page/find?query=email&live=true", nil)
+			},
+		},
+		{
+			name: "post body",
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodPost, "/api/page/find",
+					bytes.NewBufferString(`{"query":"email","live":true}`))
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := &fakeController{snap: sampleSnapshot()}
+			server := New("", ctrl)
+			rec := httptest.NewRecorder()
+			server.server.Handler.ServeHTTP(rec, tt.request())
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			var got snapshot.FindResult
+			if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+				t.Fatal(err)
+			}
+			if ctrl.findLiveCalls != 1 {
+				t.Fatalf("live searches = %d, want the route to have bypassed the cache", ctrl.findLiveCalls)
+			}
+			if len(got.Elements) != len(sampleSnapshot().Elements) {
+				t.Fatalf("elements = %d, want the live page's %d", len(got.Elements), len(sampleSnapshot().Elements))
+			}
+			if live, _ := got.Metadata[snapshot.FindLiveKey].(bool); !live {
+				t.Fatalf("metadata = %v, want it to confirm the search was live", got.Metadata)
+			}
+		})
+	}
+}
+
+// An ordinary find is unchanged: it may still be served from the cache, and it
+// does not claim to be live.
+func TestFindWithoutLiveIsUnchanged(t *testing.T) {
+	ctrl := &fakeController{snap: sampleSnapshot()}
+	server := New("", ctrl)
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/page/find?query=email", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got snapshot.FindResult
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if ctrl.findLiveCalls != 0 {
+		t.Fatalf("a plain find took the live path %d times", ctrl.findLiveCalls)
+	}
+	if _, present := got.Metadata[snapshot.FindLiveKey]; present {
+		t.Fatalf("a plain find claimed to be live: %v", got.Metadata)
+	}
+}
+
 func TestOpenForwardsTabGroupOptions(t *testing.T) {
 	ctrl := &fakeController{}
 	server := New("", ctrl)
@@ -384,6 +457,7 @@ type fakeController struct {
 	snap          snapshot.PageSnapshot
 	snapshotOpts  snapshot.SnapshotOptions
 	findOpts      snapshot.FindOptions
+	findLiveCalls int
 	fillOpts      snapshot.FillOptions
 	uploadOpts    snapshot.UploadOptions
 	batchSteps    []browser.BatchStep
@@ -466,6 +540,15 @@ func (f *fakeController) Snapshot(_ context.Context, opts snapshot.SnapshotOptio
 func (f *fakeController) Find(_ context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
 	f.findOpts = opts
 	return snapshot.FindResult{Elements: []snapshot.Element{f.snap.Elements[0]}}, nil
+}
+
+// FindLive answers with every element the fixture page has, while Find above
+// answers with one: a route that served a live search from the cached path
+// returns a different list rather than the same one.
+func (f *fakeController) FindLive(_ context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
+	f.findOpts = opts
+	f.findLiveCalls++
+	return snapshot.FindResult{Elements: append([]snapshot.Element(nil), f.snap.Elements...)}, nil
 }
 
 func (f *fakeController) Read(context.Context) (readability.PageRead, error) {

@@ -16,6 +16,10 @@ import (
 type observeController struct {
 	fakeController
 	findElements []snapshot.Element
+	// liveElements is what the page holds NOW, when a test wants the cached
+	// search and the live one to disagree. Unset, the two answer alike.
+	liveElements []snapshot.Element
+	liveSearches int
 	acted        []string
 }
 
@@ -86,6 +90,19 @@ func (c *observeController) Find(_ context.Context, opts snapshot.FindOptions) (
 	return result, nil
 }
 
+// FindLive is the search a locate-and-act resolves through. It answers from
+// liveElements when a test set them, so a call that took the cached path
+// resolves a different element list.
+func (c *observeController) FindLive(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
+	c.liveSearches++
+	if c.liveElements != nil {
+		cached := c.findElements
+		c.findElements = c.liveElements
+		defer func() { c.findElements = cached }()
+	}
+	return c.Find(ctx, opts)
+}
+
 func (c *observeController) ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error) {
 	return browser.BatchResult{
 		OK: true, TabID: "tab1", URL: "https://fixture.test/cart", Title: "Cart", Focus: "e9", Version: 7,
@@ -116,6 +133,13 @@ func (c *observeController) ExecutePlan(_ context.Context, steps []browser.PlanS
 				Action:  "click",
 				Result:  observeFixtureResult(),
 			}
+		case "navigate_to":
+			// The primitive a navigate_to step reuses: a message written from the
+			// REQUESTED url, and an observed url that is where the browser landed.
+			result := observeFixtureResult()
+			result.Message = "navigated to " + step.URL
+			result.URL = observeRedirectedURL
+			stepResult.Result = result
 		default:
 			stepResult.Result = observeFixtureResult()
 		}
@@ -584,6 +608,80 @@ func TestNavigationToolsKeepTheCommittedURLAtEveryLevel(t *testing.T) {
 	}
 }
 
+// navigationPlanSteps is one brw_plan step per navigation verb. A navigation
+// verb the catalogue advertises as a plan step and this map does not name fails
+// the test below rather than going unchecked, which is what the two-tool fix
+// missed: brw_navigate_to was corrected while the plan step running the same
+// primitive was not.
+func navigationPlanSteps() map[string]map[string]any {
+	return map[string]map[string]any{
+		"navigate_to": {"action": "navigate_to", "url": "https://fixture.test/cart"},
+	}
+}
+
+// The url a navigation reports is its outcome, and a brw_plan step runs the same
+// primitive as the standalone tool. Enumerated over the advertised step enum, so
+// the exception cannot be one surface wide: this is the defect the tool-name fix
+// left behind on brw_plan.
+func TestNavigationPlanStepsKeepTheCommittedURLAtEveryLevel(t *testing.T) {
+	steps := navigationPlanSteps()
+	checked := 0
+	for _, verb := range advertisedPlanStepVerbs(t) {
+		if !browser.IsNavigationAction(verb) {
+			continue
+		}
+		step, ok := steps[verb]
+		if !ok {
+			t.Errorf("brw_plan advertises navigation step verb %q, which has no call here, so nothing checks whether it keeps the url", verb)
+			continue
+		}
+		if !browser.PlanStepVerbKeepsTheCommittedURL(verb) {
+			t.Errorf("brw_plan step verb %q navigates but observe trims it as a plain observation", verb)
+			continue
+		}
+		checked++
+		for _, level := range []string{"full", "minimal", "none"} {
+			t.Run(verb+"/"+level, func(t *testing.T) {
+				body, err := json.Marshal(map[string]any{"steps": []any{step}, "observe": level})
+				if err != nil {
+					t.Fatalf("encode: %v", err)
+				}
+				var decoded struct {
+					Steps []struct {
+						Action string `json:"action"`
+						Result struct {
+							URL     string `json:"url"`
+							Message string `json:"message"`
+						} `json:"result"`
+					} `json:"steps"`
+				}
+				got := toolText(t, observeCallTool(t, &observeController{}, "brw_plan", string(body)))
+				if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+					t.Fatalf("decode plan: %v", err)
+				}
+				if len(decoded.Steps) != 1 {
+					t.Fatalf("plan returned %d steps: %s", len(decoded.Steps), got)
+				}
+				if decoded.Steps[0].Result.URL != observeRedirectedURL {
+					t.Fatalf("brw_plan %s step at observe:%q reported url %q while claiming %q",
+						verb, level, decoded.Steps[0].Result.URL, decoded.Steps[0].Result.Message)
+				}
+			})
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no advertised plan step verb is a navigation, so this test checked nothing")
+	}
+	// A verb the plan advertises whose name says it navigates has to BE a
+	// navigation action, or the classification is a list that the next sibling
+	// is simply left off.
+	for _, verb := range advertisedPlanStepVerbs(t) {
+		if strings.HasPrefix(verb, "navigate") && !browser.IsNavigationAction(verb) {
+			t.Errorf("brw_plan step verb %q navigates but browser.NavigationActions() does not name it, so observe drops the url it did not verify", verb)
+		}
+	}
+}
+
 // snapshot:true and observe minimal/none contradict each other: one asks for the
 // page, the other deletes it on the way out. Picking one silently leaves the
 // caller unable to see which. The pairing is read off the catalogue so a new
@@ -709,6 +807,23 @@ func TestFindActHonoursObserveAndKeepsTheMatch(t *testing.T) {
 // whatever the caller asked for; a table entry for a verb nobody can send is a
 // classification of nothing.
 func TestEveryPlanStepVerbIsClassifiedForObserve(t *testing.T) {
+	advertised := advertisedPlanStepVerbs(t)
+	for _, verb := range advertised {
+		if !browser.PlanStepVerbIsClassified(verb) {
+			t.Errorf("brw_plan advertises step verb %q, which observe does not classify", verb)
+		}
+	}
+	for _, verb := range browser.ClassifiedPlanStepVerbs() {
+		if !slices.Contains(advertised, verb) {
+			t.Errorf("observe classifies step verb %q, which brw_plan does not advertise", verb)
+		}
+	}
+}
+
+// advertisedPlanStepVerbs reads the step enum off the catalogue, which is the
+// set of verbs a caller can actually send.
+func advertisedPlanStepVerbs(t *testing.T) []string {
+	t.Helper()
 	steps, ok := toolProperties(t, "brw_plan")["steps"].(map[string]any)
 	if !ok {
 		t.Fatal("brw_plan does not advertise steps")
@@ -720,16 +835,7 @@ func TestEveryPlanStepVerbIsClassifiedForObserve(t *testing.T) {
 	if len(advertised) == 0 {
 		t.Fatal("brw_plan's step action advertises no verbs")
 	}
-	for _, verb := range advertised {
-		if !browser.PlanStepVerbIsClassified(verb) {
-			t.Errorf("brw_plan advertises step verb %q, which observe does not classify", verb)
-		}
-	}
-	for _, verb := range browser.ClassifiedPlanStepVerbs() {
-		if !slices.Contains(advertised, verb) {
-			t.Errorf("observe classifies step verb %q, which brw_plan does not advertise", verb)
-		}
-	}
+	return advertised
 }
 
 // A plan step that fetched a snapshot keeps it at every level. SKILL.md sends

@@ -85,6 +85,15 @@ type FindResult struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
+// FindLiveKey names both halves of the live-search contract on the HTTP control
+// plane: the request parameter that asks for a search bypassing the browser
+// host's snapshot cache, and the FindResult metadata field the daemon sets to
+// true when it answered that way. The answer needs the mark because a cached
+// list and a live one are otherwise identical on the wire, and a daemon too old
+// to know the parameter returns the cached one with the same 200. A
+// locate-and-act over the HTTP proxy resolves only from a result carrying it.
+const FindLiveKey = "live"
+
 type FillOptions struct {
 	Ref   string `json:"ref,omitempty"`
 	Query string `json:"query,omitempty"`

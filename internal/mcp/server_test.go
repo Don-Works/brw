@@ -1378,6 +1378,9 @@ func (fakeController) Snapshot(context.Context, snapshot.SnapshotOptions) (snaps
 func (fakeController) Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error) {
 	return snapshot.FindResult{}, nil
 }
+func (fakeController) FindLive(context.Context, snapshot.FindOptions) (snapshot.FindResult, error) {
+	return snapshot.FindResult{}, nil
+}
 func (fakeController) Click(context.Context, string) (browser.ActionResult, error) {
 	return browser.ActionResult{OK: true}, nil
 }

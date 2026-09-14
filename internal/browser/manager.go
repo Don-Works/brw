@@ -916,6 +916,14 @@ func (m *Manager) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot
 	return result, nil
 }
 
+// FindLive is Find on the direct-CDP transport: every search here walks the live
+// DOM through snapshot.Find, so there is no cached element list to bypass. It is
+// spelled out rather than left to an interface probe, because the transport that
+// had no FindLive is exactly the one that fell back to a cache.
+func (m *Manager) FindLive(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
+	return m.Find(ctx, opts)
+}
+
 func (m *Manager) Read(ctx context.Context) (readability.PageRead, error) {
 	start := time.Now()
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)

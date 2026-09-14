@@ -232,12 +232,26 @@ type LiveFinder interface {
 // findActSearcher picks the searcher a locate-and-act resolves with. Choosing
 // here rather than at each call site is what makes the rule transport-wide: the
 // standalone tool, a batch step and a plan step all go through ResolveFindAct.
-func findActSearcher(finder FindActFinder) FindActFinder {
+//
+// A finder that does not implement LiveFinder is REFUSED rather than used as it
+// is. Falling back to the plain Find looks harmless on a transport that has no
+// cache and is silent on one that does: that fallback is how the upstream-HTTP
+// proxy, whose Find is a GET the daemon served from the extension's snapshot
+// cache, went on resolving a standalone locate-and-act from a stale element list
+// after the bridge itself was fixed. Every transport now says whether its search
+// is live (browser.Controller requires FindLive), so a new one that forgets
+// fails loudly instead of quietly acting on the page as it used to be.
+func findActSearcher(finder FindActFinder) (FindActFinder, error) {
 	if live, ok := finder.(LiveFinder); ok {
-		return findInTab(live.FindLive)
+		return findInTab(live.FindLive), nil
 	}
-	return finder
+	return nil, fmt.Errorf("%w: %T", ErrFinderNotLive, finder)
 }
+
+// ErrFinderNotLive is returned when a locate-and-act would have to resolve
+// through a searcher that cannot promise a live read of the page.
+var ErrFinderNotLive = errors.New("locate-and-act needs a live search of the page and this transport does not provide one; " +
+	"acting on a cached element list would confirm a uniqueness the page may no longer have")
 
 // ResolveFindAct validates the request, runs the search, and returns the one
 // element it names.
@@ -245,7 +259,11 @@ func ResolveFindAct(ctx context.Context, finder FindActFinder, f FindAct) (snaps
 	if err := f.Validate(); err != nil {
 		return snapshot.Element{}, err
 	}
-	result, err := findActSearcher(finder).Find(ctx, f.FindOptions())
+	searcher, err := findActSearcher(finder)
+	if err != nil {
+		return snapshot.Element{}, err
+	}
+	result, err := searcher.Find(ctx, f.FindOptions())
 	if err != nil {
 		return snapshot.Element{}, err
 	}

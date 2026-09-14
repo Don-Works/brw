@@ -251,6 +251,33 @@ func (c *Controller) Find(ctx context.Context, opts snapshot.FindOptions) (snaps
 	return out, err
 }
 
+// FindLive asks the daemon that owns the browser for a search that bypasses its
+// snapshot cache, which is what a locate-and-act resolves through on every
+// transport (see browser.LiveFinder). Without it the proxy fell back to the
+// cached Find above, so a standalone brw_find with an action decided from the
+// pre-action page on exactly the topology — an extension bridge behind
+// --upstream-http — where the cache is real.
+//
+// The upstream has to CONFIRM it answered live. A daemon that predates the
+// parameter ignores the unknown query value and returns its cached list with a
+// 200, which is indistinguishable from a live answer at the wire. Refusing is
+// the fail-closed half: brw would rather say it cannot resolve than act on a
+// page state it cannot vouch for.
+func (c *Controller) FindLive(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
+	values := findValues(opts)
+	values.Set(snapshot.FindLiveKey, "true")
+	var out snapshot.FindResult
+	if err := c.get(ctx, "/api/page/find", values, &out); err != nil {
+		return snapshot.FindResult{}, err
+	}
+	if live, _ := out.Metadata[snapshot.FindLiveKey].(bool); !live {
+		return snapshot.FindResult{}, fmt.Errorf("upstream brw daemon at %s did not confirm a live search "+
+			"(it answered without %q, so the element list may be its cached one): %w",
+			c.baseURL, snapshot.FindLiveKey, browser.ErrFinderNotLive)
+	}
+	return out, nil
+}
+
 func (c *Controller) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
 	var out browser.ActionResult
 	err := c.post(ctx, "/api/page/click", map[string]string{"ref": ref}, &out)

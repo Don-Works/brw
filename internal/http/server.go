@@ -878,12 +878,30 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, snap, err)
 }
 
+// find serves a page search. `live` is what a locate-and-act asks for: the
+// caller is deciding whether to ACT from this element list, so it must come from
+// the page as it is now rather than from the transport's snapshot cache. The
+// answer says so in its metadata, because a daemon that did not understand the
+// parameter would otherwise return its cached list with the same 200 and the
+// proxy could not tell the difference.
 func (s *Server) find(w http.ResponseWriter, r *http.Request) {
-	opts, ok := parseFindOptions(w, r)
+	opts, live, ok := parseFindOptions(w, r)
 	if !ok {
 		return
 	}
-	result, err := s.manager.Find(s.requestContext(r), opts)
+	ctx := s.requestContext(r)
+	if !live {
+		result, err := s.manager.Find(ctx, opts)
+		writeResult(w, result, err)
+		return
+	}
+	result, err := s.manager.FindLive(ctx, opts)
+	if err == nil {
+		if result.Metadata == nil {
+			result.Metadata = map[string]any{}
+		}
+		result.Metadata[snapshot.FindLiveKey] = true
+	}
 	writeResult(w, result, err)
 }
 
@@ -2157,34 +2175,45 @@ func parseSnapshotOptions(w http.ResponseWriter, r *http.Request) (snapshotReque
 	}, true
 }
 
-func parseFindOptions(w http.ResponseWriter, r *http.Request) (snapshot.FindOptions, bool) {
+// parseFindOptions reads a search off either shape the route accepts: a GET
+// query string and a POST body. `live` is read from BOTH — a guard that only one
+// argument shape can ask for is a guard the other shape routes around, and this
+// route is registered for both methods.
+func parseFindOptions(w http.ResponseWriter, r *http.Request) (snapshot.FindOptions, bool, bool) {
 	if r.Method == http.MethodPost {
-		var opts snapshot.FindOptions
-		if !decode(w, r, &opts) {
-			return snapshot.FindOptions{}, false
+		var req struct {
+			snapshot.FindOptions
+			Live bool `json:"live"`
 		}
-		if opts.Limit < 0 {
+		if !decode(w, r, &req) {
+			return snapshot.FindOptions{}, false, false
+		}
+		if req.Limit < 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "limit must be non-negative"})
-			return snapshot.FindOptions{}, false
+			return snapshot.FindOptions{}, false, false
 		}
-		return opts, true
+		return req.FindOptions, req.Live, true
 	}
 	q := r.URL.Query()
 	limit, ok := parseIntParam(w, q.Get("limit"), "limit")
 	if !ok {
-		return snapshot.FindOptions{}, false
+		return snapshot.FindOptions{}, false, false
 	}
 	viewportOnly, ok := parseBoolValue(w, q.Get("viewport_only"), "viewport_only")
 	if !ok {
-		return snapshot.FindOptions{}, false
+		return snapshot.FindOptions{}, false, false
 	}
 	includeHidden, ok := parseBoolValue(w, q.Get("include_hidden"), "include_hidden")
 	if !ok {
-		return snapshot.FindOptions{}, false
+		return snapshot.FindOptions{}, false, false
 	}
 	textContent, ok := parseBoolValue(w, q.Get("text_content"), "text_content")
 	if !ok {
-		return snapshot.FindOptions{}, false
+		return snapshot.FindOptions{}, false, false
+	}
+	live, ok := parseBoolValue(w, q.Get(snapshot.FindLiveKey), snapshot.FindLiveKey)
+	if !ok {
+		return snapshot.FindOptions{}, false, false
 	}
 	return snapshot.FindOptions{
 		Query:         q.Get("query"),
@@ -2194,7 +2223,7 @@ func parseFindOptions(w http.ResponseWriter, r *http.Request) (snapshot.FindOpti
 		ViewportOnly:  viewportOnly,
 		IncludeHidden: includeHidden,
 		TextContent:   textContent,
-	}, true
+	}, live, true
 }
 
 func parseBoolValue(w http.ResponseWriter, raw, name string) (bool, bool) {

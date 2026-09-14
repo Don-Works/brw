@@ -307,15 +307,17 @@ func planStepFixtures() map[string]struct {
 		result      any
 		wantTrimmed bool
 	}{
-		"click":       {result: richActionResult(), wantTrimmed: true},
-		"click_text":  {result: richActionResult(), wantTrimmed: true},
-		"type":        {result: richActionResult(), wantTrimmed: true},
-		"fill":        {result: richActionResult(), wantTrimmed: true},
-		"select":      {result: richActionResult(), wantTrimmed: true},
-		"press":       {result: richActionResult(), wantTrimmed: true},
-		"scroll":      {result: richActionResult(), wantTrimmed: true},
-		"hover":       {result: richActionResult(), wantTrimmed: true},
-		"navigate_to": {result: richActionResult(), wantTrimmed: true},
+		"click":      {result: richActionResult(), wantTrimmed: true},
+		"click_text": {result: richActionResult(), wantTrimmed: true},
+		"type":       {result: richActionResult(), wantTrimmed: true},
+		"fill":       {result: richActionResult(), wantTrimmed: true},
+		"select":     {result: richActionResult(), wantTrimmed: true},
+		"press":      {result: richActionResult(), wantTrimmed: true},
+		"scroll":     {result: richActionResult(), wantTrimmed: true},
+		"hover":      {result: richActionResult(), wantTrimmed: true},
+		// Shaped the way the primitive answers: a message written from the url
+		// that was REQUESTED and a committed url that is somewhere else.
+		"navigate_to": {result: navigationActionResult(), wantTrimmed: true},
 		"find_act": {result: FindActResult{
 			Matched: snapshot.Element{Ref: "e9", Role: "button", Name: "Checkout"},
 			Action:  "click",
@@ -368,10 +370,114 @@ func TestEveryClassifiedPlanStepVerbTrimsAsItsPayloadAllows(t *testing.T) {
 				if !strings.Contains(got, `"ok":true`) {
 					t.Fatalf("observe=none left a %q step unable to report its outcome: %s", verb, got)
 				}
+				// A verb whose result is a navigation keeps the committed url at
+				// every level, because that url IS its outcome and its message
+				// names the one that was requested. Every other observation drops
+				// it. Checked here for EVERY classified verb, so a sibling verb
+				// that navigates cannot be added as a plain observation.
+				if keptURL, wantURL := strings.Contains(got, `"url"`), IsNavigationAction(verb); keptURL != wantURL {
+					if wantURL {
+						t.Fatalf("observe=none dropped the committed url from a %q step while keeping a message that names the requested one: %s", verb, got)
+					}
+					t.Fatalf("observe=none left the url on a %q step, which is an observation and not a destination: %s", verb, got)
+				}
 				return
 			}
 			if got != before {
 				t.Fatalf("observe=none changed what a %q step produced:\n got %s\nwant %s", verb, got, before)
+			}
+		})
+	}
+}
+
+// navigationActionResult is what a navigation primitive answers with: the
+// message is written from the url the caller ASKED for, and URL is the one the
+// browser committed to after the redirect.
+func navigationActionResult() ActionResult {
+	result := richActionResult()
+	result.Message = "navigated to https://fixture.test/cart"
+	result.URL = "https://fixture.test/login?next=%2Fcart"
+	return result
+}
+
+// The navigation exception is keyed on one set of verbs, not on a tool name and
+// not on a step verb: brw_navigate_to and a brw_plan navigate_to step run the
+// same primitive, and fixing the tool while leaving the step classified as a
+// plain observation is how the step went on reporting a destination brw never
+// verified. Both directions, over the whole domain of classified verbs.
+func TestEveryNavigationVerbIsClassifiedAsOne(t *testing.T) {
+	for _, verb := range ClassifiedPlanStepVerbs() {
+		classified := PlanStepVerbKeepsTheCommittedURL(verb)
+		if navigates := IsNavigationAction(verb); classified != navigates {
+			if navigates {
+				t.Errorf("%q is a navigation action but its plan step is not classified as one, so observe drops the url it did not verify", verb)
+				continue
+			}
+			t.Errorf("plan step verb %q is classified as a navigation but is not a navigation action", verb)
+		}
+	}
+	// The set itself has to be non-empty and reach the classification, or both
+	// directions above are vacuously true.
+	if len(NavigationActions()) == 0 {
+		t.Fatal("NavigationActions() is empty, so nothing above checked anything")
+	}
+	classified := 0
+	for _, verb := range NavigationActions() {
+		if PlanStepVerbIsClassified(verb) {
+			classified++
+		}
+	}
+	if classified == 0 {
+		t.Fatalf("no navigation action %v is a classified plan step verb, so the plan surface checks nothing", NavigationActions())
+	}
+}
+
+// A navigate_to plan step arrives typed in-process and as a decoded object over
+// the upstream HTTP proxy. Both drop the observation and both keep the url: the
+// shape a step arrives in is not something the caller chose, and the proxy is
+// the transport where a plan step is decoded rather than constructed.
+func TestApplyToPlanKeepsTheCommittedURLOnANavigateStep(t *testing.T) {
+	typedStep := navigationActionResult()
+	var decodedStep map[string]any
+	if err := json.Unmarshal([]byte(mustJSON(t, typedStep)), &decodedStep); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	for _, level := range []ObserveLevel{ObserveFull, ObserveMinimal, ObserveNone} {
+		t.Run(string(level), func(t *testing.T) {
+			plan := PlanResult{OK: true, Steps: []PlanStepResult{
+				{Index: 0, Action: "navigate_to", OK: true, Result: typedStep},
+				{Index: 1, Action: "navigate_to", OK: true, Result: decodedStep},
+			}}
+			got := level.ApplyToPlan(plan, true)
+
+			typedOut, ok := got.Steps[0].Result.(ActionResult)
+			if !ok {
+				t.Fatalf("typed navigate_to step result is %T", got.Steps[0].Result)
+			}
+			if typedOut.URL != typedStep.URL {
+				t.Fatalf("level %q reported url %q on a typed navigate_to step while claiming %q",
+					level, typedOut.URL, typedOut.Message)
+			}
+			decodedOut, ok := got.Steps[1].Result.(map[string]any)
+			if !ok {
+				t.Fatalf("decoded navigate_to step result is %T", got.Steps[1].Result)
+			}
+			if decodedOut["url"] != typedStep.URL {
+				t.Fatalf("level %q reported url %v on a decoded navigate_to step while claiming %v",
+					level, decodedOut["url"], decodedOut["message"])
+			}
+			if level == ObserveNone {
+				// The exception is one field wide: everything else still trims, or
+				// it is a way out of the parameter rather than a correction to it.
+				if len(typedOut.Elements) != 0 || typedOut.Snapshot != nil || typedOut.Title != "" {
+					t.Fatalf("observe=none left the observation on a typed navigate_to step: %+v", typedOut)
+				}
+				for _, key := range []string{"elements", "snapshot", "title", "changed"} {
+					if _, present := decodedOut[key]; present {
+						t.Fatalf("observe=none left %q on a decoded navigate_to step: %v", key, decodedOut)
+					}
+				}
 			}
 		})
 	}

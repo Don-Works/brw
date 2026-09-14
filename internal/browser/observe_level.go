@@ -2,6 +2,7 @@ package browser
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -70,6 +71,29 @@ func (l ObserveLevel) ApplyToAction(result ActionResult) ActionResult {
 	default:
 		return result
 	}
+}
+
+// navigationActions are the action verbs whose ActionResult is a navigation:
+// the outcome IS the destination, and the message is written from the url or
+// direction that was REQUESTED, before the observation reads where the browser
+// landed. Trimming such a result to the outcome alone leaves the caller holding
+// a claim brw never verified.
+//
+// Every surface that trims one keys off THIS set rather than naming the verbs
+// again: the standalone tool list in internal/mcp derives from it, and the
+// brw_plan step classification below is checked against it in both directions.
+// Naming them per surface is what let the plan step keep dropping the url after
+// the two tools were fixed.
+var navigationActions = []string{"navigate", "navigate_to"}
+
+// NavigationActions lists those verbs. The tool name for each is "brw_"+verb.
+func NavigationActions() []string {
+	return append([]string(nil), navigationActions...)
+}
+
+// IsNavigationAction reports whether a verb's result is a navigation.
+func IsNavigationAction(action string) bool {
+	return slices.Contains(navigationActions, action)
 }
 
 // ApplyToNavigation trims a navigation's observation and keeps url at every
@@ -170,6 +194,12 @@ const (
 	// with the observation nested one level down and the matched element — the
 	// answer to "which one did you act on" — beside it.
 	planStepFindAct
+	// planStepNavigation is a post-navigation observation: an observation whose
+	// url is the OUTCOME, so every level keeps it. See ApplyToNavigation. A step
+	// classified as a plain observation would drop the url while keeping the
+	// message written from the requested one, which is the same false claim the
+	// standalone navigation tools used to make.
+	planStepNavigation
 )
 
 // planStepPayloads classifies every brw_plan step verb. The trim is driven by
@@ -178,7 +208,9 @@ const (
 // the upstream HTTP proxy), and the predicate that guessed from shape trimmed
 // neither find_act form. TestEveryPlanStepVerbIsClassifiedForObserve checks
 // this table against the advertised step enum in both directions, so a new verb
-// cannot quietly default its own level.
+// cannot quietly default its own level, and
+// TestEveryNavigationVerbIsClassifiedAsOne checks the navigation entries against
+// navigationActions in both directions.
 var planStepPayloads = map[string]planStepPayload{
 	"click":       planStepObservation,
 	"click_text":  planStepObservation,
@@ -188,7 +220,7 @@ var planStepPayloads = map[string]planStepPayload{
 	"press":       planStepObservation,
 	"scroll":      planStepObservation,
 	"hover":       planStepObservation,
-	"navigate_to": planStepObservation,
+	"navigate_to": planStepNavigation,
 	"find_act":    planStepFindAct,
 	"snapshot":    planStepProduct,
 	"read":        planStepProduct,
@@ -215,6 +247,14 @@ func ClassifiedPlanStepVerbs() []string {
 	return verbs
 }
 
+// PlanStepVerbKeepsTheCommittedURL reports whether a plan step verb's result is
+// trimmed as a navigation, so the package that owns the advertised step enum can
+// check that classification against the tool surface without reaching into this
+// table.
+func PlanStepVerbKeepsTheCommittedURL(action string) bool {
+	return planStepPayloads[action] == planStepNavigation
+}
+
 // observationOnlyKeys are the ActionResult fields an observe level drops. They
 // are listed by wire name so a plan step result that came back over HTTP as a
 // generic object trims to the same shape as one produced in-process.
@@ -228,6 +268,8 @@ func trimStepResult(action string, value any, level ObserveLevel) any {
 	switch planStepPayloads[action] {
 	case planStepObservation:
 		return trimObservation(value, level)
+	case planStepNavigation:
+		return trimNavigation(value, level)
 	case planStepFindAct:
 		return trimFindActResult(value, level)
 	default:
@@ -253,6 +295,40 @@ func trimObservation(value any, level ObserveLevel) any {
 	default:
 		return value
 	}
+}
+
+// trimNavigation trims a post-navigation step observation in either shape,
+// keeping the committed url. It is ApplyToNavigation for the plan surface: the
+// step's message names the url the caller ASKED for, so the observed one is the
+// only thing in the result that says where the browser actually is.
+func trimNavigation(value any, level ObserveLevel) any {
+	switch typed := value.(type) {
+	case ActionResult:
+		return level.ApplyToNavigation(typed)
+	case *ActionResult:
+		if typed == nil {
+			return value
+		}
+		trimmed := level.ApplyToNavigation(*typed)
+		return &trimmed
+	case map[string]any:
+		return withoutKeys(typed, navigationOnlyKeys(level))
+	default:
+		return value
+	}
+}
+
+// navigationOnlyKeys is observationOnlyKeys minus url, for the decoded shape a
+// plan step arrives in over the upstream HTTP transport.
+func navigationOnlyKeys(level ObserveLevel) []string {
+	keys := make([]string, 0, len(observationOnlyKeys[level]))
+	for _, key := range observationOnlyKeys[level] {
+		if key == "url" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 // trimFindActResult trims the observation half of a locate-and-act step and
