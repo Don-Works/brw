@@ -1602,6 +1602,17 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolOK(s.manager.AssertHidden(ctx, req.Ref, time.Duration(req.TimeoutMS)*time.Millisecond))
+	case "brw_assert":
+		var req struct {
+			browser.AssertRequest
+			// Declared so strict unmarshalling accepts it; callTool has already
+			// put it on the context, which is what actually targets the tab.
+			TabID string `json:"tab_id"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(browser.Assert(ctx, s.manager, req.AssertRequest))
 	case "brw_commit":
 		var req struct {
 			Ref string `json:"ref"`
@@ -2294,8 +2305,8 @@ func tools() []map[string]any {
 			"action": stringEnumSchema("mark records the baseline; compare reports what changed since it.", "mark", "compare"),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"action"})),
-		tool("brw_get", "Read ONE typed fact about the page or an element, without writing JavaScript. what=url|title|text|value|attr|count|box|styles|visible|hidden|enabled|disabled|checked. target is a brw ref from brw_snapshot or a CSS selector, and resolves across same-origin iframes and open shadow roots (plain document.querySelector does not). Use this instead of brw_evaluate for simple reads: it is one round trip, it needs no hand-written JS, and it cannot be tripped up by a value that will not serialize.", object(map[string]any{
-			"what":   stringEnumSchema("Which fact to read.", "url", "title", "text", "value", "attr", "count", "box", "styles", "visible", "hidden", "enabled", "disabled", "checked"),
+		tool("brw_get", "Read ONE typed fact about the page or an element, without writing JavaScript. what=url|title|status|text|value|attr|count|box|styles|visible|hidden|enabled|disabled|editable|checked|focused|state. status is the HTTP status of the current document's navigation (0 when there was none, as for a data: or about: document). state returns every interaction flag for one element at once — {found, visible, enabled, editable, checked, focused} — and is the cheap way to ask several of those questions together. target is a brw ref from brw_snapshot or a CSS selector, and resolves across same-origin iframes and open shadow roots (plain document.querySelector does not). Use this instead of brw_evaluate for simple reads: it is one round trip, it needs no hand-written JS, and it cannot be tripped up by a value that will not serialize. To CHECK one of these rather than read it, use brw_assert: it returns expected against actual when the check does not hold.", object(map[string]any{
+			"what":   stringEnumSchema("Which fact to read.", "url", "title", "status", "text", "value", "attr", "count", "box", "styles", "visible", "hidden", "enabled", "disabled", "editable", "checked", "focused", "state"),
 			"target": stringSchema("Element ref from brw_snapshot, or a CSS selector. Omit for page-level facts (url, title, and text of the whole body). Required for count as the selector to count."),
 			"name":   stringSchema("Attribute name for what=attr, or a single CSS property name for what=styles. Omitting it for styles returns the properties that explain layout and appearance rather than every property."),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
@@ -2346,23 +2357,28 @@ func tools() []map[string]any {
 				},
 			},
 		}, []string{"steps"})),
-		tool("brw_batch", "PREFERRED for multi-step flows: chain click, click_text, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, and inline assertions (assert_visible, assert_text, assert_value, assert_hidden) in ONE round-trip, returning a single observation at the end. Use this instead of individual brw_click/brw_type/brw_fill calls whenever you need 2+ actions. Steps run sequentially; interleave assertions to fail fast.", object(map[string]any{
+		tool("brw_batch", "PREFERRED for multi-step flows: chain click, click_text, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, and inline assertions (assert_visible, assert_text, assert_value, assert_hidden, plus the richer assert step) in ONE round-trip, returning a single observation at the end. Use this instead of individual brw_click/brw_type/brw_fill calls whenever you need 2+ actions. Steps run sequentially; interleave assertions to fail fast.", object(map[string]any{
 			"steps": map[string]any{
 				"type":        "array",
 				"description": "Ordered list of actions and assertions to execute.",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"action":     stringEnumSchema("One of: click, click_text, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, assert_visible, assert_text, assert_value, assert_hidden. open spawns a new tab; navigate_to drives the batch's existing working tab.", "click", "click_text", "type", "fill", "select", "press", "scroll", "hover", "wait", "open", "navigate_to", "focus_tab", "assert_visible", "assert_text", "assert_value", "assert_hidden"),
+						"action":     stringEnumSchema("One of: click, click_text, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, assert_visible, assert_text, assert_value, assert_hidden, assert. open spawns a new tab; navigate_to drives the batch's existing working tab; assert carries a brw_assert request in the assertion field.", "click", "click_text", "type", "fill", "select", "press", "scroll", "hover", "wait", "open", "navigate_to", "focus_tab", "assert_visible", "assert_text", "assert_value", "assert_hidden", "assert"),
 						"ref":        stringSchema("Element ref for click, type, fill, select, hover, and assert_* actions."),
 						"text":       stringSchema("Text for type and fill actions, or expected text for assert_text."),
 						"value":      stringSchema("Option value for select / assert_value. For fill, also accepted as a Playwright-style alias for text."),
 						"direction":  stringEnumSchema("Scroll direction: up, down, left, right.", "up", "down", "left", "right"),
 						"condition":  stringSchema("Wait condition (load, text:..., ref:..., url:..., selector:..., fn:..., download, etc)."),
-						"timeout_ms": map[string]any{"type": "integer", "description": "Timeout for wait/assert actions in milliseconds."},
+						"timeout_ms": map[string]any{"type": "integer", "description": "Timeout for wait/assert_* actions in milliseconds. The assert action does not take one: it reads current state once."},
 						"url":        stringSchema("URL for open or navigate_to action."),
 						"id":         stringSchema("Tab id for focus_tab action."),
 						"key":        stringSchema("Key name for press action (Enter, Tab, Escape, etc)."),
+						"assertion": map[string]any{
+							"type":                 "object",
+							"description":          "For the assert action: a brw_assert request ({assertion:\"url\"|\"http_status\"|\"element_count\"|\"element_state\"|\"attribute\"|\"download\", ...}). The step fails with expected-vs-actual text when it does not hold.",
+							"additionalProperties": true,
+						},
 					},
 					"required": []string{"action"},
 				},
@@ -2414,6 +2430,28 @@ func tools() []map[string]any {
 			"timeout_ms": integerSchema("Timeout in milliseconds. Defaults to 5000."),
 			"tab_id":     stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"ref"})),
+		tool("brw_assert", "Deterministic one-shot assertions that would otherwise be hand-written brw_evaluate JavaScript. Pick one with assertion: \"url\" compares location.href exactly, by prefix, or against a fully anchored regex (the \"#fragment\" is ignored unless include_fragment is true); \"http_status\" compares the status of the CURRENT DOCUMENT's navigation; \"element_count\" counts a CSS selector or a semantic role and checks count, or min/max; \"element_state\" checks one ref is enabled, editable, checked or focused (negate inverts it); \"attribute\" compares an attribute on one ref exactly or by substring; \"download\" hashes a file brw_downloads already recorded and checks its sha256 and/or byte size. On success returns {ok, assertion, expected, actual}; on failure it is a tool error naming expected against actual, so you can see what the page said without a second call. NOTHING HERE RETRIES — it reads current state once. If a check needs the page to settle first, put brw_wait_for in front of it. Works on both transports; \"download\" needs the direct-CDP transport and says so by name on the extension bridge.", object(map[string]any{
+			"assertion":        stringEnumSchema("Which check to run.", "url", "http_status", "element_count", "element_state", "attribute", "download"),
+			"expected":         stringSchema("url: the URL, prefix, or regex to match. attribute: the attribute value to match."),
+			"mode":             stringEnumSchema("url: exact (default), prefix, or regex (anchored to the whole URL). attribute: exact (default) or contains.", "exact", "prefix", "regex", "contains"),
+			"include_fragment": boolSchema("url only. Compare the \"#fragment\" too. Defaults false, because a router rewrites it without navigating."),
+			"status":           integerSchema("http_status only. Expected HTTP status of the current document, 100-599."),
+			"selector":         stringSchema("element_count only. CSS selector to count. Use this or role, not both."),
+			"role":             stringSchema("element_count only. Semantic role to count, as brw_find reports it. Use this or selector, not both."),
+			"name":             stringSchema("element_count with role. Restrict the count to this exact accessible name."),
+			"count":            integerSchema("element_count only. Exact number of matches required."),
+			"min":              integerSchema("element_count only. Lower bound on matches. Combine with max for a range."),
+			"max":              integerSchema("element_count only. Upper bound on matches."),
+			"ref":              stringSchema("element_state and attribute. Element ref from brw_snapshot."),
+			"state":            stringEnumSchema("element_state only. Which state the ref must be in.", "enabled", "editable", "checked", "focused"),
+			"negate":           boolSchema("element_state only. Require the NEGATION of state, for example \"not checked\"."),
+			"attribute":        stringSchema("attribute only. Attribute name to read, for example aria-expanded."),
+			"download_guid":    stringSchema("download only. GUID from brw_downloads. Use this or filename, not both."),
+			"filename":         stringSchema("download only. suggested_filename from brw_downloads. Use this or download_guid, not both."),
+			"sha256":           stringSchema("download only. Expected sha256 of the downloaded bytes, 64 hex characters."),
+			"bytes":            integerSchema("download only. Expected size of the downloaded file in bytes."),
+			"tab_id":           stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"assertion"})),
 		tool("brw_commit", "Commit a form field: submits the enclosing form (via submit button or requestSubmit) or presses Enter if no form. Use after filling a field that requires explicit submission.", object(map[string]any{
 			"ref":    stringSchema("Element ref from brw_snapshot."),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),

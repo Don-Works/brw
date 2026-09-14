@@ -315,6 +315,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/assert_hidden", s.assertHidden)
 	mux.HandleFunc("POST /api/page/assert_text", s.assertText)
 	mux.HandleFunc("POST /api/page/assert_value", s.assertValue)
+	mux.HandleFunc("POST /api/page/assert", s.assertPage)
 	mux.HandleFunc("POST /api/page/click_xy", s.clickXY)
 	mux.HandleFunc("GET /api/page/window_bounds", s.windowBounds)
 	mux.HandleFunc("POST /api/browser/resize_window", s.resizeWindow)
@@ -1524,6 +1525,21 @@ func (s *Server) assertValue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertValue(s.contextWithTabID(r.Context(), req.TabID), req.Ref, req.Value, time.Duration(req.TimeoutMS)*time.Millisecond))
+}
+
+// assertPage is the single route behind the richer deterministic assertions.
+// tab_id is transport routing rather than an assertion parameter, so it is
+// decoded alongside the request instead of living on the request type.
+func (s *Server) assertPage(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		browser.AssertRequest
+		TabID string `json:"tab_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	result, err := browser.Assert(s.contextWithTabID(r.Context(), req.TabID), s.manager, req.AssertRequest)
+	writeResult(w, result, err)
 }
 
 func (s *Server) clickXY(w http.ResponseWriter, r *http.Request) {

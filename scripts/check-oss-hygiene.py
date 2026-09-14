@@ -31,10 +31,14 @@ ARGS = [a for a in sys.argv[1:] if a != "--full"]
 FULL = "--full" in sys.argv[1:]
 BASE = ARGS[0] if ARGS else "origin/main"
 SELF = "scripts/check-oss-hygiene.py"
+# Schema tests have to carry a whole recipe document as literal JSON: the parser
+# rejects unknown fields, so a Go struct round-trip would not prove the published
+# field names. Every recipe in these files is fabricated and targets example.test.
 PUBLIC_SYNTHETIC_FIXTURES = {
     SELF,
     "scripts/test-functional.sh",
     "internal/recipe/schema_test.go",
+    "internal/recipe/assertions_test.go",
 }
 
 # Setup renders absolute LaunchAgent, systemd, log and policy paths, so its tests

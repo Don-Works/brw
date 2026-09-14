@@ -282,6 +282,9 @@ type BatchStep struct {
 	AssertValue   string `json:"assert_value,omitempty"`
 	AssertVisible *bool  `json:"assert_visible,omitempty"`
 	AssertHidden  *bool  `json:"assert_hidden,omitempty"`
+	// Assertion carries the richer deterministic checks (url, http_status,
+	// element_count, element_state, attribute, download) for the "assert" action.
+	Assertion *AssertRequest `json:"assertion,omitempty"`
 }
 
 type BatchStepResult struct {

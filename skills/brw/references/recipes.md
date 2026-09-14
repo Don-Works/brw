@@ -53,7 +53,7 @@ A schema-v1 recipe declares:
 - optional non-secret metadata.
 
 Supported actions are `click`, `fill`, `type`, `select`, `press`,
-`navigate_to`, `wait_event`, `timer`, and `capture`. Targets require a role plus
+`navigate_to`, `wait_event`, `timer`, `capture`, and `assert`. Targets require a role plus
 one stable selector: exact/contained accessible name, test ID, or href fragment.
 The selector fields (but not `role`) may contain `${input:name}` for a declared
 runtime value, which lets one reviewed workflow find a named person,
@@ -73,6 +73,20 @@ tabs, and network responses. A transient
 download/tab/network event must be the postcondition on the action that causes
 it so brw can arm observation first. Timers are at most 60 seconds; event waits
 are at most 120 seconds.
+
+An `assert` step carries a deterministic check in `assert`, with `kind` one of
+`url`, `http_status`, `element_count`, `element_state`, `attribute`, or
+`download`. Element kinds name their element with the same semantic `target` as
+every other step, never a ref. `url` takes `expected` plus
+`mode: exact|prefix|regex` (anchored to the whole URL) and compares the
+`#fragment` only when `include_fragment` is set; `element_count` takes
+`count`, or `min`/`max`; `element_state` takes `state: enabled|editable|checked|focused`
+with optional `negate`; `attribute` takes `attribute`, `expected`, and
+`mode: exact|contains`; `download` takes `filename` plus `sha256` and/or `bytes`
+and hashes the file the run produced. An assertion never retries and has no
+timeout: it reads current state once and fails the run with expected against
+actual. When a check needs the page to settle first, put a `wait_event` in front
+of it, where the wait is visible to whoever reviews the recipe.
 
 When a workflow needs the downloaded bytes, put a matching `capture` step
 immediately after `download.completed`. Direct-CDP profiles stage deterministic

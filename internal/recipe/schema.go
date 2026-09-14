@@ -53,6 +53,7 @@ type Step struct {
 	MaxAttempts    int          `json:"max_attempts,omitempty"`
 	IdempotencyKey string       `json:"idempotency_key,omitempty"`
 	Postcondition  *Event       `json:"postcondition,omitempty"`
+	Assert         *Assertion   `json:"assert,omitempty"`
 }
 
 // Target is resolved immediately before every action. Observation refs are
@@ -190,7 +191,7 @@ func validateStep(recipe Recipe, step Step, seen map[string]bool) error {
 	if !stepIDPattern.MatchString(step.ID) || seen[step.ID] {
 		problems = append(problems, errors.New("step id must be unique and stable"))
 	}
-	allowed := []string{"click", "fill", "type", "select", "press", "navigate_to", "wait_event", "timer", "capture"}
+	allowed := []string{"click", "fill", "type", "select", "press", "navigate_to", "wait_event", "timer", "capture", "assert"}
 	if !slices.Contains(allowed, step.Action) {
 		problems = append(problems, fmt.Errorf("unsupported action %q", step.Action))
 	}
@@ -242,6 +243,12 @@ func validateStep(recipe Recipe, step Step, seen map[string]bool) error {
 		} else if err := validateCapture(*step.Capture, recipe.Inputs); err != nil {
 			problems = append(problems, err)
 		}
+	case "assert":
+		if step.Assert == nil {
+			problems = append(problems, errors.New("assertion is required"))
+		} else if err := validateAssertion(*step.Assert, recipe.Inputs); err != nil {
+			problems = append(problems, err)
+		}
 	}
 	actuation := slices.Contains([]string{"click", "fill", "type", "select", "press", "navigate_to"}, step.Action)
 	if actuation && step.Effect == "" {
@@ -270,6 +277,9 @@ func validateStep(recipe Recipe, step Step, seen map[string]bool) error {
 	}
 	if step.Action != "capture" && step.Capture != nil {
 		problems = append(problems, errors.New("capture is only valid for capture"))
+	}
+	if step.Action != "assert" && step.Assert != nil {
+		problems = append(problems, errors.New("assert is only valid for assert"))
 	}
 	if step.Effect != "" && step.Effect != "read" && step.Effect != "external_write" {
 		problems = append(problems, errors.New("effect must be read or external_write"))

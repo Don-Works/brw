@@ -147,9 +147,17 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `download` waits for a file download that starts after the wait begins to finish; `download:<substring>` picks one by filename or URL.
 - `brw_assert_visible/brw_assert_hidden({ref, timeout_ms?})`, `brw_assert_text({ref,text})`, `brw_assert_value({ref,value})` — retry until true, then `{ok:true}`; otherwise `{"error":"timeout","message":"assertion did not pass within timeout","retryable":true}`.
 - Never poll with sleep loops. These retry for you.
+- `brw_assert({assertion, …})` is the deterministic, one-shot family — use it instead of a `brw_evaluate` snippet:
+  - `url` — `{expected, mode?:"exact"|"prefix"|"regex", include_fragment?}`. The regex is anchored to the whole URL; the `#fragment` is ignored unless you ask for it.
+  - `http_status` — `{status}` for the current document's navigation.
+  - `element_count` — `{selector | role (+name?), count | min | max}`.
+  - `element_state` — `{ref, state:"enabled"|"editable"|"checked"|"focused", negate?}`.
+  - `attribute` — `{ref, attribute, expected, mode?:"exact"|"contains"}`.
+  - `download` — `{download_guid | filename, sha256?, bytes?}`, hashing a file `brw_downloads` recorded. Direct-CDP transport only; the extension bridge says so by name.
+  - Passing returns `{ok:true, assertion, expected, actual}`; failing is a tool error naming expected against actual. Nothing here retries — put `brw_wait_for` in front of it when the page needs to settle.
 
 **Batching**
-- `brw_batch({steps:[…]})` runs many steps in one round trip under one tab resolution, stopping at the first failure. Actions: `click, click_text, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, assert_visible, assert_text, assert_value, assert_hidden`. Step fields: `action, ref, text, value, url, id, key, condition, direction, timeout_ms`. There is no `snapshot` or `read` step — get refs first, then batch; assert inline instead of re-reading.
+- `brw_batch({steps:[…]})` runs many steps in one round trip under one tab resolution, stopping at the first failure. Actions: `click, click_text, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, assert_visible, assert_text, assert_value, assert_hidden, assert`. Step fields: `action, ref, text, value, url, id, key, condition, direction, timeout_ms, assertion`. The `assert` step carries a `brw_assert` request in `assertion` and takes no `timeout_ms`. There is no `snapshot` or `read` step — get refs first, then batch; assert inline instead of re-reading.
 - Result: `{ok, steps:[{index,action,ok,error?,tab_id?,new_tab_id?}], error?, tab_id, url, title, focus, changed[], version, steps_completed}` — one observation at the end, not one per step.
 - Pin the tab with a first `{"action":"focus_tab","id":"<tab_id>"}` step; `open` and `focus_tab` steps retarget the rest of the batch.
 - `brw_plan({steps})` is the older sibling: it adds `snapshot`/`read` steps and `expect_ref`/`expect_role` guards but returns a result per step. Prefer `brw_batch` unless you need a mid-flow snapshot.
@@ -185,7 +193,7 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - It is **unauthenticated**: no cookies, no profile, no credentials. Anything behind a login needs `brw_open` + `brw_read`.
 
 **Small reads and page storage**
-- `brw_get({what, target?, name?})` — one typed fact, no hand-written JS. `what` is `url|title|text|value|attr|count|box|styles|visible|hidden|enabled|disabled|checked`. `target` is a ref or a CSS selector and resolves across same-origin iframes and open shadow roots. Use this instead of `brw_evaluate` for simple reads.
+- `brw_get({what, target?, name?})` — one typed fact, no hand-written JS. `what` is `url|title|status|text|value|attr|count|box|styles|visible|hidden|enabled|disabled|editable|checked|focused|state`. `status` is the current document's navigation HTTP status (0 when there was none); `state` returns `{found,visible,enabled,editable,checked,focused}` for one element in a single call. `target` is a ref or a CSS selector and resolves across same-origin iframes and open shadow roots. Use this instead of `brw_evaluate` for simple reads.
 - `brw_storage({action:"get"|"set"|"remove"|"clear", kind?:"local"|"session", key?, value?})` — localStorage/sessionStorage for the current origin. `get` with no `key` returns everything. Not a cookie or credential surface.
 
 **Did my action change anything?**

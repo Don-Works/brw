@@ -558,6 +558,15 @@ func (c *Controller) AssertHidden(ctx context.Context, ref string, timeout time.
 	return c.post(ctx, "/api/page/assert_hidden", map[string]any{"ref": ref, "timeout_ms": timeout.Milliseconds()}, nil)
 }
 
+// Assert forwards the whole assertion to the browser host rather than
+// re-deriving it here. A download digest hashes a file that exists only on that
+// host, so an assertion evaluated on this side of the proxy would hash nothing.
+func (c *Controller) Assert(ctx context.Context, req browser.AssertRequest) (browser.AssertResult, error) {
+	var out browser.AssertResult
+	err := c.post(ctx, "/api/page/assert", req, &out)
+	return out, err
+}
+
 func (c *Controller) CommitField(ctx context.Context, ref string) error {
 	return c.post(ctx, "/api/page/commit", map[string]any{"ref": ref}, nil)
 }

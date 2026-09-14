@@ -215,6 +215,19 @@ func (r Runner) runStep(ctx context.Context, value Recipe, step Step, inputs map
 			result.Artifacts = append(result.Artifacts, meta)
 		}
 		return 1, err
+	case "assert":
+		// No retry and no timeout: the assertion reads current state once. A
+		// recipe that needs the page to settle first puts a wait_event in front
+		// of it, where the wait is visible to whoever reviews the recipe.
+		asserter, ok := r.Surface.(Asserter)
+		if !ok {
+			return 0, errors.New("deterministic assertions are unavailable on this browser surface")
+		}
+		assertion, err := expandAssertion(*step.Assert, inputs)
+		if err != nil {
+			return 0, err
+		}
+		return 1, asserter.Assert(ctx, assertion)
 	case "click", "fill", "type", "select", "press", "navigate_to":
 		return r.runActuation(ctx, value, step, inputs)
 	default:
@@ -367,6 +380,7 @@ func stepUsesSecret(step Step, declared map[string]Input) bool {
 	if step.Capture != nil {
 		values = appendTargetTemplateValues(values, step.Capture.Target)
 	}
+	values = assertionTemplateValues(values, step.Assert)
 	for _, value := range values {
 		for _, match := range inputTemplate.FindAllStringSubmatch(value, -1) {
 			if declared[match[1]].Secret {
@@ -452,6 +466,11 @@ func preflightRuntimePlan(value Recipe, inputs map[string]string) error {
 		}
 		if step.Postcondition != nil {
 			if _, err := expandEvent(*step.Postcondition, inputs); err != nil {
+				return fail(err)
+			}
+		}
+		if step.Assert != nil {
+			if _, err := expandAssertion(*step.Assert, inputs); err != nil {
 				return fail(err)
 			}
 		}

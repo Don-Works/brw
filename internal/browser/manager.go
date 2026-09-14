@@ -2716,6 +2716,15 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, index int, step Batch
 			timeout = 5 * time.Second
 		}
 		actionErr = snapshot.EvalAssert(tabCtx, snapshot.AssertHiddenScript, step.Ref, timeout.Milliseconds())
+	case "assert":
+		// Deliberately has no timeout: these assertions read current state once.
+		// A batch that needs the page to settle first puts a wait step in front
+		// of the assertion, where the wait is visible in the replayable flow.
+		if step.Assertion == nil {
+			actionErr = errors.New("assert requires assertion")
+			break
+		}
+		_, actionErr = evaluateAssertion(tabCtx, m, *step.Assertion)
 	default:
 		actionErr = fmt.Errorf("unknown action %q", step.Action)
 	}

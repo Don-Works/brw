@@ -7,12 +7,17 @@ import (
 
 // GetScript answers a single typed question about the page or one element.
 //
-// It exists so the eleven separate "get X" / "is X" reads an agent needs
-// (text, title, url, value, box, attr, styles, count, visible, enabled,
-// checked) are one round trip and one tool rather than eleven, and so none of
+// It exists so the separate "get X" / "is X" reads an agent needs (text, title,
+// url, status, value, box, attr, styles, count, visible, enabled, checked,
+// state) are one round trip and one tool rather than a dozen, and so none of
 // them requires hand-written JavaScript through brw_evaluate. Element lookup is
 // frame-aware: a ref or selector resolves across same-origin iframes and open
 // shadow roots, which is where ad-hoc document.querySelector silently fails.
+//
+// 'state' returns every interaction flag for one element in a single object
+// rather than one boolean per round trip, and reports found separately: an
+// assertion that cannot tell "disabled" from "not on the page" produces a
+// failure message that sends the caller looking in the wrong place.
 const GetScript = `(function(what, target, name){` + FrameWalkHelpers + `
   function roots(){ return __abRootList(); }
   function resolve(sel){
@@ -56,10 +61,36 @@ const GetScript = `(function(what, target, name){` + FrameWalkHelpers + `
     if(!el) throw new Error('no element matched ' + JSON.stringify(target));
     return el;
   }
+  function editable(el){
+    if(!el) return false;
+    if(el.isContentEditable) return true;
+    var tag = String(el.tagName || '').toLowerCase();
+    if(tag !== 'input' && tag !== 'textarea' && tag !== 'select') return false;
+    return !el.disabled && !el.readOnly;
+  }
+  function focused(el){
+    if(!el) return false;
+    // A focused element inside a shadow root is its ROOT's activeElement; the
+    // document only reports the shadow host. Checking both is what makes this
+    // agree with what the user would call "the focused field".
+    var root = el.getRootNode ? el.getRootNode() : null;
+    if(root && root.activeElement === el) return true;
+    var doc = el.ownerDocument;
+    return !!doc && doc.activeElement === el;
+  }
 
   switch(what){
     case 'url':   return {value: location.href};
     case 'title': return {value: document.title};
+    case 'status': {
+      // responseStatus is the only in-page reading of the MAIN DOCUMENT's HTTP
+      // status. It is absent for documents that never made a network request
+      // (data:, about:blank) and for a same-document history change, so zero
+      // means "no navigation status to report", not "status 0".
+      var nav = null;
+      try { nav = (performance.getEntriesByType('navigation') || [])[0]; } catch(e){}
+      return {value: nav && typeof nav.responseStatus === 'number' ? nav.responseStatus : 0};
+    }
     case 'text':
       if(!target) return {value: document.body ? document.body.innerText : ''};
       return {value: need().innerText};
@@ -92,6 +123,19 @@ const GetScript = `(function(what, target, name){` + FrameWalkHelpers + `
     case 'enabled': { var e1 = resolve(target); return {value: !!e1 && !e1.disabled}; }
     case 'disabled':{ var e2 = resolve(target); return {value: !!e2 && !!e2.disabled}; }
     case 'checked': { var e3 = resolve(target); return {value: !!e3 && !!e3.checked}; }
+    case 'editable':{ return {value: editable(resolve(target))}; }
+    case 'focused': { return {value: focused(resolve(target))}; }
+    case 'state': {
+      var e4 = resolve(target);
+      return {value: {
+        found:    !!e4,
+        visible:  visible(e4),
+        enabled:  !!e4 && !e4.disabled,
+        editable: editable(e4),
+        checked:  !!e4 && !!e4.checked,
+        focused:  focused(e4),
+      }};
+    }
     default: throw new Error('unknown get target ' + JSON.stringify(what));
   }
 })`

@@ -16,10 +16,13 @@ const getterFixture = `<!doctype html><html><head><title>Getter fixture</title><
 <h1 id="heading">Hello</h1>
 <input id="name" value="Ada" data-kind="person">
 <input id="agree" type="checkbox" checked>
+<input id="frozen" value="fixed" readonly>
+<div id="editor" contenteditable="true">notes</div>
 <button id="go" disabled>Go</button>
 <p class="row">one</p><p class="row">two</p><p class="row">three</p>
 <div id="gone" style="display:none">invisible</div>
 <iframe srcdoc="<p id='inframe'>inside the frame</p>"></iframe>
+<script>document.getElementById('name').focus();</script>
 </body></html>`
 
 func evalJSON(t *testing.T, ctx context.Context, expr string) map[string]any {
@@ -63,6 +66,13 @@ func TestGetScript(t *testing.T) {
 		{name: "enabled input", what: "enabled", target: "#name", want: true},
 		{name: "checked box", what: "checked", target: "#agree", want: true},
 		{name: "single css property", what: "styles", target: "#gone", attr: "display", want: "none"},
+		{name: "editable input", what: "editable", target: "#name", want: true},
+		{name: "readonly input is not editable", what: "editable", target: "#frozen", want: false},
+		{name: "disabled control is not editable", what: "editable", target: "#go", want: false},
+		{name: "contenteditable is editable", what: "editable", target: "#editor", want: true},
+		{name: "focused input", what: "focused", target: "#name", want: true},
+		{name: "unfocused input", what: "focused", target: "#agree", want: false},
+		{name: "navigation http status", what: "status", want: float64(200)},
 		// Frame-awareness is the reason this exists rather than a bare
 		// document.querySelector in brw_evaluate.
 		{name: "resolves inside a same-origin iframe", what: "text", target: "#inframe", want: "inside the frame"},
@@ -84,6 +94,55 @@ func TestGetScript(t *testing.T) {
 			got := evalJSON(t, ctx, BuildGetExpression(tt.what, tt.target, tt.attr))
 			if got["value"] != tt.want {
 				t.Fatalf("get %s(%s) = %#v, want %#v", tt.what, tt.target, got["value"], tt.want)
+			}
+		})
+	}
+}
+
+// TestGetScriptStateReportsEveryFlagAtOnce covers the 'state' case: one round
+// trip for every interaction flag, with found reported separately so a caller
+// can tell "disabled" from "not on the page".
+func TestGetScriptStateReportsEveryFlagAtOnce(t *testing.T) {
+	ctx, cancel := newHeadlessSettleCtx(t)
+	defer cancel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, getterFixture)
+	}))
+	defer srv.Close()
+	if err := chromedp.Run(ctx, chromedp.Navigate(srv.URL)); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		target string
+		want   map[string]any
+	}{
+		{name: "focused text input", target: "#name", want: map[string]any{
+			"found": true, "visible": true, "enabled": true, "editable": true, "checked": false, "focused": true,
+		}},
+		{name: "checked box", target: "#agree", want: map[string]any{
+			"found": true, "visible": true, "enabled": true, "editable": true, "checked": true, "focused": false,
+		}},
+		{name: "disabled button", target: "#go", want: map[string]any{
+			"found": true, "visible": true, "enabled": false, "editable": false, "checked": false, "focused": false,
+		}},
+		{name: "missing element", target: "#nope", want: map[string]any{
+			"found": false, "visible": false, "enabled": false, "editable": false, "checked": false, "focused": false,
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := evalJSON(t, ctx, BuildGetExpression("state", tt.target, ""))
+			state, ok := got["value"].(map[string]any)
+			if !ok {
+				t.Fatalf("state value = %#v, want an object", got["value"])
+			}
+			for key, want := range tt.want {
+				if state[key] != want {
+					t.Fatalf("state[%q] = %#v, want %#v (full: %#v)", key, state[key], want, state)
+				}
 			}
 		})
 	}

@@ -497,6 +497,25 @@ func (s *BrowserSurface) cacheCompletedDownloads(ctx context.Context, entries []
 	}
 }
 
+// peekCompletedDownload finds a cached completed download for this tab without
+// consuming it. A digest assertion reads the download; only a capture step
+// claims it.
+func (s *BrowserSurface) peekCompletedDownload(ctx context.Context, filename string) (browser.DownloadEntry, bool) {
+	if filename == "" {
+		return browser.DownloadEntry{}, false
+	}
+	tabID := browser.TabIDFromContext(ctx)
+	s.downloadsMu.Lock()
+	defer s.downloadsMu.Unlock()
+	for index := len(s.downloads) - 1; index >= 0; index-- {
+		candidate := s.downloads[index]
+		if candidate.tabID == tabID && candidate.entry.SuggestedFilename == filename {
+			return candidate.entry, true
+		}
+	}
+	return browser.DownloadEntry{}, false
+}
+
 func (s *BrowserSurface) takeCompletedDownload(ctx context.Context, guid, filename string) (browser.DownloadEntry, bool, error) {
 	if guid == "" && filename == "" {
 		return browser.DownloadEntry{}, false, nil
