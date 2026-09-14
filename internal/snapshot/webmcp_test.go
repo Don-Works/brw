@@ -20,8 +20,8 @@ func awaitPromise(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 
 // TestWebMCPRuntimeCapturesAndCallsPageTools proves the opt-in WebMCP runtime:
 // brw installs the shim at document-start, a cooperating page registers a tool
-// via navigator.modelContext, and brw can both list it (PageToolsScript) and
-// invoke it (CallPageToolScript) — returning the tool's result.
+// via navigator.modelContext, and brw can both list it (BuildPageToolsExpression)
+// and invoke it (InvokePageTool) — returning the tool's result.
 func TestWebMCPRuntimeCapturesAndCallsPageTools(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

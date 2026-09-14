@@ -428,6 +428,11 @@ type TraceEntry struct {
 	// trace, which is readable over the HTTP control plane.
 	Redacted bool `json:"redacted,omitempty"`
 
+	// Repeat counts the EXTRA times a collapsible action repeated identically
+	// before anything else was recorded; absent means it ran once. DurationMS
+	// then covers the whole run of repeats and Timestamp is the last of them.
+	Repeat int `json:"repeat,omitempty"`
+
 	OK         bool   `json:"ok"`
 	Error      string `json:"error,omitempty"`
 	DurationMS int64  `json:"duration_ms"`

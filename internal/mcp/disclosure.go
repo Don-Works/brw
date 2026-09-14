@@ -11,8 +11,10 @@ import (
 //
 // An MCP client re-sends the whole tool catalogue on every request, so the
 // catalogue is a fixed cost on every turn rather than a one-off. brw's full
-// surface is over 13k approximate tokens; a browser agent uses a dozen tools in a
-// normal session and pays for all 54 every time it thinks.
+// surface costs several times what the dozen tools a browser agent uses in a
+// normal session do, and it pays that on every turn it thinks. The figures are
+// not repeated here because they go stale silently every time a tool is added:
+// scripts/measure-tool-catalogue.py prints the current cost per profile.
 //
 // The "auto" profile advertises the minimal working set plus brw_tools. When an
 // agent needs something outside that set it searches for it, the server unlocks

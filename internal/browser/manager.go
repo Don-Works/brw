@@ -3069,15 +3069,27 @@ func (m *Manager) recordTrace(tabID string, entry TraceEntry) {
 			}
 		}
 	}
-	// Publish before taking traceMu: subscribers get the same fully redacted
-	// entry the ring buffer stores, without waiting on it.
-	m.publishTrace(entry)
+	// A repeat of a collapsible action folds into the row it repeats instead of
+	// appending: a poll loop would otherwise push every other entry out of the
+	// ring. The decision needs the same lock as the append, so both happen in one
+	// critical section rather than racing each other.
 	m.traceMu.Lock()
+	if n := len(m.trace); n > 0 && IsCollapsibleAction(entry.Action) && RepeatsTraceEntry(m.trace[n-1], entry) {
+		m.trace[n-1].Repeat++
+		m.trace[n-1].DurationMS += entry.DurationMS
+		m.trace[n-1].Timestamp = entry.Timestamp
+		m.traceMu.Unlock()
+		return
+	}
 	m.trace = append(m.trace, entry)
 	if len(m.trace) > 500 {
 		m.trace = m.trace[len(m.trace)-500:]
 	}
 	m.traceMu.Unlock()
+	// Published after the ring rather than before it, because a folded repeat
+	// must not reach subscribers either and only the ring can tell. Subscribers
+	// get the same fully redacted entry the ring stores; publishTrace never blocks.
+	m.publishTrace(entry)
 }
 
 func (m *Manager) GetTrace() TraceResult {

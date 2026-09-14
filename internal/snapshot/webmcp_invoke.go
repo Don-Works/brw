@@ -107,15 +107,24 @@ type PageToolInvocation struct {
 	Name   string `json:"name,omitempty"`
 	Status string `json:"status,omitempty"`
 	Frame  string `json:"frame,omitempty"`
+	// TabID names the tab the invocation was started in. The page cannot know
+	// it, so the daemon stamps it: a poll walks only the windows of whatever tab
+	// it lands in, and a page tool that opens a tab moves the active one, so an
+	// agent needs a tab to poll back into.
+	TabID string `json:"tab_id,omitempty"`
 	// Detached marks a start that returned without waiting for the result.
 	Detached bool `json:"detached,omitempty"`
 	// TimedOut marks a wait that ended with the tool still running. The
 	// invocation is untouched and still addressable by ID.
-	TimedOut  bool            `json:"timed_out,omitempty"`
-	Cancelled bool            `json:"cancelled,omitempty"`
-	Result    json.RawMessage `json:"result,omitempty"`
-	Error     string          `json:"error,omitempty"`
-	ElapsedMS int64           `json:"elapsed_ms,omitempty"`
+	TimedOut bool `json:"timed_out,omitempty"`
+	// Interrupted marks a wait that ended for a reason other than its timeout —
+	// a cancelled request, a closed tab, an evaluate that failed. The invocation
+	// itself is untouched, so the ID is still the handle on it.
+	Interrupted bool            `json:"interrupted,omitempty"`
+	Cancelled   bool            `json:"cancelled,omitempty"`
+	Result      json.RawMessage `json:"result,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	ElapsedMS   int64           `json:"elapsed_ms,omitempty"`
 	// StartedURL is the document the invocation was started in, and CurrentURL
 	// where the tab is now: together they say what a lost invocation lost.
 	StartedURL string `json:"started_url,omitempty"`
@@ -291,7 +300,7 @@ const webmcpRuntimeHelpers = `
                error: 'webmcp invocation not found: ' + id + ' (this document minted no such invocation; use the id brw_call_page_tool returned)' };
     }
     return { ok: false, id: id, status: 'lost', current_url: url,
-             error: 'webmcp invocation lost: the document that started ' + id + ' navigated away before the tool finished' };
+             error: 'webmcp invocation lost: no document in the polled tab holds ' + id + ' (it navigated away before the tool finished, or the poll landed on a different tab: pass the tab_id the invocation reported)' };
   }
 `
 
@@ -386,7 +395,13 @@ func BuildPageToolInvokeExpression(opts PageToolInvokeOptions) (string, error) {
   } catch (err) {
     settle('failed', null, String(err && err.message || err));
   }
-  return { ok: true, id: id, name: NAME, status: rec.status, frame: target.frame, started_url: rec.url };
+  // fn can throw before this line, which has already settled rec to 'failed'.
+  // Detached, this report is the whole answer, so it carries that outcome rather
+  // than a hardcoded ok:true sending the agent to collect work that already failed.
+  var out = { ok: rec.status === 'running', id: id, name: NAME, status: rec.status,
+              frame: target.frame, started_url: rec.url };
+  if (rec.error) out.error = rec.error;
+  return out;
 })()`, nil
 }
 
@@ -451,8 +466,8 @@ func InvokePageTool(ctx context.Context, eval PageToolEvaluator, opts PageToolIn
 		timeout = DefaultPageToolTimeout
 	}
 	final, err := AwaitPageTool(ctx, eval, started.ID, timeout)
-	if err != nil {
-		return PageToolInvocation{}, fmt.Errorf("webmcp invocation %s started but could not be collected: %w", started.ID, err)
+	if final.ID == "" {
+		final.ID = started.ID
 	}
 	if final.Name == "" {
 		final.Name = started.Name
@@ -460,13 +475,19 @@ func InvokePageTool(ctx context.Context, eval PageToolEvaluator, opts PageToolIn
 	if final.StartedURL == "" {
 		final.StartedURL = started.StartedURL
 	}
+	if err != nil {
+		return final, fmt.Errorf("webmcp invocation %s started but could not be collected: %w", started.ID, err)
+	}
 	return final, nil
 }
 
 // AwaitPageTool polls one invocation until it leaves the running state or the
-// timeout expires. A zero timeout reads the current state once.
+// timeout expires. A zero timeout reads the current state once. However the wait
+// ends, the report carries the invocation id: work that outlived the wait has to
+// stay addressable rather than surviving only inside an error string.
 func AwaitPageTool(ctx context.Context, eval PageToolEvaluator, id string, timeout time.Duration) (PageToolInvocation, error) {
-	if err := validatePageToolID(id); err != nil {
+	id, err := validatePageToolID(id)
+	if err != nil {
 		return PageToolInvocation{}, err
 	}
 	if timeout < 0 {
@@ -479,7 +500,7 @@ func AwaitPageTool(ctx context.Context, eval PageToolEvaluator, id string, timeo
 	wait := firstPageToolPollInterval
 	expression := BuildPageToolResultExpression(id)
 
-	var last PageToolInvocation
+	last := PageToolInvocation{ID: id}
 	var lastErr error
 	for {
 		got, err := evaluatePageTool(ctx, eval, expression)
@@ -487,8 +508,11 @@ func AwaitPageTool(ctx context.Context, eval PageToolEvaluator, id string, timeo
 		case err == nil:
 			lastErr = nil
 			last = got
-			if got.Status != PageToolRunning {
-				return got, nil
+			if last.ID == "" {
+				last.ID = id
+			}
+			if last.Status != PageToolRunning {
+				return last, nil
 			}
 		case transientEvaluateFailure(err):
 			// The evaluate landed mid-navigation and the old execution context
@@ -496,7 +520,7 @@ func AwaitPageTool(ctx context.Context, eval PageToolEvaluator, id string, timeo
 			// the tab now has, which is where the invocation is reported lost.
 			lastErr = err
 		default:
-			return PageToolInvocation{}, err
+			return interruptedPageTool(last, id), err
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -507,7 +531,7 @@ func AwaitPageTool(ctx context.Context, eval PageToolEvaluator, id string, timeo
 		}
 		select {
 		case <-ctx.Done():
-			return PageToolInvocation{}, ctx.Err()
+			return interruptedPageTool(last, id), ctx.Err()
 		case <-time.After(wait):
 		}
 		wait *= 2
@@ -516,7 +540,7 @@ func AwaitPageTool(ctx context.Context, eval PageToolEvaluator, id string, timeo
 		}
 	}
 	if lastErr != nil {
-		return PageToolInvocation{}, lastErr
+		return interruptedPageTool(last, id), lastErr
 	}
 	if timeout > 0 {
 		last.TimedOut = true
@@ -528,21 +552,37 @@ func AwaitPageTool(ctx context.Context, eval PageToolEvaluator, id string, timeo
 // CancelPageTool stops waiting on an invocation and signals the page tool
 // through its AbortSignal.
 func CancelPageTool(ctx context.Context, eval PageToolEvaluator, id string) (PageToolInvocation, error) {
-	if err := validatePageToolID(id); err != nil {
+	id, err := validatePageToolID(id)
+	if err != nil {
 		return PageToolInvocation{}, err
 	}
 	return evaluatePageTool(ctx, eval, BuildPageToolCancelExpression(id))
 }
 
-func validatePageToolID(id string) error {
+// interruptedPageTool describes an invocation whose wait ended for a reason
+// other than the timeout. Nothing was done to the invocation itself, so the
+// report keeps the id and names the verbs that get back to it.
+func interruptedPageTool(last PageToolInvocation, id string) PageToolInvocation {
+	last.ID = id
+	last.OK = false
+	last.TimedOut = false
+	last.Interrupted = true
+	last.Note = "the wait ended early; the invocation itself was not stopped — collect it with brw_page_tool_result or stop it with brw_page_tool_cancel"
+	return last
+}
+
+// validatePageToolID checks an invocation id and returns the trimmed form. The
+// trimmed value is the one the page expression must embed: validating one string
+// and then looking up another turns a padded id into a bogus "lost" report.
+func validatePageToolID(id string) (string, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return errors.New("invocation id is required; it comes from brw_call_page_tool")
+		return "", errors.New("invocation id is required; it comes from brw_call_page_tool")
 	}
 	if !pageToolIDPattern.MatchString(id) {
-		return fmt.Errorf("%w: %q was not minted by brw, so no page can be holding it", ErrPageToolIDUnrecognised, id)
+		return "", fmt.Errorf("%w: %q was not minted by brw, so no page can be holding it", ErrPageToolIDUnrecognised, id)
 	}
-	return nil
+	return id, nil
 }
 
 // evaluatePageTool runs one page script and re-decodes its generic JSON value

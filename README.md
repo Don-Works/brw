@@ -378,7 +378,7 @@ Core MCP tools include:
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: `all` costs ~22.3k tokens, `core` ~7.9k, `minimal` ~4.3k,
+tokens on every turn: `all` costs ~22.9k tokens, `core` ~7.9k, `minimal` ~4.3k,
 and `auto` starts at ~4.5k and grows only as the agent discovers tools it needs
 via `brw_tools` (measure with `scripts/measure-tool-catalogue.py`).
 
@@ -443,8 +443,11 @@ Backend-specific notes:
   `brw_page_tool_cancel`; a waited call that outlasts its timeout returns the
   same id rather than abandoning the work. Tools are registered per document, so
   `frame` targets a same-origin iframe's own tools. Arguments are capped at 64KB
-  and refused above it, never truncated, and an invocation whose page navigates
-  away is reported as `status:"lost"` instead of waiting out the timeout.
+  and refused above it, never truncated, and the tool's own result is windowed
+  like `brw_evaluate`. An invocation no document in the polled tab holds — its
+  page navigated away, or the poll landed on another tab — is reported as
+  `status:"lost"` instead of waiting out the timeout; every report carries the
+  `tab_id` to poll back into.
 - **Navigation guardrail**: `--blocked-domains` / `--allowed-domains` (or
   `BRW_BLOCKED_DOMAINS` / `BRW_ALLOWED_DOMAINS`) gate `brw_open`,
   `brw_open_incognito`, `brw_navigate_to`, plan/batch `open` steps,

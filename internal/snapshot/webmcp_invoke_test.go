@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,6 +48,17 @@ const slowToolPage = `<!doctype html><html><body>
           options.signal.addEventListener('abort', function(){ reject(new Error('aborted by the agent')); });
         }
       });
+    }
+  });
+  navigator.modelContext.registerTool({
+    name: "throw_now",
+    description: "Fail the instant it is called",
+    inputSchema: { type: "object", properties: {} },
+    execute: function(){
+      window.__dispatches++;
+      // Synchronous: the invocation is already settled when the start script
+      // reaches its return statement.
+      throw new Error("ledger is locked");
     }
   });
   navigator.modelContext.registerTool({
@@ -315,7 +327,9 @@ func TestPageToolInputValidationRefusesBeforeDispatch(t *testing.T) {
 		t.Fatalf("page tool was dispatched %d times for refused arguments (was %d)", got, before)
 	}
 
-	// Turning validation off hands the arguments to the tool as given.
+	// Turning validation off hands the arguments to the tool as given: the same
+	// arguments the schema refused above now reach it, which only the page's own
+	// dispatch counter can prove.
 	got, err := snapshot.InvokePageTool(ctx, eval, snapshot.PageToolInvokeOptions{
 		Name:      "export_ledger",
 		Arguments: []byte(`{}`),
@@ -324,8 +338,11 @@ func TestPageToolInputValidationRefusesBeforeDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unvalidated invoke: %v", err)
 	}
-	if !got.OK {
+	if !got.OK || got.Status != snapshot.PageToolRunning {
 		t.Fatalf("unvalidated invoke = %+v, want the page to decide", got)
+	}
+	if after := dispatchCount(t, ctx); after != before+1 {
+		t.Fatalf("dispatch count = %d, want %d: the unvalidated arguments never reached the tool", after, before+1)
 	}
 }
 
@@ -488,8 +505,15 @@ func TestPageToolInvocationIsLostWhenThePageNavigatesAway(t *testing.T) {
 	if lost.Status != snapshot.PageToolLost || lost.OK || lost.TimedOut {
 		t.Fatalf("poll after navigation = %+v, want status lost", lost)
 	}
-	if !strings.Contains(lost.Error, "navigated away") {
-		t.Fatalf("lost invocation error = %q, want it to name the navigation", lost.Error)
+	// The poll walks only the windows of the tab it landed in, so the message has
+	// to say what was observed — no document HERE holds the id — and name the
+	// thing an agent can act on, rather than asserting a navigation it did not
+	// establish. A page tool that opens a tab moves the active one, and that is
+	// the same report on a document that is alive and still running.
+	for _, want := range []string{"no document in the polled tab holds", "navigated away", "tab_id"} {
+		if !strings.Contains(lost.Error, want) {
+			t.Fatalf("lost invocation error = %q, want it to name %q", lost.Error, want)
+		}
 	}
 	if elapsed := time.Since(begun); elapsed > deadline/2 {
 		t.Fatalf("lost invocation took %s to report, which is waiting out the timeout", elapsed)
@@ -499,4 +523,167 @@ func TestPageToolInvocationIsLostWhenThePageNavigatesAway(t *testing.T) {
 	if _, err := snapshot.AwaitPageTool(ctx, eval, "not-an-id", 0); !errors.Is(err, snapshot.ErrPageToolIDUnrecognised) {
 		t.Fatalf("bogus id error = %v, want ErrPageToolIDUnrecognised", err)
 	}
+}
+
+// A page tool that throws the instant it is called has already failed by the
+// time the start script returns. Detached, that report is the whole answer the
+// agent gets, so reporting ok:true and dropping the message would send it off to
+// collect work that never ran.
+func TestSynchronouslyFailingPageToolIsReportedAtTheStart(t *testing.T) {
+	srv := servePage(t, slowToolPage)
+	ctx := armedWebMCPTab(t, srv.URL)
+	eval := chromedpEvaluator(ctx)
+
+	for _, tc := range []struct {
+		name   string
+		detach bool
+	}{
+		{name: "detached", detach: true},
+		{name: "waited", detach: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := snapshot.InvokePageTool(ctx, eval, snapshot.PageToolInvokeOptions{
+				Name:     "throw_now",
+				Detach:   tc.detach,
+				Validate: true,
+				Timeout:  5 * time.Second,
+			})
+			if err != nil {
+				t.Fatalf("invoke: %v", err)
+			}
+			if got.OK || got.Status != snapshot.PageToolFailed {
+				t.Fatalf("invoke = %+v, want ok:false with status failed", got)
+			}
+			if !strings.Contains(got.Error, "ledger is locked") {
+				t.Fatalf("invoke error = %q, want the page tool's own message", got.Error)
+			}
+			if got.Detached || strings.Contains(got.Note, "collect it") {
+				t.Fatalf("invoke = %+v, want no instruction to collect an invocation that already failed", got)
+			}
+		})
+	}
+}
+
+// scriptedEvaluator answers page-tool expressions without a browser, so the
+// parts of the invocation path that are pure daemon logic — which id the
+// expression carries, what a wait returns when it is cut short — stay testable
+// on a machine with no Chrome.
+type scriptedEvaluator struct {
+	mu          sync.Mutex
+	expressions []string
+	respond     func(expression string, call int) (any, error)
+}
+
+func (s *scriptedEvaluator) eval(_ context.Context, expression string) (any, error) {
+	s.mu.Lock()
+	s.expressions = append(s.expressions, expression)
+	call := len(s.expressions)
+	s.mu.Unlock()
+	return s.respond(expression, call)
+}
+
+func (s *scriptedEvaluator) first() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.expressions) == 0 {
+		return ""
+	}
+	return s.expressions[0]
+}
+
+// Validation trimmed a copy of the id and the expression then embedded the
+// original, so a padded id passed validation, was looked up verbatim, found
+// nothing, and came back as "lost" — the misleading answer rather than a
+// rejected id. The value that reaches the page has to be the validated one.
+func TestPageToolIDIsTrimmedBeforeItReachesThePage(t *testing.T) {
+	const id = "0a1b2c3d4e5f6071-3"
+	running := map[string]any{"ok": false, "id": id, "status": "running"}
+
+	for _, tc := range []struct {
+		name  string
+		given string
+	}{
+		{name: "surrounding spaces", given: "  " + id + "  "},
+		{name: "trailing newline", given: id + "\n"},
+		{name: "already clean", given: id},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("result", func(t *testing.T) {
+				rec := &scriptedEvaluator{respond: func(string, int) (any, error) { return running, nil }}
+				if _, err := snapshot.AwaitPageTool(context.Background(), rec.eval, tc.given, 0); err != nil {
+					t.Fatalf("await: %v", err)
+				}
+				if got, want := rec.first(), snapshot.BuildPageToolResultExpression(id); got != want {
+					t.Fatalf("poll expression carries the untrimmed id:\n%s\nwant\n%s", got, want)
+				}
+			})
+			t.Run("cancel", func(t *testing.T) {
+				rec := &scriptedEvaluator{respond: func(string, int) (any, error) { return running, nil }}
+				if _, err := snapshot.CancelPageTool(context.Background(), rec.eval, tc.given); err != nil {
+					t.Fatalf("cancel: %v", err)
+				}
+				if got, want := rec.first(), snapshot.BuildPageToolCancelExpression(id); got != want {
+					t.Fatalf("cancel expression carries the untrimmed id:\n%s\nwant\n%s", got, want)
+				}
+			})
+		})
+	}
+}
+
+// A wait can end without the invocation ending: the request is cancelled, the
+// tab closes, an evaluate fails outright. The invocation is untouched in the
+// page, so the id has to come back in the report — an id that survives only
+// inside an error string is not something an agent can poll or cancel with.
+func TestPageToolWaitKeepsTheIDWhenItIsCutShort(t *testing.T) {
+	const id = "0a1b2c3d4e5f6071-4"
+	running := map[string]any{"ok": false, "id": id, "status": "running"}
+
+	t.Run("cancelled context", func(t *testing.T) {
+		rec := &scriptedEvaluator{respond: func(string, int) (any, error) { return running, nil }}
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(120 * time.Millisecond)
+			cancel()
+		}()
+		got, err := snapshot.AwaitPageTool(ctx, rec.eval, id, 30*time.Second)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("await error = %v, want context.Canceled", err)
+		}
+		if got.ID != id || !got.Interrupted || got.TimedOut {
+			t.Fatalf("cancelled wait = %+v, want the id back marked interrupted", got)
+		}
+	})
+
+	t.Run("evaluate fails outright", func(t *testing.T) {
+		boom := errors.New("tab was closed")
+		rec := &scriptedEvaluator{respond: func(string, int) (any, error) { return nil, boom }}
+		got, err := snapshot.AwaitPageTool(context.Background(), rec.eval, id, time.Second)
+		if !errors.Is(err, boom) {
+			t.Fatalf("await error = %v, want the evaluate failure", err)
+		}
+		if got.ID != id || !got.Interrupted {
+			t.Fatalf("failed wait = %+v, want the id back marked interrupted", got)
+		}
+	})
+
+	t.Run("a started invocation survives a failed collection", func(t *testing.T) {
+		boom := errors.New("tab was closed")
+		rec := &scriptedEvaluator{respond: func(_ string, call int) (any, error) {
+			if call == 1 {
+				return map[string]any{"ok": true, "id": id, "name": "export_ledger", "status": "running"}, nil
+			}
+			return nil, boom
+		}}
+		got, err := snapshot.InvokePageTool(context.Background(), rec.eval, snapshot.PageToolInvokeOptions{
+			Name:      "export_ledger",
+			Arguments: []byte(`{"format":"csv"}`),
+			Timeout:   time.Second,
+		})
+		if !errors.Is(err, boom) {
+			t.Fatalf("invoke error = %v, want the collection failure", err)
+		}
+		if got.ID != id || !got.Interrupted {
+			t.Fatalf("failed collection = %+v, want the started invocation still addressable", got)
+		}
+	})
 }

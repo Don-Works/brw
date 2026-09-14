@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
@@ -23,26 +25,32 @@ import (
 // is why every transport gets this without a second implementation.
 
 // pageToolEvaluator adapts the controller's Evaluate to the page-tool runner.
-func (s *Server) pageToolEvaluator() snapshot.PageToolEvaluator {
+// label names the call in the trace instead of the generated script: a bounded
+// wait runs one evaluate per poll — hundreds of them at the ten-minute cap — and
+// recorded as raw evaluate rows they would push the session's real activity out
+// of the trace ring.
+func (s *Server) pageToolEvaluator(label string) snapshot.PageToolEvaluator {
 	return func(ctx context.Context, expression string) (any, error) {
-		return s.manager.Evaluate(ctx, expression)
+		return s.manager.Evaluate(browser.WithTraceLabel(ctx, browser.TraceActionPageTool, label), expression)
 	}
 }
 
-// pageToolTimeout clamps a caller's timeout_ms. A zero or missing value means
-// fallback; a negative one is a mistake, not a request for no wait at all.
-func pageToolTimeout(ms int, fallback time.Duration) time.Duration {
-	if ms == 0 {
-		return fallback
-	}
+// pageToolTimeout clamps a caller's timeout_ms. Zero or missing means the calling
+// tool's own default. A negative value is refused rather than guessed at: the two
+// readings of it — no wait at all, or the default wait — differ by thirty seconds
+// of the agent's turn, and neither is what the caller asked for.
+func pageToolTimeout(ms int, fallback time.Duration) (time.Duration, error) {
 	if ms < 0 {
-		return 0
+		return 0, fmt.Errorf("timeout_ms must not be negative, got %d; omit it for this tool's default wait", ms)
+	}
+	if ms == 0 {
+		return fallback, nil
 	}
 	timeout := time.Duration(ms) * time.Millisecond
 	if timeout > snapshot.MaxPageToolTimeout {
-		return snapshot.MaxPageToolTimeout
+		return snapshot.MaxPageToolTimeout, nil
 	}
-	return timeout
+	return timeout, nil
 }
 
 func (s *Server) callPageTool(ctx context.Context, args json.RawMessage) (any, *rpcError) {
@@ -52,6 +60,8 @@ func (s *Server) callPageTool(ctx context.Context, args json.RawMessage) (any, *
 		Frame     string          `json:"frame"`
 		Detach    bool            `json:"detach"`
 		TimeoutMS int             `json:"timeout_ms"`
+		Offset    int             `json:"offset"`
+		MaxBytes  int             `json:"max_bytes"`
 		// ValidateInput defaults to true, so the pointer distinguishes "not
 		// supplied" from an explicit false.
 		ValidateInput *bool `json:"validate_input"`
@@ -62,51 +72,81 @@ func (s *Server) callPageTool(ctx context.Context, args json.RawMessage) (any, *
 	if strings.TrimSpace(req.Name) == "" {
 		return toolError(errors.New("name is required; call brw_page_tools to list available page tools")), nil
 	}
+	timeout, err := pageToolTimeout(req.TimeoutMS, snapshot.DefaultPageToolTimeout)
+	if err != nil {
+		return toolError(err), nil
+	}
 	validate := true
 	if req.ValidateInput != nil {
 		validate = *req.ValidateInput
 	}
-	return toolJSON(snapshot.InvokePageTool(ctx, s.pageToolEvaluator(), snapshot.PageToolInvokeOptions{
+	invocation, err := snapshot.InvokePageTool(ctx, s.pageToolEvaluator("call "+strings.TrimSpace(req.Name)), snapshot.PageToolInvokeOptions{
 		Name:      req.Name,
 		Arguments: req.Arguments,
 		Frame:     req.Frame,
 		Detach:    req.Detach,
-		Timeout:   pageToolTimeout(req.TimeoutMS, snapshot.DefaultPageToolTimeout),
+		Timeout:   timeout,
 		Validate:  validate,
-	}))
+	})
+	return pageToolReport(ctx, invocation, err, req.Offset, req.MaxBytes)
 }
 
 func (s *Server) pageToolResult(ctx context.Context, args json.RawMessage) (any, *rpcError) {
 	var req struct {
 		InvocationID string `json:"invocation_id"`
-		ID           string `json:"id"`
 		TimeoutMS    int    `json:"timeout_ms"`
+		Offset       int    `json:"offset"`
+		MaxBytes     int    `json:"max_bytes"`
 	}
 	if err := unmarshalArgs(args, &req); err != nil {
 		return nil, invalid(err)
 	}
-	id := firstNonEmpty(req.InvocationID, req.ID)
 	// No timeout means "tell me where it is now", which is the cheap poll an
 	// agent interleaves with other work.
-	return toolJSON(snapshot.AwaitPageTool(ctx, s.pageToolEvaluator(), id, pageToolTimeout(req.TimeoutMS, 0)))
+	timeout, err := pageToolTimeout(req.TimeoutMS, 0)
+	if err != nil {
+		return toolError(err), nil
+	}
+	id := strings.TrimSpace(req.InvocationID)
+	invocation, err := snapshot.AwaitPageTool(ctx, s.pageToolEvaluator("result "+id), id, timeout)
+	return pageToolReport(ctx, invocation, err, req.Offset, req.MaxBytes)
 }
 
 func (s *Server) cancelPageTool(ctx context.Context, args json.RawMessage) (any, *rpcError) {
 	var req struct {
 		InvocationID string `json:"invocation_id"`
-		ID           string `json:"id"`
+		Offset       int    `json:"offset"`
+		MaxBytes     int    `json:"max_bytes"`
 	}
 	if err := unmarshalArgs(args, &req); err != nil {
 		return nil, invalid(err)
 	}
-	return toolJSON(snapshot.CancelPageTool(ctx, s.pageToolEvaluator(), firstNonEmpty(req.InvocationID, req.ID)))
+	id := strings.TrimSpace(req.InvocationID)
+	invocation, err := snapshot.CancelPageTool(ctx, s.pageToolEvaluator("cancel "+id), id)
+	return pageToolReport(ctx, invocation, err, req.Offset, req.MaxBytes)
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
+// pageToolReport renders one invocation as a bounded tool result.
+//
+// The payload is a page tool's own return value, so the page decides its size: it
+// goes through the same offset/max_bytes windowing as brw_evaluate rather than
+// being serialised whole into the turn, and a cached result stays collectable for
+// five minutes, so an unbounded one could be re-dumped repeatedly.
+//
+// A wait that ended early — a cancelled request, a closed tab, an evaluate that
+// failed — is reported WITH its id rather than as a bare error, because the
+// invocation is still running in the document whatever happened to the call that
+// was watching it, and the id is the only way back to it.
+func pageToolReport(ctx context.Context, invocation snapshot.PageToolInvocation, err error, offset, maxBytes int) (any, *rpcError) {
+	if err != nil && invocation.ID == "" {
+		return toolError(err), nil
 	}
-	return ""
+	if err != nil {
+		invocation.OK = false
+		invocation.Error = err.Error()
+	}
+	if invocation.TabID == "" {
+		invocation.TabID = browser.TabIDFromContext(ctx)
+	}
+	return evaluateResult(invocation, nil, offset, maxBytes)
 }

@@ -25,6 +25,7 @@ const (
 	TraceActionEvaluate = "evaluate"
 	TraceActionGet      = "get"
 	TraceActionFrame    = "frame"
+	TraceActionPageTool = "page_tool"
 )
 
 var observationActions = map[string]bool{
@@ -50,8 +51,37 @@ func IsObservationAction(action string) bool {
 // name any action would let hand-written JavaScript record itself in the trace
 // as a typed read, which is the distinction the label exists to draw.
 var generatedScriptVerbs = map[string]bool{
-	TraceActionGet:   true,
-	TraceActionFrame: true,
+	TraceActionGet:      true,
+	TraceActionFrame:    true,
+	TraceActionPageTool: true,
+}
+
+// collapsibleActions are the actions one logical call repeats by design. A
+// bounded wait on a WebMCP page tool runs an evaluate per poll, close to six
+// hundred of them at the ten-minute cap, and one row each would evict the
+// session's real activity from the 500-entry trace ring. Consecutive identical
+// entries fold into one carrying how many times it ran, so the signal survives.
+var collapsibleActions = map[string]bool{
+	TraceActionPageTool: true,
+}
+
+// IsCollapsibleAction reports whether consecutive identical entries for action
+// may be folded into a single trace row.
+func IsCollapsibleAction(action string) bool {
+	return collapsibleActions[strings.TrimSpace(action)]
+}
+
+// RepeatsTraceEntry reports whether entry is an exact repeat of prev: same tab,
+// same action, same subject and same outcome. A different outcome is a distinct
+// event even when the action matches, so it is never folded away.
+func RepeatsTraceEntry(prev, entry TraceEntry) bool {
+	return prev.Action == entry.Action &&
+		prev.TabID == entry.TabID &&
+		prev.Ref == entry.Ref &&
+		prev.Text == entry.Text &&
+		prev.Value == entry.Value &&
+		prev.OK == entry.OK &&
+		prev.Error == entry.Error
 }
 
 // IsGeneratedScriptVerb reports whether action may be carried across the HTTP

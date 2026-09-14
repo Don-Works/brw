@@ -42,9 +42,9 @@ func TestAdvertisedSchemasCoverHandlerParameters(t *testing.T) {
 		"brw_trace":            {"format", "guards", "include_failed"},
 		"brw_window_resize":    {"width", "height", "left", "top", "state"},
 		"brw_page_tools":       {"frame"},
-		"brw_call_page_tool":   {"frame", "detach", "timeout_ms", "validate_input"},
-		"brw_page_tool_result": {"invocation_id", "timeout_ms"},
-		"brw_page_tool_cancel": {"invocation_id"},
+		"brw_call_page_tool":   {"frame", "detach", "timeout_ms", "validate_input", "offset", "max_bytes"},
+		"brw_page_tool_result": {"invocation_id", "timeout_ms", "offset", "max_bytes"},
+		"brw_page_tool_cancel": {"invocation_id", "offset", "max_bytes"},
 	}
 	for tool, params := range want {
 		props := toolProperties(t, tool)

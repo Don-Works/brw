@@ -147,10 +147,15 @@ under `--enable-webmcp`:
   `brw_page_tool_cancel { invocation_id }` stops it, firing the tool's
   `AbortSignal`. A waited call that outlasts `timeout_ms` comes back with
   `timed_out:true` and the same id, so the work is never lost, only unwatched.
-- `status:"lost"` means the document that started the invocation navigated away
-  before the tool finished; it is reported as soon as it is noticed rather than
+- Every report carries `tab_id`. A poll looks only in the tab it lands in, so
+  pass that `tab_id` back to `brw_page_tool_result` when the page tool may have
+  opened or focused another tab.
+- `status:"lost"` means no document in the polled tab holds that invocation —
+  its document navigated away before the tool finished, or the poll landed on
+  the wrong tab; either way it is reported as soon as it is noticed rather than
   waited out. Arguments are capped at 64KB and refused above it — pass a URL or a
-  record id the tool can fetch instead of inlining a payload.
+  record id the tool can fetch instead of inlining a payload, and the tool's own
+  result is windowed like `brw_evaluate` via `offset`/`max_bytes`.
 
 ## Cookies: list, set, delete — HttpOnly included
 
