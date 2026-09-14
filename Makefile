@@ -103,12 +103,18 @@ install-mac: build
 		codesign --force --sign - "$(MAC_APPDIR)/bin/brwd" "$(MAC_APPDIR)/bin/brwcheck" "$(MAC_APPDIR)/bin/brwctl" "$(MAC_APPDIR)/bin/brw-devtools-mcp"; \
 	fi
 
-# Keep every existing per-profile unpacked extension payload current. rsync's
-# exclusion preserves the local bridge endpoint/token file in each copy while
-# --delete prevents removed source files from lingering as executable code.
+# Keep every existing unpacked extension payload current. rsync's exclusion
+# preserves the local bridge endpoint/token file in each copy while --delete
+# prevents removed source files from lingering as executable code.
+#
+# DATADIR is listed alongside MAC_APPDIR because install-mac writes only
+# MAC_APPDIR: a DATADIR left behind by an earlier `make install` survived every
+# subsequent install untouched. On this machine that copy sat at extension
+# 0.4.14 while the loaded one was 0.5.0 — stale executable code that no install
+# target could reach. Both dirs are globbed so whichever exist are refreshed.
 sync-installed-extensions:
 	@command -v rsync >/dev/null 2>&1 || { echo "rsync is required to sync installed extension copies" >&2; exit 1; }
-	@for extdir in "$(MAC_APPDIR)/extension" "$(MAC_APPDIR)"/extension-*; do \
+	@for extdir in "$(MAC_APPDIR)/extension" "$(MAC_APPDIR)"/extension-* "$(DATADIR)/extension" "$(DATADIR)"/extension-*; do \
 		if [ -d "$$extdir" ] && [ ! -L "$$extdir" ]; then \
 			rsync -a --delete --exclude '/bridge-defaults.json' extension/ "$$extdir"/; \
 		fi; \
