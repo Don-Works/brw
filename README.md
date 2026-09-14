@@ -541,8 +541,8 @@ signed-in session. To watch a remote browser, forward the port
   from under them. Over HTTP the refusal is `409` with `"code":
   "takeover_held"` and the holder and expiry alongside it, and the usage log
   counts it under that same class, so an agent never has to match on prose.
-  Reads continue — snapshots, `brw_read`, `brw_get`, `brw_frame` — so the agent
-  can see what the human did before it resumes.
+  Reads continue — snapshots, `brw_read`, `brw_get`, `brw_frame` and
+  `brw_assert` — so the agent can see what the human did before it resumes.
 
 ## Safety
 

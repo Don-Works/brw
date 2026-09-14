@@ -196,12 +196,15 @@ func TestScreencastDropsFramesUnderBackpressureWithoutStalling(t *testing.T) {
 	counts := stats()
 	t.Logf("backpressure: %d frames delivered, %d dropped, %d out of order, %d unstamped",
 		counts.Frames, counts.Dropped, counts.OutOfOrder, counts.UnstampedFrames)
-	// Dropping frames must not cost the ordering floor. An out-of-order count
-	// climbing with the drop count would mean the gate was discarding real frames
-	// rather than reordered ones.
-	if counts.OutOfOrder > counts.Frames {
-		t.Errorf("discarded %d frames as out of order against %d delivered; the ordering gate is eating the stream",
-			counts.OutOfOrder, counts.Frames)
+	// Dropping frames must not cost the ordering floor. Chrome stamps every frame
+	// on this fixture and the CDP stream is ordered, so every frame it sent is
+	// behind the previous one's swap and ahead of the floor: a single discard
+	// here is the gate measuring the floor against something other than the last
+	// swap it forwarded — brw's own clock, say — and once it does that it eats
+	// the whole stream.
+	if counts.OutOfOrder != 0 {
+		t.Errorf("discarded %d of %d frames as out of order; the ordering gate is eating the stream",
+			counts.OutOfOrder, counts.Frames+counts.Dropped+counts.OutOfOrder)
 	}
 }
 

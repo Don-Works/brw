@@ -80,6 +80,47 @@ func (c *screencastCounters) snapshot() screencastStats {
 	}
 }
 
+// screencastAdmission is what the frame listener does with one frame once its
+// swap time has been judged.
+type screencastAdmission int
+
+const (
+	// frameInOrder: forward it; the ordering floor has advanced to its swap.
+	frameInOrder screencastAdmission = iota
+	// frameUnstamped: forward it, but the ordering floor is unchanged.
+	frameUnstamped
+	// frameOutOfOrder: discard it; the floor is already at or past its swap.
+	frameOutOfOrder
+)
+
+// admitScreencastFrame places one frame in the stream and returns the swap time
+// to publish with it, advancing lastSwap when it takes one.
+//
+// stamped is Chrome's frame-swap time and arrivedAt is the moment brw read the
+// event carrying it. The two are different clocks. A swap is when the page
+// repainted, so it is necessarily BEHIND the read; a value that is not is either
+// a clock the browser process does not share with us or our own clock wearing
+// the compositor's name. Such a value must never set the ordering floor — it
+// would push the floor into the future and take every real frame behind it down
+// with it — so the frame is forwarded unstamped instead. The CDP event stream is
+// ordered, so a frame with no usable swap time is already in order; substituting
+// our own clock is what would start discarding the frames behind it.
+func admitScreencastFrame(lastSwap *atomic.Int64, stamped, arrivedAt time.Time) (screencastAdmission, time.Time) {
+	if stamped.IsZero() || !stamped.Before(arrivedAt) {
+		return frameUnstamped, time.Time{}
+	}
+	swap := stamped.UnixNano()
+	for {
+		previous := lastSwap.Load()
+		if swap <= previous {
+			return frameOutOfOrder, stamped
+		}
+		if lastSwap.CompareAndSwap(previous, swap) {
+			return frameInOrder, stamped
+		}
+	}
+}
+
 // ScreencastFrames streams frames from Chrome's compositor for the active tab
 // until ctx is cancelled, then stops the screencast and closes the channel.
 //
@@ -161,33 +202,14 @@ func (m *Manager) screencastFrames(ctx context.Context, opts ScreencastOptions) 
 				frame.Timestamp = time.Time(*e.Metadata.Timestamp)
 			}
 		}
-		// A frame's swap time is when the page repainted, so it is necessarily
-		// behind the moment we read the event about it. A value that is not is
-		// either a clock the browser process does not share with us or our own
-		// clock wearing the compositor's name; either way it must not set the
-		// ordering floor, which it would push into the future and take every real
-		// frame behind it down with it.
-		if !frame.Timestamp.IsZero() && !frame.Timestamp.Before(arrivedAt) {
-			frame.Timestamp = time.Time{}
-		}
-		if frame.Timestamp.IsZero() {
-			// Forward it, but leave the ordering floor alone. The CDP event stream
-			// is ordered, so a frame with no usable swap time is already in order;
-			// substituting our own clock is what would start discarding the frames
-			// behind it.
+		admission, swap := admitScreencastFrame(&lastSwap, frame.Timestamp, arrivedAt)
+		frame.Timestamp = swap
+		switch admission {
+		case frameOutOfOrder:
+			counters.outOfOrder.Add(1)
+			return
+		case frameUnstamped:
 			counters.unstamped.Add(1)
-		} else {
-			swap := frame.Timestamp.UnixNano()
-			for {
-				previous := lastSwap.Load()
-				if swap <= previous {
-					counters.outOfOrder.Add(1)
-					return
-				}
-				if lastSwap.CompareAndSwap(previous, swap) {
-					break
-				}
-			}
 		}
 		sendMu.RLock()
 		defer sendMu.RUnlock()

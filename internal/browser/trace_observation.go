@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -66,17 +67,50 @@ func IsGeneratedScriptVerb(action string) bool {
 // field, so an --upstream-http client — or anything else posting to
 // /api/page/evaluate — can name arbitrary JavaScript a typed read. What cannot
 // be forged is the script: brw builds both generated reads as one constant
-// followed by JSON-encoded arguments, so a prefix match means the code that will
-// run is brw's, with the caller controlling only string arguments to it.
+// applied to JSON-encoded string arguments and nothing else, so the whole
+// expression is reproducible from the arguments it carries.
+//
+// The comparison is therefore against a REBUILT expression rather than a prefix.
+// A prefix constrains only the start of the string and says nothing about what
+// follows the generated call's closing paren, so
+// BuildGetExpression(...) + ";document.getElementById('go').click()" would pass
+// as a read and drive the page through a human's hold. Rebuilding accepts
+// exactly the set brw itself emits, with the caller controlling only the string
+// arguments to it.
 func isGeneratedReadExpression(action, expression string) bool {
 	switch strings.TrimSpace(action) {
 	case TraceActionGet:
-		return strings.HasPrefix(expression, snapshot.GetScript+"(")
+		args, ok := generatedScriptArgs(expression, snapshot.GetScript, 3)
+		return ok && expression == snapshot.BuildGetExpression(args[0], args[1], args[2])
 	case TraceActionFrame:
-		return strings.HasPrefix(expression, snapshot.FrameSwitchScript+"(")
+		args, ok := generatedScriptArgs(expression, snapshot.FrameSwitchScript, 1)
+		return ok && expression == snapshot.BuildFrameSwitchExpression(args[0])
 	default:
 		return false
 	}
+}
+
+// generatedScriptArgs recovers the arguments of `script(...)` when expression is
+// that call and nothing else. Recovery is deliberately strict but not the
+// security boundary: the caller rebuilds the call from what comes back and
+// compares, so this only has to produce the arguments a genuine generated
+// expression would have been built from.
+func generatedScriptArgs(expression, script string, want int) ([]string, bool) {
+	open := script + "("
+	if !strings.HasPrefix(expression, open) || !strings.HasSuffix(expression, ")") {
+		return nil, false
+	}
+	// Decoding the argument list as a JSON array is what rejects trailing code:
+	// encoding/json refuses anything after the closing bracket, so the arguments
+	// of `script("a","b","c");evil()` do not parse as one.
+	var args []string
+	if err := json.Unmarshal([]byte("["+expression[len(open):len(expression)-1]+"]"), &args); err != nil {
+		return nil, false
+	}
+	if len(args) != want {
+		return nil, false
+	}
+	return args, true
 }
 
 // traceLabelAction is the semantic verb an evaluation was made under, or

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/store"
@@ -382,26 +383,67 @@ func TestTakeoverDoesNotRefuseObservations(t *testing.T) {
 			t.Errorf("%q was allowed during a hold; it moves or destroys the tab the human is aiming at", action)
 		}
 	}
-	// A generated read script is still a read, whatever the hold says. brw_get
-	// and brw_frame are how the agent finds out what the human changed.
-	for _, expression := range []string{
-		snapshot.BuildGetExpression("text", "#go", ""),
-		snapshot.BuildFrameSwitchExpression("main"),
-	} {
-		action := TraceActionGet
-		if strings.HasPrefix(expression, snapshot.FrameSwitchScript) {
-			action = TraceActionFrame
-		}
-		if !isGeneratedReadExpression(action, expression) {
-			t.Errorf("a %s script brw generated is not recognised as one; the agent would be blinded during a hold", action)
-		}
+}
+
+// The exemption that keeps brw_get and brw_frame answering through a hold is
+// decided from the expression, because the expression is the one part of an
+// /api/page/evaluate request a caller cannot forge. It therefore has to accept
+// exactly what brw emits — one generated call, the caller controlling its string
+// arguments and nothing else. Anything a caller can append to that call runs
+// during the hold with the full reach of an evaluate.
+func TestOnlyAWholeGeneratedReadScriptIsExemptFromAHold(t *testing.T) {
+	get := snapshot.BuildGetExpression("text", "#count", "")
+	frame := snapshot.BuildFrameSwitchExpression("main")
+	const drive = "document.getElementById('go').click()"
+
+	tests := []struct {
+		name       string
+		action     string
+		expression string
+		want       bool
+	}{
+		{"a generated get", TraceActionGet, get, true},
+		{"a generated get with every argument set", TraceActionGet, snapshot.BuildGetExpression("attr", "#field", "value"), true},
+		{"a generated get whose target carries quotes and a paren", TraceActionGet, snapshot.BuildGetExpression("text", `[data-x="a)b'c"]`, ""), true},
+		{"a generated frame switch", TraceActionFrame, frame, true},
+		{"hand-written javascript", TraceActionGet, "document.querySelector('button').click()", false},
+		{"hand-written javascript labelled as a frame switch", TraceActionFrame, "document.querySelector('button').click()", false},
+		{"a generated get under an ungenerated verb", TraceActionEvaluate, get, false},
+		{"a generated get under the other generated verb", TraceActionFrame, get, false},
+		{"javascript appended to a generated get", TraceActionGet, get + ";" + drive, false},
+		{"javascript appended to a generated frame switch", TraceActionFrame, frame + ";" + drive, false},
+		{"javascript appended through the comma operator", TraceActionGet, get + "," + drive, false},
+		{"javascript chained onto the generated call", TraceActionGet, get + ".toString()", false},
+		{"javascript prepended to a generated get", TraceActionGet, drive + ";" + get, false},
+		{"the generated script called with an expression argument", TraceActionGet, snapshot.GetScript + `("text","#count",document.title)`, false},
+		{"the generated script called with too few arguments", TraceActionGet, snapshot.GetScript + `("text","#count")`, false},
+		{"the generated script called with an extra argument", TraceActionGet, snapshot.GetScript + `("text","#count","","")`, false},
+		{"the generated script with no call at all", TraceActionGet, snapshot.GetScript, false},
+		{"an empty expression", TraceActionGet, "", false},
 	}
-	// And a caller's own JavaScript is not a read however it is labelled.
-	for _, action := range []string{TraceActionGet, TraceActionFrame, TraceActionEvaluate} {
-		if isGeneratedReadExpression(action, "document.querySelector('button').click()") {
-			t.Errorf("hand-written JavaScript passed as a generated %s read", action)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isGeneratedReadExpression(tt.action, tt.expression); got != tt.want {
+				t.Fatalf("isGeneratedReadExpression(%q, %d bytes ending %q) = %v, want %v",
+					tt.action, len(tt.expression), tail(tt.expression, 48), got, tt.want)
+			}
+		})
 	}
+}
+
+// tail is the end of an expression, which is where a forgery lives: the
+// generated scripts are ~10 KB of walker and printing one whole fails a test
+// unreadably. The cut is moved onto a rune boundary so the diagnostic stays
+// printable.
+func tail(expression string, n int) string {
+	if len(expression) <= n {
+		return expression
+	}
+	cut := len(expression) - n
+	for cut < len(expression) && !utf8.RuneStart(expression[cut]) {
+		cut++
+	}
+	return "…" + expression[cut:]
 }
 
 // A batch that was already running when the human took over must stop driving

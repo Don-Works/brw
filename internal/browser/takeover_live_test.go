@@ -328,6 +328,16 @@ func TestEvaluateIsRefusedWhileAHumanHoldsTakeover(t *testing.T) {
 			WithTraceLabel(ctx, TraceActionGet, "text #count"),
 			"document.getElementById('go').click()",
 		},
+		{
+			// The generated read script is a caller-supplied string like any
+			// other, so a check that only constrains its start leaves everything
+			// after the call's closing paren free: a whole evaluate riding in on
+			// the exemption that keeps brw_get answering during a hold.
+			"a click appended to a generated read script",
+			WithTraceLabel(ctx, TraceActionGet, "text #count"),
+			snapshot.BuildGetExpression("text", "#count", "") +
+				";document.getElementById('go').click();document.getElementById('field').value='agent typed this';1",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -532,41 +542,107 @@ func TestAHoldThatEndsMidDispatchDoesNotReportTheEventAsDelivered(t *testing.T) 
 // ReleaseTakeover has to wait for an event already on its way to the renderer.
 // Releasing out from under one puts the human's click on a page the agent has
 // just been told it may drive again.
+//
+// The event is a real one: the /slow fixture stalls a mousedown in the renderer
+// for a quarter second, so the dispatch genuinely sits between its token check
+// and the page while the release is attempted. Taking the dispatch lock in the
+// test body instead would assert nothing about DispatchTakeoverInput — it would
+// only re-measure an RWMutex.
 func TestReleaseWaitsForAnEventAlreadyOnItsWayToTheRenderer(t *testing.T) {
-	m := newBrowserlessManager()
-	grant, err := m.AcquireTakeover("operator", time.Minute)
+	manager := newHeadlessManager(t)
+	srv := takeoverFixtureServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	if _, err := manager.Open(ctx, srv.URL+"/slow"); err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	grant, err := manager.AcquireTakeover("operator", time.Minute)
 	if err != nil {
 		t.Fatalf("acquire takeover: %v", err)
 	}
 
-	// Stands in for a dispatch that has passed its token check and is inside the
-	// CDP call: that is exactly the window this lock covers.
-	m.takeoverDispatchMu.RLock()
-	released := make(chan error, 1)
-	go func() { released <- m.ReleaseTakeover(grant.Token) }()
+	dispatched := make(chan error, 1)
+	go func() {
+		dispatched <- manager.DispatchTakeoverInput(ctx, grant.Token,
+			TakeoverInput{Kind: "mouse", Type: "mousePressed", X: 120, Y: 40, Button: "left", Buttons: 1, ClickCount: 1})
+	}()
 
-	select {
-	case err := <-released:
-		t.Fatalf("release completed while an event was still in flight: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	if err := m.guardTakeover("click"); err == nil {
+	// Long enough for the press to reach the stalled listener, short enough to
+	// leave most of the fixture's quarter second for the release to be blocked by.
+	const (
+		inFlight  = 100 * time.Millisecond
+		mustBlock = 40 * time.Millisecond
+	)
+	time.Sleep(inFlight)
+	if err := manager.guardTakeover("click"); err == nil {
 		t.Fatal("an agent click was accepted while a human event was still in flight")
 	}
 
-	m.takeoverDispatchMu.RUnlock()
-	select {
-	case err := <-released:
-		if err != nil {
-			t.Fatalf("release: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("release never completed after the event finished")
+	releaseStarted := time.Now()
+	releaseErr := manager.ReleaseTakeover(grant.Token)
+	blocked := time.Since(releaseStarted)
+	dispatchErr := <-dispatched
+
+	if releaseErr != nil {
+		t.Fatalf("release: %v", releaseErr)
 	}
-	if m.TakeoverState().Held {
+	// A dispatch that came back refused means the release got in first and
+	// invalidated the token, which is the race this lock exists to close.
+	if dispatchErr != nil {
+		t.Fatalf("the forwarded press = %v with the fixture still stalling it; the release ended the hold out from under it", dispatchErr)
+	}
+	if blocked < mustBlock {
+		t.Fatalf("release returned after %s with a press still in the renderer; it must wait for the event, not race it", blocked)
+	}
+	t.Logf("release waited %s for the in-flight press", blocked)
+
+	if manager.TakeoverState().Held {
 		t.Fatal("the hold survived its own release")
 	}
-	if err := m.guardTakeover("click"); err != nil {
+	if err := manager.guardTakeover("click"); err != nil {
 		t.Fatalf("agent actions are still refused after release: %v", err)
+	}
+}
+
+// An assertion only reads, and every assert step is classified read-only so a
+// hold does not stop the agent finding out what the human did. The assertion
+// evaluator reads through the same generated getters script brw_get uses, so
+// this asserts the whole path rather than the guard's classification: a step the
+// guard admits must not then be refused one layer below it.
+func TestAssertionsStillAnswerWhileAHumanHoldsTakeover(t *testing.T) {
+	manager := newHeadlessManager(t)
+	srv := takeoverFixtureServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	if _, err := manager.Open(ctx, srv.URL+"/page"); err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	if _, err := manager.AcquireTakeover("operator", time.Minute); err != nil {
+		t.Fatalf("acquire takeover: %v", err)
+	}
+
+	one := 1
+	tests := []struct {
+		name string
+		req  AssertRequest
+	}{
+		{"url", AssertRequest{Assertion: AssertionURL, Expected: srv.URL + "/page", Mode: AssertModeExact}},
+		{"http status", AssertRequest{Assertion: AssertionHTTPStatus, Status: 200}},
+		{"element count", AssertRequest{Assertion: AssertionElementCount, Selector: "#go", Count: &one}},
+		{"element state", AssertRequest{Assertion: AssertionElementState, Ref: "#field", State: AssertStateEditable}},
+		{"attribute", AssertRequest{Assertion: AssertionAttribute, Ref: "#field", Attribute: "aria-label", Expected: "Field"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Assert(ctx, manager, tt.req)
+			if err != nil {
+				t.Fatalf("assert during a hold = %v (%+v); a read-only step the guard admits must not be refused below it", err, result)
+			}
+			if !result.OK {
+				t.Fatalf("assert during a hold reported %+v", result)
+			}
+		})
 	}
 }

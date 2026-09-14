@@ -566,8 +566,17 @@ func hashFile(path string) (string, int64, error) {
 // probeGetter reads one value through the shared getters script so element
 // resolution — refs, same-origin frames, open shadow roots — behaves exactly as
 // it does for brw_get instead of drifting into a per-assertion selector dialect.
+//
+// It carries brw_get's trace label too, because the label is what tells the
+// takeover guard this is one of brw's own reads rather than a caller's
+// expression. Without it an assertion is refused while a human holds the
+// browser — one layer below the guard that classifies every assert step as
+// read-only precisely so a hold does not stop the agent finding out what the
+// human did. The label is also what puts "count #go" in the activity feed in
+// place of the ~10 KB walker script.
 func probeGetter(ctx context.Context, src AssertSource, what, target, name string, out any) error {
-	raw, err := src.Evaluate(ctx, snapshot.BuildGetExpression(what, target, name))
+	label := snapshot.GetRequest{What: what, Target: target, Name: name}.TraceLabel()
+	raw, err := src.Evaluate(WithTraceLabel(ctx, TraceActionGet, label), snapshot.BuildGetExpression(what, target, name))
 	if err != nil {
 		return err
 	}
