@@ -155,6 +155,65 @@ server, not against `brw`. The two projects reach the same conclusion from the
 same premise: an accessibility-derived snapshot with stable refs costs far less
 than screenshots or raw DOM.
 
+### What the browser itself constrains
+
+Two platform facts sit under every row above, and explain gaps that otherwise
+read as missing work:
+
+- Chrome 136 stopped honouring `--remote-debugging-port` against the default
+  user-data directory. Attackers were using it to lift cookies once App-Bound
+  Encryption closed the older path. A real signed-in browser is therefore
+  reachable only through an extension holding `chrome.debugger`, or through the
+  Chrome 144+ opt-in at `chrome://inspect/#remote-debugging`.
+- An extension cannot attach `chrome.debugger` to the BROWSER target. Documented
+  in *Chrowned by an Extension* (EuroS&P 2023) and confirmed here: live Chromium
+  answers `Browser.setDownloadBehavior` with "Cannot not access browser-level
+  commands".
+
+Together they account for `brw`'s incognito, HttpOnly-cookie and
+deterministic-download gaps on the extension bridge. Neither is fixable in the
+extension, which is why the direct-CDP lane exists and why the Chrome 144+
+opt-in is tracked as a third transport (`77TC6Z`) rather than as a connection
+convenience.
+
+### The wider field
+
+| Project | Primitive | Locus | Licence | What is worth taking |
+| --- | --- | --- | --- | --- |
+| Stagehand v4 | `observe()` returns candidates carrying a selector, replayed deterministically by Playwright | extension next to the page; SDKs are thin RPC clients | MIT | Pruning against the live accessibility tree rather than a serialized copy (`G8MDRX`); pop-ups blocked before load, not closed after |
+| Chrome DevTools MCP | `take_snapshot` yields uid handles; every action takes a uid | direct CDP, `--autoConnect` via the Chrome 144+ opt-in | Apache-2.0 | `includeSnapshot` defaults to false, so the model asks for a snapshot (`GD6DR1`); 13 heap-snapshot tools and 3 performance-trace tools nobody else has |
+| browser-use | integer index over a DOM + accessibility element list | local Chromium, real profile, or cloud | MIT | Event-driven CDP; cloud profile sync transfers cookies only, not localStorage or IndexedDB, and their README says so |
+| Steel.dev | none of its own — bring Playwright or Puppeteer | self-hostable session infrastructure | Apache-2.0 | Custom extension loading, proxy rotation, session-debug UI; runs the public benchmark aggregator |
+| Agent Browser Protocol | REST on a fixed loopback port, 18 embedded MCP tools | a Chromium fork with the server compiled in | BSD-3 | Freezes JavaScript execution *and virtual time* between actions, so the agent only ever acts on a stable world. An extension can pause the debugger but cannot freeze `Date.now()` or the compositor; only a fork can |
+
+`brw`'s adaptive post-action settle is the achievable approximation of that last
+one. Knowing where the ceiling is set by a fork is worth more than the protocol
+comparison: no single protocol is consolidating, ABP has no second
+implementation, and WebMCP (`navigator.modelContext`, origin trial in Chrome
+149) is the only cross-vendor surface — `brw`, Chrome DevTools MCP, Stagehand v4
+and agent-browser all added it within about four months of each other.
+
+The trend that bears on a 74-tool MCP surface is not protocol consolidation.
+Microsoft and Vercel both now steer coding agents toward a CLI plus Skills, on
+the stated grounds that MCP forces tool schemas and accessibility trees into
+model context; `@playwright/cli` takes bare refs (`playwright-cli check e21`)
+and ships `install --skills`. `brw`'s `auto` tool-profile growth and
+`--print-system-prompt` attack the same cost from the other side. The per-action
+CLI (`2AR4JB`) and daemon-served skills (`JDK64N`) are the second front door.
+
+### Benchmarks worth quoting
+
+Agents score around 70% on sandboxed Online-Mind2Web and 33.3% on ClawBench —
+153 everyday tasks across 144 live production sites, scored by intercepting the
+final submission request. The sandbox-to-live gap is the product.
+
+Vendor numbers that should not go in a matrix: Stagehand's "2x faster, ~80% more
+token-efficient" rests on one 50-action crawl the authors themselves label a
+single run rather than a benchmark; browser-use's 97.0% Online-Mind2Web is
+self-reported. agent-browser's 93% token reduction is measured against Playwright
+MCP. `brw`'s own head-to-head numbers are internal and unpublished, which is what
+task `2EKP6X` exists to fix.
+
 ### Deliberate non-goals
 
 These are absent by decision, not by omission, and will not be closed by a
