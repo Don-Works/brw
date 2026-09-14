@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pointer Primitives Fixture</title>
+<style>
+  body { font: 16px system-ui, sans-serif; margin: 24px; }
+  #board { position: relative; width: 420px; height: 220px; border: 2px solid #333; }
+  .zone { position: absolute; width: 160px; height: 90px; border: 2px dashed #666; display: flex; align-items: center; justify-content: center; }
+  #source { left: 10px; top: 10px; background: #e8f0ff; }
+  #sink { right: 10px; bottom: 10px; background: #fff3e0; }
+  #pad { margin-top: 20px; width: 300px; height: 120px; background: #f0f0f0; border: 2px solid #999; display: flex; align-items: center; justify-content: center; }
+  output { display: block; margin-top: 14px; font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<h1>Pointer Primitives Fixture</h1>
+
+<!-- Deterministic targets for hover, click_xy, drag and mouse_down/up. Every
+     handler writes an exact string so a scenario asserts on text, never on
+     pixels: coordinates differ between headless and a real window. -->
+
+<div id="board">
+  <button class="zone" id="source" type="button" draggable="true">drag source</button>
+  <button class="zone" id="sink" type="button">drop sink</button>
+</div>
+
+<div id="pad">press pad</div>
+
+<button id="hoverme" type="button">Hover target</button>
+
+<output id="hover-state">hover: none</output>
+<output id="drag-state">drag: none</output>
+<output id="press-state">press: none</output>
+<output id="xy-state">xy: none</output>
+
+<script>
+  const hoverState = document.getElementById('hover-state');
+  const dragState = document.getElementById('drag-state');
+  const pressState = document.getElementById('press-state');
+  const xyState = document.getElementById('xy-state');
+
+  const hoverme = document.getElementById('hoverme');
+  hoverme.addEventListener('mouseenter', () => { hoverState.textContent = 'hover: entered'; });
+  hoverme.addEventListener('mouseleave', () => { hoverState.textContent = 'hover: left'; });
+
+  const source = document.getElementById('source');
+  const sink = document.getElementById('sink');
+
+  // HTML5 drag and drop, plus a pointer-based fallback: brw_drag may issue
+  // either a native drag sequence or mouse move/down/up depending on transport,
+  // and the fixture must report success for both.
+  source.addEventListener('dragstart', (e) => {
+    dragState.textContent = 'drag: started';
+    e.dataTransfer.setData('text/plain', 'source');
+  });
+  sink.addEventListener('dragover', (e) => e.preventDefault());
+  sink.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragState.textContent = 'drag: dropped on sink';
+  });
+  source.addEventListener('mousedown', () => { dragState.textContent = 'drag: started'; });
+  sink.addEventListener('mouseup', () => { dragState.textContent = 'drag: dropped on sink'; });
+
+  const pad = document.getElementById('pad');
+  pad.addEventListener('mousedown', () => { pressState.textContent = 'press: down'; });
+  pad.addEventListener('mouseup', () => {
+    pressState.textContent = pressState.textContent === 'press: down'
+      ? 'press: down then up'
+      : 'press: up without down';
+  });
+
+  // click_xy lands somewhere in the board; report only that a click arrived, so
+  // the assertion does not depend on exact device pixels.
+  document.getElementById('board').addEventListener('click', () => {
+    xyState.textContent = 'xy: clicked board';
+  });
+</script>
+</body>
+</html>

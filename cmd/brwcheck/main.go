@@ -61,6 +61,85 @@ type step struct {
 	AssertText        *assertTextStep        `json:"assert_text,omitempty"`
 	AssertValue       *assertValueStep       `json:"assert_value,omitempty"`
 	Cookies           *cookiesStep           `json:"cookies,omitempty"`
+	GroupTabs         *groupTabsStep         `json:"group_tabs,omitempty"`
+	UngroupTabs       *ungroupTabsStep       `json:"ungroup_tabs,omitempty"`
+	ListTabGroups     *listTabGroupsStep     `json:"list_tab_groups,omitempty"`
+	ListTabs          *listTabsStep          `json:"list_tabs,omitempty"`
+	CloseTab          *tabStep               `json:"close_tab,omitempty"`
+	WindowResize      *windowResizeStep      `json:"window_resize,omitempty"`
+	WindowBounds      *windowBoundsStep      `json:"window_bounds,omitempty"`
+	Hover             *targetStep            `json:"hover,omitempty"`
+	ClickXY           *clickXYStep           `json:"click_xy,omitempty"`
+	Drag              *dragStep              `json:"drag,omitempty"`
+	MouseDown         *mousePointStep        `json:"mouse_down,omitempty"`
+	MouseUp           *mousePointStep        `json:"mouse_up,omitempty"`
+	Batch             *batchStep             `json:"batch,omitempty"`
+}
+
+// The tab-group, window, pointer and batch steps below exist because the suite
+// drove 18 of the 69 registered tools. Everything an agent uses to manage tabs,
+// size a window, aim the pointer at a coordinate, or run several actions in one
+// call was covered only by Go tests against a fake controller, which cannot
+// catch a tool that marshals correctly and then fails against real Chrome.
+
+type groupTabsStep struct {
+	Tabs      []string `json:"tabs,omitempty"`
+	Title     string   `json:"title,omitempty"`
+	Color     string   `json:"color,omitempty"`
+	GroupID   string   `json:"group_id,omitempty"`
+	SaveAs    string   `json:"save_as,omitempty"`
+	WantTitle string   `json:"want_title,omitempty"`
+}
+
+type ungroupTabsStep struct {
+	Tabs []string `json:"tabs,omitempty"`
+}
+
+type listTabGroupsStep struct {
+	MinGroups     int    `json:"min_groups,omitempty"`
+	WantTitle     string `json:"want_title,omitempty"`
+	WantColor     string `json:"want_color,omitempty"`
+	AbsentTitle   string `json:"absent_title,omitempty"`
+	MinMemberTabs int    `json:"min_member_tabs,omitempty"`
+}
+
+type listTabsStep struct {
+	MinTabs      int    `json:"min_tabs,omitempty"`
+	WantURL      string `json:"want_url,omitempty"`
+	RequireLease bool   `json:"require_lease,omitempty"`
+}
+
+type windowResizeStep struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+type windowBoundsStep struct {
+	MinWidth  int `json:"min_width,omitempty"`
+	MinHeight int `json:"min_height,omitempty"`
+	WantWidth int `json:"want_width,omitempty"`
+}
+
+type clickXYStep struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+type dragStep struct {
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
+}
+
+type mousePointStep struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Button string  `json:"button,omitempty"`
+}
+
+type batchStep struct {
+	Steps     []map[string]any `json:"steps"`
+	MinOK     int              `json:"min_ok,omitempty"`
+	WantError bool             `json:"want_error,omitempty"`
 }
 
 type assertRefStep struct {
@@ -675,6 +754,72 @@ func (r *runner) runStep(st step) error {
 		return r.client.postJSON("/api/page/assert_value", body, nil)
 	case st.Cookies != nil:
 		return r.runCookiesStep(*st.Cookies)
+	case st.GroupTabs != nil:
+		return r.runGroupTabsStep(*st.GroupTabs)
+	case st.UngroupTabs != nil:
+		return r.runUngroupTabsStep(*st.UngroupTabs)
+	case st.ListTabGroups != nil:
+		return r.runListTabGroupsStep(*st.ListTabGroups)
+	case st.ListTabs != nil:
+		return r.runListTabsStep(*st.ListTabs)
+	case st.CloseTab != nil:
+		id, err := r.resolveTab(*st.CloseTab)
+		if err != nil {
+			return err
+		}
+		var result browser.ActionResult
+		if err := r.client.postJSON("/api/browser/close", map[string]string{"id": id}, &result); err != nil {
+			return err
+		}
+		if r.tabID == id {
+			r.tabID = ""
+		}
+		return nil
+	case st.WindowResize != nil:
+		var result map[string]any
+		return r.client.postJSON("/api/browser/resize_window", map[string]any{
+			"width": st.WindowResize.Width, "height": st.WindowResize.Height,
+		}, &result)
+	case st.WindowBounds != nil:
+		return r.runWindowBoundsStep(*st.WindowBounds)
+	case st.Hover != nil:
+		ref, err := r.resolveTarget(st.Hover.Ref, st.Hover.Target, st.Hover.Match)
+		if err != nil {
+			return err
+		}
+		body := map[string]any{"ref": ref}
+		r.addTabID(body)
+		var result browser.ActionResult
+		return r.client.postJSON("/api/page/hover", body, &result)
+	case st.ClickXY != nil:
+		body := map[string]any{"x": st.ClickXY.X, "y": st.ClickXY.Y}
+		r.addTabID(body)
+		var result browser.ActionResult
+		return r.client.postJSON("/api/page/click_xy", body, &result)
+	case st.Drag != nil:
+		// Saved keys resolve through the target parameter; resolveTarget
+		// returns a ref verbatim, which would hand the daemon the key itself.
+		from, err := r.resolveTarget("", st.Drag.From, nil)
+		if err != nil {
+			return err
+		}
+		to, err := r.resolveTarget("", st.Drag.To, nil)
+		if err != nil {
+			return err
+		}
+		body := map[string]any{
+			"from": map[string]any{"ref": from},
+			"to":   map[string]any{"ref": to},
+		}
+		r.addTabID(body)
+		var result browser.ActionResult
+		return r.client.postJSON("/api/page/drag", body, &result)
+	case st.MouseDown != nil:
+		return r.runMousePoint("/api/page/mouse_down", *st.MouseDown)
+	case st.MouseUp != nil:
+		return r.runMousePoint("/api/page/mouse_up", *st.MouseUp)
+	case st.Batch != nil:
+		return r.runBatchStep(*st.Batch)
 	default:
 		return errors.New("empty or unknown step")
 	}

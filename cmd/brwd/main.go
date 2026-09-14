@@ -491,7 +491,14 @@ func main() {
 
 	var api *httpapi.Server
 	if httpAddr != "" && httpAddr != "off" {
-		api = httpapi.NewWithIdentity(httpAddr, controller, runtimeIdentity)
+		// usageIdentity, not runtimeIdentity: the resolved one carries Mode,
+		// Transport and Headless, which this process derives from its own flags
+		// and always knows. runtimeIdentity is only populated by a profile
+		// policy, so a daemon started without one reported an Empty() identity
+		// and /health omitted the block entirely — including the transport. Two
+		// surfaces on one daemon then disagreed about what they were driving,
+		// and a caller gating on transport silently got no answer.
+		api = httpapi.NewWithIdentity(httpAddr, controller, usageIdentity)
 		api.SetNavigationPolicy(navPolicy)
 		api.SetUsageRecorder(usage)
 		api.SetArtifactAPI(artifactAPI)

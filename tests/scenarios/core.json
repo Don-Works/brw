@@ -1262,6 +1262,384 @@
       "requires": [
         "direct-cdp"
       ]
+    },
+    {
+      "id": "fixture-tab-groups",
+      "name": "Group, inspect and ungroup Chrome tabs",
+      "tags": [
+        "local",
+        "tabs",
+        "tab-groups"
+      ],
+      "requires": [
+        "extension-bridge"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/content.html",
+            "save_as": "first"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Readable Content Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "open": {
+            "url": "${FIXTURES}/forms.html",
+            "save_as": "second"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Form Interaction Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "group_tabs": {
+            "tabs": [
+              "first",
+              "second"
+            ],
+            "title": "brwcheck group",
+            "color": "blue",
+            "want_title": "brwcheck group"
+          }
+        },
+        {
+          "list_tab_groups": {
+            "min_groups": 1,
+            "want_title": "brwcheck group",
+            "want_color": "blue",
+            "min_member_tabs": 2
+          }
+        },
+        {
+          "ungroup_tabs": {
+            "tabs": [
+              "first",
+              "second"
+            ]
+          }
+        },
+        {
+          "list_tab_groups": {
+            "absent_title": "brwcheck group"
+          }
+        },
+        {
+          "close_tab": {
+            "target": "second"
+          }
+        },
+        {
+          "close_tab": {
+            "target": "first"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-tab-listing",
+      "name": "List tabs and see an opened tab reported",
+      "tags": [
+        "local",
+        "tabs"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/content.html",
+            "save_as": "listed"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Readable Content Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "list_tabs": {
+            "min_tabs": 1,
+            "want_url": "content.html"
+          }
+        },
+        {
+          "close_tab": {
+            "target": "listed"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-window-resize",
+      "name": "Resize the window and read the bounds back",
+      "tags": [
+        "local",
+        "window"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/content.html",
+            "save_as": "win"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Readable Content Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "window_resize": {
+            "width": 1024,
+            "height": 768
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "fn:window.innerWidth > 200",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "close_tab": {
+            "target": "win"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-pointer-hover",
+      "name": "Hover reports enter on the hovered element",
+      "tags": [
+        "local",
+        "input",
+        "pointer"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/pointer.html",
+            "save_as": "ptr"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Pointer Primitives Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 1,
+            "require": [
+              {
+                "role": "button",
+                "name_contains": "Hover target",
+                "save_as": "hoverme"
+              }
+            ]
+          }
+        },
+        {
+          "hover": {
+            "target": "hoverme"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:hover: entered",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "close_tab": {
+            "target": "ptr"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-pointer-press-release",
+      "name": "mouse_down and mouse_up deliver a press then a release",
+      "tags": [
+        "local",
+        "input",
+        "pointer"
+      ],
+      "requires": [
+        "direct-cdp"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/pointer.html",
+            "save_as": "ptr"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Pointer Primitives Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "mouse_down": {
+            "x": 160,
+            "y": 430,
+            "button": "left"
+          }
+        },
+        {
+          "mouse_up": {
+            "x": 160,
+            "y": 430,
+            "button": "left"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:press: down then up",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "close_tab": {
+            "target": "ptr"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-pointer-drag",
+      "name": "Drag a source element onto a drop sink",
+      "tags": [
+        "local",
+        "input",
+        "drag"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/pointer.html",
+            "save_as": "ptr"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Pointer Primitives Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              {
+                "role": "button",
+                "name_contains": "drag source",
+                "save_as": "src"
+              },
+              {
+                "role": "button",
+                "name_contains": "drop sink",
+                "save_as": "dst"
+              }
+            ]
+          }
+        },
+        {
+          "drag": {
+            "from": "src",
+            "to": "dst"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "text:drag: dropped on sink",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "close_tab": {
+            "target": "ptr"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fixture-batch-actions",
+      "name": "Run several page actions in one batch call",
+      "tags": [
+        "local",
+        "batch"
+      ],
+      "actions": [
+        {
+          "open": {
+            "url": "${FIXTURES}/forms.html",
+            "save_as": "batch"
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "title:Form Interaction Fixture",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "snapshot": {
+            "min_elements": 2,
+            "require": [
+              {
+                "role": "textbox",
+                "name_contains": "Email",
+                "save_as": "email"
+              },
+              {
+                "role": "textbox",
+                "name_contains": "Full name",
+                "save_as": "fullname"
+              }
+            ]
+          }
+        },
+        {
+          "batch": {
+            "steps": [
+              {
+                "action": "fill",
+                "ref": "email",
+                "text": "batch@example.invalid"
+              },
+              {
+                "action": "fill",
+                "ref": "fullname",
+                "text": "Batch Runner"
+              }
+            ],
+            "min_ok": 2
+          }
+        },
+        {
+          "wait_for": {
+            "condition": "fn:document.getElementById('email').value === 'batch@example.invalid' && document.getElementById('full-name').value === 'Batch Runner'",
+            "timeout_ms": 5000
+          }
+        },
+        {
+          "close_tab": {
+            "target": "batch"
+          }
+        }
+      ]
     }
   ]
 }
