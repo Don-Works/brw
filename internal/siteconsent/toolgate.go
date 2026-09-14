@@ -139,9 +139,18 @@ var ToolRules = map[string]ToolRule{
 	// Extra headers are the same shape as authenticating: an Authorization
 	// header bound to an origin is a credential handed to that origin.
 	"brw_set_extra_headers": {Scope: ScopeAct, Target: TargetURL, Fields: []DestinationField{FieldOrigins}},
+	// A snapshot seals the cookies an origin holds and puts them back into a
+	// browser context. Sealing reads that site's session and restoring hands it
+	// to a browser, so the origins the call names need the act scope on both
+	// halves - and they are an exact allowlist, so gating them gates the tool.
+	"brw_state": {Scope: ScopeAct, Target: TargetURL, Fields: []DestinationField{FieldOrigins}},
 
 	// State-changing page actions, and script execution, which can do anything
 	// an action can.
+	// A baseline captures the page's pixels and its accessibility tree. That is
+	// a read of whatever the tab is showing, gated against the tab's live URL
+	// like every other page read.
+	"brw_baseline":         {Scope: ScopeRead, Target: TargetPage},
 	"brw_click":            {Scope: ScopeAct, Target: TargetPage},
 	"brw_click_text":       {Scope: ScopeAct, Target: TargetPage},
 	"brw_click_xy":         {Scope: ScopeAct, Target: TargetPage},
@@ -297,8 +306,31 @@ var StepActions = map[string]StepClass{
 }
 
 // OriginEntry is one entry of a tool's origins list.
+//
+// The two spellings in the tool surface are both accepted: an object carrying
+// an origin field (brw_set_extra_headers, where each entry also carries the
+// headers) and a bare string (brw_state, where the list is only an allowlist).
+// Decoding one shape and not the other yields an empty origin list rather than
+// an error, so a rule naming FieldOrigins would gate nothing at all - which is
+// exactly how a tool ends up looking classified while deciding nothing.
 type OriginEntry struct {
 	Origin string `json:"origin"`
+}
+
+func (e *OriginEntry) UnmarshalJSON(data []byte) error {
+	var bare string
+	if err := json.Unmarshal(data, &bare); err == nil {
+		e.Origin = bare
+		return nil
+	}
+	var object struct {
+		Origin string `json:"origin"`
+	}
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+	e.Origin = object.Origin
+	return nil
 }
 
 // Probe reads the argument fields consent needs out of any call, without
