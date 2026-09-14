@@ -49,18 +49,24 @@ The `credential` block has two kinds.
 
 `exec` runs a fixed argv. `command[0]` must be an absolute, already-clean path:
 a bare `op` is whatever `PATH` resolves at the moment of the call, and the point
-of the manifest is that an operator decided what runs. Exactly one argument must
-contain the token `{reference}`, which is replaced by the requested reference
-name. There is no shell: the argv is passed to `execve` as written, so a
-reference cannot inject a second command, a pipe, or a redirect. Zero
-occurrences of the token is a load error, because a provider that ignores the
-reference would answer every request with the same secret.
+of the manifest is that an operator decided what runs. It must also not contain
+`{reference}`, which would let the requested name spell a different program than
+the one the loader checked. The loader resolves it once and runs the resolved
+path at every call, so a symlink moved after startup does not change the
+program. Exactly one other argument must contain the token `{reference}`, which
+is replaced by the requested reference name. There is no shell: the argv is
+passed to `execve` as written, so a reference cannot inject a second command, a
+pipe, or a redirect. Zero occurrences of the token is a load error, because a
+provider that ignores the reference would answer every request with the same
+secret.
 
 `file` reads `<directory>/<reference>`. It is the reference implementation used
 by the test suite and by anyone who has no CLI vault. `timeout_ms` applies to it
 as well as to `exec`. Each credential file is checked as it is read and refused
-if it is readable by group or other; the directory's own mode is not checked, so
-a shared-readable directory still leaks the NAMES of the credentials in it.
+if it is readable by group or other. The directory is held to the same write and
+ownership rules as the plugin directory, because whoever can write it chooses
+the value brw types into a password field. Its READ mode is not checked, so a
+shared-readable directory still leaks the NAMES of the credentials in it.
 
 ```json
 {
@@ -160,9 +166,21 @@ boundary is who can write that directory — its mode, its owner and its ancesto
   the program it names is held to the same mode, owner and ancestor rules as the
   manifest. A bare name would be resolved from the daemon's `PATH` at every
   call, so the manifest an operator reviewed would not decide what runs.
+- A location has more than one spelling, so both are checked: the ancestors of
+  the declared path as well as the ancestors of the file it resolves to. A 0700
+  binary in a 0700 directory, named through a world-writable directory, is a
+  program whoever can write that directory chooses, because they choose where
+  the symlink points. What brw then runs is the resolved path the loader
+  checked, not the declared name looked up again at exec.
+- The program's mode, owner and ancestors are re-checked immediately before
+  every call, not only at load. brwd runs for weeks, and a load-time answer is
+  about the machine as it was at boot.
 - A manifest is refused above 64 KiB, and unknown fields are refused.
 - `file` credential files are refused if group- or other-readable, and the
-  resolved path (after symlinks) must stay inside the configured directory.
+  resolved path (after symlinks) must stay inside the configured directory. The
+  directory itself is refused if group- or other-writable, if another local user
+  owns it, or if any ancestor of either spelling of it is writable: choosing the
+  answer a provider gives is the same authority as choosing the program.
 - brw passes the provider no shell, no brw state and no page data. It does not
   strip the environment: an `exec` child inherits the daemon's, which is what
   `op` and `pass` need to find their own sessions.

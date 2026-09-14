@@ -40,14 +40,18 @@ func newCredentialProvider(spec CredentialProviderSpec) (credentialProvider, err
 			// so a future caller cannot reach the index below on an empty argv.
 			return nil, errors.New("the exec credential kind requires a command")
 		}
-		if err := refuseUntrustedProgram(command[0]); err != nil {
+		program, err := checkProgramTrust(command[0])
+		if err != nil {
 			return nil, err
 		}
-		return &execProvider{command: command, timeout: timeout}, nil
+		return &execProvider{command: command, program: program, timeout: timeout}, nil
 	case CredentialKindFile:
 		root, err := filepath.Abs(spec.Directory)
 		if err != nil {
 			return nil, fmt.Errorf("resolve credential directory: %w", err)
+		}
+		if err := checkCredentialDirectoryTrust(root); err != nil {
+			return nil, err
 		}
 		return &fileProvider{root: root, timeout: timeout}, nil
 	default:
@@ -55,25 +59,62 @@ func newCredentialProvider(spec CredentialProviderSpec) (credentialProvider, err
 	}
 }
 
-// refuseUntrustedProgram applies the plugin directory's own rule to the binary
-// an exec provider runs. The manifest is 0600 and owner-checked, but that only
-// fixes the argv: if another local user can write the program it names, or the
-// directory holding it, they still choose what brwd executes. Checked at load
-// so a misconfigured provider is a startup failure rather than a login that
-// fails three steps into a recipe.
-func refuseUntrustedProgram(program string) error {
+// trustedProgram is the binary an exec provider runs, under both the names that
+// decide which bytes execute: the path the reviewed manifest declared, and the
+// path that declaration resolves to.
+type trustedProgram struct {
+	declared string
+	resolved string
+}
+
+// checkProgramTrust applies the plugin directory's own rule to the binary an
+// exec provider runs. The manifest is 0600 and owner-checked, but that only
+// fixes the argv: if another local user can write the program it names, or any
+// directory on the way to it, they still choose what brwd executes.
+//
+// A location has more than one spelling, so checking the resolved target alone
+// is not the boundary. A symlink points wherever the writer of its directory
+// says, which makes a 0700 binary in a 0700 directory, named through a
+// world-writable directory, a program another local user picks. Both ancestor
+// chains are therefore walked, and the mode and owner rules land on the
+// resolved file, because that is the file that runs.
+//
+// Checked at load so a misconfigured provider is a startup failure rather than
+// a login that fails three steps into a recipe, and again before every exec,
+// because a daemon that has been up for a week is answering with what was true
+// at boot otherwise.
+func checkProgramTrust(program string) (trustedProgram, error) {
 	resolved, err := filepath.EvalSymlinks(program)
 	if err != nil {
-		return fmt.Errorf("resolve credential command program %q: %w", program, err)
-	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return fmt.Errorf("read credential command program %q: %w", program, err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("credential command program %q is not a regular file", program)
+		return trustedProgram{}, fmt.Errorf("resolve credential command program %q: %w", program, err)
 	}
 	what := fmt.Sprintf("credential command program %q", program)
+	if err := refuseWritableAncestors(program, what); err != nil {
+		return trustedProgram{}, err
+	}
+	if err := checkProgramFileTrust(resolved, what); err != nil {
+		return trustedProgram{}, err
+	}
+	return trustedProgram{declared: program, resolved: resolved}, nil
+}
+
+// checkProgramFileTrust holds the file that actually runs to the mode, owner
+// and ancestor rules. Split out of checkProgramTrust because it runs again
+// before every exec, on the resolved path the provider pinned at load.
+//
+// The stat is by path, and exec opens that path a second time. What closes the
+// gap between them is the ancestor walk rather than the stat: replacing the
+// file in between needs write access to a directory on the way to it, and that
+// is what the walk has already refused to anyone but the daemon's user and
+// root.
+func checkProgramFileTrust(resolved, what string) error {
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", what, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", what)
+	}
 	if err := refuseSharedWrite(info.Mode().Perm(), what); err != nil {
 		return err
 	}
@@ -83,14 +124,53 @@ func refuseUntrustedProgram(program string) error {
 	return refuseWritableAncestors(resolved, what)
 }
 
+// checkCredentialDirectoryTrust holds the file provider's directory to the same
+// rule, because it carries the same authority: whoever can write the directory
+// chooses the value brw types into a password field, and choosing the answer is
+// choosing the program by another route. Both spellings again, for the reason
+// checkProgramTrust walks both.
+func checkCredentialDirectoryTrust(root string) error {
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve credential directory %q: %w", root, err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("read credential directory %q: %w", root, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("credential directory %q is not a directory", root)
+	}
+	what := fmt.Sprintf("credential directory %q", root)
+	if err := refuseSharedWrite(info.Mode().Perm(), what); err != nil {
+		return err
+	}
+	if err := refuseForeignOwner(info, what); err != nil {
+		return err
+	}
+	if err := refuseWritableAncestors(root, what); err != nil {
+		return err
+	}
+	return refuseWritableAncestors(resolved, what)
+}
+
 // execProvider runs a fixed argv and reads one value from its stdout.
 type execProvider struct {
 	command []string
+	program trustedProgram
 	timeout time.Duration
 }
 
 func (p *execProvider) resolve(ctx context.Context, reference string) (credential.Secret, error) {
+	what := fmt.Sprintf("credential command program %q", p.program.declared)
+	if err := checkProgramFileTrust(p.program.resolved, what); err != nil {
+		return credential.Secret{}, err
+	}
 	argv := substituteReference(p.command, reference)
+	// The path the loader resolved and checked, never the declared name looked
+	// up again here: re-resolving would let a link moved since startup choose
+	// the program, which is the whole thing the check above establishes.
+	argv[0] = p.program.resolved
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)

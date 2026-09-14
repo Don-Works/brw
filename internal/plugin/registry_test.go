@@ -152,6 +152,14 @@ func TestLoadRefusesManifestsThatWouldMoveTheTrustBoundary(t *testing.T) {
 			},
 			wantErr: "exactly once, found 2",
 		},
+		"exec program spelled by the reference": {
+			setup: func(t *testing.T, root, _ string) {
+				manifest := fileManifest("")
+				manifest["credential"] = map[string]any{"kind": CredentialKindExec, "command": []string{"/usr/local/bin/" + ReferenceToken, "read"}}
+				writeManifest(t, root, "a.json", manifest)
+			},
+			wantErr: "must not contain the " + ReferenceToken + " token",
+		},
 		"timeout past the ceiling": {
 			setup: func(t *testing.T, root, credentials string) {
 				manifest := fileManifest(credentials)
@@ -422,6 +430,68 @@ func TestLoadPinsTheBinaryAnExecProviderRuns(t *testing.T) {
 				t.Fatalf("Load error = %v, want one containing %q", err, test.wantErr)
 			}
 		})
+	}
+}
+
+// Every credential kind reaches credential.read through the same registry, so a
+// kind classified by one switch over Kind and missed by the other — or accepted
+// by both and trust-checked by neither — is how a gate stops covering what it
+// gates. This enumerates the domain rather than naming the kinds that existed
+// when it was written: a kind added to CredentialKinds with no row below fails
+// here before it can ship.
+func TestEveryCredentialKindIsClassifiedAndHeldToTheTrustBoundary(t *testing.T) {
+	// One spec per kind, each naming a location another local user can write.
+	// The enclosing directory is the daemon's own, so the only thing a row can
+	// trip on is the location its spec points at.
+	untrustedSpec := map[string]func(t *testing.T, shared string) CredentialProviderSpec{
+		CredentialKindExec: func(t *testing.T, shared string) CredentialProviderSpec {
+			t.Helper()
+			program := filepath.Join(shared, "vaultcli")
+			if err := os.WriteFile(program, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return CredentialProviderSpec{Kind: CredentialKindExec, Command: []string{program, ReferenceToken}}
+		},
+		CredentialKindFile: func(_ *testing.T, shared string) CredentialProviderSpec {
+			return CredentialProviderSpec{Kind: CredentialKindFile, Directory: shared}
+		},
+	}
+	for _, kind := range CredentialKinds {
+		t.Run(kind, func(t *testing.T) {
+			build, ok := untrustedSpec[kind]
+			if !ok {
+				t.Fatalf("credential kind %q has no row here; it reaches %s like every other kind, so say how it is held to the trust boundary", kind, CapabilityCredentialRead)
+			}
+			shared := filepath.Join(t.TempDir(), "shared")
+			if err := os.Mkdir(shared, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			// Chmod after Mkdir: the process umask clears the bits under test.
+			if err := os.Chmod(shared, 0o777); err != nil {
+				t.Fatal(err)
+			}
+			spec := build(t, shared)
+			if err := validateCredentialSpec(spec); err != nil {
+				t.Fatalf("validateCredentialSpec refused a well-formed %s spec: %v", kind, err)
+			}
+			provider, err := newCredentialProvider(spec)
+			if err == nil {
+				t.Fatalf("newCredentialProvider built a %s provider (%T) from a world-writable location", kind, provider)
+			}
+			if !strings.Contains(err.Error(), "writable by group or other") {
+				t.Fatalf("%s provider from a world-writable location = %v, want the trust refusal", kind, err)
+			}
+		})
+	}
+
+	// A kind off the list reaches the default of both switches, and neither may
+	// build anything from it.
+	unknown := CredentialProviderSpec{Kind: "vault-agent", Directory: t.TempDir()}
+	if err := validateCredentialSpec(unknown); err == nil || !strings.Contains(err.Error(), "credential kind must be one of") {
+		t.Fatalf("validateCredentialSpec(%q) = %v, want a refusal naming the domain", unknown.Kind, err)
+	}
+	if _, err := newCredentialProvider(unknown); err == nil || !strings.Contains(err.Error(), "is not supported") {
+		t.Fatalf("newCredentialProvider(%q) = %v, want a refusal", unknown.Kind, err)
 	}
 }
 

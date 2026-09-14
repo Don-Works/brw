@@ -33,6 +33,14 @@ const (
 	CredentialKindFile = "file"
 )
 
+// CredentialKinds is the closed domain of provider backends, declared once so
+// the validator, the loader and the test that enumerates them read from the
+// same list. Every kind on it reaches the same capability, so every kind has to
+// be classified by both switches over Kind and held to the same trust boundary;
+// a sibling added to one of them and missed by the other is how a gate stops
+// covering the thing it gates.
+var CredentialKinds = []string{CredentialKindExec, CredentialKindFile}
+
 // ReferenceToken is the single argv placeholder an exec provider substitutes.
 const ReferenceToken = "{reference}"
 
@@ -156,7 +164,7 @@ func validateCredentialSpec(spec CredentialProviderSpec) error {
 			problems = append(problems, errors.New("the file credential kind requires a directory"))
 		}
 	default:
-		problems = append(problems, fmt.Errorf("credential kind must be %q or %q", CredentialKindExec, CredentialKindFile))
+		problems = append(problems, fmt.Errorf("credential kind must be one of %v", CredentialKinds))
 	}
 	return errors.Join(problems...)
 }
@@ -195,7 +203,9 @@ func validateCredentialCommand(command []string) error {
 // the manifest an operator reviewed does not decide what runs: whoever controls
 // PATH, or can write an earlier directory on it, does. The path must also be
 // already clean, because "/usr/bin/../../tmp/op" reads as a reviewed system
-// binary and is not one. The program's mode, owner and ancestors are checked
+// binary and is not one, and it must not carry the reference token, which would
+// let the caller's reference name spell a different program than the one the
+// loader checked. The program's mode, owner and ancestors are checked
 // separately at load, where the filesystem is available.
 func validateCredentialProgram(program string) error {
 	if strings.TrimSpace(program) == "" {
@@ -206,6 +216,9 @@ func validateCredentialProgram(program string) error {
 	}
 	if filepath.Clean(program) != program {
 		return fmt.Errorf("credential command program %q must already be a clean path, with no %q or %q segment", program, ".", "..")
+	}
+	if strings.Contains(program, ReferenceToken) {
+		return fmt.Errorf("credential command program %q must not contain the %s token; the program is what the loader pins, so a reference must not be able to name a different one", program, ReferenceToken)
 	}
 	return nil
 }
