@@ -341,7 +341,8 @@ func main() {
 		base: strings.TrimRight(baseURL, "/"),
 		http: &http.Client{Timeout: 5 * time.Minute},
 	}
-	if err := c.health(); err != nil {
+	transport, err := c.health()
+	if err != nil {
 		fatal(fmt.Errorf("brwd is not ready at %s: %w", baseURL, err))
 	}
 
@@ -352,7 +353,7 @@ func main() {
 		if len(selected) > 0 && !selected[sc.ID] {
 			continue
 		}
-		if reason := skipReason(sc, includeNetwork, includeAuth, includeManual); reason != "" {
+		if reason := skipReason(sc, includeNetwork, includeAuth, includeManual, transport); reason != "" {
 			fmt.Printf("SKIP %-32s %s\n", sc.ID, reason)
 			skipped++
 			continue
@@ -1167,9 +1168,20 @@ func (r *runner) expandPath(raw string) string {
 	return raw
 }
 
-func (c *apiClient) health() error {
-	var result map[string]any
-	return c.getJSON("/health", &result)
+// health confirms the daemon is up and reports which transport it drives the
+// browser over. /health already carries identity.transport; this used to decode
+// the payload and throw it away, so the runner had no way to tell a scenario
+// that cannot work here from one that is broken.
+func (c *apiClient) health() (string, error) {
+	var result struct {
+		Identity struct {
+			Transport string `json:"transport"`
+		} `json:"identity"`
+	}
+	if err := c.getJSON("/health", &result); err != nil {
+		return "", err
+	}
+	return result.Identity.Transport, nil
 }
 
 func (c *apiClient) listTabs() ([]browser.Tab, error) {
@@ -1254,9 +1266,24 @@ func loadSuite(path string) (suiteFile, error) {
 	return suite, nil
 }
 
-func skipReason(sc scenario, includeNetwork, includeAuth, includeManual bool) string {
+// skipReason reports why a scenario cannot run here, or "" to run it.
+//
+// A scenario naming a transport it needs is SKIPPED on the other one, not
+// failed. Some capabilities exist on exactly one transport by construction:
+// incognito contexts and HttpOnly cookie access need CDP target isolation the
+// extension APIs do not expose, and Chrome tab groups exist only in the
+// extension APIs. Running the suite against a bridged daemon used to report
+// "1 failed" for a capability that was never going to be there, which buries a
+// real regression among expected noise.
+func skipReason(sc scenario, includeNetwork, includeAuth, includeManual bool, transport string) string {
 	for _, req := range sc.Requires {
 		switch req {
+		case "direct-cdp", "extension-bridge":
+			// An empty transport means the daemon did not report one; run the
+			// scenario rather than silently skipping the whole suite.
+			if transport != "" && transport != req {
+				return fmt.Sprintf("requires the %s transport, daemon is on %s", req, transport)
+			}
 		case "network":
 			if !includeNetwork {
 				return "requires --include-network"
