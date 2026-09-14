@@ -265,6 +265,132 @@ func TestHighlightScrollsOnlyWhenAsked(t *testing.T) {
 	}
 }
 
+// TestHighlightExpiresOnItsOwnSchedule drives the auto-clear timer against a
+// real page. The tool description, the CLI's "clears itself in Nms" line and
+// expires_in_ms all promise an overlay that removes itself, and every other
+// highlight test asserts on the drawing rather than on time passing, so a
+// highlight that reported a duration and then never expired would leave a box
+// on a human's screen with all of them green.
+//
+// The rows go both ways on purpose: a timer that never fires fails the first,
+// and a timer that fires when nothing asked for one, or fires immediately,
+// fails the other two.
+func TestHighlightExpiresOnItsOwnSchedule(t *testing.T) {
+	manager := newHeadlessManager(t)
+	srv := newDevtoolsFixtureServer(t)
+	ctx := openFixture(t, manager, srv.URL+"/interactive")
+	ref := refForText(t, manager, ctx, "Press me")
+
+	// Long enough that the round trip cannot be mistaken for the timer, short
+	// enough to wait out; and a duration no test run outlives, for the rows
+	// that need a timer pending while the overlay stays up.
+	const expiringMS = 750
+	const pendingMS = 120000
+	// How long the "it stayed up" rows watch before believing it.
+	const persistFor = 3 * time.Second
+
+	tests := []struct {
+		name       string
+		durationMS int
+		wantExpiry bool
+	}{
+		{name: "a duration removes the overlay with no second call", durationMS: expiringMS, wantExpiry: true},
+		{name: "no duration leaves the overlay up", durationMS: 0},
+		{name: "a pending duration leaves the overlay up until it is due", durationMS: pendingMS},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			started := time.Now()
+			drawn, err := manager.Highlight(ctx, devtools.HighlightOptions{Ref: ref, DurationMS: tt.durationMS})
+			if err != nil {
+				t.Fatalf("highlight: %v", err)
+			}
+			// Neither the box nor a timer still counting down may reach the next row.
+			t.Cleanup(func() {
+				if _, err := manager.Highlight(ctx, devtools.HighlightOptions{Clear: true}); err != nil {
+					t.Errorf("clear: %v", err)
+				}
+			})
+			if drawn.Active != 1 {
+				t.Fatalf("highlight result = %+v, want one box drawn", drawn)
+			}
+			if drawn.ExpiresMS != tt.durationMS {
+				t.Errorf("expires_in_ms = %d, want %d", drawn.ExpiresMS, tt.durationMS)
+			}
+
+			window := persistFor
+			if tt.wantExpiry {
+				// Generous: this is a wall-clock wait on a machine sharing its
+				// cores with the rest of this package's live-browser tests, and
+				// what is under test is that the timer fires at all.
+				window = 60 * time.Second
+			}
+			gone, waited := waitForOverlayGone(t, manager, ctx, window)
+			if gone != tt.wantExpiry {
+				if tt.wantExpiry {
+					t.Fatalf("the overlay was still up %s after a %dms duration, so it never cleared itself", window, tt.durationMS)
+				}
+				t.Fatalf("the overlay vanished after %s with duration_ms %d, and nothing asked it to", waited, tt.durationMS)
+			}
+			if !tt.wantExpiry {
+				return
+			}
+			// setTimeout does not fire early and the timer is armed inside the
+			// highlight call, so a removal quicker than the duration measured
+			// from before that call was not this timer.
+			if wanted := time.Duration(tt.durationMS) * time.Millisecond; time.Since(started) < wanted {
+				t.Errorf("the overlay went after %s, sooner than the %s that was asked for", time.Since(started), wanted)
+			}
+			// The listeners that keep the boxes aligned go with the element, or
+			// the page keeps paying for an overlay it no longer has.
+			if !highlightStateGone(t, manager, ctx) {
+				t.Error("window.__brwHighlight survived the expiry, so the scroll and resize listeners are still attached")
+			}
+			// An expiry is the page's own doing, so a clear afterwards has
+			// nothing left to remove and must not report a removal.
+			cleared, err := manager.Highlight(ctx, devtools.HighlightOptions{Clear: true})
+			if err != nil {
+				t.Fatalf("clear after the expiry: %v", err)
+			}
+			if cleared.Cleared {
+				t.Error("clear reported removing an overlay the duration had already taken")
+			}
+		})
+	}
+}
+
+// waitForOverlayGone watches the page for up to within, and reports whether the
+// overlay disappeared and how long that took.
+func waitForOverlayGone(t *testing.T, manager *Manager, ctx context.Context, within time.Duration) (bool, time.Duration) {
+	t.Helper()
+	started := time.Now()
+	for {
+		if overlayCount(t, manager, ctx) == 0 {
+			return true, time.Since(started)
+		}
+		if time.Since(started) >= within {
+			return false, time.Since(started)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// highlightStateGone reports whether the script's window state was cleared. It
+// is reduced to a boolean in the page because the state holds the listener
+// functions, which have no value to bring back.
+func highlightStateGone(t *testing.T, manager *Manager, ctx context.Context) bool {
+	t.Helper()
+	value, err := manager.Evaluate(ctx, `!window.__brwHighlight`)
+	if err != nil {
+		t.Fatalf("read the highlight state: %v", err)
+	}
+	cleared, ok := value.(bool)
+	if !ok {
+		t.Fatalf("highlight state = %#v, want a boolean", value)
+	}
+	return cleared
+}
+
 func refForText(t *testing.T, manager *Manager, ctx context.Context, text string) string {
 	t.Helper()
 	found, err := manager.Find(ctx, snapshot.FindOptions{Text: text, TextContent: true, IncludeHidden: true})
