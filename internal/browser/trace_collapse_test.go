@@ -129,23 +129,3 @@ func TestCollapsedPollsDoNotEvictTheRing(t *testing.T) {
 		t.Fatalf("collapsed row repeat = %d, want 599", got.Entries[1].Repeat)
 	}
 }
-
-// The label has to survive the --upstream-http hop as well, or a proxied wait
-// records raw evaluate rows on the daemon and floods the ring there instead.
-func TestPageToolLabelCrossesTheHTTPSurface(t *testing.T) {
-	for _, tc := range []struct {
-		action string
-		want   bool
-	}{
-		{action: TraceActionPageTool, want: true},
-		{action: TraceActionGet, want: true},
-		{action: TraceActionFrame, want: true},
-		{action: "click", want: false},
-	} {
-		t.Run(tc.action, func(t *testing.T) {
-			if got := IsGeneratedScriptVerb(tc.action); got != tc.want {
-				t.Fatalf("IsGeneratedScriptVerb(%q) = %v, want %v", tc.action, got, tc.want)
-			}
-		})
-	}
-}

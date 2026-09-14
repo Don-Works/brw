@@ -201,3 +201,33 @@ func TestObservationsAreGroupedInReplaySkipReasons(t *testing.T) {
 		t.Errorf("exported %d actions, want the single click", result.Actions)
 	}
 }
+
+// Every trace label brw puts on a generated script is an evaluate under another
+// name, so replay has to group all of them with the observations. page_tool was
+// the one that was not: relabelling the page-tool polls moved them out of the
+// group and brw_trace format="batch" started reporting them as "not a
+// replayable action: page_tool", which reads as a recording defect an agent
+// could act on rather than as something there was never anything to replay.
+func TestGeneratedScriptVerbsReplayAsObservations(t *testing.T) {
+	for _, action := range []string{TraceActionEvaluate, TraceActionGet, TraceActionFrame, TraceActionPageTool} {
+		t.Run(action, func(t *testing.T) {
+			if !IsObservationAction(action) {
+				t.Fatalf("IsObservationAction(%q) = false, want every generated-script label grouped with the observations", action)
+			}
+			trace := TraceResult{Entries: []TraceEntry{
+				{Action: action, Text: "result 0a1b2c3d-1", TabID: "1", OK: true},
+				{Action: "click", Ref: "e1", Name: "Submit", Role: "button", NameIsVisibleText: true, TabID: "1", OK: true},
+			}}
+			result := TraceToBatch(trace, ReplayOptions{})
+			const reason = "observation, not an action to replay"
+			if result.Reasons[reason] != 1 {
+				t.Fatalf("skipped_reasons = %v, want one %q", result.Reasons, reason)
+			}
+			for key := range result.Reasons {
+				if strings.HasPrefix(key, "not a replayable action") {
+					t.Fatalf("%q listed as an unknown action: %q", action, key)
+				}
+			}
+		})
+	}
+}

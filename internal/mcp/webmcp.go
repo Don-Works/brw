@@ -35,6 +35,12 @@ func (s *Server) pageToolEvaluator(label string) snapshot.PageToolEvaluator {
 	}
 }
 
+// pageToolTabLookupTimeout bounds naming the tab a report belongs to. It is a
+// cached lookup on direct CDP and one round trip behind --upstream-http, and it
+// runs after the work the agent is waiting on: a report that took seconds longer
+// to say which tab it came from would be worse than one that says nothing.
+const pageToolTabLookupTimeout = 5 * time.Second
+
 // pageToolTimeout clamps a caller's timeout_ms. Zero or missing means the calling
 // tool's own default. A negative value is refused rather than guessed at: the two
 // readings of it — no wait at all, or the default wait — differ by thirty seconds
@@ -88,7 +94,7 @@ func (s *Server) callPageTool(ctx context.Context, args json.RawMessage) (any, *
 		Timeout:   timeout,
 		Validate:  validate,
 	})
-	return pageToolReport(ctx, invocation, err, req.Offset, req.MaxBytes)
+	return s.pageToolReport(ctx, invocation, err, req.Offset, req.MaxBytes)
 }
 
 func (s *Server) pageToolResult(ctx context.Context, args json.RawMessage) (any, *rpcError) {
@@ -109,7 +115,7 @@ func (s *Server) pageToolResult(ctx context.Context, args json.RawMessage) (any,
 	}
 	id := strings.TrimSpace(req.InvocationID)
 	invocation, err := snapshot.AwaitPageTool(ctx, s.pageToolEvaluator("result "+id), id, timeout)
-	return pageToolReport(ctx, invocation, err, req.Offset, req.MaxBytes)
+	return s.pageToolReport(ctx, invocation, err, req.Offset, req.MaxBytes)
 }
 
 func (s *Server) cancelPageTool(ctx context.Context, args json.RawMessage) (any, *rpcError) {
@@ -123,7 +129,7 @@ func (s *Server) cancelPageTool(ctx context.Context, args json.RawMessage) (any,
 	}
 	id := strings.TrimSpace(req.InvocationID)
 	invocation, err := snapshot.CancelPageTool(ctx, s.pageToolEvaluator("cancel "+id), id)
-	return pageToolReport(ctx, invocation, err, req.Offset, req.MaxBytes)
+	return s.pageToolReport(ctx, invocation, err, req.Offset, req.MaxBytes)
 }
 
 // pageToolReport renders one invocation as a bounded tool result.
@@ -137,7 +143,7 @@ func (s *Server) cancelPageTool(ctx context.Context, args json.RawMessage) (any,
 // failed — is reported WITH its id rather than as a bare error, because the
 // invocation is still running in the document whatever happened to the call that
 // was watching it, and the id is the only way back to it.
-func pageToolReport(ctx context.Context, invocation snapshot.PageToolInvocation, err error, offset, maxBytes int) (any, *rpcError) {
+func (s *Server) pageToolReport(ctx context.Context, invocation snapshot.PageToolInvocation, err error, offset, maxBytes int) (any, *rpcError) {
 	if err != nil && invocation.ID == "" {
 		return toolError(err), nil
 	}
@@ -146,7 +152,38 @@ func pageToolReport(ctx context.Context, invocation snapshot.PageToolInvocation,
 		invocation.Error = err.Error()
 	}
 	if invocation.TabID == "" {
-		invocation.TabID = browser.TabIDFromContext(ctx)
+		invocation.TabID = s.pageToolTabID(ctx)
 	}
 	return evaluateResult(invocation, nil, offset, maxBytes)
+}
+
+// pageToolTabID names the tab the report has to be polled back into.
+//
+// A pin in the context is the cheap answer, but only the extension bridge puts
+// one there: pinActiveTabForTool needs activeTabResolver, which the direct-CDP
+// Manager and the HTTP proxy deliberately do not implement. On those two — one
+// of them the default transport — an unpinned report carried no tab at all,
+// while the lost-invocation message told the agent to pass back "the tab_id the
+// invocation reported". So the controller is asked instead; every transport
+// answers (browser.ActiveTabReporter).
+//
+// The lookup runs outside the caller's cancellation on purpose. A wait cut short
+// by a cancelled request is exactly the report whose whole value is staying
+// addressable, and inheriting the cancellation that ended it would drop the tab
+// from the one report that needs it most.
+func (s *Server) pageToolTabID(ctx context.Context) string {
+	if tabID := browser.TabIDFromContext(ctx); tabID != "" {
+		return tabID
+	}
+	reporter, ok := s.manager.(browser.ActiveTabReporter)
+	if !ok {
+		return ""
+	}
+	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pageToolTabLookupTimeout)
+	defer cancel()
+	tabID, err := reporter.ActiveTabID(lookupCtx)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(tabID)
 }

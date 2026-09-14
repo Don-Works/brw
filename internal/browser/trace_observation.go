@@ -37,6 +37,12 @@ var observationActions = map[string]bool{
 	TraceActionEvaluate: true,
 	TraceActionGet:      true,
 	TraceActionFrame:    true,
+	// A page-tool evaluate is the same read as any other evaluate, relabelled so
+	// that a bounded wait's hundreds of polls fold into one trace row. Without
+	// it here, relabelling moved those rows out of the observation group and
+	// brw_trace format="batch" reported them as "not a replayable action:
+	// page_tool" — an unknown action an agent might try to fix.
+	TraceActionPageTool: true,
 }
 
 // IsObservationAction reports whether a traced action observed the page rather

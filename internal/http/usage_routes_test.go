@@ -26,6 +26,10 @@ var routesNotRecorded = map[string]string{
 	"/api/artifacts/{id}/info":   "mapped by the artifacts prefix fallback",
 	"/api/artifacts/{id}/read":   "mapped by the artifacts prefix fallback",
 	"/api/artifacts/{id}/search": "mapped by the artifacts prefix fallback",
+	// Names the tab a proxying daemon's page-tool report has to poll back into.
+	// It is one hop inside another operation, which is already recorded on both
+	// daemons, so a ledger entry of its own would double-count the agent's call.
+	"/api/browser/active_tab": "internal tab-naming hop inside another operation",
 }
 
 // TestEveryAPIRouteHasAUsageOperation pins the route table to the usage

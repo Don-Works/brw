@@ -525,14 +525,42 @@ func TestPageToolInvocationIsLostWhenThePageNavigatesAway(t *testing.T) {
 	}
 }
 
+// countingEvaluator counts the round trips an invocation makes to the page, so a
+// test can tell an answer the start report carried from one a later poll had to
+// go back for.
+type countingEvaluator struct {
+	mu    sync.Mutex
+	calls int
+	inner snapshot.PageToolEvaluator
+}
+
+func (c *countingEvaluator) eval(ctx context.Context, expression string) (any, error) {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	return c.inner(ctx, expression)
+}
+
+func (c *countingEvaluator) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
 // A page tool that throws the instant it is called has already failed by the
 // time the start script returns. Detached, that report is the whole answer the
 // agent gets, so reporting ok:true and dropping the message would send it off to
 // collect work that never ran.
+//
+// Both rows assert the round-trip count, because that is the only thing that
+// separates the two halves of the fix. A waited call re-reads the record through
+// the same report builder, which recomputes ok from the status, so it reports the
+// failure correctly whether or not the START report does — it just takes a poll
+// to get there. One evaluate means the start report answered; two means it
+// claimed the tool was running and the wait had to discover otherwise.
 func TestSynchronouslyFailingPageToolIsReportedAtTheStart(t *testing.T) {
 	srv := servePage(t, slowToolPage)
 	ctx := armedWebMCPTab(t, srv.URL)
-	eval := chromedpEvaluator(ctx)
 
 	for _, tc := range []struct {
 		name   string
@@ -542,7 +570,8 @@ func TestSynchronouslyFailingPageToolIsReportedAtTheStart(t *testing.T) {
 		{name: "waited", detach: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := snapshot.InvokePageTool(ctx, eval, snapshot.PageToolInvokeOptions{
+			eval := &countingEvaluator{inner: chromedpEvaluator(ctx)}
+			got, err := snapshot.InvokePageTool(ctx, eval.eval, snapshot.PageToolInvokeOptions{
 				Name:     "throw_now",
 				Detach:   tc.detach,
 				Validate: true,
@@ -559,6 +588,9 @@ func TestSynchronouslyFailingPageToolIsReportedAtTheStart(t *testing.T) {
 			}
 			if got.Detached || strings.Contains(got.Note, "collect it") {
 				t.Fatalf("invoke = %+v, want no instruction to collect an invocation that already failed", got)
+			}
+			if calls := eval.count(); calls != 1 {
+				t.Fatalf("invoke made %d round trips to the page, want the start report to be the whole answer (1)", calls)
 			}
 		})
 	}

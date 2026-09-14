@@ -3348,6 +3348,30 @@ func (m *Manager) tabContext(tabID string) (context.Context, error) {
 	return ctx, nil
 }
 
+// Every first-party transport reports its active tab, so a caller that must
+// name one (a WebMCP page-tool report) works on all of them rather than only
+// where a tab happens to be pinned into the context.
+var _ ActiveTabReporter = (*Manager)(nil)
+
+// ActiveTabID names the tab an untargeted page call lands in, which is the same
+// answer activeContext reaches on its way into every Evaluate. It reports what
+// is already open and never opens a tab: a caller asking which tab to name must
+// not change the browser to get an answer, and ensureActive opens about:blank
+// when there is nothing to report.
+func (m *Manager) ActiveTabID(ctx context.Context) (string, error) {
+	if active := m.refs.Active(); active != "" {
+		return active, nil
+	}
+	tabs, err := m.ListTabs(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(tabs) == 0 {
+		return "", errors.New("no tab is open to name")
+	}
+	return tabs[0].ID, nil
+}
+
 func (m *Manager) ensureActive(ctx context.Context) (string, error) {
 	if active := m.refs.Active(); active != "" {
 		return active, nil

@@ -450,6 +450,26 @@ func (c *Controller) Evaluate(ctx context.Context, expression string) (any, erro
 	return out, err
 }
 
+var _ browser.ActiveTabReporter = (*Controller)(nil)
+
+// ActiveTabID names the tab an untargeted page call lands in on the daemon this
+// controller proxies to. A proxying process holds no browser, so the answer can
+// only come from the one that does — and a WebMCP page-tool report has to carry
+// a tab for the agent to poll back into on this transport too, not only where
+// the extension bridge pins one into the context.
+func (c *Controller) ActiveTabID(ctx context.Context) (string, error) {
+	var out struct {
+		TabID string `json:"tab_id"`
+	}
+	if err := c.get(ctx, "/api/browser/active_tab", nil, &out); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(out.TabID) == "" {
+		return "", errors.New("the upstream daemon named no active tab")
+	}
+	return out.TabID, nil
+}
+
 func (c *Controller) NetworkRequests(ctx context.Context, filter string) ([]browser.NetworkRequest, error) {
 	var out []browser.NetworkRequest
 	err := c.post(ctx, "/api/page/network_requests", map[string]string{"filter": filter}, &out)

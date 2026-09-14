@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -37,7 +38,31 @@ type pageToolController struct {
 	activeTab   string
 }
 
-func (c *pageToolController) ResolveActiveTabID(context.Context) string { return c.activeTab }
+// ActiveTabID is the capability EVERY transport has: it reports the tab an
+// untargeted page call lands in and pins nothing. This is the direct-CDP and
+// --upstream-http shape.
+func (c *pageToolController) ActiveTabID(ctx context.Context) (string, error) {
+	// A real lookup is a round trip — the direct-CDP Manager lists tabs, the
+	// proxy asks the upstream daemon — so both fail on a dead context, which is
+	// what makes the report's tab lookup outlive the caller's cancellation
+	// observable here.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if c.activeTab == "" {
+		return "", errors.New("no tab is open to name")
+	}
+	return c.activeTab, nil
+}
+
+// bridgePageToolController adds the capability only the extension bridge has:
+// resolving the active tab once per tool call and PINNING it into the context,
+// so every report downstream reads it from there.
+type bridgePageToolController struct {
+	pageToolController
+}
+
+func (c *bridgePageToolController) ResolveActiveTabID(context.Context) string { return c.activeTab }
 
 func (c *pageToolController) Evaluate(ctx context.Context, expression string) (any, error) {
 	c.mu.Lock()
@@ -306,47 +331,102 @@ func TestNegativePageToolTimeoutIsRefusedBeforeDispatch(t *testing.T) {
 // A poll walks only the windows of the tab it lands in, and a page tool that
 // opens a tab moves the active one. The report has to name the tab it was
 // started in, because the agent has nothing else to pass back.
+//
+// Run against both transport shapes, because they reach the tab by different
+// routes and the promise is made without qualification in four places. Only the
+// extension bridge pins the tab into the context; direct CDP and the proxy pin
+// nothing, so a stub that grants the bridge's pinning capability is green on a
+// transport that carried no tab at all.
 func TestPageToolReportNamesTheTabToPollBackInto(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		tool      string
-		args      string
-		activeTab string
-		want      string
+	transports := []struct {
+		name string
+		make func(activeTab string) browser.Controller
 	}{
 		{
-			name:      "start reports the resolved active tab",
-			tool:      "brw_call_page_tool",
-			args:      `{"name":"export_ledger","arguments":{"format":"csv"},"detach":true}`,
-			activeTab: "tab-7",
-			want:      `"tab_id":"tab-7"`,
+			name: "extension bridge",
+			make: func(activeTab string) browser.Controller {
+				return &bridgePageToolController{pageToolController{activeTab: activeTab}}
+			},
 		},
 		{
-			name:      "an explicit tab_id is echoed back",
-			tool:      "brw_call_page_tool",
-			args:      `{"name":"export_ledger","arguments":{"format":"csv"},"detach":true,"tab_id":"tab-9"}`,
-			activeTab: "tab-7",
-			want:      `"tab_id":"tab-9"`,
+			name: "direct cdp",
+			make: func(activeTab string) browser.Controller {
+				return &pageToolController{activeTab: activeTab}
+			},
 		},
-		{
-			name:      "a poll reports the tab it polled",
-			tool:      "brw_page_tool_result",
-			args:      `{"invocation_id":"` + pageToolStubID + `"}`,
-			activeTab: "tab-7",
-			want:      `"tab_id":"tab-7"`,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctrl := &pageToolController{activeTab: tc.activeTab}
-			srv := New(ctrl)
-			result, rpcErr := srv.callTool(context.Background(), tc.tool, json.RawMessage(tc.args))
-			if rpcErr != nil {
-				t.Fatalf("rpc error: %+v", rpcErr)
-			}
-			if text := resultText(result); !strings.Contains(text, tc.want) {
-				t.Fatalf("answered %q, want it to carry %s", text, tc.want)
-			}
-		})
+	}
+
+	for _, transport := range transports {
+		for _, tc := range []struct {
+			name      string
+			tool      string
+			args      string
+			activeTab string
+			want      string
+		}{
+			{
+				name:      "start reports the resolved active tab",
+				tool:      "brw_call_page_tool",
+				args:      `{"name":"export_ledger","arguments":{"format":"csv"},"detach":true}`,
+				activeTab: "tab-7",
+				want:      `"tab_id":"tab-7"`,
+			},
+			{
+				name:      "an explicit tab_id is echoed back",
+				tool:      "brw_call_page_tool",
+				args:      `{"name":"export_ledger","arguments":{"format":"csv"},"detach":true,"tab_id":"tab-9"}`,
+				activeTab: "tab-7",
+				want:      `"tab_id":"tab-9"`,
+			},
+			{
+				name:      "a poll reports the tab it polled",
+				tool:      "brw_page_tool_result",
+				args:      `{"invocation_id":"` + pageToolStubID + `"}`,
+				activeTab: "tab-7",
+				want:      `"tab_id":"tab-7"`,
+			},
+			{
+				name:      "a cancel reports the tab it cancelled in",
+				tool:      "brw_page_tool_cancel",
+				args:      `{"invocation_id":"` + pageToolStubID + `"}`,
+				activeTab: "tab-7",
+				want:      `"tab_id":"tab-7"`,
+			},
+		} {
+			t.Run(transport.name+"/"+tc.name, func(t *testing.T) {
+				srv := New(transport.make(tc.activeTab))
+				result, rpcErr := srv.callTool(context.Background(), tc.tool, json.RawMessage(tc.args))
+				if rpcErr != nil {
+					t.Fatalf("rpc error: %+v", rpcErr)
+				}
+				if text := resultText(result); !strings.Contains(text, tc.want) {
+					t.Fatalf("answered %q, want it to carry %s", text, tc.want)
+				}
+			})
+		}
+	}
+}
+
+// The wait that was cut short is the report whose only value is staying
+// addressable, so it is also the one that most needs to name a tab. Looking the
+// tab up on the caller's cancelled context would drop it from exactly that
+// report.
+func TestAnInterruptedPageToolReportStillNamesItsTab(t *testing.T) {
+	ctrl := &pageToolController{activeTab: "tab-7"}
+	srv := New(ctrl)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, rpcErr := srv.callTool(ctx, "brw_page_tool_result", json.RawMessage(`{"invocation_id":"`+pageToolStubID+`"}`))
+	if rpcErr != nil {
+		t.Fatalf("rpc error: %+v", rpcErr)
+	}
+	text := resultText(result)
+	if !strings.Contains(text, `"tab_id":"tab-7"`) {
+		t.Fatalf("answered %q, want the interrupted report to still name tab-7", text)
+	}
+	if !strings.Contains(text, pageToolStubID) {
+		t.Fatalf("answered %q, want the invocation id back", text)
 	}
 }
 

@@ -176,6 +176,22 @@ type WindowReader interface {
 	ReadWindow(context.Context, readability.ReadOptions) (readability.PageRead, error)
 }
 
+// ActiveTabReporter names the tab an untargeted page call lands in. All three
+// controllers brwd can install implement it, each asserted at compile time next
+// to its implementation, because the caller that needs it needs it on every
+// transport rather than on whichever one it was written against.
+//
+// It is deliberately not ResolveActiveTabID (internal/mcp): that one RESOLVES a
+// tab and pins it for the rest of a tool call, which is why only the extension
+// bridge implements it — the bridge is where per-sub-call re-resolution was
+// costing round trips. This one only reports, opens nothing and pins nothing, so
+// a report can name the tab it ran in without changing what anything else
+// targets. A transport with no tab open answers with an error rather than an
+// empty string, so a caller can tell "no tab" from "not asked".
+type ActiveTabReporter interface {
+	ActiveTabID(context.Context) (string, error)
+}
+
 // DocumentIdentity is an opaque, main-frame document identity plus its exact
 // security origin. ID must remain stable across same-document history changes
 // (pushState/replaceState/hash changes) and change whenever Chrome commits a

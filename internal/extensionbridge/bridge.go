@@ -4674,6 +4674,18 @@ func (b *Bridge) ResolveActiveTabID(ctx context.Context) string {
 	return b.ensureOwnedTabID(ctx)
 }
 
+var _ browser.ActiveTabReporter = (*Bridge)(nil)
+
+// ActiveTabID satisfies browser.ActiveTabReporter: it is the same resolution
+// with the failure named instead of returned as an empty string, so a caller
+// that has to report a tab can say why it has none.
+func (b *Bridge) ActiveTabID(ctx context.Context) (string, error) {
+	if tabID := b.ensureOwnedTabID(ctx); tabID != "" {
+		return tabID, nil
+	}
+	return "", errors.New("the extension bridge resolved no active tab to name")
+}
+
 // pinActiveTab resolves the active tab once and returns a context with that tab
 // pinned via browser.WithCurrentOwnedTabID. If an explicit tab is already in the context it
 // is left untouched (the caller asked for a specific tab). If resolution fails

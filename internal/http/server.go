@@ -293,6 +293,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/browser/open_incognito", s.openIncognito)
 	mux.HandleFunc("POST /api/browser/close_context", s.closeContext)
 	mux.HandleFunc("GET /api/browser/tabs", s.tabs)
+	mux.HandleFunc("GET /api/browser/active_tab", s.activeTab)
 	mux.HandleFunc("GET /api/browser/tab_groups", s.tabGroups)
 	mux.HandleFunc("POST /api/browser/focus", s.focus)
 	mux.HandleFunc("POST /api/browser/close", s.closeTab)
@@ -737,6 +738,41 @@ func (s *Server) tabs(w http.ResponseWriter, r *http.Request) {
 		tabs = s.leases.annotate(leaseOwner(r.Context()), tabs)
 	}
 	writeResult(w, tabs, err)
+}
+
+// activeTab names the tab an untargeted page call on THIS daemon lands in.
+//
+// It exists for the --upstream-http hop. A WebMCP page-tool report has to carry
+// a tab for the agent to poll back into, because a poll walks only the windows
+// of the tab it lands in and a page tool that opens a tab moves the active one.
+// The proxying daemon has no way to work that out: it holds no browser, and the
+// tab list carries no active flag on direct CDP. So it asks the daemon that does
+// own the browser, here.
+//
+// Reporting only: it opens nothing and pins nothing, so asking which tab to name
+// never changes which tab anything targets.
+func (s *Server) activeTab(w http.ResponseWriter, r *http.Request) {
+	// A session that already holds a working tab lands every untargeted page
+	// call on it, so that lease — not the browser's own active tab — is this
+	// caller's answer. Read it without opening one.
+	if owner := leaseOwner(r.Context()); owner != "" {
+		if tabID, release, ok := s.leases.acquireDefault(owner); ok {
+			release()
+			writeJSON(w, http.StatusOK, map[string]string{"tab_id": tabID})
+			return
+		}
+	}
+	reporter, ok := s.manager.(browser.ActiveTabReporter)
+	if !ok {
+		writeError(w, errors.New("this browser transport cannot name its active tab"))
+		return
+	}
+	tabID, err := reporter.ActiveTabID(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"tab_id": tabID})
 }
 
 func (s *Server) tabGroups(w http.ResponseWriter, r *http.Request) {
