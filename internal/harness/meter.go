@@ -57,8 +57,14 @@ func (c Counters) Add(other Counters) Counters {
 // made from the Go call graph would be an assertion about the code rather than
 // a measurement of the browser conversation.
 type Meter struct {
-	ln       net.Listener
+	ln net.Listener
+	// target and path are Chrome's own address and browser-websocket path;
+	// listen is the relay's address. The handshake check compares against the
+	// relay's address and the rewrite that follows it uses the browser's, so
+	// both have to be kept.
 	target   string
+	path     string
+	listen   string
 	browser  string
 	tx       counterPair
 	rx       counterPair
@@ -89,8 +95,14 @@ func StartMeter(chromeEndpoint string) (*Meter, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Meter{ln: ln, target: parsed.Host, dialWait: 10 * time.Second}
-	m.browser = "ws://" + ln.Addr().String() + parsed.Path
+	m := &Meter{
+		ln:       ln,
+		target:   parsed.Host,
+		path:     parsed.Path,
+		listen:   ln.Addr().String(),
+		dialWait: 10 * time.Second,
+	}
+	m.browser = "ws://" + m.listen + parsed.Path
 	m.wg.Add(1)
 	go m.accept()
 	return m, nil
@@ -163,23 +175,32 @@ func (m *Meter) track(conn net.Conn) {
 
 func (m *Meter) relay(client net.Conn) {
 	defer client.Close()
+
+	clientReader := bufio.NewReader(client)
+	head, err := readHTTPHead(clientReader)
+	if err != nil {
+		return
+	}
+	// Refused before the dial, so a request the relay will not carry never opens
+	// a connection to the browser at all.
+	if reason := m.refuseHandshake(head); reason != "" {
+		writeRefusal(client, reason)
+		return
+	}
+
 	server, err := net.DialTimeout("tcp", m.target, m.dialWait)
 	if err != nil {
 		return
 	}
 	defer server.Close()
 	m.track(server)
-
-	clientReader := bufio.NewReader(client)
 	serverReader := bufio.NewReader(server)
 
-	head, err := readHTTPHead(clientReader)
-	if err != nil {
-		return
-	}
 	// Chrome refuses a DevTools websocket whose Host header names something
 	// other than the port it is listening on, so the relay's own address has to
-	// be swapped out before the handshake is forwarded.
+	// be swapped out before the handshake is forwarded. refuseHandshake has
+	// already applied the same check against the relay's own address, so this
+	// rewrite no longer stands in for Chrome's.
 	if _, err := server.Write(rewriteHost(head, m.target)); err != nil {
 		return
 	}
@@ -204,6 +225,81 @@ func (m *Meter) relay(client net.Conn) {
 	}()
 	<-done
 	<-done
+}
+
+// refuseHandshake reports why a request must not be carried, or "" for the one
+// websocket upgrade the meter exists to relay.
+//
+// Chrome's DevTools endpoint refuses a request whose Host header is not its own
+// listening address. That check is what stops web content from reaching the
+// debugging port after rebinding a name to 127.0.0.1, and rewriting the header
+// on the way through replaced it with nothing: anything arriving on the relay's
+// port was re-addressed to the browser and answered, /json/version included,
+// which hands out the browser UUID and with it a full CDP session. The relay
+// therefore applies the same check against its OWN address, and carries nothing
+// but the exact upgrade StartMeter resolved: a rebound name cannot present the
+// relay's literal address as its Host, and an ordinary cross-origin fetch is
+// not an upgrade.
+func (m *Meter) refuseHandshake(head []byte) string {
+	lines := strings.Split(strings.TrimRight(string(head), "\r\n"), "\r\n")
+	fields := strings.Fields(lines[0])
+	if len(fields) < 2 {
+		return "malformed request line"
+	}
+	if fields[0] != http.MethodGet || fields[1] != m.path {
+		return "only the browser websocket upgrade is relayed"
+	}
+
+	var hosts, upgrade, connection []string
+	for _, line := range lines[1:] {
+		name, value, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "host":
+			hosts = append(hosts, value)
+		case "upgrade":
+			upgrade = append(upgrade, value)
+		case "connection":
+			connection = append(connection, value)
+		}
+	}
+	// Exactly one Host: two of them leave the relay and the browser disagreeing
+	// about which is authoritative, which is the shape of request smuggling.
+	if len(hosts) != 1 {
+		return "a relayed request carries exactly one host header"
+	}
+	if !strings.EqualFold(hosts[0], m.listen) {
+		return "host header is not the relay's own address"
+	}
+	if !headerHasToken(upgrade, "websocket") || !headerHasToken(connection, "upgrade") {
+		return "only a websocket upgrade is relayed"
+	}
+	return ""
+}
+
+// headerHasToken reports whether any of a header's values carries the token,
+// which is how "Connection: keep-alive, Upgrade" has to be read.
+func headerHasToken(values []string, token string) bool {
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// writeRefusal answers a request the relay will not carry, so a mis-plumbed
+// client sees why rather than a closed socket.
+func writeRefusal(client net.Conn, reason string) {
+	body := reason + "\n"
+	_, _ = fmt.Fprintf(client,
+		"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		len(body), body)
 }
 
 // readHTTPHead reads up to and including the blank line that ends an HTTP

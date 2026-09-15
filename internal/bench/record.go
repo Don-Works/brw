@@ -1,6 +1,6 @@
 // Package bench measures what one brw command costs against the local fixture
 // suite: wall time, CDP round trips, bytes over the transport, and the token
-// size of the observation the agent gets back, plus the machine cost of the
+// size of the MCP tool result the agent gets back, plus the machine cost of the
 // whole run.
 //
 // It is a measurement, not a gate. Nothing here runs under `go test ./...`;
@@ -16,11 +16,17 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/harness"
+	"github.com/Don-Works/brw/internal/mcp"
 )
 
 // RecordSchema names the shape of the machine-readable record. A consumer that
 // does not recognise it should refuse to compare rather than guess.
-const RecordSchema = "brw.bench/v1"
+//
+// v2 because the observation columns changed meaning: v1 weighed the internal
+// Go result once, v2 weighs the MCP tool result an agent is actually sent. The
+// two are the same measurement by name and roughly a factor of two apart, which
+// is exactly the comparison the schema field exists to stop.
+const RecordSchema = "brw.bench/v2"
 
 // charsPerToken is the same rough estimator scripts/measure-tool-catalogue.py
 // uses, kept identical so the two sets of published numbers are on one scale.
@@ -59,6 +65,9 @@ type Flow struct {
 // came back — responses and events together. The counters are sampled around
 // each call, so an event that arrives while no call is in flight is attributed
 // to the next command rather than to the one that caused it.
+//
+// ObservationBytes is the MCP tool result, envelope included, not the internal
+// Go value: see ObservationBytes.
 type Command struct {
 	Name              string  `json:"name"`
 	Tool              string  `json:"tool"`
@@ -118,14 +127,25 @@ func EstimateTokens(bytes int) int {
 	return bytes / charsPerToken
 }
 
-// ObservationBytes is the size of the JSON an agent would receive for a result.
+// ObservationBytes is the size of the MCP tool result an agent receives for a
+// value, measured through the same payload builder the server serializes.
+//
+// It is not the size of the internal Go result. MCP sends the payload twice —
+// once as content[0].text, a JSON string with every quote escaped, and again as
+// structuredContent — so weighing the Go value alone reports roughly half of
+// what the turn costs, under a column heading that says otherwise.
+//
 // A value that cannot be marshalled is reported as zero-sized rather than
 // failing the measurement, because the command itself still ran.
 func ObservationBytes(value any) int {
 	if value == nil {
 		return 0
 	}
-	data, err := json.Marshal(value)
+	payload, err := mcp.ToolResultPayload(value)
+	if err != nil {
+		return 0
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return 0
 	}

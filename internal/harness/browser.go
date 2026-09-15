@@ -35,10 +35,23 @@ type Browser struct {
 //
 // A fixed window and device scale keep layout identical between machines, and
 // the first-run surfaces would otherwise steal a tab and change what a snapshot
-// sees. The networking flags matter for a different reason: a harness that
-// claims to reach nothing but its own fixture origin has to actually reach
-// nothing else, and Chrome's default background traffic — component updates,
-// GCM registration, safe-browsing, variations — is neither silent nor free.
+// sees.
+//
+// offBoxBlockedRule is what makes "nothing but the fixture origin" true rather
+// than asserted. The --disable-* networking flags below are Chrome's own
+// opt-outs and they are not sufficient: with all of them set, Chrome 153 still
+// completed GCM registration round trips to Google on every run, which is
+// network latency and CPU inside a window whose whole point is determinism. A
+// resolver rule cannot be ignored the same way — every name but the loopback
+// literal fails to resolve, so anything off this machine fails by construction
+// and the flags become defence in depth.
+//
+// localhost is deliberately NOT excluded. It is the only name that would
+// resolve without a network, so leaving it inside the rule is what lets a test
+// tell an enforced rule from an unenforced one: same port, same bytes, name
+// instead of literal, and the load has to fail.
+const offBoxBlockedRule = "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"
+
 func chromeArgs() []string {
 	return []string{
 		"--no-sandbox",
@@ -50,6 +63,7 @@ func chromeArgs() []string {
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--disable-search-engine-choice-screen",
+		offBoxBlockedRule,
 		"--disable-background-networking",
 		"--disable-component-update",
 		"--disable-client-side-phishing-detection",

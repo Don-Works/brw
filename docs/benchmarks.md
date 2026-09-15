@@ -23,8 +23,16 @@ minimal` trade surface for it.
 HTTP origin it starts itself, in a headless Chrome on a throwaway profile. It
 needs no daemon, no network and no account. Per command it records wall time,
 the CDP messages sent and received, the bytes those cost on the transport, and
-the size of the observation an agent gets back; per run it records the harness
-process's and the browser tree's CPU and peak RSS.
+the size of the MCP tool result an agent gets back; per run it records the
+harness process's and the browser tree's CPU and peak RSS.
+
+"No network" is enforced rather than asked for. Chrome launches with
+`--host-resolver-rules="MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"`, so the fixture
+origin's own address is the only thing that resolves at all and everything else
+fails by construction. Chrome's `--disable-background-networking` family is set
+too and is not sufficient on its own: with all of it set, Chrome 153 still
+completed GCM registration round trips to Google on every run, inside the
+window being measured.
 
 ```sh
 task bench                                   # summary plus dist/bench/record.json
@@ -44,46 +52,65 @@ attributed to the next command rather than to the one that caused it.
 ### First recorded run
 
 ```
-darwin/arm64 Apple M4 Max x16 | Chrome/153.0.8010.37 | brw dev | go1.26.6 | fixtures c93446d33c8a
-captured 2026-09-15T07:47:22Z, 32 commands, 4037 ms wall
+darwin/arm64 Apple M4 Max x16 | Chrome/153.0.8010.37 | brw 0.13.5-72-ge1b285b-dirty | go1.26.6 | fixtures c93446d33c8a
+captured 2026-09-15T10:01:14Z, 32 commands, 5627 ms wall
 ```
 
 | Flow | Commands | Wall ms | CDP sent | CDP received | Bytes sent | Bytes received | Observation bytes | ~tokens |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| forms | 11 | 907.7 | 60 | 119 | 362,407 | 85,617 | 9,126 | 2,277 |
-| shop | 11 | 574.0 | 59 | 111 | 334,710 | 58,519 | 5,959 | 1,484 |
-| dynamic | 6 | 1,117.0 | 40 | 88 | 216,201 | 35,551 | 2,630 | 654 |
-| structured | 4 | 876.7 | 28 | 75 | 97,709 | 24,260 | 1,666 | 414 |
-| **all flows** | **32** | **3,475.4** | **187** | **393** | **1,011,027** | **203,947** | **19,381** | **4,829** |
+| forms | 11 | 1,239.2 | 60 | 113 | 362,407 | 80,649 | 20,582 | 5,142 |
+| shop | 11 | 894.9 | 59 | 108 | 334,710 | 58,288 | 13,486 | 3,370 |
+| dynamic | 6 | 1,133.1 | 40 | 88 | 216,201 | 35,526 | 6,274 | 1,567 |
+| structured | 4 | 883.4 | 28 | 75 | 97,709 | 24,236 | 3,778 | 944 |
+| **all flows** | **32** | **4,150.6** | **187** | **384** | **1,011,027** | **198,699** | **44,120** | **11,023** |
 
-System cost of that run: the harness process peaked at 23.9 MB RSS and used
-46 ms user + 73 ms sys; the browser tree's largest process peaked at 248.5 MB
-and the tree used 1,596 ms user + 931 ms sys. The browser figure is a high-water
-mark for the largest single browser process, which is what the kernel records —
-not a sum across Chrome's processes.
+System cost of that run: the harness process peaked at 24.5 MB RSS and used
+79 ms user + 105 ms sys; the browser tree's largest process peaked at 267.4 MB
+and the tree used 2,652 ms user + 1,470 ms sys. The browser figure is a
+high-water mark for the largest single browser process, which is what the kernel
+records — not a sum across Chrome's processes.
 
-Two rows are the page waiting rather than brw working, and reading them as
-latency would be wrong. `dynamic/wait_controls` is 697.1 ms because the fixture's
-`setTimeout` is 800 ms. `structured/read` is 829.3 ms for the same class of
-reason. The flow totals include them.
+Read the wall column as an upper bound. This machine was compiling and driving
+other browsers throughout, at a load average around 45 on its 16 cores. The
+counted columns do not move with that, and are the ones to compare.
+
+`dynamic/wait_controls` is the page waiting rather than brw working: the
+fixture's `setTimeout` is 800 ms and the row cannot be faster than it.
+
+`structured/read` is brw working. `structured-product.html` has no timer; its
+visible body text is 38 characters, under `readMinMainLen` 50, so `brw_read`
+treats the page as an unpopulated shell and waits out `readSettleCapMS` — the
+800 ms content-settle cap in `internal/readability/scripts.go` — before giving
+up. Read that row as the cost of brw's own settle cap on a page with almost no
+text, not as the page being slow. The flow totals include both.
 
 Bytes sent exceeds bytes received on every flow because brw sends in-page
 scripts and receives semantic results: a `brw_fill` carries roughly 44 KB of
 script to the browser and gets back roughly 6 KB. That is the shape of the
 design, not a measurement of a page.
 
-What moves between runs and what does not, across four runs on this machine:
-the suite's total wall time ranged 3,277–4,186 ms, the top of that range being a
-run taken while a test suite was using the other cores. Commands sent stayed at
-187 every time and bytes sent moved by at most two bytes. Messages received
-moved by a few — Chrome's event stream is asynchronous, so an event that arrives
-between two calls is attributed to the later one. Read the send counts as stable
-and the receive counts as approximate.
+What moves between runs and what does not, across 8 runs on this machine while
+it was busy with other work: total wall time ranged 4,151–9,241 ms. Seven of the
+eight sent 187 commands and 1,011,027 bytes, to the byte; the exception was the
+slowest run, which sent 186 and 1,010,910. Messages received ranged 376–387 —
+Chrome's event stream is asynchronous, so an event that arrives between two
+calls is attributed to the later one. Observation bytes spanned 12 bytes in all,
+because each result carries its own `duration_ms`. Read the send counts as
+stable, the receive counts as approximate, and the wall times as a machine with
+other work on it.
 
 Compare two records by their `environment` block first: `os`, `arch`,
 `cpu_model`, `cpus`, `browser`, `headless` and `fixture_digest` all have to
 match, and the record carries all seven so a mismatch is visible rather than
 assumed.
+
+The observation columns are the MCP tool result an agent receives, envelope
+included: MCP carries the payload twice, once as a JSON string inside
+`content[0].text` with every quote escaped and again as `structuredContent`, and
+both are counted. An earlier version of this table weighed the internal Go value
+once, which was roughly half of what a turn costs under a heading that said
+otherwise; records from it carry schema `brw.bench/v1` and must not be compared
+with these.
 
 Token figures use the same 4-chars-per-token estimator as
 `scripts/measure-tool-catalogue.py`. It compares arms; it is not a tokenizer.
@@ -102,7 +129,8 @@ task agent-eval          # four tasks, deterministic end-state grading
 task agent-eval-verify   # the same four run honestly AND sabotaged
 ```
 
-It runs with no API key. `--eval-judge` adds an LLM judge over the deterministic
+It runs with no API key, and on the same resolver-blocked browser as the
+benchmark. `--eval-judge` adds an LLM judge over the deterministic
 check, shown the task, the criteria and the observed end state — never what the
 run claimed. The judge can fail a run the end-state check passed; it cannot pass
 one the check failed.

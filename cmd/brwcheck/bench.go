@@ -18,18 +18,31 @@ type benchOptions struct {
 	OutPath  string
 }
 
+// benchBudget bounds the whole suite. The per-operation Timeout below only
+// bounds one browser call: a browser that never answers the launch handshake,
+// or a wait the manager does not time out, would otherwise hang `task bench`
+// with no output and nothing to read. The suite takes seconds, so this is
+// generous by two orders of magnitude and only ever catches a wedge.
+const benchBudget = 10 * time.Minute
+
 // runBench drives the fixture suite and reports what each command cost.
 //
 // It launches its own browser and serves the fixtures itself, so it needs no
 // daemon and no network. The record is written where a later run can be
 // compared against it; the summary is what a human reads.
 func runBench(opts benchOptions) error {
-	record, err := bench.Run(context.Background(), bench.Options{
+	ctx, cancel := context.WithTimeout(context.Background(), benchBudget)
+	defer cancel()
+
+	record, err := bench.Run(ctx, bench.Options{
 		RepoRoot: opts.RepoRoot,
 		Only:     opts.Only,
 		Timeout:  30 * time.Second,
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("benchmark run exceeded its %s budget: %w", benchBudget, err)
+		}
 		return err
 	}
 

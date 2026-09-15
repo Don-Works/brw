@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,7 +25,7 @@ import (
 // the frame walker meets every shape it has to handle.
 func TestMeterCountsRealWebSocketTraffic(t *testing.T) {
 	var observedHost atomic.Value
-	server, wsPath := startEchoServer(t, &observedHost)
+	server, wsPath := startEchoServer(t, &observedHost, nil)
 
 	meter, err := StartMeter(server.URL)
 	if err != nil {
@@ -91,7 +93,7 @@ func TestMeterCountsRealWebSocketTraffic(t *testing.T) {
 // a way that looks like a browser bug.
 func TestMeterForwardsPayloadsUnchanged(t *testing.T) {
 	var observedHost atomic.Value
-	server, _ := startEchoServer(t, &observedHost)
+	server, _ := startEchoServer(t, &observedHost, nil)
 	meter, err := StartMeter(server.URL)
 	if err != nil {
 		t.Fatalf("start meter: %v", err)
@@ -128,17 +130,120 @@ func TestMeterForwardsPayloadsUnchanged(t *testing.T) {
 	}
 }
 
-func startEchoServer(t *testing.T, observedHost *atomic.Value) (*httptest.Server, string) {
+// TestMeterCarriesNothingButItsOwnUpgrade is the DNS-rebinding property.
+//
+// Chrome refuses a DevTools request whose Host header is not its own address,
+// which is what keeps web content off the debugging port. The meter sits in
+// front of that check and used to rewrite the header for anything that arrived,
+// so a page that rebound a name to 127.0.0.1 and found the relay's port could
+// read /json/version, take the browser UUID out of it and open a full CDP
+// session. Every row here is a request that must never reach the browser.
+func TestMeterCarriesNothingButItsOwnUpgrade(t *testing.T) {
+	var observedHost atomic.Value
+	var upstream atomic.Int64
+	server, wsPath := startEchoServer(t, &observedHost, &upstream)
+
+	meter, err := StartMeter(server.URL)
+	if err != nil {
+		t.Fatalf("start meter: %v", err)
+	}
+	defer meter.Close()
+	relay := meter.listen
+	// StartMeter resolves the websocket itself; only what arrives through the
+	// relay from here on counts as upstream contact.
+	upstream.Store(0)
+
+	upgrade := "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==\r\n"
+	cases := []struct {
+		name string
+		head string
+	}{
+		{
+			name: "rebound name asks for the browser list",
+			head: "GET /json/version HTTP/1.1\r\nHost: evil.test:1234\r\n\r\n",
+		},
+		{
+			name: "the relay's own address asks for the browser list",
+			head: "GET /json/version HTTP/1.1\r\nHost: " + relay + "\r\n\r\n",
+		},
+		{
+			name: "rebound name upgrades on the right path",
+			head: "GET " + wsPath + " HTTP/1.1\r\nHost: evil.test:1234\r\n" + upgrade + "\r\n",
+		},
+		{
+			name: "right host, another target's websocket",
+			head: "GET /devtools/page/some-tab HTTP/1.1\r\nHost: " + relay + "\r\n" + upgrade + "\r\n",
+		},
+		{
+			name: "right host and path, no upgrade",
+			head: "GET " + wsPath + " HTTP/1.1\r\nHost: " + relay + "\r\n\r\n",
+		},
+		{
+			name: "right host and path, not a GET",
+			head: "POST " + wsPath + " HTTP/1.1\r\nHost: " + relay + "\r\n" + upgrade + "\r\n",
+		},
+		{
+			name: "two host headers, one of them the relay's",
+			head: "GET " + wsPath + " HTTP/1.1\r\nHost: " + relay + "\r\nHost: evil.test:1234\r\n" + upgrade + "\r\n",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			status, body := speakToMeter(t, relay, testCase.head)
+			if !strings.HasPrefix(status, "HTTP/1.1 403") {
+				t.Fatalf("meter answered %q with %q and body %q, want a refusal", testCase.head, status, body)
+			}
+		})
+	}
+	if reached := upstream.Load(); reached != 0 {
+		t.Fatalf("%d refused requests still reached the browser", reached)
+	}
+	if host, _ := observedHost.Load().(string); host != "" {
+		t.Fatalf("the browser saw a handshake with Host %q from a refused request", host)
+	}
+}
+
+// speakToMeter writes one raw HTTP head at the relay and returns its status
+// line and whatever body followed.
+func speakToMeter(t *testing.T, address, head string) (string, string) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial the relay: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := io.WriteString(conn, head); err != nil {
+		t.Fatalf("write the head: %v", err)
+	}
+	answer, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read the answer: %v", err)
+	}
+	status, body, _ := strings.Cut(string(answer), "\r\n")
+	return status, body
+}
+
+func startEchoServer(t *testing.T, observedHost *atomic.Value, upstream *atomic.Int64) (*httptest.Server, string) {
 	t.Helper()
 	const wsPath = "/devtools/browser/fixture-id"
 	mux := http.NewServeMux()
 	var base string
+	if upstream == nil {
+		upstream = &atomic.Int64{}
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		upstream.Add(1)
+		http.NotFound(w, r)
+	})
 	mux.HandleFunc("/json/version", func(w http.ResponseWriter, r *http.Request) {
+		upstream.Add(1)
 		w.Header().Set("content-type", "application/json")
 		fmt.Fprintf(w, `{"Browser":"Chrome/fixture","Protocol-Version":"1.3","webSocketDebuggerUrl":"ws://%s%s"}`,
 			strings.TrimPrefix(base, "http://"), wsPath)
 	})
 	mux.HandleFunc(wsPath, func(w http.ResponseWriter, r *http.Request) {
+		upstream.Add(1)
 		observedHost.Store(r.Host)
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {

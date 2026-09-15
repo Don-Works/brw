@@ -2318,9 +2318,23 @@ func toolJSON[T any](value T, err error) (any, *rpcError) {
 	if err != nil {
 		return toolError(err), nil
 	}
-	data, err := json.Marshal(value)
+	result, err := ToolResultPayload(value)
 	if err != nil {
 		return toolError(err), nil
+	}
+	return result, nil
+}
+
+// ToolResultPayload is the object a successful tool result is serialized from.
+//
+// It is exported because it is also what a measurement of "what does this
+// observation cost an agent" has to weigh: the payload crosses the wire twice,
+// once as a JSON string with every quote escaped and once as structuredContent,
+// so marshalling the internal Go value alone understates it by roughly half.
+func ToolResultPayload(value any) (any, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
 	}
 	result := map[string]any{
 		"content": []toolContent{{Type: "text", Text: string(data)}},

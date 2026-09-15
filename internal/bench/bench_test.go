@@ -1,8 +1,12 @@
 package bench
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -109,32 +113,96 @@ func TestSelectFlows(t *testing.T) {
 	}
 }
 
+// TestEstimateTokensMatchesThePublishedEstimator reads the divisor out of
+// scripts/measure-tool-catalogue.py rather than restating it.
+//
+// The two sets of published numbers are only on one scale if the two estimators
+// agree, and a test that compares Go against constants typed beside it would
+// keep passing after somebody changed the script.
 func TestEstimateTokensMatchesThePublishedEstimator(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "measure-tool-catalogue.py"))
+	if err != nil {
+		t.Fatalf("read the published estimator: %v", err)
+	}
+	assignment := regexp.MustCompile(`(?m)^CHARS_PER_TOKEN\s*=\s*(\d+)\s*$`).FindSubmatch(script)
+	if assignment == nil {
+		t.Fatal("scripts/measure-tool-catalogue.py no longer declares CHARS_PER_TOKEN; the two published scales cannot be checked against each other")
+	}
+	published, err := strconv.Atoi(string(assignment[1]))
+	if err != nil {
+		t.Fatalf("CHARS_PER_TOKEN %q is not a number: %v", assignment[1], err)
+	}
+	if !bytes.Contains(script, []byte("// CHARS_PER_TOKEN")) {
+		t.Error("the script no longer floor-divides by CHARS_PER_TOKEN; EstimateTokens' integer division may no longer match it")
+	}
+
 	cases := []struct {
+		name  string
 		bytes int
 		want  int
 	}{
-		{bytes: 0, want: 0},
-		{bytes: -5, want: 0},
-		{bytes: 3, want: 0},
-		{bytes: 4, want: 1},
-		{bytes: 4951, want: 1237},
+		{name: "nothing", bytes: 0, want: 0},
+		{name: "negative", bytes: -5, want: 0},
+		{name: "under one token", bytes: published - 1, want: 0},
+		{name: "exactly one token", bytes: published, want: 1},
+		{name: "a whole observation", bytes: 4951, want: 4951 / published},
 	}
 	for _, testCase := range cases {
-		if got := EstimateTokens(testCase.bytes); got != testCase.want {
-			t.Errorf("EstimateTokens(%d) = %d, want %d", testCase.bytes, got, testCase.want)
-		}
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := EstimateTokens(testCase.bytes); got != testCase.want {
+				t.Errorf("EstimateTokens(%d) = %d, want %d at %d chars per token",
+					testCase.bytes, got, testCase.want, published)
+			}
+		})
 	}
 }
 
-func TestObservationBytesMeasuresTheJSONAnAgentReceives(t *testing.T) {
-	if got := ObservationBytes(nil); got != 0 {
-		t.Errorf("nil observation = %d bytes, want 0", got)
+// TestObservationBytesMeasuresTheMCPResultAnAgentReceives is the correction to
+// a test that used to measure the internal Go value. MCP sends the payload
+// twice — escaped inside content[0].text and again as structuredContent — so a
+// figure taken from one marshal is about half the real cost under a column
+// heading that claims otherwise.
+func TestObservationBytesMeasuresTheMCPResultAnAgentReceives(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		want  int
+	}{
+		{name: "nothing was returned", value: nil, want: 0},
+		{name: "an object payload", value: map[string]string{"ok": "true"}},
+		{name: "a scalar payload", value: "a string brw_evaluate returned"},
+		{name: "a list payload", value: []string{"one", "two"}},
 	}
-	payload := map[string]string{"ok": "true"}
-	if got := ObservationBytes(payload); got != len(`{"ok":"true"}`) {
-		t.Errorf("observation = %d bytes, want %d", got, len(`{"ok":"true"}`))
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := ObservationBytes(testCase.value)
+			if testCase.value == nil {
+				if got != testCase.want {
+					t.Fatalf("observation = %d bytes, want %d", got, testCase.want)
+				}
+				return
+			}
+			bare, err := json.Marshal(testCase.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := mcp.ToolResultPayload(testCase.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sent, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != len(sent) {
+				t.Fatalf("observation = %d bytes, want the %d the server sends", got, len(sent))
+			}
+			if got <= len(bare) {
+				t.Fatalf("observation = %d bytes, no more than the %d of the bare Go value; the envelope is not being counted", got, len(bare))
+			}
+		})
 	}
+
 	// A value JSON cannot represent must not abort a measurement of a command
 	// that did in fact run.
 	if got := ObservationBytes(make(chan int)); got != 0 {

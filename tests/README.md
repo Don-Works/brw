@@ -36,8 +36,11 @@ Run a single scenario:
 
 Two modes of the same binary measure rather than gate. Both launch their own
 headless Chrome and serve `tests/fixtures` over a loopback origin they start
-themselves, so neither needs the daemon, the network or an account, and neither
-runs under `go test ./...`.
+themselves, so neither needs the daemon, the network or an account: the browser
+launches with `--host-resolver-rules="MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"`, so
+anything but that origin fails to resolve. Neither measurement runs under
+`go test ./...`; one evaluation task does, honestly and sabotaged, as the guard
+that the grading can report a failure.
 
 ```sh
 task bench                # per-command wall time, CDP round trips, transport bytes, observation tokens

@@ -95,6 +95,15 @@ func TestJudgeSendsTheEndStateAndNotTheClaim(t *testing.T) {
 	if got := captured.header.Get("anthropic-version"); got != anthropicVersion {
 		t.Errorf("anthropic-version = %q, want %q", got, anthropicVersion)
 	}
+	// Both halves of the refusal fallback, because either alone does nothing:
+	// the beta header without the field is an unused opt-in, and the field
+	// without the header is rejected.
+	if got := captured.header.Get("anthropic-beta"); !strings.Contains(got, serverSideFallbackBeta) {
+		t.Errorf("anthropic-beta = %q, want it to carry %q so a policy decline is re-served rather than dropping the judge", got, serverSideFallbackBeta)
+	}
+	if got, _ := captured.body["fallbacks"].(string); got != "default" {
+		t.Errorf("request fallbacks = %q, want \"default\"", got)
+	}
 	if got, _ := captured.body["model"].(string); got != "claude-opus-5" {
 		t.Errorf("request model = %q", got)
 	}
@@ -131,6 +140,100 @@ func TestJudgeSurfacesAnErrorResponse(t *testing.T) {
 		t.Fatal("a 429 was accepted as a verdict")
 	} else if !strings.Contains(err.Error(), "slow down") {
 		t.Fatalf("error %q does not carry what the API said", err)
+	}
+}
+
+// TestJudgeReportsWhatFailedRatherThanTheDecoder covers the endpoints that do
+// not answer in the API's own shape. A proxy in front of an operator-set
+// ANTHROPIC_BASE_URL answers a 502 with an HTML page, and decoding before
+// checking the status reported every one of those as "judge response was not
+// JSON" — the decoder's complaint, not the failure, and it sends whoever reads
+// the log looking at the wrong thing.
+func TestJudgeReportsWhatFailedRatherThanTheDecoder(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      int
+		contentType string
+		body        string
+		wantIn      []string
+		wantNotIn   []string
+	}{
+		{
+			name: "gateway html error", status: http.StatusBadGateway, contentType: "text/html",
+			body:   "<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>",
+			wantIn: []string{"502"}, wantNotIn: []string{"was not JSON"},
+		},
+		{
+			name: "api error object", status: http.StatusTooManyRequests, contentType: "application/json",
+			body:   `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`,
+			wantIn: []string{"429", "slow down"},
+		},
+		{
+			name: "empty body", status: http.StatusServiceUnavailable, contentType: "text/plain",
+			body:   "",
+			wantIn: []string{"503"}, wantNotIn: []string{"was not JSON"},
+		},
+		{
+			name: "success that is not the API's shape", status: http.StatusOK, contentType: "text/html",
+			body:   "<html>a captive portal</html>",
+			wantIn: []string{"was not JSON"},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("content-type", testCase.contentType)
+				w.WriteHeader(testCase.status)
+				_, _ = io.WriteString(w, testCase.body)
+			}))
+			defer server.Close()
+
+			judge := &Judge{APIKey: "fake", Model: "claude-opus-5", BaseURL: server.URL, Client: server.Client()}
+			_, err := judge.Grade(context.Background(), formSubmitTask(), EndState{})
+			if err == nil {
+				t.Fatal("a failed request was accepted as a verdict")
+			}
+			for _, want := range testCase.wantIn {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+			for _, unwanted := range testCase.wantNotIn {
+				if strings.Contains(err.Error(), unwanted) {
+					t.Errorf("error %q blames %q instead of the failure", err, unwanted)
+				}
+			}
+		})
+	}
+}
+
+// TestJudgeBoundsTheBodyItDecodes drives an endpoint that answers with more
+// than the limit. The reply below is valid JSON carrying a valid verdict at the
+// very end, so an unbounded decoder reads all of it and reports a pass: the
+// error this test requires IS the bound.
+func TestJudgeBoundsTheBodyItDecodes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		if _, err := io.WriteString(w, `{"stop_reason":"end_turn","content":[{"type":"text","text":"`); err != nil {
+			return
+		}
+		padding := strings.Repeat("a", 64*1024)
+		for written := 0; written < 4*judgeBodyLimit; written += len(padding) {
+			if _, err := io.WriteString(w, padding); err != nil {
+				return
+			}
+		}
+		_, _ = io.WriteString(w, `{\"passed\": true, \"reason\": \"an unbounded read got this far\"}"}]}`)
+	}))
+	defer server.Close()
+
+	judge := &Judge{APIKey: "fake", Model: "claude-opus-5", BaseURL: server.URL, Client: server.Client()}
+	verdict, err := judge.Grade(context.Background(), formSubmitTask(), EndState{})
+	if err == nil {
+		t.Fatalf("a %d-byte reply was decoded whole into %+v; nothing bounds the allocation", 4*judgeBodyLimit, verdict)
+	}
+	if !strings.Contains(err.Error(), "was not JSON") {
+		t.Fatalf("error %q is not the truncated decode the limit produces", err)
 	}
 }
 

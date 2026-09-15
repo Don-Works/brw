@@ -3,6 +3,7 @@ package harness
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -103,6 +104,66 @@ func TestExternalResourceRefsFindsWhatThePageWouldFetch(t *testing.T) {
 
 	if err := AuditFixtures([]string{path}); err == nil {
 		t.Fatal("AuditFixtures passed a page that loads from six other hosts")
+	}
+}
+
+// TestExternalResourceRefsCatchesEveryWayPastTheTextScan is the table the regex
+// audit could not satisfy. Every "flagged" row below went through the old scan
+// clean — unquoted values had no quotes to match, href outside <link> was never
+// read, and CSS and JavaScript inside the page were not looked at — so each one
+// was a fixture edit away from putting somebody else's network inside a
+// deterministic run.
+//
+// The "ignored" rows are the other half: an audit that cried wolf on an
+// illustrative <a href>, a JSON-LD @context or a local srcset is an audit that
+// gets switched off.
+func TestExternalResourceRefsCatchesEveryWayPastTheTextScan(t *testing.T) {
+	cases := []struct {
+		name    string
+		markup  string
+		flagged string
+	}{
+		{name: "object data", markup: `<object data="https://evil.test/x.pdf"></object>`, flagged: "https://evil.test/x.pdf"},
+		{name: "svg use href", markup: `<svg><use href="https://evil.test/sprite.svg#icon"></use></svg>`, flagged: "https://evil.test/sprite.svg#icon"},
+		{name: "svg image href", markup: `<svg><image href="https://evil.test/pic.png"></image></svg>`, flagged: "https://evil.test/pic.png"},
+		{name: "svg xlink href", markup: `<svg><use xlink:href="https://evil.test/legacy.svg#icon"></use></svg>`, flagged: "https://evil.test/legacy.svg#icon"},
+		{name: "meta refresh", markup: `<meta http-equiv="refresh" content="0;url=https://evil.test/next">`, flagged: "https://evil.test/next"},
+		{name: "unquoted src", markup: `<img src=https://evil.test/unquoted.png>`, flagged: "https://evil.test/unquoted.png"},
+		{name: "srcdoc iframe", markup: `<iframe srcdoc="&lt;img src=&quot;https://evil.test/inner.png&quot;&gt;"></iframe>`, flagged: "https://evil.test/inner.png"},
+		{name: "inline fetch", markup: `<script>fetch("https://evil.test/beacon")</script>`, flagged: "https://evil.test/beacon"},
+		{name: "inline dynamic import", markup: `<script type="module">import("https://evil.test/mod.js")</script>`, flagged: "https://evil.test/mod.js"},
+		{name: "inline scheme-relative", markup: `<script>new Image().src = "//evil.test/px.gif"</script>`, flagged: "//evil.test/px.gif"},
+		{name: "srcset candidate", markup: `<img srcset="local.png 1x, https://evil.test/hi.png 2x">`, flagged: "https://evil.test/hi.png"},
+		{name: "base href", markup: `<base href="https://evil.test/">`, flagged: "https://evil.test/"},
+		{name: "inline style url", markup: `<div style="background:url(https://evil.test/bg.png)"></div>`, flagged: "https://evil.test/bg.png"},
+
+		{name: "illustrative link", markup: `<a href="https://docs.example.test/guide">guide</a>`},
+		{name: "json-ld context", markup: `<script type="application/ld+json">{"@context":"https://schema.org"}</script>`},
+		{name: "open graph metadata", markup: `<meta property="og:image" content="https://cdn.example.test/hero.jpg">`},
+		{name: "local srcset", markup: `<img srcset="a.png 1x, b.png 2x">`},
+		{name: "canonical link", markup: `<link rel="canonical" href="https://example.test/page">`},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "page.html")
+			page := "<!doctype html><html><head></head><body>" + testCase.markup + "</body></html>"
+			if err := os.WriteFile(path, []byte(page), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			refs, err := ExternalResourceRefs(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if testCase.flagged == "" {
+				if len(refs) != 0 {
+					t.Fatalf("audit flagged %v in %s, which the browser does not fetch off this machine", refs, testCase.markup)
+				}
+				return
+			}
+			if !slices.Contains(refs, testCase.flagged) {
+				t.Fatalf("audit found %v in %s, want %s among them", refs, testCase.markup, testCase.flagged)
+			}
+		})
 	}
 }
 

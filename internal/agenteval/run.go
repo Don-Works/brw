@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/Don-Works/brw/internal/agenteval/solver"
 	"github.com/Don-Works/brw/internal/harness"
 )
 
@@ -187,7 +188,7 @@ func runTask(ctx context.Context, rig *harness.Browser, fixtures *harness.Fixtur
 	tabID := opened.Tab.ID
 	defer func() { _ = rig.Manager.CloseTab(ctx, tabID) }()
 
-	agent := &Agent{ctx: ctx, manager: rig.Manager, tabID: tabID}
+	agent := solver.New(ctx, rig.Manager, tabID)
 	outcome, solveErr := task.Solve(ctx, agent, mode)
 	if solveErr != nil {
 		result.Error = solveErr.Error()

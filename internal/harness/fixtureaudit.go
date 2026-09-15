@@ -6,20 +6,36 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"golang.org/x/net/html"
 )
 
-// Resource-loading references in a fixture. An <a href> is deliberately absent:
-// a link is only fetched if something clicks it, and the fixtures carry
-// illustrative links to the open web that no harness ever follows. Everything
-// here is fetched by the browser because the page said so.
-var resourceRefPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?is)\b(?:src|srcset|data-src|poster|action|formaction)\s*=\s*["']([^"']+)["']`),
-	regexp.MustCompile(`(?is)@import\s+(?:url\()?\s*["']([^"']+)["']`),
-	regexp.MustCompile(`(?is)\burl\(\s*["']?([^"')]+)["']?\s*\)`),
-}
-
-var linkTagPattern = regexp.MustCompile(`(?is)<link\b[^>]*>`)
-var attrPattern = regexp.MustCompile(`(?is)\b([a-z-]+)\s*=\s*["']([^"']*)["']`)
+// The audit parses a fixture rather than pattern-matching its text.
+//
+// The regex form it replaced had a second way past it for every shape it
+// checked: an unquoted attribute value, an SVG <use href>, an xlink:href, an
+// <object data>, a meta refresh, an <iframe srcdoc> carrying an escaped <img>,
+// and a fetch() in an inline script all went through clean. A parser does not
+// have a list of shapes to be incomplete about — it reports the elements, their
+// attributes and their text, and the decision below is about which attributes a
+// browser fetches.
+//
+// cssRefPattern and scriptURLPattern still scan text, because CSS and
+// JavaScript are not HTML and there is nothing here that parses them.
+var (
+	cssRefPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?is)@import\s+(?:url\()?\s*["']([^"')]+)["']`),
+		regexp.MustCompile(`(?is)\burl\(\s*["']?([^"')]+)["']?\s*\)`),
+	}
+	// An absolute URL anywhere in an executable script. A fixture has no reason
+	// to carry one, and fetch("https://...") / import("https://...") are exactly
+	// what an audit of what the page loads has to see.
+	scriptURLPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(?:https?|wss?)://[^\s"'` + "`" + `)\]}>]+`),
+		regexp.MustCompile(`["'](//[A-Za-z0-9.\-]+(?::\d+)?/[^"']*)["']`),
+	}
+	metaRefreshURLPattern = regexp.MustCompile(`(?i)\burl\s*=\s*["']?([^"';,\s]+)`)
+)
 
 // nonFetchingLinkRels are the <link rel> values that declare a relationship
 // without making the browser open anything.
@@ -46,6 +62,39 @@ var nonFetchingLinkRels = map[string]bool{
 	"tag":        true,
 }
 
+// fetchingAttrs are attributes whose value the browser resolves and loads,
+// whatever element carries them. href is absent because it depends on the
+// element: see refsFromAttr.
+var fetchingAttrs = map[string]bool{
+	"src":        true,
+	"data-src":   true,
+	"poster":     true,
+	"action":     true,
+	"formaction": true,
+	"background": true,
+}
+
+// linkOnlyElements are the elements whose href the browser follows only when
+// something clicks it. The fixtures carry illustrative links to the open web
+// that no harness ever follows, so an <a href> is not a fetch.
+var linkOnlyElements = map[string]bool{"a": true, "area": true}
+
+// executableScriptTypes are the <script type> values whose body Chrome runs. A
+// JSON-LD or application/json block is data the fixtures legitimately fill with
+// schema.org URLs, and nothing fetches those.
+var executableScriptTypes = map[string]bool{
+	"":                       true,
+	"module":                 true,
+	"text/javascript":        true,
+	"application/javascript": true,
+	"text/ecmascript":        true,
+	"application/ecmascript": true,
+}
+
+// srcdocDepth bounds the recursion through nested srcdoc documents, which are
+// otherwise a way to make this walk forever.
+const srcdocDepth = 4
+
 // ExternalResourceRefs returns the references in a fixture that would make the
 // browser fetch something off this machine.
 //
@@ -58,7 +107,6 @@ func ExternalResourceRefs(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	text := string(data)
 	var external []string
 	seen := map[string]bool{}
 	consider := func(ref string) {
@@ -71,27 +119,159 @@ func ExternalResourceRefs(path string) ([]string, error) {
 			external = append(external, ref)
 		}
 	}
-	for _, pattern := range resourceRefPatterns {
-		for _, match := range pattern.FindAllStringSubmatch(text, -1) {
-			consider(match[1])
-		}
-	}
-	for _, tag := range linkTagPattern.FindAllString(text, -1) {
-		rel, href := "", ""
-		for _, attr := range attrPattern.FindAllStringSubmatch(tag, -1) {
-			switch strings.ToLower(attr[1]) {
-			case "rel":
-				rel = strings.ToLower(strings.TrimSpace(attr[2]))
-			case "href":
-				href = attr[2]
-			}
-		}
-		if href == "" || nonFetchingLinkRels[rel] {
-			continue
-		}
-		consider(href)
+	if err := scanDocument(string(data), srcdocDepth, consider); err != nil {
+		return nil, err
 	}
 	return external, nil
+}
+
+// scanDocument parses one document and reports every reference in it that the
+// browser would load.
+func scanDocument(text string, depth int, consider func(string)) error {
+	doc, err := html.Parse(strings.NewReader(text))
+	if err != nil {
+		return err
+	}
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		switch node.Type {
+		case html.ElementNode:
+			scanElement(node, depth, consider)
+		case html.TextNode:
+			scanText(node, consider)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(doc)
+	return nil
+}
+
+func scanElement(node *html.Node, depth int, consider func(string)) {
+	tag := strings.ToLower(node.Data)
+	rel, httpEquiv := "", ""
+	for _, attr := range node.Attr {
+		switch attrName(attr) {
+		case "rel":
+			rel = strings.ToLower(strings.TrimSpace(attr.Val))
+		case "http-equiv":
+			httpEquiv = strings.ToLower(strings.TrimSpace(attr.Val))
+		}
+	}
+	for _, attr := range node.Attr {
+		name := attrName(attr)
+		if name == "srcdoc" && depth > 0 {
+			// The parser has already unescaped the value, so what is in hand is
+			// the nested document itself.
+			_ = scanDocument(attr.Val, depth-1, consider)
+			continue
+		}
+		for _, ref := range refsFromAttr(tag, name, attr.Val, rel, httpEquiv) {
+			consider(ref)
+		}
+	}
+}
+
+// attrName is the attribute's name as it was written, so a namespaced
+// xlink:href is told apart from a plain href.
+func attrName(attr html.Attribute) string {
+	name := strings.ToLower(attr.Key)
+	if attr.Namespace != "" {
+		return strings.ToLower(attr.Namespace) + ":" + name
+	}
+	return name
+}
+
+func refsFromAttr(tag, name, value, rel, httpEquiv string) []string {
+	switch {
+	case fetchingAttrs[name]:
+		return []string{value}
+	case name == "srcset":
+		return srcsetCandidates(value)
+	case name == "data":
+		// <object data> loads a document or plugin resource; the attribute means
+		// nothing on anything else.
+		if tag == "object" {
+			return []string{value}
+		}
+	case name == "xlink:href":
+		return []string{value}
+	case name == "href":
+		switch {
+		case linkOnlyElements[tag]:
+			return nil
+		case tag == "link" && nonFetchingLinkRels[rel]:
+			return nil
+		}
+		// Everything else's href is loaded without a click: <link>, <base>,
+		// which redirects every relative reference on the page, and the SVG
+		// <use>, <image> and <filter> family.
+		return []string{value}
+	case name == "style":
+		return cssRefs(value)
+	case name == "content":
+		if tag == "meta" && httpEquiv == "refresh" {
+			if match := metaRefreshURLPattern.FindStringSubmatch(value); match != nil {
+				return []string{match[1]}
+			}
+		}
+	}
+	return nil
+}
+
+func scanText(node *html.Node, consider func(string)) {
+	if node.Parent == nil || node.Parent.Type != html.ElementNode {
+		return
+	}
+	switch strings.ToLower(node.Parent.Data) {
+	case "style":
+		for _, ref := range cssRefs(node.Data) {
+			consider(ref)
+		}
+	case "script":
+		if !executableScript(node.Parent) {
+			return
+		}
+		for _, pattern := range scriptURLPatterns {
+			for _, match := range pattern.FindAllStringSubmatch(node.Data, -1) {
+				consider(match[len(match)-1])
+			}
+		}
+	}
+}
+
+func executableScript(node *html.Node) bool {
+	for _, attr := range node.Attr {
+		if attrName(attr) == "type" {
+			return executableScriptTypes[strings.ToLower(strings.TrimSpace(attr.Val))]
+		}
+	}
+	return true
+}
+
+func cssRefs(text string) []string {
+	var refs []string
+	for _, pattern := range cssRefPatterns {
+		for _, match := range pattern.FindAllStringSubmatch(text, -1) {
+			refs = append(refs, match[1])
+		}
+	}
+	return refs
+}
+
+// srcsetCandidates splits a srcset into its URLs. Flagging the whole attribute
+// instead would make a perfectly local "a.png 1x, b.png 2x" unparseable and so
+// external, which is a false alarm the audit cannot afford if anyone is to keep
+// running it.
+func srcsetCandidates(value string) []string {
+	var refs []string
+	for _, candidate := range strings.Split(value, ",") {
+		if fields := strings.Fields(candidate); len(fields) > 0 {
+			refs = append(refs, fields[0])
+		}
+	}
+	return refs
 }
 
 // IsExternalRef reports whether a reference names a host other than this

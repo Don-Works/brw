@@ -113,13 +113,11 @@ func Run(ctx context.Context, opts Options) (Record, error) {
 		Environment: environment,
 		OK:          true,
 		Notes: map[string]any{
-			// Named from the identity constant, not a literal: the bench launches its
-			// own throwaway Chrome so the lane is not in doubt, and a rename should
-			// not leave the record claiming a transport that no longer exists.
-			"transport":        brwidentity.TransportDirectCDP,
-			"fixture_origin":   "loopback http",
-			"token_estimator":  fmt.Sprintf("%d chars per token", charsPerToken),
-			"warmup_discarded": true,
+			"transport":         "direct-cdp",
+			"fixture_origin":    "loopback http",
+			"token_estimator":   fmt.Sprintf("%d chars per token", charsPerToken),
+			"observation_scope": "the mcp tool result: the payload escaped inside content[0].text plus structuredContent",
+			"warmup_discarded":  true,
 		},
 	}
 
@@ -457,13 +455,18 @@ func (f *flowRunner) fill(key, text string) (any, error) {
 	return f.manager().Fill(f.tabContext(), snapshot.FillOptions{Ref: ref, Text: text, Replace: true})
 }
 
-// waitFor returns the condition as the observation. A wait's result IS its
-// condition holding, so reporting anything larger would inflate the observation
-// column with bytes no agent receives.
+// waitFor returns what brw_wait_for returns.
+//
+// It used to substitute {"condition": ...} on the grounds that a wait's result
+// IS its condition holding. That was a claim about what an agent ought to be
+// sent, in a column that reports what it IS sent: the tool answers with the
+// whole WaitOutcome — ok, condition, resolved_by, waited_ms, wakeups — and
+// resolved_by in particular is the field that tells a caller whether the
+// condition it picked costs a round trip per check.
 func (f *flowRunner) waitFor(condition string) (any, error) {
-	err := f.manager().WaitFor(f.tabContext(), condition, 10*time.Second)
+	outcome, err := f.manager().WaitForOutcome(f.tabContext(), condition, 10*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("wait %s: %w", condition, err)
 	}
-	return map[string]string{"condition": condition}, nil
+	return outcome, nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -90,10 +91,28 @@ func Prompt(task Task, end EndState) string {
 	return builder.String()
 }
 
+// serverSideFallbackBeta routes a policy decline to another model inside the
+// same call, rather than returning a refusal the caller has to handle. "default"
+// picks the destination by refusal category, so there is no model list here to
+// go stale.
+//
+// It matters here because ANTHROPIC_BASE_URL is operator-settable and the judge
+// is optional: without the fallback a decline surfaces as "judge unavailable"
+// and the run is graded by the deterministic check alone, which is safe but
+// silently drops the layer the operator asked for.
+const serverSideFallbackBeta = "server-side-fallback-2026-07-01"
+
+// judgeBodyLimit bounds what is decoded from the endpoint's answer. The base
+// URL is operator-settable, and a misbehaving or hostile one can otherwise
+// stream into the decoder for the client's whole three-minute timeout with
+// nothing bounding the allocation.
+const judgeBodyLimit = 1 << 20
+
 type judgeRequest struct {
 	Model     string         `json:"model"`
 	MaxTokens int            `json:"max_tokens"`
 	Messages  []judgeMessage `json:"messages"`
+	Fallbacks string         `json:"fallbacks,omitempty"`
 }
 
 type judgeMessage struct {
@@ -123,6 +142,7 @@ func (j *Judge) Grade(ctx context.Context, task Task, end EndState) (JudgeVerdic
 		// the same ceiling, so a small max_tokens truncates the answer away.
 		MaxTokens: 8192,
 		Messages:  []judgeMessage{{Role: "user", Content: Prompt(task, end)}},
+		Fallbacks: "default",
 	})
 	if err != nil {
 		return verdict, err
@@ -134,6 +154,7 @@ func (j *Judge) Grade(ctx context.Context, task Task, end EndState) (JudgeVerdic
 	}
 	request.Header.Set("content-type", "application/json")
 	request.Header.Set("anthropic-version", anthropicVersion)
+	request.Header.Set("anthropic-beta", serverSideFallbackBeta)
 	request.Header.Set("x-api-key", j.APIKey)
 
 	client := j.Client
@@ -146,15 +167,25 @@ func (j *Judge) Grade(ctx context.Context, task Task, end EndState) (JudgeVerdic
 	}
 	defer response.Body.Close()
 
-	var decoded judgeResponse
-	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
-		return verdict, fmt.Errorf("judge response was not JSON: %w", err)
+	answer, err := io.ReadAll(io.LimitReader(response.Body, judgeBodyLimit))
+	if err != nil {
+		return verdict, fmt.Errorf("read the judge response: %w", err)
 	}
+
+	// The status comes first. A 502 answered with a gateway's HTML error page
+	// used to be reported as "judge response was not JSON", which names the
+	// decoder rather than the failure and sends the reader looking in the wrong
+	// place.
+	var decoded judgeResponse
+	decodeErr := json.Unmarshal(answer, &decoded)
 	if response.StatusCode != http.StatusOK {
-		if decoded.Error != nil {
+		if decodeErr == nil && decoded.Error != nil {
 			return verdict, fmt.Errorf("judge request failed with %s: %s", response.Status, decoded.Error.Message)
 		}
-		return verdict, fmt.Errorf("judge request failed with %s", response.Status)
+		return verdict, fmt.Errorf("judge request failed with %s: %s", response.Status, truncate(strings.TrimSpace(string(answer)), 200))
+	}
+	if decodeErr != nil {
+		return verdict, fmt.Errorf("judge response was not JSON: %w", decodeErr)
 	}
 	if decoded.StopReason == "refusal" {
 		return verdict, errors.New("judge declined to answer")

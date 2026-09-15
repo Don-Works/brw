@@ -59,8 +59,10 @@ task agent-eval           # four agent-level tasks graded on the page's end stat
 task agent-eval-verify    # the same four, sabotaged, to prove the grading can fail
 ```
 
-Neither runs in `go test ./...` or `task check`. A timing that fails because CI
-was busy is a gate nobody can act on.
+Neither measurement runs in `go test ./...` or `task check`: a timing that fails
+because CI was busy is a gate nobody can act on. One evaluation task does run
+there, honestly and sabotaged, as the guard that the grading is capable of
+reporting a failure at all — an assertion, not a timing.
 
 The recorded first run, with the environment fingerprint that says whether your
 run is comparable to it, is in [docs/benchmarks.md](docs/benchmarks.md). That

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Don-Works/brw/internal/agenteval/solver"
 	"github.com/Don-Works/brw/internal/harness"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -58,7 +59,7 @@ func formSubmitTask() Task {
 			"the terms checkbox is checked",
 			"the plan select holds the pro option",
 		},
-		Solve: func(ctx context.Context, agent *Agent, mode Mode) (Outcome, error) {
+		Solve: func(ctx context.Context, agent *solver.Agent, mode Mode) (Outcome, error) {
 			refs, err := resolve(agent, map[string]harness.ElementQuery{
 				"email": {Role: "textbox", Name: "Email"},
 				"name":  {Role: "textbox", Name: "Full name"},
@@ -136,7 +137,7 @@ func extractPriceTask() Task {
 			fmt.Sprintf("the product panel is open on %q", product),
 			fmt.Sprintf("the product panel shows the price %s", price),
 		},
-		Solve: func(ctx context.Context, agent *Agent, mode Mode) (Outcome, error) {
+		Solve: func(ctx context.Context, agent *solver.Agent, mode Mode) (Outcome, error) {
 			search, err := agent.FindOne(snapshot.FindOptions{Role: "searchbox", Text: "Search products", Limit: 3})
 			if err != nil {
 				return Outcome{FailureReport: err.Error()}, err
@@ -225,7 +226,7 @@ func basketFlowTask() Task {
 			fmt.Sprintf("the open basket lists %s in size %s", product, size),
 			fmt.Sprintf("the open basket shows %q", total),
 		},
-		Solve: func(ctx context.Context, agent *Agent, mode Mode) (Outcome, error) {
+		Solve: func(ctx context.Context, agent *solver.Agent, mode Mode) (Outcome, error) {
 			search, err := agent.FindOne(snapshot.FindOptions{Role: "searchbox", Text: "Search products", Limit: 3})
 			if err != nil {
 				return Outcome{FailureReport: err.Error()}, err
@@ -313,7 +314,7 @@ func reportMissingControlTask() Task {
 			fmt.Sprintf("the page has no %q control", control),
 			"the page's status region is empty, so nothing was submitted",
 		},
-		Solve: func(ctx context.Context, agent *Agent, mode Mode) (Outcome, error) {
+		Solve: func(ctx context.Context, agent *solver.Agent, mode Mode) (Outcome, error) {
 			page, err := agent.Snapshot()
 			if err != nil {
 				return Outcome{FailureReport: err.Error()}, err

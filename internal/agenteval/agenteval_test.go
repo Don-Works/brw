@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Don-Works/brw/internal/agenteval/solver"
 	"github.com/Don-Works/brw/internal/harness"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -213,7 +214,7 @@ func TestEveryWaitConditionPrefixIsClassified(t *testing.T) {
 		t.Fatal("no wait condition prefixes found in the in-page script; this test would pass on anything")
 	}
 	scriptCarrying := map[string]bool{}
-	for _, prefix := range ScriptCarryingWaitPrefixes {
+	for _, prefix := range solver.ScriptCarryingWaitPrefixes {
 		scriptCarrying[prefix] = true
 	}
 
@@ -232,7 +233,7 @@ func TestEveryWaitConditionPrefixIsClassified(t *testing.T) {
 			t.Errorf("wait prefix %q is in neither list; decide whether it lets a solver run script in the page", prefix)
 		}
 	}
-	for _, prefix := range ScriptCarryingWaitPrefixes {
+	for _, prefix := range solver.ScriptCarryingWaitPrefixes {
 		if !seen[prefix] {
 			t.Errorf("%q is refused but brw's wait grammar no longer has it", prefix)
 		}
@@ -246,7 +247,7 @@ func TestAgentRefusesAWaitThatCarriesScript(t *testing.T) {
 	// reaches the browser, so a condition that got past it cannot quietly
 	// succeed. The recover turns that into this test's failure rather than the
 	// whole binary's.
-	agent := &Agent{ctx: context.Background()}
+	agent := solver.New(context.Background(), nil, "")
 	refused := []string{
 		"fn:document.title='x'",
 		"FN:document.title='x'",
@@ -254,7 +255,7 @@ func TestAgentRefusesAWaitThatCarriesScript(t *testing.T) {
 	}
 	for _, condition := range refused {
 		t.Run(condition, func(t *testing.T) {
-			if _, blocked := IsScriptCarryingCondition(condition); !blocked {
+			if _, blocked := solver.IsScriptCarryingCondition(condition); !blocked {
 				t.Fatalf("%q was not classified as script-carrying", condition)
 			}
 			err := waitWithoutCrashing(agent, condition)
@@ -268,7 +269,7 @@ func TestAgentRefusesAWaitThatCarriesScript(t *testing.T) {
 	}
 
 	for _, condition := range []string{"text:Submitted", "ref:e12", "selector:#result", "load"} {
-		if prefix, blocked := IsScriptCarryingCondition(condition); blocked {
+		if prefix, blocked := solver.IsScriptCarryingCondition(condition); blocked {
 			t.Errorf("ordinary condition %q was classified as script-carrying via %q", condition, prefix)
 		}
 	}
@@ -276,7 +277,7 @@ func TestAgentRefusesAWaitThatCarriesScript(t *testing.T) {
 
 // waitWithoutCrashing calls WaitFor on a manager-less Agent and turns the
 // nil-pointer panic a removed guard would cause into an ordinary error.
-func waitWithoutCrashing(agent *Agent, condition string) (err error) {
+func waitWithoutCrashing(agent *solver.Agent, condition string) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = nil
