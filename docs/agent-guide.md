@@ -507,10 +507,10 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` | 87 | ~31.3k tokens |
-| `core` | 26 | ~10.3k tokens |
-| `minimal` | 13 | ~5.8k tokens |
-| `auto` (default) | 14, growing | ~6.0k tokens to start |
+| `all` | 88 | ~32.8k tokens |
+| `core` | 26 | ~10.5k tokens |
+| `minimal` | 13 | ~6.0k tokens |
+| `auto` (default) | 14, growing | ~6.3k tokens to start |
 
 Measured on a direct-CDP daemon. A tool a transport cannot serve is never
 advertised on it, so the `all` row is 91 tools unfiltered, 88 on direct CDP and

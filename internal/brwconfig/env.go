@@ -31,6 +31,9 @@ var flagEnv = map[string]string{
 	"bridge-raise-window":         "BRW_BRIDGE_RAISE_WINDOW",
 	"bridge-tab-group":            "BRW_BRIDGE_TAB_GROUP",
 	"ca-cert":                     "BRW_CA_CERT",
+	"chrome-opt-in":               "BRW_CHROME_OPT_IN",
+	"chrome-opt-in-browser":       "BRW_CHROME_OPT_IN_BROWSER",
+	"chrome-opt-in-user-data-dir": "BRW_CHROME_OPT_IN_USER_DATA_DIR",
 	"chrome-path":                 "BRW_CHROME_PATH",
 	// Listed because brwd does read it, even though notConfigurable stops a
 	// file from setting it: the table's job is to describe what brwd reads, and

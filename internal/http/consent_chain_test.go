@@ -180,19 +180,6 @@ func methodsByReceiver(t *testing.T) map[string]map[string]bool {
 	return out
 }
 
-func receiverTypeName(expr ast.Expr) string {
-	switch typed := expr.(type) {
-	case *ast.StarExpr:
-		return receiverTypeName(typed.X)
-	case *ast.Ident:
-		return typed.Name
-	case *ast.IndexExpr:
-		return receiverTypeName(typed.X)
-	default:
-		return "?"
-	}
-}
-
 // returnsBrwHealth reports whether a result list carries brw's own /health
 // payload: httpclient.Health elsewhere, or a bare Health inside the httpclient
 // package itself.

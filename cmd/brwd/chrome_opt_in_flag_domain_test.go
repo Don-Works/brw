@@ -22,6 +22,8 @@ import (
 // browser is reached — and none of them reaches the browser.
 var notAboutWhichBrowser = map[string]string{
 	"http":                        "daemon's own HTTP listen address",
+	"config":                      "supplies defaults for other flags; the lane conflicts are decided after the file is merged",
+	"idle-exit":                   "when an idle daemon exits; a lifetime setting, not a browser decision",
 	"mcp":                         "serve MCP over stdio; no browser decision",
 	"mcp-tools":                   "which tools tools/list advertises",
 	"mcp-idle-exit":               "when an idle stdio server exits",
