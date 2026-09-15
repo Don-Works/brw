@@ -31,3 +31,19 @@ Run a single scenario:
 ```sh
 ./bin/brwcheck --only fixture-form-actions
 ```
+
+## Measurement modes
+
+Two modes of the same binary measure rather than gate. Both launch their own
+headless Chrome and serve `tests/fixtures` over a loopback origin they start
+themselves, so neither needs the daemon, the network or an account, and neither
+runs under `go test ./...`.
+
+```sh
+task bench                # per-command wall time, CDP round trips, transport bytes, observation tokens
+task agent-eval           # four agent-level tasks graded on the page's end state
+task agent-eval-verify    # the same four with the decisive act removed, which must be caught
+```
+
+The recorded first run and what each column means are in
+[docs/benchmarks.md](../docs/benchmarks.md).

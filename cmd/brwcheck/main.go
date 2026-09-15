@@ -383,10 +383,24 @@ func main() {
 	var repoRootFlag string
 	var benchMode bool
 	var benchJSON bool
-	var benchFixture string
-	flag.BoolVar(&benchMode, "bench", false, "run direct-CDP speed benchmark against local fixtures")
-	flag.BoolVar(&benchJSON, "bench-json", false, "emit benchmark scorecard as JSON")
-	flag.StringVar(&benchFixture, "bench-fixture", "custom-combobox.html", "fixture file under tests/fixtures/")
+	var benchOnly string
+	var benchOut string
+	flag.BoolVar(&benchMode, "bench", false, "measure per-command cost against the local fixture suite")
+	flag.BoolVar(&benchJSON, "bench-json", false, "emit the benchmark record as JSON on stdout")
+	flag.StringVar(&benchOnly, "bench-only", "", "restrict the benchmark to one flow id")
+	flag.StringVar(&benchOut, "bench-out", "", "write the machine-readable benchmark record to this path")
+	var evalMode bool
+	var evalJSON bool
+	var evalOnly string
+	var evalOut string
+	var evalVerify bool
+	var evalJudge bool
+	flag.BoolVar(&evalMode, "eval", false, "run the agent-level evaluations against the local fixture suite")
+	flag.BoolVar(&evalJSON, "eval-json", false, "emit the evaluation report as JSON on stdout")
+	flag.StringVar(&evalOnly, "eval-only", "", "restrict the evaluation to one task id")
+	flag.StringVar(&evalOut, "eval-out", "", "write the machine-readable evaluation report to this path")
+	flag.BoolVar(&evalVerify, "eval-verify", false, "also run every task sabotaged and require it to be graded a failure")
+	flag.BoolVar(&evalJudge, "eval-judge", false, "add the optional LLM judge over the end-state check (needs ANTHROPIC_API_KEY)")
 	flag.StringVar(&suitePath, "suite", "tests/scenarios/core.json", "scenario suite JSON path")
 	flag.StringVar(&baseURL, "base-url", envDefault("BRW_URL", "http://127.0.0.1:17310"), "brwd HTTP base URL")
 	flag.StringVar(&repoRootFlag, "repo-root", envDefault("BRW_REPO_ROOT", ""), "repo/share root containing tests and fixtures")
@@ -411,8 +425,22 @@ func main() {
 	if benchMode {
 		if err := runBench(benchOptions{
 			RepoRoot: root,
-			Fixture:  benchFixture,
+			Only:     benchOnly,
 			JSON:     benchJSON,
+			OutPath:  benchOut,
+		}); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	if evalMode {
+		if err := runAgentEval(evalOptions{
+			RepoRoot: root,
+			Only:     evalOnly,
+			JSON:     evalJSON,
+			OutPath:  evalOut,
+			Verify:   evalVerify,
+			Judge:    evalJudge,
 		}); err != nil {
 			fatal(err)
 		}

@@ -1,31 +1,140 @@
 # Benchmarks
 
-Private pre-release head-to-head runs compared `brw` with Claude-in-Chrome on
-semantic browser tasks. The raw transcripts are not published, so these results
-are directional rather than independently reproducible from this repository.
+Every number on this page is produced by something in this repository, against
+fixtures in this repository, on a machine whose identity is printed next to the
+result.
 
-Observed signal:
+A head-to-head against Claude-in-Chrome used to be described here. It was run
+before release, its transcripts were never published, and nothing in this
+repository reproduces it. It has been removed rather than restated: see
+[removed claims](#removed-claims) for exactly what went and why.
 
-- `brw` needed fewer turns.
-- `brw` used fewer tokens.
-- `brw` took less wall time.
-- `brw` had lower estimated cost.
-- `brw` needed fewer screenshots because actions return semantic observations.
-- Claude-in-Chrome retained an auth advantage when it could use an already-open
-  installed Chrome profile.
+What remains about the design, with no measurement attached to it: `brw` returns
+semantic observations from actions, so an agent acting from refs does not
+re-interpret a screenshot per step; an installed browser profile is what carries
+a signed-in session, which is what the extension bridge and the SSH runtime
+exist for; and the MCP catalogue is re-sent on every request, so its size is a
+per-turn cost rather than a one-off — `--mcp-tools core` and `--mcp-tools
+minimal` trade surface for it.
 
-Interpretation:
+## The fixture benchmark harness
 
-- For normal DOM-heavy web tasks, refs plus action observations beat repeated
-  screenshot interpretation.
-- For auth-heavy tasks, installed-profile access matters. `brw` addresses that
-  with the Chrome extension bridge and SSH runtime.
-- The full MCP tool surface is intentionally broad. Use `--mcp-tools core` or
-  `--mcp-tools minimal` for a lean advertised tool set; the catalogue is re-sent
-  on every request, so its size is a per-turn cost rather than a one-off.
+`task bench` drives four flows against `tests/fixtures`, served over a loopback
+HTTP origin it starts itself, in a headless Chrome on a throwaway profile. It
+needs no daemon, no network and no account. Per command it records wall time,
+the CDP messages sent and received, the bytes those cost on the transport, and
+the size of the observation an agent gets back; per run it records the harness
+process's and the browser tree's CPU and peak RSS.
 
-Raw transcripts are not shipped. They can contain prompts, paths, local machine
-metadata, and third-party page state.
+```sh
+task bench                                   # summary plus dist/bench/record.json
+go run ./cmd/brwcheck --bench --repo-root .  # the same run, no record written
+go run ./cmd/brwcheck --bench --bench-only forms --bench-json --repo-root .
+```
+
+It is not part of `go test ./...`, `task test` or `task check`, on purpose: a
+timing that fails because CI was busy is a gate nobody can act on.
+
+The CDP counts and byte counts are measured, not estimated. A counting relay
+sits between brw and Chrome's debugging port and walks the websocket frames, so
+a row reading 60 sent is 60 CDP messages that crossed the socket. The counters
+are sampled around each call, so an event arriving while no call is in flight is
+attributed to the next command rather than to the one that caused it.
+
+### First recorded run
+
+```
+darwin/arm64 Apple M4 Max x16 | Chrome/153.0.8010.37 | brw dev | go1.26.6 | fixtures c93446d33c8a
+captured 2026-09-15T07:47:22Z, 32 commands, 4037 ms wall
+```
+
+| Flow | Commands | Wall ms | CDP sent | CDP received | Bytes sent | Bytes received | Observation bytes | ~tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| forms | 11 | 907.7 | 60 | 119 | 362,407 | 85,617 | 9,126 | 2,277 |
+| shop | 11 | 574.0 | 59 | 111 | 334,710 | 58,519 | 5,959 | 1,484 |
+| dynamic | 6 | 1,117.0 | 40 | 88 | 216,201 | 35,551 | 2,630 | 654 |
+| structured | 4 | 876.7 | 28 | 75 | 97,709 | 24,260 | 1,666 | 414 |
+| **all flows** | **32** | **3,475.4** | **187** | **393** | **1,011,027** | **203,947** | **19,381** | **4,829** |
+
+System cost of that run: the harness process peaked at 23.9 MB RSS and used
+46 ms user + 73 ms sys; the browser tree's largest process peaked at 248.5 MB
+and the tree used 1,596 ms user + 931 ms sys. The browser figure is a high-water
+mark for the largest single browser process, which is what the kernel records —
+not a sum across Chrome's processes.
+
+Two rows are the page waiting rather than brw working, and reading them as
+latency would be wrong. `dynamic/wait_controls` is 697.1 ms because the fixture's
+`setTimeout` is 800 ms. `structured/read` is 829.3 ms for the same class of
+reason. The flow totals include them.
+
+Bytes sent exceeds bytes received on every flow because brw sends in-page
+scripts and receives semantic results: a `brw_fill` carries roughly 44 KB of
+script to the browser and gets back roughly 6 KB. That is the shape of the
+design, not a measurement of a page.
+
+What moves between runs and what does not, across four runs on this machine:
+the suite's total wall time ranged 3,277–4,186 ms, the top of that range being a
+run taken while a test suite was using the other cores. Commands sent stayed at
+187 every time and bytes sent moved by at most two bytes. Messages received
+moved by a few — Chrome's event stream is asynchronous, so an event that arrives
+between two calls is attributed to the later one. Read the send counts as stable
+and the receive counts as approximate.
+
+Compare two records by their `environment` block first: `os`, `arch`,
+`cpu_model`, `cpus`, `browser`, `headless` and `fixture_digest` all have to
+match, and the record carries all seven so a mismatch is visible rather than
+assumed.
+
+Token figures use the same 4-chars-per-token estimator as
+`scripts/measure-tool-catalogue.py`. It compares arms; it is not a tokenizer.
+
+## The agent evaluations
+
+`task agent-eval` runs four tasks against the same fixtures and grades each one
+on the state the harness reads out of the page after the run stops, not on what
+the run says it did. The four shapes: submit a form with the right values,
+extract a fact that only exists after opening something, complete a four-step
+flow, and report a failure instead of doing something adjacent and calling it
+done.
+
+```sh
+task agent-eval          # four tasks, deterministic end-state grading
+task agent-eval-verify   # the same four run honestly AND sabotaged
+```
+
+It runs with no API key. `--eval-judge` adds an LLM judge over the deterministic
+check, shown the task, the criteria and the observed end state — never what the
+run claimed. The judge can fail a run the end-state check passed; it cannot pass
+one the check failed.
+
+`agent-eval-verify` is how the evaluation is shown to be capable of failing at
+all: it runs every task a second time with the decisive act removed and the
+success claim left in, and exits non-zero unless every one of those is caught.
+On the machine fingerprinted above, 8 of 8 graded as expected — four honest
+passes, four sabotaged failures, each naming what the page did not show:
+
+| Task | Sabotage | Caught by |
+| --- | --- | --- |
+| form-submit | fills everything, never submits | status region empty |
+| extract-price | right price, product never opened | product panel closed |
+| basket-flow | never chooses a size | basket count 0, basket empty |
+| report-missing-control | submits the form and claims the deletion | claimed success, and the status region shows a submission |
+
+## Removed claims
+
+These were on this page and are gone. None of them is reproducible from this
+repository, and each was a claim about `brw` that a reader had no way to check.
+
+- "`brw` needed fewer turns" than Claude-in-Chrome.
+- "`brw` used fewer tokens" than Claude-in-Chrome.
+- "`brw` took less wall time" than Claude-in-Chrome.
+- "`brw` had lower estimated cost" than Claude-in-Chrome.
+- "`brw` needed fewer screenshots because actions return semantic observations."
+- "Claude-in-Chrome retained an auth advantage when it could use an already-open
+  installed Chrome profile."
+
+The harness above measures `brw` against fixtures. It does not compare `brw`
+with any other tool, and nothing here should be read as one.
 
 ## Reproducible local measurements
 

@@ -86,6 +86,35 @@ tasks:
     cmds:
       - python3 scripts/check-oss-hygiene.py --full
 
+  # Measurement, not a gate. Deliberately absent from `test` and `check`: a
+  # latency figure taken on a loaded CI machine fails for reasons that have
+  # nothing to do with the change under test, and a gate that fails for reasons
+  # nobody can act on stops being read.
+  #
+  # The run launches its own headless Chrome and serves tests/fixtures over
+  # loopback, so it needs no daemon and no network. The record carries the
+  # environment fingerprint that says whether two runs are comparable.
+  bench:
+    desc: Measure per-command latency, transport cost and system metrics against the local fixtures
+    cmds:
+      - go run ./cmd/brwcheck --bench --repo-root . --bench-out dist/bench/record.json
+
+  # The agent-level evaluations: four tasks graded on the end state the harness
+  # reads out of the page, not on what the run says it did. Runs with no API
+  # key; --eval-judge adds the optional LLM layer on top.
+  agent-eval:
+    desc: Run the four agent-level evaluations against the local fixtures
+    cmds:
+      - go run ./cmd/brwcheck --eval --repo-root . --eval-out dist/agenteval/report.json
+
+  # Runs every evaluation honestly AND sabotaged, and fails unless each honest
+  # run passes and each sabotaged one is caught. This is what says the
+  # evaluation is capable of reporting a failure at all.
+  agent-eval-verify:
+    desc: Prove the evaluations can fail — every task run honestly and sabotaged
+    cmds:
+      - go run ./cmd/brwcheck --eval --eval-verify --repo-root . --eval-out dist/agenteval/verify.json
+
   # The static half of `check`, fast enough to run on every save.
   lint:
     desc: Static half of check (fmt, vet, staticcheck, govulncheck, actionlint)

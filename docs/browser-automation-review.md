@@ -66,6 +66,7 @@ local cache and the provider-backed huge bank.
 | Closed | More than 200 matching controls could make a visible candidate look uniquely safe. Truncated semantic resolution now fails closed. | `internal/recipe/browser_surface_test.go` |
 | Closed | Checking a URL, HTTP status, element count, element state, attribute, or a downloaded file's digest required hand-written `brw_evaluate` JavaScript, which each caller rewrote and none of which reported expected against actual. `brw_assert` and the recipe `assert` step now run those six checks once, with no retry, through the shared getters script; a download digest is evaluated on the browser host so the proxy hashes the real file. | `internal/browser/assertions_test.go`, `internal/recipe/assertions_test.go`, `internal/http/assert_route_test.go`, `internal/httpclient/assert_test.go` |
 | Closed | Long element waits scanned Gmail/LinkedIn-scale DOMs every 100 ms (up to about 1,200 scans). Bounded adaptive polling makes the first recheck faster and cuts a 120-second idle wait to about 483 scans. | `internal/recipe/browser_surface_test.go`, `docs/benchmarks.md` |
+| Closed | The only published performance claims about `brw` itself were head-to-head results against Claude-in-Chrome that nothing in this repository reproduced. They are deleted and listed as removed. `task bench` now measures per-command wall time, CDP round trips, transport bytes (counted at the websocket by a relay in front of Chrome, not estimated), observation tokens, and the run's CPU and peak RSS, against the local fixture suite with an environment fingerprint; `task agent-eval` grades four agent-level tasks on the end state probed out of the page rather than on what the run claimed, and `task agent-eval-verify` reruns each with its decisive act removed and fails unless every one is caught. Neither is in `go test ./...` or `task check`. | `internal/bench`, `internal/agenteval`, `internal/harness`, `docs/benchmarks.md` |
 | Closed | Provider redirects could forward its bearer token. Redirects, URL credentials, query strings, fragments, downgrade, oversized responses, malformed metadata, and body substitution are rejected. | `internal/recipe/schema_test.go` |
 | Closed | A custom provider implementation could bypass the HTTPS provider's validation and substitute a recipe after discovery. The service boundary now validates every search result and revalidates exact `id + version + digest` after fetch, independent of provider implementation. | `internal/recipe/runner_test.go` |
 | Closed | Two local profiles could silently share the default artifact cache. The automatic root is now namespaced by runtime identity. | `cmd/brwd/main_test.go` |
@@ -217,8 +218,18 @@ Vendor numbers that should not go in a matrix: Stagehand's "2x faster, ~80% more
 token-efficient" rests on one 50-action crawl the authors themselves label a
 single run rather than a benchmark; browser-use's 97.0% Online-Mind2Web is
 self-reported. agent-browser's 93% token reduction is measured against Playwright
-MCP. `brw`'s own head-to-head numbers are internal and unpublished, which is what
-task `2EKP6X` exists to fix.
+MCP. `brw`'s own head-to-head numbers against Claude-in-Chrome were internal and
+unpublished; they have been deleted from [benchmarks](benchmarks.md) rather than
+restated, and that page lists each one that went.
+
+What replaced them measures `brw` against fixtures in this repository and
+compares `brw` with nothing: `task bench` records per-command wall time, CDP
+round trips, transport bytes and observation tokens with the environment
+fingerprint that says whether two runs are comparable, and `task agent-eval`
+grades four agent-level tasks on the end state read out of the page.
+`task agent-eval-verify` runs the same four with the decisive act removed and
+requires every one of them to be graded a failure, which is what says the
+evaluation can fail at all. Neither is in `go test ./...` or `task check`.
 
 ### Deliberate non-goals
 

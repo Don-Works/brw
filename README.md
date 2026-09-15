@@ -47,20 +47,34 @@ requested viewport/crop. macOS uses the built-in `sips`; Linux/other installs ca
 provide `pdftoppm`, ImageMagick `magick`, or `convert`. This fallback runs only
 after the normal fast screenshot path stalls.
 
-## Bench Signal
+## Measurement
 
-Internal pre-release head-to-head runs against Claude-in-Chrome showed the
-direction we built for: on semantic web tasks, `brw` needed fewer turns,
-less token spend, less wall time, and lower estimated cost. The main reason:
-agents act from refs and action observations instead of repeatedly interpreting
-screenshots.
+Two harnesses run from a clean checkout, against the fixtures in `tests/`, with
+no network beyond the loopback origin they start themselves and no account of
+any kind:
 
-Claude-in-Chrome's advantages at the time were installed-profile auth,
-scheduled and recurring runs, a credential-manager integration, and sessions
-that carry across desktop, web and mobile. `brw` answers the first with the
-`brw` Chrome extension and SSH-first remote runtime: keep Chrome, cookies,
-passkeys, downloads, and human takeover on the browser machine, while MCP runs
-over stdio through SSH. The rest are tracked in the parity matrix in
+```sh
+task bench                # per-command wall time, CDP round trips, transport bytes, observation tokens
+task agent-eval           # four agent-level tasks graded on the page's end state
+task agent-eval-verify    # the same four, sabotaged, to prove the grading can fail
+```
+
+Neither runs in `go test ./...` or `task check`. A timing that fails because CI
+was busy is a gate nobody can act on.
+
+The recorded first run, with the environment fingerprint that says whether your
+run is comparable to it, is in [docs/benchmarks.md](docs/benchmarks.md). That
+page also lists the head-to-head claims against Claude-in-Chrome that used to
+stand here and have been removed: they were measured before release, never
+published, and nothing here reproduces them.
+
+What `brw` does differently is a design statement, not a measured one: actions
+return semantic observations, so an agent acts from refs instead of
+re-interpreting a screenshot per step. Where a signed-in session is the point,
+the installed browser profile is what holds it — the `brw` Chrome extension and
+the SSH-first remote runtime keep Chrome, cookies, passkeys, downloads and human
+takeover on the browser machine while MCP runs over stdio through SSH. Feature
+comparisons live in the parity matrix in
 [docs/browser-automation-review.md](docs/browser-automation-review.md);
 scheduling is deliberately external.
 
@@ -77,12 +91,8 @@ loop (act by ref, read the post-action observation instead of re-snapshotting,
 use deltas, screenshot only as a fallback), run `brwd --print-system-prompt`.
 See [docs/agent-guide.md](docs/agent-guide.md).
 
-Raw private benchmark transcripts are not shipped in this repository because
-they can contain prompts, machine paths, and session metadata. Treat the public
-benchmark note as directional until a reproducible public harness lands.
-
-See [docs/benchmarks.md](docs/benchmarks.md). For what answers a
-`brw_wait_for` on each transport, see [docs/waiting.md](docs/waiting.md).
+For what answers a `brw_wait_for` on each transport, see
+[docs/waiting.md](docs/waiting.md).
 
 For repeated site workflows and large observations, see
 [Private recipes and browser-host artifacts](docs/recipes-and-artifacts.md).
