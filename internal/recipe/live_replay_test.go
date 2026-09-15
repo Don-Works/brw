@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -155,16 +156,17 @@ func liveChrome(t *testing.T) *browser.Manager {
 		t.Skipf("Chrome/Chromium not available: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	profile := browsertest.NewProfile(t)
 	manager, err := browser.New(ctx, browser.Config{
 		Headless:    true,
-		UserDataDir: t.TempDir(),
+		UserDataDir: profile.Dir(),
 		Timeout:     30 * time.Second,
 	})
 	if err != nil {
 		cancel()
 		t.Skipf("headless Chrome did not start: %v", err)
 	}
-	t.Cleanup(func() {
+	profile.StopWith(func() {
 		_ = manager.Close()
 		cancel()
 	})

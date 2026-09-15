@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
@@ -326,9 +327,10 @@ func TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured(t *testing.T) {
 	var version string
 	for _, browser := range browsers {
 		build := browserVersion(t, browser)
+		profile := browsertest.NewProfile(t)
 		launcher, err := cdp.Launch(context.Background(), cdp.LaunchConfig{
 			ChromePath:  browser,
-			UserDataDir: t.TempDir(),
+			UserDataDir: profile.Dir(),
 			Extensions:  []string{extension},
 			Headless:    true,
 			Args:        quietLaunchArgs(),
@@ -347,7 +349,7 @@ func TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured(t *testing.T) {
 		} else {
 			t.Logf("%s loaded no MV3 worker that reached %s within %s", build, probeURL, mv3ProbeWait)
 		}
-		_ = launcher.Close()
+		profile.StopWith(func() { _ = launcher.Close() })
 		if version != "" {
 			break
 		}

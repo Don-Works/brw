@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	cdplaunch "github.com/Don-Works/brw/internal/cdp"
 )
@@ -158,15 +159,16 @@ func TestBrwStartedBrowserStillStagesDownloads(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
+	profile := browsertest.NewProfile(t)
 	m, err := New(ctx, Config{
-		UserDataDir: t.TempDir(),
+		UserDataDir: profile.Dir(),
 		Timeout:     20 * time.Second,
 		ChromeArgs:  []string{"--headless=new", "--disable-gpu", "--no-sandbox"},
 	})
 	if err != nil {
 		t.Skipf("could not launch headless Chrome: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Close() })
+	profile.StopWith(func() { _ = m.Close() })
 
 	if _, err := m.Open(ctx, "data:text/html,<html><body>x</body></html>"); err != nil {
 		t.Fatalf("open a tab: %v", err)

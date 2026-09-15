@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -110,11 +111,12 @@ func newOOPIFManager(t *testing.T, ctx context.Context) *Manager {
 	if _, err := cdp.FindChrome(""); err != nil {
 		t.Skipf("Chrome/Chromium not available: %v", err)
 	}
+	profile := browsertest.NewProfile(t)
 	m, err := New(ctx, Config{
 		Timeout: 30 * time.Second,
 		// Its own profile: the shared default one is held by whatever brw Chrome
 		// is already running, and a test that skips because of that proves nothing.
-		UserDataDir: t.TempDir(),
+		UserDataDir: profile.Dir(),
 		ChromeArgs: []string{
 			"--headless=new", "--disable-gpu", "--no-sandbox",
 			// The frame has to land in its own process for this to be an OOPIF at all.
@@ -125,7 +127,7 @@ func newOOPIFManager(t *testing.T, ctx context.Context) *Manager {
 	if err != nil {
 		t.Skipf("could not launch headless Chrome: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Close() })
+	profile.StopWith(func() { _ = m.Close() })
 	return m
 }
 
