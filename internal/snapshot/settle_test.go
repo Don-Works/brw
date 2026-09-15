@@ -241,7 +241,15 @@ func TestPreArmedSettleWaitsForRenderAfterNetworkResponse(t *testing.T) {
 	if err := chromedp.Run(runCtx, chromedp.Navigate(server.URL), chromedp.WaitReady("#b")); err != nil {
 		t.Fatal(err)
 	}
-	handle, err := ArmSettle(runCtx, 150)
+	// The cap is deliberately far above what this page needs. What is under test
+	// is that the observer waits for the render AFTER the response, and a cap
+	// tight enough to race a localhost fetch tests the runner's load instead: a
+	// CI run failed here at SettledMS=151 against a 150ms cap, reporting
+	// output="pending" as if the observer had settled early when it had simply
+	// been cut off. Settling still happens on quiesce, so a healthy run is no
+	// slower for the headroom; the cap only bites when something is wrong.
+	// Same lesson as TestPreArmedSettleCatchesSynchronousMutation above.
+	handle, err := ArmSettle(runCtx, 2000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +264,23 @@ func TestPreArmedSettleWaitsForRenderAfterNetworkResponse(t *testing.T) {
 	if err := chromedp.Run(runCtx, chromedp.Evaluate(`document.getElementById('o').textContent`, &rendered)); err != nil {
 		t.Fatal(err)
 	}
-	if rendered != "rendered" || result.SettledMS < 35 {
-		t.Fatalf("settled before post-response render: result=%+v output=%q", result, rendered)
+	// Reason is not proof on its own: the quiet window is re-armed by network
+	// idle as well as by mutations, and whichever re-armed it last names the
+	// result — a healthy run here reports "network_quiesce" even though the
+	// mutation was seen. Only "cap" is unambiguous, meaning the cap fired with
+	// sawMutation false. It is checked first because it is the exact shape of
+	// the CI failure, and says so rather than leaving the reader to infer it
+	// from output="pending". The two assertions after it are what actually
+	// bite in every other case.
+	if result.Reason == "cap" {
+		t.Fatalf("pre-armed settle never observed the post-response render: result=%+v output=%q", result, rendered)
+	}
+	if rendered != "rendered" {
+		t.Fatalf("settle returned before the post-response render landed: result=%+v output=%q", result, rendered)
+	}
+	// The render is 20ms after the response and the quiet window is 40ms, so
+	// anything under this settled without waiting for either.
+	if result.SettledMS < 35 {
+		t.Fatalf("settled too early to have waited for the post-response render: result=%+v", result)
 	}
 }
