@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browsertest"
 	cdplaunch "github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/chromedp/chromedp"
@@ -46,15 +46,15 @@ func TestPrearmedSettleIsMateriallyFaster(t *testing.T) {
 	// context error instead of the timing the test exists to record.
 	ctx, cancel := context.WithTimeout(context.Background(), settlePerformanceBudget)
 	defer cancel()
-	profileDir := t.TempDir()
+	profile := browsertest.NewProfile(t)
 	manager, err := New(ctx, Config{
-		ChromePath: chromePath, UserDataDir: profileDir, Timeout: 10 * time.Second,
+		ChromePath: chromePath, UserDataDir: profile.Dir(), Timeout: 10 * time.Second,
 		ChromeArgs: []string{"--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-sandbox"},
 	})
 	if err != nil {
 		t.Skipf("headless Chrome unavailable: %v", err)
 	}
-	cleanupPerformanceManager(t, manager, profileDir)
+	profile.StopWith(func() { _ = manager.Close() })
 	if _, err := manager.Open(ctx, fixture.URL); err != nil {
 		t.Fatal(err)
 	}
@@ -121,15 +121,15 @@ func TestPrearmedSettleWorstCaseOverheadIsBounded(t *testing.T) {
 	// context error instead of the timing the test exists to record.
 	ctx, cancel := context.WithTimeout(context.Background(), settlePerformanceBudget)
 	defer cancel()
-	profileDir := t.TempDir()
+	profile := browsertest.NewProfile(t)
 	manager, err := New(ctx, Config{
-		ChromePath: chromePath, UserDataDir: profileDir, Timeout: 10 * time.Second,
+		ChromePath: chromePath, UserDataDir: profile.Dir(), Timeout: 10 * time.Second,
 		ChromeArgs: []string{"--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-sandbox"},
 	})
 	if err != nil {
 		t.Skipf("headless Chrome unavailable: %v", err)
 	}
-	cleanupPerformanceManager(t, manager, profileDir)
+	profile.StopWith(func() { _ = manager.Close() })
 	if _, err := manager.Open(ctx, fixture.URL); err != nil {
 		t.Fatal(err)
 	}
@@ -193,44 +193,4 @@ func TestPrearmedSettleWorstCaseOverheadIsBounded(t *testing.T) {
 		t.Fatalf("prearmed no-reaction overhead median=%s over %d rounds (%v); overhead exceeds 50ms", median, rounds, overheads)
 	}
 	t.Logf("no-reaction overhead median=%s over %d rounds (%v)", sorted[rounds/2], rounds, overheads)
-}
-
-// Chrome's root process can exit a few milliseconds before its last helper
-// releases or finishes writing the profile on Linux. Manager.Close waits for
-// the root process; this test-only cleanup additionally requires the disposable
-// profile to remain absent for a short quiet window before testing.TempDir runs
-// its strict one-shot cleanup. A helper that actually stays alive still fails
-// the bounded deadline instead of being hidden as a flaky RemoveAll error.
-func cleanupPerformanceManager(t *testing.T, manager *Manager, profileDir string) {
-	t.Helper()
-	t.Cleanup(func() {
-		_ = manager.Close()
-		deadline := time.Now().Add(3 * time.Second)
-		var (
-			lastErr      error
-			missingSince time.Time
-		)
-		for {
-			lastErr = os.RemoveAll(profileDir)
-			_, statErr := os.Stat(profileDir)
-			if lastErr == nil && os.IsNotExist(statErr) {
-				if missingSince.IsZero() {
-					missingSince = time.Now()
-				}
-				if time.Since(missingSince) >= 150*time.Millisecond {
-					return
-				}
-			} else {
-				missingSince = time.Time{}
-				if lastErr == nil {
-					lastErr = statErr
-				}
-			}
-			if time.Now().After(deadline) {
-				t.Errorf("temporary Chrome profile did not quiesce after Manager.Close: %v", lastErr)
-				return
-			}
-			time.Sleep(25 * time.Millisecond)
-		}
-	})
 }

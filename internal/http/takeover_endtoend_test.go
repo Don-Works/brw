@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -40,9 +41,13 @@ func TestDashboardInputReachesTheRealBrowserAndAgentActionsAreRefused(t *testing
 	t.Setenv(dashboardEnvVar, "1")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	profile := browsertest.NewProfile(t)
+	// Both teardown steps hang off the profile rather than off a defer, so the
+	// browser still closes under a live context: every defer in this function
+	// runs before any cleanup does.
+	profile.StopWith(cancel)
 	manager, err := browser.New(ctx, browser.Config{
-		UserDataDir: t.TempDir(),
+		UserDataDir: profile.Dir(),
 		Timeout:     20 * time.Second,
 		Headless:    true,
 		ChromeArgs:  []string{"--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--hide-scrollbars"},
@@ -50,7 +55,7 @@ func TestDashboardInputReachesTheRealBrowserAndAgentActionsAreRefused(t *testing
 	if err != nil {
 		t.Skipf("headless Chrome did not start: %v", err)
 	}
-	defer manager.Close()
+	profile.StopWith(func() { _ = manager.Close() })
 
 	pages := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")

@@ -13,6 +13,7 @@ import (
 
 	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/devtools"
 	"github.com/Don-Works/brw/internal/httpclient"
@@ -43,16 +44,17 @@ func newDevtoolsRouteServer(t *testing.T) (*Server, string) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	profile := browsertest.NewProfile(t)
 	manager, err := browser.New(ctx, browser.Config{
 		ChromePath:  chromePath,
-		UserDataDir: t.TempDir(),
+		UserDataDir: profile.Dir(),
 		Headless:    true,
 		Timeout:     45 * time.Second,
 	})
 	if err != nil {
 		t.Skipf("headless Chrome did not start: %v", err)
 	}
-	t.Cleanup(func() { _ = manager.Close() })
+	profile.StopWith(func() { _ = manager.Close() })
 
 	store, err := artifact.NewStore(artifact.Config{
 		Root:             filepath.Join(t.TempDir(), "artifacts"),

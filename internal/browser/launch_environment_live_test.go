@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browsertest"
 	cdplaunch "github.com/Don-Works/brw/internal/cdp"
 )
 
@@ -24,8 +25,9 @@ func launchedManager(t *testing.T, network cdplaunch.NetworkEnvironment) *Manage
 	if _, err := cdplaunch.FindChrome(""); err != nil {
 		t.Skipf("Chrome/Chromium not available: %v", err)
 	}
+	profile := browsertest.NewProfile(t)
 	m, err := New(context.Background(), Config{
-		UserDataDir: t.TempDir(),
+		UserDataDir: profile.Dir(),
 		Headless:    true,
 		Timeout:     20 * time.Second,
 		Network:     network,
@@ -33,9 +35,10 @@ func launchedManager(t *testing.T, network cdplaunch.NetworkEnvironment) *Manage
 	if err != nil {
 		t.Skipf("headless Chrome did not start: %v", err)
 	}
-	// Close before testing removes the user-data-dir: it SIGTERMs Chrome and
-	// waits, so the profile's final writes land before the directory goes.
-	t.Cleanup(func() { _ = m.Close() })
+	// Close only waits for Chrome's root process, which on Linux exits while a
+	// helper is still writing the profile; the reclaim holds the directory gone
+	// before testing's own removal runs.
+	profile.StopWith(func() { _ = m.Close() })
 	return m
 }
 

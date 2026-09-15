@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/store"
 	cdpbrowser "github.com/chromedp/cdproto/browser"
@@ -38,11 +39,17 @@ func newHeadlessManagerWith(t *testing.T, extra ...chromedp.ExecAllocatorOption)
 	if err != nil {
 		t.Skipf("Chrome/Chromium not available: %v", err)
 	}
+	// Two directories Chrome writes into, both reclaimed after it exits. The
+	// staging root is created first so its reclaim runs LAST: the profile's
+	// reclaim is what stops the browser, and downloads are still being staged
+	// until it does.
+	staging := browsertest.NewProfile(t)
+	profile := browsertest.NewProfile(t)
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(chromePath),
 		chromedp.Flag("headless", "new"),
 		chromedp.Flag("disable-gpu", true),
-		chromedp.UserDataDir(t.TempDir()),
+		chromedp.UserDataDir(profile.Dir()),
 		chromedp.WSURLReadTimeout(45*time.Second),
 	)
 	opts = append(opts, extra...)
@@ -66,7 +73,7 @@ func newHeadlessManagerWith(t *testing.T, extra ...chromedp.ExecAllocatorOption)
 		trace:              make([]TraceEntry, 0, 16),
 		consoleCaptureTabs: map[string]bool{},
 		consoleMessages:    map[string][]ConsoleMessage{},
-		userDataDir:        t.TempDir(),
+		userDataDir:        staging.Dir(),
 		downloadIndex:      map[string]int{},
 		downloadVersions:   map[string]uint64{},
 		downloadCursors:    map[string]uint64{},
@@ -82,12 +89,11 @@ func newHeadlessManagerWith(t *testing.T, extra ...chromedp.ExecAllocatorOption)
 	if err := m.connect(); err != nil {
 		t.Skipf("headless Chrome connect failed: %v", err)
 	}
-	// This cleanup owns the shutdown. It is registered after the t.TempDir calls
-	// above and cleanups run last-in-first-out, so it completes before testing
-	// removes the user-data-dir. A test must therefore NOT close this Manager
-	// itself: chromedp.Cancel only waits for the Chrome process over a live
-	// browser connection, and Manager.Close cancels browserCtx.
-	t.Cleanup(func() {
+	// This shutdown owns the teardown, and the profile runs it before reclaiming
+	// the directory. A test must therefore NOT close this Manager itself:
+	// chromedp.Cancel only waits for the Chrome process over a live browser
+	// connection, and Manager.Close cancels browserCtx.
+	profile.StopWith(func() {
 		if err := m.browserCtx.Err(); err != nil {
 			t.Errorf("browser context was already cancelled (%v) before cleanup: chromedp.Cancel returns without waiting for Chrome to exit, and the user-data-dir removal then races its final writes. Let this cleanup own the shutdown.", err)
 		}

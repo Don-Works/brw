@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/cdp"
 )
 
@@ -43,23 +44,24 @@ func newLiveManager(t *testing.T) *browser.Manager {
 	if _, err := cdp.FindChrome(""); err != nil {
 		t.Skipf("Chrome/Chromium not available: %v", err)
 	}
+	profile := browsertest.NewProfile(t)
 	// The browser's own context has to outlive this helper: chromedp derives the
 	// allocator from it, so a cancel here would tear the browser down before the
 	// first call.
 	ctx, cancel := context.WithCancel(context.Background())
 	m, err := browser.New(ctx, browser.Config{
 		Headless:    true,
-		UserDataDir: t.TempDir(),
+		UserDataDir: profile.Dir(),
 		Timeout:     20 * time.Second,
 	})
 	if err != nil {
 		cancel()
 		t.Skipf("headless Chrome did not start: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = m.Close()
-		cancel()
-	})
+	// Stops unwind in reverse: the manager closes, then the allocator context is
+	// cancelled, and only then is the profile reclaimed.
+	profile.StopWith(cancel)
+	profile.StopWith(func() { _ = m.Close() })
 	return m
 }
 
