@@ -113,7 +113,10 @@ func Run(ctx context.Context, opts Options) (Record, error) {
 		Environment: environment,
 		OK:          true,
 		Notes: map[string]any{
-			"transport":         "direct-cdp",
+			// Named from the identity constant, not a literal: the bench launches its
+			// own throwaway Chrome so the lane is not in doubt, and a rename should
+			// not leave the record claiming a transport that no longer exists.
+			"transport":         brwidentity.TransportDirectCDP,
 			"fixture_origin":    "loopback http",
 			"token_estimator":   fmt.Sprintf("%d chars per token", charsPerToken),
 			"observation_scope": "the mcp tool result: the payload escaped inside content[0].text plus structuredContent",
