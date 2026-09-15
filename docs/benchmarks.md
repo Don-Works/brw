@@ -52,26 +52,26 @@ attributed to the next command rather than to the one that caused it.
 ### First recorded run
 
 ```
-darwin/arm64 Apple M4 Max x16 | Chrome/153.0.8010.37 | brw 0.13.5-72-ge1b285b-dirty | go1.26.6 | fixtures c93446d33c8a
-captured 2026-09-15T10:01:14Z, 32 commands, 5627 ms wall
+darwin/arm64 Apple M4 Max x16 | Chrome/153.0.8010.37 | brw 0.13.5-73-g4601537 | go1.26.6 | fixtures c93446d33c8a
+captured 2026-09-15T10:05:39Z, 32 commands, 7978 ms wall
 ```
 
 | Flow | Commands | Wall ms | CDP sent | CDP received | Bytes sent | Bytes received | Observation bytes | ~tokens |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| forms | 11 | 1,239.2 | 60 | 113 | 362,407 | 80,649 | 20,582 | 5,142 |
-| shop | 11 | 894.9 | 59 | 108 | 334,710 | 58,288 | 13,486 | 3,370 |
-| dynamic | 6 | 1,133.1 | 40 | 88 | 216,201 | 35,526 | 6,274 | 1,567 |
-| structured | 4 | 883.4 | 28 | 75 | 97,709 | 24,236 | 3,778 | 944 |
-| **all flows** | **32** | **4,150.6** | **187** | **384** | **1,011,027** | **198,699** | **44,120** | **11,023** |
+| forms | 11 | 1,214.2 | 60 | 116 | 362,407 | 83,198 | 20,582 | 5,142 |
+| shop | 11 | 1,749.7 | 59 | 109 | 334,710 | 58,529 | 13,486 | 3,370 |
+| dynamic | 6 | 1,525.9 | 40 | 88 | 216,201 | 35,552 | 6,278 | 1,568 |
+| structured | 4 | 1,377.3 | 28 | 75 | 97,709 | 24,243 | 3,778 | 944 |
+| **all flows** | **32** | **5,867.2** | **187** | **388** | **1,011,027** | **201,522** | **44,124** | **11,024** |
 
-System cost of that run: the harness process peaked at 24.5 MB RSS and used
-79 ms user + 105 ms sys; the browser tree's largest process peaked at 267.4 MB
-and the tree used 2,652 ms user + 1,470 ms sys. The browser figure is a
+System cost of that run: the harness process peaked at 24.4 MB RSS and used
+67 ms user + 79 ms sys; the browser tree's largest process peaked at 260.1 MB
+and the tree used 2,027 ms user + 1,192 ms sys. The browser figure is a
 high-water mark for the largest single browser process, which is what the kernel
 records — not a sum across Chrome's processes.
 
 Read the wall column as an upper bound. This machine was compiling and driving
-other browsers throughout, at a load average around 45 on its 16 cores. The
+other browsers throughout, at a load average around 65 on its 16 cores. The
 counted columns do not move with that, and are the ones to compare.
 
 `dynamic/wait_controls` is the page waiting rather than brw working: the
@@ -89,15 +89,15 @@ scripts and receives semantic results: a `brw_fill` carries roughly 44 KB of
 script to the browser and gets back roughly 6 KB. That is the shape of the
 design, not a measurement of a page.
 
-What moves between runs and what does not, across 8 runs on this machine while
-it was busy with other work: total wall time ranged 4,151–9,241 ms. Seven of the
-eight sent 187 commands and 1,011,027 bytes, to the byte; the exception was the
-slowest run, which sent 186 and 1,010,910. Messages received ranged 376–387 —
-Chrome's event stream is asynchronous, so an event that arrives between two
-calls is attributed to the later one. Observation bytes spanned 12 bytes in all,
-because each result carries its own `duration_ms`. Read the send counts as
-stable, the receive counts as approximate, and the wall times as a machine with
-other work on it.
+What moves between runs and what does not, across 6 runs on this machine while
+it was busy with other work: total wall time ranged 5,867–9,518 ms. Every one of
+them sent 187 commands and 1,011,027 bytes, to the byte. Messages received
+ranged 380–388 — Chrome's event stream is asynchronous, so an event that
+arrives between two calls is attributed to the later one. Observation bytes
+spanned 10 bytes in all, because each result carries its own `duration_ms`. Read
+the send counts as stable, the receive counts as approximate, and the wall times
+as a machine with other work on it. Stable is not invariant: in an earlier set of
+eight runs the slowest sent 186 and 1,010,910.
 
 Compare two records by their `environment` block first: `os`, `arch`,
 `cpu_model`, `cpus`, `browser`, `headless` and `fixture_digest` all have to
