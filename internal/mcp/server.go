@@ -1671,7 +1671,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		// as a tab navigation - on the URL the call named and on every redirect
 		// hop after it, which is where a grant for one origin was reading
 		// another's pages.
-		req.PolicyCheck = s.checkFetchDestination
+		req.PolicyCheck = s.CheckFetchDestination
 		result, err := urlread.Fetch(ctx, req)
 		if err != nil {
 			return toolError(err), nil

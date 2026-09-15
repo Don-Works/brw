@@ -3,11 +3,12 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
-
 	"strings"
 	"testing"
 
+	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
@@ -146,15 +147,67 @@ func TestNothingAdvertisesTheOldFrameRefShape(t *testing.T) {
 	}
 }
 
-// TestSequenceToolsSayTheyRefuseACrossOriginRef closes a gap between what brw
-// tells an agent and what it does.
+// sequenceTools are the tools that take their refs inside steps and refuse the
+// whole call when one of them names a cross-origin frame.
+var sequenceTools = []string{"brw_plan", "brw_batch"}
+
+// routingToolName is the tool the refusal sends an agent to instead, read out of
+// the classification table rather than spelled out here, so renaming it has to
+// move through the table, the tool descriptions and the skill together.
+func routingToolName(t *testing.T) string {
+	t.Helper()
+	var names []string
+	for name, entry := range refTakingTools {
+		if entry.Disposition == refToolRoutesIntoTheFrame {
+			names = append(names, name)
+		}
+	}
+	if len(names) != 1 {
+		t.Fatalf("expected exactly one tool classified as routing into a cross-origin frame, found %v", names)
+	}
+	return names[0]
+}
+
+// TestSequenceToolsRefuseACrossOriginRefAndSayTheyDo closes a gap between what
+// brw tells an agent and what it does.
 //
 // brw_snapshot's description tells an agent that an f<i>:<ref> can be passed to
 // brw_click and the click lands in that frame. ExecutePlan and ExecuteBatch then
 // refuse such a ref for the whole call — correctly, since a step does not route
 // into the frame — but nothing an agent reads said so, so it batched the click it
 // had just been told worked and got a refusal.
-func TestSequenceToolsSayTheyRefuseACrossOriginRef(t *testing.T) {
+//
+// The refusal is DRIVEN, not assumed: each tool is called through callTool with
+// the real Controller, so deleting either guard turns this red. Only then is the
+// prose checked, and it is checked NEAR the phrase rather than anywhere in the
+// file: a source has to say, within one passage, that such a ref is refused and
+// which tool does reach the frame. The old assertion was satisfied by the phrase
+// "cross-origin iframe" appearing anywhere in the skill, including in a passage
+// telling an agent the opposite.
+func TestSequenceToolsRefuseACrossOriginRefAndSayTheyDo(t *testing.T) {
+	// A zero Manager is enough: the guard is the first thing ExecutePlan and
+	// ExecuteBatch do, so a refusal here is the guard and nothing else. Without it
+	// the call reaches a Manager with no browser behind it, which callSequenceTool
+	// turns into this test's verdict.
+	server := New(&browser.Manager{})
+	step := map[string]any{"action": "click", "ref": crossOriginRef}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, tool := range sequenceTools {
+		payload, err := json.Marshal(map[string]any{"steps": []map[string]any{step}})
+		if err != nil {
+			t.Fatalf("marshal %s args: %v", tool, err)
+		}
+		text := callSequenceTool(t, server, ctx, tool, payload)
+		if !strings.Contains(text, snapshot.ErrCrossOriginFrameUnsupported.Error()) {
+			t.Fatalf("%s answered %q, which is not the cross-origin capability refusal the descriptions promise", tool, text)
+		}
+		if !strings.Contains(text, crossOriginRef) {
+			t.Fatalf("%s refused without naming the ref it refused: %s", tool, text)
+		}
+	}
+
+	routing := routingToolName(t)
 	skill, err := os.ReadFile("../../skills/brw/SKILL.md")
 	if err != nil {
 		t.Fatalf("read skills/brw/SKILL.md: %v", err)
@@ -162,19 +215,64 @@ func TestSequenceToolsSayTheyRefuseACrossOriginRef(t *testing.T) {
 	sources := map[string]string{"skills/brw/SKILL.md": string(skill)}
 	for _, tl := range tools() {
 		name, _ := tl["name"].(string)
-		if name != "brw_plan" && name != "brw_batch" {
-			continue
+		for _, want := range sequenceTools {
+			if name == want {
+				description, _ := tl["description"].(string)
+				sources[name] = description
+			}
 		}
-		description, _ := tl["description"].(string)
-		sources[name] = description
 	}
-	if len(sources) != 3 {
-		t.Fatalf("expected brw_plan and brw_batch in the catalogue; found %d sources", len(sources))
+	if len(sources) != len(sequenceTools)+1 {
+		t.Fatalf("expected %v in the catalogue; found %d sources", sequenceTools, len(sources))
 	}
 	for where, text := range sources {
-		if !strings.Contains(text, "cross-origin iframe") {
-			t.Errorf("%s never says a ref inside a cross-origin iframe is refused by brw_plan and brw_batch, so an agent batches the click brw_snapshot told it would work", where)
+		if !saysSuchARefIsRefused(text, routing) {
+			t.Errorf("%s never says, where it mentions a cross-origin iframe, that %v refuse such a ref and that %s is what reaches the frame — so an agent batches the click brw_snapshot told it would work", where, sequenceTools, routing)
 		}
+	}
+}
+
+// callSequenceTool runs one sequence tool and returns whatever the surface said.
+//
+// A zero Manager has no cancel registry, so a call that got PAST the guard dies
+// there instead of returning. Recovering turns that into this test's own verdict
+// — the guard did not refuse — rather than taking the package's other tests down
+// with it.
+func callSequenceTool(t *testing.T, server *Server, ctx context.Context, tool string, payload []byte) (text string) {
+	t.Helper()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			text = fmt.Sprintf("ran past the guard and crashed on the browser it does not have: %v", recovered)
+		}
+	}()
+	result, rpcErr := server.callTool(ctx, tool, payload)
+	return rpcErrText(rpcErr) + resultText(result)
+}
+
+// refusalPassage is how much text after a mention of "cross-origin iframe" still
+// counts as the same passage. Two sentences: the claim and its way out.
+const refusalPassage = 260
+
+// saysSuchARefIsRefused reports whether some mention of a cross-origin iframe in
+// text is followed, within one passage, by both the refusal and the tool that
+// does reach the frame.
+func saysSuchARefIsRefused(text, routing string) bool {
+	const phrase = "cross-origin iframe"
+	for at := 0; ; {
+		i := strings.Index(text[at:], phrase)
+		if i < 0 {
+			return false
+		}
+		start := at + i
+		end := start + refusalPassage
+		if end > len(text) {
+			end = len(text)
+		}
+		passage := text[start:end]
+		if strings.Contains(passage, "refuse") && strings.Contains(passage, routing) {
+			return true
+		}
+		at = start + len(phrase)
 	}
 }
 

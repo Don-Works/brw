@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -286,4 +287,78 @@ func elementSummary(elements []snapshot.Element) []string {
 		out = append(out, el.Ref+"="+el.Role+":"+el.Name)
 	}
 	return out
+}
+
+// TestClickIntoACrossOriginFrameAsksAboutTheFramesOwnOrigin is the consent half
+// of the click path, on the wired verb.
+//
+// brw_click on an f<i>:<ref> attaches a CDP session to the frame's own target,
+// evaluates brw's actionability and box scripts inside that third party's
+// document and dispatches a real gesture at the result. include_frames asks
+// consent before doing the same thing; the click did not, and nothing made it
+// wait for a read: findFrameHandle runs the boxing walk and stamps the frames
+// itself, so f0:e1 guessed blind reached the embedded payment form. The click was
+// authorized against the origin the TAB is showing, which is not a grant to
+// actuate what that page embeds.
+func TestClickIntoACrossOriginFrameAsksAboutTheFramesOwnOrigin(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	defer cancel()
+	m := newOOPIFManager(t, ctx)
+	outerURL := oopifFixtureServer(t, oopifInnerDoc, "", "position:absolute;left:100px;top:80px;width:320px;height:220px")
+
+	opened, err := m.Open(ctx, outerURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabCtx := WithTabID(ctx, opened.Tab.ID)
+	t.Cleanup(func() { _ = m.CloseTab(ctx, opened.Tab.ID) })
+	time.Sleep(700 * time.Millisecond)
+
+	allowCtx := WithFrameReadCheck(tabCtx, func(string) error { return nil })
+	snap, err := m.Snapshot(allowCtx, snapshot.SnapshotOptions{Mode: "all", IncludeFrames: true})
+	if err != nil {
+		t.Fatalf("snapshot with include_frames: %v", err)
+	}
+	ref := refNamed(snap.Elements, "Frame Go")
+	if ref == "" {
+		t.Fatalf("include_frames did not surface the cross-origin frame's button; elements: %v", elementSummary(snap.Elements))
+	}
+
+	var asked []string
+	refuseCtx := WithFrameReadCheck(tabCtx, func(origin string) error {
+		asked = append(asked, origin)
+		return errors.New("no site permission grant for " + origin + " (scope read)")
+	})
+	_, clickErr := m.Click(refuseCtx, ref)
+	if clickErr == nil {
+		t.Fatalf("click %q actuated a document nobody decided about", ref)
+	}
+	if len(asked) != 1 || !strings.Contains(asked[0], "localhost") {
+		t.Fatalf("the gate was asked %v; the click has to be checked against the origin the FRAME is serving, not the tab's", asked)
+	}
+	if !strings.Contains(clickErr.Error(), asked[0]) || !strings.Contains(clickErr.Error(), "no site permission grant") {
+		t.Fatalf("the refusal does not say which origin was refused or why: %v", clickErr)
+	}
+
+	refused, err := m.Snapshot(allowCtx, snapshot.SnapshotOptions{Mode: "all", IncludeFrames: true})
+	if err != nil {
+		t.Fatalf("snapshot after the refused click: %v", err)
+	}
+	if refNamed(refused.Elements, "frame click recorded") != "" {
+		t.Fatalf("the refused click actuated the frame anyway; elements: %v", elementSummary(refused.Elements))
+	}
+	assertEmbedderGotNoClick(t, m, tabCtx)
+
+	// The same ref with the gate allowing it clicks, so the gate is what decided
+	// rather than the click having quietly broken.
+	if _, err := m.Click(allowCtx, ref); err != nil {
+		t.Fatalf("click %q with the frame's origin granted: %v", ref, err)
+	}
+	after, err := m.Snapshot(allowCtx, snapshot.SnapshotOptions{Mode: "all", IncludeFrames: true})
+	if err != nil {
+		t.Fatalf("snapshot after click: %v", err)
+	}
+	if refNamed(after.Elements, "frame click recorded") == "" {
+		t.Fatalf("the granted click did not reach the frame's document; elements: %v", elementSummary(after.Elements))
+	}
 }

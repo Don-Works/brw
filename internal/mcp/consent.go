@@ -35,19 +35,19 @@ func (s *Server) enforceSiteConsent(ctx context.Context, name string, args json.
 	)
 }
 
-// withConsentHooks installs the two consent checks that cannot be answered
-// before dispatch: the per-step re-check a plan or batch needs once its own
-// steps start moving the page, and the fetch check a daemon-side retrieval needs
-// once a server answers with a redirect.
+// withConsentHooks installs the consent checks that cannot be answered before
+// dispatch: the per-step re-check a plan or batch needs once its own steps start
+// moving the page, the fetch check a daemon-side retrieval needs once a server
+// answers with a redirect, and the frame-read check a cross-origin iframe needs
+// once the page has been walked and its embedded origins are known.
 //
-// Both are no-ops on a daemon with no consent store, so a controller reached
+// All are no-ops on a daemon with no consent store, so a controller reached
 // through this path behaves exactly as it did before consent existed.
 func (s *Server) withConsentHooks(ctx context.Context, name string, args json.RawMessage) context.Context {
 	if !s.consent.Enabled() {
 		return ctx
 	}
-	ctx = browser.WithFetchCheck(ctx, s.checkFetchDestination)
-	ctx = browser.WithFrameReadCheck(ctx, s.checkFrameRead)
+	ctx = browser.WithRuntimeConsent(ctx, s)
 	gate := s.consent.NewStepGate(name, args)
 	if gate == nil {
 		return ctx
@@ -71,26 +71,31 @@ func (s *Server) withConsentHooks(ctx context.Context, name string, args json.Ra
 	})
 }
 
-// checkFetchDestination gates a URL the DAEMON retrieves itself rather than the
+// CheckFetchDestination gates a URL the DAEMON retrieves itself rather than the
 // page: the one the call named, and every redirect hop after it.
 //
 // A grant is for an origin, not for a request. Gating only the first URL made a
 // 302 from a granted site into a read of whatever it pointed at, which is the
 // document brw never asked for that the read scope exists to cover.
-func (s *Server) checkFetchDestination(rawURL string) error {
+//
+// It is exported because it is half of browser.ConsentEnforcer, which is what
+// makes "every runtime question is answered" a compile error rather than a habit.
+func (s *Server) CheckFetchDestination(rawURL string) error {
 	if err := s.checkNavPolicy(rawURL); err != nil {
 		return err
 	}
 	return s.consent.Authorize(rawURL, siteconsent.ScopeRead)
 }
 
-// checkFrameRead gates reading the document inside one cross-origin iframe.
+// CheckFrameRead gates reaching into one cross-origin iframe.
 //
 // brw_snapshot is gated against the origin the TAB is showing. include_frames
 // then attaches a session to each embedded frame's own target and runs the walker
 // in a third party's document — a read of that third party, which the embedder's
-// grant does not cover and which the tool's arguments never named.
-func (s *Server) checkFrameRead(frameOrigin string) error {
+// grant does not cover and which the tool's arguments never named. brw_click on
+// an f<i>:<ref> attaches the same session and actuates there, so it asks the same
+// question.
+func (s *Server) CheckFrameRead(frameOrigin string) error {
 	return s.consent.Authorize(frameOrigin, siteconsent.ScopeRead)
 }
 

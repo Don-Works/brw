@@ -46,6 +46,11 @@ const crossOriginActionableTimeoutMS = 5000
 // that point is not on screen inside the frame. The dispatch is a real browser
 // gesture rather than an in-page MouseEvent: the in-page fast path builds its
 // event in the TOP document, where the element does not exist.
+//
+// The frame's own origin is put to the consent gate first, exactly as
+// include_frames does. This attaches the same session and runs the same scripts
+// in the same third-party document; the click was authorized against the origin
+// the TAB is showing, which is not a grant to actuate what that page embeds.
 func (m *Manager) clickCrossOriginFrameRef(ctx context.Context, ref string) (ActionResult, error) {
 	if err := m.guardTakeover("click"); err != nil {
 		return ActionResult{}, err
@@ -58,7 +63,7 @@ func (m *Manager) clickCrossOriginFrameRef(ctx context.Context, ref string) (Act
 	defer cancel()
 	m.recordAgentInteraction(tabID, "click")
 
-	box, err := snapshot.ResolveCrossOriginActionPoint(tabCtx, ref, crossOriginActionableTimeoutMS)
+	box, err := snapshot.ResolveCrossOriginActionPoint(tabCtx, ref, crossOriginActionableTimeoutMS, FrameReadCheckFromContext(ctx))
 	if err != nil {
 		return ActionResult{}, err
 	}

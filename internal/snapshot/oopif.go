@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -122,6 +123,27 @@ type frameHandle struct {
 	index    int
 	targetID target.ID
 	box      frameBox
+	// liveURL is what the frame's own CDP target reports it is showing, which is
+	// not always what the embedder's markup asked for.
+	liveURL string
+}
+
+// origin is the origin consent has to be checked against: the one the frame is
+// SERVING.
+//
+// The walker derives a frame's origin from el.src, which is page-writable DOM —
+// the same input the forged data-brw-xframe stamp comes from. A page can shadow
+// the src property, and a frame can simply redirect after load, so the attribute
+// names the origin the embedder asked for rather than the one now answering. Both
+// turn a grant for a site the user trusts into a read of a document they never
+// saw. The target's own URL is the live answer and wins; the attribute is the
+// fallback for a target reporting no usable URL (about:blank, srcdoc), whose
+// document came from the embedder's own markup anyway.
+func (h frameHandle) origin() string {
+	if parsed, err := url.Parse(h.liveURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		return parsed.Scheme + "://" + parsed.Host
+	}
+	return h.box.origin
 }
 
 // crossOriginFrameBoxes walks the document for its cross-origin iframe boxes and
@@ -235,12 +257,17 @@ func frameHandles(ctx context.Context) ([]frameHandle, error) {
 		}
 		seen[index] = true
 		id := target.ID(node.FrameID.String())
-		if _, hosted := targets[id]; !hosted {
+		info, hosted := targets[id]
+		if !hosted {
 			// Cross-origin but in the embedder's process: no target to attach to, so
 			// this frame stays coordinate-only.
 			continue
 		}
-		handles = append(handles, frameHandle{index: index, targetID: id, box: boxes[index]})
+		live := ""
+		if info != nil {
+			live = info.URL
+		}
+		handles = append(handles, frameHandle{index: index, targetID: id, box: boxes[index], liveURL: live})
 	}
 	return handles, nil
 }
@@ -326,8 +353,9 @@ func SnapshotOutOfProcessFrames(ctx context.Context, opts SnapshotOptions, allow
 	}
 	frames := make([]OutOfProcessFrame, 0, len(handles))
 	for _, handle := range handles {
+		origin := handle.origin()
 		if allowOrigin != nil {
-			if err := allowOrigin(handle.box.origin); err != nil {
+			if err := allowOrigin(origin); err != nil {
 				continue
 			}
 		}
@@ -352,7 +380,7 @@ func SnapshotOutOfProcessFrames(ctx context.Context, opts SnapshotOptions, allow
 			Index:    handle.index,
 			TargetID: handle.targetID.String(),
 			URL:      snap.URL,
-			Origin:   handle.box.origin,
+			Origin:   origin,
 			Box:      handle.box,
 			Snapshot: snap,
 		})
@@ -560,25 +588,26 @@ func findFrameHandle(ctx context.Context, index int) (frameHandle, error) {
 	return frameHandle{}, fmt.Errorf("no out-of-process iframe f%d on this page; re-run brw_snapshot with include_frames to refresh frame refs", index)
 }
 
-// ResolveCrossOriginBox resolves an f<i>:<inner> ref through a session attached
-// to frame i's own target and returns the element's box translated into
-// TOP-LEVEL viewport coordinates, which is the space CDP input speaks.
-func ResolveCrossOriginBox(ctx context.Context, ref string) (ElementBox, error) {
-	return resolveCrossOriginPoint(ctx, ref, 0)
-}
-
-// ResolveCrossOriginActionPoint is ResolveCrossOriginBox plus the actionability
-// gate the ordinary click path applies, evaluated INSIDE the frame.
+// ResolveCrossOriginActionPoint resolves an f<i>:<inner> ref through a session
+// attached to frame i's own target and returns the element's box translated into
+// TOP-LEVEL viewport coordinates, which is the space CDP input speaks. It applies
+// the actionability gate the ordinary click path applies, evaluated INSIDE the
+// frame; a zero timeout skips that wait and resolves the box alone.
 //
 // Manager.Click refuses a hidden, disabled or overlaid element before it
 // dispatches anything. Skipping that for a frame ref would make the one ref shape
 // that actuates by coordinate also the one shape that clicks a disabled button
 // and reports OK, so the same script runs in the frame's own context.
-func ResolveCrossOriginActionPoint(ctx context.Context, ref string, actionableTimeoutMS int64) (ElementBox, error) {
-	return resolveCrossOriginPoint(ctx, ref, actionableTimeoutMS)
+//
+// allowOrigin carries the same decision SnapshotOutOfProcessFrames takes, for the
+// same reason: this attaches to the frame's target too. It is the only exported
+// way in, so there is no sibling entry point a future caller can reach the frame
+// through while passing nil.
+func ResolveCrossOriginActionPoint(ctx context.Context, ref string, actionableTimeoutMS int64, allowOrigin func(origin string) error) (ElementBox, error) {
+	return resolveCrossOriginPoint(ctx, ref, actionableTimeoutMS, allowOrigin)
 }
 
-func resolveCrossOriginPoint(ctx context.Context, ref string, actionableTimeoutMS int64) (ElementBox, error) {
+func resolveCrossOriginPoint(ctx context.Context, ref string, actionableTimeoutMS int64, allowOrigin func(origin string) error) (ElementBox, error) {
 	index, inner, ok := ParseFrameRef(ref)
 	if !ok || inner == "" {
 		return ElementBox{}, fmt.Errorf("ref %q does not name an element inside a cross-origin iframe", ref)
@@ -586,6 +615,19 @@ func resolveCrossOriginPoint(ctx context.Context, ref string, actionableTimeoutM
 	handle, err := findFrameHandle(ctx, index)
 	if err != nil {
 		return ElementBox{}, err
+	}
+	// Reaching a ref inside the frame is a read of, and an action in, a THIRD
+	// PARTY's document: this attaches a session to that frame's target, evaluates
+	// brw's actionability and box scripts there, and scrolls the frame's element.
+	// The call was authorized against the origin the TAB is showing, which is not
+	// a grant to actuate what that origin embeds — and nothing here requires a
+	// prior include_frames read, because findFrameHandle does its own walk, so
+	// guessing f0:e1 blind would otherwise reach the payment form unasked.
+	if allowOrigin != nil {
+		origin := handle.origin()
+		if err := allowOrigin(origin); err != nil {
+			return ElementBox{}, fmt.Errorf("%q is inside the document %s is serving, and acting there reads and actuates that third party rather than the page this call was authorized against: %w", ref, origin, err)
+		}
 	}
 	// Bring the frame ELEMENT into the embedder's viewport first: everything after
 	// this measures against where the frame actually is on screen.

@@ -188,7 +188,7 @@ func TestForgedFrameStampRefusesToBindAFrameRef(t *testing.T) {
 		t.Fatalf("the refusal does not name the frame it will not bind: %v", err)
 	}
 	// And the ref paths refuse with it rather than acting on the wrong frame.
-	if _, err := ResolveCrossOriginBox(ctx, "f0:e1"); err == nil {
+	if _, err := ResolveCrossOriginActionPoint(ctx, "f0:e1", 0, nil); err == nil {
 		t.Fatal("a ref resolved against a page whose frame stamps are ambiguous")
 	}
 }
@@ -245,7 +245,7 @@ func TestCrossOriginFrameRefResolvesAndClicksInsideTheFrame(t *testing.T) {
 		t.Fatalf("ref %q is not recognised as a cross-origin element ref", ref)
 	}
 
-	box, err := ResolveCrossOriginBox(ctx, ref)
+	box, err := ResolveCrossOriginActionPoint(ctx, ref, 0, nil)
 	if err != nil {
 		t.Fatalf("resolve %q: %v", ref, err)
 	}
@@ -511,4 +511,64 @@ func frameNamesOf(elements []Element) []string {
 		out = append(out, el.Role+":"+el.Name)
 	}
 	return out
+}
+
+// TestFrameReadGateAsksAboutTheOriginTheFrameIsServing is the other half of the
+// frame-read gate: WHICH origin it is asked about.
+//
+// The walker derives a frame's origin from el.src. That is page-writable DOM —
+// the same input the forged data-brw-xframe stamp comes from — and it names the
+// origin the embedder ASKED for, not the one now answering: a frame that
+// redirected after load, or a page that shadows the src property, serves a
+// document that attribute never named. Checking consent against it turns a grant
+// for a site the user trusts into a read of one they never saw, which is the same
+// hole the redirect hop opened in the daemon-side fetch check. The target's own
+// URL is the live answer, so that is what the gate is asked about.
+func TestFrameReadGateAsksAboutTheOriginTheFrameIsServing(t *testing.T) {
+	ctx, _ := crossOriginFixture(t, innerFrameDoc)
+
+	// The frame keeps serving localhost; only what the DOM says about it changes.
+	lie := `(function(){
+		var el = document.getElementById('embed');
+		Object.defineProperty(el, 'src', { get: function(){ return 'https://granted.example/embed'; } });
+		return el.src;
+	})()`
+	var reported string
+	if err := chromedp.Run(ctx, chromedp.Evaluate(lie, &reported)); err != nil {
+		t.Fatalf("shadow the frame's src: %v", err)
+	}
+	if reported != "https://granted.example/embed" {
+		t.Fatalf("the fixture did not take the lie: el.src reads %q", reported)
+	}
+
+	var asked []string
+	frames, err := SnapshotOutOfProcessFrames(ctx, SnapshotOptions{Mode: "all"}, func(origin string) error {
+		asked = append(asked, origin)
+		if origin == "https://granted.example" {
+			return nil
+		}
+		return errors.New("no site permission grant for " + origin + " (scope read)")
+	})
+	if err != nil {
+		t.Fatalf("snapshot out-of-process frames: %v", err)
+	}
+	if len(asked) != 1 {
+		t.Fatalf("the gate was asked %v, want exactly the one embedded frame", asked)
+	}
+	if !strings.Contains(asked[0], "localhost") {
+		t.Fatalf("the gate was asked about %q, which is what the page CLAIMS the frame is; it is serving a localhost document", asked[0])
+	}
+	if len(frames) != 0 {
+		t.Fatalf("a frame whose real origin nobody granted was read anyway: %d frames, first from %q", len(frames), frames[0].URL)
+	}
+
+	// Granting the origin it is really serving reads it, so the gate is what
+	// decided rather than the lie having broken the walk.
+	allowed, err := SnapshotOutOfProcessFrames(ctx, SnapshotOptions{Mode: "all"}, func(string) error { return nil })
+	if err != nil || len(allowed) != 1 {
+		t.Fatalf("an allowed frame was not read: %v (%d frames)", err, len(allowed))
+	}
+	if !strings.Contains(allowed[0].Origin, "localhost") {
+		t.Fatalf("the frame is reported as origin %q, which is not the document it is serving", allowed[0].Origin)
+	}
 }

@@ -15,8 +15,24 @@ import (
 // cross-origin iframe: a frame index and a ref minted in that frame's document.
 const crossOriginRef = "f0:e7"
 
-// refVerbInvokers calls each ref-taking Controller method with a cross-origin ref
+// refVerbInvoker calls one ref-taking Controller method with a cross-origin ref
 // in every position that method accepts one, and returns the error.
+//
+// capability, when set, is the optional interface the verb is reached through
+// rather than through Controller itself. It is DATA rather than a type assertion
+// inside invoke, because an invoker that answered a failed assertion with nil
+// returned "no error" for a call it never made, and the test read that as the
+// verb having ACCEPTED a cross-origin ref — the opposite diagnosis, pointing at a
+// guard that is fine rather than at a capability that has gone. The assertion is
+// made by the test, against this field, so a transport that no longer implements
+// the interface is named as such unless transportsWithoutCapability says in
+// writing that it never did.
+type refVerbInvoker struct {
+	capability reflect.Type
+	invoke     func(context.Context, browser.Controller) error
+}
+
+// refVerbInvokers is the table of ref-taking verbs.
 //
 // The table is the point. Guarding "click and fill" is not a guard; the property
 // is "this ref belongs to another document", and every verb that resolves a ref
@@ -24,115 +40,112 @@ const crossOriginRef = "f0:e7"
 // against browser.ControllerRefMethods, which is itself checked against the
 // Controller interface — so a new ref-taking verb fails here until someone
 // decides what it does with a cross-origin ref.
-var refVerbInvokers = map[string]func(context.Context, browser.Controller) error{
-	"Click": func(ctx context.Context, c browser.Controller) error {
+var refVerbInvokers = map[string]refVerbInvoker{
+	"Click": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.Click(ctx, crossOriginRef)
 		return err
-	},
-	"ClickButton": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"ClickButton": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.ClickButton(ctx, browser.ClickButtonOptions{MousePoint: browser.MousePoint{Ref: crossOriginRef}})
 		return err
-	},
-	"MouseDown": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"MouseDown": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.MouseDown(ctx, browser.MouseButtonOptions{MousePoint: browser.MousePoint{Ref: crossOriginRef}})
 		return err
-	},
-	"MouseUp": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"MouseUp": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.MouseUp(ctx, browser.MouseButtonOptions{MousePoint: browser.MousePoint{Ref: crossOriginRef}})
 		return err
-	},
-	"Drag": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"Drag": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.Drag(ctx, browser.DragOptions{
 			From: browser.MousePoint{Ref: crossOriginRef},
 			To:   browser.MousePoint{Ref: "e2"},
 		})
 		return err
-	},
-	"Hover": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"Hover": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.Hover(ctx, crossOriginRef)
 		return err
-	},
-	"Type": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"Type": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.Type(ctx, crossOriginRef, "hello")
 		return err
-	},
-	"Fill": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"Fill": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.Fill(ctx, snapshot.FillOptions{Ref: crossOriginRef, Text: "hello"})
 		return err
-	},
-	"UploadFile": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"UploadFile": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.UploadFile(ctx, snapshot.UploadOptions{ClickRef: crossOriginRef, Path: "/dev/null"})
 		return err
-	},
-	"Select": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"Select": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.Select(ctx, crossOriginRef, "one")
 		return err
-	},
-	"ScreenshotAnnotated": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"ScreenshotAnnotated": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.ScreenshotAnnotated(ctx, browser.AnnotatedScreenshotOptions{Ref: crossOriginRef})
 		return err
-	},
-	"ScreenshotElement": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"ScreenshotElement": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.ScreenshotElement(ctx, crossOriginRef)
 		return err
-	},
-	"AssertVisible": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"AssertVisible": {invoke: func(ctx context.Context, c browser.Controller) error {
 		return c.AssertVisible(ctx, crossOriginRef, time.Second)
-	},
-	"AssertText": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"AssertText": {invoke: func(ctx context.Context, c browser.Controller) error {
 		return c.AssertText(ctx, crossOriginRef, "x", time.Second)
-	},
-	"AssertValue": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"AssertValue": {invoke: func(ctx context.Context, c browser.Controller) error {
 		return c.AssertValue(ctx, crossOriginRef, "x", time.Second)
+	}},
+	"AssertValueContains": {
+		capability: reflect.TypeOf((*browser.ValueContainsAsserter)(nil)).Elem(),
+		invoke: func(ctx context.Context, c browser.Controller) error {
+			return c.(browser.ValueContainsAsserter).AssertValueContains(ctx, crossOriginRef, "x", time.Second)
+		},
 	},
-	"AssertValueContains": func(ctx context.Context, c browser.Controller) error {
-		asserter, ok := c.(browser.ValueContainsAsserter)
-		if !ok {
-			return nil
-		}
-		return asserter.AssertValueContains(ctx, crossOriginRef, "x", time.Second)
-	},
-	"AssertHidden": func(ctx context.Context, c browser.Controller) error {
+	"AssertHidden": {invoke: func(ctx context.Context, c browser.Controller) error {
 		return c.AssertHidden(ctx, crossOriginRef, time.Second)
-	},
-	"CommitField": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"CommitField": {invoke: func(ctx context.Context, c browser.Controller) error {
 		return c.CommitField(ctx, crossOriginRef)
-	},
-	"ExecutePlan": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"ExecutePlan": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.ExecutePlan(ctx, []browser.PlanStep{{Action: "click", Ref: crossOriginRef}})
 		return err
-	},
-	"ExecuteBatch": func(ctx context.Context, c browser.Controller) error {
+	}},
+	"ExecuteBatch": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := c.ExecuteBatch(ctx, []browser.BatchStep{{Action: "assert", AssertRef: crossOriginRef}})
 		return err
-	},
+	}},
 	// A wait names its ref inside the condition string. It is the case a guard
 	// written against parameters called "ref" walks straight past, and the one
 	// where the un-guarded answer is worst: the wait cannot ever come true, so it
 	// burns its whole timeout and then reports the page never got there.
-	"WaitFor": func(ctx context.Context, c browser.Controller) error {
+	"WaitFor": {invoke: func(ctx context.Context, c browser.Controller) error {
 		return c.WaitFor(ctx, "ref:"+crossOriginRef, time.Second)
+	}},
+	"WaitForOutcome": {
+		capability: reflect.TypeOf((*browser.WaitObserver)(nil)).Elem(),
+		invoke: func(ctx context.Context, c browser.Controller) error {
+			_, err := c.(browser.WaitObserver).WaitForOutcome(ctx, "not_ref:"+crossOriginRef, time.Second)
+			return err
+		},
 	},
-	"WaitForOutcome": func(ctx context.Context, c browser.Controller) error {
-		observer, ok := c.(browser.WaitObserver)
-		if !ok {
-			return nil
-		}
-		_, err := observer.WaitForOutcome(ctx, "not_ref:"+crossOriginRef, time.Second)
-		return err
+	"Focus": {
+		capability: reflect.TypeOf((*browser.ElementFocuser)(nil)).Elem(),
+		invoke: func(ctx context.Context, c browser.Controller) error {
+			_, err := c.(browser.ElementFocuser).Focus(ctx, crossOriginRef)
+			return err
+		},
 	},
-	"Focus": func(ctx context.Context, c browser.Controller) error {
-		focuser, ok := c.(browser.ElementFocuser)
-		if !ok {
-			return nil
-		}
-		_, err := focuser.Focus(ctx, crossOriginRef)
-		return err
-	},
-	"Assert": func(ctx context.Context, c browser.Controller) error {
+	"Assert": {invoke: func(ctx context.Context, c browser.Controller) error {
 		_, err := browser.Assert(ctx, c, browser.AssertRequest{Assertion: "element_state", Ref: crossOriginRef, State: "visible"})
 		return err
-	},
+	}},
 }
 
 // capabilityInterfaces are the optional transport capabilities alongside
@@ -160,6 +173,17 @@ var capabilityInterfaces = []reflect.Type{
 	reflect.TypeOf((*browser.ValueContainsAsserter)(nil)).Elem(),
 }
 
+// transportsWithoutCapability records the (transport, verb) pairs where the
+// transport genuinely does not implement the optional interface that verb is
+// reached through, so there is no call to guard.
+//
+// It is empty, and that is the assertion: both first-party transports implement
+// all three optional interfaces the ref table names. A transport that drops one
+// has to be written down here, which is what separates "this verb cannot be
+// reached on this transport" from "this verb is reachable and ungated" — two
+// states the invoker used to report identically.
+var transportsWithoutCapability = map[string]map[string]bool{}
+
 // routesInsteadOfRefusing names the (transport, method) pairs that REACH into a
 // cross-origin frame rather than refusing. Direct CDP attaches a session to the
 // frame's own target for a click, so Click there must not return the capability
@@ -177,9 +201,19 @@ func TestControllerRefMethodsAreAllInvokable(t *testing.T) {
 			t.Errorf("%s takes an element ref but no invoker exercises its cross-origin refusal", name)
 		}
 	}
-	for name := range refVerbInvokers {
+	enumerated := map[reflect.Type]bool{}
+	for _, iface := range capabilityInterfaces {
+		enumerated[iface] = true
+	}
+	for name, verb := range refVerbInvokers {
 		if _, ok := browser.ControllerRefMethods[name]; !ok {
 			t.Errorf("invoker for %s names a method that is no longer classified as ref-taking", name)
+		}
+		if verb.capability == nil {
+			continue
+		}
+		if !enumerated[verb.capability] {
+			t.Errorf("%s is reached through %s, which capabilityInterfaces does not list, so TestControllerMethodsAreClassifiedForCrossOriginRefs never walks it", name, verb.capability)
 		}
 	}
 }
@@ -233,17 +267,23 @@ func TestRefVerbsRefuseCrossOriginRefsByName(t *testing.T) {
 		"direct-cdp":       &browser.Manager{},
 	}
 	for transport, controller := range transports {
-		for name, invoke := range refVerbInvokers {
+		for name, verb := range refVerbInvokers {
 			if routesInsteadOfRefusing[transport][name] {
 				continue
 			}
 			t.Run(transport+"/"+name, func(t *testing.T) {
+				if verb.capability != nil && !reflect.TypeOf(controller).Implements(verb.capability) {
+					if transportsWithoutCapability[transport][name] {
+						t.Skipf("%s does not implement %s, so %s cannot be reached on it at all", transport, verb.capability, name)
+					}
+					t.Fatalf("%s no longer implements %s, so %s reaches it by some other path and this subtest would otherwise have asserted nothing; if the capability was dropped on purpose, record it in transportsWithoutCapability", transport, verb.capability, name)
+				}
 				ctx, cancel := context.WithCancel(context.Background())
 				// Cancelled: nothing here should get far enough to need a browser, and
 				// a verb that skipped the guard fails on I/O with a different error
 				// instead of hanging.
 				cancel()
-				err := invoke(ctx, controller)
+				err := verb.invoke(ctx, controller)
 				if err == nil {
 					t.Fatalf("%s.%s accepted a ref inside a cross-origin iframe", transport, name)
 				}

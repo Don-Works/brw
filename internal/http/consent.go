@@ -192,11 +192,18 @@ func (s *Server) consentMiddleware(next http.Handler) http.Handler {
 // context, exactly as the MCP surface does. A rule enforced on one surface and
 // not the other is a bypass by choice of surface, which is the shape of hole
 // this whole table exists to close.
+//
+// It installs them through browser.WithRuntimeConsent rather than one call per
+// hook because this function is where that hole reopened: it installed the fetch
+// check alone, so `GET /api/page/snapshot?include_frames=true` attached a session
+// to every embedded third party's target and walked its document with nothing
+// decided about that origin — while the same call over MCP asked. Naming the
+// interface makes the next hook a compile error here instead of a silent gap.
 func (s *Server) withConsentHooks(ctx context.Context, operation string, body []byte, tabID string) context.Context {
 	if !s.consent.Enabled() {
 		return ctx
 	}
-	ctx = browser.WithFetchCheck(ctx, s.checkFetchDestination)
+	ctx = browser.WithRuntimeConsent(ctx, s)
 	gate := s.consent.NewStepGate(operation, body)
 	if gate == nil {
 		return ctx
@@ -216,13 +223,25 @@ func (s *Server) withConsentHooks(ctx context.Context, operation string, body []
 	})
 }
 
-// checkFetchDestination gates a URL the daemon retrieves itself, on the call's
+// CheckFetchDestination gates a URL the daemon retrieves itself, on the call's
 // own URL and on every redirect hop after it.
-func (s *Server) checkFetchDestination(rawURL string) error {
+func (s *Server) CheckFetchDestination(rawURL string) error {
 	if err := s.checkNavPolicy(rawURL); err != nil {
 		return err
 	}
 	return s.consent.Authorize(rawURL, siteconsent.ScopeRead)
+}
+
+// CheckFrameRead gates reaching into one cross-origin iframe, against that
+// frame's own origin rather than the embedder's.
+//
+// This route is also the one a proxied call arrives on: a daemon running against
+// an upstream one forwards include_frames to GET /api/page/snapshot
+// (internal/httpclient), and a Go func cannot cross that boundary. So the
+// upstream daemon has to ask this question itself, or every brw_snapshot proxied
+// through it reads its embedded third parties ungated.
+func (s *Server) CheckFrameRead(frameOrigin string) error {
+	return s.consent.Authorize(frameOrigin, siteconsent.ScopeRead)
 }
 
 // readConsentBody buffers a request body so the gate can read it and the handler

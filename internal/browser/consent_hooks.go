@@ -9,8 +9,8 @@ import (
 // The runtime half of site consent.
 //
 // Most of the gate decides from a call's arguments before anything is
-// dispatched, which is where a refusal costs nothing. Two things cannot be
-// decided there, and both are carried on the context so a controller that knows
+// dispatched, which is where a refusal costs nothing. Three things cannot be
+// decided there, and all are carried on the context so a controller that knows
 // nothing about consent keeps working unchanged:
 //
 //   - A plan or batch step runs after earlier steps have already moved the page.
@@ -18,6 +18,9 @@ import (
 //     step runs.
 //   - A URL the daemon fetches itself can answer with a redirect. The hop is a
 //     destination no argument named, and only the HTTP client sees it.
+//   - A cross-origin iframe is a third party's document whose origin no argument
+//     named either. Which origins a page embeds is known only once the page has
+//     been walked and the frame targets enumerated.
 //
 // A surface installs these when it dispatches; a context without them gates
 // nothing, exactly as before consent existed.
@@ -39,15 +42,58 @@ type SequenceGate func(index int, tabID string, step siteconsent.StepProbe) erro
 // consented to.
 type FetchCheck func(rawURL string) error
 
-// FrameReadCheck gates reading the DOCUMENT inside a cross-origin iframe.
+// FrameReadCheck gates reaching INTO a cross-origin iframe: reading its document
+// and acting inside it.
 //
 // include_frames attaches a CDP session to the frame's own target and runs the
 // walker in a THIRD PARTY's document — the payment form, the embedded editor,
-// the social widget. The call was gated against the embedder's origin, which is
-// not a grant to read what the embedder happens to have embedded, so each frame
-// origin is checked on its own. A frame this refuses is still reported, as the
-// clickable box it was before include_frames could read it at all.
+// the social widget. Clicking an f<i>:<ref> attaches the same session, evaluates
+// brw's actionability and box scripts there, and dispatches a gesture at the
+// result. Both were gated against the EMBEDDER's origin, which is not a grant to
+// read or actuate what the embedder happens to have embedded, so each frame
+// origin is checked on its own. A frame this refuses is still reported by a
+// snapshot, as the clickable box it was before include_frames could read it at
+// all; a click on a ref inside it is refused by name.
 type FrameReadCheck func(frameOrigin string) error
+
+// ConsentEnforcer is the surface-side half of the runtime gate: the decisions a
+// dispatching surface makes while a call is already in flight.
+//
+// It is ONE interface rather than a hook each surface installs by hand because
+// that is exactly how the hole opened: the MCP surface installed the fetch check
+// and the frame-read check, the HTTP surface installed the fetch check alone, and
+// `GET /api/page/snapshot?include_frames=true` walked a third party's document
+// with nothing decided about its origin. Gating on the hook a surface remembered
+// to install is gating on the lane. Gating on this interface is gating on the
+// property: a surface either answers every runtime question or does not compile,
+// and a hook added here stops compiling every surface that has not decided what
+// to do about it.
+//
+// The per-step sequence gate is not here. It is built per CALL from that call's
+// own arguments and is legitimately absent for a tool that runs no steps, so it
+// stays a separate installer.
+type ConsentEnforcer interface {
+	// CheckFetchDestination gates a URL the DAEMON retrieves itself rather than
+	// the page, including every redirect hop.
+	CheckFetchDestination(rawURL string) error
+	// CheckFrameRead gates reading the document inside one cross-origin iframe,
+	// and acting inside it, against that frame's own origin.
+	CheckFrameRead(frameOrigin string) error
+}
+
+// WithRuntimeConsent installs every runtime hook a surface answers. It is the
+// only thing a dispatching surface calls: the individual installers below stay
+// exported for tests that drive one hook in isolation, and
+// TestEveryConsentInstallerIsAnEnumeratedSurface (internal/http) fails on
+// production code that reaches for one of them instead of this.
+func WithRuntimeConsent(ctx context.Context, enforcer ConsentEnforcer) context.Context {
+	if enforcer == nil {
+		return ctx
+	}
+	ctx = WithFetchCheck(ctx, enforcer.CheckFetchDestination)
+	ctx = WithFrameReadCheck(ctx, enforcer.CheckFrameRead)
+	return ctx
+}
 
 // WithSequenceGate installs the per-step consent re-check for one sequence call.
 func WithSequenceGate(ctx context.Context, gate SequenceGate) context.Context {
