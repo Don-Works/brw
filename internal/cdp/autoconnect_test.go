@@ -12,8 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
+	"time"
 )
 
 // writeActivePort plants the file Chrome writes into its own profile.
@@ -242,39 +243,71 @@ func serverPort(t *testing.T, server *httptest.Server) int {
 // untrusted local listener. A decoder reading until EOF from one that never
 // stops sending is a daemon that never starts, and every other upstream read in
 // the tree is bounded.
+//
+// Both cases below assert on what the probe DID, not on how many bytes the
+// listener managed to push into a socket buffer. An earlier version counted the
+// latter and allowed 4x the bound as slack for buffering; on a Linux runner with
+// larger buffers the writer got 4.6MB ahead of a probe that had correctly
+// stopped at 1MB, and the test went red over the machine's socket sizing rather
+// than over anything the probe did.
 func TestProbeDoesNotReadAnUnboundedBody(t *testing.T) {
-	var sent atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		// Valid JSON that never ends: an array of objects, one chunk at a time.
-		if _, err := io.WriteString(w, "["); err != nil {
-			return
-		}
-		flusher, _ := w.(http.Flusher)
-		chunk := strings.Repeat("x", 4096)
-		for {
-			written, err := fmt.Fprintf(w, `{"Browser":"%s"},`, chunk)
-			if err != nil {
-				return
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-			if sent.Add(int64(written)) > 64*maxProbeBody {
-				// The probe is still reading well past any sane bound; stop
-				// feeding it so the test fails on the assertion below rather
-				// than by filling the machine.
-				return
-			}
-		}
-	}))
-	defer server.Close()
+	// A complete, valid /json/version that is merely too big. Without the bound
+	// this decodes cleanly and the probe accepts the listener as a browser, so
+	// the assertion fails for the right reason and nothing else can produce it.
+	t.Run("an oversized but valid document is refused", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("content-type", "application/json")
+			fmt.Fprintf(w, `{"Browser":"Chrome/1.2.3","webSocketDebuggerUrl":"ws://127.0.0.1:1/x","pad":%q}`,
+				strings.Repeat("x", 2*maxProbeBody))
+		}))
+		defer server.Close()
 
-	_, err := ProbeEndpoint(context.Background(), serverPort(t, server))
-	if err == nil {
-		t.Fatal("a listener that answers with an endless document was accepted as a browser")
-	}
-	if read := sent.Load(); read > 4*maxProbeBody {
-		t.Fatalf("the probe read %d bytes from one port; the bound is %d", read, maxProbeBody)
-	}
+		browser, err := ProbeEndpoint(context.Background(), serverPort(t, server))
+		if err == nil {
+			t.Fatalf("a %d-byte answer was accepted as browser %q; the %d-byte bound is not being applied",
+				2*maxProbeBody, browser, maxProbeBody)
+		}
+	})
+
+	// A listener that never finishes its document. The probe has to give up on
+	// its own: reading to EOF here is a daemon that never starts.
+	t.Run("an endless document is refused promptly", func(t *testing.T) {
+		stop := make(chan struct{})
+		var closeOnce sync.Once
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("content-type", "application/json")
+			io.WriteString(w, "[")
+			flusher, _ := w.(http.Flusher)
+			chunk := strings.Repeat("x", 4096)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if _, err := fmt.Fprintf(w, `{"Browser":"%s"},`, chunk); err != nil {
+					return
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}))
+		defer func() {
+			closeOnce.Do(func() { close(stop) })
+			server.Close()
+		}()
+
+		done := make(chan error, 1)
+		go func() { _, err := ProbeEndpoint(context.Background(), serverPort(t, server)); done <- err }()
+
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("a listener that answers with an endless document was accepted as a browser")
+			}
+		case <-time.After(probeTimeout + 10*time.Second):
+			t.Fatal("the probe was still reading an endless document well past its own timeout")
+		}
+	})
 }
