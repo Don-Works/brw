@@ -101,7 +101,7 @@ func (d *doctorRun) checkChromeOptIn() {
 		}
 		detail := fmt.Sprintf("on: %s exposes browser-target CDP at %s", endpoint.Browser, endpoint.HTTPURL)
 		if !onThisLane {
-			detail += "; run brwd --chrome-opt-in to drive it (incognito, HttpOnly cookies and deterministic downloads, against your signed-in profile)"
+			detail += "; run brwd --chrome-opt-in to drive it (incognito and HttpOnly cookies against your signed-in profile; brw_state and brw_set_download_path stay refused there)"
 		}
 		d.add(checkOK, "chrome_opt_in", "chrome remote-debugging opt-in", detail, "")
 		return

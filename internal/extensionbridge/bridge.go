@@ -5663,6 +5663,9 @@ func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error)
 		Downloads: result,
 		Count:     len(result),
 		Supported: payload.Supported,
+		// chrome.downloads reports the file's own local path, so an entry the
+		// bridge supports always carries one.
+		FilePaths: payload.Supported,
 		Note:      payload.Note,
 	}, nil
 }

@@ -57,6 +57,33 @@ type DownloadsResult struct {
 	// support — see Bridge.Downloads). Clients can branch on this flag instead
 	// of pattern-matching the human-readable Note.
 	Supported bool `json:"supported"`
+	// FilePaths reports whether a completed entry carries a path brw may open.
+	// It is a second axis on purpose: a lane that drives the browser its user is
+	// signed into observes every download and reports none of their paths,
+	// because brw refuses to route that browser's downloads through a directory
+	// it owns. Digest assertions and download captures read this rather than
+	// treating a missing path as a per-download failure.
+	FilePaths bool `json:"file_paths"`
+}
+
+// ErrDownloadRoutingSignedIn refuses to decide where downloads land on a lane
+// that drives the browser the user is personally signed into.
+//
+// Browser.setDownloadBehavior has no per-download and no per-tab scope: the
+// narrowest thing it applies to is a whole browser context, and on this lane
+// the default browser context is the user's own windows. Pointing it at brw's
+// staging directory would silently send every file that person downloads by
+// hand into a directory named by download GUID that Manager.Close then deletes.
+// So the capability is refused rather than delivered by taking over their
+// browser; downloads are still OBSERVED, they just land where Chrome was
+// already sending them.
+var ErrDownloadRoutingSignedIn = errors.New("brw will not choose where downloads land on a transport that drives the browser you are signed into: the DevTools command applies to the whole browser context, so it would redirect the files you download by hand into brw's staging directory. downloads are still reported by brw_downloads, at the browser's own destination — use a direct-CDP profile to stage them")
+
+// stagesDownloads reports whether this lane may point the browser at a brw-owned
+// download directory. It is the single place the refusal is decided, so no code
+// path can reach Browser.setDownloadBehavior with a path by forgetting to ask.
+func (m *Manager) stagesDownloads() bool {
+	return !m.signedInProfile
 }
 
 // ensureDownloadTracking is idempotent: on first call it picks a download
@@ -64,6 +91,10 @@ type DownloadsResult struct {
 // remote endpoint), enables Browser.setDownloadBehavior with download events,
 // and registers listeners that record download lifecycle into the bounded
 // buffer. Subsequent calls are no-ops.
+//
+// On a signed-in lane it stages nothing: the behaviour is left at Chrome's
+// default and only the event stream is switched on, so brw observes the
+// downloads the browser was going to make anyway and moves none of them.
 //
 // With Chrome's flat session protocol the Browser.downloadWillBegin /
 // downloadProgress events are delivered to the *target* (page) session, so every
@@ -79,12 +110,14 @@ func (m *Manager) ensureDownloadTracking(ctx context.Context) error {
 	// Mark as enabled before releasing the lock so concurrent callers block on
 	// downloadsMu and see the flag as true. The actual setup runs below; if it
 	// fails, we clear the flag so a later retry can succeed.
-	dir, err := m.resolveDownloadDir()
-	if err != nil {
-		m.downloadsMu.Unlock()
-		return err
+	if m.stagesDownloads() {
+		dir, err := m.resolveDownloadDir()
+		if err != nil {
+			m.downloadsMu.Unlock()
+			return err
+		}
+		m.downloadDir = dir
 	}
-	m.downloadDir = dir
 	m.downloadsMu.Unlock()
 
 	// Browser-connection fallback subscription.
@@ -102,15 +135,7 @@ func (m *Manager) ensureDownloadTracking(ctx context.Context) error {
 		}
 	}
 
-	// Browser.setDownloadBehavior is a browser-domain command; run it against
-	// the browser executor like connect() does. allowAndName names completed
-	// files by their download guid, which is generic and site-independent.
-	if err := m.runBrowser(ctx, func(runCtx context.Context) error {
-		return browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllowAndName).
-			WithDownloadPath(m.downloadDir).
-			WithEventsEnabled(true).
-			Do(runCtx)
-	}); err != nil {
+	if err := m.applyDownloadBehavior(ctx, m.downloadDir); err != nil {
 		// Setup failed — clear the flag so a later retry can succeed.
 		m.downloadsMu.Lock()
 		m.downloadsEnabled = false
@@ -164,13 +189,44 @@ func (m *Manager) handleDownloadEventForTab(tabID string, ev any) {
 	}
 }
 
+// applyDownloadBehavior points Chrome at dir, or leaves the browser's own
+// destination alone when dir is empty, and turns the download event stream on
+// either way. Browser.setDownloadBehavior is a browser-domain command, so it
+// runs against the browser executor.
+//
+// This is the ONLY place brw sends that command, and it refuses a directory on
+// a signed-in lane. The command's narrowest scope is a whole browser context,
+// so a path here would move the files the person using that browser downloads
+// by hand; putting the refusal at the command rather than at each caller is
+// what keeps a future caller from reaching it.
+//
+// "default" is Chrome's own behaviour and is also the value that undoes an
+// override, which is why this lane leaves nothing to restore at Close.
+func (m *Manager) applyDownloadBehavior(ctx context.Context, dir string) error {
+	if dir != "" && !m.stagesDownloads() {
+		return ErrDownloadRoutingSignedIn
+	}
+	return m.runBrowser(ctx, func(runCtx context.Context) error {
+		if dir == "" {
+			return browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorDefault).
+				WithEventsEnabled(true).
+				Do(runCtx)
+		}
+		return browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllowAndName).
+			WithDownloadPath(dir).
+			WithEventsEnabled(true).
+			Do(runCtx)
+	})
+}
+
 func (m *Manager) resolveDownloadDir() (string, error) {
 	base := strings.TrimSpace(m.userDataDir)
-	// An attach-only lane's user data directory is the browser's own — on the
-	// Chrome opt-in lane, the profile its user is signed into. Staging
-	// downloads under it would have brw creating directories inside that
-	// profile, which is not brw's to write to, so it falls through to the
-	// per-user cache below exactly as an endpoint with no known directory does.
+	// An attach-only lane's user data directory is the browser's own — with
+	// --remote, whatever profile that browser was started against. Staging
+	// downloads under it would have brw creating directories inside somebody
+	// else's profile, so it falls through to the per-user cache below exactly as
+	// an endpoint with no known directory does. A lane that also drives a
+	// SIGNED-IN browser never reaches here at all: it stages nothing.
 	if m.attachOnly {
 		base = ""
 	}
@@ -408,8 +464,17 @@ func (m *Manager) Downloads(ctx context.Context) (DownloadsResult, error) {
 	if result == nil {
 		result = []DownloadEntry{}
 	}
-	return DownloadsResult{Downloads: result, Count: len(result), Supported: true}, nil
+	out := DownloadsResult{Downloads: result, Count: len(result), Supported: true, FilePaths: m.stagesDownloads()}
+	if !out.FilePaths {
+		out.Note = signedInDownloadNote
+	}
+	return out, nil
 }
+
+// signedInDownloadNote says why entries from this lane carry no path. It is on
+// every snapshot rather than only the empty one: an agent that sees downloads
+// listed and no path would otherwise read the gap as a bug.
+const signedInDownloadNote = "downloads are observed but not staged on this transport: it drives the browser you are signed into, so brw leaves the destination alone and does not report a file path. brw_downloads still reports every download; a digest assertion or a download capture needs a direct-CDP profile"
 
 // CleanupManagedDownload removes only a file from this Manager's private,
 // allowAndName staging directory. Artifact Service calls it after persistence;

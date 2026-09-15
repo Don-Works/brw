@@ -66,9 +66,15 @@ type pending struct {
 	fail   chan error
 }
 
+// maxRecordedEvents bounds the event ring. A session that subscribes to
+// network and log events produces thousands a minute, and both the memory and
+// Await's scan are linear in what is kept. The oldest are dropped; Await
+// carries a sequence rather than an index so a drop cannot make it skip one.
+const maxRecordedEvents = 4096
+
 // Conn is a live BiDi session over a WebSocket. It multiplexes command
-// responses by id and records every event, so a caller can subscribe first and
-// assert afterwards without racing the browser.
+// responses by id and records recent events in a bounded ring, so a caller can
+// subscribe first and assert afterwards without racing the browser.
 type Conn struct {
 	ws *websocket.Conn
 
@@ -78,6 +84,12 @@ type Conn struct {
 	nextID  uint64
 	waiting map[uint64]pending
 	events  []Event
+	// firstSeq is the sequence number of events[0]. Sequence numbers are
+	// assigned in arrival order and never reused, so they stay meaningful after
+	// the ring drops from the front.
+	firstSeq uint64
+	// nextSeq is the sequence the next arriving event will take.
+	nextSeq uint64
 	// closed carries the reader goroutine's exit reason, so a command still in
 	// flight when the socket drops fails with that reason instead of hanging.
 	readErr  error
@@ -149,6 +161,12 @@ func (c *Conn) dispatch(data []byte) {
 	case "event":
 		c.mu.Lock()
 		c.events = append(c.events, Event{Method: f.Method, Params: f.Params, Received: time.Now()})
+		c.nextSeq++
+		if len(c.events) > maxRecordedEvents {
+			drop := len(c.events) - maxRecordedEvents
+			c.events = append(c.events[:0], c.events[drop:]...)
+			c.firstSeq += uint64(drop)
+		}
 		close(c.eventCh)
 		c.eventCh = make(chan struct{})
 		c.mu.Unlock()
@@ -237,17 +255,23 @@ func (c *Conn) Subscribe(ctx context.Context, events ...string) error {
 }
 
 // Await returns the first recorded event for method that satisfies match,
-// waiting for one to arrive if none has yet. Events recorded before the call
-// count: a settle machinery built on this has to be able to subscribe, act, and
-// then ask, without losing an event that landed in between.
+// waiting for one to arrive if none has yet. Events still in the ring when the
+// call starts count: a settle machinery built on this has to be able to
+// subscribe, act, and then ask, without losing an event that landed in between.
+//
+// The cursor is a sequence number, not a slice index, so an event dropped from
+// the ring while this call waits cannot shift the position out from under it.
 //
 // A nil match accepts any event with that method.
 func (c *Conn) Await(ctx context.Context, method string, match func(json.RawMessage) bool) (Event, error) {
-	cursor := 0
+	var cursor uint64
 	for {
 		c.mu.Lock()
-		for ; cursor < len(c.events); cursor++ {
-			ev := c.events[cursor]
+		if cursor < c.firstSeq {
+			cursor = c.firstSeq
+		}
+		for ; cursor < c.nextSeq; cursor++ {
+			ev := c.events[cursor-c.firstSeq]
 			if ev.Method != method {
 				continue
 			}

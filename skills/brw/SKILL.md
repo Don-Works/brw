@@ -50,7 +50,9 @@ says nothing about capabilities.
 | `brw_cookies` | error: *"cookie access is not supported on the extension-bridge transport"* | works, including HttpOnly | works, including HttpOnly |
 | `brw_state` | not advertised; calling it anyway errors: *"session snapshots are not supported on the extension-bridge transport"* | works | not advertised; calling it anyway errors: *"session snapshots are refused on a transport that drives the browser you are signed into"* |
 | `brw_list_tab_groups` / `brw_group_tabs` / `brw_ungroup_tabs` | works | not advertised; calling one anyway errors: *"tab grouping is not supported over the DevTools Protocol"* | not advertised; same error |
-| `brw_set_geolocation` / `brw_set_network_conditions` / `brw_emulate_media` / `brw_set_extra_headers` / `brw_set_user_agent` / `brw_authenticate` / `brw_set_download_path` | not advertised at all; calling one anyway errors: *"page environment overrides … are not supported on the extension-bridge transport"* | works | works |
+| `brw_set_geolocation` / `brw_set_network_conditions` / `brw_emulate_media` / `brw_set_extra_headers` / `brw_set_user_agent` / `brw_authenticate` | not advertised at all; calling one anyway errors: *"page environment overrides … are not supported on the extension-bridge transport"* | works | works |
+| `brw_set_download_path` | not advertised; same error | works | not advertised; calling it anyway errors: *"brw will not choose where downloads land on a transport that drives the browser you are signed into"* |
+| `brw_downloads` | works, with paths | works, with paths into brw's staging directory | works, `file_paths: false` and no path: the file went where the human's browser sends downloads |
 | `brw_snapshot {include_ax:true}` | no AX tree | AX enrichment available | AX enrichment available |
 | tab ids | Chrome tab ids, e.g. `"235935869"` | CDP target ids, e.g. `"79F95D14…"` | CDP target ids, e.g. `"79F95D14…"` |
 
@@ -61,6 +63,14 @@ every lane and fail only when called. The seven page-environment tools are the
 exception: they are DevTools session overrides that the bridge's attach/detach
 cycle would silently drop between calls, so on the bridge they are not
 advertised and an agent never spends a call finding out.
+
+`brw_set_download_path` is the one of those seven that the Chrome opt-in lane
+also lacks, and not for want of the protocol: the command applies to a whole
+browser context, and on that lane the browser context is the human's, so
+pointing it at brw's staging directory would move the files they download
+themselves. Downloads are still reported there; they just carry no path. If a
+flow needs the downloaded bytes — a digest assertion, or capturing the file as
+an artifact — ask for a direct-CDP profile.
 
 `chrome-opt-in-cdp` is the lane a person has to turn on for themselves, so you
 will rarely see it: it needs Chrome 144+ and a human switching remote debugging
@@ -110,7 +120,7 @@ snapshot, read the ref, use it.
 `brwd --mcp` defaults to `--mcp-tools auto`: it advertises 14 tools — `brw_tools`,
 `brw_open`, `brw_navigate_to`, `brw_read`, `brw_read_url`, `brw_snapshot`, `brw_find`,
 `brw_click`, `brw_fill`, `brw_select`, `brw_press`, `brw_wait_for`, `brw_observe`,
-`brw_batch` — and grows as you search. The full surface is 85 tools; the catalogue is
+`brw_batch` — and grows as you search. The full surface is 87 tools; the catalogue is
 re-sent on every request, so the small default is a per-turn saving.
 
 ```json

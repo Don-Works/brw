@@ -13,12 +13,14 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -1418,39 +1420,115 @@ func loadSuite(path string) (suiteFile, error) {
 	if suite.Version != 1 {
 		return suiteFile{}, fmt.Errorf("unsupported suite version %d", suite.Version)
 	}
+	if err := validateSuiteRequirements(suite); err != nil {
+		return suiteFile{}, err
+	}
 	return suite, nil
+}
+
+// transportRequirements are the capability requirements a scenario may declare,
+// each read off the transport's own properties rather than off its name.
+//
+// Naming lanes was the earlier spelling and it did not survive a third lane:
+// every scenario that said "direct-cdp" was skipped against a daemon reporting
+// chrome-opt-in-cdp, which is a lane with the same browser-target CDP, so the
+// suite reported the whole lane as untested and a skip is not a failure. A
+// property is true of a lane or it is not, and a lane added to brwidentity
+// answers every one of these without a suite edit.
+var transportRequirements = map[string]struct {
+	explain string
+	has     func(brwidentity.TransportCapabilities) bool
+}{
+	"cdp-session": {
+		explain: "a DevTools Protocol session that survives between calls",
+		has:     func(c brwidentity.TransportCapabilities) bool { return c.CDPSession },
+	},
+	"browser-target": {
+		explain: "the CDP browser target (incognito contexts, browser-level cookies)",
+		has:     func(c brwidentity.TransportCapabilities) bool { return c.BrowserTarget },
+	},
+	"extension-apis": {
+		explain: "chrome.* extension APIs (tab groups)",
+		has:     func(c brwidentity.TransportCapabilities) bool { return c.ExtensionAPIs },
+	},
+	"download-routing": {
+		explain: "deciding at runtime where a completed download lands",
+		has:     func(c brwidentity.TransportCapabilities) bool { return c.RuntimeDownloadRouting },
+	},
+}
+
+// runFlagRequirements are the requirements answered by how brwcheck was
+// invoked rather than by the lane.
+var runFlagRequirements = map[string]string{
+	"network": "--include-network",
+	"auth":    "--include-auth",
+	"manual":  "--include-manual",
+}
+
+// validateSuiteRequirements refuses a suite naming a requirement brwcheck does
+// not know. It is a hard error and not a skip on purpose: a skip for a typo, or
+// for a lane name this no longer understands, reads as "nothing to run here"
+// and hides exactly the coverage gap it causes.
+func validateSuiteRequirements(suite suiteFile) error {
+	for _, sc := range suite.Scenarios {
+		for _, req := range sc.Requires {
+			if _, ok := transportRequirements[req]; ok {
+				continue
+			}
+			if _, ok := runFlagRequirements[req]; ok {
+				continue
+			}
+			known := make([]string, 0, len(transportRequirements)+len(runFlagRequirements))
+			for name := range transportRequirements {
+				known = append(known, name)
+			}
+			for name := range runFlagRequirements {
+				known = append(known, name)
+			}
+			sort.Strings(known)
+			return fmt.Errorf("scenario %s requires %q, which is not a requirement brwcheck knows; use one of %s", sc.ID, req, strings.Join(known, ", "))
+		}
+	}
+	return nil
 }
 
 // skipReason reports why a scenario cannot run here, or "" to run it.
 //
-// A scenario naming a transport it needs is SKIPPED on the other one, not
-// failed. Some capabilities exist on exactly one transport by construction:
-// incognito contexts and HttpOnly cookie access need CDP target isolation the
-// extension APIs do not expose, and Chrome tab groups exist only in the
-// extension APIs. Running the suite against a bridged daemon used to report
-// "1 failed" for a capability that was never going to be there, which buries a
-// real regression among expected noise.
+// A scenario naming a capability the lane does not have is SKIPPED, not failed.
+// Some capabilities exist on a subset of lanes by construction: incognito
+// contexts and HttpOnly cookie access need the CDP browser target the extension
+// APIs do not expose, Chrome tab groups exist only in the extension APIs, and
+// routing downloads is refused on a browser its user is signed into. Running
+// the suite against a bridged daemon used to report "1 failed" for a capability
+// that was never going to be there, which buries a real regression among
+// expected noise.
 func skipReason(sc scenario, includeNetwork, includeAuth, includeManual bool, transport string) string {
+	flags := map[string]bool{"network": includeNetwork, "auth": includeAuth, "manual": includeManual}
 	for _, req := range sc.Requires {
-		switch req {
-		case "direct-cdp", "extension-bridge":
-			// An empty transport means the daemon did not report one; run the
-			// scenario rather than silently skipping the whole suite.
-			if transport != "" && transport != req {
-				return fmt.Sprintf("requires the %s transport, daemon is on %s", req, transport)
+		if flag, ok := runFlagRequirements[req]; ok {
+			if !flags[req] {
+				return "requires " + flag
 			}
-		case "network":
-			if !includeNetwork {
-				return "requires --include-network"
-			}
-		case "auth":
-			if !includeAuth {
-				return "requires --include-auth"
-			}
-		case "manual":
-			if !includeManual {
-				return "requires --include-manual"
-			}
+			continue
+		}
+		rule, ok := transportRequirements[req]
+		if !ok {
+			// loadSuite refuses these, so reaching here means the suite was not
+			// loaded through it. Say so rather than running a scenario whose
+			// requirement nothing checked.
+			return fmt.Sprintf("requires %q, which brwcheck does not classify", req)
+		}
+		// An empty transport means the daemon did not report one; run the
+		// scenario rather than silently skipping the whole suite.
+		if transport == "" {
+			continue
+		}
+		caps, known := brwidentity.Capabilities(transport)
+		if !known {
+			return fmt.Sprintf("daemon reports transport %s, which brw does not classify, so %q cannot be checked", transport, req)
+		}
+		if !rule.has(caps) {
+			return fmt.Sprintf("requires %s, which the %s transport does not have", rule.explain, transport)
 		}
 	}
 	return ""

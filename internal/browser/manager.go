@@ -421,6 +421,12 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 	}
 
 	endpoint := cfg.RemoteURL
+	// A checked browser WebSocket URL is dialled as given, never re-derived.
+	var allocatorOpts []chromedp.RemoteAllocatorOption
+	if cfg.BrowserWSURL != "" {
+		endpoint = cfg.BrowserWSURL
+		allocatorOpts = append(allocatorOpts, chromedp.NoModifyURL)
+	}
 	var launcher *cdplaunch.Launcher
 	var err error
 	if endpoint == "" {
@@ -444,7 +450,7 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		endpoint = launcher.Endpoint()
 	}
 
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, endpoint)
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, endpoint, allocatorOpts...)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 	m := &Manager{
 		launcher:           launcher,

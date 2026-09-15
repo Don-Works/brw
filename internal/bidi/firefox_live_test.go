@@ -22,8 +22,12 @@ import (
 // one of the four questions in docs/bidi-prototype.md against a real Firefox,
 // so the document's claims are measurements rather than readings of the spec.
 //
-// They skip only when Firefox is absent. A machine with Firefox runs every
-// assertion.
+// They are measurement code and run only when asked: BRW_BIDI_LIVE=1. Nothing
+// in brw's tool surface routes through this package and the recorded decision
+// is defer, so `go test ./...` launching five Firefoxes for it would be the
+// default suite paying for work that was not adopted. Re-run the measurements
+// with `BRW_BIDI_LIVE=1 go test ./internal/bidi/ -count=1 -v`, which is what
+// docs/bidi-prototype.md tells a later attempt to do.
 
 const fixtureHTML = `<!doctype html>
 <html><head><meta charset="utf-8"><title>brw bidi fixture</title>
@@ -84,11 +88,24 @@ type session struct {
 // newSession launches Firefox, opens a BiDi session and resolves the top-level
 // browsing context. downloadDir is written into the profile's prefs because
 // Firefox 155 has no runtime command for it; see TestBiDiDownloadsAndDialogs.
-func newSession(ctx context.Context, t *testing.T) *session {
+// requireLiveFirefox skips unless the measurements were explicitly asked for
+// and a Firefox is there to measure.
+func requireLiveFirefox(t *testing.T) {
 	t.Helper()
+	if os.Getenv(liveEnv) != "1" {
+		t.Skipf("set %s=1 to re-run the BiDi measurements against a real Firefox (docs/bidi-prototype.md)", liveEnv)
+	}
 	if _, err := FindFirefox(""); err != nil {
 		t.Skipf("firefox not available: %v", err)
 	}
+}
+
+// liveEnv is named once so the skip message and the documentation cannot drift.
+const liveEnv = "BRW_BIDI_LIVE"
+
+func newSession(ctx context.Context, t *testing.T) *session {
+	t.Helper()
+	requireLiveFirefox(t)
 	downloads := filepath.Join(t.TempDir(), "downloads")
 	if err := os.MkdirAll(downloads, 0o700); err != nil {
 		t.Fatalf("download dir: %v", err)
@@ -679,9 +696,7 @@ func TestBiDiCapturesArtifacts(t *testing.T) {
 // browser's state and not a session's. The off row is the control — without it
 // a true reading could just as well mean the fixture always reports true.
 func TestFirefoxRemoteAgentMarksEveryPageAutomated(t *testing.T) {
-	if _, err := FindFirefox(""); err != nil {
-		t.Skipf("firefox not available: %v", err)
-	}
+	requireLiveFirefox(t)
 	for _, tc := range []struct {
 		name        string
 		remoteAgent bool

@@ -138,7 +138,7 @@ level to trim.
 
 ## Tool catalogue
 
-The measured MCP catalogues are 85 tools / ~28.8k tokens for `all`, 26 / ~10.1k
+The measured MCP catalogues are 87 tools / ~31.2k tokens for `all`, 26 / ~10.2k
 for `core`, 13 / ~5.8k for `minimal`, and 14 / ~6.0k initially for the default
 `auto` profile — the same figures README.md and docs/agent-guide.md quote, from
 `scripts/measure-tool-catalogue.py`. Thus the default starts about 79% smaller
@@ -146,15 +146,18 @@ than advertising every tool, while every tool remains directly callable and
 discoverable through `brw_tools`.
 
 The `observe` parameter and the locate-and-act half of `brw_find` cost ~2.6k
-tokens of `all` (~26.1k before them) and ~1.3k of `minimal` (~4.5k before),
-because a parameter repeated across seventeen tools is paid for on every turn
-whether or not it is used. That is the trade: a fixed per-turn catalogue cost
-against a per-action saving that scales with the length of the flow.
+tokens of `all` and ~1.3k of `minimal`, measured when they landed against an
+`all` catalogue of ~28.8k; the totals above have moved since and these two
+deltas have not been re-measured. A parameter repeated across seventeen tools is
+paid for on every turn whether or not it is used. That is the trade: a fixed
+per-turn catalogue cost against a per-action saving that scales with the length
+of the flow.
 
 A daemon whose identity names a transport advertises fewer: the three
-extension-only tab-group tools drop on direct CDP, and the incognito, context
-and cookie tools drop on the extension bridge. The numbers above are the
-unfiltered catalogue, which is the ceiling.
+extension-only tab-group tools drop on direct CDP, the incognito, context and
+cookie tools drop on the extension bridge, and `brw_state` and
+`brw_set_download_path` drop on the Chrome opt-in lane. The numbers above are
+the unfiltered catalogue, which is the ceiling.
 
 The figures in the rest of this paragraph are historical: they measure the
 release that introduced the `auto` default, not this tree, and the catalogue has

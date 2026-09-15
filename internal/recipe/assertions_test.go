@@ -256,8 +256,8 @@ func TestBrowserSurfaceDownloadAssertionKeepsTheEntryForALaterCapture(t *testing
 	digest := sha256.Sum256(payload)
 	entry := browser.DownloadEntry{GUID: "download-1", SuggestedFilename: "invoice.pdf", State: "completed", Path: path}
 	controller := &downloadOnlyController{results: []browser.DownloadsResult{
-		{Supported: true, Downloads: []browser.DownloadEntry{entry}},
-		{Supported: true},
+		{Supported: true, FilePaths: true, Downloads: []browser.DownloadEntry{entry}},
+		{Supported: true, FilePaths: true},
 	}}
 	artifacts := &completedDownloadArtifacts{}
 	surface := &BrowserSurface{Browser: controller, Artifacts: artifacts}

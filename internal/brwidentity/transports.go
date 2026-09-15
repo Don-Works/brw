@@ -2,7 +2,7 @@ package brwidentity
 
 import "sort"
 
-// TransportCapabilities are the three properties that decide, for every
+// TransportCapabilities are the properties that decide, for every
 // capability-gated tool, whether a lane can run it. They are stated per
 // transport once, here, because the alternative is a per-tool list that has to
 // be revisited by hand for every new lane — and the lane that gets forgotten is
@@ -26,19 +26,31 @@ type TransportCapabilities struct {
 	ExtensionAPIs bool
 	// SignedInProfile reports that the lane drives the browser the user is
 	// personally signed into. It is not a capability: it is why brw refuses to
-	// seal that browser's cookies into a snapshot (docs/auth-model.md).
+	// seal that browser's cookies into a snapshot (docs/auth-model.md), and why
+	// it will not retarget that browser's downloads.
 	SignedInProfile bool
+	// RuntimeDownloadRouting reports that brw can decide, while the browser is
+	// running, where a completed download lands. It is separate from CDPSession
+	// because the primitive is not one: Browser.setDownloadBehavior applies to a
+	// whole browser context, so on a lane whose browser context is the user's
+	// own, using it would redirect the downloads that person starts by hand.
+	// WebDriver BiDi has no equivalent at all — browsingContext.setDownloadBehavior
+	// is an unknown command on Firefox (docs/bidi-prototype.md) — so a future
+	// BiDi lane would declare this false while declaring a durable session.
+	RuntimeDownloadRouting bool
 }
 
 // transportCapabilities is the authoritative table. A transport absent from it
 // is not a transport brw can report, which is what KnownTransport enforces.
 var transportCapabilities = map[string]TransportCapabilities{
 	// brw launched this browser itself, against a brw-owned profile directory.
-	TransportDirectCDP: {CDPSession: true, BrowserTarget: true},
+	TransportDirectCDP: {CDPSession: true, BrowserTarget: true, RuntimeDownloadRouting: true},
 	// The user turned on remote debugging at chrome://inspect/#remote-debugging
 	// in their own Chrome. brw attaches to the browser target it exposes, so
 	// everything CDP offers is reachable — against the profile they are signed
-	// into, which is why SignedInProfile is set.
+	// into, which is why SignedInProfile is set. RuntimeDownloadRouting is not:
+	// the browser context is the user's own, and pointing it at brw's staging
+	// directory would move the files they download by hand.
 	TransportChromeOptIn: {CDPSession: true, BrowserTarget: true, SignedInProfile: true},
 	// The extension attaches chrome.debugger per operation and detaches after,
 	// so there is no durable session and no browser target; what it does have is

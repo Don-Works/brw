@@ -786,7 +786,7 @@ func TestServiceDownloadsListingThenCaptureWorksAndPreservesUserOriginal(t *test
 	if err := os.WriteFile(path, payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fake := &downloadServiceFakeBrowser{result: browser.DownloadsResult{Supported: true, Count: 1, Downloads: []browser.DownloadEntry{{
+	fake := &downloadServiceFakeBrowser{result: browser.DownloadsResult{Supported: true, FilePaths: true, Count: 1, Downloads: []browser.DownloadEntry{{
 		GUID: "guid-1", SuggestedFilename: "invoice.pdf", TabID: "tab-1", State: "completed", Path: path,
 	}}}}
 	service, err := NewService(newTestStore(t, 2<<20, 4<<20), fake)
@@ -814,7 +814,7 @@ func TestServiceDownloadMatchingRejectsWrongTabAndAmbiguousFilename(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	fake := &downloadServiceFakeBrowser{result: browser.DownloadsResult{Supported: true, Downloads: []browser.DownloadEntry{
+	fake := &downloadServiceFakeBrowser{result: browser.DownloadsResult{Supported: true, FilePaths: true, Downloads: []browser.DownloadEntry{
 		{GUID: "other-tab", SuggestedFilename: "invoice.pdf", TabID: "tab-2", State: "completed", Path: paths[0]},
 		{GUID: "same-tab-1", SuggestedFilename: "invoice.pdf", TabID: "tab-1", State: "completed", Path: paths[0]},
 		{GUID: "same-tab-2", SuggestedFilename: "invoice.pdf", TabID: "tab-1", State: "completed", Path: paths[1]},
@@ -831,7 +831,7 @@ func TestServiceDownloadMatchingRejectsWrongTabAndAmbiguousFilename(t *testing.T
 		t.Fatalf("ambiguous filename capture error = %v", err)
 	}
 	fake.origin = "https://allowed.example.test"
-	fake.result = browser.DownloadsResult{Supported: true, Downloads: []browser.DownloadEntry{{
+	fake.result = browser.DownloadsResult{Supported: true, FilePaths: true, Downloads: []browser.DownloadEntry{{
 		GUID: "unknown-tab", SuggestedFilename: "invoice.pdf", State: "completed", Path: paths[0],
 	}}}
 	recipeCtx := browser.WithAllowedOrigins(ctx, []string{"https://allowed.example.test"})
@@ -847,6 +847,7 @@ func TestServiceRemovesManagedDownloadOnlyAfterPersistence(t *testing.T) {
 	}
 	fake := &managedDownloadServiceFakeBrowser{downloadServiceFakeBrowser: downloadServiceFakeBrowser{result: browser.DownloadsResult{
 		Supported: true,
+		FilePaths: true,
 		Downloads: []browser.DownloadEntry{{GUID: "managed-guid", SuggestedFilename: "data.bin", State: "completed", Path: path}},
 	}}}
 	store := newTestStore(t, 2<<20, 4<<20)
@@ -872,7 +873,7 @@ func TestServiceRollsBackArtifactWhenManagedCleanupFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := &managedDownloadServiceFakeBrowser{
-		downloadServiceFakeBrowser: downloadServiceFakeBrowser{result: browser.DownloadsResult{Supported: true, Downloads: []browser.DownloadEntry{{
+		downloadServiceFakeBrowser: downloadServiceFakeBrowser{result: browser.DownloadsResult{Supported: true, FilePaths: true, Downloads: []browser.DownloadEntry{{
 			GUID: "managed-guid", SuggestedFilename: "data.bin", State: "completed", Path: path,
 		}}}},
 		cleanupErr: errors.New("synthetic cleanup failure"),
@@ -1457,4 +1458,49 @@ func FuzzArtifactIDConfinement(f *testing.F) {
 			t.Fatalf("validator accepted non-matching id %q", id)
 		}
 	})
+}
+
+// A lane that records downloads without staging them has no brw-owned file to
+// capture, and says so. Falling through to the selector's "not found" would
+// send the caller looking for a wrong filename instead of a wrong transport.
+func TestServiceDownloadCaptureNamesALaneThatStagesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		note string
+		want string
+	}{
+		{
+			name: "with the transport's own note",
+			note: "downloads are observed but not staged on this transport",
+			want: "download capture is unavailable on this browser transport: downloads are observed but not staged on this transport",
+		},
+		{
+			name: "with no note to borrow",
+			want: "download capture is unavailable on this browser transport: it reports no file path for a completed download",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &downloadServiceFakeBrowser{result: browser.DownloadsResult{
+				Supported: true,
+				FilePaths: false,
+				Note:      tc.note,
+				Count:     1,
+				Downloads: []browser.DownloadEntry{{
+					GUID: "guid-1", SuggestedFilename: "invoice.pdf", TabID: "tab-1", State: "completed",
+				}},
+			}}
+			service, err := NewService(newTestStore(t, 2<<20, 4<<20), fake)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := browser.WithTabID(context.Background(), "tab-1")
+			_, err = service.CaptureArtifact(ctx, CaptureOptions{Kind: "download", DownloadGUID: "guid-1"})
+			if err == nil {
+				t.Fatal("captured a download the transport never staged")
+			}
+			if err.Error() != tc.want {
+				t.Fatalf("error = %q, want %q", err, tc.want)
+			}
+		})
+	}
 }

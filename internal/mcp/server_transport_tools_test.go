@@ -46,10 +46,16 @@ func TestAdvertisedToolsDropTransportUnsupported(t *testing.T) {
 			// still refused on a browser its user is signed into.
 			name:      "chrome opt-in has cookies and incognito but not tab groups or state",
 			transport: brwidentity.TransportChromeOptIn,
-			hidden:    []string{"brw_group_tabs", "brw_ungroup_tabs", "brw_list_tab_groups", "brw_state"},
+			hidden: []string{
+				"brw_group_tabs", "brw_ungroup_tabs", "brw_list_tab_groups", "brw_state",
+				// The one page-environment tool the lane does NOT get: pointing
+				// downloads at brw's staging directory is browser-context-wide,
+				// so on this lane it would move the user's own files.
+				"brw_set_download_path",
+			},
 			shown: []string{
 				"brw_open_incognito", "brw_close_context", "brw_cookies", "brw_clipboard",
-				"brw_set_geolocation", "brw_set_download_path", "brw_authenticate",
+				"brw_set_geolocation", "brw_authenticate",
 			},
 		},
 	} {
@@ -125,7 +131,7 @@ func TestEveryTransportClassifiesEveryCapabilityGatedTool(t *testing.T) {
 	for _, req := range toolRequirements {
 		requirements[req] = true
 	}
-	for _, req := range []toolRequirement{needsCDPSession, needsBrowserTarget, needsExtensionAPIs, refusedOnSignedInProfile} {
+	for _, req := range []toolRequirement{needsCDPSession, needsBrowserTarget, needsExtensionAPIs, refusedOnSignedInProfile, needsDownloadRouting} {
 		delete(requirements, req)
 	}
 	if len(requirements) != 0 {
@@ -169,6 +175,7 @@ func TestDerivedTableMatchesTheDocumentedLanes(t *testing.T) {
 		{"brw_set_geolocation", []string{brwidentity.TransportExtensionBridge}},
 		{"brw_group_tabs", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportDirectCDP}},
 		{"brw_state", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportExtensionBridge}},
+		{"brw_set_download_path", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportExtensionBridge}},
 	} {
 		got := append([]string(nil), transportUnsupported[tc.tool]...)
 		sort.Strings(got)

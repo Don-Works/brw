@@ -81,7 +81,7 @@ func TestTransportCapabilitiesDistinguishTheLanes(t *testing.T) {
 		transport string
 		want      TransportCapabilities
 	}{
-		{TransportDirectCDP, TransportCapabilities{CDPSession: true, BrowserTarget: true}},
+		{TransportDirectCDP, TransportCapabilities{CDPSession: true, BrowserTarget: true, RuntimeDownloadRouting: true}},
 		{TransportChromeOptIn, TransportCapabilities{CDPSession: true, BrowserTarget: true, SignedInProfile: true}},
 		{TransportExtensionBridge, TransportCapabilities{ExtensionAPIs: true, SignedInProfile: true}},
 	} {

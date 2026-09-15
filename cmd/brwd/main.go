@@ -175,7 +175,7 @@ func main() {
 	flag.BoolVar(&siteConsentPrompt, "site-consent-prompt", envBool("BRW_SITE_CONSENT_PROMPT"), "ask on this terminal when an un-granted origin comes up, and record the answer. Requires a terminal on stdin and is incompatible with --mcp (which owns stdin); without it the daemon is non-interactive and refuses instead of asking.")
 	flag.BoolVar(&confirmActions, "confirm-actions", envBool("BRW_CONFIRM_ACTIONS"), "require confirmation before a high-risk action (publishing, purchasing, submitting a form carrying personal data, anything on a blocklisted category). Fails CLOSED: with nobody to ask, the action is refused rather than approved. Requires --site-consent.")
 	flag.BoolVar(&contentNavGuard, "content-nav-guard", envBool("BRW_CONTENT_NAV_GUARD"), "refuse a top-level navigation that page content initiated to another site (an injected link click, a meta refresh, a script location assignment). What the agent asked for still works: the destination it named, and the navigation its own click or keypress causes. Not available on the extension bridge or an upstream HTTP proxy.")
-	flag.BoolVar(&chromeOptIn, "chrome-opt-in", envBool("BRW_CHROME_OPT_IN"), "attach to a Chrome 144+ instance whose user has turned on remote debugging at chrome://inspect/#remote-debugging. This is full browser-target CDP against the real signed-in profile, with none of the extension bridge's incognito, cookie or download limits and no extension at all. brw never turns the opt-in on: it is a human action by design, and with it off the daemon says so and exits rather than launching a browser with a debugging flag.")
+	flag.BoolVar(&chromeOptIn, "chrome-opt-in", envBool("BRW_CHROME_OPT_IN"), "attach to a Chrome 144+ instance whose user has turned on remote debugging at chrome://inspect/#remote-debugging. This is full browser-target CDP against the real signed-in profile, with none of the extension bridge's incognito or cookie limits and no extension at all. Downloads are reported but not routed, and brw_state is refused: brw will not move or seal what belongs to the browser's own user. A profile policy grants this lane with chrome_opt_in_allowed: true. brw never turns the opt-in on: it is a human action by design, and with it off the daemon says so and exits rather than launching a browser with a debugging flag.")
 	flag.StringVar(&chromeOptInBrowser, "chrome-opt-in-browser", envDefault("BRW_CHROME_OPT_IN_BROWSER", "chrome"), "which browser's user data directory --chrome-opt-in looks in for the endpoint (chrome, chromium, edge, brave, vivaldi)")
 	flag.StringVar(&chromeOptInUserDataDir, "chrome-opt-in-user-data-dir", os.Getenv("BRW_CHROME_OPT_IN_USER_DATA_DIR"), "explicit user data directory for --chrome-opt-in, when the browser is not one brw knows the default path for. brw only reads from it.")
 	flag.Parse()
@@ -222,26 +222,58 @@ func main() {
 	if unsafeRealProfile {
 		log.Printf("WARNING: --unsafe-real-profile is active; brw may launch Chrome against your real browser profile, which can corrupt it (lost logins, won't reopen)")
 	}
+	// The profile is resolved before the opt-in block, and only resolved: this
+	// lane has to be gated by policy and pointed at the profile's own browser
+	// and directory, and both need the profile in hand before discovery runs.
+	// Everything the policy CHANGES is still applied below.
+	var profile profilepolicy.Profile
+	haveProfilePolicy := false
+	if profileName != "" || workspaceName != "" {
+		policy, err := profilepolicy.Load(profilePolicyPath)
+		if err != nil {
+			log.Fatalf("load profile policy: %v", err)
+		}
+		resolved, err := policy.ResolveProfile(workspaceName, profileName)
+		if err != nil {
+			log.Fatalf("profile policy: %v", err)
+		}
+		profile = resolved
+		haveProfilePolicy = true
+	}
+
 	var chromeOptInEndpoint chromeoptin.Endpoint
 	if chromeOptIn {
+		// Gated before discovery: a profile the policy has not opted in gets no
+		// probe of its browser, let alone an attach.
+		if haveProfilePolicy {
+			if err := checkChromeOptInProfile(profile); err != nil {
+				log.Fatal(err)
+			}
+		}
 		if err := checkChromeOptInFlags(chromeOptInFlags{
-			Bridge:           bridgeMode,
-			RemoteURL:        cfg.RemoteURL,
-			UpstreamHTTP:     upstreamHTTP,
-			Headless:         headless,
-			Login:            loginMode,
-			LaunchNetworking: !cfg.Network.Empty(),
-			Extensions:       len(extensions),
-			ChromeArgs:       len(chromeArgs),
-			ChromePath:       cfg.ChromePath,
-			Port:             cfg.Port,
+			Bridge:                  bridgeMode,
+			RemoteURL:               cfg.RemoteURL,
+			UpstreamHTTP:            upstreamHTTP,
+			Headless:                headless,
+			Login:                   loginMode,
+			LaunchNetworking:        !cfg.Network.Empty(),
+			Extensions:              len(extensions),
+			ChromeArgs:              len(chromeArgs),
+			ChromePath:              cfg.ChromePath,
+			Port:                    cfg.Port,
+			UserDataDirSet:          flagWasSet("user-data-dir") || os.Getenv("BRW_USER_DATA_DIR") != "",
+			ProfileDirectorySet:     flagWasSet("profile-directory") || os.Getenv("BRW_PROFILE_DIRECTORY") != "",
+			UnsafeRealProfile:       unsafeRealProfile,
+			UnsafeDefaultProfileCDP: unsafeAllowDefaultProfileCDP,
 		}); err != nil {
 			log.Fatal(err)
 		}
-		dir := strings.TrimSpace(chromeOptInUserDataDir)
-		if dir == "" {
-			dir = chromeoptin.DefaultUserDataDir(runtime.GOOS, chromeOptInBrowser)
-		}
+		browserKind := chromeOptInBrowserKind(
+			chromeOptInBrowser,
+			flagWasSet("chrome-opt-in-browser") || os.Getenv("BRW_CHROME_OPT_IN_BROWSER") != "",
+			profile.Kind,
+		)
+		dir := chromeOptInDiscoveryDir(chromeOptInUserDataDir, profile.UserDataDir, runtime.GOOS, browserKind)
 		optInCfg, endpoint, err := configureChromeOptIn(context.Background(), cfg, dir)
 		if err != nil {
 			// Fatal, and deliberately not a fallback: the alternative to a
@@ -249,24 +281,19 @@ func main() {
 			// debugging flag, which is the access Chrome asks a human to grant.
 			log.Fatalf("--chrome-opt-in: %v", err)
 		}
+		if haveProfilePolicy {
+			if err := checkChromeOptInEndpointProfile(endpoint, profile); err != nil {
+				log.Fatalf("--chrome-opt-in: %v", err)
+			}
+		}
 		cfg = optInCfg
 		chromeOptInEndpoint = endpoint
 		log.Printf("chrome opt-in endpoint discovered: %s (%s, user data dir %s)", endpoint.HTTPURL, endpoint.Browser, endpoint.UserDataDir)
 	}
 	runtimeIdentity := brwidentity.Identity{}
 	identityExpected := brwidentity.Identity{}
-	haveProfilePolicy := false
 
-	if profileName != "" || workspaceName != "" {
-		policy, err := profilepolicy.Load(profilePolicyPath)
-		if err != nil {
-			log.Fatalf("load profile policy: %v", err)
-		}
-		profile, err := policy.ResolveProfile(workspaceName, profileName)
-		if err != nil {
-			log.Fatalf("profile policy: %v", err)
-		}
-		haveProfilePolicy = true
+	if haveProfilePolicy {
 		if profile.BridgeHTTPAddr != "" && !flagWasSet("http") && os.Getenv("BRW_HTTP_ADDR") == "" {
 			httpAddr = profile.BridgeHTTPAddr
 		}
@@ -291,8 +318,14 @@ func main() {
 		if unsafeAllowDefaultProfileCDP {
 			log.Printf("WARNING: --unsafe-allow-default-profile-cdp is active; profile policy bypass is enabled for diagnostics")
 		}
-		cfg.UserDataDir = profile.UserDataDir
-		cfg.ProfileDirectory = profile.ProfileDirectory
+		if !chromeOptIn {
+			// Not on the opt-in lane: there the directory is the browser's own,
+			// the Manager writes under whatever it is given, and the daemon
+			// attaches to a running browser rather than choosing a profile
+			// inside it.
+			cfg.UserDataDir = profile.UserDataDir
+			cfg.ProfileDirectory = profile.ProfileDirectory
+		}
 		if profile.Headless {
 			headless = true
 		}
@@ -332,6 +365,11 @@ func main() {
 		switch {
 		case bridgeMode:
 			log.Fatalf("--headless cannot be combined with --bridge: the bridge drives the browser you are already running, so there is no window for brw to suppress")
+		case chromeOptIn:
+			// Reachable through a profile's "headless": true, since the flag
+			// itself is already refused alongside --chrome-opt-in. Named
+			// separately so the operator is not sent looking at --remote.
+			log.Fatalf("--chrome-opt-in cannot run headless: it attaches to the Chrome you turned remote debugging on in, which is the window you are looking at; drop \"headless\": true from the profile or use a direct-CDP profile")
 		case cfg.RemoteURL != "":
 			log.Fatalf("--headless cannot be combined with --remote: brw attaches to a browser it did not launch, so headlessness was decided by whoever started it")
 		case upstreamHTTP != "":
@@ -358,11 +396,11 @@ func main() {
 	}
 	usageIdentity.Headless = headless
 	usageIdentity.IgnoreHTTPSErrors = ignoreHTTPSErrors
-	// Report which profile the opt-in endpoint belongs to when no profile policy
-	// has already said. It goes in the identity only: the Manager never receives
-	// it, because it stages downloads under the UserDataDir it is given and that
-	// directory is the browser's, not brw's.
-	if chromeOptIn && usageIdentity.UserDataDir == "" {
+	// Report the directory the endpoint was discovered in, always: it is the
+	// profile this daemon is driving, and a policy value that disagreed was
+	// already refused above. It goes in the identity only — the Manager never
+	// receives it, because that directory is the browser's, not brw's.
+	if chromeOptIn && chromeOptInEndpoint.UserDataDir != "" {
 		usageIdentity.UserDataDir = chromeOptInEndpoint.UserDataDir
 	}
 
@@ -845,15 +883,6 @@ func findInstalledExtension() (string, bool) {
 	return "", false
 }
 
-// localTransport names how THIS process reaches the browser. A proxy cannot
-// know until it asks its upstream, so it reports empty here and adopts the
-// answer from the upstream's health response.
-//
-// The Chrome opt-in lane is reported as its own transport rather than as direct
-// CDP, because the catalogue differs in both directions: it has the cookie and
-// incognito access the bridge lacks, and it is still the browser the user is
-// signed into, so brw_state is refused there and is not on direct CDP. A caller
-// told "direct-cdp" would read both of those wrongly.
 // daemonMode is the human-facing label for how this daemon reached the browser.
 // It mirrors localTransport so /health's mode and transport can never disagree
 // about which lane is running.
@@ -870,6 +899,15 @@ func daemonMode(upstreamHTTP string, bridgeMode, chromeOptIn bool) string {
 	}
 }
 
+// localTransport names how THIS process reaches the browser. A proxy cannot
+// know until it asks its upstream, so it reports empty here and adopts the
+// answer from the upstream's health response.
+//
+// The Chrome opt-in lane is reported as its own transport rather than as direct
+// CDP, because the catalogue differs in both directions: it has the cookie and
+// incognito access the bridge lacks, and it is still the browser the user is
+// signed into, so brw_state is refused there and is not on direct CDP. A caller
+// told "direct-cdp" would read both of those wrongly.
 func localTransport(upstreamHTTP string, bridgeMode, chromeOptIn bool) string {
 	switch {
 	case upstreamHTTP != "":

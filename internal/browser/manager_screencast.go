@@ -134,8 +134,9 @@ func admitScreencastFrame(lastSwap *atomic.Int64, stamped, arrivedAt time.Time) 
 // the caller's ctx, because tabCtx derives from it and a cancelled tabCtx
 // cannot carry the Page.stopScreencast call that releases Chrome's encoder.
 //
-// Direct CDP only. The extension bridge has no equivalent, and callers fall
-// back to the screenshot loop when a controller does not implement this.
+// A Manager capability, so it holds on both DevTools Protocol lanes. The
+// extension bridge has no equivalent, and callers fall back to the screenshot
+// loop when a controller does not implement this.
 func (m *Manager) ScreencastFrames(ctx context.Context, opts ScreencastOptions) (<-chan ScreencastFrame, func(), error) {
 	frames, stop, _, err := m.screencastFrames(ctx, opts)
 	return frames, stop, err

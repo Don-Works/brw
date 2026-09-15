@@ -75,6 +75,15 @@ type Config struct {
 	// brw attaches to a browser it did not start (RemoteURL, the bridge, or an
 	// upstream proxy), because that browser was launched by someone else.
 	Network cdplaunch.NetworkEnvironment
+	// BrowserWSURL is the browser target's WebSocket URL, when the caller has
+	// already resolved and checked one. It takes precedence over RemoteURL for
+	// the dial and is used verbatim: chromedp's default is to re-fetch
+	// /json/version at connect time and dial whatever webSocketDebuggerUrl comes
+	// back, which would make the caller's check apply to a URL nobody dials. On
+	// the Chrome opt-in lane that second fetch is the whole exposure — the
+	// listener holding a stale port can answer brw's probe with a loopback
+	// address and chromedp's with anything at all.
+	BrowserWSURL string
 	// AttachOnly forbids launching a browser. On the Chrome opt-in lane the
 	// browser is the user's own and the debugging endpoint exists only because
 	// they turned it on by hand; a brw that fell back to starting Chrome with a

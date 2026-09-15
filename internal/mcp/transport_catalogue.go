@@ -33,6 +33,11 @@ const (
 	// the one the user is personally signed into. Policy, not a gap; see
 	// docs/auth-model.md.
 	refusedOnSignedInProfile
+	// needsDownloadRouting: the lane can be told at runtime where a completed
+	// download lands. A durable CDP session is not enough — the CDP command is
+	// browser-context-wide, so a lane whose browser context belongs to the user
+	// cannot use it without moving the files that person downloads by hand.
+	needsDownloadRouting
 )
 
 // toolRequirements classifies every tool whose availability depends on the
@@ -64,7 +69,9 @@ var toolRequirements = map[string]toolRequirement{
 	"brw_set_extra_headers":      needsCDPSession,
 	"brw_set_user_agent":         needsCDPSession,
 	"brw_authenticate":           needsCDPSession,
-	"brw_set_download_path":      needsCDPSession,
+	// Not needsCDPSession: the Chrome opt-in lane has the session and still
+	// cannot route downloads. See needsDownloadRouting.
+	"brw_set_download_path": needsDownloadRouting,
 	// Held keys need the transport to stamp a modifier mask onto every later
 	// input event, and a policy-checked same-document history change needs the
 	// controller to resolve the target against the live document across calls.
@@ -88,6 +95,8 @@ func runnableOn(req toolRequirement, caps brwidentity.TransportCapabilities) boo
 		return caps.ExtensionAPIs
 	case refusedOnSignedInProfile:
 		return !caps.SignedInProfile
+	case needsDownloadRouting:
+		return caps.RuntimeDownloadRouting
 	default:
 		// An unclassified requirement must not read as "available everywhere".
 		// A test enumerates the requirements so this branch stays unreachable.

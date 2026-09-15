@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -122,16 +123,40 @@ func Discover(ctx context.Context, opts Options) (Endpoint, error) {
 	return endpoint, nil
 }
 
+// maxActivePortBytes bounds the read of DevToolsActivePort. Chrome writes a
+// port and a path; anything larger is not that file, and this is a path in a
+// directory brw does not own, so the read is bounded rather than trusted.
+const maxActivePortBytes = 4 << 10
+
+// maxVersionBytes bounds the /json/version body. The port is read from a file
+// any process could have replaced, so the listener answering may not be Chrome:
+// without a cap it can stream for the client's whole timeout.
+const maxVersionBytes = 64 << 10
+
 // readActivePort parses the port Chrome recorded. A missing file, an empty one
 // and an unparseable one all mean the same thing to the caller — no opt-in
 // endpoint — so all three answer with ErrOptInOff and the action.
 func readActivePort(dir string) (int, error) {
 	path := filepath.Join(dir, activePortFile)
-	data, err := os.ReadFile(path)
+	// Lstat, not Stat: a symlink here would let whoever placed it choose the
+	// file brw reads, and a fifo would let them choose how long the read takes.
+	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return 0, fmt.Errorf("%w: %s does not exist, so this Chrome has no debugging endpoint. %s", ErrOptInOff, path, UserAction)
 		}
+		return 0, fmt.Errorf("%w: cannot read %s: %v. %s", ErrOptInOff, path, err, UserAction)
+	}
+	if !info.Mode().IsRegular() {
+		return 0, fmt.Errorf("%w: %s is not a regular file. %s", ErrOptInOff, path, UserAction)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("%w: cannot read %s: %v. %s", ErrOptInOff, path, err, UserAction)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxActivePortBytes))
+	if err != nil {
 		return 0, fmt.Errorf("%w: cannot read %s: %v. %s", ErrOptInOff, path, err, UserAction)
 	}
 	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
@@ -165,7 +190,7 @@ func probeVersion(ctx context.Context, client *http.Client, port int) (versionIn
 		return versionInfo{}, fmt.Errorf("%w: %s answered %s rather than a DevTools version document. %s", ErrOptInOff, target, resp.Status, UserAction)
 	}
 	var out versionInfo
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxVersionBytes)).Decode(&out); err != nil {
 		return versionInfo{}, fmt.Errorf("%w: %s did not answer with a DevTools version document (%v). %s", ErrOptInOff, target, err, UserAction)
 	}
 	if strings.TrimSpace(out.WebSocketDebuggerURL) == "" {

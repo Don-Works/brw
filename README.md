@@ -68,7 +68,7 @@ The full MCP surface is large. For lean agent contexts, run:
 
 ```sh
 brwd --mcp --mcp-tools auto     # 14 tools to start, grows on demand
-brwd --mcp --mcp-tools core     # 26 tools, ~10.1k tokens of catalogue
+brwd --mcp --mcp-tools core     # 26 tools, ~10.2k tokens of catalogue
 brwd --mcp --mcp-tools minimal  # 13 tools, ~5.8k tokens of catalogue
 ```
 
@@ -371,11 +371,14 @@ Core MCP tools include:
 - `brw_emulate_device` for DevTools mobile/responsive emulation
 - `brw_set_geolocation`, `brw_set_network_conditions`, `brw_emulate_media` —
   what the page believes about where it is, whether it has a network, and which
-  media it renders for (direct-CDP transport only)
+  media it renders for (not on the extension bridge)
 - `brw_set_extra_headers` — extra request headers for the origins you name and
   nothing else; `brw_set_user_agent`; `brw_authenticate` for one credentialed
-  navigation (direct-CDP transport only)
-- `brw_set_download_path` — send completed downloads somewhere you can open them
+  navigation (not on the extension bridge)
+- `brw_set_download_path` — send completed downloads somewhere you can open
+  them. Not on the extension bridge, and not on the Chrome opt-in lane: the
+  DevTools command applies to a whole browser context, so on the browser you are
+  signed into it would redirect the files you download by hand
 - `brw_network_requests`, `brw_network_capture`, `brw_replay_request`
 - `brw_console`, `brw_downloads`, `brw_trace`
 - `brw_vitals` — LCP, CLS, INP, TTFB and FCP for the current navigation, each
@@ -404,7 +407,7 @@ Core MCP tools include:
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: `all` costs ~30.8k tokens across 87 tools, `core` ~10.1k,
+tokens on every turn: `all` costs ~31.2k tokens across 87 tools, `core` ~10.2k,
 `minimal` ~5.8k, and `auto` starts at ~6.0k and grows only as the agent
 discovers tools it needs via `brw_tools` (measure with
 `scripts/measure-tool-catalogue.py`).

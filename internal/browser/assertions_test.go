@@ -403,19 +403,57 @@ func TestDownloadDigestAssertion(t *testing.T) {
 }
 
 // TestDownloadDigestAssertionNamesAnUnsupportedTransport pins the capability
-// error: a transport that cannot see downloads must say so by name rather than
-// quietly report "no download matched".
+// error: a transport that cannot produce the bytes must say so by name rather
+// than quietly report "no download matched".
+//
+// There are two ways to be unable to: not seeing downloads at all, and seeing
+// them without a file brw may open. The second is the lane that drives the
+// browser its user is signed into, where the file is theirs and brw never
+// chose where it went — and where "download ... has no file on disk" would read
+// as a failed check on a real download rather than as a missing capability.
 func TestDownloadDigestAssertionNamesAnUnsupportedTransport(t *testing.T) {
-	src := &stubAssertSource{downloads: DownloadsResult{Supported: false, Note: "the extension bridge cannot observe downloads"}}
-	_, err := evaluateAssertion(context.Background(), src, AssertRequest{
-		Assertion: AssertionDownload, Filename: "statement.csv", Bytes: int64Ptr(1),
-	})
-	if err == nil {
-		t.Fatal("unsupported transport passed the assertion")
-	}
-	want := "download digest assertions are unavailable on this transport: the extension bridge cannot observe downloads"
-	if err.Error() != want {
-		t.Fatalf("message = %q, want %q", err.Error(), want)
+	for _, tc := range []struct {
+		name      string
+		downloads DownloadsResult
+		want      string
+	}{
+		{
+			name:      "a transport that cannot observe downloads",
+			downloads: DownloadsResult{Supported: false, Note: "the extension bridge cannot observe downloads"},
+			want:      "download digest assertions are unavailable on this transport: the extension bridge cannot observe downloads",
+		},
+		{
+			name: "a transport that observes them without staging them",
+			downloads: DownloadsResult{
+				Supported: true,
+				FilePaths: false,
+				Note:      "downloads are observed but not staged on this transport",
+				Downloads: []DownloadEntry{{GUID: "guid-1", SuggestedFilename: "statement.csv", State: "completed"}},
+			},
+			want: "download digest assertions are unavailable on this transport: downloads are observed but not staged on this transport",
+		},
+		{
+			name: "no note to borrow",
+			downloads: DownloadsResult{
+				Supported: true,
+				FilePaths: false,
+				Downloads: []DownloadEntry{{GUID: "guid-1", SuggestedFilename: "statement.csv", State: "completed"}},
+			},
+			want: "download digest assertions are unavailable on this transport: this browser transport reports no file path for a completed download",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &stubAssertSource{downloads: tc.downloads}
+			_, err := evaluateAssertion(context.Background(), src, AssertRequest{
+				Assertion: AssertionDownload, Filename: "statement.csv", Bytes: int64Ptr(1),
+			})
+			if err == nil {
+				t.Fatal("a transport that cannot produce the bytes passed the assertion")
+			}
+			if err.Error() != tc.want {
+				t.Fatalf("message = %q, want %q", err.Error(), tc.want)
+			}
+		})
 	}
 }
 

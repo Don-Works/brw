@@ -1260,7 +1260,7 @@
         }
       ],
       "requires": [
-        "direct-cdp"
+        "browser-target"
       ]
     },
     {
@@ -1272,7 +1272,7 @@
         "tab-groups"
       ],
       "requires": [
-        "extension-bridge"
+        "extension-apis"
       ],
       "actions": [
         {
@@ -1474,7 +1474,7 @@
         "pointer"
       ],
       "requires": [
-        "direct-cdp"
+        "cdp-session"
       ],
       "actions": [
         {

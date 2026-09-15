@@ -640,6 +640,12 @@ func (m *Manager) Authenticate(ctx context.Context, opts CredentialsOptions) (En
 
 // SetDownloadPath redirects completed downloads to a caller-named directory.
 func (m *Manager) SetDownloadPath(ctx context.Context, opts DownloadPathOptions) (EnvironmentResult, error) {
+	// Checked before the arguments: the refusal is a property of the lane, so it
+	// has to hold for clear:true as well, which would otherwise adopt a brw
+	// staging directory for the user's own browser context.
+	if !m.stagesDownloads() {
+		return EnvironmentResult{}, ErrDownloadRoutingSignedIn
+	}
 	if !opts.Clear {
 		if strings.TrimSpace(opts.Path) == "" {
 			return EnvironmentResult{}, errors.New("download path is required, or clear:true to go back to brw's managed staging directory")
@@ -683,17 +689,6 @@ func (m *Manager) SetDownloadPath(ctx context.Context, opts DownloadPathOptions)
 		DownloadPath: dir,
 		Message:      "downloads now land in this directory, named by their brw download id rather than the server's suggested filename. That is what keeps the path brw_downloads reports exact: a suggested filename is attacker-controlled and Chrome silently renames collisions. brw will not delete this directory. The setting is browser-wide, so every tab downloads here, and files that completed before this call stay where they were at the paths brw_downloads already reported",
 	}, nil
-}
-
-// applyDownloadBehavior points Chrome at dir. Browser.setDownloadBehavior is a
-// browser-domain command, so it runs against the browser executor.
-func (m *Manager) applyDownloadBehavior(ctx context.Context, dir string) error {
-	return m.runBrowser(ctx, func(runCtx context.Context) error {
-		return cdpbrowser.SetDownloadBehavior(cdpbrowser.SetDownloadBehaviorBehaviorAllowAndName).
-			WithDownloadPath(dir).
-			WithEventsEnabled(true).
-			Do(runCtx)
-	})
 }
 
 // adoptDownloadDir switches tracking to a caller-owned directory.

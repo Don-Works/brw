@@ -38,8 +38,8 @@ var capabilityTable = map[string]Capabilities{
 	},
 	ResolvedChromeOptIn: {
 		Transport: ResolvedChromeOptIn,
-		Has:       "your real signed-in Chrome with full browser-target CDP: incognito contexts (brw_open_incognito), HttpOnly cookie access (brw_cookies), deterministic download routing, page-environment overrides — and no extension at all",
-		Lacks:     "no Chrome tab groups (an extension API), no session snapshots (brw_state is refused on a browser you are signed into), and nothing works while the chrome://inspect opt-in is off",
+		Has:       "your real signed-in Chrome with full browser-target CDP: incognito contexts (brw_open_incognito), HttpOnly cookie access (brw_cookies), page-environment overrides — and no extension at all",
+		Lacks:     "no Chrome tab groups (an extension API), no session snapshots (brw_state is refused on a browser you are signed into), no download routing (brw_set_download_path would move the downloads you make by hand, so downloads are reported without a file path), and nothing works while the chrome://inspect opt-in is off",
 	},
 	ResolvedExtensionBridge: {
 		Transport: ResolvedExtensionBridge,

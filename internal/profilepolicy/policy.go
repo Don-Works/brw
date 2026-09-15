@@ -44,6 +44,15 @@ type Profile struct {
 	ProfileDirectory       string `json:"profile_directory,omitempty"`
 	DirectCDPAllowed       bool   `json:"direct_cdp_allowed"`
 	ExtensionBridgeAllowed bool   `json:"extension_bridge_allowed"`
+	// ChromeOptInAllowed permits `brwd --chrome-opt-in` against this profile.
+	// It is its own bit, defaulting to false, because the lane's capability is
+	// not either of the other two: full browser-target CDP — HttpOnly cookie
+	// reads, incognito contexts, browser-level permission grants — against the
+	// profile the person is signed into. A profile restricted to the extension
+	// bridge is exactly the profile that restriction exists to protect, and
+	// reading direct_cdp_allowed here would grant this lane to every profile
+	// that allows brw to launch its own throwaway browser instead.
+	ChromeOptInAllowed bool `json:"chrome_opt_in_allowed,omitempty"`
 	// Headless launches this profile's Chrome with no visible window. Direct
 	// CDP only — the extension bridge attaches to a browser the user is
 	// already running, so there is nothing for brw to make headless.

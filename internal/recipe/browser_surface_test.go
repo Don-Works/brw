@@ -225,8 +225,8 @@ func TestDownloadPostconditionPreservesOnlyNewEventForFollowingCapture(t *testin
 	old := browser.DownloadEntry{GUID: "old", SuggestedFilename: "invoice.pdf", State: "completed", Path: "/old"}
 	fresh := browser.DownloadEntry{GUID: "fresh", SuggestedFilename: "invoice.pdf", State: "completed", Path: "/fresh"}
 	controller := &downloadOnlyController{results: []browser.DownloadsResult{
-		{Supported: true, Downloads: []browser.DownloadEntry{old}},
-		{Supported: true, Downloads: []browser.DownloadEntry{fresh}},
+		{Supported: true, FilePaths: true, Downloads: []browser.DownloadEntry{old}},
+		{Supported: true, FilePaths: true, Downloads: []browser.DownloadEntry{fresh}},
 	}}
 	artifacts := &completedDownloadArtifacts{}
 	surface := &BrowserSurface{Browser: controller, Artifacts: artifacts}

@@ -481,6 +481,13 @@ func AssertDownloadFrom(result DownloadsResult, req AssertRequest) (AssertResult
 		}
 		return AssertResult{Assertion: AssertionDownload}, fmt.Errorf("download digest assertions are unavailable on this transport: %s", note)
 	}
+	if !result.FilePaths {
+		note := strings.TrimSpace(result.Note)
+		if note == "" {
+			note = "this browser transport reports no file path for a completed download"
+		}
+		return AssertResult{Assertion: AssertionDownload}, fmt.Errorf("download digest assertions are unavailable on this transport: %s", note)
+	}
 	entry, found := SelectDownloadEntry(result.Downloads, req.DownloadGUID, req.Filename)
 	if !found {
 		return assertionFailed(AssertionDownload, describeDownloadExpectation(req), "no download matched "+quote(downloadSelector(req)))

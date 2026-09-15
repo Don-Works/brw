@@ -207,7 +207,7 @@ so a tool that cannot work on it is not advertised at all.
 | Chrome tab groups | Yes | No | No |
 | Incognito contexts (`brw_open_incognito`) | No | Yes | Yes |
 | Cookies incl. HttpOnly (`brw_cookies`) | No | Yes | Yes |
-| Deterministic download capture | No, uses the browser's download folder | Yes, staged in brw's cache | Yes, staged in brw's cache |
+| Deterministic download capture | No, uses the browser's download folder | Yes, staged in brw's cache | No, uses the browser's download folder |
 | Session snapshots (`brw_state`) | No, by policy | Yes | No, by the same policy |
 | Headless | No | Yes | No, it is your window |
 
@@ -243,10 +243,19 @@ It is a human action by design, and brw treats it that way:
 
 The port is discovered, not configured: the opt-in allocates one dynamically
 and Chrome records it in `DevToolsActivePort` in the user data directory, which
-is the only place it appears. brw reads that file, probes the port, and checks
-that the browser WebSocket URL the endpoint reports points back at the same
-loopback port — a file left behind by an exited Chrome names a port anything
-else on the machine may since have taken.
+is the only place it appears. Measured on Chrome 153, that file is written only
+for a dynamically allocated port — start Chrome with an explicit
+`--remote-debugging-port` and there is no file at all, because the caller
+already knows the port. The opt-in allocates dynamically, so the file is the
+right channel; a future Chrome that changed this would make brw report the
+opt-in as off.
+
+brw reads that file, probes the port, and checks that the browser WebSocket URL
+the endpoint reports points back at the same loopback port — a file left behind
+by an exited Chrome names a port anything else on the machine may since have
+taken. That checked URL is then the one brw dials, rather than re-asking the
+endpoint at connect time: a listener holding a stale port can answer the first
+question honestly and the second one however it likes.
 
 `brw_state` is refused on this lane. It is the same refusal as on the extension
 bridge and for the same reason: sealing the cookies of the browser you are
@@ -254,10 +263,42 @@ personally signed into is the "no cookie extraction" non-goal in
 [auth-model.md](auth-model.md). The CDP to do it is right there, which is
 exactly why the refusal is in the controller and not only in `tools/list`.
 
+`brw_set_download_path` is refused for a related reason, and this one is about
+your files rather than your cookies. `Browser.setDownloadBehavior` has no
+per-tab and no per-download scope — the narrowest thing it applies to is a whole
+browser context, and on this lane the default browser context is your own
+windows. Staging downloads there would send every file you downloaded by hand
+into a brw directory, named by download id instead of by filename, and brw
+deletes that directory when the daemon stops. So on this lane brw turns the
+download event stream on and leaves the destination alone: `brw_downloads`
+reports every download with its filename, size, state and source tab, and
+reports `file_paths: false` and no path, because the file is yours and where it
+went was your browser's decision. `brw_assert(assertion:"download")` and
+`brw_artifact_capture(kind:"download")` need a path, so they return a named
+capability error here and work on a direct-CDP profile.
+
+Neither refusal is a capability gap that a later Chrome could close. Both are
+brw declining to use access it has, against a browser it is a guest in.
+
+A profile policy has to grant this lane explicitly: `"chrome_opt_in_allowed":
+true` on the profile. It is a separate bit from `direct_cdp_allowed`, which
+says brw may launch its own browser against a profile directory. A profile
+restricted to the extension bridge is exactly the profile that restriction
+exists to protect, so the opt-in lane does not inherit permission from either of
+the other two. Without a `--profile` or `--workspace` there is no policy to
+consult and no gate, as elsewhere in brwd.
+
 `--chrome-opt-in` attaches to a browser brw did not start, so it cannot be
 combined with `--bridge`, `--remote`, `--upstream-http`, `--headless`,
 `--login`, `--extension`, `--chrome-arg`, `--chrome-path`,
-`--remote-debugging-port`, or the launch network switches.
+`--remote-debugging-port`, `--user-data-dir`, `--profile-directory`,
+`--unsafe-real-profile`, `--unsafe-allow-default-profile-cdp`, or the launch
+network switches. Each is refused by name rather than ignored. Which directory
+this lane reads is `--chrome-opt-in-user-data-dir`, or the resolved profile's
+`user_data_dir`, or the platform default for `--chrome-opt-in-browser` — and
+when a policy profile names a directory, an endpoint discovered anywhere else
+is refused, because `brw_identity` would otherwise report a profile the daemon
+is not driving.
 
 ### Page environment and launch flags
 
@@ -268,6 +309,9 @@ operation, and a detach drops every override that session installed. On the
 bridge each tool returns a named capability error and is not advertised in
 `tools/list` at all, so an agent never spends a call finding out.
 
+`brw_set_download_path` is the one the Chrome opt-in lane also lacks, and there
+it is a refusal rather than a gap — see the lane's section above.
+
 | Capability | Tool | Extension bridge | Direct CDP | Chrome opt-in |
 |---|---|---|---|---|
 | Geolocation override | `brw_set_geolocation` | No | Yes | Yes |
@@ -276,7 +320,7 @@ bridge each tool returns a named capability error and is not advertised in
 | Per-origin extra request headers | `brw_set_extra_headers` | No | Yes | Yes |
 | User agent, Accept-Language, platform | `brw_set_user_agent` | No | Yes | Yes |
 | Per-call HTTP credentials | `brw_authenticate` | No | Yes | Yes |
-| Download directory | `brw_set_download_path` | No | Yes | Yes |
+| Download directory | `brw_set_download_path` | No | Yes | No, it would move your own downloads |
 | Proxy | `--proxy-server`, `--proxy-bypass-list` | No | Yes, at launch | No, you launched it |
 | Certificate errors ignored | `--ignore-https-errors` | No | Yes, at launch | No, you launched it |
 | Private CA accepted | `--ca-cert` | No | Yes, at launch | No, you launched it |

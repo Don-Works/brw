@@ -148,14 +148,25 @@ Two further costs, recorded so a later attempt does not rediscover them:
   this backend.
 
 That last point is why the capability matrix is stated **per backend**. Each
-transport declares what it can do — a durable CDP session, a browser target,
-extension APIs, whether it drives the profile its user is signed into — in
-`internal/brwidentity/transports.go`, and each capability-gated tool declares
-what it needs, in `internal/mcp/transport_catalogue.go`. What a lane advertises
-is derived from the two. A Firefox lane would state its own properties once and
-every tool's availability would follow, rather than each tool growing a "except
-on Firefox" clause; a test enumerates transports against tools and fails on a
-pair nobody has classified.
+transport declares what it can do in `internal/brwidentity/transports.go` — a
+durable CDP session, a browser target, extension APIs, whether it can decide at
+runtime where a download lands, and whether it drives the profile its user is
+signed into — and each capability-gated tool declares what it needs, in
+`internal/mcp/transport_catalogue.go`. What a lane advertises is derived from
+the two. A Firefox lane would state its own properties once and every tool's
+availability would follow, rather than each tool growing a "except on Firefox"
+clause; a test enumerates transports against tools and fails on a pair nobody
+has classified.
+
+`RuntimeDownloadRouting` is the property this measurement produced, and it is
+deliberately not the same axis as a durable session. A BiDi lane would declare
+`CDPSession`-equivalent durability and `RuntimeDownloadRouting: false`, because
+`browsingContext.setDownloadBehavior` is an unknown command; `brw_set_download_path`
+is classified against that property and would be dropped from its catalogue.
+The Chrome opt-in lane reaches the same answer from the other direction — it has
+the command and refuses to use it, because the browser context belongs to the
+person using the browser — which is what says the axis is about the lane's
+ability to route a download and not about which protocol it speaks.
 
 ## What the prototype is not
 
@@ -164,3 +175,15 @@ routes through it. No capability is advertised on its behalf, and `brwctl setup`
 offers no Firefox lane. It is measurement code, kept because the measurements
 are the reason the decision is what it is — and because the tests fail if
 Firefox changes any of the answers.
+
+Being measurement code, it is not part of the default suite: `go test ./...`
+would otherwise launch five Firefoxes for a lane nobody adopted. Re-run the
+measurements when a later attempt needs to know whether the answers still hold:
+
+```sh
+BRW_BIDI_LIVE=1 go test ./internal/bidi/ -count=1 -v
+```
+
+Without that variable the live tests skip and the package's protocol tests —
+command matching, error codes, the bounded event ring — still run against a
+fake endpoint.

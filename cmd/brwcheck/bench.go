@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
@@ -98,9 +99,11 @@ func runBench(opts benchOptions) error {
 func benchComboboxFlow(ctx context.Context, mgr *browser.Manager, fixtureURL, fixture string) (benchScorecard, error) {
 	refs := map[string]string{}
 	card := benchScorecard{
-		Fixture:   fixture,
-		Path:      fixtureURL,
-		Transport: "direct-cdp",
+		Fixture: fixture,
+		Path:    fixtureURL,
+		// The bench launches its own throwaway Chrome, so the lane is not in
+		// doubt; named from the identity constant so a rename cannot drift.
+		Transport: brwidentity.TransportDirectCDP,
 	}
 
 	run := func(name string, fn func() (any, error)) error {
