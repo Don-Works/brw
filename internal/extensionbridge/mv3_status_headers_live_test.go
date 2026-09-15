@@ -288,6 +288,11 @@ func TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured(t *testing.T) {
 	if len(browsers) == 0 {
 		t.Skip("no Chrome/Chromium build is installed")
 	}
+	// Logged before anything launches, so the run says which builds were
+	// available as well as which one the measurement came from. docs/auth-model.md
+	// records a branded-Chrome observation this test does not reproduce, and
+	// this is what lets a reader see that it was not asked to.
+	t.Logf("installed browsers, in the order they are tried: %s", strings.Join(browsers, ", "))
 
 	recorder := newMV3Recorder()
 	mux := http.NewServeMux()
@@ -361,7 +366,7 @@ func TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured(t *testing.T) {
 		t.Fatal("the local client's request never arrived")
 	}
 
-	t.Logf("browser: %s", version)
+	t.Logf("browser: %s (measurement taken on the first installed build that ran the worker; later ones were not launched)", version)
 	t.Logf("local process (curl-equivalent): %s", local.render())
 	for _, caller := range []string{callerWorker, callerExtensionPage, callerPageNoCORS, callerPageScript} {
 		observed, ok := recorder.get(caller)

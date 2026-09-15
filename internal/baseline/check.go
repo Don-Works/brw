@@ -79,7 +79,7 @@ type CheckResult struct {
 // retina display against a baseline captured at 1x reports the display, not a
 // screen full of moved pixels.
 func Check(store Storage, opts CheckOptions) (CheckResult, error) {
-	if store == nil {
+	if noStorage(store) {
 		return CheckResult{}, ErrNoStorage
 	}
 	if err := opts.Key.Validate(); err != nil {

@@ -112,11 +112,16 @@ MV3 extension into that browser and records what arrives:
 | page on another site, `<script src>` | absent | `cross-site` | `no-cors` | `script` |
 | local process (curl-equivalent) | absent | absent | absent | absent |
 
-Google Chrome 153.0.8010.37 is installed on the same machine. Asked to load the
-same unpacked extension, it ran no service worker at all — the `--load-extension`
-removal `docs/install.md` records for branded Chrome 137+ — so the measurement is
-Chromium's, and the test tries unbranded builds first and branded Chrome only if
-nothing else is installed.
+Google Chrome 153.0.8010.37 is installed on the same machine. Tried by hand
+during development with the same unpacked extension, it ran no service worker at
+all — the `--load-extension` removal `docs/install.md` records for branded
+Chrome 137+. That sentence is not the committed test's output: the test tries
+unbranded builds first and stops at the first that answers, so with Chromium
+installed it never launches branded Chrome. It does not, on purpose — branded
+Chrome starts Google's separate updater, which inherits the test binary's stderr
+and can outlive it, and `go test` fails the whole package on that. The test logs
+every installed build it found and which one it measured, so the table above can
+be checked against the run that produced it.
 
 Two things follow. **No `Origin` distinguishes anything** — every caller sends
 none, so the header cannot be required and cannot be used to tell callers apart.

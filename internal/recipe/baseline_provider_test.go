@@ -3,6 +3,7 @@ package recipe
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"image"
@@ -84,7 +85,13 @@ func privateRecipeRoot(t *testing.T, value Recipe) string {
 // operator's provider, not a second implementation of the rules — the rules
 // live in encodeBaseline/decodeBaseline and are what the tests exercise.
 type fakeBaselineProvider struct {
-	owned   map[string]bool
+	owned map[string]bool
+	// origins is the other half of the routing question: which sites this
+	// provider has any recipe for.
+	origins map[string]bool
+	// routed records what the client actually sent as the origin, so a test can
+	// assert that a page URL was reduced to one before it left the daemon.
+	routed  []string
 	records map[string]baselineWire
 	// mutate lets a test make the provider answer with something other than
 	// what it was given, which is the only way to check that the client refuses
@@ -96,6 +103,7 @@ type fakeBaselineProvider struct {
 func newFakeBaselineProvider(ownedDigest string) *fakeBaselineProvider {
 	return &fakeBaselineProvider{
 		owned:   map[string]bool{strings.ToLower(ownedDigest): true},
+		origins: map[string]bool{"https://billing.example.test": true},
 		records: map[string]baselineWire{},
 	}
 }
@@ -117,11 +125,21 @@ func (f *fakeBaselineProvider) handler(t *testing.T) http.Handler {
 	mux.HandleFunc("/v1/baselines/owner", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			RecipeDigest string `json:"recipe_digest"`
+			Origin       string `json:"origin"`
 		}
 		if !decode(w, r, &req) {
 			return
 		}
-		writeFakeJSON(w, map[string]any{"owns": f.owned[strings.ToLower(req.RecipeDigest)]})
+		// A provider only ever sees the origin. A path or query arriving here is
+		// the private half of a signed-in page's URL leaving the daemon.
+		if strings.Count(req.Origin, "/") > 2 || strings.ContainsAny(req.Origin, "?#") {
+			t.Errorf("provider was sent %q, want an origin with no path or query", req.Origin)
+		}
+		f.routed = append(f.routed, req.Origin)
+		writeFakeJSON(w, map[string]any{
+			"owns":        f.owned[strings.ToLower(req.RecipeDigest)],
+			"owns_origin": req.Origin != "" && f.origins[req.Origin],
+		})
 	})
 	mux.HandleFunc("/v1/baselines/put", func(w http.ResponseWriter, r *http.Request) {
 		var wire baselineWire
@@ -241,13 +259,42 @@ func TestBothProvidersStoreAndServeABaseline(t *testing.T) {
 			ctx := context.Background()
 			record := baselineFixtureRecord(t, implementation.owned, 2, 200)
 
-			owns, err := implementation.store.OwnsRecipe(ctx, implementation.owned)
-			if err != nil || !owns {
-				t.Fatalf("OwnsRecipe(own digest) = %v, %v; want true", owns, err)
-			}
 			foreign := strings.Repeat("ab", 32)
-			if owns, err := implementation.store.OwnsRecipe(ctx, foreign); err != nil || owns {
-				t.Fatalf("OwnsRecipe(foreign digest) = %v, %v; want false", owns, err)
+			routes := []struct {
+				name    string
+				digest  string
+				pageURL string
+				want    BaselineRoute
+			}{
+				{name: "its own recipe", digest: implementation.owned, pageURL: "", want: BaselineRoute{OwnsRecipe: true}},
+				{name: "a digest it does not hold", digest: foreign, pageURL: "", want: BaselineRoute{}},
+				{
+					name: "a digest it does not hold, on a page its recipes reach", digest: foreign,
+					pageURL: "https://billing.example.test/invoices?month=3", want: BaselineRoute{OwnsOrigin: true},
+				},
+				{name: "a digest it does not hold, on an unrelated page", digest: foreign, pageURL: "https://fixtures.example.test/home", want: BaselineRoute{}},
+				{
+					name: "its own recipe, on a page its recipes reach", digest: implementation.owned,
+					pageURL: "https://billing.example.test/invoices", want: BaselineRoute{OwnsRecipe: true, OwnsOrigin: true},
+				},
+			}
+			for _, route := range routes {
+				got, err := implementation.store.RouteBaseline(ctx, route.digest, route.pageURL)
+				if err != nil {
+					t.Fatalf("RouteBaseline(%s): %v", route.name, err)
+				}
+				if got != route.want {
+					t.Fatalf("RouteBaseline(%s) = %+v, want %+v", route.name, got, route.want)
+				}
+			}
+			if implementation.fake != nil {
+				// The page URL carried a path and a query. What reached the
+				// provider is the origin and nothing else.
+				for _, sent := range implementation.fake.routed {
+					if sent != "" && sent != "https://billing.example.test" && sent != "https://fixtures.example.test" {
+						t.Fatalf("provider was sent origin %q", sent)
+					}
+				}
 			}
 
 			if _, found, err := implementation.store.LoadBaseline(ctx, record.Key); err != nil || found {
@@ -566,26 +613,129 @@ func TestDirectoryProviderBaselineRootRefusesACheckout(t *testing.T) {
 // would stop being served with no error. A root that refuses to load and says
 // why is the lesser failure.
 func TestReservedBaselineDirRefusesRecipesRatherThanHidingThem(t *testing.T) {
-	ctx := context.Background()
-	value := validRecipe("https://billing.example.test")
-	root := privateRecipeRoot(t, value)
-	reserved := filepath.Join(root, BaselineRoot, "misplaced")
-	if err := os.MkdirAll(reserved, 0o700); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+		// relative is where the stray recipe goes under BaselineRoot.
+		relative string
+		// wantNamed is the path the refusal must name, from the recipe root. A
+		// message naming a directory rebuilt from the file's parent reads
+		// correctly only at one depth, and at the other it sends the operator to
+		// <root>/baselines/baselines, which was never there.
+		wantNamed string
+	}{
+		{name: "directly in the reserved directory", relative: "invoices.json", wantNamed: "baselines/invoices.json"},
+		{name: "one level down", relative: "misplaced/invoices.json", wantNamed: "baselines/misplaced/invoices.json"},
+		// The name alone is not the guard: a recipe saved under the record's own
+		// file name is exactly the silently-undiscovered recipe this refuses.
+		{name: "wearing the record file name", relative: "baseline.json", wantNamed: "baselines/baseline.json"},
+		{name: "wearing the record file name one level down", relative: "deep/baseline.json", wantNamed: "baselines/deep/baseline.json"},
 	}
-	data, err := json.Marshal(value)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			value := validRecipe("https://billing.example.test")
+			root := privateRecipeRoot(t, value)
+			stray := filepath.Join(root, BaselineRoot, filepath.FromSlash(tc.relative))
+			if err := os.MkdirAll(filepath.Dir(stray), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(stray, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = NewDirectoryProvider(ctx, DirectoryConfig{Root: root})
+			if err == nil {
+				t.Fatal("a recipe hidden in the reserved baseline subtree was accepted")
+			}
+			if !strings.Contains(err.Error(), "reserved for regression baselines") {
+				t.Fatalf("error = %v, want the reserved-name refusal", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantNamed) {
+				t.Fatalf("error = %v, want it to name %s", err, tc.wantNamed)
+			}
+			// Whatever the message names has to exist, or it sends the operator
+			// looking for a file that was never there.
+			named := filepath.Join(root, filepath.FromSlash(tc.wantNamed))
+			if _, statErr := os.Stat(named); statErr != nil {
+				t.Fatalf("the refusal names %s, which does not exist: %v", named, statErr)
+			}
+		})
+	}
+}
+
+// TestRoutingRefusesAProviderThatAnswersHalfTheQuestion: an absent field is not
+// a "no".
+//
+// A provider that does not answer owns_origin cannot be told apart from one
+// that has no recipe for the page, and that difference decides whether a
+// capture of a signed-in page is written to the local baseline root. So the
+// client refuses by name rather than taking the missing field as permission.
+func TestRoutingRefusesAProviderThatAnswersHalfTheQuestion(t *testing.T) {
+	tests := []struct {
+		name    string
+		answer  string
+		pageURL string
+		wantErr string
+	}{
+		{
+			name: "owns_origin missing while a page was asked about", answer: `{"owns":false}`,
+			pageURL: "https://billing.example.test/invoices", wantErr: "owns_origin",
+		},
+		{
+			name: "owns missing", answer: `{"owns_origin":false}`,
+			pageURL: "https://billing.example.test/invoices", wantErr: "without owns",
+		},
+		{
+			name: "neither field", answer: `{}`, pageURL: "", wantErr: "without owns",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/v1/baselines/owner", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.answer))
+			})
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+			provider, err := NewHTTPProvider(HTTPProviderConfig{BaseURL: server.URL, RequestTimeout: 5 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			route, err := provider.RouteBaseline(context.Background(), strings.Repeat("ab", 32), tc.pageURL)
+			if err == nil {
+				t.Fatalf("a half-answered routing question was accepted as %+v", route)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want it to name %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestBaselineImageBoundFitsTheProviderResponseCap pins the derivation of
+// maxBaselineImageBytes. A capture the put accepts that no fetch can return is
+// a baseline stored and never usable again, which is exactly what the
+// round-trip check in PutBaseline says it prevents.
+func TestBaselineImageBoundFitsTheProviderResponseCap(t *testing.T) {
+	wire := baselineWire{
+		RecipeDigest:  strings.Repeat("ab", 32),
+		StepIndex:     4,
+		Environment:   baselineFixtureEnvironment(),
+		Fingerprint:   baselineFixtureEnvironment().Fingerprint(),
+		ScreenshotPNG: base64.StdEncoding.EncodeToString(make([]byte, maxBaselineImageBytes)),
+		CreatedAt:     time.Unix(1700000000, 0).UTC(),
+	}
+	encoded, err := json.Marshal(map[string]any{"found": true, "baseline": wire})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(reserved, "invoices.json"), data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err = NewDirectoryProvider(ctx, DirectoryConfig{Root: root})
-	if err == nil {
-		t.Fatal("a recipe hidden in the reserved baseline subtree was accepted")
-	}
-	if !strings.Contains(err.Error(), "reserved for regression baselines") {
-		t.Fatalf("error = %v, want the reserved-name refusal", err)
+	if len(encoded) > maxProviderResponseBytes {
+		t.Fatalf("a fetch of the largest storable baseline is %d bytes, over the %d-byte provider response cap: raise the cap or lower maxBaselineImageBytes",
+			len(encoded), maxProviderResponseBytes)
 	}
 }
 
@@ -607,12 +757,18 @@ func TestReservedBaselineDirAcceptsWhatTheStoreWrites(t *testing.T) {
 	if err := provider.PutBaseline(ctx, baselineFixtureRecord(t, digest, 0, 55)); err != nil {
 		t.Fatalf("PutBaseline: %v", err)
 	}
-	// The reload is where the guard runs, and a provider that refused its own
-	// baseline would only fail here.
-	if _, err := provider.Search(ctx, "download monthly billing invoices", "", 5); err != nil {
+	// A second provider over the same root is the reload: the first one's
+	// fingerprint walk skips the reserved subtree, so writing a baseline does
+	// not change it and Search would answer from the cached catalog without
+	// re-running the guard at all.
+	reloaded, err := NewDirectoryProvider(ctx, DirectoryConfig{Root: root})
+	if err != nil {
+		t.Fatalf("loading a root that holds the provider's own baseline: %v", err)
+	}
+	if _, err := reloaded.Search(ctx, "download monthly billing invoices", "", 5); err != nil {
 		t.Fatalf("search after the provider wrote its own baseline: %v", err)
 	}
-	if err := checkReservedBaselineDir(filepath.Join(root, BaselineRoot)); err != nil {
+	if err := checkReservedBaselineDir(root); err != nil {
 		t.Fatalf("the guard refuses what baseline.Store writes: %v", err)
 	}
 }

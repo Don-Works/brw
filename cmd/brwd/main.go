@@ -624,11 +624,20 @@ func main() {
 	// declared out here because the provider is configured inside the
 	// browser-host branch below and read again when the MCP server is built.
 	var recipeBaselines recipe.BaselineStore
+	// baselineRouter answers where a capture belongs. On a browser host it is
+	// recipeBaselines; on a proxy it is the upstream hop, which can ask the
+	// question without being able to store the answer.
+	var baselineRouter recipe.BaselineRouter
 	if upstreamHTTP != "" {
 		// The proxy controller implements both optional APIs and forwards them to
 		// the canonical browser host. Never create a second cache/provider here.
 		artifactAPI, _ = controller.(artifact.API)
 		recipeAPI, _ = controller.(recipe.API)
+		// brw_baseline runs on THIS daemon (it has no HTTP route), while the
+		// private recipe provider lives upstream. Without the routing hop every
+		// capture here would be written to this process's --baseline-root,
+		// including captures of pages the provider's recipes reach.
+		baselineRouter, _ = controller.(recipe.BaselineRouter)
 		if strings.TrimSpace(recipeRoot) != "" || strings.TrimSpace(recipeProviderURL) != "" || strings.TrimSpace(recipeProviderTokenFile) != "" {
 			log.Printf("WARNING: recipe provider flags are ignored in --upstream-http mode; configure them on the browser-host daemon")
 		}
@@ -732,6 +741,7 @@ func main() {
 			}
 			recipeAPI = service
 			recipeBaselines = recipeBaselinesFor(provider)
+			baselineRouter = recipeBaselines
 			log.Printf("private recipe provider enabled (recipe bodies and inputs are never written to usage logs)")
 			log.Printf("%s", recipeReceiptStatusLine(runner.Receipts))
 			log.Printf("%s", recipeBaselineStatusLine(recipeBaselines))
@@ -753,6 +763,12 @@ func main() {
 		api.SetUsageRecorder(usage)
 		api.SetArtifactAPI(artifactAPI)
 		api.SetRecipeAPI(recipeAPI)
+		// Only on the browser host: recipeBaselines is nil in proxy mode, and a
+		// proxy answering the routing question for another proxy would answer
+		// "nobody owns this" for a provider it cannot see.
+		if recipeBaselines != nil {
+			api.SetBaselineRouter(recipeBaselines)
+		}
 		api.SetPluginRegistry(plugins)
 		defer gracefulShutdown("HTTP API", api.Shutdown)
 		if !isLoopback(httpAddr) {
@@ -807,6 +823,16 @@ func main() {
 		// a provider and no --baseline-root can still gate those recipes.
 		if recipeBaselines != nil {
 			server.SetRecipeBaselines(recipeBaselines)
+		} else if upstreamHTTP != "" {
+			if baselineRouter == nil {
+				// Cannot happen: httpclient.Controller asserts the interface at
+				// compile time. If it ever could, every capture would land in
+				// this daemon's local root with the tool description saying it
+				// could not — so refuse to start rather than degrade quietly.
+				log.Fatalf("the upstream controller cannot answer baseline routing; brw_baseline would write every capture to --baseline-root")
+			}
+			server.SetBaselineRouter(baselineRouter)
+			log.Printf("%s", proxyBaselineStatusLine())
 		}
 
 		// A direct/bridge MCP process has no upstream HTTP middleware to record its
@@ -1161,6 +1187,13 @@ func recipeBaselineStatusLine(store recipe.BaselineStore) string {
 		return "this recipe provider holds no baselines: brw_baseline for its recipes falls back to --baseline-root"
 	}
 	return "regression baselines for this provider's own recipes are stored with it, at " + store.BaselineLocation()
+}
+
+// proxyBaselineStatusLine says at startup how a proxying daemon decides where a
+// baseline belongs, because the answer is the difference between gating a
+// private recipe and writing its page to this machine's disk.
+func proxyBaselineStatusLine() string {
+	return "brw_baseline asks the browser host where each capture belongs; one that belongs with its private recipe provider is refused here rather than written to --baseline-root"
 }
 
 func configureRecipeProvider(ctx context.Context, directory, providerURL, tokenFile string) (recipe.Provider, error) {

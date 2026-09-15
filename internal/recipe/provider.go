@@ -163,7 +163,7 @@ func LoadDirectory(ctx context.Context, config DirectoryConfig) (*Catalog, error
 		}
 		if entry.IsDir() {
 			if isReservedBaselineDir(config.Root, path) {
-				if err := checkReservedBaselineDir(path); err != nil {
+				if err := checkReservedBaselineDir(config.Root); err != nil {
 					return err
 				}
 				return filepath.SkipDir
@@ -688,6 +688,12 @@ func (p *HTTPProvider) Fetch(ctx context.Context, id, version, digest string) (R
 	return out.Recipe, nil
 }
 
+// maxProviderResponseBytes caps every provider response this client reads. It
+// is a named constant because the baseline image bound is derived from it: a
+// capture the put accepts that no fetch can return is a baseline stored and
+// never usable again.
+const maxProviderResponseBytes = 8 << 20
+
 func (p *HTTPProvider) post(ctx context.Context, path string, body, out any) error {
 	requestCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
@@ -708,13 +714,13 @@ func (p *HTTPProvider) post(ctx context.Context, path string, body, out any) err
 		return err
 	}
 	defer resp.Body.Close()
-	limited := io.LimitReader(resp.Body, (8<<20)+1)
+	limited := io.LimitReader(resp.Body, maxProviderResponseBytes+1)
 	data, err := io.ReadAll(limited)
 	if err != nil {
 		return err
 	}
-	if len(data) > 8<<20 {
-		return errors.New("recipe provider response exceeds 8 MiB")
+	if len(data) > maxProviderResponseBytes {
+		return fmt.Errorf("recipe provider response exceeds %d bytes", maxProviderResponseBytes)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("recipe provider returned %s", resp.Status)
@@ -899,17 +905,70 @@ func isReservedBaselineDir(root, path string) bool {
 // called "baselines" would find them silently undiscovered. A recipe that
 // stopped being served with no error is worse than a root that refuses to load
 // and says why, so the name is reserved out loud.
-func checkReservedBaselineDir(dir string) error {
+//
+// The name is not enough on its own: a recipe saved as baseline.json under the
+// reserved tree would pass a name check and be exactly the silently-undiscovered
+// recipe this guard exists to prevent. So every .json file here is read and
+// required to be a baseline record.
+func checkReservedBaselineDir(root string) error {
+	dir := filepath.Join(filepath.Clean(root), BaselineRoot)
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	return filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" || entry.Name() == baselineRecordFile {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			return nil
 		}
-		return fmt.Errorf("%s/%s is reserved for regression baselines and holds %s; move those recipes elsewhere in the root",
-			BaselineRoot, filepath.Base(filepath.Dir(path)), entry.Name())
+		// The offending file's own path from the recipe root, so the message
+		// names something that exists. A directory name rebuilt from the file's
+		// parent reads correctly only when the file happens to sit one level
+		// down, and sends the operator to <root>/baselines/baselines otherwise.
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			relative = filepath.Join(BaselineRoot, entry.Name())
+		}
+		relative = filepath.ToSlash(relative)
+		if entry.Name() != baselineRecordFile {
+			return fmt.Errorf("%s is reserved for regression baselines; %s is not a baseline record, so move those recipes elsewhere in the root",
+				BaselineRoot, relative)
+		}
+		if err := checkBaselineRecordFile(path); err != nil {
+			return fmt.Errorf("%s is reserved for regression baselines; %s is not a baseline record (%w), so move those recipes elsewhere in the root",
+				BaselineRoot, relative, err)
+		}
+		return nil
 	})
+}
+
+// maxBaselineRecordBytes bounds one record file read at load. The record holds
+// no image — the screenshot lives beside it as a PNG — so this is generous for
+// a key, an environment and an ARIA tree, and it is here because the
+// fingerprint walk's own 1 MiB cap skips this subtree.
+const maxBaselineRecordBytes = 8 << 20
+
+// checkBaselineRecordFile reports whether one file under the reserved subtree
+// is a baseline record rather than a recipe wearing the record's file name.
+func checkBaselineRecordFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxBaselineRecordBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxBaselineRecordBytes {
+		return fmt.Errorf("larger than %d bytes", maxBaselineRecordBytes)
+	}
+	var record baseline.Record
+	if err := json.Unmarshal(data, &record); err != nil {
+		return errors.New("not decodable as a baseline record")
+	}
+	return record.Key.Validate()
 }
 
 func directoryFingerprint(config DirectoryConfig) (string, error) {

@@ -631,26 +631,46 @@ directory holds the PNG its file name claims.
 brwd --baseline-root /var/lib/brw/baselines   # auto uses the user cache; off (default) disables
 ```
 
-**Where a baseline lands is decided by the recipe, not by the caller.** A
-baseline of a signed-in page is a screenshot of private content, and the private
-provider already holds the recipe that reached the page. So brw asks the
-configured provider whether it owns the recipe the digest pins, and if it does,
-the baseline is stored with the provider. `--baseline-root` keeps the rest:
-public fixtures, and every recipe no provider claims. Each answer names the
-destination it used in `stored_in`, and a daemon with a provider needs no local
-root to gate that provider's own recipes.
+**Where a baseline lands is decided by the recipe and the page, not by the
+caller.** A baseline of a signed-in page is a screenshot of private content, and
+the private provider already holds the recipe that reached the page. So brw asks
+the configured provider whether it owns the recipe the digest pins, and if it
+does, the baseline is stored with the provider. `--baseline-root` keeps the
+rest: public fixtures, and every recipe no provider claims. Each answer names
+the destination it used in `stored_in`, and a daemon with a provider needs no
+local root to gate that provider's own recipes.
 
-Both shipped providers implement it. The directory provider keeps them under a
+`recipe_digest` is a caller argument, so it does not decide this on its own. An
+agent on a page a private recipe reached can pass any well-formed digest the
+provider does not own, and routing on the digest alone would write that page's
+screenshot and its ARIA names — which carry its text — to the local root. brw
+therefore asks about both in one question: the digest, and the origin the tab is
+showing. A provider that has a recipe for that origin and does not own the
+digest is a refusal, not a destination — brw does not know which of its recipes
+the capture belongs to and will not guess by keeping it locally. Only the origin
+crosses to the provider; the path and query of a signed-in page never do.
+
+A daemon started with `--upstream-http` runs `brw_baseline` itself while the
+provider lives on the browser host. It asks the host `/api/baselines/route` —
+two booleans, no recipe — and refuses by name anything that belongs with the
+provider rather than writing it to its own `--baseline-root`. Public fixtures
+still gate there. Take a private recipe's baselines on the browser-host daemon.
+
+Both shipped providers answer the routing question and hold baselines. The
+directory provider keeps them under a
 reserved `baselines/` subdirectory of the recipe root, which recipe discovery
 skips — a stored baseline is a `.json` file, and every other `.json` file under
 that root is parsed as a recipe. The name is reserved: a root whose `baselines/`
 holds anything but baseline records is refused at load with the file named,
-rather than serving a corpus with those recipes silently missing. The HTTPS
-provider `POST`s them:
+rather than serving a corpus with those recipes silently missing. The name is
+not the whole check — each `.json` file under the reserved tree is read and
+required to decode as a baseline record, because a recipe saved as
+`baseline.json` would otherwise pass on its name and be exactly the silently
+undiscovered recipe this refuses. The HTTPS provider `POST`s them:
 
 | route | body |
 | --- | --- |
-| `/v1/baselines/owner` | `{recipe_digest}` → `{owns}` |
+| `/v1/baselines/owner` | `{recipe_digest, origin?}` → `{owns, owns_origin}` — both required; an absent field is refused, not read as `false` |
 | `/v1/baselines/put` | the baseline → `{stored}` |
 | `/v1/baselines/fetch` | `{recipe_digest, step_index, environment_fingerprint}` → `{found, baseline}` |
 | `/v1/baselines/environments` | `{recipe_digest, step_index}` → `{environments}` |
@@ -658,7 +678,10 @@ provider `POST`s them:
 
 A baseline on the wire is the recipe/step key, the environment fingerprint
 alongside the environment it was computed from, the screenshot as base64 PNG,
-the ARIA tree and the ignore regions. The fingerprint is re-derived and the
+the ARIA tree and the ignore regions. The image bound is derived from the 8 MiB
+provider response cap rather than picked, because base64 inflates by 4/3 and a
+capture the put accepts that no fetch can return is a baseline stored and never
+usable again. The fingerprint is re-derived and the
 image re-decoded on the way back, and a record that does not describe the key
 that was asked for is refused: the provider is authenticated, not trusted, and a
 baseline from another environment would be compared against this page and

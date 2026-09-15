@@ -17,26 +17,43 @@ import (
 // keeps whatever it was given, so a test can say which store a capture landed
 // in rather than inferring it from a status string.
 type recordingBaselines struct {
-	owned     map[string]bool
+	owned map[string]bool
+	// origins is the other half of the routing question: the sites this
+	// provider has some recipe for, whatever the caller's digest says.
+	origins   map[string]bool
 	records   map[string]baseline.Record
 	ownsError error
 	asked     []string
+	// askedAbout is the page URL each routing question carried, so a test can
+	// say the destination was decided from the page and not only the argument.
+	askedAbout []string
 }
 
 func newRecordingBaselines(owned ...string) *recordingBaselines {
-	store := &recordingBaselines{owned: map[string]bool{}, records: map[string]baseline.Record{}}
+	store := &recordingBaselines{
+		owned:   map[string]bool{},
+		origins: map[string]bool{},
+		records: map[string]baseline.Record{},
+	}
 	for _, digest := range owned {
 		store.owned[strings.ToLower(digest)] = true
 	}
 	return store
 }
 
-func (r *recordingBaselines) OwnsRecipe(_ context.Context, digest string) (bool, error) {
+func (r *recordingBaselines) RouteBaseline(_ context.Context, digest, pageURL string) (recipe.BaselineRoute, error) {
 	r.asked = append(r.asked, digest)
+	r.askedAbout = append(r.askedAbout, pageURL)
 	if r.ownsError != nil {
-		return false, r.ownsError
+		return recipe.BaselineRoute{}, r.ownsError
 	}
-	return r.owned[strings.ToLower(digest)], nil
+	owns := recipe.BaselineRoute{OwnsRecipe: r.owned[strings.ToLower(digest)]}
+	for origin := range r.origins {
+		if pageURL != "" && strings.HasPrefix(pageURL, origin) {
+			owns.OwnsOrigin = true
+		}
+	}
+	return owns, nil
 }
 
 func (r *recordingBaselines) PutBaseline(_ context.Context, record baseline.Record) error {

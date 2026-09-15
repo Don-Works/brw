@@ -636,6 +636,7 @@ func (b *Bridge) recordHandshakeRejection(h hello, err error) {
 }
 
 func (b *Bridge) handleStatus(w http.ResponseWriter, r *http.Request) {
+	markInitiatorSensitive(w)
 	b.mu.RLock()
 	connected := b.conn != nil
 	hello := b.hello
@@ -6001,6 +6002,21 @@ func (b *Bridge) ClearTrace() {
 	b.traceMu.Lock()
 	b.trace = b.trace[:0]
 	b.traceMu.Unlock()
+}
+
+// markInitiatorSensitive marks a response whose BODY depends on who asked.
+//
+// /status includes the handshake token only for a caller tokenServable accepts,
+// and /consent is served only to that same caller, so both vary on Origin and
+// Sec-Fetch-Site. An unmarked 200 carrying a token is cacheable and
+// indistinguishable from the tokenless one, which is the shape the initiator
+// check exists to close. Chrome partitions its HTTP cache by top-level site and
+// the extension fetches with cache:"no-store", so this closes a gap rather than
+// a live path — and it is one line either way.
+func markInitiatorSensitive(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Add("Vary", "Origin")
+	w.Header().Add("Vary", "Sec-Fetch-Site")
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

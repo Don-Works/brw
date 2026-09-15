@@ -46,15 +46,22 @@ func privateRecipe() recipe.Recipe {
 // httpsProviderFixture is the provider side of the baseline wire format, kept
 // in memory. It answers the five routes an HTTPProvider calls.
 type httpsProviderFixture struct {
-	mu      sync.Mutex
-	owned   string
-	stored  map[string]json.RawMessage
-	handler http.Handler
+	mu    sync.Mutex
+	owned string
+	// ownedOrigin is the site this provider's one recipe covers. It is the
+	// other half of the routing question a real provider answers.
+	ownedOrigin string
+	stored      map[string]json.RawMessage
+	handler     http.Handler
 }
 
 func newHTTPSProviderFixture(t *testing.T, ownedDigest string) *httpsProviderFixture {
 	t.Helper()
-	fixture := &httpsProviderFixture{owned: strings.ToLower(ownedDigest), stored: map[string]json.RawMessage{}}
+	fixture := &httpsProviderFixture{
+		owned:       strings.ToLower(ownedDigest),
+		ownedOrigin: privateRecipe().Origins[0],
+		stored:      map[string]json.RawMessage{},
+	}
 	mux := http.NewServeMux()
 	read := func(w http.ResponseWriter, r *http.Request) map[string]any {
 		var body map[string]any
@@ -80,7 +87,11 @@ func newHTTPSProviderFixture(t *testing.T, ownedDigest string) *httpsProviderFix
 			return
 		}
 		digest, _ := body["recipe_digest"].(string)
-		answer(w, map[string]any{"owns": strings.EqualFold(digest, fixture.owned)})
+		origin, _ := body["origin"].(string)
+		answer(w, map[string]any{
+			"owns":        strings.EqualFold(digest, fixture.owned),
+			"owns_origin": origin != "" && strings.EqualFold(origin, fixture.ownedOrigin),
+		})
 	})
 	mux.HandleFunc("/v1/baselines/put", func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()

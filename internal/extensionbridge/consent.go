@@ -39,6 +39,7 @@ type consentStatus struct {
 // cannot read which other sites they have granted - which is itself a small
 // profile of the user.
 func (b *Bridge) handleConsent(w http.ResponseWriter, r *http.Request) {
+	markInitiatorSensitive(w)
 	if !b.tokenServable(r) {
 		http.Error(w, "consent surface is served only to the local extension", http.StatusForbidden)
 		return
@@ -71,6 +72,7 @@ func (b *Bridge) handleConsent(w http.ResponseWriter, r *http.Request) {
 
 // handleConsentRevoke revokes one grant, or all of them, from the options page.
 func (b *Bridge) handleConsentRevoke(w http.ResponseWriter, r *http.Request) {
+	markInitiatorSensitive(w)
 	if !b.tokenServable(r) {
 		http.Error(w, "consent surface is served only to the local extension", http.StatusForbidden)
 		return

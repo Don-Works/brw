@@ -38,6 +38,10 @@ const fixtureBaselineDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0
 // would test a capture no deployment hands back.
 type pageController struct {
 	browser.Controller
+	// url is what ListTabs reports the one tab is showing. brw_baseline routes
+	// on the page as well as on the digest, so a controller that could not say
+	// what it was on would be a browser no deployment has.
+	url     string
 	patched bool
 	// patch repaints an exact rectangle of the capture, in image pixels, so a
 	// test can place a change relative to an ignore region instead of relative
@@ -75,6 +79,14 @@ func (c *pageController) Screenshot(context.Context) (browser.Screenshot, error)
 		return browser.Screenshot{}, err
 	}
 	return browser.Screenshot{MIMEType: mime, Data: buf.Bytes(), Base64: base64.StdEncoding.EncodeToString(buf.Bytes())}, nil
+}
+
+func (c *pageController) ListTabs(context.Context) ([]browser.Tab, error) {
+	url := c.url
+	if url == "" {
+		url = "https://fixtures.example.test/report"
+	}
+	return []browser.Tab{{ID: "tab-1", URL: url, Active: true}}, nil
 }
 
 func (c *pageController) Evaluate(_ context.Context, expression string) (any, error) {

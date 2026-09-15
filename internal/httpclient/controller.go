@@ -739,6 +739,34 @@ func (c *Controller) SearchRecipes(ctx context.Context, query, origin string, li
 	return out, err
 }
 
+// RouteBaseline forwards the baseline routing question to the browser host.
+//
+// Only the question crosses, never a capture: this daemon has no private
+// provider of its own, so a baseline that belongs with one is refused by name
+// in internal/mcp rather than written to this daemon's local root. Answering it
+// from here rather than assuming "not the provider's" is the whole point — the
+// assumption is what put a private page's screenshot in a proxy's baseline root.
+//
+// A browser host that does not serve the route fails the call. That is
+// deliberate: an unanswerable routing question is exactly the case where
+// falling back to local storage is wrong.
+func (c *Controller) RouteBaseline(ctx context.Context, digest, pageURL string) (recipe.BaselineRoute, error) {
+	var out struct {
+		OwnsRecipe bool `json:"owns_recipe"`
+		OwnsOrigin bool `json:"owns_origin"`
+	}
+	body := map[string]any{"recipe_digest": digest, "page_url": pageURL}
+	if err := c.postExactWithLimit(ctx, "/api/baselines/route", body, &out, maxBaselineRouteResponseBytes); err != nil {
+		return recipe.BaselineRoute{}, fmt.Errorf("ask the browser host where this baseline belongs: %w", err)
+	}
+	return recipe.BaselineRoute{OwnsRecipe: out.OwnsRecipe, OwnsOrigin: out.OwnsOrigin}, nil
+}
+
+// maxBaselineRouteResponseBytes bounds a reply that is two booleans.
+const maxBaselineRouteResponseBytes = int64(4 << 10)
+
+var _ recipe.BaselineRouter = (*Controller)(nil)
+
 func (c *Controller) RunRecipe(ctx context.Context, request recipe.RunRequest) (recipe.RunResult, error) {
 	var out recipe.RunResult
 	// Ordinary browser calls default to a short transport timeout, but one valid

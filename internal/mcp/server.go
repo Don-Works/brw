@@ -64,6 +64,10 @@ type Server struct {
 	// owns goes there instead of the local root: the capture is of a page the
 	// private recipe reached, and the provider already holds the recipe.
 	recipeBaselines recipe.BaselineStore
+	// baselineRouter answers where a capture belongs. It is recipeBaselines on a
+	// browser-host daemon, and the upstream hop on a proxying one, which can ask
+	// the question without being able to store the answer.
+	baselineRouter recipe.BaselineRouter
 
 	// notify pushes a JSON-RPC notification to the client. Serve installs it;
 	// it is nil before Serve runs and on transports that cannot push.

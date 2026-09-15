@@ -29,26 +29,53 @@ func (s *Server) SetBaselineStore(store *baseline.Store) { s.baselines = store }
 // provider owns the recipe, that is where its baselines go; the local root is
 // what is left for public fixtures. Nil means no provider implements the
 // capability, and everything goes to the local root as before.
-func (s *Server) SetRecipeBaselines(store recipe.BaselineStore) { s.recipeBaselines = store }
+func (s *Server) SetRecipeBaselines(store recipe.BaselineStore) {
+	s.recipeBaselines = store
+	s.baselineRouter = store
+}
 
-// baselineStorage picks the destination for one recipe digest.
+// SetBaselineRouter installs the routing question WITHOUT a place to store the
+// answer. That is a daemon proxying its browser host: the private provider is
+// upstream, so this process can ask what the provider owns and cannot write to
+// it. Without the question a proxy routes every baseline to its own local root,
+// including captures of pages the provider's recipes reach.
+func (s *Server) SetBaselineRouter(router recipe.BaselineRouter) { s.baselineRouter = router }
+
+// errBaselineProviderIsUpstream is the refusal on a proxying daemon. Named
+// rather than a silent fall back to the local root, and narrower than refusing
+// the tool outright: a public fixture's baseline still works here.
+var errBaselineProviderIsUpstream = errors.New("this baseline belongs with the private recipe provider, which is on the browser-host daemon this one proxies over --upstream-http; run brw_baseline there rather than writing the capture to this daemon's --baseline-root")
+
+// baselineStorage picks the destination for one capture.
 //
-// The provider is asked whether it owns the recipe rather than the caller being
-// asked where to put the baseline: the caller is an agent, and which store a
-// capture belongs in is a property of the recipe, not a decision to delegate.
+// Two questions decide it, and neither is asked of the caller. The provider is
+// asked whether it owns the recipe the digest pins, because which store a
+// capture belongs in is a property of the recipe. It is asked about the page as
+// well, because the digest is an argument an agent invents: an agent sitting on
+// a page a private recipe reached can name any well-formed digest the provider
+// does not own, and routing on the digest alone would then write that page's
+// screenshot and accessible names to the local root. When the provider has a
+// recipe for the page's origin and does not own the digest, brw refuses instead
+// of guessing.
 //
-// A provider that errors on the ownership question is NOT quietly treated as
-// "not mine". That fallback would put a private-page screenshot in the local
-// root exactly when the provider is unreachable, which is the outcome this
-// whole path exists to prevent.
-func (s *Server) baselineStorage(ctx context.Context, digest string) (baseline.Storage, error) {
-	if s.recipeBaselines != nil {
-		owns, err := s.recipeBaselines.OwnsRecipe(ctx, digest)
+// A provider that errors on either question is NOT quietly treated as "not
+// mine". That fallback would put a private-page screenshot in the local root
+// exactly when the provider is unreachable, which is the outcome this whole
+// path exists to prevent.
+func (s *Server) baselineStorage(ctx context.Context, digest, pageURL string) (baseline.Storage, error) {
+	if s.baselineRouter != nil {
+		route, err := s.baselineRouter.RouteBaseline(ctx, digest, pageURL)
 		if err != nil {
-			return nil, fmt.Errorf("ask the private recipe provider whether it owns this recipe: %w", err)
+			return nil, fmt.Errorf("resolve where this baseline belongs: %w", err)
 		}
-		if owns {
+		if route.OwnsRecipe {
+			if s.recipeBaselines == nil {
+				return nil, errBaselineProviderIsUpstream
+			}
 			return recipe.ProviderBaselines(ctx, s.recipeBaselines), nil
+		}
+		if route.OwnsOrigin {
+			return nil, fmt.Errorf("the private recipe provider has a recipe for the page this tab is showing, and recipe_digest %s is not one of its recipes: a capture of that page is not written to the local baseline root, so gate it with the digest of the provider's own recipe for this page", digest)
 		}
 	}
 	if s.baselines == nil {
@@ -90,7 +117,7 @@ type baselineListResult struct {
 }
 
 func (s *Server) callBaseline(ctx context.Context, args json.RawMessage) (any, *rpcError) {
-	if s.baselines == nil && s.recipeBaselines == nil {
+	if s.baselines == nil && s.baselineRouter == nil {
 		return toolError(errBaselinesDisabled), nil
 	}
 	var req baselineRequest
@@ -122,7 +149,18 @@ func (s *Server) callBaseline(ctx context.Context, args json.RawMessage) (any, *
 	if err != nil {
 		return toolError(err), nil
 	}
-	store, err := s.baselineStorage(ctx, digest)
+	// The page is half of the routing question, so it is resolved before the
+	// destination is. Only the actions that capture the page need it: list reads
+	// no page and writes nothing, and requiring a live tab for it would refuse a
+	// call that has nothing to leak.
+	var pageURL string
+	if s.baselineRouter != nil && (action == "check" || action == "update") {
+		pageURL, err = s.currentPageOrigin(ctx, req.TabID)
+		if err != nil {
+			return toolError(fmt.Errorf("a baseline is routed by the page it captures as well as by the digest, and this tab's URL could not be read: %w", err)), nil
+		}
+	}
+	store, err := s.baselineStorage(ctx, digest, pageURL)
 	if err != nil {
 		return toolError(err), nil
 	}
@@ -238,9 +276,10 @@ func (s *Server) ariaTree(ctx context.Context) (snapshot.AriaTree, error) {
 
 // baselineTool is the catalogue entry. Every guarantee in it is enforced in
 // callBaseline or internal/baseline: the environment is part of the key, an
-// update only happens on the update action, and nothing is written by a check.
+// update only happens on the update action, nothing is written by a check, and
+// the destination is resolved from the recipe AND the page in baselineStorage.
 func baselineTool() map[string]any {
-	return tool("brw_baseline", "Gate a page against a stored regression baseline instead of eyeballing a screenshot. Actions: check (compare the current page against the baseline for this recipe step and environment — WRITES NOTHING, ever, including when it passes), update (replace that baseline with what the page looks like now; this is the only way a baseline changes), list (the environments a baseline already exists under for this step), delete (drop one baseline). A baseline is keyed by recipe_digest + step_index + an environment fingerprint brw measures itself: browser build, viewport, device pixel ratio, locale and the browser host's OS. If a baseline exists for the step but under different conditions, check reports status \"environment_mismatch\" and names the fields that moved (\"device_pixel_ratio 1 -> 2\") instead of a screen full of false pixel differences. Two comparisons run. The visual one counts pixels that moved, with pixel_tolerance as the fraction of compared pixels allowed to differ, channel_tolerance as the per-channel slack that absorbs anti-aliasing, and ignore_regions as NAMED rectangles in CSS pixels — put the clock, the avatar and the ad slot in there or every run fails. The structural one diffs the page's ARIA structure, role and accessible name, which catches a button losing its label — invisible to a pixel diff. It carries no geometry, so a change that only repaints (a font bump, a colour) moves the visual half and leaves the structural half alone. status is \"match\", \"diff\", \"environment_mismatch\", \"missing\" (nothing stored yet; run update once to record it), \"recorded\" or \"updated\"; failed is the single boolean to branch on. Baselines are stored by the daemon that runs the check, and stored_in names which of its two destinations was used: a recipe the private provider owns keeps its baselines with that provider, because the capture is of a page that recipe reached; everything else goes to the operator-configured local root, which the daemon refuses to place inside a Git working tree — so a baseline of a signed-in page cannot end up committed. You do not choose the destination and there is no argument for it: the recipe_digest decides. A daemon whose provider cannot be reached fails the call rather than writing that capture to the local root.", object(map[string]any{
+	return tool("brw_baseline", "Gate a page against a stored regression baseline instead of eyeballing a screenshot. Actions: check (compare the current page against the baseline for this recipe step and environment — WRITES NOTHING, ever, including when it passes), update (replace that baseline with what the page looks like now; this is the only way a baseline changes), list (the environments a baseline already exists under for this step), delete (drop one baseline). A baseline is keyed by recipe_digest + step_index + an environment fingerprint brw measures itself: browser build, viewport, device pixel ratio, locale and the browser host's OS. If a baseline exists for the step but under different conditions, check reports status \"environment_mismatch\" and names the fields that moved (\"device_pixel_ratio 1 -> 2\") instead of a screen full of false pixel differences. Two comparisons run. The visual one counts pixels that moved, with pixel_tolerance as the fraction of compared pixels allowed to differ, channel_tolerance as the per-channel slack that absorbs anti-aliasing, and ignore_regions as NAMED rectangles in CSS pixels — put the clock, the avatar and the ad slot in there or every run fails. The structural one diffs the page's ARIA structure, role and accessible name, which catches a button losing its label — invisible to a pixel diff. It carries no geometry, so a change that only repaints (a font bump, a colour) moves the visual half and leaves the structural half alone. status is \"match\", \"diff\", \"environment_mismatch\", \"missing\" (nothing stored yet; run update once to record it), \"recorded\" or \"updated\"; failed is the single boolean to branch on. Baselines are stored by the daemon that runs the check, and stored_in names which of its two destinations was used: a recipe the private provider owns keeps its baselines with that provider, because the capture is of a page that recipe reached; everything else goes to the operator-configured local root, which the daemon refuses to place inside a Git working tree — so a baseline of a signed-in page cannot end up committed. You do not choose the destination and there is no argument for it: the recipe and the PAGE decide. recipe_digest is an argument you supply, so it is not trusted on its own — if the provider has a recipe for the origin the tab is showing and the digest you passed is not one of its recipes, the call is refused instead of writing that page's capture locally. A daemon whose provider cannot be reached fails the call rather than writing that capture to the local root, and one that proxies its browser host (--upstream-http) refuses by name the baselines that belong with the provider, because the provider is on the host, not here.", object(map[string]any{
 		"action":        stringEnumSchema("check (compare, never write), update (accept the current page as the new baseline), list (environments already recorded for this step), delete (remove this environment's baseline).", "check", "update", "list", "delete"),
 		"recipe_digest": stringSchema("The 64-character hex content digest of the pinned recipe version, as returned by brw_recipe_search. Editing a recipe changes its digest, which orphans its baselines rather than silently comparing new behaviour against the old."),
 		"step_index":    integerSchema("Zero-based index of the step in that recipe this baseline belongs to."),

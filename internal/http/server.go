@@ -30,8 +30,13 @@ type Server struct {
 	manager   browser.Controller
 	artifacts artifact.API
 	recipes   recipe.API
-	identity  brwidentity.Identity
-	navPolicy *navpolicy.Policy
+	// baselineRoutes answers "does the private provider own this recipe, or the
+	// page this capture is of". A proxying daemon runs brw_baseline itself and
+	// has no provider of its own, so without this hop it would route every
+	// capture to its own local root.
+	baselineRoutes recipe.BaselineRouter
+	identity       brwidentity.Identity
+	navPolicy      *navpolicy.Policy
 	// consent is the per-origin grant guard behind /api/consent/*. Nil means the
 	// daemon was started without site consent.
 	consent *siteconsent.Guard
@@ -118,6 +123,11 @@ func (s *Server) SetArtifactAPI(api artifact.API) { s.artifacts = api }
 // Recipe contents remain behind the provider boundary; this HTTP surface only
 // exposes metadata search and exact, digest-pinned execution.
 func (s *Server) SetRecipeAPI(api recipe.API) { s.recipes = api }
+
+// SetBaselineRouter installs the baseline routing question for proxying
+// daemons to ask. Only two booleans ever leave through it: no recipe, no
+// baseline and no capture crosses this route.
+func (s *Server) SetBaselineRouter(router recipe.BaselineRouter) { s.baselineRoutes = router }
 
 // computeAllowedHosts derives the Host allowlist and whether to enforce it from
 // the daemon's bind address. The Host check defends against DNS-rebinding — a
@@ -391,6 +401,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/plugins/revoke", s.revokePlugin)
 	mux.HandleFunc("POST /api/recipes/search", s.searchRecipes)
 	mux.HandleFunc("POST /api/recipes/run", s.runRecipe)
+	mux.HandleFunc("POST /api/baselines/route", s.routeBaseline)
 	mux.HandleFunc("GET /api/consent/grants", s.consentGrants)
 	mux.HandleFunc("POST /api/consent/revoke", s.consentRevoke)
 }
@@ -556,6 +567,36 @@ func (s *Server) searchRecipes(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.recipes.SearchRecipes(r.Context(), req.Query, req.Origin, req.Limit)
 	writeResult(w, result, err)
+}
+
+// routeBaseline answers where one baseline belongs, for a daemon that proxies
+// this one.
+//
+// A host with no provider, or one whose provider holds no baselines, owns
+// nothing — which is the honest answer and the one that leaves the proxy free
+// to use its own local root. It is NOT an error: a refusal here would stop a
+// proxy gating public fixtures against a browser host that has no private
+// recipes at all.
+func (s *Server) routeBaseline(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RecipeDigest string `json:"recipe_digest"`
+		PageURL      string `json:"page_url"`
+	}
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	if s.baselineRoutes == nil {
+		writeResult(w, baselineRouteResponse{}, nil)
+		return
+	}
+	route, err := s.baselineRoutes.RouteBaseline(r.Context(), req.RecipeDigest, req.PageURL)
+	writeResult(w, baselineRouteResponse{OwnsRecipe: route.OwnsRecipe, OwnsOrigin: route.OwnsOrigin}, err)
+}
+
+// baselineRouteResponse is the whole of what this route discloses.
+type baselineRouteResponse struct {
+	OwnsRecipe bool `json:"owns_recipe"`
+	OwnsOrigin bool `json:"owns_origin"`
 }
 
 func (s *Server) runRecipe(w http.ResponseWriter, r *http.Request) {
