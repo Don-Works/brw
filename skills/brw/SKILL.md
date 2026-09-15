@@ -262,6 +262,7 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `brw_route({action:"add"|"list"|"clear", pattern, behaviour?:"fulfill"|"abort", status?, body?, content_type?, headers?, times?, tab_id?})`. `pattern` is a URL glob where `*` matches any run of characters; a pattern with no `*` matches as a prefix. First match wins, so add specific rules before general ones.
 - `fulfill` answers from `body`/`status` without touching the network (content type is inferred from the body or the pattern); `abort` fails the request — useful for analytics or a slow third party.
 - A route can never reach a host the navigation policy forbids: containment is evaluated first. Active routes are reported by `brw_observe` as `active_routes`, so mocked traffic is never invisible.
+- There is no `redirect` behaviour, on either transport. `behaviour:"redirect"` returns a named refusal rather than a rule that does nothing; to send a page somewhere else, mock the endpoint with `fulfill` or point the page at the other server.
 - `brw_artifact_capture({kind:"har"})` exports the tab's captured traffic as a HAR 1.2 file for DevTools or a bug report. Credential headers and request bodies are redacted unless you pass `redaction:"none"`.
 
 **When a page is contained**

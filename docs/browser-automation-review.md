@@ -311,7 +311,11 @@ parity argument alone:
 5. **Artifact efficiency.** Use CDP stream mode for PDFs/downloads where
    available, content-addressed deduplication under opaque per-capture handles,
    optional at-rest encryption, and a manifest artifact that links related
-   captures without inlining them.
+   captures without inlining them. The download half of this was since measured
+   and declined: the only CDP stream for a download's bytes is
+   `Fetch.takeResponseBodyAsStream`, and taking it cancels the download the rest
+   of brw tracks. See "A rendered PDF is pulled from the browser as a stream" in
+   [recipes and artifacts](recipes-and-artifacts.md).
 6. **Environment profiles.** Add controlled locale/timezone/media/permission
    emulation for direct-CDP contexts. Any auth-state import/export must remain a
    separately permissioned feature and must not weaken the cookie/storage

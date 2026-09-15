@@ -138,6 +138,12 @@ func bridgeRoute(opts browser.RouteOptions) (browser.Route, error) {
 	if pattern == "" {
 		return browser.Route{}, errors.New("route add requires a pattern (a URL glob such as https://api.example.com/*)")
 	}
+	// The same refusal the direct-CDP backend gives, from the same table: a
+	// behaviour brw declines to implement must not read as "not on this
+	// transport", which is what would send a caller looking for another profile.
+	if err := browser.CheckRouteBehaviourSupported(opts.Behaviour); err != nil {
+		return browser.Route{}, err
+	}
 	switch browser.RouteBehaviour(strings.ToLower(strings.TrimSpace(opts.Behaviour))) {
 	case browser.RouteAbort:
 	case "", browser.RouteFulfill:

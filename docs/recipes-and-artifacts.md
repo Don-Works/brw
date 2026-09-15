@@ -440,10 +440,36 @@ Chrome rather than at that size. Each CDP round trip carries its own deadline,
 so a long transfer is bounded per read rather than by one wall clock covering
 the render and the whole document, and the browser-side stream handle is
 released even when the capture was cancelled or timed out. A captured download
-is streamed from its completed file for the same reason; CDP has no stream
-handle for downloads, so the staged file is the stream. Both first-party
-transports implement the streaming capability; an upstream controller that
-cannot stream still produces a PDF through the buffered path.
+is streamed from its completed file for the same reason: the staged file is the
+stream, and the daemon holds one `io.Copy` buffer rather than the payload. Both
+first-party transports implement the streaming capability; an upstream
+controller that cannot stream still produces a PDF through the buffered path.
+
+There is a CDP stream handle for a download's bytes, and brw deliberately does
+not use it. With `Fetch` enabled at the response stage,
+`Fetch.takeResponseBodyAsStream` does hand back the body of a request that was
+about to become a download — including a navigation turned into one by
+`Content-Disposition`, and an `<a download>` click, both of which arrive as
+document requests — and it streams, delivering its first chunk long before the
+server has finished writing. What it does not do is leave the download intact.
+Taking the stream means the request can no longer be continued, so the browser
+never writes its copy and the transfer the rest of brw is built on never
+happens. The download manager either never hears about it — a navigation turned
+into a download raises no `Browser.download*` event at all — or records a
+cancellation at zero bytes, which is what an `<a download>` click produces.
+Either way there is no completed entry: no guid to select by, no suggested
+filename, no progress, and nothing for `brw_wait_for {condition:"download"}` to
+resolve on.
+
+Nor would it save a copy. brw's own staged file is deleted once the artifact is
+persisted, so the disk round trip is transient and already bounded, and the
+stream would trade it for the download lifecycle — on direct CDP only. The
+extension bridge intercepts with `declarativeNetRequest`, which is never handed
+a response body at all, and reaching CDP's `Fetch` domain there would mean
+holding interception across the `chrome.debugger` attach and detach that wraps
+each operation, which is the same reason `brw_route` `fulfill` is direct-CDP
+only. The measurements are in
+`TestFetchResponseStageStreamsADownloadInsteadOfTheBrowserTakingIt`.
 
 Artifacts can be encrypted at rest with `--artifact-encrypt off|recipe|all` and
 an operator key file given by `--artifact-key-file`. The default is off, and

@@ -397,6 +397,11 @@ func buildRoute(opts RouteOptions) (*Route, error) {
 	if pattern == "" {
 		return nil, fmt.Errorf("route add requires a pattern (a URL glob such as https://api.example.com/*)")
 	}
+	// Asked before the switch below, so a behaviour brw refuses on purpose is
+	// named as refused rather than reported as a misspelling of one it supports.
+	if err := CheckRouteBehaviourSupported(opts.Behaviour); err != nil {
+		return nil, err
+	}
 	behaviour := RouteBehaviour(strings.ToLower(strings.TrimSpace(opts.Behaviour)))
 	switch behaviour {
 	case "":

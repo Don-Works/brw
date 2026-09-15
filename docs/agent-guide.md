@@ -335,6 +335,11 @@ A route can never reach a host the navigation policy forbids — containment is
 evaluated first. `brw_observe` reports `active_routes`, so mocked traffic is
 never invisible in the transcript.
 
+There is no `redirect` behaviour on either transport, and asking for one returns
+a refusal naming the reason rather than a rule that quietly does nothing. Mock
+the endpoint with `fulfill`, or point the page at the other server; the
+measurements behind the decision are in `docs/install.md`.
+
 `brw_route {action:"replay", har_artifact_id}` answers from a HAR captured with
 `brw_artifact_capture {kind:"har"}` instead of from a hand-written body, so a
 page can be driven against a recording of its own backend.

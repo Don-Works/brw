@@ -426,9 +426,39 @@ exactly as direct CDP does here; the column below covers both.
 | Refuse a request | `{action:"add", behaviour:"abort"}` | Yes, a `declarativeNetRequest` session rule scoped to the tab, covering every resource type including the top-level navigation | Yes |
 | Answer from a body | `{action:"add", behaviour:"fulfill"}` | No | Yes |
 | Replay a recorded HAR | `{action:"replay", har_artifact_id}` | No | Yes, fetch and XHR only |
-| Redirect a request | none — there is no redirect behaviour | No. A `declarativeNetRequest` redirect needs host permissions for both the request URL and its initiator, which brw's extension deliberately does not hold, and Chrome declines such a rule silently rather than erroring | No, not implemented |
+| Redirect a request | `{action:"add", behaviour:"redirect"}` | No, refused by name — see below | No, refused by name — see below |
 | Retire a rule after N matches | `times` | No, a declarative rule reports no match count | Yes |
 | Report how often a rule fired | `routes[].matched` | No, for the same reason | Yes |
+
+#### Why there is no redirect
+
+Both transports can express a redirect, so this is a decision rather than a
+missing primitive. `brw_route {behaviour:"redirect"}` returns the same named
+refusal on each, because there is no profile where it would work.
+
+On the extension bridge a `declarativeNetRequest` redirect action needs host
+permissions for the request URL **and** for the request's initiator. brw's
+extension holds host permissions for loopback only, on purpose. Chrome does not
+refuse a rule it cannot apply: `updateSessionRules` accepts it and
+`getSessionRules` lists it, and it simply never fires — measured in
+`TestDeclarativeNetRequestRedirectNeverFiresUnderShippedPermissions`, which also
+shows the same rule firing once the request URL's host is added to
+`host_permissions`. Shipping the rule without that access is the worst of the
+options: an agent would be told a third-party origin was stubbed while the page
+reached it for real. Buying the access means holding host permissions for the
+sites the user browses, which is a permanent "read and change all your data on
+all websites" grant for one behaviour.
+
+On direct CDP the rewrite is `Fetch.continueRequest` with a new URL, and Chrome
+does **not** pause the rewritten request again — only the server's own 30x hop
+comes back through the interception (`TestRewrittenRequestURLIsNotPausedAgain`).
+Every other route behaviour answers a request brw was already shown; a redirect
+destination is one the containment listener never sees, so the single behaviour
+that widens what a page can reach would also be the one the allowlist could not
+gate.
+
+To mock an endpoint use `behaviour:"fulfill"` or `action:"replay"`. To drive a
+page against a different live server, point the page at that server.
 
 A HAR fixture is recorded and replayed with the ordinary artifact tools:
 
