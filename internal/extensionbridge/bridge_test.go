@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -527,9 +528,32 @@ func TestExtensionHasBridgeOptionsPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"prefers-color-scheme: dark", "prefers-reduced-motion: reduce", ":focus-visible", "min-height: 44px"} {
+	for _, want := range []string{"prefers-color-scheme: dark", "prefers-reduced-motion: reduce", ":focus-visible"} {
 		if !strings.Contains(string(optionsCSS), want) {
 			t.Fatalf("options styles missing %q", want)
+		}
+	}
+	popupCSS, err := os.ReadFile(filepath.Join("..", "..", "extension", "popup.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The hit-target floor, read as a number rather than matched as a string.
+	// The literal "min-height: 44px" this used to look for was satisfied by any
+	// occurrence anywhere, including a comment, and said nothing when a
+	// restyle quietly dropped every control to 34px — which is how it got
+	// there. Assert the property on the rules that actually style controls.
+	for _, surface := range []struct {
+		name string
+		css  []byte
+	}{{"options.css", optionsCSS}, {"popup.css", popupCSS}} {
+		heights := controlMinHeights(string(surface.css))
+		if len(heights) == 0 {
+			t.Fatalf("%s declares no min-height on .button or input; the hit-target floor is unenforced", surface.name)
+		}
+		for selector, px := range heights {
+			if px < 44 {
+				t.Fatalf("%s: %s has min-height %gpx, below the 44px hit-target floor", surface.name, selector, px)
+			}
 		}
 	}
 	optionsJS, err := os.ReadFile(filepath.Join("..", "..", "extension", "options.js"))
@@ -924,4 +948,91 @@ func findFunc(file *ast.File, name string) *ast.FuncDecl {
 		}
 	}
 	return nil
+}
+
+// controlMinHeights returns the min-height, in px, declared by each rule whose
+// selector styles an interactive control. It exists so the hit-target check can
+// compare a number instead of matching a string: a guard keyed on the spelling
+// "min-height: 44px" passes on a comment and says nothing when a restyle drops
+// every control to 34px.
+//
+// Rules carrying no min-height are absent from the result rather than zero — a
+// control can inherit its height from a rule that does declare one, and the
+// caller's own emptiness check covers the case where nothing declares it.
+func controlMinHeights(css string) map[string]float64 {
+	out := map[string]float64{}
+	for _, block := range strings.Split(css, "}") {
+		open := strings.Index(block, "{")
+		if open < 0 {
+			continue
+		}
+		selector := strings.TrimSpace(block[:open])
+		if i := strings.LastIndex(selector, "\n"); i >= 0 {
+			selector = strings.TrimSpace(selector[i+1:])
+		}
+		if !stylesAControl(selector) {
+			continue
+		}
+		for _, decl := range strings.Split(block[open+1:], ";") {
+			name, value, ok := strings.Cut(decl, ":")
+			if !ok || strings.TrimSpace(name) != "min-height" {
+				continue
+			}
+			value = strings.TrimSpace(value)
+			if !strings.HasSuffix(value, "px") {
+				continue // a relative or viewport unit is not ours to judge
+			}
+			px, err := strconv.ParseFloat(strings.TrimSuffix(value, "px"), 64)
+			if err != nil {
+				continue
+			}
+			out[selector] = px
+		}
+	}
+	return out
+}
+
+// stylesAControl reports whether a selector targets something a person clicks.
+// Deliberately narrow: the base rule for each control type, not its state and
+// variant rules, which inherit the height and would only add noise.
+func stylesAControl(selector string) bool {
+	switch selector {
+	case ".button", "input", "button", "select", "textarea",
+		`input[type="text"]`, `input[type="url"]`:
+		return true
+	}
+	return false
+}
+
+// TestControlMinHeightsReadsTheProperty pins the reader itself, so the guard
+// above cannot quietly start returning nothing and passing everything.
+func TestControlMinHeightsReadsTheProperty(t *testing.T) {
+	got := controlMinHeights(`
+/* min-height: 44px in a comment must not count */
+.button {
+  padding: 0 14px;
+  min-height: 44px;
+}
+.button.primary {
+  font-weight: 600;
+}
+input {
+  min-height: 34px;
+}
+.shell {
+  min-height: 100vh;
+}
+textarea {
+  min-height: 60em;
+}
+`)
+	want := map[string]float64{".button": 44, "input": 34}
+	if len(got) != len(want) {
+		t.Fatalf("controlMinHeights() = %v, want %v", got, want)
+	}
+	for selector, px := range want {
+		if got[selector] != px {
+			t.Fatalf("controlMinHeights()[%q] = %v, want %v", selector, got[selector], px)
+		}
+	}
 }

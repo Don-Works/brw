@@ -453,7 +453,7 @@ code {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 32px;
+  min-height: 44px;
   padding: 0 13px;
   font-size: var(--t-sm);
   font-weight: 560;

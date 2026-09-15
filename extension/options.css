@@ -485,7 +485,7 @@ footer a:hover,
   align-items: center;
   justify-content: center;
   gap: 7px;
-  min-height: 34px;
+  min-height: 44px;
   padding: 0 14px;
   font-size: var(--t-md);
   font-weight: 560;
@@ -926,7 +926,7 @@ form {
 
 input {
   width: 100%;
-  min-height: 34px;
+  min-height: 44px;
   padding: 0 10px;
   font-size: var(--t-md);
   font-variant-numeric: tabular-nums;
