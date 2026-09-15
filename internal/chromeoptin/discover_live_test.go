@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browsertest"
 	cdplaunch "github.com/Don-Works/brw/internal/cdp"
 )
 
@@ -38,7 +39,11 @@ func TestDiscoverFindsAChromeThatIsGenuinelyOptedIn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	dir := t.TempDir()
+	// The directory is reclaimed by browsertest rather than by t.TempDir,
+	// because this Chrome writes Default/ into it and testing's cleanup is one
+	// strict RemoveAll that races the last helper still doing so.
+	profile := browsertest.NewProfile(t)
+	dir := profile.Dir()
 	localState := `{"devtools":{"remote_debugging":{"user-enabled":true}}}`
 	if err := os.WriteFile(filepath.Join(dir, "Local State"), []byte(localState), 0o600); err != nil {
 		t.Fatalf("write Local State: %v", err)
@@ -58,7 +63,7 @@ func TestDiscoverFindsAChromeThatIsGenuinelyOptedIn(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Skipf("could not start Chrome: %v", err)
 	}
-	t.Cleanup(func() {
+	profile.StopWith(func() {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		_, _ = cmd.Process.Wait()
 	})

@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 
 	cdpproto "github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
+	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -494,23 +496,96 @@ const CrossOriginFramePointScript = `(function(index, px, py) {
   return { ok: false, reason: 'the embedding document hit-tests <' + what + '> there, not the frame' };
 })`
 
+// CrossOriginFramePointerProbeScript asks the FRAME's own document which element
+// the pointer is over, after a pointer move has been dispatched at the candidate
+// point.
+//
+// The embedder's elementFromPoint answers from the renderer's layout. Input for
+// an out-of-process iframe is routed and TRANSFORMED by the browser process from
+// compositor hit-test data, which is updated when the aggregated surface changes
+// — a different clock. Between them is the exact state this measures: the
+// embedder has scrolled and laid out, both documents agree the point is the
+// element's pixel, and an event dispatched there still arrives in the frame at
+// the offset the frame USED to have. Chrome routed the click 70px above the
+// button and the ref reported success, because nothing had asked the input path
+// where it would actually land.
+//
+// A pointer move is what a click dispatches first anyway, and :hover is the
+// frame's own answer to where that move landed, so this reads the routing
+// through the pipeline the click will use rather than predicting it.
+const CrossOriginFramePointerProbeScript = `(function(ref) {` + FrameWalkHelpers + `
+  var hit = __abFindDeep(ref);
+  if (!hit || !hit.el) return { ok: false, reason: 'the element is no longer in the frame' };
+  // :hover matches an ancestor of the hovered node too, so a pointer over a span
+  // inside the control still answers for the control.
+  var hovered = false;
+  try { hovered = hit.el.matches(':hover'); } catch (e) { hovered = false; }
+  if (hovered) return { ok: true, reason: '' };
+  var over = null;
+  try { over = document.querySelectorAll(':hover'); } catch (e) { over = null; }
+  var deepest = over && over.length ? over[over.length - 1] : null;
+  if (!deepest) return { ok: false, reason: 'the pointer is not inside the frame at all' };
+  var what = String(deepest.tagName || '').toLowerCase();
+  // The id is page-controlled and ends up in an error an operator reads, so it
+  // is bounded rather than pasted whole.
+  if (deepest.id) what += '#' + String(deepest.id).replace(/\s+/g, ' ').slice(0, 60);
+  return { ok: false, reason: 'the browser routes a pointer there to <' + what + '> inside the frame, not to the element' };
+})`
+
 // framePointCheck is what the embedder answered about one candidate point.
 type framePointCheck struct {
 	OK     bool   `json:"ok"`
 	Reason string `json:"reason"`
 }
 
-// crossOriginPointAttempts bounds the measure/verify loop. A cross-origin
-// scrollIntoView reaches the embedder through the browser process, so one pass
-// can read a rect the frame is already leaving; more than a few passes means the
-// page is moving under us and refusing is the honest answer.
-const crossOriginPointAttempts = 4
+// crossOriginPointAttempts is the floor and crossOriginPointBudget the ceiling on
+// the measure/verify loop.
+//
+// A cross-origin scrollIntoView reaches the embedder through the browser process,
+// so one pass can read a rect the frame is already leaving. The wait is bounded
+// by a clock rather than by passes because what the last check waits for — the
+// browser's input routing catching up with the scroll the embedder has already
+// laid out — is paced by compositor frames, not by how fast this loop can ask.
+//
+// The ceiling is not a tuning knob for slow machines. The loop ends on a
+// measured condition, and the ceiling only says when to stop believing it will
+// arrive: the routing settled in under a second on the slowest machine measured
+// (Chrome on emulated amd64 Linux, where everything else in the same test takes
+// twice its native time), and the caller's own deadline cuts it shorter when
+// that comes first. A point still wrong at the deadline is refused by name
+// rather than clicked in the hope that it has since become right.
+const (
+	crossOriginPointAttempts = 4
+	crossOriginPointBudget   = 5 * time.Second
+)
 
 // frameHitTest evaluates CrossOriginFramePointScript against the top document.
 func frameHitTest(ctx context.Context, index int, px, py float64) (framePointCheck, error) {
 	var check framePointCheck
 	expr := fmt.Sprintf("%s(%d,%g,%g)", CrossOriginFramePointScript, index, px, py)
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &check)); err != nil {
+		return framePointCheck{}, err
+	}
+	return check, nil
+}
+
+// framePointerRouting dispatches a pointer move at a top-level point and asks the
+// frame's own document where that move landed.
+//
+// The move is sent on the TOP-LEVEL session, in top-level viewport coordinates,
+// which is the same dispatch the click itself makes; the answer comes from the
+// frame's session, where the coordinates the browser handed the frame are the
+// only thing that decides what is under the pointer.
+func framePointerRouting(topCtx, frameCtx context.Context, ref string, px, py float64) (framePointCheck, error) {
+	if err := chromedp.Run(topCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return input.DispatchMouseEvent(input.MouseMoved, px, py).Do(ctx)
+	})); err != nil {
+		return framePointCheck{}, err
+	}
+	args, _ := json.Marshal(ref)
+	var check framePointCheck
+	expr := fmt.Sprintf("%s(%s)", CrossOriginFramePointerProbeScript, args)
+	if err := chromedp.Run(frameCtx, chromedp.Evaluate(expr, &check)); err != nil {
 		return framePointCheck{}, err
 	}
 	return check, nil
@@ -668,7 +743,20 @@ func resolveCrossOriginPoint(ctx context.Context, ref string, actionableTimeoutM
 		box.ViewportY = localViewportY + r.Y
 	}
 	check := framePointCheck{Reason: "the frame never settled in the embedding document"}
-	for attempt := 0; attempt < crossOriginPointAttempts; attempt++ {
+	// waitingOnRouting extends the loop past its pass count for the ONE condition
+	// that is paced by the browser rather than by this loop: both documents agree
+	// the point is the element's pixel and the input path has not caught up yet.
+	// A point refused for any other reason — covered, off screen, outside the
+	// frame — is refused at the pass count, because more passes cannot change it.
+	waitingOnRouting := false
+	deadline := time.Now().Add(crossOriginPointBudget)
+	// The caller's budget wins when it is shorter: waiting past it would refuse
+	// for the deadline that is about to cancel the call anyway, and the error an
+	// operator reads should name the condition, not the timeout.
+	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
+		deadline = callerDeadline
+	}
+	for attempt := 0; attempt < crossOriginPointAttempts || (waitingOnRouting && time.Now().Before(deadline)); attempt++ {
 		// ResolveBox scrolled the element into view inside the FRAME, and that
 		// request propagates out to the embedder through the browser process. The
 		// rect read straight after it is therefore one the frame is about to leave,
@@ -704,7 +792,21 @@ func resolveCrossOriginPoint(ctx context.Context, ref string, actionableTimeoutM
 			return ElementBox{}, err
 		}
 		if check.OK {
-			return box, nil
+			// The embedder's layout says the point is the frame's pixel. The
+			// browser process routes input from its own hit-test data, which is
+			// updated on a different clock, so the last word belongs to the frame:
+			// where did a real pointer move at this point actually arrive?
+			routed, probeErr := framePointerRouting(ctx, frameCtx, inner, box.ViewportX, box.ViewportY)
+			if probeErr != nil {
+				return ElementBox{}, probeErr
+			}
+			if routed.OK {
+				return box, nil
+			}
+			check = routed
+			waitingOnRouting = true
+		} else {
+			waitingOnRouting = false
 		}
 	}
 	// The point is not the frame's pixel, so a click there lands in the embedding

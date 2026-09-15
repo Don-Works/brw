@@ -312,7 +312,11 @@ func startChromeOutsideBrw(ctx context.Context, t *testing.T, downloadDir string
 	if err != nil {
 		t.Skipf("Chrome/Chromium not available: %v", err)
 	}
-	userDataDir = t.TempDir()
+	// Reclaimed by browsertest rather than by t.TempDir: this Chrome is one brw
+	// did not launch and does not shut down, so its helpers are still writing
+	// the profile when testing's own strict RemoveAll reaches for it.
+	profile := browsertest.NewProfile(t)
+	userDataDir = profile.Dir()
 	if downloadDir != "" {
 		if err := os.MkdirAll(filepath.Join(userDataDir, "Default"), 0o700); err != nil {
 			t.Fatalf("seed profile: %v", err)
@@ -344,7 +348,7 @@ func startChromeOutsideBrw(ctx context.Context, t *testing.T, downloadDir string
 	if err := cmd.Start(); err != nil {
 		t.Skipf("could not start Chrome: %v", err)
 	}
-	t.Cleanup(func() {
+	profile.StopWith(func() {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		_, _ = cmd.Process.Wait()
 	})
