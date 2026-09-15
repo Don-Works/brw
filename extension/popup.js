@@ -18,7 +18,11 @@ const detailsPanel = document.getElementById("detailsPanel");
 
 let refreshTimer = 0;
 let busy = false;
+// Setting `open` from render() fires `toggle` exactly as a click does. Without
+// the flag, the first automatic open (any unhealthy state) reads as an operator
+// preference and Details never collapses again, even once the bridge recovers.
 let operatorOpenedDetails = false;
+let programmaticDetails = false;
 let consentGranted = false;
 
 reconnectButton.addEventListener("click", reconnect);
@@ -26,7 +30,11 @@ optionsButton.addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
 });
 detailsPanel.addEventListener("toggle", () => {
-  operatorOpenedDetails = detailsPanel.open;
+  if (programmaticDetails) {
+    programmaticDetails = false;
+    return;
+  }
+  operatorOpenedDetails = true;
 });
 
 init();
@@ -96,7 +104,9 @@ async function refresh({ announce = false } = {}) {
   } catch (error) {
     applyLexicon("error", humanize(error));
     popup.dataset.state = "error";
+    programmaticDetails = !detailsPanel.open;
     detailsPanel.open = true;
+    document.getElementById("detailsMeta").textContent = "unavailable";
     document.getElementById("socketFact").textContent = "—";
     document.getElementById("daemonFact").textContent = "—";
     document.getElementById("portFact").textContent = "—";
@@ -160,7 +170,11 @@ function render(status, announce) {
   // Progressive disclosure: open Details when unhealthy unless the operator
   // already chose. Healthy Idle stays collapsed so the popup can disappear.
   if (!operatorOpenedDetails) {
-    detailsPanel.open = mode !== "connected" && mode !== "used";
+    const wanted = mode !== "connected" && mode !== "used";
+    if (detailsPanel.open !== wanted) {
+      programmaticDetails = true;
+      detailsPanel.open = wanted;
+    }
   }
 
   if (announce && mode === "disconnected") setMessage(summary, "error");
@@ -246,12 +260,29 @@ function clearMessage() {
   delete formMessage.dataset.kind;
 }
 
+// Same contract as the options page: name the problem and the recovery, and
+// never put a raw exception in front of the reader. The popup is smaller, so
+// the recovery is a place to go rather than a paragraph.
 function humanize(error) {
-  const text = String(error?.message || error || "Something went wrong").replace(/^Error:\s*/i, "");
+  const text = String(error?.message || error || "").replace(/^Error:\s*/i, "").trim();
+
   if (/failed to fetch|networkerror/i.test(text)) {
-    return "The local daemon is not reachable on the configured status URL.";
+    return "The local daemon is not reachable. Start brwd, or check the port in Options.";
   }
-  return text.charAt(0).toUpperCase() + text.slice(1);
+  if (/workspace mismatch|profile mismatch/i.test(text)) {
+    return "This daemon belongs to a different profile. Check the identity binding in Options.";
+  }
+  if (/sendmessage|message port closed|receiving end does not exist|extension context invalidated/i.test(text)) {
+    return "The background worker is not running. Reload brw on chrome://extensions.";
+  }
+  if (/missing handshake token|invalid handshake token/i.test(text)) {
+    return "The daemon refused the handshake. Reload the extension to pick up the current token.";
+  }
+  if (/consent/i.test(text)) {
+    return "Browser control is not enabled for this profile. Enable it in Options.";
+  }
+
+  return "Could not read the bridge state. Open Options for the underlying error.";
 }
 
 function sleep(ms) {

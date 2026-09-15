@@ -27,15 +27,18 @@
         <p class="consent-summary" id="consentSummary">
           When you ask an agent to use brw, this extension can read and change content in visible tabs and return the result to a brw daemon on this computer.
         </p>
-        <ul class="consent-facts">
-          <li>Handles tab URLs, page content, form values, screenshots, console/network diagnostics and requested downloads. On pages you choose, this may include personal, communication, financial, health, location or authentication information.</li>
-          <li>Connects only to <code>127.0.0.1</code> or <code>localhost</code>; Don Works and Revitt do not receive the data.</li>
-          <li>Refuses HttpOnly cookie and bulk-storage CDP methods. Browser control remains visible and can be disabled here at any time.</li>
-        </ul>
-        <p class="consent-terms">
-          If you connect brw to a third-party AI service, observations requested by that agent may be sent to that service under its privacy terms.
-          <a href="https://brw.donworks.co.uk/privacy" target="_blank" rel="noreferrer">Read the full privacy policy</a>.
-        </p>
+        <details class="consent-more" id="consentMore" open>
+          <summary>What brw can access</summary>
+          <ul class="consent-facts">
+            <li>Handles tab URLs, page content, form values, screenshots, console/network diagnostics and requested downloads. On pages you choose, this may include personal, communication, financial, health, location or authentication information.</li>
+            <li>Connects only to <code>127.0.0.1</code> or <code>localhost</code>; Don Works and Revitt do not receive the data.</li>
+            <li>Refuses HttpOnly cookie and bulk-storage CDP methods. Browser control remains visible and can be disabled here at any time.</li>
+          </ul>
+          <p class="consent-terms">
+            If you connect brw to a third-party AI service, observations requested by that agent may be sent to that service under its privacy terms.
+            <a href="https://brw.donworks.co.uk/privacy" target="_blank" rel="noreferrer">Read the full privacy policy</a>.
+          </p>
+        </details>
         <div class="consent-actions">
           <button class="button primary" id="grantConsent" type="button">Enable local browser control</button>
           <button class="button secondary" id="revokeConsent" type="button" hidden>Disable browser control</button>

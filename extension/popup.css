@@ -1,300 +1,391 @@
+/* brw profile bridge — toolbar popup.
+ *
+ * The surface an operator actually sees day to day, usually for two seconds to
+ * answer one question: is the bridge up, and if not, what do I do. So state
+ * leads, detail is one disclosure away, and the two actions sit where a thumb
+ * or cursor already is.
+ *
+ * Shares the options page's system exactly — same ramp, same semantics, same
+ * one-accent rule — because they are one product and a popup that invents its
+ * own palette reads as a different tool.
+ */
+
 :root {
   color-scheme: light dark;
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: 13px;
-  /* Brand-tinted neutrals (magenta hue), restrained product palette */
-  --bg: #f6f2f5;
-  --surface: #fffbfe;
-  --surface-2: #f3eef2;
-  --ink: #1d1520;
-  --muted: #6a5a66;
-  --line: #ddd0d9;
-  --accent: #9f006f;
-  --accent-hover: #7e0058;
-  --accent-soft: #fae7f4;
-  --success: #11643b;
-  --success-soft: #e4f5eb;
-  --warning: #765400;
-  --warning-soft: #fff2ca;
-  --danger: #a42c32;
-  --danger-soft: #fdebed;
-  --agent: #9f006f;
-  --agent-soft: #fae7f4;
-  --focus: #9f006f;
-  --radius: 12px;
-  --ease: cubic-bezier(.22, 1, .36, 1);
+
+  /* One type scale, five steps, shared by both surfaces. Sizes were ad hoc
+   * before — nineteen of them on the options page alone — which is how a
+   * hierarchy ends up flat: every element a little different from its
+   * neighbour and nothing clearly above anything else. */
+  --t-xs: .75rem;
+  --t-sm: .8125rem;
+  --t-md: .875rem;
+  --t-lg: 1rem;
+  --t-xl: 1.25rem;
+
+  --font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --n-0: #ffffff;
+  --n-1: #faf9fb;
+  --n-2: #f3f1f5;
+  --n-3: #e9e6ec;
+  --n-4: #d8d3dc;
+  --n-5: #b4acba;
+  --n-6: #7d7386;
+  --n-7: #554d5c;
+  --n-9: #1b1720;
+
+  --surface: var(--n-0);
+  --surface-sunken: var(--n-1);
+  --ink: var(--n-9);
+  --ink-2: var(--n-7);
+  --ink-3: var(--n-6);
+  --line: var(--n-3);
+  --line-strong: var(--n-4);
+
+  --accent: #a3006f;
+  --accent-hover: #86005c;
+  --accent-ink: #ffffff;
+
+  --ok: #0f6b41;
+  --ok-line: #a8d7bf;
+  --ok-wash: #f0faf4;
+  --warn: #7a5300;
+  --warn-line: #e6cd8e;
+  --warn-wash: #fdf7e8;
+  --bad: #a3242c;
+  --bad-line: #eeb4b7;
+  --bad-wash: #fdf2f3;
+  --idle: var(--n-6);
+
+  --focus: #5b34c7;
+
+  --r-sm: 6px;
+  --r-md: 10px;
+
+  --ease: cubic-bezier(.2, .8, .3, 1);
+  --fast: 120ms;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1a1418;
-    --surface: #241c22;
-    --surface-2: #2e242c;
-    --ink: #f6eef4;
-    --muted: #b5a4b0;
-    --line: #3f333c;
-    --accent: #ff6ec7;
-    --accent-hover: #ff8ad3;
-    --accent-soft: #3a2033;
-    --success: #5ddea0;
-    --success-soft: #163526;
-    --warning: #f0c14b;
-    --warning-soft: #3a2e10;
-    --danger: #ff8a90;
-    --danger-soft: #3a1a1c;
-    --agent: #ff6ec7;
-    --agent-soft: #3a2033;
-    --focus: #ff6ec7;
+    --n-0: #17141b;
+    --n-1: #1d1922;
+    --n-2: #242029;
+    --n-3: #2f2a36;
+    --n-4: #3d3745;
+    --n-5: #6b6275;
+    --n-6: #978da1;
+    --n-7: #c3b9cb;
+    --n-9: #f7f4f9;
+
+    --surface: var(--n-1);
+    --surface-sunken: var(--n-0);
+    --ink: var(--n-9);
+    --ink-2: var(--n-7);
+    --ink-3: var(--n-6);
+    --line: var(--n-3);
+    --line-strong: var(--n-4);
+
+    --accent: #ff5cc8;
+    --accent-hover: #ff7ed3;
+    --accent-ink: #2b0620;
+
+    --ok: #64d69c;
+    --ok-line: #23543c;
+    --ok-wash: #14241c;
+    --warn: #e8bd63;
+    --warn-line: #574420;
+    --warn-wash: #241d10;
+    --bad: #ff8f95;
+    --bad-line: #5e2a2f;
+    --bad-wash: #261418;
+
+    --focus: #a98cff;
   }
 }
 
-* { box-sizing: border-box; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Outranks every display rule below; the JS hides the message block with it. */
+[hidden] {
+  display: none !important;
+}
+
+html {
+  font-size: 16px;
+}
 
 body {
   margin: 0;
-  min-width: 300px;
-  max-width: 340px;
-  background: var(--bg);
+  width: 340px;
+  font-family: var(--font);
+  background: var(--surface);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--accent) 22%, transparent);
   color: var(--ink);
 }
 
-.popup {
-  padding: 14px 14px 12px;
+:where(a, button, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
 }
 
-.head,
-.brand,
-.status,
-.actions {
-  display: flex;
-  align-items: center;
+button {
+  font: inherit;
+  color: inherit;
+  -webkit-tap-highlight-color: transparent;
 }
+
+code {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.popup {
+  --state: var(--idle);
+  --state-line: var(--line);
+  --state-wash: var(--surface-sunken);
+  display: block;
+}
+
+.popup[data-state="connected"] {
+  --state: var(--ok);
+  --state-line: var(--ok-line);
+  --state-wash: var(--ok-wash);
+}
+
+.popup[data-state="used"] {
+  --state: var(--accent);
+  --state-line: var(--line);
+  --state-wash: var(--surface-sunken);
+}
+
+.popup[data-state="connecting"],
+.popup[data-state="consent"] {
+  --state: var(--warn);
+  --state-line: var(--warn-line);
+  --state-wash: var(--warn-wash);
+}
+
+.popup[data-state="disconnected"],
+.popup[data-state="error"] {
+  --state: var(--bad);
+  --state-line: var(--bad-line);
+  --state-wash: var(--bad-wash);
+}
+
+/* ─── Head ───────────────────────────────────────────────────────────────── */
 
 .head {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
 }
 
 .brand {
+  display: flex;
+  align-items: center;
   gap: 9px;
   min-width: 0;
 }
 
 .brand img {
-  display: block;
-  border-radius: 7px;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  flex: none;
 }
 
 .wordmark {
-  font-size: 1.125rem;
-  font-weight: 780;
-  letter-spacing: -0.03em;
-  line-height: 1.1;
+  font-size: var(--t-md);
+  font-weight: 640;
+  letter-spacing: -.015em;
+  line-height: 1.15;
 }
 
 .brand p {
-  margin: 3px 0 0;
-  color: var(--muted);
-  font-size: .75rem;
+  margin: 1px 0 0;
+  font-size: var(--t-xs);
+  line-height: 1.25;
+  color: var(--ink-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 190px;
+}
+
+.version:empty {
+  display: none;
 }
 
 .version {
-  flex: 0 0 auto;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--muted);
-  font: 650 .7rem/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
 }
 
+/* ─── Status ─────────────────────────────────────────────────────────────── */
+
 .status {
-  gap: 12px;
-  padding: 14px 13px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 11px;
+  padding: 15px 14px;
+  background: var(--state-wash);
+  border-bottom: 1px solid var(--line);
 }
 
 .status-mark {
-  width: 12px;
-  height: 12px;
-  flex: 0 0 auto;
-  border: 3px solid var(--muted);
-  border-radius: 50%;
-  background: transparent;
+  position: relative;
+  width: 9px;
+  height: 9px;
+  margin-top: 6px;
+  border-radius: 99px;
+  background: var(--state);
+}
+
+.popup[data-state="connecting"] .status-mark::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 99px;
+  border: 1.5px solid var(--state);
+  animation: pulse 1.6s var(--ease) infinite;
+}
+
+@keyframes pulse {
+  0% { transform: scale(.6); opacity: .7; }
+  100% { transform: scale(1.35); opacity: 0; }
 }
 
 .status-copy {
   min-width: 0;
-  flex: 1;
 }
 
 .status-label {
-  margin: 0 0 3px;
-  color: var(--muted);
-  font-size: .7rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  margin: 0 0 2px;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: .01em;
+  color: var(--state);
 }
 
-h1 {
-  margin: 0;
-  font-size: 1.2rem;
-  line-height: 1.2;
-  letter-spacing: -0.03em;
-  font-weight: 750;
+.status-copy h1 {
+  margin: 0 0 4px;
+  font-size: var(--t-md);
+  font-weight: 620;
+  letter-spacing: -.015em;
+  line-height: 1.3;
+  text-wrap: balance;
 }
 
 #statusSummary {
-  margin: 5px 0 0;
-  color: var(--muted);
-  font-size: .82rem;
-  line-height: 1.4;
-  max-width: 42ch;
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.45;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
 }
 
-/* —— state colours —— */
-.popup[data-state="loading"] .status-mark {
-  border-color: var(--muted);
-  animation: pulse 1.2s var(--ease) infinite;
-}
+/* ─── Details ────────────────────────────────────────────────────────────── */
 
-.popup[data-state="connected"] .status { background: var(--success-soft); border-color: color-mix(in srgb, var(--success) 28%, var(--line)); }
-.popup[data-state="connected"] .status-mark {
-  border-color: var(--success);
-  background: var(--success);
-}
-.popup[data-state="connected"] .status-label { color: var(--success); }
-
-.popup[data-state="used"] .status { background: var(--agent-soft); border-color: color-mix(in srgb, var(--agent) 30%, var(--line)); }
-.popup[data-state="used"] .status-mark {
-  border-color: var(--agent);
-  background: var(--agent);
-  animation: pulse 1s var(--ease) infinite;
-}
-.popup[data-state="used"] .status-label { color: var(--agent); }
-
-.popup[data-state="connecting"] .status { background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 30%, var(--line)); }
-.popup[data-state="connecting"] .status-mark {
-  border-color: var(--warning);
-  animation: pulse 1s var(--ease) infinite;
-}
-.popup[data-state="connecting"] .status-label { color: var(--warning); }
-
-.popup[data-state="consent"] .status { background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 30%, var(--line)); }
-.popup[data-state="consent"] .status-mark {
-  border-color: var(--warning);
-}
-.popup[data-state="consent"] .status-label { color: var(--warning); }
-
-.popup[data-state="disconnected"] .status,
-.popup[data-state="error"] .status { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); }
-.popup[data-state="disconnected"] .status-mark,
-.popup[data-state="error"] .status-mark {
-  border-color: var(--danger);
-  background: var(--danger);
-}
-.popup[data-state="disconnected"] .status-label,
-.popup[data-state="error"] .status-label { color: var(--danger); }
-
-@keyframes pulse {
-  50% { transform: scale(.72); opacity: .55; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .popup[data-state="used"] .status-mark,
-  .popup[data-state="connecting"] .status-mark,
-  .popup[data-state="loading"] .status-mark {
-    animation: none;
-  }
-}
-
-/* —— progressive disclosure —— */
 .details {
-  margin-top: 10px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
+  border-bottom: 1px solid var(--line);
 }
 
 .details > summary {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 40px;
-  padding: 0 11px;
+  gap: 8px;
+  padding: 10px 14px;
+  font-size: var(--t-sm);
+  font-weight: 560;
   cursor: pointer;
   list-style: none;
-  color: var(--ink);
-  font-size: .8rem;
-  font-weight: 650;
 }
 
-.details > summary::-webkit-details-marker { display: none; }
+.details > summary::-webkit-details-marker {
+  display: none;
+}
 
 .details > summary::before {
-  content: "›";
-  margin-right: 6px;
-  color: var(--muted);
-  transition: transform 140ms var(--ease);
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid var(--ink-3);
+  border-bottom: 1.5px solid var(--ink-3);
+  transform: rotate(-45deg);
+  transition: transform var(--fast) var(--ease);
+  flex: none;
 }
 
 .details[open] > summary::before {
-  transform: rotate(90deg);
+  transform: rotate(45deg);
 }
 
 .summary-meta {
-  color: var(--muted);
-  font-size: .72rem;
-  font-weight: 500;
+  margin-left: auto;
+  font-size: var(--t-xs);
+  font-weight: 400;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .details-body {
-  padding: 0 11px 11px;
-  border-top: 1px solid var(--line);
+  padding: 0 14px 12px;
 }
 
 .facts {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 9px 12px;
-  margin: 10px 0 0;
-  padding: 0;
+  margin: 0 0 12px;
 }
 
-.facts div { min-width: 0; }
+.facts > div {
+  min-width: 0;
+}
 
 .facts dt {
-  margin: 0 0 2px;
-  color: var(--muted);
-  font-size: .68rem;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  margin-bottom: 1px;
 }
 
 .facts dd {
   margin: 0;
-  overflow: hidden;
-  font-size: .82rem;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--t-sm);
+  font-weight: 560;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .legend {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 5px 10px;
-  margin: 10px 0 0;
-  padding: 8px 9px;
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--muted);
-  font-size: .72rem;
+  gap: 5px 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+  font-size: var(--t-xs);
+  color: var(--ink-3);
 }
 
 .legend span {
@@ -306,102 +397,117 @@ h1 {
 .dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
-  flex: 0 0 auto;
+  border-radius: 99px;
+  background: var(--idle);
+  flex: none;
 }
-.dot.connected { background: var(--success); }
-.dot.used { background: var(--agent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--agent) 30%, transparent); }
-.dot.connecting { background: var(--warning); }
-.dot.disconnected { background: var(--danger); }
+
+/* Literal toolbar badge colours, from BADGE_*_BG in service_worker.js. Chrome
+ * paints the badge the same in both schemes, and this legend exists to decode
+ * that badge — so it cannot use the theme tokens. A green that is not the
+ * badge's green explains nothing. Keep these in step with the constants. */
+.dot.connected { background: #1a7f37; }
+.dot.used { background: #9f006f; }
+.dot.connecting { background: #bf8700; }
+.dot.disconnected { background: #c5221f; }
+
+/* ─── Message ────────────────────────────────────────────────────────────── */
 
 .message {
-  margin-top: 10px;
-  color: var(--muted);
-  font-size: .78rem;
-  line-height: 1.35;
+  margin: 12px 14px 0;
+  padding: 9px 11px;
+  font-size: var(--t-sm);
+  line-height: 1.45;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  color: var(--ink-2);
 }
-.message[hidden] { display: none; }
-.message[data-kind="error"] { color: var(--danger); }
-.message[data-kind="success"] { color: var(--success); }
+
+.message[hidden] {
+  display: none;
+}
+
+.message[data-kind="success"] {
+  border-color: var(--ok-line);
+  background: var(--ok-wash);
+  color: var(--ok);
+}
+
+.message[data-kind="error"] {
+  border-color: var(--bad-line);
+  background: var(--bad-wash);
+  color: var(--bad);
+}
+
+/* ─── Actions ────────────────────────────────────────────────────────────── */
 
 .actions {
+  display: grid;
+  grid-template-columns: 1fr auto;
   gap: 8px;
-  margin-top: 12px;
+  padding: 12px 14px 14px;
 }
 
 .button {
-  min-height: 40px;
-  padding: 0 14px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 13px;
+  font-size: var(--t-sm);
+  font-weight: 560;
   color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
   cursor: pointer;
-  font: inherit;
-  font-weight: 650;
-  transition: background-color 140ms var(--ease), border-color 140ms var(--ease), filter 140ms var(--ease);
+  white-space: nowrap;
+  transition:
+    background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    transform var(--fast) var(--ease);
 }
 
-.button:hover { background: var(--surface-2); }
-.button:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 30%, transparent);
-}
-.button:disabled {
-  opacity: .55;
-  cursor: default;
+.button:hover {
+  background: var(--n-2);
 }
 
-.button.primary {
-  flex: 1;
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
-}
-.button.primary:hover {
-  filter: brightness(1.05);
-  background: var(--accent);
+.button:active {
+  transform: translateY(.5px);
 }
 
-.button.secondary {
-  flex: 1;
-}
-
-/* When healthy, Options is primary and Reconnect is quiet */
-.popup[data-state="connected"] #openOptions,
-.popup[data-state="used"] #openOptions {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
-}
-.popup[data-state="connected"] #openOptions:hover,
-.popup[data-state="used"] #openOptions:hover {
-  filter: brightness(1.05);
-}
-
+/* Reconnect is the one thing a popup is opened to do when something is wrong,
+ * so it carries the single accent — and only while it would actually help. */
 .popup[data-state="disconnected"] #reconnect,
 .popup[data-state="error"] #reconnect,
-.popup[data-state="connecting"] #reconnect,
-.popup[data-state="loading"] #reconnect {
-  flex: 1;
-  border-color: var(--accent);
+.popup[data-state="consent"] #reconnect {
+  color: var(--accent-ink);
   background: var(--accent);
-  color: #fff;
-}
-.popup[data-state="disconnected"] #reconnect:hover,
-.popup[data-state="error"] #reconnect:hover,
-.popup[data-state="connecting"] #reconnect:hover {
-  filter: brightness(1.05);
+  border-color: var(--accent);
+  font-weight: 600;
 }
 
-@media (prefers-color-scheme: dark) {
-  .button.primary,
-  .popup[data-state="connected"] #openOptions,
-  .popup[data-state="used"] #openOptions,
-  .popup[data-state="disconnected"] #reconnect,
-  .popup[data-state="error"] #reconnect,
-  .popup[data-state="connecting"] #reconnect,
-  .popup[data-state="loading"] #reconnect {
-    color: #1a1016;
+.popup[data-state="disconnected"] #reconnect:hover,
+.popup[data-state="error"] #reconnect:hover,
+.popup[data-state="consent"] #reconnect:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .popup[data-state="connecting"] .status-mark::after {
+    animation: none;
+    opacity: .35;
+  }
+  * {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
   }
 }

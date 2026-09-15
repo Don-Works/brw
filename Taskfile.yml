@@ -134,6 +134,7 @@ tasks:
       - |
         if command -v node >/dev/null 2>&1; then
           node extension/tab_resolution_test.mjs
+          node extension/surface_test.mjs
         else
           echo "node not found; skipping extension tests"
         fi

@@ -7,6 +7,7 @@ const formMessage = document.getElementById("formMessage");
 const rawStatus = document.getElementById("rawStatus");
 const advanced = document.getElementById("advancedConfig");
 const consentPanel = document.getElementById("consentPanel");
+const consentMore = document.getElementById("consentMore");
 const grantConsentButton = document.getElementById("grantConsent");
 const revokeConsentButton = document.getElementById("revokeConsent");
 const grantsList = document.getElementById("grantsList");
@@ -17,9 +18,22 @@ const revokeAllGrantsButton = document.getElementById("revokeAllGrants");
 let refreshTimer = 0;
 let refreshing = false;
 let consentGranted = false;
+// The poll re-renders every 3s. Setting `open` fires `toggle` just as a click
+// does, so without this flag the first programmatic collapse would look like an
+// operator preference and freeze the disclosure for the rest of the session.
+let operatorSetConsentMore = false;
+let programmaticConsentMore = false;
 
 form.addEventListener("submit", save);
 refreshButton.addEventListener("click", () => refreshStatus({ announce: true }));
+consentMore.addEventListener("toggle", () => {
+  if (programmaticConsentMore) {
+    programmaticConsentMore = false;
+    return;
+  }
+  operatorSetConsentMore = true;
+});
+
 grantConsentButton.addEventListener("click", () => updateConsent(true));
 revokeConsentButton.addEventListener("click", () => {
   if (window.confirm("Disable brw browser control and disconnect the local daemon?")) {
@@ -65,7 +79,7 @@ async function refreshGrants() {
     grantsList.replaceChildren();
     grantsRejected.hidden = true;
     grantsEmpty.hidden = false;
-    grantsEmpty.textContent = humanizeError(error);
+    grantsEmpty.textContent = "Site permissions cannot be read while the extension worker is down.";
     grantsSource.textContent = "";
   }
 }
@@ -292,6 +306,10 @@ function renderConsent(consent = {}) {
   grantConsentButton.hidden = consentGranted;
   revokeConsentButton.hidden = !consentGranted;
   saveButton.disabled = !consentGranted;
+  if (!operatorSetConsentMore && consentMore.open === consentGranted) {
+    programmaticConsentMore = true;
+    consentMore.open = !consentGranted;
+  }
 }
 
 function renderUnavailable(error) {
@@ -398,10 +416,38 @@ function isLoopback(hostname) {
   return hostname === "127.0.0.1" || hostname === "localhost";
 }
 
+// humanizeError turns a failure into something an operator can act on.
+//
+// The unmapped case is the one that matters. It used to capitalise the raw
+// exception and put it on screen, so a reader was shown "Cannot read properties
+// of undefined (reading 'sendMessage')" and told nothing about what to do —
+// which is the raw-diagnostic-dump anti-reference in PRODUCT.md, reached by
+// accident rather than by choice. Every branch now names a problem AND a
+// recovery; the exception text stays available under Diagnostic details, where
+// someone who wants it knows to look.
 function humanizeError(error) {
-  const text = String(error?.message || error || "Connection failed").replace(/^Error:\s*/i, "");
-  if (/failed to fetch|networkerror/i.test(text)) return "The local daemon is not reachable on the selected status URL.";
-  if (/workspace mismatch/i.test(text)) return "This daemon belongs to a different workspace. Check the identity binding below.";
-  if (/profile mismatch/i.test(text)) return "This daemon belongs to a different browser profile. Check the identity binding below.";
-  return text.charAt(0).toUpperCase() + text.slice(1);
+  const text = String(error?.message || error || "").replace(/^Error:\s*/i, "").trim();
+
+  if (/failed to fetch|networkerror/i.test(text)) {
+    return "The local daemon is not reachable on the selected status URL. Start brwd, or pick the port this browser profile uses.";
+  }
+  if (/workspace mismatch/i.test(text)) {
+    return "This daemon belongs to a different workspace. Check the identity binding under Advanced configuration.";
+  }
+  if (/profile mismatch/i.test(text)) {
+    return "This daemon belongs to a different browser profile. Check the identity binding under Advanced configuration.";
+  }
+  // Chrome tears the message port down with the service worker, so both of
+  // these mean the worker is not running rather than that anything is broken.
+  if (/sendmessage|message port closed|receiving end does not exist|extension context invalidated/i.test(text)) {
+    return "The extension's background worker is not running. Reload brw on chrome://extensions, then refresh this page.";
+  }
+  if (/missing handshake token|invalid handshake token/i.test(text)) {
+    return "The daemon refused this extension's handshake. Reload the extension so it picks up the current token.";
+  }
+  if (/consent/i.test(text)) {
+    return "Browser control is not enabled for this profile. Use the enable button above, then reconnect.";
+  }
+
+  return "The extension could not read its connection state. Refresh, and open Diagnostic details below for the underlying error.";
 }
