@@ -1,10 +1,9 @@
 package setup
 
 import (
-	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 // SkillDestinations are the global skill directories the common agent harnesses
@@ -17,69 +16,40 @@ func SkillDestinations(home string) []string {
 	}
 }
 
-// FindSkillSource locates the shipped skills/brw directory: the app directory a
-// package installer or `task install-mac` wrote, the platform share directory a
-// native installer wrote, the directory the running brwctl sits in, or the
-// working directory of a source checkout. The first that holds a SKILL.md wins.
-func FindSkillSource(appDir, executable, workingDir string) (string, error) {
-	var candidates []string
-	if appDir != "" {
-		candidates = append(candidates, filepath.Join(appDir, "skills", "brw"))
-	}
-	if executable != "" {
-		binDir := filepath.Dir(executable)
-		candidates = append(candidates,
-			filepath.Join(binDir, "..", "skills", "brw"),
-			filepath.Join(binDir, "..", "share", "brw", "skills", "brw"),
-		)
-	}
-	switch runtime.GOOS {
-	case "darwin":
-		candidates = append(candidates, filepath.Join("/usr", "local", "share", "brw", "skills", "brw"))
-	case "windows":
-	default:
-		candidates = append(candidates, filepath.Join("/usr", "share", "brw", "skills", "brw"))
-	}
-	if workingDir != "" {
-		candidates = append(candidates, filepath.Join(workingDir, "skills", "brw"))
-	}
-	for _, candidate := range dedupeStrings(candidates) {
-		clean := filepath.Clean(candidate)
-		if info, err := os.Stat(filepath.Join(clean, "SKILL.md")); err == nil && info.Mode().IsRegular() {
-			return clean, nil
-		}
-	}
-	return "", errors.New("no skills/brw directory found next to the brw install or in the working directory")
-}
-
-// CopyTree mirrors src into dst and reports whether anything on disk changed.
-// Identical content is left alone so a re-run can honestly say it did nothing,
-// and files the source no longer has are removed so a stale skill page cannot
-// linger as instructions an agent still reads.
-func CopyTree(src, dst string) (changed bool, err error) {
+// CopyTree mirrors an fs.FS into dst and reports whether anything on disk
+// changed. Identical content is left alone so a re-run can honestly say it did
+// nothing, and files the source no longer has are removed so a stale skill page
+// cannot linger as instructions an agent still reads.
+//
+// The source is an fs.FS rather than a directory path because the skill brwctl
+// installs comes out of the binary (see internal/agentskill). Hunting for a
+// directory next to the executable is what let the copy on disk and the daemon
+// serving it drift apart in the first place: whichever brw ran setup decided
+// what the page said, for every brw afterwards.
+func CopyTree(src fs.FS, dst string) (changed bool, err error) {
 	wanted := map[string]bool{}
-	err = filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
+	err = fs.WalkDir(src, ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		relative, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, relative)
-		if relative != "." {
+		target := filepath.Join(dst, filepath.FromSlash(path))
+		if path != "." {
 			wanted[filepath.Clean(target)] = true
 		}
-		if info.IsDir() {
+		if entry.IsDir() {
 			if _, statErr := os.Stat(target); os.IsNotExist(statErr) {
 				changed = true
 			}
 			return os.MkdirAll(target, 0o755)
 		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := fs.ReadFile(src, path)
 		if err != nil {
 			return err
 		}

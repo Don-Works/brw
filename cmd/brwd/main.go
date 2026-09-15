@@ -23,6 +23,7 @@ import (
 	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/baseline"
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/brwconfig"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	cdplaunch "github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/chromeoptin"
@@ -83,6 +84,7 @@ func main() {
 	var upstreamHTTP string
 	var mcpToolProfile string
 	var mcpIdleExit time.Duration
+	var httpIdleExit time.Duration
 	var printSystemPrompt bool
 	var blockedDomains string
 	var allowedDomains string
@@ -117,11 +119,13 @@ func main() {
 	var chromeOptIn bool
 	var chromeOptInBrowser string
 	var chromeOptInUserDataDir string
+	var configPath string
 
 	flag.StringVar(&httpAddr, "http", envDefault("BRW_HTTP_ADDR", "127.0.0.1:17310"), "HTTP listen address, or off. Defaults to loopback; bind a non-loopback address only behind SSH/Tailscale with caller auth.")
 	flag.BoolVar(&mcpMode, "mcp", false, "run MCP stdio server")
 	flag.StringVar(&mcpToolProfile, "mcp-tools", envDefault("BRW_MCP_TOOLS", "auto"), "MCP tool surface advertised in tools/list: 'all' (full), 'core' (lean common-flow set), 'minimal' (smallest surface that still completes ordinary web work), or 'auto' (default; starts minimal and grows as the agent discovers tools with brw_tools). The catalogue is re-sent on every request, so a narrower profile is a per-turn context saving. All tools remain callable regardless.")
 	flag.DurationVar(&mcpIdleExit, "mcp-idle-exit", envDuration("BRW_MCP_IDLE_EXIT", 0), "exit the --mcp stdio server cleanly after this long with no requests; upstream HTTP proxies default to 90m unless this flag or BRW_MCP_IDLE_EXIT is explicitly set (0 disables). Prevents abandoned clients from accumulating disposable proxy processes.")
+	flag.DurationVar(&httpIdleExit, "idle-exit", envDuration("BRW_IDLE_EXIT", 0), "shut this daemon down cleanly after this long with no API request; 0 (the default) keeps it persistent. For a daemon started for one job — a scheduled run, a CI step — that would otherwise hold a browser and a loopback port until the machine reboots. A /health poll does not count as use, so a supervisor cannot keep an abandoned daemon alive.")
 	flag.BoolVar(&bridgeMode, "bridge", false, "use installed Chrome extension bridge instead of direct CDP")
 	flag.BoolVar(&headless, "headless", envBool("BRW_HEADLESS"), "direct CDP: launch Chrome with no visible window (--headless=new). Extensions, the persistent profile and the full CDP surface still work. Incompatible with --bridge and --remote, which attach to a browser brw did not launch. A profile may set \"headless\": true instead.")
 	flag.StringVar(&bridgeAddr, "bridge-addr", envDefault("BRW_BRIDGE_ADDR", "127.0.0.1:17311"), "extension bridge WebSocket listen address")
@@ -130,7 +134,7 @@ func main() {
 	flag.BoolVar(&bridgeFollowFocus, "bridge-follow-focus", envBool("BRW_BRIDGE_FOLLOW_FOCUS"), "bridge: follow the user's manually-focused Chrome tab for no-tab_id actions (legacy behavior). OFF by default: brw works in its own tab group on tabs it opened (opening a fresh one when needed) and never touches your existing tabs unless you pass tab_id. Turn on for an interactive session where you want brw to act on whatever tab you have selected.")
 	flag.IntVar(&bridgeMaxInflight, "bridge-max-inflight", envInt("BRW_BRIDGE_MAX_INFLIGHT", 6), "bridge: max concurrent operations on the shared extension socket. Excess calls queue and, past the deadline, fail fast with a busy signal. Caps load on the single Chrome extension worker so many parallel agents can't wedge it. 0 disables the cap.")
 	flag.StringVar(&upstreamHTTP, "upstream-http", os.Getenv("BRW_UPSTREAM_HTTP"), "proxy MCP/HTTP control to an existing local brw HTTP daemon")
-	flag.StringVar(&cfg.RemoteURL, "remote", os.Getenv("BRW_REMOTE_URL"), "attach to existing CDP endpoint, for example http://127.0.0.1:9222")
+	flag.StringVar(&cfg.RemoteURL, "remote", os.Getenv("BRW_REMOTE_URL"), "attach to an existing CDP endpoint, for example http://127.0.0.1:9222, or \"auto\" to find one: brw reads DevToolsActivePort in the user data directory (which is the only place an ephemeral port is written) and then tries the conventional loopback debugging ports, attaching only to something that answers /json/version as a browser.")
 	flag.StringVar(&profileName, "profile", os.Getenv("BRW_PROFILE"), "workspace-allowed browser profile name")
 	flag.StringVar(&workspaceName, "workspace", os.Getenv("BRW_WORKSPACE"), "workspace binding name for default/restricted profiles")
 	flag.StringVar(&profilePolicyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path; defaults to standard brw config discovery")
@@ -178,7 +182,29 @@ func main() {
 	flag.BoolVar(&chromeOptIn, "chrome-opt-in", envBool("BRW_CHROME_OPT_IN"), "attach to a Chrome 144+ instance whose user has turned on remote debugging at chrome://inspect/#remote-debugging. This is full browser-target CDP against the real signed-in profile, with none of the extension bridge's incognito or cookie limits and no extension at all. Downloads are reported but not routed, and brw_state is refused: brw will not move or seal what belongs to the browser's own user. A profile policy grants this lane with chrome_opt_in_allowed: true. brw never turns the opt-in on: it is a human action by design, and with it off the daemon says so and exits rather than launching a browser with a debugging flag. Chrome 144+ also asks you to approve each debugging connection in the browser window; brw waits two minutes for that and then exits naming the prompt, rather than hanging.")
 	flag.StringVar(&chromeOptInBrowser, "chrome-opt-in-browser", envDefault("BRW_CHROME_OPT_IN_BROWSER", "chrome"), "which browser's user data directory --chrome-opt-in looks in for the endpoint (chrome, chromium, edge, brave, vivaldi)")
 	flag.StringVar(&chromeOptInUserDataDir, "chrome-opt-in-user-data-dir", os.Getenv("BRW_CHROME_OPT_IN_USER_DATA_DIR"), "explicit user data directory for --chrome-opt-in, when the browser is not one brw knows the default path for. brw only reads from it.")
+	flag.StringVar(&configPath, "config", os.Getenv("BRW_CONFIG"), "brw.json holding this machine's daemon defaults, with optional per-profile sections. Defaults to brw.json in the user config directory, which is read when it exists and ignored when it does not. It is the weakest source: a flag on the command line wins, then the environment, then the file.")
 	flag.Parse()
+
+	// brw.json is applied after Parse and before anything reads a flag, and it
+	// only fills in what the command line and the environment left alone. The
+	// set of flags the operator actually typed is what makes that possible:
+	// brwd reads its environment as each flag's default, so a flag's value alone
+	// cannot say whether anybody chose it.
+	if config, configFile, err := brwconfig.Load(configPath); err != nil {
+		log.Fatalf("config: %v", err)
+	} else if config != nil {
+		applied, err := config.Apply(flag.CommandLine, profileName, flagsSetOnCommandLine(), os.LookupEnv)
+		if err != nil {
+			log.Fatalf("config %s: %v", configFile, err)
+		}
+		if len(applied) > 0 {
+			settings := make([]string, 0, len(applied))
+			for _, setting := range applied {
+				settings = append(settings, setting.String())
+			}
+			log.Printf("config %s supplied %s", configFile, strings.Join(settings, ", "))
+		}
+	}
 
 	mcpIdleExit = effectiveMCPIdleExit(
 		mcpIdleExit,
@@ -377,6 +403,28 @@ func main() {
 		case upstreamHTTP != "":
 			log.Fatalf("--proxy-server, --ignore-https-errors and --ca-cert cannot be combined with --upstream-http: set them on the daemon that launches the browser")
 		}
+	}
+	// --remote auto is resolved here, after the profile policy has decided which
+	// user data directory this daemon is for: the browser's own
+	// DevToolsActivePort lives in that directory, and it is the only place an
+	// ephemeral debugging port is ever written down.
+	if cdplaunch.IsAutoConnect(cfg.RemoteURL) {
+		if bridgeMode || upstreamHTTP != "" {
+			// Named rather than quietly ignored: neither of these modes uses a
+			// CDP endpoint, so discovering one would probe the machine's ports
+			// and then throw the answer away.
+			log.Fatalf("--remote auto cannot be combined with --bridge or --upstream-http: neither drives the browser over a CDP endpoint, so there is nothing to attach")
+		}
+		discoverCtx, cancelDiscover := context.WithTimeout(context.Background(), 15*time.Second)
+		endpoint, err := cdplaunch.AutoConnect(discoverCtx, cdplaunch.AutoConnectOptions{
+			UserDataDirs: autoConnectSearchDirs(cfg.UserDataDir),
+		})
+		cancelDiscover()
+		if err != nil {
+			log.Fatalf("--remote auto: %v", err)
+		}
+		cfg.RemoteURL = endpoint.URL
+		log.Printf("--remote auto attached to %s (%s) found by %s", endpoint.URL, endpoint.Browser, endpoint.Source)
 	}
 	cfg.Headless = headless
 	usageIdentity := runtimeIdentity
@@ -758,6 +806,9 @@ func main() {
 		// surfaces on one daemon then disagreed about what they were driving,
 		// and a caller gating on transport silently got no answer.
 		api = httpapi.NewWithIdentity(httpAddr, controller, usageIdentity)
+		// /api/skill serves this binary's own copy of the agent manual, and the
+		// version is what lets a caller tell it apart from the copy on disk.
+		api.SetVersion(mcp.Version)
 		api.SetNavigationPolicy(navPolicy)
 		api.SetSiteConsent(consentGuard)
 		api.SetUsageRecorder(usage)
@@ -770,6 +821,20 @@ func main() {
 			api.SetBaselineRouter(recipeBaselines)
 		}
 		api.SetPluginRegistry(plugins)
+		if httpIdleExit > 0 {
+			api.SetIdleExit(httpIdleExit)
+			log.Printf("HTTP idle-exit armed: shutting down after %s with no API request", httpIdleExit)
+			go func() {
+				if api.WatchIdle(ctx) {
+					log.Printf("no API request for %s; shutting down", httpIdleExit)
+					// stop(), not os.Exit: the deferred browser close is the
+					// only thing that detaches the debugger and tears Chrome
+					// down, and an idle exit that orphaned a browser would be
+					// worse than staying up.
+					stop()
+				}
+			}()
+		}
 		defer gracefulShutdown("HTTP API", api.Shutdown)
 		if !isLoopback(httpAddr) {
 			log.Printf("WARNING: HTTP API bound to non-loopback address %s; no authentication is enforced — ensure caller auth is in place (SSH/Tailscale)", httpAddr)
@@ -853,6 +918,22 @@ func main() {
 	// HTTP API and extension-bridge graceful shutdown run via the deferred
 	// gracefulShutdown calls registered at construction, so they fire on every
 	// exit path (including the MCP-mode early return).
+}
+
+// autoConnectSearchDirs is where --remote auto looks for a browser's own
+// DevToolsActivePort file, most specific first: the directory this daemon was
+// configured for, then brw's own default profile directory. A user data
+// directory is where the browser writes its ephemeral debugging port, so a
+// directory the operator named is a far better answer than any port guess.
+func autoConnectSearchDirs(configured string) []string {
+	var dirs []string
+	if trimmed := strings.TrimSpace(configured); trimmed != "" {
+		dirs = append(dirs, trimmed)
+	}
+	if fallback := cdplaunch.DefaultProfileDir(""); fallback != "" && fallback != strings.TrimSpace(configured) {
+		dirs = append(dirs, fallback)
+	}
+	return dirs
 }
 
 func effectiveMCPIdleExit(configured time.Duration, mcpMode bool, upstreamHTTP string, explicitlyConfigured bool) time.Duration {
@@ -1320,6 +1401,15 @@ func normalizeAddr(addr string) string {
 		return strings.TrimPrefix(addr, "127.0.0.1")
 	}
 	return "/" + addr
+}
+
+// flagsSetOnCommandLine is the set of flags the operator actually typed. It is
+// what keeps brw.json weaker than the command line: a flag's value cannot say
+// whether anybody chose it, because brwd reads the environment as the default.
+func flagsSetOnCommandLine() map[string]bool {
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	return set
 }
 
 func flagWasSet(name string) bool {

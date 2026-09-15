@@ -215,6 +215,65 @@ brw completion zsh > "${fpath[1]}/_brw"
 brw completion bash > /etc/bash_completion.d/brw
 ```
 
+`brw skill` prints brw's operating manual out of the daemon you are talking to,
+stamped with that daemon's build — the same answer `brw_skill` gives over MCP and
+`GET /api/skill` over HTTP. Prefer it to whatever copy is on disk: that one was
+written by whichever brw was installed when `brwctl setup` last ran, and after an
+upgrade it describes a surface the daemon no longer has.
+
+## Scheduling
+
+brw ships no scheduler. `brw run <recipe-id>` is the entry point launchd,
+systemd or cron drives: one recipe, one JSON object on stdout, diagnostics on
+stderr, and an exit code that tells a postcondition failure (4) apart from a
+policy refusal (5), a broken daemon (3) and another run already holding the
+profile (6). Two runs against one browser profile serialise on a lock keyed by
+the profile rather than the daemon, so they can never interleave on one tab, and
+anything that would prompt a human is refused rather than waited on.
+
+```sh
+brw run example.invoices.download --recipe-version 3 --digest <sha256>
+```
+
+Working launchd and systemd examples are in
+[docs/scheduling.md](docs/scheduling.md).
+
+## Configuring a daemon
+
+Every `brwd` setting is a flag, and a flag is also an environment variable
+(`--http` / `BRW_HTTP_ADDR`). `brw.json` is the third place, for the settings a
+machine should have without repeating them in every unit file and shell alias:
+
+```json
+{
+  "defaults": {"site-consent": true, "usage-log": "auto"},
+  "profiles": {
+    "chrome-work": {"http": "127.0.0.1:17320", "idle-exit": "2h"}
+  }
+}
+```
+
+It lives at `brw.json` in your user config directory, or wherever `--config` /
+`BRW_CONFIG` points. Keys are flag names; a key that is not a flag is a startup
+error rather than a setting that quietly does nothing. It is the weakest source:
+the command line wins, then the environment, then the profile section, then the
+file's defaults. The flags that say what an invocation *is* (`--mcp`,
+`--login`) and the `--unsafe-*` diagnostic overrides cannot be set from a file —
+those have to be typed.
+
+Two more distribution flags:
+
+* `--remote auto` attaches to a browser that is already running: brw reads
+  `DevToolsActivePort` in the user data directory (the only place an ephemeral
+  debugging port is written down) and then tries the conventional loopback
+  debugging ports, attaching only to something that answers `/json/version` as a
+  browser.
+* `--idle-exit <duration>` shuts a daemon down cleanly after that long with no
+  API request. Off by default, because the default daemon is persistent; use it
+  for a daemon started for one job, which would otherwise hold a browser and a
+  port until the machine reboots. A `/health` poll does not count as use, so a
+  supervisor cannot keep an abandoned daemon alive.
+
 ## SSH Runtime
 
 Remote control is a first-class path. The browser stays visible on the remote

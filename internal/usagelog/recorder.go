@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/brwidentity"
+	"github.com/Don-Works/brw/internal/siteconsent"
 )
 
 const (
@@ -460,6 +461,15 @@ func ClassifyError(err error) string {
 	}
 	if errors.Is(err, os.ErrNotExist) {
 		return "not_found"
+	}
+	// The consent gate saying no is classified by the error's TYPE, before any
+	// message matching. A refusal and a transport fault need opposite handling —
+	// one is settled until a human grants something, the other is worth another
+	// attempt — and an unattended run only ever sees the class. Matching on the
+	// wording would make that distinction a property of a sentence someone may
+	// reword.
+	if siteconsent.IsRefusal(err) {
+		return "policy_denied"
 	}
 	msg := strings.ToLower(err.Error())
 	switch {

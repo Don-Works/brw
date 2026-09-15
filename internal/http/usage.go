@@ -96,6 +96,7 @@ var usageOperations = map[string]string{
 	"/api/recipes/search":            "brw_recipe_search",
 	"/api/recipes/run":               "brw_recipe_run",
 	"/api/baselines/route":           "brw_baseline",
+	"/api/skill":                     "brw_skill",
 	"/api/consent/grants":            "brw_consent_grants",
 	"/api/consent/revoke":            "brw_consent_revoke",
 	"/api/plugins":                   "brw_plugins",

@@ -53,6 +53,21 @@ type Controller struct {
 type Health struct {
 	OK       bool                 `json:"ok"`
 	Identity brwidentity.Identity `json:"identity,omitempty"`
+	// Consent says whether this daemon gates sites, and whether it has a human
+	// to ask. An unattended caller needs the second half before it starts: a
+	// daemon that can prompt will block on a terminal read nobody answers, and a
+	// scheduled run that hangs until its timeout looks like a slow site.
+	Consent ConsentHealth `json:"consent"`
+}
+
+// ConsentHealth is the consent posture of a daemon, as /health reports it.
+type ConsentHealth struct {
+	Enabled bool `json:"enabled"`
+	// Interactive means the daemon was started with a prompter on its terminal
+	// (--site-consent-prompt) and will ask rather than refuse.
+	Interactive bool `json:"interactive"`
+	// ConfirmActions means a high-risk action needs confirmation before it runs.
+	ConfirmActions bool `json:"confirm_actions"`
 }
 
 func New(baseURL string, timeout time.Duration) (*Controller, error) {
@@ -939,13 +954,16 @@ func (c *Controller) doRequestWithLimit(client *http.Client, req *http.Request, 
 					ExpiresAt: payload.ExpiresAt,
 				}
 			}
-			return errors.New(boundedUpstreamError(payload.Error))
+			// Typed, not prose: the daemon classified this refusal and the
+			// caller has to be able to tell a policy decision from a transport
+			// fault without reading the sentence. Error() is still the message.
+			return newRemoteError(resp, boundedUpstreamError(payload.Error), data)
 		}
 		message := boundedUpstreamError(string(data))
 		if truncated && !strings.Contains(message, "[truncated]") {
 			message += "… [truncated]"
 		}
-		return errors.New(boundedUpstreamError(fmt.Sprintf("upstream HTTP %s: %s", resp.Status, message)))
+		return newRemoteError(resp, boundedUpstreamError(fmt.Sprintf("upstream HTTP %s: %s", resp.Status, message)), data)
 	}
 	if out == nil {
 		return nil

@@ -42,6 +42,12 @@ type Server struct {
 	consent *siteconsent.Guard
 	usage   *usagelog.Recorder
 	leases  *tabLeaseManager
+	// version is the build this daemon is, stamped onto the agent skill it
+	// serves so the manual and the tool surface it describes are one thing.
+	version string
+	// idle tracks when this daemon was last used, for the optional idle exit.
+	// The zero value is a persistent daemon, which is the default.
+	idle    idleTracker
 	server  *http.Server
 	plugins *plugin.Registry
 
@@ -104,7 +110,10 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	// a loopback Host and no browser Origin, so it is untouched.
 	// Site consent sits INSIDE the host guard (a rejected cross-origin request
 	// never reaches it) and OUTSIDE the mux, so a refusal means no handler ran.
-	s.server.Handler = s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.consentMiddleware(s.leaseMiddleware(mux)))))
+	// The idle tracker sits outermost so a request that a guard refuses still
+	// counts as somebody using the daemon: a client being told no repeatedly is
+	// not an abandoned daemon.
+	s.server.Handler = s.idleMiddleware(s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.consentMiddleware(s.leaseMiddleware(mux))))))
 	return s
 }
 
@@ -402,12 +411,25 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/recipes/search", s.searchRecipes)
 	mux.HandleFunc("POST /api/recipes/run", s.runRecipe)
 	mux.HandleFunc("POST /api/baselines/route", s.routeBaseline)
+	mux.HandleFunc("GET /api/skill", s.agentSkill)
 	mux.HandleFunc("GET /api/consent/grants", s.consentGrants)
 	mux.HandleFunc("POST /api/consent/revoke", s.consentRevoke)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	payload := map[string]any{"ok": true, "tab_leases": s.leases.stats()}
+	payload := map[string]any{
+		"ok":         true,
+		"tab_leases": s.leases.stats(),
+		// An unattended caller has to know, before it starts a run, whether this
+		// daemon can stop and ask a human. With a prompter on its terminal the
+		// daemon blocks on a read nobody will answer, and the scheduled run that
+		// was meant to fail closed hangs until its timeout instead.
+		"consent": map[string]any{
+			"enabled":         s.consent.Enabled(),
+			"interactive":     s.consent.Interactive(),
+			"confirm_actions": s.consent.ConfirmActions(),
+		},
+	}
 	if !s.identity.Empty() {
 		payload["identity"] = s.identity
 	}

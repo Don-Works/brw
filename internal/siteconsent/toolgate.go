@@ -235,6 +235,8 @@ var UngatedTools = map[string]string{
 	"brw_downloads":              "reports brw's own download bookkeeping",
 	"brw_set_download_path":      "chooses where brw writes completed downloads on this machine",
 	"brw_identity":               "reports which browser profile this brw drives",
+	"brw_skill":                  "returns brw's own operating manual out of the daemon binary; it drives no browser and reaches no site",
+	"brw_tools":                  "searches brw's own tool catalogue and discloses more of it; it drives no tab and names no origin",
 	"brw_notify":                 "raises a desktop notification on this machine",
 	"brw_window_bounds":          "reports the OS window geometry, not page content",
 	"brw_window_resize":          "moves the OS window",

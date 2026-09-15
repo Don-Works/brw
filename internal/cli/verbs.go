@@ -366,7 +366,8 @@ func verbs() []verb {
 	// verbs_devtools.go; the completion scripts and the route test read this
 	// table, so they are covered the same way every verb above is.
 	table = append(table, devtoolsVerbs()...)
-	return append(table, pluginVerbs()...)
+	table = append(table, pluginVerbs()...)
+	return append(table, skillVerbs()...)
 }
 
 // downloadsUnsupported reads the flag the downloads route sets when the active

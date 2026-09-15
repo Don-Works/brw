@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Don-Works/brw/internal/agentskill"
 	"github.com/Don-Works/brw/internal/discovery"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/setup"
@@ -56,7 +58,7 @@ options:
   --http-port N         loopback control port; the bridge WebSocket uses N+1 (default: 17310)
   --profile-policy PATH profile policy JSON to create or merge into
   --app-dir PATH        brw app install directory
-  --skills-dir PATH     skills/brw source directory to install from
+  --skills-dir PATH     install the skill from this directory instead of the brwctl binary
   --no-service          skip the background service and print the foreground command instead
   --dry-run             print every action in order without performing any
   --yes                 do not prompt for confirmation
@@ -149,7 +151,7 @@ func setupCommand(args []string) error {
 	fs.StringVar(&opts.mcpClient, "mcp-client", "", "claude (default), codex, both, or none")
 	fs.StringVar(&opts.policyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path")
 	fs.StringVar(&opts.appDir, "app-dir", defaultAppDir(), "brw app install directory")
-	fs.StringVar(&opts.skillsDir, "skills-dir", "", "skills/brw source directory")
+	fs.StringVar(&opts.skillsDir, "skills-dir", "", "install the agent skill from this skills/brw directory instead of the copy inside this binary")
 	fs.IntVar(&opts.httpPort, "http-port", setup.DefaultHTTPPort, "loopback control port; the bridge WebSocket uses this plus one")
 	fs.BoolVar(&opts.noService, "no-service", false, "skip the background service")
 	fs.BoolVar(&opts.dryRun, "dry-run", false, "print every action without performing any")
@@ -840,15 +842,23 @@ func codexAddArgs(spec mcpServerSpec) []string {
 
 func (r *setupRunner) stepSkills() {
 	r.begin("agent skill")
-	source := r.opts.skillsDir
-	if source == "" {
-		found, err := setup.FindSkillSource(r.opts.appDir, r.opts.executable, r.opts.workingDir)
+	// The default source is this binary's own copy, not a directory found next
+	// to the install. Searching disk meant whichever brw happened to run setup
+	// decided what the page said for every brw afterwards, and an upgraded
+	// daemon then served a surface its own installed skill did not describe.
+	// --skills-dir stays for working on the skill itself.
+	source := "the brwctl binary"
+	var tree fs.FS
+	if r.opts.skillsDir != "" {
+		source = r.opts.skillsDir
+		tree = os.DirFS(r.opts.skillsDir)
+	} else {
+		embedded, err := agentskill.FS()
 		if err != nil {
-			r.act(statusSkip, "%v", err)
-			r.manual = append(r.manual, "Install the brw agent skill by copying skills/brw into ~/.claude/skills/brw.")
+			r.act(statusFail, "read the built-in agent skill: %v", err)
 			return
 		}
-		source = found
+		tree = embedded
 	}
 	r.act(statusOK, "source %s", source)
 	for _, destination := range setup.SkillDestinations(r.opts.home) {
@@ -856,7 +866,7 @@ func (r *setupRunner) stepSkills() {
 			r.act(statusWould, "install skill into %s", destination)
 			continue
 		}
-		changed, err := setup.CopyTree(source, destination)
+		changed, err := setup.CopyTree(tree, destination)
 		switch {
 		case err != nil:
 			r.act(statusFail, "install skill into %s: %v", destination, err)

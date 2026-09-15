@@ -120,9 +120,8 @@ snapshot, read the ref, use it.
 `brwd --mcp` defaults to `--mcp-tools auto`: it advertises 14 tools — `brw_tools`,
 `brw_open`, `brw_navigate_to`, `brw_read`, `brw_read_url`, `brw_snapshot`, `brw_find`,
 `brw_click`, `brw_fill`, `brw_select`, `brw_press`, `brw_wait_for`, `brw_observe`,
-`brw_batch` — and grows as you search. The full surface is 87 tools on a direct-CDP
-daemon (75 on the extension bridge, which cannot serve the other twelve); the
-catalogue is re-sent on every request, so the small default is a per-turn saving.
+`brw_batch` — and grows as you search. The full surface is 88 tools; the catalogue is
+re-sent on every request, so the small default is a per-turn saving.
 
 ```json
 {"name":"brw_tools","arguments":{"query":"read the console"}}
@@ -134,6 +133,24 @@ Strong matches (max 4 per search) are added to the catalogue, the server emits
 narrows what you are shown, never what you may call. `brw_identity` and `brw_close_tab`
 are not in the default 13 and answer anyway. Call the tool you need; search only when
 you want its schema.
+
+## This page, from the daemon
+
+The copy you are reading may be on disk, written by whichever brw was installed
+when `brwctl setup` last ran. Upgrade the daemon and that copy keeps describing
+the old surface with nothing to say so. Ask the daemon instead:
+
+```json
+{"name": "brw_skill", "arguments": {}}
+```
+
+`brw_skill({document?})` → `{skill, path, version, source, documents, bytes, content}`.
+`content` is this markdown out of the daemon's own binary, `version` is that binary's
+build, and `documents` lists the deeper pages — pass one back as `document`
+(`references/recipes.md`, `references/mcplexer-gateway.md`). `source` is always
+`brwd-binary`; nothing on this path reads disk. The same answer is on the HTTP API at
+`GET /api/skill`, and `brw skill` prints it from a shell. If the `version` it reports
+is not the one `brw_identity` reports, you are talking to two different brws.
 
 ## Tools, verified signatures
 

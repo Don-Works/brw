@@ -14,7 +14,7 @@ func TestCopyTreeInstallsThenReportsNoChange(t *testing.T) {
 		"references/recipes.md": "recipes\n",
 	})
 
-	changed, err := CopyTree(source, destination)
+	changed, err := CopyTree(os.DirFS(source), destination)
 	if err != nil || !changed {
 		t.Fatalf("first install changed=%v err=%v", changed, err)
 	}
@@ -22,7 +22,7 @@ func TestCopyTreeInstallsThenReportsNoChange(t *testing.T) {
 		t.Fatalf("nested file = %q", got)
 	}
 
-	changed, err = CopyTree(source, destination)
+	changed, err = CopyTree(os.DirFS(source), destination)
 	if err != nil || changed {
 		t.Fatalf("re-install must be a no-op, changed=%v err=%v", changed, err)
 	}
@@ -32,7 +32,7 @@ func TestCopyTreeInstallsThenReportsNoChange(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(destination, "stale.md"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	changed, err = CopyTree(source, destination)
+	changed, err = CopyTree(os.DirFS(source), destination)
 	if err != nil || !changed {
 		t.Fatalf("stale removal changed=%v err=%v", changed, err)
 	}
@@ -44,48 +44,11 @@ func TestCopyTreeInstallsThenReportsNoChange(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(destination, "SKILL.md"), []byte("tampered"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := CopyTree(source, destination); err != nil || !changed {
+	if changed, err := CopyTree(os.DirFS(source), destination); err != nil || !changed {
 		t.Fatalf("edited file restore changed=%v err=%v", changed, err)
 	}
 	if got := readFile(t, filepath.Join(destination, "SKILL.md")); got != "# brw\n" {
 		t.Fatalf("SKILL.md = %q, want the source content", got)
-	}
-}
-
-func TestFindSkillSource(t *testing.T) {
-	root := t.TempDir()
-	appDir := filepath.Join(root, "app")
-	workingDir := filepath.Join(root, "checkout")
-	writeTree(t, filepath.Join(appDir, "skills", "brw"), map[string]string{"SKILL.md": "app\n"})
-	writeTree(t, filepath.Join(workingDir, "skills", "brw"), map[string]string{"SKILL.md": "checkout\n"})
-
-	cases := []struct {
-		name       string
-		appDir     string
-		workingDir string
-		want       string
-		wantErr    bool
-	}{
-		{name: "app dir wins", appDir: appDir, workingDir: workingDir, want: filepath.Join(appDir, "skills", "brw")},
-		{name: "falls back to the checkout", appDir: filepath.Join(root, "absent"), workingDir: workingDir, want: filepath.Join(workingDir, "skills", "brw")},
-		{name: "nothing anywhere", appDir: filepath.Join(root, "absent"), workingDir: filepath.Join(root, "absent"), wantErr: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := FindSkillSource(tc.appDir, "", tc.workingDir)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected an error, got %q", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != tc.want {
-				t.Fatalf("FindSkillSource = %q, want %q", got, tc.want)
-			}
-		})
 	}
 }
 

@@ -50,9 +50,36 @@ const (
 // errNoDaemon marks every failure where the action never reached a daemon.
 var errNoDaemon = errors.New("no brw daemon reachable")
 
-// builtinCommands carry no route: they print and exit. A verb may not start
-// with one of these words or it would never be dispatched.
-func builtinCommands() []string { return []string{"completion", "help", "version"} }
+// builtinCommand is a first word dispatched before the verb table. Most print
+// and exit; `run` is the non-interactive scheduled entry point, which owns its
+// own output contract (JSON on stdout, diagnostics on stderr, its own exit
+// codes) and so cannot go through runVerb's human rendering.
+type builtinCommand struct {
+	name    string
+	summary string
+}
+
+// builtinCommandTable is the one place these words are listed. The completion
+// scripts are generated from it as well as the dispatcher's shadowing check, so
+// a built-in added here is completable without a second edit — the zsh script
+// used to carry its own hand-written copy, and a new word reached the shell
+// only if somebody remembered both.
+var builtinCommandTable = []builtinCommand{
+	{name: "completion", summary: "print the shell completion script"},
+	{name: "help", summary: "print the verb list"},
+	{name: "run", summary: "run one recipe non-interactively for a scheduler"},
+	{name: "version", summary: "print the brw version"},
+}
+
+// builtinCommands lists the words a verb may not start with, or it would never
+// be dispatched.
+func builtinCommands() []string {
+	names := make([]string, 0, len(builtinCommandTable))
+	for _, command := range builtinCommandTable {
+		names = append(names, command.name)
+	}
+	return names
+}
 
 // builtinFlagWords are the built-ins people also spell with dashes, as in
 // `brw --help`.
@@ -123,6 +150,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	case "completion":
 		return runCompletion(rest[1:], stdout, stderr)
+	case "run":
+		// The scheduled entry point takes the global flags itself: its output is
+		// a fixed JSON contract, so --json means nothing to it and hoisting one
+		// in would be an unknown flag.
+		return runCommand(ctx, append(leading, rest[1:]...), stdout, stderr)
 	}
 
 	v, verbArgs, ok := lookupVerb(verbs(), rest)
@@ -473,6 +505,8 @@ verbs:
 		fmt.Fprintf(w, "  %-26s %s\n", name, v.summary)
 	}
 	fmt.Fprint(w, `
+  run <recipe-id>            run one recipe non-interactively for a scheduler
+                             (JSON on stdout; see docs/scheduling.md)
   completion <bash|zsh>      print the shell completion script
   version                    print the brw version
 
@@ -489,6 +523,9 @@ exit codes:
   1  the action failed
   2  usage error
   3  no brw daemon reachable
+
+brw run adds 4 (a postcondition did not hold), 5 (site permissions refused) and
+6 (another run holds this profile). See brw run --help.
 `)
 }
 

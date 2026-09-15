@@ -218,15 +218,21 @@ func zshCompletion(all []verb) string {
 		described[tokens[0]] = true
 		fmt.Fprintf(&b, "        '%s:%s'\n", tokens[0], describeForZsh(v.summary))
 	}
+	builtin := map[string]bool{}
+	for _, command := range builtinCommandTable {
+		builtin[command.name] = true
+	}
 	for _, word := range sortedKeys(subWords(all)) {
-		if word == "completion" || described[word] {
+		if builtin[word] || described[word] {
 			continue
 		}
 		fmt.Fprintf(&b, "        '%s:%s'\n", word, describeForZsh(groupSummary(all, word)))
 	}
-	b.WriteString("        'completion:print the shell completion script'\n")
-	b.WriteString("        'help:print the verb list'\n")
-	b.WriteString("        'version:print the brw version'\n")
+	// Generated from the same table the dispatcher uses, so a built-in cannot
+	// exist in one and not the other.
+	for _, command := range builtinCommandTable {
+		fmt.Fprintf(&b, "        '%s:%s'\n", command.name, describeForZsh(command.summary))
+	}
 	b.WriteString(`    )
 
     # A global flag may be typed before the verb, so the verb is the first word

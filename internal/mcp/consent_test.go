@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -500,6 +501,11 @@ func toolCaseBodies(t *testing.T) map[string][]ast.Stmt {
 	if dispatch == nil {
 		t.Fatal("server.go declares no callTool; the dispatch this test reads has moved")
 	}
+	// A case label may be a constant rather than a literal — brw_tools and
+	// brw_skill are — and a scan that saw only literals would report those tools
+	// as having no handler at all, which is a guard stating the opposite of the
+	// truth.
+	constants := packageStringConstants(t)
 	out := map[string][]ast.Stmt{}
 	ast.Inspect(dispatch, func(node ast.Node) bool {
 		stmt, ok := node.(*ast.SwitchStmt)
@@ -512,17 +518,79 @@ func toolCaseBodies(t *testing.T) map[string][]ast.Stmt {
 				continue
 			}
 			for _, expr := range clause.List {
-				literal, ok := expr.(*ast.BasicLit)
-				if !ok || literal.Kind != token.STRING {
-					continue
-				}
-				if name, err := strconv.Unquote(literal.Value); err == nil {
+				if name, ok := toolCaseName(expr, constants); ok {
 					out[name] = clause.Body
 				}
 			}
 		}
 		return true
 	})
+	return out
+}
+
+// toolCaseName resolves one case label to the tool name it dispatches: a string
+// literal, or a package-level string constant naming one.
+func toolCaseName(expr ast.Expr, constants map[string]string) (string, bool) {
+	switch typed := expr.(type) {
+	case *ast.BasicLit:
+		if typed.Kind != token.STRING {
+			return "", false
+		}
+		name, err := strconv.Unquote(typed.Value)
+		return name, err == nil
+	case *ast.Ident:
+		name, ok := constants[typed.Name]
+		return name, ok
+	default:
+		return "", false
+	}
+}
+
+// packageStringConstants collects every package-level string constant in this
+// package. The constants a case label uses are declared beside their handlers
+// (skillToolName in skill.go, discoveryToolName in disclosure.go), not in
+// server.go, so resolving them means reading the whole package.
+func packageStringConstants(t *testing.T) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package directory: %v", err)
+	}
+	out := map[string]string{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				value, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, ident := range value.Names {
+					if i >= len(value.Values) {
+						continue
+					}
+					literal, ok := value.Values[i].(*ast.BasicLit)
+					if !ok || literal.Kind != token.STRING {
+						continue
+					}
+					if text, err := strconv.Unquote(literal.Value); err == nil {
+						out[ident.Name] = text
+					}
+				}
+			}
+		}
+	}
 	return out
 }
 
@@ -581,7 +649,10 @@ func calledMethods(body []ast.Stmt) map[string]bool {
 // reason; one that is neither fails here instead of shipping with no rule.
 func TestEveryToolIsClassifiedForConsent(t *testing.T) {
 	known := map[string]bool{}
-	for _, tl := range tools() {
+	// discoveryTool() is advertised by the auto profile and callable under every
+	// profile, but it is not in tools(), so a scan of tools() alone left the one
+	// tool every default session starts with classified by nobody.
+	for _, tl := range append(tools(), discoveryTool()) {
 		name, _ := tl["name"].(string)
 		known[name] = true
 		_, gated := siteconsent.ToolRules[name]

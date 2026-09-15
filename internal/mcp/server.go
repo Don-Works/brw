@@ -781,6 +781,7 @@ type activeTabResolver interface {
 // trip the task brief calls out.
 var tabAgnosticTools = map[string]bool{
 	"brw_identity":        true,
+	skillToolName:         true,
 	"brw_list_tabs":       true,
 	"brw_list_tab_groups": true,
 	"brw_focus_tab":       true,
@@ -884,6 +885,16 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			"version":   Version,
 			"connected": !s.identity.Empty(),
 		}, nil)
+	case skillToolName:
+		// Served from the binary, never from disk: the whole point is that the
+		// manual and the tool surface it describes come from one build.
+		var req struct {
+			Document string `json:"document"`
+		}
+		if err := unmarshalArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(serveSkill(req.Document))
 	case "brw_open":
 		var req struct {
 			URL        string `json:"url"`
@@ -2444,6 +2455,7 @@ func tools() []map[string]any {
 			"browser_context_id": stringSchema("Deprecated alias for context_id."),
 		}, []string{"context_id"})),
 		tool("brw_identity", "Report which browser profile THIS brw namespace drives, so you can pick the right one instead of guessing from the namespace label. brw exposes one namespace per browser profile (brw, brw_chromium, brw_chromium_work, …) and that set grows — enumerate them, then call brw_identity on each to map a namespace to a concrete browser+profile. Returns {identity:{workspace, profile, user_data_dir, profile_directory, mode, transport, headless}, version, connected}. transport is how brw reaches the browser — \"direct-cdp\", \"remote-cdp\", \"chrome-opt-in-cdp\" or \"extension-bridge\" — and decides which capabilities exist. direct-cdp is a browser brw started itself: incognito contexts, brw_cookies, brw_state and brw_set_download_path, no Chrome tab groups. remote-cdp is a DevTools endpoint another process opened and brw attached to: the same as direct-cdp except brw_set_download_path, because brw did not start that browser and will not redirect what it downloads. chrome-opt-in-cdp is the user's own signed-in Chrome with remote debugging switched on by hand at chrome://inspect: incognito contexts and brw_cookies work there too, Chrome tab groups still do not, and brw_state and brw_set_download_path are refused because sealing or moving what belongs to that browser's own user is not something brw does. extension-bridge is the signed-in browser through the extension: Chrome tab groups yes, incognito/brw_cookies/brw_state no. tools/list is already narrowed to the transport, so what you can see is what you can run. headless reports a browser with no visible window (verify visually with brw_screenshot, not by looking at a screen). Needs no tab and no connected bridge — safe to call first, even when the browser has no windows open. When the user's request implies a specific browser (their work Chrome, their personal Chromium, …), use this to confirm the match before you open or touch a tab.", object(nil, nil)),
+		skillTool(),
 		tool("brw_list_tabs", "List controllable Chrome/Chromium browser targets, including owner-redacted lease metadata. lease.status is mine for this session's tabs, leased for a tab under another session's control, or available for an unclaimed tab. Never operate on leased tabs; call brw_open for a fresh tab instead. lease.group_drift on your own tab means a human moved it out of your per-agent tab group (ownership unchanged; regroup with brw_group_tabs + expected_group_id only if tidiness matters). discarded/frozen flag tabs whose renderer Chrome has reclaimed or paused; brw auto-revives them before driving. Popup windows and Chrome tab-group metadata are included when the extension bridge reports them.", object(nil, nil)),
 		tool("brw_list_tab_groups", "List visible Chrome tab groups with ids, titles, colors, collapsed state, window ids, and member tab ids. Extension-bridge transport only: Chrome tab groups are an extension API with no DevTools Protocol equivalent, so no CDP transport can inspect them.", object(nil, nil)),
 		tool("brw_focus_tab", "Claim and focus an available or already-mine Chrome/Chromium target, then make it this session's default for following reads/actions. A target marked leased by brw_list_tabs belongs to another session and is rejected with non-retryable tab_contended; open a new tab instead.", object(map[string]any{
