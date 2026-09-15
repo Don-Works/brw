@@ -78,7 +78,14 @@ the daemon reports at `/health` — the workspace, profile name, user data
 directory and profile directory. It is keyed by the profile and not by the
 daemon on purpose: an `--upstream-http` MCP proxy and the bridge daemon behind
 it are two URLs driving one browser, and a per-daemon lock would let those two
-interleave while each looked perfectly serialised.
+interleave while each looked perfectly serialised. The proxy adopts the profile
+of the daemon it forwards to, so both take the same key.
+
+A daemon that names no profile at `/health` is refused rather than run. There is
+no key that would be honest for one: it would take a lock shared with every
+other anonymous daemon while an identified daemon on the same Chrome took the
+profile's own, and the two would interleave on one tab while each reported a
+lock key. Start the daemon with `--workspace`/`--profile`; `brwctl setup` does.
 
 * `--lock-wait <duration>` (default `5m`) is how long to wait for the run in
   front. This is the queueing behaviour.
@@ -103,6 +110,9 @@ An unattended run has nobody to ask, so anything that would ask is a refusal:
   is going to answer, and a job that hangs to its timeout reports a timeout,
   which is not what happened. Run scheduled jobs against a daemon without the
   prompt.
+* A daemon whose `/health` does not report a consent posture at all — one built
+  before the block existed — is refused the same way. "No prompter" and "said
+  nothing" are different answers, and only the first one is safe to act on.
 
 These are the consent and confirmation surfaces brw already has. `brw run` adds
 no policy of its own; it only reports their decision in a form a scheduler can
@@ -222,7 +232,7 @@ environment, so `BRW_URL` has to be set in the crontab, and it mails stderr to
 the local user, which usually goes nowhere. Redirect both streams.
 
 ```crontab
-0 3 * * * BRW_URL=http://127.0.0.1:17310 /usr/local/bin/brw run example.invoices.download --recipe-version 3 --digest deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef --lock-wait 10m >> /usr/local/var/log/brw/invoices.jsonl 2>> /usr/local/var/log/brw/invoices.log
+0 3 * * * BRW_URL=http://127.0.0.1:17310 /usr/local/bin/brw run example.invoices.download --recipe-version 3 --digest deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef --input account=example-ltd --lock-wait 10m >> /usr/local/var/log/brw/invoices.jsonl 2>> /usr/local/var/log/brw/invoices.log
 ```
 
 ## Before the first scheduled run

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -321,5 +322,92 @@ func TestLoadFindsTheFileInTheUserConfigDirectory(t *testing.T) {
 	}
 	if values.idle != 20*time.Minute {
 		t.Fatalf("idle-exit = %s", values.idle)
+	}
+}
+
+// brw.json is trust-bearing: it can set chrome-arg, proxy-server,
+// ignore-https-errors, allowed-domains, blocked-domains, plugin-dir,
+// recipe-provider-url and profile-policy, and every brwd on the machine reads
+// it at startup. Another local account that can write it therefore decides
+// where every browser brw drives sends its traffic. The repo already gates the
+// consent key, credential files, recipe directories and the recipe provider
+// token on their permissions; this is the same rule for the file that
+// configures all of them.
+func TestLoadRefusesAConfigFileAnotherAccountCouldWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not express this on Windows")
+	}
+	tests := []struct {
+		name        string
+		mode        os.FileMode
+		wantRefused bool
+	}{
+		{name: "owner only", mode: 0o600},
+		{name: "world readable", mode: 0o644},
+		{name: "group readable", mode: 0o640},
+		{name: "group writable", mode: 0o664, wantRefused: true},
+		{name: "world writable", mode: 0o666, wantRefused: true},
+		{name: "world writable and executable", mode: 0o777, wantRefused: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), FileName)
+			if err := os.WriteFile(path, []byte(`{"defaults":{"headless":true}}`), tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			// WriteFile is subject to the process umask, so the bits the test
+			// cares about are set explicitly.
+			if err := os.Chmod(path, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			file, _, err := Load(path)
+			if tt.wantRefused {
+				if err == nil {
+					t.Fatalf("mode %#o was accepted", tt.mode)
+				}
+				if !strings.Contains(err.Error(), "writable") {
+					t.Fatalf("the refusal does not say why: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("mode %#o was refused: %v", tt.mode, err)
+			}
+			if file == nil || file.Defaults["headless"] != true {
+				t.Fatalf("loaded = %+v", file)
+			}
+		})
+	}
+}
+
+// Not a regular file, and not unbounded. A fifo at the path would block the
+// daemon at startup, and a directory or a symlink to one is not a config file
+// somebody wrote on purpose.
+func TestLoadRefusesWhatIsNotAnOrdinaryConfigFile(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, _, err := Load(dir); err == nil {
+		t.Fatal("a directory was accepted as a config file")
+	}
+
+	target := filepath.Join(dir, FileName)
+	if err := os.WriteFile(target, []byte(`{"defaults":{"headless":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks are unavailable here: %v", err)
+	}
+	if _, _, err := Load(link); err == nil {
+		t.Fatal("a symlink was followed; the permissions checked would have been the link's")
+	}
+
+	oversize := filepath.Join(dir, "big.json")
+	padding := strings.Repeat(" ", maxConfigBytes)
+	if err := os.WriteFile(oversize, []byte(`{"defaults":{"headless":true}}`+padding), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Load(oversize); err == nil {
+		t.Fatal("a config file over the size bound was read in full")
 	}
 }

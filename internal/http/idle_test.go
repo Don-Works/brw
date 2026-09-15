@@ -203,3 +203,41 @@ func TestEveryRouteIsClassifiedForIdleActivity(t *testing.T) {
 		t.Error("a route nobody has classified does not count as work, so a daemon could exit while it is being used")
 	}
 }
+
+// TestUseThatDidNotArriveOverHTTPStillCounts: --idle-exit is armed on this
+// server, but the HTTP mux is not the only way to use a daemon. A daemon in
+// --mcp mode keeps the default listener and serves an agent over stdio, and
+// those tool calls reach the controller directly. Counting only the mux meant a
+// live MCP session read as silence and the daemon shut the browser down under
+// the agent driving it.
+func TestUseThatDidNotArriveOverHTTPStillCounts(t *testing.T) {
+	server := New("", &fakeController{})
+	server.SetIdleExit(100 * time.Millisecond)
+
+	done := server.NoteActivity()
+	// Hold it open past four idle windows, as a long MCP tool call would.
+	deadline := time.Now().Add(400 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if idle, armed := server.idle.idleFor(time.Now()); !armed || idle != 0 {
+			t.Fatalf("work reported through NoteActivity showed %s of idleness (armed=%t)", idle, armed)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	if server.WatchIdle(ctx) {
+		cancel()
+		t.Fatal("the daemon exited while an MCP call was still running")
+	}
+	cancel()
+
+	// Calling done twice must not unbalance the tracker: the caller defers it
+	// and may also call it on an early return.
+	done()
+	done()
+
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if !server.WatchIdle(ctx) {
+		t.Fatal("the daemon never went idle after the MCP call finished")
+	}
+}

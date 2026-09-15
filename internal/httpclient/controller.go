@@ -57,7 +57,13 @@ type Health struct {
 	// to ask. An unattended caller needs the second half before it starts: a
 	// daemon that can prompt will block on a terminal read nobody answers, and a
 	// scheduled run that hangs until its timeout looks like a slow site.
-	Consent ConsentHealth `json:"consent"`
+	//
+	// A pointer so "this daemon says it has no prompter" and "this daemon said
+	// nothing at all" are different answers. A build from before /health carried
+	// the block decodes to the zero value, and reading that as "no prompter"
+	// would let the caller fail OPEN against exactly the daemon it cannot see
+	// into. Nil means unreported.
+	Consent *ConsentHealth `json:"consent,omitempty"`
 }
 
 // ConsentHealth is the consent posture of a daemon, as /health reports it.

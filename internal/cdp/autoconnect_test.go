@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -234,4 +236,45 @@ func serverPort(t *testing.T, server *httptest.Server) int {
 		t.Fatal(err)
 	}
 	return port
+}
+
+// --remote auto probes conventional ports, so whatever answers there is an
+// untrusted local listener. A decoder reading until EOF from one that never
+// stops sending is a daemon that never starts, and every other upstream read in
+// the tree is bounded.
+func TestProbeDoesNotReadAnUnboundedBody(t *testing.T) {
+	var sent atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		// Valid JSON that never ends: an array of objects, one chunk at a time.
+		if _, err := io.WriteString(w, "["); err != nil {
+			return
+		}
+		flusher, _ := w.(http.Flusher)
+		chunk := strings.Repeat("x", 4096)
+		for {
+			written, err := fmt.Fprintf(w, `{"Browser":"%s"},`, chunk)
+			if err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if sent.Add(int64(written)) > 64*maxProbeBody {
+				// The probe is still reading well past any sane bound; stop
+				// feeding it so the test fails on the assertion below rather
+				// than by filling the machine.
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	_, err := ProbeEndpoint(context.Background(), serverPort(t, server))
+	if err == nil {
+		t.Fatal("a listener that answers with an endless document was accepted as a browser")
+	}
+	if read := sent.Load(); read > 4*maxProbeBody {
+		t.Fatalf("the probe read %d bytes from one port; the bound is %d", read, maxProbeBody)
+	}
 }

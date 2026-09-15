@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -182,13 +183,14 @@ flags:
 
 exit codes:`
 
-// runCommand is the whole non-interactive entry point. It returns the process
-// exit code and writes exactly one JSON object to stdout.
-func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	opts := runOptions{inputs: inputList{}, lockWait: 5 * time.Minute, timeout: recipe.DefaultMaxRunDuration}
+// newRunFlagSet registers every flag `brw run` accepts.
+//
+// Split out because the completion scripts enumerate it. `brw run` takes none
+// of the global flags — its output is a fixed JSON contract, so --json means
+// nothing to it — and a shell that offered them would be offering words this
+// FlagSet rejects with exit 2.
+func newRunFlagSet(opts *runOptions) *flag.FlagSet {
 	fs := flag.NewFlagSet("brw run", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() { runUsageText(stderr) }
 	fs.StringVar(&opts.daemon, "daemon", "", "daemon base URL")
 	fs.StringVar(&opts.profile, "profile", os.Getenv("BRW_PROFILE"), "bridge profile to act against")
 	fs.StringVar(&opts.policyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path")
@@ -197,6 +199,25 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	fs.Var(opts.inputs, "input", "recipe input as key=value; repeatable")
 	fs.DurationVar(&opts.lockWait, "lock-wait", opts.lockWait, "how long to wait for another run on this profile")
 	fs.DurationVar(&opts.timeout, "timeout", opts.timeout, "how long to wait for the run itself")
+	return fs
+}
+
+// runCommandFlags is the flag list the completion scripts emit for `brw run`.
+func runCommandFlags() []string {
+	opts := runOptions{inputs: inputList{}}
+	var names []string
+	newRunFlagSet(&opts).VisitAll(func(f *flag.Flag) { names = append(names, "--"+f.Name) })
+	sort.Strings(names)
+	return names
+}
+
+// runCommand is the whole non-interactive entry point. It returns the process
+// exit code and writes exactly one JSON object to stdout.
+func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	opts := runOptions{inputs: inputList{}, lockWait: 5 * time.Minute, timeout: recipe.DefaultMaxRunDuration}
+	fs := newRunFlagSet(&opts)
+	fs.SetOutput(stderr)
+	fs.Usage = func() { runUsageText(stderr) }
 
 	flagArgs, positional, err := splitFlags(fs, args)
 	if err != nil {
@@ -244,16 +265,34 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}
 	report.Profile = runProfile{Workspace: health.Identity.Workspace, Profile: health.Identity.Profile}
 
-	// Fail closed on anything that would stop and ask. This daemon was started
-	// with a prompter on its terminal, so an un-granted origin makes it block on
-	// a read nobody is going to answer — the run would hang to its timeout and
-	// report a timeout, which is not what happened.
-	if health.Consent.Interactive {
+	// Fail closed on anything that would stop and ask, and on a daemon that will
+	// not say whether it would. A daemon started with a prompter on its terminal
+	// blocks on a read nobody is going to answer, so the run hangs to its timeout
+	// and reports a timeout, which is not what happened; a daemon too old to
+	// carry the consent block cannot be distinguished from one that answered
+	// "no prompter", so it is refused by the same rule rather than trusted.
+	switch {
+	case health.Consent == nil:
+		return failRun(stdout, stderr, "policy_refused", report,
+			errors.New("this daemon's /health does not report a consent posture, so brw cannot tell whether an un-granted origin would block it waiting for an answer nobody is there to give; upgrade the daemon to a build that reports it"))
+	case health.Consent.Interactive:
 		return failRun(stdout, stderr, "policy_refused", report,
 			errors.New("this daemon was started with --site-consent-prompt, so an un-granted origin would block it waiting for an answer nobody is there to give; run the scheduled job against a daemon without the prompt and grant origins ahead of time with brwctl grants allow"))
 	}
 
-	report.Profile.LockKey = runlock.Key(health.Identity)
+	// A daemon that will not name the browser profile it drives cannot be
+	// serialised against the other daemons driving that same browser: its runs
+	// would take the shared "unidentified" lock while an identified daemon on the
+	// same Chrome took the profile's own, and the two would interleave on one tab
+	// while each reported a lock key. Refused rather than run, because there is
+	// no key that would be honest here.
+	lockKey := runlock.Key(health.Identity)
+	if lockKey == runlock.Unidentified {
+		return failRun(stdout, stderr, "failed", report,
+			errors.New("this daemon does not report which browser profile it drives, so a second run on the same browser could not be serialised against it; start the daemon with --workspace/--profile (brwctl setup does) so /health names the profile"))
+	}
+
+	report.Profile.LockKey = lockKey
 	lockStarted := time.Now()
 	// The lock directory is not an argument. A run pointed at a directory of its
 	// own would serialise against nothing while reporting that it had.
@@ -305,19 +344,32 @@ func classifyRun(ctx context.Context, result recipe.RunResult, err error) runOut
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return outcome("infrastructure")
 	}
-	switch class := httpclient.RemoteClass(err); {
-	case class == "policy_denied":
+	// A refusal is settled however far the run got: the consent gate can stop a
+	// recipe part-way, and retrying it unchanged still cannot succeed until a
+	// human grants something.
+	class := httpclient.RemoteClass(err)
+	if class == "policy_denied" {
 		return outcome("policy_refused")
-	// The daemon computes the class; whether it is worth another attempt is
-	// already decided in one place, so ask that rather than re-listing them.
-	case class != "" && usagelog.Retryable(class):
-		return outcome("infrastructure")
 	}
 	// The daemon answered with the run's own result: the recipe started, and a
 	// step did not reach the state it asserted. That is a different thing from
 	// brw being unable to run it, and a scheduler treats it differently.
+	//
+	// Asked BEFORE the daemon's error class, and that order is the contract. The
+	// class names the innermost failure, and a postcondition that did not hold
+	// is a wait that ran out — so the classes the compiler's default
+	// postconditions produce are "timeout", which is retryable, which used to
+	// classify a failed step as an infrastructure failure and exit 3. A
+	// structured result carrying a failed step is positive evidence that the
+	// recipe ran, and no error class can outrank it.
 	if failedStep(result) {
 		return outcome("postcondition_failed")
+	}
+	// Nothing ran, or the daemon returned nothing that says otherwise. The daemon
+	// computes the class; whether it is worth another attempt is already decided
+	// in one place, so ask that rather than re-listing them.
+	if class != "" && usagelog.Retryable(class) {
+		return outcome("infrastructure")
 	}
 	return outcome("failed")
 }

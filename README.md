@@ -267,12 +267,16 @@ Two more distribution flags:
   `DevToolsActivePort` in the user data directory (the only place an ephemeral
   debugging port is written down) and then tries the conventional loopback
   debugging ports, attaching only to something that answers `/json/version` as a
-  browser.
+  browser. A profile the workspace policy bars from direct CDP accepts only the
+  `DevToolsActivePort` half: a port probe under such a profile is refused by
+  name, because a guess is not a browser the operator named.
 * `--idle-exit <duration>` shuts a daemon down cleanly after that long with no
-  API request. Off by default, because the default daemon is persistent; use it
-  for a daemon started for one job, which would otherwise hold a browser and a
-  port until the machine reboots. A `/health` poll does not count as use, so a
-  supervisor cannot keep an abandoned daemon alive.
+  use. Off by default, because the default daemon is persistent; use it for a
+  daemon started for one job, which would otherwise hold a browser and a port
+  until the machine reboots. Use means an HTTP API request, or an MCP tool call
+  in `--mcp` mode; a `/health` poll does not count, so a supervisor cannot keep
+  an abandoned daemon alive. It needs the HTTP listener, so `--http off` is
+  refused at startup — `--mcp-idle-exit` is the stdio-only equivalent.
 
 ## SSH Runtime
 

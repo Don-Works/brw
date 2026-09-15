@@ -513,9 +513,9 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 | `auto` (default) | 14, growing | ~6.0k tokens to start |
 
 Measured on a direct-CDP daemon. A tool a transport cannot serve is never
-advertised on it, so the `all` row is 90 tools unfiltered, 87 on direct CDP and
-75 on the extension bridge; `core`, `minimal` and `auto` are the same size on
-every transport.
+advertised on it, so the `all` row is 91 tools unfiltered, 88 on direct CDP and
+76 on the extension bridge; the narrower profiles are the same size on every
+transport.
 
 `core` advertises the common-flow tools (open/snapshot/find/click/type/fill/
 select/press/scroll/hover/drag/upload/navigate/wait/batch/observe/screenshot).

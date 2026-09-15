@@ -19,7 +19,14 @@ import (
 // scheduler, and a plist or a unit file that does not work is worse than none:
 // it fails at 03:00 in a log nobody reads. So the examples are not inspected,
 // they are RUN — the exact argument vector out of the document, against a
-// daemon that answers, with the exit code and the JSON checked.
+// daemon that answers, with the exit code and the JSON checked. All three
+// examples, launchd, systemd and cron, go through the same vector.
+//
+// What is not exercised: the schedulers themselves, and the /usr/local/bin/brw
+// in each example, because the vector is handed to cli.Run in process rather
+// than executed as a path. A job that never fires because launchd rejected the
+// plist is covered by the directive assertions below and by plutil; a brw that
+// is not installed at that path is not.
 
 const schedulingDoc = "../../docs/scheduling.md"
 
@@ -278,8 +285,83 @@ func TestSchedulingDocsAgreeWithTheExitCodeTable(t *testing.T) {
 	}
 }
 
-// TestDocumentedJobsRunTheSameCommand: the macOS and Linux examples have to be
-// the same invocation, or one of them is the one nobody tested.
+// parseCrontab pulls the environment and the command out of the documented
+// crontab line. cron takes five schedule fields, then leading KEY=VALUE
+// assignments, then the command, then the shell redirections; only the command
+// and its environment are runnable here.
+func parseCrontab(t *testing.T, block string) ([]string, map[string]string) {
+	t.Helper()
+	var line string
+	for _, candidate := range strings.Split(block, "\n") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" && !strings.HasPrefix(candidate, "#") {
+			line = candidate
+			break
+		}
+	}
+	if line == "" {
+		t.Fatalf("%s documents an empty crontab block", schedulingDoc)
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 6 {
+		t.Fatalf("the documented crontab line has %d fields, too few for a schedule and a command: %q", len(fields), line)
+	}
+	// cron itself parses the first five as the schedule, so anything else here
+	// is a job that never fires at the hour the document claims.
+	schedule := fields[:5]
+	for _, field := range schedule {
+		if strings.HasPrefix(field, "-") || strings.Contains(field, "=") {
+			t.Fatalf("the documented crontab schedule is %v, which cron would not read as five time fields", schedule)
+		}
+	}
+	env := map[string]string{}
+	rest := fields[5:]
+	for len(rest) > 0 && strings.Contains(rest[0], "=") && !strings.HasPrefix(rest[0], "-") {
+		key, value, _ := strings.Cut(rest[0], "=")
+		env[key] = value
+		rest = rest[1:]
+	}
+	var args []string
+	for _, field := range rest {
+		if strings.HasPrefix(field, ">") || strings.HasPrefix(field, "2>") || strings.HasPrefix(field, "&>") {
+			break
+		}
+		args = append(args, field)
+	}
+	// The redirections are the second of the two caveats the document names, so
+	// an example that dropped them would teach the failure it warns about.
+	if !strings.Contains(line, ">>") || !strings.Contains(line, "2>>") {
+		t.Errorf("the documented crontab line does not redirect both streams, which the paragraph above it says to do: %q", line)
+	}
+	return args, env
+}
+
+// TestDocumentedCronJobRuns runs the crontab line's command. cron is the third
+// documented example and was the one nobody executed, which is how it came to
+// be missing an --input the other two carry.
+func TestDocumentedCronJobRuns(t *testing.T) {
+	isolateLocks(t)
+	blocks := blocksOfType(t, schedulingDocument(t), "crontab")
+	if len(blocks) != 1 {
+		t.Fatalf("expected exactly one crontab block in %s, found %d", schedulingDoc, len(blocks))
+	}
+	args, env := parseCrontab(t, blocks[0])
+
+	daemon := newRunDaemon(t, &runDaemon{})
+	code, report, stderrText := runDocumentedCommand(t, args, env, daemon.server.URL)
+	if code != ExitOK {
+		t.Fatalf("the documented cron job exited %d: %+v\n%s", code, report, stderrText)
+	}
+	if report.Outcome != "ok" || report.Schema != runSchema {
+		t.Fatalf("the documented cron job reported %+v", report)
+	}
+	if daemon.runs != 1 {
+		t.Fatalf("the documented cron job ran the recipe %d times", daemon.runs)
+	}
+}
+
+// TestDocumentedJobsRunTheSameCommand: the macOS, Linux and cron examples have
+// to be the same invocation, or one of them is the one nobody tested.
 func TestDocumentedJobsRunTheSameCommand(t *testing.T) {
 	document := schedulingDocument(t)
 	plist := blocksOfType(t, document, "xml")[0]
@@ -296,7 +378,19 @@ func TestDocumentedJobsRunTheSameCommand(t *testing.T) {
 		}
 	}
 	systemd, _ := parseUnit(t, service)
-	if strings.Join(launchd, " ") != strings.Join(systemd, " ") {
-		t.Fatalf("the launchd and systemd examples differ:\n  launchd: %v\n  systemd: %v", launchd, systemd)
+	cron, cronEnv := parseCrontab(t, blocksOfType(t, document, "crontab")[0])
+	vectors := map[string][]string{"launchd": launchd, "systemd": systemd, "cron": cron}
+	for name, vector := range vectors {
+		if len(vector) == 0 {
+			t.Fatalf("the %s example has no command, so this comparison is reading nothing", name)
+		}
+		if strings.Join(vector, " ") != strings.Join(launchd, " ") {
+			t.Errorf("the launchd and %s examples differ:\n  launchd: %v\n  %s: %v", name, launchd, name, vector)
+		}
+	}
+	// cron carries its environment on the command line rather than in a unit
+	// stanza, and the document's own caveat is that it has to.
+	if _, ok := cronEnv["BRW_URL"]; !ok {
+		t.Error("the documented crontab line sets no BRW_URL, which is the first caveat the paragraph above it names")
 	}
 }

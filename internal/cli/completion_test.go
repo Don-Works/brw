@@ -152,6 +152,14 @@ func completionCases() []completionCase {
 			current: 5,
 			want:    []string{"--group", "--json"},
 		},
+		{
+			// brw run owns its flag set: it takes the global flags itself, so
+			// every global the shell offered here is a word run rejects.
+			name:    "flags for a built-in with its own flag set",
+			words:   []string{"run", "--"},
+			current: 3,
+			wantAll: runCommandFlags(),
+		},
 	}
 }
 

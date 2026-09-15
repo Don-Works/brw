@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -189,7 +190,9 @@ func ProbeEndpoint(ctx context.Context, port int) (string, error) {
 		Browser              string `json:"Browser"`
 		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+	// Bounded: this is an untrusted local listener that merely answered on a
+	// conventional port, and a real /json/version is a few hundred bytes.
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxProbeBody)).Decode(&payload); err != nil {
 		return "", fmt.Errorf("port %d did not answer /json/version with JSON: %w", port, err)
 	}
 	if payload.WebSocketDebuggerURL == "" {
@@ -200,6 +203,11 @@ func ProbeEndpoint(ctx context.Context, port int) (string, error) {
 	}
 	return payload.Browser, nil
 }
+
+// maxProbeBody bounds what a probed port may hand back. Anything on one of the
+// conventional debugging ports can answer, and a decoder reading until EOF from
+// something that never stops sending is a daemon that never starts.
+const maxProbeBody = 1 << 20
 
 // probeTimeout bounds one probe. Discovery tries several ports in sequence and
 // a closed port fails immediately; this only matters for a port that accepts

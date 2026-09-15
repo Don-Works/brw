@@ -34,12 +34,15 @@ import (
 // the first is worth trying again on the next tick, the second is not.
 var ErrBusy = errors.New("another brw run holds this profile")
 
-// unidentified is the key for a daemon that will not say which profile it
-// drives. Such daemons share one lock, which over-serialises them: two runs that
-// might have been independent take turns. That is the safe direction — the
-// alternative is two runs interleaving on one tab because neither could prove
-// they were different.
-const unidentified = "unidentified"
+// Unidentified is the key Key returns for a daemon that will not say which
+// profile it drives. Every such daemon shares this one lock, which serialises
+// them against each other but NOT against an identified daemon on the same
+// browser: that one takes the profile's own key, and the two interleave on one
+// tab while each reports a lock key. The key alone therefore cannot carry the
+// guarantee, so `brw run` refuses a daemon whose identity hashes to this rather
+// than taking it. It is exported so that refusal is written against the same
+// constant the key comes from.
+const Unidentified = "unidentified"
 
 // Key derives the lock identity from the profile a daemon drives.
 //
@@ -56,7 +59,7 @@ func Key(identity brwidentity.Identity) string {
 		strings.TrimSpace(identity.ProfileDirectory),
 	}
 	if strings.TrimSpace(strings.Join(fields, "")) == "" {
-		return unidentified
+		return Unidentified
 	}
 	digest := sha256.Sum256([]byte(strings.Join(fields, "\x00")))
 	return hex.EncodeToString(digest[:16])

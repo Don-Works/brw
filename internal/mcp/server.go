@@ -42,11 +42,14 @@ type Server struct {
 	toolProfile string // all, core, minimal, or progressive auto
 	navPolicy   *navpolicy.Policy
 	idleExit    time.Duration
-	usage       *usagelog.Recorder
-	sessionID   string
-	identity    brwidentity.Identity
-	console     consoleBuffer
-	unlocked    unlockedTools
+	// activity reports work to an owner outside this server. Nil by default;
+	// see SetActivityHook.
+	activity  func() func()
+	usage     *usagelog.Recorder
+	sessionID string
+	identity  brwidentity.Identity
+	console   consoleBuffer
+	unlocked  unlockedTools
 	// consent gates tools behind a persistent per-origin grant. Nil (the
 	// default) leaves every tool ungated: site consent is opt-in.
 	consent *siteconsent.Guard
@@ -92,6 +95,30 @@ func (s *Server) SetIdentity(identity brwidentity.Identity) {
 // closing its stdin would otherwise pin it alive forever.
 func (s *Server) SetIdleExit(d time.Duration) {
 	s.idleExit = d
+}
+
+// SetActivityHook reports each request this server handles to its owner. The
+// hook is called when a request starts and the function it returns when that
+// request finishes.
+//
+// The owner is the daemon's HTTP server, whose --idle-exit watcher sees only
+// the HTTP mux. A daemon in --mcp mode keeps that listener and serves an agent
+// over stdio, so without this it counted a live MCP session as silence and
+// exited, closing the browser under the agent that was driving it.
+func (s *Server) SetActivityHook(hook func() func()) {
+	s.activity = hook
+}
+
+// noteActivity brackets one piece of work for the activity hook. It always
+// returns a callable, so the call sites need no nil check.
+func (s *Server) noteActivity() func() {
+	if s.activity == nil {
+		return func() {}
+	}
+	if done := s.activity(); done != nil {
+		return done
+	}
+	return func() {}
 }
 
 // SetUsageRecorder installs the metadata-only operational ledger. Tool
@@ -574,9 +601,11 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 
 		active++
 		workers.Add(1)
+		endActivity := s.noteActivity()
 		go func(req request, mode stdioMode, key string, entry *activeRequest) {
 			defer workers.Done()
 			defer cancelRequest()
+			defer endActivity()
 			result, rpcErr := s.handle(requestCtx, req.Method, req.Params)
 			err := write(mode, response{JSONRPC: "2.0", ID: req.ID, Result: result, Error: rpcErr})
 			inflightMu.Lock()

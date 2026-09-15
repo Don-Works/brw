@@ -57,6 +57,11 @@ var errNoDaemon = errors.New("no brw daemon reachable")
 type builtinCommand struct {
 	name    string
 	summary string
+	// flags lists the flags this built-in accepts, for the completion scripts.
+	// Nil means it takes none; a built-in with its own FlagSet must set this or
+	// the shell falls through to offering the global flags, every one of which
+	// that FlagSet rejects with exit 2.
+	flags func() []string
 }
 
 // builtinCommandTable is the one place these words are listed. The completion
@@ -67,7 +72,7 @@ type builtinCommand struct {
 var builtinCommandTable = []builtinCommand{
 	{name: "completion", summary: "print the shell completion script"},
 	{name: "help", summary: "print the verb list"},
-	{name: "run", summary: "run one recipe non-interactively for a scheduler"},
+	{name: "run", summary: "run one recipe non-interactively for a scheduler", flags: runCommandFlags},
 	{name: "version", summary: "print the brw version"},
 }
 

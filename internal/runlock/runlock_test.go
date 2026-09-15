@@ -69,10 +69,10 @@ func TestKeyIsTheProfileNotTheDaemon(t *testing.T) {
 
 	// A daemon that says nothing about its profile still gets a key, and every
 	// such daemon gets the SAME key: over-serialising is the safe direction.
-	if got := Key(brwidentity.Identity{}); got != unidentified {
-		t.Errorf("Key(empty) = %q, want %q", got, unidentified)
+	if got := Key(brwidentity.Identity{}); got != Unidentified {
+		t.Errorf("Key(empty) = %q, want %q", got, Unidentified)
 	}
-	if Key(brwidentity.Identity{Mode: "direct"}) != unidentified {
+	if Key(brwidentity.Identity{Mode: "direct"}) != Unidentified {
 		t.Error("a daemon that reports only its mode must still fall back to the shared key")
 	}
 }

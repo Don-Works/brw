@@ -68,6 +68,20 @@ func (s *Server) IdleExit() time.Duration {
 	return s.idle.after
 }
 
+// NoteActivity records use of the daemon that did not arrive over this mux, and
+// returns the function to call when that work finishes.
+//
+// --idle-exit measures the HTTP mux, but the HTTP mux is not the only way to
+// use a daemon: `brwd --mcp` keeps the default HTTP listener AND serves an
+// agent over stdio, and those tool calls reach the controller directly. Without
+// this the daemon counted a live MCP session as silence and shut the browser
+// down under the agent driving it. The returned function is idempotent so a
+// caller may defer it and also call it on an early return.
+func (s *Server) NoteActivity() func() {
+	s.idle.begin()
+	return sync.OnceFunc(s.idle.end)
+}
+
 // idleMiddleware records that somebody used the daemon. A request is counted on
 // the way in AND on the way out: a single long call — a recipe run, a wait —
 // must not look like silence just because it has not finished yet.

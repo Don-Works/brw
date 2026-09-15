@@ -34,6 +34,13 @@ type runDaemon struct {
 	hold     time.Duration
 
 	interactive bool
+	// identity is the raw /health identity object. Empty uses the fixture
+	// profile; a value naming none of the four profile fields stands in for a
+	// daemon that will not say which browser it drives.
+	identity string
+	// noConsent omits the consent block entirely, which is what a daemon built
+	// before /health carried one answers with.
+	noConsent bool
 	// respond overrides the run response. Nil answers a successful run.
 	respond func(w http.ResponseWriter, body []byte)
 }
@@ -43,7 +50,15 @@ func newRunDaemon(t *testing.T, d *runDaemon) *runDaemon {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("content-type", "application/json")
-		fmt.Fprintf(w, `{"ok":true,"identity":{"workspace":"work","profile":"chrome-work","user_data_dir":"/var/tmp/brw/chrome","profile_directory":"Profile 1","mode":"direct","transport":"direct-cdp"},"consent":{"enabled":true,"interactive":%t}}`, d.interactive)
+		identity := d.identity
+		if identity == "" {
+			identity = `{"workspace":"work","profile":"chrome-work","user_data_dir":"/var/tmp/brw/chrome","profile_directory":"Profile 1","mode":"direct","transport":"direct-cdp"}`
+		}
+		consent := fmt.Sprintf(`,"consent":{"enabled":true,"interactive":%t}`, d.interactive)
+		if d.noConsent {
+			consent = ""
+		}
+		fmt.Fprintf(w, `{"ok":true,"identity":%s%s}`, identity, consent)
 	})
 	mux.HandleFunc("POST /api/recipes/run", func(w http.ResponseWriter, r *http.Request) {
 		body := make([]byte, r.ContentLength)
@@ -541,4 +556,161 @@ func outcomeNamesInSource(t *testing.T, file string) []string {
 		return true
 	})
 	return names
+}
+
+// failingRunDaemon answers one failed run, with the error class the argument
+// names. The class is the daemon's own classification of the innermost failure,
+// which is the thing brw run has to weigh against the structured result.
+func failingRunDaemon(t *testing.T, class string) *runDaemon {
+	t.Helper()
+	return newRunDaemon(t, &runDaemon{respond: func(w http.ResponseWriter, _ []byte) {
+		if class != "" {
+			w.Header().Set(usagelog.HeaderErrorClass, class)
+		}
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"recipe_id":"fixture.recipe","status":"failed","steps":[{"id":"submit","status":"failed"}],"error":"step \"submit\": postcondition network_response did not occur"}`)
+	}})
+}
+
+// TestAFailedStepIsAPostconditionFailureWhateverClassTheDaemonAttached is the
+// acceptance criterion held against the classes the daemon really sends.
+//
+// Every postcondition the recipe compiler infers by default is a wait, and a
+// wait that ran out is classified "timeout" — which usagelog.Retryable says is
+// worth another attempt, which used to return "infrastructure" and exit 3, the
+// same code as an unreachable daemon. The whole point of the exit-code contract
+// is that 4 and 3 are different answers, so the structured result outranks the
+// class rather than the other way round.
+func TestAFailedStepIsAPostconditionFailureWhateverClassTheDaemonAttached(t *testing.T) {
+	// Every class the daemon computes that Retryable() says yes to, plus the two
+	// it reaches for a postcondition in practice and the empty one.
+	classes := []string{"", "tool", "timeout", "busy", "transport", "takeover_held", "target_not_found"}
+	for _, class := range classes {
+		t.Run("class "+class, func(t *testing.T) {
+			isolateLocks(t)
+			daemon := failingRunDaemon(t, class)
+			code, report, stderrText := invokeRun(t, daemon)
+			if code != ExitPostconditionFailed {
+				t.Fatalf("a failed step with class %q exited %d, want %d: %+v", class, code, ExitPostconditionFailed, report)
+			}
+			if report.Outcome != "postcondition_failed" || report.OK {
+				t.Fatalf("report = %+v", report)
+			}
+			if report.Result == nil || report.Result.Status != "failed" {
+				t.Fatalf("the report dropped the run result: %+v", report.Result)
+			}
+			if !strings.Contains(stderrText, "postcondition") {
+				t.Fatalf("stderr does not name the failure: %q", stderrText)
+			}
+		})
+	}
+
+	// And the other direction: the same retryable class with no failed step is
+	// still an infrastructure failure, so this did not simply delete the arm.
+	isolateLocks(t)
+	noResult := newRunDaemon(t, &runDaemon{respond: func(w http.ResponseWriter, _ []byte) {
+		w.Header().Set(usagelog.HeaderErrorClass, "timeout")
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":"no response from downstream"}`)
+	}})
+	code, report, _ := invokeRun(t, noResult)
+	if code != ExitNoDaemon || report.Outcome != "infrastructure" {
+		t.Fatalf("a retryable class with no run result exited %d (%s), want %d (infrastructure)", code, report.Outcome, ExitNoDaemon)
+	}
+
+	// A refusal stays a refusal even when the run got far enough to fail a step:
+	// retrying it changes nothing until a human grants something.
+	isolateLocks(t)
+	refused := failingRunDaemon(t, "policy_denied")
+	code, report, _ = invokeRun(t, refused)
+	if code != ExitPolicyRefused || report.Retryable {
+		t.Fatalf("a refusal carrying a failed step exited %d (retryable=%v), want %d and not retryable", code, report.Retryable, ExitPolicyRefused)
+	}
+}
+
+// TestRunRefusesADaemonThatReportsNoConsentPosture is the fail-closed rule held
+// against a daemon older than the block it reads. The Consent field decodes to
+// its zero value when /health sends nothing, so "this daemon has no prompter"
+// and "this daemon said nothing" used to be the same answer — and the second
+// one is exactly the daemon brw cannot see into.
+func TestRunRefusesADaemonThatReportsNoConsentPosture(t *testing.T) {
+	isolateLocks(t)
+	daemon := newRunDaemon(t, &runDaemon{noConsent: true})
+	code, report, stderrText := invokeRun(t, daemon)
+	if code != ExitPolicyRefused {
+		t.Fatalf("a daemon reporting no consent posture exited %d, want %d: %+v", code, ExitPolicyRefused, report)
+	}
+	if daemon.runs != 0 {
+		t.Fatalf("the run reached the daemon %d times; it must refuse before starting", daemon.runs)
+	}
+	if !strings.Contains(report.Error, "consent posture") {
+		t.Fatalf("the refusal does not say what was missing: %q", report.Error)
+	}
+	if !strings.Contains(stderrText, "policy_refused") {
+		t.Fatalf("stderr does not name the outcome: %q", stderrText)
+	}
+}
+
+// TestRunRefusesADaemonThatWillNotNameItsProfile: the lock is keyed on the
+// profile, and a daemon that names none hashes to the shared "unidentified"
+// key. That key serialises such daemons against each other but NOT against an
+// identified daemon on the same browser, so a run that took it would report a
+// lock key while interleaving on one tab with the run it was supposed to queue
+// behind.
+func TestRunRefusesADaemonThatWillNotNameItsProfile(t *testing.T) {
+	for _, identity := range []string{`{}`, `{"mode":"direct","transport":"direct-cdp"}`} {
+		t.Run(identity, func(t *testing.T) {
+			isolateLocks(t)
+			daemon := newRunDaemon(t, &runDaemon{identity: identity})
+			code, report, _ := invokeRun(t, daemon)
+			if code == ExitOK {
+				t.Fatalf("a run against an unidentified daemon succeeded: %+v", report)
+			}
+			if daemon.runs != 0 {
+				t.Fatalf("the run reached the daemon %d times; it must refuse before starting", daemon.runs)
+			}
+			if report.Retryable {
+				t.Fatalf("the refusal is advertised as retryable, so a scheduler would repeat it forever: %+v", report)
+			}
+			if !strings.Contains(report.Error, "--workspace/--profile") {
+				t.Fatalf("the refusal does not tell the operator what to change: %q", report.Error)
+			}
+		})
+	}
+}
+
+// TestAnIdentifiedAndAnUnidentifiedDaemonNeverBothRun is the pair the profile
+// lock cannot serialise: two daemons on one browser whose lock keys differ
+// because only one of them will say which browser it is. Neither takes the
+// other's lock, so the guarantee has to hold by one of them refusing.
+func TestAnIdentifiedAndAnUnidentifiedDaemonNeverBothRun(t *testing.T) {
+	isolateLocks(t)
+	identified := newRunDaemon(t, &runDaemon{hold: 120 * time.Millisecond})
+	anonymous := newRunDaemon(t, &runDaemon{hold: 120 * time.Millisecond, identity: `{"mode":"direct","transport":"direct-cdp"}`})
+
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for index, daemon := range []*runDaemon{identified, anonymous} {
+		wg.Add(1)
+		go func(index int, daemon *runDaemon) {
+			defer wg.Done()
+			codes[index], _, _ = invokeRun(t, daemon, "--lock-wait", "30s")
+		}(index, daemon)
+	}
+	wg.Wait()
+
+	if codes[0] != ExitOK {
+		t.Fatalf("the identified daemon's run exited %d", codes[0])
+	}
+	if codes[1] == ExitOK {
+		t.Fatal("both daemons ran: one of them could not prove which browser it drives, so nothing serialised the two")
+	}
+	if anonymous.runs != 0 {
+		t.Fatalf("the unidentified daemon served %d runs alongside the identified one", anonymous.runs)
+	}
+	if identified.runs != 1 {
+		t.Fatalf("the identified daemon served %d runs", identified.runs)
+	}
 }

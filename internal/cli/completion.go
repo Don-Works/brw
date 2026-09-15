@@ -102,8 +102,18 @@ func verbFlags(v verb) []string {
 
 // flagsByFirstWord collapses flags onto the first word of each verb name, which
 // is what a shell has in hand when completing.
+//
+// The built-ins that carry their own FlagSet are folded in from the same table
+// the dispatcher reads, so a shell never offers `brw run --json`: run takes the
+// global flags itself and rejects the ones it does not register.
 func flagsByFirstWord(all []verb) map[string][]string {
 	byWord := map[string][]string{}
+	for _, command := range builtinCommandTable {
+		if command.flags == nil {
+			continue
+		}
+		byWord[command.name] = command.flags()
+	}
 	for _, v := range all {
 		tokens := strings.Fields(v.name)
 		if len(tokens) == 0 {

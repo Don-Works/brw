@@ -120,7 +120,8 @@ snapshot, read the ref, use it.
 `brwd --mcp` defaults to `--mcp-tools auto`: it advertises 14 tools — `brw_tools`,
 `brw_open`, `brw_navigate_to`, `brw_read`, `brw_read_url`, `brw_snapshot`, `brw_find`,
 `brw_click`, `brw_fill`, `brw_select`, `brw_press`, `brw_wait_for`, `brw_observe`,
-`brw_batch` — and grows as you search. The full surface is 88 tools; the catalogue is
+`brw_batch` — and grows as you search. The full surface is 88 tools on a direct-CDP
+daemon (76 on the extension bridge, which cannot serve the rest); the catalogue is
 re-sent on every request, so the small default is a per-turn saving.
 
 ```json

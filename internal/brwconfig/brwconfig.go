@@ -18,9 +18,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -75,12 +77,12 @@ func Load(path string) (*File, string, error) {
 			return nil, "", err
 		}
 	}
-	data, err := os.ReadFile(resolved)
+	data, err := readTrusted(resolved)
 	if err != nil {
 		if os.IsNotExist(err) && !explicit {
 			return nil, "", nil
 		}
-		return nil, resolved, fmt.Errorf("read %s: %w", resolved, err)
+		return nil, resolved, err
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
@@ -93,6 +95,61 @@ func Load(path string) (*File, string, error) {
 		return nil, resolved, fmt.Errorf("parse %s: it contains more than one JSON document", resolved)
 	}
 	return &file, resolved, nil
+}
+
+// maxConfigBytes bounds the file. A brw.json is a few hundred bytes of flag
+// names; anything approaching this is not one.
+const maxConfigBytes = 1 << 20
+
+// readTrusted reads brw.json only when nothing but its owner could have written
+// it.
+//
+// The file decides what every brwd on this machine does — chrome-arg,
+// proxy-server, ignore-https-errors, allowed-domains, plugin-dir,
+// recipe-provider-url, profile-policy — so another local account that can write
+// it can redirect every browser brw drives. The repo already gates the recipe
+// provider token, the consent key, credential files and recipe directories the
+// same way. Refused rather than warned about: a warning on a daemon's stderr at
+// boot is read by nobody.
+//
+// Writability is the check, not readability: brw.json holds no secret, and
+// requiring 0600 would reject the ordinary 0644 a person's editor writes.
+func readTrusted(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("%s is mode %#o; it must not be group- or world-writable, because it decides what every brwd on this machine does", path, info.Mode().Perm())
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	// Re-checked on the open handle: the path could have been swapped between
+	// the Lstat and the Open.
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return nil, fmt.Errorf("%s changed before it was read", path)
+	}
+	if runtime.GOOS != "windows" && opened.Mode().Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("%s is mode %#o; it must not be group- or world-writable, because it decides what every brwd on this machine does", path, opened.Mode().Perm())
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxConfigBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(data) > maxConfigBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", path, maxConfigBytes)
+	}
+	return data, nil
 }
 
 // DefaultPath is where brw looks when no path is given.

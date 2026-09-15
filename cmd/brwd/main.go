@@ -125,7 +125,7 @@ func main() {
 	flag.BoolVar(&mcpMode, "mcp", false, "run MCP stdio server")
 	flag.StringVar(&mcpToolProfile, "mcp-tools", envDefault("BRW_MCP_TOOLS", "auto"), "MCP tool surface advertised in tools/list: 'all' (full), 'core' (lean common-flow set), 'minimal' (smallest surface that still completes ordinary web work), or 'auto' (default; starts minimal and grows as the agent discovers tools with brw_tools). The catalogue is re-sent on every request, so a narrower profile is a per-turn context saving. All tools remain callable regardless.")
 	flag.DurationVar(&mcpIdleExit, "mcp-idle-exit", envDuration("BRW_MCP_IDLE_EXIT", 0), "exit the --mcp stdio server cleanly after this long with no requests; upstream HTTP proxies default to 90m unless this flag or BRW_MCP_IDLE_EXIT is explicitly set (0 disables). Prevents abandoned clients from accumulating disposable proxy processes.")
-	flag.DurationVar(&httpIdleExit, "idle-exit", envDuration("BRW_IDLE_EXIT", 0), "shut this daemon down cleanly after this long with no API request; 0 (the default) keeps it persistent. For a daemon started for one job — a scheduled run, a CI step — that would otherwise hold a browser and a loopback port until the machine reboots. A /health poll does not count as use, so a supervisor cannot keep an abandoned daemon alive.")
+	flag.DurationVar(&httpIdleExit, "idle-exit", envDuration("BRW_IDLE_EXIT", 0), "shut this daemon down cleanly after this long with no use; 0 (the default) keeps it persistent. For a daemon started for one job — a scheduled run, a CI step — that would otherwise hold a browser and a loopback port until the machine reboots. Use means a request to the HTTP API, or an MCP tool call in --mcp mode; a /health poll does not, so a supervisor cannot keep an abandoned daemon alive. Requires the HTTP listener: with --http off, use --mcp-idle-exit instead.")
 	flag.BoolVar(&bridgeMode, "bridge", false, "use installed Chrome extension bridge instead of direct CDP")
 	flag.BoolVar(&headless, "headless", envBool("BRW_HEADLESS"), "direct CDP: launch Chrome with no visible window (--headless=new). Extensions, the persistent profile and the full CDP surface still work. Incompatible with --bridge and --remote, which attach to a browser brw did not launch. A profile may set \"headless\": true instead.")
 	flag.StringVar(&bridgeAddr, "bridge-addr", envDefault("BRW_BRIDGE_ADDR", "127.0.0.1:17311"), "extension bridge WebSocket listen address")
@@ -254,6 +254,13 @@ func main() {
 	// Everything the policy CHANGES is still applied below.
 	var profile profilepolicy.Profile
 	haveProfilePolicy := false
+	// The policy's direct-CDP verdict, kept outside the block that resolves it
+	// because --remote auto is resolved further down and has to honour it. No
+	// policy means no prohibition, which is what a daemon started without
+	// --profile has always had.
+	policyProfileName := ""
+	directCDPAllowed := true
+
 	if profileName != "" || workspaceName != "" {
 		policy, err := profilepolicy.Load(profilePolicyPath)
 		if err != nil {
@@ -312,6 +319,8 @@ func main() {
 	identityExpected := brwidentity.Identity{}
 
 	if haveProfilePolicy {
+		policyProfileName = profile.Name
+		directCDPAllowed = profile.DirectCDPAllowed
 		if profile.BridgeHTTPAddr != "" && !flagWasSet("http") && os.Getenv("BRW_HTTP_ADDR") == "" {
 			httpAddr = profile.BridgeHTTPAddr
 		}
@@ -369,6 +378,11 @@ func main() {
 		identityExpected.IgnoreHTTPSErrors = false
 		log.Printf("using workspace profile %q (%s)", profile.Name, profile.Kind)
 	}
+	// The profile policy above is the last thing that can change httpAddr, so
+	// this is where the answer is final.
+	if err := idleExitRefusal(httpIdleExit, httpAddr); err != nil {
+		log.Fatalf("%v", err)
+	}
 	if loginMode {
 		switch {
 		case bridgeMode, upstreamHTTP != "", cfg.RemoteURL != "":
@@ -421,6 +435,9 @@ func main() {
 		})
 		cancelDiscover()
 		if err != nil {
+			log.Fatalf("--remote auto: %v", err)
+		}
+		if err := autoConnectRefusal(endpoint, policyProfileName, directCDPAllowed, unsafeAllowDefaultProfileCDP); err != nil {
 			log.Fatalf("--remote auto: %v", err)
 		}
 		cfg.RemoteURL = endpoint.URL
@@ -522,21 +539,14 @@ func main() {
 				log.Fatalf("upstream HTTP controller %s identity mismatch: %s", upstreamHTTP, strings.Join(mismatches, "; "))
 			}
 		}
-		// Adopt the upstream's transport and headlessness. This process is a
-		// disposable MCP proxy: its own Mode is "upstream-http", which says
-		// how the AGENT reaches brw and nothing about how brw reaches Chrome.
 		// Without adoption every bridge daemon looked identical to every
-		// direct-CDP one from inside a tool call, and the documented advice
-		// was to shell out and grep ps for --bridge.
-		if healthErr == nil && !health.Identity.Empty() {
-			runtimeIdentity.Transport = health.Identity.Transport
-			runtimeIdentity.Headless = health.Identity.Headless
-			runtimeIdentity.IgnoreHTTPSErrors = health.Identity.IgnoreHTTPSErrors
-			usageIdentity.Transport = health.Identity.Transport
-			usageIdentity.Headless = health.Identity.Headless
-			usageIdentity.IgnoreHTTPSErrors = health.Identity.IgnoreHTTPSErrors
-		} else if healthErr != nil {
-			log.Printf("WARNING: upstream %s health unavailable (%v); transport and headless state will be reported empty", upstreamHTTP, healthErr)
+		// direct-CDP one from inside a tool call, and the documented advice was
+		// to shell out and grep ps for --bridge.
+		if healthErr == nil {
+			runtimeIdentity = adoptUpstreamIdentity(runtimeIdentity, health.Identity, haveProfilePolicy)
+			usageIdentity = adoptUpstreamIdentity(usageIdentity, health.Identity, haveProfilePolicy)
+		} else {
+			log.Printf("WARNING: upstream %s health unavailable (%v); transport, headless state and the profile this proxy drives will be reported empty", upstreamHTTP, healthErr)
 		}
 		controller = upstream
 		log.Printf("using upstream HTTP controller %s", upstreamHTTP)
@@ -899,6 +909,13 @@ func main() {
 			server.SetIdleExit(mcpIdleExit)
 			log.Printf("MCP idle-exit armed: exiting after %s without requests", mcpIdleExit)
 		}
+		// The HTTP idle watcher measures the HTTP mux, and an MCP tool call never
+		// crosses it — it reaches the controller directly. Reporting each call to
+		// the same tracker is what keeps --idle-exit from shutting the browser
+		// down under the agent that is using it over stdio.
+		if api != nil && api.IdleExit() > 0 {
+			server.SetActivityHook(api.NoteActivity)
+		}
 		err := server.Serve(ctx, os.Stdin, os.Stdout)
 		switch {
 		case errors.Is(err, mcp.ErrIdleExit):
@@ -999,6 +1016,73 @@ func daemonMode(upstreamHTTP, remoteURL string, bridgeMode, chromeOptIn bool) st
 	default:
 		return "direct"
 	}
+}
+
+// httpListenerEnabled reports whether this daemon serves the HTTP API at all.
+func httpListenerEnabled(httpAddr string) bool {
+	return httpAddr != "" && httpAddr != "off"
+}
+
+// idleExitRefusal rejects --idle-exit on a daemon that serves no HTTP API.
+//
+// The idle watcher is armed on the HTTP server and postponed by the requests
+// that reach it, plus the MCP calls the stdio server reports to it. With no
+// listener there is no watcher, so the flag silently does nothing — which is
+// the opposite of what an operator asking a daemon to stop itself wants, and
+// there is already a flag that works there.
+func idleExitRefusal(idleExit time.Duration, httpAddr string) error {
+	if idleExit <= 0 || httpListenerEnabled(httpAddr) {
+		return nil
+	}
+	return errors.New("--idle-exit is armed on the HTTP API and this daemon has --http off, so it would never fire; use --mcp-idle-exit for a stdio session, or leave the HTTP listener on")
+}
+
+// autoConnectRefusal decides whether a resolved --remote auto endpoint may be
+// used, given the profile policy.
+//
+// A port probe is a guess, and a guess is not how a profile barred from direct
+// CDP comes to be driven over direct CDP. The explicit gate at startup is
+// skipped for any non-empty --remote and "auto" is non-empty, so without this
+// the prohibition ends at the word "auto" — and the daemon then reports the
+// policy's own user_data_dir and profile_directory as the identity of whatever
+// answered on 9222, which is both what brw_identity tells an agent and what the
+// run lock keys on. The DevToolsActivePort result is not a guess: it came out
+// of the user data directory the policy itself named.
+func autoConnectRefusal(endpoint cdplaunch.AutoEndpoint, profileName string, directCDPAllowed, unsafeOverride bool) error {
+	if endpoint.Source != cdplaunch.SourcePortProbe || directCDPAllowed || unsafeOverride {
+		return nil
+	}
+	return fmt.Errorf("found a browser on port %d by probing the conventional ports, and profile %q is allowed only through the extension bridge, not direct CDP; pass --remote %s explicitly if that is the browser you mean", endpoint.Port, profileName, endpoint.URL)
+}
+
+// adoptUpstreamIdentity folds the identity of the daemon behind an
+// --upstream-http proxy into the proxy's own.
+//
+// Transport, headlessness and the certificate policy are always adopted: this
+// process is a disposable MCP proxy whose own Mode says how the AGENT reaches
+// brw and nothing about how brw reaches Chrome.
+//
+// The four profile fields are adopted only when this process has no profile
+// policy naming them, and they are what the run lock is keyed on. A proxy that
+// reported none of them handed `brw run` the shared "unidentified" key while
+// the daemon behind it handed out the profile's own — two locks, one Chrome,
+// and the interleaving on a single tab that the lock exists to prevent. With a
+// policy they are already set and verified against this same upstream at
+// startup, so adopting would only overwrite equals.
+func adoptUpstreamIdentity(local, upstream brwidentity.Identity, haveProfilePolicy bool) brwidentity.Identity {
+	if upstream.Empty() {
+		return local
+	}
+	local.Transport = upstream.Transport
+	local.Headless = upstream.Headless
+	local.IgnoreHTTPSErrors = upstream.IgnoreHTTPSErrors
+	if !haveProfilePolicy {
+		local.Workspace = upstream.Workspace
+		local.Profile = upstream.Profile
+		local.UserDataDir = upstream.UserDataDir
+		local.ProfileDirectory = upstream.ProfileDirectory
+	}
+	return local
 }
 
 // localTransport names how THIS process reaches the browser. A proxy cannot
