@@ -20,7 +20,7 @@ import (
 // attributes and their text, and the decision below is about which attributes a
 // browser fetches.
 //
-// cssRefPattern and scriptURLPattern still scan text, because CSS and
+// cssRefPatterns and scriptURLPatterns still scan text, because CSS and
 // JavaScript are not HTML and there is nothing here that parses them.
 var (
 	cssRefPatterns = []*regexp.Regexp{
