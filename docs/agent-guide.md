@@ -499,7 +499,7 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` | 85 | ~28.8k tokens |
+| `all` | 87 | ~30.8k tokens |
 | `core` | 26 | ~10.1k tokens |
 | `minimal` | 13 | ~5.8k tokens |
 | `auto` (default) | 14, growing | ~6.0k tokens to start |

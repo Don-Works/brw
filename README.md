@@ -400,7 +400,7 @@ Core MCP tools include:
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: `all` costs ~28.8k tokens across 85 tools, `core` ~10.1k,
+tokens on every turn: `all` costs ~30.8k tokens across 87 tools, `core` ~10.1k,
 `minimal` ~5.8k, and `auto` starts at ~6.0k and grows only as the agent
 discovers tools it needs via `brw_tools` (measure with
 `scripts/measure-tool-catalogue.py`).
