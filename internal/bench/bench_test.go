@@ -162,30 +162,50 @@ func TestEstimateTokensMatchesThePublishedEstimator(t *testing.T) {
 // twice — escaped inside content[0].text and again as structuredContent — so a
 // figure taken from one marshal is about half the real cost under a column
 // heading that claims otherwise.
+//
+// Each case names the bytes an MCP client receives as a literal rather than
+// building them with the call ObservationBytes itself makes. Re-deriving the
+// implementation cannot disagree with it: the whole envelope could go missing
+// and both sides of the comparison would shrink together.
 func TestObservationBytesMeasuresTheMCPResultAnAgentReceives(t *testing.T) {
 	cases := []struct {
 		name  string
 		value any
-		want  int
+		// wire is the exact JSON the server puts on the socket for value:
+		// the payload escaped inside content[0].text, and repeated as
+		// structuredContent when — and only when — it is a JSON object.
+		wire string
 	}{
-		{name: "nothing was returned", value: nil, want: 0},
-		{name: "an object payload", value: map[string]string{"ok": "true"}},
-		{name: "a scalar payload", value: "a string brw_evaluate returned"},
-		{name: "a list payload", value: []string{"one", "two"}},
+		{name: "nothing was returned", value: nil, wire: ""},
+		{
+			name:  "an object payload",
+			value: map[string]string{"ok": "true"},
+			wire:  `{"content":[{"type":"text","text":"{\"ok\":\"true\"}"}],"structuredContent":{"ok":"true"}}`,
+		},
+		{
+			name:  "a scalar payload",
+			value: "a string brw_evaluate returned",
+			wire:  `{"content":[{"type":"text","text":"\"a string brw_evaluate returned\""}]}`,
+		},
+		{
+			name:  "a list payload",
+			value: []string{"one", "two"},
+			wire:  `{"content":[{"type":"text","text":"[\"one\",\"two\"]"}]}`,
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := ObservationBytes(testCase.value)
 			if testCase.value == nil {
-				if got != testCase.want {
-					t.Fatalf("observation = %d bytes, want %d", got, testCase.want)
+				if got != 0 {
+					t.Fatalf("observation = %d bytes, want 0", got)
 				}
 				return
 			}
-			bare, err := json.Marshal(testCase.value)
-			if err != nil {
-				t.Fatal(err)
-			}
+			// The literal is checked against the server first, so that a
+			// changed envelope reads as "the wire moved" rather than as
+			// "ObservationBytes miscounts". The count below is still
+			// compared against the literal, never against this.
 			payload, err := mcp.ToolResultPayload(testCase.value)
 			if err != nil {
 				t.Fatal(err)
@@ -194,8 +214,15 @@ func TestObservationBytesMeasuresTheMCPResultAnAgentReceives(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got != len(sent) {
-				t.Fatalf("observation = %d bytes, want the %d the server sends", got, len(sent))
+			if string(sent) != testCase.wire {
+				t.Fatalf("the server now sends\n  %s\nthe case says it sends\n  %s", sent, testCase.wire)
+			}
+			if got != len(testCase.wire) {
+				t.Fatalf("observation = %d bytes, want the %d of\n  %s", got, len(testCase.wire), testCase.wire)
+			}
+			bare, err := json.Marshal(testCase.value)
+			if err != nil {
+				t.Fatal(err)
 			}
 			if got <= len(bare) {
 				t.Fatalf("observation = %d bytes, no more than the %d of the bare Go value; the envelope is not being counted", got, len(bare))

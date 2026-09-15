@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Don-Works/brw/internal/agenteval"
 )
 
 // TestMeasurementRunsCarryAWholeRunDeadline reads the two entry points rather
@@ -47,8 +51,20 @@ func TestMeasurementRunsCarryAWholeRunDeadline(t *testing.T) {
 	}
 }
 
+// perModeBudget is the room one pass over the whole suite is given. It is
+// written here rather than divided out of evalBudget so that the check below
+// weighs the deadline a run actually gets against a number, not against the
+// constant the run was built from.
+const perModeBudget = 15 * time.Minute
+
 // TestEveryMeasurementBudgetIsSet pins that each entry point has one, since a
-// zero duration makes context.WithTimeout expire immediately rather than never.
+// zero duration makes context.WithTimeout expire immediately rather than never
+// — `task bench` would then fail before it launched anything, and the failure
+// would read as a browser problem.
+//
+// This checks the constants only. That the entry points run under them is
+// TestMeasurementRunsCarryAWholeRunDeadline's job, and which one an evaluation
+// picks is TestTheBudgetCoversTheModesTheRunDrives'.
 func TestEveryMeasurementBudgetIsSet(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -63,12 +79,124 @@ func TestEveryMeasurementBudgetIsSet(t *testing.T) {
 			if testCase.budget <= time.Minute {
 				t.Fatalf("budget is %s; a measurement that takes seconds needs headroom, not a hair trigger", testCase.budget)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), testCase.budget)
-			defer cancel()
-			if _, ok := ctx.Deadline(); !ok {
-				t.Fatal("no deadline was set")
+		})
+	}
+}
+
+// errEvalStub stands in for whatever the suite would have returned. It is an
+// error so that runAgentEval returns before printing a report, and a sentinel
+// so a test can tell "the suite ran" from "runAgentEval failed earlier".
+var errEvalStub = errors.New("stub suite")
+
+// evalCall records what runAgentEval handed the suite runner.
+type evalCall struct {
+	ran         bool
+	modes       []agenteval.Mode
+	hasDeadline bool
+	remaining   time.Duration
+}
+
+// driveAgentEval runs the real entry point with the suite runner swapped out,
+// and reports the modes and the deadline it was actually given. The entry
+// point is what is under test: re-asking evalPlanFor what the budget should
+// have been cannot notice runAgentEval building its context from a different
+// constant, which is the mistake the pairing exists to prevent.
+func driveAgentEval(t *testing.T, verify bool) *evalCall {
+	t.Helper()
+	call := &evalCall{}
+	previous := runEvalSuite
+	t.Cleanup(func() { runEvalSuite = previous })
+	runEvalSuite = func(ctx context.Context, opts agenteval.Options) (agenteval.Report, error) {
+		call.ran = true
+		call.modes = opts.Modes
+		if deadline, ok := ctx.Deadline(); ok {
+			call.hasDeadline = true
+			call.remaining = time.Until(deadline)
+		}
+		return agenteval.Report{}, errEvalStub
+	}
+	if err := runAgentEval(evalOptions{RepoRoot: t.TempDir(), Verify: verify}); !errors.Is(err, errEvalStub) {
+		t.Fatalf("runAgentEval returned %v, want %v; the suite was never reached", err, errEvalStub)
+	}
+	if !call.ran {
+		t.Fatal("the suite runner was never called")
+	}
+	return call
+}
+
+// TestTheBudgetCoversTheModesTheRunDrives drives runAgentEval and reads the
+// deadline it puts on the context against the modes it puts in the options,
+// because the two are picked off the same flag and nothing else makes the
+// budget grow when the mode list does. A verify run given the honest-only
+// budget is killed midway, and every task it never reached is reported as
+// failing rather than as never attempted.
+//
+// It also pins which run drives the sabotaged task. Dropping it from
+// --eval-verify leaves a run that passes everything, which is the state the
+// flag exists to rule out, and one a mode count alone would not notice.
+func TestTheBudgetCoversTheModesTheRunDrives(t *testing.T) {
+	// startupSlack is the time between the context being created and the
+	// stub reading it. It is microseconds; a second is generous.
+	const startupSlack = time.Second
+
+	cases := []struct {
+		name      string
+		verify    bool
+		sabotaged bool
+	}{
+		{name: "an ordinary run", verify: false, sabotaged: false},
+		{name: "a verify run", verify: true, sabotaged: true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			call := driveAgentEval(t, testCase.verify)
+			if len(call.modes) == 0 {
+				t.Fatal("no modes; the run drives nothing")
+			}
+			if got := slices.Contains(call.modes, agenteval.ModeSabotaged); got != testCase.sabotaged {
+				t.Errorf("drives the sabotaged task = %t, want %t (modes %v)", got, testCase.sabotaged, call.modes)
+			}
+			if !call.hasDeadline {
+				t.Fatal("the suite was given a context with no deadline; a wedged run hangs with no output")
+			}
+			want := perModeBudget * time.Duration(len(call.modes))
+			if call.remaining+startupSlack < want {
+				t.Errorf("the run has %s left for %d mode(s), want at least %s; it is cut off partway and the tasks it never reached are reported as failures",
+					call.remaining.Round(time.Second), len(call.modes), want)
 			}
 		})
+	}
+}
+
+// TestEveryEvaluationModeIsReachable enumerates the modes the package offers
+// and requires each to be driven by some run, so that a mode added later is
+// covered without editing this test. A mode nothing selects is dead grading
+// code that still compiles and silently never runs.
+//
+// The modes come from driving the entry point rather than from evalPlanFor, so
+// a runAgentEval that overrides the plan with a list of its own fails here.
+func TestEveryEvaluationModeIsReachable(t *testing.T) {
+	driven := map[agenteval.Mode]string{}
+	for _, verify := range []bool{false, true} {
+		name := "an ordinary run"
+		if verify {
+			name = "a verify run"
+		}
+		for _, mode := range driveAgentEval(t, verify).modes {
+			if _, seen := driven[mode]; !seen {
+				driven[mode] = name
+			}
+		}
+	}
+	for _, mode := range agenteval.Modes() {
+		if _, ok := driven[mode]; !ok {
+			t.Errorf("mode %q is never driven; no flag selects it", mode)
+		}
+	}
+	for mode, by := range driven {
+		if !slices.Contains(agenteval.Modes(), mode) {
+			t.Errorf("%s drives mode %q, which is not one agenteval offers", by, mode)
+		}
 	}
 }
 

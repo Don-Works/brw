@@ -32,17 +32,34 @@ const (
 	verifyBudget = 30 * time.Minute
 )
 
+// evalPlanFor reports what one flag choice implies: the modes the run drives
+// and the whole-run budget it gets. The two are returned from a single branch
+// so they cannot be edited apart. A run handed more modes than its budget
+// covers is killed partway through, and every task it never reached is
+// reported as failing rather than as never attempted.
+//
+// An ordinary run only wants to know whether the agent can do the task;
+// --eval-verify also drives the sabotaged task, because a harness that passes
+// everything is indistinguishable from one that cannot report a failure.
+func evalPlanFor(verify bool) ([]agenteval.Mode, time.Duration) {
+	if verify {
+		return agenteval.Modes(), verifyBudget
+	}
+	return []agenteval.Mode{agenteval.ModeHonest}, evalBudget
+}
+
+// runEvalSuite is the suite runner, indirected so a test can drive
+// runAgentEval end to end and read the modes and the deadline it actually
+// passes, rather than re-asking evalPlanFor what they should have been.
+// Nothing outside the tests replaces it.
+var runEvalSuite = agenteval.Run
+
 // runAgentEval drives the agent-level evaluations against the local fixture
 // suite. Like the benchmark it launches its own browser and serves the fixtures
 // itself, so it needs no daemon; unlike the benchmark it needs no network
 // either unless the judge is asked for.
 func runAgentEval(opts evalOptions) error {
-	modes := []agenteval.Mode{agenteval.ModeHonest}
-	budget := evalBudget
-	if opts.Verify {
-		modes = agenteval.Modes()
-		budget = verifyBudget
-	}
+	modes, budget := evalPlanFor(opts.Verify)
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
@@ -55,7 +72,7 @@ func runAgentEval(opts evalOptions) error {
 		judge = resolved
 	}
 
-	report, err := agenteval.Run(ctx, agenteval.Options{
+	report, err := runEvalSuite(ctx, agenteval.Options{
 		RepoRoot: opts.RepoRoot,
 		Only:     opts.Only,
 		Modes:    modes,
