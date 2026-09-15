@@ -568,8 +568,21 @@ func isTransientTransportErr(err error) bool {
 // type" rejection, surfaced when the connected extension predates a bridge RPC
 // (e.g. an old build that lacks get_downloads). Callers use it to degrade
 // gracefully to an unsupported result rather than erroring.
+// unknownMessageType is the error the extension's service worker returns for a
+// message type it does not implement, which is how the bridge tells an OLD
+// extension apart from a real failure and falls back rather than erroring.
+//
+// It is the extension's text, produced in JavaScript
+// (extension/service_worker.js), so Go cannot share the literal with it. What it
+// can do is keep exactly one Go copy and assert the two still agree:
+// TestTheExtensionStillSendsTheUnknownMessageTypeError reads the service worker
+// and fails when the wording moves. Without that, a reworded message turns every
+// capability probe into a hard failure on browsers running an older extension,
+// with nothing to say why.
+const unknownMessageType = "unknown message type"
+
 func isUnknownMessageTypeErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "unknown message type")
+	return err != nil && strings.Contains(err.Error(), unknownMessageType)
 }
 
 func (b *Bridge) ListenAndServe() error {
@@ -3235,7 +3248,7 @@ func (b *Bridge) selectValue(ctx context.Context, ref, value string) (string, er
 		if result.Error == "" {
 			result.Error = "select failed"
 		}
-		if !strings.Contains(result.Error, "ref is not a select element") {
+		if !strings.Contains(result.Error, snapshot.NotASelectElement) {
 			return "", fmt.Errorf("select: %s", result.Error)
 		}
 		return b.selectCustomOption(ctx, ref, value)
@@ -5607,7 +5620,7 @@ func (b *Bridge) evalAssert(ctx context.Context, script string, args ...any) err
 		return err
 	}
 	if !ok {
-		return errors.New("assertion did not pass within timeout")
+		return snapshot.ErrAssertionTimeout
 	}
 	return nil
 }

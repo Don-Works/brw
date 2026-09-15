@@ -1831,7 +1831,7 @@ func (m *Manager) selectValue(tabCtx context.Context, ref, value string) (string
 		// settling again in the caller added a measurable 100 ms to every custom
 		// option selection without improving stability.
 		return "selected " + ref, nil
-	} else if !strings.Contains(err.Error(), "ref is not a select element") {
+	} else if !strings.Contains(err.Error(), snapshot.NotASelectElement) {
 		return "", err
 	}
 	if elementValueMatches(tabCtx, ref, value) {
@@ -2086,7 +2086,7 @@ func retryAssertAfterNavigation(ctx context.Context, timeout time.Duration, oper
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return errors.New("assertion did not pass within timeout")
+			return snapshot.ErrAssertionTimeout
 		}
 		err := operation(remaining)
 		if err == nil || !isTransientNavigationError(err) {
@@ -2098,7 +2098,7 @@ func retryAssertAfterNavigation(ctx context.Context, timeout time.Duration, oper
 		// assertion again inside the original caller-supplied deadline.
 		remaining = time.Until(deadline)
 		if remaining <= 0 {
-			return errors.New("assertion did not pass within timeout")
+			return snapshot.ErrAssertionTimeout
 		}
 		delay := 100 * time.Millisecond
 		if remaining < delay {

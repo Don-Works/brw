@@ -1090,6 +1090,44 @@ const FocusElementScript = `(function(ref) {` + FrameWalkHelpers + `
   return focused(el);
 })`
 
+// NotASelectElement is the exact text SelectElementScript returns when the ref
+// names something that is not a <select>. It is a CONTRACT rather than a
+// message: two callers branch on it to fall back to the custom-dropdown path,
+// and they have to branch on the text because the value crosses into JavaScript
+// and back as a string, with no error type to carry.
+//
+// Declared once and interpolated into the script below, so a reword cannot
+// leave the script saying one thing while the callers look for another. That
+// desync has no loud failure mode — the fallback simply stops firing and every
+// custom dropdown starts returning a hard error instead of being clicked.
+const NotASelectElement = "ref is not a select element"
+
+// ErrAssertionTimeout is the one assertion-timed-out error, for the same reason
+// NotASelectElement is one string: a caller branches on it to tell "the page has
+// not got there yet" apart from "the assertion is wrong", and it was written out
+// by hand in four places across three packages.
+//
+// The recipe runner reads it through an interface that may be an in-process
+// Manager, the extension bridge, or an HTTP client proxying to another daemon.
+// Over that last one the error arrives as text with no wrapping left, so callers
+// match the sentinel AND its message; AssertionTimedOut does both.
+var ErrAssertionTimeout = errors.New("assertion did not pass within timeout")
+
+// AssertionTimedOut reports whether err is the assertion-timeout sentinel,
+// including when it has crossed a process boundary and arrived as plain text.
+func AssertionTimedOut(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, ErrAssertionTimeout) ||
+		strings.Contains(err.Error(), ErrAssertionTimeout.Error())
+}
+
+// settleObserverMissing is the reason AwaitSettle's script reports when the
+// observer it was asked about is gone. Interpolated into that script rather than
+// written on both sides, so the Go check and the JavaScript cannot drift.
+const settleObserverMissing = "missing"
+
 const SelectElementScript = `(function(ref, value) {` + FrameWalkHelpers + `
   function clean(s) {
     return String(s || '').replace(/\s+/g, ' ').trim();
@@ -1103,7 +1141,7 @@ const SelectElementScript = `(function(ref, value) {` + FrameWalkHelpers + `
   }
   const el = findByRef(ref);
   if (!el) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
-  if (el.tagName.toLowerCase() !== 'select') return { ok: false, error: 'ref is not a select element' };
+  if (el.tagName.toLowerCase() !== 'select') return { ok: false, error: '` + NotASelectElement + `' };
   el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   const requested = clean(value);
   const options = Array.from(el.options || []);
@@ -2162,7 +2200,7 @@ func AwaitSettle(ctx context.Context, handle SettleHandle) (SettleResult, error)
 		var split=compound.indexOf(':');
 		var registry=compound.slice(0,split), token=compound.slice(split+1);
 		var entries=window[registry], entry=entries&&entries[token];
-		if(!entry) return Promise.resolve({settledMs:0,reason:'missing',cap:%d});
+		if(!entry) return Promise.resolve({settledMs:0,reason:'" + settleObserverMissing + "',cap:%d});
 		return entry.promise.then(function(result){try{delete entries[token]}catch(e){};return result;});
 	})(%s)`, handle.CapMS, tokenJSON)
 	var result SettleResult
@@ -2185,7 +2223,7 @@ func AwaitSettle(ctx context.Context, handle SettleHandle) (SettleResult, error)
 	})); err != nil {
 		return SettleResult{}, err
 	}
-	if result.Reason == "missing" {
+	if result.Reason == settleObserverMissing {
 		return result, errors.New("settle observer expired before it was awaited")
 	}
 	return result, nil
@@ -2686,7 +2724,7 @@ func EvalAssert(ctx context.Context, script string, args ...any) error {
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("assertion did not pass within timeout")
+		return ErrAssertionTimeout
 	}
 	return nil
 }

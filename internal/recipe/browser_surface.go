@@ -456,7 +456,7 @@ func (s *BrowserSurface) elementValueSatisfied(ctx context.Context, event Event)
 		assertionErr = s.Browser.AssertValue(ctx, matches[0].Ref, event.Match, time.Millisecond)
 	}
 	if assertionErr != nil {
-		if strings.Contains(assertionErr.Error(), "assertion did not pass within timeout") {
+		if snapshot.AssertionTimedOut(assertionErr) {
 			return false, nil
 		}
 		return false, assertionErr

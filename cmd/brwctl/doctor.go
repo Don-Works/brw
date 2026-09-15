@@ -815,11 +815,25 @@ func (d *doctorRun) checkTransport() {
 		d.add(checkSkip, "transport", "transport capabilities", "no profile resolved", "")
 		return
 	}
-	// Name the lane and its capability gap. Both transports are complete
-	// browsers, but incognito, HttpOnly cookies and download routing exist on
-	// one and Chrome tab groups on the other, and nothing else tells the user
-	// which one their install chose.
-	transport := setup.ResolvedTransport(d.profile)
+	// Name the lane and its capability gap. Every lane is a complete browser,
+	// and they differ in what an agent can ask for: incognito and HttpOnly
+	// cookies on the CDP lanes, Chrome tab groups only on the bridge, download
+	// routing only where brw started the browser, and nothing that resolves a
+	// local path or the clipboard where the browser is on another machine.
+	// Nothing else tells the user which of those they have.
+	//
+	// The RUNNING daemon's answer wins over the policy's. ResolvedTransport can
+	// only ever return the two lanes a profile policy selects, so on the Chrome
+	// opt-in, --remote or a browser.provider lane it names a lane the user is
+	// not on — which is worse than saying nothing, because the capability list
+	// printed beside it is then somebody else's.
+	transport := ""
+	if d.health != nil {
+		transport = d.health.Identity.Transport
+	}
+	if transport == "" {
+		transport = setup.ResolvedTransport(d.profile)
+	}
 	if transport == "" {
 		d.add(checkFail, "transport", "transport capabilities",
 			"profile "+d.profile.Name+" allows neither direct CDP nor the extension bridge, so no tool can run",
