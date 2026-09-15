@@ -435,8 +435,9 @@ exactly as direct CDP does here; the column below covers both.
 Both transports can express a redirect, so this is a decision rather than a
 missing primitive. Any `brw_route` call carrying `behaviour:"redirect"` returns
 the same named refusal on each, because there is no profile where it would work.
-The behaviour is checked before the action, the pattern and the tab, so the
-answer does not change with the shape the word arrives in.
+The behaviour is checked at the tool surface, before the action, the pattern,
+the tab and the HAR a replay names, so the answer does not change with the shape
+the word arrives in.
 
 `redirect` is not among the behaviours `brw_route` advertises, though: the
 `behaviour` enum offers `fulfill` and `abort`, because a tool that offers a

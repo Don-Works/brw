@@ -1470,6 +1470,15 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
+		// Before this surface's own pre-checks, for the same reason both
+		// backends ask before their action switch: the refusal belongs to the
+		// behaviour and to nothing else. Asked only in the backends, the replay
+		// shape never got there — the transport pre-checks below answered first,
+		// so behaviour=redirect came back as "use a direct-CDP profile" for a
+		// behaviour no profile has, or as an artifact-store error.
+		if err := browser.CheckRouteBehaviourSupported(req.Behaviour); err != nil {
+			return toolError(err), nil
+		}
 		// The HAR is read here rather than inside a transport: the recording
 		// lives in the artifact store this surface owns, and decoding it here is
 		// what keeps every transport free of a dependency on artifact storage.
