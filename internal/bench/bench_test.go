@@ -210,6 +210,34 @@ func TestObservationBytesMeasuresTheMCPResultAnAgentReceives(t *testing.T) {
 	}
 }
 
+// TestNoFlowSubstitutesItsOwnObservation reads the suite rather than running
+// it, because what is being guarded cannot be seen from a record: a command
+// that hands the measurement something smaller than the tool returns produces a
+// row that looks right and is not.
+//
+// The wait rows did exactly that. They reported `{"condition": ...}`, 51 bytes,
+// on the argument that a wait's result IS its condition holding — while
+// brw_wait_for answers with the whole WaitOutcome, and `resolved_by` is the
+// field that tells a caller whether the condition it picked costs a round trip
+// per check.
+func TestNoFlowSubstitutesItsOwnObservation(t *testing.T) {
+	source, err := os.ReadFile("bench.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(source, []byte("WaitForOutcome(")) {
+		t.Error("the wait rows no longer report what brw_wait_for returns")
+	}
+	for _, substitute := range []string{
+		`map[string]string{"condition"`,
+		`map[string]any{"condition"`,
+	} {
+		if bytes.Contains(source, []byte(substitute)) {
+			t.Errorf("a command builds %s instead of returning the tool's own result", substitute)
+		}
+	}
+}
+
 func TestTotalsAccumulate(t *testing.T) {
 	var totals Totals
 	totals.AddCommand(Command{WallMS: 10.5, CDPCommands: 2, CDPMessages: 3, TransportBytesTx: 100, TransportBytesRx: 200, ObservationBytes: 40, ObservationTokens: 10})
