@@ -30,12 +30,13 @@ type consentStatus struct {
 
 // handleConsent serves the grant list to the extension's options page.
 //
-// Same reachability rule as the handshake token: loopback Host, and either no
-// Origin (a non-browser client) or a chrome-extension Origin. A web page cannot
-// satisfy both, so a site the user is visiting cannot read which other sites
-// they have granted - which is itself a small profile of the user.
+// Same reachability rule as the handshake token, and the same method, so the
+// two cannot drift: loopback Host, and either no Origin (an MV3 worker's fetch
+// sends none) or the configured extension's own Origin. A web page satisfies
+// neither, so a site the user is visiting cannot read which other sites they
+// have granted - which is itself a small profile of the user.
 func (b *Bridge) handleConsent(w http.ResponseWriter, r *http.Request) {
-	if !tokenServable(r) {
+	if !b.tokenServable(r) {
 		http.Error(w, "consent surface is served only to the local extension", http.StatusForbidden)
 		return
 	}
@@ -67,7 +68,7 @@ func (b *Bridge) handleConsent(w http.ResponseWriter, r *http.Request) {
 
 // handleConsentRevoke revokes one grant, or all of them, from the options page.
 func (b *Bridge) handleConsentRevoke(w http.ResponseWriter, r *http.Request) {
-	if !tokenServable(r) {
+	if !b.tokenServable(r) {
 		http.Error(w, "consent surface is served only to the local extension", http.StatusForbidden)
 		return
 	}

@@ -15,6 +15,10 @@ import (
 // fixtureConsentKey is an obviously fabricated MAC key for tests.
 var fixtureConsentKey = []byte("fixture-bridge-consent-key-abcdef")
 
+// fixtureConsentExtensionID is a fabricated 32-character extension id, the
+// shape Chrome assigns, used so the origin pin is a real comparison.
+const fixtureConsentExtensionID = "fixtureextensionidaaaaaaaaaaaaaa"
+
 func newConsentBridge(t *testing.T) (*Bridge, *siteconsent.Guard) {
 	t.Helper()
 	store, err := siteconsent.NewStoreWithKey(filepath.Join(t.TempDir(), "site-grants.json"), fixtureConsentKey)
@@ -26,7 +30,11 @@ func newConsentBridge(t *testing.T) (*Bridge, *siteconsent.Guard) {
 		t.Fatal(err)
 	}
 	guard.SetGrantor("fixture-user")
-	bridge := New("127.0.0.1:0", time.Second, "")
+	// Pin the fixture extension id rather than leaving it empty: the reachability
+	// rule now matches a present Origin against the configured extension, so an
+	// unpinned bridge would accept any well-formed extension origin and the test
+	// would stop exercising the pin it exists to check.
+	bridge := New("127.0.0.1:0", time.Second, fixtureConsentExtensionID)
 	bridge.SetSiteConsent(guard)
 	return bridge, guard
 }
@@ -53,7 +61,7 @@ func TestBridgeConsentListsGrants(t *testing.T) {
 	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://one.test", Scope: siteconsent.ScopeAct, Actor: "fixture-user"}); err != nil {
 		t.Fatal(err)
 	}
-	rec := consentRequest(t, bridge, http.MethodGet, "/consent", "chrome-extension://fixtureextensionidaaaaaaaaaaaaaa", "")
+	rec := consentRequest(t, bridge, http.MethodGet, "/consent", "chrome-extension://"+fixtureConsentExtensionID, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -124,7 +132,7 @@ func TestBridgeConsentRevoke(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			rec := consentRequest(t, bridge, http.MethodPost, "/consent/revoke", "chrome-extension://fixtureextensionidaaaaaaaaaaaaaa", c.body)
+			rec := consentRequest(t, bridge, http.MethodPost, "/consent/revoke", "chrome-extension://"+fixtureConsentExtensionID, c.body)
 			if rec.Code != c.wantStatus {
 				t.Fatalf("status %d, want %d: %s", rec.Code, c.wantStatus, rec.Body.String())
 			}
@@ -136,8 +144,8 @@ func TestBridgeConsentRevoke(t *testing.T) {
 }
 
 func TestBridgeConsentWithoutAGuard(t *testing.T) {
-	bridge := New("127.0.0.1:0", time.Second, "")
-	rec := consentRequest(t, bridge, http.MethodGet, "/consent", "chrome-extension://fixtureextensionidaaaaaaaaaaaaaa", "")
+	bridge := New("127.0.0.1:0", time.Second, fixtureConsentExtensionID)
+	rec := consentRequest(t, bridge, http.MethodGet, "/consent", "chrome-extension://"+fixtureConsentExtensionID, "")
 	var got consentStatus
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatal(err)
@@ -145,7 +153,7 @@ func TestBridgeConsentWithoutAGuard(t *testing.T) {
 	if got.Enabled {
 		t.Fatal("a daemon with no consent store reported consent enabled")
 	}
-	rec = consentRequest(t, bridge, http.MethodPost, "/consent/revoke", "chrome-extension://fixtureextensionidaaaaaaaaaaaaaa", `{"all":true}`)
+	rec = consentRequest(t, bridge, http.MethodPost, "/consent/revoke", "chrome-extension://"+fixtureConsentExtensionID, `{"all":true}`)
 	if rec.Code == http.StatusOK {
 		t.Fatalf("revoking with no store reported success: %s", rec.Body.String())
 	}
