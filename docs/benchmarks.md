@@ -145,11 +145,14 @@ for `core`, 13 / ~5.8k for `minimal`, and 14 / ~6.0k initially for the default
 than advertising every tool, while every tool remains directly callable and
 discoverable through `brw_tools`.
 
-The `observe` parameter and the locate-and-act half of `brw_find` are described
-in seventeen tools' schemas, so a caller pays for those descriptions on every
-turn whether or not it sets either. That is the trade: a fixed per-turn
-catalogue cost against a per-action saving that scales with the length of the
-flow.
+The `observe` parameter and the locate-and-act half of `brw_find` cost ~2.6k
+tokens of `all` and ~1.3k of `minimal`, measured against the catalogue that
+introduced them, because a parameter repeated across seventeen tools is paid for
+on every turn whether or not it is used. Those two are deltas, not a second pair
+of totals: subtracting them from the figures above to quote a catalogue size
+without them is what left this section naming two different sizes for `all`.
+That is the trade: a fixed per-turn catalogue cost against a per-action saving
+that scales with the length of the flow.
 
 A daemon whose identity names a transport advertises fewer: the three
 extension-only tab-group tools drop on direct CDP, the incognito, context and

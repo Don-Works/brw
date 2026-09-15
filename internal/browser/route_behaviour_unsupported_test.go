@@ -21,23 +21,39 @@ func TestUnsupportedRouteBehavioursAreRefusedByNameOnDirectCDP(t *testing.T) {
 	defer cancel()
 	tabID := routeFixtureTab(t, m, ctx)
 
+	// Every shape that can carry a behaviour, not just a well-formed add:
+	// docs/install.md states the refusal with no qualification, and while the
+	// check lived in buildRoute an add with no pattern and an action=replay
+	// each reached a different error that pointed the caller at another call.
+	shapes := []struct {
+		name string
+		opts RouteOptions
+	}{
+		{"add", RouteOptions{Action: "add", Pattern: "https://api.example.com/*"}},
+		{"add with no pattern", RouteOptions{Action: "add"}},
+		{"replay", RouteOptions{Action: "replay", HARArtifactID: "har-1"}},
+		{"clear", RouteOptions{Action: "clear", Pattern: "https://api.example.com/*"}},
+	}
 	for behaviour, want := range UnsupportedRouteBehaviours {
-		t.Run(string(behaviour), func(t *testing.T) {
-			// Spelled the way an agent would send it, and in the casing the
-			// normaliser has to fold, so a check that compares the raw argument
-			// cannot pass this.
-			for _, spelling := range []string{string(behaviour), strings.ToUpper(string(behaviour)), " " + string(behaviour) + " "} {
-				_, err := m.Route(ctx, RouteOptions{
-					Action: "add", TabID: tabID, Pattern: "https://api.example.com/*", Behaviour: spelling,
-				})
-				if !errors.Is(err, want) {
-					t.Fatalf("Route(behaviour=%q) error = %v, want %v", spelling, err, want)
+		for _, shape := range shapes {
+			t.Run(string(behaviour)+"/"+shape.name, func(t *testing.T) {
+				// Spelled the way an agent would send it, and in the casing the
+				// normaliser has to fold, so a check that compares the raw argument
+				// cannot pass this.
+				for _, spelling := range []string{string(behaviour), strings.ToUpper(string(behaviour)), " " + string(behaviour) + " "} {
+					opts := shape.opts
+					opts.TabID = tabID
+					opts.Behaviour = spelling
+					_, err := m.Route(ctx, opts)
+					if !errors.Is(err, want) {
+						t.Fatalf("Route(%s, behaviour=%q) error = %v, want %v", shape.name, spelling, err, want)
+					}
 				}
-			}
-			if count := m.routes.count(tabID); count != 0 {
-				t.Fatalf("a refused behaviour left %d routes installed", count)
-			}
-		})
+				if count := m.routes.count(tabID); count != 0 {
+					t.Fatalf("a refused behaviour left %d routes installed", count)
+				}
+			})
+		}
 	}
 }
 
@@ -59,19 +75,23 @@ func TestRedirectRefusalNamesBothTransportsAndAnAlternative(t *testing.T) {
 	}
 }
 
-// A behaviour cannot be in the refusal table and in the set the backend builds
-// rules for; that combination is a rule installed for a behaviour whose refusal
-// a reader believes in.
+// A behaviour in the refusal table must not also be one the rule builder can
+// build; that combination is a rule installed for a behaviour whose refusal a
+// reader believes in.
 //
-// The test above proves the same thing more directly and is the one that would
-// catch a real regression. This one needs no browser, so it still runs where
-// Chrome is absent and that one skips — which is where a mistyped table entry
-// would otherwise go unnoticed until CI had a browser.
-func TestUnsupportedRouteBehavioursAreNotAlsoImplemented(t *testing.T) {
-	implemented := map[RouteBehaviour]bool{RouteAbort: true, RouteFulfill: true, RouteReplay: true}
+// Asked of buildRoute rather than of a literal list of the behaviours this file
+// believes are implemented, because a list restates the table instead of
+// checking it: it would stay green for a `case RouteRedirect:` added to the
+// switch below it. The test above proves the same thing end to end and is the
+// one that would catch a real regression; this one needs no browser, so it
+// still runs where Chrome is absent and that one skips.
+func TestUnsupportedRouteBehavioursBuildNoRule(t *testing.T) {
 	for behaviour := range UnsupportedRouteBehaviours {
-		if implemented[behaviour] {
-			t.Errorf("%q is both refused by name and implemented", behaviour)
-		}
+		t.Run(string(behaviour), func(t *testing.T) {
+			route, err := buildRoute(RouteOptions{Pattern: "https://api.example.com/*", Behaviour: string(behaviour)})
+			if err == nil {
+				t.Fatalf("buildRoute turned %q into a rule (%+v); it is refused by name in UnsupportedRouteBehaviours", behaviour, route)
+			}
+		})
 	}
 }

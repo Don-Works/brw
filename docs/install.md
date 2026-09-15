@@ -426,24 +426,36 @@ exactly as direct CDP does here; the column below covers both.
 | Refuse a request | `{action:"add", behaviour:"abort"}` | Yes, a `declarativeNetRequest` session rule scoped to the tab, covering every resource type including the top-level navigation | Yes |
 | Answer from a body | `{action:"add", behaviour:"fulfill"}` | No | Yes |
 | Replay a recorded HAR | `{action:"replay", har_artifact_id}` | No | Yes, fetch and XHR only |
-| Redirect a request | `{action:"add", behaviour:"redirect"}` | No, refused by name — see below | No, refused by name — see below |
+| Redirect a request | — (not an advertised shape) | No, refused by name — see below | No, refused by name — see below |
 | Retire a rule after N matches | `times` | No, a declarative rule reports no match count | Yes |
 | Report how often a rule fired | `routes[].matched` | No, for the same reason | Yes |
 
 #### Why there is no redirect
 
 Both transports can express a redirect, so this is a decision rather than a
-missing primitive. `brw_route {behaviour:"redirect"}` returns the same named
-refusal on each, because there is no profile where it would work.
+missing primitive. Any `brw_route` call carrying `behaviour:"redirect"` returns
+the same named refusal on each, because there is no profile where it would work.
+The behaviour is checked before the action, the pattern and the tab, so the
+answer does not change with the shape the word arrives in.
+
+`redirect` is not among the behaviours `brw_route` advertises, though: the
+`behaviour` enum offers `fulfill` and `abort`, because a tool that offers a
+value every call for it rejects documents a capability it does not have. brw
+does no server-side enum validation, so a client that sends the value through
+reaches the refusal above and its reason; a client that validates `inputSchema`
+locally rejects the call itself and shows a schema error instead. That reader
+gets the reason from the `brw_route` description, which states it in prose.
 
 On the extension bridge a `declarativeNetRequest` redirect action needs host
 permissions for the request URL **and** for the request's initiator. brw's
 extension holds host permissions for loopback only, on purpose. Chrome does not
 refuse a rule it cannot apply: `updateSessionRules` accepts it and
 `getSessionRules` lists it, and it simply never fires — measured in
-`TestDeclarativeNetRequestRedirectNeverFiresUnderShippedPermissions`, which also
-shows the same rule firing once the request URL's host is added to
-`host_permissions`. Shipping the rule without that access is the worst of the
+`TestDeclarativeNetRequestRedirectNeverFiresUnderShippedPermissions`, which
+moves the two grants independently. The rule does not fire for an off-permission
+request URL, and does not fire for a loopback request URL either when the page
+asking for it is off-permission; add the one missing grant in each case and the
+same rule fires. Shipping the rule without that access is the worst of the
 options: an agent would be told a third-party origin was stubbed while the page
 reached it for real. Buying the access means holding host permissions for the
 sites the user browses, which is a permanent "read and change all your data on

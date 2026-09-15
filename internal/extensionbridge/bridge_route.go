@@ -73,6 +73,15 @@ func (t *bridgeRouteTable) set(tabID string, routes []browser.Route) {
 // the browser and the daemon's table on the same side of the change instead of
 // drifting apart.
 func (b *Bridge) Route(ctx context.Context, opts browser.RouteOptions) (browser.RouteResult, error) {
+	// Before the action switch and before a tab is resolved, for the reason the
+	// direct-CDP backend does the same: the refusal belongs to the behaviour,
+	// so every shape carrying it has to reach the same answer. Checked only
+	// inside the rule builder, action=replay was answered by this transport's
+	// own capability error instead — "use a direct-CDP profile", for a
+	// behaviour no profile has.
+	if err := browser.CheckRouteBehaviourSupported(opts.Behaviour); err != nil {
+		return browser.RouteResult{}, err
+	}
 	tabID := strings.TrimSpace(opts.TabID)
 	if tabID == "" {
 		tabID = b.contextTabID(ctx)
@@ -138,12 +147,9 @@ func bridgeRoute(opts browser.RouteOptions) (browser.Route, error) {
 	if pattern == "" {
 		return browser.Route{}, errors.New("route add requires a pattern (a URL glob such as https://api.example.com/*)")
 	}
-	// The same refusal the direct-CDP backend gives, from the same table: a
-	// behaviour brw declines to implement must not read as "not on this
-	// transport", which is what would send a caller looking for another profile.
-	if err := browser.CheckRouteBehaviourSupported(opts.Behaviour); err != nil {
-		return browser.Route{}, err
-	}
+	// A behaviour brw refuses by name never reaches here; Bridge.Route answers
+	// it first, so the transport-specific errors below can never be the answer
+	// for one.
 	switch browser.RouteBehaviour(strings.ToLower(strings.TrimSpace(opts.Behaviour))) {
 	case browser.RouteAbort:
 	case "", browser.RouteFulfill:

@@ -27,7 +27,10 @@ const RouteRedirect RouteBehaviour = "redirect"
 //     believes a third-party origin is stubbed while the page reaches it for
 //     real. Buying the access means host permissions for the sites the user
 //     browses. Measured in
-//     TestDeclarativeNetRequestRedirectNeverFiresUnderShippedPermissions.
+//     TestDeclarativeNetRequestRedirectNeverFiresUnderShippedPermissions, which
+//     grants the two halves separately: a loopback request URL is not
+//     redirected either when the page asking for it is off-permission, so the
+//     initiator is a second requirement rather than a restatement of the first.
 //   - Direct CDP. Fetch.continueRequest can rewrite the URL, but Chrome does
 //     NOT pause the rewritten request again — only the server's own 30x hop
 //     comes back through the interception. The destination would therefore

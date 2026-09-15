@@ -260,6 +260,16 @@ func RoutePatternRegex(pattern string) string {
 
 // Route adds, lists or clears interception rules for a tab.
 func (m *Manager) Route(ctx context.Context, opts RouteOptions) (RouteResult, error) {
+	// Asked before the action switch, the pattern check and the tab lookup,
+	// because the refusal is a property of the behaviour asked for and of
+	// nothing else. Checked inside the rule builder instead, the same word
+	// reached a different answer depending on the shape it arrived in: an
+	// add with no pattern was told to supply one, and action=replay was told
+	// to use action add — each sending the caller towards a call that refuses
+	// it again for a different reason.
+	if err := CheckRouteBehaviourSupported(opts.Behaviour); err != nil {
+		return RouteResult{}, err
+	}
 	tabID := strings.TrimSpace(opts.TabID)
 	if tabID == "" {
 		active, err := m.ensureActive(ctx)
@@ -397,11 +407,9 @@ func buildRoute(opts RouteOptions) (*Route, error) {
 	if pattern == "" {
 		return nil, fmt.Errorf("route add requires a pattern (a URL glob such as https://api.example.com/*)")
 	}
-	// Asked before the switch below, so a behaviour brw refuses on purpose is
-	// named as refused rather than reported as a misspelling of one it supports.
-	if err := CheckRouteBehaviourSupported(opts.Behaviour); err != nil {
-		return nil, err
-	}
+	// A behaviour brw refuses on purpose never reaches here: Manager.Route
+	// answers it before any of this runs, so the default branch below is only
+	// ever a misspelling of a behaviour that exists.
 	behaviour := RouteBehaviour(strings.ToLower(strings.TrimSpace(opts.Behaviour)))
 	switch behaviour {
 	case "":

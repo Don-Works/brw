@@ -33,16 +33,28 @@ import (
 // failure an agent cannot see, and the reason shipping it anyway would be worse
 // than not having it.
 
+// shippedManifest is the part of extension/manifest.json this file measures.
+//
+// optional_host_permissions is decoded as well as host_permissions because a
+// granted optional entry gives declarativeNetRequest exactly the host access
+// these tests exist to detect, and a struct that cannot see the field would stay
+// green while the documented reason stopped holding.
+type shippedManifest struct {
+	Permissions             []string `json:"permissions"`
+	HostPermissions         []string `json:"host_permissions"`
+	OptionalHostPermissions []string `json:"optional_host_permissions"`
+}
+
+// grantableHosts is every host pattern the extension can end up holding, whether
+// it is granted at install time or asked for later.
+func (m shippedManifest) grantableHosts() []string {
+	return append(append([]string{}, m.HostPermissions...), m.OptionalHostPermissions...)
+}
+
 // shippedExtensionManifest reads the manifest brw actually installs.
-func shippedExtensionManifest(t *testing.T) struct {
-	Permissions     []string `json:"permissions"`
-	HostPermissions []string `json:"host_permissions"`
-} {
+func shippedExtensionManifest(t *testing.T) shippedManifest {
 	t.Helper()
-	var manifest struct {
-		Permissions     []string `json:"permissions"`
-		HostPermissions []string `json:"host_permissions"`
-	}
+	var manifest shippedManifest
 	raw, err := os.ReadFile(filepath.Join("..", "..", "extension", "manifest.json"))
 	if err != nil {
 		t.Fatalf("read the shipped extension manifest: %v", err)
@@ -68,9 +80,9 @@ func TestShippedExtensionHoldsNoHostAccessForADeclarativeRedirect(t *testing.T) 
 	if len(manifest.HostPermissions) == 0 {
 		t.Fatal("the shipped manifest declares no host_permissions at all; this test is measuring nothing")
 	}
-	for _, entry := range manifest.HostPermissions {
+	for _, entry := range manifest.grantableHosts() {
 		if !loopbackHostPattern(entry) {
-			t.Errorf("host_permissions entry %q is not loopback-only; a declarativeNetRequest redirect can fire for that host, so the redirect row in docs/install.md and browser.ErrRouteRedirectUnsupported no longer hold", entry)
+			t.Errorf("host pattern %q is not loopback-only; a declarativeNetRequest redirect can fire for that host once it is granted, so the redirect row in docs/install.md and browser.ErrRouteRedirectUnsupported no longer hold", entry)
 		}
 	}
 }
@@ -91,37 +103,74 @@ func loopbackHostPattern(pattern string) bool {
 	}
 }
 
-// The measured half. Under the manifest's own permission set a redirect rule
-// does not fire; add the request URL's host to host_permissions and the SAME
-// rule fires.
+// The measured half, over the two host permissions a redirect action needs
+// SEPARATELY: the one for the request URL and the one for the request's
+// initiator. docs/install.md and browser.ErrRouteRedirectUnsupported both name
+// the initiator, so a table that only ever moves the request URL's host in and
+// out would be citing a measurement it never took — in the first two cases the
+// page and the request it makes are on the same host, so one added permission
+// covers both halves and neither can be attributed to.
 //
-// The second case is not decoration. Without it "the redirect did not happen"
-// would be satisfied by a malformed rule, an extension that never loaded, or a
-// urlFilter that matched nothing, and the negative would prove nothing at all.
+// Each negative case is paired with a positive one that differs by a single
+// permission, because "the redirect did not happen" on its own is equally
+// satisfied by a malformed rule, an extension that never loaded, or a urlFilter
+// that matched nothing.
 func TestDeclarativeNetRequestRedirectNeverFiresUnderShippedPermissions(t *testing.T) {
 	manifest := shippedExtensionManifest(t)
 	const interceptedHost = "notlocal.test"
 	for _, tc := range []struct {
-		name         string
-		extraHosts   []string
-		wantRedirect bool
+		name              string
+		extraHosts        []string
+		subjectOnLoopback bool
+		requestOnLoopback bool
+		wantRedirect      bool
 	}{
-		{name: "shipped permissions", wantRedirect: false},
-		{name: "plus host access to the request url", extraHosts: []string{"http://" + interceptedHost + "/*"}, wantRedirect: true},
+		{
+			name:         "neither the request url nor the initiator is granted",
+			wantRedirect: false,
+		},
+		{
+			name:         "both the request url and the initiator are granted",
+			extraHosts:   []string{"http://" + interceptedHost + "/*"},
+			wantRedirect: true,
+		},
+		{
+			// The initiator half on its own: the request URL is loopback, which
+			// the shipped manifest already grants, and only the page issuing it
+			// is off-permission.
+			name:              "the request url is granted and the initiator is not",
+			requestOnLoopback: true,
+			wantRedirect:      false,
+		},
+		{
+			// The control for the case above. Same rule, same request URL, same
+			// permission set — only the initiator moves onto loopback. Without
+			// it, that negative would also be satisfied by a rule that never
+			// matches a loopback URL for some unrelated reason.
+			name:              "the request url is granted and so is the initiator",
+			subjectOnLoopback: true,
+			requestOnLoopback: true,
+			wantRedirect:      true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			hostPermissions := append(append([]string{}, manifest.HostPermissions...), tc.extraHosts...)
-			result := runDNRRedirectProbe(t, manifest.Permissions, hostPermissions, interceptedHost)
+			result := runDNRRedirectProbe(t, dnrProbeInput{
+				permissions:       manifest.Permissions,
+				hostPermissions:   append(append([]string{}, manifest.HostPermissions...), tc.extraHosts...),
+				interceptedHost:   interceptedHost,
+				subjectOnLoopback: tc.subjectOnLoopback,
+				requestOnLoopback: tc.requestOnLoopback,
+			})
 			// The block rule is the liveness control: it needs no host access, so
-			// it fires in both cases and proves the rules reached Chrome.
+			// it fires in every case and proves the rules reached Chrome.
 			if result.blocked != "ERR" {
 				t.Fatalf("the block control returned %q rather than failing; the rules never reached Chrome, so nothing here is measuring permissions", result.blocked)
 			}
 			if tc.wantRedirect && result.redirected != "STUB" {
-				t.Fatalf("with host access to %s the redirect still did not fire (page saw %q); the shipped-permissions case would then be passing for some other reason", interceptedHost, result.redirected)
+				t.Fatalf("with host access to both the request url and the initiator the redirect still did not fire (page saw %q); the matching negative case would then be passing for some other reason", result.redirected)
 			}
 			if !tc.wantRedirect && result.redirected != "REAL" {
-				t.Fatalf("under the shipped permissions the redirect fired (page saw %q); the bridge could now offer brw_route behaviour=redirect, so revisit browser.ErrRouteRedirectUnsupported and the matrix in docs/install.md", result.redirected)
+				t.Fatalf("the redirect fired without host access to both the request url and its initiator (page saw %q); the bridge could now offer brw_route behaviour=redirect, so revisit browser.ErrRouteRedirectUnsupported and the matrix in docs/install.md", result.redirected)
 			}
 		})
 	}
@@ -132,11 +181,25 @@ type dnrProbeResult struct {
 	blocked    string
 }
 
+// dnrProbeInput selects one permission set and where the two halves of the
+// request sit: the page that issues it (the initiator) and the URL it asks for.
+type dnrProbeInput struct {
+	permissions     []string
+	hostPermissions []string
+	interceptedHost string
+	// subjectOnLoopback serves the page making the request from loopback, which
+	// the shipped manifest grants, instead of the off-permission host.
+	subjectOnLoopback bool
+	// requestOnLoopback points the intercepted request at loopback, likewise.
+	requestOnLoopback bool
+}
+
 // runDNRRedirectProbe loads an unpacked extension carrying the given permission
-// set, installs one redirect rule and one block rule, and reports what a page on
-// an off-permission host actually received.
-func runDNRRedirectProbe(t *testing.T, permissions, hostPermissions []string, interceptedHost string) dnrProbeResult {
+// set, installs one redirect rule and one block rule, and reports what the
+// subject page actually received.
+func runDNRRedirectProbe(t *testing.T, in dnrProbeInput) dnrProbeResult {
 	t.Helper()
+	permissions, hostPermissions, interceptedHost := in.permissions, in.hostPermissions, in.interceptedHost
 	var mu sync.Mutex
 	reports := map[string]string{}
 	reported := make(chan struct{})
@@ -168,6 +231,16 @@ func runDNRRedirectProbe(t *testing.T, permissions, hostPermissions []string, in
 	port := strings.TrimPrefix(srv.URL, "http://127.0.0.1:")
 	loopback := "http://127.0.0.1:" + port
 	offPermission := "http://" + interceptedHost + ":" + port
+	// The two halves of the permission question, chosen independently: the
+	// origin the page is served from is the request's initiator, the origin it
+	// fetches from is the request URL.
+	subjectBase, requestBase := offPermission, offPermission
+	if in.subjectOnLoopback {
+		subjectBase = loopback
+	}
+	if in.requestOnLoopback {
+		requestBase = loopback
+	}
 	// Deliberately NOT under any path the rules match, or the page's own
 	// document request is the thing that gets redirected and the fetches below
 	// never run.
@@ -182,7 +255,7 @@ func runDNRRedirectProbe(t *testing.T, permissions, hostPermissions []string, in
 		  }
 		  Promise.all([probe('redirected', %q), probe('blocked', %q)])
 		    .then(function(){ window.__done = true; });
-		</script></body></html>`, offPermission+"/intercepted", offPermission+"/blocked")
+		</script></body></html>`, requestBase+"/intercepted", requestBase+"/blocked")
 	})
 
 	resourceTypes := []string{"main_frame", "sub_frame", "xmlhttprequest", "script", "image", "other"}
@@ -275,7 +348,7 @@ install("block", %s).then(() => install("redirect", %s));
 	runCtx, runCancel := context.WithTimeout(ctx, 40*time.Second)
 	defer runCancel()
 	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
-		_, _, _, _, err := page.Navigate(offPermission + "/subject").Do(c)
+		_, _, _, _, err := page.Navigate(subjectBase + "/subject").Do(c)
 		return err
 	})); err != nil {
 		t.Fatalf("navigate to the subject page: %v", err)
