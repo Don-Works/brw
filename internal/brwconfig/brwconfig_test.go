@@ -381,25 +381,13 @@ func TestLoadRefusesAConfigFileAnotherAccountCouldWrite(t *testing.T) {
 }
 
 // Not a regular file, and not unbounded. A fifo at the path would block the
-// daemon at startup, and a directory or a symlink to one is not a config file
-// somebody wrote on purpose.
+// daemon at startup and a directory is not a config file somebody wrote on
+// purpose.
 func TestLoadRefusesWhatIsNotAnOrdinaryConfigFile(t *testing.T) {
 	dir := t.TempDir()
 
 	if _, _, err := Load(dir); err == nil {
 		t.Fatal("a directory was accepted as a config file")
-	}
-
-	target := filepath.Join(dir, FileName)
-	if err := os.WriteFile(target, []byte(`{"defaults":{"headless":true}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "link.json")
-	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlinks are unavailable here: %v", err)
-	}
-	if _, _, err := Load(link); err == nil {
-		t.Fatal("a symlink was followed; the permissions checked would have been the link's")
 	}
 
 	oversize := filepath.Join(dir, "big.json")
@@ -409,5 +397,64 @@ func TestLoadRefusesWhatIsNotAnOrdinaryConfigFile(t *testing.T) {
 	}
 	if _, _, err := Load(oversize); err == nil {
 		t.Fatal("a config file over the size bound was read in full")
+	}
+}
+
+// A symlinked brw.json is how a dotfile repository puts one on a machine: the
+// file lives in ~/dotfiles and the config path is a link to it. Refusing the
+// link protected nothing — a symlink's own mode is lrwxrwxrwx everywhere, so
+// the mode that matters is the target's, which is what is checked — and it
+// broke every machine managed that way.
+func TestLoadFollowsASymlinkedConfigAndJudgesTheFileItPointsAt(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "dotfiles-brw.json")
+	if err := os.WriteFile(target, []byte(`{"defaults":{"headless":true}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, FileName)
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks are unavailable here: %v", err)
+	}
+
+	file, resolved, err := Load(link)
+	if err != nil {
+		t.Fatalf("a symlinked config was refused: %v", err)
+	}
+	if resolved != link {
+		t.Errorf("resolved = %q, want the path the operator named (%q)", resolved, link)
+	}
+	if file == nil || file.Defaults["headless"] != true {
+		t.Fatalf("the linked file's contents were not loaded: %+v", file)
+	}
+
+	// And the target's mode is what decides, not the link's: a link is always
+	// world-writable by its own mode, so a check that read the link would
+	// either refuse everything or check nothing.
+	if err := os.Chmod(target, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Load(link); err == nil {
+		t.Fatal("a link to a world-writable config was accepted; the permissions checked were the link's, not the file's")
+	} else if !strings.Contains(err.Error(), "world-writable") {
+		t.Fatalf("the refusal does not name the reason: %v", err)
+	}
+}
+
+// A dangling link is a config file that is not there. It has to fail as "not
+// there" and not as "not a regular file", because the discovered (non-explicit)
+// path treats a missing file as no config at all and reports anything else as a
+// startup failure.
+func TestLoadReportsADanglingSymlinkAsAMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, FileName)
+	if err := os.Symlink(filepath.Join(dir, "gone.json"), link); err != nil {
+		t.Skipf("symlinks are unavailable here: %v", err)
+	}
+	_, _, err := Load(link)
+	if err == nil {
+		t.Fatal("a dangling link was accepted as a config file")
+	}
+	if !os.IsNotExist(err) {
+		t.Fatalf("a dangling link failed as %v, which the discovered path would report as a broken machine rather than as no config", err)
 	}
 }

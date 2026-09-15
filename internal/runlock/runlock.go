@@ -39,9 +39,12 @@ var ErrBusy = errors.New("another brw run holds this profile")
 // them against each other but NOT against an identified daemon on the same
 // browser: that one takes the profile's own key, and the two interleave on one
 // tab while each reports a lock key. The key alone therefore cannot carry the
-// guarantee, so `brw run` refuses a daemon whose identity hashes to this rather
-// than taking it. It is exported so that refusal is written against the same
-// constant the key comes from.
+// guarantee, so `brw run` reports it — `"lock_shared": true` in the run object
+// and a line on stderr — rather than claiming one it does not have. It is not
+// a refusal: a daemon started without --workspace/--profile is the default
+// install, and a scheduled job that cannot start at all is worse than one that
+// says which guarantee it got. It is exported so that report is written against
+// the same constant the key comes from.
 const Unidentified = "unidentified"
 
 // Key derives the lock identity from the profile a daemon drives.

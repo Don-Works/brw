@@ -16,11 +16,7 @@ import (
 // the same code every real launch runs.
 func runBrwd(t *testing.T, args []string, env []string) (string, string, int) {
 	t.Helper()
-	binary := filepath.Join(t.TempDir(), "brwd")
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build brwd: %v\n%s", err, out)
-	}
+	binary := brwdBinary(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

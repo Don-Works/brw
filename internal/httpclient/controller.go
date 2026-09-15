@@ -22,6 +22,7 @@ import (
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/recipe"
+	"github.com/Don-Works/brw/internal/siteconsent"
 	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
@@ -63,17 +64,10 @@ type Health struct {
 	// the block decodes to the zero value, and reading that as "no prompter"
 	// would let the caller fail OPEN against exactly the daemon it cannot see
 	// into. Nil means unreported.
-	Consent *ConsentHealth `json:"consent,omitempty"`
-}
-
-// ConsentHealth is the consent posture of a daemon, as /health reports it.
-type ConsentHealth struct {
-	Enabled bool `json:"enabled"`
-	// Interactive means the daemon was started with a prompter on its terminal
-	// (--site-consent-prompt) and will ask rather than refuse.
-	Interactive bool `json:"interactive"`
-	// ConfirmActions means a high-risk action needs confirmation before it runs.
-	ConfirmActions bool `json:"confirm_actions"`
+	//
+	// It is the posture of the whole chain: a daemon that forwards to another
+	// merges that daemon's answer into its own before reporting it.
+	Consent *siteconsent.Posture `json:"consent,omitempty"`
 }
 
 func New(baseURL string, timeout time.Duration) (*Controller, error) {
@@ -161,6 +155,24 @@ func (c *Controller) Health(ctx context.Context) (Health, error) {
 	var out Health
 	err := c.get(ctx, "/health", nil, &out)
 	return out, err
+}
+
+// UpstreamConsentPosture reports the consent posture of the daemon this
+// controller drives, so a brw daemon proxying through it can report the whole
+// chain's posture rather than its own flags.
+//
+// A daemon that answers without a consent block is not treated as "no
+// prompter": it is a build from before the block existed, and the difference
+// between "said no" and "said nothing" is the entire point of asking.
+func (c *Controller) UpstreamConsentPosture(ctx context.Context) (siteconsent.Posture, error) {
+	health, err := c.Health(ctx)
+	if err != nil {
+		return siteconsent.Posture{}, err
+	}
+	if health.Consent == nil {
+		return siteconsent.UnreadablePosture(fmt.Sprintf("the daemon at %s reports no consent posture, so it is too old to say whether it would stop and ask", c.baseURL)), nil
+	}
+	return *health.Consent, nil
 }
 
 func (c *Controller) Open(ctx context.Context, targetURL string) (browser.OpenResult, error) {

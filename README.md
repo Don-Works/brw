@@ -267,16 +267,24 @@ Two more distribution flags:
   `DevToolsActivePort` in the user data directory (the only place an ephemeral
   debugging port is written down) and then tries the conventional loopback
   debugging ports, attaching only to something that answers `/json/version` as a
-  browser. A profile the workspace policy bars from direct CDP accepts only the
-  `DevToolsActivePort` half: a port probe under such a profile is refused by
-  name, because a guess is not a browser the operator named.
+  browser. Under a profile the workspace policy bars from direct CDP, the
+  question asked is about the browser and not about how discovery found it:
+  only an endpoint that names the user data directory that profile names may be
+  driven, because the daemon reports the policy's own `user_data_dir` and
+  `profile_directory` as the identity of whatever it attached to. Anything else
+  — a guessed port, or another browser's `DevToolsActivePort` — is refused by
+  name, and `--remote <endpoint>` typed out is how you say you meant it.
 * `--idle-exit <duration>` shuts a daemon down cleanly after that long with no
   use. Off by default, because the default daemon is persistent; use it for a
   daemon started for one job, which would otherwise hold a browser and a port
   until the machine reboots. Use means an HTTP API request, or an MCP tool call
   in `--mcp` mode; a `/health` poll does not count, so a supervisor cannot keep
-  an abandoned daemon alive. It needs the HTTP listener, so `--http off` is
-  refused at startup — `--mcp-idle-exit` is the stdio-only equivalent.
+  an abandoned daemon alive. It needs the HTTP listener: with `--http off` on a
+  `--mcp` daemon the same duration arms `--mcp-idle-exit` instead, and with
+  neither listener nor stdio session it can never fire and says so. It is a
+  note, not a startup failure, because `BRW_IDLE_EXIT` is an environment
+  default and an exported one must not turn `brwd --mcp --http off` into a
+  daemon that will not start.
 
 ## SSH Runtime
 

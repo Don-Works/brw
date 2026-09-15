@@ -206,12 +206,12 @@ func main() {
 		}
 	}
 
-	mcpIdleExit = effectiveMCPIdleExit(
-		mcpIdleExit,
-		mcpMode,
-		upstreamHTTP,
-		flagWasSet("mcp-idle-exit") || strings.TrimSpace(os.Getenv("BRW_MCP_IDLE_EXIT")) != "",
-	)
+	// Whether the operator chose the stdio idle exit themselves, as opposed to
+	// inheriting the disposable-proxy default. Both this and the --http off
+	// fallback below have to tell those apart, or a duration nobody typed
+	// silently outranks one they did.
+	mcpIdleExitTyped := flagWasSet("mcp-idle-exit") || strings.TrimSpace(os.Getenv("BRW_MCP_IDLE_EXIT")) != ""
+	mcpIdleExit = effectiveMCPIdleExit(mcpIdleExit, mcpMode, upstreamHTTP, mcpIdleExitTyped)
 
 	if printSystemPrompt {
 		fmt.Println(mcp.AgentSystemPrompt)
@@ -380,8 +380,10 @@ func main() {
 	}
 	// The profile policy above is the last thing that can change httpAddr, so
 	// this is where the answer is final.
-	if err := idleExitRefusal(httpIdleExit, httpAddr); err != nil {
-		log.Fatalf("%v", err)
+	resolvedMCPIdleExit, idleExitNote := resolveIdleExit(httpIdleExit, mcpIdleExit, httpAddr, mcpMode, mcpIdleExitTyped)
+	mcpIdleExit = resolvedMCPIdleExit
+	if idleExitNote != "" {
+		log.Printf("%s", idleExitNote)
 	}
 	if loginMode {
 		switch {
@@ -437,7 +439,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("--remote auto: %v", err)
 		}
-		if err := autoConnectRefusal(endpoint, policyProfileName, directCDPAllowed, unsafeAllowDefaultProfileCDP); err != nil {
+		if err := autoConnectRefusal(endpoint, policyProfileName, cfg.UserDataDir, directCDPAllowed, unsafeAllowDefaultProfileCDP); err != nil {
 			log.Fatalf("--remote auto: %v", err)
 		}
 		cfg.RemoteURL = endpoint.URL
@@ -542,6 +544,12 @@ func main() {
 		// Without adoption every bridge daemon looked identical to every
 		// direct-CDP one from inside a tool call, and the documented advice was
 		// to shell out and grep ps for --bridge.
+		//
+		// usageIdentity is the one that is read in this mode: it is what /health
+		// serves and what the run lock is keyed on. runtimeIdentity feeds the
+		// artifact root, the session-state store and the bridge, none of which
+		// this process builds while it proxies — it is adopted anyway so the two
+		// never disagree about the browser behind them.
 		if healthErr == nil {
 			runtimeIdentity = adoptUpstreamIdentity(runtimeIdentity, health.Identity, haveProfilePolicy)
 			usageIdentity = adoptUpstreamIdentity(usageIdentity, health.Identity, haveProfilePolicy)
@@ -1023,36 +1031,88 @@ func httpListenerEnabled(httpAddr string) bool {
 	return httpAddr != "" && httpAddr != "off"
 }
 
-// idleExitRefusal rejects --idle-exit on a daemon that serves no HTTP API.
+// resolveIdleExit decides what --idle-exit means on a daemon that serves no
+// HTTP API, and returns the --mcp-idle-exit to use plus a line for the log.
 //
 // The idle watcher is armed on the HTTP server and postponed by the requests
 // that reach it, plus the MCP calls the stdio server reports to it. With no
-// listener there is no watcher, so the flag silently does nothing — which is
-// the opposite of what an operator asking a daemon to stop itself wants, and
-// there is already a flag that works there.
-func idleExitRefusal(idleExit time.Duration, httpAddr string) error {
+// listener there is no watcher, so the flag on its own does nothing — which is
+// the opposite of what an operator asking a daemon to stop itself wants.
+//
+// It is NOT a startup failure. BRW_IDLE_EXIT is one of the environment-sourced
+// defaults, so an exported variable plus an ordinary `brwd --mcp --http off`
+// became a daemon that refused to start, and a refusal is a far worse answer
+// than the silence it replaced. What an operator asking for an idle exit means
+// is the same thing in both modes, so on a stdio daemon the duration is carried
+// over to the watcher that does work there.
+//
+// A --mcp-idle-exit the operator TYPED is left alone, including a typed zero
+// that turns the stdio watcher off. The disposable-proxy default is not: it is
+// a value nobody chose, and letting it outrank a duration somebody did type is
+// how `--http off --idle-exit 20m` became a 90-minute daemon.
+func resolveIdleExit(idleExit, mcpIdleExit time.Duration, httpAddr string, mcpMode, mcpIdleExitTyped bool) (time.Duration, string) {
 	if idleExit <= 0 || httpListenerEnabled(httpAddr) {
-		return nil
+		return mcpIdleExit, ""
 	}
-	return errors.New("--idle-exit is armed on the HTTP API and this daemon has --http off, so it would never fire; use --mcp-idle-exit for a stdio session, or leave the HTTP listener on")
+	if !mcpMode {
+		return mcpIdleExit, fmt.Sprintf("WARNING: --idle-exit %s is armed on the HTTP API and this daemon has --http off with no --mcp, so nothing measures use and it will never fire", idleExit)
+	}
+	if mcpIdleExitTyped {
+		return mcpIdleExit, fmt.Sprintf("--idle-exit %s does nothing with --http off; this stdio daemon follows the --mcp-idle-exit you set (%s) instead", idleExit, mcpIdleExit)
+	}
+	return idleExit, fmt.Sprintf("--idle-exit %s is armed on the HTTP API and this daemon has --http off; arming the stdio idle exit for the same duration instead", idleExit)
 }
 
 // autoConnectRefusal decides whether a resolved --remote auto endpoint may be
-// used, given the profile policy.
+// driven, given the profile policy.
 //
-// A port probe is a guess, and a guess is not how a profile barred from direct
-// CDP comes to be driven over direct CDP. The explicit gate at startup is
-// skipped for any non-empty --remote and "auto" is non-empty, so without this
-// the prohibition ends at the word "auto" — and the daemon then reports the
-// policy's own user_data_dir and profile_directory as the identity of whatever
-// answered on 9222, which is both what brw_identity tells an agent and what the
-// run lock keys on. The DevToolsActivePort result is not a guess: it came out
-// of the user data directory the policy itself named.
-func autoConnectRefusal(endpoint cdplaunch.AutoEndpoint, profileName string, directCDPAllowed, unsafeOverride bool) error {
-	if endpoint.Source != cdplaunch.SourcePortProbe || directCDPAllowed || unsafeOverride {
+// The question is about the BROWSER, never about how discovery found it: is
+// this the browser running out of the user data directory this daemon's policy
+// named, or some other browser on the machine? A profile marked
+// direct_cdp_allowed=false is a browser a human is signed into, and the daemon
+// reports the policy's own user_data_dir and profile_directory as the identity
+// of whatever it attached to — which is what brw_identity answers and what the
+// run lock keys on. Attaching to a different browser under that identity is the
+// damage, and it is the same damage however the port was discovered.
+//
+// So the gate is one comparison of directories, and nothing here reads the
+// discovery Source. The first version of this check exempted every
+// DevToolsActivePort hit on the premise that the file "came out of the user
+// data directory the policy itself named" — untrue, because
+// autoConnectSearchDirs also searches brw's own default profile directory, so a
+// browser in ~/.brw/chrome-profile was accepted under a bridge-only policy and
+// reported as the policy's profile. A source added later is covered by the same
+// comparison with no edit here: an endpoint that cannot name the directory it
+// came out of cannot be the policy's browser.
+func autoConnectRefusal(endpoint cdplaunch.AutoEndpoint, profileName, policyUserDataDir string, directCDPAllowed, unsafeOverride bool) error {
+	if directCDPAllowed || unsafeOverride {
 		return nil
 	}
-	return fmt.Errorf("found a browser on port %d by probing the conventional ports, and profile %q is allowed only through the extension bridge, not direct CDP; pass --remote %s explicitly if that is the browser you mean", endpoint.Port, profileName, endpoint.URL)
+	if sameUserDataDir(endpoint.From, policyUserDataDir) {
+		return nil
+	}
+	found := fmt.Sprintf("found a browser on port %d that does not say which user data directory it belongs to (discovered by %s)", endpoint.Port, endpoint.Source)
+	if strings.TrimSpace(endpoint.From) != "" {
+		found = fmt.Sprintf("found a browser on port %d belonging to %s", endpoint.Port, endpoint.From)
+	}
+	wanted := strings.TrimSpace(policyUserDataDir)
+	if wanted == "" {
+		wanted = "a user data directory the policy does not name"
+	}
+	return fmt.Errorf("%s, and profile %q is allowed only through the extension bridge, not direct CDP, on the browser in %s; pass --remote %s explicitly if that is the browser you mean",
+		found, profileName, wanted, endpoint.URL)
+}
+
+// sameUserDataDir reports whether two user data directory spellings name the
+// same directory. An unnamed directory is never the same as anything: "brw does
+// not know which browser this is" has to answer the question the same way "a
+// different browser" does.
+func sameUserDataDir(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // adoptUpstreamIdentity folds the identity of the daemon behind an

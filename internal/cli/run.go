@@ -72,8 +72,8 @@ var runOutcomes = []runOutcome{
 	{Name: "ok", Code: ExitOK, Meaning: "the recipe ran and every step reached its asserted state", Retry: false},
 	{Name: "failed", Code: ExitActionFailed, Meaning: "the run failed for a reason that is none of the others; read error", Retry: false},
 	{Name: "usage", Code: ExitUsage, Meaning: "the invocation is wrong; the scheduler's command line needs fixing", Retry: false},
-	{Name: "infrastructure", Code: ExitNoDaemon, Meaning: "brw could not run it: no daemon reachable, a transport failure, or a timeout", Retry: true},
-	{Name: "postcondition_failed", Code: ExitPostconditionFailed, Meaning: "the recipe ran and a step did not reach its asserted state", Retry: true},
+	{Name: "infrastructure", Code: ExitNoDaemon, Meaning: "brw could not run it and nothing came back saying the recipe started: no daemon reachable, a transport failure, or a timeout with no result", Retry: true},
+	{Name: "postcondition_failed", Code: ExitPostconditionFailed, Meaning: "the recipe ran and a step did not reach its asserted state, whatever class the daemon attached to the failure", Retry: true},
 	{Name: "policy_refused", Code: ExitPolicyRefused, Meaning: "site permissions or the confirmation gate refused; a human has to grant something", Retry: false},
 	{Name: "busy", Code: ExitBusy, Meaning: "another run holds this browser profile; nothing was attempted", Retry: true},
 }
@@ -115,6 +115,11 @@ type runProfile struct {
 	// LockKey is the profile identity the run serialised on. Two runs that
 	// report the same lock key can never have overlapped.
 	LockKey string `json:"lock_key,omitempty"`
+	// LockShared says the daemon named no profile, so the key above is the one
+	// every anonymous daemon shares rather than this browser's own. Runs through
+	// such daemons still serialise against each other; they do not serialise
+	// against an identified daemon driving the same browser.
+	LockShared bool `json:"lock_shared,omitempty"`
 }
 
 type runRecipeRef struct {
@@ -271,25 +276,34 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	// and reports a timeout, which is not what happened; a daemon too old to
 	// carry the consent block cannot be distinguished from one that answered
 	// "no prompter", so it is refused by the same rule rather than trusted.
+	//
+	// The posture is the whole chain's. A proxy merges the posture of the daemon
+	// it forwards to into its own before reporting it, so "unknown" here means
+	// some hop could not be asked — which answers "could this hang" the same way
+	// "yes" does.
 	switch {
 	case health.Consent == nil:
 		return failRun(stdout, stderr, "policy_refused", report,
 			errors.New("this daemon's /health does not report a consent posture, so brw cannot tell whether an un-granted origin would block it waiting for an answer nobody is there to give; upgrade the daemon to a build that reports it"))
+	case health.Consent.Unknown:
+		return failRun(stdout, stderr, "policy_refused", report,
+			fmt.Errorf("this daemon forwards to another one whose consent posture brw could not read, so it cannot tell whether an un-granted origin would block the run waiting for an answer nobody is there to give: %s", health.Consent.Reason))
 	case health.Consent.Interactive:
 		return failRun(stdout, stderr, "policy_refused", report,
-			errors.New("this daemon was started with --site-consent-prompt, so an un-granted origin would block it waiting for an answer nobody is there to give; run the scheduled job against a daemon without the prompt and grant origins ahead of time with brwctl grants allow"))
+			errors.New("this daemon, or one it forwards to, was started with --site-consent-prompt, so an un-granted origin would block it waiting for an answer nobody is there to give; run the scheduled job against a daemon without the prompt and grant origins ahead of time with brwctl grants allow"))
 	}
 
-	// A daemon that will not name the browser profile it drives cannot be
-	// serialised against the other daemons driving that same browser: its runs
-	// would take the shared "unidentified" lock while an identified daemon on the
-	// same Chrome took the profile's own, and the two would interleave on one tab
-	// while each reported a lock key. Refused rather than run, because there is
-	// no key that would be honest here.
+	// The lock is keyed on the profile the daemon names at /health. A daemon
+	// that names none takes the shared "unidentified" key: that serialises it
+	// against every other anonymous daemon, but NOT against an identified daemon
+	// on the same Chrome, which takes the profile's own key. The gap is reported
+	// rather than refused — a daemon started without --workspace/--profile is
+	// the default install, and a run that cannot start at all is worse than one
+	// that says which guarantee it has.
 	lockKey := runlock.Key(health.Identity)
-	if lockKey == runlock.Unidentified {
-		return failRun(stdout, stderr, "failed", report,
-			errors.New("this daemon does not report which browser profile it drives, so a second run on the same browser could not be serialised against it; start the daemon with --workspace/--profile (brwctl setup does) so /health names the profile"))
+	report.Profile.LockShared = lockKey == runlock.Unidentified
+	if report.Profile.LockShared {
+		fmt.Fprintf(stderr, "brw run: this daemon does not name the browser profile it drives, so this run holds the shared lock every anonymous daemon holds; it is NOT serialised against an identified daemon on the same browser. Start the daemon with --workspace/--profile (brwctl setup does) for a lock keyed on the profile.\n")
 	}
 
 	report.Profile.LockKey = lockKey

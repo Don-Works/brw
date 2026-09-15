@@ -33,15 +33,18 @@ change what your machine does at 3am. See
 | 0 | `ok` | the recipe ran and every step reached its asserted state |
 | 1 | `failed` | the run failed for a reason that is none of the others; read error |
 | 2 | `usage` | the invocation is wrong; the scheduler's command line needs fixing |
-| 3 | `infrastructure` | brw could not run it: no daemon reachable, a transport failure, or a timeout |
-| 4 | `postcondition_failed` | the recipe ran and a step did not reach its asserted state |
+| 3 | `infrastructure` | brw could not run it and nothing came back saying the recipe started: no daemon reachable, a transport failure, or a timeout with no result |
+| 4 | `postcondition_failed` | the recipe ran and a step did not reach its asserted state, whatever class the daemon attached to the failure |
 | 5 | `policy_refused` | site permissions or the confirmation gate refused; a human has to grant something |
 | 6 | `busy` | another run holds this browser profile; nothing was attempted |
 
 The distinction that matters to a wrapper is 4 versus 3. A postcondition failure
-means the browser, the daemon and the machine are all fine and the work did not
-land — worth another attempt on the next tick, and worth a human's attention if
-it repeats. An infrastructure failure means brw never got to try. 5 is neither:
+means the work did not land — worth another attempt on the next tick, and worth
+a human's attention if it repeats. An infrastructure failure means brw never got
+to try. What decides between them is the run result, not the error text: a
+response carrying a failed step is positive evidence that the recipe ran, so it
+exits 4 even when the class attached to it is a transport failure or a timeout.
+A transport failure or timeout that produced no result exits 3. 5 is neither:
 retrying it changes nothing until somebody grants a permission.
 
 The JSON object carries the same decision as `outcome`, plus `retryable`, so a
@@ -81,11 +84,13 @@ it are two URLs driving one browser, and a per-daemon lock would let those two
 interleave while each looked perfectly serialised. The proxy adopts the profile
 of the daemon it forwards to, so both take the same key.
 
-A daemon that names no profile at `/health` is refused rather than run. There is
-no key that would be honest for one: it would take a lock shared with every
-other anonymous daemon while an identified daemon on the same Chrome took the
-profile's own, and the two would interleave on one tab while each reported a
-lock key. Start the daemon with `--workspace`/`--profile`; `brwctl setup` does.
+A daemon that names no profile at `/health` takes the key every anonymous daemon
+shares, and the report says so with `"lock_shared": true` and a line on stderr.
+Runs through anonymous daemons still serialise against each other; what that key
+cannot do is serialise them against an identified daemon driving the same
+Chrome, which takes the profile's own key. Start the daemon with
+`--workspace`/`--profile` — `brwctl setup` does — for a lock keyed on the
+profile.
 
 * `--lock-wait <duration>` (default `5m`) is how long to wait for the run in
   front. This is the queueing behaviour.
@@ -113,6 +118,13 @@ An unattended run has nobody to ask, so anything that would ask is a refusal:
 * A daemon whose `/health` does not report a consent posture at all — one built
   before the block existed — is refused the same way. "No prompter" and "said
   nothing" are different answers, and only the first one is safe to act on.
+* The posture is the whole chain's, not one process's. An `--upstream-http`
+  proxy applies its own consent guard and then hands the work to a daemon with a
+  guard of its own, so its `/health` merges the posture of the daemon it
+  forwards to into its own: a prompter anywhere in the chain reports
+  `"interactive": true` at every hop. A hop that cannot be asked reports
+  `"unknown": true` and is refused with exit 5, because "could not ask" answers
+  "could this hang" the same way "yes" does.
 
 These are the consent and confirmation surfaces brw already has. `brw run` adds
 no policy of its own; it only reports their decision in a form a scheduler can

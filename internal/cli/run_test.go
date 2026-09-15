@@ -60,6 +60,12 @@ func newRunDaemon(t *testing.T, d *runDaemon) *runDaemon {
 		}
 		fmt.Fprintf(w, `{"ok":true,"identity":%s%s}`, identity, consent)
 	})
+	// A proxy in front of this daemon takes a tab lease before it forwards a
+	// run, which opens a working tab through its controller.
+	mux.HandleFunc("POST /api/browser/open", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		fmt.Fprint(w, `{"tab":{"id":"tab-1"},"ready":true}`)
+	})
 	mux.HandleFunc("POST /api/recipes/run", func(w http.ResponseWriter, r *http.Request) {
 		body := make([]byte, r.ContentLength)
 		_, _ = r.Body.Read(body)
@@ -653,64 +659,83 @@ func TestRunRefusesADaemonThatReportsNoConsentPosture(t *testing.T) {
 	}
 }
 
-// TestRunRefusesADaemonThatWillNotNameItsProfile: the lock is keyed on the
-// profile, and a daemon that names none hashes to the shared "unidentified"
-// key. That key serialises such daemons against each other but NOT against an
-// identified daemon on the same browser, so a run that took it would report a
-// lock key while interleaving on one tab with the run it was supposed to queue
-// behind.
-func TestRunRefusesADaemonThatWillNotNameItsProfile(t *testing.T) {
+// A daemon that names no profile at /health takes the key every anonymous
+// daemon shares. That serialises it against other anonymous daemons but NOT
+// against an identified daemon on the same Chrome, which takes the profile's
+// own key.
+//
+// It used to be refused outright, and that broke the default install: a daemon
+// started without --workspace/--profile is what `brwd` on its own is, and `brw
+// run` against one exited 1 every time. The gap is reported instead — in the
+// JSON a scheduler parses and on stderr a human reads — because a run that
+// cannot start at all is worse than one that says which guarantee it has.
+func TestRunAgainstAnAnonymousDaemonRunsAndReportsTheSharedLock(t *testing.T) {
 	for _, identity := range []string{`{}`, `{"mode":"direct","transport":"direct-cdp"}`} {
 		t.Run(identity, func(t *testing.T) {
 			isolateLocks(t)
 			daemon := newRunDaemon(t, &runDaemon{identity: identity})
-			code, report, _ := invokeRun(t, daemon)
-			if code == ExitOK {
-				t.Fatalf("a run against an unidentified daemon succeeded: %+v", report)
+			code, report, stderrText := invokeRun(t, daemon)
+			if code != ExitOK {
+				t.Fatalf("a run against a daemon started without --workspace/--profile exited %d: %+v\n%s", code, report, stderrText)
 			}
-			if daemon.runs != 0 {
-				t.Fatalf("the run reached the daemon %d times; it must refuse before starting", daemon.runs)
+			if daemon.runs != 1 {
+				t.Fatalf("the daemon served %d runs", daemon.runs)
 			}
-			if report.Retryable {
-				t.Fatalf("the refusal is advertised as retryable, so a scheduler would repeat it forever: %+v", report)
+			if !report.Profile.LockShared {
+				t.Fatalf("the report does not say the lock was the shared one, so a scheduler cannot tell which guarantee it got: %+v", report.Profile)
 			}
-			if !strings.Contains(report.Error, "--workspace/--profile") {
-				t.Fatalf("the refusal does not tell the operator what to change: %q", report.Error)
+			if report.Profile.LockKey == "" {
+				t.Fatalf("the report names no lock key at all: %+v", report.Profile)
+			}
+			if !strings.Contains(stderrText, "--workspace/--profile") {
+				t.Fatalf("stderr does not tell the operator how to get a lock keyed on the profile: %q", stderrText)
 			}
 		})
 	}
 }
 
-// TestAnIdentifiedAndAnUnidentifiedDaemonNeverBothRun is the pair the profile
-// lock cannot serialise: two daemons on one browser whose lock keys differ
-// because only one of them will say which browser it is. Neither takes the
-// other's lock, so the guarantee has to hold by one of them refusing.
-func TestAnIdentifiedAndAnUnidentifiedDaemonNeverBothRun(t *testing.T) {
+// And the report is not decoration: a run through a daemon that DOES name its
+// profile must not be labelled the same way, or the field says nothing.
+func TestAnIdentifiedDaemonIsNotReportedAsSharingTheAnonymousLock(t *testing.T) {
 	isolateLocks(t)
-	identified := newRunDaemon(t, &runDaemon{hold: 120 * time.Millisecond})
-	anonymous := newRunDaemon(t, &runDaemon{hold: 120 * time.Millisecond, identity: `{"mode":"direct","transport":"direct-cdp"}`})
+	daemon := newRunDaemon(t, &runDaemon{})
+	code, report, _ := invokeRun(t, daemon)
+	if code != ExitOK {
+		t.Fatalf("exited %d: %+v", code, report)
+	}
+	if report.Profile.LockShared {
+		t.Fatalf("a daemon naming workspace, profile and user data dir was reported as anonymous: %+v", report.Profile)
+	}
+}
+
+// The guarantee the shared key does carry, which is why the run is allowed to
+// proceed on it: two anonymous daemons still queue behind each other rather
+// than driving one browser at once.
+func TestAnonymousDaemonsStillSerialiseAgainstEachOther(t *testing.T) {
+	isolateLocks(t)
+	const anonymous = `{"mode":"direct","transport":"direct-cdp"}`
+	first := newRunDaemon(t, &runDaemon{hold: 120 * time.Millisecond, identity: anonymous})
+	second := newRunDaemon(t, &runDaemon{hold: 120 * time.Millisecond, identity: anonymous})
 
 	var wg sync.WaitGroup
-	codes := make([]int, 2)
-	for index, daemon := range []*runDaemon{identified, anonymous} {
+	var waited int64
+	for index, daemon := range []*runDaemon{first, second} {
 		wg.Add(1)
 		go func(index int, daemon *runDaemon) {
 			defer wg.Done()
-			codes[index], _, _ = invokeRun(t, daemon, "--lock-wait", "30s")
+			code, report, _ := invokeRun(t, daemon, "--lock-wait", "30s")
+			if code != ExitOK {
+				t.Errorf("run against anonymous daemon %d exited %d", index, code)
+			}
+			atomic.AddInt64(&waited, report.LockWaitMS)
 		}(index, daemon)
 	}
 	wg.Wait()
 
-	if codes[0] != ExitOK {
-		t.Fatalf("the identified daemon's run exited %d", codes[0])
+	if waited < 100 {
+		t.Fatalf("neither run waited, so the two anonymous daemons did not share a lock (total wait %dms)", waited)
 	}
-	if codes[1] == ExitOK {
-		t.Fatal("both daemons ran: one of them could not prove which browser it drives, so nothing serialised the two")
-	}
-	if anonymous.runs != 0 {
-		t.Fatalf("the unidentified daemon served %d runs alongside the identified one", anonymous.runs)
-	}
-	if identified.runs != 1 {
-		t.Fatalf("the identified daemon served %d runs", identified.runs)
+	if first.runs != 1 || second.runs != 1 {
+		t.Fatalf("runs served: %d and %d", first.runs, second.runs)
 	}
 }

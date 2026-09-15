@@ -114,30 +114,37 @@ const maxConfigBytes = 1 << 20
 //
 // Writability is the check, not readability: brw.json holds no secret, and
 // requiring 0600 would reject the ordinary 0644 a person's editor writes.
+//
+// A symlink is followed. Keeping a dotfile repository at ~/dotfiles and linking
+// the config into place is how a lot of people manage this file, and refusing
+// the link broke every one of those machines while protecting nothing: what
+// matters is the mode of the file the daemon actually reads, and a symlink's
+// own mode is lrwxrwxrwx everywhere. So the permission check is made on the
+// OPEN HANDLE, after the link has been resolved — which is also why there is no
+// second stat of the path to race against.
 func readTrusted(path string) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
+	// Screened before anything is opened, because opening a fifo blocks until
+	// somebody writes to it and that would hang the daemon at startup. os.Stat
+	// follows the link, so this rejects a link to a fifo as well as a fifo.
+	if info, err := os.Stat(path); err != nil {
 		return nil, err
-	}
-	if !info.Mode().IsRegular() {
+	} else if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0 {
-		return nil, fmt.Errorf("%s is mode %#o; it must not be group- or world-writable, because it decides what every brwd on this machine does", path, info.Mode().Perm())
 	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	// Re-checked on the open handle: the path could have been swapped between
-	// the Lstat and the Open.
+	// The handle, not the path: whatever the name pointed at when it was opened
+	// is exactly the bytes read below, so the decision cannot be made about one
+	// file and the read done on another.
 	opened, err := file.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
-		return nil, fmt.Errorf("%s changed before it was read", path)
+	if !opened.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
 	if runtime.GOOS != "windows" && opened.Mode().Perm()&0o022 != 0 {
 		return nil, fmt.Errorf("%s is mode %#o; it must not be group- or world-writable, because it decides what every brwd on this machine does", path, opened.Mode().Perm())

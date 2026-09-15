@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -40,8 +41,12 @@ type Server struct {
 	// consent is the per-origin grant guard behind /api/consent/*. Nil means the
 	// daemon was started without site consent.
 	consent *siteconsent.Guard
-	usage   *usagelog.Recorder
-	leases  *tabLeaseManager
+	// upstreamConsent is the controller's own consent posture, when this
+	// daemon's controller is itself a client of another brw daemon. Taken from
+	// the controller rather than wired by the caller: see upstreamConsentSource.
+	upstreamConsent upstreamConsentSource
+	usage           *usagelog.Recorder
+	leases          *tabLeaseManager
 	// version is the build this daemon is, stamped onto the agent skill it
 	// serves so the manual and the tool surface it describes are one thing.
 	version string
@@ -104,6 +109,13 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	}}
 	s.allowedHosts, s.enforceHost = computeAllowedHosts(addr)
 	s.loopbackBind = isLoopbackHost(bindHost(addr))
+	// Not a setter. A daemon whose controller forwards to another daemon has to
+	// report that daemon's consent posture as well as its own, and a proxy that
+	// was merely SUPPOSED to wire that up reports its own flags as the whole
+	// chain's answer — which is exactly the bypass this closes. Asking the
+	// controller means every forwarding controller, including one added later,
+	// is covered without a second edit here.
+	s.upstreamConsent, _ = manager.(upstreamConsentSource)
 	s.routes(mux)
 	// Wrap the router so every request first passes the same-machine browser
 	// guard (DNS-rebinding + cross-origin CSRF). A loopback CLI/MCP client sends
@@ -416,7 +428,43 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/consent/revoke", s.consentRevoke)
 }
 
-func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+// upstreamConsentSource is implemented by a browser.Controller that is itself a
+// client of another brw daemon.
+//
+// The consent posture at /health is a property of the whole chain a request
+// travels, not of the process that answers: a proxy applies its own guard and
+// then hands the work to a daemon that applies its own. Whichever of them has a
+// prompter is the one that blocks, so a proxy reporting only its own flags told
+// an unattended caller "nothing here will ask you" on behalf of a daemon that
+// would.
+type upstreamConsentSource interface {
+	// UpstreamConsentPosture reports the posture of the daemon this controller
+	// forwards to, already merged with anything further upstream. An error means
+	// the hop could not be asked.
+	UpstreamConsentPosture(ctx context.Context) (siteconsent.Posture, error)
+}
+
+// upstreamConsentTimeout bounds the extra hop /health makes on a proxy. It is
+// short because /health is what a scheduler polls before every run, and a slow
+// upstream must degrade to "unknown" rather than to a hung poll.
+const upstreamConsentTimeout = 3 * time.Second
+
+// consentPosture answers for this daemon and everything it forwards to.
+func (s *Server) consentPosture(ctx context.Context) siteconsent.Posture {
+	posture := s.consent.Posture()
+	if s.upstreamConsent == nil {
+		return posture
+	}
+	ctx, cancel := context.WithTimeout(ctx, upstreamConsentTimeout)
+	defer cancel()
+	upstream, err := s.upstreamConsent.UpstreamConsentPosture(ctx)
+	if err != nil {
+		return posture.Merge(siteconsent.UnreadablePosture(fmt.Sprintf("the daemon this one forwards to could not be asked: %v", err)))
+	}
+	return posture.Merge(upstream)
+}
+
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]any{
 		"ok":         true,
 		"tab_leases": s.leases.stats(),
@@ -424,11 +472,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		// daemon can stop and ask a human. With a prompter on its terminal the
 		// daemon blocks on a read nobody will answer, and the scheduled run that
 		// was meant to fail closed hangs until its timeout instead.
-		"consent": map[string]any{
-			"enabled":         s.consent.Enabled(),
-			"interactive":     s.consent.Interactive(),
-			"confirm_actions": s.consent.ConfirmActions(),
-		},
+		"consent": s.consentPosture(r.Context()),
 	}
 	if !s.identity.Empty() {
 		payload["identity"] = s.identity
