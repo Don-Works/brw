@@ -184,6 +184,7 @@ contain no private site data. On an Apple M4 Max in September 2026:
 | Post-action observation over ten separate action-tool calls, `observe:"minimal"` vs the `full` default | ~2,676 B vs ~4,951 B of result JSON; **46% fewer bytes** |
 | The same ten calls at `observe:"none"` | ~1,184 B vs ~4,951 B; **76% fewer bytes**, and every call still reports its outcome |
 | The same ten steps as one `brw_batch` (one closing observation), against those ten calls | ~743 B vs ~4,951 B; **85% fewer bytes**, and ~622 B at `observe:"none"` |
+| One compositor frame against one screenshot capture of the same page, over a 20s capture at 5fps | 2,386 B vs 2,771 B per frame; **14% fewer bytes per frame** |
 
 The two wait rows measure the same question asked two ways against the same
 state, so each ratio is the cost of asking rather than the cost of the answer.
@@ -200,6 +201,16 @@ extension transport still runs, because it holds no debugger attachment to
 subscribe with. See [waiting.md](waiting.md) for which mechanism answers which
 condition on which transport.
 
+The screencast row is per frame because the window total is not a property of
+the transport: the total is bytes per frame times the frame rate each side
+managed, and the loop's rate is set by how fast the host can capture. The same
+20s window fits 100 captures on this machine and 42 on a Linux CI runner, which
+puts the total saving anywhere between 5.8x and 15% while the per-frame figure
+stays put — 2,386 B against 2,771 B here, 2,578 B against 2,966 B there. Round
+trips are not the measure either: `Page.screencastFrameAck` costs one per frame
+exactly as the loop costs one capture call per frame, plus start and stop, so
+that count reads 22 against 100 here and 43 against 42 on the runner.
+
 These are machine-local samples, not universal latency promises. Reproduce them
 with:
 
@@ -207,6 +218,7 @@ with:
 go test -count=1 -v ./internal/browser -run TestObserveLevelsShrinkATenStepFlow
 go test -count=1 -v ./internal/browser -run TestPrearmedSettleIsMateriallyFaster
 go test -count=1 -v ./internal/browser -run 'TestEventWaitLatencyBeatsThePollingFallback|TestLoadWaitLatencyBeatsTheInPageProbe'
+go test -count=1 -v ./internal/browser -run TestScreencastMovesFewerBytesPerFrameThanTheScreenshotLoop
 go test -count=1 -v ./internal/httpclient -run TestReadWindowIsAppliedOnBrowserHost
 go test -count=1 -v ./internal/artifact -run TestArtifactMetadataSizeDoesNotScaleWithPayload
 go test -run '^$' -bench '^BenchmarkCatalogSearch100K$' -benchtime=100x -benchmem ./internal/recipe

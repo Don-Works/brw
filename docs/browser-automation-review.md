@@ -301,13 +301,23 @@ parity argument alone:
   artifacts from `Page.startScreencast` frames with `Page.screencastFrameAck`
   backpressure, keeping the screenshot loop only for transports with no
   compositor stream (the extension bridge, and the locked-session print-renderer
-  case). Over a 20s capture at 5fps of a page repainting twice a second the
-  screenshot loop moved 277 KB against the compositor stream's 98 KB. The
-  round-trip figures — 100 against 43 — are counted rather than observed on the
-  wire: one capture call per tick on one side, start plus stop plus one ack per
-  compositor frame on the other, so each is a floor for its own path. CPU is not
-  compared: the daemon-process figure excludes the Chrome process doing the
-  compositing, which is where the work the screencast saves actually moves. See
+  case). Over a 20s capture at 5fps of a page repainting twice a second, an M4
+  Max records 277 KB over 100 captures for the loop against 48 KB over 20 frames
+  for the stream; the same capture on a Linux CI runner records 125 KB over 42
+  captures against 106 KB over 41 frames. The per-frame figure is what holds
+  across both — about 2.4 KB against 2.8 KB on the Mac, 2.6 KB against 2.9 KB on
+  the runner — and it is the only one the test asserts. The window totals carry
+  the host's capture latency and the compositor's own frame rate with them: the
+  runner fitted 42 captures into the same 20s rather than 100, which is what
+  turns a 5.8x saving into 15%. Round trips are not a saving either. The ack
+  costs one per frame delivered exactly as a capture costs one per frame taken,
+  plus start and stop, so the same measurement reads 100 against 22 on the Mac
+  and 42 against 43 on the runner. Both counts are counted rather than observed
+  on the wire — one capture call per tick on one side, start plus stop plus one
+  ack per compositor frame on the other — so each is a floor for its own path.
+  CPU is not compared: the daemon-process figure excludes the Chrome process
+  doing the compositing, which is where the work the screencast saves actually
+  moves. See
   [Puppeteer screencast](https://pptr.dev/api/puppeteer.page.screencast).
 
 ## Prioritized next level
