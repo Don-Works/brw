@@ -112,50 +112,57 @@ The comparison is against documented capabilities, not marketing claims.
 
 ### Parity matrix: Claude-in-Chrome and Vercel agent-browser
 
-Audited 2026-09-14 against Claude-in-Chrome (support.claude.com article 12012173)
-and `vercel-labs/agent-browser` (Apache-2.0, Rust CLI + daemon + MCP). Status is
+Audited 2026-09-15 against Claude-in-Chrome (support.claude.com article 12012173)
+and `vercel-labs/agent-browser` **0.37.1** (Apache-2.0, Rust CLI + daemon + MCP;
+live binary, isolated `--session brw-compare`, then `close --all`). Status is
 `brw`'s: shipped, open with its ledger row, or a deliberate non-goal.
 
 | Feature | brw | Claude-in-Chrome | agent-browser | Status |
 | --- | --- | --- | --- | --- |
-| Semantic snapshot and stable refs | DOM + accessibility | internal | accessibility tree | shipped |
-| Post-action observation | every action | n/a | partial | shipped |
-| Browser coverage | 7 Chromium builds | Chrome only | Chrome, Lightpanda, cloud | shipped |
-| MCP server | stdio, catalogue grows on demand | native messaging | stdio, fixed profiles | shipped |
+| Semantic snapshot and stable refs | DOM + accessibility | internal | accessibility tree (`e1`, `e2`) | shipped |
+| Post-action observation | every action | n/a | click returns `{clicked:"@e2"}` only | shipped |
+| Browser coverage | 7 Chromium builds | Chrome only | Chrome, Lightpanda, iOS Safari, 6 cloud | shipped |
+| Signed-in profile | extension bridge into the live profile; no copy | live Chrome session | `--profile` copies to a temp dir; `--cdp` / `--auto-connect` | shipped |
+| MCP server | stdio, catalogue grows on demand | native messaging | stdio, fixed profiles, `tools/list` paginated at 64 | shipped |
 | HTTP JSON API | yes | no | no | shipped |
-| Per-action CLI | no | no | ~120 verbs | open, `2AR4JB` |
-| Artifacts held off model context | store, search, TTL | no | files on disk | shipped |
+| Per-action CLI | ~20 verbs bound to HTTP routes | no | ~120 verbs | open, `2AR4JB` |
+| Artifacts held off model context | store, search, TTL, quota | no | files on disk / temp paths | shipped |
 | Deterministic replay | immutable recipes, digest and origin guard | recorded workflows | batch JSON | shipped |
 | Promote a successful run to a recipe | no | yes, side-panel recording | no | open, `E8X4QH` |
 | Scheduled and recurring runs | no | daily/weekly/monthly | no | non-goal; trigger contract `5SFWAD` |
-| Network interception | isolated contexts only | read-only | route, unroute | open, `GX7V7R` |
-| HAR record and replay as a fixture | record only | no | start/stop, replay | open, `GX7V7R` |
-| Device and environment emulation | viewport only | no | viewport, device, geo, media, offline | open, `5K6NVM` |
-| Storage and auth state save/load | denylisted on the signed-in transport | n/a | `state save`, `auth save` | open, `S1JX0S`, host-only and redacted |
-| Credential manager integration | no | 1Password, macOS beta | plugin capability | open, `FGYDV6` |
-| Accessibility audit, React, Web Vitals | no | no | axe-core, react, vitals | open, `M7T2Z7` |
-| Cloud browser providers | no | no | 6 providers | open, `VXK4XY`, after `J3YFH0` |
-| Remote operation over SSH | yes | no | no | shipped |
-| WebMCP page-declared tools | list and synchronous invoke | no | detach, poll, cancel | open, `HG5BY9` |
+| Network interception | `brw_route` fulfill/abort (fulfill is direct-CDP) | read-only | route, unroute | shipped |
+| HAR record and replay as a fixture | capture + `brw_route` replay on direct-CDP | no | start/stop, replay | shipped |
+| Device and environment emulation | viewport, device, geo, media, offline, headers, UA, HTTP auth | no | viewport, device, geo, media, offline | shipped |
+| Storage and auth state save/load | `brw_state` cookies only, refused on signed-in transports, never exports values | n/a | `state save` cookies+localStorage; `auth save` vault | shipped, host-only and redacted |
+| Credential manager integration | plugin `credential.read` only; not a vault | 1Password, macOS beta | plugin + encrypted auth vault | shipped |
+| Accessibility audit and Web Vitals | axe-core + vitals + highlight | no | axe-core + vitals | shipped |
+| React DevTools introspection | no | no | `react tree` / inspect / renders / suspense | open, `M7T2Z7` |
+| Cloud browser providers | no | no | 6 providers | open, `VXK4XY` |
+| Remote operation over SSH | yes | no | no (cloud instead) | shipped |
+| WebMCP page-declared tools | list, invoke, detach, poll, cancel | no | list, invoke, detach, poll, cancel | shipped |
 | Live dashboard | viewport, activity feed, gated human takeover | side panel | viewport, activity feed, chat | shipped; chat is not a goal |
-| Per-origin grants and revocation | domain containment only | per-site grant/revoke | domain allowlist | open, `PBZHK0` |
-| Confirmation before high-risk actions | no | yes | no | open, `27GN96` |
-| Category blocklist | no | financial, adult, pirated | no | open, `PBZHK0` |
+| Per-origin grants and revocation | MAC-bound grant ledger | per-site grant/revoke | domain allowlist | shipped |
+| Confirmation before high-risk actions | `--confirm-actions`, fail-closed | yes | `--confirm-actions eval,download` | shipped |
+| Category blocklist | financial, adult, piracy-style list | financial, adult, pirated | no | shipped |
 | Cross-device session continuity | no | desktop, web, mobile | no | non-goal, see remote control |
-| Video capture | WebM from native compositor frames | no | `record` | shipped |
-| Assertion vocabulary | text, value, visible, hidden | n/a | `is`/`get` family | open, `H1BSQJ` |
-| Event-driven waits | polling on some conditions | n/a | yes | open, `FAXZ21` |
-| Failure evidence bundle | no | no | no | open, `05FQQF` |
-| Operation receipts for writes | no | no | no | open, `MVJT36` |
-| Regression baselines | `brw_diff` against one artifact | no | no | open, `RKXE53` |
-| Non-Chromium browsers | no | no | no | open, `6QWNYJ` |
-| Plugin and capability model | no | no | manifest + capabilities | open, `J3YFH0` |
+| Video capture | bounded WebM from compositor frames | no | `record` 30 fps WebM/MP4 | shipped |
+| Assertion vocabulary | `brw_assert` plus retrying visible/text/value/hidden | n/a | `is` / `get` family | shipped |
+| Event-driven waits | CDP events; extension still polls some | n/a | yes | shipped (transport-dependent) |
+| Failure evidence bundle | recipe failure artifact | no | no | shipped |
+| Operation receipts for writes | recipe run receipts, not a provider ledger | no | no | open, `MVJT36` |
+| Regression baselines | visual + ARIA, keyed to recipe digest | no | `diff snapshot` / screenshot / url | shipped |
+| Non-Chromium browsers | no (BiDi prototype) | no | Lightpanda, iOS Safari via Appium | open, `6QWNYJ` |
+| Plugin and capability model | manifest, `credential.read` only | no | manifest + credential/provider/launch/command | shipped |
 | Licence | AGPL-3.0 | closed | Apache-2.0 | — |
 
 agent-browser's headline "93% fewer tokens" is measured against Playwright's MCP
-server, not against `brw`. The two projects reach the same conclusion from the
-same premise: an accessibility-derived snapshot with stable refs costs far less
-than screenshots or raw DOM.
+server, not against `brw`. A live 0.37.1 `mcp --tools core` catalogue is 29 tools
+and ~66 KiB of JSON, because every tool repeats session/restore/namespace/CA
+fields; `mcp --tools all` paginates `tools/list` at 64. The two projects reach
+the same conclusion from the same premise: an accessibility-derived snapshot
+with stable refs costs far less than screenshots or raw DOM. After that they
+split: brw is a control plane for a real signed-in Chromium; agent-browser is a
+CLI-first disposable automation runtime.
 
 ### What the browser itself constrains
 
@@ -246,8 +253,8 @@ parity argument alone:
 - **A secret store.** Credentials reach the browser through a provider
   capability at dispatch and are never persisted by the daemon.
 - **Bulk cookie and storage export.** The signed-in extension transport
-  denylists it. State save/restore, when it lands, stays on the browser host,
-  scoped per origin, redacted and expiring.
+  denylists it. `brw_state` stays on the browser host, scoped per origin,
+  redacted and expiring, and never returns cookie names or values.
 - **Fleet and session orchestration.** One daemon drives one authorized browser.
 - **Cross-device session continuity.** The answer is to keep the browser on the
   machine that owns it and reach it over SSH, not to replicate a session.
@@ -273,9 +280,10 @@ parity argument alone:
   with those correlated views. See
   [Playwright tracing](https://playwright.dev/docs/api/class-tracing).
 - Playwright can record and replay HAR files and intercept HTTP/WebSocket
-  traffic. `brw` intentionally redacts captured headers and can replay one
-  request, but cannot yet create or apply a deterministic network fixture. See
-  [Playwright network mocking](https://playwright.dev/docs/mock).
+  traffic. `brw` redacts captured headers, can replay one in-page request, and
+  on direct-CDP can capture a HAR artifact and replay it as a `brw_route`
+  fixture. Fulfill and HAR replay are not available on the extension bridge.
+  See [Playwright network mocking](https://playwright.dev/docs/mock).
 - Playwright supports isolated contexts, reusable storage state, locale,
   timezone, geolocation, permissions, and visual/ARIA baselines. `brw` has
   incognito contexts and device emulation, while its principal differentiator is
@@ -319,9 +327,10 @@ parity argument alone:
    evidence across daemon restarts. Prefer the site's native idempotency API
    where one exists; never mistake a local receipt for proof that the remote
    transaction committed.
-4. **Event stream and network fixtures.** Replace polling with one scoped event
-   subscription where transports support it; then add privacy-filtered HAR
-   capture/replay and request interception as explicitly opt-in capabilities.
+4. **Event stream on the extension bridge.** Direct-CDP already answers several
+   waits from CDP events, and HAR capture/replay plus `brw_route` interception
+   ship on that lane. The remaining work is event subscriptions on the
+   extension transport, which still polls some conditions.
 5. **Artifact efficiency.** Use CDP stream mode for PDFs/downloads where
    available, content-addressed deduplication under opaque per-capture handles,
    optional at-rest encryption, and a manifest artifact that links related
@@ -330,10 +339,11 @@ parity argument alone:
    `Fetch.takeResponseBodyAsStream`, and taking it cancels the download the rest
    of brw tracks. See "A rendered PDF is pulled from the browser as a stream" in
    [recipes and artifacts](recipes-and-artifacts.md).
-6. **Environment profiles.** Add controlled locale/timezone/media/permission
-   emulation for direct-CDP contexts. Any auth-state import/export must remain a
-   separately permissioned feature and must not weaken the cookie/storage
-   denylist of the signed-in extension bridge.
+6. **Locale and timezone profiles.** Device, geo, media, offline, headers, UA
+   and HTTP auth already exist on direct-CDP. Locale/timezone/permission
+   bundles are still missing. Auth-state import/export must remain a separately
+   permissioned feature and must not weaken the cookie/storage denylist of the
+   signed-in extension bridge.
 7. **Cross-browser backend.** Prototype WebDriver BiDi after its required event,
    actionability, download, and artifact primitives are stable enough to retain
    the same fail-closed recipe guarantees.
