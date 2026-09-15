@@ -474,12 +474,14 @@ resolve on.
 
 Nor would it save a copy. brw's own staged file is deleted once the artifact is
 persisted, so the disk round trip is transient and already bounded, and the
-stream would trade it for the download lifecycle — on direct CDP only. The
+stream would trade it for the download lifecycle, which only a browser brw started exposes. The
 extension bridge intercepts with `declarativeNetRequest`, which is never handed
 a response body at all, and reaching CDP's `Fetch` domain there would mean
 holding interception across the `chrome.debugger` attach and detach that wraps
-each operation, which is the same reason `brw_route` `fulfill` is direct-CDP
-only. The measurements are in
+each operation, which is the same reason `brw_route`'s `fulfill` needs a CDP
+transport. The tool itself is advertised on every lane: `abort` works on the
+bridge through `declarativeNetRequest`, so only the response-body actions
+refuse there. The measurements are in
 `TestFetchResponseStageStreamsADownloadInsteadOfTheBrowserTakingIt`.
 
 Artifacts can be encrypted at rest with `--artifact-encrypt off|recipe|all` and

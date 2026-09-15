@@ -217,7 +217,7 @@ func TestSessionStateIsRefusedOnAProviderBackedBrowser(t *testing.T) {
 		if !strings.Contains(response, `"isError":true`) {
 			t.Errorf("brw_state %v on a provider-backed browser = %s, want a refusal", args["action"], response)
 		}
-		if !strings.Contains(response, "plugin-supplied remote browser") {
+		if !strings.Contains(response, "not on this machine") {
 			t.Errorf("brw_state %v refusal = %s, want it to name the capability class", args["action"], response)
 		}
 	}

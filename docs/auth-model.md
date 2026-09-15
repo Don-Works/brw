@@ -353,8 +353,11 @@ drives — is refused for that reason.
 
 `brw_state` is refused on the `off-host-cdp` transport too, and that one is the
 "on that host" clause above holding rather than a second policy. The store lives
-on the machine brwd runs on and holds sessions established there; a browser a
-`browser.provider` plugin lent brw is on somebody else's machine. All four
+on the machine brwd runs on and holds sessions established there; a browser on
+the `remote-cdp` transport is on somebody else's. That is a browser a
+`browser.provider` plugin lent brw, and equally `brwd --remote` at an endpoint
+brw cannot prove is loopback: the refusal is keyed on where the browser is, so
+neither lane needs a gate of its own. All four
 actions are refused, not `restore` alone: `restore` would put those cookies into
 the provider's browser, `list` and `delete` would let a cloud-backed run
 enumerate and destroy this host's snapshots, and `save` would file a snapshot

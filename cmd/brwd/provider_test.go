@@ -117,40 +117,105 @@ func TestEveryProviderLaunchFieldIsCheckedBySomething(t *testing.T) {
 	}
 }
 
-// Every launch-only field of browser.Config that checkRemoteConfig refuses has
-// to be refused at STARTUP too. The inner gate runs inside browser.New, after
-// the mint program has run and the provider has billed a session, and its
-// failure then also has to unwind a session brw already holds.
+// configFieldsReadOffTheFlagInstead are the settings the startup table does not
+// read from the config, because the config carries a DEFAULT for them that
+// describes this machine: refusing on the default would make a provider
+// unusable without also passing a flag to unset one. Each names the launch
+// shape that IS refused when the operator asked for it explicitly.
+var configFieldsReadOffTheFlagInstead = map[string]providerLaunch{
+	"UserDataDir":      {Profile: "p"},
+	"ProfileDirectory": {Profile: "p"},
+	"Headless":         {Headless: true},
+	// Both of these are produced by the Chrome opt-in discovery rather than
+	// typed: BrowserWSURL is the endpoint it resolved, and SignedInProfile is
+	// the marker it stamps on the config. --chrome-opt-in is what an operator
+	// actually passes, so that is what startup refuses.
+	"BrowserWSURL":    {ChromeOptIn: true},
+	"SignedInProfile": {ChromeOptIn: true},
+}
+
+// probeConfigField returns a non-zero value for one browser.Config field, so
+// the enumeration below can ask the manager's own table about each field on its
+// own rather than trusting a hand-written list of the fields that table reads.
+func probeConfigField(field reflect.StructField) (reflect.Value, bool) {
+	switch field.Type.Kind() {
+	case reflect.String:
+		return reflect.ValueOf("http://127.0.0.1:9222").Convert(field.Type), true
+	case reflect.Bool:
+		return reflect.ValueOf(true), true
+	case reflect.Int, reflect.Int64:
+		return reflect.ValueOf(int64(9222)).Convert(field.Type), true
+	case reflect.Slice:
+		return reflect.ValueOf([]string{"/tmp/fixture"}).Convert(field.Type), true
+	case reflect.Struct:
+		return reflect.ValueOf(cdplaunch.NetworkEnvironment{ProxyServer: "http://127.0.0.1:8080"}), true
+	}
+	return reflect.Value{}, false
+}
+
+// Every setting of browser.Config the MANAGER's own table refuses has to be
+// refused at STARTUP too. The inner gate runs inside browser.New, after the
+// mint program has run and the provider has billed a session, and its failure
+// then also has to unwind a session brw already holds.
+//
+// Enumerated by reflecting over browser.Config and asking
+// browser.ProviderConfigProblems — the very function checkRemoteConfig applies —
+// about each field one at a time. A hand-written list of cases here would cover
+// the fields that table reads TODAY and stay green for a field added to it
+// tomorrow and forgotten in refuseWithProvider, which is the "satisfied by one
+// representative" defect that hid --remote-debugging-port.
 func TestConfigFieldsRefusedByTheManagerAreAlsoRefusedAtStartup(t *testing.T) {
-	for name, cfg := range map[string]browser.Config{
-		"remote url":        {RemoteURL: "http://127.0.0.1:9222"},
-		"user data dir":     {UserDataDir: "/tmp/fixture-profile"},
-		"profile directory": {ProfileDirectory: "Profile 1"},
-		"extensions":        {Extensions: []string{"/tmp/fixture-ext"}},
-		"chrome args":       {ChromeArgs: []string{"--mute-audio"}},
-		"headless":          {Headless: true},
-		"debugging port":    {Port: 9222},
-		"real profile":      {AllowRealProfile: true},
-		"proxy server":      {Network: cdplaunch.NetworkEnvironment{ProxyServer: "http://127.0.0.1:8080"}},
-		"ignore https":      {Network: cdplaunch.NetworkEnvironment{IgnoreHTTPSErrors: true}},
-	} {
-		t.Run(name, func(t *testing.T) {
+	configType := reflect.TypeOf(browser.Config{})
+	enumerated := 0
+	for index := 0; index < configType.NumField(); index++ {
+		field := configType.Field(index)
+		if field.Name == "Remote" {
+			// Remote IS the plugin-supplied browser, not a setting that
+			// conflicts with one, and there is no RemoteTarget at startup.
+			continue
+		}
+		probe, ok := probeConfigField(field)
+		if !ok {
+			t.Errorf("browser.Config.%s is a %s this test cannot set, so nothing asks the manager's table about it; add a case to probeConfigField", field.Name, field.Type)
+			continue
+		}
+		cfg := browser.Config{}
+		reflect.ValueOf(&cfg).Elem().Field(index).Set(probe)
+		if browser.ProviderConfigProblems(cfg) == nil {
+			// Not a setting the manager refuses; startup has nothing to mirror.
+			continue
+		}
+		enumerated++
+		t.Run(field.Name, func(t *testing.T) {
 			launch := providerLaunch{Config: cfg}
-			// The two the startup table reads off the flag rather than the
-			// config: --headless and --user-data-dir/--profile-directory have
-			// their own cases in main, because the config carries a DEFAULT for
-			// them that describes this machine and refusing on the default would
-			// make a provider unusable.
-			switch name {
-			case "user data dir", "profile directory":
-				launch = providerLaunch{Profile: "p"}
-			case "headless":
-				launch = providerLaunch{Headless: true}
+			if alternate, ok := configFieldsReadOffTheFlagInstead[field.Name]; ok {
+				launch = alternate
 			}
 			if err := refuseWithProvider(launch); err == nil {
-				t.Fatalf("browser.Config%+v is refused by checkRemoteConfig and accepted at startup", cfg)
+				t.Fatalf("browser.Config.%s is refused by the manager and accepted at startup, so the refusal lands only after the provider has billed a session", field.Name)
 			}
 		})
+	}
+	if enumerated == 0 {
+		t.Fatal("the probe found no refused field, so this test asserts nothing")
+	}
+	// A stale exemption is as bad as a missing case: it excuses a field from the
+	// config half of the check for a reason that no longer applies.
+	for name, launch := range configFieldsReadOffTheFlagInstead {
+		field, ok := configType.FieldByName(name)
+		if !ok {
+			t.Errorf("configFieldsReadOffTheFlagInstead names %q, which is not a field of browser.Config", name)
+			continue
+		}
+		probe, _ := probeConfigField(field)
+		cfg := browser.Config{}
+		reflect.ValueOf(&cfg).Elem().FieldByName(name).Set(probe)
+		if browser.ProviderConfigProblems(cfg) == nil {
+			t.Errorf("browser.Config.%s is exempted from the config half of the startup check, but the manager no longer refuses it", name)
+		}
+		if err := refuseWithProvider(launch); err == nil {
+			t.Errorf("the flag that stands in for browser.Config.%s (%+v) is not refused at startup either", name, launch)
+		}
 	}
 }
 

@@ -73,7 +73,7 @@ func (s *Server) takeoverGuard(w http.ResponseWriter, r *http.Request) (takeover
 	controller, ok := s.manager.(takeoverController)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, map[string]any{
-			"error": "takeover needs the direct-CDP transport; this daemon proxies or bridges to another one, so take over on that daemon instead",
+			"error": "takeover needs a daemon that drives the browser over CDP itself; this one proxies or bridges to another one, so take over on that daemon instead",
 		})
 		return nil, false
 	}
@@ -182,7 +182,7 @@ func (s *Server) dashboardActivity(w http.ResponseWriter, r *http.Request) {
 	sub, ok := s.manager.(traceSubscriberController)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, map[string]any{
-			"error": "the activity feed needs the direct-CDP transport; this daemon proxies or bridges to another one, so watch it on that daemon instead",
+			"error": "the activity feed needs a daemon that drives the browser over CDP itself; this one proxies or bridges to another one, so watch it on that daemon instead",
 		})
 		return
 	}

@@ -5,6 +5,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -229,11 +230,14 @@ func TestProviderBackedBrowserDrivesAFullScenario(t *testing.T) {
 	}
 
 	// The refusals hold on the same live session, not only on a bare struct.
-	if _, err := manager.Downloads(tabCtx); err == nil || !strings.Contains(err.Error(), "remote browser") {
+	// Matched on the sentinel every caller branches on rather than on words in
+	// the sentence: this assertion read the message and broke when the reason
+	// was reworded, which tells nobody anything about the gate.
+	if _, err := manager.Downloads(tabCtx); !errors.Is(err, ErrRemoteTargetUnsupported) {
 		t.Fatalf("Downloads on a live provider session = %v, want the named capability refusal", err)
 	}
-	if err := manager.CheckProfileSession(); err == nil {
-		t.Fatal("CheckProfileSession on a live provider session returned nil")
+	if err := manager.CheckProfileSession(); !errors.Is(err, ErrRemoteTargetUnsupported) {
+		t.Fatalf("CheckProfileSession on a live provider session = %v, want the named capability refusal", err)
 	}
 
 	// Closing hands the browser back, aimed at the session that was opened.

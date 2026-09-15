@@ -155,10 +155,16 @@ type Manager struct {
 	timeout       time.Duration
 	navPolicy     *navpolicy.Policy
 	// remote is set when a plugin holding browser.provider lent brw this
-	// browser. Nil means brw launched it (or was pointed at a local endpoint
-	// with --remote), which is the only case where the local-machine
-	// capabilities in RemoteUnavailable hold.
+	// browser. It carries the provider session: who minted it, when it expires
+	// and how to give it back.
 	remote *RemoteTarget
+	// offHost records that the browser this manager drives is NOT on the
+	// machine brwd runs on, which is what every capability in RemoteUnavailable
+	// turns on. It is a separate field from remote because a provider is not the
+	// only way to reach a browser elsewhere: --remote takes a URL, and
+	// --remote http://198.51.100.7:9222 is a browser on another machine down the
+	// same code path a loopback endpoint takes. Read through BrowserOnThisHost.
+	offHost bool
 
 	// lastState caches each tab's most-recent post-action SemanticState so the
 	// next action can reuse it as its "before" baseline instead of taking a
@@ -425,6 +431,30 @@ func tabIDFromCtx(ctx context.Context) string {
 }
 
 func New(ctx context.Context, cfg Config) (*Manager, error) {
+	m, err := newManager(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.connect(); err != nil {
+		_ = m.Close()
+		// The dialer quotes the URL it could not reach, and on a remote target
+		// that URL authenticates the session. Redact before it reaches a log.
+		return nil, m.scrubRemoteEndpoint(err)
+	}
+	if tabs, err := m.ListTabs(ctx); err == nil && len(tabs) > 0 {
+		m.refs.SetActive(tabs[0].ID)
+	}
+	return m, nil
+}
+
+// newManager builds the manager and everything it owns except the connection.
+//
+// Split from New so the classification every capability gate depends on — is
+// this browser on the machine brwd runs on? — is provable without a browser to
+// dial. A test that had to reach a real Chrome on a real second machine to
+// check that gate is a test nobody runs, and the gate was inert for the
+// --remote lane for exactly that long.
+func newManager(ctx context.Context, cfg Config) (*Manager, error) {
 	timeout := cfg.Timeout
 	if timeout == 0 {
 		timeout = 20 * time.Second
@@ -478,6 +508,7 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 	m := &Manager{
 		launcher:           launcher,
 		remote:             cfg.Remote,
+		offHost:            !cfg.BrowserOnThisHost(),
 		allocCancel:        allocCancel,
 		browserCtx:         browserCtx,
 		browserCancel:      browserCancel,
@@ -508,15 +539,6 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		attachedBrowser:    launcher == nil,
 	}
 
-	if err := m.connect(); err != nil {
-		_ = m.Close()
-		// The dialer quotes the URL it could not reach, and on a remote target
-		// that URL authenticates the session. Redact before it reaches a log.
-		return nil, m.scrubRemoteEndpoint(err)
-	}
-	if tabs, err := m.ListTabs(ctx); err == nil && len(tabs) > 0 {
-		m.refs.SetActive(tabs[0].ID)
-	}
 	return m, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Don-Works/brw/internal/brwidentity"
 	cdplaunch "github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -101,6 +102,30 @@ type Config struct {
 	// ignored: a --user-data-dir that quietly does nothing is how an operator
 	// ends up believing a cloud run reused their signed-in profile.
 	Remote *RemoteTarget
+}
+
+// BrowserOnThisHost reports whether the browser this configuration describes
+// runs on the machine brwd runs on. That is the property, not the flag and not
+// the plugin, that decides whether a profile, a download path, a clipboard or
+// this host's session-snapshot store means anything.
+//
+// A provider's browser is elsewhere by definition. A --remote endpoint is
+// wherever its URL points, and it points off this machine as easily as at
+// loopback: brwd --remote http://198.51.100.7:9222 drives somebody else's browser
+// through the same code path as a local attach.
+func (c Config) BrowserOnThisHost() bool {
+	if c.Remote != nil {
+		return false
+	}
+	// BrowserWSURL first, because that is the one New dials when it is set:
+	// answering about RemoteURL while the socket goes somewhere else is the
+	// same class of mistake as answering about the flag instead of the browser.
+	// A config carrying only BrowserWSURL would otherwise read as "brw launched
+	// it" — the empty-endpoint case — whatever host that URL names.
+	if endpoint := strings.TrimSpace(c.BrowserWSURL); endpoint != "" {
+		return brwidentity.BrowserRunsOnThisHost(endpoint)
+	}
+	return brwidentity.BrowserRunsOnThisHost(c.RemoteURL)
 }
 
 type Tab struct {

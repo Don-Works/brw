@@ -47,9 +47,14 @@ type RemoteTarget struct {
 const remoteReleaseTimeout = 30 * time.Second
 
 // ErrRemoteTargetUnsupported is the single sentinel for every capability brw
-// has on a browser it launched and does not have on one a plugin lent it. A
+// has on a browser running beside it and does not have on one running somewhere
+// else - a plugin-supplied browser, or a --remote endpoint on another host. A
 // caller branches on the class with errors.Is rather than matching strings.
-var ErrRemoteTargetUnsupported = errors.New("unavailable on a plugin-supplied remote browser")
+//
+// It names the property rather than the lane because the reasons below all do:
+// each is a fact about the machine the browser runs on, true of a provider and
+// of any other off-host endpoint alike.
+var ErrRemoteTargetUnsupported = errors.New("unavailable on a browser that is not on this machine")
 
 // ErrRemoteSessionExpired is returned once the provider's stated lifetime has
 // passed. Starting an operation on a browser the provider has reclaimed
@@ -66,14 +71,14 @@ var ErrRemoteSessionExpired = errors.New("the plugin-supplied browser session ha
 // Every value here is a REASON, written for whoever reads the error. A reason
 // that only says "not supported" tells an agent nothing about what to do next.
 var RemoteUnavailable = map[string]string{
-	"profile_reuse": "a profile lives on the machine running the browser; a plugin-supplied browser has none of this machine's profiles, so --user-data-dir, --profile-directory and a workspace profile policy cannot be honoured",
-	"extension_bridge": "the extension bridge drives the Chrome you are personally signed into on this machine; there is no such Chrome at the other end of a provider's websocket. " +
+	"profile_reuse": "a profile lives on the machine running the browser, and a browser on another machine has none of this machine's profiles, so --user-data-dir, --profile-directory and a workspace profile policy cannot be honoured",
+	"extension_bridge": "the extension bridge drives the Chrome you are personally signed into on this machine; there is no such Chrome at the other end of a websocket to another machine. " +
 		"The print-renderer screenshot fallback goes with it: it is a bridge-only path that shells out to a local PDF rasteriser",
-	"profile_session": "a recipe that declares it needs the signed-in profile needs a browser a human already signed into; a provider mints a fresh unauthenticated one, so running it anyway would run a login-shaped flow signed out",
-	"local_downloads": "Chrome writes a download on the machine it runs on. On a provider's browser the bytes land on the provider's disk, and brw's download bookkeeping would report a path that does not exist here",
-	"local_upload":    "an upload hands Chrome a filesystem path, which Chrome resolves on the machine it runs on. A local path sent to a provider's browser names a file on the provider's disk, not the one you meant",
-	"local_clipboard": "the clipboard belongs to the machine the browser runs on, so a read would return the provider host's clipboard and a write would set it",
-	"local_session_state": "the session-snapshot store holds sessions a human signed into on THIS machine, sealed from a browser brw owns. Restoring one into a provider's browser would put those cookies on somebody else's host — the same thing the profile gates refuse — and listing or deleting one would let a cloud-backed daemon enumerate and destroy this machine's snapshots. " +
+	"profile_session": "a recipe that declares it needs the signed-in profile needs a browser a human already signed into on this machine; a browser somewhere else carries a session brw did not create and cannot attest to, so running it anyway would run a login-shaped flow signed out",
+	"local_downloads": "Chrome writes a download on the machine it runs on. On a browser somewhere else the bytes land on that machine's disk, and brw's download bookkeeping would report a path that does not exist here",
+	"local_upload":    "an upload hands Chrome a filesystem path, which Chrome resolves on the machine it runs on. A local path sent to a browser somewhere else names a file on that machine's disk, not the one you meant",
+	"local_clipboard": "the clipboard belongs to the machine the browser runs on, so a read would return that host's clipboard and a write would set it",
+	"local_session_state": "the session-snapshot store holds sessions a human signed into on THIS machine, sealed from a browser brw owns. Restoring one into a browser on another machine would put those cookies on somebody else's host — the same thing the profile gates refuse — and listing or deleting one would let a cloud-backed daemon enumerate and destroy this machine's snapshots. " +
 		"Save is refused with them: a snapshot sealed from a provider's browser would join this host's store under an id indistinguishable from a local one",
 }
 
@@ -118,6 +123,24 @@ func checkRemoteConfig(cfg Config) error {
 		// not whoever built the target remembered.
 		cfg.Remote.RedactedURL = redactWebSocketURL(cfg.Remote.WebSocketURL)
 	}
+	return ProviderConfigProblems(cfg)
+}
+
+// ProviderConfigProblems reports every setting in a Config that conflicts with
+// driving a browser a plugin lent brw: a second way of naming a browser, and
+// the settings that only mean something for one brw launches itself here.
+//
+// Exported because the same table has to be applied twice. checkRemoteConfig
+// applies it inside browser.New, which runs AFTER the operator's mint program
+// has executed and the provider has billed a session; brwd applies it at
+// startup, from the flags, before anything is minted. Two hand-written
+// spellings of "which settings conflict" is how a field added to one gets
+// forgotten in the other, so the daemon's startup table is enumerated against
+// this one rather than kept in step by hand.
+//
+// It does not look at cfg.Remote: the caller has already decided a provider is
+// in play, and at startup there is no RemoteTarget yet.
+func ProviderConfigProblems(cfg Config) error {
 	var problems []error
 	if strings.TrimSpace(cfg.RemoteURL) != "" {
 		problems = append(problems, errors.New("--remote names a CDP endpoint and a browser.provider plugin supplies one; brw will not guess which browser you meant"))
@@ -208,22 +231,47 @@ type ProfileSessionController interface {
 }
 
 // CheckProfileSession reports whether this browser can carry the signed-in
-// installed profile. A brw-launched (or --remote local) Chrome can: its profile
-// directory is on this machine and a human may have signed into it. A
-// provider's browser cannot, whatever the provider's marketing says about
-// persistent contexts — brw did not create that state and cannot attest to it.
+// installed profile. A brw-launched Chrome can, and so can one reached with
+// --remote at a loopback endpoint: the profile directory is on this machine and
+// a human may have signed into it. A browser on any other machine cannot,
+// whatever a provider's marketing says about persistent contexts — brw did not
+// create that state and cannot attest to it.
 func (m *Manager) CheckProfileSession() error {
 	return m.refuseOnRemote("profile_session")
 }
 
 var _ ProfileSessionController = (*Manager)(nil)
 
-// Remote reports whether this manager drives a plugin-supplied browser.
+// Remote reports whether this manager drives a plugin-supplied browser. It
+// answers about the PROVIDER SESSION only - who minted it, when it expires, how
+// to give it back - and is not the capability gate. Use BrowserOnThisHost for
+// that: a --remote endpoint on another machine has no provider session and
+// every local-machine capability is just as wrong there.
 func (m *Manager) Remote() bool {
 	if m == nil {
 		return false
 	}
 	return m.remote != nil
+}
+
+// BrowserOnThisHost reports whether the browser this manager drives is on the
+// machine brwd runs on.
+//
+// This is the question the capability gates ask, and it is deliberately not
+// "did the operator ask for a plugin-supplied browser?". Those were the same
+// question only for as long as a provider was the only way to reach a browser
+// elsewhere. --remote takes a URL, so it never was: brwd --remote
+// http://198.51.100.7:9222 drives a browser on another machine with no provider
+// anywhere, and a gate keyed on the provider is inert for it.
+//
+// A nil manager answers true. Nothing drives a browser at all in that state, so
+// no local-machine capability is about to be misdirected, and the callers that
+// can see a nil manager are tests holding a zero value.
+func (m *Manager) BrowserOnThisHost() bool {
+	if m == nil {
+		return true
+	}
+	return m.remote == nil && !m.offHost
 }
 
 // RemoteSessionInfo is the reportable description of a plugin-supplied browser
@@ -279,9 +327,16 @@ func (m *Manager) checkRemoteSession() error {
 }
 
 // refuseOnRemote is the one-line guard the refused verbs open with. It returns
-// nil on a local browser, so the check costs a nil comparison there.
+// nil when the browser is on this machine, so the check costs a nil comparison
+// there.
+//
+// Keyed on where the browser is, not on how brw was told to reach it. Every
+// reason in RemoteUnavailable is a statement about the machine the browser runs
+// on, so a lane that reaches another machine inherits the whole table without an
+// edit here - which is what the --remote lane did not do while this asked
+// m.Remote().
 func (m *Manager) refuseOnRemote(capability string) error {
-	if !m.Remote() {
+	if m.BrowserOnThisHost() {
 		return nil
 	}
 	return RemoteUnavailableError(capability)

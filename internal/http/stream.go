@@ -36,7 +36,7 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 	sub, ok := s.manager.(traceSubscriberController)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, map[string]any{
-			"error": "live session streaming needs the direct-CDP transport; this daemon proxies or bridges to another one, so subscribe on that daemon instead",
+			"error": "live session streaming needs a daemon that drives the browser over CDP itself; this one proxies or bridges to another one, so subscribe on that daemon instead",
 		})
 		return
 	}

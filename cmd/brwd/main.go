@@ -134,7 +134,7 @@ func main() {
 	flag.BoolVar(&bridgeFollowFocus, "bridge-follow-focus", envBool("BRW_BRIDGE_FOLLOW_FOCUS"), "bridge: follow the user's manually-focused Chrome tab for no-tab_id actions (legacy behavior). OFF by default: brw works in its own tab group on tabs it opened (opening a fresh one when needed) and never touches your existing tabs unless you pass tab_id. Turn on for an interactive session where you want brw to act on whatever tab you have selected.")
 	flag.IntVar(&bridgeMaxInflight, "bridge-max-inflight", envInt("BRW_BRIDGE_MAX_INFLIGHT", 6), "bridge: max concurrent operations on the shared extension socket. Excess calls queue and, past the deadline, fail fast with a busy signal. Caps load on the single Chrome extension worker so many parallel agents can't wedge it. 0 disables the cap.")
 	flag.StringVar(&upstreamHTTP, "upstream-http", os.Getenv("BRW_UPSTREAM_HTTP"), "proxy MCP/HTTP control to an existing local brw HTTP daemon")
-	flag.StringVar(&cfg.RemoteURL, "remote", os.Getenv("BRW_REMOTE_URL"), "attach to an existing CDP endpoint, for example http://127.0.0.1:9222, or \"auto\" to find one: brw reads DevToolsActivePort in the user data directory (which is the only place an ephemeral port is written) and then tries the conventional loopback debugging ports, attaching only to something that answers /json/version as a browser.")
+	flag.StringVar(&cfg.RemoteURL, "remote", os.Getenv("BRW_REMOTE_URL"), "attach to an existing CDP endpoint, for example http://127.0.0.1:9222, or \"auto\" to find one: brw reads DevToolsActivePort in the user data directory (which is the only place an ephemeral port is written) and then tries the conventional loopback debugging ports, attaching only to something that answers /json/version as a browser. An endpoint brw cannot prove is on this machine is the off-host-cdp transport, not direct-cdp: downloads, uploads, the clipboard and brw_state are refused by name there, because each of them belongs to the host the browser runs on.")
 	flag.StringVar(&profileName, "profile", os.Getenv("BRW_PROFILE"), "workspace-allowed browser profile name")
 	flag.StringVar(&workspaceName, "workspace", os.Getenv("BRW_WORKSPACE"), "workspace binding name for default/restricted profiles")
 	flag.StringVar(&profilePolicyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path; defaults to standard brw config discovery")
@@ -178,7 +178,7 @@ func main() {
 	flag.StringVar(&siteConsentConfig, "site-consent-config", os.Getenv("BRW_SITE_CONSENT_CONFIG"), "admin consent config JSON (allowed_origins, blocked_origins, category_domains, confirm_actions, default_grant_ttl). Defaults to site-consent.json beside the profile policy, so a managed machine needs no UI.")
 	flag.BoolVar(&siteConsentPrompt, "site-consent-prompt", envBool("BRW_SITE_CONSENT_PROMPT"), "ask on this terminal when an un-granted origin comes up, and record the answer. Requires a terminal on stdin and is incompatible with --mcp (which owns stdin); without it the daemon is non-interactive and refuses instead of asking.")
 	flag.BoolVar(&confirmActions, "confirm-actions", envBool("BRW_CONFIRM_ACTIONS"), "require confirmation before a high-risk action (publishing, purchasing, submitting a form carrying personal data, anything on a blocklisted category). Fails CLOSED: with nobody to ask, the action is refused rather than approved. Requires --site-consent.")
-	flag.BoolVar(&contentNavGuard, "content-nav-guard", envBool("BRW_CONTENT_NAV_GUARD"), "refuse a top-level navigation that page content initiated to another site (an injected link click, a meta refresh, a script location assignment). What the agent asked for still works: the destination it named, and the navigation its own click or keypress causes. Not available on the extension bridge or an upstream HTTP proxy.")
+	flag.BoolVar(&contentNavGuard, "content-nav-guard", envBool("BRW_CONTENT_NAV_GUARD"), "refuse a top-level navigation that page content initiated to another site (an injected link click, a meta refresh, a script location assignment). What the agent asked for still works: the destination it named, and the navigation its own click or keypress causes. Any CDP transport; not the extension bridge or an upstream HTTP proxy.")
 	flag.BoolVar(&chromeOptIn, "chrome-opt-in", envBool("BRW_CHROME_OPT_IN"), "attach to a Chrome 144+ instance whose user has turned on remote debugging at chrome://inspect/#remote-debugging. This is full browser-target CDP against the real signed-in profile, with none of the extension bridge's incognito or cookie limits and no extension at all. Downloads are reported but not routed, and brw_state is refused: brw will not move or seal what belongs to the browser's own user. A profile policy grants this lane with chrome_opt_in_allowed: true. brw never turns the opt-in on: it is a human action by design, and with it off the daemon says so and exits rather than launching a browser with a debugging flag. Chrome 144+ also asks you to approve each debugging connection in the browser window; brw waits two minutes for that and then exits naming the prompt, rather than hanging.")
 	flag.StringVar(&chromeOptInBrowser, "chrome-opt-in-browser", envDefault("BRW_CHROME_OPT_IN_BROWSER", "chrome"), "which browser's user data directory --chrome-opt-in looks in for the endpoint (chrome, chromium, edge, brave, vivaldi)")
 	flag.StringVar(&chromeOptInUserDataDir, "chrome-opt-in-user-data-dir", os.Getenv("BRW_CHROME_OPT_IN_USER_DATA_DIR"), "explicit user data directory for --chrome-opt-in, when the browser is not one brw knows the default path for. brw only reads from it.")
@@ -482,15 +482,35 @@ func main() {
 		cfg.RemoteURL = endpoint.URL
 		log.Printf("--remote auto attached to %s (%s) found by %s", endpoint.URL, endpoint.Browser, endpoint.Source)
 	}
+	// --remote reads as "a Chrome on this machine" and takes a URL, so an
+	// operator can point it at another one without noticing. Say so once, at
+	// startup, in the same shape as the plaintext-endpoint warning: everything
+	// this daemon reports afterwards is about a browser over there, and every
+	// capability that resolves a path, a clipboard or this host's session store
+	// is refused by name rather than answered about the wrong machine.
+	//
+	// After the auto block, so a discovered endpoint is checked too rather than
+	// only one the operator typed.
+	if strings.TrimSpace(cfg.RemoteURL) != "" && !brwidentity.BrowserRunsOnThisHost(cfg.RemoteURL) {
+		log.Printf("WARNING: --remote %s names a browser that is not on this machine; brw reports transport %s and refuses downloads, uploads, the clipboard and brw_state, because each of those belongs to the host the browser runs on",
+			cfg.RemoteURL, brwidentity.TransportOffHostCDP)
+	}
 	cfg.Headless = headless
 	// The profile-policy block above is the only thing that populates
-	// runtimeIdentity, and a provider launch never reaches it (--profile and
-	// --workspace are refused with a provider). Without this the on-disk scope
-	// runtimeIdentity decides — the artifact root and the session-snapshot store
-	// — would be the same "default" a local daemon started without a profile
-	// uses, so a cloud-backed daemon would resolve to this machine's stores.
-	if useBrowserProvider {
-		runtimeIdentity.Transport = localTransport(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn, useBrowserProvider)
+	// runtimeIdentity, and a launch that drives a browser on another machine
+	// often never reaches it (--profile and --workspace are refused with a
+	// provider). Without this the on-disk scope runtimeIdentity decides — the
+	// artifact root and the session-snapshot store — would be the same "default"
+	// a local daemon started without a profile uses, so a daemon driving a
+	// browser elsewhere would resolve to this machine's stores.
+	//
+	// Keyed on the transport rather than on useBrowserProvider so --remote at an
+	// endpoint off this machine is covered by the same line, and so is whatever
+	// lane classifies as off-host-cdp next. The local transports are
+	// deliberately left unset here: mixing one in would move every existing
+	// store to a new path for no gain.
+	if localTransport(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn, useBrowserProvider) == brwidentity.TransportOffHostCDP {
+		runtimeIdentity.Transport = brwidentity.TransportOffHostCDP
 	}
 	usageIdentity := resolveIdentity(identityInputs{
 		Runtime:           runtimeIdentity,
@@ -699,11 +719,13 @@ func main() {
 
 	if contentNavGuard {
 		if manager == nil {
-			// Named, not silently ignored. The boundary is implemented on the
-			// direct-CDP transport's request interception; the extension bridge
-			// has no equivalent, and a flag that quietly does nothing is worse
-			// than one that refuses.
-			log.Fatalf("--content-nav-guard needs a DevTools Protocol transport: it is enforced on CDP request interception, which the extension bridge and the upstream HTTP proxy do not have")
+			// Named, not silently ignored. The boundary is implemented on CDP
+			// request interception, which every lane that drives a browser over
+			// CDP has — a Chrome brwd launched, a --remote endpoint, the Chrome
+			// opt-in and a provider's browser alike. The extension bridge has no
+			// equivalent, and a flag that quietly does nothing is worse than one
+			// that refuses.
+			log.Fatalf("--content-nav-guard needs a CDP transport: it is enforced on CDP request interception, which the extension bridge and the upstream HTTP proxy do not have")
 		}
 		manager.SetContentNavigationGuard(true)
 		log.Printf("content navigation boundary active: a page-initiated top-level navigation to another site is refused")
@@ -1195,8 +1217,11 @@ func adoptUpstreamIdentity(local, upstream brwidentity.Identity, haveProfilePoli
 // than passed as a run of adjacent bools, because a reversal here would make a
 // daemon report somebody else's lane.
 type identityInputs struct {
-	Runtime           brwidentity.Identity
-	UpstreamHTTP      string
+	Runtime      brwidentity.Identity
+	UpstreamHTTP string
+	// RemoteURL is the endpoint --remote names. Carried because it decides
+	// where the browser is: the flag is a URL, and a URL naming another machine
+	// is not the direct-CDP lane however local the flag's name sounds.
 	RemoteURL         string
 	Bridge            bool
 	ChromeOptIn       bool
@@ -1243,42 +1268,30 @@ func resolveIdentity(in identityInputs) brwidentity.Identity {
 // know until it asks its upstream, so it reports empty here and adopts the
 // answer from the upstream's health response.
 //
-// The Chrome opt-in lane is reported as its own transport rather than as direct
-// CDP, because the catalogue differs in both directions: it has the cookie and
-// incognito access the bridge lacks, and it is still the browser the user is
-// signed into, so brw_state is refused there and is not on direct CDP. A caller
-// told "direct-cdp" would read both of those wrongly.
+// The classification lives in brwidentity.Lane, which the browser manager's
+// capability gates read as well, so what tools/list filters on and what those
+// gates enforce cannot disagree.
 //
-// --remote is its own transport for the same reason and a sharper one: direct
-// CDP means a browser brw started, and brw may point a browser it started at a
-// staging directory it later deletes. On --remote it is somebody else's
-// browser, the refusal is enforced in internal/browser whatever this reports,
-// and reporting direct-cdp would advertise brw_set_download_path on a lane that
-// always refuses it.
+// In particular --remote is classified by where its endpoint points rather than
+// by the flag's name. --remote at a loopback endpoint is a Chrome on this
+// machine, and --remote http://198.51.100.7:9222 is a browser on somebody
+// else's, which is off-host-cdp for the same reason a provider's browser is.
 //
-// A plugin-supplied browser is a fourth: --remote shares this machine's disk
-// and clipboard, and that one does not, so the two cannot answer the same way
-// about a path or an upload.
+// Four lanes come back from it rather than two, because the catalogue differs
+// in more than one direction. The Chrome opt-in has the cookie and incognito
+// access the bridge lacks AND is still the browser the user is signed into, so
+// brw_state is refused there and is not on direct CDP. --remote at loopback is
+// a browser brw did not start, so it may not be pointed at a staging directory
+// brw later deletes, while a path, an upload and the clipboard still mean what
+// the caller meant. A browser on another machine shares none of those.
 func localTransport(upstreamHTTP, remoteURL string, bridgeMode, chromeOptIn, browserProvider bool) string {
-	switch {
-	case upstreamHTTP != "":
-		return ""
-	case bridgeMode:
-		return brwidentity.TransportExtensionBridge
-	case browserProvider:
-		// Its own transport, and specifically NOT remote-cdp: --remote is
-		// pointed at a loopback endpoint, where this machine's filesystem
-		// and clipboard are the browser's too. Here they are not, and a
-		// caller that cannot tell the two apart cannot avoid asking a
-		// browser on another machine for this machine's files.
-		return brwidentity.TransportOffHostCDP
-	case chromeOptIn:
-		return brwidentity.TransportChromeOptIn
-	case strings.TrimSpace(remoteURL) != "":
-		return brwidentity.TransportRemoteCDP
-	default:
-		return brwidentity.TransportDirectCDP
-	}
+	return brwidentity.Lane{
+		UpstreamHTTP:    upstreamHTTP,
+		Bridge:          bridgeMode,
+		BrowserProvider: browserProvider,
+		ChromeOptIn:     chromeOptIn,
+		CDPEndpoint:     remoteURL,
+	}.Transport()
 }
 
 func resolveUsageLogPath(configured string, identity brwidentity.Identity) (string, error) {

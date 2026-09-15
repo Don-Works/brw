@@ -228,7 +228,7 @@ Over HTTP: `GET /api/consent/grants`, `POST /api/consent/revoke`, and the
 
 ## Content-boundary navigation guard
 
-`brwd --content-nav-guard` (not on the extension bridge) refuses a top-level
+`brwd --content-nav-guard` (any CDP transport; not the extension bridge) refuses a top-level
 navigation that **page content** initiated to another site — an injected link
 click, a meta refresh, a script assignment to `location`. What the agent asked
 for still works.
@@ -261,9 +261,10 @@ Three limits:
 - A navigation that the page makes within five seconds of the agent's own click
   is allowed: brw cannot tell it apart from the navigation the click was for.
   The window is deliberately short, and an intent is spent on the first arrival.
-- Not on the extension bridge. It has no equivalent interception point, so
-  `--content-nav-guard` there is refused at startup rather than ignored. Both
-  DevTools Protocol lanes have one, the Chrome opt-in lane included.
+- The extension bridge has no equivalent interception point, so
+  `--content-nav-guard` there is refused at startup rather than ignored. Every
+  CDP lane has one: a Chrome brw launched, `--remote`, the Chrome opt-in and a
+  browser on another machine alike.
 - "Same site" is host equality or a subdomain relationship. brw carries no
   public-suffix list, so sibling subdomains of a public suffix are treated as
   same-site. The error is in the permissive direction for that case; the

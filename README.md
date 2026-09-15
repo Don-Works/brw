@@ -479,7 +479,9 @@ Core MCP tools include:
   nothing else; `brw_set_user_agent`; `brw_authenticate` for one credentialed
   navigation (not on the extension bridge)
 - `brw_set_download_path` — send completed downloads somewhere you can open
-  them. Not on the extension bridge, and not on the Chrome opt-in lane: the
+  them. `brw_set_download_path` is not on the extension bridge, not on the
+  Chrome opt-in lane, not on `--remote` and not on a browser on another machine,
+  because brw did not start any of those browsers: the
   DevTools command applies to a whole browser context, so on the browser you are
   signed into it would redirect the files you download by hand
 - `brw_network_requests`, `brw_network_capture`, `brw_replay_request`
@@ -609,7 +611,7 @@ Backend-specific notes:
   plan/batch steps alike, and fails CLOSED when nobody is there to confirm. List and revoke with `brwctl grants`, the extension
   options page, or `brw grants`. Opt-in; off by default.
   See [docs/site-permissions.md](docs/site-permissions.md).
-- **Content-boundary navigation guard**: `--content-nav-guard` (not on the extension bridge)
+- **Content-boundary navigation guard**: `--content-nav-guard` (any CDP transport; not the extension bridge)
   refuses a top-level navigation that page content initiated to another site — an
   injected link click, a meta refresh, a script `location` assignment — while
   what the agent asked for still works: the destination it named, and the

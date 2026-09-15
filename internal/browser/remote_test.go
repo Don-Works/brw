@@ -96,6 +96,8 @@ var remoteSafeSurface = []string{
 var remoteManagerPlumbing = []string{
 	"Close", "ContentNavigationGuard", "Remote", "RemoteSession",
 	"SetContentNavigationGuard", "SetNavigationPolicy", "SetSessionStateStore",
+	// BrowserOnThisHost is the gate's own question, not a verb it guards.
+	"BrowserOnThisHost",
 }
 
 // remoteSurfaceInterfaces is half the domain the enumeration walks: every

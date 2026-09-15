@@ -375,12 +375,7 @@ func TestATransportOnlyClaimMatchesTheTable(t *testing.T) {
 			if !strings.Contains(lowered, phrase) {
 				continue
 			}
-			var advertised []string
-			for _, transport := range brwidentity.Transports() {
-				if !slices.Contains(transportUnsupported[name], transport) {
-					advertised = append(advertised, transport)
-				}
-			}
+			advertised := advertisedTransports(name)
 			if !slices.Equal(advertised, []string{claimed}) {
 				t.Errorf("%s says %q but is advertised on %v", name, phrase, advertised)
 			}

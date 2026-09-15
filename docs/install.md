@@ -200,23 +200,24 @@ namespace resolved to, and `brwctl doctor` names it with the capabilities it
 implies. `tools/list` is narrowed to the lane, so a tool that cannot work on it
 is not advertised at all.
 
-| | Extension bridge | Direct CDP | Chrome opt-in |
-|---|---|---|---|
-| Browser | The real signed-in Chromium browser you already use | A separate brw-owned instance | The real signed-in Chrome you already use |
-| How it connects | The brw extension, `chrome.debugger` per operation | brw launches Chrome with a debugging port | Full browser-target CDP, no extension |
-| Needs | The extension loaded and enabled | Nothing | Chrome 144+ with the opt-in switched on by hand |
-| Existing logins | Yes | No, unless you point it at a cloned profile | Yes |
-| Chrome tab groups | Yes | No | No |
-| Incognito contexts (`brw_open_incognito`) | No | Yes | Yes |
-| Cookies incl. HttpOnly (`brw_cookies`) | No | Yes | Yes |
-| Deterministic download capture | No, uses the browser's download folder | Yes, staged in brw's cache | No, uses the browser's download folder |
-| Session snapshots (`brw_state`) | No, by policy | Yes | No, by the same policy |
-| Headless | No | Yes | No, it is your window |
-| `brw_identity` transport | `extension-bridge` | `direct-cdp` | `chrome-opt-in-cdp` |
+| | Extension bridge | Direct CDP | Chrome opt-in | `--remote` here | Browser elsewhere |
+|---|---|---|---|---|---|
+| Browser | The real signed-in Chromium browser you already use | A separate brw-owned instance | The real signed-in Chrome you already use | One another process on this machine started | One on somebody else's machine |
+| How it connects | The brw extension, `chrome.debugger` per operation | brw launches Chrome with a debugging port | Full browser-target CDP, no extension | Full browser-target CDP to an endpoint brw was given | Full browser-target CDP over a socket to another host |
+| Needs | The extension loaded and enabled | Nothing | Chrome 144+ with the opt-in switched on by hand | `--remote` at a loopback endpoint | A `browser.provider` plugin, or `--remote` at an endpoint elsewhere |
+| Existing logins | Yes | No, unless you point it at a cloned profile | Yes | Whatever that browser has | No, a fresh unauthenticated session |
+| Chrome tab groups | Yes | No | No | No | No |
+| Incognito contexts (`brw_open_incognito`) | No | Yes | Yes | Yes | Yes |
+| Cookies incl. HttpOnly (`brw_cookies`) | No | Yes | Yes | Yes | Yes |
+| Deterministic download capture | No, uses the browser's download folder | Yes, staged in brw's cache | No, uses the browser's download folder | No, brw did not start that browser | No, the bytes land on the other machine |
+| File uploads (`brw_upload_file`) and the clipboard (`brw_clipboard`) | Uploads yes, clipboard no | Yes | Yes | Yes, the disk is shared | No, the path and the clipboard are the other machine's |
+| Session snapshots (`brw_state`) | No, by policy | Yes | No, by the same policy | Yes | No, the store holds sessions signed into here |
+| Headless | No | Yes | No, it is your window | Whatever that browser was started as | Decided by whoever started it |
+| `brw_identity` transport | `extension-bridge` | `direct-cdp` | `chrome-opt-in-cdp` | `remote-cdp` | `off-host-cdp` |
 
 `brwd --remote <endpoint>` attaches to a DevTools endpoint another process
-opened, and reports `transport: "remote-cdp"`. It is the direct-CDP column with
-one row changed: no deterministic download capture. `Browser.setDownloadBehavior`
+opened. At a loopback endpoint it reports `transport: "remote-cdp"`: the
+direct-CDP column with one row changed, no deterministic download capture. `Browser.setDownloadBehavior`
 has no scope narrower than a browser context, and brw did not start that
 browser, so pointing its downloads at brw's staging directory would move files
 belonging to whoever did — and brw deletes that directory when the daemon stops.

@@ -45,23 +45,32 @@ const (
 	// signed into, brw never started it, and brw must never try to turn the
 	// opt-in on — it exists precisely because that switch is a human action.
 	TransportChromeOptIn = "chrome-opt-in-cdp"
-	// TransportRemoteCDP is `brwd --remote`: brw attaches to a DevTools endpoint
-	// some other process opened. It was reported as direct CDP, which says brw
-	// started the browser. The browser behind that endpoint may be the one its
-	// user is signed into, up to and including the port the Chrome opt-in
-	// publishes, and a lane reported as one brw started routed and then deleted
-	// that person's downloads.
+	// TransportRemoteCDP is `brwd --remote` at an endpoint on THIS machine: brw
+	// attaches to a DevTools endpoint some other process opened. It was reported
+	// as direct CDP, which says brw started the browser. The browser behind that
+	// endpoint may be the one its user is signed into, up to and including the
+	// port the Chrome opt-in publishes, and a lane reported as one brw started
+	// routed and then deleted that person's downloads.
+	//
+	// The browser is still on this machine, so a filesystem path, an upload and
+	// the clipboard all mean what the caller meant. An endpoint brw cannot prove
+	// is on this machine is TransportOffHostCDP instead.
 	TransportRemoteCDP = "remote-cdp"
 	// TransportOffHostCDP is the CDP wire protocol over a socket to a machine
 	// that is not this one: a browser a plugin holding browser.provider lent
-	// brw. It is separate from TransportRemoteCDP because --remote is usually
-	// pointed at a loopback endpoint, where this machine's filesystem and
-	// clipboard are the browser's too; here they are not, so a path, an upload
+	// brw, and equally a --remote endpoint that is not loopback.
+	//
+	// It names where the browser IS, not which flag asked for it, so a new way
+	// of reaching a browser elsewhere lands here without an edit to the gates
+	// that read it. That is also why it is separate from TransportRemoteCDP
+	// rather than folded into it: --remote is pointed at a loopback endpoint in
+	// every topology brw ships for, and there this machine's filesystem and
+	// clipboard are the browser's too. Here they are not, so a path, an upload
 	// or a clipboard read answers about the wrong machine rather than failing.
 	//
-	// It names where the browser IS rather than which flag asked for it, so
-	// another way of reaching a browser elsewhere lands here without an edit to
-	// the gates that read it.
+	// It is separate from TransportDirectCDP because the difference is not
+	// cosmetic — no local profile, no local filesystem, no extension bridge —
+	// and a caller that cannot tell the two apart cannot avoid asking for those.
 	TransportOffHostCDP      = "off-host-cdp"
 	TransportExtensionBridge = "extension-bridge"
 )

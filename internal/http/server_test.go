@@ -889,11 +889,15 @@ func TestHealthNamesThePluginSuppliedSession(t *testing.T) {
 	if !resp.RemoteSession.ExpiresAt.Equal(expiry) {
 		t.Fatalf("expires_at = %v, want %v; an operator cannot see the session ending without it", resp.RemoteSession.ExpiresAt, expiry)
 	}
-	// The endpoint reported is the redacted form. The path of a CDP websocket
-	// URL authenticates the socket, and /health is served to anything on
-	// loopback.
-	if strings.Contains(resp.RemoteSession.Endpoint, "/devtools/") {
-		t.Fatalf("endpoint = %q, which carries the part that authenticates the session", resp.RemoteSession.Endpoint)
+	// Deliberately NOT asserted here: that the endpoint is redacted. This test
+	// puts the endpoint on the fake controller itself, so any such check would
+	// re-derive its own input and could not fail whatever Manager.RemoteSession
+	// does. The redaction is a property of the manager and is checked where it
+	// is produced, by TestRemoteSessionReportsTheRedactedEndpoint in
+	// internal/browser (and end to end against a live provider-backed manager
+	// in remote_provider_live_test.go).
+	if resp.RemoteSession.Endpoint != "wss://browsers.example" {
+		t.Fatalf("endpoint = %q; /health has to serve what the controller reported", resp.RemoteSession.Endpoint)
 	}
 
 	// A local daemon says nothing, rather than an empty object a client would

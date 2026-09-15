@@ -216,8 +216,9 @@ a session cookie before/after login, or stage a clean-room cookie setup.
 Cookies need a real http(s) origin — `file://` and `about:blank` pages cannot
 hold them, and the error says so.
 
-**Not on the extension bridge.** There (driving the user's existing signed-in
-Chrome through the extension) `brw_cookies` returns an explicit error: the
+**`brw_cookies` is not on the extension bridge.** There (driving the user's
+existing signed-in Chrome through the extension) `brw_cookies` returns an
+explicit error: the
 extension's security policy blocks cookie CDP methods so a rogue server can
 never exfiltrate HttpOnly cookies through brw. `brw_identity`'s `transport`
 field (`direct-cdp` | `remote-cdp` | `off-host-cdp` | `chrome-opt-in-cdp` |
