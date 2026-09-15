@@ -18,7 +18,7 @@
       <h1>Form Interaction Fixture</h1>
       <form id="signup" aria-label="Account setup">
         <label for="email">Email</label>
-        <input id="email" name="email" type="email" autocomplete="email" required>
+        <input id="email" name="email" type="email" autocomplete="email" required data-testid="email-field" data-state="empty">
 
         <label for="full-name">Full name</label>
         <input id="full-name" name="full_name" autocomplete="name">
@@ -36,24 +36,41 @@
         </label>
 
         <label for="notes">Project notes</label>
-        <div id="notes" role="textbox" contenteditable="true" aria-label="Project notes"></div>
+        <div id="notes" role="textbox" contenteditable="true" aria-label="Project notes" data-testid="notes-editor" data-state="empty"></div>
 
         <label for="attachment">Attachment</label>
         <input id="attachment" name="attachment" type="file">
 
         <button type="submit">Submit request</button>
       </form>
-      <div id="result" role="status" aria-live="polite"></div>
+      <div id="result" role="status" aria-live="polite" data-testid="submission-result" data-state="empty"></div>
     </main>
     <script>
+      // Reflect "this field now holds something" as an attribute. A recipe has
+      // to read a write back, and for a secret input the value itself is the one
+      // thing an assertion must not name.
+      const email = document.getElementById('email');
+      email.addEventListener('input', () => {
+        email.dataset.state = email.value ? 'filled' : 'empty';
+      });
+
+      const notesEditor = document.getElementById('notes');
+      notesEditor.addEventListener('input', () => {
+        notesEditor.dataset.state = notesEditor.innerText.trim() ? 'filled' : 'empty';
+      });
+
       document.getElementById('signup').addEventListener('submit', (event) => {
         event.preventDefault();
         const form = new FormData(event.currentTarget);
         const notes = document.getElementById('notes').innerText.trim();
         const accepted = document.getElementById('terms').checked ? 'accepted' : 'missing';
         const file = document.getElementById('attachment').files[0]?.name || 'no-file';
-        document.getElementById('result').textContent =
+        const result = document.getElementById('result');
+        result.textContent =
           `Submitted ${form.get('email')} ${form.get('full_name')} ${form.get('plan')} ${accepted} ${notes} ${file}`;
+        // A read-back a recipe can assert on without naming the value it wrote:
+        // the submitted text contains a secret input, this flag does not.
+        result.dataset.state = 'submitted';
       });
     </script>
   </body>
