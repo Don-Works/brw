@@ -137,8 +137,8 @@ collect:
 	}
 
 	counts := stats()
-	t.Logf("screencast: %d frames, %d bytes, %d dropped, %d out of order, %d unstamped",
-		counts.Frames, counts.Bytes, counts.Dropped, counts.OutOfOrder, counts.UnstampedFrames)
+	t.Logf("screencast: %d frames, %d bytes, %d dropped, %d out of order, %d duplicate swaps, %d unstamped",
+		counts.Frames, counts.Bytes, counts.Dropped, counts.OutOfOrder, counts.DuplicateSwap, counts.UnstampedFrames)
 	if counts.Frames == 0 {
 		t.Error("the stream reported no frames")
 	}
@@ -194,23 +194,29 @@ func TestScreencastDropsFramesUnderBackpressureWithoutStalling(t *testing.T) {
 		}
 	}
 	counts := stats()
-	t.Logf("backpressure: %d frames delivered, %d dropped, %d out of order, %d unstamped",
-		counts.Frames, counts.Dropped, counts.OutOfOrder, counts.UnstampedFrames)
+	t.Logf("backpressure: %d frames delivered, %d dropped, %d out of order, %d duplicate swaps, %d unstamped",
+		counts.Frames, counts.Dropped, counts.OutOfOrder, counts.DuplicateSwap, counts.UnstampedFrames)
 	// Dropping frames must not cost the ordering floor. The failure this guards
 	// is the gate measuring the floor against something other than the last swap
 	// it forwarded — brw's own clock, say — which puts the floor ahead of every
 	// frame still to come and discards the whole stream.
 	//
-	// It is a RATE, not a count. Two repaints inside one compositor tick carry
-	// the same swap time, and the gate discards the second of them because a
-	// consumer pacing on swap time must see the clock advance; under load that
-	// happens occasionally and is Chrome's stamping, not brw's floor. A floor on
-	// the wrong clock discards essentially everything, so anything past a few
-	// percent is the failure and a stray duplicate is not.
-	total := counts.Frames + counts.Dropped + counts.OutOfOrder
-	if total > 0 && counts.OutOfOrder*20 > total {
-		t.Errorf("discarded %d of %d frames as out of order; the ordering gate is eating the stream",
-			counts.OutOfOrder, total)
+	// A discard is only ever one of two things, and they are counted apart so this
+	// does not need slack to tell them apart. The CDP event stream is ordered and
+	// the compositor's clock does not run backwards, so a frame stamped BEFORE the
+	// last one forwarded cannot come from that clock: zero, exactly.
+	if counts.OutOfOrder != 0 {
+		t.Errorf("discarded %d frames as swapping before the last one forwarded; the compositor's clock does not run backwards, so the floor is being measured against a different one",
+			counts.OutOfOrder)
+	}
+	// The other is two repaints inside one compositor tick sharing a swap time,
+	// which is Chrome's stamping. It happens occasionally under load and is
+	// bounded rather than forbidden — but a floor on the wrong clock would show up
+	// here too if it landed exactly on the floor, so it is still capped.
+	total := counts.Frames + counts.Dropped + counts.OutOfOrder + counts.DuplicateSwap
+	if total > 0 && counts.DuplicateSwap*20 > total {
+		t.Errorf("discarded %d of %d frames as carrying the previous swap time; that is past what one compositor tick explains",
+			counts.DuplicateSwap, total)
 	}
 }
 

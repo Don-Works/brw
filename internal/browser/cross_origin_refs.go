@@ -87,6 +87,7 @@ var ControllerRefMethods = map[string][]string{
 	"AssertVisible":       {"ref"},
 	"AssertText":          {"ref"},
 	"AssertValue":         {"ref"},
+	"AssertValueContains": {"ref"},
 	"AssertHidden":        {"ref"},
 	"CommitField":         {"ref"},
 	"ExecutePlan":         {"steps[].Ref", "steps[].ExpectRef"},

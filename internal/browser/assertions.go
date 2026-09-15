@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -115,6 +116,19 @@ type AssertSource interface {
 // re-deriving it across the proxy would hash nothing.
 type Asserter interface {
 	Assert(context.Context, AssertRequest) (AssertResult, error)
+}
+
+// ValueContainsAsserter is the substring counterpart to AssertValue, used by the
+// recipe runner's element.value_contains wait.
+//
+// It is a NAMED interface rather than the anonymous one the runner used to
+// assert against, because the cross-origin classification enumerates Controller
+// and the capability interfaces: a ref-taking method belonging to no named
+// interface is invisible to that enumeration, and AssertValueContains stayed
+// unguarded on both transports for exactly that reason while its four siblings
+// were covered.
+type ValueContainsAsserter interface {
+	AssertValueContains(ctx context.Context, ref, expected string, timeout time.Duration) error
 }
 
 // maxSemanticCountMatches bounds the semantic search behind an element_count

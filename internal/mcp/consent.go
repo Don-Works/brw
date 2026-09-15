@@ -47,6 +47,7 @@ func (s *Server) withConsentHooks(ctx context.Context, name string, args json.Ra
 		return ctx
 	}
 	ctx = browser.WithFetchCheck(ctx, s.checkFetchDestination)
+	ctx = browser.WithFrameReadCheck(ctx, s.checkFrameRead)
 	gate := s.consent.NewStepGate(name, args)
 	if gate == nil {
 		return ctx
@@ -81,6 +82,16 @@ func (s *Server) checkFetchDestination(rawURL string) error {
 		return err
 	}
 	return s.consent.Authorize(rawURL, siteconsent.ScopeRead)
+}
+
+// checkFrameRead gates reading the document inside one cross-origin iframe.
+//
+// brw_snapshot is gated against the origin the TAB is showing. include_frames
+// then attaches a session to each embedded frame's own target and runs the walker
+// in a third party's document — a read of that third party, which the embedder's
+// grant does not cover and which the tool's arguments never named.
+func (s *Server) checkFrameRead(frameOrigin string) error {
+	return s.consent.Authorize(frameOrigin, siteconsent.ScopeRead)
 }
 
 // currentPageOrigin resolves the origin a tab is showing. An empty want is the

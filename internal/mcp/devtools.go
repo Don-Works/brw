@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Don-Works/brw/internal/artifact"
+	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/devtools"
 )
 
@@ -46,13 +47,21 @@ func (s *Server) callAccessibilityAudit(ctx context.Context, args json.RawMessag
 }
 
 func (s *Server) callHighlight(ctx context.Context, args json.RawMessage) (any, *rpcError) {
-	observer, ok := s.devtoolsObserver()
-	if !ok {
-		return toolError(devtools.ErrUnsupported), nil
-	}
 	var req devtools.HighlightOptions
 	if err := unmarshalArgs(args, &req); err != nil {
 		return nil, invalid(err)
+	}
+	// The overlay is drawn in the TOP document, which cannot see into a
+	// cross-origin frame: without this the ref comes back resolved:false, which
+	// reads as "the page changed" for a ref that is perfectly current. It is
+	// refused before the transport is consulted, because the answer is the same
+	// on every transport.
+	if err := browser.GuardCrossOriginRefs("highlight", browser.GenericCrossOriginRemedy, append([]string{req.Ref}, req.Refs...)...); err != nil {
+		return toolError(err), nil
+	}
+	observer, ok := s.devtoolsObserver()
+	if !ok {
+		return toolError(devtools.ErrUnsupported), nil
 	}
 	return toolJSON(observer.Highlight(ctx, req))
 }

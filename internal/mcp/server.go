@@ -1548,6 +1548,13 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := req.Validate(); err != nil {
 			return toolError(err), nil
 		}
+		// brw_get takes a ref but reaches the transport through Evaluate, which is
+		// ref-free as far as the Controller classification is concerned — so the
+		// guard the other ref-taking verbs get has to be applied here, at the one
+		// place that knows this argument is a ref.
+		if err := browser.GuardCrossOriginRefs("get", browser.GenericCrossOriginRemedy, req.Target); err != nil {
+			return toolError(err), nil
+		}
 		value, err := s.manager.Evaluate(browser.WithTraceLabel(ctx, browser.TraceActionGet, req.TraceLabel()), req.Expression())
 		if err != nil {
 			return toolError(err), nil
@@ -1982,16 +1989,22 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	case "brw_highlight":
 		return s.callHighlight(ctx, args)
 	case "brw_artifact_capture":
-		api := s.artifactService()
-		if api == nil {
-			return toolError(errors.New("artifact service is not configured on the browser host")), nil
-		}
 		var req struct {
 			artifact.CaptureOptions
 			TabID string `json:"tab_id"`
 		}
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
+		}
+		// The capture reads the TOP document, so a ref inside a cross-origin frame
+		// would crop whatever the top-level resolver answered with instead. Refused
+		// before the service is consulted: the answer is the same on every host.
+		if err := browser.GuardCrossOriginRefs("artifact capture", browser.GenericCrossOriginRemedy, req.Ref); err != nil {
+			return toolError(err), nil
+		}
+		api := s.artifactService()
+		if api == nil {
+			return toolError(errors.New("artifact service is not configured on the browser host")), nil
 		}
 		return toolJSON(api.CaptureArtifact(ctx, req.CaptureOptions))
 	case "brw_artifact_info":
@@ -2735,7 +2748,7 @@ func tools() []map[string]any {
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"what"})),
 		tool("brw_frame", "Switch the active FRAME scope, so brw_snapshot, brw_find, brw_get and every ref lookup afterwards see only that frame's document. Pass a brw ref or CSS selector for the iframe (a ref for an element INSIDE the frame selects that frame too), or target \"main\" to go back to the whole page. Returns {switched, scope, kind, url, origin, accessible, x, y, width, height, element_count}. You rarely need this to CLICK something: refs already resolve across same-origin iframes. Reach for it when the same selector exists in the page and in an embed and you mean the embedded one, or to count/read within one widget. A CROSS-ORIGIN frame (kind:\"cross_origin\", reachable by its f<i> ref from brw_snapshot include_frames, or by an f<i>:<ref> element ref whose element half is dropped) cannot be scoped into — the browser isolates its DOM from this one — so it is returned with switched:false plus its top-level box, and you act on it with brw_screenshot then brw_click_xy at the box center, or on direct CDP by passing an f<i>:<ref> from brw_snapshot include_frames straight to brw_click. An f<i> index belongs to the snapshot that minted it: the CDP and extension backends number cross-origin frames independently, so re-snapshot after switching transport. The scope is per document: any navigation drops it back to main. Works on every transport.", object(map[string]any{
-			"target": stringSchema("Frame to scope to: a brw ref, a CSS selector for the iframe, an f<i> or f<i>:e<j> cross-origin frame ref, or \"main\" to clear the scope. Omitting it is the same as \"main\"."),
+			"target": stringSchema("Frame to scope to: a brw ref, a CSS selector for the iframe, an f<i> or f<i>:<ref> cross-origin frame ref, or \"main\" to clear the scope. Omitting it is the same as \"main\"."),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
 		tool("brw_focus", "Give one element the keyboard focus by ref, without clicking it. Use it before brw_press when the keystroke must land on a specific field and you do not want the side effects of a click (a menu opening, a link following, a blur handler firing on the way). Resolves across same-origin iframes and open shadow roots. brw_type and brw_fill already focus the field they write to; this is for the case where the next thing you send is a key. Returns the post-action observation, so `focus` in the result tells you where focus actually landed — a control that moves focus on its own is reported as a warning rather than passing silently.", object(map[string]any{
@@ -2786,7 +2799,7 @@ func tools() []map[string]any {
 			"peek":        map[string]any{"type": "boolean", "description": "For status: do not consume the list."},
 			"tab_id":      stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
-		tool("brw_plan", "Execute a sequence of browser operations in one round-trip. Steps run sequentially and stop on first failure. Steps that produce data carry it under result; snapshot steps also populate snapshot. Intermediate action steps report a MINIMAL observation (outcome, url/title, what changed — no element list) and the last step reports the full one, because by the time you read an intermediate observation its step has already been followed by the next; pass observe to set every step level yourself. Prefer brw_batch, which returns one observation instead of per-step payloads.", object(map[string]any{
+		tool("brw_plan", "Execute a sequence of browser operations in one round-trip. Steps run sequentially and stop on first failure. Steps that produce data carry it under result; snapshot steps also populate snapshot. Intermediate action steps report a MINIMAL observation (outcome, url/title, what changed — no element list) and the last step reports the full one, because by the time you read an intermediate observation its step has already been followed by the next; pass observe to set every step level yourself. Prefer brw_batch, which returns one observation instead of per-step payloads. A ref inside a cross-origin iframe (f<i>:<ref>, from brw_snapshot include_frames) is refused for the whole call by name: brw_click routes such a ref into the frame, a step here does not, so click it with brw_click on its own.", object(map[string]any{
 			"steps": map[string]any{
 				"type":        "array",
 				"description": "Ordered list of steps to execute.",
@@ -2818,7 +2831,7 @@ func tools() []map[string]any {
 			},
 			"observe": observePlanSchema(),
 		}, []string{"steps"})),
-		tool("brw_batch", "PREFERRED for multi-step flows: chain click, click_text, find_act, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, and inline assertions (assert_visible, assert_text, assert_value, assert_hidden, plus the richer assert step) in ONE round-trip, returning a single observation at the end. Use this instead of individual brw_click/brw_type/brw_fill calls whenever you need 2+ actions. Steps run sequentially; interleave assertions to fail fast. A find_act step locates its own target by role and name, which is what lets a batch keep going past a step that changes the page: refs minted before the batch started do not exist on the new page, and a find_act step does not need them. Pass observe to shrink or drop the closing observation when you already know what comes next.", object(map[string]any{
+		tool("brw_batch", "PREFERRED for multi-step flows: chain click, click_text, find_act, type, fill, select, press, scroll, hover, wait, open, navigate_to, focus_tab, and inline assertions (assert_visible, assert_text, assert_value, assert_hidden, plus the richer assert step) in ONE round-trip, returning a single observation at the end. Use this instead of individual brw_click/brw_type/brw_fill calls whenever you need 2+ actions. Steps run sequentially; interleave assertions to fail fast. A find_act step locates its own target by role and name, which is what lets a batch keep going past a step that changes the page: refs minted before the batch started do not exist on the new page, and a find_act step does not need them. Pass observe to shrink or drop the closing observation when you already know what comes next. A ref inside a cross-origin iframe (f<i>:<ref>, from brw_snapshot include_frames) is refused for the whole call by name: brw_click routes such a ref into the frame, a step here does not, so click it with brw_click on its own.", object(map[string]any{
 			"steps": map[string]any{
 				"type":        "array",
 				"description": "Ordered list of actions and assertions to execute.",

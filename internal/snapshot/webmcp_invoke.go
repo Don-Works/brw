@@ -142,7 +142,7 @@ type PageToolEvaluator func(ctx context.Context, expression string) (any, error)
 // the same-origin window walk both the frame target and the id lookup use, and
 // the reporting shape. Every script below embeds it, because a navigation can
 // have replaced the document between any two calls.
-const webmcpRuntimeHelpers = `
+const webmcpRuntimeHelpers = FrameWalkHelpers + `
   var __BRW_WEBMCP_FRAME_DEPTH = 5;
   var __BRW_WEBMCP_KEEP_MS = 300000;
   function __brwWebMCPSafe(value){
@@ -177,16 +177,22 @@ const webmcpRuntimeHelpers = `
   function __brwWebMCPFrameWindow(target){
     var t = String(target == null ? '' : target).trim();
     if (t === '' || t === 'main' || t === 'top') return { ok: true, win: window, frame: 'main' };
-    var escaped = t;
-    try { if (window.CSS && CSS.escape) escaped = CSS.escape(t); } catch (e) {}
-    var wins = __brwWebMCPWindows(window, 0, []);
+    // A ref resolves through the ONE shared lookup. Its private copy here walked
+    // the same windows but knew nothing about shadow roots or frame-qualified
+    // refs, so an f<i>:<ref> came back as "webmcp frame not found" instead of
+    // naming the document brw cannot reach. A CSS selector still falls through to
+    // the window walk, which is what that walk is for.
     var el = null;
-    for (var i = 0; i < wins.length && !el; i++) {
-      var doc = null;
-      try { doc = wins[i].document; } catch (e) { continue; }
-      if (!doc) continue;
-      try { el = doc.querySelector('[data-brw-ref="' + escaped + '"]'); } catch (e) { el = null; }
-      if (!el) { try { el = doc.querySelector(t); } catch (e) { el = null; } }
+    var hit = __abFindDeep(t);
+    if (hit) el = hit.el;
+    if (!el) {
+      var wins = __brwWebMCPWindows(window, 0, []);
+      for (var i = 0; i < wins.length && !el; i++) {
+        var doc = null;
+        try { doc = wins[i].document; } catch (e) { continue; }
+        if (!doc) continue;
+        try { el = doc.querySelector(t); } catch (e) { el = null; }
+      }
     }
     if (!el) return { ok: false, error: 'webmcp frame not found: ' + t + ' (pass a brw ref or a CSS selector for the iframe, or "main" for the top document)' };
     var tag = String(el.tagName || '').toLowerCase();

@@ -2284,23 +2284,59 @@ func (b *Bridge) snapshot(ctx context.Context, opts snapshot.SnapshotOptions, sk
 // slice (no error) when the extension predates the command so callers degrade to
 // the same-origin-only snapshot.
 func (b *Bridge) readCrossOriginFrames(ctx context.Context, opts snapshot.SnapshotOptions) ([]snapshot.CrossOriginFrame, error) {
-	tabID := b.contextTabID(ctx)
-	// The extension is handed the walker to run rather than carrying one of its
-	// own. It used to hold a private selector list plus its own role and name
-	// rules, which is a second implementation of the thing ref_stability_test
-	// covers: two extractors that agree today and disagree after the next change
-	// to either. include_boxes is what lets the daemon put the frame's controls
-	// back into top-level coordinates without the extension measuring anything.
+	// Phase one asks WHICH third-party documents are embedded here. It runs no
+	// expression: the daemon has to know the origins before it can decide which of
+	// them the user has consented to brw reading, and the live frame URL is the
+	// only place that answer is correct — an iframe that redirected after load is
+	// serving an origin its src attribute never named.
+	listed, err := b.callCrossOriginFrames(ctx, nil, "")
+	if err != nil || len(listed) == 0 {
+		return listed, err
+	}
+	allow := browser.FrameReadCheckFromContext(ctx)
+	origins := make([]string, 0, len(listed))
+	seen := map[string]bool{}
+	for _, frame := range listed {
+		if frame.Origin == "" || seen[frame.Origin] {
+			continue
+		}
+		if allow != nil {
+			if refused := allow(frame.Origin); refused != nil {
+				continue
+			}
+		}
+		seen[frame.Origin] = true
+		origins = append(origins, frame.Origin)
+	}
+	if len(origins) == 0 {
+		return listed, nil
+	}
+	// Phase two hands the extension the walker to run, and the exact origins it
+	// may run it in. The extension used to hold a private selector list plus its
+	// own role and name rules, which is a second implementation of the thing
+	// ref_stability_test covers: two extractors that agree today and disagree
+	// after the next change to either. include_boxes is what lets the daemon put
+	// the frame's controls back into top-level coordinates without the extension
+	// measuring anything.
 	frameOpts := opts
 	frameOpts.Since = 0
 	frameOpts.IncludeFrames = false
 	frameOpts.IncludeAX = false
 	frameOpts.IncludeBoxes = true
 	_, cold := snapshot.SnapshotCallExpressions(frameOpts)
-	raw, err := b.call(ctx, "read_cross_origin_frames", map[string]any{
-		"tabId":      parseTabID(tabID),
-		"expression": cold,
-	})
+	return b.callCrossOriginFrames(ctx, origins, cold)
+}
+
+// callCrossOriginFrames issues one read_cross_origin_frames message. A nil
+// origins list is the enumerate-only form; a non-nil one names every origin the
+// expression may run in, and the extension evaluates in no other.
+func (b *Bridge) callCrossOriginFrames(ctx context.Context, origins []string, expression string) ([]snapshot.CrossOriginFrame, error) {
+	params := map[string]any{"tabId": parseTabID(b.contextTabID(ctx))}
+	if origins != nil {
+		params["origins"] = origins
+		params["expression"] = expression
+	}
+	raw, err := b.call(ctx, "read_cross_origin_frames", params)
 	if err != nil {
 		if isUnknownMessageTypeErr(err) {
 			return nil, nil
@@ -5540,6 +5576,9 @@ func (b *Bridge) AssertValue(ctx context.Context, ref, value string, timeout tim
 }
 
 func (b *Bridge) AssertValueContains(ctx context.Context, ref, value string, timeout time.Duration) error {
+	if err := browser.GuardCrossOriginRefs("assert value contains", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}

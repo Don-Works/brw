@@ -7,9 +7,10 @@ import (
 )
 
 var screencastAdmissionNames = map[screencastAdmission]string{
-	frameInOrder:    "in order",
-	frameUnstamped:  "unstamped",
-	frameOutOfOrder: "out of order",
+	frameInOrder:       "in order",
+	frameUnstamped:     "unstamped",
+	frameOutOfOrder:    "out of order",
+	frameDuplicateSwap: "duplicate swap",
 }
 
 func (a screencastAdmission) name() string {
@@ -50,10 +51,10 @@ func TestScreencastFrameAdmission(t *testing.T) {
 			},
 		},
 		{
-			name: "a swap at or before the floor is discarded",
+			name: "a swap at or before the floor is discarded, and the two are told apart",
 			frames: []frame{
 				{stamped: read.Add(-20 * time.Millisecond), arrivedAt: read, want: frameInOrder, wantSwap: read.Add(-20 * time.Millisecond)},
-				{stamped: read.Add(-20 * time.Millisecond), arrivedAt: read.Add(5 * time.Millisecond), want: frameOutOfOrder, wantSwap: read.Add(-20 * time.Millisecond)},
+				{stamped: read.Add(-20 * time.Millisecond), arrivedAt: read.Add(5 * time.Millisecond), want: frameDuplicateSwap, wantSwap: read.Add(-20 * time.Millisecond)},
 				{stamped: read.Add(-25 * time.Millisecond), arrivedAt: read.Add(10 * time.Millisecond), want: frameOutOfOrder, wantSwap: read.Add(-25 * time.Millisecond)},
 				{stamped: read.Add(-15 * time.Millisecond), arrivedAt: read.Add(15 * time.Millisecond), want: frameInOrder, wantSwap: read.Add(-15 * time.Millisecond)},
 			},

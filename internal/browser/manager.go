@@ -971,7 +971,7 @@ func (m *Manager) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (
 		return snapshot.PageSnapshot{}, err
 	}
 	if opts.IncludeFrames {
-		m.mergeCrossOriginFrames(tabCtx, &snap, opts)
+		m.mergeCrossOriginFrames(ctx, tabCtx, &snap, opts)
 	}
 	if opts.IncludeAX {
 		snapshot.EnrichAccessibility(tabCtx, &snap)
@@ -2098,6 +2098,9 @@ func (m *Manager) AssertValue(ctx context.Context, ref, expected string, timeout
 }
 
 func (m *Manager) AssertValueContains(ctx context.Context, ref, expected string, timeout time.Duration) error {
+	if err := GuardCrossOriginRefs("assert value contains", DirectCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	return m.evalAssert(ctx, timeout, snapshot.AssertValueContainsScript, ref, expected)
 }
 

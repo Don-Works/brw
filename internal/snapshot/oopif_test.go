@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -103,7 +104,7 @@ func crossOriginFixture(t *testing.T, innerDoc string) (context.Context, string)
 
 func frameSnapshotFor(t *testing.T, ctx context.Context) []OutOfProcessFrame {
 	t.Helper()
-	frames, err := SnapshotOutOfProcessFrames(ctx, SnapshotOptions{Mode: "all"})
+	frames, err := SnapshotOutOfProcessFrames(ctx, SnapshotOptions{Mode: "all"}, nil)
 	if err != nil {
 		t.Fatalf("snapshot out-of-process frames: %v", err)
 	}
@@ -111,6 +112,85 @@ func frameSnapshotFor(t *testing.T, ctx context.Context) []OutOfProcessFrame {
 		t.Fatalf("expected one out-of-process frame, got %d — the fixture's iframe did not get its own target", len(frames))
 	}
 	return frames
+}
+
+// TestCrossOriginFrameReadAsksAboutEachEmbeddedOrigin is the direct-CDP half of
+// the consent gate include_frames needs.
+//
+// The snapshot was authorized against the origin the TAB is showing. Attaching a
+// session to an embedded frame's own target and running the walker there is a
+// read of a THIRD PARTY's document, which that grant never covered — so the
+// frame's origin is put to the gate on its own, and a refused frame is not read
+// at all rather than read and then discarded.
+func TestCrossOriginFrameReadAsksAboutEachEmbeddedOrigin(t *testing.T) {
+	ctx, _ := crossOriginFixture(t, innerFrameDoc)
+
+	var asked []string
+	refuse := func(origin string) error {
+		asked = append(asked, origin)
+		return errors.New("no site permission grant for " + origin + " (scope read)")
+	}
+	frames, err := SnapshotOutOfProcessFrames(ctx, SnapshotOptions{Mode: "all"}, refuse)
+	if err != nil {
+		t.Fatalf("snapshot out-of-process frames: %v", err)
+	}
+	if len(frames) != 0 {
+		t.Fatalf("a refused origin was read anyway: %d frames came back", len(frames))
+	}
+	if len(asked) != 1 || !strings.Contains(asked[0], "localhost") {
+		t.Fatalf("the gate was asked about %v, want the embedded cross-site origin", asked)
+	}
+
+	// And the same page with the gate allowing it reads exactly as before, so the
+	// gate is what decided rather than the read having quietly broken.
+	allowed, err := SnapshotOutOfProcessFrames(ctx, SnapshotOptions{Mode: "all"}, func(string) error { return nil })
+	if err != nil || len(allowed) != 1 {
+		t.Fatalf("an allowed origin was not read: %v (%d frames)", err, len(allowed))
+	}
+}
+
+// TestForgedFrameStampRefusesToBindAFrameRef covers the one input to the frame
+// mapping that the PAGE can write.
+//
+// data-brw-xframe lives in page-writable DOM, and the walker only re-stamps
+// frames it classified as inaccessible — so a stamp the page put on a frame the
+// walker walks INTO survives every later walk. Two nodes claiming index 0 used to
+// be resolved by DOM order, which binds f0 to whichever came first while its
+// coordinates come from the other frame's box: a click on a ref from the payment
+// iframe dispatched at the advert's pixels. There is no right guess here, so the
+// walk refuses.
+func TestForgedFrameStampRefusesToBindAFrameRef(t *testing.T) {
+	ctx, _ := crossOriginFixture(t, innerFrameDoc)
+
+	if _, err := frameHandles(ctx); err != nil {
+		t.Fatalf("the unforged page does not map its frames: %v", err)
+	}
+
+	// A same-origin iframe the walker enters (and therefore never stamps), wearing
+	// the real frame's index.
+	forge := `(function(){
+		var f = document.createElement('iframe');
+		f.setAttribute('data-brw-xframe', '0');
+		f.setAttribute('src', 'about:blank');
+		f.style.cssText = 'position:absolute;left:600px;top:10px;width:100px;height:60px';
+		document.body.insertBefore(f, document.body.firstChild);
+		return true;
+	})()`
+	if err := chromedp.Run(ctx, chromedp.Evaluate(forge, nil), chromedp.Sleep(200*time.Millisecond)); err != nil {
+		t.Fatalf("forge a frame stamp: %v", err)
+	}
+
+	handles, err := frameHandles(ctx)
+	if err == nil {
+		t.Fatalf("a page carrying two elements stamped f0 still produced %d frame handles; f0 was bound by DOM order", len(handles))
+	}
+	if !strings.Contains(err.Error(), "f0") {
+		t.Fatalf("the refusal does not name the frame it will not bind: %v", err)
+	}
+	// And the ref paths refuse with it rather than acting on the wrong frame.
+	if _, err := ResolveCrossOriginBox(ctx, "f0:e1"); err == nil {
+		t.Fatal("a ref resolved against a page whose frame stamps are ambiguous")
+	}
 }
 
 func refForName(elements []Element, name string) string {

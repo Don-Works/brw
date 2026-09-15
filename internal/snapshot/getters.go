@@ -49,15 +49,13 @@ const GetScript = `(function(what, target, name){` + FrameWalkHelpers + `
   function roots(){ return __abRootList(); }
   function resolve(sel){
     if(!sel) return null;
-    var refSelector = '[data-brw-ref="' + (window.CSS && CSS.escape ? CSS.escape(sel) : sel) + '"]';
+    // Refs resolve through the ONE shared lookup. Its private copy here walked
+    // the same roots but knew nothing about frame-qualified refs, so an
+    // f<i>:<ref> came back as "no element matched" — advice that can never help,
+    // because re-snapshotting mints the same ref.
+    var hit = __abFindDeep(sel);
+    if(hit && hit.el) return hit.el;
     var list = roots();
-    for(var i=0;i<list.length;i++){
-      var root = list[i];
-      if(!root || !root.querySelector) continue;
-      var byRef = null;
-      try { byRef = root.querySelector(refSelector); } catch(e){}
-      if(byRef) return byRef;
-    }
     for(var j=0;j<list.length;j++){
       var r2 = list[j];
       if(!r2 || !r2.querySelector) continue;
@@ -66,6 +64,10 @@ const GetScript = `(function(what, target, name){` + FrameWalkHelpers + `
     return null;
   }
   function all(sel){
+    // Same lookup, for the same reason: counting an f<i>:<ref> as an invalid CSS
+    // selector answered {value:0} with no error at all, which is a silent wrong
+    // answer about an element that exists.
+    __abFindDeep(sel);
     var out = [];
     var list = roots();
     for(var i=0;i<list.length;i++){

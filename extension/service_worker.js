@@ -94,6 +94,23 @@ function isDeniedCdpMethod(method) {
   if (/cookie/i.test(m)) return true;
   return STORAGE_DOMAIN_PREFIXES.some((prefix) => m.startsWith(prefix));
 }
+// sendPolicedCdp is the ONE route from a daemon message to the debugger. The
+// denylist and the acting pulse belong to brw's policy rather than to whichever
+// handler happened to remember them: a second route that skipped either is how
+// the denylist stops being an enforced boundary and becomes a convention.
+// debuggee is null for the tab's own session (which carries the attach/revive
+// handling), or {targetId} for an out-of-process frame's; tabId is passed either
+// way so the pulse names the tab the work belongs to.
+async function sendPolicedCdp(tabId, debuggee, method, params) {
+  if (isDeniedCdpMethod(method)) {
+    throw new Error(`cdp method ${method} is blocked by brw policy: cookie and storage access are not permitted`);
+  }
+  // brw is now actively driving this tab: a dialog it triggers in the next few
+  // seconds is its own and may be auto-accepted (see the dialog handler).
+  markActing(tabId);
+  if (!debuggee) return await sendDebuggerCommand(tabId, method, params || {});
+  return await chrome.debugger.sendCommand(debuggee, method, params || {});
+}
 let offscreenSetupPromise = null;
 let packagedDefaultConfigPromise = null;
 // Activate→work→restore "juggles" (screenshot capture, frozen-tab revival) are
@@ -1912,19 +1929,18 @@ async function handle(message) {
 	}
 	if (message.type === "cdp") {
       const method = message.params?.method;
-      // Enforce the cookie/storage denylist regardless of who sent this command —
-      // a rogue server that answered our outbound socket cannot exfiltrate cookies
+      // Refuse a denied method BEFORE the tab is attached: sendPolicedCdp enforces
+      // the same denylist for every route to the debugger, and this is the early
+      // out that keeps a method brw will not run from earning a debugger session.
+      // A rogue server that answered our outbound socket cannot exfiltrate cookies
       // through brw, because brw simply will not run those methods.
       if (isDeniedCdpMethod(method)) {
         send({ id: message.id, ok: false, error: `cdp method ${method} is blocked by brw policy: cookie and storage access are not permitted` });
         return;
       }
       const tabId = Number(message.params?.tabId || (await activeTabId()));
-      // brw is now actively driving this tab: a dialog it triggers in the next few
-      // seconds is its own and may be auto-accepted (see the dialog handler).
-      markActing(tabId);
       await attach(tabId);
-      const result = await sendDebuggerCommand(tabId, method, message.params?.params || {});
+      const result = await sendPolicedCdp(tabId, null, method, message.params?.params || {});
       send({ id: message.id, ok: true, result: result || {} });
       return;
     }
@@ -2075,13 +2091,21 @@ async function handle(message) {
       // own DOM walker: this file must not grow a second one, because the roles,
       // names and ref rules it would carry are the ones brw's ref-stability
       // guarantees are written against.
+      //
+      // Running a daemon-supplied expression in a THIRD PARTY's document is the
+      // widest reach any message here has, so it is not open-ended: the message
+      // must name every origin it may run in, and this enumerates rather than
+      // evaluates when it names none. That is what lets the daemon decide, per
+      // embedded origin, before anything runs there — and it keeps a message that
+      // simply forgot to say from reaching a frame by omission.
       const tabId = Number(message.params?.tabId || (await activeTabId()));
+      const origins = Array.isArray(message.params?.origins) ? message.params.origins : null;
       const expression = String(message.params?.expression || "");
-      if (!expression) {
+      if (origins && !expression) {
         send({ id: message.id, ok: false, error: "read_cross_origin_frames needs an expression to run inside each frame" });
         return;
       }
-      const frames = await readCrossOriginFrames(tabId, expression).catch(() => []);
+      const frames = await readCrossOriginFrames(tabId, expression, origins).catch(() => []);
       send({ id: message.id, ok: true, result: { frames } });
       return;
     }
@@ -2140,10 +2164,12 @@ async function handle(message) {
 // readCrossOriginFrames enumerates the tab's cross-origin child frames (from
 // Page.getFrameTree on the tab's own session, so we only ever read frames that
 // belong to THIS tab), matches each to its debugger iframe target by URL, and
-// runs the DAEMON-SUPPLIED expression inside it. Same-origin frames are skipped
-// — the in-page walker already reads those. Never throws; returns [] on any
-// failure.
-async function readCrossOriginFrames(tabId, expression) {
+// runs the DAEMON-SUPPLIED expression inside the ones whose origin the caller
+// listed. A null origins list enumerates and evaluates nothing. Same-origin
+// frames are skipped — the in-page walker already reads those. Never throws;
+// returns [] on any failure.
+async function readCrossOriginFrames(tabId, expression, origins) {
+  const allowed = origins ? new Set(origins.map((o) => String(o))) : null;
   await attach(tabId);
   let tree;
   try {
@@ -2181,7 +2207,12 @@ async function readCrossOriginFrames(tabId, expression) {
       continue;
     }
     usedTargets.add(tgt.id);
-    const snapshot = await evaluateInFrameTarget(tgt.id, expression).catch(() => null);
+    if (!allowed || !allowed.has(w.origin)) {
+      // Enumerated, not read: the caller did not name this origin.
+      out.push({ url: w.url, origin: w.origin });
+      continue;
+    }
+    const snapshot = await evaluateInFrameTarget(tabId, tgt.id, expression).catch(() => null);
     out.push({ url: w.url, origin: w.origin, snapshot });
   }
   return out;
@@ -2193,7 +2224,12 @@ async function readCrossOriginFrames(tabId, expression) {
 // already owns the target, it is left untouched and the existing session is used
 // opportunistically. The expression is opaque here on purpose: the extension
 // relays a result, it does not decide what a control is.
-async function evaluateInFrameTarget(targetId, expression) {
+//
+// It goes through sendPolicedCdp for the same reason the "cdp" message type
+// does: the cookie/storage denylist and the acting pulse are brw's policy, not
+// one message handler's, and a second route to the debugger that skipped them
+// would be the way around them.
+async function evaluateInFrameTarget(tabId, targetId, expression) {
   let owned = false;
   try {
     try {
@@ -2205,7 +2241,7 @@ async function evaluateInFrameTarget(targetId, expression) {
       // attach. Try to use the existing session opportunistically.
       owned = false;
     }
-    const res = await chrome.debugger.sendCommand({ targetId }, "Runtime.evaluate", {
+    const res = await sendPolicedCdp(tabId, { targetId }, "Runtime.evaluate", {
       expression,
       returnByValue: true
     });

@@ -429,9 +429,11 @@ func (s *BrowserSurface) elementValueSatisfied(ctx context.Context, event Event)
 	}
 	var assertionErr error
 	if event.Kind == "element.value_contains" {
-		asserter, ok := s.Browser.(interface {
-			AssertValueContains(context.Context, string, string, time.Duration) error
-		})
+		// A NAMED capability interface, not an anonymous one: the cross-origin ref
+		// classification enumerates Controller plus the named capabilities, and a
+		// ref-taking method reachable only through an anonymous interface is
+		// invisible to it.
+		asserter, ok := s.Browser.(browser.ValueContainsAsserter)
 		if !ok {
 			return false, errors.New("element.value_contains is unavailable on this browser transport")
 		}

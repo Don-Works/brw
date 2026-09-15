@@ -2,7 +2,6 @@ package browser
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/Don-Works/brw/internal/snapshot"
@@ -18,8 +17,12 @@ import (
 // resolve, not as coordinates to aim at. A cross-origin iframe that shares the
 // embedder's process (same site, different port) has no target, so it keeps the
 // existing treatment: the frame itself is promoted to a clickable box.
-func (m *Manager) mergeCrossOriginFrames(tabCtx context.Context, snap *snapshot.PageSnapshot, opts snapshot.SnapshotOptions) {
-	frames, err := snapshot.SnapshotOutOfProcessFrames(tabCtx, opts)
+func (m *Manager) mergeCrossOriginFrames(ctx, tabCtx context.Context, snap *snapshot.PageSnapshot, opts snapshot.SnapshotOptions) {
+	// Reading a frame's document is a read of a THIRD PARTY's site. The snapshot
+	// was authorized against the origin the tab is showing, which is not a grant
+	// to read the payment form or the editor that origin embeds, so each frame
+	// origin is asked for on its own.
+	frames, err := snapshot.SnapshotOutOfProcessFrames(tabCtx, opts, FrameReadCheckFromContext(ctx))
 	read := map[int]bool{}
 	if err == nil && len(frames) > 0 {
 		_, read = snapshot.MergeOutOfProcessFrames(snap, frames)
@@ -29,13 +32,20 @@ func (m *Manager) mergeCrossOriginFrames(tabCtx context.Context, snap *snapshot.
 	snapshot.PromoteCrossOriginFrames(snap, read)
 }
 
+// crossOriginActionableTimeoutMS is the actionability budget for a click inside a
+// cross-origin frame. It matches Manager.Click's own 5s so the two paths wait the
+// same amount for the same conditions.
+const crossOriginActionableTimeoutMS = 5000
+
 // clickCrossOriginFrameRef clicks an element inside an out-of-process iframe.
 //
-// The ref is resolved through a session attached to that frame's own target, and
-// the box it returns is translated into top-level viewport coordinates, which is
-// the only space CDP input speaks. The dispatch is a real browser gesture rather
-// than an in-page MouseEvent: the in-page fast path builds its event in the TOP
-// document, where the element does not exist.
+// The ref is resolved through a session attached to that frame's own target,
+// gated on the same actionability script the ordinary click path runs (evaluated
+// in the frame), and the box it returns is translated into top-level viewport
+// coordinates, which is the only space CDP input speaks — refused outright when
+// that point is not on screen inside the frame. The dispatch is a real browser
+// gesture rather than an in-page MouseEvent: the in-page fast path builds its
+// event in the TOP document, where the element does not exist.
 func (m *Manager) clickCrossOriginFrameRef(ctx context.Context, ref string) (ActionResult, error) {
 	if err := m.guardTakeover("click"); err != nil {
 		return ActionResult{}, err
@@ -48,12 +58,9 @@ func (m *Manager) clickCrossOriginFrameRef(ctx context.Context, ref string) (Act
 	defer cancel()
 	m.recordAgentInteraction(tabID, "click")
 
-	box, err := snapshot.ResolveCrossOriginBox(tabCtx, ref)
+	box, err := snapshot.ResolveCrossOriginActionPoint(tabCtx, ref, crossOriginActionableTimeoutMS)
 	if err != nil {
 		return ActionResult{}, err
-	}
-	if !box.OK {
-		return ActionResult{}, fmt.Errorf("element ref %q resolved inside its cross-origin iframe but has no visible box; re-run brw_snapshot with include_frames to refresh frame refs", ref)
 	}
 	before := m.cachedBefore(tabID, tabCtx)
 	modifiers := input.Modifier(m.heldModifierMask(tabID))

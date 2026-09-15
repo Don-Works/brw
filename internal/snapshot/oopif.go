@@ -11,6 +11,7 @@ import (
 
 	cdpproto "github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -26,6 +27,13 @@ const frameDetachTimeout = 2 * time.Second
 // acting on the frame ELEMENT instead — reports success for a click that landed
 // somewhere else entirely, which is the failure a ref exists to prevent.
 var ErrCrossOriginFrameUnsupported = errors.New("ref names an element inside a cross-origin iframe, whose document this action cannot reach")
+
+// ErrCrossOriginPointUnreachable is the NAMED error for a ref that DID resolve
+// inside its frame but whose translated point is not a pixel belonging to that
+// element: outside the frame's box, or outside the top-level viewport that CDP
+// input clamps into. Dispatching there clicks the embedding document and reports
+// success, which is the failure a ref exists to prevent.
+var ErrCrossOriginPointUnreachable = errors.New("element inside a cross-origin iframe cannot be reached at a top-level point")
 
 // CrossOriginRefError wraps the sentinel with the verb that was asked for and
 // the transport's way out, so callers can both match on the capability
@@ -203,6 +211,7 @@ func frameHandles(ctx context.Context) ([]frameHandle, error) {
 		return nil, err
 	}
 	handles := make([]frameHandle, 0, len(nodes))
+	seen := map[int]bool{}
 	for _, node := range nodes {
 		index, ok := xframeIndex(node)
 		if !ok {
@@ -211,6 +220,20 @@ func frameHandles(ctx context.Context) ([]frameHandle, error) {
 		if index >= len(boxes) {
 			continue
 		}
+		// data-brw-xframe lives in page-writable DOM, and the walk only re-stamps
+		// frames it classified as inaccessible — so a forged stamp on another
+		// frame-owner element survives it. Two nodes claiming the same index would
+		// be resolved by DOM order, silently binding f<i> to a target whose
+		// coordinates come from a different frame's box, so the walk is refused
+		// instead of guessed at. An <object> or <embed> hosting a cross-origin
+		// document has a frameId too, which is why the tag is checked as well.
+		if !strings.EqualFold(node.NodeName, "IFRAME") {
+			continue
+		}
+		if seen[index] {
+			return nil, fmt.Errorf("more than one element on this page is stamped as cross-origin frame f%d, so an f%d ref cannot be bound to one frame; brw refuses to guess which", index, index)
+		}
+		seen[index] = true
 		id := target.ID(node.FrameID.String())
 		if _, hosted := targets[id]; !hosted {
 			// Cross-origin but in the embedder's process: no target to attach to, so
@@ -291,13 +314,23 @@ func attachFrameTarget(ctx context.Context, id target.ID) (context.Context, func
 // names, ranking, the frontier score and the stable-key ref rules are one
 // implementation, not two — a second copy would drift and ref_stability_test
 // would stop covering the frames an agent actually has to act in.
-func SnapshotOutOfProcessFrames(ctx context.Context, opts SnapshotOptions) ([]OutOfProcessFrame, error) {
+//
+// allowOrigin, when non-nil, decides whether each frame's ORIGIN may be read at
+// all. Reading a frame's document is a read of a third-party site, and the call
+// that asked for it was authorized against the embedder; a frame this refuses is
+// skipped here and surfaces as a clickable box instead.
+func SnapshotOutOfProcessFrames(ctx context.Context, opts SnapshotOptions, allowOrigin func(origin string) error) ([]OutOfProcessFrame, error) {
 	handles, err := frameHandles(ctx)
 	if err != nil {
 		return nil, err
 	}
 	frames := make([]OutOfProcessFrame, 0, len(handles))
 	for _, handle := range handles {
+		if allowOrigin != nil {
+			if err := allowOrigin(handle.box.origin); err != nil {
+				continue
+			}
+		}
 		frameCtx, release, err := attachFrameTarget(ctx, handle.targetID)
 		if err != nil {
 			// One unreachable frame must not cost the caller the rest of the page.
@@ -377,35 +410,206 @@ func MergeOutOfProcessFrames(snap *PageSnapshot, frames []OutOfProcessFrame) (in
 	return appended, read
 }
 
+// CrossOriginFrameRectScript re-measures frame <i>'s box in the TOP document,
+// after optionally scrolling that frame into view or scrolling the page by a
+// delta, and reports the viewport it was measured against.
+//
+// Nothing else moves the frame ELEMENT. ResolveBox scrolls its target into view
+// inside the FRAME's own document, which shifts nothing in the embedder, so a
+// frame below the fold translated to a point outside the top-level viewport —
+// and CDP clamps a click there into the visible page, which put the click in the
+// EMBEDDING document while the ref reported success.
+const CrossOriginFrameRectScript = `(function(index, intoView, dx, dy) {
+  var el = document.querySelector('[data-brw-xframe="' + String(index) + '"]');
+  if (!el) return { ok: false };
+  if (intoView) {
+    try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); }
+    catch (e) { try { el.scrollIntoView(); } catch (_) {} }
+  } else if (dx || dy) {
+    try { window.scrollBy(dx, dy); } catch (e) {}
+  }
+  var r = el.getBoundingClientRect();
+  return {
+    ok: r.width > 0 && r.height > 0,
+    x: r.left,
+    y: r.top,
+    width: r.width,
+    height: r.height,
+    viewport_width: window.innerWidth,
+    viewport_height: window.innerHeight
+  };
+})`
+
+// CrossOriginFramePointScript asks the EMBEDDING document what it would hit at a
+// point, and reports whether that is frame <i>.
+//
+// This is the property the arithmetic only approximates. A point can be inside
+// the frame's box and inside the viewport and still belong to something else —
+// a sticky header, a cookie banner, a modal scrim — and a click there enters the
+// embedder while the ref that produced it names an element in the frame. The top
+// document cannot see INTO the frame, so elementFromPoint over an out-of-process
+// iframe returns the iframe element itself: hitting it is exactly the condition
+// that says the event will be routed to that frame's renderer.
+const CrossOriginFramePointScript = `(function(index, px, py) {
+  var el = document.querySelector('[data-brw-xframe="' + String(index) + '"]');
+  if (!el) return { ok: false, reason: 'the frame is no longer on the page' };
+  if (px < 0 || py < 0 || px > window.innerWidth || py > window.innerHeight) {
+    return { ok: false, reason: 'the point is outside the ' + Math.round(window.innerWidth) + 'x' + Math.round(window.innerHeight) + ' viewport' };
+  }
+  var hit = document.elementFromPoint(px, py);
+  if (!hit) return { ok: false, reason: 'the embedding document paints nothing at that point' };
+  if (hit === el) return { ok: true, reason: '' };
+  var what = String(hit.tagName || '').toLowerCase();
+  // The id is page-controlled and ends up in an error an operator reads, so it
+  // is bounded rather than pasted whole.
+  if (hit.id) what += '#' + String(hit.id).replace(/\s+/g, ' ').slice(0, 60);
+  return { ok: false, reason: 'the embedding document hit-tests <' + what + '> there, not the frame' };
+})`
+
+// framePointCheck is what the embedder answered about one candidate point.
+type framePointCheck struct {
+	OK     bool   `json:"ok"`
+	Reason string `json:"reason"`
+}
+
+// crossOriginPointAttempts bounds the measure/verify loop. A cross-origin
+// scrollIntoView reaches the embedder through the browser process, so one pass
+// can read a rect the frame is already leaving; more than a few passes means the
+// page is moving under us and refusing is the honest answer.
+const crossOriginPointAttempts = 4
+
+// frameHitTest evaluates CrossOriginFramePointScript against the top document.
+func frameHitTest(ctx context.Context, index int, px, py float64) (framePointCheck, error) {
+	var check framePointCheck
+	expr := fmt.Sprintf("%s(%d,%g,%g)", CrossOriginFramePointScript, index, px, py)
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &check)); err != nil {
+		return framePointCheck{}, err
+	}
+	return check, nil
+}
+
+// frameRect is one cross-origin iframe's live top-level box plus the viewport it
+// was measured in.
+type frameRect struct {
+	OK             bool    `json:"ok"`
+	X              float64 `json:"x"`
+	Y              float64 `json:"y"`
+	Width          float64 `json:"width"`
+	Height         float64 `json:"height"`
+	ViewportWidth  float64 `json:"viewport_width"`
+	ViewportHeight float64 `json:"viewport_height"`
+}
+
+// crossOriginPointSlack absorbs the sub-pixel gap between the frame box the
+// walker rounded and the rect measured here.
+const crossOriginPointSlack = 2
+
+func (r frameRect) containsPoint(px, py float64) bool {
+	return px >= r.X-crossOriginPointSlack && px <= r.X+r.Width+crossOriginPointSlack &&
+		py >= r.Y-crossOriginPointSlack && py <= r.Y+r.Height+crossOriginPointSlack
+}
+
+func (r frameRect) pointInViewport(px, py float64) bool {
+	return px >= 0 && py >= 0 && px <= r.ViewportWidth && py <= r.ViewportHeight
+}
+
+// TopLevelScrollSettleScript resolves once the embedder has produced a frame.
+//
+// Input events for an out-of-process iframe are routed by the BROWSER process
+// from compositor hit-test data, which is only updated when the embedder commits
+// a frame. Dispatching a click in the same tick as the scroll that brought the
+// frame into view therefore hit-tests against where the frame USED to be and
+// delivers the event to the embedding document. The setTimeout is the floor: a
+// backgrounded or throttled page can stop producing frames altogether, and a
+// wait with no way out is worse than a click that reports what it did.
+const TopLevelScrollSettleScript = `new Promise(function(resolve){
+  var done = false;
+  function finish(){ if (done) return; done = true; resolve(true); }
+  try { setTimeout(finish, 150); } catch (e) { finish(); }
+  try { requestAnimationFrame(function(){ requestAnimationFrame(finish); }); } catch (e) { finish(); }
+})`
+
+// settleTopLevelScroll waits for the embedder to commit the scroll just applied.
+func settleTopLevelScroll(ctx context.Context) error {
+	var ok bool
+	return chromedp.Run(ctx, chromedp.Evaluate(TopLevelScrollSettleScript, &ok,
+		func(p *runtime.EvaluateParams) *runtime.EvaluateParams { return p.WithAwaitPromise(true) }))
+}
+
+// frameRectIn evaluates CrossOriginFrameRectScript against the top document.
+func frameRectIn(ctx context.Context, index int, intoView bool, dx, dy float64) (frameRect, error) {
+	var rect frameRect
+	expr := fmt.Sprintf("%s(%d,%t,%g,%g)", CrossOriginFrameRectScript, index, intoView, dx, dy)
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &rect)); err != nil {
+		return frameRect{}, err
+	}
+	return rect, nil
+}
+
+// findFrameHandle locates the handle for frame index i on the current page.
+func findFrameHandle(ctx context.Context, index int) (frameHandle, error) {
+	handles, err := frameHandles(ctx)
+	if err != nil {
+		return frameHandle{}, err
+	}
+	for _, candidate := range handles {
+		if candidate.index == index {
+			return candidate, nil
+		}
+	}
+	return frameHandle{}, fmt.Errorf("no out-of-process iframe f%d on this page; re-run brw_snapshot with include_frames to refresh frame refs", index)
+}
+
 // ResolveCrossOriginBox resolves an f<i>:<inner> ref through a session attached
 // to frame i's own target and returns the element's box translated into
 // TOP-LEVEL viewport coordinates, which is the space CDP input speaks.
 func ResolveCrossOriginBox(ctx context.Context, ref string) (ElementBox, error) {
+	return resolveCrossOriginPoint(ctx, ref, 0)
+}
+
+// ResolveCrossOriginActionPoint is ResolveCrossOriginBox plus the actionability
+// gate the ordinary click path applies, evaluated INSIDE the frame.
+//
+// Manager.Click refuses a hidden, disabled or overlaid element before it
+// dispatches anything. Skipping that for a frame ref would make the one ref shape
+// that actuates by coordinate also the one shape that clicks a disabled button
+// and reports OK, so the same script runs in the frame's own context.
+func ResolveCrossOriginActionPoint(ctx context.Context, ref string, actionableTimeoutMS int64) (ElementBox, error) {
+	return resolveCrossOriginPoint(ctx, ref, actionableTimeoutMS)
+}
+
+func resolveCrossOriginPoint(ctx context.Context, ref string, actionableTimeoutMS int64) (ElementBox, error) {
 	index, inner, ok := ParseFrameRef(ref)
 	if !ok || inner == "" {
 		return ElementBox{}, fmt.Errorf("ref %q does not name an element inside a cross-origin iframe", ref)
 	}
-	handles, err := frameHandles(ctx)
+	handle, err := findFrameHandle(ctx, index)
 	if err != nil {
 		return ElementBox{}, err
 	}
-	var handle frameHandle
-	found := false
-	for _, candidate := range handles {
-		if candidate.index == index {
-			handle = candidate
-			found = true
-			break
-		}
+	// Bring the frame ELEMENT into the embedder's viewport first: everything after
+	// this measures against where the frame actually is on screen.
+	rect, err := frameRectIn(ctx, index, true, 0, 0)
+	if err != nil {
+		return ElementBox{}, err
 	}
-	if !found {
-		return ElementBox{}, fmt.Errorf("no out-of-process iframe f%d on this page; re-run brw_snapshot with include_frames to refresh frame refs", index)
+	if !rect.OK {
+		return ElementBox{}, fmt.Errorf("%w: %q names frame f%d, which has no visible box in the embedding document; re-run brw_snapshot with include_frames to refresh frame refs", ErrCrossOriginPointUnreachable, ref, index)
 	}
 	frameCtx, release, err := attachFrameTarget(ctx, handle.targetID)
 	if err != nil {
 		return ElementBox{}, err
 	}
 	defer release()
+	if actionableTimeoutMS > 0 {
+		actionable, waitErr := WaitForActionableResult(frameCtx, inner, actionableTimeoutMS)
+		if waitErr != nil {
+			return ElementBox{}, waitErr
+		}
+		if !actionable.OK {
+			return ElementBox{}, fmt.Errorf("element ref %q is not actionable within %dms inside cross-origin frame f%d — it may be hidden, disabled, or covered by an overlay; re-run brw_snapshot with include_frames to refresh frame refs", ref, actionableTimeoutMS, index)
+		}
+	}
 	box, err := ResolveBox(frameCtx, inner)
 	if err != nil {
 		return ElementBox{}, err
@@ -413,9 +617,57 @@ func ResolveCrossOriginBox(ctx context.Context, ref string) (ElementBox, error) 
 	// The frame's document reports its own viewport; the embedder's box is what
 	// puts those pixels back into the top-level space.
 	box.Ref = ref
-	box.X += handle.box.x
-	box.Y += handle.box.y
-	box.ViewportX += handle.box.x
-	box.ViewportY += handle.box.y
-	return box, nil
+	localX, localY := box.X, box.Y
+	localViewportX, localViewportY := box.ViewportX, box.ViewportY
+	translate := func(r frameRect) {
+		box.X = localX + r.X
+		box.Y = localY + r.Y
+		box.ViewportX = localViewportX + r.X
+		box.ViewportY = localViewportY + r.Y
+	}
+	check := framePointCheck{Reason: "the frame never settled in the embedding document"}
+	for attempt := 0; attempt < crossOriginPointAttempts; attempt++ {
+		// ResolveBox scrolled the element into view inside the FRAME, and that
+		// request propagates out to the embedder through the browser process. The
+		// rect read straight after it is therefore one the frame is about to leave,
+		// which is why the loop settles, measures and then VERIFIES rather than
+		// trusting a single measurement.
+		if err := settleTopLevelScroll(ctx); err != nil {
+			return ElementBox{}, err
+		}
+		rect, err = frameRectIn(ctx, index, false, 0, 0)
+		if err != nil {
+			return ElementBox{}, err
+		}
+		if !rect.OK {
+			return ElementBox{}, fmt.Errorf("%w: %q names frame f%d, which has no visible box in the embedding document; re-run brw_snapshot with include_frames to refresh frame refs", ErrCrossOriginPointUnreachable, ref, index)
+		}
+		translate(rect)
+		if rect.containsPoint(box.ViewportX, box.ViewportY) && !rect.pointInViewport(box.ViewportX, box.ViewportY) {
+			// The frame is in view but taller (or wider) than the viewport and the
+			// element sits in the clipped part. The frame's own document cannot scroll
+			// it any further — it is already inside the FRAME's viewport — so move the
+			// PAGE, then go round again to measure where that left things.
+			moved, moveErr := frameRectIn(ctx, index, false,
+				box.ViewportX-rect.ViewportWidth/2, box.ViewportY-rect.ViewportHeight/2)
+			if moveErr != nil {
+				return ElementBox{}, moveErr
+			}
+			if moved.OK && moved != rect {
+				continue
+			}
+		}
+		check, err = frameHitTest(ctx, index, box.ViewportX, box.ViewportY)
+		if err != nil {
+			return ElementBox{}, err
+		}
+		if check.OK {
+			return box, nil
+		}
+	}
+	// The point is not the frame's pixel, so a click there lands in the embedding
+	// document — the exact failure a ref exists to prevent. Refuse: an unreachable
+	// element must not come back as a box something is about to click.
+	return ElementBox{}, fmt.Errorf("%w: %q resolves to (%.0f,%.0f) in the embedding document, but %s; scroll the page, close whatever covers the frame, or act by coordinate after brw_screenshot",
+		ErrCrossOriginPointUnreachable, ref, box.ViewportX, box.ViewportY, check.Reason)
 }

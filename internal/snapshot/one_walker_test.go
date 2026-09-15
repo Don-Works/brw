@@ -70,6 +70,28 @@ var (
 	selectorLookupWord = "data-brw-ref="
 )
 
+// refLookupPackages are every package that ships in-page JavaScript able to look
+// up a brw ref. The test WALKS these rather than naming files: an enumeration of
+// files only covers the ones someone remembered, and two private lookups
+// (internal/snapshot/getters.go and internal/snapshot/webmcp_invoke.go) survived
+// exactly that way.
+var refLookupPackages = []string{
+	filepath.Join("internal", "snapshot"),
+	filepath.Join("internal", "devtools"),
+	filepath.Join("internal", "extensionbridge"),
+	filepath.Join("internal", "browser"),
+	filepath.Join("internal", "recipe"),
+	filepath.Join("internal", "mcp"),
+}
+
+// refSelectorAllowlist names the one file that may write the ref selector, with
+// the reason. FrameWalkHelpers IS the shared lookup: the selector has to appear
+// somewhere, and this is the somewhere.
+var refSelectorAllowlist = map[string]string{
+	filepath.Join("internal", "snapshot", "frame_walk.go"): "defines __abFindDeep, the shared lookup every other script resolves through",
+	filepath.Join("internal", "snapshot", "frames.go"):     "defines __abFrameElementIn, which resolves the FRAME a scope switch names and cannot call __abFindDeep without recursing through __abRoots",
+}
+
 // TestEveryRefScriptResolvesThroughTheSharedLookup keeps the cross-origin refusal
 // (and frame/shadow traversal, and ref recovery) holding at the PROPERTY rather
 // than at whichever scripts someone remembered.
@@ -77,9 +99,9 @@ var (
 // Every in-page script that takes a ref resolves it through __abFindDeep. That is
 // the single function that knows the frame tree, and it is where a ref inside a
 // cross-origin iframe is named for what it is instead of coming back as a bare
-// "not found". Eighteen scripts used to carry their own copy of the selector
-// loop; a nineteenth copy would route around the guard silently, so the test
-// enumerates the scripts and fails on one that looks up a ref for itself.
+// "not found". Many scripts used to carry their own copy of the selector loop;
+// another copy would route around the guard silently, so the test walks every
+// package that ships page script and fails on one that looks up a ref for itself.
 func TestEveryRefScriptResolvesThroughTheSharedLookup(t *testing.T) {
 	source := repoFile(t, filepath.Join("internal", "snapshot", "scripts.go"))
 
@@ -111,16 +133,43 @@ func TestEveryRefScriptResolvesThroughTheSharedLookup(t *testing.T) {
 
 	// Nothing outside the shared helper may query the ref attribute directly:
 	// that is how a private lookup gets written in the first place.
-	for _, file := range []string{
-		filepath.Join("internal", "snapshot", "scripts.go"),
-		filepath.Join("internal", "snapshot", "annotate.go"),
-		filepath.Join("internal", "extensionbridge", "bridge.go"),
-	} {
+	for _, file := range refLookupSources(t) {
+		if reason, allowed := refSelectorAllowlist[file]; allowed {
+			body := repoFile(t, file)
+			if !strings.Contains(body, selectorLookupWord) {
+				t.Errorf("%s is allowlisted for the ref selector (%s) but no longer writes one; drop the entry so the next private lookup is not allowlisted by inheritance", file, reason)
+			}
+			continue
+		}
 		body := repoFile(t, file)
 		if count := strings.Count(body, selectorLookupWord); count > 0 {
 			t.Errorf("%s builds a %q selector itself (%d times); resolve refs through __abFindDeep so frame traversal and the cross-origin refusal apply", file, selectorLookupWord, count)
 		}
 	}
+}
+
+// refLookupSources lists the non-test Go files of every package that ships page
+// script, repo-relative.
+func refLookupSources(t *testing.T) []string {
+	t.Helper()
+	var files []string
+	for _, pkg := range refLookupPackages {
+		entries, err := os.ReadDir(filepath.Join("..", "..", pkg))
+		if err != nil {
+			t.Fatalf("read %s: %v", pkg, err)
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			files = append(files, filepath.Join(pkg, name))
+		}
+	}
+	if len(files) < 50 {
+		t.Fatalf("found only %d source files across %v; the walk has stopped covering the packages that ship page script", len(files), refLookupPackages)
+	}
+	return files
 }
 
 // TestTheInstallingCallAndTheInstalledCallAgreeOnRefs covers the seam the

@@ -85,6 +85,13 @@ var refVerbInvokers = map[string]func(context.Context, browser.Controller) error
 	"AssertValue": func(ctx context.Context, c browser.Controller) error {
 		return c.AssertValue(ctx, crossOriginRef, "x", time.Second)
 	},
+	"AssertValueContains": func(ctx context.Context, c browser.Controller) error {
+		asserter, ok := c.(browser.ValueContainsAsserter)
+		if !ok {
+			return nil
+		}
+		return asserter.AssertValueContains(ctx, crossOriginRef, "x", time.Second)
+	},
 	"AssertHidden": func(ctx context.Context, c browser.Controller) error {
 		return c.AssertHidden(ctx, crossOriginRef, time.Second)
 	},
@@ -146,6 +153,11 @@ var capabilityInterfaces = []reflect.Type{
 	reflect.TypeOf((*browser.ActiveTabReporter)(nil)).Elem(),
 	reflect.TypeOf((*browser.DocumentIdentityProvider)(nil)).Elem(),
 	reflect.TypeOf((*browser.Asserter)(nil)).Elem(),
+	// AssertValueContains was reached through an ANONYMOUS interface in the recipe
+	// runner, so it belonged to no type this list could enumerate and stayed
+	// unguarded on both transports while its four siblings were covered. Naming
+	// the interface is what puts it back inside the property.
+	reflect.TypeOf((*browser.ValueContainsAsserter)(nil)).Elem(),
 }
 
 // routesInsteadOfRefusing names the (transport, method) pairs that REACH into a

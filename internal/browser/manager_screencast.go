@@ -49,10 +49,19 @@ type screencastStats struct {
 	Frames  int64
 	Bytes   int64
 	Dropped int64
-	// OutOfOrder counts frames Chrome stamped at or before the previous frame's
-	// swap. They are discarded: a consumer pacing on swap time must never see
-	// the compositor's clock go backwards.
+	// OutOfOrder counts frames Chrome stamped strictly BEFORE the previous
+	// frame's swap. They are discarded: a consumer pacing on swap time must never
+	// see the compositor's clock go backwards. The CDP stream is ordered and the
+	// compositor's clock does not run backwards, so on a healthy stream this is
+	// zero — a non-zero count is the floor being measured against some other
+	// clock, which puts it ahead of every frame still to come.
 	OutOfOrder int64
+	// DuplicateSwap counts frames Chrome stamped at EXACTLY the previous frame's
+	// swap: two repaints inside one compositor tick. They are discarded for the
+	// same reason (a consumer pacing on swap time has to see the clock advance),
+	// but they are Chrome's stamping rather than a floor on the wrong clock, and
+	// they are counted apart so one cannot be read as the other.
+	DuplicateSwap int64
 	// UnstampedFrames counts frames delivered with no swap time brw could use —
 	// no metadata, no timestamp in it, or one that is not behind the moment we
 	// read the event. They are forwarded, but they set no ordering floor.
@@ -63,11 +72,12 @@ type screencastStats struct {
 // caller, so every field is atomic rather than relying on the stop() happening
 // before the read.
 type screencastCounters struct {
-	frames     atomic.Int64
-	bytes      atomic.Int64
-	dropped    atomic.Int64
-	outOfOrder atomic.Int64
-	unstamped  atomic.Int64
+	frames        atomic.Int64
+	bytes         atomic.Int64
+	dropped       atomic.Int64
+	outOfOrder    atomic.Int64
+	duplicateSwap atomic.Int64
+	unstamped     atomic.Int64
 }
 
 func (c *screencastCounters) snapshot() screencastStats {
@@ -76,6 +86,7 @@ func (c *screencastCounters) snapshot() screencastStats {
 		Bytes:           c.bytes.Load(),
 		Dropped:         c.dropped.Load(),
 		OutOfOrder:      c.outOfOrder.Load(),
+		DuplicateSwap:   c.duplicateSwap.Load(),
 		UnstampedFrames: c.unstamped.Load(),
 	}
 }
@@ -89,8 +100,11 @@ const (
 	frameInOrder screencastAdmission = iota
 	// frameUnstamped: forward it, but the ordering floor is unchanged.
 	frameUnstamped
-	// frameOutOfOrder: discard it; the floor is already at or past its swap.
+	// frameOutOfOrder: discard it; it swapped BEFORE the floor.
 	frameOutOfOrder
+	// frameDuplicateSwap: discard it; it swapped at exactly the floor, which is
+	// two repaints inside one compositor tick rather than a frame out of order.
+	frameDuplicateSwap
 )
 
 // admitScreencastFrame places one frame in the stream and returns the swap time
@@ -112,8 +126,11 @@ func admitScreencastFrame(lastSwap *atomic.Int64, stamped, arrivedAt time.Time) 
 	swap := stamped.UnixNano()
 	for {
 		previous := lastSwap.Load()
-		if swap <= previous {
+		if swap < previous {
 			return frameOutOfOrder, stamped
+		}
+		if swap == previous {
+			return frameDuplicateSwap, stamped
 		}
 		if lastSwap.CompareAndSwap(previous, swap) {
 			return frameInOrder, stamped
@@ -208,6 +225,9 @@ func (m *Manager) screencastFrames(ctx context.Context, opts ScreencastOptions) 
 		switch admission {
 		case frameOutOfOrder:
 			counters.outOfOrder.Add(1)
+			return
+		case frameDuplicateSwap:
+			counters.duplicateSwap.Add(1)
 			return
 		case frameUnstamped:
 			counters.unstamped.Add(1)

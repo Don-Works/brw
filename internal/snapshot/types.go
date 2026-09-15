@@ -216,10 +216,13 @@ type Element struct {
 	// otherwise-opaque painted content.
 	VisualHint string `json:"visual_hint,omitempty"`
 	// CX/CY are the element's top-level viewport CENTER in CSS pixels. Set ONLY on
-	// cross-origin-frame elements (source includes "frame", ref f<i>:e<j>), whose
-	// DOM is isolated so they cannot be resolved by ref the normal way — act on
-	// them with brw_click_xy at (cx, cy), then type via the keyboard. Zero/omitted
-	// for ordinary same-document elements (resolve those by ref as usual).
+	// cross-origin-frame elements (source includes "frame", ref f<i>:<ref>).
+	//
+	// On direct CDP that ref RESOLVES: brw_click attaches a session to the frame's
+	// own target and clicks there. Every other ref-taking verb refuses it by name,
+	// and on the extension bridge so does brw_click, so cx/cy is the way through
+	// for those — brw_click_xy at (cx, cy), then type via the keyboard.
+	// Zero/omitted for ordinary same-document elements (resolve those by ref).
 	CX float64 `json:"cx,omitempty"`
 	CY float64 `json:"cy,omitempty"`
 	// X/Y/W/H are the element's box in its OWN document's viewport space, set only
