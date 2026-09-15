@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os/exec"
 	"regexp"
@@ -118,6 +119,33 @@ func (e Endpoint) String() string {
 }
 
 func (e Endpoint) GoString() string { return e.String() }
+
+// PlaintextToAnotherHost reports a ws:// endpoint whose host is not loopback.
+//
+// ws is accepted — a stand-in browser on this machine needs it, and refusing it
+// would make the capability untestable without a certificate. What is not
+// acceptable is accepting it SILENTLY: on such a socket every byte of the CDP
+// session travels in the clear to another machine, which is page content, the
+// cookies brw_cookies reads and the text brw_fill types. brw already shouts
+// about --ignore-https-errors and --unsafe-real-profile; this is the same class
+// of fact and the caller warns in the same shape.
+func (e Endpoint) PlaintextToAnotherHost() bool {
+	if e.raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(e.raw)
+	if err != nil || parsed.Scheme != "ws" {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "localhost" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return false
+	}
+	return true
+}
 
 func (e Endpoint) MarshalJSON() ([]byte, error) { return json.Marshal(e.String()) }
 

@@ -5,19 +5,29 @@ import (
 	"testing"
 )
 
-// Acceptance 2, the identity-guard half. The guard is unchanged code on a
-// remote target, and "unchanged" is the thing worth pinning: a proxy pinned to
-// a workspace profile must NOT accept a daemon driving somebody else's browser,
-// and it must not accept it by way of the empty fields such a daemon reports.
+// Acceptance 2, the identity-guard half. A proxy pinned to a workspace profile
+// must NOT accept a daemon driving somebody else's browser, and it must not
+// accept it by way of the empty fields such a daemon reports.
 //
-// A provider-backed daemon has no local profile. Every field that names one is
-// therefore empty, and an expectation that names one fails — which is the guard
-// doing exactly what it does for any other mismatch, with no special case.
-func TestAProfilePinIsNotSatisfiedByAProviderBackedDaemon(t *testing.T) {
+// The identity here is the one a provider-backed brwd actually builds, which is
+// the correction: an earlier version of this test pinned Workspace "client-a"
+// on it, and no provider-backed daemon can report that — cmd/brwd refuses
+// --profile and --workspace with a provider, so the profile-policy block that
+// fills those fields never runs and the identity carries Mode and Transport and
+// nothing else. That made the test a property of Mismatches rather than of what
+// this daemon reports, and it locked the half that does not matter: it asserted
+// a workspace pin SUCCEEDS, in a shape where a workspace can never be set.
+//
+// cmd/brwd's TestTheIdentityAProviderLaunchReportsCarriesNoProfile builds it
+// from resolveIdentity and asserts the same refusals; this one states the
+// property of Mismatches those depend on.
+func TestNoProfileOrWorkspacePinIsSatisfiedByAProviderBackedDaemon(t *testing.T) {
 	remote := Identity{
-		Workspace: "client-a",
 		Transport: TransportOffHostCDP,
 		Mode:      "browser-provider",
+	}
+	if remote.Empty() {
+		t.Fatal("a provider-backed daemon must not read as having no identity at all")
 	}
 	expected := Identity{
 		Workspace:        "client-a",
@@ -26,21 +36,30 @@ func TestAProfilePinIsNotSatisfiedByAProviderBackedDaemon(t *testing.T) {
 		ProfileDirectory: "Profile 1",
 	}
 	mismatches := remote.Mismatches(expected)
-	if len(mismatches) != 3 {
-		t.Fatalf("mismatches = %v, want the profile, the user data dir and the profile directory", mismatches)
+	if len(mismatches) != 4 {
+		t.Fatalf("mismatches = %v, want the workspace, the profile, the user data dir and the profile directory", mismatches)
 	}
-	for _, field := range []string{"profile", "user_data_dir", "profile_directory"} {
+	for _, field := range []string{"workspace", "profile", "user_data_dir", "profile_directory"} {
 		if !slices.ContainsFunc(mismatches, func(m string) bool { return len(m) > len(field) && m[:len(field)] == field }) {
 			t.Errorf("mismatches = %v, want one naming %q", mismatches, field)
 		}
 	}
-	// The workspace binding itself still matches, so the refusal is about the
-	// profile rather than about the transport being unfamiliar.
-	if got := remote.Mismatches(Identity{Workspace: "client-a"}); len(got) != 0 {
-		t.Fatalf("a workspace-only pin against a provider-backed daemon = %v, want no mismatch", got)
+	// Each pin alone is enough to refuse, so a proxy that pins only a workspace
+	// is not talked past by a daemon that reports none.
+	for _, pin := range []Identity{
+		{Workspace: "client-a"},
+		{Profile: "client-a-chrome"},
+		{UserDataDir: "/profiles/client-a"},
+		{ProfileDirectory: "Profile 1"},
+	} {
+		if got := remote.Mismatches(pin); len(got) != 1 {
+			t.Errorf("pin %+v against a provider-backed daemon = %v, want exactly one mismatch", pin, got)
+		}
 	}
-	if got := remote.Mismatches(Identity{Workspace: "client-b"}); len(got) != 1 {
-		t.Fatalf("a wrong workspace = %v, want exactly one mismatch", got)
+	// An unpinned proxy still accepts it: the guard refuses a claim it cannot
+	// satisfy, not the transport itself.
+	if got := remote.Mismatches(Identity{}); len(got) != 0 {
+		t.Fatalf("an unpinned proxy refused a provider-backed daemon: %v", got)
 	}
 }
 

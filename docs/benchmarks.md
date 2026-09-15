@@ -309,8 +309,10 @@ lane, leaving the 88 above on direct CDP. `--remote` drops
 not retarget its downloads. The Chrome opt-in lane drops `brw_state` on top of
 that (86), because it drives the browser its user is signed into. A
 plugin-supplied off-host browser drops `brw_downloads`, `brw_upload_file` and
-`brw_clipboard` rather than `brw_state` (84), because those name things on this
-machine and that browser is on another. Twelve more drop on the extension
+`brw_clipboard` as well as `brw_state` (83), because all four name something on
+this machine and that browser is on another: three resolve a path or the
+clipboard on the host the browser runs on, and the fourth reads this host's
+session-snapshot store. Twelve more drop on the extension
 bridge — incognito, contexts and cookies, the seven page-environment overrides,
 clipboard, the two held-key tools, pushState and session snapshots — leaving 76.
 Only `all` is narrowed this way; `core`, `minimal` and `auto` advertise the same

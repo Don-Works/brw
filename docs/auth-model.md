@@ -347,9 +347,22 @@ The material is also not the user's. Direct-CDP profiles and incognito contexts
 hold sessions that brw's own browser established, and a persistent
 `--workspace` profile already stores those same cookies on disk **unencrypted**,
 because that is what Chrome does with a profile. A snapshot of them is a smaller,
-shorter-lived, encrypted subset of a file that already exists. The one profile
-whose cookies are genuinely the user's — the installed Chrome the extension
-bridge drives — is the one transport where `brw_state` is refused.
+shorter-lived, encrypted subset of a file that already exists. The profile whose
+cookies are genuinely the user's — the installed Chrome the extension bridge
+drives — is refused for that reason.
+
+`brw_state` is refused on the `off-host-cdp` transport too, and that one is the
+"on that host" clause above holding rather than a second policy. The store lives
+on the machine brwd runs on and holds sessions established there; a browser a
+`browser.provider` plugin lent brw is on somebody else's machine. All four
+actions are refused, not `restore` alone: `restore` would put those cookies into
+the provider's browser, `list` and `delete` would let a cloud-backed run
+enumerate and destroy this host's snapshots, and `save` would file a snapshot
+sealed from the provider's browser alongside the local ones. A provider-backed
+daemon also resolves to its own store scope, so it cannot reach the local
+default one even if a guard were missed. `remote-cdp` is not on this list:
+`--remote` reaches a browser on this machine, so the store and the browser are
+on the same host and the clause does not bite.
 
 What would contradict the non-goal is a read action. A `brw_state` that returned
 cookie values, or a snapshot format the daemon would decrypt for a caller, would

@@ -119,7 +119,16 @@ var toolRequirements = map[string][]toolRequirement{
 	"brw_key_up":    {needsCDPSession},
 	"brw_pushstate": {needsCDPSession},
 
-	"brw_state": {refusedOnSignedInProfile},
+	// Two unrelated refusals, which is the case the list form exists for.
+	// refusedOnSignedInProfile is policy: brw does not seal the cookies of a
+	// browser its user is personally signed into. needsLocalBrowserHost is the
+	// mirror image: the snapshot store holds sessions a human signed into on
+	// THIS machine, so a restore would install them into a browser somebody
+	// else runs, and a list or delete would let an off-host run enumerate and
+	// destroy them. Restore is the other sanctioned way to put signed-in state
+	// into a fresh context, so leaving it open off host walks straight past the
+	// profile gates that refuse the same thing.
+	"brw_state": {refusedOnSignedInProfile, needsLocalBrowserHost},
 }
 
 // runnableOn reports whether a transport satisfies a requirement. It reads the

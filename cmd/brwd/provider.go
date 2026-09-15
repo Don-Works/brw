@@ -62,6 +62,14 @@ func refuseWithProvider(launch providerLaunch) error {
 		return errors.New("--extension with a browser.provider plugin: an unpacked extension is loaded from this machine's filesystem, which the provider's browser cannot read")
 	case len(launch.Config.ChromeArgs) > 0:
 		return errors.New("--chrome-arg with a browser.provider plugin: brw is not launching Chrome, so it has no command line to add to")
+	case launch.Config.Port != 0:
+		// checkRemoteConfig refuses this too, but only inside browser.New —
+		// which runs after the operator's mint program has already executed and
+		// the provider has already billed a session. A conflict that is knowable
+		// from the flags belongs in the startup table, before anything is minted.
+		return errors.New("--remote-debugging-port with a browser.provider plugin: brw is not launching Chrome, so there is no debugging port for it to open")
+	case launch.Config.AllowRealProfile:
+		return fmt.Errorf("--unsafe-real-profile with a browser.provider plugin: %w", browser.RemoteUnavailableError("profile_reuse"))
 	case !launch.Config.Network.Empty():
 		return errors.New("--proxy-server/--ignore-https-errors/--ca-cert with a browser.provider plugin: they are Chrome launch switches, and the provider launched its own browser")
 	}
@@ -75,6 +83,32 @@ func refuseWithProvider(launch providerLaunch) error {
 func explicitProfileFlags() bool {
 	return flagWasSet("user-data-dir") || os.Getenv("BRW_USER_DATA_DIR") != "" ||
 		flagWasSet("profile-directory") || os.Getenv("BRW_PROFILE_DIRECTORY") != ""
+}
+
+// providerReleaseTimeout bounds giving a browser back on the failure path. The
+// caller's context is usually already cancelled by the time anything releases,
+// so the teardown gets a deadline of its own.
+const providerReleaseTimeout = 30 * time.Second
+
+// releaseUnreleasedSession gives a plugin-supplied browser back after a failed
+// start, and only when nothing already has.
+//
+// browser.New calls Manager.Close when the connect fails, which releases the
+// session and clears Release on this very pointer. Running the operator's
+// teardown program a second time resolves the provider credential again and logs
+// a second exit status as a failed release, which reads as a leaked session when
+// nothing leaked. A failure BEFORE the connect — checkRemoteConfig refusing the
+// configuration — leaves Release set, and that is the case where the provider is
+// still holding a browser nothing will ever connect to.
+func releaseUnreleasedSession(remote *browser.RemoteTarget, release func(context.Context) error) {
+	if remote == nil || remote.Release == nil || release == nil {
+		return
+	}
+	releaseCtx, cancel := context.WithTimeout(context.Background(), providerReleaseTimeout)
+	defer cancel()
+	if err := release(releaseCtx); err != nil {
+		log.Printf("release the plugin-supplied browser session: %v", err)
+	}
 }
 
 // openProviderBrowser mints a session and turns it into the remote target the
@@ -93,6 +127,10 @@ func openProviderBrowser(ctx context.Context, plugins *plugin.Registry) (*browse
 	expiresAt := time.Now().Add(session.Lifetime)
 	log.Printf("driving a plugin-supplied browser: provider %s, session %s, endpoint %s, session ends %s",
 		session.ProviderID, session.SessionID, session.Endpoint, expiresAt.UTC().Format(time.RFC3339))
+	if session.Endpoint.PlaintextToAnotherHost() {
+		log.Printf("WARNING: plugin %s minted a plaintext ws:// endpoint at %s; the whole CDP session travels unencrypted to that host, including page content, cookies and anything brw types",
+			session.ProviderID, session.Endpoint)
+	}
 	return &browser.RemoteTarget{
 		WebSocketURL: session.Endpoint.Reveal(),
 		RedactedURL:  session.Endpoint.String(),

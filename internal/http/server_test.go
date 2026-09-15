@@ -841,6 +841,77 @@ func TestNavPolicyGatesAndCanonicalizesHTTPPlanBatch(t *testing.T) {
 	}
 }
 
+// remoteSessionController is a controller driving a plugin-supplied browser.
+type remoteSessionController struct {
+	fakeController
+	session browser.RemoteSessionInfo
+	live    bool
+}
+
+func (c *remoteSessionController) RemoteSession() (browser.RemoteSessionInfo, bool) {
+	return c.session, c.live
+}
+
+// An operator on a provider-backed daemon has to be able to see which session
+// is running and when it ends. The startup log line is written before this
+// server exists and is gone by the time anybody asks, so without /health the
+// first news of an expiry is a call failing.
+func TestHealthNamesThePluginSuppliedSession(t *testing.T) {
+	expiry := time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second)
+	ctrl := &remoteSessionController{
+		session: browser.RemoteSessionInfo{
+			ProviderID: "local.standin",
+			SessionID:  "sess-7",
+			Endpoint:   "wss://browsers.example",
+			ExpiresAt:  expiry,
+		},
+		live: true,
+	}
+	srv := New(":", ctrl)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	srv.server.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", w.Code)
+	}
+	var resp struct {
+		RemoteSession *browser.RemoteSessionInfo `json:"remote_session"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.RemoteSession == nil {
+		t.Fatal("/health said nothing about the plugin-supplied browser this daemon is driving")
+	}
+	if resp.RemoteSession.ProviderID != "local.standin" || resp.RemoteSession.SessionID != "sess-7" {
+		t.Fatalf("remote_session = %+v", resp.RemoteSession)
+	}
+	if !resp.RemoteSession.ExpiresAt.Equal(expiry) {
+		t.Fatalf("expires_at = %v, want %v; an operator cannot see the session ending without it", resp.RemoteSession.ExpiresAt, expiry)
+	}
+	// The endpoint reported is the redacted form. The path of a CDP websocket
+	// URL authenticates the socket, and /health is served to anything on
+	// loopback.
+	if strings.Contains(resp.RemoteSession.Endpoint, "/devtools/") {
+		t.Fatalf("endpoint = %q, which carries the part that authenticates the session", resp.RemoteSession.Endpoint)
+	}
+
+	// A local daemon says nothing, rather than an empty object a client would
+	// have to distinguish from a session with no id.
+	ctrl.live = false
+	w = httptest.NewRecorder()
+	srv.server.Handler.ServeHTTP(w, req)
+	if strings.Contains(w.Body.String(), "remote_session") {
+		t.Fatalf("a daemon with no provider session reported one: %s", w.Body.String())
+	}
+	plain := New(":", &fakeController{})
+	w = httptest.NewRecorder()
+	plain.server.Handler.ServeHTTP(w, req)
+	if strings.Contains(w.Body.String(), "remote_session") {
+		t.Fatalf("a controller that cannot report a session reported one: %s", w.Body.String())
+	}
+}
+
 func TestHealthIncludesRuntimeIdentity(t *testing.T) {
 	srv := NewWithIdentity(":", &fakeController{}, brwidentity.Identity{
 		Workspace:        "client-a",

@@ -128,11 +128,22 @@ func (m *Manager) sessionStateStore() *sessionstate.Store {
 	return m.sessionState
 }
 
-// SessionState implements brw_state on the direct-CDP transport. Cookies are
-// read and written at the BROWSER context level (CDP Storage.getCookies /
+// SessionState implements brw_state on a browser brw owns. Cookies are read and
+// written at the BROWSER context level (CDP Storage.getCookies /
 // Storage.setCookies with a browserContextId), so an incognito context created
 // by OpenIncognito is addressable by its own id and needs no open tab.
 func (m *Manager) SessionState(ctx context.Context, opts SessionStateOptions) (SessionStateResult, error) {
+	// Ahead of Validate, and covering all four actions rather than restore
+	// alone. The store is this machine's, holding sessions a human signed into
+	// here; a provider-backed daemon resolves to a store it has no business
+	// reading, writing or deleting from. Restoring is the one that matters most
+	// — it is the other sanctioned route for putting signed-in state into a
+	// fresh browser, so leaving it open would walk straight past the profile
+	// gates — but a refusal that depended on the action would be a gate with the
+	// same hole in it one verb over.
+	if err := m.refuseOnRemote("local_session_state"); err != nil {
+		return SessionStateResult{}, err
+	}
 	if err := opts.Validate(); err != nil {
 		return SessionStateResult{}, err
 	}

@@ -165,13 +165,15 @@ the wrong answer:
 | local downloads | Chrome writes a download on the machine it runs on. `brw_downloads`, `brw_set_download_path` and a `download:` wait are all refused: the guard is on the bookkeeping they share, not on the two verbs somebody thought of first. |
 | local uploads | `brw_upload_file` hands Chrome a path it resolves on its own machine, so a local path names a file on the provider's disk instead of yours. |
 | the local clipboard | `brw_clipboard` would read or set the provider host's clipboard. |
+| this host's session snapshots | The `brw_state` store holds sessions a human signed into on THIS machine. All four actions are refused, not just `restore`: a restore would install those cookies into the provider's browser, which is the same thing the profile gates refuse by another route; a `list` or `delete` would let a cloud-backed run enumerate and destroy them; and a `save` would put a snapshot sealed from somebody else's browser into this host's store under an id indistinguishable from a local one. A provider-backed daemon also resolves to its own store scope rather than the unscoped local default. |
 
 `brw_identity` reports `transport: off-host-cdp` — its own lane, and not the
 `remote-cdp` that `brwd --remote` reports: that endpoint is on this machine, so a
-path, an upload and the clipboard still name what the caller meant there.
-`brw_downloads`, `brw_set_download_path`, `brw_upload_file` and `brw_clipboard`
-are not advertised in `tools/list` on `off-host-cdp`, so an agent does not spend
-a round trip discovering a tool that can only fail; calling one anyway still
+path, an upload and the clipboard still name what the caller meant there, and
+this host's session store is the browser's own. `brw_downloads`,
+`brw_set_download_path`, `brw_upload_file`, `brw_clipboard` and `brw_state` are
+not advertised in `tools/list` on `off-host-cdp`, so an agent does not spend a
+round trip discovering a tool that can only fail; calling one anyway still
 returns the named refusal.
 
 #### Manifest
@@ -208,7 +210,11 @@ six auth stories and six breakage surfaces; the capability carries them instead.
   given — no `/json/version` discovery, no DNS-to-IP rewrite — because those
   would be brw second-guessing the provider and would break TLS on a hosted
   endpoint. A URL carrying userinfo is refused; pass a credential by reference
-  instead (below).
+  instead (below). `ws` is accepted, because a stand-in browser on this machine
+  needs it — but a `ws` endpoint whose host is not loopback gets a startup
+  `WARNING`, in the same shape as `--ignore-https-errors`: the whole CDP session
+  crosses the network in the clear, which is page content, the cookies
+  `brw_cookies` reads and the text `brw_fill` types.
 - `session_id` is substituted for `{session}` in `teardown`, so it is held to a
   narrow character set. `teardown` must contain the token exactly once: a
   teardown that never sees the id releases whatever the provider considers
@@ -254,9 +260,17 @@ does not break the release of one already open — a revoke that leaked the clou
 browser it was running at the time would cost money to use.
 
 A `--bridge`, `--upstream-http`, `--remote`, `--login`, `--headless`,
-`--extension`, `--chrome-arg`, `--proxy-server`, `--profile` or explicit
-`--user-data-dir` launch alongside a loaded `browser.provider` plugin is a
-startup failure naming the conflict, not a flag that quietly does nothing.
+`--extension`, `--chrome-arg`, `--remote-debugging-port`, `--proxy-server`,
+`--unsafe-real-profile`, `--profile` or explicit `--user-data-dir` launch
+alongside a loaded `browser.provider` plugin is a startup failure naming the
+conflict, not a flag that quietly does nothing. Each is refused BEFORE the mint
+program runs, so a conflicting launch never bills a session it then has to give
+back.
+
+`GET /health` on the browser host reports the live session — provider id,
+session id, redacted `scheme://host` endpoint and `expires_at` — so an operator
+can see which browser is running and when it stops, rather than finding out from
+the first call that fails.
 
 ### Never granted
 

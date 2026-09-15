@@ -84,9 +84,20 @@ func (s *Server) openInOwnerGroup(ctx context.Context, url, owner string) (brows
 	return result, err
 }
 
+// isGroupingUnsupported recognises the refusal both when the sentinel survives
+// and when it does not. A chained daemon forwards the upstream's failure as
+// TEXT over HTTP, so errors.Is finds nothing there and the fallback is what
+// keeps the grouped open from becoming a hard failure for want of grouping.
+//
+// The fallback compares against the sentinel's OWN message rather than a
+// hand-copied fragment of it. A fragment is a second copy of the wording that
+// nothing keeps in step: rewording the error to name the capability instead of
+// one transport silently turned the substring into a match for nothing, and the
+// only symptom would have been chained daemons failing an open they used to
+// serve ungrouped.
 func isGroupingUnsupported(err error) bool {
 	if errors.Is(err, browser.ErrTabGroupingUnsupported) {
 		return true
 	}
-	return strings.Contains(err.Error(), "tab grouping is not supported")
+	return strings.Contains(err.Error(), browser.ErrTabGroupingUnsupported.Error())
 }

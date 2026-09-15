@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/cdp"
+	"github.com/Don-Works/brw/internal/sessionstate"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
@@ -36,6 +39,15 @@ var refusedSurface = map[string]string{
 	"Downloads":       "local_downloads",
 	"SetDownloadPath": "local_downloads",
 	"Clipboard":       "local_clipboard",
+	// The cleanup half of the download pair. It deletes from the manager's own
+	// staging directory on this machine, and a remote target never gets one, so
+	// the guard is unreachable today and costs a nil comparison to keep honest.
+	"CleanupManagedDownload": "local_downloads",
+	// All four actions, not restore alone. The store holds sessions a human
+	// signed into on THIS machine; restore would put them on the provider's
+	// host, list would enumerate them to a cloud-backed run and delete would
+	// destroy them.
+	"SessionState": "local_session_state",
 	// CheckProfileSession is the refusal itself rather than a refused verb: it
 	// exists to answer "no" on a remote target.
 	"CheckProfileSession": "profile_session",
@@ -57,15 +69,49 @@ var remoteSafeSurface = []string{
 	"Open", "OpenInGroup", "OpenIncognito", "Press", "PushState", "Read",
 	"ReadData", "ReplayRequest", "ResizeWindow", "Route", "Screenshot",
 	"ScreenshotAnnotated", "ScreenshotElement", "Scroll", "Select",
-	"SessionState", "SetExtraHeaders", "SetGeolocation", "SetNetworkConditions",
+	"SetExtraHeaders", "SetGeolocation", "SetNetworkConditions",
 	"SetUserAgent", "Snapshot", "Type", "UngroupTabs", "WaitFor",
 	"WaitForOutcome", "WindowBounds", "Authenticate", "Fill", "CheckRouteReplay",
+	// Reached through the optional capabilities and through *Manager itself.
+	// Assert is safe because its own refusals come from the primitives it is
+	// built on: a download assertion resolves through AssertSource.Downloads,
+	// which is refused by name above.
+	"ActiveTabID", "Assert", "AssertValueContains", "ReadWindow",
+	"AccessibilityAudit", "BlockedRequests", "FocusRef", "Highlight", "Vitals",
+	// Artifact capture is CDP asking the browser for bytes and brw writing them
+	// here, so the file lands on this machine either way.
+	"CaptureArtifactScreenshot", "CapturePDF", "CapturePDFStream",
+	// Human takeover is a CDP screencast out and CDP input back. Neither end
+	// touches the machine the browser runs on.
+	"AcquireTakeover", "DispatchTakeoverInput", "ReleaseTakeover",
+	"RenewTakeover", "ScreencastFrames", "TakeoverState", "SubscribeTrace",
 }
 
-// remoteSurfaceInterfaces is the domain the enumeration walks: the transport
-// contract plus every optional capability a direct-CDP manager also serves. A
-// method added to any of them, or a new sibling verb, fails the test until
-// somebody decides which half it belongs in.
+// remoteManagerPlumbing names the exported *Manager methods that are not a
+// browser verb: daemon wiring a transport is configured with, or a question
+// about the target rather than a request to the page. They are a third bucket
+// rather than "safe", because "this never reaches the page" and "this is safe
+// to run against somebody else's browser" are different statements and a method
+// filed under the wrong one reads as a decision nobody made.
+var remoteManagerPlumbing = []string{
+	"Close", "ContentNavigationGuard", "Remote", "RemoteSession",
+	"SetContentNavigationGuard", "SetNavigationPolicy", "SetSessionStateStore",
+}
+
+// remoteSurfaceInterfaces is half the domain the enumeration walks: every
+// browser-surface interface declared in this package - the transport contract
+// plus each optional capability a transport may also serve. A method added to
+// any of them fails the test until somebody decides which bucket it belongs in.
+//
+// It is only half because an interface can only be listed here if this package
+// declares it, and the ones internal/http and internal/artifact declare for
+// their own use (the screencast, takeover and trace-subscription surfaces, the
+// PDF capture pair) are satisfied by *Manager without appearing anywhere in
+// this file. The first draft of this table claimed to walk "every optional
+// capability" and walked thirteen interfaces, so AssertSource.Downloads and
+// CapturePDF were unclassified with nothing turning red. The other half is
+// TestEveryManagerMethodIsClassifiedForARemoteTarget, which walks *Manager's own
+// exported method set and therefore catches an interface declared anywhere.
 func remoteSurfaceInterfaces() map[string]reflect.Type {
 	return map[string]reflect.Type{
 		"Controller":               reflect.TypeOf((*Controller)(nil)).Elem(),
@@ -81,6 +127,52 @@ func remoteSurfaceInterfaces() map[string]reflect.Type {
 		"WaitObserver":             reflect.TypeOf((*WaitObserver)(nil)).Elem(),
 		"DocumentIdentityProvider": reflect.TypeOf((*DocumentIdentityProvider)(nil)).Elem(),
 		"ProfileSessionController": reflect.TypeOf((*ProfileSessionController)(nil)).Elem(),
+		"WindowReader":             reflect.TypeOf((*WindowReader)(nil)).Elem(),
+		"ActiveTabReporter":        reflect.TypeOf((*ActiveTabReporter)(nil)).Elem(),
+		"AssertSource":             reflect.TypeOf((*AssertSource)(nil)).Elem(),
+		"Asserter":                 reflect.TypeOf((*Asserter)(nil)).Elem(),
+		"FindActFinder":            reflect.TypeOf((*FindActFinder)(nil)).Elem(),
+		"LiveFinder":               reflect.TypeOf((*LiveFinder)(nil)).Elem(),
+		"FindActController":        reflect.TypeOf((*FindActController)(nil)).Elem(),
+	}
+}
+
+// classifyRemoteMethod reports which bucket a method name is in, and whether it
+// is in more than one.
+func classifyRemoteMethod(method string) (refused, safe, plumbing bool) {
+	_, refused = refusedSurface[method]
+	return refused, slices.Contains(remoteSafeSurface, method), slices.Contains(remoteManagerPlumbing, method)
+}
+
+// The other half of the domain: *Manager's own exported method set. An
+// interface declared in another package (internal/http's screencast, takeover
+// and trace surfaces; internal/artifact's PDF capture pair) can only be
+// satisfied by methods that appear here, so walking this catches a capability
+// added anywhere without this package having to know about it.
+func TestEveryManagerMethodIsClassifiedForARemoteTarget(t *testing.T) {
+	manager := reflect.TypeOf((*Manager)(nil))
+	for index := 0; index < manager.NumMethod(); index++ {
+		method := manager.Method(index).Name
+		refused, safe, plumbing := classifyRemoteMethod(method)
+		count := 0
+		for _, in := range []bool{refused, safe, plumbing} {
+			if in {
+				count++
+			}
+		}
+		switch count {
+		case 1:
+		case 0:
+			t.Errorf("Manager.%s is unclassified for a remote target: refusedSurface with a capability key, remoteSafeSurface because it does not touch this machine, or remoteManagerPlumbing because it is not a browser verb", method)
+		default:
+			t.Errorf("Manager.%s is classified in more than one bucket", method)
+		}
+	}
+	// A rename leaves a stale row rather than a silently unenforced one.
+	for _, method := range remoteManagerPlumbing {
+		if _, ok := manager.MethodByName(method); !ok {
+			t.Errorf("remoteManagerPlumbing names %q, which is not a method of *Manager", method)
+		}
 	}
 }
 
@@ -90,26 +182,32 @@ func TestEveryBrowserSurfaceMethodIsClassifiedForARemoteTarget(t *testing.T) {
 		for index := 0; index < iface.NumMethod(); index++ {
 			method := iface.Method(index).Name
 			seen[method] = true
-			_, refused := refusedSurface[method]
-			safe := slices.Contains(remoteSafeSurface, method)
+			refused, safe, plumbing := classifyRemoteMethod(method)
 			switch {
 			case refused && safe:
 				t.Errorf("%s.%s is classified both refused and safe on a remote target", name, method)
+			case plumbing:
+				t.Errorf("%s.%s is filed as plumbing but is part of a browser surface interface, so somebody can call it as a verb", name, method)
 			case !refused && !safe:
 				t.Errorf("%s.%s is unclassified for a remote target: put it in refusedSurface with a capability key, or in remoteSafeSurface because it does not touch this machine", name, method)
 			}
 		}
 	}
 	// The reverse direction, so a rename leaves a stale row rather than a
-	// silently unenforced one.
+	// silently unenforced one. The domain is both halves: a method may be on
+	// *Manager without being on any interface this package declares.
+	manager := reflect.TypeOf((*Manager)(nil))
+	for index := 0; index < manager.NumMethod(); index++ {
+		seen[manager.Method(index).Name] = true
+	}
 	for method := range refusedSurface {
 		if !seen[method] {
-			t.Errorf("refusedSurface names %q, which is not a method of any browser surface interface", method)
+			t.Errorf("refusedSurface names %q, which is not a method of any browser surface", method)
 		}
 	}
 	for _, method := range remoteSafeSurface {
 		if !seen[method] {
-			t.Errorf("remoteSafeSurface names %q, which is not a method of any browser surface interface", method)
+			t.Errorf("remoteSafeSurface names %q, which is not a method of any browser surface", method)
 		}
 	}
 }
@@ -188,6 +286,31 @@ func TestRefusedVerbsAnswerWithTheNamedCapabilityClass(t *testing.T) {
 		"WaitFor download:": {"local_downloads", func(m *Manager) error {
 			return m.WaitFor(ctx, "download:invoice.pdf", time.Second)
 		}},
+		"CleanupManagedDownload": {"local_downloads", func(m *Manager) error {
+			_, err := m.CleanupManagedDownload(DownloadEntry{GUID: "fixture-guid", Path: "/tmp/fixture-downloads/fixture-guid"})
+			return err
+		}},
+		// One subtest per action, because the finding this closes was a guard
+		// that covered save and left restore - the action that puts a session a
+		// human signed into here onto somebody else's host - open.
+		"SessionState": {"local_session_state", func(m *Manager) error {
+			for _, opts := range []SessionStateOptions{
+				{Action: SessionStateActionSave, Origins: []string{"https://app.example.com"}},
+				{Action: SessionStateActionRestore, SnapshotID: "snap-1", Origins: []string{"https://app.example.com"}},
+				{Action: SessionStateActionList},
+				{Action: SessionStateActionDelete, SnapshotID: "snap-1"},
+				// And a malformed one, so the refusal does not depend on the
+				// request validating first.
+				{Action: "restore"},
+			} {
+				err := mustRefuse(m, opts)
+				if err != nil {
+					return err
+				}
+			}
+			_, err := m.SessionState(context.Background(), SessionStateOptions{Action: SessionStateActionList})
+			return err
+		}},
 		"CheckProfileSession": {"profile_session", func(m *Manager) error { return m.CheckProfileSession() }},
 	}
 	// Every refused method has a call here, so adding a row to refusedSurface
@@ -215,6 +338,47 @@ func TestRefusedVerbsAnswerWithTheNamedCapabilityClass(t *testing.T) {
 				t.Fatalf("%s refusal = %q, want it to carry the declared reason %q", method, err, want)
 			}
 		})
+	}
+}
+
+// mustRefuse asserts one brw_state action refuses on a remote target, returning
+// the refusal so the caller can go on checking its class and reason.
+func mustRefuse(m *Manager, opts SessionStateOptions) error {
+	_, err := m.SessionState(context.Background(), opts)
+	if errors.Is(err, ErrRemoteTargetUnsupported) {
+		return nil
+	}
+	return fmt.Errorf("brw_state %s on a remote target = %v, want the named refusal", opts.Action, err)
+}
+
+// The guard must land before the store is consulted, not as a fallback when a
+// provider-backed daemon happens to have none installed. A daemon started with
+// --state-key-file has a real store, and that is the configuration where a
+// restore would have had something to replay.
+func TestSessionStateIsRefusedOnARemoteTargetEvenWithAStoreInstalled(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "snapshots")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Obviously fabricated and low entropy: it seals nothing this test reads.
+	store, err := sessionstate.NewStore(sessionstate.Config{Root: root, Key: []byte("fixture-session-state-key-0123456789ab")})
+	if err != nil {
+		t.Fatalf("open the snapshot store: %v", err)
+	}
+	m := remoteMarked()
+	m.SetSessionStateStore(store)
+	for _, action := range []string{SessionStateActionSave, SessionStateActionRestore, SessionStateActionList, SessionStateActionDelete} {
+		opts := SessionStateOptions{Action: action, SnapshotID: "snap-1", Origins: []string{"https://app.example.com"}}
+		if _, err := m.SessionState(context.Background(), opts); !errors.Is(err, ErrRemoteTargetUnsupported) {
+			t.Errorf("brw_state %s with a store installed = %v, want the named refusal", action, err)
+		}
+	}
+	// And the same manager without the remote mark still reaches the store, so
+	// the guard is a guard rather than a feature switch.
+	local := &Manager{}
+	local.SetSessionStateStore(store)
+	if _, err := local.SessionState(context.Background(), SessionStateOptions{Action: SessionStateActionList}); err != nil {
+		t.Fatalf("brw_state list on a local browser = %v, want the store consulted", err)
 	}
 }
 

@@ -73,6 +73,8 @@ var RemoteUnavailable = map[string]string{
 	"local_downloads": "Chrome writes a download on the machine it runs on. On a provider's browser the bytes land on the provider's disk, and brw's download bookkeeping would report a path that does not exist here",
 	"local_upload":    "an upload hands Chrome a filesystem path, which Chrome resolves on the machine it runs on. A local path sent to a provider's browser names a file on the provider's disk, not the one you meant",
 	"local_clipboard": "the clipboard belongs to the machine the browser runs on, so a read would return the provider host's clipboard and a write would set it",
+	"local_session_state": "the session-snapshot store holds sessions a human signed into on THIS machine, sealed from a browser brw owns. Restoring one into a provider's browser would put those cookies on somebody else's host — the same thing the profile gates refuse — and listing or deleting one would let a cloud-backed daemon enumerate and destroy this machine's snapshots. " +
+		"Save is refused with them: a snapshot sealed from a provider's browser would join this host's store under an id indistinguishable from a local one",
 }
 
 // RemoteCapabilityNames lists the table's keys in order, for error text and for
@@ -224,14 +226,42 @@ func (m *Manager) Remote() bool {
 	return m.remote != nil
 }
 
-// RemoteSession describes the provider session, for the daemon's own logging
-// and identity. It never carries the unredacted endpoint.
-func (m *Manager) RemoteSession() (providerID, sessionID, redactedURL string, expiresAt time.Time, ok bool) {
-	if !m.Remote() {
-		return "", "", "", time.Time{}, false
-	}
-	return m.remote.ProviderID, m.remote.SessionID, m.remote.RedactedURL, m.remote.ExpiresAt, true
+// RemoteSessionInfo is the reportable description of a plugin-supplied browser
+// session. Every field is safe to log or serve: Endpoint is the redacted
+// scheme://host form, never the URL that authenticates the socket.
+type RemoteSessionInfo struct {
+	ProviderID string    `json:"provider_id,omitempty"`
+	SessionID  string    `json:"session_id,omitempty"`
+	Endpoint   string    `json:"endpoint,omitempty"`
+	ExpiresAt  time.Time `json:"expires_at,omitzero"`
 }
+
+// RemoteSessionReporter is an optional transport capability: saying which
+// plugin-supplied browser session this daemon is driving.
+//
+// It exists so an operator can see the session and its expiry BEFORE a call
+// fails with ErrRemoteSessionExpired. The one startup log line is written before
+// the HTTP server exists and is gone by the time anybody asks, so /health
+// answers instead.
+type RemoteSessionReporter interface {
+	RemoteSession() (RemoteSessionInfo, bool)
+}
+
+// RemoteSession describes the provider session, for the daemon's own logging,
+// identity and /health. It never carries the unredacted endpoint.
+func (m *Manager) RemoteSession() (RemoteSessionInfo, bool) {
+	if !m.Remote() {
+		return RemoteSessionInfo{}, false
+	}
+	return RemoteSessionInfo{
+		ProviderID: m.remote.ProviderID,
+		SessionID:  m.remote.SessionID,
+		Endpoint:   m.remote.RedactedURL,
+		ExpiresAt:  m.remote.ExpiresAt,
+	}, true
+}
+
+var _ RemoteSessionReporter = (*Manager)(nil)
 
 // checkRemoteSession refuses to start work on a session the provider has
 // already reclaimed. Called from the two funnels every browser operation passes

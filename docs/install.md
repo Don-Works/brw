@@ -442,7 +442,7 @@ exactly as direct CDP does here; the column below covers both.
 
 #### Why there is no redirect
 
-Both transports can express a redirect, so this is a decision rather than a
+Every transport can express a redirect, so this is a decision rather than a
 missing primitive. Any `brw_route` call carrying `behaviour:"redirect"` returns
 the same named refusal on each, because there is no profile where it would work.
 The behaviour is checked at the tool surface, before the action, the pattern,

@@ -483,22 +483,26 @@ func main() {
 		log.Printf("--remote auto attached to %s (%s) found by %s", endpoint.URL, endpoint.Browser, endpoint.Source)
 	}
 	cfg.Headless = headless
-	usageIdentity := runtimeIdentity
-	if usageIdentity.Mode == "" {
-		usageIdentity.Mode = daemonMode(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn, useBrowserProvider)
+	// The profile-policy block above is the only thing that populates
+	// runtimeIdentity, and a provider launch never reaches it (--profile and
+	// --workspace are refused with a provider). Without this the on-disk scope
+	// runtimeIdentity decides — the artifact root and the session-snapshot store
+	// — would be the same "default" a local daemon started without a profile
+	// uses, so a cloud-backed daemon would resolve to this machine's stores.
+	if useBrowserProvider {
+		runtimeIdentity.Transport = localTransport(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn, useBrowserProvider)
 	}
-	if usageIdentity.Transport == "" {
-		usageIdentity.Transport = localTransport(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn, useBrowserProvider)
-	}
-	usageIdentity.Headless = headless
-	usageIdentity.IgnoreHTTPSErrors = ignoreHTTPSErrors
-	// Report the directory the endpoint was discovered in, always: it is the
-	// profile this daemon is driving, and a policy value that disagreed was
-	// already refused above. It goes in the identity only — the Manager never
-	// receives it, because that directory is the browser's, not brw's.
-	if chromeOptIn && chromeOptInEndpoint.UserDataDir != "" {
-		usageIdentity.UserDataDir = chromeOptInEndpoint.UserDataDir
-	}
+	usageIdentity := resolveIdentity(identityInputs{
+		Runtime:           runtimeIdentity,
+		UpstreamHTTP:      upstreamHTTP,
+		RemoteURL:         cfg.RemoteURL,
+		Bridge:            bridgeMode,
+		ChromeOptIn:       chromeOptIn,
+		BrowserProvider:   useBrowserProvider,
+		Headless:          headless,
+		IgnoreHTTPSErrors: ignoreHTTPSErrors,
+		OptInUserDataDir:  chromeOptInEndpoint.UserDataDir,
+	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -652,15 +656,7 @@ func main() {
 			cfg.Remote = remote
 			manager, err = browser.New(ctx, cfg)
 			if err != nil {
-				// Give the browser back before dying. Manager.Close is what
-				// normally releases it, and there is no manager on this path, so
-				// without this the provider keeps billing for a session nothing
-				// will ever connect to.
-				releaseCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				if releaseErr := release(releaseCtx); releaseErr != nil {
-					log.Printf("release the plugin-supplied browser session: %v", releaseErr)
-				}
-				cancel()
+				releaseUnreleasedSession(remote, release)
 			}
 		} else {
 			manager, err = browser.New(ctx, cfg)
@@ -1195,6 +1191,54 @@ func adoptUpstreamIdentity(local, upstream brwidentity.Identity, haveProfilePoli
 	return local
 }
 
+// identityInputs is what the profile-policy block did not decide. Named rather
+// than passed as a run of adjacent bools, because a reversal here would make a
+// daemon report somebody else's lane.
+type identityInputs struct {
+	Runtime           brwidentity.Identity
+	UpstreamHTTP      string
+	RemoteURL         string
+	Bridge            bool
+	ChromeOptIn       bool
+	BrowserProvider   bool
+	Headless          bool
+	IgnoreHTTPSErrors bool
+	// OptInUserDataDir is the directory the Chrome opt-in endpoint was
+	// discovered in. It is the profile that daemon is driving, and a policy
+	// value that disagreed was already refused at startup. It goes in the
+	// identity only — the Manager never receives it, because the directory is
+	// the browser's, not brw's.
+	OptInUserDataDir string
+}
+
+// resolveIdentity completes the identity a daemon reports.
+//
+// Extracted from main so the shape a PROVIDER-backed launch produces is
+// testable. That launch never runs the profile-policy block — --profile and
+// --workspace are refused with a provider — so its Runtime is empty and every
+// field that names a profile on this machine stays empty. An identity guard
+// pinned to a workspace therefore fails against it, which is the fail-closed
+// half worth locking.
+//
+// Mode and transport are both delegated rather than decided here, so the two
+// answers come from the same pair of functions every other caller uses and
+// /health cannot report a mode from one lane and a transport from another.
+func resolveIdentity(in identityInputs) brwidentity.Identity {
+	out := in.Runtime
+	if out.Mode == "" {
+		out.Mode = daemonMode(in.UpstreamHTTP, in.RemoteURL, in.Bridge, in.ChromeOptIn, in.BrowserProvider)
+	}
+	if out.Transport == "" {
+		out.Transport = localTransport(in.UpstreamHTTP, in.RemoteURL, in.Bridge, in.ChromeOptIn, in.BrowserProvider)
+	}
+	out.Headless = in.Headless
+	out.IgnoreHTTPSErrors = in.IgnoreHTTPSErrors
+	if in.ChromeOptIn && in.OptInUserDataDir != "" {
+		out.UserDataDir = in.OptInUserDataDir
+	}
+	return out
+}
+
 // localTransport names how THIS process reaches the browser. A proxy cannot
 // know until it asks its upstream, so it reports empty here and adopts the
 // answer from the upstream's health response.
@@ -1333,6 +1377,20 @@ func runtimeScopeDir(identity brwidentity.Identity) string {
 	material := strings.Join([]string{
 		identity.Workspace, identity.Profile, identity.UserDataDir, identity.ProfileDirectory,
 	}, "\x00")
+	// Every field above names a profile on this machine, and an off-host daemon
+	// has none — --profile and --workspace are refused with a provider, so its
+	// identity is empty and it would land in the same "default" scope as a local
+	// daemon started without a profile, sharing that host's artifact and
+	// snapshot stores with it. The transport is the one thing such a daemon can
+	// always say, so it is mixed in for that transport only.
+	//
+	// Only that one. remote-cdp is NOT included: --remote reaches a browser on
+	// this machine, so it has always shared this host's stores, and adding the
+	// transport there would move every existing artifact and snapshot to a new
+	// path. The same goes for the other local lanes.
+	if identity.Transport == brwidentity.TransportOffHostCDP {
+		material += "\x00" + identity.Transport
+	}
 	if strings.Trim(material, "\x00") == "" {
 		return "default"
 	}

@@ -436,3 +436,37 @@ func TestBrowserProviderDeadlineIsEnforced(t *testing.T) {
 		t.Fatalf("the deadline took %s to fire", elapsed)
 	}
 }
+
+// ws and wss are accepted on equal terms - a loopback stand-in needs ws, and
+// refusing it would make the capability untestable without a certificate. What
+// the caller must be able to tell apart is a plaintext socket to ANOTHER
+// machine, where the whole CDP session crosses the network in the clear.
+func TestAPlaintextEndpointToAnotherHostIsDistinguishable(t *testing.T) {
+	for name, test := range map[string]struct {
+		raw  string
+		want bool
+	}{
+		"plaintext to a host":   {"ws://browsers.example/devtools/browser/fixture", true},
+		"plaintext to an ip":    {"ws://198.51.100.7:9222/devtools/browser/fixture", true},
+		"encrypted to a host":   {"wss://browsers.example/devtools/browser/fixture", false},
+		"loopback v4":           {"ws://127.0.0.1:9222/devtools/browser/fixture", false},
+		"loopback v4 elsewhere": {"ws://127.0.0.2:9222/devtools/browser/fixture", false},
+		"loopback v6":           {"ws://[::1]:9222/devtools/browser/fixture", false},
+		"loopback by name":      {"ws://localhost:9222/devtools/browser/fixture", false},
+		"encrypted to loopback": {"wss://127.0.0.1:9222/devtools/browser/fixture", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			endpoint, err := ParseEndpoint(test.raw)
+			if err != nil {
+				t.Fatalf("ParseEndpoint(%q) = %v", test.raw, err)
+			}
+			if got := endpoint.PlaintextToAnotherHost(); got != test.want {
+				t.Fatalf("PlaintextToAnotherHost() = %v, want %v", got, test.want)
+			}
+		})
+	}
+	// The zero endpoint describes no socket at all, so it warns about nothing.
+	if (Endpoint{}).PlaintextToAnotherHost() {
+		t.Error("the zero endpoint reported a plaintext socket")
+	}
+}

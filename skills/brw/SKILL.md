@@ -35,8 +35,8 @@ opened, never touch a tab another session has leased.
 It needs no tab and no browser window, so it is safe first. `profile` +
 `user_data_dir` + `profile_directory` say which browser you are about to drive;
 if that is not the one the user meant, stop and ask. `transport` decides which
-tools work (below) and is one of `extension-bridge`, `direct-cdp` or
-`chrome-opt-in-cdp`. `headless: true` means the browser has no visible window —
+tools work (below) and is one of `extension-bridge`, `direct-cdp`,
+`chrome-opt-in-cdp`, `remote-cdp` or `off-host-cdp`. `headless: true` means the browser has no visible window —
 absent means windowed. Read `transport`, not `mode`: `mode` is how this process
 reaches the daemon (`direct`, `upstream-http`, `bridge`, `chrome-opt-in`) and
 says nothing about capabilities.
@@ -48,8 +48,8 @@ says nothing about capabilities.
 | drives | the human's existing signed-in Chrome, via the brw extension | a Chrome brw launched itself, often headless | the human's existing signed-in Chrome, with remote debugging switched on by hand at `chrome://inspect` | a browser another process started on this machine, attached with `--remote` | a browser a `browser.provider` plugin lent brw, on another machine |
 | `brw_open_incognito` / `brw_close_context` | error: *"incognito browser contexts are not supported on the extension-bridge transport"* | works; `tab.context_id` comes back on open | works | works | works |
 | `brw_cookies` | error: *"cookie access is not supported on the extension-bridge transport"* | works, including HttpOnly | works, including HttpOnly | works, including HttpOnly | works, including HttpOnly |
-| `brw_state` | not advertised; calling it anyway errors: *"session snapshots are not supported on the extension-bridge transport"* | works | not advertised; calling it anyway errors: *"session snapshots are refused on a transport that drives the browser you are signed into"* | works | works |
-| `brw_list_tab_groups` / `brw_group_tabs` / `brw_ungroup_tabs` | works | not advertised; calling one anyway errors: *"tab grouping is not supported over the DevTools Protocol"* | not advertised; same error | not advertised; same error | not advertised; same error |
+| `brw_state` | not advertised; calling it anyway errors: *"session snapshots are not supported on the extension-bridge transport"* | works | not advertised; calling it anyway errors: *"session snapshots are refused on a transport that drives the browser you are signed into"* | works | not advertised; all four actions error *"local session state is unavailable on a plugin-supplied remote browser"*, because the snapshot store holds sessions a human signed into on THIS machine |
+| `brw_list_tab_groups` / `brw_group_tabs` / `brw_ungroup_tabs` | works | not advertised; calling one anyway errors: *"tab grouping is unavailable on any CDP transport"* | not advertised; same error | not advertised; same error | not advertised; same error |
 | `brw_set_geolocation` / `brw_set_network_conditions` / `brw_emulate_media` / `brw_set_extra_headers` / `brw_set_user_agent` / `brw_authenticate` | not advertised at all; calling one anyway errors: *"page environment overrides … are not supported on the extension-bridge transport"* | works | works | works | works |
 | `brw_set_download_path` | not advertised; same error | works | not advertised; calling it anyway errors: *"brw will not choose where downloads land on a transport that drives the browser you are signed into"* | not advertised; brw did not start this browser, so it leaves the destination alone | not advertised; the directory would be created on the provider's disk |
 | `brw_downloads` | works, with paths | works, with paths into brw's staging directory | works, `file_paths: false` and no path: the file went where the human's browser sends downloads | works, `file_paths: false` and no path | not advertised; the bytes land on the provider's disk, so there is no path here to report |
@@ -92,10 +92,13 @@ On `off-host-cdp` the guards do not change. The navigation allow/block policy,
 subresource containment, the site-consent gate and the identity guard all apply
 exactly as they do locally — a browser on another machine is treated as less
 trusted than a local one, not more. What changes is that there is no profile on
-it: a recipe declaring `"requires": ["profile_session"]` is refused before its
-first action rather than run signed out, and the provider states a session
-lifetime past which every call errors with *"the plugin-supplied browser session
-has expired"*.
+it, and no route to one: a recipe declaring `"requires": ["profile_session"]` is
+refused before its first action rather than run signed out, and `brw_state` is
+refused in all four of its actions so a session a human signed into on this
+machine cannot be replayed into somebody else's browser, listed by a cloud-backed
+run or deleted by one. The provider states a session lifetime past which every
+call errors with *"the plugin-supplied browser session has expired"*; `GET
+/health` on the browser host names the session and that expiry.
 
 When incognito is unavailable and you need isolation: use a second brw profile (two
 signed-in identities), or ask the operator for a direct-CDP profile (`brwd` without
@@ -139,7 +142,7 @@ snapshot, read the ref, use it.
 `brw_open`, `brw_navigate_to`, `brw_read`, `brw_read_url`, `brw_snapshot`, `brw_find`,
 `brw_click`, `brw_fill`, `brw_select`, `brw_press`, `brw_wait_for`, `brw_observe`,
 `brw_batch` — and grows as you search. The full surface is 88 tools on a direct-CDP
-daemon (87 on `--remote`, 86 on the Chrome opt-in lane, 84 on a plugin-supplied
+daemon (87 on `--remote`, 86 on the Chrome opt-in lane, 83 on a plugin-supplied
 off-host browser, 76 on the extension bridge, each missing only what its lane
 cannot serve); the catalogue is re-sent on every request, so the small default is
 a per-turn saving.
@@ -302,7 +305,7 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `brw_route({action:"add"|"list"|"clear", pattern, behaviour?:"fulfill"|"abort", status?, body?, content_type?, headers?, times?, tab_id?})`. `pattern` is a URL glob where `*` matches any run of characters; a pattern with no `*` matches as a prefix. First match wins, so add specific rules before general ones.
 - `fulfill` answers from `body`/`status` without touching the network (content type is inferred from the body or the pattern); `abort` fails the request — useful for analytics or a slow third party.
 - A route can never reach a host the navigation policy forbids: containment is evaluated first. Active routes are reported by `brw_observe` as `active_routes`, so mocked traffic is never invisible.
-- There is no `redirect` behaviour, on either transport. `behaviour:"redirect"` returns a named refusal rather than a rule that does nothing; to send a page somewhere else, mock the endpoint with `fulfill` or point the page at the other server.
+- There is no `redirect` behaviour, on any transport. `behaviour:"redirect"` returns a named refusal rather than a rule that does nothing; to send a page somewhere else, mock the endpoint with `fulfill` or point the page at the other server.
 - `brw_artifact_capture({kind:"har"})` exports the tab's captured traffic as a HAR 1.2 file for DevTools or a bug report. Credential headers and request bodies are redacted unless you pass `redaction:"none"`.
 
 **When a page is contained**

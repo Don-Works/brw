@@ -3,6 +3,7 @@ package mcp
 import (
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/Don-Works/brw/internal/brwidentity"
@@ -79,21 +80,28 @@ func TestAdvertisedToolsDropTransportUnsupported(t *testing.T) {
 		},
 		{
 			// A plugin-supplied browser is CDP over a socket to another machine.
-			// Everything that resolves a path or a clipboard on the machine the
-			// browser runs on would answer about the wrong one, so it is not
-			// advertised; everything else is exactly direct CDP.
+			// Everything that resolves a path, the clipboard or this host's
+			// session-snapshot store on the machine the browser runs on would
+			// answer about the wrong one, so it is not advertised; everything
+			// else is exactly direct CDP.
 			//
 			// This is the row that distinguishes the lane from --remote above:
 			// both attached to a browser brw did not start, and only this one
-			// has to refuse the local filesystem and the clipboard.
-			name:      "an off-host browser hides this machine's filesystem and clipboard",
+			// has to refuse the local filesystem, the clipboard and the store.
+			//
+			// brw_state is hidden for the stronger reason. Restoring a snapshot
+			// is the other sanctioned way to put a session a human signed into
+			// HERE into a fresh browser, so leaving it advertised would walk
+			// past the profile gates that refuse exactly that.
+			name:      "an off-host browser hides this machine's filesystem, clipboard and session store",
 			transport: brwidentity.TransportOffHostCDP,
 			hidden: []string{
 				"brw_downloads", "brw_set_download_path", "brw_upload_file", "brw_clipboard",
+				"brw_state",
 				"brw_group_tabs", "brw_ungroup_tabs", "brw_list_tab_groups",
 			},
 			shown: []string{
-				"brw_open_incognito", "brw_close_context", "brw_cookies", "brw_state",
+				"brw_open_incognito", "brw_close_context", "brw_cookies",
 				"brw_key_down", "brw_pushstate", "brw_set_geolocation", "brw_authenticate",
 			},
 		},
@@ -254,7 +262,7 @@ func TestDerivedTableMatchesTheDocumentedLanes(t *testing.T) {
 		{"brw_open_incognito", []string{brwidentity.TransportExtensionBridge}},
 		{"brw_set_geolocation", []string{brwidentity.TransportExtensionBridge}},
 		{"brw_group_tabs", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportDirectCDP, brwidentity.TransportOffHostCDP, brwidentity.TransportRemoteCDP}},
-		{"brw_state", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportExtensionBridge}},
+		{"brw_state", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportExtensionBridge, brwidentity.TransportOffHostCDP}},
 		{"brw_set_download_path", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportExtensionBridge, brwidentity.TransportOffHostCDP, brwidentity.TransportRemoteCDP}},
 		// The clipboard row is what a single-requirement table could not state:
 		// the bridge has no browser target, the off-host lane has one and would
@@ -294,6 +302,87 @@ func TestEveryDeclaredTransportProducesACatalogue(t *testing.T) {
 		for name, transports := range transportUnsupported {
 			if slices.Contains(transports, transport) && got[name] {
 				t.Errorf("transport %q advertises %s, which can never succeed there", transport, name)
+			}
+		}
+	}
+}
+
+// transportOnlyClaims maps a phrase an agent reads as "this tool runs on
+// exactly one transport" to the transport it names. Lowercased, because the
+// descriptions shout some of them and not others.
+func transportOnlyClaims() map[string]string {
+	return map[string]string{
+		"direct-cdp transport only":        brwidentity.TransportDirectCDP,
+		"direct cdp transport only":        brwidentity.TransportDirectCDP,
+		"direct-cdp only":                  brwidentity.TransportDirectCDP,
+		"direct cdp only":                  brwidentity.TransportDirectCDP,
+		"extension-bridge transport only":  brwidentity.TransportExtensionBridge,
+		"extension bridge transport only":  brwidentity.TransportExtensionBridge,
+		"extension-bridge only":            brwidentity.TransportExtensionBridge,
+		"extension bridge only":            brwidentity.TransportExtensionBridge,
+		"remote-cdp transport only":        brwidentity.TransportRemoteCDP,
+		"remote-cdp only":                  brwidentity.TransportRemoteCDP,
+		"off-host-cdp transport only":      brwidentity.TransportOffHostCDP,
+		"off-host-cdp only":                brwidentity.TransportOffHostCDP,
+		"chrome-opt-in-cdp transport only": brwidentity.TransportChromeOptIn,
+		"chrome-opt-in-cdp only":           brwidentity.TransportChromeOptIn,
+	}
+}
+
+// A description is the only thing an agent has to decide what its lane can do,
+// and a tool handed to it on one transport that says it runs on a different one
+// is worse than no sentence at all: it reads as "you are on the wrong daemon"
+// for a call that would have worked.
+//
+// This is the check the branch that added a third transport needed. Three tools
+// said "direct-CDP only" while being advertised on remote-cdp, and four said
+// "works on both transports" when there were three, because nothing compared
+// the prose against the table that decides what is advertised.
+func TestNoAdvertisedToolClaimsADifferentTransport(t *testing.T) {
+	for _, transport := range brwidentity.Transports() {
+		t.Run(transport, func(t *testing.T) {
+			s := NewWithToolProfile(nil, "all")
+			s.SetIdentity(brwidentity.Identity{Transport: transport})
+			for _, tool := range s.advertisedTools() {
+				name, _ := tool["name"].(string)
+				description, _ := tool["description"].(string)
+				lowered := strings.ToLower(description)
+				for phrase, claimed := range transportOnlyClaims() {
+					if strings.Contains(lowered, phrase) && claimed != transport {
+						t.Errorf("%s is advertised on %q and its description says %q; make the sentence true or drop it", name, transport, phrase)
+					}
+				}
+				// "both transports" was written when there were two.
+				for _, stale := range []string{"both transports", "either transport", "the two transports"} {
+					if strings.Contains(lowered, stale) {
+						t.Errorf("%s says %q; brw advertises %d transports", name, stale, len(brwidentity.Transports()))
+					}
+				}
+			}
+		})
+	}
+}
+
+// The converse: a tool that really does run on exactly one transport should say
+// so, and the sentence has to name the transport the table agrees with. This is
+// what stops the fix above being "delete every sentence".
+func TestATransportOnlyClaimMatchesTheTable(t *testing.T) {
+	for _, tool := range tools() {
+		name, _ := tool["name"].(string)
+		description, _ := tool["description"].(string)
+		lowered := strings.ToLower(description)
+		for phrase, claimed := range transportOnlyClaims() {
+			if !strings.Contains(lowered, phrase) {
+				continue
+			}
+			var advertised []string
+			for _, transport := range brwidentity.Transports() {
+				if !slices.Contains(transportUnsupported[name], transport) {
+					advertised = append(advertised, transport)
+				}
+			}
+			if !slices.Equal(advertised, []string{claimed}) {
+				t.Errorf("%s says %q but is advertised on %v", name, phrase, advertised)
 			}
 		}
 	}

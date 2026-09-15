@@ -632,7 +632,7 @@ bump or a colour change moves pixels and leaves the structure alone.
 including on a passing run. `action: "update"` is the only thing that records or
 replaces a baseline, and it reports the differences it accepted.
 
-Both transports work. The ARIA structure is computed in the page rather than
+Every transport works. The ARIA structure is computed in the page rather than
 read from a browser-level Accessibility domain the extension bridge does not
 have, and the viewport capture — which every transport takes as JPEG for wire
 size — is re-encoded losslessly before it is stored or compared, so a baseline
@@ -690,7 +690,7 @@ recipe's baselines on the browser-host daemon.
 A `check` or `update` on a tab that reports no URL at all is refused rather than
 routed. An absent page is how `list` and `delete` say they capture nothing, so
 the rule lets an owned digest through without one; reading a silent tab the same
-way would make the digest sufficient on its own again. Both transports can
+way would make the digest sufficient on its own again. Every transport can
 produce that tab — a CDP page target before its first navigation commits, a
 `chrome.tabs` entry with no host permission.
 

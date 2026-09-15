@@ -43,7 +43,7 @@ var fullCatalogueCountClaims = []struct {
 	{"../../docs/benchmarks.md", brwidentity.TransportDirectCDP, regexp.MustCompile(`leaving the\s+(\d+)\s+above`)},
 	{"../../docs/benchmarks.md", brwidentity.TransportRemoteCDP, regexp.MustCompile(`as\s+well\s+\((\d+)\)`)},
 	{"../../docs/benchmarks.md", brwidentity.TransportChromeOptIn, regexp.MustCompile(`on\s+top\s+of\s+that\s+\((\d+)\)`)},
-	{"../../docs/benchmarks.md", brwidentity.TransportOffHostCDP, regexp.MustCompile("rather\\s+than\\s+`brw_state`\\s+\\((\\d+)\\)")},
+	{"../../docs/benchmarks.md", brwidentity.TransportOffHostCDP, regexp.MustCompile("as\\s+well\\s+as\\s+`brw_state`\\s+\\((\\d+)\\)")},
 	{"../../docs/benchmarks.md", brwidentity.TransportExtensionBridge, regexp.MustCompile(`leaving\s+(\d+)\.`)},
 	{"../../skills/brw/SKILL.md", brwidentity.TransportDirectCDP, regexp.MustCompile(`full surface is\s+(\d+)\s+tools`)},
 	{"../../skills/brw/SKILL.md", brwidentity.TransportRemoteCDP, regexp.MustCompile("(\\d+)\\s+on\\s+`--remote`")},

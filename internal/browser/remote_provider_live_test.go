@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,12 +172,15 @@ func TestProviderBackedBrowserDrivesAFullScenario(t *testing.T) {
 	if !manager.Remote() {
 		t.Fatal("a provider-backed manager must report itself as remote")
 	}
-	providerID, sessionID, redacted, _, ok := manager.RemoteSession()
-	if !ok || providerID != "local.standin" || sessionID != "standin-1" {
-		t.Fatalf("RemoteSession() = %q %q %q %v", providerID, sessionID, redacted, ok)
+	session, ok := manager.RemoteSession()
+	if !ok || session.ProviderID != "local.standin" || session.SessionID != "standin-1" {
+		t.Fatalf("RemoteSession() = %+v %v", session, ok)
 	}
-	if strings.Contains(redacted, "/devtools/") {
-		t.Fatalf("the reportable endpoint %q carries the path that authenticates the session", redacted)
+	if strings.Contains(session.Endpoint, "/devtools/") {
+		t.Fatalf("the reportable endpoint %q carries the path that authenticates the session", session.Endpoint)
+	}
+	if session.ExpiresAt.IsZero() {
+		t.Fatal("RemoteSession() reported no expiry, so /health cannot say when the browser stops existing")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -250,9 +254,13 @@ func TestProviderBackedBrowserDrivesAFullScenario(t *testing.T) {
 // there. The page is served from an allowlisted host and reaches for a
 // subresource on one that is not.
 func TestContainmentHoldsOnAProviderBackedBrowser(t *testing.T) {
-	var offAllowlistHits int
+	// Atomic because it is written from httptest's handler goroutine and read
+	// from the test goroutine, and it is only ever written when containment has
+	// already failed - so an unsynchronised counter would turn the regression
+	// this test exists to report into a race report under -race.
+	var offAllowlistHits atomic.Int64
 	offAllowlist := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		offAllowlistHits++
+		offAllowlistHits.Add(1)
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		fmt.Fprint(w, "leaked")
 	}))
@@ -307,8 +315,8 @@ func TestContainmentHoldsOnAProviderBackedBrowser(t *testing.T) {
 	if got, _ := value.(string); got != "blocked" {
 		t.Errorf("a page on the provider's browser fetched an off-allowlist host: %q", got)
 	}
-	if offAllowlistHits != 0 {
-		t.Errorf("the off-allowlist origin was reached %d times from the provider's browser", offAllowlistHits)
+	if hits := offAllowlistHits.Load(); hits != 0 {
+		t.Errorf("the off-allowlist origin was reached %d times from the provider's browser", hits)
 	}
 	blocked := manager.BlockedRequests(tabID)
 	found := false

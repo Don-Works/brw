@@ -336,7 +336,7 @@ A route can never reach a host the navigation policy forbids — containment is
 evaluated first. `brw_observe` reports `active_routes`, so mocked traffic is
 never invisible in the transcript.
 
-There is no `redirect` behaviour on either transport, and asking for one returns
+There is no `redirect` behaviour on any transport, and asking for one returns
 a refusal naming the reason rather than a rule that quietly does nothing. Mock
 the endpoint with `fulfill`, or point the page at the other server; the
 measurements behind the decision are in `docs/install.md`.
@@ -515,7 +515,7 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 Measured on a direct-CDP daemon. A tool a transport cannot serve is never
 advertised on it, so the `all` row is 91 tools unfiltered, 88 on direct CDP, 87
-on `--remote`, 86 on the Chrome opt-in lane, 84 on a plugin-supplied off-host
+on `--remote`, 86 on the Chrome opt-in lane, 83 on a plugin-supplied off-host
 browser and 76 on the extension bridge; the narrower profiles are the same size
 on every transport.
 

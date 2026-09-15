@@ -514,6 +514,13 @@ const attachedBrowserDownloadNote = "downloads are observed but not staged in th
 // transports backed by a user's normal Downloads folder do not implement this
 // capability and therefore retain their originals.
 func (m *Manager) CleanupManagedDownload(item DownloadEntry) (bool, error) {
+	// It removes a file from this machine's disk. A remote target never gets a
+	// staging directory (ensureDownloadTracking refuses before one is chosen),
+	// so this is unreachable there today — which is exactly when a guard is
+	// cheap and the absence of one is a deletion waiting for the next caller.
+	if err := m.refuseOnRemote("local_downloads"); err != nil {
+		return false, err
+	}
 	m.downloadsMu.Lock()
 	dir := m.downloadDir
 	owned := m.downloadDirOwned

@@ -6,22 +6,25 @@ import (
 )
 
 // ErrTabGroupingUnsupported is returned for any tab-grouping operation by every
-// lane this Manager drives — direct CDP and the Chrome opt-in alike. Chrome tab
-// groups are a browser-UI feature owned by the chrome:// layer and exposed only
-// through the chrome.tabGroups / chrome.tabs.group extension APIs. The DevTools
-// Protocol (the Target, Browser, and Page domains this Manager drives) has no
-// primitive to create a tab group or assign a target to one — cdproto exposes
-// none, and Chromium ships none.
+// lane this Manager drives — direct CDP, --remote, the Chrome opt-in and a
+// plugin-supplied off-host browser alike. Chrome tab groups are a browser-UI
+// feature owned by the chrome:// layer and exposed only through the
+// chrome.tabGroups / chrome.tabs.group extension APIs. The DevTools Protocol
+// (the Target, Browser, and Page domains this Manager drives) has no primitive
+// to create a tab group or assign a target to one — cdproto exposes none, and
+// Chromium ships none.
 //
-// It names the missing capability rather than one lane, because two lanes reach
-// this code: saying "not supported on the direct-CDP transport" to someone on
-// the Chrome opt-in lane sends them looking for a lane they are already past.
+// The message names the CAPABILITY rather than one transport, because four
+// lanes reach this code: saying "not supported on the direct-CDP transport"
+// tells an agent on any of the other three that its problem is a lane it is not
+// on, and sends someone on the Chrome opt-in lane looking for one they are
+// already past.
 //
 // Rather than silently returning nil (reporting success while no group is ever
 // created — the dead-wiring bug this replaces), the Manager fails loudly so
 // callers can fall back to the extension-bridge transport, which does implement
 // grouping via the extension APIs.
-var ErrTabGroupingUnsupported = errors.New("tab grouping is not supported over the DevTools Protocol (Chrome tab groups are exposed only via the extension APIs); use the extension-bridge transport for grouping")
+var ErrTabGroupingUnsupported = errors.New("tab grouping is unavailable on any CDP transport (Chrome tab groups are exposed only via the extension APIs, not the DevTools Protocol); use the extension-bridge transport for grouping")
 
 // OpenInGroup opens the URL but cannot place the resulting tab into a named
 // Chrome tab group over direct CDP. Because the "in group" guarantee cannot be

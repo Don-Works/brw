@@ -133,11 +133,11 @@ live binary, isolated `--session brw-compare`, then `close --all`). Status is
 | Network interception | `brw_route` fulfill/abort (fulfill is direct-CDP) | read-only | route, unroute | shipped |
 | HAR record and replay as a fixture | capture + `brw_route` replay on direct-CDP | no | start/stop, replay | shipped |
 | Device and environment emulation | viewport, device, geo, media, offline, headers, UA, HTTP auth | no | viewport, device, geo, media, offline | shipped |
-| Storage and auth state save/load | `brw_state` cookies only, refused on signed-in transports, never exports values | n/a | `state save` cookies+localStorage; `auth save` vault | shipped, host-only and redacted |
+| Storage and auth state save/load | `brw_state` cookies only, refused on signed-in transports and on a plugin-supplied browser, never exports values | n/a | `state save` cookies+localStorage; `auth save` vault | shipped, host-only and redacted |
 | Credential manager integration | plugin `credential.read` only; not a vault | 1Password, macOS beta | plugin + encrypted auth vault | shipped |
 | Accessibility audit and Web Vitals | axe-core + vitals + highlight | no | axe-core + vitals | shipped |
 | React DevTools introspection | no | no | `react tree` / inspect / renders / suspense | open, `M7T2Z7` |
-| Cloud browser providers | `browser.provider` plugin capability, one reference backend | no | 6 providers | shipped |
+| Cloud browser providers | `browser.provider` plugin capability, one backend kind (`exec`); no vendor ships in brw | no | 6 providers | shipped |
 | Remote operation over SSH | yes | no | no (cloud instead) | shipped |
 | WebMCP page-declared tools | list, invoke, detach, poll, cancel | no | list, invoke, detach, poll, cancel | shipped |
 | Live dashboard | viewport, activity feed, gated human takeover | side panel | viewport, activity feed, chat | shipped; chat is not a goal |

@@ -60,7 +60,7 @@ func catalogueClaims() []catalogueClaim {
 		{name: "benchmarks direct", file: "../../docs/benchmarks.md", profile: "all", transport: direct, pattern: `leaving the (\d+) above`},
 		{name: "benchmarks remote", file: "../../docs/benchmarks.md", profile: "all", transport: remote, pattern: `as well \((\d+)\)`},
 		{name: "benchmarks opt-in", file: "../../docs/benchmarks.md", profile: "all", transport: optIn, pattern: `on top of that \((\d+)\)`},
-		{name: "benchmarks off-host", file: "../../docs/benchmarks.md", profile: "all", transport: offHost, pattern: "rather than `brw_state` \\((\\d+)\\)"},
+		{name: "benchmarks off-host", file: "../../docs/benchmarks.md", profile: "all", transport: offHost, pattern: "as well as `brw_state` \\((\\d+)\\)"},
 		{name: "benchmarks bridge", file: "../../docs/benchmarks.md", profile: "all", transport: bridge, pattern: `pushState and session snapshots — leaving (\d+)`},
 		{name: "SKILL all", file: "../../skills/brw/SKILL.md", profile: "all", transport: direct, pattern: `full surface is (\d+) tools on a direct-CDP`},
 		{name: "SKILL remote", file: "../../skills/brw/SKILL.md", profile: "all", transport: remote, pattern: "(\\d+) on `--remote`"},

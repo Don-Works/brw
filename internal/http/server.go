@@ -477,6 +477,16 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	if !s.identity.Empty() {
 		payload["identity"] = s.identity
 	}
+	// A plugin-supplied browser has a provider, a session id and an expiry, and
+	// nothing else reports them: the startup log line is written before this
+	// server exists. Without it an operator learns the session ended by watching
+	// a call fail. Redacted by construction — RemoteSessionInfo.Endpoint is the
+	// scheme://host form, never the URL that authenticates the socket.
+	if reporter, ok := s.manager.(browser.RemoteSessionReporter); ok {
+		if session, live := reporter.RemoteSession(); live {
+			payload["remote_session"] = session
+		}
+	}
 	writeJSON(w, http.StatusOK, payload)
 }
 
