@@ -417,9 +417,9 @@ Core MCP tools include:
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: `all` costs ~31.3k tokens across 87 tools, `core` ~10.3k,
-`minimal` ~5.8k, and `auto` starts at ~6.0k and grows only as the agent
-discovers tools it needs via `brw_tools` (measure with
+tokens on every turn: on a direct-CDP daemon `all` costs ~30.9k tokens across
+87 tools, `core` ~10.1k, `minimal` ~5.8k, and `auto` starts at ~6.0k and grows
+only as the agent discovers tools it needs via `brw_tools` (measure with
 `scripts/measure-tool-catalogue.py`).
 
 MCP stdio lifecycle: `brwd --mcp` exits cleanly on SIGTERM/SIGINT (including

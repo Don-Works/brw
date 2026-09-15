@@ -141,9 +141,9 @@ level to trim.
 The measured MCP catalogues are 87 tools / ~31.3k tokens for `all`, 26 / ~10.3k
 for `core`, 13 / ~5.8k for `minimal`, and 14 / ~6.0k initially for the default
 `auto` profile — the same figures README.md and docs/agent-guide.md quote, from
-`scripts/measure-tool-catalogue.py`. Thus the default starts about 80% smaller
-than advertising every tool, while every tool remains directly callable and
-discoverable through `brw_tools`.
+`scripts/measure-tool-catalogue.py`, which measures a direct-CDP daemon. Thus
+the default starts about 80% smaller than advertising every tool, while every
+tool remains directly callable and discoverable through `brw_tools`.
 
 The `observe` parameter and the locate-and-act half of `brw_find` cost ~2.6k
 tokens of `all` and ~1.3k of `minimal`, measured against the catalogue that
@@ -154,11 +154,13 @@ without them is what left this section naming two different sizes for `all`.
 That is the trade: a fixed per-turn catalogue cost against a per-action saving
 that scales with the length of the flow.
 
-A daemon whose identity names a transport advertises fewer: the three
-extension-only tab-group tools drop on direct CDP, the incognito, context and
-cookie tools drop on the extension bridge, and `brw_state` and
-`brw_set_download_path` drop on the Chrome opt-in lane. The numbers above are
-the unfiltered catalogue, which is the ceiling.
+A daemon whose identity names a transport advertises fewer than the 90 tools
+the catalogue holds: the three extension-only tab-group tools drop on direct
+CDP, leaving the 87 above, and fifteen drop on the extension bridge — incognito,
+contexts and cookies, the seven page-environment overrides, clipboard, the two
+held-key tools, pushState and session snapshots — leaving 75. Only `all` is
+narrowed this way; `core`, `minimal` and `auto` advertise the same tools on
+every transport.
 
 The figures in the rest of this paragraph are historical: they measure the
 release that introduced the `auto` default, not this tree, and the catalogue has
