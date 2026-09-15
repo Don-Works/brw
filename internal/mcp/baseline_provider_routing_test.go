@@ -88,9 +88,14 @@ func newHTTPSProviderFixture(t *testing.T, ownedDigest string) *httpsProviderFix
 		}
 		digest, _ := body["recipe_digest"].(string)
 		origin, _ := body["origin"].(string)
+		owns := strings.EqualFold(digest, fixture.owned)
+		onOwnedOrigin := origin != "" && strings.EqualFold(origin, fixture.ownedOrigin)
 		answer(w, map[string]any{
-			"owns":        strings.EqualFold(digest, fixture.owned),
-			"owns_origin": origin != "" && strings.EqualFold(origin, fixture.ownedOrigin),
+			"owns":        owns,
+			"owns_origin": onOwnedOrigin,
+			// The provider holds one recipe, so the recipe it owns visits
+			// exactly the origin that recipe declares.
+			"covers_page": owns && onOwnedOrigin,
 		})
 	})
 	mux.HandleFunc("/v1/baselines/put", func(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +237,10 @@ func TestBaselineRoutingAgainstBothShippedProviders(t *testing.T) {
 
 	for _, provider := range shippedProviders(t, ownedDigest) {
 		t.Run(provider.name, func(t *testing.T) {
-			controller := &pageController{label: "Download invoices", encoding: "jpeg"}
+			// On the page the owned recipe declares. The destination is the
+			// pair, so a capture of any other page under this digest is a
+			// refusal rather than a write to either store.
+			controller := &pageController{label: "Download invoices", encoding: "jpeg", url: privateRecipe().Origins[0] + "/invoices"}
 			s := baselineServer(t, controller)
 			s.SetRecipeBaselines(provider.store)
 			localRoot := s.baselines.Root()
@@ -248,6 +256,9 @@ func TestBaselineRoutingAgainstBothShippedProviders(t *testing.T) {
 				t.Fatalf("%d private baselines were written to the local root", got)
 			}
 
+			// The public fixture is captured where it lives: a site no recipe of
+			// this provider's declares.
+			controller.url = "https://fixtures.example.test/report"
 			public := callBaselineTool(t, s, fmt.Sprintf(`{"action":"update","recipe_digest":%q,"step_index":0}`, publicDigest))
 			if status, _ := public["status"].(string); status != baseline.StatusRecorded {
 				t.Fatalf("recording the public fixture's baseline = %+v", public)
@@ -260,12 +271,36 @@ func TestBaselineRoutingAgainstBothShippedProviders(t *testing.T) {
 			}
 
 			// Both are readable again from where they were put, which is what
-			// makes each a gate rather than a write.
-			for _, digest := range []string{ownedDigest, publicDigest} {
-				checked := callBaselineTool(t, s, fmt.Sprintf(`{"action":"check","recipe_digest":%q,"step_index":0}`, digest))
+			// makes each a gate rather than a write. Each is checked from the
+			// page it was recorded on, because a check is routed by the pair
+			// exactly as the update was.
+			for _, gate := range []struct{ digest, pageURL string }{
+				{ownedDigest, privateRecipe().Origins[0] + "/invoices"},
+				{publicDigest, "https://fixtures.example.test/report"},
+			} {
+				controller.url = gate.pageURL
+				checked := callBaselineTool(t, s, fmt.Sprintf(`{"action":"check","recipe_digest":%q,"step_index":0}`, gate.digest))
 				if status, _ := checked["status"].(string); status != baseline.StatusMatch {
-					t.Fatalf("check for %s... = %+v, want match", digest[:8], checked)
+					t.Fatalf("check for %s... = %+v, want match", gate.digest[:8], checked)
 				}
+			}
+
+			// And the capture the digest alone would have aimed at the provider:
+			// the same owned recipe, on a page it never visits. Refused, and
+			// neither store grows.
+			controller.url = "https://mail.unrelated.test/inbox/secret-thread"
+			args := fmt.Sprintf(`{"action":"update","recipe_digest":%q,"step_index":0}`, ownedDigest)
+			result, rpcErr := s.callTool(context.Background(), baselineToolName, []byte(args))
+			if rpcErr != nil {
+				t.Fatalf("callTool: %+v", rpcErr)
+			}
+			failed, message := isToolError(t, result)
+			if !failed || !strings.Contains(message, "does not visit the page") {
+				t.Fatalf("capturing an unrelated page under an owned digest = %v / %q, want a refusal naming the page", failed, message)
+			}
+			if provider.count() != 1 || localBaselineFiles(t, localRoot) != 1 {
+				t.Fatalf("the refused capture was stored anyway: %d with the %s provider, %d under the local root",
+					provider.count(), provider.name, localBaselineFiles(t, localRoot))
 			}
 		})
 	}

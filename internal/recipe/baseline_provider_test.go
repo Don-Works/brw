@@ -136,9 +136,13 @@ func (f *fakeBaselineProvider) handler(t *testing.T) http.Handler {
 			t.Errorf("provider was sent %q, want an origin with no path or query", req.Origin)
 		}
 		f.routed = append(f.routed, req.Origin)
+		owns := f.owned[strings.ToLower(req.RecipeDigest)]
 		writeFakeJSON(w, map[string]any{
-			"owns":        f.owned[strings.ToLower(req.RecipeDigest)],
+			"owns":        owns,
 			"owns_origin": req.Origin != "" && f.origins[req.Origin],
+			// This provider holds one recipe, for the billing origin, so the
+			// recipe it owns covers exactly the origins it claims.
+			"covers_page": owns && req.Origin != "" && f.origins[req.Origin],
 		})
 	})
 	mux.HandleFunc("/v1/baselines/put", func(w http.ResponseWriter, r *http.Request) {
@@ -264,18 +268,26 @@ func TestBothProvidersStoreAndServeABaseline(t *testing.T) {
 				name    string
 				digest  string
 				pageURL string
-				want    BaselineRoute
+				want    BaselineDestination
 			}{
-				{name: "its own recipe", digest: implementation.owned, pageURL: "", want: BaselineRoute{OwnsRecipe: true}},
-				{name: "a digest it does not hold", digest: foreign, pageURL: "", want: BaselineRoute{}},
+				{name: "its own recipe, no page (list and delete capture nothing)", digest: implementation.owned, pageURL: "", want: BaselineProvider},
+				{name: "a digest it does not hold", digest: foreign, pageURL: "", want: BaselineLocal},
 				{
 					name: "a digest it does not hold, on a page its recipes reach", digest: foreign,
-					pageURL: "https://billing.example.test/invoices?month=3", want: BaselineRoute{OwnsOrigin: true},
+					pageURL: "https://billing.example.test/invoices?month=3", want: BaselineRefusedProviderReachesPage,
 				},
-				{name: "a digest it does not hold, on an unrelated page", digest: foreign, pageURL: "https://fixtures.example.test/home", want: BaselineRoute{}},
+				{name: "a digest it does not hold, on an unrelated page", digest: foreign, pageURL: "https://fixtures.example.test/home", want: BaselineLocal},
 				{
 					name: "its own recipe, on a page its recipes reach", digest: implementation.owned,
-					pageURL: "https://billing.example.test/invoices", want: BaselineRoute{OwnsRecipe: true, OwnsOrigin: true},
+					pageURL: "https://billing.example.test/invoices", want: BaselineProvider,
+				},
+				{
+					// The direction the digest alone decides: an owned digest is
+					// still a caller argument, and an agent can name it while
+					// sitting on any page at all. Sending that capture to the
+					// provider POSTs an unrelated signed-in page off the machine.
+					name: "its own recipe, on a page that recipe never visits", digest: implementation.owned,
+					pageURL: "https://mail.unrelated.test/inbox/secret-thread", want: BaselineRefusedPageOutsideRecipe,
 				},
 			}
 			for _, route := range routes {
@@ -283,15 +295,17 @@ func TestBothProvidersStoreAndServeABaseline(t *testing.T) {
 				if err != nil {
 					t.Fatalf("RouteBaseline(%s): %v", route.name, err)
 				}
-				if got != route.want {
-					t.Fatalf("RouteBaseline(%s) = %+v, want %+v", route.name, got, route.want)
+				if got.Destination() != route.want {
+					t.Fatalf("RouteBaseline(%s) = %q, want %q", route.name, got.Destination(), route.want)
 				}
 			}
 			if implementation.fake != nil {
 				// The page URL carried a path and a query. What reached the
 				// provider is the origin and nothing else.
 				for _, sent := range implementation.fake.routed {
-					if sent != "" && sent != "https://billing.example.test" && sent != "https://fixtures.example.test" {
+					switch sent {
+					case "", "https://billing.example.test", "https://fixtures.example.test", "https://mail.unrelated.test":
+					default:
 						t.Fatalf("provider was sent origin %q", sent)
 					}
 				}
@@ -690,6 +704,14 @@ func TestRoutingRefusesAProviderThatAnswersHalfTheQuestion(t *testing.T) {
 		},
 		{
 			name: "neither field", answer: `{}`, pageURL: "", wantErr: "without owns",
+		},
+		{
+			// The other half of the binding. Without covers_page the client
+			// cannot tell a provider whose recipe really visits this page from
+			// one that never answered, and taking the silence as yes POSTs a
+			// capture of an unrelated signed-in page to the provider.
+			name: "covers_page missing while the provider claims the digest", answer: `{"owns":true,"owns_origin":true}`,
+			pageURL: "https://billing.example.test/invoices", wantErr: "covers_page",
 		},
 	}
 	for _, tc := range tests {

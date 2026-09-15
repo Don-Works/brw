@@ -82,13 +82,21 @@ func TestBaselineRouteAnswersAProxyingDaemon(t *testing.T) {
 		name    string
 		digest  string
 		pageURL string
-		want    recipe.BaselineRoute
+		want    recipe.BaselineDestination
 	}{
-		{name: "a recipe the host's provider owns", digest: owned, want: recipe.BaselineRoute{OwnsRecipe: true}},
-		{name: "a public fixture", digest: unowned, pageURL: "https://fixtures.example.test/report"},
+		{name: "a recipe the host's provider owns, with no page (list and delete capture nothing)", digest: owned, want: recipe.BaselineProvider},
+		{
+			name: "a recipe the host's provider owns, on a page it declares", digest: owned,
+			pageURL: value.Origins[0] + "/invoices", want: recipe.BaselineProvider,
+		},
+		{
+			name: "a recipe the host's provider owns, on a page it never visits", digest: owned,
+			pageURL: "https://mail.unrelated.test/inbox/secret-thread", want: recipe.BaselineRefusedPageOutsideRecipe,
+		},
+		{name: "a public fixture", digest: unowned, pageURL: "https://fixtures.example.test/report", want: recipe.BaselineLocal},
 		{
 			name: "an invented digest on a page the provider's recipes reach", digest: unowned,
-			pageURL: "https://billing.example.test/invoices?month=3", want: recipe.BaselineRoute{OwnsOrigin: true},
+			pageURL: "https://billing.example.test/invoices?month=3", want: recipe.BaselineRefusedProviderReachesPage,
 		},
 	}
 	for _, tc := range tests {
@@ -97,8 +105,8 @@ func TestBaselineRouteAnswersAProxyingDaemon(t *testing.T) {
 			if err != nil {
 				t.Fatalf("RouteBaseline: %v", err)
 			}
-			if got != tc.want {
-				t.Fatalf("RouteBaseline = %+v, want %+v", got, tc.want)
+			if got.Destination() != tc.want {
+				t.Fatalf("RouteBaseline = %q, want %q", got.Destination(), tc.want)
 			}
 		})
 	}
@@ -120,15 +128,15 @@ func TestBaselineRouteOnAHostWithNoProviderOwnsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RouteBaseline against a host with no provider: %v", err)
 	}
-	if route.OwnsRecipe || route.OwnsOrigin {
-		t.Fatalf("a host with no recipe provider claimed %+v", route)
+	if route.Destination() != recipe.BaselineLocal {
+		t.Fatalf("a host with no recipe provider answered %q, want the local root", route.Destination())
 	}
 }
 
-// TestBaselineRouteDisclosesOnlyTwoBooleans. The route exists so a proxy can
+// TestBaselineRouteDisclosesOnlyTheDestination. The route exists so a proxy can
 // decide where a capture belongs; a recipe body, an id or a digest list coming
 // back would make it a way to read the private corpus over HTTP.
-func TestBaselineRouteDisclosesOnlyTwoBooleans(t *testing.T) {
+func TestBaselineRouteDisclosesOnlyTheDestination(t *testing.T) {
 	root, value := privateProviderRoot(t)
 	owned, err := recipe.Digest(value)
 	if err != nil {
@@ -151,8 +159,8 @@ func TestBaselineRouteDisclosesOnlyTwoBooleans(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
 	}
-	if len(answer) != 2 || answer["owns_recipe"] != true || answer["owns_origin"] != true {
-		t.Fatalf("answer = %v, want exactly the two routing booleans", answer)
+	if len(answer) != 1 || answer["destination"] != string(recipe.BaselineProvider) {
+		t.Fatalf("answer = %v, want exactly the destination word", answer)
 	}
 	for _, secret := range []string{value.ID, value.Name, value.Description, "download-invoices"} {
 		if strings.Contains(rec.Body.String(), secret) {

@@ -42,8 +42,10 @@ type BaselineStore interface {
 // a proxy could not ask about would fall back to that proxy's local root, which
 // is the outcome this whole path exists to prevent.
 type BaselineRouter interface {
-	// RouteBaseline reports what this provider owns of one capture: the recipe
-	// the digest pins, and the page the capture is of.
+	// RouteBaseline reports where one capture belongs. An implementation says
+	// what it owns and hands that to NewBaselineRoute, which is the only
+	// constructor: the rule that binds the page to the recipe belongs to every
+	// router at once, not to each one's idea of it.
 	//
 	// pageURL is the full URL of the page being captured, or empty for an action
 	// that reads no page. Only its ORIGIN is ever sent to a provider — the path
@@ -52,23 +54,112 @@ type BaselineRouter interface {
 	RouteBaseline(ctx context.Context, digest, pageURL string) (BaselineRoute, error)
 }
 
-// BaselineRoute is a provider's answer about one capture.
+// BaselineRoute is a provider's answer about one capture: the destination, or
+// a refusal to pick one.
 //
-// Two questions rather than one, because a destination decided from the digest
-// alone is decided from an argument the caller invents. An agent sitting on a
-// page a private recipe reached can pass any well-formed digest the provider
-// does not own; without OwnsOrigin the screenshot and the page's accessible
-// names would then be written to the local root, which is the leak the routing
-// exists to close.
+// Its fields are unexported and NewBaselineRoute is the only way to build one,
+// because the rule below has to hold for every implementation of
+// BaselineRouter — the two shipped providers, the proxy hop, and whatever is
+// added next. A router that assembled its own answer could say "the recipe is
+// mine" about a page that recipe never visits, and that sentence is what sends
+// a screenshot of an unrelated signed-in page to the provider's /v1/baselines/put.
 type BaselineRoute struct {
-	// OwnsRecipe is true when the provider holds the recipe version the digest
-	// pins. Its baselines belong with the provider.
+	destination BaselineDestination
+}
+
+// BaselineDestination is where one capture belongs, as a closed set. brw
+// handles every value and refuses the zero one, so a router that answers with
+// something nobody classified stops the capture rather than defaulting it to
+// the local root.
+type BaselineDestination string
+
+const (
+	// BaselineUnclassified is the zero value: a route that never went through
+	// NewBaselineRoute. It is a refusal, not a synonym for "nothing claims it" —
+	// "nobody said this page was private" is exactly how a private page's
+	// screenshot lands on disk.
+	BaselineUnclassified BaselineDestination = ""
+	// BaselineLocal: nothing the provider holds claims this capture, so it goes
+	// to the operator-configured local root as it did before providers could
+	// hold baselines at all.
+	BaselineLocal BaselineDestination = "local"
+	// BaselineProvider: the provider holds the recipe the digest pins AND that
+	// recipe declares the origin of the page being captured. Both halves,
+	// because each alone is a way to aim the capture somewhere it should not go.
+	BaselineProvider BaselineDestination = "provider"
+	// BaselineRefusedPageOutsideRecipe: the provider owns the recipe the digest
+	// pins and that recipe does not visit this page. recipe_digest is an
+	// argument an agent invents, so an agent on any signed-in page can name an
+	// owned digest and have the capture POSTed to the provider — off this
+	// machine — under a key claiming it is a step of a recipe that never goes
+	// there. Neither destination is right, so brw refuses.
+	BaselineRefusedPageOutsideRecipe BaselineDestination = "refused_page_outside_recipe"
+	// BaselineRefusedProviderReachesPage: the provider has some recipe for this
+	// page's origin and the digest is not one of its recipes. The mirror image,
+	// and the one that would write a private page's capture to the local root.
+	BaselineRefusedProviderReachesPage BaselineDestination = "refused_provider_reaches_page"
+)
+
+// BaselineOwnership is what one provider knows about one capture, before the
+// rule that turns it into a destination.
+type BaselineOwnership struct {
+	// PageURL is the page being captured, or empty for an action that reads no
+	// page. Empty means there is nothing to bind the recipe to — list and delete
+	// name a stored record and capture nothing — not that the binding passed.
+	PageURL string
+	// OwnsRecipe: the provider holds the recipe version the digest pins.
 	OwnsRecipe bool
-	// OwnsOrigin is true when the provider holds ANY recipe for the origin the
-	// page being captured is showing. With OwnsRecipe false it is a refusal, not
-	// a destination: brw does not know which of the provider's recipes this
-	// capture belongs to, and will not guess by writing it locally.
-	OwnsOrigin bool
+	// RecipeVisitsPage: that same recipe declares the page's origin among its
+	// own. A recipe cannot navigate outside its declared origins, so a capture
+	// taken during it is always at one of them.
+	RecipeVisitsPage bool
+	// OwnsPageOrigin: the provider holds SOME recipe for the page's origin,
+	// whatever the caller's digest says.
+	OwnsPageOrigin bool
+}
+
+// NewBaselineRoute applies the routing rule once, for every router.
+//
+// The rule is a property of the pair — is this page one that recipe reaches —
+// and not of the lane the question arrived on. Asking it here rather than in
+// each provider is what stops the next transport from re-deciding it: a router
+// reports what it owns, and the destination is derived.
+func NewBaselineRoute(ownership BaselineOwnership) BaselineRoute {
+	page := strings.TrimSpace(ownership.PageURL)
+	switch {
+	case ownership.OwnsRecipe && (page == "" || ownership.RecipeVisitsPage):
+		return BaselineRoute{destination: BaselineProvider}
+	case ownership.OwnsRecipe:
+		return BaselineRoute{destination: BaselineRefusedPageOutsideRecipe}
+	case page != "" && ownership.OwnsPageOrigin:
+		return BaselineRoute{destination: BaselineRefusedProviderReachesPage}
+	default:
+		return BaselineRoute{destination: BaselineLocal}
+	}
+}
+
+// Destination names where the capture belongs.
+func (r BaselineRoute) Destination() BaselineDestination { return r.destination }
+
+// ParseBaselineDestination rebuilds a route from the wire, for the proxy hop.
+//
+// An unknown or absent destination is an error rather than a local-root
+// default: a proxy talking to a browser host that answers something this build
+// does not understand knows nothing about who owns the capture, and that is the
+// case where using the local root is wrong.
+func ParseBaselineDestination(value string) (BaselineRoute, error) {
+	switch BaselineDestination(strings.TrimSpace(value)) {
+	case BaselineLocal:
+		return BaselineRoute{destination: BaselineLocal}, nil
+	case BaselineProvider:
+		return BaselineRoute{destination: BaselineProvider}, nil
+	case BaselineRefusedPageOutsideRecipe:
+		return BaselineRoute{destination: BaselineRefusedPageOutsideRecipe}, nil
+	case BaselineRefusedProviderReachesPage:
+		return BaselineRoute{destination: BaselineRefusedProviderReachesPage}, nil
+	default:
+		return BaselineRoute{}, fmt.Errorf("unknown baseline destination %q", value)
+	}
 }
 
 // baselineEnvelopeHeadroom is what a fetch response costs beyond the base64
@@ -261,10 +352,13 @@ func (p *DirectoryProvider) RouteBaseline(ctx context.Context, digest, pageURL s
 	if err != nil {
 		return BaselineRoute{}, err
 	}
-	return BaselineRoute{
-		OwnsRecipe: catalog.Owns(digest),
-		OwnsOrigin: catalog.OwnsOrigin(originOf(pageURL)),
-	}, nil
+	origin := originOf(pageURL)
+	return NewBaselineRoute(BaselineOwnership{
+		PageURL:          pageURL,
+		OwnsRecipe:       catalog.Owns(digest),
+		RecipeVisitsPage: catalog.RecipeVisitsOrigin(digest, origin),
+		OwnsPageOrigin:   catalog.OwnsOrigin(origin),
+	}), nil
 }
 
 func (p *DirectoryProvider) PutBaseline(_ context.Context, record baseline.Record) error {
@@ -325,6 +419,34 @@ func (c *Catalog) Owns(digest string) bool {
 	return ok
 }
 
+// RecipeVisitsOrigin reports whether the recipe version digest pins declares
+// origin among its own.
+//
+// This is the binding the digest alone cannot give. A recipe cannot navigate
+// outside its declared origins, so a capture taken during one is always at an
+// origin it declares; a capture of any other page under that recipe's key is a
+// caller mistake or an attempt to aim the capture at the provider.
+func (c *Catalog) RecipeVisitsOrigin(digest, origin string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return false
+	}
+	normalized, err := baseline.NormalizeRecipeDigest(digest)
+	if err != nil {
+		return false
+	}
+	index, ok := c.byDigest[normalized]
+	if !ok {
+		return false
+	}
+	for _, declared := range c.entries[index].recipe.Origins {
+		if strings.EqualFold(strings.TrimSpace(declared), origin) {
+			return true
+		}
+	}
+	return false
+}
+
 // OwnsOrigin reports whether this catalog holds any recipe for origin.
 //
 // Compared case-insensitively: a recipe declares its origin and a page reports
@@ -363,6 +485,13 @@ func (p *HTTPProvider) RouteBaseline(ctx context.Context, digest, pageURL string
 	var out struct {
 		Owns       *bool `json:"owns"`
 		OwnsOrigin *bool `json:"owns_origin"`
+		// CoversPage is the binding in the other direction: the recipe the
+		// digest pins declares the page's origin among its own. Absent while
+		// owns is true and a page was asked about is refused for the reason
+		// owns_origin is: a provider that cannot answer it cannot be told from
+		// one whose recipe really does visit the page, and the difference is
+		// whether a capture of an unrelated signed-in page is POSTed out.
+		CoversPage *bool `json:"covers_page"`
 	}
 	if err := p.post(ctx, "/v1/baselines/owner", request, &out); err != nil {
 		return BaselineRoute{}, err
@@ -373,7 +502,15 @@ func (p *HTTPProvider) RouteBaseline(ctx context.Context, digest, pageURL string
 	if origin != "" && out.OwnsOrigin == nil {
 		return BaselineRoute{}, errors.New("recipe provider answered the baseline routing question without owns_origin, so a page its recipes reach cannot be told from one they do not")
 	}
-	return BaselineRoute{OwnsRecipe: *out.Owns, OwnsOrigin: origin != "" && *out.OwnsOrigin}, nil
+	if origin != "" && *out.Owns && out.CoversPage == nil {
+		return BaselineRoute{}, errors.New("recipe provider answered the baseline routing question without covers_page, so a capture of a page this recipe never visits cannot be told from one it does")
+	}
+	return NewBaselineRoute(BaselineOwnership{
+		PageURL:          pageURL,
+		OwnsRecipe:       *out.Owns,
+		RecipeVisitsPage: out.CoversPage != nil && *out.CoversPage,
+		OwnsPageOrigin:   origin != "" && out.OwnsOrigin != nil && *out.OwnsOrigin,
+	}), nil
 }
 
 func (p *HTTPProvider) PutBaseline(ctx context.Context, record baseline.Record) error {

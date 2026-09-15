@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,7 +21,11 @@ type recordingBaselines struct {
 	owned map[string]bool
 	// origins is the other half of the routing question: the sites this
 	// provider has some recipe for, whatever the caller's digest says.
-	origins   map[string]bool
+	origins map[string]bool
+	// visits is what the OWNED recipes themselves declare. A real provider
+	// answers this from the recipe the digest pins, and it is what stops an
+	// owned digest naming a page that recipe never goes to.
+	visits    map[string]bool
 	records   map[string]baseline.Record
 	ownsError error
 	asked     []string
@@ -33,6 +38,7 @@ func newRecordingBaselines(owned ...string) *recordingBaselines {
 	store := &recordingBaselines{
 		owned:   map[string]bool{},
 		origins: map[string]bool{},
+		visits:  map[string]bool{},
 		records: map[string]baseline.Record{},
 	}
 	for _, digest := range owned {
@@ -47,13 +53,22 @@ func (r *recordingBaselines) RouteBaseline(_ context.Context, digest, pageURL st
 	if r.ownsError != nil {
 		return recipe.BaselineRoute{}, r.ownsError
 	}
-	owns := recipe.BaselineRoute{OwnsRecipe: r.owned[strings.ToLower(digest)]}
-	for origin := range r.origins {
-		if pageURL != "" && strings.HasPrefix(pageURL, origin) {
-			owns.OwnsOrigin = true
-		}
+	origin := testOriginOf(pageURL)
+	return recipe.NewBaselineRoute(recipe.BaselineOwnership{
+		PageURL:          pageURL,
+		OwnsRecipe:       r.owned[strings.ToLower(digest)],
+		RecipeVisitsPage: origin != "" && r.visits[origin],
+		OwnsPageOrigin:   origin != "" && r.origins[origin],
+	}), nil
+}
+
+// testOriginOf is what a provider reduces a page URL to before it answers.
+func testOriginOf(pageURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(pageURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
 	}
-	return owns, nil
+	return parsed.Scheme + "://" + parsed.Host
 }
 
 func (r *recordingBaselines) PutBaseline(_ context.Context, record baseline.Record) error {
@@ -137,18 +152,30 @@ func TestBaselineForAProviderOwnedRecipeGoesToTheProvider(t *testing.T) {
 	const publicDigest = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 
 	tests := []struct {
-		name         string
+		name string
+		// pageURL is the page the capture is of. It is per-case because the
+		// destination is the pair: the provider's recipe on the provider's site,
+		// or a public fixture on a site no recipe of theirs reaches.
+		pageURL      string
 		digest       string
 		wantProvider bool
 	}{
-		{name: "a recipe the provider owns", digest: fixtureBaselineDigest, wantProvider: true},
-		{name: "a public fixture the provider does not own", digest: publicDigest},
+		{
+			name:   "a recipe the provider owns, on the page that recipe visits",
+			digest: fixtureBaselineDigest, pageURL: providerRecipeOrigin + "/invoices", wantProvider: true,
+		},
+		{
+			name:   "a public fixture the provider does not own",
+			digest: publicDigest, pageURL: "https://fixtures.example.test/report",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			controller := &pageController{label: "Pay invoice", encoding: "jpeg"}
+			controller := &pageController{label: "Pay invoice", encoding: "jpeg", url: tc.pageURL}
 			s := baselineServer(t, controller)
 			provider := newRecordingBaselines(fixtureBaselineDigest)
+			provider.origins[providerRecipeOrigin] = true
+			provider.visits[providerRecipeOrigin] = true
 			s.SetRecipeBaselines(provider)
 			localRoot := s.baselines.Root()
 
@@ -209,7 +236,7 @@ func TestBaselineForAProviderOwnedRecipeGoesToTheProvider(t *testing.T) {
 // would put a screenshot of a private page in the local root at exactly the
 // moment the provider cannot be reached to say it is private.
 func TestBaselineRoutingRefusesRatherThanFallingBackToTheLocalRoot(t *testing.T) {
-	controller := &pageController{label: "Pay invoice", encoding: "jpeg"}
+	controller := &pageController{label: "Pay invoice", encoding: "jpeg", url: providerRecipeOrigin + "/invoices"}
 	s := baselineServer(t, controller)
 	provider := newRecordingBaselines(fixtureBaselineDigest)
 	provider.ownsError = errors.New("the provider is unreachable")
@@ -237,9 +264,11 @@ func TestBaselineRoutingRefusesRatherThanFallingBackToTheLocalRoot(t *testing.T)
 // come from the provider should not have to configure a local root it never
 // writes to.
 func TestBaselinesWorkWithAProviderAndNoLocalRoot(t *testing.T) {
-	controller := &pageController{label: "Pay invoice", encoding: "jpeg"}
+	controller := &pageController{label: "Pay invoice", encoding: "jpeg", url: providerRecipeOrigin + "/invoices"}
 	s := New(controller)
 	provider := newRecordingBaselines(fixtureBaselineDigest)
+	provider.origins[providerRecipeOrigin] = true
+	provider.visits[providerRecipeOrigin] = true
 	s.SetRecipeBaselines(provider)
 
 	result := callBaselineTool(t, s, fmt.Sprintf(`{"action":"update","recipe_digest":%q,"step_index":0}`, fixtureBaselineDigest))
@@ -251,6 +280,9 @@ func TestBaselinesWorkWithAProviderAndNoLocalRoot(t *testing.T) {
 	}
 
 	// A recipe the provider does not own still has nowhere to go, and says so.
+	// On a page no recipe of the provider's reaches, so that the refusal is the
+	// missing local root rather than the page disagreeing with the digest.
+	controller.url = "https://fixtures.example.test/report"
 	const publicDigest = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 	args := fmt.Sprintf(`{"action":"update","recipe_digest":%q,"step_index":0}`, publicDigest)
 	unowned, rpcErr := s.callTool(context.Background(), baselineToolName, []byte(args))

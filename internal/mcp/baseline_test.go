@@ -39,10 +39,14 @@ const fixtureBaselineDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0
 type pageController struct {
 	browser.Controller
 	// url is what ListTabs reports the one tab is showing. brw_baseline routes
-	// on the page as well as on the digest, so a controller that could not say
-	// what it was on would be a browser no deployment has.
-	url     string
-	patched bool
+	// on the page as well as on the digest, so most cases need to say where the
+	// daemon is; leaving it empty stands in for the ordinary public fixture.
+	url string
+	// blankURL makes ListTabs report a tab that exists and says nothing about
+	// where it is, which both transports can produce: a CDP page target before
+	// its first navigation commits, a chrome.tabs entry with no host permission.
+	blankURL bool
+	patched  bool
 	// patch repaints an exact rectangle of the capture, in image pixels, so a
 	// test can place a change relative to an ignore region instead of relative
 	// to the whole left half.
@@ -83,7 +87,7 @@ func (c *pageController) Screenshot(context.Context) (browser.Screenshot, error)
 
 func (c *pageController) ListTabs(context.Context) ([]browser.Tab, error) {
 	url := c.url
-	if url == "" {
+	if url == "" && !c.blankURL {
 		url = "https://fixtures.example.test/report"
 	}
 	return []browser.Tab{{ID: "tab-1", URL: url, Active: true}}, nil

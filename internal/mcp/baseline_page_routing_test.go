@@ -15,31 +15,43 @@ import (
 // sent it.
 const unownedDigest = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 
+// providerRecipeOrigin is the one site the test provider's recipe declares.
+// Nothing else is a page that recipe visits, which is what makes a capture
+// taken anywhere else under its digest a refusal.
+const providerRecipeOrigin = "https://billing.example.test"
+
 // TestBaselineOfAPageTheProviderReachesIsRefusedNotWrittenLocally is the
-// property the digest alone cannot give.
+// property the digest alone cannot give, in both directions.
 //
 // recipe_digest is a caller argument. An agent sitting on a signed-in page a
 // private recipe reached can pass any 64-hex string the provider does not own,
 // and routing on that argument alone writes the screenshot and the page's
-// accessible names — which carry its text — to the local root. The page is
-// therefore half the question, and a provider that has a recipe for the page's
-// origin but not for this digest is a refusal rather than a destination.
+// accessible names — which carry its text — to the local root. The same agent
+// can pass one the provider DOES own, and routing on the argument alone then
+// POSTs that capture to the provider, off the machine, under the key of a
+// recipe that never goes there. The page is therefore half the question either
+// way, and a pair that disagrees is a refusal rather than a destination.
 func TestBaselineOfAPageTheProviderReachesIsRefusedNotWrittenLocally(t *testing.T) {
-	const privateOrigin = "https://billing.example.test"
+	const privateOrigin = providerRecipeOrigin
 
 	tests := []struct {
 		name string
 		// pageURL is what the tab is showing when the call arrives.
 		pageURL string
 		digest  string
-		// wantRefused is whether brw must refuse rather than pick a store.
-		wantRefused bool
+		// wantRefusal is the phrase the refusal has to carry, or empty when the
+		// capture is meant to be stored.
+		wantRefusal string
 		wantLocal   int
+		// wantProvider is how many captures reached the provider, because "not
+		// written locally" is only half of a refusal: the other destination is
+		// off this machine entirely.
+		wantProvider int
 	}{
 		{
 			name:    "an invented digest on a page the provider's recipes reach",
 			pageURL: privateOrigin + "/invoices?month=3", digest: unownedDigest,
-			wantRefused: true,
+			wantRefusal: "not one of its recipes",
 		},
 		{
 			name:    "the same invented digest on a page no recipe reaches",
@@ -49,6 +61,17 @@ func TestBaselineOfAPageTheProviderReachesIsRefusedNotWrittenLocally(t *testing.
 		{
 			name:    "the provider's own recipe on its own page",
 			pageURL: privateOrigin + "/invoices", digest: fixtureBaselineDigest,
+			wantProvider: 1,
+		},
+		{
+			// The mirror of the first row, and the one an owned digest opens:
+			// the provider holds this recipe, so routing on the digest alone
+			// sends a screenshot and the accessible names of an unrelated
+			// signed-in page to the provider's /v1/baselines/put — off this
+			// machine — under the key of a recipe that never goes there.
+			name:    "the provider's own recipe on a page that recipe never visits",
+			pageURL: "https://mail.unrelated.test/inbox/secret-thread", digest: fixtureBaselineDigest,
+			wantRefusal: "does not visit the page",
 		},
 	}
 	for _, tc := range tests {
@@ -57,6 +80,7 @@ func TestBaselineOfAPageTheProviderReachesIsRefusedNotWrittenLocally(t *testing.
 			s := baselineServer(t, controller)
 			provider := newRecordingBaselines(fixtureBaselineDigest)
 			provider.origins[privateOrigin] = true
+			provider.visits[privateOrigin] = true
 			s.SetRecipeBaselines(provider)
 			localRoot := s.baselines.Root()
 
@@ -66,14 +90,17 @@ func TestBaselineOfAPageTheProviderReachesIsRefusedNotWrittenLocally(t *testing.
 				t.Fatalf("callTool: %+v", rpcErr)
 			}
 			failed, message := isToolError(t, result)
-			if failed != tc.wantRefused {
-				t.Fatalf("refused = %v (%s), want %v", failed, message, tc.wantRefused)
+			if failed != (tc.wantRefusal != "") {
+				t.Fatalf("refused = %v (%s), want %v", failed, message, tc.wantRefusal != "")
 			}
-			if tc.wantRefused && !strings.Contains(message, "not one of its recipes") {
-				t.Fatalf("refusal = %q, which does not say why the digest and the page disagree", message)
+			if tc.wantRefusal != "" && !strings.Contains(message, tc.wantRefusal) {
+				t.Fatalf("refusal = %q, which does not say why the digest and the page disagree (want %q)", message, tc.wantRefusal)
 			}
 			if got := localBaselineFiles(t, localRoot); got != tc.wantLocal {
 				t.Fatalf("%d baselines under the local root, want %d", got, tc.wantLocal)
+			}
+			if len(provider.records) != tc.wantProvider {
+				t.Fatalf("%d captures reached the provider, want %d", len(provider.records), tc.wantProvider)
 			}
 			// The page reached the routing question at all: without it the
 			// refusal above could only ever have come from the digest.
@@ -90,7 +117,8 @@ func TestBaselineListDoesNotRequireAPage(t *testing.T) {
 	controller := &pageController{label: "Pay invoice", encoding: "jpeg", url: "https://billing.example.test/invoices"}
 	s := baselineServer(t, controller)
 	provider := newRecordingBaselines(fixtureBaselineDigest)
-	provider.origins["https://billing.example.test"] = true
+	provider.origins[providerRecipeOrigin] = true
+	provider.visits[providerRecipeOrigin] = true
 	s.SetRecipeBaselines(provider)
 
 	result := callBaselineTool(t, s, fmt.Sprintf(`{"action":"list","recipe_digest":%q,"step_index":1}`, unownedDigest))
@@ -126,6 +154,7 @@ func (u upstreamRouter) RouteBaseline(context.Context, string, string) (recipe.B
 // with the tool description saying it could not happen. The refusal is named
 // and narrow: a public fixture still gates here.
 func TestBaselineOnAProxyingDaemonRefusesWhatBelongsWithTheProvider(t *testing.T) {
+	page := "https://billing.example.test/invoices"
 	tests := []struct {
 		name        string
 		route       recipe.BaselineRoute
@@ -133,19 +162,38 @@ func TestBaselineOnAProxyingDaemonRefusesWhatBelongsWithTheProvider(t *testing.T
 		wantLocal   int
 	}{
 		{
-			name:        "a recipe the upstream provider owns",
-			route:       recipe.BaselineRoute{OwnsRecipe: true},
+			name: "a recipe the upstream provider owns, on a page it visits",
+			route: recipe.NewBaselineRoute(recipe.BaselineOwnership{
+				PageURL: page, OwnsRecipe: true, RecipeVisitsPage: true, OwnsPageOrigin: true,
+			}),
 			wantRefusal: "--upstream-http",
 		},
 		{
-			name:        "a page the upstream provider's recipes reach",
-			route:       recipe.BaselineRoute{OwnsOrigin: true},
+			name: "a page the upstream provider's recipes reach",
+			route: recipe.NewBaselineRoute(recipe.BaselineOwnership{
+				PageURL: page, OwnsPageOrigin: true,
+			}),
 			wantRefusal: "not one of its recipes",
 		},
 		{
+			name: "a recipe the upstream provider owns, on a page it never visits",
+			route: recipe.NewBaselineRoute(recipe.BaselineOwnership{
+				PageURL: "https://mail.unrelated.test/inbox/secret-thread", OwnsRecipe: true,
+			}),
+			wantRefusal: "does not visit the page",
+		},
+		{
 			name:      "a public fixture nothing upstream claims",
-			route:     recipe.BaselineRoute{},
+			route:     recipe.NewBaselineRoute(recipe.BaselineOwnership{PageURL: page}),
 			wantLocal: 1,
+		},
+		{
+			// The zero value: a router that never classified the capture. Read
+			// as "nobody claimed it" this writes a private page's screenshot to
+			// the proxy's disk, so it is a refusal instead.
+			name:        "an answer this daemon does not classify",
+			route:       recipe.BaselineRoute{},
+			wantRefusal: "without a destination",
 		},
 	}
 	for _, tc := range tests {
@@ -209,5 +257,49 @@ func TestBaselineStorageIsStillLocalWithNoRouter(t *testing.T) {
 	}
 	if got := localBaselineFiles(t, s.baselines.Root()); got != 1 {
 		t.Fatalf("%d baselines under the local root, want the one just recorded", got)
+	}
+}
+
+// TestBaselineOfATabThatReportsNoURLIsRefused is the third way to reach the
+// destination on the digest alone.
+//
+// An absent page is how list and delete say "this action captures nothing", so
+// the routing rule lets an owned digest through without one. A tab that exists
+// and reports no URL is a different thing entirely, and reading it as the first
+// would hand an agent back exactly what binding the page took away: name an
+// owned digest, capture whatever is on screen, and it is POSTed to the
+// provider. Both transports can produce that tab.
+func TestBaselineOfATabThatReportsNoURLIsRefused(t *testing.T) {
+	for _, action := range []string{"check", "update"} {
+		t.Run(action, func(t *testing.T) {
+			controller := &pageController{label: "Pay invoice", encoding: "jpeg", blankURL: true}
+			s := baselineServer(t, controller)
+			provider := newRecordingBaselines(fixtureBaselineDigest)
+			provider.origins[providerRecipeOrigin] = true
+			provider.visits[providerRecipeOrigin] = true
+			s.SetRecipeBaselines(provider)
+			localRoot := s.baselines.Root()
+
+			args := fmt.Sprintf(`{"action":%q,"recipe_digest":%q,"step_index":0}`, action, fixtureBaselineDigest)
+			result, rpcErr := s.callTool(context.Background(), baselineToolName, []byte(args))
+			if rpcErr != nil {
+				t.Fatalf("callTool: %+v", rpcErr)
+			}
+			failed, message := isToolError(t, result)
+			if !failed || !strings.Contains(message, "reports no URL") {
+				t.Fatalf("capturing a tab with no URL under an owned digest = %v / %q, want a refusal naming the missing page", failed, message)
+			}
+			if len(provider.records) != 0 {
+				t.Fatalf("%d captures of a page brw could not place reached the provider", len(provider.records))
+			}
+			if got := localBaselineFiles(t, localRoot); got != 0 {
+				t.Fatalf("%d captures of a page brw could not place were written to the local root", got)
+			}
+			// The provider was never asked either: a routing question carrying no
+			// page is the question list and delete ask, and this is not that.
+			if len(provider.askedAbout) != 0 {
+				t.Fatalf("the provider was asked to place a capture with no page: %q", provider.askedAbout)
+			}
+		})
 	}
 }

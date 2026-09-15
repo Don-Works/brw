@@ -125,8 +125,8 @@ func (s *Server) SetArtifactAPI(api artifact.API) { s.artifacts = api }
 func (s *Server) SetRecipeAPI(api recipe.API) { s.recipes = api }
 
 // SetBaselineRouter installs the baseline routing question for proxying
-// daemons to ask. Only two booleans ever leave through it: no recipe, no
-// baseline and no capture crosses this route.
+// daemons to ask. Only one word from a closed set ever leaves through it: no
+// recipe, no baseline and no capture crosses this route.
 func (s *Server) SetBaselineRouter(router recipe.BaselineRouter) { s.baselineRoutes = router }
 
 // computeAllowedHosts derives the Host allowlist and whether to enforce it from
@@ -586,17 +586,19 @@ func (s *Server) routeBaseline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.baselineRoutes == nil {
-		writeResult(w, baselineRouteResponse{}, nil)
+		writeResult(w, baselineRouteResponse{Destination: recipe.BaselineLocal}, nil)
 		return
 	}
 	route, err := s.baselineRoutes.RouteBaseline(r.Context(), req.RecipeDigest, req.PageURL)
-	writeResult(w, baselineRouteResponse{OwnsRecipe: route.OwnsRecipe, OwnsOrigin: route.OwnsOrigin}, err)
+	writeResult(w, baselineRouteResponse{Destination: route.Destination()}, err)
 }
 
-// baselineRouteResponse is the whole of what this route discloses.
+// baselineRouteResponse is the whole of what this route discloses: one word
+// from a closed set. The destination is the answer the proxy needs; a recipe
+// id, a name or a digest list coming back would make this a way to read the
+// private corpus over HTTP.
 type baselineRouteResponse struct {
-	OwnsRecipe bool `json:"owns_recipe"`
-	OwnsOrigin bool `json:"owns_origin"`
+	Destination recipe.BaselineDestination `json:"destination"`
 }
 
 func (s *Server) runRecipe(w http.ResponseWriter, r *http.Request) {

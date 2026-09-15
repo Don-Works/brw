@@ -818,21 +818,10 @@ func main() {
 			server.SetBaselineStore(store)
 			log.Printf("regression baselines enabled at %s", store.Root())
 		}
-		// Installed whether or not a local root is configured: a baseline for a
-		// recipe the provider owns never goes to the local root, so a daemon with
-		// a provider and no --baseline-root can still gate those recipes.
-		if recipeBaselines != nil {
-			server.SetRecipeBaselines(recipeBaselines)
-		} else if upstreamHTTP != "" {
-			if baselineRouter == nil {
-				// Cannot happen: httpclient.Controller asserts the interface at
-				// compile time. If it ever could, every capture would land in
-				// this daemon's local root with the tool description saying it
-				// could not — so refuse to start rather than degrade quietly.
-				log.Fatalf("the upstream controller cannot answer baseline routing; brw_baseline would write every capture to --baseline-root")
-			}
-			server.SetBaselineRouter(baselineRouter)
-			log.Printf("%s", proxyBaselineStatusLine())
+		if line, err := installBaselineDestinations(server, recipeBaselines, upstreamHTTP, baselineRouter); err != nil {
+			log.Fatalf("%v", err)
+		} else if line != "" {
+			log.Printf("%s", line)
 		}
 
 		// A direct/bridge MCP process has no upstream HTTP middleware to record its
@@ -1162,6 +1151,37 @@ func recipeReceiptStatusLine(receipts recipe.Receipts) string {
 		return "external-write receipts are recorded with the recipe provider, so an interrupted write survives a daemon restart"
 	}
 	return "this recipe provider cannot hold external-write receipts: an interrupted write leaves no record a restarted daemon can find, and a recipe declaring a site idempotency nonce is refused; --recipe-provider-url configures a provider that can"
+}
+
+// installBaselineDestinations gives the MCP server the places a capture may go,
+// and is where a daemon that cannot decide refuses to start.
+//
+// The provider's own store is installed whether or not a local root is
+// configured: a baseline for a recipe the provider owns never goes to the local
+// root, so a daemon with a provider and no --baseline-root can still gate those
+// recipes. On a proxy there is no provider here to install — brw_baseline has
+// no HTTP route, so it runs on this daemon while the provider is upstream — and
+// only the routing question is wired, so a capture that belongs with the
+// provider is refused by name instead of written to this machine's disk.
+//
+// A proxy whose upstream controller cannot answer that question would route
+// every capture to its own --baseline-root with the tool description saying it
+// could not, so it fails to start. It returns the startup line rather than
+// printing it, because what an operator is told has to be decided in the same
+// place as what was wired.
+func installBaselineDestinations(server *mcp.Server, recipeBaselines recipe.BaselineStore, upstreamHTTP string, router recipe.BaselineRouter) (string, error) {
+	switch {
+	case recipeBaselines != nil:
+		server.SetRecipeBaselines(recipeBaselines)
+		return "", nil
+	case strings.TrimSpace(upstreamHTTP) == "":
+		return "", nil
+	case router == nil:
+		return "", fmt.Errorf("the upstream controller cannot answer baseline routing; brw_baseline would write every capture to --baseline-root, including captures of pages the private recipe provider's recipes reach")
+	default:
+		server.SetBaselineRouter(router)
+		return proxyBaselineStatusLine(), nil
+	}
 }
 
 // recipeBaselinesFor returns the provider's baseline side, or nil.

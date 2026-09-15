@@ -634,27 +634,54 @@ brwd --baseline-root /var/lib/brw/baselines   # auto uses the user cache; off (d
 **Where a baseline lands is decided by the recipe and the page, not by the
 caller.** A baseline of a signed-in page is a screenshot of private content, and
 the private provider already holds the recipe that reached the page. So brw asks
-the configured provider whether it owns the recipe the digest pins, and if it
-does, the baseline is stored with the provider. `--baseline-root` keeps the
-rest: public fixtures, and every recipe no provider claims. Each answer names
+the configured provider whether it owns the recipe the digest pins *and* whether
+that recipe declares the origin the tab is showing; when both hold, the baseline
+is stored with the provider. `--baseline-root` keeps the rest: public fixtures,
+and every recipe no provider claims. Each answer names
 the destination it used in `stored_in`, and a daemon with a provider needs no
 local root to gate that provider's own recipes.
 
-`recipe_digest` is a caller argument, so it does not decide this on its own. An
-agent on a page a private recipe reached can pass any well-formed digest the
-provider does not own, and routing on the digest alone would write that page's
-screenshot and its ARIA names — which carry its text — to the local root. brw
-therefore asks about both in one question: the digest, and the origin the tab is
-showing. A provider that has a recipe for that origin and does not own the
-digest is a refusal, not a destination — brw does not know which of its recipes
-the capture belongs to and will not guess by keeping it locally. Only the origin
-crosses to the provider; the path and query of a signed-in page never do.
+`recipe_digest` is a caller argument, so it does not decide this on its own, in
+either direction. An agent on a page a private recipe reached can pass any
+well-formed digest the provider does not own, and routing on the digest alone
+would write that page's screenshot and its ARIA names — which carry its text —
+to the local root. The same agent can equally pass a digest the provider *does*
+own, and routing on the digest alone would then POST that page's capture to the
+provider, off the machine, under the key of a recipe that never goes there. So
+brw asks about both halves in one question — the digest, and the origin the tab
+is showing — and a pair that disagrees is refused rather than sent either way:
+
+- the provider owns the digest and the recipe it pins declares that origin: the
+  baseline is stored with the provider;
+- the provider owns the digest and that recipe does not visit the page: refused,
+  because neither destination is right;
+- the provider has some recipe for that origin and does not own the digest:
+  refused — brw does not know which of its recipes the capture belongs to and
+  will not guess by keeping it locally;
+- nothing the provider holds claims either half: the local root.
+
+A recipe cannot navigate outside its declared origins, so a capture taken during
+one is always at an origin it declares; that is what makes the binding checkable
+without the provider disclosing anything. Only the origin crosses to the
+provider; the path and query of a signed-in page never do. The rule lives in one
+constructor that every router answers through, so it holds on a lane added later
+without that lane re-deciding it.
 
 A daemon started with `--upstream-http` runs `brw_baseline` itself while the
 provider lives on the browser host. It asks the host `/api/baselines/route` —
-two booleans, no recipe — and refuses by name anything that belongs with the
-provider rather than writing it to its own `--baseline-root`. Public fixtures
-still gate there. Take a private recipe's baselines on the browser-host daemon.
+one destination word from a closed set, no recipe — and refuses by name anything
+that belongs with the provider rather than writing it to its own
+`--baseline-root`. A word this build does not recognise is an error, not a
+local-root default: a host that answered something unclassified said nothing
+about who owns the capture. Public fixtures still gate there. Take a private
+recipe's baselines on the browser-host daemon.
+
+A `check` or `update` on a tab that reports no URL at all is refused rather than
+routed. An absent page is how `list` and `delete` say they capture nothing, so
+the rule lets an owned digest through without one; reading a silent tab the same
+way would make the digest sufficient on its own again. Both transports can
+produce that tab — a CDP page target before its first navigation commits, a
+`chrome.tabs` entry with no host permission.
 
 Both shipped providers answer the routing question and hold baselines. The
 directory provider keeps them under a
@@ -670,7 +697,7 @@ undiscovered recipe this refuses. The HTTPS provider `POST`s them:
 
 | route | body |
 | --- | --- |
-| `/v1/baselines/owner` | `{recipe_digest, origin?}` → `{owns, owns_origin}` — both required; an absent field is refused, not read as `false` |
+| `/v1/baselines/owner` | `{recipe_digest, origin?}` → `{owns, owns_origin, covers_page}` — `covers_page` says the recipe the digest pins declares that origin; each is required where it decides the answer, and an absent field is refused, not read as `false` |
 | `/v1/baselines/put` | the baseline → `{stored}` |
 | `/v1/baselines/fetch` | `{recipe_digest, step_index, environment_fingerprint}` → `{found, baseline}` |
 | `/v1/baselines/environments` | `{recipe_digest, step_index}` → `{environments}` |

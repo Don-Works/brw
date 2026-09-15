@@ -752,17 +752,29 @@ func (c *Controller) SearchRecipes(ctx context.Context, query, origin string, li
 // falling back to local storage is wrong.
 func (c *Controller) RouteBaseline(ctx context.Context, digest, pageURL string) (recipe.BaselineRoute, error) {
 	var out struct {
-		OwnsRecipe bool `json:"owns_recipe"`
-		OwnsOrigin bool `json:"owns_origin"`
+		Destination string `json:"destination"`
 	}
+	// The whole page URL, not its origin. The host reduces it to an origin
+	// before anything reaches a provider, and it needs the difference this hop
+	// would throw away: a page with no origin (about:blank, a file:// fixture)
+	// is not the same as an action that captures no page, and only the second
+	// lets an owned digest decide on its own.
 	body := map[string]any{"recipe_digest": digest, "page_url": pageURL}
 	if err := c.postExactWithLimit(ctx, "/api/baselines/route", body, &out, maxBaselineRouteResponseBytes); err != nil {
 		return recipe.BaselineRoute{}, fmt.Errorf("ask the browser host where this baseline belongs: %w", err)
 	}
-	return recipe.BaselineRoute{OwnsRecipe: out.OwnsRecipe, OwnsOrigin: out.OwnsOrigin}, nil
+	// A destination this build does not know is an error, not a local-root
+	// default: a host answering something unrecognised has told this daemon
+	// nothing about who owns the capture, and that is the case where writing it
+	// here is wrong.
+	route, err := recipe.ParseBaselineDestination(out.Destination)
+	if err != nil {
+		return recipe.BaselineRoute{}, fmt.Errorf("the browser host answered where this baseline belongs with an answer this daemon cannot act on: %w", err)
+	}
+	return route, nil
 }
 
-// maxBaselineRouteResponseBytes bounds a reply that is two booleans.
+// maxBaselineRouteResponseBytes bounds a reply that is one word.
 const maxBaselineRouteResponseBytes = int64(4 << 10)
 
 var _ recipe.BaselineRouter = (*Controller)(nil)
