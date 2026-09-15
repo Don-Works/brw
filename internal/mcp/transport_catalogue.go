@@ -68,6 +68,8 @@ var toolRequirements = map[string]toolRequirement{
 	"brw_emulate_media":          needsCDPSession,
 	"brw_set_extra_headers":      needsCDPSession,
 	"brw_set_user_agent":         needsCDPSession,
+	"brw_set_locale":             needsCDPSession,
+	"brw_init_script":            needsCDPSession,
 	"brw_authenticate":           needsCDPSession,
 	// Not needsCDPSession: the Chrome opt-in lane has the session and still
 	// cannot route downloads. See needsDownloadRouting.

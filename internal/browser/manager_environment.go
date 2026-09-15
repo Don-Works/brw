@@ -23,6 +23,7 @@ import (
 // that drifts would not fail the build — it would quietly turn every override
 // into "this transport does not support it" on the transport that does.
 var _ EnvironmentController = (*Manager)(nil)
+var _ InitScriptController = (*Manager)(nil)
 
 // environmentState holds the per-tab page-environment overrides that CDP itself
 // cannot report back: the scoped header table the request interceptor consults,
@@ -41,6 +42,7 @@ type environmentState struct {
 	// permission is browser-wide rather than per tab, so clearing an override
 	// would otherwise revoke a grant the human made themselves.
 	geoPermissions map[string]string
+	initScripts    map[string][]InitScript
 }
 
 // armedCredential is alive only between Authenticate arming it and the deferred
@@ -69,6 +71,9 @@ func (e *environmentState) initLocked() {
 	}
 	if e.geoPermissions == nil {
 		e.geoPermissions = map[string]string{}
+	}
+	if e.initScripts == nil {
+		e.initScripts = map[string][]InitScript{}
 	}
 }
 

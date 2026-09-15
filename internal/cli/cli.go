@@ -124,6 +124,35 @@ type options struct {
 	clear      bool
 	scroll     bool
 	scope      string
+
+	clickCount int
+	button     string
+	direction  string
+	expression string
+	pattern    string
+	level      string
+	onlyErrors bool
+	device     string
+	width      int
+	height     int
+	path       string
+	filename   string
+	contextID  string
+	kind       string
+	title      string
+	message    string
+	filter     string
+	domain     string
+	cookiePath string
+	secure     bool
+	httpOnly   bool
+	sameSite   string
+	fromRef    string
+	toRef      string
+	name       string
+	value      string
+	x          float64
+	y          float64
 }
 
 // Run executes one brw invocation and returns its process exit code. args
@@ -507,7 +536,7 @@ verbs:
 		if v.usage != "" {
 			name += " " + v.usage
 		}
-		fmt.Fprintf(w, "  %-26s %s\n", name, v.summary)
+		fmt.Fprintf(w, "  %-36s %s\n", name, v.summary)
 	}
 	fmt.Fprint(w, `
   run <recipe-id>            run one recipe non-interactively for a scheduler

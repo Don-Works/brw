@@ -378,3 +378,45 @@ func cookiePathOrDefault(p string) string {
 	}
 	return p
 }
+
+// CookieMeta is a cookie with the secret stripped. Operator UIs must use this.
+type CookieMeta struct {
+	Name     string  `json:"name"`
+	Domain   string  `json:"domain"`
+	Path     string  `json:"path"`
+	Expires  float64 `json:"expires"`
+	HTTPOnly bool    `json:"http_only"`
+	Secure   bool    `json:"secure"`
+	Session  bool    `json:"session"`
+	SameSite string  `json:"same_site,omitempty"`
+}
+
+// Meta returns the non-secret fields of c.
+func (c Cookie) Meta() CookieMeta {
+	return CookieMeta{
+		Name: c.Name, Domain: c.Domain, Path: c.Path, Expires: c.Expires,
+		HTTPOnly: c.HTTPOnly, Secure: c.Secure, Session: c.Session, SameSite: c.SameSite,
+	}
+}
+
+// AllCookies returns every cookie in this browser's jar via Network.getAllCookies.
+func (m *Manager) AllCookies(ctx context.Context) ([]Cookie, error) {
+	_, tabCtx, cancel, err := m.activeContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+	var result struct {
+		Cookies []*network.Cookie `json:"cookies"`
+	}
+	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return cdp.Execute(ctx, "Network.getAllCookies", nil, &result)
+	})); err != nil {
+		return nil, fmt.Errorf("Network.getAllCookies: %w", err)
+	}
+	out := make([]Cookie, 0, len(result.Cookies))
+	for _, c := range result.Cookies {
+		out = append(out, fromCDPCookie(c))
+	}
+	return out, nil
+}

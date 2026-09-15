@@ -33,6 +33,9 @@ func TestResolveBaseURL(t *testing.T) {
 	directOnly := writePolicyFile(t, profilepolicy.Policy{Profiles: []profilepolicy.Profile{
 		{Name: "direct", DirectCDPAllowed: true},
 	}})
+	neither := writePolicyFile(t, profilepolicy.Policy{Profiles: []profilepolicy.Profile{
+		{Name: "idle"},
+	}})
 
 	tests := []struct {
 		name    string
@@ -74,8 +77,13 @@ func TestResolveBaseURL(t *testing.T) {
 			wantErr: `no extension-bridge profile named "personal"`,
 		},
 		{
-			name:    "a policy with no bridge profile",
-			opts:    options{policyPath: directOnly},
+			name: "a direct-cdp profile is a candidate",
+			opts: options{policyPath: directOnly},
+			want: "http://127.0.0.1:17310",
+		},
+		{
+			name:    "a policy with no daemon profile",
+			opts:    options{policyPath: neither},
 			wantErr: "configures no extension-bridge profile",
 		},
 		{

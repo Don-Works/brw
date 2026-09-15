@@ -51,3 +51,7 @@ func (b *Bridge) Authenticate(context.Context, browser.CredentialsOptions) (brow
 func (b *Bridge) SetDownloadPath(context.Context, browser.DownloadPathOptions) (browser.EnvironmentResult, error) {
 	return browser.EnvironmentResult{}, browser.ErrEnvironmentUnsupported
 }
+
+func (b *Bridge) SetLocale(context.Context, browser.LocaleOptions) (browser.EnvironmentResult, error) {
+	return browser.EnvironmentResult{}, browser.ErrEnvironmentUnsupported
+}

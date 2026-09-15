@@ -194,10 +194,22 @@ brw find "sign in"                 # @e17  button  Sign in
 brw click @e17
 brw fill @e18 someone@example.test
 brw press Enter
+brw get url
+brw get text @e17
+brw hover @e17
+brw goto https://example.com/next
+brw back
+brw eval 'document.title'
+brw cookies
+brw console --errors
+brw locale en-GB Europe/London
+brw init-script add 'window.__ready=true' --origin https://example.com
+brw batch '[{"action":"click","ref":"e1"},{"action":"wait","condition":"text:ok"}]'
 brw read                           # the page as text
 brw snapshot --limit 20            # refs for the whole page
 brw screenshot --out shot.png
 brw tabs
+brw tab close 1234
 brw artifact read art_01H...
 ```
 
@@ -504,7 +516,7 @@ Core MCP tools include:
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
 tokens on every turn: on a direct-CDP daemon `all` costs ~30.9k tokens across
-88 tools, `core` ~10.5k, `minimal` ~6.0k, and `auto` starts at ~6.3k and grows
+90 tools, `core` ~10.5k, `minimal` ~6.0k, and `auto` starts at ~6.3k and grows
 only as the agent discovers tools it needs via `brw_tools` (measure with
 `scripts/measure-tool-catalogue.py`).
 

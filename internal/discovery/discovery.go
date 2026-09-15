@@ -26,8 +26,9 @@ type Record struct {
 	Workspace   string                `json:"workspace,omitempty"`
 	Profile     string                `json:"profile"`
 	HTTPAddr    string                `json:"http_addr"`
-	WSAddr      string                `json:"ws_addr"`
+	WSAddr      string                `json:"ws_addr,omitempty"`
 	ExtensionID string                `json:"extension_id,omitempty"`
+	Transport   string                `json:"transport,omitempty"`
 	Reachable   bool                  `json:"reachable"`
 	Identity    *brwidentity.Identity `json:"identity,omitempty"`
 	Error       string                `json:"error,omitempty"`
@@ -44,7 +45,7 @@ func Candidates(policyPath string) ([]profilepolicy.Profile, error) {
 	}
 	profiles := make([]profilepolicy.Profile, 0, len(policy.Profiles))
 	for _, profile := range policy.Profiles {
-		if !profile.ExtensionBridgeAllowed {
+		if !profile.ExtensionBridgeAllowed && !profile.DirectCDPAllowed {
 			continue
 		}
 		profiles = append(profiles, profile)
@@ -81,8 +82,11 @@ func Probe(profile profilepolicy.Profile, timeout time.Duration) Record {
 		Kind:        profile.Kind,
 		Profile:     profile.Name,
 		HTTPAddr:    httpURL,
-		WSAddr:      WSAddr(profile),
 		ExtensionID: extID,
+		Transport:   transportOf(profile),
+	}
+	if profile.ExtensionBridgeAllowed {
+		rec.WSAddr = WSAddr(profile)
 	}
 	ctrl, cerr := httpclient.New(httpURL, timeout)
 	if cerr != nil {
@@ -123,4 +127,14 @@ func HTTPURL(profile profilepolicy.Profile) string {
 		return addr
 	}
 	return "http://" + addr
+}
+
+func transportOf(profile profilepolicy.Profile) string {
+	if profile.DirectCDPAllowed {
+		return "direct-cdp"
+	}
+	if profile.ExtensionBridgeAllowed {
+		return "extension-bridge"
+	}
+	return ""
 }

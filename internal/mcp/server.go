@@ -1074,6 +1074,39 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(env.SetDownloadPath(ctx, req))
+	case "brw_set_locale":
+		env, ok := s.environmentController()
+		if !ok {
+			return toolError(browser.ErrEnvironmentUnsupported), nil
+		}
+		var req browser.LocaleOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(env.SetLocale(ctx, req))
+	case "brw_init_script":
+		scripts, ok := s.manager.(browser.InitScriptController)
+		if !ok {
+			return toolError(browser.ErrInitScriptUnsupported), nil
+		}
+		var req struct {
+			Action string `json:"action"`
+			browser.InitScriptOptions
+			ID string `json:"id"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		switch strings.ToLower(strings.TrimSpace(req.Action)) {
+		case "", "add":
+			return toolJSON(scripts.AddInitScript(ctx, req.InitScriptOptions))
+		case "remove":
+			return toolJSON(scripts.RemoveInitScript(ctx, browser.InitScriptRemoveOptions{ID: req.ID, TabID: req.TabID}))
+		case "list":
+			return toolJSON(scripts.ListInitScripts(ctx, req.TabID))
+		default:
+			return nil, invalid(errors.New("action must be add, remove, or list"))
+		}
 	case "brw_read":
 		var req readability.ReadOptions
 		if err := unmarshalArgs(args, &req); err != nil {
@@ -2564,6 +2597,19 @@ func tools() []map[string]any {
 		tool("brw_set_download_path", "Send completed downloads to a directory you name instead of brw's private staging directory, so a downloaded file is somewhere you can open it. BROWSER-WIDE: it applies to every tab, which is why there is no tab_id. The path must be absolute; brw creates it if needed and never deletes it, and unlike its own staging directory it does not refuse a path inside a Git checkout - you named this directory deliberately and brw removes nothing from it. Downloads that already completed stay where they are, at the paths brw_downloads already reported. Files are named by their brw download id rather than the server's suggested filename, which is what keeps the path brw_downloads reports exact - a suggested filename is chosen by the site and Chrome silently renames collisions. Pair with brw_downloads to find the id, state and path of each file. clear:true goes back to the managed staging directory. Returns {ok, download_path, message}. NOT ON THE EXTENSION BRIDGE, which uses the browser's own download folder, AND NOT IN A BROWSER BRW DID NOT START (remote-cdp, chrome-opt-in-cdp): the DevTools command is browser-context-wide, so setting it there would redirect the files that browser's own user downloads by hand. Both return a named capability error rather than doing it anyway.", object(map[string]any{
 			"path":  stringSchema("Absolute directory for completed downloads."),
 			"clear": boolSchema("Go back to brw's private staging directory, which is removed on shutdown."),
+		}, nil)),
+		tool("brw_set_locale", "Override the locale and timezone a tab reports to the page: navigator.language, Intl date formatting, and Date timezone calculations. Pass locale as BCP-47 (en-GB) or ICU (en_GB), timezone as an IANA identifier (Europe/London), or clear:true to restore the host. The result echoes what the page actually reports (reported_language, reported_timezone), not only what was requested. A page that reads the locale once at startup needs a reload. NOT ON THE EXTENSION BRIDGE: it is a DevTools Protocol session override, so there it returns a named capability error.", object(map[string]any{
+			"locale":   stringSchema("BCP-47 or ICU locale, for example en-GB or en_GB."),
+			"timezone": stringSchema("IANA timezone, for example Europe/London or UTC."),
+			"clear":    boolSchema("Restore the host's own locale and timezone."),
+			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, nil)),
+		tool("brw_init_script", "Install JavaScript that runs at document-start on every later navigation of this tab, AND immediately in the document that is already open (Chrome's runImmediately). Pass origin to wrap the script so it is a no-op on any other origin — that is what keeps a helper for one app from running on every site the tab later visits. Source is never echoed back; the result lists id, origin, sha256 and byte size. action:\"list\" / \"remove\" (by id) manage what is installed. Max 64KiB and 16 scripts per tab. NOT ON THE EXTENSION BRIDGE: the registration is DevTools session state the attach/detach cycle would drop.", object(map[string]any{
+			"action": stringEnumSchema("add (default), list, or remove.", "add", "list", "remove"),
+			"source": stringSchema("JavaScript source to install. Required for add. Never echoed in the result."),
+			"origin": stringSchema("If set, the script is a no-op unless location.origin matches this origin exactly."),
+			"id":     stringSchema("Identifier returned by add; required for remove."),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
 		tool("brw_read", "Return semantic page content: main text, headings, links, forms, tables, and metadata. Prose is bounded by default and paged via next_offset — a long article is several cheap reads, not one huge one. Narrow with include to skip what you do not need (include:[\"headings\",\"links\"] is a cheap page map).", object(map[string]any{
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),

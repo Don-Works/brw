@@ -21,6 +21,7 @@ type environmentRecorder struct {
 	media       browser.MediaEmulationOptions
 	headers     browser.ExtraHeadersOptions
 	userAgent   browser.UserAgentOptions
+	locale      browser.LocaleOptions
 	credentials browser.CredentialsOptions
 	download    browser.DownloadPathOptions
 	// authSensitive records whether the handler marked the call as carrying a
@@ -63,6 +64,11 @@ func (c *environmentRecorder) Authenticate(ctx context.Context, opts browser.Cre
 func (c *environmentRecorder) SetDownloadPath(_ context.Context, opts browser.DownloadPathOptions) (browser.EnvironmentResult, error) {
 	c.download = opts
 	return browser.EnvironmentResult{OK: true}, nil
+}
+
+func (c *environmentRecorder) SetLocale(_ context.Context, opts browser.LocaleOptions) (browser.EnvironmentResult, error) {
+	c.locale = opts
+	return browser.EnvironmentResult{OK: true, TabID: opts.TabID}, nil
 }
 
 // The CLI drives the HTTP API rather than MCP, so every environment tool needs
@@ -141,6 +147,16 @@ func TestEnvironmentRoutesForwardTheirBodies(t *testing.T) {
 			check: func(t *testing.T, ctrl *environmentRecorder) {
 				if ctrl.download.Path != "/tmp/brw-fixture-downloads" {
 					t.Fatalf("download options = %+v", ctrl.download)
+				}
+			},
+		},
+		{
+			name: "locale",
+			path: "/api/page/locale",
+			body: `{"locale":"en-GB","timezone":"Europe/London","tab_id":"42"}`,
+			check: func(t *testing.T, ctrl *environmentRecorder) {
+				if ctrl.locale.Locale != "en-GB" || ctrl.locale.Timezone != "Europe/London" || ctrl.locale.TabID != "42" {
+					t.Fatalf("locale options = %+v", ctrl.locale)
 				}
 			},
 		},

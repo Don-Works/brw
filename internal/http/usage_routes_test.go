@@ -30,6 +30,12 @@ var routesNotRecorded = map[string]string{
 	// It is one hop inside another operation, which is already recorded on both
 	// daemons, so a ledger entry of its own would double-count the agent's call.
 	"/api/browser/active_tab": "internal tab-naming hop inside another operation",
+	"/api/roster/board":       "operator profile-manager UI, not an agent tool",
+	"/api/roster/self":        "operator profile-manager UI, not an agent tool",
+	"/api/roster/profiles":    "operator profile-manager UI, not an agent tool",
+	"/api/roster/copy":        "operator profile-manager UI, not an agent tool",
+	"/api/roster/pin":         "operator profile-manager UI, not an agent tool",
+	"/api/roster/open":        "operator profile-manager UI, not an agent tool",
 }
 
 // TestEveryAPIRouteHasAUsageOperation pins the route table to the usage

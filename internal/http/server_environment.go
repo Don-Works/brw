@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/Don-Works/brw/internal/browser"
 )
@@ -138,3 +139,54 @@ type quietResponse struct {
 func (q *quietResponse) Write(p []byte) (int, error) { return len(p), nil }
 
 func (q *quietResponse) WriteHeader(int) {}
+
+func (s *Server) locale(w http.ResponseWriter, r *http.Request) {
+	var req browser.LocaleOptions
+	if !decode(w, r, &req) {
+		return
+	}
+	env, ok := s.environmentController(w)
+	if !ok {
+		return
+	}
+	result, err := env.SetLocale(s.contextWithTabID(r.Context(), req.TabID), req)
+	writeResult(w, result, err)
+}
+
+func (s *Server) initScriptController(w http.ResponseWriter) (browser.InitScriptController, bool) {
+	scripts, ok := s.manager.(browser.InitScriptController)
+	if !ok {
+		writeError(w, browser.ErrInitScriptUnsupported)
+		return nil, false
+	}
+	return scripts, true
+}
+
+func (s *Server) initScript(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Action string `json:"action"`
+		browser.InitScriptOptions
+		ID string `json:"id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	scripts, ok := s.initScriptController(w)
+	if !ok {
+		return
+	}
+	ctx := s.contextWithTabID(r.Context(), req.TabID)
+	switch strings.ToLower(strings.TrimSpace(req.Action)) {
+	case "", "add":
+		result, err := scripts.AddInitScript(ctx, req.InitScriptOptions)
+		writeResult(w, result, err)
+	case "remove":
+		result, err := scripts.RemoveInitScript(ctx, browser.InitScriptRemoveOptions{ID: req.ID, TabID: req.TabID})
+		writeResult(w, result, err)
+	case "list":
+		result, err := scripts.ListInitScripts(ctx, req.TabID)
+		writeResult(w, result, err)
+	default:
+		writeError(w, errors.New(`init_script action must be add, remove, or list`))
+	}
+}

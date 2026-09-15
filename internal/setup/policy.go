@@ -111,13 +111,23 @@ func (r PolicyRequest) userDataDir() string {
 // gets its own brw-owned directory for the same reason.
 func NewProfile(req PolicyRequest) profilepolicy.Profile {
 	if req.Transport == TransportDirectCDP {
+		port := req.HTTPPort
+		if port <= 0 {
+			port = DefaultHTTPPort
+		}
+		udd := req.UserDataDir
+		if udd == "" {
+			udd = "~/.brw/" + req.Browser + "-agent"
+		}
 		return profilepolicy.Profile{
 			Name:                   req.Profile,
 			Description:            "brw-owned " + BrowserDisplayName(req.Browser) + " driven over direct CDP. Sign in once with `brwd --workspace " + req.Workspace + " --login`; the session persists in this profile directory.",
 			Kind:                   req.Browser,
-			UserDataDir:            "~/.brw/" + req.Browser + "-agent",
+			UserDataDir:            udd,
+			ProfileDirectory:       "Default",
 			DirectCDPAllowed:       true,
 			ExtensionBridgeAllowed: false,
+			BridgeHTTPAddr:         fmt.Sprintf("127.0.0.1:%d", port),
 		}
 	}
 	port := req.HTTPPort

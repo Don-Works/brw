@@ -274,7 +274,7 @@ level to trim.
 
 ## Tool catalogue
 
-The measured MCP catalogues are 88 tools / ~32.8k tokens for `all`, 26 / ~10.5k
+The measured MCP catalogues are 90 tools / ~32.8k tokens for `all`, 26 / ~10.5k
 for `core`, 13 / ~5.8k for `minimal`, and 14 / ~6.0k initially for the default
 `auto` profile — the same figures README.md and docs/agent-guide.md quote, from
 `scripts/measure-tool-catalogue.py`, which measures a direct-CDP daemon. Thus
@@ -290,10 +290,10 @@ without them is what left this section naming two different sizes for `all`.
 That is the trade: a fixed per-turn catalogue cost against a per-action saving
 that scales with the length of the flow.
 
-A daemon whose identity names a transport advertises fewer than the 91 tools
+A daemon whose identity names a transport advertises fewer than the 93 tools
 the catalogue holds: the three extension-only tab-group tools drop on direct
-CDP, leaving the 88 above, and twelve more drop on the extension bridge — incognito,
-contexts and cookies, the seven page-environment overrides, clipboard, the two
+CDP, leaving the 90 above, and fourteen more drop on the extension bridge — incognito,
+contexts and cookies, the eight page-environment overrides, init scripts, clipboard, the two
 held-key tools, pushState and session snapshots — leaving 76. Only `all` is
 narrowed this way; `core`, `minimal` and `auto` advertise the same tools on
 every transport.

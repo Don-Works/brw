@@ -9,7 +9,10 @@ product
 Technical operators and developers who connect an AI-agent harness to a visible,
 installed Chrome or Chromium profile. In the extension UI they are usually doing
 one of two jobs: binding this browser profile to the correct local `brwd` daemon,
-or diagnosing why that bridge is not connected.
+or diagnosing why that bridge is not connected. A hidden third job lives under
+Options → Advanced → Profile manager: creating isolated Chromium jars per agent
+identity and copying site sessions between them. That surface is off until the
+operator turns it on; it never appears in the default toolbar popup.
 
 ## Product Purpose
 

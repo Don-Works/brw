@@ -44,6 +44,7 @@ revokeAllGrantsButton.addEventListener("click", () => {
 });
 
 async function init() {
+  await loadProfileManagerPref();
   await refreshStatus({ populate: true });
   await refreshGrants();
   refreshTimer = window.setInterval(() => {
@@ -404,4 +405,20 @@ function humanizeError(error) {
   if (/workspace mismatch/i.test(text)) return "This daemon belongs to a different workspace. Check the identity binding below.";
   if (/profile mismatch/i.test(text)) return "This daemon belongs to a different browser profile. Check the identity binding below.";
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+async function loadProfileManagerPref() {
+  const box = document.getElementById("profileManager");
+  if (!box) return;
+  const stored = await chrome.storage.local.get("profileManagerEnabled");
+  box.checked = stored.profileManagerEnabled === true;
+  box.addEventListener("change", async () => {
+    await chrome.storage.local.set({ profileManagerEnabled: box.checked });
+    setFormMessage(
+      box.checked
+        ? "Profile manager is on. Open the toolbar popup to launch it."
+        : "Profile manager hidden from the toolbar menu.",
+      "success"
+    );
+  });
 }

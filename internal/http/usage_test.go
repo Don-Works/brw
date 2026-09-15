@@ -108,6 +108,12 @@ var unloggedAPIRoutes = map[string]string{
 	"/api/artifacts/{id}/search": "wildcard handle route, classified by the prefix fallback",
 	"/api/session/stream":        "long-lived SSE connection, not one operation with an outcome",
 	"/api/browser/active_tab":    "internal tab-naming hop inside another operation, which both daemons already record",
+	"/api/roster/board":          "operator profile-manager UI, not an agent tool",
+	"/api/roster/self":           "operator profile-manager UI, not an agent tool",
+	"/api/roster/profiles":       "operator profile-manager UI, not an agent tool",
+	"/api/roster/copy":           "operator profile-manager UI, not an agent tool",
+	"/api/roster/pin":            "operator profile-manager UI, not an agent tool",
+	"/api/roster/open":           "operator profile-manager UI, not an agent tool",
 }
 
 // routePathFromPattern reduces a net/http mux pattern - "[METHOD ][HOST]/[PATH]"

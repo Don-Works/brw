@@ -65,6 +65,8 @@ var usageOperations = map[string]string{
 	"/api/page/emulate_media":        "brw_emulate_media",
 	"/api/page/extra_headers":        "brw_set_extra_headers",
 	"/api/page/user_agent":           "brw_set_user_agent",
+	"/api/page/locale":               "brw_set_locale",
+	"/api/page/init_script":          "brw_init_script",
 	"/api/page/authenticate":         "brw_authenticate",
 	"/api/page/execute_plan":         "brw_plan",
 	"/api/page/batch":                "brw_batch",

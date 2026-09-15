@@ -318,6 +318,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("GET /profiles", s.rosterPage)
+	mux.HandleFunc("GET /profiles/roster.js", s.rosterScript)
+	mux.HandleFunc("GET /api/roster/board", s.rosterBoard)
+	mux.HandleFunc("GET /api/roster/self", s.rosterSelf)
+	mux.HandleFunc("POST /api/roster/profiles", s.rosterCreate)
+	mux.HandleFunc("POST /api/roster/copy", s.rosterCopy)
+	mux.HandleFunc("POST /api/roster/pin", s.rosterPin)
+	mux.HandleFunc("POST /api/roster/open", s.rosterOpen)
 	// Off unless BRW_DASHBOARD=1, and loopback-only even then: it streams the
 	// rendered pixels of a signed-in browser.
 	mux.HandleFunc("GET /dashboard", s.dashboardPage)
@@ -343,6 +351,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/emulate_media", s.emulateMedia)
 	mux.HandleFunc("POST /api/page/extra_headers", s.extraHeaders)
 	mux.HandleFunc("POST /api/page/user_agent", s.userAgent)
+	mux.HandleFunc("POST /api/page/locale", s.locale)
+	mux.HandleFunc("POST /api/page/init_script", s.initScript)
 	mux.HandleFunc("POST /api/page/authenticate", s.authenticate)
 	mux.HandleFunc("GET /api/page/snapshot", s.snapshot)
 	mux.HandleFunc("GET /api/page/find", s.find)

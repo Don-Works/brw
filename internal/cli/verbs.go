@@ -99,12 +99,23 @@ func verbs() []verb {
 			summary: "click the element at a ref from find or snapshot",
 			method:  http.MethodPost,
 			path:    "/api/page/click",
-			build: func(_ *options, args []string) (request, error) {
+			flags: func(fs *flag.FlagSet, opts *options) {
+				fs.IntVar(&opts.clickCount, "count", 0, "click this many times (2 is a double-click)")
+				fs.StringVar(&opts.button, "button", "", "mouse button: left, right or middle")
+			},
+			build: func(opts *options, args []string) (request, error) {
 				ref, err := refArg(args)
 				if err != nil {
 					return request{}, err
 				}
-				return request{Body: map[string]any{"ref": ref}}, nil
+				body := map[string]any{"ref": ref}
+				if opts.clickCount > 0 {
+					body["click_count"] = opts.clickCount
+				}
+				if opts.button != "" {
+					body["button"] = opts.button
+				}
+				return request{Body: body}, nil
 			},
 			render: renderAction,
 		},
@@ -365,6 +376,10 @@ func verbs() []verb {
 	// The developer observations are defined beside their renderers in
 	// verbs_devtools.go; the completion scripts and the route test read this
 	// table, so they are covered the same way every verb above is.
+	table = append(table, pageVerbs()...)
+	table = append(table, inspectVerbs()...)
+	table = append(table, envVerbs()...)
+	table = append(table, tabVerbs()...)
 	table = append(table, devtoolsVerbs()...)
 	table = append(table, pluginVerbs()...)
 	return append(table, skillVerbs()...)
@@ -407,6 +422,13 @@ func oneArg(args []string, name string) (string, error) {
 		return "", fmt.Errorf("needs exactly one %s", name)
 	}
 	return args[0], nil
+}
+
+func twoArgs(args []string, first, second string) (string, string, error) {
+	if len(args) != 2 {
+		return "", "", fmt.Errorf("needs a %s and a %s", first, second)
+	}
+	return args[0], args[1], nil
 }
 
 func atMostOneArg(args []string, name string) (string, error) {

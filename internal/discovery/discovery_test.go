@@ -70,9 +70,10 @@ func TestProbeUnreachableIsRecordedNotFatal(t *testing.T) {
 	}
 }
 
-func TestCandidatesDropsProfilesWithoutABridge(t *testing.T) {
+func TestCandidatesIncludesDirectCDP(t *testing.T) {
 	path := writePolicy(t, profilepolicy.Policy{Profiles: []profilepolicy.Profile{
-		{Name: "direct-only", DirectCDPAllowed: true},
+		{Name: "neither"},
+		{Name: "direct-only", DirectCDPAllowed: true, BridgeHTTPAddr: "127.0.0.1:17510"},
 		{Name: "bridge-a", ExtensionBridgeAllowed: true, BridgeHTTPAddr: "127.0.0.1:17410"},
 		{Name: "bridge-b", ExtensionBridgeAllowed: true},
 	}})
@@ -81,16 +82,19 @@ func TestCandidatesDropsProfilesWithoutABridge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(profiles) != 2 || profiles[0].Name != "bridge-a" || profiles[1].Name != "bridge-b" {
-		t.Fatalf("candidates = %+v, want the two extension-bridge profiles", profiles)
+	if len(profiles) != 3 || profiles[0].Name != "direct-only" || profiles[1].Name != "bridge-a" || profiles[2].Name != "bridge-b" {
+		t.Fatalf("candidates = %+v, want direct-CDP plus the two extension-bridge profiles", profiles)
 	}
-	if got := HTTPURL(profiles[0]); got != "http://127.0.0.1:17410" {
+	if got := HTTPURL(profiles[0]); got != "http://127.0.0.1:17510" {
+		t.Fatalf("direct HTTPURL = %q", got)
+	}
+	if got := HTTPURL(profiles[1]); got != "http://127.0.0.1:17410" {
 		t.Fatalf("HTTPURL = %q, want the configured address with a scheme", got)
 	}
-	if got := HTTPURL(profiles[1]); got != "http://127.0.0.1:17310" {
+	if got := HTTPURL(profiles[2]); got != "http://127.0.0.1:17310" {
 		t.Fatalf("HTTPURL = %q, want the default daemon address", got)
 	}
-	if got := WSAddr(profiles[1]); got != "127.0.0.1:17311" {
+	if got := WSAddr(profiles[2]); got != "127.0.0.1:17311" {
 		t.Fatalf("WSAddr = %q, want the default bridge address", got)
 	}
 }

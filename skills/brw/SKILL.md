@@ -50,7 +50,7 @@ says nothing about capabilities.
 | `brw_cookies` | error: *"cookie access is not supported on the extension-bridge transport"* | works, including HttpOnly | works, including HttpOnly |
 | `brw_state` | not advertised; calling it anyway errors: *"session snapshots are not supported on the extension-bridge transport"* | works | not advertised; calling it anyway errors: *"session snapshots are refused on a transport that drives the browser you are signed into"* |
 | `brw_list_tab_groups` / `brw_group_tabs` / `brw_ungroup_tabs` | works | not advertised; calling one anyway errors: *"tab grouping is not supported over the DevTools Protocol"* | not advertised; same error |
-| `brw_set_geolocation` / `brw_set_network_conditions` / `brw_emulate_media` / `brw_set_extra_headers` / `brw_set_user_agent` / `brw_authenticate` | not advertised at all; calling one anyway errors: *"page environment overrides … are not supported on the extension-bridge transport"* | works | works |
+| `brw_set_geolocation` / `brw_set_network_conditions` / `brw_emulate_media` / `brw_set_extra_headers` / `brw_set_user_agent` / `brw_set_locale` / `brw_authenticate` / `brw_init_script` | not advertised at all; calling one anyway errors: *"page environment overrides … are not supported on the extension-bridge transport"* | works | works |
 | `brw_set_download_path` | not advertised; same error | works | not advertised; calling it anyway errors: *"brw will not choose where downloads land on a transport that drives the browser you are signed into"* |
 | `brw_downloads` | works, with paths | works, with paths into brw's staging directory | works, `file_paths: false` and no path: the file went where the human's browser sends downloads |
 | `brw_snapshot {include_ax:true}` | no AX tree | AX enrichment available | AX enrichment available |
@@ -59,12 +59,12 @@ says nothing about capabilities.
 All three transports ship in brw, and an unavailable capability is a property of
 this profile's lane, not of the product; an operator can run a second daemon on
 another transport. Most tools are listed and fully described in `tools/list` on
-every lane and fail only when called. The seven page-environment tools are the
+every lane and fail only when called. The page-environment tools are the
 exception: they are DevTools session overrides that the bridge's attach/detach
 cycle would silently drop between calls, so on the bridge they are not
 advertised and an agent never spends a call finding out.
 
-`brw_set_download_path` is the one of those seven that the Chrome opt-in lane
+`brw_set_download_path` is the one of those tools that the Chrome opt-in lane
 also lacks, and not for want of the protocol: the command applies to a whole
 browser context, and on that lane the browser context is the human's, so
 pointing it at brw's staging directory would move the files they download
@@ -120,7 +120,7 @@ snapshot, read the ref, use it.
 `brwd --mcp` defaults to `--mcp-tools auto`: it advertises 14 tools — `brw_tools`,
 `brw_open`, `brw_navigate_to`, `brw_read`, `brw_read_url`, `brw_snapshot`, `brw_find`,
 `brw_click`, `brw_fill`, `brw_select`, `brw_press`, `brw_wait_for`, `brw_observe`,
-`brw_batch` — and grows as you search. The full surface is 88 tools on a direct-CDP
+`brw_batch` — and grows as you search. The full surface is 90 tools on a direct-CDP
 daemon (76 on the extension bridge, which cannot serve the rest); the catalogue is
 re-sent on every request, so the small default is a per-turn saving.
 
@@ -246,6 +246,8 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `brw_emulate_media({media?:"screen"|"print", color_scheme?:"light"|"dark"|"no-preference", reduced_motion?:"reduce"|"no-preference", clear?, tab_id?})` — media queries re-evaluate immediately; a page that reads the preference once at startup needs a reload.
 - `brw_set_extra_headers({origins:[{origin,headers}],clear?,tab_id?})` — extra request headers for the origins you name **and nothing else**, attached per request from the interceptor. The browser-wide way would put a bearer token on every analytics beacon and font CDN the page touches. Values are never echoed back; `Host`, `Content-Length` and `Transfer-Encoding` are refused.
 - `brw_set_user_agent({user_agent,accept_language?,platform?,clear?,tab_id?})` — the request header as well as `navigator.userAgent`. `Sec-CH-UA` client hints still report the real browser. For phone/tablet work prefer `brw_emulate_device`, which sets the UA together with viewport, DPR and touch.
+- `brw_set_locale({locale?,timezone?,clear?,tab_id?})` — `navigator.language` and the Intl timezone. Pass BCP-47 (`en-GB`) or ICU (`en_GB`); timezone is IANA (`Europe/London`). The result reports what the page actually got (`reported_language`, `reported_timezone`). A page that reads the locale once at startup needs a reload.
+- `brw_init_script({action?:"add"|"list"|"remove", source?, origin?, id?, tab_id?})` — JavaScript that runs at document-start on every later navigation AND immediately in the current document. Pass `origin` so it is a no-op on any other site. Source is never echoed; the result lists `id`, `origin`, `sha256`, `bytes`. Max 64KiB and 16 scripts per tab.
 - `brw_authenticate({origin,username,password,url?,tab_id?})` → `{authentication:{origin,url,challenged,answered,browser_cached}}`. Loads one URL with HTTP auth armed for one origin; `challenged:false` means the server never asked. brw drops its copy before returning, but **Chrome caches an answered credential for that origin for the rest of the browser session** and no CDP command clears it — `browser_cached:true` says so. Do it inside `brw_open_incognito` and dispose the context if that matters.
 - `brw_notify({title?, message?, kind?})` — desktop notification. `kind` is `needs_input`, `done`, or `error`; anything else is rejected. Use `needs_input` at MFA/CAPTCHA/payment and stop.
 

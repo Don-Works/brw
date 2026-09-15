@@ -29,7 +29,7 @@ const (
 // a detach drops every override the session installed, so an override applied
 // through the bridge would silently evaporate between two tool calls. Failing
 // loudly is the only honest answer.
-var ErrEnvironmentUnsupported = errors.New("page environment overrides (geolocation, network conditions, emulated media, per-origin headers, user agent, HTTP credentials, download path) are not supported on the extension-bridge transport: they are DevTools Protocol session overrides that do not survive the extension's attach/detach cycle; use a direct-CDP profile")
+var ErrEnvironmentUnsupported = errors.New("page environment overrides (geolocation, network conditions, emulated media, per-origin headers, user agent, locale, HTTP credentials, download path) are not supported on the extension-bridge transport: they are DevTools Protocol session overrides that do not survive the extension's attach/detach cycle; use a direct-CDP profile")
 
 // EnvironmentController is an optional transport capability covering the page
 // environment an agent may need to fake: where the browser claims to be, whether
@@ -45,6 +45,7 @@ type EnvironmentController interface {
 	EmulateMedia(context.Context, MediaEmulationOptions) (EnvironmentResult, error)
 	SetExtraHeaders(context.Context, ExtraHeadersOptions) (EnvironmentResult, error)
 	SetUserAgent(context.Context, UserAgentOptions) (EnvironmentResult, error)
+	SetLocale(context.Context, LocaleOptions) (EnvironmentResult, error)
 	Authenticate(context.Context, CredentialsOptions) (EnvironmentResult, error)
 	SetDownloadPath(context.Context, DownloadPathOptions) (EnvironmentResult, error)
 }
@@ -65,6 +66,7 @@ type EnvironmentResult struct {
 	// caller-side copy.
 	ExtraHeaders  []OriginHeaderNames    `json:"extra_headers,omitempty"`
 	UserAgent     *UserAgentConfig       `json:"user_agent,omitempty"`
+	Locale        *LocaleConfig          `json:"locale,omitempty"`
 	Authenticated *AuthenticationOutcome `json:"authentication,omitempty"`
 	DownloadPath  string                 `json:"download_path,omitempty"`
 	Message       string                 `json:"message,omitempty"`

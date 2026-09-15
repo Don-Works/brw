@@ -70,20 +70,38 @@ const (
 
 func daemonResponses() map[string]string {
 	return map[string]string{
-		"POST /api/browser/open":     openResponse,
-		"GET /api/browser/tabs":      tabsResponse,
-		"GET /api/page/find":         elementsResponse,
-		"GET /api/page/snapshot":     elementsResponse,
-		"GET /api/page/read":         readResponse,
-		"POST /api/page/click":       actionResponse,
-		"POST /api/page/fill":        actionResponse,
-		"POST /api/page/type":        actionResponse,
-		"POST /api/page/press":       actionResponse,
-		"POST /api/page/wait_for":    actionResponse,
-		"GET /api/page/downloads":    downloadsResponse,
-		"POST /api/artifacts/read":   artifactResponse,
-		"GET /api/visual/screenshot": screenshotResponse,
-		"GET /health":                healthResponse,
+		"POST /api/browser/open":           openResponse,
+		"GET /api/browser/tabs":            tabsResponse,
+		"GET /api/page/find":               elementsResponse,
+		"GET /api/page/snapshot":           elementsResponse,
+		"GET /api/page/read":               readResponse,
+		"POST /api/page/click":             actionResponse,
+		"POST /api/page/fill":              actionResponse,
+		"POST /api/page/type":              actionResponse,
+		"POST /api/page/press":             actionResponse,
+		"POST /api/page/wait_for":          actionResponse,
+		"GET /api/page/downloads":          downloadsResponse,
+		"POST /api/artifacts/read":         artifactResponse,
+		"GET /api/visual/screenshot":       screenshotResponse,
+		"GET /health":                      healthResponse,
+		"POST /api/page/navigate_to":       actionResponse,
+		"POST /api/page/navigate":          actionResponse,
+		"POST /api/page/hover":             actionResponse,
+		"POST /api/page/select":            actionResponse,
+		"POST /api/page/scroll":            actionResponse,
+		"POST /api/page/key_down":          actionResponse,
+		"POST /api/page/key_up":            actionResponse,
+		"POST /api/page/focus":             actionResponse,
+		"POST /api/page/cookies":           `{"action":"list","cookies":[{"name":"sid","domain":"example.test","path":"/"}],"count":1}`,
+		"GET /api/page/get":                `{"value":"Example Domain"}`,
+		"POST /api/page/evaluate":          `{"value":2}`,
+		"GET /api/page/console":            `[{"level":"error","text":"boom"}]`,
+		"POST /api/browser/close":          actionResponse,
+		"POST /api/browser/focus":          actionResponse,
+		"POST /api/browser/open_incognito": openResponse,
+		"POST /api/page/locale":            `{"ok":true,"locale":{"locale":"en-GB","timezone":"Europe/London"}}`,
+		"POST /api/page/batch":             `{"ok":true,"steps_completed":1}`,
+		"POST /api/page/init_script":       `{"ok":true,"count":1,"scripts":[{"id":"1","sha256":"abc","bytes":4}]}`,
 	}
 }
 
@@ -267,6 +285,108 @@ func TestVerbsDriveTheDaemonHTTPAPI(t *testing.T) {
 			wantMethod: http.MethodGet,
 			wantPath:   "/health",
 			wantStdout: []string{"ok", "profile=work-profile", "transport=extension-bridge"},
+		},
+		{
+			name:       "goto navigates the current tab",
+			args:       []string{"goto", "https://example.test/next"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/page/navigate_to",
+			wantBody:   `{"url":"https://example.test/next"}`,
+			wantStdout: []string{"ok"},
+		},
+		{
+			name:       "back sends the history direction",
+			args:       []string{"back"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/page/navigate",
+			wantBody:   `{"direction":"back"}`,
+		},
+		{
+			name:       "dblclick posts click_count 2",
+			args:       []string{"dblclick", "@e17"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/page/click",
+			wantBody:   `{"click_count":2,"ref":"e17"}`,
+		},
+		{
+			name:       "hover posts the ref",
+			args:       []string{"hover", "@e17"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/page/hover",
+			wantBody:   `{"ref":"e17"}`,
+		},
+		{
+			name:       "select posts ref and value",
+			args:       []string{"select", "@e18", "uk"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/page/select",
+			wantBody:   `{"ref":"e18","value":"uk"}`,
+		},
+		{
+			name:       "get url queries the typed-fact route",
+			args:       []string{"get", "url"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/page/get",
+			wantQuery:  url.Values{"what": {"url"}},
+			wantStdout: []string{"Example Domain"},
+		},
+		{
+			name:       "get text normalises the printed ref",
+			args:       []string{"get", "text", "@e17"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/page/get",
+			wantQuery:  url.Values{"what": {"text"}, "target": {"e17"}},
+		},
+		{
+			name:       "eval posts the expression",
+			args:       []string{"eval", "1+1"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/page/evaluate",
+			wantBody:   `{"expression":"1+1"}`,
+		},
+		{
+			name:       "cookies lists without extra fields",
+			args:       []string{"cookies"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/page/cookies",
+			wantBody:   `{"action":"list"}`,
+			wantStdout: []string{"sid"},
+		},
+		{
+			name:       "tab close posts the tab id",
+			args:       []string{"tab", "close", "1234"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/browser/close",
+			wantBody:   `{"tab_id":"1234"}`,
+		},
+		{
+			name:       "incognito opens an isolated context",
+			args:       []string{"incognito", "https://example.test/"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/browser/open_incognito",
+			wantBody:   `{"url":"https://example.test/"}`,
+			wantStdout: []string{"opened https://example.test/"},
+		},
+		{
+			name:       "locale posts bcp47 and timezone",
+			args:       []string{"locale", "en-GB", "Europe/London"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/page/locale",
+			wantBody:   `{"locale":"en-GB","timezone":"Europe/London"}`,
+		},
+		{
+			name:       "batch posts parsed steps",
+			args:       []string{"batch", `[{"action":"click","ref":"e1"}]`},
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/page/batch",
+			wantBody:   `{"steps":[{"action":"click","ref":"e1"}]}`,
+		},
+		{
+			name:       "init-script add posts source and origin",
+			args:       []string{"init-script", "add", "window.x=1;", "--origin", "https://app.example.test"},
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/page/init_script",
+			wantBody:   `{"action":"add","origin":"https://app.example.test","source":"window.x=1;"}`,
 		},
 	}
 
@@ -535,7 +655,8 @@ func TestWaitKeepsClientHeadroomOverTheDaemonTimeout(t *testing.T) {
 		t.Fatalf("body = %q, want the timeout forwarded to the daemon", (*calls)[0].body)
 	}
 	for _, v := range verbs() {
-		if v.serverTimeout != (v.name == "wait") {
+		forwards := v.name == "wait" || strings.HasPrefix(v.name, "assert ")
+		if v.serverTimeout != forwards {
 			t.Errorf("verb %q serverTimeout=%v; only a verb that forwards timeout_ms may claim it", v.name, v.serverTimeout)
 		}
 	}

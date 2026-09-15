@@ -125,14 +125,14 @@ live binary, isolated `--session brw-compare`, then `close --all`). Status is
 | Signed-in profile | extension bridge into the live profile; no copy | live Chrome session | `--profile` copies to a temp dir; `--cdp` / `--auto-connect` | shipped |
 | MCP server | stdio, catalogue grows on demand | native messaging | stdio, fixed profiles, `tools/list` paginated at 64 | shipped |
 | HTTP JSON API | yes | no | no | shipped |
-| Per-action CLI | ~20 verbs bound to HTTP routes | no | ~120 verbs | open, `2AR4JB` |
+| Per-action CLI | HTTP-bound verbs covering the daemon surface (`goto`, `get`, `eval`, `cookies`, `tab close`, …) | no | ~120 verbs | shipped; remaining long-tail is `2AR4JB` |
 | Artifacts held off model context | store, search, TTL, quota | no | files on disk / temp paths | shipped |
 | Deterministic replay | immutable recipes, digest and origin guard | recorded workflows | batch JSON | shipped |
 | Promote a successful run to a recipe | no | yes, side-panel recording | no | open, `E8X4QH` |
 | Scheduled and recurring runs | no | daily/weekly/monthly | no | non-goal; trigger contract `5SFWAD` |
 | Network interception | `brw_route` fulfill/abort (fulfill is direct-CDP) | read-only | route, unroute | shipped |
 | HAR record and replay as a fixture | capture + `brw_route` replay on direct-CDP | no | start/stop, replay | shipped |
-| Device and environment emulation | viewport, device, geo, media, offline, headers, UA, HTTP auth | no | viewport, device, geo, media, offline | shipped |
+| Device and environment emulation | viewport, device, geo, media, offline, headers, UA, locale/timezone, HTTP auth | no | viewport, device, geo, media, offline | shipped |
 | Storage and auth state save/load | `brw_state` cookies only, refused on signed-in transports, never exports values | n/a | `state save` cookies+localStorage; `auth save` vault | shipped, host-only and redacted |
 | Credential manager integration | plugin `credential.read` only; not a vault | 1Password, macOS beta | plugin + encrypted auth vault | shipped |
 | Accessibility audit and Web Vitals | axe-core + vitals + highlight | no | axe-core + vitals | shipped |
@@ -152,6 +152,7 @@ live binary, isolated `--session brw-compare`, then `close --all`). Status is
 | Operation receipts for writes | recipe run receipts, not a provider ledger | no | no | open, `MVJT36` |
 | Regression baselines | visual + ARIA, keyed to recipe digest | no | `diff snapshot` / screenshot / url | shipped |
 | Non-Chromium browsers | no (BiDi prototype) | no | Lightpanda, iOS Safari via Appium | open, `6QWNYJ` |
+| Init scripts | origin-scoped, run immediately AND on later navigations; source never echoed | no | `--init-script`, add/remove | shipped |
 | Plugin and capability model | manifest, `credential.read` only | no | manifest + credential/provider/launch/command | shipped |
 | Licence | AGPL-3.0 | closed | Apache-2.0 | — |
 

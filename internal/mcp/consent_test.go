@@ -361,6 +361,8 @@ var notADestination = map[string]string{
 	"brw_cookies/path":             "a cookie path inside a site, not a site",
 	"brw_upload_file/path":         "a file on THIS machine, which the daemon reads from disk and never fetches",
 	"brw_set_download_path/path":   "a directory on THIS machine",
+	"brw_init_script/source":       "JavaScript source, not a URL",
+	"brw_init_script/origin":       "scopes when the script runs; it does not navigate there",
 	"brw_console/pattern":          "filters console lines brw already captured",
 	"brw_network_requests/pattern": "filters requests the page already made; it names no request brw issues",
 	"brw_network_capture/pattern":  "selects which of the page's own requests to record",
