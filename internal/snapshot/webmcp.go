@@ -63,7 +63,7 @@ const WebMCPInstallScript = `(function(){
 // this shim fills as well as a native navigator.modelContext.
 
 // RegisterWebMCPOnNewDocument arms the WebMCP shim to install at document-start
-// on every future navigation (direct-CDP only) so it captures tool registrations
+// on every future navigation (the CDP transports only) so it captures tool registrations
 // before the page's own scripts run. Call once per tab.
 func RegisterWebMCPOnNewDocument(ctx context.Context) error {
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {

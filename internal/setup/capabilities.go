@@ -2,34 +2,61 @@ package setup
 
 import "github.com/Don-Works/brw/internal/profilepolicy"
 
-// Resolved transport names, as brw_identity and the daemon report them.
+// Resolved transport names, as brw_identity and the daemon report them. They
+// are the brwidentity.Transport* values; this package keeps its own constants
+// so the setup surface does not pull the identity package into every caller.
 const (
 	ResolvedExtensionBridge = "extension-bridge"
 	ResolvedDirectCDP       = "direct-cdp"
+	// ResolvedChromeOptIn is the Chrome 144+ lane a user turns on for
+	// themselves at chrome://inspect/#remote-debugging. No profile policy
+	// selects it — `brwd --chrome-opt-in` does, against whichever Chrome has
+	// the switch on — so ResolvedTransport never returns it. It is here so
+	// doctor and the capability table can describe a daemon that reports it.
+	ResolvedChromeOptIn = "chrome-opt-in-cdp"
 )
 
 // Capabilities states, for one transport, what a caller can and cannot do. The
-// two lanes differ in ways that read as missing features when nothing names the
-// lane: brw_open_incognito and brw_cookies exist, but only on direct CDP.
+// three lanes differ in ways that read as missing features when nothing names
+// the lane: brw_open_incognito and brw_cookies exist on two of them and Chrome
+// tab groups on only the third.
 type Capabilities struct {
 	Transport string `json:"transport"`
 	Has       string `json:"has"`
 	Lacks     string `json:"lacks"`
 }
 
-// CapabilitiesFor describes one resolved transport.
-func CapabilitiesFor(transport string) Capabilities {
-	if transport == ResolvedDirectCDP {
-		return Capabilities{
-			Transport: ResolvedDirectCDP,
-			Has:       "incognito contexts (brw_open_incognito/brw_close_context), HttpOnly cookie access (brw_cookies), deterministic download routing, headless runs",
-			Lacks:     "drives a separate brw-owned browser instance, not your existing signed-in window; no Chrome tab groups",
-		}
-	}
-	return Capabilities{
+// capabilityTable is what each lane can and cannot do, in the words doctor
+// shows a human. A lane absent from it is described as unclassified rather than
+// falling through to another lane's text: a wrong capability list reads as an
+// authoritative one, and the reader has nothing to check it against.
+var capabilityTable = map[string]Capabilities{
+	ResolvedDirectCDP: {
+		Transport: ResolvedDirectCDP,
+		Has:       "incognito contexts (brw_open_incognito/brw_close_context), HttpOnly cookie access (brw_cookies), deterministic download routing, session snapshots (brw_state), headless runs",
+		Lacks:     "drives a separate brw-owned browser instance, not your existing signed-in window; no Chrome tab groups",
+	},
+	ResolvedChromeOptIn: {
+		Transport: ResolvedChromeOptIn,
+		Has:       "your real signed-in Chrome with full browser-target CDP: incognito contexts (brw_open_incognito), HttpOnly cookie access (brw_cookies), deterministic download routing, page-environment overrides — and no extension at all",
+		Lacks:     "no Chrome tab groups (an extension API), no session snapshots (brw_state is refused on a browser you are signed into), and nothing works while the chrome://inspect opt-in is off",
+	},
+	ResolvedExtensionBridge: {
 		Transport: ResolvedExtensionBridge,
 		Has:       "your real signed-in browser profile, its existing logins, and Chrome tab groups",
-		Lacks:     "no incognito contexts (brw_open_incognito), no HttpOnly cookie access (brw_cookies), no deterministic download routing",
+		Lacks:     "no incognito contexts (brw_open_incognito), no HttpOnly cookie access (brw_cookies), no deterministic download routing, no session snapshots (brw_state)",
+	},
+}
+
+// CapabilitiesFor describes one resolved transport.
+func CapabilitiesFor(transport string) Capabilities {
+	if caps, ok := capabilityTable[transport]; ok {
+		return caps
+	}
+	return Capabilities{
+		Transport: transport,
+		Has:       "unknown: brw has no capability description for this transport",
+		Lacks:     "unknown: treat every capability as unverified until this lane is described",
 	}
 }
 

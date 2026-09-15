@@ -99,7 +99,7 @@ where a refusal costs nothing.
 The walk stops being true the moment a step **acts**. A click on a link is a
 navigation, so the steps after it can land on an origin the arguments never
 named. Each step is therefore re-checked by the runner immediately before it
-runs, against the origin the tab is showing at that moment — on both transports,
+runs, against the origin the tab is showing at that moment — on every transport,
 since a gate one runner honours and the other does not is a bypass by choice of
 transport. The high-risk confirmation for a step the walk could not place is
 asked there too, so a person is asked once per action and about the origin it

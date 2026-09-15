@@ -174,8 +174,9 @@ read as missing work:
 Together they account for `brw`'s incognito, HttpOnly-cookie and
 deterministic-download gaps on the extension bridge. Neither is fixable in the
 extension, which is why the direct-CDP lane exists and why the Chrome 144+
-opt-in is tracked as a third transport (`77TC6Z`) rather than as a connection
-convenience.
+opt-in ships as a third transport rather than as a connection convenience:
+`brwd --chrome-opt-in`, reported by `brw_identity` as `chrome-opt-in-cdp`, with
+its own tool catalogue. See [install.md](install.md#the-chrome-opt-in-lane).
 
 ### The wider field
 

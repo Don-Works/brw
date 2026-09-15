@@ -231,7 +231,7 @@ type Manager struct {
 	netCaptureTabs map[string]bool
 
 	// shadowPierceTabs records which tabs have had the closed-shadow piercer
-	// armed at document-start (direct-CDP only), so a tab is registered once.
+	// armed at document-start (the CDP transports only), so a tab is registered once.
 	shadowPierceMu   sync.Mutex
 	shadowPierceTabs map[string]bool
 
@@ -275,6 +275,16 @@ type Manager struct {
 	// refuses by name instead of writing a snapshot in the clear.
 	sessionStateMu sync.Mutex
 	sessionState   *sessionstate.Store
+
+	// signedInProfile marks a lane driving the browser the user is personally
+	// signed into (the Chrome opt-in lane). It is read by SessionState, which
+	// refuses to seal that browser's cookies whatever store is installed.
+	signedInProfile bool
+
+	// attachOnly marks a lane that attached to a browser brw did not start, so
+	// the user data directory belongs to that browser. resolveDownloadDir reads
+	// it to keep brw's staging out of somebody else's profile.
+	attachOnly bool
 
 	// events is the CDP event stream every wait and post-action settle reads
 	// instead of re-asking the page. One subscription per context; see events.go.
@@ -414,6 +424,9 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 	var launcher *cdplaunch.Launcher
 	var err error
 	if endpoint == "" {
+		if cfg.AttachOnly {
+			return nil, ErrAttachOnlyNoEndpoint
+		}
 		launcher, err = cdplaunch.Launch(ctx, cdplaunch.LaunchConfig{
 			ChromePath:       cfg.ChromePath,
 			UserDataDir:      cfg.UserDataDir,
@@ -461,6 +474,8 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		webmcpTabs:         map[string]bool{},
 		emulationStates:    map[string]deviceEmulationState{},
 		incognitoContexts:  map[string]bool{},
+		signedInProfile:    cfg.SignedInProfile,
+		attachOnly:         cfg.AttachOnly,
 	}
 
 	if err := m.connect(); err != nil {

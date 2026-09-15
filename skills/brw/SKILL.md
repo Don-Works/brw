@@ -35,31 +35,39 @@ opened, never touch a tab another session has leased.
 It needs no tab and no browser window, so it is safe first. `profile` +
 `user_data_dir` + `profile_directory` say which browser you are about to drive;
 if that is not the one the user meant, stop and ask. `transport` decides which
-tools work (below). `headless: true` means the browser has no visible window —
+tools work (below) and is one of `extension-bridge`, `direct-cdp` or
+`chrome-opt-in-cdp`. `headless: true` means the browser has no visible window —
 absent means windowed. Read `transport`, not `mode`: `mode` is how this process
-reaches the daemon (`direct`, `upstream-http`, `bridge`) and says nothing about
-capabilities.
+reaches the daemon (`direct`, `upstream-http`, `bridge`, `chrome-opt-in`) and
+says nothing about capabilities.
 
 ## Transport decides capabilities
 
-| | `extension-bridge` | `direct-cdp` |
-|---|---|---|
-| drives | the human's existing signed-in Chrome, via the brw extension | a Chrome brw launched itself, often headless |
-| `brw_open_incognito` / `brw_close_context` | error: *"incognito browser contexts are not supported on the extension-bridge transport"* | works; `tab.context_id` comes back on open |
-| `brw_cookies` | error: *"cookie access is not supported on the extension-bridge transport"* | works, including HttpOnly |
-| `brw_state` | not advertised; calling it anyway errors: *"session snapshots are not supported on the extension-bridge transport"* | works |
-| `brw_list_tab_groups` / `brw_group_tabs` / `brw_ungroup_tabs` | works | error: *"tab grouping is not supported on the direct-CDP transport"* |
-| `brw_set_geolocation` / `brw_set_network_conditions` / `brw_emulate_media` / `brw_set_extra_headers` / `brw_set_user_agent` / `brw_authenticate` / `brw_set_download_path` | not advertised at all; calling one anyway errors: *"page environment overrides … are not supported on the extension-bridge transport"* | works |
-| `brw_snapshot {include_ax:true}` | no AX tree | AX enrichment available |
-| tab ids | Chrome tab ids, e.g. `"235935869"` | CDP target ids, e.g. `"79F95D14…"` |
+| | `extension-bridge` | `direct-cdp` | `chrome-opt-in-cdp` |
+|---|---|---|---|
+| drives | the human's existing signed-in Chrome, via the brw extension | a Chrome brw launched itself, often headless | the human's existing signed-in Chrome, with remote debugging switched on by hand at `chrome://inspect` |
+| `brw_open_incognito` / `brw_close_context` | error: *"incognito browser contexts are not supported on the extension-bridge transport"* | works; `tab.context_id` comes back on open | works |
+| `brw_cookies` | error: *"cookie access is not supported on the extension-bridge transport"* | works, including HttpOnly | works, including HttpOnly |
+| `brw_state` | not advertised; calling it anyway errors: *"session snapshots are not supported on the extension-bridge transport"* | works | not advertised; calling it anyway errors: *"session snapshots are refused on a transport that drives the browser you are signed into"* |
+| `brw_list_tab_groups` / `brw_group_tabs` / `brw_ungroup_tabs` | works | not advertised; calling one anyway errors: *"tab grouping is not supported over the DevTools Protocol"* | not advertised; same error |
+| `brw_set_geolocation` / `brw_set_network_conditions` / `brw_emulate_media` / `brw_set_extra_headers` / `brw_set_user_agent` / `brw_authenticate` / `brw_set_download_path` | not advertised at all; calling one anyway errors: *"page environment overrides … are not supported on the extension-bridge transport"* | works | works |
+| `brw_snapshot {include_ax:true}` | no AX tree | AX enrichment available | AX enrichment available |
+| tab ids | Chrome tab ids, e.g. `"235935869"` | CDP target ids, e.g. `"79F95D14…"` | CDP target ids, e.g. `"79F95D14…"` |
 
-Both transports ship in brw, and an unavailable capability is a property of this
-profile's lane, not of the product; an operator can run a second daemon on the
-other transport. Most tools are listed and fully described in `tools/list` on both
-and fail only when called. The seven page-environment tools are the exception: they
-are DevTools session overrides that the bridge's attach/detach cycle would silently
-drop between calls, so on the bridge they are not advertised and an agent never
-spends a call finding out.
+All three transports ship in brw, and an unavailable capability is a property of
+this profile's lane, not of the product; an operator can run a second daemon on
+another transport. Most tools are listed and fully described in `tools/list` on
+every lane and fail only when called. The seven page-environment tools are the
+exception: they are DevTools session overrides that the bridge's attach/detach
+cycle would silently drop between calls, so on the bridge they are not
+advertised and an agent never spends a call finding out.
+
+`chrome-opt-in-cdp` is the lane a person has to turn on for themselves, so you
+will rarely see it: it needs Chrome 144+ and a human switching remote debugging
+on at `chrome://inspect/#remote-debugging`. Never tell a user brw can enable it
+— it cannot, by design. If they want incognito or HttpOnly cookies against their
+own signed-in Chrome, that page is where they go; `brwctl doctor` prints the
+same instruction.
 
 When incognito is unavailable and you need isolation: use a second brw profile (two
 signed-in identities), or ask the operator for a direct-CDP profile (`brwd` without
@@ -147,9 +155,9 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `brw_upload_file({ref|query, path|paths|bytes_base64|url, filename?, click_ref?, click_text?})` — exactly one source.
 - `brw_navigate({direction:"back"|"forward"|"reload"})`, `brw_navigate_to({url})` (reuses this session's working tab).
 - `brw_focus({ref})` gives one element the keyboard focus without clicking it — use it before `brw_press` when a click's side effects (a menu opening, a link following) would get in the way.
-- `brw_key_down({key})` / `brw_key_up({key})` hold a key instead of tapping it, so `Ctrl+drag` and `Shift+click-range` are expressible. While a key is held, every later input on that tab carries its modifier — `brw_click`, `brw_click_text`, `brw_drag`, `brw_hover`, `brw_mouse_down/up`, `brw_press`, and the `click`/`click_text`/`press`/`hover` steps of a `brw_batch` — and every action result warns that keys are still held. One key per call: a chord like `"ctrl+shift"` is refused. Always release (`brw_key_up({key:"all"})` releases everything). Direct-CDP transport only.
-- `brw_pushstate({url, state?, replace?, notify?})` changes the URL through the History API with no reload, to drive a client-side router straight to a route. A `popstate` is dispatched unless `notify:false`. Same origin only, and the target passes the same navigation policy a real navigation does. Direct-CDP transport only.
-- `brw_clipboard({action:"read"|"write"|"revoke", text?})` reads or writes the system clipboard for copy/paste flows. Reading needs a secure context (https or localhost); clipboard text is never written to the trace. The Chrome permission it grants outlives the call, so `action:"revoke"` after a read on an origin you do not control. Headless Chrome's clipboard is in-process, not the OS pasteboard. Direct-CDP transport only.
+- `brw_key_down({key})` / `brw_key_up({key})` hold a key instead of tapping it, so `Ctrl+drag` and `Shift+click-range` are expressible. While a key is held, every later input on that tab carries its modifier — `brw_click`, `brw_click_text`, `brw_drag`, `brw_hover`, `brw_mouse_down/up`, `brw_press`, and the `click`/`click_text`/`press`/`hover` steps of a `brw_batch` — and every action result warns that keys are still held. One key per call: a chord like `"ctrl+shift"` is refused. Always release (`brw_key_up({key:"all"})` releases everything). Not on the extension bridge.
+- `brw_pushstate({url, state?, replace?, notify?})` changes the URL through the History API with no reload, to drive a client-side router straight to a route. A `popstate` is dispatched unless `notify:false`. Same origin only, and the target passes the same navigation policy a real navigation does. Not on the extension bridge.
+- `brw_clipboard({action:"read"|"write"|"revoke", text?})` reads or writes the system clipboard for copy/paste flows. Reading needs a secure context (https or localhost); clipboard text is never written to the trace. The Chrome permission it grants outlives the call, so `action:"revoke"` after a read on an origin you do not control. Headless Chrome's clipboard is in-process, not the OS pasteboard. Not on the extension bridge.
 - Action tools return a post-action observation: `{ok,message,tab_id,version,url,title,focus,changed_state,changed[],elements[],warning?}`.
 
 **Waiting and asserting**
@@ -202,7 +210,7 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `brw_window_bounds({tab_id?})` → `{device_pixel_ratio,screen_x,screen_y,inner_*,outer_*,scroll_*,screen_*}`; `brw_window_resize({width?,height?,left?,top?,state?})` moves the real OS window.
 - `brw_set_download_path({path|clear})` → `{ok,download_path}`. Sends completed downloads somewhere you can open them instead of brw's private staging directory. Browser-wide, so there is no `tab_id`; files are named by download id, and files already downloaded stay where they were.
 
-**Faking the page's surroundings** (direct-CDP only; each returns a named capability error on the extension bridge and is not advertised there)
+**Faking the page's surroundings** (not on the extension bridge; each returns a named capability error there and is not advertised)
 - `brw_set_geolocation({latitude,longitude,accuracy?,clear?,tab_id?})` — what `navigator.geolocation` reports. brw grants the page's geolocation permission so the override is reachable, and puts the permission back as it found it on `clear`.
 - `brw_set_network_conditions({offline?,latency_ms?,download_throughput?,upload_throughput?,clear?,tab_id?})` — `offline:true` actually fails the page's requests, which is what enters an app's offline path; throughputs are bytes/second and `-1` is no limit.
 - `brw_emulate_media({media?:"screen"|"print", color_scheme?:"light"|"dark"|"no-preference", reduced_motion?:"reduce"|"no-preference", clear?, tab_id?})` — media queries re-evaluate immediately; a page that reads the preference once at startup needs a reload.
@@ -226,7 +234,7 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 **Small reads and page storage**
 - `brw_get({what, target?, name?})` — one typed fact, no hand-written JS. `what` is `attr|box|checked|count|disabled|editable|enabled|focused|hidden|state|status|styles|text|title|url|value|visible`. `status` is the current document's navigation HTTP status (0 when there was none); `state` returns `{found,visible,enabled,editable,checked,focused}` for one element in a single call. `target` is a ref or a CSS selector and resolves across same-origin iframes and open shadow roots. Use this instead of `brw_evaluate` for simple reads.
 - `brw_storage({action:"get"|"set"|"remove"|"clear", kind?:"local"|"session", key?, value?})` — localStorage/sessionStorage for the current origin. `get` with no `key` returns everything. Not a cookie or credential surface.
-- `brw_frame({target})` scopes every later lookup — snapshot, find, get, refs — to one iframe. `target` is a ref, a CSS selector for the frame, or an element ref inside it; `"main"` clears the scope, and any navigation clears it too. You rarely need it to click something (refs already cross same-origin frames); reach for it when the same selector exists in the page and in an embed. A cross-origin frame (`kind:"cross_origin"`, its `f<i>` ref, or an `f<i>:e<j>` element ref whose `:e<j>` half is dropped) cannot be scoped into and comes back with its top-level box for `brw_click_xy`. An `f<i>` index belongs to the snapshot that minted it — the two transports number cross-origin frames independently.
+- `brw_frame({target})` scopes every later lookup — snapshot, find, get, refs — to one iframe. `target` is a ref, a CSS selector for the frame, or an element ref inside it; `"main"` clears the scope, and any navigation clears it too. You rarely need it to click something (refs already cross same-origin frames); reach for it when the same selector exists in the page and in an embed. A cross-origin frame (`kind:"cross_origin"`, its `f<i>` ref, or an `f<i>:e<j>` element ref whose `:e<j>` half is dropped) cannot be scoped into and comes back with its top-level box for `brw_click_xy`. An `f<i>` index belongs to the snapshot that minted it — the CDP and extension backends number cross-origin frames independently.
 
 **Did my action change anything?**
 - `brw_diff({action:"mark"})` before, `brw_diff({action:"compare"})` after → `{changed, summary, added/removed/updated[], *_count, url_changed, …}`. Elements match on identity, so a list that re-renders in place does not read as everything being replaced. Counts stay exact even when the lists are capped.
@@ -236,8 +244,8 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `brw_baseline({action:"check"|"update"|"list"|"delete", recipe_digest, step_index, pixel_tolerance?, channel_tolerance?, ignore_regions?, tab_id?})` → `{status,baseline_id,environment,failed,environment_mismatch[],visual,aria,baseline_created_at,ignored_regions[],regions_outside_capture[],note}`. `status` is `match`, `diff`, `environment_mismatch`, `missing`, `recorded` or `updated`; branch on `failed`. `brw_diff` compares against a mark taken seconds ago; this compares against a stored capture, so it needs a daemon started with `--baseline-root` and answers `"regression baselines are not enabled on this daemon"` without one.
 - `check` **writes nothing, ever**, including on a pass. `update` is the only thing that records or replaces a baseline. Record one deliberately: a gate that passes because it has never seen the page is not a gate, so the first `check` fails with `missing`.
 - The key is `recipe_digest` + `step_index` + an environment fingerprint brw measures itself (browser build, viewport, device pixel ratio, locale, the browser host's OS). A baseline recorded on another display reports `environment_mismatch` naming the field (`device_pixel_ratio 1 -> 2`) and compares no pixels. `recipe_digest` is the digest from `brw_recipe_search`; editing a recipe orphans its baselines rather than comparing new behaviour against old.
-- Two comparisons run. Pixels, with `pixel_tolerance` (fraction of compared pixels allowed to differ), `channel_tolerance` (per-channel slack that absorbs anti-aliasing) and `ignore_regions` (named rectangles in CSS pixels — put the clock, the avatar and the ad slot in there, and a region recorded with a baseline keeps applying). Write the rectangles in the page's own coordinates: the capture is downscaled (both transports cap it at 800px wide), and brw places the rectangle from the capture's width against the viewport in the key rather than from the device pixel ratio. A region that lands off the capture excluded nothing and comes back in `regions_outside_capture`. And the page's ARIA structure, which carries no geometry: a button losing its accessible name fails the structural half while a font bump moves only the visual one. A region that covers the whole capture fails rather than passing, because then nothing was compared.
-- Works on both transports.
+- Two comparisons run. Pixels, with `pixel_tolerance` (fraction of compared pixels allowed to differ), `channel_tolerance` (per-channel slack that absorbs anti-aliasing) and `ignore_regions` (named rectangles in CSS pixels — put the clock, the avatar and the ad slot in there, and a region recorded with a baseline keeps applying). Write the rectangles in the page's own coordinates: the capture is downscaled (every transport caps it at 800px wide), and brw places the rectangle from the capture's width against the viewport in the key rather than from the device pixel ratio. A region that lands off the capture excluded nothing and comes back in `regions_outside_capture`. And the page's ARIA structure, which carries no geometry: a button losing its accessible name fails the structural half while a font bump moves only the visual one. A region that covers the whole capture fails rather than passing, because then nothing was compared.
+- Works on every transport.
 
 **Mocking requests**
 - `brw_route({action:"add"|"list"|"clear", pattern, behaviour?:"fulfill"|"abort", status?, body?, content_type?, headers?, times?, tab_id?})`. `pattern` is a URL glob where `*` matches any run of characters; a pattern with no `*` matches as a prefix. First match wins, so add specific rules before general ones.

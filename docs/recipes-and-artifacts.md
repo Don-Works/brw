@@ -577,7 +577,7 @@ pixels with `pixel_tolerance` (a fraction of compared pixels),
 `channel_tolerance` (per-channel slack that absorbs anti-aliasing) and
 `ignore_regions` — named rectangles in CSS pixels for the clock, the avatar and
 the ad slot, reported back by name so you can see which exclusion swallowed a
-change. CSS pixels are not capture pixels: both transports clip-capture the
+change. CSS pixels are not capture pixels: every transport clip-captures the
 viewport at `min(1, 800/viewport_width)` on top of the device pixel ratio, so a
 rectangle is placed by the capture's own width divided by the viewport width in
 the key — measured, not assumed to be the DPR, which on a 1400px viewport is
@@ -597,7 +597,7 @@ replaces a baseline, and it reports the differences it accepted.
 
 Both transports work. The ARIA structure is computed in the page rather than
 read from a browser-level Accessibility domain the extension bridge does not
-have, and the viewport capture — which both transports take as JPEG for wire
+have, and the viewport capture — which every transport takes as JPEG for wire
 size — is re-encoded losslessly before it is stored or compared, so a baseline
 directory holds the PNG its file name claims.
 

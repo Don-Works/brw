@@ -90,7 +90,7 @@ const clipboardScript = `(function(action, text){
 // is readable by the page and by a later brw read, and invisible to a native
 // paste in another application.
 //
-// Direct-CDP transport only. Browser-domain commands are not reachable through
+// Not on the extension bridge. Browser-domain commands are not reachable through
 // chrome.debugger, so the extension bridge cannot grant the permission.
 func (m *Manager) Clipboard(ctx context.Context, opts ClipboardOptions) (ClipboardResult, error) {
 	if err := m.guardTakeover("clipboard"); err != nil {

@@ -166,6 +166,14 @@ func (m *Manager) handleDownloadEventForTab(tabID string, ev any) {
 
 func (m *Manager) resolveDownloadDir() (string, error) {
 	base := strings.TrimSpace(m.userDataDir)
+	// An attach-only lane's user data directory is the browser's own — on the
+	// Chrome opt-in lane, the profile its user is signed into. Staging
+	// downloads under it would have brw creating directories inside that
+	// profile, which is not brw's to write to, so it falls through to the
+	// per-user cache below exactly as an endpoint with no known directory does.
+	if m.attachOnly {
+		base = ""
+	}
 	if base == "" {
 		// Remote-endpoint case: use the private per-user cache rather than a
 		// shared, predictable /tmp directory.

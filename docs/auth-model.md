@@ -259,10 +259,14 @@ on the same browser host.
 
 ### What it is not
 
-- Not available on the extension-bridge transport. That transport drives the
-  browser the user is personally signed into, and sealing its cookies is exactly
-  the thing brw does not do. `brw_state` is not advertised there and returns
-  `ErrSessionStateUnsupported` by name if called.
+- Not available on any transport that drives the browser the user is personally
+  signed into — the extension bridge, and the Chrome opt-in lane. Sealing that
+  browser's cookies is exactly the thing brw does not do. `brw_state` is not
+  advertised on either and returns a named error if called anyway:
+  `ErrSessionStateUnsupported` on the bridge, `ErrSessionStateSignedIn` on the
+  opt-in lane. The opt-in lane is the one where the refusal has to be in the
+  controller rather than only in `tools/list`: it is full browser-target CDP, so
+  the capability to seal those cookies is right there.
 - Not a credential vault. It holds session cookies for origins the caller named,
   for hours, in a file only the daemon's user can read, with no path back out.
   It does not hold, and cannot be made to hold, passwords, API keys or OAuth

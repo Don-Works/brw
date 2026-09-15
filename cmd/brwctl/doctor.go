@@ -47,6 +47,7 @@ var doctorCheckNames = []string{
 	"extension_version",
 	"mcp_registration",
 	"claude_in_chrome",
+	"chrome_opt_in",
 	"transport",
 }
 
@@ -83,6 +84,7 @@ type doctorResult struct {
 	BridgeExtensionSource    string              `json:"bridge_extension_source,omitempty"`
 	Transport                string              `json:"transport,omitempty"`
 	Capabilities             *setup.Capabilities `json:"capabilities,omitempty"`
+	ChromeOptIn              *doctorChromeOptIn  `json:"chrome_opt_in,omitempty"`
 	DaemonHTTPURL            string              `json:"daemon_http_url,omitempty"`
 	BridgeWSAddr             string              `json:"bridge_ws_addr,omitempty"`
 	BrowserExecutable        string              `json:"browser_executable,omitempty"`
@@ -121,6 +123,12 @@ type doctorRequest struct {
 	// reported as the profile check rather than returned, so a machine whose
 	// policy binds no workspace still gets the whole report.
 	ResolveError error
+	// ChromeOptInUserDataDir overrides where the Chrome remote-debugging opt-in
+	// endpoint is looked for. The command leaves it empty and the check resolves
+	// the browser's real user data directory; a test sets it so its result does
+	// not depend on whether the person running the suite happens to have the
+	// opt-in switched on.
+	ChromeOptInUserDataDir string
 }
 
 func doctor(args []string) error {
@@ -215,6 +223,10 @@ type doctorRun struct {
 	// extension-version check: the loaded build is only knowable from a
 	// connected extension.
 	bridge *bridgeStatus
+	// health is the daemon's own answer, carried from the daemon check to the
+	// checks that have to know which lane is actually running. Nil when the
+	// daemon was not probed or did not answer.
+	health *daemonHealth
 }
 
 func doctorReport(req doctorRequest) doctorResult {
@@ -243,6 +255,7 @@ func doctorReport(req doctorRequest) doctorResult {
 	d.checkExtensionVersion()
 	d.checkMCPRegistration()
 	d.checkClaudeInChrome()
+	d.checkChromeOptIn()
 	d.checkTransport()
 	return d.finish()
 }
@@ -541,6 +554,7 @@ func (d *doctorRun) checkDaemon() {
 			"brwctl daemons   # then re-run setup with a free --http-port")
 		return
 	}
+	d.health = &health
 	detail := url + " is up"
 	if health.TabLeases.ActiveTabs > 0 {
 		detail += fmt.Sprintf(", %d tab lease(s) held, %d request(s) in flight", health.TabLeases.ActiveTabs, health.TabLeases.InFlight)

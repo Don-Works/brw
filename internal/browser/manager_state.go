@@ -29,6 +29,14 @@ const (
 // "unencrypted" are the same state and neither writes a snapshot.
 var ErrSessionStateDisabled = errors.New("session snapshots are not enabled on this daemon: start brwd with --state-key-file pointing at an owner-only key file of at least 32 bytes")
 
+// ErrSessionStateSignedIn refuses brw_state on a lane that drives the browser
+// the user is personally signed into. It is policy, not a capability gap: the
+// Chrome opt-in lane has exactly the browser-level CDP a snapshot needs, and
+// using it would seal the cookies of the session the human is sitting in front
+// of — the "no cookie extraction" non-goal in docs/auth-model.md. The extension
+// bridge refuses the same thing for the same reason.
+var ErrSessionStateSignedIn = errors.New("session snapshots are refused on a transport that drives the browser you are signed into: brw_state would seal that browser's cookies, which brw does not do — use a direct-CDP profile, or an incognito context there")
+
 // ErrSessionStateEmpty refuses to seal a snapshot that would restore nothing.
 // An empty snapshot is always a mistake — the wrong origins, or a context that
 // was never signed in — and saving one hides it until the restore that fails.
@@ -127,6 +135,12 @@ func (m *Manager) sessionStateStore() *sessionstate.Store {
 func (m *Manager) SessionState(ctx context.Context, opts SessionStateOptions) (SessionStateResult, error) {
 	if err := opts.Validate(); err != nil {
 		return SessionStateResult{}, err
+	}
+	// Checked before the store is consulted: the refusal is a property of the
+	// lane, so it has to hold whether or not a snapshot store was configured,
+	// and for list and delete as well as for save.
+	if m.signedInProfile {
+		return SessionStateResult{}, ErrSessionStateSignedIn
 	}
 	store := m.sessionStateStore()
 	if store == nil {

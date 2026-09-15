@@ -216,13 +216,14 @@ a session cookie before/after login, or stage a clean-room cookie setup.
 Cookies need a real http(s) origin — `file://` and `about:blank` pages cannot
 hold them, and the error says so.
 
-**Direct-CDP transport only.** On the extension bridge (driving the user's
-existing signed-in Chrome) `brw_cookies` returns an explicit error: the
+**Not on the extension bridge.** There (driving the user's existing signed-in
+Chrome through the extension) `brw_cookies` returns an explicit error: the
 extension's security policy blocks cookie CDP methods so a rogue server can
 never exfiltrate HttpOnly cookies through brw. `brw_identity`'s `transport`
-field (`direct-cdp` | `extension-bridge`) tells you which you are on. Use a
-dedicated direct-CDP profile — or an incognito context there (`brw_open_incognito` +
-`brw_close_context`) for disposable cookie states.
+field (`direct-cdp` | `chrome-opt-in-cdp` | `extension-bridge`) tells you which
+you are on; the first two both reach browser-level CDP and both read cookies.
+Use a dedicated direct-CDP profile — or an incognito context there
+(`brw_open_incognito` + `brw_close_context`) for disposable cookie states.
 
 ## Waiting
 
@@ -364,8 +365,9 @@ miss saying the body never arrived.
 recent reasons when a replay could not answer something, so a half-loaded page
 points at the fixture rather than at nothing.
 
-`fulfill` and `replay` are direct-CDP only. On the extension-bridge transport
-they return a named capability error and `abort` is what works; see the matrix in
+`fulfill` and `replay` need the DevTools `Fetch` domain, so they work on
+direct CDP and on the Chrome opt-in lane. On the extension-bridge transport they
+return a named capability error and `abort` is what works; see the matrix in
 `docs/install.md`.
 
 ## When a page is contained

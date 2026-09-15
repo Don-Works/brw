@@ -67,7 +67,7 @@ satisfied as soon as the document is interactive; `load` is the load event, and
 the in-page script that answers it where no subscription can requires
 `document.readyState === 'complete'` (`TestWaitForLoadIsNotAnAliasForReady`).
 
-Both transports apply the same 15-second recency window, so "did my click cause
+Every transport applies the same 15-second recency window, so "did my click cause
 this?" is answered the same way on either: the direct-CDP wait times a download
 from its own registry, and the extension bridge from the `changed_at_ms` the
 extension records on each state change. One exception, and it is a version skew

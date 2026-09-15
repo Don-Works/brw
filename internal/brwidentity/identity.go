@@ -32,9 +32,16 @@ type Identity struct {
 }
 
 // Transport values. These name how brw reaches the browser, not how a client
-// reaches brw.
+// reaches brw. transports.go states what each one can do; a value added here
+// without an entry there is not a transport brw can report.
 const (
-	TransportDirectCDP       = "direct-cdp"
+	TransportDirectCDP = "direct-cdp"
+	// TransportChromeOptIn is a Chrome 144+ instance whose user turned on
+	// remote debugging at chrome://inspect/#remote-debugging. It is a third
+	// lane and not a flavour of direct CDP: the browser is the one the user is
+	// signed into, brw never started it, and brw must never try to turn the
+	// opt-in on — it exists precisely because that switch is a human action.
+	TransportChromeOptIn     = "chrome-opt-in-cdp"
 	TransportExtensionBridge = "extension-bridge"
 )
 

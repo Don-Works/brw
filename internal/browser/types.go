@@ -61,7 +61,7 @@ type Config struct {
 	Timeout          time.Duration
 	// WebMCP, when true, installs a WebMCP runtime (navigator.modelContext) at
 	// document-start so cooperating sites can register page tools that
-	// brw_page_tools / brw_call_page_tool surface. Direct-CDP transport only.
+	// brw_page_tools / brw_call_page_tool surface. Not on the extension bridge.
 	WebMCP bool
 	// AllowRealProfile overrides the safety refusal to direct-CDP launch Chrome
 	// against the user's real browser profile (which corrupts it). Diagnostics
@@ -75,6 +75,18 @@ type Config struct {
 	// brw attaches to a browser it did not start (RemoteURL, the bridge, or an
 	// upstream proxy), because that browser was launched by someone else.
 	Network cdplaunch.NetworkEnvironment
+	// AttachOnly forbids launching a browser. On the Chrome opt-in lane the
+	// browser is the user's own and the debugging endpoint exists only because
+	// they turned it on by hand; a brw that fell back to starting Chrome with a
+	// debugging flag when discovery came up empty would be arranging that access
+	// for itself, which is the thing Chrome 136 closed off. The refusal lives
+	// here rather than at the caller so no code path can reach a launch by
+	// leaving RemoteURL unset.
+	AttachOnly bool
+	// SignedInProfile marks a lane that drives the browser the user is
+	// personally signed into. brw_state refuses to seal that browser's cookies
+	// into a snapshot; see docs/auth-model.md and ErrSessionStateSignedIn.
+	SignedInProfile bool
 }
 
 type Tab struct {

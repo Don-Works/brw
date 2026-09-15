@@ -120,19 +120,35 @@ func TestLocalTransport(t *testing.T) {
 		name     string
 		upstream string
 		bridge   bool
+		optIn    bool
 		want     string
+		wantMode string
 	}{
-		{"direct cdp", "", false, brwidentity.TransportDirectCDP},
-		{"extension bridge", "", true, brwidentity.TransportExtensionBridge},
+		{"direct cdp", "", false, false, brwidentity.TransportDirectCDP, "direct"},
+		{"extension bridge", "", true, false, brwidentity.TransportExtensionBridge, "bridge"},
+		// The opt-in lane is its own transport, not direct CDP: it has the
+		// cookie and incognito access the bridge lacks AND it drives the
+		// browser the user is signed into, so its catalogue matches neither.
+		{"chrome opt-in", "", false, true, brwidentity.TransportChromeOptIn, "chrome-opt-in"},
 		// A proxy cannot know how its upstream reaches Chrome, so it reports
 		// empty and adopts the upstream's answer from /health.
-		{"upstream proxy defers", "http://127.0.0.1:17410", false, ""},
-		{"upstream proxy defers even with bridge set", "http://127.0.0.1:17410", true, ""},
+		{"upstream proxy defers", "http://127.0.0.1:17410", false, false, "", "upstream-http"},
+		{"upstream proxy defers even with bridge set", "http://127.0.0.1:17410", true, false, "", "upstream-http"},
+		{"upstream proxy defers even with opt-in set", "http://127.0.0.1:17410", false, true, "", "upstream-http"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := localTransport(tt.upstream, tt.bridge); got != tt.want {
-				t.Fatalf("localTransport(%q, %v) = %q, want %q", tt.upstream, tt.bridge, got, tt.want)
+			got := localTransport(tt.upstream, tt.bridge, tt.optIn)
+			if got != tt.want {
+				t.Fatalf("localTransport(%q, %v, %v) = %q, want %q", tt.upstream, tt.bridge, tt.optIn, got, tt.want)
+			}
+			// /health serves mode and transport together; a caller that gates
+			// on one and logs the other must not see two different lanes.
+			if mode := daemonMode(tt.upstream, tt.bridge, tt.optIn); mode != tt.wantMode {
+				t.Fatalf("daemonMode(%q, %v, %v) = %q, want %q", tt.upstream, tt.bridge, tt.optIn, mode, tt.wantMode)
+			}
+			if got != "" && !brwidentity.KnownTransport(got) {
+				t.Fatalf("localTransport returned %q, which brwidentity does not classify; every tool's availability on that lane would be undefined", got)
 			}
 		})
 	}

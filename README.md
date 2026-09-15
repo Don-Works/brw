@@ -262,24 +262,28 @@ The extension keeps its service worker alive so the bridge does not drop while
 Chrome idles in the background — see [docs/reliability.md](docs/reliability.md)
 for how brw stays connected, the one-time macOS App Nap setup, and how to verify.
 
-### Two transports
+### Three transports
 
 `brw_identity` reports which one a namespace resolved to; `brwctl doctor` names
 it with the capabilities it implies.
 
-| | Extension bridge | Direct CDP |
-|---|---|---|
-| Browser | The real signed-in Chromium browser you already use | A separate brw-owned instance |
-| Existing logins | Yes | No, unless pointed at a cloned profile |
-| Chrome tab groups | Yes | No |
-| `brw_open_incognito` | No | Yes |
-| `brw_cookies`, incl. HttpOnly | No | Yes |
-| `brw_state` session snapshots | No | Yes |
-| Deterministic download capture | No | Yes |
-| Headless | No | Yes |
+| | Extension bridge | Direct CDP | Chrome opt-in |
+|---|---|---|---|
+| Browser | The real signed-in Chromium browser you already use | A separate brw-owned instance | The real signed-in Chrome you already use |
+| Needs | The brw extension loaded | Nothing | Chrome 144+ with remote debugging switched on by hand at `chrome://inspect` |
+| Existing logins | Yes | No, unless pointed at a cloned profile | Yes |
+| Chrome tab groups | Yes | No | No |
+| `brw_open_incognito` | No | Yes | Yes |
+| `brw_cookies`, incl. HttpOnly | No | Yes | Yes |
+| `brw_state` session snapshots | No | Yes | No, same refusal as the bridge |
+| Deterministic download capture | No | Yes | Yes |
+| Headless | No | Yes | No |
 
-Both lanes are supported at once: one `brwd` per profile, one MCP server per
-daemon. `brwctl setup --transport direct-cdp` configures the second.
+The lanes are supported at once: one `brwd` per profile, one MCP server per
+daemon. `brwctl setup --transport direct-cdp` configures the second. The third
+is `brwd --chrome-opt-in`, and only after a person has turned the switch on —
+brw never does that for you. See
+[docs/install.md](docs/install.md#the-chrome-opt-in-lane).
 
 ### Chromium recommended (open source)
 
@@ -496,7 +500,7 @@ Backend-specific notes:
   plan/batch steps alike, and fails CLOSED when nobody is there to confirm. List and revoke with `brwctl grants`, the extension
   options page, or `brw grants`. Opt-in; off by default.
   See [docs/site-permissions.md](docs/site-permissions.md).
-- **Content-boundary navigation guard**: `--content-nav-guard` (direct CDP only)
+- **Content-boundary navigation guard**: `--content-nav-guard` (not on the extension bridge)
   refuses a top-level navigation that page content initiated to another site — an
   injected link click, a meta refresh, a script `location` assignment — while
   what the agent asked for still works: the destination it named, and the

@@ -44,6 +44,10 @@ type doctorFixture struct {
 	daemon     *httptest.Server
 	bridge     *httptest.Server
 	policy     profilepolicy.Policy
+	// optInDir is where the Chrome opt-in check looks. It is a directory with
+	// no DevToolsActivePort file by default, so the suite's result does not
+	// depend on whether the person running it has the opt-in switched on.
+	optInDir string
 }
 
 func newDoctorFixture(t *testing.T) *doctorFixture {
@@ -65,6 +69,10 @@ func newDoctorFixture(t *testing.T) *doctorFixture {
 	fx.status.ConnectedAt = "2026-01-01T00:00:00Z"
 	fx.status.Hello.Build = fixtureExtensionBuild
 
+	fx.optInDir = filepath.Join(home, "opt-in-user-data")
+	if err := os.MkdirAll(fx.optInDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	fx.runner.onPath["google-chrome"] = true
 	fx.runner.output[fixtureChromePath+" --version"] = "Google Chrome " + fixtureChromeVersion
 
@@ -165,13 +173,14 @@ func (fx *doctorFixture) writePolicy() {
 func (fx *doctorFixture) report() doctorResult {
 	fx.t.Helper()
 	return doctorReport(doctorRequest{
-		Workspace:  fixtureWorkspace,
-		PolicyPath: fx.policyPath,
-		AppDir:     fx.appDir,
-		Home:       fx.home,
-		GOOS:       "linux",
-		Executable: filepath.Join(fx.appDir, "bin", "brwctl"),
-		Runner:     fx.runner,
+		Workspace:              fixtureWorkspace,
+		PolicyPath:             fx.policyPath,
+		AppDir:                 fx.appDir,
+		Home:                   fx.home,
+		GOOS:                   "linux",
+		Executable:             filepath.Join(fx.appDir, "bin", "brwctl"),
+		Runner:                 fx.runner,
+		ChromeOptInUserDataDir: fx.optInDir,
 	})
 }
 
@@ -604,6 +613,10 @@ func assertDoctorSchemaJSON(t *testing.T, raw []byte, requireAll bool) {
 	allowed := map[string]bool{
 		"profile_policy_path": true, "bridge_extension_id": true, "bridge_extension_installed": true,
 		"bridge_extension_source": true, "transport": true, "capabilities": true,
+		// chrome_opt_in is present whenever the opt-in lane was looked for, and
+		// absent when live checks were skipped, so it is allowed rather than
+		// required even on a fully resolved machine.
+		"chrome_opt_in":   true,
 		"daemon_http_url": true, "bridge_ws_addr": true, "browser_executable": true,
 		"browser_version": true, "extension_payload_version": true, "extension_loaded_version": true,
 		"warnings": true, "failures": true,

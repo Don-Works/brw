@@ -152,14 +152,18 @@ brwctl setup --browser comet --user-data-dir ~/Library/Application\ Support/Come
 Firefox and Safari are not supported.
 
 Firefox does speak an automation protocol — WebDriver BiDi, over the same
-`--remote-debugging-port` flag, with no driver binary. Three things stop it
-being a lane. BiDi can only be switched on at startup, so brw would have to be
-what launches your browser rather than attaching to the one you already have
-open. Firefox sets `navigator.webdriver = true` for the whole process whenever
-the remote agent is enabled, not per session, so every page of a signed-in
-session would be told it is automated. And there is no extension lane to fall
-back on: Firefox has no equivalent of `chrome.debugger`, and a content script
-can only produce untrusted events.
+`--remote-debugging-port` flag, with no driver binary. brw has a measured
+prototype against Firefox 155 and the primitives are largely there; what stops
+it being a lane is not the protocol. BiDi can only be switched on at startup, so
+brw would have to be what launches your browser rather than attaching to the one
+you already have open. While the remote agent is enabled Firefox sets
+`navigator.webdriver = true` on every page, whether or not anything is driving
+it, so every page of a signed-in session would be told it is automated. And
+there is no extension lane to fall back on: Firefox has no equivalent of
+`chrome.debugger`, and a content script can only produce untrusted events.
+
+[bidi-prototype.md](bidi-prototype.md) records what the prototype measured,
+primitive by primitive, and the decision taken from it.
 
 Safari's automation route hands you a clean window rather than your signed-in
 session, which is the opposite of what brw is for.
@@ -188,20 +192,72 @@ With both switched on the agent sees two browser tool sets and may drive the
 wrong one. `brwctl doctor` emits the `claude_in_chrome_enabled` warning when it
 finds it; run `/chrome` in Claude Code and turn it off.
 
-## Two transports, different capabilities
+## Three transports, different capabilities
 
 `brw_identity` reports which one a namespace resolved to, and `brwctl doctor`
-names it with the capabilities it implies.
+names it with the capabilities it implies. `tools/list` is narrowed to the lane,
+so a tool that cannot work on it is not advertised at all.
 
-| | Extension bridge | Direct CDP |
-|---|---|---|
-| Browser | The real signed-in Chromium browser you already use | A separate brw-owned instance |
-| Existing logins | Yes | No, unless you point it at a cloned profile |
-| Chrome tab groups | Yes | No |
-| Incognito contexts (`brw_open_incognito`) | No | Yes |
-| Cookies incl. HttpOnly (`brw_cookies`) | No | Yes |
-| Deterministic download capture | No, uses the browser's download folder | Yes, staged in brw's cache |
-| Headless | No | Yes |
+| | Extension bridge | Direct CDP | Chrome opt-in |
+|---|---|---|---|
+| Browser | The real signed-in Chromium browser you already use | A separate brw-owned instance | The real signed-in Chrome you already use |
+| How it connects | The brw extension, `chrome.debugger` per operation | brw launches Chrome with a debugging port | Full browser-target CDP, no extension |
+| Needs | The extension loaded and enabled | Nothing | Chrome 144+ with the opt-in switched on by hand |
+| Existing logins | Yes | No, unless you point it at a cloned profile | Yes |
+| Chrome tab groups | Yes | No | No |
+| Incognito contexts (`brw_open_incognito`) | No | Yes | Yes |
+| Cookies incl. HttpOnly (`brw_cookies`) | No | Yes | Yes |
+| Deterministic download capture | No, uses the browser's download folder | Yes, staged in brw's cache | Yes, staged in brw's cache |
+| Session snapshots (`brw_state`) | No, by policy | Yes | No, by the same policy |
+| Headless | No | Yes | No, it is your window |
+
+### The Chrome opt-in lane
+
+Chrome 136 stopped honouring `--remote-debugging-port` against the default user
+data directory, and an extension cannot attach `chrome.debugger` to the BROWSER
+target at all. Between them those are why the bridge has no incognito, no
+HttpOnly cookie read and no deterministic download capture: the capability is
+not missing from brw, it is unreachable from where the bridge stands.
+
+Chrome 144 added the sanctioned way back: at `chrome://inspect/#remote-debugging`
+a person can switch remote debugging on for their own browser. That is a third
+lane — full browser-target CDP against the profile you are signed into, with no
+extension involved.
+
+```sh
+brwd --chrome-opt-in
+```
+
+It is a human action by design, and brw treats it that way:
+
+- brw never turns the opt-in on and has no flag that would. With it off, `brwd
+  --chrome-opt-in` says so, names what to do, and exits. It does not fall back
+  to launching Chrome with a debugging flag — doing that would be brw granting
+  itself the access Chrome asks you to grant.
+- `brwctl doctor` reports the lane as a `chrome_opt_in` check. Off is a skip,
+  not a failure: it is the default and the other two lanes work without it. The
+  check's fix opens `chrome://inspect/#remote-debugging`; the switch is still
+  yours to flip.
+- `brw_identity` reports `transport: "chrome-opt-in-cdp"`, distinct from
+  `direct-cdp`, because the catalogue differs in both directions.
+
+The port is discovered, not configured: the opt-in allocates one dynamically
+and Chrome records it in `DevToolsActivePort` in the user data directory, which
+is the only place it appears. brw reads that file, probes the port, and checks
+that the browser WebSocket URL the endpoint reports points back at the same
+loopback port — a file left behind by an exited Chrome names a port anything
+else on the machine may since have taken.
+
+`brw_state` is refused on this lane. It is the same refusal as on the extension
+bridge and for the same reason: sealing the cookies of the browser you are
+personally signed into is the "no cookie extraction" non-goal in
+[auth-model.md](auth-model.md). The CDP to do it is right there, which is
+exactly why the refusal is in the controller and not only in `tools/list`.
+
+`--chrome-opt-in` attaches to a browser brw did not start, so it cannot be
+combined with `--bridge`, `--remote`, `--upstream-http`, `--headless`,
+`--login`, `--extension`, `--chrome-arg`, `--chrome-path`,
+`--remote-debugging-port`, or the launch network switches.
 
 ### Page environment and launch flags
 
@@ -212,23 +268,23 @@ operation, and a detach drops every override that session installed. On the
 bridge each tool returns a named capability error and is not advertised in
 `tools/list` at all, so an agent never spends a call finding out.
 
-| Capability | Tool | Extension bridge | Direct CDP |
-|---|---|---|---|
-| Geolocation override | `brw_set_geolocation` | No | Yes |
-| Offline / latency / throughput | `brw_set_network_conditions` | No | Yes |
-| Media type and `prefers-*` features | `brw_emulate_media` | No | Yes |
-| Per-origin extra request headers | `brw_set_extra_headers` | No | Yes |
-| User agent, Accept-Language, platform | `brw_set_user_agent` | No | Yes |
-| Per-call HTTP credentials | `brw_authenticate` | No | Yes |
-| Download directory | `brw_set_download_path` | No | Yes |
-| Proxy | `--proxy-server`, `--proxy-bypass-list` | No | Yes, at launch |
-| Certificate errors ignored | `--ignore-https-errors` | No | Yes, at launch |
-| Private CA accepted | `--ca-cert` | No | Yes, at launch |
-| Viewport / device emulation | `brw_emulate_device` | Yes | Yes |
+| Capability | Tool | Extension bridge | Direct CDP | Chrome opt-in |
+|---|---|---|---|---|
+| Geolocation override | `brw_set_geolocation` | No | Yes | Yes |
+| Offline / latency / throughput | `brw_set_network_conditions` | No | Yes | Yes |
+| Media type and `prefers-*` features | `brw_emulate_media` | No | Yes | Yes |
+| Per-origin extra request headers | `brw_set_extra_headers` | No | Yes | Yes |
+| User agent, Accept-Language, platform | `brw_set_user_agent` | No | Yes | Yes |
+| Per-call HTTP credentials | `brw_authenticate` | No | Yes | Yes |
+| Download directory | `brw_set_download_path` | No | Yes | Yes |
+| Proxy | `--proxy-server`, `--proxy-bypass-list` | No | Yes, at launch | No, you launched it |
+| Certificate errors ignored | `--ignore-https-errors` | No | Yes, at launch | No, you launched it |
+| Private CA accepted | `--ca-cert` | No | Yes, at launch | No, you launched it |
+| Viewport / device emulation | `brw_emulate_device` | Yes | Yes | Yes |
 
 The four launch switches are read once, when Chrome starts, so `brwd` refuses
-them alongside `--bridge`, `--remote` and `--upstream-http`, which all attach to
-a browser someone else launched.
+them alongside `--bridge`, `--remote`, `--upstream-http` and `--chrome-opt-in`,
+which all attach to a browser someone else launched.
 
 `--ignore-https-errors` turns certificate validation off for the whole browser.
 It is opt-in per launch and `brw_identity` reports it as `ignore_https_errors`,
@@ -284,7 +340,10 @@ detaches around each operation, and interception dropped at a detach is worse
 than none — the page would reach the real endpoint while the caller believed it
 was mocked. So each gap below is a named error, never a silent passthrough.
 
-| Capability | `brw_route` call | Extension bridge | Direct CDP |
+Interception is the DevTools `Fetch` domain, so the Chrome opt-in lane behaves
+exactly as direct CDP does here; the column below covers both.
+
+| Capability | `brw_route` call | Extension bridge | Direct CDP and Chrome opt-in |
 |---|---|---|---|
 | Refuse a request | `{action:"add", behaviour:"abort"}` | Yes, a `declarativeNetRequest` session rule scoped to the tab, covering every resource type including the top-level navigation | Yes |
 | Answer from a body | `{action:"add", behaviour:"fulfill"}` | No | Yes |
