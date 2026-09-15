@@ -907,12 +907,17 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// read a packaged file that may be overridden.
 	// It is DECOUPLED from the wire PROTOCOL_VERSION below: the manifest moves
 	// with every feature release, while PROTOCOL_VERSION only moves on a breaking
-	// bridge-handshake change. 0.4.0-0.6.0 add fields, message types and
+	// bridge-handshake change. 0.4.0-0.7.0 add fields, message types and
 	// in-extension behaviour only. A new message type is additive in both
 	// directions: an older extension answers resize_window with "unknown message
 	// type", which the daemon reports as an upgrade note rather than a failure.
 	// So the protocol stays 0.2.0 (the daemon still accepts it).
-	const wantManifest = "0.6.0"
+	//
+	// 0.7.0 is the options and popup rebuild. It changes no message and no
+	// stored shape, but package-web-store.sh names the ZIP after this version
+	// and the Web Store refuses an update that does not raise it — so two
+	// different builds sharing 0.6.0 is the defect the bump prevents.
+	const wantManifest = "0.7.0"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

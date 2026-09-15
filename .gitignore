@@ -57,3 +57,7 @@ node_modules/
 # Codex review artifacts: transcripts of a local review run, which quote local
 # paths and are not part of the project.
 .review/
+
+# package-web-store.sh writes here when it is handed the extension dir as its
+# output argument, which is one typo away from committing a build artifact.
+extension/*.zip
