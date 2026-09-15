@@ -287,6 +287,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("GET /profiles", s.rosterPage)
+	mux.HandleFunc("GET /profiles/roster.js", s.rosterScript)
+	mux.HandleFunc("GET /api/roster/board", s.rosterBoard)
+	mux.HandleFunc("GET /api/roster/self", s.rosterSelf)
+	mux.HandleFunc("POST /api/roster/profiles", s.rosterCreate)
+	mux.HandleFunc("POST /api/roster/copy", s.rosterCopy)
+	mux.HandleFunc("POST /api/roster/pin", s.rosterPin)
+	mux.HandleFunc("POST /api/roster/open", s.rosterOpen)
 	// Off unless BRW_DASHBOARD=1, and loopback-only even then: it streams the
 	// rendered pixels of a signed-in browser.
 	mux.HandleFunc("GET /dashboard", s.dashboardPage)

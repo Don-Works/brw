@@ -13,6 +13,7 @@ const LEXICON = {
 const popup = document.getElementById("popup");
 const reconnectButton = document.getElementById("reconnect");
 const optionsButton = document.getElementById("openOptions");
+const profilesButton = document.getElementById("openProfiles");
 const formMessage = document.getElementById("formMessage");
 const detailsPanel = document.getElementById("detailsPanel");
 
@@ -25,6 +26,9 @@ reconnectButton.addEventListener("click", reconnect);
 optionsButton.addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
 });
+if (profilesButton) {
+  profilesButton.addEventListener("click", openProfileManager);
+}
 detailsPanel.addEventListener("toggle", () => {
   operatorOpenedDetails = detailsPanel.open;
 });
@@ -32,6 +36,7 @@ detailsPanel.addEventListener("toggle", () => {
 init();
 
 async function init() {
+  await revealProfileManager();
   await refresh({ announce: false });
   refreshTimer = window.setInterval(() => {
     if (!document.hidden && !busy) refresh({ announce: false });
@@ -256,4 +261,32 @@ function humanize(error) {
 
 function sleep(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function revealProfileManager() {
+  if (!profilesButton) return;
+  const stored = await chrome.storage.local.get("profileManagerEnabled");
+  profilesButton.hidden = stored.profileManagerEnabled !== true;
+}
+
+async function openProfileManager() {
+  const status = await chrome.runtime.sendMessage({ type: "BRW_GET_STATUS" });
+  const config = status?.status?.config || {};
+  let url = "";
+  try {
+    const statusUrl = config.statusUrl || "";
+    const u = new URL(statusUrl || config.bridgeUrl || "http://127.0.0.1:17310/status");
+    u.protocol = "http:";
+    u.pathname = "/profiles";
+    u.search = "";
+    u.hash = "";
+    if (u.port && Number(u.port) % 2 === 1) {
+      u.port = String(Number(u.port) - 1);
+    }
+    url = u.toString();
+  } catch (_) {
+    url = "http://127.0.0.1:17310/profiles";
+  }
+  await chrome.tabs.create({ url });
+  window.close();
 }

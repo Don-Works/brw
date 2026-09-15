@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>brw profiles</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f3eef2; --ink: #1d1520; --muted: #6a5a66; --line: #d9cfd6;
+  --well: #fffbfe; --chip: #f6eef3; --accent: #9f006f; --ok: #11643b;
+  --warn: #765400; --bad: #a42c32;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161117; --ink: #f4eaf1; --muted: #b5a4b0; --line: #3c3238;
+    --well: #221b20; --chip: #2c2329; --accent: #ff6ec7; --ok: #5ddea0;
+    --warn: #f0c14b; --bad: #ff8a90;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); }
+body { padding: 28px 24px 48px; }
+header.page { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+h1 { margin: 0; font-size: 1.35rem; letter-spacing: -0.04em; font-weight: 750; }
+header.page p { margin: 4px 0 0; color: var(--muted); font-size: .85rem; max-width: 52ch; }
+#board { display: flex; gap: 14px; align-items: stretch; overflow-x: auto; padding-bottom: 12px; }
+.well {
+  flex: 0 0 240px; display: flex; flex-direction: column; gap: 8px;
+  min-height: 420px; padding: 14px 12px 12px; background: var(--well);
+  border: 1px solid var(--line); border-radius: 2px 14px 14px 2px;
+}
+.well.source { border-style: dashed; }
+.well.drop { outline: 2px solid var(--accent); }
+.well h2 { margin: 0; font-size: 1rem; letter-spacing: -0.03em; }
+.meta { color: var(--muted); font-size: .72rem; font-family: ui-monospace, Menlo, monospace; }
+.chip {
+  display: flex; align-items: center; gap: 8px; padding: 8px 9px;
+  background: var(--chip); border: 1px solid var(--line); border-radius: 8px;
+  cursor: grab; user-select: none;
+}
+.chip .pip { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
+.chip[data-health="signed-in"] .pip { background: var(--ok); }
+.chip[data-health="expired"] .pip, .chip[data-health="copied-unverified"] .pip { background: var(--warn); }
+.chip[data-health="missing"] .pip { background: var(--bad); }
+.chip b { font-size: .82rem; font-weight: 650; }
+.chip small { display: block; color: var(--muted); font-size: .7rem; }
+.empty { color: var(--muted); font-size: .8rem; padding: 18px 4px; }
+.actions { display: flex; gap: 6px; margin-top: auto; }
+button {
+  min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: transparent; color: var(--ink); font: inherit; font-weight: 650; cursor: pointer;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+#create { flex: 0 0 220px; }
+#create form { display: flex; flex-direction: column; gap: 8px; }
+input {
+  font: inherit; padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--well); color: var(--ink);
+}
+#toast {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 999px;
+  font-size: .8rem; display: none;
+}
+#toast.show { display: block; }
+.err { color: var(--bad); font-size: .8rem; }
+</style>
+</head>
+<body>
+<header class="page">
+  <div>
+    <h1>Profiles</h1>
+    <p>Each well is an isolated Chromium jar. Drag a site onto another well to copy that session. Daily Chrome never accepts drops.</p>
+  </div>
+  <button type="button" id="refresh">Refresh</button>
+</header>
+<div id="board"></div>
+<p class="err" id="err" hidden></p>
+<div id="toast"></div>
+<script src="/profiles/roster.js"></script>
+</body>
+</html>

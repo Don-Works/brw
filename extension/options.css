@@ -831,3 +831,17 @@ footer a {
     transition-duration: .01ms !important;
   }
 }
+
+.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 8px 0 4px;
+  color: var(--ink);
+  font-size: .92rem;
+  cursor: pointer;
+}
+.toggle input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}

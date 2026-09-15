@@ -54,6 +54,16 @@ type Profile struct {
 	BridgeWSAddr       string `json:"bridge_ws_addr,omitempty"`
 	DevToolsMCPAllowed bool   `json:"devtools_mcp_allowed,omitempty"`
 	DevToolsMCPMode    string `json:"devtools_mcp_mode,omitempty"`
+	// Pins are operator-declared expected sessions (account at origin). brwd
+	// ignores them; the profile manager and `brwctl profiles` are the readers.
+	Pins []Pin `json:"pins,omitempty"`
+}
+
+// Pin is an expected login on a profile, not a stored credential.
+type Pin struct {
+	Label   string `json:"label,omitempty"`
+	Origin  string `json:"origin"`
+	Account string `json:"account,omitempty"`
 }
 
 type Transport struct {
