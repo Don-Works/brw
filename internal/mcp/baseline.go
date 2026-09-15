@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Don-Works/brw/internal/baseline"
+	"github.com/Don-Works/brw/internal/recipe"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
@@ -18,8 +19,43 @@ import (
 // that passes on every fresh process, which is worse than not having one.
 var errBaselinesDisabled = errors.New("regression baselines are not enabled on this daemon; start brwd with --baseline-root pointing at a directory outside any repository")
 
-// SetBaselineStore installs the regression-baseline store.
+// SetBaselineStore installs the local regression-baseline store.
 func (s *Server) SetBaselineStore(store *baseline.Store) { s.baselines = store }
+
+// SetRecipeBaselines installs the private provider's baseline side.
+//
+// A baseline of a page a private recipe navigated to is a screenshot of private
+// content, and the provider already holds the recipe that reached it. When the
+// provider owns the recipe, that is where its baselines go; the local root is
+// what is left for public fixtures. Nil means no provider implements the
+// capability, and everything goes to the local root as before.
+func (s *Server) SetRecipeBaselines(store recipe.BaselineStore) { s.recipeBaselines = store }
+
+// baselineStorage picks the destination for one recipe digest.
+//
+// The provider is asked whether it owns the recipe rather than the caller being
+// asked where to put the baseline: the caller is an agent, and which store a
+// capture belongs in is a property of the recipe, not a decision to delegate.
+//
+// A provider that errors on the ownership question is NOT quietly treated as
+// "not mine". That fallback would put a private-page screenshot in the local
+// root exactly when the provider is unreachable, which is the outcome this
+// whole path exists to prevent.
+func (s *Server) baselineStorage(ctx context.Context, digest string) (baseline.Storage, error) {
+	if s.recipeBaselines != nil {
+		owns, err := s.recipeBaselines.OwnsRecipe(ctx, digest)
+		if err != nil {
+			return nil, fmt.Errorf("ask the private recipe provider whether it owns this recipe: %w", err)
+		}
+		if owns {
+			return recipe.ProviderBaselines(ctx, s.recipeBaselines), nil
+		}
+	}
+	if s.baselines == nil {
+		return nil, errBaselinesDisabled
+	}
+	return s.baselines, nil
+}
 
 type baselineRequest struct {
 	Action           string                  `json:"action"`
@@ -31,6 +67,14 @@ type baselineRequest struct {
 	TabID            string                  `json:"tab_id,omitempty"`
 }
 
+// baselineCheckResult is a check verdict plus where the baseline it compared
+// against lives. The verdict is embedded rather than copied field by field, so
+// a field added to baseline.CheckResult cannot be dropped here silently.
+type baselineCheckResult struct {
+	baseline.CheckResult
+	StoredIn string `json:"stored_in,omitempty"`
+}
+
 // baselineListResult answers "what do I already have for this step, and under
 // what conditions was it taken".
 type baselineListResult struct {
@@ -39,11 +83,14 @@ type baselineListResult struct {
 	StepIndex    int                    `json:"step_index"`
 	Environments []baseline.Environment `json:"environments"`
 	Count        int                    `json:"count"`
-	Note         string                 `json:"note,omitempty"`
+	// StoredIn names the destination these came from, because there are now two
+	// and an operator looking for a file needs to know which.
+	StoredIn string `json:"stored_in,omitempty"`
+	Note     string `json:"note,omitempty"`
 }
 
 func (s *Server) callBaseline(ctx context.Context, args json.RawMessage) (any, *rpcError) {
-	if s.baselines == nil {
+	if s.baselines == nil && s.recipeBaselines == nil {
 		return toolError(errBaselinesDisabled), nil
 	}
 	var req baselineRequest
@@ -58,9 +105,31 @@ func (s *Server) callBaseline(ctx context.Context, args json.RawMessage) (any, *
 		return toolError(errors.New("pixel_tolerance is a fraction of compared pixels, between 0 and 1")), nil
 	}
 
+	// The action is checked before the destination is resolved: routing asks the
+	// provider a question over the network, and a typo in the action is not a
+	// reason to ask it.
+	switch action {
+	case "check", "update", "list", "delete":
+	case "":
+		return toolError(errors.New(`action is required: "check", "update", "list", or "delete"`)), nil
+	default:
+		return toolError(fmt.Errorf("unknown action %q: want check, update, list, or delete", req.Action)), nil
+	}
+	// Checked here too, although every store checks it again: routing sends the
+	// digest to a third party, and a malformed one should be refused by brw
+	// rather than forwarded to the operator's provider.
+	digest, err := baseline.NormalizeRecipeDigest(req.RecipeDigest)
+	if err != nil {
+		return toolError(err), nil
+	}
+	store, err := s.baselineStorage(ctx, digest)
+	if err != nil {
+		return toolError(err), nil
+	}
+
 	switch action {
 	case "list":
-		environments, err := s.baselines.EnvironmentsFor(req.RecipeDigest, req.StepIndex)
+		environments, err := store.EnvironmentsFor(req.RecipeDigest, req.StepIndex)
 		if err != nil {
 			return toolError(err), nil
 		}
@@ -69,7 +138,7 @@ func (s *Server) callBaseline(ctx context.Context, args json.RawMessage) (any, *
 		}
 		result := baselineListResult{
 			Action: action, RecipeDigest: req.RecipeDigest, StepIndex: req.StepIndex,
-			Environments: environments, Count: len(environments),
+			Environments: environments, Count: len(environments), StoredIn: store.Location(),
 		}
 		if len(environments) == 0 {
 			result.Note = "no baseline is stored for this recipe step in any environment"
@@ -107,7 +176,7 @@ func (s *Server) callBaseline(ctx context.Context, args json.RawMessage) (any, *
 		if err != nil {
 			return toolError(err), nil
 		}
-		result, err := baseline.Check(s.baselines, baseline.CheckOptions{
+		result, err := baseline.Check(store, baseline.CheckOptions{
 			Key:              key,
 			Screenshot:       pixels,
 			Tree:             tree,
@@ -121,7 +190,7 @@ func (s *Server) callBaseline(ctx context.Context, args json.RawMessage) (any, *
 		if err != nil {
 			return toolError(err), nil
 		}
-		return toolJSON(result, nil)
+		return toolJSON(baselineCheckResult{CheckResult: result, StoredIn: store.Location()}, nil)
 
 	case "delete":
 		environment, err := s.baselineEnvironment(ctx)
@@ -129,14 +198,16 @@ func (s *Server) callBaseline(ctx context.Context, args json.RawMessage) (any, *
 			return toolError(err), nil
 		}
 		key := baseline.Key{RecipeDigest: req.RecipeDigest, StepIndex: req.StepIndex, Environment: environment}
-		if err := s.baselines.Delete(key); err != nil {
+		if err := store.Delete(key); err != nil {
 			return toolError(err), nil
 		}
-		return toolJSON(map[string]any{"action": action, "baseline_id": key.ID(), "note": "baseline deleted"}, nil)
-
-	case "":
-		return toolError(errors.New(`action is required: "check", "update", "list", or "delete"`)), nil
+		return toolJSON(map[string]any{
+			"action": action, "baseline_id": key.ID(), "stored_in": store.Location(),
+			"note": "baseline deleted",
+		}, nil)
 	}
+	// Unreachable: the action was validated above. Kept as a refusal rather than
+	// a panic so a new action added to one switch and not the other is answered.
 	return toolError(fmt.Errorf("unknown action %q: want check, update, list, or delete", req.Action)), nil
 }
 
@@ -169,7 +240,7 @@ func (s *Server) ariaTree(ctx context.Context) (snapshot.AriaTree, error) {
 // callBaseline or internal/baseline: the environment is part of the key, an
 // update only happens on the update action, and nothing is written by a check.
 func baselineTool() map[string]any {
-	return tool("brw_baseline", "Gate a page against a stored regression baseline instead of eyeballing a screenshot. Actions: check (compare the current page against the baseline for this recipe step and environment — WRITES NOTHING, ever, including when it passes), update (replace that baseline with what the page looks like now; this is the only way a baseline changes), list (the environments a baseline already exists under for this step), delete (drop one baseline). A baseline is keyed by recipe_digest + step_index + an environment fingerprint brw measures itself: browser build, viewport, device pixel ratio, locale and the browser host's OS. If a baseline exists for the step but under different conditions, check reports status \"environment_mismatch\" and names the fields that moved (\"device_pixel_ratio 1 -> 2\") instead of a screen full of false pixel differences. Two comparisons run. The visual one counts pixels that moved, with pixel_tolerance as the fraction of compared pixels allowed to differ, channel_tolerance as the per-channel slack that absorbs anti-aliasing, and ignore_regions as NAMED rectangles in CSS pixels — put the clock, the avatar and the ad slot in there or every run fails. The structural one diffs the page's ARIA structure, role and accessible name, which catches a button losing its label — invisible to a pixel diff. It carries no geometry, so a change that only repaints (a font bump, a colour) moves the visual half and leaves the structural half alone. status is \"match\", \"diff\", \"environment_mismatch\", \"missing\" (nothing stored yet; run update once to record it), \"recorded\" or \"updated\"; failed is the single boolean to branch on. Baselines are stored by the daemon that runs the check, under a root the operator configures, and that daemon refuses a root inside a Git working tree — so a baseline of a signed-in page cannot end up committed.", object(map[string]any{
+	return tool("brw_baseline", "Gate a page against a stored regression baseline instead of eyeballing a screenshot. Actions: check (compare the current page against the baseline for this recipe step and environment — WRITES NOTHING, ever, including when it passes), update (replace that baseline with what the page looks like now; this is the only way a baseline changes), list (the environments a baseline already exists under for this step), delete (drop one baseline). A baseline is keyed by recipe_digest + step_index + an environment fingerprint brw measures itself: browser build, viewport, device pixel ratio, locale and the browser host's OS. If a baseline exists for the step but under different conditions, check reports status \"environment_mismatch\" and names the fields that moved (\"device_pixel_ratio 1 -> 2\") instead of a screen full of false pixel differences. Two comparisons run. The visual one counts pixels that moved, with pixel_tolerance as the fraction of compared pixels allowed to differ, channel_tolerance as the per-channel slack that absorbs anti-aliasing, and ignore_regions as NAMED rectangles in CSS pixels — put the clock, the avatar and the ad slot in there or every run fails. The structural one diffs the page's ARIA structure, role and accessible name, which catches a button losing its label — invisible to a pixel diff. It carries no geometry, so a change that only repaints (a font bump, a colour) moves the visual half and leaves the structural half alone. status is \"match\", \"diff\", \"environment_mismatch\", \"missing\" (nothing stored yet; run update once to record it), \"recorded\" or \"updated\"; failed is the single boolean to branch on. Baselines are stored by the daemon that runs the check, and stored_in names which of its two destinations was used: a recipe the private provider owns keeps its baselines with that provider, because the capture is of a page that recipe reached; everything else goes to the operator-configured local root, which the daemon refuses to place inside a Git working tree — so a baseline of a signed-in page cannot end up committed. You do not choose the destination and there is no argument for it: the recipe_digest decides. A daemon whose provider cannot be reached fails the call rather than writing that capture to the local root.", object(map[string]any{
 		"action":        stringEnumSchema("check (compare, never write), update (accept the current page as the new baseline), list (environments already recorded for this step), delete (remove this environment's baseline).", "check", "update", "list", "delete"),
 		"recipe_digest": stringSchema("The 64-character hex content digest of the pinned recipe version, as returned by brw_recipe_search. Editing a recipe changes its digest, which orphans its baselines rather than silently comparing new behaviour against the old."),
 		"step_index":    integerSchema("Zero-based index of the step in that recipe this baseline belongs to."),

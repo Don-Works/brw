@@ -110,9 +110,12 @@ func TestStatusTokenOriginIsAnExactMatch(t *testing.T) {
 			want:         "",
 		},
 		{
-			// Measured on Chromium 152: an MV3 service worker fetching a loopback
-			// URL it holds host_permissions for sends no Origin header. Refusing
-			// this case would refuse the extension itself.
+			// Measured on Chromium 152.0.7977.82 on 2026-09-15: an MV3 service
+			// worker fetching a loopback URL it holds host_permissions for sends
+			// no Origin header. Refusing this case would refuse the extension
+			// itself. The rows carry no Sec-Fetch-Site, which is the shape a
+			// non-browser local client arrives in; the browser shapes are
+			// enumerated in bridge_tokenissue_secfetch_test.go.
 			name:         "a caller that sends no Origin is served, including one that is not the extension",
 			configuredID: configuredExtnID,
 			host:         tokenIssueLoopback,
@@ -387,16 +390,20 @@ var (
 // caller shape rather than for the three that were interesting when the guard
 // was written.
 //
+// Every row here sends no Sec-Fetch-Site, which is how a non-browser local
+// client arrives; the browser-set dimension is enumerated separately in
+// TestStatusTokenSecFetchSiteDomainHasAVerdictForEveryValue.
+//
 // The two true rows on loopback are the boundary, and the second of them is the
 // one to read carefully: a caller that sends NO Origin is served, because that
 // is what the real extension's privileged loopback fetch looks like (measured on
-// Chromium 152: an MV3 service worker fetching a URL it holds host_permissions
-// for sends no Origin and Sec-Fetch-Site: none). Requiring the header would
-// refuse the only client this endpoint exists for. So any local process gets the
-// token by simply omitting a header, and no property of the request separates it
-// from the extension — every property of a request is chosen by whoever sends
-// it. docs/auth-model.md argues that boundary instead of pretending this
-// function moves it.
+// Chromium 152.0.7977.82 on 2026-09-15: an MV3 service worker fetching a URL it
+// holds host_permissions for sends no Origin and Sec-Fetch-Site: none).
+// Requiring the Origin header would refuse the only client this endpoint exists
+// for. So any local process gets the token by simply omitting a header, and no
+// property of the request separates it from the extension — every property of a
+// request is chosen by whoever sends it. docs/auth-model.md argues that boundary
+// instead of pretending this function moves it.
 func TestStatusTokenCallerMatrixIsExhaustive(t *testing.T) {
 	// key is "<host>/<origin>"; every combination of the two lists above must
 	// appear exactly once.

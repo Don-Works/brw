@@ -620,6 +620,10 @@ func main() {
 
 	var artifactAPI artifact.API
 	var recipeAPI recipe.API
+	// recipeBaselines is the provider's baseline side when it has one. It is
+	// declared out here because the provider is configured inside the
+	// browser-host branch below and read again when the MCP server is built.
+	var recipeBaselines recipe.BaselineStore
 	if upstreamHTTP != "" {
 		// The proxy controller implements both optional APIs and forwards them to
 		// the canonical browser host. Never create a second cache/provider here.
@@ -727,8 +731,10 @@ func main() {
 				log.Fatalf("recipe service: %v", err)
 			}
 			recipeAPI = service
+			recipeBaselines = recipeBaselinesFor(provider)
 			log.Printf("private recipe provider enabled (recipe bodies and inputs are never written to usage logs)")
 			log.Printf("%s", recipeReceiptStatusLine(runner.Receipts))
+			log.Printf("%s", recipeBaselineStatusLine(recipeBaselines))
 		}
 	}
 
@@ -795,6 +801,12 @@ func main() {
 		} else if store != nil {
 			server.SetBaselineStore(store)
 			log.Printf("regression baselines enabled at %s", store.Root())
+		}
+		// Installed whether or not a local root is configured: a baseline for a
+		// recipe the provider owns never goes to the local root, so a daemon with
+		// a provider and no --baseline-root can still gate those recipes.
+		if recipeBaselines != nil {
+			server.SetRecipeBaselines(recipeBaselines)
 		}
 
 		// A direct/bridge MCP process has no upstream HTTP middleware to record its
@@ -1124,6 +1136,31 @@ func recipeReceiptStatusLine(receipts recipe.Receipts) string {
 		return "external-write receipts are recorded with the recipe provider, so an interrupted write survives a daemon restart"
 	}
 	return "this recipe provider cannot hold external-write receipts: an interrupted write leaves no record a restarted daemon can find, and a recipe declaring a site idempotency nonce is refused; --recipe-provider-url configures a provider that can"
+}
+
+// recipeBaselinesFor returns the provider's baseline side, or nil.
+//
+// Same shape as recipeReceiptsFor and for a related reason: the capability is
+// the provider's, not the daemon's. Both shipped providers implement it, so nil
+// here means a custom provider that does not — in which case its recipes' own
+// baselines fall back to the local root, which is the behaviour that existed
+// before there was anywhere else to put them.
+func recipeBaselinesFor(provider recipe.Provider) recipe.BaselineStore {
+	if store, ok := provider.(recipe.BaselineStore); ok {
+		return store
+	}
+	return nil
+}
+
+// recipeBaselineStatusLine says at startup where a private recipe's baselines
+// will land, because the answer differs per deployment and a screenshot of a
+// signed-in page landing somewhere unexpected is the failure this routing
+// exists to prevent.
+func recipeBaselineStatusLine(store recipe.BaselineStore) string {
+	if store == nil {
+		return "this recipe provider holds no baselines: brw_baseline for its recipes falls back to --baseline-root"
+	}
+	return "regression baselines for this provider's own recipes are stored with it, at " + store.BaselineLocation()
 }
 
 func configureRecipeProvider(ctx context.Context, directory, providerURL, tokenFile string) (recipe.Provider, error) {

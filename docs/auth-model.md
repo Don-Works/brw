@@ -89,24 +89,66 @@ daemon launch, so an extension pointed at the wrong port is refused instead of
 silently driving somebody else's browser. That is why the refusal now carries the
 endpoint it tried, and why `brwctl doctor` can name it.
 
-`/status` serves the token to a request with a loopback Host whose `Origin` is
-absent or is exactly the configured extension's. That was a **prefix** match on
-`chrome-extension://` until this change; the exact comparison is hygiene — a
-prefix match on attacker-supplied input, removed — and not a new boundary, because
-no reachable caller was blocked by it. Measured on Chromium 152: an MV3 service
-worker fetching a loopback URL it holds `host_permissions` for sends **no `Origin`
-header at all** (`Sec-Fetch-Site: none`, no initiator origin). So the real
-extension sends none, any other extension with the same host permission also
-sends none — and one WITHOUT that permission is denied the body by CORS whatever
-this check says.
+`/status` serves the token to a request with a loopback Host, an `Origin` that is
+absent or exactly the configured extension's, and a `Sec-Fetch-Site` that is
+absent or `none`. The Origin comparison was a **prefix** match on
+`chrome-extension://` until it was made exact; that is hygiene — a prefix match on
+attacker-supplied input, removed — and not a new boundary, because no reachable
+caller was blocked by it.
+
+### The measurement the empty-Origin case rests on
+
+Requiring `Origin` would refuse the only client this endpoint exists for, so the
+question is what a real browser puts on the wire. Measured on Chromium
+152.0.7977.82 on 2026-09-15 by
+`TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured`, which loads an unpacked
+MV3 extension into that browser and records what arrives:
+
+| caller | `Origin` | `Sec-Fetch-Site` | `Sec-Fetch-Mode` | `Sec-Fetch-Dest` |
+| --- | --- | --- | --- | --- |
+| MV3 service worker `fetch()` | absent | `none` | `cors` | `empty` |
+| extension page `fetch()` | absent | `none` | `cors` | `empty` |
+| page on another site, `fetch(…, {mode:"no-cors"})` | absent | `cross-site` | `no-cors` | `empty` |
+| page on another site, `<script src>` | absent | `cross-site` | `no-cors` | `script` |
+| local process (curl-equivalent) | absent | absent | absent | absent |
+
+Google Chrome 153.0.8010.37 is installed on the same machine. Asked to load the
+same unpacked extension, it ran no service worker at all — the `--load-extension`
+removal `docs/install.md` records for branded Chrome 137+ — so the measurement is
+Chromium's, and the test tries unbranded builds first and branded Chrome only if
+nothing else is installed.
+
+Two things follow. **No `Origin` distinguishes anything** — every caller sends
+none, so the header cannot be required and cannot be used to tell callers apart.
+**`Sec-Fetch-Site` distinguishes the browser callers**: a page on another site
+reaches a loopback daemon with no `Origin` (a no-cors GET carries none) and
+arrives as `cross-site`. The browser sets `Sec-Fetch-*` itself and forbids page
+script from overriding it, so `none` is a property a web page cannot present.
+That case is now refused. The page could never read the reply — an opaque
+response, and the JSON body is not a parseable script — but a page on the internet
+causing a request that answers with the token is not left in place on the strength
+of the reply being unreadable.
+
+**It distinguishes nothing else.** A local process sends no `Sec-Fetch-*` at all
+and may send any value it likes; `brwctl doctor` sends none, so an absent header
+is still served. The header is a boundary against browsers, not against the
+machine.
+
+Re-check the measurement with
+`go test ./internal/extensionbridge -run TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured -v`.
+It prints the table above for the browser it found and fails if the worker starts
+sending an `Origin`, at which point the empty-`Origin` case can be closed.
 
 ### What it does not do
 
-Anything that can send a loopback GET can have the token: a process running as
-your user, and any other extension holding `http://127.0.0.1/*`. There is no
-request property that separates them from the extension, because every property
-of a request is chosen by whoever sends it. The guard would be something the
-attacker already controls.
+Anything ON THIS MACHINE that can send a loopback GET can have the token: a
+process running as your user, and any other extension holding
+`http://127.0.0.1/*`. There is no request property that separates them from the
+extension, because a local process chooses every property of the request it
+sends, `Sec-Fetch-Site` included. The guard would be something the attacker
+already controls. What the `Sec-Fetch-Site` check buys is the browser half: a
+page on the internet cannot choose that header, so it can no longer cause a
+request the daemon answers with the token.
 
 For another extension the token is inert — it still cannot open the websocket, and
 a token alone drives nothing. For a local process it is not: that process forges
@@ -143,6 +185,14 @@ as that user cannot also hold. Moving this boundary requires OS-level isolation
 
 `/status` compares the `Origin` exactly instead of by prefix — hygiene, as above,
 with no path closed that was open.
+
+`/status` and the consent surface now also refuse a request whose
+`Sec-Fetch-Site` is anything other than `none`. That one did close a path that
+was open: a page on another site could cause a GET to the loopback daemon with
+no `Origin` at all, and the daemon answered it with the token in the body. The
+page could not read that body, so nothing leaked — but the request was served,
+and it need not have been. The measurement above is what says `none` is a value
+a page cannot present and the real extension always does.
 
 The token is no longer written to `~/.brw/bridge-token`. That file existed "for
 operator inspection"; nothing in the tree ever read it. What it did was keep a

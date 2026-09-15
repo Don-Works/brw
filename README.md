@@ -410,7 +410,9 @@ Core MCP tools include:
 - `brw_baseline` — gate a page against a stored regression baseline keyed by
   recipe digest, step and an environment fingerprint, comparing pixels with a
   tolerance and named ignore regions AND the page's ARIA structure. Updating a
-  baseline takes an explicit action; a check never writes
+  baseline takes an explicit action; a check never writes. A baseline for a
+  recipe the private provider owns is stored with that provider; the local
+  `--baseline-root` holds the rest
 - `brw_notify`, `brw_commit`
 - `brw_window_resize` (real OS window, unlike `brw_emulate_device`)
 - `brw_tools` (find and disclose a tool by describing the task)

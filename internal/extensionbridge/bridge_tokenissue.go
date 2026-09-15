@@ -83,21 +83,46 @@ func trimPartialRune(value string) string {
 	return value
 }
 
+// initiatorSecFetchSite is the only Sec-Fetch-Site value a brw browser client
+// produces. Measured on Chromium 152.0.7977.82 on 2026-09-15: both the MV3
+// service worker's fetch and an extension page's fetch of a loopback URL the
+// extension holds host_permissions for arrive as
+// `Sec-Fetch-Site: none, Sec-Fetch-Mode: cors` with no Origin.
+const initiatorSecFetchSite = "none"
+
 // tokenServable reports whether the handshake token may be included in a /status
-// response: a loopback Host, and an Origin that is either absent or exactly this
-// bridge's configured extension.
+// response: a loopback Host, an Origin that is either absent or exactly this
+// bridge's configured extension, and — when the caller is a browser — an
+// initiator that is not another document.
 //
 // Be precise about what that buys, because it is less than it looks.
 //
-// The absent-Origin case is the extension. Measured on Chromium 152, an MV3
-// service worker fetching a loopback URL it holds host_permissions for sends NO
-// Origin header at all — the request arrives with Sec-Fetch-Site: none and no
-// initiator origin. Requiring the header would refuse the only client this
-// endpoint exists for. It also means no real browser client reaches here WITH an
-// Origin unless it lacks the host permission, in which case CORS already denies
-// it the body. So the exact match is hygiene — the class of prefix-match-on-
-// attacker-input bug this codebase has been bitten by, removed — and not a new
-// boundary: it closes no path that was reachable.
+// The absent-Origin case is the extension. Measured on Chromium 152.0.7977.82 on
+// 2026-09-15, an MV3 service worker fetching a loopback URL it holds
+// host_permissions for sends NO Origin header at all. Requiring the header would
+// refuse the only client this endpoint exists for. It also means no real browser
+// client reaches here WITH an Origin unless it lacks the host permission, in
+// which case CORS already denies it the body. So the exact match is hygiene —
+// the class of prefix-match-on-attacker-input bug this codebase has been bitten
+// by, removed — and not a new boundary.
+//
+// Sec-Fetch-Site is a boundary, for browser callers only. The same measurement
+// found two shapes that reach here from a page on ANOTHER site with no Origin at
+// all — `fetch(url, {mode:"no-cors"})` and `<script src=url>`, both
+// `Sec-Fetch-Site: cross-site` — because a no-cors GET carries no Origin. Those
+// were served before this check. The page could not read the reply (opaque
+// response, and the JSON body is not a parseable script), but a page on the
+// internet causing a request that answers with the token is not a thing to leave
+// in place on the strength of the reply being unreadable. A browser sets
+// Sec-Fetch-* itself and forbids page script from overriding it, so
+// `Sec-Fetch-Site: none` is a property a web page cannot present. Measured by
+// TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured, which drives a real
+// browser and then feeds the headers it observed back through this function.
+//
+// An absent Sec-Fetch-Site is still served, because that is a non-browser local
+// client (brwctl doctor sends none) — and any local process can send whatever
+// header it likes, so requiring the header would refuse a real caller and
+// inconvenience no attacker.
 //
 // The Host check is load-bearing: a DNS-rebinding page reaches the daemon with
 // an attacker Host and no Origin, and this is what excludes it.
@@ -111,6 +136,13 @@ func trimPartialRune(value string) string {
 // than pretending this function moves it.
 func (b *Bridge) tokenServable(r *http.Request) bool {
 	if !isLoopbackHostname(r.Host) {
+		return false
+	}
+	// Checked before the Origin cases rather than inside the empty-Origin one:
+	// the property is "no document initiated this", and a caller that sends both
+	// an extension Origin and a cross-site Sec-Fetch-Site is describing two
+	// different initiators, which no browser produces.
+	if site := strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")); site != "" && site != initiatorSecFetchSite {
 		return false
 	}
 	origin := strings.TrimSpace(r.Header.Get("Origin"))

@@ -145,10 +145,12 @@ var recipeDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // 64 hex characters is either a typo or a traversal.
 var ErrRecipeDigest = errors.New("recipe_digest must be the 64-character hex content digest of a pinned recipe version")
 
-// normalizeRecipeDigest is the one gate. Key.Validate and Store.scopeDir both
-// call it, so there is no way to reach the filesystem with a digest that was
-// never checked.
-func normalizeRecipeDigest(digest string) (string, error) {
+// NormalizeRecipeDigest is the one gate on a caller-supplied recipe digest.
+// Key.Validate and Store.scopeDir both call it, so there is no way to reach the
+// filesystem with a digest that was never checked, and a provider-backed store
+// calls it for the same reason: the digest is a key there too, and a second
+// spelling of "is this a digest" is a second thing to keep right.
+func NormalizeRecipeDigest(digest string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(digest))
 	if !recipeDigestPattern.MatchString(normalized) {
 		return "", ErrRecipeDigest
@@ -168,7 +170,7 @@ type Key struct {
 }
 
 func (k Key) Validate() error {
-	if _, err := normalizeRecipeDigest(k.RecipeDigest); err != nil {
+	if _, err := NormalizeRecipeDigest(k.RecipeDigest); err != nil {
 		return err
 	}
 	if k.StepIndex < 0 {

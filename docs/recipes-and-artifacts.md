@@ -631,11 +631,46 @@ directory holds the PNG its file name claims.
 brwd --baseline-root /var/lib/brw/baselines   # auto uses the user cache; off (default) disables
 ```
 
-A baseline of a signed-in page is a screenshot of private content. The store
-refuses a root inside a Git working tree and writes an ignore-everything file
-into the root it does accept, so baselines cannot be committed to this
-repository or to yours. Keep the baselines for private pages where the private
-recipes live, alongside the provider, not in a source tree.
+**Where a baseline lands is decided by the recipe, not by the caller.** A
+baseline of a signed-in page is a screenshot of private content, and the private
+provider already holds the recipe that reached the page. So brw asks the
+configured provider whether it owns the recipe the digest pins, and if it does,
+the baseline is stored with the provider. `--baseline-root` keeps the rest:
+public fixtures, and every recipe no provider claims. Each answer names the
+destination it used in `stored_in`, and a daemon with a provider needs no local
+root to gate that provider's own recipes.
+
+Both shipped providers implement it. The directory provider keeps them under a
+reserved `baselines/` subdirectory of the recipe root, which recipe discovery
+skips — a stored baseline is a `.json` file, and every other `.json` file under
+that root is parsed as a recipe. The name is reserved: a root whose `baselines/`
+holds anything but baseline records is refused at load with the file named,
+rather than serving a corpus with those recipes silently missing. The HTTPS
+provider `POST`s them:
+
+| route | body |
+| --- | --- |
+| `/v1/baselines/owner` | `{recipe_digest}` → `{owns}` |
+| `/v1/baselines/put` | the baseline → `{stored}` |
+| `/v1/baselines/fetch` | `{recipe_digest, step_index, environment_fingerprint}` → `{found, baseline}` |
+| `/v1/baselines/environments` | `{recipe_digest, step_index}` → `{environments}` |
+| `/v1/baselines/delete` | `{recipe_digest, step_index, environment_fingerprint}` → `{deleted}` |
+
+A baseline on the wire is the recipe/step key, the environment fingerprint
+alongside the environment it was computed from, the screenshot as base64 PNG,
+the ARIA tree and the ignore regions. The fingerprint is re-derived and the
+image re-decoded on the way back, and a record that does not describe the key
+that was asked for is refused: the provider is authenticated, not trusted, and a
+baseline from another environment would be compared against this page and
+reported as a regression in it.
+
+If the provider cannot be asked, the check fails. It does not fall back to the
+local root — that fallback would put a screenshot of a private page there at
+exactly the moment the provider is unreachable to say it is private.
+
+The local store refuses a root inside a Git working tree and writes an
+ignore-everything file into the root it does accept, so baselines cannot be
+committed to this repository or to yours.
 
 ## Verification
 
@@ -645,6 +680,15 @@ id/version/digest pinning, a guarded write, a pre-armed event, a timer, secret
 input non-disclosure, an idempotent zero-write rerun, text search, screenshot,
 PDF, a real completed-download-to-artifact handoff, and (when installed) video.
 The temporary recipes and every artifact are deleted at exit.
+
+One recorded flow is replayed against a real browser rather than a page model:
+`TestCompiledRecipeReplaysTwiceAgainstRealChromeOnASignedInFixture` records a
+login, a search and a report open against an httptest site that refuses an
+unauthenticated request, compiles the trace, and replays the compiled recipe
+twice on browser profiles with no cookies — so each run signs itself in. A third
+replay runs against the same fixture issuing a session cookie the browser
+discards, and must fail: without that case, pages that render for anyone would
+replay just as green and the other two would prove nothing about the session.
 
 The normal test suite also covers directory permissions, repository/symlink
 escape attempts, strict parsing, provider substitution, ambiguous targets,

@@ -59,6 +59,11 @@ type Server struct {
 	// Nil unless the operator configured a root; brw_baseline then refuses by
 	// name rather than gating against a store that forgets on restart.
 	baselines *baseline.Store
+	// recipeBaselines is the private provider's baseline side, when the
+	// configured provider implements it. A baseline for a recipe that provider
+	// owns goes there instead of the local root: the capture is of a page the
+	// private recipe reached, and the provider already holds the recipe.
+	recipeBaselines recipe.BaselineStore
 
 	// notify pushes a JSON-RPC notification to the client. Serve installs it;
 	// it is nil before Serve runs and on transports that cannot push.

@@ -324,8 +324,9 @@ parity argument alone:
    actionability, download, and artifact primitives are stable enough to retain
    the same fail-closed recipe guarantees.
 8. **Regression comparison.** Add opt-in visual and ARIA artifact comparisons
-   with environment fingerprints and tolerances. Keep baselines in the private
-   provider when they expose private pages.
+   with environment fingerprints and tolerances. Shipped, including the
+   destination: a baseline for a recipe the private provider owns is stored with
+   that provider rather than in the local root.
 
 Features intentionally left outside `brw`: long-running scheduling, a hosted
 vector database, secret resolution, human approval policy, notifications to

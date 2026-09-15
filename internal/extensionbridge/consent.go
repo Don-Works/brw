@@ -31,10 +31,13 @@ type consentStatus struct {
 // handleConsent serves the grant list to the extension's options page.
 //
 // Same reachability rule as the handshake token, and the same method, so the
-// two cannot drift: loopback Host, and either no Origin (an MV3 worker's fetch
-// sends none) or the configured extension's own Origin. A web page satisfies
-// neither, so a site the user is visiting cannot read which other sites they
-// have granted - which is itself a small profile of the user.
+// two cannot drift: loopback Host, an initiator that is not another document,
+// and either no Origin or the configured extension's own Origin. An MV3
+// worker's fetch sends no Origin and Sec-Fetch-Site: none
+// (measured on Chromium 152.0.7977.82 on 2026-09-15; see docs/auth-model.md),
+// and a web page satisfies neither branch, so a site the user is visiting
+// cannot read which other sites they have granted - which is itself a small
+// profile of the user.
 func (b *Bridge) handleConsent(w http.ResponseWriter, r *http.Request) {
 	if !b.tokenServable(r) {
 		http.Error(w, "consent surface is served only to the local extension", http.StatusForbidden)

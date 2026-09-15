@@ -164,7 +164,7 @@ func (s *Store) dirFor(key Key) string {
 // a directory traversal ("../..") out of the store root, and EnvironmentsFor is
 // reachable from brw_baseline without a Key to validate.
 func (s *Store) scopeDir(digest string, step int) (string, error) {
-	normalized, err := normalizeRecipeDigest(digest)
+	normalized, err := NormalizeRecipeDigest(digest)
 	if err != nil {
 		return "", err
 	}

@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/Don-Works/brw/internal/baseline"
 )
 
 type Match struct {
@@ -54,6 +56,9 @@ type Catalog struct {
 	originPostings map[string][]int
 	byIdentity     map[string]int
 	latestByID     map[string]int
+	// byDigest answers "is this digest one of mine" without a scan, which is
+	// what routes a baseline to the provider that owns the recipe.
+	byDigest map[string]int
 }
 
 type catalogEntry struct {
@@ -80,6 +85,11 @@ type DirectoryProvider struct {
 	mu          sync.Mutex
 	catalog     *Catalog
 	fingerprint string
+	// baselines is the provider-owned regression-baseline set, opened on first
+	// use and kept for the daemon's life. It lives under a reserved
+	// subdirectory of Root that recipe discovery skips; see baseline_provider.go.
+	baselineMu sync.Mutex
+	baselines  *baseline.Store
 }
 
 func NewDirectoryProvider(ctx context.Context, config DirectoryConfig) (*DirectoryProvider, error) {
@@ -152,6 +162,12 @@ func LoadDirectory(ctx context.Context, config DirectoryConfig) (*Catalog, error
 			return fmt.Errorf("recipe root contains symlink %s", filepath.Base(path))
 		}
 		if entry.IsDir() {
+			if isReservedBaselineDir(config.Root, path) {
+				if err := checkReservedBaselineDir(path); err != nil {
+					return err
+				}
+				return filepath.SkipDir
+			}
 			if path != config.Root {
 				if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
 					return errors.New("recipe root must not contain a nested git checkout")
@@ -351,8 +367,10 @@ func (c *Catalog) buildIndexes() {
 	c.originPostings = make(map[string][]int)
 	c.byIdentity = make(map[string]int, len(c.entries))
 	c.latestByID = make(map[string]int, len(c.entries))
+	c.byDigest = make(map[string]int, len(c.entries))
 	for index, entry := range c.entries {
 		c.byIdentity[entry.recipe.ID+"@"+entry.recipe.Version] = index
+		c.byDigest[entry.digest] = index
 		previous, found := c.latestByID[entry.recipe.ID]
 		if !found || compareSemanticVersions(entry.recipe.Version, c.entries[previous].recipe.Version) > 0 {
 			c.latestByID[entry.recipe.ID] = index
@@ -861,6 +879,39 @@ func EnsureOutsideGitCheckout(path string) error {
 	}
 }
 
+// isReservedBaselineDir reports whether path is the provider's own baseline
+// subtree.
+//
+// Recipe discovery parses every .json file under the root as a recipe and
+// refuses the directory if one does not parse. A stored baseline is a .json
+// file, so without this the first baseline written would take the whole private
+// recipe corpus offline. It is skipped in the fingerprint walk as well, so
+// recording one does not force a re-index of every recipe either.
+func isReservedBaselineDir(root, path string) bool {
+	return filepath.Clean(path) == filepath.Join(filepath.Clean(root), BaselineRoot)
+}
+
+// checkReservedBaselineDir refuses a reserved subtree holding anything but
+// baseline records.
+//
+// Skipping the directory is what lets baselines live inside the recipe root,
+// and it is also how an operator who happened to keep recipes in a folder
+// called "baselines" would find them silently undiscovered. A recipe that
+// stopped being served with no error is worse than a root that refuses to load
+// and says why, so the name is reserved out loud.
+func checkReservedBaselineDir(dir string) error {
+	return filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" || entry.Name() == baselineRecordFile {
+			return nil
+		}
+		return fmt.Errorf("%s/%s is reserved for regression baselines and holds %s; move those recipes elsewhere in the root",
+			BaselineRoot, filepath.Base(filepath.Dir(path)), entry.Name())
+	})
+}
+
 func directoryFingerprint(config DirectoryConfig) (string, error) {
 	if err := validateDirectoryRoot(config); err != nil {
 		return "", err
@@ -872,6 +923,9 @@ func directoryFingerprint(config DirectoryConfig) (string, error) {
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("recipe root contains symlink %s", filepath.Base(path))
+		}
+		if entry.IsDir() && isReservedBaselineDir(config.Root, path) {
+			return filepath.SkipDir
 		}
 		if entry.IsDir() && path != config.Root {
 			if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {

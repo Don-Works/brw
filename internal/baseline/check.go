@@ -78,9 +78,9 @@ type CheckResult struct {
 // stored for the same recipe step before anything is compared, so a run on a
 // retina display against a baseline captured at 1x reports the display, not a
 // screen full of moved pixels.
-func Check(store *Store, opts CheckOptions) (CheckResult, error) {
+func Check(store Storage, opts CheckOptions) (CheckResult, error) {
 	if store == nil {
-		return CheckResult{}, errors.New("no baseline store is configured on this daemon")
+		return CheckResult{}, ErrNoStorage
 	}
 	if err := opts.Key.Validate(); err != nil {
 		return CheckResult{}, err
@@ -177,7 +177,7 @@ func Check(store *Store, opts CheckOptions) (CheckResult, error) {
 	return result, nil
 }
 
-func writeBaseline(store *Store, key Key, opts CheckOptions, now func() time.Time) error {
+func writeBaseline(store Storage, key Key, opts CheckOptions, now func() time.Time) error {
 	return store.Save(Record{
 		Key:           key,
 		Environment:   key.Environment,
