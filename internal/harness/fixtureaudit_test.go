@@ -136,6 +136,9 @@ func TestExternalResourceRefsCatchesEveryWayPastTheTextScan(t *testing.T) {
 		{name: "srcset candidate", markup: `<img srcset="local.png 1x, https://evil.test/hi.png 2x">`, flagged: "https://evil.test/hi.png"},
 		{name: "base href", markup: `<base href="https://evil.test/">`, flagged: "https://evil.test/"},
 		{name: "inline style url", markup: `<div style="background:url(https://evil.test/bg.png)"></div>`, flagged: "https://evil.test/bg.png"},
+		// Nested past the recursion limit, so the fallback scan is what catches
+		// it: running out of depth must not be a way to pass.
+		{name: "srcdoc nested deeper than the walk follows", markup: nestedSrcdoc(6, `<img src="https://evil.test/deep.png">`), flagged: "https://evil.test/deep.png"},
 
 		{name: "illustrative link", markup: `<a href="https://docs.example.test/guide">guide</a>`},
 		{name: "json-ld context", markup: `<script type="application/ld+json">{"@context":"https://schema.org"}</script>`},
@@ -165,6 +168,16 @@ func TestExternalResourceRefsCatchesEveryWayPastTheTextScan(t *testing.T) {
 			}
 		})
 	}
+}
+
+// nestedSrcdoc wraps inner in depth layers of <iframe srcdoc>, escaping each
+// layer the way a real document has to.
+func nestedSrcdoc(depth int, inner string) string {
+	for range depth {
+		escaped := strings.NewReplacer("&", "&amp;", `"`, "&quot;", "<", "&lt;", ">", "&gt;").Replace(inner)
+		inner = `<iframe srcdoc="` + escaped + `"></iframe>`
+	}
+	return inner
 }
 
 func TestAuditFixturesPassesASelfContainedPage(t *testing.T) {

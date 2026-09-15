@@ -161,10 +161,18 @@ func scanElement(node *html.Node, depth int, consider func(string)) {
 	}
 	for _, attr := range node.Attr {
 		name := attrName(attr)
-		if name == "srcdoc" && depth > 0 {
+		if name == "srcdoc" {
 			// The parser has already unescaped the value, so what is in hand is
-			// the nested document itself.
-			_ = scanDocument(attr.Val, depth-1, consider)
+			// the nested document itself. Past the recursion limit it is scanned
+			// bluntly for absolute URLs instead of being walked, because running
+			// out of depth must not be a way to pass.
+			if depth > 0 {
+				_ = scanDocument(attr.Val, depth-1, consider)
+			} else {
+				for _, ref := range absoluteURLs(unescapeFully(attr.Val)) {
+					consider(ref)
+				}
+			}
 			continue
 		}
 		for _, ref := range refsFromAttr(tag, name, attr.Val, rel, httpEquiv) {
@@ -233,12 +241,36 @@ func scanText(node *html.Node, consider func(string)) {
 		if !executableScript(node.Parent) {
 			return
 		}
-		for _, pattern := range scriptURLPatterns {
-			for _, match := range pattern.FindAllStringSubmatch(node.Data, -1) {
-				consider(match[len(match)-1])
-			}
+		for _, ref := range absoluteURLs(node.Data) {
+			consider(ref)
 		}
 	}
+}
+
+// unescapeFully strips the entity layers a nested srcdoc accumulates, so the
+// blunt scan below sees a URL rather than one run into an "&quot;". Bounded
+// because unescaping is what adds the next layer, and a crafted value could
+// otherwise be made to peel forever.
+func unescapeFully(text string) string {
+	for range 2 * srcdocDepth {
+		unescaped := html.UnescapeString(text)
+		if unescaped == text {
+			break
+		}
+		text = unescaped
+	}
+	return text
+}
+
+// absoluteURLs pulls every absolute reference out of text that is not markup.
+func absoluteURLs(text string) []string {
+	var refs []string
+	for _, pattern := range scriptURLPatterns {
+		for _, match := range pattern.FindAllStringSubmatch(text, -1) {
+			refs = append(refs, match[len(match)-1])
+		}
+	}
+	return refs
 }
 
 func executableScript(node *html.Node) bool {

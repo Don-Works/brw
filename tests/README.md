@@ -39,8 +39,9 @@ headless Chrome and serve `tests/fixtures` over a loopback origin they start
 themselves, so neither needs the daemon, the network or an account: the browser
 launches with `--host-resolver-rules="MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"`, so
 anything but that origin fails to resolve. Neither measurement runs under
-`go test ./...`; one evaluation task does, honestly and sabotaged, as the guard
-that the grading can report a failure.
+`go test ./...`. Two assertions do: one evaluation task in both modes, as the
+guard that the grading can report a failure, and one check that the browser
+cannot reach off this machine.
 
 ```sh
 task bench                # per-command wall time, CDP round trips, transport bytes, observation tokens

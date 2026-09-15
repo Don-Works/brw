@@ -60,9 +60,10 @@ task agent-eval-verify    # the same four, sabotaged, to prove the grading can f
 ```
 
 Neither measurement runs in `go test ./...` or `task check`: a timing that fails
-because CI was busy is a gate nobody can act on. One evaluation task does run
-there, honestly and sabotaged, as the guard that the grading is capable of
-reporting a failure at all — an assertion, not a timing.
+because CI was busy is a gate nobody can act on. What does run there is
+assertions rather than timings — one evaluation task in both modes, as the guard
+that the grading can report a failure, and one check that the harness browser
+cannot reach off this machine.
 
 The recorded first run, with the environment fingerprint that says whether your
 run is comparable to it, is in [docs/benchmarks.md](docs/benchmarks.md). That

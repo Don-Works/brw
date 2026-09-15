@@ -130,9 +130,8 @@ task agent-eval-verify   # the same four run honestly AND sabotaged
 ```
 
 It runs with no API key, and on the same resolver-blocked browser as the
-benchmark. `--eval-judge` adds an LLM judge over the deterministic
-check, shown the task, the criteria and the observed end state — never what the
-run claimed. The judge can fail a run the end-state check passed; it cannot pass
+benchmark. `--eval-judge` adds an LLM judge over the deterministic check, shown
+the task, the criteria and the observed end state — never what the run claimed. The judge can fail a run the end-state check passed; it cannot pass
 one the check failed.
 
 `agent-eval-verify` is how the evaluation is shown to be capable of failing at
