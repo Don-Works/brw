@@ -640,9 +640,21 @@ func (m *Manager) Authenticate(ctx context.Context, opts CredentialsOptions) (En
 
 // SetDownloadPath redirects completed downloads to a caller-named directory.
 func (m *Manager) SetDownloadPath(ctx context.Context, opts DownloadPathOptions) (EnvironmentResult, error) {
-	// Checked before the arguments: the refusal is a property of the browser, so
-	// it has to hold for clear:true as well, which would otherwise adopt a brw
-	// staging directory for somebody else's browser context.
+	// Both checks are before the arguments: each is a property of the browser,
+	// so each has to hold for clear:true as well, which would otherwise adopt a
+	// brw staging directory for somebody else's browser context.
+	//
+	// The remote check is first because it is the narrower one. A provider's
+	// browser is also a browser brw did not start, so both fire on it, and the
+	// reason a caller needs is that the path names a directory on another
+	// machine — not that they should launch their own Chrome, which is advice
+	// they cannot act on for a cloud session.
+	if err := m.refuseOnRemote("local_downloads"); err != nil {
+		return EnvironmentResult{}, err
+	}
+	// The sibling verb to Downloads: refusing the reader and not the writer
+	// would leave setDownloadBehavior retargeting a whole browser context that
+	// holds somebody else's windows.
 	if !m.stagesDownloads() {
 		return EnvironmentResult{}, ErrDownloadRoutingAttachedBrowser
 	}

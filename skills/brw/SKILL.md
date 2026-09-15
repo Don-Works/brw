@@ -43,20 +43,22 @@ says nothing about capabilities.
 
 ## Transport decides capabilities
 
-| | `extension-bridge` | `direct-cdp` | `chrome-opt-in-cdp` |
-|---|---|---|---|
-| drives | the human's existing signed-in Chrome, via the brw extension | a Chrome brw launched itself, often headless | the human's existing signed-in Chrome, with remote debugging switched on by hand at `chrome://inspect` |
-| `brw_open_incognito` / `brw_close_context` | error: *"incognito browser contexts are not supported on the extension-bridge transport"* | works; `tab.context_id` comes back on open | works |
-| `brw_cookies` | error: *"cookie access is not supported on the extension-bridge transport"* | works, including HttpOnly | works, including HttpOnly |
-| `brw_state` | not advertised; calling it anyway errors: *"session snapshots are not supported on the extension-bridge transport"* | works | not advertised; calling it anyway errors: *"session snapshots are refused on a transport that drives the browser you are signed into"* |
-| `brw_list_tab_groups` / `brw_group_tabs` / `brw_ungroup_tabs` | works | not advertised; calling one anyway errors: *"tab grouping is not supported over the DevTools Protocol"* | not advertised; same error |
-| `brw_set_geolocation` / `brw_set_network_conditions` / `brw_emulate_media` / `brw_set_extra_headers` / `brw_set_user_agent` / `brw_authenticate` | not advertised at all; calling one anyway errors: *"page environment overrides … are not supported on the extension-bridge transport"* | works | works |
-| `brw_set_download_path` | not advertised; same error | works | not advertised; calling it anyway errors: *"brw will not choose where downloads land on a transport that drives the browser you are signed into"* |
-| `brw_downloads` | works, with paths | works, with paths into brw's staging directory | works, `file_paths: false` and no path: the file went where the human's browser sends downloads |
-| `brw_snapshot {include_ax:true}` | no AX tree | AX enrichment available | AX enrichment available |
-| tab ids | Chrome tab ids, e.g. `"235935869"` | CDP target ids, e.g. `"79F95D14…"` | CDP target ids, e.g. `"79F95D14…"` |
+| | `extension-bridge` | `direct-cdp` | `chrome-opt-in-cdp` | `remote-cdp` | `off-host-cdp` |
+|---|---|---|---|---|---|
+| drives | the human's existing signed-in Chrome, via the brw extension | a Chrome brw launched itself, often headless | the human's existing signed-in Chrome, with remote debugging switched on by hand at `chrome://inspect` | a browser another process started on this machine, attached with `--remote` | a browser a `browser.provider` plugin lent brw, on another machine |
+| `brw_open_incognito` / `brw_close_context` | error: *"incognito browser contexts are not supported on the extension-bridge transport"* | works; `tab.context_id` comes back on open | works | works | works |
+| `brw_cookies` | error: *"cookie access is not supported on the extension-bridge transport"* | works, including HttpOnly | works, including HttpOnly | works, including HttpOnly | works, including HttpOnly |
+| `brw_state` | not advertised; calling it anyway errors: *"session snapshots are not supported on the extension-bridge transport"* | works | not advertised; calling it anyway errors: *"session snapshots are refused on a transport that drives the browser you are signed into"* | works | works |
+| `brw_list_tab_groups` / `brw_group_tabs` / `brw_ungroup_tabs` | works | not advertised; calling one anyway errors: *"tab grouping is not supported over the DevTools Protocol"* | not advertised; same error | not advertised; same error | not advertised; same error |
+| `brw_set_geolocation` / `brw_set_network_conditions` / `brw_emulate_media` / `brw_set_extra_headers` / `brw_set_user_agent` / `brw_authenticate` | not advertised at all; calling one anyway errors: *"page environment overrides … are not supported on the extension-bridge transport"* | works | works | works | works |
+| `brw_set_download_path` | not advertised; same error | works | not advertised; calling it anyway errors: *"brw will not choose where downloads land on a transport that drives the browser you are signed into"* | not advertised; brw did not start this browser, so it leaves the destination alone | not advertised; the directory would be created on the provider's disk |
+| `brw_downloads` | works, with paths | works, with paths into brw's staging directory | works, `file_paths: false` and no path: the file went where the human's browser sends downloads | works, `file_paths: false` and no path | not advertised; the bytes land on the provider's disk, so there is no path here to report |
+| `brw_upload_file` | works | works | works | works | not advertised; the path would name a file on the provider's disk, not the one you meant |
+| `brw_clipboard` | not advertised; it needs the browser target the bridge cannot attach to | works | works | works | not advertised; the clipboard belongs to the machine the browser runs on |
+| `brw_snapshot {include_ax:true}` | no AX tree | AX enrichment available | AX enrichment available | AX enrichment available | AX enrichment available |
+| tab ids | Chrome tab ids, e.g. `"235935869"` | CDP target ids, e.g. `"79F95D14…"` | CDP target ids, e.g. `"79F95D14…"` | CDP target ids | CDP target ids |
 
-All three transports ship in brw, and an unavailable capability is a property of
+All five transports ship in brw, and an unavailable capability is a property of
 this profile's lane, not of the product; an operator can run a second daemon on
 another transport. Most tools are listed and fully described in `tools/list` on
 every lane and fail only when called. The seven page-environment tools are the
@@ -64,13 +66,14 @@ exception: they are DevTools session overrides that the bridge's attach/detach
 cycle would silently drop between calls, so on the bridge they are not
 advertised and an agent never spends a call finding out.
 
-`brw_set_download_path` is the one of those seven that the Chrome opt-in lane
-also lacks, and not for want of the protocol: the command applies to a whole
-browser context, and on that lane the browser context is the human's, so
-pointing it at brw's staging directory would move the files they download
-themselves. Downloads are still reported there; they just carry no path. If a
-flow needs the downloaded bytes — a digest assertion, or capturing the file as
-an artifact — ask for a direct-CDP profile.
+`brw_set_download_path` is the one of those seven that three other lanes also
+lack, and not for want of the protocol. On `chrome-opt-in-cdp` and `remote-cdp`
+the command applies to a whole browser context brw did not open, so pointing it
+at brw's staging directory would move files somebody else downloads by hand;
+downloads are still reported there, they just carry no path. On `off-host-cdp`
+the directory it named would be created on the provider's machine. If a flow
+needs the downloaded bytes — a digest assertion, or capturing the file as an
+artifact — ask for a direct-CDP profile.
 
 `chrome-opt-in-cdp` is the lane a person has to turn on for themselves, so you
 will rarely see it: it needs Chrome 144+ and a human switching remote debugging
@@ -78,6 +81,21 @@ on at `chrome://inspect/#remote-debugging`. Never tell a user brw can enable it
 — it cannot, by design. If they want incognito or HttpOnly cookies against their
 own signed-in Chrome, that page is where they go; `brwctl doctor` prints the
 same instruction.
+
+`remote-cdp` and `off-host-cdp` both attach to a browser brw did not start, and
+they differ in the one way that decides what a path means: `--remote` is pointed
+at an endpoint on this machine, so an upload, the clipboard and a download
+destination still name the things you meant, while a provider's browser shares
+none of them. Read the transport rather than inferring from "remote".
+
+On `off-host-cdp` the guards do not change. The navigation allow/block policy,
+subresource containment, the site-consent gate and the identity guard all apply
+exactly as they do locally — a browser on another machine is treated as less
+trusted than a local one, not more. What changes is that there is no profile on
+it: a recipe declaring `"requires": ["profile_session"]` is refused before its
+first action rather than run signed out, and the provider states a session
+lifetime past which every call errors with *"the plugin-supplied browser session
+has expired"*.
 
 When incognito is unavailable and you need isolation: use a second brw profile (two
 signed-in identities), or ask the operator for a direct-CDP profile (`brwd` without
@@ -121,8 +139,10 @@ snapshot, read the ref, use it.
 `brw_open`, `brw_navigate_to`, `brw_read`, `brw_read_url`, `brw_snapshot`, `brw_find`,
 `brw_click`, `brw_fill`, `brw_select`, `brw_press`, `brw_wait_for`, `brw_observe`,
 `brw_batch` — and grows as you search. The full surface is 88 tools on a direct-CDP
-daemon (76 on the extension bridge, which cannot serve the rest); the catalogue is
-re-sent on every request, so the small default is a per-turn saving.
+daemon (87 on `--remote`, 86 on the Chrome opt-in lane, 84 on a plugin-supplied
+off-host browser, 76 on the extension bridge, each missing only what its lane
+cannot serve); the catalogue is re-sent on every request, so the small default is
+a per-turn saving.
 
 ```json
 {"name":"brw_tools","arguments":{"query":"read the console"}}

@@ -154,6 +154,11 @@ type Manager struct {
 	refs          *store.RefStore
 	timeout       time.Duration
 	navPolicy     *navpolicy.Policy
+	// remote is set when a plugin holding browser.provider lent brw this
+	// browser. Nil means brw launched it (or was pointed at a local endpoint
+	// with --remote), which is the only case where the local-machine
+	// capabilities in RemoteUnavailable hold.
+	remote *RemoteTarget
 
 	// lastState caches each tab's most-recent post-action SemanticState so the
 	// next action can reuse it as its "before" baseline instead of taking a
@@ -427,14 +432,27 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 
 	endpoint := cfg.RemoteURL
 	// A checked browser WebSocket URL is dialled as given, never re-derived.
-	var allocatorOpts []chromedp.RemoteAllocatorOption
+	var allocOpts []chromedp.RemoteAllocatorOption
 	if cfg.BrowserWSURL != "" {
 		endpoint = cfg.BrowserWSURL
-		allocatorOpts = append(allocatorOpts, chromedp.NoModifyURL)
+		allocOpts = append(allocOpts, chromedp.NoModifyURL)
 	}
 	var launcher *cdplaunch.Launcher
 	var err error
-	if endpoint == "" {
+	if cfg.Remote != nil {
+		if err := checkRemoteConfig(cfg); err != nil {
+			return nil, err
+		}
+		endpoint = cfg.Remote.WebSocketURL
+		// NoModifyURL because the provider handed brw the exact socket to dial.
+		// chromedp's default rewrites the URL: it resolves the host to a literal
+		// IP (which breaks TLS SNI on a wss endpoint) or, for a URL with no
+		// /devtools/browser/ path, replaces it with an http /json/version fetch
+		// against the same host. Both are brw second-guessing the provider, and
+		// the second one sends brw off to retrieve a document from a host on the
+		// strength of a string a plugin printed.
+		allocOpts = append(allocOpts, chromedp.NoModifyURL)
+	} else if endpoint == "" {
 		if cfg.AttachOnly {
 			return nil, ErrAttachOnlyNoEndpoint
 		}
@@ -455,10 +473,11 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		endpoint = launcher.Endpoint()
 	}
 
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, endpoint, allocatorOpts...)
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, endpoint, allocOpts...)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 	m := &Manager{
 		launcher:           launcher,
+		remote:             cfg.Remote,
 		allocCancel:        allocCancel,
 		browserCtx:         browserCtx,
 		browserCancel:      browserCancel,
@@ -491,7 +510,9 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 
 	if err := m.connect(); err != nil {
 		_ = m.Close()
-		return nil, err
+		// The dialer quotes the URL it could not reach, and on a remote target
+		// that URL authenticates the session. Redact before it reaches a log.
+		return nil, m.scrubRemoteEndpoint(err)
 	}
 	if tabs, err := m.ListTabs(ctx); err == nil && len(tabs) > 0 {
 		m.refs.SetActive(tabs[0].ID)
@@ -519,6 +540,17 @@ func (m *Manager) Close() error {
 	var closeErr error
 	if m.launcher != nil {
 		closeErr = m.launcher.Close()
+	}
+	// The provider's browser is given back after brw's own connection is torn
+	// down, and its own deadline is independent of any caller's: a release that
+	// does not happen leaves a cloud browser (and its bill) running.
+	if m.remote != nil && m.remote.Release != nil {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), remoteReleaseTimeout)
+		if err := m.remote.Release(releaseCtx); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("release the plugin-supplied browser session: %w", err))
+		}
+		cancel()
+		m.remote.Release = nil
 	}
 	if cleanupErr := m.cleanupDownloadStaging(); cleanupErr != nil {
 		closeErr = errors.Join(closeErr, cleanupErr)
@@ -1579,6 +1611,12 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 		return ActionResult{}, err
 	}
 	if err := m.guardTakeover("upload_file"); err != nil {
+		return ActionResult{}, err
+	}
+	// Before the tab is touched: an upload hands Chrome a path it resolves on
+	// its own machine, so on a provider's browser this either finds nothing or
+	// finds a different file of that name over there.
+	if err := m.refuseOnRemote("local_upload"); err != nil {
 		return ActionResult{}, err
 	}
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
@@ -3451,6 +3489,12 @@ func MetadataInt64(value any) int64 {
 }
 
 func (m *Manager) runBrowser(ctx context.Context, fn func(context.Context) error) error {
+	// One of the two funnels every browser operation passes through, so a
+	// session the provider has already reclaimed is named here rather than
+	// surfacing as an unattributable websocket failure in each verb.
+	if err := m.checkRemoteSession(); err != nil {
+		return err
+	}
 	timeoutCtx, cancel := context.WithTimeout(m.browserCtx, m.timeout)
 	defer cancel()
 	if ctx != nil {
@@ -3518,6 +3562,10 @@ func (m *Manager) activeContextWithTimeout(ctx context.Context, timeout time.Dur
 }
 
 func (m *Manager) tabContext(tabID string) (context.Context, error) {
+	// The other funnel: everything tab-scoped resolves its context here.
+	if err := m.checkRemoteSession(); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	if tab, ok := m.tabContexts[tabID]; ok {
 		m.mu.RUnlock()

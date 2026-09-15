@@ -33,6 +33,12 @@ type Recipe struct {
 	Inputs        map[string]Input  `json:"inputs,omitempty"`
 	Steps         []Step            `json:"steps"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
+	// Requires names properties of the browser this recipe assumes. It is not a
+	// hint: a runner refuses the whole recipe when it cannot honour one, before
+	// step one, because the failure it prevents is a login-shaped flow that runs
+	// signed out and looks like it worked until it reaches the password field.
+	// Omitted when empty, so adding it did not move any existing recipe digest.
+	Requires []string `json:"requires,omitempty"`
 	// CaptureOnFailure asks the browser host to collect a failure evidence
 	// bundle when a step fails. It is a request, not a guarantee: the host
 	// decides, and its default is to collect nothing. Omitted when false, so
@@ -170,6 +176,7 @@ func Validate(value Recipe) error {
 	if value.Risk != "read_only" && value.Risk != "external_write" {
 		problems = append(problems, errors.New("risk must be read_only or external_write"))
 	}
+	problems = append(problems, validateRequirements(value.Requires))
 	if len(value.Inputs) > 64 {
 		problems = append(problems, errors.New("at most 64 inputs are allowed"))
 	}
@@ -207,6 +214,45 @@ func Validate(value Recipe) error {
 	// reported as an embedded credential.
 	if secretPattern.Match(bytes.ReplaceAll(encoded, []byte(credential.Scheme), []byte("credential-reference-"))) {
 		problems = append(problems, errors.New("recipe appears to contain a literal secret"))
+	}
+	return errors.Join(problems...)
+}
+
+// RequiresProfileSession says this recipe's steps assume a browser a human has
+// already signed into — the installed profile brw drives on this machine.
+const RequiresProfileSession = "profile_session"
+
+// Requirements is the CLOSED domain of requirement names, matched byte for
+// byte. A recipe naming anything else is refused at validation rather than
+// accepted and ignored: a requirement nobody enforces is worse than no
+// requirement, because the recipe author believes it is enforced.
+//
+// A test enumerates this list against the runner's own switch, so a name added
+// here and not honoured there fails rather than shipping as a declaration with
+// nothing behind it.
+var Requirements = []string{RequiresProfileSession}
+
+// maxRequirements bounds the list rather than pinning it to the domain size, so
+// the duplicate and unknown-name checks below are the ones that report a bad
+// list. A bound of len(Requirements) would answer "at most 1 requirement" to a
+// recipe that declared the same one twice, which names the wrong problem.
+const maxRequirements = 32
+
+func validateRequirements(requires []string) error {
+	if len(requires) > maxRequirements {
+		return fmt.Errorf("at most %d requirements are allowed", maxRequirements)
+	}
+	var problems []error
+	seen := map[string]bool{}
+	for _, name := range requires {
+		if seen[name] {
+			problems = append(problems, fmt.Errorf("requirement %q is declared twice", name))
+			continue
+		}
+		seen[name] = true
+		if !slices.Contains(Requirements, name) {
+			problems = append(problems, fmt.Errorf("requirement %q is not one of %v; brw refuses a requirement it cannot enforce rather than ignoring it", name, Requirements))
+		}
 	}
 	return errors.Join(problems...)
 }

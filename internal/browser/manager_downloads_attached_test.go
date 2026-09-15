@@ -221,6 +221,10 @@ func TestEveryTransportDeclaresWhetherBrwStartedTheBrowser(t *testing.T) {
 		brwidentity.TransportRemoteCDP:       false,
 		brwidentity.TransportChromeOptIn:     false,
 		brwidentity.TransportExtensionBridge: false,
+		// A provider started this one, on its own machine. Routing is refused
+		// twice over: brw did not start the browser, and the directory it named
+		// would be created on the provider's disk.
+		brwidentity.TransportOffHostCDP: false,
 	}
 	for _, transport := range brwidentity.Transports() {
 		started, classified := brwStarts[transport]

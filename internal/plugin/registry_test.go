@@ -43,6 +43,23 @@ func fileManifest(credentialDir string) map[string]any {
 	}
 }
 
+func browserManifest(t *testing.T, mint, teardown string) map[string]any {
+	t.Helper()
+	return map[string]any{
+		"schema_version": ManifestSchemaVersion,
+		"id":             "local.standin",
+		"name":           "Local stand-in browser",
+		"version":        "1.0.0",
+		"description":    "Mints a CDP endpoint",
+		"capabilities":   []string{CapabilityBrowserProvider},
+		"browser": map[string]any{
+			"kind":     BrowserKindExec,
+			"command":  []string{mint},
+			"teardown": []string{teardown, SessionToken},
+		},
+	}
+}
+
 // fileProviderRegistry builds the reference file provider with one credential
 // in it, which is what lets the credential path run on a machine with no vault
 // CLI installed at all.
@@ -103,22 +120,47 @@ func TestLoadRefusesManifestsThatWouldMoveTheTrustBoundary(t *testing.T) {
 			},
 			wantErr: "widen a brw security default",
 		},
-		"reserved capability": {
+		"browser grant without the browser block": {
 			setup: func(t *testing.T, root, credentials string) {
 				manifest := fileManifest(credentials)
 				manifest["capabilities"] = []string{CapabilityBrowserProvider}
 				delete(manifest, "credential")
 				writeManifest(t, root, "a.json", manifest)
 			},
-			wantErr: "reserved",
+			wantErr: "requires a browser block",
 		},
 		"provider without the grant": {
 			setup: func(t *testing.T, root, credentials string) {
 				manifest := fileManifest(credentials)
 				manifest["capabilities"] = []string{CapabilityBrowserProvider}
+				manifest["browser"] = map[string]any{
+					"kind": BrowserKindExec, "command": []string{"/bin/echo"},
+					"teardown": []string{"/bin/echo", SessionToken},
+				}
 				writeManifest(t, root, "a.json", manifest)
 			},
 			wantErr: "requires the credential.read capability",
+		},
+		"browser block without the browser grant": {
+			setup: func(t *testing.T, root, credentials string) {
+				manifest := fileManifest(credentials)
+				manifest["browser"] = map[string]any{
+					"kind": BrowserKindExec, "command": []string{"/bin/echo"},
+					"teardown": []string{"/bin/echo", SessionToken},
+				}
+				writeManifest(t, root, "a.json", manifest)
+			},
+			wantErr: "requires the browser.provider capability",
+		},
+		"two browser holders": {
+			setup: func(t *testing.T, root, credentials string) {
+				first := browserManifest(t, "/bin/echo", "/bin/echo")
+				writeManifest(t, root, "a.json", first)
+				second := browserManifest(t, "/bin/echo", "/bin/echo")
+				second["id"] = "other.browsers"
+				writeManifest(t, root, "b.json", second)
+			},
+			wantErr: "only one plugin may",
 		},
 		"grant without the provider": {
 			setup: func(t *testing.T, root, credentials string) {

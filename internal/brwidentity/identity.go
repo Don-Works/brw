@@ -51,7 +51,18 @@ const (
 	// user is signed into, up to and including the port the Chrome opt-in
 	// publishes, and a lane reported as one brw started routed and then deleted
 	// that person's downloads.
-	TransportRemoteCDP       = "remote-cdp"
+	TransportRemoteCDP = "remote-cdp"
+	// TransportOffHostCDP is the CDP wire protocol over a socket to a machine
+	// that is not this one: a browser a plugin holding browser.provider lent
+	// brw. It is separate from TransportRemoteCDP because --remote is usually
+	// pointed at a loopback endpoint, where this machine's filesystem and
+	// clipboard are the browser's too; here they are not, so a path, an upload
+	// or a clipboard read answers about the wrong machine rather than failing.
+	//
+	// It names where the browser IS rather than which flag asked for it, so
+	// another way of reaching a browser elsewhere lands here without an edit to
+	// the gates that read it.
+	TransportOffHostCDP      = "off-host-cdp"
 	TransportExtensionBridge = "extension-bridge"
 )
 

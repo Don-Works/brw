@@ -112,6 +112,17 @@ again around every target resolution and actuation. Accessible-name, test-id,
 and href selectors may interpolate declared inputs at runtime; the role remains
 static, and resolution must still produce exactly one element before brw acts.
 
+A recipe may declare what it assumes about the browser itself. `"requires":
+["profile_session"]` says its steps only make sense on a browser a human has
+already signed into — the installed profile brw drives on this machine. The
+runner checks that before step one and refuses the whole recipe when the
+transport cannot honour it: on a browser a `browser.provider` plugin lent brw
+there is no such profile, and running anyway would take a login-shaped flow
+through half a site as an anonymous visitor before reaching the password field.
+The name list is closed, so a requirement brw cannot enforce is a validation
+error rather than a declaration nothing reads. A surface that cannot answer the
+question is refused too: "has not said" is not "probably signed in".
+
 The public schema supports clicks, fills, typing, selection, key presses,
 navigation, bounded timers, event waits, and artifact capture. Every browser
 actuation explicitly declares `effect: read` or `effect: external_write`; the

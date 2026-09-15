@@ -169,7 +169,7 @@ func main() {
 	flag.StringVar(&recipeRoot, "recipe-root", os.Getenv("BRW_RECIPE_ROOT"), "absolute 0700 directory containing private 0600 recipe JSON files; must live outside the brw source repository")
 	flag.StringVar(&recipeProviderURL, "recipe-provider-url", os.Getenv("BRW_RECIPE_PROVIDER_URL"), "HTTPS private recipe-provider base URL (loopback HTTP allowed); use instead of --recipe-root")
 	flag.StringVar(&recipeProviderTokenFile, "recipe-provider-token-file", os.Getenv("BRW_RECIPE_PROVIDER_TOKEN_FILE"), "0600 regular file containing the private recipe-provider bearer token; never logged")
-	flag.StringVar(&pluginDir, "plugin-dir", os.Getenv("BRW_PLUGIN_DIR"), "directory of *.json plugin manifests. brw does not sandbox a plugin, so the directory and its manifests must not be group- or other-writable. Grants only the capabilities in docs/plugins.md; today that is credential.read, which lets a recipe resolve a secret:// reference at execution.")
+	flag.StringVar(&pluginDir, "plugin-dir", os.Getenv("BRW_PLUGIN_DIR"), "directory of *.json plugin manifests. brw does not sandbox a plugin, so the directory and its manifests must not be group- or other-writable. Grants only the capabilities in docs/plugins.md: credential.read, which lets a recipe resolve a secret:// reference at execution, and browser.provider, which supplies a CDP websocket URL so brw drives a browser on another machine instead of launching one here. A loaded browser.provider plugin is incompatible with --bridge, --remote, --upstream-http, --login, --headless and a workspace profile; each is refused at startup rather than ignored.")
 	flag.StringVar(&proxyServer, "proxy-server", os.Getenv("BRW_PROXY_SERVER"), "direct CDP: route the launched browser through this proxy, for example http://127.0.0.1:8080 or socks5://127.0.0.1:1080. Chrome takes a proxy only at launch, so this cannot be changed on a running browser.")
 	flag.StringVar(&proxyBypassList, "proxy-bypass-list", os.Getenv("BRW_PROXY_BYPASS_LIST"), "direct CDP: semicolon-separated hosts that bypass --proxy-server and go direct, for example \"<local>;*.internal\". Requires --proxy-server.")
 	flag.BoolVar(&ignoreHTTPSErrors, "ignore-https-errors", envBool("BRW_IGNORE_HTTPS_ERRORS"), "direct CDP: launch Chrome with certificate validation OFF for every site. Opt-in per launch and reported by brw_identity as ignore_https_errors, because an agent reading a page over this daemon otherwise cannot tell a valid site from an intercepted one. Prefer --ca-cert, which trusts one private CA instead of everything.")
@@ -248,6 +248,43 @@ func main() {
 	if unsafeRealProfile {
 		log.Printf("WARNING: --unsafe-real-profile is active; brw may launch Chrome against your real browser profile, which can corrupt it (lost logins, won't reopen)")
 	}
+	// Loaded before anything can call it, and before the transport is chosen: a
+	// plugin holding browser.provider decides WHICH browser this daemon drives,
+	// so every mode check below has to be able to see it. A misconfigured plugin
+	// directory stays a startup failure rather than a daemon that silently holds
+	// no provider and fails a login three steps into a recipe.
+	plugins, err := plugin.Load(pluginDir)
+	if err != nil {
+		log.Fatalf("plugin directory: %v", err)
+	}
+	for _, status := range plugins.Plugins() {
+		log.Printf("plugin %s %s loaded with capabilities %v", status.ID, status.Version, status.Capabilities)
+	}
+	useBrowserProvider := plugins.ProbeBrowserProvider() == nil
+	if useBrowserProvider {
+		if err := refuseWithProvider(providerLaunch{
+			Bridge:       bridgeMode,
+			UpstreamHTTP: upstreamHTTP,
+			ChromeOptIn:  chromeOptIn,
+			Login:        loginMode,
+			Headless:     headless,
+			Profile:      profileName,
+			Workspace:    workspaceName,
+			Config:       cfg,
+		}); err != nil {
+			log.Fatalf("%v", err)
+		}
+		if explicitProfileFlags() {
+			log.Fatalf("--user-data-dir/--profile-directory with a browser.provider plugin: %v", browser.RemoteUnavailableError("profile_reuse"))
+		}
+		// Cleared rather than left at their flag defaults, so browser.New sees
+		// the configuration this daemon actually has. The explicit spellings
+		// were already refused above; what is left is the default profile dir,
+		// which describes a machine the browser is not on.
+		cfg.UserDataDir = ""
+		cfg.ProfileDirectory = ""
+	}
+
 	// The profile is resolved before the opt-in block, and only resolved: this
 	// lane has to be gated by policy and pointed at the profile's own browser
 	// and directory, and both need the profile in hand before discovery runs.
@@ -356,14 +393,14 @@ func main() {
 		if profile.Headless {
 			headless = true
 		}
-		mode := daemonMode(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn)
+		mode := daemonMode(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn, useBrowserProvider)
 		runtimeIdentity = brwidentity.Identity{
 			Workspace:         workspaceName,
 			Profile:           profile.Name,
 			UserDataDir:       profile.UserDataDir,
 			ProfileDirectory:  profile.ProfileDirectory,
 			Mode:              mode,
-			Transport:         localTransport(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn),
+			Transport:         localTransport(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn, useBrowserProvider),
 			Headless:          headless,
 			IgnoreHTTPSErrors: ignoreHTTPSErrors,
 		}
@@ -448,10 +485,10 @@ func main() {
 	cfg.Headless = headless
 	usageIdentity := runtimeIdentity
 	if usageIdentity.Mode == "" {
-		usageIdentity.Mode = daemonMode(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn)
+		usageIdentity.Mode = daemonMode(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn, useBrowserProvider)
 	}
 	if usageIdentity.Transport == "" {
-		usageIdentity.Transport = localTransport(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn)
+		usageIdentity.Transport = localTransport(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn, useBrowserProvider)
 	}
 	usageIdentity.Headless = headless
 	usageIdentity.IgnoreHTTPSErrors = ignoreHTTPSErrors
@@ -607,7 +644,27 @@ func main() {
 		}()
 	} else {
 		var err error
-		manager, err = browser.New(ctx, cfg)
+		if useBrowserProvider {
+			remote, release, openErr := openProviderBrowser(ctx, plugins)
+			if openErr != nil {
+				log.Fatalf("%v", openErr)
+			}
+			cfg.Remote = remote
+			manager, err = browser.New(ctx, cfg)
+			if err != nil {
+				// Give the browser back before dying. Manager.Close is what
+				// normally releases it, and there is no manager on this path, so
+				// without this the provider keeps billing for a session nothing
+				// will ever connect to.
+				releaseCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				if releaseErr := release(releaseCtx); releaseErr != nil {
+					log.Printf("release the plugin-supplied browser session: %v", releaseErr)
+				}
+				cancel()
+			}
+		} else {
+			manager, err = browser.New(ctx, cfg)
+		}
 		if err != nil {
 			log.Fatalf("start browser: %v", err)
 		}
@@ -671,17 +728,6 @@ func main() {
 		// The extension's options page is the only consent surface a user of the
 		// signed-in browser has, and it reaches the daemon through the bridge.
 		bridge.SetSiteConsent(consentGuard)
-	}
-
-	// Loaded before anything can call it. A misconfigured plugin directory is a
-	// startup failure, never a daemon that silently holds no provider and then
-	// fails a login three steps into a recipe.
-	plugins, err := plugin.Load(pluginDir)
-	if err != nil {
-		log.Fatalf("plugin directory: %v", err)
-	}
-	for _, status := range plugins.Plugins() {
-		log.Printf("plugin %s %s loaded with capabilities %v", status.ID, status.Version, status.Capabilities)
 	}
 
 	var artifactAPI artifact.API
@@ -1011,12 +1057,16 @@ func findInstalledExtension() (string, bool) {
 // daemonMode is the human-facing label for how this daemon reached the browser.
 // It mirrors localTransport so /health's mode and transport can never disagree
 // about which lane is running.
-func daemonMode(upstreamHTTP, remoteURL string, bridgeMode, chromeOptIn bool) string {
+func daemonMode(upstreamHTTP, remoteURL string, bridgeMode, chromeOptIn, browserProvider bool) string {
 	switch {
 	case upstreamHTTP != "":
 		return "upstream-http"
 	case bridgeMode:
 		return "bridge"
+	case browserProvider:
+		// Not "direct": that says brw launched Chrome here, and nothing on this
+		// daemon did.
+		return "browser-provider"
 	case chromeOptIn:
 		return "chrome-opt-in"
 	case strings.TrimSpace(remoteURL) != "":
@@ -1161,12 +1211,23 @@ func adoptUpstreamIdentity(local, upstream brwidentity.Identity, haveProfilePoli
 // browser, the refusal is enforced in internal/browser whatever this reports,
 // and reporting direct-cdp would advertise brw_set_download_path on a lane that
 // always refuses it.
-func localTransport(upstreamHTTP, remoteURL string, bridgeMode, chromeOptIn bool) string {
+//
+// A plugin-supplied browser is a fourth: --remote shares this machine's disk
+// and clipboard, and that one does not, so the two cannot answer the same way
+// about a path or an upload.
+func localTransport(upstreamHTTP, remoteURL string, bridgeMode, chromeOptIn, browserProvider bool) string {
 	switch {
 	case upstreamHTTP != "":
 		return ""
 	case bridgeMode:
 		return brwidentity.TransportExtensionBridge
+	case browserProvider:
+		// Its own transport, and specifically NOT remote-cdp: --remote is
+		// pointed at a loopback endpoint, where this machine's filesystem
+		// and clipboard are the browser's too. Here they are not, and a
+		// caller that cannot tell the two apart cannot avoid asking a
+		// browser on another machine for this machine's files.
+		return brwidentity.TransportOffHostCDP
 	case chromeOptIn:
 		return brwidentity.TransportChromeOptIn
 	case strings.TrimSpace(remoteURL) != "":

@@ -83,10 +83,15 @@ func TestEveryTransportConstantIsClassified(t *testing.T) {
 // rather than passing unexamined.
 func TestTransportCapabilitiesDistinguishTheLanes(t *testing.T) {
 	want := map[string]TransportCapabilities{
-		TransportDirectCDP:       {CDPSession: true, BrowserTarget: true, RuntimeDownloadRouting: true},
-		TransportRemoteCDP:       {CDPSession: true, BrowserTarget: true},
-		TransportChromeOptIn:     {CDPSession: true, BrowserTarget: true, SignedInProfile: true},
-		TransportExtensionBridge: {ExtensionAPIs: true, SignedInProfile: true},
+		TransportDirectCDP:       {CDPSession: true, BrowserTarget: true, RuntimeDownloadRouting: true, BrowserOnThisHost: true},
+		TransportRemoteCDP:       {CDPSession: true, BrowserTarget: true, BrowserOnThisHost: true},
+		TransportChromeOptIn:     {CDPSession: true, BrowserTarget: true, SignedInProfile: true, BrowserOnThisHost: true},
+		TransportExtensionBridge: {ExtensionAPIs: true, SignedInProfile: true, BrowserOnThisHost: true},
+		// The only lane whose browser is somewhere else. It is the same row as
+		// remote-cdp but for BrowserOnThisHost, and that single bit is what
+		// decides whether a path, an upload or the clipboard names the thing
+		// the caller meant.
+		TransportOffHostCDP: {CDPSession: true, BrowserTarget: true},
 	}
 	for _, transport := range Transports() {
 		expected, stated := want[transport]

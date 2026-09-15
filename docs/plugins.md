@@ -7,12 +7,18 @@ refuses. The capability list below is a closed allowlist. Everything outside it
 is refused at load, including the capabilities other agent-browser products
 ship.
 
-The reason the extension point exists at all is authentication. brw is not a
+Two capabilities are granted. `credential.read` exists because brw is not a
 secret store and will not become one, so a fresh browser context has no way to
 log in: a signed-in recipe works only because the profile was already signed in
-by a human. The `credential.read` capability closes that without brw holding a
-vault — the value is fetched from the operator's own secret manager at the
-moment of use and written into one form field.
+by a human. That capability closes the gap without brw holding a vault — the
+value is fetched from the operator's own secret manager at the moment of use and
+written into one form field.
+
+`browser.provider` exists because the browser does not have to be on this
+machine. A plugin answers with a CDP websocket URL and brw drives what is on the
+other end of it, keeping every guard it applies to a local browser. brw ships
+one backend kind rather than a list of named cloud vendors, and the capability
+carries the rest.
 
 ## Manifest
 
@@ -44,6 +50,7 @@ rather than a silently ignored setting.
 | `version` | `major.minor.patch` |
 | `capabilities` | exact capability names, matched byte for byte |
 | `credential` | required if and only if `credential.read` is granted |
+| `browser` | required if and only if `browser.provider` is granted |
 
 The `credential` block has two kinds.
 
@@ -119,12 +126,137 @@ reason through an error string.
 recipe references `secret://<name>`; the agent passes the recipe id, version and
 digest. The agent never supplies, names, or receives the value.
 
-### `browser.provider` — reserved, refused today
+### `browser.provider` — granted
 
-The interface shape exists (`plugin.BrowserProvider`) for the cloud-browser
-work, and the loader refuses the capability with a named error. brw advertises
-no plugin-supplied browser backend, so granting the name today would be a claim
-with nothing behind it.
+**Can reach:** nothing of brw's. brw asks the provider to open a browser session
+and, later, to release it. The provider answers with a CDP websocket URL, a
+session id and a lifetime.
+
+**Cannot reach through brw:** the page, the DOM, the navigation policy, the
+containment boundary, the site-consent grants, cookies, storage, the trace, the
+artifact store, the usage ledger, or any brw HTTP or MCP route. As with
+`credential.read`, that is what brw *hands* a provider — it is not a statement
+about what the provider's process can do, because brw does not sandbox one: the
+mint and teardown programs are children of the daemon, running as the daemon's
+user with the daemon's environment and network access. See
+[Trust and sandboxing](#trust-and-sandboxing).
+
+**What a provider decides that a credential plugin does not.** Which browser brw
+drives, and therefore the IP a site sees, where the bytes of a page are rendered,
+and who else can reach that browser. A provider that answered with somebody
+else's websocket URL would be handing brw's whole session to them, which is why
+the trust boundary on the plugin directory matters at least as much here as it
+does for a vault.
+
+**What brw keeps.** Everything above the socket. The identity guard, the
+navigation allow/block policy, subresource containment and the site-consent gate
+are the same code on a remote target as on a local one, and a remote target is
+treated as LESS trusted than a local one, never more.
+
+**What a remote browser cannot do**, each refused by name with
+`browser.ErrRemoteTargetUnsupported` rather than attempted and silently getting
+the wrong answer:
+
+| capability | why |
+| --- | --- |
+| profile reuse | A profile lives on the machine running the browser. `--user-data-dir`, `--profile-directory` and a workspace profile policy are refused at startup. |
+| the extension bridge | It drives the Chrome you are personally signed into on this machine. The print-renderer screenshot fallback goes with it: that is a bridge-only path that shells out to a local PDF rasteriser. |
+| installed-profile auth | A recipe declaring `"requires": ["profile_session"]` is refused before its first browser action, so a signed-in flow never runs signed out. |
+| local downloads | Chrome writes a download on the machine it runs on. `brw_downloads`, `brw_set_download_path` and a `download:` wait are all refused: the guard is on the bookkeeping they share, not on the two verbs somebody thought of first. |
+| local uploads | `brw_upload_file` hands Chrome a path it resolves on its own machine, so a local path names a file on the provider's disk instead of yours. |
+| the local clipboard | `brw_clipboard` would read or set the provider host's clipboard. |
+
+`brw_identity` reports `transport: off-host-cdp` — its own lane, and not the
+`remote-cdp` that `brwd --remote` reports: that endpoint is on this machine, so a
+path, an upload and the clipboard still name what the caller meant there.
+`brw_downloads`, `brw_set_download_path`, `brw_upload_file` and `brw_clipboard`
+are not advertised in `tools/list` on `off-host-cdp`, so an agent does not spend
+a round trip discovering a tool that can only fail; calling one anyway still
+returns the named refusal.
+
+#### Manifest
+
+```json
+{
+  "schema_version": 1,
+  "id": "acme.browsers",
+  "name": "ACME hosted browsers",
+  "version": "1.0.0",
+  "description": "Mints a hosted Chrome session",
+  "capabilities": ["browser.provider"],
+  "browser": {
+    "kind": "exec",
+    "command": ["/usr/local/bin/acme-browser", "open"],
+    "teardown": ["/usr/local/bin/acme-browser", "close", "{session}"],
+    "credential": "work/acme/api-key",
+    "timeout_ms": 20000
+  }
+}
+```
+
+One kind ships, `exec`, and it is the whole point: whatever service you use, the
+auth story is your program's, not brw's. Six named vendors inside brw would be
+six auth stories and six breakage surfaces; the capability carries them instead.
+
+`command` mints a session and prints ONE JSON object on stdout:
+
+```json
+{"websocket_url":"wss://…","session_id":"sess-42","expires_in_ms":600000}
+```
+
+- `websocket_url` must be `ws` or `wss` with a host. brw dials it exactly as
+  given — no `/json/version` discovery, no DNS-to-IP rewrite — because those
+  would be brw second-guessing the provider and would break TLS on a hosted
+  endpoint. A URL carrying userinfo is refused; pass a credential by reference
+  instead (below).
+- `session_id` is substituted for `{session}` in `teardown`, so it is held to a
+  narrow character set. `teardown` must contain the token exactly once: a
+  teardown that never sees the id releases whatever the provider considers
+  current, which on a shared account is somebody else's browser.
+- `expires_in_ms` is required, between one second and 24 hours. brw refuses to
+  start an operation past it with a named error rather than letting the socket
+  fail with nothing to attribute it to. A provider that states no lifetime is
+  asking brw to report an expiry it has no way to notice.
+
+Unknown fields, trailing output and anything over 64 KiB are refused.
+
+#### The provider's own credential
+
+`credential` names a reference, never a value. brw resolves it through the
+plugin holding `credential.read` — the same mechanism a recipe uses, not a
+second one — at the moment of each call, and writes the value to the program's
+**stdin**. A manifest that names a reference therefore needs a `credential.read`
+plugin installed as well, which may be the same manifest declaring both
+capabilities or a separate one; with nothing to resolve it, the session is
+refused rather than minted unauthenticated. A provider that needs no key (a
+stand-in endpoint on your own machine) omits the field and is handed nothing. Not its argv: an argv is readable by every process on the machine,
+which is the difference between "passed by reference" and "passed by reference
+and then printed in `ps`".
+
+It is resolved again for the teardown rather than held for the life of the
+session, so brw retains no provider key. The consequence, stated rather than
+hidden: revoking the `credential.read` plugin between open and release makes the
+release fail, and the error names the session the provider still holds.
+
+The websocket URL is redacted on every rendering path — logs, errors, JSON — to
+`scheme://host`. Its path authenticates the connection (Chrome's own
+`/devtools/browser/<uuid>` is a bearer token, and a hosted provider usually
+carries its key in the query), so only the CDP dialer ever sees the whole thing.
+
+#### Lifecycle
+
+At most one loaded plugin may hold `browser.provider`, for the reason at most one
+may hold `credential.read`: two make "which browser am I driving?" unanswerable
+from a failure.
+
+`brw plugin revoke <id>` stops the NEXT session being opened. It deliberately
+does not break the release of one already open — a revoke that leaked the cloud
+browser it was running at the time would cost money to use.
+
+A `--bridge`, `--upstream-http`, `--remote`, `--login`, `--headless`,
+`--extension`, `--chrome-arg`, `--proxy-server`, `--profile` or explicit
+`--user-data-dir` launch alongside a loaded `browser.provider` plugin is a
+startup failure naming the conflict, not a flag that quietly does nothing.
 
 ### Never granted
 
@@ -165,7 +297,10 @@ boundary is who can write that directory — its mode, its owner and its ancesto
 - An `exec` provider's `command[0]` must be an absolute, already-clean path, and
   the program it names is held to the same mode, owner and ancestor rules as the
   manifest. A bare name would be resolved from the daemon's `PATH` at every
-  call, so the manifest an operator reviewed would not decide what runs.
+  call, so the manifest an operator reviewed would not decide what runs. A
+  `browser.provider` declares two programs, the mint and the teardown, and both
+  are held to the rule: checking only the one an operator reads first is not a
+  boundary.
 - A location has more than one spelling, so both are checked: the ancestors of
   the declared path as well as the ancestors of the file it resolves to. A 0700
   binary in a 0700 directory, named through a world-writable directory, is a

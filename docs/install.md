@@ -225,6 +225,16 @@ path. That holds however the endpoint was produced, including when it is the
 port a Chrome opt-in published: the refusal reads whether brw started the
 browser, not which flag the operator passed.
 
+A loaded `browser.provider` plugin gives a fifth, `transport: "off-host-cdp"`: a
+CDP websocket to a browser on the provider's own machine. It is the direct-CDP
+column with every row that names something on THIS machine changed, because a
+path resolved at the other end of that socket is a path on the provider's disk.
+`brw_downloads`, `brw_set_download_path`, `brw_upload_file` and `brw_clipboard`
+are refused by name, and a recipe declaring `"requires": ["profile_session"]` is
+refused before its first action rather than run signed out. That is the whole
+difference from `remote-cdp`, which is pointed at an endpoint on this machine
+and keeps all four. See [plugins.md](plugins.md).
+
 ### The Chrome opt-in lane
 
 Chrome 136 stopped honouring `--remote-debugging-port` against the default user

@@ -137,7 +137,7 @@ live binary, isolated `--session brw-compare`, then `close --all`). Status is
 | Credential manager integration | plugin `credential.read` only; not a vault | 1Password, macOS beta | plugin + encrypted auth vault | shipped |
 | Accessibility audit and Web Vitals | axe-core + vitals + highlight | no | axe-core + vitals | shipped |
 | React DevTools introspection | no | no | `react tree` / inspect / renders / suspense | open, `M7T2Z7` |
-| Cloud browser providers | no | no | 6 providers | open, `VXK4XY` |
+| Cloud browser providers | `browser.provider` plugin capability, one reference backend | no | 6 providers | shipped |
 | Remote operation over SSH | yes | no | no (cloud instead) | shipped |
 | WebMCP page-declared tools | list, invoke, detach, poll, cancel | no | list, invoke, detach, poll, cancel | shipped |
 | Live dashboard | viewport, activity feed, gated human takeover | side panel | viewport, activity feed, chat | shipped; chat is not a goal |

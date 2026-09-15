@@ -114,6 +114,16 @@ func (m *Manager) stagesDownloads() bool {
 // adds the browser-connection subscription as the fallback for a download no
 // page session claims.
 func (m *Manager) ensureDownloadTracking(ctx context.Context) error {
+	// The choke point, so the refusal covers every way in rather than the verbs
+	// somebody remembered. Three reach here: Downloads, SetDownloadPath and a
+	// `download:` wait — and the wait is the one a per-verb guard would have
+	// missed. What it would otherwise do is worse than a wrong answer: it sends
+	// Browser.setDownloadBehavior with a path on THIS machine, so the provider's
+	// Chrome starts writing files to a directory of that name on its own disk
+	// while brw reports local paths for them.
+	if err := m.refuseOnRemote("local_downloads"); err != nil {
+		return err
+	}
 	m.downloadsMu.Lock()
 	if m.downloadsEnabled {
 		m.downloadsMu.Unlock()
@@ -453,6 +463,12 @@ func (m *Manager) rebuildDownloadIndexLocked() {
 // call establishes a baseline without deleting an in-progress entry, and later
 // progress updates still retain the begin event's filename and provenance.
 func (m *Manager) Downloads(ctx context.Context) (DownloadsResult, error) {
+	// Refused before tracking is armed: on a provider's browser the bytes land
+	// on the provider's disk, and reporting local paths for them would describe
+	// files that do not exist here.
+	if err := m.refuseOnRemote("local_downloads"); err != nil {
+		return DownloadsResult{}, err
+	}
 	if err := m.ensureDownloadTracking(ctx); err != nil {
 		return DownloadsResult{}, err
 	}

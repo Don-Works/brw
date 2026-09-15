@@ -378,6 +378,16 @@ context, so staging its downloads would move files brw does not own. That is the
 only difference, and it holds however the endpoint was produced — including when
 it is the port a Chrome opt-in published.
 
+A `browser.provider` plugin supplies a fifth, `off-host-cdp`: a CDP websocket to
+a browser on the provider's own machine. It is not `remote-cdp` and the
+difference is the one that decides what a path means. `--remote` is pointed at
+an endpoint on this machine, so an upload, the clipboard and a download
+destination still name the things you meant; a provider's browser shares none of
+them, so `brw_downloads`, `brw_set_download_path`, `brw_upload_file` and
+`brw_clipboard` are refused by name rather than answering about the wrong disk.
+Every guard above the socket is unchanged. See
+[docs/plugins.md](docs/plugins.md).
+
 ### Chromium recommended (open source)
 
 Chromium is open source and not gated by the Chrome Web Store, so you can

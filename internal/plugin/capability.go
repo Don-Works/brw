@@ -10,28 +10,30 @@ import (
 )
 
 // CapabilityCredentialRead lets a plugin answer one credential reference at a
-// time. It is the only capability brw grants.
+// time.
 const CapabilityCredentialRead = "credential.read"
 
-// CapabilityBrowserProvider names the cloud-browser backend capability. The Go
-// interface shape below exists for the work that will implement it; the loader
-// refuses the name today, because advertising a capability nothing honours is
-// a claim brw cannot back.
+// CapabilityBrowserProvider names the cloud/remote-browser backend capability.
+// A plugin holding it answers with a CDP websocket URL, a session lifetime and
+// a teardown hook; brw owns everything above that socket.
 const CapabilityBrowserProvider = "browser.provider"
 
 // grantable is a CLOSED allowlist, matched byte for byte. It, not the refusal
 // table below, is what stops an attacker-supplied capability: a name that is
 // not a key here is refused whether or not anyone anticipated it.
 var grantable = map[string]bool{
-	CapabilityCredentialRead: true,
+	CapabilityCredentialRead:  true,
+	CapabilityBrowserProvider: true,
 }
 
 // reserved names a capability with a defined interface shape that brw cannot
 // grant yet. Separated from "never" so the error tells an operator to wait
 // rather than to give up.
-var reserved = map[string]string{
-	CapabilityBrowserProvider: "brw has no plugin-supplied browser backend yet; the interface shape exists but nothing honours the grant",
-}
+//
+// It is empty today: browser.provider, the one entry it ever held, is granted
+// now that a backend honours it. The map stays because the distinction is real
+// and the next reserved name should land here rather than in "never".
+var reserved = map[string]string{}
 
 // refused maps a capability brw will never grant to the security default it
 // would widen. This table only improves the message — an unknown capability is
@@ -79,14 +81,28 @@ func GrantableCapabilities() []string {
 	return names
 }
 
-// BrowserProvider is the interface shape the cloud-browser work will implement
-// behind CapabilityBrowserProvider. It is declared here so that task has a
-// contract to build against; the loader refuses the capability, so nothing can
-// be reached through it today.
+// BrowserProvider is what CapabilityBrowserProvider grants. A provider hands
+// brw a CDP websocket URL for a browser it owns, a lifetime for that browser,
+// and a way to give it back. Everything above the socket stays brw's: the
+// navigation policy, the containment boundary, the site-consent gate and the
+// identity guard are the same code on a remote target as on a local one.
 type BrowserProvider interface {
-	// Endpoint returns a CDP websocket URL for a browser the plugin owns, plus
-	// a release function the daemon calls when it is finished with it.
-	Endpoint(ctx context.Context) (wsURL string, release func(context.Context) error, err error)
+	// OpenBrowserSession mints a session and returns it with the release
+	// function the daemon calls when it is finished with the browser.
+	OpenBrowserSession(ctx context.Context) (BrowserSession, func(context.Context) error, error)
+}
+
+// browserProvider is the internal shape of a granted browser.provider plugin.
+// It is as narrow as credentialProvider on purpose: a provider is asked to open
+// a session and told to release one, and has no way to ask brw for a page, a
+// cookie, a policy, or anything else.
+//
+// The credential it needs is HANDED to it, already resolved. brw looks the
+// reference up through the credential.read holder — the wave-3 mechanism — so
+// a browser provider is not a second way to reach a secret store.
+type browserProvider interface {
+	open(ctx context.Context, secret credential.Secret) (BrowserSession, error)
+	release(ctx context.Context, sessionID string, secret credential.Secret) error
 }
 
 // credentialProvider is the internal shape of a granted credential.read plugin.

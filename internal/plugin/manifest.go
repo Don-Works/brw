@@ -19,6 +19,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/Don-Works/brw/internal/credential"
 )
 
 const ManifestSchemaVersion = 1
@@ -41,8 +43,29 @@ const (
 // covering the thing it gates.
 var CredentialKinds = []string{CredentialKindExec, CredentialKindFile}
 
+// BrowserKind values.
+const BrowserKindExec = "exec"
+
+// BrowserKinds is the closed domain of browser-provider backends. One kind
+// ships: a program the operator wrote that mints a session against whatever
+// cloud service they use. Six named services would be six auth stories and six
+// breakage surfaces inside brw; the capability carries them instead.
+//
+// Declared once, for the same reason CredentialKinds is: every kind on it
+// reaches the same capability, so a sibling added to one switch over Kind and
+// missed by another is how a gate stops covering what it gates. A test
+// enumerates this list.
+var BrowserKinds = []string{BrowserKindExec}
+
 // ReferenceToken is the single argv placeholder an exec provider substitutes.
 const ReferenceToken = "{reference}"
+
+// SessionToken is the argv placeholder a browser provider's teardown command
+// substitutes with the id of the session being released. Deliberately not
+// ReferenceToken: a teardown argv is built from a value the PROVIDER printed,
+// and reusing the credential token would make "which substitution is this?"
+// a question the reader has to answer from context.
+const SessionToken = "{session}"
 
 type Manifest struct {
 	SchemaVersion int      `json:"schema_version"`
@@ -53,6 +76,24 @@ type Manifest struct {
 	Capabilities  []string `json:"capabilities"`
 	// Credential is required if and only if credential.read is declared.
 	Credential *CredentialProviderSpec `json:"credential,omitempty"`
+	// Browser is required if and only if browser.provider is declared.
+	Browser *BrowserProviderSpec `json:"browser,omitempty"`
+}
+
+// BrowserProviderSpec configures the one browser-provider backend brw ships.
+//
+// Command mints a session and prints one JSON envelope (see ParseSessionEnvelope).
+// Teardown releases it and must carry SessionToken exactly once, so the release
+// is aimed at the session that was opened rather than at whatever the provider
+// considers current. Credential names a reference resolved through the
+// credential.read holder at the moment of the call and written to the program's
+// STDIN — never its argv, which every process on the machine can read.
+type BrowserProviderSpec struct {
+	Kind       string   `json:"kind"`
+	Command    []string `json:"command,omitempty"`
+	Teardown   []string `json:"teardown,omitempty"`
+	Credential string   `json:"credential,omitempty"`
+	TimeoutMS  int      `json:"timeout_ms,omitempty"`
 }
 
 type CredentialProviderSpec struct {
@@ -138,6 +179,84 @@ func ValidateManifest(manifest Manifest) error {
 			problems = append(problems, err)
 		}
 	}
+	wantsBrowser := slices.Contains(manifest.Capabilities, CapabilityBrowserProvider)
+	switch {
+	case wantsBrowser && manifest.Browser == nil:
+		problems = append(problems, errors.New("browser.provider requires a browser block naming the backend"))
+	case !wantsBrowser && manifest.Browser != nil:
+		// Same reason as the credential half: a configured backend with no grant
+		// reads as working and is not, and the grant is what an operator reviews.
+		problems = append(problems, errors.New("a browser block requires the browser.provider capability"))
+	case wantsBrowser:
+		if err := validateBrowserSpec(*manifest.Browser); err != nil {
+			problems = append(problems, err)
+		}
+	}
+	return errors.Join(problems...)
+}
+
+func validateBrowserSpec(spec BrowserProviderSpec) error {
+	var problems []error
+	if spec.TimeoutMS < 0 || spec.TimeoutMS > maxBrowserTimeoutMS {
+		problems = append(problems, fmt.Errorf("browser timeout_ms must be between 0 and %d", maxBrowserTimeoutMS))
+	}
+	if spec.Credential != "" {
+		if err := credential.ValidateReference(spec.Credential); err != nil {
+			problems = append(problems, err)
+		}
+	}
+	switch spec.Kind {
+	case BrowserKindExec:
+		problems = append(problems, validateBrowserCommand("browser command", spec.Command, 0))
+		// Exactly one, for the reason the credential command needs exactly one
+		// reference: a teardown that never sees the session id releases whatever
+		// the provider decides is current, which on a shared account is somebody
+		// else's browser.
+		problems = append(problems, validateBrowserCommand("browser teardown", spec.Teardown, 1))
+	default:
+		problems = append(problems, fmt.Errorf("browser kind must be one of %v", BrowserKinds))
+	}
+	return errors.Join(problems...)
+}
+
+// maxBrowserTimeoutMS bounds how long a mint or a teardown may take. A provider
+// that can block for an hour blocks the daemon's startup behind it.
+const maxBrowserTimeoutMS = 60_000
+
+// validateBrowserCommand holds a browser provider's argv to the same rules the
+// credential one lives under, and pins how many SessionToken placeholders it
+// must carry: none for the mint, which has no session yet, and exactly one for
+// the teardown, which is aimed at a specific one.
+func validateBrowserCommand(what string, command []string, wantSessionTokens int) error {
+	if len(command) == 0 {
+		return fmt.Errorf("the exec browser kind requires a %s", what)
+	}
+	var problems []error
+	if len(command) > 32 {
+		problems = append(problems, fmt.Errorf("%s has too many arguments", what))
+	}
+	problems = append(problems, validateProgramPath(what+" program", command[0]))
+	sessionTokens, referenceTokens, oversized := 0, 0, false
+	for _, argument := range command {
+		if len(argument) > 4096 {
+			oversized = true
+		}
+		sessionTokens += strings.Count(argument, SessionToken)
+		referenceTokens += strings.Count(argument, ReferenceToken)
+	}
+	if oversized {
+		problems = append(problems, fmt.Errorf("%s argument is too long", what))
+	}
+	if sessionTokens != wantSessionTokens {
+		problems = append(problems, fmt.Errorf("%s must contain the %s token exactly %d times, found %d", what, SessionToken, wantSessionTokens, sessionTokens))
+	}
+	if referenceTokens != 0 {
+		// The credential reaches this provider on stdin, never in its argv. A
+		// manifest that spells the credential token here is asking for a
+		// substitution that will not happen, and shipping it would leave an
+		// operator believing their key was passed.
+		problems = append(problems, fmt.Errorf("%s must not contain the %s token; a browser provider receives its credential on stdin, not in its argv", what, ReferenceToken))
+	}
 	return errors.Join(problems...)
 }
 
@@ -177,7 +296,7 @@ func validateCredentialCommand(command []string) error {
 	if len(command) > 32 {
 		problems = append(problems, errors.New("credential command has too many arguments"))
 	}
-	problems = append(problems, validateCredentialProgram(command[0]))
+	problems = append(problems, validateProgramPath("credential command program", command[0]))
 	tokens, oversized := 0, false
 	for _, argument := range command {
 		if len(argument) > 4096 {
@@ -197,39 +316,47 @@ func validateCredentialCommand(command []string) error {
 	return errors.Join(problems...)
 }
 
-// validateCredentialProgram pins which binary a manifest names.
+// validateProgramPath pins which binary a manifest names. Shared by every
+// provider kind that execs, because the reason is the same for all of them and
+// a second copy of this rule is a second place for it to go stale.
 //
 // A bare name such as "op" is resolved from the daemon's PATH at every call, so
 // the manifest an operator reviewed does not decide what runs: whoever controls
 // PATH, or can write an earlier directory on it, does. The path must also be
 // already clean, because "/usr/bin/../../tmp/op" reads as a reviewed system
-// binary and is not one, and it must not carry the reference token, which would
-// let the caller's reference name spell a different program than the one the
-// loader checked. The program's mode, owner and ancestors are checked
-// separately at load, where the filesystem is available.
-func validateCredentialProgram(program string) error {
+// binary and is not one, and it must carry NEITHER substitution token, which
+// would let a reference name or a provider-printed session id spell a different
+// program than the one the loader checked. The program's mode, owner and
+// ancestors are checked separately at load, where the filesystem is available.
+func validateProgramPath(what, program string) error {
 	if strings.TrimSpace(program) == "" {
-		return errors.New("credential command program is empty")
+		return fmt.Errorf("%s is empty", what)
 	}
 	if !filepath.IsAbs(program) {
-		return fmt.Errorf("credential command program %q must be an absolute path, so the reviewed manifest decides which binary runs rather than the daemon's PATH", program)
+		return fmt.Errorf("%s %q must be an absolute path, so the reviewed manifest decides which binary runs rather than the daemon's PATH", what, program)
 	}
 	if filepath.Clean(program) != program {
-		return fmt.Errorf("credential command program %q must already be a clean path, with no %q or %q segment", program, ".", "..")
+		return fmt.Errorf("%s %q must already be a clean path, with no %q or %q segment", what, program, ".", "..")
 	}
-	if strings.Contains(program, ReferenceToken) {
-		return fmt.Errorf("credential command program %q must not contain the %s token; the program is what the loader pins, so a reference must not be able to name a different one", program, ReferenceToken)
+	for _, token := range []string{ReferenceToken, SessionToken} {
+		if strings.Contains(program, token) {
+			return fmt.Errorf("%s %q must not contain the %s token; the program is what the loader pins, so a substitution must not be able to name a different one", what, program, token)
+		}
 	}
 	return nil
 }
 
-// substituteReference builds the argv for one resolve. It replaces the token in
-// place rather than appending, so an argv like ["op","read","op://{reference}"]
-// keeps its scheme prefix. No shell is involved at any point.
-func substituteReference(command []string, reference string) []string {
+// substituteToken builds the argv for one call. It replaces the token in place
+// rather than appending, so an argv like ["op","read","op://{reference}"] keeps
+// its scheme prefix. No shell is involved at any point.
+func substituteToken(command []string, token, value string) []string {
 	argv := make([]string, len(command))
 	for index, argument := range command {
-		argv[index] = strings.ReplaceAll(argument, ReferenceToken, reference)
+		argv[index] = strings.ReplaceAll(argument, token, value)
 	}
 	return argv
+}
+
+func substituteReference(command []string, reference string) []string {
+	return substituteToken(command, ReferenceToken, reference)
 }

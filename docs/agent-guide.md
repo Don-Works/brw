@@ -220,7 +220,8 @@ hold them, and the error says so.
 Chrome through the extension) `brw_cookies` returns an explicit error: the
 extension's security policy blocks cookie CDP methods so a rogue server can
 never exfiltrate HttpOnly cookies through brw. `brw_identity`'s `transport`
-field (`direct-cdp` | `remote-cdp` | `chrome-opt-in-cdp` | `extension-bridge`)
+field (`direct-cdp` | `remote-cdp` | `off-host-cdp` | `chrome-opt-in-cdp` |
+`extension-bridge`)
 tells you which you are on; every one but `extension-bridge` reaches
 browser-level CDP and reads cookies.
 Use a dedicated direct-CDP profile — or an incognito context there
@@ -513,9 +514,10 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 | `auto` (default) | 14, growing | ~6.3k tokens to start |
 
 Measured on a direct-CDP daemon. A tool a transport cannot serve is never
-advertised on it, so the `all` row is 91 tools unfiltered, 88 on direct CDP and
-76 on the extension bridge; the narrower profiles are the same size on every
-transport.
+advertised on it, so the `all` row is 91 tools unfiltered, 88 on direct CDP, 87
+on `--remote`, 86 on the Chrome opt-in lane, 84 on a plugin-supplied off-host
+browser and 76 on the extension bridge; the narrower profiles are the same size
+on every transport.
 
 `core` advertises the common-flow tools (open/snapshot/find/click/type/fill/
 select/press/scroll/hover/drag/upload/navigate/wait/batch/observe/screenshot).

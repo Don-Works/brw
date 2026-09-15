@@ -19,6 +19,10 @@ const (
 	// ResolvedTransport never returns it; doctor describes a daemon reporting
 	// it from here.
 	ResolvedRemoteCDP = "remote-cdp"
+	// ResolvedOffHostCDP is a browser a browser.provider plugin lent brwd, on
+	// the provider's machine. A loaded plugin selects it rather than a profile
+	// policy, so ResolvedTransport never returns it either.
+	ResolvedOffHostCDP = "off-host-cdp"
 )
 
 // Capabilities states, for one transport, what a caller can and cannot do. The
@@ -51,6 +55,11 @@ var capabilityTable = map[string]Capabilities{
 		Transport: ResolvedRemoteCDP,
 		Has:       "full browser-target CDP against a browser somebody else started: incognito contexts (brw_open_incognito), HttpOnly cookie access (brw_cookies), page-environment overrides, session snapshots (brw_state)",
 		Lacks:     "no Chrome tab groups (an extension API), no download routing (brw did not start this browser, so brw_set_download_path would move files it does not own and downloads are reported without a file path), and no control over how that browser was launched — its proxy, certificate policy and headlessness were fixed by whoever started it",
+	},
+	ResolvedOffHostCDP: {
+		Transport: ResolvedOffHostCDP,
+		Has:       "full browser-target CDP against a browser on the provider's machine: incognito contexts (brw_open_incognito), HttpOnly cookie access (brw_cookies), page-environment overrides, session snapshots (brw_state)",
+		Lacks:     "no Chrome tab groups (an extension API), and nothing that names something on this machine: no downloads or download routing, no file uploads (brw_upload_file resolves the path on the provider's disk) and no clipboard (brw_clipboard would read the provider host's). There is no profile on it either, so a recipe that requires the signed-in profile is refused rather than run signed out",
 	},
 	ResolvedExtensionBridge: {
 		Transport: ResolvedExtensionBridge,

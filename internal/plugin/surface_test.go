@@ -47,12 +47,48 @@ func TestPluginDocsNameEveryCapabilityTheGateKnows(t *testing.T) {
 // property of the plugin process. It is not one: brw does not sandbox an exec
 // provider, so the list is what brw HANDS a provider, and an operator deciding
 // whether to install one has to see both facts in the same place.
-func TestTheCredentialSectionSaysWhatTheCapabilityDoesNotCover(t *testing.T) {
+func TestEveryGrantedCapabilitySectionSaysWhatItDoesNotCover(t *testing.T) {
+	for _, capability := range GrantableCapabilities() {
+		t.Run(capability, func(t *testing.T) {
+			section := docSection(t, "### `"+capability+"`")
+			for _, phrase := range []string{"does not sandbox", "daemon's user"} {
+				if !strings.Contains(section, phrase) {
+					t.Errorf("the %s section does not say %q, so its boundary list reads as a property of the plugin process", capability, phrase)
+				}
+			}
+			for _, phrase := range []string{"Can reach", "Cannot reach"} {
+				if !strings.Contains(section, phrase) {
+					t.Errorf("the %s section does not state %q", capability, phrase)
+				}
+			}
+		})
+	}
+}
+
+// The browser.provider section is the operator-facing half of the remote
+// capability table. A refusal the code enforces and the doc does not name is a
+// boundary an operator finds out about from a failed run.
+func TestTheBrowserProviderSectionNamesWhatARemoteBrowserCannotDo(t *testing.T) {
+	section := docSection(t, "### `"+CapabilityBrowserProvider+"`")
+	for _, phrase := range []string{
+		"profile reuse", "extension bridge", "print-renderer", "profile_session",
+		"local downloads", "local uploads", "clipboard",
+		"stdin", "expires_in_ms", "{session}", "userinfo", "remote-cdp",
+	} {
+		if !strings.Contains(section, phrase) {
+			t.Errorf("the browser.provider section does not mention %q", phrase)
+		}
+	}
+}
+
+// docSection returns one heading's body with whitespace collapsed, so a phrase
+// that straddles a markdown line wrap still matches.
+func docSection(t *testing.T, heading string) string {
+	t.Helper()
 	doc, err := os.ReadFile("../../docs/plugins.md")
 	if err != nil {
 		t.Fatalf("read docs/plugins.md: %v", err)
 	}
-	const heading = "### `" + CapabilityCredentialRead + "`"
 	start := strings.Index(string(doc), heading)
 	if start < 0 {
 		t.Fatalf("docs/plugins.md has no %s section", heading)
@@ -61,32 +97,57 @@ func TestTheCredentialSectionSaysWhatTheCapabilityDoesNotCover(t *testing.T) {
 	if end := strings.Index(section, "\n### "); end >= 0 {
 		section = section[:end]
 	}
-	// Markdown wraps, so a phrase can straddle a line break.
-	section = strings.Join(strings.Fields(section), " ")
-	for _, phrase := range []string{"does not sandbox", "daemon's user"} {
-		if !strings.Contains(section, phrase) {
-			t.Errorf("the %s section does not say %q, so its boundary list reads as a property of the plugin process", heading, phrase)
-		}
-	}
+	return strings.Join(strings.Fields(section), " ")
 }
 
-// A granted plugin's ENTIRE runtime surface is the credential resolver. That is
-// why the capability table can be short: there is no second door to gate.
+// A granted plugin's ENTIRE runtime surface is the credential resolver and the
+// browser-session opener. That is why the capability table can be short: there
+// is no third door to gate.
 //
 // This is a lock on the registry's exported method set. A Registry.Cookies, a
 // Registry.NavigationPolicy or a Registry.Run would each be a way for a plugin
 // to reach something the capability list says it cannot, and each would fail
 // here before it could be wired to anything.
-func TestAGrantedPluginsRuntimeSurfaceIsOnlyTheResolver(t *testing.T) {
+//
+// OpenBrowserSession and ProbeBrowserProvider are the browser.provider half,
+// and they mirror Resolve and ProbeProvider exactly: ask, or ask whether asking
+// would work. Neither hands the plugin anything of brw's.
+func TestAGrantedPluginsRuntimeSurfaceIsOnlyTheResolverAndTheBrowserOpener(t *testing.T) {
 	registryType := reflect.TypeOf((*Registry)(nil))
 	var methods []string
 	for index := 0; index < registryType.NumMethod(); index++ {
 		methods = append(methods, registryType.Method(index).Name)
 	}
 	slices.Sort(methods)
-	want := []string{"Plugins", "ProbeProvider", "Resolve", "Revoke"}
+	want := []string{"OpenBrowserSession", "Plugins", "ProbeBrowserProvider", "ProbeProvider", "Resolve", "Revoke"}
 	if !slices.Equal(methods, want) {
 		t.Fatalf("Registry exposes %v, want exactly %v; a new method is a new way to reach a plugin, so say why here", methods, want)
+	}
+}
+
+// The browser provider interface is the same shape of promise the credential
+// one makes: a plugin is ASKED for something and told to release it. It is
+// handed a context and, internally, a resolved credential — never a structure
+// it could read brw state out of, and never a way to call back into brw.
+func TestTheBrowserProviderInterfaceOffersNoWayToAskBrwForAnything(t *testing.T) {
+	providerType := reflect.TypeOf((*browserProvider)(nil)).Elem()
+	var methods []string
+	for index := 0; index < providerType.NumMethod(); index++ {
+		methods = append(methods, providerType.Method(index).Name)
+	}
+	slices.Sort(methods)
+	if !slices.Equal(methods, []string{"open", "release"}) {
+		t.Fatalf("browserProvider exposes %v, want exactly [open release]", methods)
+	}
+	for _, method := range methods {
+		m, _ := providerType.MethodByName(method)
+		for index := 0; index < m.Type.NumIn(); index++ {
+			switch kind := m.Type.In(index).Kind(); kind {
+			case reflect.String, reflect.Interface, reflect.Struct:
+			default:
+				t.Errorf("browserProvider.%s argument %d is a %s; a provider takes a context, a name and a value, never something it could read brw out of", method, index, kind)
+			}
+		}
 	}
 }
 

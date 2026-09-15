@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"slices"
 	"sort"
 	"testing"
 
@@ -37,7 +38,7 @@ func TestAdvertisedToolsDropTransportUnsupported(t *testing.T) {
 			name:      "direct cdp hides tab groups",
 			transport: brwidentity.TransportDirectCDP,
 			hidden:    []string{"brw_group_tabs", "brw_ungroup_tabs", "brw_list_tab_groups"},
-			shown:     []string{"brw_open_incognito", "brw_close_context", "brw_cookies", "brw_state"},
+			shown:     []string{"brw_open_incognito", "brw_close_context", "brw_cookies", "brw_state", "brw_downloads", "brw_upload_file", "brw_clipboard"},
 		},
 		{
 			// The lane the whole opt-in exists for: the bridge's incognito and
@@ -71,6 +72,29 @@ func TestAdvertisedToolsDropTransportUnsupported(t *testing.T) {
 			shown: []string{
 				"brw_open_incognito", "brw_close_context", "brw_cookies", "brw_clipboard",
 				"brw_set_geolocation", "brw_authenticate", "brw_state",
+				// The browser is on this machine, so a path still names the file
+				// the caller meant. Only the ROUTING of downloads is refused.
+				"brw_downloads", "brw_upload_file",
+			},
+		},
+		{
+			// A plugin-supplied browser is CDP over a socket to another machine.
+			// Everything that resolves a path or a clipboard on the machine the
+			// browser runs on would answer about the wrong one, so it is not
+			// advertised; everything else is exactly direct CDP.
+			//
+			// This is the row that distinguishes the lane from --remote above:
+			// both attached to a browser brw did not start, and only this one
+			// has to refuse the local filesystem and the clipboard.
+			name:      "an off-host browser hides this machine's filesystem and clipboard",
+			transport: brwidentity.TransportOffHostCDP,
+			hidden: []string{
+				"brw_downloads", "brw_set_download_path", "brw_upload_file", "brw_clipboard",
+				"brw_group_tabs", "brw_ungroup_tabs", "brw_list_tab_groups",
+			},
+			shown: []string{
+				"brw_open_incognito", "brw_close_context", "brw_cookies", "brw_state",
+				"brw_key_down", "brw_pushstate", "brw_set_geolocation", "brw_authenticate",
 			},
 		},
 	} {
@@ -112,16 +136,55 @@ func TestAdvertisedToolsUnknownTransportKeepsEverything(t *testing.T) {
 }
 
 // Every classified tool must name a real tool, or a rename silently stops
-// filtering the tool it was meant to hide.
+// filtering the tool it was meant to hide. Every tool must also carry at least
+// one requirement, or the row classifies nothing while looking classified.
 func TestToolRequirementsNameRealTools(t *testing.T) {
 	known := map[string]bool{}
 	for _, tool := range tools() {
 		name, _ := tool["name"].(string)
 		known[name] = true
 	}
-	for name := range toolRequirements {
+	for name, reqs := range toolRequirements {
 		if !known[name] {
 			t.Errorf("toolRequirements names %q, which is not a registered tool", name)
+		}
+		if len(reqs) == 0 {
+			t.Errorf("toolRequirements[%q] carries no requirement, so the row gates nothing", name)
+		}
+		seen := map[toolRequirement]bool{}
+		for _, req := range reqs {
+			if _, named := requirementNames[req]; !named {
+				t.Errorf("toolRequirements[%q] carries requirement %d, which requirementNames does not name", name, req)
+			}
+			if seen[req] {
+				t.Errorf("toolRequirements[%q] carries %s twice", name, requirementNames[req])
+			}
+			seen[req] = true
+		}
+	}
+}
+
+// The derived table is what supportedOnTransport reads, so its own shape has to
+// hold: every transport it names must be one brwidentity declares — enumerated
+// against that closed list rather than spelled out here, so a new transport
+// cannot be classified against a typo — and no tool may be excluded everywhere.
+func TestTransportUnsupportedNamesKnownTransports(t *testing.T) {
+	for name, transports := range transportUnsupported {
+		if len(transports) == 0 {
+			t.Errorf("transportUnsupported[%q] is empty, so the row filters nothing", name)
+		}
+		seen := map[string]bool{}
+		for _, transport := range transports {
+			if !slices.Contains(brwidentity.Transports(), transport) {
+				t.Errorf("transportUnsupported[%q] names %q, which is not in %v", name, transport, brwidentity.Transports())
+			}
+			if seen[transport] {
+				t.Errorf("transportUnsupported[%q] names %q twice", name, transport)
+			}
+			seen[transport] = true
+		}
+		if len(transports) == len(brwidentity.Transports()) {
+			t.Errorf("transportUnsupported[%q] excludes every transport, so the tool can never run anywhere and should not be registered", name)
 		}
 	}
 }
@@ -134,7 +197,7 @@ func TestToolRequirementsNameRealTools(t *testing.T) {
 // a lane that always fails it.
 func TestEveryTransportClassifiesEveryCapabilityGatedTool(t *testing.T) {
 	transports := brwidentity.Transports()
-	if len(transports) < 3 {
+	if len(transports) < 4 {
 		t.Fatalf("brwidentity reports %d transports; this test exists to cover all of them", len(transports))
 	}
 	// Every requirement value in use must have a rule in runnableOn. A new
@@ -143,10 +206,12 @@ func TestEveryTransportClassifiesEveryCapabilityGatedTool(t *testing.T) {
 	// while meaning "everyone can" would hide every tool everywhere, so the
 	// enumeration is explicit.
 	requirements := map[toolRequirement]bool{}
-	for _, req := range toolRequirements {
-		requirements[req] = true
+	for _, reqs := range toolRequirements {
+		for _, req := range reqs {
+			requirements[req] = true
+		}
 	}
-	for _, req := range []toolRequirement{needsCDPSession, needsBrowserTarget, needsExtensionAPIs, refusedOnSignedInProfile, needsDownloadRouting} {
+	for _, req := range []toolRequirement{needsCDPSession, needsBrowserTarget, needsExtensionAPIs, refusedOnSignedInProfile, needsDownloadRouting, needsLocalBrowserHost} {
 		delete(requirements, req)
 	}
 	if len(requirements) != 0 {
@@ -188,9 +253,18 @@ func TestDerivedTableMatchesTheDocumentedLanes(t *testing.T) {
 		{"brw_cookies", []string{brwidentity.TransportExtensionBridge}},
 		{"brw_open_incognito", []string{brwidentity.TransportExtensionBridge}},
 		{"brw_set_geolocation", []string{brwidentity.TransportExtensionBridge}},
-		{"brw_group_tabs", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportDirectCDP, brwidentity.TransportRemoteCDP}},
+		{"brw_group_tabs", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportDirectCDP, brwidentity.TransportOffHostCDP, brwidentity.TransportRemoteCDP}},
 		{"brw_state", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportExtensionBridge}},
-		{"brw_set_download_path", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportExtensionBridge, brwidentity.TransportRemoteCDP}},
+		{"brw_set_download_path", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportExtensionBridge, brwidentity.TransportOffHostCDP, brwidentity.TransportRemoteCDP}},
+		// The clipboard row is what a single-requirement table could not state:
+		// the bridge has no browser target, the off-host lane has one and would
+		// answer about the provider's machine. Two reasons, two lanes.
+		{"brw_clipboard", []string{brwidentity.TransportExtensionBridge, brwidentity.TransportOffHostCDP}},
+		// Refused only where the browser is on another machine. --remote is NOT
+		// on this list: a loopback endpoint shares this disk, and refusing it
+		// there would take away a capability that works.
+		{"brw_downloads", []string{brwidentity.TransportOffHostCDP}},
+		{"brw_upload_file", []string{brwidentity.TransportOffHostCDP}},
 	} {
 		got := append([]string(nil), transportUnsupported[tc.tool]...)
 		sort.Strings(got)
@@ -201,6 +275,25 @@ func TestDerivedTableMatchesTheDocumentedLanes(t *testing.T) {
 		for i := range got {
 			if got[i] != tc.want[i] {
 				t.Fatalf("%s unsupported on %v, want %v", tc.tool, got, tc.want)
+			}
+		}
+	}
+}
+
+// Every declared transport has to actually be exercised by the filter, or a
+// transport added to brwidentity and nowhere else advertises a surface nobody
+// checked.
+func TestEveryDeclaredTransportProducesACatalogue(t *testing.T) {
+	for _, transport := range brwidentity.Transports() {
+		s := NewWithToolProfile(nil, "all")
+		s.SetIdentity(brwidentity.Identity{Transport: transport})
+		got := advertisedNames(s)
+		if len(got) == 0 {
+			t.Fatalf("transport %q advertises nothing", transport)
+		}
+		for name, transports := range transportUnsupported {
+			if slices.Contains(transports, transport) && got[name] {
+				t.Errorf("transport %q advertises %s, which can never succeed there", transport, name)
 			}
 		}
 	}

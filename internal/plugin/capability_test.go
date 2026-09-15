@@ -22,6 +22,7 @@ func TestNoCapabilityCanWidenABrwSecurityDefault(t *testing.T) {
 		wantErr    string
 	}{
 		"granted":                    {CapabilityCredentialRead, ""},
+		"granted browser provider":   {CapabilityBrowserProvider, ""},
 		"bulk cookie export":         {"cookies.export", "widen a brw security default"},
 		"bulk storage export":        {"storage.export", "widen a brw security default"},
 		"arbitrary command":          {"command.run", "widen a brw security default"},
@@ -29,8 +30,10 @@ func TestNoCapabilityCanWidenABrwSecurityDefault(t *testing.T) {
 		"captcha egress":             {"captcha.solve", "widen a brw security default"},
 		"navigation policy off":      {"navigation.policy.disable", "widen a brw security default"},
 		"make brw a vault":           {"secret.store", "widen a brw security default"},
-		"reserved browser provider":  {CapabilityBrowserProvider, "reserved"},
 		"unknown name":               {"anything.at.all", "not a capability brw defines"},
+		"browser provider suffixed":  {CapabilityBrowserProvider + "s", "not a capability brw defines"},
+		"browser provider uppercase": {"Browser.Provider", "not a capability brw defines"},
+		"browser provider spaced":    {CapabilityBrowserProvider + " ", "not a capability brw defines"},
 		"trailing space":             {CapabilityCredentialRead + " ", "not a capability brw defines"},
 		"leading space":              {" " + CapabilityCredentialRead, "not a capability brw defines"},
 		"uppercase":                  {"Credential.Read", "not a capability brw defines"},
@@ -81,21 +84,60 @@ func TestNoCapabilityCanWidenABrwSecurityDefault(t *testing.T) {
 
 // A lock, not a tautology: the grantable set is the entire security boundary,
 // so widening it has to be a deliberate edit that fails this test first.
-func TestGrantableSetIsExactlyCredentialRead(t *testing.T) {
-	if got := GrantableCapabilities(); !slices.Equal(got, []string{CapabilityCredentialRead}) {
-		t.Fatalf("grantable capabilities = %v; adding one changes what a plugin can reach, so say why in this test", got)
+//
+// browser.provider joined it when a backend started honouring it: a plugin can
+// now decide WHICH browser brw drives. What that does not widen is what brw
+// then does with the browser — the navigation policy, the containment
+// boundary, the site-consent gate and the identity guard are unchanged code on
+// a remote target, and internal/browser's RemoteUnavailable table is where the
+// narrowing that comes with it is written down.
+func TestGrantableSetIsExactlyTheTwoHonouredCapabilities(t *testing.T) {
+	want := []string{CapabilityBrowserProvider, CapabilityCredentialRead}
+	if got := GrantableCapabilities(); !slices.Equal(got, want) {
+		t.Fatalf("grantable capabilities = %v, want %v; adding one changes what a plugin can reach, so say why in this test", got, want)
 	}
 }
 
-// The reserved name has an interface shape and no grant. Advertising it as
-// available would be a claim with nothing behind it, so the refusal is the
-// feature and the message has to tell an operator which of the two it is.
-func TestReservedBrowserProviderIsRefusedRatherThanSilentlyIgnored(t *testing.T) {
-	err := CheckCapability(CapabilityBrowserProvider)
-	if err == nil {
-		t.Fatal("browser.provider was granted; nothing honours it")
+// The three tables are the whole gate, and a name in two of them is a name
+// whose second classification is unreachable: CheckCapability answers from the
+// first that matches, so the reason in the other is text nobody will ever read.
+// Enumerating them against CheckCapability is what makes that checkable rather
+// than a convention.
+//
+// It also pins that every table entry produces the classification its table
+// promises. "reserved" is empty today — browser.provider, the one entry it ever
+// held, is granted now — so the loop over it proves nothing on its own; the
+// grantable and refused loops are what fail if a name moves without its answer
+// moving with it.
+func TestEveryCapabilityTableEntryIsClassifiedExactlyOnce(t *testing.T) {
+	seen := map[string]string{}
+	claim := func(name, table string) {
+		if previous, ok := seen[name]; ok {
+			t.Errorf("capability %q is in both %s and %s; whichever CheckCapability answers from first makes the other's reason unreachable", name, previous, table)
+		}
+		seen[name] = table
 	}
-	if !strings.Contains(err.Error(), "reserved") || strings.Contains(err.Error(), "widen") {
-		t.Fatalf("browser.provider refusal = %q; it is reserved, not a widening", err)
+	for name := range grantable {
+		claim(name, "grantable")
+		if err := CheckCapability(name); err != nil {
+			t.Errorf("grantable capability %q is refused: %v", name, err)
+		}
+	}
+	for name := range reserved {
+		claim(name, "reserved")
+		err := CheckCapability(name)
+		if err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("reserved capability %q = %v, want a refusal naming it as reserved", name, err)
+		}
+	}
+	for name := range refused {
+		claim(name, "refused")
+		err := CheckCapability(name)
+		if err == nil || !strings.Contains(err.Error(), "widen a brw security default") {
+			t.Errorf("refused capability %q = %v, want a refusal naming the default it would widen", name, err)
+		}
+	}
+	if len(seen) < len(grantable)+len(reserved)+len(refused) {
+		t.Fatalf("the tables hold %d distinct names for %d entries", len(seen), len(grantable)+len(reserved)+len(refused))
 	}
 }

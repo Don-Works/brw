@@ -137,6 +137,11 @@ func (r Runner) Run(ctx context.Context, value Recipe, inputs map[string]string)
 	if err := r.checkReceiptCapabilities(value); err != nil {
 		return RunResult{}, err
 	}
+	// Same point in the run, same reason: a declared requirement is refused
+	// before the first browser action, never discovered at the login form.
+	if err := r.checkRequirements(value); err != nil {
+		return RunResult{}, err
+	}
 	if r.Clock == nil {
 		r.Clock = RealClock{}
 	}

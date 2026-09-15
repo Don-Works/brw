@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -122,43 +123,61 @@ func TestLocalTransport(t *testing.T) {
 		remote   string
 		bridge   bool
 		optIn    bool
+		provider bool
 		want     string
 		wantMode string
 	}{
-		{"direct cdp", "", "", false, false, brwidentity.TransportDirectCDP, "direct"},
-		{"extension bridge", "", "", true, false, brwidentity.TransportExtensionBridge, "bridge"},
+		{"direct cdp", "", "", false, false, false, brwidentity.TransportDirectCDP, "direct"},
+		{"extension bridge", "", "", true, false, false, brwidentity.TransportExtensionBridge, "bridge"},
 		// The opt-in lane is its own transport, not direct CDP: it has the
 		// cookie and incognito access the bridge lacks AND it drives the
 		// browser the user is signed into, so its catalogue matches neither.
-		{"chrome opt-in", "", "", false, true, brwidentity.TransportChromeOptIn, "chrome-opt-in"},
+		{"chrome opt-in", "", "", false, true, false, brwidentity.TransportChromeOptIn, "chrome-opt-in"},
 		// --remote is its own transport for the same kind of reason: direct CDP
 		// means a browser brw started and may therefore point at a staging
 		// directory it later deletes, and this is somebody else's browser.
-		{"remote endpoint", "", "http://127.0.0.1:9222", false, false, brwidentity.TransportRemoteCDP, "remote"},
+		{"remote endpoint", "", "http://127.0.0.1:9222", false, false, false, brwidentity.TransportRemoteCDP, "remote"},
+		// A browser a plugin lent brw is a fourth lane, and specifically not the
+		// --remote one: that endpoint is on this machine, so a path and the
+		// clipboard still mean what the caller meant. This one is elsewhere, and
+		// an agent that cannot tell the two apart cannot avoid asking a browser
+		// on another machine for this machine's files.
+		{"browser provider", "", "", false, false, true, brwidentity.TransportOffHostCDP, "browser-provider"},
 		// The opt-in lane sets RemoteURL to the endpoint it discovered, so the
 		// two must not race: it stays chrome-opt-in-cdp.
-		{"opt-in keeps its lane once the endpoint is resolved", "", "http://127.0.0.1:9222", false, true, brwidentity.TransportChromeOptIn, "chrome-opt-in"},
+		{"opt-in keeps its lane once the endpoint is resolved", "", "http://127.0.0.1:9222", false, true, false, brwidentity.TransportChromeOptIn, "chrome-opt-in"},
 		// A proxy cannot know how its upstream reaches Chrome, so it reports
 		// empty and adopts the upstream's answer from /health.
-		{"upstream proxy defers", "http://127.0.0.1:17410", "", false, false, "", "upstream-http"},
-		{"upstream proxy defers even with bridge set", "http://127.0.0.1:17410", "", true, false, "", "upstream-http"},
-		{"upstream proxy defers even with opt-in set", "http://127.0.0.1:17410", "", false, true, "", "upstream-http"},
+		{"upstream proxy defers", "http://127.0.0.1:17410", "", false, false, false, "", "upstream-http"},
+		{"upstream proxy defers even with bridge set", "http://127.0.0.1:17410", "", true, false, false, "", "upstream-http"},
+		{"upstream proxy defers even with opt-in set", "http://127.0.0.1:17410", "", false, true, false, "", "upstream-http"},
+		{"upstream proxy defers even with a provider loaded", "http://127.0.0.1:17410", "", false, false, true, "", "upstream-http"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := localTransport(tt.upstream, tt.remote, tt.bridge, tt.optIn)
+			got := localTransport(tt.upstream, tt.remote, tt.bridge, tt.optIn, tt.provider)
 			if got != tt.want {
-				t.Fatalf("localTransport(%q, %q, %v, %v) = %q, want %q", tt.upstream, tt.remote, tt.bridge, tt.optIn, got, tt.want)
+				t.Fatalf("localTransport(%q, %q, %v, %v, %v) = %q, want %q", tt.upstream, tt.remote, tt.bridge, tt.optIn, tt.provider, got, tt.want)
 			}
 			// /health serves mode and transport together; a caller that gates
 			// on one and logs the other must not see two different lanes.
-			if mode := daemonMode(tt.upstream, tt.remote, tt.bridge, tt.optIn); mode != tt.wantMode {
-				t.Fatalf("daemonMode(%q, %q, %v, %v) = %q, want %q", tt.upstream, tt.remote, tt.bridge, tt.optIn, mode, tt.wantMode)
+			if mode := daemonMode(tt.upstream, tt.remote, tt.bridge, tt.optIn, tt.provider); mode != tt.wantMode {
+				t.Fatalf("daemonMode(%q, %q, %v, %v, %v) = %q, want %q", tt.upstream, tt.remote, tt.bridge, tt.optIn, tt.provider, mode, tt.wantMode)
 			}
 			if got != "" && !brwidentity.KnownTransport(got) {
 				t.Fatalf("localTransport returned %q, which brwidentity does not classify; every tool's availability on that lane would be undefined", got)
 			}
 		})
+	}
+	// Every transport the daemon can report must be one brwidentity declares,
+	// or a table keyed by transport silently fails to classify it.
+	for _, tt := range tests {
+		if tt.want == "" {
+			continue
+		}
+		if !slices.Contains(brwidentity.Transports(), tt.want) {
+			t.Errorf("localTransport can report %q, which is not in %v", tt.want, brwidentity.Transports())
+		}
 	}
 }
 
@@ -180,22 +199,29 @@ func TestEveryClassifiedTransportIsALaneBrwdCanSelect(t *testing.T) {
 		remote   string
 		bridge   bool
 		optIn    bool
+		provider bool
 		// brwStartsTheBrowser is what this lane does, not what it is called.
 		brwStartsTheBrowser bool
+		// browserOnThisHost is the second, independent property: whether a
+		// filesystem path and the clipboard mean the same thing at both ends of
+		// the socket. It is not implied by the first — brw does not start the
+		// browser on three of these lanes, and shares a disk with two of them.
+		browserOnThisHost bool
 	}
 	lanes := map[string]lane{
-		brwidentity.TransportDirectCDP:       {brwStartsTheBrowser: true},
-		brwidentity.TransportRemoteCDP:       {remote: "http://127.0.0.1:9222"},
-		brwidentity.TransportChromeOptIn:     {optIn: true},
-		brwidentity.TransportExtensionBridge: {bridge: true},
+		brwidentity.TransportDirectCDP:       {brwStartsTheBrowser: true, browserOnThisHost: true},
+		brwidentity.TransportRemoteCDP:       {remote: "http://127.0.0.1:9222", browserOnThisHost: true},
+		brwidentity.TransportChromeOptIn:     {optIn: true, browserOnThisHost: true},
+		brwidentity.TransportExtensionBridge: {bridge: true, browserOnThisHost: true},
+		brwidentity.TransportOffHostCDP:      {provider: true},
 	}
 	for _, transport := range brwidentity.Transports() {
 		l, ok := lanes[transport]
 		if !ok {
-			t.Errorf("brwidentity classifies %q but no brwd invocation here produces it: say which flags select that lane, and whether brw starts the browser on it", transport)
+			t.Errorf("brwidentity classifies %q but no brwd invocation here produces it: say which flags select that lane, whether brw starts the browser on it, and whether that browser is on this machine", transport)
 			continue
 		}
-		if got := localTransport(l.upstream, l.remote, l.bridge, l.optIn); got != transport {
+		if got := localTransport(l.upstream, l.remote, l.bridge, l.optIn, l.provider); got != transport {
 			t.Errorf("the lane recorded for %q selects %q instead", transport, got)
 			continue
 		}
@@ -208,6 +234,11 @@ func TestEveryClassifiedTransportIsALaneBrwdCanSelect(t *testing.T) {
 			t.Errorf("transport %q declares RuntimeDownloadRouting=%v but brw %s the browser on that lane; brw may only route downloads in a browser it started",
 				transport, caps.RuntimeDownloadRouting,
 				map[bool]string{true: "starts", false: "does not start"}[l.brwStartsTheBrowser])
+		}
+		if caps.BrowserOnThisHost != l.browserOnThisHost {
+			t.Errorf("transport %q declares BrowserOnThisHost=%v but the browser on that lane %s on this machine; a path or a clipboard read answers about the browser's host either way",
+				transport, caps.BrowserOnThisHost,
+				map[bool]string{true: "is", false: "is not"}[l.browserOnThisHost])
 		}
 	}
 }

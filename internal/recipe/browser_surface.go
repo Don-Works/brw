@@ -74,6 +74,20 @@ func (s *BrowserSurface) Origin(ctx context.Context) (string, error) {
 	return origin, nil
 }
 
+// CheckProfileSession forwards the question to the transport. It does NOT
+// answer on the transport's behalf: a surface that returned nil for a
+// controller with no opinion would turn a fail-closed check into a fail-open
+// one at the only layer that could tell the difference.
+func (s *BrowserSurface) CheckProfileSession() error {
+	controller, ok := s.Browser.(browser.ProfileSessionController)
+	if !ok {
+		return errors.New("this transport does not report whether it drives the signed-in profile")
+	}
+	return controller.CheckProfileSession()
+}
+
+var _ ProfileSessionChecker = (*BrowserSurface)(nil)
+
 func (s *BrowserSurface) Resolve(ctx context.Context, target Target) ([]ResolvedElement, error) {
 	elements, err := s.findSemantic(ctx, target)
 	if err != nil {

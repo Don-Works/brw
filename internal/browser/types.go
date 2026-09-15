@@ -96,6 +96,11 @@ type Config struct {
 	// personally signed into. brw_state refuses to seal that browser's cookies
 	// into a snapshot; see docs/auth-model.md and ErrSessionStateSignedIn.
 	SignedInProfile bool
+	// Remote, when set, is a browser a plugin holding browser.provider lent
+	// brw. Every launch field above is refused alongside it rather than
+	// ignored: a --user-data-dir that quietly does nothing is how an operator
+	// ends up believing a cloud run reused their signed-in profile.
+	Remote *RemoteTarget
 }
 
 type Tab struct {

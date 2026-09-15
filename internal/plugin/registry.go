@@ -19,6 +19,10 @@ import (
 // change to either side is a compile error rather than a runtime nil.
 var _ credential.Resolver = (*Registry)(nil)
 
+// Same for the browser backend: the registry IS the BrowserProvider a daemon
+// holds, so a change to either side is a compile error.
+var _ BrowserProvider = (*Registry)(nil)
+
 // Status is what an operator (never a page, never a page tool) can see about a
 // loaded plugin. It names the backend kind but not the argv or the directory:
 // the daemon's own filesystem layout is not part of the control-plane answer.
@@ -29,20 +33,29 @@ type Status struct {
 	Description    string   `json:"description"`
 	Capabilities   []string `json:"capabilities"`
 	CredentialKind string   `json:"credential_kind,omitempty"`
+	BrowserKind    string   `json:"browser_kind,omitempty"`
 	Revoked        bool     `json:"revoked"`
 }
 
 type loadedPlugin struct {
-	manifest   Manifest
-	kind       string
-	credential credentialProvider
-	revoked    bool
+	manifest    Manifest
+	kind        string
+	browserKind string
+	credential  credentialProvider
+	browser     browserProvider
+	// browserCredential is the REFERENCE the browser provider needs, never a
+	// value. It is resolved through the credential.read holder at the moment of
+	// each call and wiped when that call returns, so no provider credential is
+	// retained for the life of a session.
+	browserCredential string
+	revoked           bool
 }
 
 // Registry holds the plugins one daemon loaded. It implements
-// credential.Resolver, and that is the ONLY runtime surface a grant produces:
-// resolution is consulted per call, so a revoke takes effect on the next step
-// rather than on the next restart.
+// credential.Resolver and BrowserProvider, and those two are the ONLY runtime
+// surfaces a grant produces: a plugin is asked for a secret or for a browser
+// and has no other way in. Both are consulted per call, so a revoke takes
+// effect on the next step rather than on the next restart.
 type Registry struct {
 	mu      sync.RWMutex
 	plugins []*loadedPlugin
@@ -110,6 +123,7 @@ func Load(root string) (*Registry, error) {
 	}
 	seen := map[string]bool{}
 	credentialHolder := ""
+	browserHolder := ""
 	for _, name := range names {
 		path := filepath.Join(absolute, name)
 		manifest, err := loadManifestFile(path)
@@ -135,6 +149,23 @@ func Load(root string) (*Registry, error) {
 			}
 			loaded.credential = provider
 			loaded.kind = manifest.Credential.Kind
+		}
+		if slices.Contains(manifest.Capabilities, CapabilityBrowserProvider) {
+			if browserHolder != "" {
+				// Same reason as the credential half: two backends make "which
+				// browser am I driving?" unanswerable from a failure, and a
+				// silently shadowed provider ends with a recipe running against
+				// the wrong browser entirely.
+				return nil, fmt.Errorf("plugin manifest %s: %q already holds %s; only one plugin may", name, browserHolder, CapabilityBrowserProvider)
+			}
+			browserHolder = manifest.ID
+			provider, err := newBrowserProvider(*manifest.Browser)
+			if err != nil {
+				return nil, fmt.Errorf("plugin manifest %s: %w", name, err)
+			}
+			loaded.browser = provider
+			loaded.browserKind = manifest.Browser.Kind
+			loaded.browserCredential = manifest.Browser.Credential
 		}
 		registry.plugins = append(registry.plugins, loaded)
 	}
@@ -229,6 +260,7 @@ func (r *Registry) Plugins() []Status {
 			Description:    loaded.manifest.Description,
 			Capabilities:   append([]string(nil), loaded.manifest.Capabilities...),
 			CredentialKind: loaded.kind,
+			BrowserKind:    loaded.browserKind,
 			Revoked:        loaded.revoked,
 		})
 	}
@@ -278,6 +310,95 @@ func (r *Registry) ProbeProvider() error {
 		return nil
 	}
 	return credential.ErrNoProvider
+}
+
+// OpenBrowserSession implements BrowserProvider: it asks the granted plugin for
+// a browser and returns the session with the release function that gives it
+// back.
+//
+// Every failure mode is closed. No provider, a revoked provider, a provider
+// error, an unparseable envelope and an unresolvable credential all return an
+// error. None of them degrades to "carry on with a local browser", because the
+// operator who configured a provider asked for the browser to be somewhere
+// else, and silently launching Chrome here instead would run their flow on a
+// machine and an IP they did not choose.
+//
+// The credential is resolved per call and wiped when the call returns, so a
+// provider key is never retained for the life of a session. The consequence is
+// stated rather than hidden: a credential.read grant revoked between open and
+// release makes the release fail, and the caller is told which session was left
+// with the provider.
+func (r *Registry) OpenBrowserSession(ctx context.Context) (BrowserSession, func(context.Context) error, error) {
+	holder, err := r.browserHolder()
+	if err != nil {
+		return BrowserSession{}, nil, err
+	}
+	secret, err := r.browserCredential(ctx, holder)
+	if err != nil {
+		return BrowserSession{}, nil, err
+	}
+	defer secret.Wipe()
+	session, err := holder.browser.open(ctx, secret)
+	if err != nil {
+		return BrowserSession{}, nil, fmt.Errorf("plugin %q: %w", holder.manifest.ID, err)
+	}
+	session.ProviderID = holder.manifest.ID
+	release := func(releaseCtx context.Context) error {
+		// Deliberately NOT re-checking revocation: a session already open has to
+		// be returnable, or revoking a plugin leaks the browser it lent. Revoke
+		// stops the NEXT open, which is what narrowing a grant means here.
+		releaseSecret, err := r.browserCredential(releaseCtx, holder)
+		if err != nil {
+			return fmt.Errorf("plugin %q still holds session %q: %w", holder.manifest.ID, session.SessionID, err)
+		}
+		defer releaseSecret.Wipe()
+		if err := holder.browser.release(releaseCtx, session.SessionID, releaseSecret); err != nil {
+			return fmt.Errorf("plugin %q: %w", holder.manifest.ID, err)
+		}
+		return nil
+	}
+	return session, release, nil
+}
+
+// ProbeBrowserProvider reports the same refusal OpenBrowserSession would,
+// without asking a provider for anything. It lets a daemon decide at startup
+// whether it has a remote backend at all.
+func (r *Registry) ProbeBrowserProvider() error {
+	_, err := r.browserHolder()
+	return err
+}
+
+func (r *Registry) browserHolder() (*loadedPlugin, error) {
+	if r == nil {
+		return nil, ErrNoBrowserProvider
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, loaded := range r.plugins {
+		if loaded.browser == nil {
+			continue
+		}
+		if loaded.revoked {
+			return nil, fmt.Errorf("%w: plugin %q no longer holds %s", ErrBrowserProviderRevoked, loaded.manifest.ID, CapabilityBrowserProvider)
+		}
+		return loaded, nil
+	}
+	return nil, ErrNoBrowserProvider
+}
+
+// browserCredential resolves the provider's declared reference through the
+// credential.read holder. A provider that declares no credential gets none:
+// a stand-in endpoint on the operator's own machine needs no key, and inventing
+// one would make the common case need two plugins.
+func (r *Registry) browserCredential(ctx context.Context, holder *loadedPlugin) (credential.Secret, error) {
+	if holder.browserCredential == "" {
+		return credential.Secret{}, nil
+	}
+	secret, err := r.Resolve(ctx, holder.browserCredential)
+	if err != nil {
+		return credential.Secret{}, fmt.Errorf("resolve the browser provider's credential reference: %w", err)
+	}
+	return secret, nil
 }
 
 // Resolve implements credential.Resolver.

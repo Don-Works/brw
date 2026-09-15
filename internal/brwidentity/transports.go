@@ -46,6 +46,19 @@ type TransportCapabilities struct {
 	// is an unknown command on Firefox (docs/bidi-prototype.md) — so a future
 	// BiDi lane would declare this false while declaring a durable session.
 	RuntimeDownloadRouting bool
+	// BrowserOnThisHost reports that the browser is running on the machine brwd
+	// is running on, so a filesystem path, the clipboard and this host's
+	// session-snapshot store mean the same thing at both ends of the socket.
+	//
+	// It is a separate axis from RuntimeDownloadRouting, which asks whether brw
+	// STARTED the browser. The two differ on both of the attach lanes and the
+	// difference is the whole point: `--remote` at a loopback endpoint reaches a
+	// browser brw did not start on a disk it shares, so brw must not move that
+	// browser's downloads and may still hand it a local path to upload. A
+	// provider's browser shares neither, so the path names a file on somebody
+	// else's disk and the refusal has to be by name — a capability that quietly
+	// answers about the wrong machine is worse than one that is missing.
+	BrowserOnThisHost bool
 }
 
 // transportCapabilities is the authoritative table. A transport absent from it
@@ -53,14 +66,14 @@ type TransportCapabilities struct {
 var transportCapabilities = map[string]TransportCapabilities{
 	// brw started this browser itself, so nobody else is downloading in it.
 	// That, and only that, is what RuntimeDownloadRouting states.
-	TransportDirectCDP: {CDPSession: true, BrowserTarget: true, RuntimeDownloadRouting: true},
+	TransportDirectCDP: {CDPSession: true, BrowserTarget: true, RuntimeDownloadRouting: true, BrowserOnThisHost: true},
 	// The user turned on remote debugging at chrome://inspect/#remote-debugging
 	// in their own Chrome. brw attaches to the browser target it exposes, so
 	// everything CDP offers is reachable — against the profile they are signed
 	// into, which is why SignedInProfile is set. RuntimeDownloadRouting is not:
 	// the browser context is the user's own, and pointing it at brw's staging
 	// directory would move the files they download by hand.
-	TransportChromeOptIn: {CDPSession: true, BrowserTarget: true, SignedInProfile: true},
+	TransportChromeOptIn: {CDPSession: true, BrowserTarget: true, SignedInProfile: true, BrowserOnThisHost: true},
 	// brw attached to a DevTools endpoint another process opened. Everything CDP
 	// offers is reachable, and nothing about the browser behind it is known:
 	// brw did not start it and cannot tell who else is using it.
@@ -74,11 +87,23 @@ var transportCapabilities = map[string]TransportCapabilities{
 	// Chrome would take away a working capability to guess at a risk nobody
 	// reported. The download refusal needs no such guess because nothing asks
 	// for it: a read-shaped brw_downloads call arms the retarget.
-	TransportRemoteCDP: {CDPSession: true, BrowserTarget: true},
+	//
+	// BrowserOnThisHost is set: --remote is pointed at a loopback endpoint in
+	// every use brw ships for, and the lane has always handed Chrome local
+	// paths. An endpoint elsewhere is a browser on another machine and belongs
+	// on the off-host lane instead of quietly widening this row.
+	TransportRemoteCDP: {CDPSession: true, BrowserTarget: true, BrowserOnThisHost: true},
+	// A plugin holding browser.provider minted this browser on its own machine.
+	// Full CDP, so everything that is a protocol capability is reachable; none
+	// of this host's files, clipboard or profiles, so everything that resolves
+	// one is refused by name. RuntimeDownloadRouting is false for the reason it
+	// is false on every attach lane, and would be useless here anyway: the
+	// directory it named would be created on the provider's disk.
+	TransportOffHostCDP: {CDPSession: true, BrowserTarget: true},
 	// The extension attaches chrome.debugger per operation and detaches after,
 	// so there is no durable session and no browser target; what it does have is
 	// the extension APIs.
-	TransportExtensionBridge: {ExtensionAPIs: true, SignedInProfile: true},
+	TransportExtensionBridge: {ExtensionAPIs: true, SignedInProfile: true, BrowserOnThisHost: true},
 }
 
 // Transports lists every transport brw can report, sorted so callers that

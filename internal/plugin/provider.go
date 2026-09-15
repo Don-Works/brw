@@ -40,7 +40,7 @@ func newCredentialProvider(spec CredentialProviderSpec) (credentialProvider, err
 			// so a future caller cannot reach the index below on an empty argv.
 			return nil, errors.New("the exec credential kind requires a command")
 		}
-		program, err := checkProgramTrust(command[0])
+		program, err := checkProgramTrust("credential command program", command[0])
 		if err != nil {
 			return nil, err
 		}
@@ -83,12 +83,16 @@ type trustedProgram struct {
 // a login that fails three steps into a recipe, and again before every exec,
 // because a daemon that has been up for a week is answering with what was true
 // at boot otherwise.
-func checkProgramTrust(program string) (trustedProgram, error) {
+// It takes the kind of program it is checking as a label rather than assuming
+// the credential one: a browser provider execs two programs of its own, and a
+// check that could only describe one kind of program is a check somebody copies
+// rather than calls.
+func checkProgramTrust(kind, program string) (trustedProgram, error) {
 	resolved, err := filepath.EvalSymlinks(program)
 	if err != nil {
-		return trustedProgram{}, fmt.Errorf("resolve credential command program %q: %w", program, err)
+		return trustedProgram{}, fmt.Errorf("resolve %s %q: %w", kind, program, err)
 	}
-	what := fmt.Sprintf("credential command program %q", program)
+	what := fmt.Sprintf("%s %q", kind, program)
 	if err := refuseWritableAncestors(program, what); err != nil {
 		return trustedProgram{}, err
 	}

@@ -96,6 +96,12 @@ func (m *Manager) Clipboard(ctx context.Context, opts ClipboardOptions) (Clipboa
 	if err := m.guardTakeover("clipboard"); err != nil {
 		return ClipboardResult{}, err
 	}
+	// A clipboard belongs to the machine the browser runs on. Reading the
+	// provider host's clipboard and calling it yours is a wrong answer that
+	// looks like a right one.
+	if err := m.refuseOnRemote("local_clipboard"); err != nil {
+		return ClipboardResult{}, err
+	}
 	action := strings.ToLower(strings.TrimSpace(opts.Action))
 	switch action {
 	case "read", "write", "revoke":

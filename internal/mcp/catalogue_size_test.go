@@ -34,13 +34,22 @@ var fullCatalogueCountClaims = []struct {
 	{"../../docs/agent-guide.md", brwidentity.TransportDirectCDP, regexp.MustCompile("\\|\\s*`all`\\s*\\|\\s*(\\d+)\\s*\\|")},
 	{"../../docs/agent-guide.md", "", regexp.MustCompile(`(\d+)\s+tools\s+unfiltered`)},
 	{"../../docs/agent-guide.md", brwidentity.TransportDirectCDP, regexp.MustCompile(`(\d+)\s+on\s+direct\s+CDP`)},
+	{"../../docs/agent-guide.md", brwidentity.TransportRemoteCDP, regexp.MustCompile("(\\d+)\\s+on\\s+`--remote`")},
+	{"../../docs/agent-guide.md", brwidentity.TransportChromeOptIn, regexp.MustCompile(`(\d+)\s+on\s+the\s+Chrome\s+opt-in\s+lane`)},
+	{"../../docs/agent-guide.md", brwidentity.TransportOffHostCDP, regexp.MustCompile(`(\d+)\s+on\s+a\s+plugin-supplied\s+off-host\s+browser`)},
 	{"../../docs/agent-guide.md", brwidentity.TransportExtensionBridge, regexp.MustCompile(`(\d+)\s+on\s+the\s+extension\s+bridge`)},
 	{"../../docs/benchmarks.md", brwidentity.TransportDirectCDP, regexp.MustCompile(`catalogues are\s+(\d+)\s+tools`)},
 	{"../../docs/benchmarks.md", "", regexp.MustCompile(`fewer than the\s+(\d+)\s+tools`)},
 	{"../../docs/benchmarks.md", brwidentity.TransportDirectCDP, regexp.MustCompile(`leaving the\s+(\d+)\s+above`)},
+	{"../../docs/benchmarks.md", brwidentity.TransportRemoteCDP, regexp.MustCompile(`as\s+well\s+\((\d+)\)`)},
+	{"../../docs/benchmarks.md", brwidentity.TransportChromeOptIn, regexp.MustCompile(`on\s+top\s+of\s+that\s+\((\d+)\)`)},
+	{"../../docs/benchmarks.md", brwidentity.TransportOffHostCDP, regexp.MustCompile("rather\\s+than\\s+`brw_state`\\s+\\((\\d+)\\)")},
 	{"../../docs/benchmarks.md", brwidentity.TransportExtensionBridge, regexp.MustCompile(`leaving\s+(\d+)\.`)},
 	{"../../skills/brw/SKILL.md", brwidentity.TransportDirectCDP, regexp.MustCompile(`full surface is\s+(\d+)\s+tools`)},
-	{"../../skills/brw/SKILL.md", brwidentity.TransportExtensionBridge, regexp.MustCompile(`\((\d+)\s+on\s+the\s+extension\s+bridge`)},
+	{"../../skills/brw/SKILL.md", brwidentity.TransportRemoteCDP, regexp.MustCompile("(\\d+)\\s+on\\s+`--remote`")},
+	{"../../skills/brw/SKILL.md", brwidentity.TransportChromeOptIn, regexp.MustCompile(`(\d+)\s+on\s+the\s+Chrome\s+opt-in\s+lane`)},
+	{"../../skills/brw/SKILL.md", brwidentity.TransportOffHostCDP, regexp.MustCompile(`(\d+)\s+on\s+a\s+plugin-supplied\s+off-host\s+browser`)},
+	{"../../skills/brw/SKILL.md", brwidentity.TransportExtensionBridge, regexp.MustCompile(`(\d+)\s+on\s+the\s+extension\s+bridge`)},
 }
 
 // TestDocumentedCatalogueSizeMatchesTheCatalogue reads each stated count out of

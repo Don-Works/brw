@@ -303,12 +303,18 @@ That is the trade: a fixed per-turn catalogue cost against a per-action saving
 that scales with the length of the flow.
 
 A daemon whose identity names a transport advertises fewer than the 91 tools
-the catalogue holds: the three extension-only tab-group tools drop on direct
-CDP, leaving the 88 above, and twelve more drop on the extension bridge — incognito,
-contexts and cookies, the seven page-environment overrides, clipboard, the two
-held-key tools, pushState and session snapshots — leaving 76. Only `all` is
-narrowed this way; `core`, `minimal` and `auto` advertise the same tools on
-every transport.
+the catalogue holds. The three extension-only tab-group tools drop on every CDP
+lane, leaving the 88 above on direct CDP. `--remote` drops
+`brw_set_download_path` as well (87): brw did not start that browser, so it will
+not retarget its downloads. The Chrome opt-in lane drops `brw_state` on top of
+that (86), because it drives the browser its user is signed into. A
+plugin-supplied off-host browser drops `brw_downloads`, `brw_upload_file` and
+`brw_clipboard` rather than `brw_state` (84), because those name things on this
+machine and that browser is on another. Twelve more drop on the extension
+bridge — incognito, contexts and cookies, the seven page-environment overrides,
+clipboard, the two held-key tools, pushState and session snapshots — leaving 76.
+Only `all` is narrowed this way; `core`, `minimal` and `auto` advertise the same
+tools on every transport.
 
 The figures in the rest of this paragraph are historical: they measure the
 release that introduced the `auto` default, not this tree, and the catalogue has
