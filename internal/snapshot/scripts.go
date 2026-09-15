@@ -40,6 +40,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   const state = window.__brw || (window.__brw = { next: 1, byKey: {}, byRef: {} });
   const includeHidden = Boolean(opts.include_hidden);
   const textContent = Boolean(opts.text_content);
+  const includeBoxes = Boolean(opts.include_boxes);
   const selectorParts = [
     'a[href]',
     'button',
@@ -546,6 +547,18 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       _frontier_score: frontierScore(role, name, signals, visible(el), inViewport(el), disabled(el))
     };
     if (isSensitive) item.sensitive = true;
+    // Geometry, opt-in. A snapshot taken inside a cross-origin iframe is merged
+    // into the top document's element list, and the merge needs each element's
+    // box to translate it into top-level click coordinates. Emitting it from the
+    // ONE walker is what keeps that path from growing a second extractor with
+    // its own idea of which controls exist and what they are called.
+    if (includeBoxes) {
+      var boxRect = el.getBoundingClientRect();
+      item.x = boxRect.left;
+      item.y = boxRect.top;
+      item.w = boxRect.width;
+      item.h = boxRect.height;
+    }
     // Does the element's own text carry its accessible name? assert_text reads
     // innerText, then textContent, then value, so this is computed the same way
     // and predicts exactly whether such an assertion would hold. A guard built
@@ -791,7 +804,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   function __brwOptsSignature() {
     return [modeTag, opts.query || '', opts.text || '',
       opts.role || '', limit, Boolean(opts.viewport_only), includeHidden,
-      textContent, Boolean(opts.visual_islands),
+      textContent, Boolean(opts.visual_islands), includeBoxes,
       (opts.visual_islands_limit === undefined ? '' : opts.visual_islands_limit)].join('\u0001');
   }
   function __brwFingerprint(it) {
@@ -1054,12 +1067,8 @@ const FocusElementScript = `(function(ref) {` + FrameWalkHelpers + `
     return __abRootList();
   }
   function findByRef(ref) {
-    const selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
-    for (const root of roots()) {
-      const el = root.querySelector && root.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   function deepActive(root) {
     let active = root && root.activeElement;
@@ -1089,12 +1098,8 @@ const SelectElementScript = `(function(ref, value) {` + FrameWalkHelpers + `
     return __abRootList();
   }
   function findByRef(ref) {
-    const selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
-    for (const root of roots()) {
-      const el = root.querySelector && root.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   const el = findByRef(ref);
   if (!el) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
@@ -1116,12 +1121,8 @@ const FillElementScript = `(function(ref, text, replace) {` + FrameWalkHelpers +
     return __abRootList();
   }
   function findByRef(ref) {
-    const selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
-    for (const root of roots()) {
-      const el = root.querySelector && root.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   function setNativeValue(el, value) {
     const own = Object.getOwnPropertyDescriptor(el, 'value');
@@ -1181,13 +1182,8 @@ const FileInputElementScript = `(function(ref) {` + FrameWalkHelpers + `
     return __abRootList();
   }
   function findByRef(ref) {
-    if (!ref) return null;
-    const selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
-    for (const root of roots()) {
-      const el = root.querySelector && root.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   function onlyFileInput() {
     const matches = [];
@@ -1210,13 +1206,8 @@ const FileInputEventsScript = `(function(ref) {` + FrameWalkHelpers + `
     return __abRootList();
   }
   function findByRef(ref) {
-    if (!ref) return null;
-    const selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
-    for (const root of roots()) {
-      const el = root.querySelector && root.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   function onlyFileInput() {
     const matches = [];
@@ -1243,12 +1234,8 @@ const HoverElementScript = `(function(ref) {` + FrameWalkHelpers + `
     return __abRootList();
   }
   function findByRef(ref) {
-    const selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
-    for (const root of roots()) {
-      const el = root.querySelector && root.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   const el = findByRef(ref);
   if (!el) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
@@ -1619,22 +1606,43 @@ const ScrollPageScript = `(function(direction) {
   return { ok: true, target: 'none', changed: false };
 })`
 
+// SnapshotCallExpressions returns the two expressions every transport runs the
+// DOM walker through.
+//
+// hot assumes an earlier call on this document left the walker installed under
+// the private per-process name, so it ships only the call — a couple of hundred
+// bytes instead of the walker source. cold installs the walker and calls it in
+// one round trip; its assignment is UNCONDITIONAL so a page that predefined the
+// name (collision) or set it to a non-function can neither shadow, spoof nor
+// wedge snapshots. A caller runs hot first and falls back to cold when it fails.
+//
+// Both transports build the pair here rather than each formatting its own
+// expression: the walker is where refs are minted and ranked, so an
+// extension-bridge snapshot and a direct-CDP snapshot of the same document have
+// to be running the same source to return the same refs.
+// SnapshotLooksInstalled reports whether a result from the hot call actually came
+// from the walker. The walker always reports location.href, so an empty URL means
+// the call expression evaluated to something else — a page or a transport that
+// answered the property with a value of its own — and the caller must install the
+// walker and ask again rather than hand that back as a snapshot of the page.
+func SnapshotLooksInstalled(snap PageSnapshot) bool {
+	return snap.URL != ""
+}
+
+func SnapshotCallExpressions(opts SnapshotOptions) (hot, cold string) {
+	args, _ := json.Marshal(opts)
+	hot = fmt.Sprintf("%s(%s)", snapshotInstallTarget, args)
+	cold = fmt.Sprintf("(function(){%s=%s;return %s(%s);})()", snapshotInstallTarget, SnapshotFunctionScript, snapshotInstallTarget, args)
+	return hot, cold
+}
+
 func EvaluateWithOptions(ctx context.Context, opts SnapshotOptions) (PageSnapshot, error) {
 	var snap PageSnapshot
-	args, _ := json.Marshal(opts)
-	// Fast path: a prior call on this document already installed the walker under
-	// the private per-process name, so ship only the tiny call expression instead
-	// of the ~30KB source.
-	hit := fmt.Sprintf("%s(%s)", snapshotInstallTarget, args)
-	if err := chromedp.Run(ctx, chromedp.Evaluate(hit, &snap)); err != nil {
-		// Cold document (first call, or a navigation replaced the JS context):
-		// define the walker and call it in a single round-trip. The assignment is
-		// UNCONDITIONAL so a page that predefined this name (collision) or set it
-		// to a non-function cannot shadow/spoof or wedge snapshots — we always
-		// install our own. Every later call on this document takes the fast path,
-		// so the full source ships once per document, not once per call.
+	hit, cold := SnapshotCallExpressions(opts)
+	err := chromedp.Run(ctx, chromedp.Evaluate(hit, &snap))
+	if err != nil || !SnapshotLooksInstalled(snap) {
+		// Cold document (first call, or a navigation replaced the JS context).
 		snap = PageSnapshot{}
-		cold := fmt.Sprintf("(function(){%s=%s;return %s(%s);})()", snapshotInstallTarget, SnapshotFunctionScript, snapshotInstallTarget, args)
 		if err := chromedp.Run(ctx, chromedp.Evaluate(cold, &snap)); err != nil {
 			return PageSnapshot{}, err
 		}
@@ -1785,10 +1793,9 @@ func Fill(ctx context.Context, ref, text string, replace bool) error {
 // {ok, dropped} where dropped reports whether the target's drop handler ran
 // (preventDefault) so the caller can fall back to a coordinate drag when false.
 const DragHtml5Script = `(function(fromRef, toRef){` + FrameWalkHelpers + `
-  function findByRef(ref){
-    var sel='[data-brw-ref="'+CSS.escape(ref)+'"]';
-    for (var root of __abRootList()){ var el=root.querySelector&&root.querySelector(sel); if(el) return el; }
-    return null;
+  function findByRef(ref) {
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   var source=findByRef(fromRef), target=findByRef(toRef);
   if(!source) return {ok:false, error:'drag source ref not found'};
@@ -1844,9 +1851,8 @@ func DragHtml5(ctx context.Context, fromRef, toRef string) (bool, error) {
 func RefDraggable(ctx context.Context, ref string) bool {
 	rj, _ := json.Marshal(ref)
 	expr := fmt.Sprintf(`(function(ref){`+FrameWalkHelpers+`
-  var sel='[data-brw-ref="'+CSS.escape(ref)+'"]';
-  for (var root of __abRootList()){ var el=root.querySelector&&root.querySelector(sel); if(el) return !!el.draggable; }
-  return false;
+  var hit = __abFindDeep(ref);
+  return hit ? !!hit.el.draggable : false;
 })(%s)`, rj)
 	var draggable bool
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &draggable)); err != nil {
@@ -1871,8 +1877,7 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
     return __abRootList();
   }
   function hasRef(ref){
-    const selector='[data-brw-ref="'+CSS.escape(ref)+'"]';
-    return roots().some(root => root.querySelector && root.querySelector(selector));
+    return !!__abFindDeep(ref);
   }
   function hasSelector(sel){
     // Frame-aware: a selector condition is satisfied by a match in ANY reachable
@@ -2223,13 +2228,9 @@ const WaitForActionableScript = `(function(ref, timeoutMs){` + FrameWalkHelpers 
   function roots(){
     return __abRootList();
   }
-  function findByRef(ref){
-    const selector='[data-brw-ref="'+CSS.escape(ref)+'"]';
-    for(const root of roots()){
-      const el=root.querySelector&&root.querySelector(selector);
-      if(el) return el;
-    }
-    return recoverRef(ref);
+  function findByRef(ref) {
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : recoverRef(ref);
   }
   function clean(s){ return String(s||'').replace(/\s+/g,' ').trim(); }
   function labelText(el){
@@ -2507,13 +2508,9 @@ const AssertTextScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelpe
   function roots(){
     return __abRootList();
   }
-  function findByRef(ref){
-    const selector='[data-brw-ref="'+CSS.escape(ref)+'"]';
-    for(const root of roots()){
-      const el=root.querySelector&&root.querySelector(selector);
-      if(el) return el;
-    }
-    return null;
+  function findByRef(ref) {
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   function check(){
     var el=findByRef(ref);
@@ -2539,13 +2536,9 @@ const AssertValueScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelp
   function roots(){
     return __abRootList();
   }
-  function findByRef(ref){
-    const selector='[data-brw-ref="'+CSS.escape(ref)+'"]';
-    for(const root of roots()){
-      const el=root.querySelector&&root.querySelector(selector);
-      if(el) return el;
-    }
-    return null;
+  function findByRef(ref) {
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   function check(){
     var el=findByRef(ref);
@@ -2577,13 +2570,9 @@ const AssertValueScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelp
 // postconditions by accident.
 const AssertValueContainsScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelpers + `
   function roots(){ return __abRootList(); }
-  function findByRef(ref){
-    const selector='[data-brw-ref="'+CSS.escape(ref)+'"]';
-    for(const root of roots()){
-      const el=root.querySelector&&root.querySelector(selector);
-      if(el) return el;
-    }
-    return null;
+  function findByRef(ref) {
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   function currentValue(el){
     if('value' in el) return String(el.value);
@@ -2611,13 +2600,9 @@ const AssertVisibleScript = `(function(ref, timeoutMs){` + FrameWalkHelpers + `
   function roots(){
     return __abRootList();
   }
-  function findByRef(ref){
-    const selector='[data-brw-ref="'+CSS.escape(ref)+'"]';
-    for(const root of roots()){
-      const el=root.querySelector&&root.querySelector(selector);
-      if(el) return el;
-    }
-    return null;
+  function findByRef(ref) {
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   function visible(el){
     if(!el||el.nodeType!==1) return false;
@@ -2646,13 +2631,9 @@ const AssertHiddenScript = `(function(ref, timeoutMs){` + FrameWalkHelpers + `
   function roots(){
     return __abRootList();
   }
-  function findByRef(ref){
-    const selector='[data-brw-ref="'+CSS.escape(ref)+'"]';
-    for(const root of roots()){
-      const el=root.querySelector&&root.querySelector(selector);
-      if(el) return el;
-    }
-    return null;
+  function findByRef(ref) {
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   function hidden(){
     var el=findByRef(ref);
@@ -2802,27 +2783,8 @@ const ClickXYScript = `(function(x, y) {
 // Used by the extension bridge (which has no direct CDP Input access) for
 // right/double/triple/middle click. clickCount>1 fires the extra click events
 // (dblclick for 2) the way browsers do for repeated clicks.
-const MouseEventScript = `(function(opts) {
+const MouseEventScript = `(function(opts) {` + FrameWalkHelpers + `
   opts = opts || {};
-  function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
-  }
-  function findByRef(ref) {
-    const selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
-    for (const root of roots()) {
-      const el = root.querySelector && root.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
-  }
   function buttonConsts(name) {
     switch (String(name || 'left').toLowerCase()) {
       case 'right': return { button: 2, buttons: 2 };
@@ -2837,13 +2799,19 @@ const MouseEventScript = `(function(opts) {
   let y = opts.y;
   let target = null;
   if (opts.ref) {
-    target = findByRef(opts.ref);
-    if (!target) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
+    const hit = __abFindDeep(opts.ref);
+    if (!hit) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
+    target = hit.el;
     if (target.closest('[hidden],[aria-hidden="true"]')) return { ok: false, error: 'ref hidden' };
     target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const r = target.getBoundingClientRect();
-    x = r.left + r.width / 2;
-    y = r.top + r.height / 2;
+    // A ref inside a same-origin iframe measures in THAT frame's viewport;
+    // hit.ox/oy put the reported point back in the top-level space every other
+    // brw result speaks. The events below are dispatched on the element itself,
+    // so their clientX/clientY stay frame-local, which is what a listener there
+    // expects.
+    x = r.left + hit.ox + r.width / 2;
+    y = r.top + hit.oy + r.height / 2;
   } else if (typeof x !== 'number' || typeof y !== 'number') {
     return { ok: false, error: 'mouse target requires either a ref or x and y coordinates' };
   } else {
@@ -2882,27 +2850,8 @@ const MouseEventScript = `(function(opts) {
 // MouseHalfScript dispatches a single pointerdown+mousedown (down) or
 // pointerup+mouseup (up) at a ref or x,y — the decomposed press-and-hold the
 // extension bridge uses for mouse_down / mouse_up.
-const MouseHalfScript = `(function(opts) {
+const MouseHalfScript = `(function(opts) {` + FrameWalkHelpers + `
   opts = opts || {};
-  function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
-  }
-  function findByRef(ref) {
-    const selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
-    for (const root of roots()) {
-      const el = root.querySelector && root.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
-  }
   function buttonConsts(name) {
     switch (String(name || 'left').toLowerCase()) {
       case 'right': return { button: 2, buttons: 2 };
@@ -2917,12 +2866,13 @@ const MouseHalfScript = `(function(opts) {
   let y = opts.y;
   let target = null;
   if (opts.ref) {
-    target = findByRef(opts.ref);
-    if (!target) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
+    const hit = __abFindDeep(opts.ref);
+    if (!hit) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };
+    target = hit.el;
     target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const r = target.getBoundingClientRect();
-    x = r.left + r.width / 2;
-    y = r.top + r.height / 2;
+    x = r.left + hit.ox + r.width / 2;
+    y = r.top + hit.oy + r.height / 2;
   } else if (typeof x !== 'number' || typeof y !== 'number') {
     return { ok: false, error: 'mouse target requires either a ref or x and y coordinates' };
   } else {
@@ -2948,27 +2898,8 @@ const MouseHalfScript = `(function(opts) {
 // mousemove events with the button held, then releases at the target. Generic
 // pointer-event drag the extension bridge uses for sliders/range inputs,
 // drag-and-drop reorder, and canvas/map panning.
-const DragScript = `(function(opts) {
+const DragScript = `(function(opts) {` + FrameWalkHelpers + `
   opts = opts || {};
-  function roots() {
-    const out = [document];
-    for (let i = 0; i < out.length; i++) {
-      const root = out[i];
-      if (!root.querySelectorAll) continue;
-      for (const el of Array.from(root.querySelectorAll('*'))) {
-        if (el.shadowRoot) out.push(el.shadowRoot);
-      }
-    }
-    return out;
-  }
-  function findByRef(ref) {
-    const selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
-    for (const root of roots()) {
-      const el = root.querySelector && root.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
-  }
   function buttonConsts(name) {
     switch (String(name || 'left').toLowerCase()) {
       case 'right': return { button: 2, buttons: 2 };
@@ -2978,11 +2909,11 @@ const DragScript = `(function(opts) {
   }
   function point(p) {
     if (p && p.ref) {
-      const el = findByRef(p.ref);
-      if (!el) return null;
-      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-      const r = el.getBoundingClientRect();
-      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      const hit = __abFindDeep(p.ref);
+      if (!hit) return null;
+      hit.el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      const r = hit.el.getBoundingClientRect();
+      return { x: r.left + hit.ox + r.width / 2, y: r.top + hit.oy + r.height / 2 };
     }
     if (p && typeof p.x === 'number' && typeof p.y === 'number') return { x: p.x, y: p.y };
     return null;
@@ -3299,12 +3230,8 @@ const CommitFieldScript = `(function(ref) {` + FrameWalkHelpers + `
     return __abRootList();
   }
   function findByRef(ref) {
-    const selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
-    for (const root of roots()) {
-      const el = root.querySelector && root.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
+    var hit = __abFindDeep(ref);
+    return hit ? hit.el : null;
   }
   const el = findByRef(ref);
   if (!el) return { ok: false, error: 'ref not found — the page likely changed; re-run brw_snapshot to get current refs' };

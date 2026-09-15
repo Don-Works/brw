@@ -30,6 +30,9 @@ func mousePointArg(point browser.MousePoint) map[string]any {
 }
 
 func (b *Bridge) ClickButton(ctx context.Context, opts browser.ClickButtonOptions) (browser.ActionResult, error) {
+	if err := browser.GuardCrossOriginRefs("click button", browser.BridgeCrossOriginRemedy, opts.Ref); err != nil {
+		return browser.ActionResult{}, err
+	}
 	before := b.captureSemanticState(ctx)
 	beforeTabs := b.captureTabIDs(ctx)
 	arg := mousePointArg(opts.MousePoint)
@@ -55,10 +58,16 @@ func (b *Bridge) ClickButton(ctx context.Context, opts browser.ClickButtonOption
 }
 
 func (b *Bridge) MouseDown(ctx context.Context, opts browser.MouseButtonOptions) (browser.ActionResult, error) {
+	if err := browser.GuardCrossOriginRefs("mouse down", browser.BridgeCrossOriginRemedy, opts.Ref); err != nil {
+		return browser.ActionResult{}, err
+	}
 	return b.mouseHalf(ctx, opts, "down", "mouse_down")
 }
 
 func (b *Bridge) MouseUp(ctx context.Context, opts browser.MouseButtonOptions) (browser.ActionResult, error) {
+	if err := browser.GuardCrossOriginRefs("mouse up", browser.BridgeCrossOriginRemedy, opts.Ref); err != nil {
+		return browser.ActionResult{}, err
+	}
 	return b.mouseHalf(ctx, opts, "up", "mouse_up")
 }
 
@@ -80,6 +89,9 @@ func (b *Bridge) mouseHalf(ctx context.Context, opts browser.MouseButtonOptions,
 }
 
 func (b *Bridge) Drag(ctx context.Context, opts browser.DragOptions) (browser.ActionResult, error) {
+	if err := browser.GuardCrossOriginRefs("drag", browser.BridgeCrossOriginRemedy, opts.From.Ref, opts.To.Ref); err != nil {
+		return browser.ActionResult{}, err
+	}
 	if err := opts.Validate(); err != nil {
 		return browser.ActionResult{}, err
 	}

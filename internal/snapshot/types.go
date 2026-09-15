@@ -55,13 +55,24 @@ type SnapshotOptions struct {
 	// element (ref role "name" + key state) — markedly fewer tokens for a small
 	// model. Presentation-only; it does not affect element selection or deltas.
 	Format string `json:"format,omitempty"`
-	// IncludeFrames, when true, reads interactive controls inside CROSS-ORIGIN
-	// iframes (out-of-process frames the same-origin DOM walk cannot reach) and
-	// merges them into Elements with frame-qualified refs (f<i>:e<j>) and
-	// top-level viewport click coordinates (cx/cy). Off by default and only
-	// honored on the extension-bridge backend (it briefly attaches a debugger to
-	// each frame target, so it is opt-in to avoid that cost/churn on every
-	// snapshot). Same-origin iframes are always walked regardless of this flag.
+	// IncludeBoxes, when true, attaches each element's viewport box (x/y/w/h, in
+	// the walked document's OWN viewport space) to the returned elements. Off by
+	// default because it costs four numbers per element for information a
+	// ref-driven agent does not need. It is what lets a snapshot taken INSIDE a
+	// cross-origin iframe be translated into top-level click coordinates without
+	// a second, forked extractor doing its own geometry.
+	IncludeBoxes bool `json:"include_boxes,omitempty"`
+	// IncludeFrames, when true, reads the controls inside CROSS-ORIGIN iframes
+	// (frames the same-origin DOM walk cannot enter) and merges them into
+	// Elements with frame-qualified refs (f<i>:<ref>) and top-level viewport
+	// click coordinates (cx/cy).
+	//
+	// Both backends honour it, by attaching a short-lived CDP session to each
+	// frame's own target and running the SAME walker there. It stays opt-in
+	// because of that attach/detach cost, not because of what it can reach. On
+	// direct CDP the merged refs resolve: brw_click routes into the frame. On the
+	// extension bridge they are coordinate-only, and a ref-taking verb handed one
+	// refuses by name. Same-origin iframes are always walked regardless.
 	IncludeFrames bool `json:"include_frames,omitempty"`
 }
 
@@ -209,8 +220,14 @@ type Element struct {
 	// DOM is isolated so they cannot be resolved by ref the normal way — act on
 	// them with brw_click_xy at (cx, cy), then type via the keyboard. Zero/omitted
 	// for ordinary same-document elements (resolve those by ref as usual).
-	CX  float64 `json:"cx,omitempty"`
-	CY  float64 `json:"cy,omitempty"`
+	CX float64 `json:"cx,omitempty"`
+	CY float64 `json:"cy,omitempty"`
+	// X/Y/W/H are the element's box in its OWN document's viewport space, set only
+	// when the snapshot was taken with include_boxes.
+	X   float64 `json:"x,omitempty"`
+	Y   float64 `json:"y,omitempty"`
+	W   float64 `json:"w,omitempty"`
+	H   float64 `json:"h,omitempty"`
 	Key string  `json:"-"`
 }
 
@@ -230,10 +247,19 @@ type CrossOriginFrameElement struct {
 
 // CrossOriginFrame is the per-frame extraction result the extension returns for a
 // single out-of-process iframe belonging to the active tab.
+//
+// Snapshot carries what the SHARED walker returned for that frame's document,
+// which is what a current extension sends back: the daemon hands it the walker
+// expression and the extension only relays the result, so roles, names, ranking
+// and refs have one implementation rather than a second one living in the
+// extension. Elements is the older shape — role/name/box triples an extension
+// that predates this produced for itself — kept so upgrading the daemon first
+// does not blind it to frames.
 type CrossOriginFrame struct {
 	URL      string                    `json:"url"`
 	Origin   string                    `json:"origin"`
-	Elements []CrossOriginFrameElement `json:"elements"`
+	Snapshot *PageSnapshot             `json:"snapshot,omitempty"`
+	Elements []CrossOriginFrameElement `json:"elements,omitempty"`
 }
 
 type AccessibilitySummary struct {

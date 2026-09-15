@@ -970,6 +970,9 @@ func (m *Manager) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (
 	if err := m.enforceFinalURL(tabID, tabCtx, snap.URL); err != nil {
 		return snapshot.PageSnapshot{}, err
 	}
+	if opts.IncludeFrames {
+		m.mergeCrossOriginFrames(tabCtx, &snap, opts)
+	}
 	if opts.IncludeAX {
 		snapshot.EnrichAccessibility(tabCtx, &snap)
 	}
@@ -1051,6 +1054,12 @@ func (m *Manager) ReadData(ctx context.Context) (snapshot.StructuredData, error)
 }
 
 func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
+	// A ref inside a cross-origin iframe lives in a document the top-document
+	// walker cannot reach, so it has to be resolved through a session attached to
+	// that frame's target before anything is dispatched.
+	if snapshot.IsCrossOriginElementRef(ref) {
+		return m.clickCrossOriginFrameRef(ctx, ref)
+	}
 	if err := m.guardTakeover("click"); err != nil {
 		return ActionResult{}, err
 	}
@@ -1182,6 +1191,9 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 }
 
 func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
+	if err := GuardCrossOriginRefs("hover", DirectCrossOriginRemedy, ref); err != nil {
+		return ActionResult{}, err
+	}
 	if err := m.guardTakeover("hover"); err != nil {
 		return ActionResult{}, err
 	}
@@ -1385,6 +1397,9 @@ func (m *Manager) NetworkRequests(ctx context.Context, filter string) ([]Network
 }
 
 func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, error) {
+	if err := GuardCrossOriginRefs("type", DirectCrossOriginRemedy, ref); err != nil {
+		return ActionResult{}, err
+	}
 	if err := m.guardTakeover("type"); err != nil {
 		return ActionResult{}, err
 	}
@@ -1435,6 +1450,9 @@ func (m *Manager) typeRef(tabCtx context.Context, ref, text string) error {
 // point: focusing is only useful if the caller can tell that focus landed where
 // it asked, and result.Focus carries the ref the document ended up on.
 func (m *Manager) Focus(ctx context.Context, ref string) (ActionResult, error) {
+	if err := GuardCrossOriginRefs("focus", DirectCrossOriginRemedy, ref); err != nil {
+		return ActionResult{}, err
+	}
 	if err := m.guardTakeover("focus"); err != nil {
 		return ActionResult{}, err
 	}
@@ -1479,6 +1497,9 @@ func (m *Manager) Focus(ctx context.Context, ref string) (ActionResult, error) {
 // a key press. It avoids relying on whichever element happened to retain focus
 // from a previous browser action.
 func (m *Manager) FocusRef(ctx context.Context, ref string) error {
+	if err := GuardCrossOriginRefs("focus", DirectCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	if err := m.guardTakeover("focus"); err != nil {
 		return err
 	}
@@ -1494,6 +1515,9 @@ func (m *Manager) FocusRef(ctx context.Context, ref string) error {
 }
 
 func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionResult, error) {
+	if err := GuardCrossOriginRefs("fill", DirectCrossOriginRemedy, opts.Ref); err != nil {
+		return ActionResult{}, err
+	}
 	if err := m.guardTakeover("fill"); err != nil {
 		return ActionResult{}, err
 	}
@@ -1551,6 +1575,9 @@ func (m *Manager) fillRef(tabCtx context.Context, ref, text string, replace bool
 }
 
 func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (ActionResult, error) {
+	if err := GuardCrossOriginRefs("upload file", DirectCrossOriginRemedy, opts.Ref, opts.ClickRef); err != nil {
+		return ActionResult{}, err
+	}
 	if err := m.guardTakeover("upload_file"); err != nil {
 		return ActionResult{}, err
 	}
@@ -1698,6 +1725,9 @@ func (m *Manager) uploadFileViaChooser(tabID string, tabCtx context.Context, opt
 }
 
 func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, error) {
+	if err := GuardCrossOriginRefs("select", DirectCrossOriginRemedy, ref); err != nil {
+		return ActionResult{}, err
+	}
 	if err := m.guardTakeover("select"); err != nil {
 		return ActionResult{}, err
 	}
@@ -2047,14 +2077,23 @@ func (m *Manager) evalAssert(ctx context.Context, timeout time.Duration, script 
 }
 
 func (m *Manager) AssertVisible(ctx context.Context, ref string, timeout time.Duration) error {
+	if err := GuardCrossOriginRefs("assert visible", DirectCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	return m.evalAssert(ctx, timeout, snapshot.AssertVisibleScript, ref)
 }
 
 func (m *Manager) AssertText(ctx context.Context, ref, expected string, timeout time.Duration) error {
+	if err := GuardCrossOriginRefs("assert text", DirectCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	return m.evalAssert(ctx, timeout, snapshot.AssertTextScript, ref, expected)
 }
 
 func (m *Manager) AssertValue(ctx context.Context, ref, expected string, timeout time.Duration) error {
+	if err := GuardCrossOriginRefs("assert value", DirectCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	return m.evalAssert(ctx, timeout, snapshot.AssertValueScript, ref, expected)
 }
 
@@ -2063,10 +2102,16 @@ func (m *Manager) AssertValueContains(ctx context.Context, ref, expected string,
 }
 
 func (m *Manager) AssertHidden(ctx context.Context, ref string, timeout time.Duration) error {
+	if err := GuardCrossOriginRefs("assert hidden", DirectCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	return m.evalAssert(ctx, timeout, snapshot.AssertHiddenScript, ref)
 }
 
 func (m *Manager) CommitField(ctx context.Context, ref string) error {
+	if err := GuardCrossOriginRefs("commit field", DirectCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	if err := m.guardTakeover("commit"); err != nil {
 		return err
 	}
@@ -2389,6 +2434,9 @@ func (m *Manager) CapturePDF(ctx context.Context) ([]byte, error) {
 // back-to-back annotated captures on a navigating page may briefly co-exist with
 // stale overlay nodes until the next snapshot.
 func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreenshotOptions) (AnnotatedScreenshot, error) {
+	if err := GuardCrossOriginRefs("screenshot annotate", DirectCrossOriginRemedy, aopts.Ref); err != nil {
+		return AnnotatedScreenshot{}, err
+	}
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return AnnotatedScreenshot{}, err
@@ -2571,6 +2619,9 @@ func boxIntersectsClip(b snapshot.AnnotationBox, clip *page.Viewport) bool {
 }
 
 func (m *Manager) ScreenshotElement(ctx context.Context, ref string) (Screenshot, error) {
+	if err := GuardCrossOriginRefs("screenshot element", DirectCrossOriginRemedy, ref); err != nil {
+		return Screenshot{}, err
+	}
 	shot, err := m.CaptureArtifactScreenshot(ctx, ref)
 	if err != nil {
 		return Screenshot{}, err
@@ -2580,6 +2631,9 @@ func (m *Manager) ScreenshotElement(ctx context.Context, ref string) (Screenshot
 }
 
 func (m *Manager) ExecutePlan(ctx context.Context, steps []PlanStep) (PlanResult, error) {
+	if err := GuardCrossOriginRefs("plan", DirectCrossOriginRemedy, PlanStepRefs(steps)...); err != nil {
+		return PlanResult{}, err
+	}
 	if err := m.guardTakeover("plan"); err != nil {
 		return PlanResult{}, err
 	}
@@ -2803,6 +2857,9 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 // observations, then returns a single compact observation at the end. This is
 // much more token-efficient than calling individual tools or brw_plan.
 func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchResult, error) {
+	if err := GuardCrossOriginRefs("batch", DirectCrossOriginRemedy, BatchStepRefs(steps)...); err != nil {
+		return BatchResult{}, err
+	}
 	if err := m.guardTakeover("batch"); err != nil {
 		return BatchResult{}, err
 	}

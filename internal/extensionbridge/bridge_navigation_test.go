@@ -141,7 +141,7 @@ func (f *navigationFakeExtension) serve(ctx context.Context, conn *websocket.Con
 				if locationRead {
 					value = f.url
 				}
-				if strings.HasPrefix(expression, "(function(opts) {") {
+				if isSnapshotWalkExpression(expression) {
 					// the in-page snapshot walker, which an observed action runs
 					// against the live page rather than the tab's cached snapshot
 					value = f.snapshotLocked()

@@ -101,13 +101,14 @@ const frameScopeHelpers = `
 // It answers three shapes of target:
 //
 //   - "main" (or an empty target) clears the scope and reports the top document.
-//   - "f<i>", or the "f<i>:e<j>" ref MergeCrossOriginFrames mints for one
-//     control inside that frame, names a CROSS-ORIGIN iframe. Its document is
-//     isolated by the browser, so there is nothing to scope into: the frame is
-//     reported with its top-level box and origin, switched:false, and the caller
-//     acts on it by coordinate. The ":e<j>" half is dropped — an element inside
-//     an isolated document is reachable only by coordinate, and the frame is
-//     what can be described.
+//   - "f<i>", or the "f<i>:<ref>" form minted for one control inside that
+//     frame, names a CROSS-ORIGIN iframe. Its document is isolated from this
+//     one, so there is nothing to scope into: the frame is reported with its
+//     top-level box and origin, switched:false. The element half is dropped —
+//     the frame is what can be described from here. Acting on that element is a
+//     separate route: brw_click resolves it through a session attached to the
+//     frame's own target on direct CDP, and brw_click_xy at its cx/cy works on
+//     either backend.
 //   - anything else is a brw ref or CSS selector for the frame element (or for
 //     an element inside it, which identifies the same frame).
 //
@@ -131,12 +132,14 @@ const FrameSwitchScript = `(function(target){` + FrameWalkHelpers + `
             x: box.x, y: box.y, width: box.width, height: box.height,
             note:'This frame is cross-origin: the browser isolates its DOM, so it cannot be scoped into or read as refs. Act on it with brw_click_xy at the center of the reported box (brw_screenshot first to see it).'};
   }
-  // An f<i>:e<j> ref names a control inside a cross-origin frame. Its element
+  // An f<i>:<ref> ref names a control inside a cross-origin frame. Its element
   // half cannot be resolved from here (the document is isolated), but the frame
   // half can, so report the frame rather than falling through to the selector
   // pass, where querySelector("f0:e3") throws and the error tells the agent to
-  // pass a ref it is already holding.
-  var promoted = /^f(\d+)(?::e\d+)?$/.exec(t);
+  // pass a ref it is already holding. The element half is matched loosely
+  // because the walker's collision pass appends name suffixes (f0:e6_edit_2),
+  // and a ref an agent is holding has to resolve to the frame it came from.
+  var promoted = /^f(\d+)(?::.+)?$/.exec(t);
   if (promoted) {
     var frameRef = 'f' + promoted[1];
     var box = __abInaccessibleFrames[parseInt(promoted[1], 10)];

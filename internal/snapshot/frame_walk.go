@@ -124,6 +124,20 @@ const frameWalkCore = `
               if (xfr && xfr.width > 0 && xfr.height > 0) {
                 var xorigin = '';
                 try { xorigin = new URL(el.src, location.href).origin; } catch (_) { xorigin = ''; }
+                // Stamp the frame ELEMENT with the same index its box takes in
+                // __abInaccessibleFrames. Direct-CDP resolves that element's node
+                // through DOM.querySelector + DOM.describeNode to learn the child
+                // frame id — which IS the out-of-process iframe's CDP target id —
+                // so the f<i> an agent holds and the target brw attaches to are
+                // derived from one walk instead of guessed from a URL.
+                //
+                // Written only when it CHANGES. setAttribute queues a mutation
+                // record even when the value is identical, and this walk runs on
+                // every poll of an in-page wait: an unconditional write would make
+                // each poll wake the MutationObserver that schedules the next poll,
+                // on any page carrying a cross-origin iframe.
+                var xindex = String(__abInaccessibleFrames.length);
+                try { if (el.getAttribute('data-brw-xframe') !== xindex) el.setAttribute('data-brw-xframe', xindex); } catch (_) {}
                 __abInaccessibleFrames.push({
                   x: Math.round(entry.ox + xfr.left),
                   y: Math.round(entry.oy + xfr.top),
@@ -149,6 +163,16 @@ const frameWalkCore = `
   // element's frame-local getBoundingClientRect(). Returns null when not found.
   function __abFindDeep(ref) {
     if (!ref) return null;
+    // A ref of the shape f<i>:<inner> names an element inside a CROSS-ORIGIN
+    // iframe. Its data-brw-ref lives in that frame's own isolated document, so no
+    // amount of walking from here can reach it and a null return would surface as
+    // the generic "ref not found — the page changed" advice, sending the agent to
+    // re-snapshot forever. Every ref-taking walker script resolves through this
+    // one function, so naming the condition here names it on all of them.
+    var __abX = /^f(\d+):(.+)$/.exec(String(ref));
+    if (__abX) {
+      throw new Error('ref "' + ref + '" is inside a cross-origin iframe, whose document this one cannot reach; act on it with brw_click (direct-CDP backend only) or brw_click_xy at the frame box reported by brw_frame ' + JSON.stringify('f' + __abX[1]));
+    }
     var selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
     var entries = __abRoots();
     for (var i = 0; i < entries.length; i++) {

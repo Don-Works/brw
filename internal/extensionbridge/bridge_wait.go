@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/snapshot"
 )
 
 // The extension transport has no chrome.debugger attachment, so it cannot
@@ -35,6 +36,7 @@ const (
 
 // WaitFor blocks until condition holds.
 func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Duration) error {
+	// The cross-origin refusal lives in WaitForOutcome, which this delegates to.
 	_, err := b.WaitForOutcome(ctx, condition, timeout)
 	return err
 }
@@ -43,6 +45,9 @@ func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Dur
 // browser.WaitObserver, so brw_wait_for answers the same shape on both
 // transports and a caller can see which mechanism it got.
 func (b *Bridge) WaitForOutcome(ctx context.Context, condition string, timeout time.Duration) (browser.WaitOutcome, error) {
+	if err := browser.GuardCrossOriginRefs("wait for", browser.BridgeCrossOriginRemedy, snapshot.WaitConditionRef(condition)); err != nil {
+		return browser.WaitOutcome{}, err
+	}
 	if timeout == 0 {
 		timeout = b.timeout
 	}

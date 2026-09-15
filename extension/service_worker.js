@@ -2071,9 +2071,17 @@ async function handle(message) {
     if (message.type === "read_cross_origin_frames") {
       // Read interactive controls inside cross-origin (out-of-process) iframes of
       // the tab (issue #11 P0-2). Best-effort: any failure yields an empty list so
-      // the daemon keeps the same-origin snapshot.
+      // the daemon keeps the same-origin snapshot. The expression is the daemon's
+      // own DOM walker: this file must not grow a second one, because the roles,
+      // names and ref rules it would carry are the ones brw's ref-stability
+      // guarantees are written against.
       const tabId = Number(message.params?.tabId || (await activeTabId()));
-      const frames = await readCrossOriginFrames(tabId).catch(() => []);
+      const expression = String(message.params?.expression || "");
+      if (!expression) {
+        send({ id: message.id, ok: false, error: "read_cross_origin_frames needs an expression to run inside each frame" });
+        return;
+      }
+      const frames = await readCrossOriginFrames(tabId, expression).catch(() => []);
       send({ id: message.id, ok: true, result: { frames } });
       return;
     }
@@ -2129,50 +2137,13 @@ async function handle(message) {
   }
 }
 
-// FRAME_EXTRACT_SCRIPT runs inside a cross-origin iframe's own document (via a
-// short-lived debugger attach to that frame's target) and returns its visible
-// interactive controls with FRAME-LOCAL viewport boxes. The daemon translates
-// those boxes to top-level coordinates using the iframe's position recorded by
-// the same-origin walker, so the merged elements are clickable via brw_click_xy.
-const FRAME_EXTRACT_SCRIPT = `(function(){
-  var SEL = 'a[href],button,input,select,textarea,[role=button],[role=link],[role=textbox],[role=checkbox],[role=radio],[role=combobox],[role=switch],[role=menuitem],[role=tab],[contenteditable=""],[contenteditable=true],[onclick]';
-  function vis(el){ try { var s=getComputedStyle(el); if(s.display==='none'||s.visibility==='hidden'||parseFloat(s.opacity||'1')===0) return false; var r=el.getBoundingClientRect(); return r.width>0&&r.height>0; } catch(_){ return false; } }
-  function nm(el){
-    try {
-      var n = el.getAttribute && (el.getAttribute('aria-label')||el.getAttribute('placeholder')||el.getAttribute('title')||el.getAttribute('alt')||el.getAttribute('name'));
-      if(n) return String(n).trim();
-      var t = (el.innerText||el.value||el.textContent||'').replace(/\\s+/g,' ').trim();
-      return t.slice(0,120);
-    } catch(_){ return ''; }
-  }
-  function rl(el){
-    var r = el.getAttribute && el.getAttribute('role'); if(r) return r;
-    var tag = el.tagName.toLowerCase();
-    if(tag==='a') return 'link';
-    if(tag==='button') return 'button';
-    if(tag==='select') return 'combobox';
-    if(tag==='textarea') return 'textbox';
-    if(tag==='input'){ var ty=(el.getAttribute('type')||'text').toLowerCase(); if(ty==='checkbox')return 'checkbox'; if(ty==='radio')return 'radio'; if(ty==='button'||ty==='submit'||ty==='reset')return 'button'; return 'textbox'; }
-    return tag;
-  }
-  var els = [];
-  try { els = Array.prototype.slice.call(document.querySelectorAll(SEL)); } catch(_){ els = []; }
-  var out = [];
-  for (var i=0;i<els.length && out.length<200;i++){
-    var el = els[i];
-    if(!vis(el)) continue;
-    var r = el.getBoundingClientRect();
-    out.push({ role: rl(el), name: nm(el), tag: el.tagName.toLowerCase(), type: (el.getAttribute&&el.getAttribute('type'))||'', x: r.left, y: r.top, w: r.width, h: r.height });
-  }
-  return out;
-})()`;
-
 // readCrossOriginFrames enumerates the tab's cross-origin child frames (from
 // Page.getFrameTree on the tab's own session, so we only ever read frames that
 // belong to THIS tab), matches each to its debugger iframe target by URL, and
-// extracts its controls. Same-origin frames are skipped — the in-page walker
-// already reads those. Never throws; returns [] on any failure.
-async function readCrossOriginFrames(tabId) {
+// runs the DAEMON-SUPPLIED expression inside it. Same-origin frames are skipped
+// — the in-page walker already reads those. Never throws; returns [] on any
+// failure.
+async function readCrossOriginFrames(tabId, expression) {
   await attach(tabId);
   let tree;
   try {
@@ -2206,21 +2177,23 @@ async function readCrossOriginFrames(tabId) {
   for (const w of wanted) {
     const tgt = iframeTargets.find((t) => !usedTargets.has(t.id) && t.url === w.url);
     if (!tgt) {
-      out.push({ url: w.url, origin: w.origin, elements: [] });
+      out.push({ url: w.url, origin: w.origin });
       continue;
     }
     usedTargets.add(tgt.id);
-    const elements = await extractFrameElements(tgt.id).catch(() => []);
-    out.push({ url: w.url, origin: w.origin, elements });
+    const snapshot = await evaluateInFrameTarget(tgt.id, expression).catch(() => null);
+    out.push({ url: w.url, origin: w.origin, snapshot });
   }
   return out;
 }
 
-// extractFrameElements briefly attaches a debugger to ONE cross-origin frame
-// target, runs FRAME_EXTRACT_SCRIPT in it, and ALWAYS detaches (even on error) so
-// no extra debugger session lingers on the user's Chrome. If another debugger
-// already owns the target, it is left untouched and an empty list is returned.
-async function extractFrameElements(targetId) {
+// evaluateInFrameTarget briefly attaches a debugger to ONE cross-origin frame
+// target, runs the daemon's expression in it, and ALWAYS detaches (even on error)
+// so no extra debugger session lingers on the user's Chrome. If another debugger
+// already owns the target, it is left untouched and the existing session is used
+// opportunistically. The expression is opaque here on purpose: the extension
+// relays a result, it does not decide what a control is.
+async function evaluateInFrameTarget(targetId, expression) {
   let owned = false;
   try {
     try {
@@ -2233,11 +2206,11 @@ async function extractFrameElements(targetId) {
       owned = false;
     }
     const res = await chrome.debugger.sendCommand({ targetId }, "Runtime.evaluate", {
-      expression: FRAME_EXTRACT_SCRIPT,
+      expression,
       returnByValue: true
     });
     const value = res?.result?.value;
-    return Array.isArray(value) ? value : [];
+    return value && typeof value === "object" ? value : null;
   } finally {
     if (owned) {
       try { await chrome.debugger.detach({ targetId }); } catch (_) {}

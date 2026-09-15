@@ -84,7 +84,7 @@ func (f *propertyWriteFake) serve(ctx context.Context, conn *websocket.Conn) {
 		case "cdp":
 			expression, _ := msg.Params["params"].(map[string]any)["expression"].(string)
 			switch {
-			case strings.HasPrefix(expression, "(function(opts) {"):
+			case isSnapshotWalkExpression(expression):
 				// the in-page snapshot walker
 				f.walks++
 				result = map[string]any{"result": map[string]any{"value": f.snapshot(f.live)}}

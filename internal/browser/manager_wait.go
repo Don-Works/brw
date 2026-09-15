@@ -26,6 +26,7 @@ const RecentDialogWindow = 15 * time.Second
 // WaitFor blocks until condition holds. It is the Controller-facing form; use
 // WaitForOutcome when the caller wants to know HOW the wait resolved.
 func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Duration) error {
+	// The cross-origin refusal lives in WaitForOutcome, which this delegates to.
 	_, err := m.WaitForOutcome(ctx, condition, timeout)
 	return err
 }
@@ -38,6 +39,9 @@ func (m *Manager) WaitFor(ctx context.Context, condition string, timeout time.Du
 // the browser anything. The remaining conditions are page state that only the
 // document can answer, and use one awaited in-page promise.
 func (m *Manager) WaitForOutcome(ctx context.Context, condition string, timeout time.Duration) (WaitOutcome, error) {
+	if err := GuardCrossOriginRefs("wait for", DirectCrossOriginRemedy, snapshot.WaitConditionRef(condition)); err != nil {
+		return WaitOutcome{}, err
+	}
 	if timeout == 0 {
 		timeout = m.timeout
 	}

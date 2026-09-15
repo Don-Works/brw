@@ -97,6 +97,9 @@ func pointDescriptor(point MousePoint) string {
 // button and click count: right-click opens context menus, click_count:2 is a
 // double-click, click_count:3 selects a line, button:middle is a middle-click.
 func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (ActionResult, error) {
+	if err := GuardCrossOriginRefs("click button", DirectCrossOriginRemedy, opts.Ref); err != nil {
+		return ActionResult{}, err
+	}
 	if err := m.guardTakeover("click_button"); err != nil {
 		return ActionResult{}, err
 	}
@@ -155,12 +158,18 @@ func (m *Manager) ClickButton(ctx context.Context, opts ClickButtonOptions) (Act
 // MouseDown presses (and holds) a mouse button at a ref or x,y without
 // releasing — the press half of a press-and-hold. Pair with MouseUp.
 func (m *Manager) MouseDown(ctx context.Context, opts MouseButtonOptions) (ActionResult, error) {
+	if err := GuardCrossOriginRefs("mouse down", DirectCrossOriginRemedy, opts.Ref); err != nil {
+		return ActionResult{}, err
+	}
 	return m.mouseHalf(ctx, opts, input.MousePressed, "mouse_down")
 }
 
 // MouseUp releases a held mouse button at a ref or x,y — the release half of a
 // press-and-hold. Pair with MouseDown.
 func (m *Manager) MouseUp(ctx context.Context, opts MouseButtonOptions) (ActionResult, error) {
+	if err := GuardCrossOriginRefs("mouse up", DirectCrossOriginRemedy, opts.Ref); err != nil {
+		return ActionResult{}, err
+	}
 	return m.mouseHalf(ctx, opts, input.MouseReleased, "mouse_up")
 }
 
@@ -225,6 +234,9 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 // intermediate steps, then releases — covering sliders/range inputs,
 // drag-and-drop reorder, and canvas/map panning. Pure CDP Input domain.
 func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, error) {
+	if err := GuardCrossOriginRefs("drag", DirectCrossOriginRemedy, opts.From.Ref, opts.To.Ref); err != nil {
+		return ActionResult{}, err
+	}
 	if err := m.guardTakeover("drag"); err != nil {
 		return ActionResult{}, err
 	}

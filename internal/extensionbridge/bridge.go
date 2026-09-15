@@ -2236,9 +2236,19 @@ func (b *Bridge) snapshot(ctx context.Context, opts snapshot.SnapshotOptions, sk
 			return cached, nil
 		}
 	}
-	optsJSON, _ := json.Marshal(opts)
-	if err := b.evaluateReadOnly(ctx, fmt.Sprintf("%s(%s)", snapshot.SnapshotFunctionScript, optsJSON), "", &snap); err != nil {
-		return snap, err
+	// The walker installs once per document and every later snapshot ships only
+	// the call. Before this, the bridge re-sent the whole walker source down the
+	// websocket on EVERY snapshot of the same page — tens of kilobytes per call,
+	// paid again for each find, each post-action observation and each settle
+	// re-read. Direct CDP already worked this way; the expressions come from
+	// snapshot.SnapshotCallExpressions so both transports run the same source and
+	// therefore mint the same refs.
+	hot, cold := snapshot.SnapshotCallExpressions(opts)
+	if err := b.evaluateReadOnly(ctx, hot, "", &snap); err != nil || !snapshot.SnapshotLooksInstalled(snap) {
+		snap = snapshot.PageSnapshot{}
+		if coldErr := b.evaluateReadOnly(ctx, cold, "", &snap); coldErr != nil {
+			return snap, coldErr
+		}
 	}
 	if err := b.enforceFinalURL(ctx, snap.URL); err != nil {
 		return snapshot.PageSnapshot{}, err
@@ -2248,21 +2258,18 @@ func (b *Bridge) snapshot(ctx context.Context, opts snapshot.SnapshotOptions, sk
 		Error:     "accessibility tree is unavailable through the Chrome extension bridge; use direct CDP attach for AX enrichment",
 	}
 	if opts.IncludeFrames {
-		// Best-effort: read interactive controls INSIDE cross-origin iframes and
-		// merge them with frame-qualified refs (f<i>:e<j>) + top-level click coords.
-		// This succeeds only when the frame's debugger sub-target is reachable; for
-		// out-of-process iframes over the extension bridge it usually is not (see
-		// readCrossOriginFrames / PromoteCrossOriginFrames).
-		read := 0
-		if frames, err := b.readCrossOriginFrames(ctx); err == nil && len(frames) > 0 {
-			read = snapshot.MergeCrossOriginFrames(&snap, frames)
+		// Best-effort: read the controls INSIDE cross-origin iframes and merge them
+		// with frame-qualified refs (f<i>:<ref>) + top-level click coords. It
+		// succeeds only where the frame has a debugger sub-target the extension can
+		// attach to and no other debugger already owns it.
+		readBoxes := map[int]bool{}
+		if frames, err := b.readCrossOriginFrames(ctx, opts); err == nil && len(frames) > 0 {
+			_, readBoxes = snapshot.MergeCrossOriginFrames(&snap, frames)
 		}
-		if read == 0 {
-			// Inner-DOM read unavailable — surface each cross-origin frame as a
-			// CLICKABLE element (ref f<i>, cx/cy at its center) so the agent can act
-			// on it via brw_click_xy instead of being blind to it.
-			snapshot.PromoteCrossOriginFrames(&snap, nil)
-		}
+		// Every frame whose controls were NOT read still becomes a CLICKABLE
+		// element (ref f<i>, cx/cy at its center), so include_frames never leaves a
+		// visible frame unmentioned.
+		snapshot.PromoteCrossOriginFrames(&snap, readBoxes)
 	}
 	if !bypassCache {
 		b.storeCachedSnapshot(ctx, opts, snap)
@@ -2276,9 +2283,24 @@ func (b *Bridge) snapshot(ctx context.Context, opts snapshot.SnapshotOptions, sk
 // to each frame target to extract its controls, and detaches. Returns an empty
 // slice (no error) when the extension predates the command so callers degrade to
 // the same-origin-only snapshot.
-func (b *Bridge) readCrossOriginFrames(ctx context.Context) ([]snapshot.CrossOriginFrame, error) {
+func (b *Bridge) readCrossOriginFrames(ctx context.Context, opts snapshot.SnapshotOptions) ([]snapshot.CrossOriginFrame, error) {
 	tabID := b.contextTabID(ctx)
-	raw, err := b.call(ctx, "read_cross_origin_frames", map[string]any{"tabId": parseTabID(tabID)})
+	// The extension is handed the walker to run rather than carrying one of its
+	// own. It used to hold a private selector list plus its own role and name
+	// rules, which is a second implementation of the thing ref_stability_test
+	// covers: two extractors that agree today and disagree after the next change
+	// to either. include_boxes is what lets the daemon put the frame's controls
+	// back into top-level coordinates without the extension measuring anything.
+	frameOpts := opts
+	frameOpts.Since = 0
+	frameOpts.IncludeFrames = false
+	frameOpts.IncludeAX = false
+	frameOpts.IncludeBoxes = true
+	_, cold := snapshot.SnapshotCallExpressions(frameOpts)
+	raw, err := b.call(ctx, "read_cross_origin_frames", map[string]any{
+		"tabId":      parseTabID(tabID),
+		"expression": cold,
+	})
 	if err != nil {
 		if isUnknownMessageTypeErr(err) {
 			return nil, nil
@@ -2549,6 +2571,9 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 }
 
 func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
+	if err := browser.GuardCrossOriginRefs("click", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return browser.ActionResult{}, err
+	}
 	before := b.captureSemanticState(ctx)
 	before.Trace = b.traceOperands(before, browser.TraceEntry{Action: "click", Ref: ref})
 	beforeTabs := b.captureTabIDs(ctx)
@@ -2608,6 +2633,9 @@ func (b *Bridge) clickTextRaw(ctx context.Context, opts snapshot.ClickTextOption
 }
 
 func (b *Bridge) Hover(ctx context.Context, ref string) (browser.ActionResult, error) {
+	if err := browser.GuardCrossOriginRefs("hover", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return browser.ActionResult{}, err
+	}
 	before := b.captureSemanticState(ctx)
 	before.Trace = b.traceOperands(before, browser.TraceEntry{Action: "hover", Ref: ref})
 	if err := b.hoverRef(ctx, ref); err != nil {
@@ -2811,25 +2839,15 @@ func (b *Bridge) activate(ctx context.Context, ref string) error {
 		OK    bool   `json:"ok"`
 		Error string `json:"error,omitempty"`
 	}
-	expr := fmt.Sprintf(`(function(ref) {
-	  function roots() {
-	    const out = [document];
-	    for (let i = 0; i < out.length; i++) {
-	      const root = out[i];
-	      if (!root.querySelectorAll) continue;
-	      for (const el of Array.from(root.querySelectorAll('*'))) {
-	        if (el.shadowRoot) out.push(el.shadowRoot);
-	      }
-	    }
-	    return out;
-	  }
+	// The lookup is the shared one (__abFindDeep), not a private copy. This used
+	// to walk only the top document and its open shadow roots, so the click
+	// fallback silently failed on refs the rest of brw resolves fine — anything in
+	// a same-origin iframe — and it was the one ref path that did not name a
+	// cross-origin ref for what it is.
+	expr := fmt.Sprintf(`(function(ref) {`+snapshot.FrameWalkHelpers+`
 	  function findByRef(ref) {
-	    const selector = '[data-brw-ref="' + CSS.escape(ref) + '"]';
-	    for (const root of roots()) {
-	      const el = root.querySelector && root.querySelector(selector);
-	      if (el) return el;
-	    }
-	    return null;
+	    var hit = __abFindDeep(ref);
+	    return hit ? hit.el : null;
 	  }
 	  const el = findByRef(ref);
 	  if (!el) return { ok: false, error: 'ref not found' };
@@ -2856,6 +2874,9 @@ func (b *Bridge) activate(ctx context.Context, ref string) error {
 }
 
 func (b *Bridge) Type(ctx context.Context, ref, text string) (browser.ActionResult, error) {
+	if err := browser.GuardCrossOriginRefs("type", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return browser.ActionResult{}, err
+	}
 	before := b.captureSemanticState(ctx)
 	before.Trace = b.traceOperands(before, browser.RedactTraceEntry(ctx, browser.TraceEntry{Action: "type", Ref: ref, Text: text}))
 	if err := b.typeRef(ctx, ref, text); err != nil {
@@ -2876,6 +2897,9 @@ func (b *Bridge) typeRef(ctx context.Context, ref, text string) error {
 // Focus gives one element the keyboard focus and reports the page afterwards,
 // matching the observation contract every action tool answers on.
 func (b *Bridge) Focus(ctx context.Context, ref string) (browser.ActionResult, error) {
+	if err := browser.GuardCrossOriginRefs("focus", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return browser.ActionResult{}, err
+	}
 	if strings.TrimSpace(ref) == "" {
 		return browser.ActionResult{}, errors.New("ref is required")
 	}
@@ -2891,10 +2915,16 @@ func (b *Bridge) Focus(ctx context.Context, ref string) (browser.ActionResult, e
 // FocusRef supports deterministic recipe key presses without exposing another
 // model-facing tool or relying on ambient focus from a previous step.
 func (b *Bridge) FocusRef(ctx context.Context, ref string) error {
+	if err := browser.GuardCrossOriginRefs("focus", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	return b.focus(ctx, ref)
 }
 
 func (b *Bridge) Fill(ctx context.Context, opts snapshot.FillOptions) (browser.ActionResult, error) {
+	if err := browser.GuardCrossOriginRefs("fill", browser.BridgeCrossOriginRemedy, opts.Ref); err != nil {
+		return browser.ActionResult{}, err
+	}
 	before := b.captureSemanticState(ctx)
 	before.Trace = b.traceOperands(before, browser.RedactTraceEntry(ctx, browser.TraceEntry{Action: "fill", Ref: opts.Ref, Text: opts.EffectiveText()}))
 	ref, err := b.fillOptions(ctx, opts)
@@ -2948,6 +2978,9 @@ func (b *Bridge) resolveFillRef(ctx context.Context, opts snapshot.FillOptions) 
 }
 
 func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (browser.ActionResult, error) {
+	if err := browser.GuardCrossOriginRefs("upload file", browser.BridgeCrossOriginRemedy, opts.Ref, opts.ClickRef); err != nil {
+		return browser.ActionResult{}, err
+	}
 	// Resolve the upload source (local path(s), inline bytes_base64, or remote
 	// URL). bytes/url sources are materialized to temp files on the daemon host
 	// and retained briefly after DOM.setFileInputFiles so a later form submission
@@ -3138,6 +3171,9 @@ func (b *Bridge) uploadViaFileChooser(ctx context.Context, opts snapshot.UploadO
 }
 
 func (b *Bridge) Select(ctx context.Context, ref, value string) (browser.ActionResult, error) {
+	if err := browser.GuardCrossOriginRefs("select", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return browser.ActionResult{}, err
+	}
 	before := b.captureSemanticState(ctx)
 	before.Trace = b.traceOperands(before, browser.RedactTraceEntry(ctx, browser.TraceEntry{Action: "select", Ref: ref, Value: value}))
 	message, err := b.selectValue(ctx, ref, value)
@@ -3721,6 +3757,9 @@ func (b *Bridge) scrollDirection(ctx context.Context, direction string) (string,
 }
 
 func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {
+	if err := browser.GuardCrossOriginRefs("plan", browser.BridgeCrossOriginRemedy, browser.PlanStepRefs(steps)...); err != nil {
+		return browser.PlanResult{}, err
+	}
 	entry, release := b.cancels.register(ctx, cancelToken(ctx, ""))
 	defer release()
 	ctx = entry.ctx
@@ -4109,6 +4148,9 @@ func (b *Bridge) CapturePDF(ctx context.Context) ([]byte, error) {
 }
 
 func (b *Bridge) ScreenshotElement(ctx context.Context, ref string) (browser.Screenshot, error) {
+	if err := browser.GuardCrossOriginRefs("screenshot element", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return browser.Screenshot{}, err
+	}
 	box, err := b.resolveBox(ctx, ref)
 	if err != nil {
 		return browser.Screenshot{}, err
@@ -4148,6 +4190,9 @@ func (b *Bridge) viewportDimensions(ctx context.Context, tabID string) (float64,
 // but runs the overlay JS over the bridge's own Runtime.evaluate channel. The
 // overlay is removed in every path so the page the agent acts on is unmutated.
 func (b *Bridge) ScreenshotAnnotated(ctx context.Context, aopts browser.AnnotatedScreenshotOptions) (browser.AnnotatedScreenshot, error) {
+	if err := browser.GuardCrossOriginRefs("screenshot annotate", browser.BridgeCrossOriginRemedy, aopts.Ref); err != nil {
+		return browser.AnnotatedScreenshot{}, err
+	}
 	mode := aopts.Mode
 	if strings.TrimSpace(mode) == "" {
 		mode = snapshot.DefaultSnapshotMode
@@ -5140,6 +5185,9 @@ func screenshotFromRawMIME(raw json.RawMessage, mimeType string) (browser.Screen
 }
 
 func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
+	if err := browser.GuardCrossOriginRefs("batch", browser.BridgeCrossOriginRemedy, browser.BatchStepRefs(steps)...); err != nil {
+		return browser.BatchResult{}, err
+	}
 	// Keep the caller context for the final observation so a cancelled run can
 	// still report current page state; step execution uses the cancel-aware ctx.
 	obsCtx := ctx
@@ -5462,6 +5510,9 @@ func (b *Bridge) advanceObservation(tabID string, after browser.SemanticState) (
 }
 
 func (b *Bridge) AssertVisible(ctx context.Context, ref string, timeout time.Duration) error {
+	if err := browser.GuardCrossOriginRefs("assert visible", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
@@ -5469,6 +5520,9 @@ func (b *Bridge) AssertVisible(ctx context.Context, ref string, timeout time.Dur
 }
 
 func (b *Bridge) AssertText(ctx context.Context, ref, text string, timeout time.Duration) error {
+	if err := browser.GuardCrossOriginRefs("assert text", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
@@ -5476,6 +5530,9 @@ func (b *Bridge) AssertText(ctx context.Context, ref, text string, timeout time.
 }
 
 func (b *Bridge) AssertValue(ctx context.Context, ref, value string, timeout time.Duration) error {
+	if err := browser.GuardCrossOriginRefs("assert value", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
@@ -5490,6 +5547,9 @@ func (b *Bridge) AssertValueContains(ctx context.Context, ref, value string, tim
 }
 
 func (b *Bridge) AssertHidden(ctx context.Context, ref string, timeout time.Duration) error {
+	if err := browser.GuardCrossOriginRefs("assert hidden", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
@@ -5513,6 +5573,9 @@ func (b *Bridge) evalAssert(ctx context.Context, script string, args ...any) err
 }
 
 func (b *Bridge) CommitField(ctx context.Context, ref string) error {
+	if err := browser.GuardCrossOriginRefs("commit field", browser.BridgeCrossOriginRemedy, ref); err != nil {
+		return err
+	}
 	var result struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`

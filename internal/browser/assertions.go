@@ -126,6 +126,12 @@ const maxSemanticCountMatches = 1000
 // Assert runs one assertion against a controller, preferring the controller's
 // own Asserter capability when it has one.
 func Assert(ctx context.Context, controller Controller, req AssertRequest) (AssertResult, error) {
+	// element_state and attribute assertions carry a ref, and every transport
+	// routes through here, so the cross-origin refusal belongs at this one point
+	// rather than in each transport's Asserter.
+	if err := GuardCrossOriginRefs("assert "+req.Assertion, GenericCrossOriginRemedy, req.Ref); err != nil {
+		return AssertResult{Assertion: req.Assertion}, err
+	}
 	if remote, ok := controller.(Asserter); ok {
 		return remote.Assert(ctx, req)
 	}
