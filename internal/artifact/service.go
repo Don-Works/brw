@@ -366,11 +366,11 @@ func (s *Service) captureDownload(ctx context.Context, opts CaptureOptions, put 
 		}
 		return Meta{}, errors.New("download capture is unavailable on this browser transport")
 	}
-	// A transport can record downloads and still report no path for them: a lane
-	// driving the browser its user is signed into leaves the destination alone,
-	// so there is no brw-owned file to capture. Without this the capture falls
-	// through to "matching completed download was not found", which reads as a
-	// selector mistake rather than as the capability it is.
+	// A transport can record downloads and still report no path for them: in a
+	// browser brw did not start it leaves the destination alone, so there is no
+	// brw-owned file to capture. Without this the capture falls through to
+	// "matching completed download was not found", which reads as a selector
+	// mistake rather than as the capability it is.
 	if !result.FilePaths {
 		if note := strings.TrimSpace(result.Note); note != "" {
 			return Meta{}, errors.New("download capture is unavailable on this browser transport: " + note)

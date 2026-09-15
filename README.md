@@ -68,7 +68,7 @@ The full MCP surface is large. For lean agent contexts, run:
 
 ```sh
 brwd --mcp --mcp-tools auto     # 14 tools to start, grows on demand
-brwd --mcp --mcp-tools core     # 26 tools, ~10.2k tokens of catalogue
+brwd --mcp --mcp-tools core     # 26 tools, ~10.3k tokens of catalogue
 brwd --mcp --mcp-tools minimal  # 13 tools, ~5.8k tokens of catalogue
 ```
 
@@ -262,10 +262,11 @@ The extension keeps its service worker alive so the bridge does not drop while
 Chrome idles in the background — see [docs/reliability.md](docs/reliability.md)
 for how brw stays connected, the one-time macOS App Nap setup, and how to verify.
 
-### Three transports
+### The transports
 
-`brw_identity` reports which one a namespace resolved to; `brwctl doctor` names
-it with the capabilities it implies.
+Three ways to set brw up, and a fourth `brw_identity` can report.
+`brw_identity` names which one a namespace resolved to; `brwctl doctor` names it
+with the capabilities it implies.
 
 | | Extension bridge | Direct CDP | Chrome opt-in |
 |---|---|---|---|
@@ -276,7 +277,7 @@ it with the capabilities it implies.
 | `brw_open_incognito` | No | Yes | Yes |
 | `brw_cookies`, incl. HttpOnly | No | Yes | Yes |
 | `brw_state` session snapshots | No | Yes | No, same refusal as the bridge |
-| Deterministic download capture | No | Yes | Yes |
+| Deterministic download capture | No | Yes | No, uses the browser's own download folder |
 | Headless | No | Yes | No |
 
 The lanes are supported at once: one `brwd` per profile, one MCP server per
@@ -284,6 +285,14 @@ daemon. `brwctl setup --transport direct-cdp` configures the second. The third
 is `brwd --chrome-opt-in`, and only after a person has turned the switch on —
 brw never does that for you. See
 [docs/install.md](docs/install.md#the-chrome-opt-in-lane).
+
+`brwd --remote <endpoint>` attaches to a DevTools endpoint some other process
+opened, and reports itself as a fourth transport, `remote-cdp`. It has
+everything direct CDP has except deterministic download capture: brw did not
+start that browser, and `Browser.setDownloadBehavior` applies to a whole browser
+context, so staging its downloads would move files brw does not own. That is the
+only difference, and it holds however the endpoint was produced — including when
+it is the port a Chrome opt-in published.
 
 ### Chromium recommended (open source)
 
@@ -395,7 +404,8 @@ Core MCP tools include:
 - `brw_state` — seal the cookies a brw-created context holds for the origins
   you name and put them back into a later throwaway context, so a run does not
   log in again. Save and restore only: no action returns a stored value.
-  Encrypted on the browser host, expiring, direct-CDP transport only
+  Encrypted on the browser host, expiring, and refused on a browser you are
+  signed into — the extension bridge and the Chrome opt-in lane
   (see [docs/auth-model.md](docs/auth-model.md))
 - `brw_baseline` — gate a page against a stored regression baseline keyed by
   recipe digest, step and an environment fingerprint, comparing pixels with a
@@ -407,7 +417,7 @@ Core MCP tools include:
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: `all` costs ~31.2k tokens across 87 tools, `core` ~10.2k,
+tokens on every turn: `all` costs ~31.3k tokens across 87 tools, `core` ~10.3k,
 `minimal` ~5.8k, and `auto` starts at ~6.0k and grows only as the agent
 discovers tools it needs via `brw_tools` (measure with
 `scripts/measure-tool-catalogue.py`).
@@ -579,8 +589,8 @@ signed-in session. To watch a remote browser, forward the port
 (`ssh -L 17310:127.0.0.1:17310`) so the pixels travel inside the tunnel.
 
 - **Viewport.** Frames come from Chrome's compositor (`Page.startScreencast`)
-  on the direct-CDP transport, so an idle page costs nothing. The extension
-  bridge has no compositor stream and polls screenshots instead.
+  on every CDP transport, so an idle page costs nothing. The extension bridge
+  has no compositor stream and polls screenshots instead.
 - **Activity feed.** A line per step — action, the ref and accessible name it
   acted on, outcome, latency — off the same trace stream `/api/session/stream`
   publishes, after credential redaction. A typed password reaches the feed as a

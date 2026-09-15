@@ -32,15 +32,16 @@ func TestAttachOnlyRefusesToLaunchABrowser(t *testing.T) {
 	}
 }
 
-// On an attach-only lane the user data directory is the browser's own — on the
-// Chrome opt-in lane, the profile its user is signed into. brw reads it to find
-// the endpoint and writes nothing to it, so download staging must not put
-// brw-created directories inside it.
+// On a browser brw did not start, the user data directory is that browser's
+// own — on the Chrome opt-in lane, the profile its user is signed into. brw
+// reads it to find the endpoint and writes nothing to it, so it must create no
+// directory inside it at all.
 //
-// The guard is in resolveDownloadDir rather than in the caller that builds the
-// config: a later edit that set UserDataDir on an attach lane for any other
-// reason would otherwise silently start writing into that profile.
-func TestAttachOnlyStagesDownloadsOutsideTheBrowsersProfile(t *testing.T) {
+// The guard is in resolveDownloadDir rather than only in the caller that builds
+// the config: this is the function that creates the directory, and a later edit
+// that set UserDataDir on an attach lane for any other reason would otherwise
+// silently start writing into that profile.
+func TestAnAttachedBrowsersProfileIsNeverWrittenTo(t *testing.T) {
 	profile := t.TempDir()
 	// resolveDownloadDir returns a symlink-resolved path, and on macOS the temp
 	// directory is reached through one, so compare against the resolved form or
@@ -50,28 +51,24 @@ func TestAttachOnlyStagesDownloadsOutsideTheBrowsersProfile(t *testing.T) {
 		t.Fatalf("resolve %s: %v", profile, err)
 	}
 
-	attached := &Manager{userDataDir: profile, attachOnly: true}
-	staged, err := attached.resolveDownloadDir()
-	if err != nil {
-		t.Fatalf("resolve download dir: %v", err)
-	}
-	if strings.HasPrefix(staged, resolvedProfile) {
-		t.Fatalf("attach-only staging landed inside the browser's profile: %s", staged)
+	attached := &Manager{userDataDir: profile, attachedBrowser: true}
+	if _, err := attached.resolveDownloadDir(); !errors.Is(err, ErrDownloadRoutingAttachedBrowser) {
+		t.Fatalf("resolve download dir on an attached browser = %v, want ErrDownloadRoutingAttachedBrowser", err)
 	}
 	if entries, err := os.ReadDir(profile); err != nil || len(entries) != 0 {
 		t.Fatalf("the browser's profile directory was written to: %v entries (err %v)", len(entries), err)
 	}
 
-	// The control: a profile brw launched itself does stage inside it, so the
-	// assertion above is about the lane and not about resolveDownloadDir always
-	// preferring the cache.
+	// The control: a browser brw started does stage inside its profile, so the
+	// refusal above is about the browser and not about resolveDownloadDir
+	// having stopped working.
 	owned := &Manager{userDataDir: profile}
 	ownedStaged, err := owned.resolveDownloadDir()
 	if err != nil {
-		t.Fatalf("resolve download dir for a brw-owned profile: %v", err)
+		t.Fatalf("resolve download dir for a browser brw started: %v", err)
 	}
 	if !strings.HasPrefix(ownedStaged, resolvedProfile) {
-		t.Fatalf("a brw-owned profile staged outside itself: %s", ownedStaged)
+		t.Fatalf("a profile brw created staged outside itself: %s", ownedStaged)
 	}
 }
 

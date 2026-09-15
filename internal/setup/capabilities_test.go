@@ -31,9 +31,9 @@ func TestEveryTransportIsDescribed(t *testing.T) {
 	}
 }
 
-// The three lanes differ in exactly the two capabilities people ask about, so
-// the text has to differ there. Two lanes sharing a sentence is the way this
-// table has gone wrong before.
+// The lanes differ in exactly the capabilities people ask about, so the text has
+// to differ there. Two lanes sharing a sentence is the way this table has gone
+// wrong before.
 func TestLaneDescriptionsDifferWhereTheLanesDo(t *testing.T) {
 	for _, tc := range []struct {
 		transport   string
@@ -42,6 +42,7 @@ func TestLaneDescriptionsDifferWhereTheLanesDo(t *testing.T) {
 	}{
 		{ResolvedDirectCDP, []string{"brw_cookies", "brw_open_incognito"}, "tab groups"},
 		{ResolvedChromeOptIn, []string{"brw_cookies", "brw_open_incognito", "signed-in"}, "tab groups"},
+		{ResolvedRemoteCDP, []string{"brw_cookies", "brw_open_incognito", "somebody else started"}, "download routing"},
 		{ResolvedExtensionBridge, []string{"tab groups"}, "brw_cookies"},
 	} {
 		caps := CapabilitiesFor(tc.transport)

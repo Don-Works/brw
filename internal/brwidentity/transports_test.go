@@ -73,25 +73,45 @@ func TestEveryTransportConstantIsClassified(t *testing.T) {
 	}
 }
 
-// The three lanes differ in exactly the properties the tool catalogue reads. A
-// lane that accidentally copied another's row would advertise the wrong
-// catalogue and nothing else would say so.
+// The lanes differ in exactly the properties the tool catalogue reads. A lane
+// that accidentally copied another's row would advertise the wrong catalogue
+// and nothing else would say so — that is how `--remote` came to be reported as
+// direct CDP, which claims brw owns the browser and may therefore stage its
+// downloads in a directory brw later deletes.
+//
+// Every transport has to appear, so a lane added without a row here fails
+// rather than passing unexamined.
 func TestTransportCapabilitiesDistinguishTheLanes(t *testing.T) {
-	for _, tc := range []struct {
-		transport string
-		want      TransportCapabilities
-	}{
-		{TransportDirectCDP, TransportCapabilities{CDPSession: true, BrowserTarget: true, RuntimeDownloadRouting: true}},
-		{TransportChromeOptIn, TransportCapabilities{CDPSession: true, BrowserTarget: true, SignedInProfile: true}},
-		{TransportExtensionBridge, TransportCapabilities{ExtensionAPIs: true, SignedInProfile: true}},
-	} {
-		got, ok := Capabilities(tc.transport)
+	want := map[string]TransportCapabilities{
+		TransportDirectCDP:       {CDPSession: true, BrowserTarget: true, RuntimeDownloadRouting: true},
+		TransportRemoteCDP:       {CDPSession: true, BrowserTarget: true},
+		TransportChromeOptIn:     {CDPSession: true, BrowserTarget: true, SignedInProfile: true},
+		TransportExtensionBridge: {ExtensionAPIs: true, SignedInProfile: true},
+	}
+	for _, transport := range Transports() {
+		expected, stated := want[transport]
+		if !stated {
+			t.Errorf("transport %q has no expected capability row here; state what that lane can do rather than letting it inherit whatever the table says", transport)
+			continue
+		}
+		got, ok := Capabilities(transport)
 		if !ok {
-			t.Fatalf("%s is not classified", tc.transport)
+			t.Errorf("%s is not classified", transport)
+			continue
 		}
-		if got != tc.want {
-			t.Fatalf("%s capabilities = %+v, want %+v", tc.transport, got, tc.want)
+		if got != expected {
+			t.Errorf("%s capabilities = %+v, want %+v", transport, got, expected)
 		}
+	}
+	// And no two lanes are the same row: a copy would carry the wrong
+	// catalogue while satisfying every other test in this file.
+	seen := map[TransportCapabilities]string{}
+	for _, transport := range Transports() {
+		caps, _ := Capabilities(transport)
+		if other, dup := seen[caps]; dup {
+			t.Errorf("%s and %s declare identical capabilities %+v", transport, other, caps)
+		}
+		seen[caps] = transport
 	}
 	if _, ok := Capabilities("some-future-lane"); ok {
 		t.Fatal("an unclassified transport reported capabilities")

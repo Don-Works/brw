@@ -54,7 +54,7 @@ operations that need it, and holds no attachment for lifecycle events. It
 answers dialog and download waits by re-asking its own extension-side registries
 on a bounded, backing-off cadence (60 ms rising to a 400 ms ceiling).
 
-| Condition | DevTools Protocol (`direct-cdp`, `chrome-opt-in-cdp`) | Extension bridge |
+| Condition | DevTools Protocol (every transport but `extension-bridge`) | Extension bridge |
 | --- | --- | --- |
 | `load` | `event` — `Page.loadEventFired`, or immediate when the subscription already recorded the load. Falls back to `script` when brw attached after the document had already loaded, since no event is coming for it. | `script` |
 | `ready`, `page_ready` | `event` when the document has already fired its load event; otherwise `script`, because a document is interactive before it is loaded and only the document knows that. | `script` |

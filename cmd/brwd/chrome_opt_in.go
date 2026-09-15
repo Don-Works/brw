@@ -144,24 +144,55 @@ func checkChromeOptInFlags(f chromeOptInFlags) error {
 	return fmt.Errorf("%s cannot be combined with --chrome-opt-in: this lane attaches to the Chrome whose user turned on remote debugging at chrome://inspect/#remote-debugging, so brw neither starts a browser nor chooses which one to reach", name)
 }
 
-// configureChromeOptIn resolves the opt-in endpoint and returns the browser
-// config for it.
+// chromeOptInRequest is everything configureChromeOptIn needs to decide whether
+// this daemon may drive the opt-in lane at all, and which browser it may drive.
+//
+// The policy profile travels with the request rather than being checked by the
+// caller because the caller was main(), and a gate in main() is a gate every
+// test of this lane runs past: the policy tests all called the checker
+// directly, so deleting the call from main() left them green. Here the check is
+// on the only path that reaches discovery.
+type chromeOptInRequest struct {
+	// UserDataDir is the directory discovery reads.
+	UserDataDir string
+	// Profile is the policy profile this daemon resolved, and HavePolicy says
+	// whether one was resolved at all. A daemon started with no --profile and
+	// no --workspace has no policy to consult, which is the shipped
+	// single-profile case and not a grant.
+	Profile    profilepolicy.Profile
+	HavePolicy bool
+}
+
+// configureChromeOptIn gates the lane by policy, resolves the opt-in endpoint
+// and returns the browser config for it.
 //
 // AttachOnly is set unconditionally. Without it, a discovery failure that some
 // later edit swallowed would leave RemoteURL empty and browser.New would launch
 // Chrome with a debugging flag — brw arranging for itself the access Chrome
 // asks a human to grant. The flag makes that a refusal in browser.New rather
 // than a rule this function has to remember.
-func configureChromeOptIn(ctx context.Context, cfg browser.Config, userDataDir string) (browser.Config, chromeoptin.Endpoint, error) {
+func configureChromeOptIn(ctx context.Context, cfg browser.Config, req chromeOptInRequest) (browser.Config, chromeoptin.Endpoint, error) {
 	cfg.AttachOnly = true
 	cfg.SignedInProfile = true
-	dir := strings.TrimSpace(userDataDir)
+	// Before discovery, so a profile the policy has not opted in gets no probe
+	// of its browser, let alone an attach.
+	if req.HavePolicy {
+		if err := checkChromeOptInProfile(req.Profile); err != nil {
+			return cfg, chromeoptin.Endpoint{}, err
+		}
+	}
+	dir := strings.TrimSpace(req.UserDataDir)
 	if dir == "" {
 		return cfg, chromeoptin.Endpoint{}, fmt.Errorf("--chrome-opt-in needs the Chrome user data directory to look in: brw does not know where this browser keeps profiles on this platform, so pass --chrome-opt-in-user-data-dir")
 	}
 	endpoint, err := chromeoptin.Discover(ctx, chromeoptin.Options{UserDataDir: dir})
 	if err != nil {
 		return cfg, chromeoptin.Endpoint{}, err
+	}
+	if req.HavePolicy {
+		if err := checkChromeOptInEndpointProfile(endpoint, req.Profile); err != nil {
+			return cfg, chromeoptin.Endpoint{}, err
+		}
 	}
 	cfg.RemoteURL = endpoint.HTTPURL
 	// The browser WebSocket URL discovery checked is the one brw dials. Without

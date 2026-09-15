@@ -138,7 +138,7 @@ level to trim.
 
 ## Tool catalogue
 
-The measured MCP catalogues are 87 tools / ~31.2k tokens for `all`, 26 / ~10.2k
+The measured MCP catalogues are 87 tools / ~31.3k tokens for `all`, 26 / ~10.3k
 for `core`, 13 / ~5.8k for `minimal`, and 14 / ~6.0k initially for the default
 `auto` profile — the same figures README.md and docs/agent-guide.md quote, from
 `scripts/measure-tool-catalogue.py`. Thus the default starts about 79% smaller

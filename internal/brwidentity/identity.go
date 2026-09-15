@@ -35,13 +35,23 @@ type Identity struct {
 // reaches brw. transports.go states what each one can do; a value added here
 // without an entry there is not a transport brw can report.
 const (
+	// TransportDirectCDP is a browser brw started itself. It is the only lane
+	// on which brw may move the browser's downloads, because it is the only one
+	// where nobody else is downloading in the same browser.
 	TransportDirectCDP = "direct-cdp"
 	// TransportChromeOptIn is a Chrome 144+ instance whose user turned on
-	// remote debugging at chrome://inspect/#remote-debugging. It is a third
+	// remote debugging at chrome://inspect/#remote-debugging. It is its own
 	// lane and not a flavour of direct CDP: the browser is the one the user is
 	// signed into, brw never started it, and brw must never try to turn the
 	// opt-in on — it exists precisely because that switch is a human action.
-	TransportChromeOptIn     = "chrome-opt-in-cdp"
+	TransportChromeOptIn = "chrome-opt-in-cdp"
+	// TransportRemoteCDP is `brwd --remote`: brw attaches to a DevTools endpoint
+	// some other process opened. It was reported as direct CDP, which says brw
+	// started the browser. The browser behind that endpoint may be the one its
+	// user is signed into, up to and including the port the Chrome opt-in
+	// publishes, and a lane reported as one brw started routed and then deleted
+	// that person's downloads.
+	TransportRemoteCDP       = "remote-cdp"
 	TransportExtensionBridge = "extension-bridge"
 )
 

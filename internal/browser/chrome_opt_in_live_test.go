@@ -5,12 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -36,7 +30,7 @@ func TestChromeOptInLaneDrivesWhatTheBridgeCannot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	userDataDir, chosenPort := startChromeWithADynamicDebuggingPort(ctx, t)
+	userDataDir, chosenPort := startChromeOutsideBrw(ctx, t, "")
 
 	// Discovery: brw is told only the user data directory, exactly as it is on
 	// the real lane. The port is not passed in and cannot be guessed.
@@ -116,53 +110,4 @@ func TestChromeOptInLaneDrivesWhatTheBridgeCannot(t *testing.T) {
 	if _, err := manager.SessionState(ctx, SessionStateOptions{Action: SessionStateActionList}); !errors.Is(err, ErrSessionStateSignedIn) {
 		t.Fatalf("brw_state on the opt-in lane = %v, want ErrSessionStateSignedIn", err)
 	}
-}
-
-// startChromeWithADynamicDebuggingPort stands in for the person who turns the
-// opt-in on, and is deliberately not brw's launcher: on this lane brw never
-// starts a browser, so a test that used the launcher would be exercising a path
-// the lane forbids.
-//
-// The port is 0 because that is what makes Chrome record it. Measured on Chrome
-// 153: with an explicit --remote-debugging-port Chrome writes no
-// DevToolsActivePort file at all — there is nothing to discover when the caller
-// already chose the port — and with 0 it writes the bound port and the browser
-// target's path. The opt-in allocates dynamically, so this is its shape.
-func startChromeWithADynamicDebuggingPort(ctx context.Context, t *testing.T) (userDataDir string, port int) {
-	t.Helper()
-	chromePath, err := cdplaunch.FindChrome("")
-	if err != nil {
-		t.Skipf("Chrome/Chromium not available: %v", err)
-	}
-	userDataDir = t.TempDir()
-	cmd := exec.CommandContext(ctx, chromePath,
-		"--headless=new",
-		"--user-data-dir="+userDataDir,
-		"--remote-debugging-port=0",
-		"--no-first-run",
-		"--no-default-browser-check",
-		"about:blank",
-	)
-	if err := cmd.Start(); err != nil {
-		t.Skipf("could not start Chrome: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		_, _ = cmd.Process.Wait()
-	})
-
-	path := filepath.Join(userDataDir, "DevToolsActivePort")
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			first, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
-			if port, err = strconv.Atoi(strings.TrimSpace(first)); err == nil && port > 0 {
-				return userDataDir, port
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Skipf("Chrome never recorded a debugging port in %s", path)
-	return "", 0
 }

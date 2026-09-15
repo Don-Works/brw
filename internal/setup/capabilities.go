@@ -14,12 +14,18 @@ const (
 	// the switch on — so ResolvedTransport never returns it. It is here so
 	// doctor and the capability table can describe a daemon that reports it.
 	ResolvedChromeOptIn = "chrome-opt-in-cdp"
+	// ResolvedRemoteCDP is `brwd --remote <endpoint>`: a DevTools endpoint some
+	// other process opened. No profile policy selects it either, so
+	// ResolvedTransport never returns it; doctor describes a daemon reporting
+	// it from here.
+	ResolvedRemoteCDP = "remote-cdp"
 )
 
 // Capabilities states, for one transport, what a caller can and cannot do. The
-// three lanes differ in ways that read as missing features when nothing names
-// the lane: brw_open_incognito and brw_cookies exist on two of them and Chrome
-// tab groups on only the third.
+// lanes differ in ways that read as missing features when nothing names the
+// lane: brw_open_incognito and brw_cookies exist on every lane but the
+// extension bridge, Chrome tab groups only on that one, and download routing
+// only where brw started the browser.
 type Capabilities struct {
 	Transport string `json:"transport"`
 	Has       string `json:"has"`
@@ -40,6 +46,11 @@ var capabilityTable = map[string]Capabilities{
 		Transport: ResolvedChromeOptIn,
 		Has:       "your real signed-in Chrome with full browser-target CDP: incognito contexts (brw_open_incognito), HttpOnly cookie access (brw_cookies), page-environment overrides — and no extension at all",
 		Lacks:     "no Chrome tab groups (an extension API), no session snapshots (brw_state is refused on a browser you are signed into), no download routing (brw_set_download_path would move the downloads you make by hand, so downloads are reported without a file path), and nothing works while the chrome://inspect opt-in is off",
+	},
+	ResolvedRemoteCDP: {
+		Transport: ResolvedRemoteCDP,
+		Has:       "full browser-target CDP against a browser somebody else started: incognito contexts (brw_open_incognito), HttpOnly cookie access (brw_cookies), page-environment overrides, session snapshots (brw_state)",
+		Lacks:     "no Chrome tab groups (an extension API), no download routing (brw did not start this browser, so brw_set_download_path would move files it does not own and downloads are reported without a file path), and no control over how that browser was launched — its proxy, certificate policy and headlessness were fixed by whoever started it",
 	},
 	ResolvedExtensionBridge: {
 		Transport: ResolvedExtensionBridge,

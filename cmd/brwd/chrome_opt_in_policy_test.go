@@ -1,11 +1,12 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/Don-Works/brw/internal/chromeoptin"
+	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
@@ -14,6 +15,13 @@ import (
 // would be the wrong question — that bit is about brw launching a browser
 // against a profile directory — and a bridge-only profile is exactly the one
 // the restriction exists to protect.
+//
+// The call under test is configureChromeOptIn, which is the whole of the lane's
+// setup, and not checkChromeOptInProfile. An earlier spelling put the gate in
+// main() and tested the checker: the four cases below passed with the call
+// deleted from main(), because nothing they ran went near it. The counter is
+// the other half — a refusal that had already probed the browser would have let
+// a policy-restricted profile be reached before being refused.
 func TestChromeOptInNeedsItsOwnPolicyGrant(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -39,10 +47,18 @@ func TestChromeOptInNeedsItsOwnPolicyGrant(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := checkChromeOptInProfile(tc.profile)
+			dir, hits := fakeOptInChrome(t)
+			cfg, endpoint, err := configureChromeOptIn(context.Background(), browser.Config{}, chromeOptInRequest{
+				UserDataDir: dir,
+				Profile:     tc.profile,
+				HavePolicy:  true,
+			})
 			if tc.allowed {
 				if err != nil {
 					t.Fatalf("profile with chrome_opt_in_allowed was refused: %v", err)
+				}
+				if cfg.RemoteURL == "" || cfg.RemoteURL != endpoint.HTTPURL {
+					t.Fatalf("granted profile got RemoteURL %q, endpoint %q", cfg.RemoteURL, endpoint.HTTPURL)
 				}
 				return
 			}
@@ -52,6 +68,12 @@ func TestChromeOptInNeedsItsOwnPolicyGrant(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.profile.Name) {
 				t.Fatalf("refusal %q does not name the profile", err)
 			}
+			if cfg.RemoteURL != "" {
+				t.Fatalf("the refusal still handed back RemoteURL %q", cfg.RemoteURL)
+			}
+			if got := hits.Load(); got != 0 {
+				t.Fatalf("a profile the policy never granted had its browser probed %d time(s); the gate has to run before discovery", got)
+			}
 		})
 	}
 }
@@ -59,30 +81,62 @@ func TestChromeOptInNeedsItsOwnPolicyGrant(t *testing.T) {
 // brw_identity sells itself as reporting which profile this namespace drives.
 // Nothing else checks that the Chrome answering on the discovered port is the
 // profile the policy named.
+//
+// Driven through configureChromeOptIn for the same reason as the grant above:
+// this check ran in main() and every case passed without it.
 func TestChromeOptInEndpointMustBeThePolicysProfile(t *testing.T) {
+	granted := func(userDataDir string) profilepolicy.Profile {
+		return profilepolicy.Profile{Name: "work", ChromeOptInAllowed: true, UserDataDir: userDataDir}
+	}
 	for _, tc := range []struct {
-		name     string
-		endpoint string
-		policy   string
-		refused  bool
+		name string
+		// policy maps the directory discovery will run in to the one the
+		// profile names, so a case can name the same place differently.
+		policy  func(discovered string) string
+		refused bool
 	}{
-		{name: "same directory", endpoint: "/tmp/brw-fixture/chrome", policy: "/tmp/brw-fixture/chrome"},
-		{name: "same directory spelled differently", endpoint: "/tmp/brw-fixture/chrome", policy: "/tmp/brw-fixture/./chrome"},
-		{name: "another profile entirely", endpoint: "/tmp/brw-fixture/chromium", policy: "/tmp/brw-fixture/chrome", refused: true},
-		{name: "policy names no directory", endpoint: "/tmp/brw-fixture/chrome", policy: ""},
+		{name: "same directory", policy: func(d string) string { return d }},
+		{name: "same directory spelled differently", policy: func(d string) string { return filepath.Join(d, "sub", "..") }},
+		{name: "another profile entirely", policy: func(d string) string { return filepath.Join(d, "another-browser") }, refused: true},
+		{name: "policy names no directory", policy: func(string) string { return "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := checkChromeOptInEndpointProfile(
-				chromeoptin.Endpoint{UserDataDir: filepath.FromSlash(tc.endpoint)},
-				profilepolicy.Profile{Name: "work", UserDataDir: filepath.FromSlash(tc.policy)},
-			)
-			if tc.refused && err == nil {
-				t.Fatal("a daemon driving one profile while reporting another was accepted")
+			dir, _ := fakeOptInChrome(t)
+			cfg, _, err := configureChromeOptIn(context.Background(), browser.Config{}, chromeOptInRequest{
+				UserDataDir: dir,
+				Profile:     granted(tc.policy(dir)),
+				HavePolicy:  true,
+			})
+			if tc.refused {
+				if err == nil {
+					t.Fatal("a daemon driving one profile while reporting another was accepted")
+				}
+				if cfg.RemoteURL != "" {
+					t.Fatalf("the refusal still handed back RemoteURL %q, so the daemon would attach anyway", cfg.RemoteURL)
+				}
+				return
 			}
-			if !tc.refused && err != nil {
+			if err != nil {
 				t.Fatalf("refused a matching endpoint: %v", err)
 			}
+			if cfg.RemoteURL == "" {
+				t.Fatal("a matching endpoint produced no RemoteURL")
+			}
 		})
+	}
+}
+
+// A daemon with no --profile and no --workspace has no policy to consult. That
+// is the shipped single-profile case, and it stays working: the gate applies to
+// a policy that exists and does not grant, not to the absence of one.
+func TestChromeOptInWithoutAPolicyIsNotGated(t *testing.T) {
+	dir, _ := fakeOptInChrome(t)
+	cfg, _, err := configureChromeOptIn(context.Background(), browser.Config{}, chromeOptInRequest{UserDataDir: dir})
+	if err != nil {
+		t.Fatalf("--chrome-opt-in with no profile policy was refused: %v", err)
+	}
+	if cfg.RemoteURL == "" {
+		t.Fatal("no endpoint was configured")
 	}
 }
 

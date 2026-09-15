@@ -640,11 +640,11 @@ func (m *Manager) Authenticate(ctx context.Context, opts CredentialsOptions) (En
 
 // SetDownloadPath redirects completed downloads to a caller-named directory.
 func (m *Manager) SetDownloadPath(ctx context.Context, opts DownloadPathOptions) (EnvironmentResult, error) {
-	// Checked before the arguments: the refusal is a property of the lane, so it
-	// has to hold for clear:true as well, which would otherwise adopt a brw
-	// staging directory for the user's own browser context.
+	// Checked before the arguments: the refusal is a property of the browser, so
+	// it has to hold for clear:true as well, which would otherwise adopt a brw
+	// staging directory for somebody else's browser context.
 	if !m.stagesDownloads() {
-		return EnvironmentResult{}, ErrDownloadRoutingSignedIn
+		return EnvironmentResult{}, ErrDownloadRoutingAttachedBrowser
 	}
 	if !opts.Clear {
 		if strings.TrimSpace(opts.Path) == "" {

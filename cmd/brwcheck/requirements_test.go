@@ -90,16 +90,29 @@ func TestSuiteRequirementsAreClosed(t *testing.T) {
 	}
 }
 
-// The shipped suites must express requirements the runner classifies, and must
-// cover the third lane rather than declaring capabilities only two lanes have.
+// Every lane has to be exercised for a capability it actually has, not merely
+// reached by the scenarios that ask for nothing.
+//
+// Counting every scenario was the earlier spelling and it proved nothing: a
+// scenario with no `requires` runs on every lane, so the map was full before any
+// capability-bearing scenario was consulted. Rewriting both `browser-target`
+// and `cdp-session` in core.json to `extension-apis` — which leaves every
+// CDP lane with no capability coverage at all — still passed it. Only the
+// scenarios that name a transport capability are counted here, which is the
+// population the claim is about.
 func TestShippedSuitesExerciseEveryLane(t *testing.T) {
 	covered := map[string]bool{}
+	capabilityScenarios := 0
 	for _, name := range []string{"core.json", "decathlon.json"} {
 		suite, err := loadSuite(filepath.Join("..", "..", "tests", "scenarios", name))
 		if err != nil {
 			t.Fatalf("load %s: %v", name, err)
 		}
 		for _, sc := range suite.Scenarios {
+			if !declaresATransportCapability(sc) {
+				continue
+			}
+			capabilityScenarios++
 			for _, transport := range brwidentity.Transports() {
 				if skipReason(sc, true, true, true, transport) == "" {
 					covered[transport] = true
@@ -107,9 +120,24 @@ func TestShippedSuitesExerciseEveryLane(t *testing.T) {
 			}
 		}
 	}
+	if capabilityScenarios == 0 {
+		t.Fatal("no shipped scenario declares a transport capability, so this test would pass whatever the lanes could do")
+	}
 	for _, transport := range brwidentity.Transports() {
 		if !covered[transport] {
-			t.Errorf("no shipped scenario runs on %s, so the suite reports that lane as untested", transport)
+			t.Errorf("no shipped scenario exercises a capability the %s lane has; the suite would report that lane green while running nothing that needs it", transport)
 		}
 	}
+}
+
+// declaresATransportCapability reports whether a scenario asks for anything
+// about the lane. A scenario that asks only for a run flag, or for nothing,
+// runs everywhere and so says nothing about which lanes are covered.
+func declaresATransportCapability(sc scenario) bool {
+	for _, req := range sc.Requires {
+		if _, ok := transportRequirements[req]; ok {
+			return true
+		}
+	}
+	return false
 }

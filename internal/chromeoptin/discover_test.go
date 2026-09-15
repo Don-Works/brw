@@ -317,3 +317,110 @@ func TestDefaultUserDataDirMatchesTheSetupTable(t *testing.T) {
 		t.Fatalf("an unknown browser resolved to %q; the caller must be told to name the directory", got)
 	}
 }
+
+// silentOptInChrome is the endpoint shape a genuinely opted-in Chrome presents:
+// the port is bound and every DevTools HTTP path answers 404.
+//
+// Measured on Chrome 153.0.8010.37 with the opt-in turned on by writing
+// {"devtools":{"remote_debugging":{"user-enabled":true}}} into Local State —
+// Chrome's own preference, the one chrome://inspect/#remote-debugging sets:
+// DevToolsActivePort was written with the port and /devtools/browser/<uuid>,
+// and /json/version, /json/list, /json and / all answered 404, headless and
+// headed alike. A Chrome started with --remote-debugging-port serves those
+// paths; the opt-in does not, which is why the browser target has to come out
+// of the file.
+func silentOptInChrome(t *testing.T, secondLine string) (dir string, port int) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	port = serverPort(t, srv)
+	dir = t.TempDir()
+	writeActivePort(t, dir, strconv.Itoa(port)+"\n"+secondLine)
+	return dir, port
+}
+
+// The lane brw is built for is the one it could not reach: discovery refused a
+// Chrome whose user had turned the opt-in on, because it asked an HTTP endpoint
+// that opt-in does not serve and read 404 as "no endpoint". The browser target
+// is on the second line of DevToolsActivePort, and that is what this asserts is
+// used.
+func TestDiscoverReadsTheBrowserTargetOffTheFileWhenHTTPIsSilent(t *testing.T) {
+	dir, port := silentOptInChrome(t, "/devtools/browser/opted-in-uuid\n")
+	got, err := Discover(context.Background(), Options{UserDataDir: dir})
+	if err != nil {
+		t.Fatalf("discovery refused a Chrome whose opt-in is on: %v", err)
+	}
+	want := fmt.Sprintf("ws://127.0.0.1:%d/devtools/browser/opted-in-uuid", port)
+	if got.BrowserWSURL != want {
+		t.Fatalf("BrowserWSURL = %q, want %q", got.BrowserWSURL, want)
+	}
+	if got.Port != port {
+		t.Fatalf("Port = %d, want %d", got.Port, port)
+	}
+	// There is no version to read on this lane, and saying "Chrome/0" or
+	// leaving a human staring at empty brackets are both worse than saying so.
+	if got.Browser != "" {
+		t.Fatalf("Browser = %q; nothing served a version document", got.Browser)
+	}
+	if got.Major != 0 {
+		t.Fatalf("Major = %d; nothing served a version to parse", got.Major)
+	}
+	if !strings.Contains(got.BrowserLabel(), "no DevTools HTTP endpoints") {
+		t.Fatalf("BrowserLabel() = %q, which does not say why there is no version", got.BrowserLabel())
+	}
+}
+
+// The fallback narrows the trust rather than widening it. brw builds the
+// WebSocket URL itself out of loopback, the recorded port and the recorded
+// path, so a second line that names a scheme or an authority — the one way this
+// file could redirect a CDP session off the machine — is not followed. It is
+// also not an error on its own: the HTTP probe may still produce a target.
+func TestDiscoverRefusesASecondLineThatIsNotAPath(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		secondLine string
+	}{
+		{name: "no second line at all", secondLine: ""},
+		{name: "an absolute websocket url elsewhere", secondLine: "ws://browser.invalid:9222/devtools/browser/x\n"},
+		{name: "a protocol-relative authority", secondLine: "//browser.invalid/devtools/browser/x\n"},
+		{name: "a relative path", secondLine: "devtools/browser/x\n"},
+		{name: "an opaque reference", secondLine: "mailto:x\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, _ := silentOptInChrome(t, tc.secondLine)
+			_, err := Discover(context.Background(), Options{UserDataDir: dir})
+			if err == nil {
+				t.Fatal("discovery accepted a browser target it cannot vouch for")
+			}
+			if !errors.Is(err, ErrOptInOff) {
+				t.Fatalf("error %v does not wrap ErrOptInOff", err)
+			}
+			if !strings.Contains(err.Error(), "chrome://inspect") {
+				t.Fatalf("error %q does not name the action", err)
+			}
+		})
+	}
+}
+
+// When the endpoint does serve /json/version — a Chrome started with
+// --remote-debugging-port=0, which is what the live tests stand up — that
+// answer is still what discovery uses, including its version. The file is the
+// fallback, not the new default.
+func TestDiscoverPrefersTheServedVersionDocument(t *testing.T) {
+	dir, port := fakeChrome(t, chrome144)
+	// Overwrite the second line with a path nothing would dial, so a discovery
+	// that preferred the file would be caught here.
+	writeActivePort(t, dir, strconv.Itoa(port)+"\n/devtools/browser/from-the-file\n")
+	got, err := Discover(context.Background(), Options{UserDataDir: dir})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if got.BrowserWSURL != browserWS(port) {
+		t.Fatalf("BrowserWSURL = %q, want the served %q", got.BrowserWSURL, browserWS(port))
+	}
+	if got.Major != 144 {
+		t.Fatalf("Major = %d, want the served 144", got.Major)
+	}
+}

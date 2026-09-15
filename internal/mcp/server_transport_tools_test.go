@@ -58,6 +58,21 @@ func TestAdvertisedToolsDropTransportUnsupported(t *testing.T) {
 				"brw_set_geolocation", "brw_authenticate",
 			},
 		},
+		{
+			// --remote: full CDP against a browser somebody else started. The
+			// download tool goes for the same reason it goes on the opt-in
+			// lane, and the Manager refuses it there whatever tools/list says.
+			name:      "remote cdp has everything direct cdp has except download routing",
+			transport: brwidentity.TransportRemoteCDP,
+			hidden: []string{
+				"brw_group_tabs", "brw_ungroup_tabs", "brw_list_tab_groups",
+				"brw_set_download_path",
+			},
+			shown: []string{
+				"brw_open_incognito", "brw_close_context", "brw_cookies", "brw_clipboard",
+				"brw_set_geolocation", "brw_authenticate", "brw_state",
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, profile := range []string{"all", "core", "minimal", "auto", "typo-profile"} {
@@ -173,9 +188,9 @@ func TestDerivedTableMatchesTheDocumentedLanes(t *testing.T) {
 		{"brw_cookies", []string{brwidentity.TransportExtensionBridge}},
 		{"brw_open_incognito", []string{brwidentity.TransportExtensionBridge}},
 		{"brw_set_geolocation", []string{brwidentity.TransportExtensionBridge}},
-		{"brw_group_tabs", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportDirectCDP}},
+		{"brw_group_tabs", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportDirectCDP, brwidentity.TransportRemoteCDP}},
 		{"brw_state", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportExtensionBridge}},
-		{"brw_set_download_path", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportExtensionBridge}},
+		{"brw_set_download_path", []string{brwidentity.TransportChromeOptIn, brwidentity.TransportExtensionBridge, brwidentity.TransportRemoteCDP}},
 	} {
 		got := append([]string(nil), transportUnsupported[tc.tool]...)
 		sort.Strings(got)

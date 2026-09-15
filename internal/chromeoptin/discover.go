@@ -33,9 +33,12 @@ import (
 const MinimumChromeMajor = 144
 
 // activePortFile is where Chrome records the port its DevTools server bound.
-// The opt-in allocates a port dynamically — there is no flag to pin it and no
-// fixed default — so this file is the discovery channel. Its first line is the
-// port and its second is the browser target's WebSocket path.
+// brw passes no --remote-debugging-port on this lane and cannot, so the port is
+// Chrome's to choose and this file is the only place it appears — measured on
+// Chrome 153 the opt-in chose 9222, and a Chrome started with an explicit port
+// writes no file at all. Its first line is the port and its second is the
+// browser target's WebSocket path; Discover reads both, because an opted-in
+// Chrome publishes the target here and nowhere else.
 const activePortFile = "DevToolsActivePort"
 
 // ErrOptInOff reports that no opt-in endpoint is reachable for a user data
@@ -62,9 +65,12 @@ type Endpoint struct {
 	// separates this lane from the extension bridge: an extension cannot attach
 	// chrome.debugger to the browser target at all.
 	BrowserWSURL string
-	// Browser is Chrome's own version string, e.g. "Chrome/144.0.7000.0".
+	// Browser is Chrome's own version string, e.g. "Chrome/144.0.7000.0", and
+	// is EMPTY when the opt-in served no /json/version document — see Discover.
+	// BrowserLabel renders it for a human either way.
 	Browser string
-	// Major is Browser's major version.
+	// Major is Browser's major version, or 0 when Browser is empty or
+	// unparseable. Discover treats 0 as "cannot tell" rather than as old.
 	Major int
 	// UserDataDir is the directory the endpoint was discovered from.
 	UserDataDir string
@@ -83,18 +89,34 @@ type Options struct {
 
 // Discover resolves the opt-in endpoint for a user data directory.
 //
-// Both halves are required. The file alone proves nothing: Chrome leaves it
-// behind when it exits, and the port it names is then free for any other
-// process to bind. So the port is probed, the answer must be a Chrome DevTools
-// endpoint, and the browser WebSocket URL it reports must point back at the
-// same loopback port — otherwise brw would follow whatever address an
-// unrelated listener chose to return.
+// The file alone proves nothing: Chrome leaves it behind when it exits, and the
+// port it names is then free for any other process to bind. So the port is
+// always probed and something has to answer on it.
+//
+// What that answer looks like differs between the two Chromes that write this
+// file, and the difference is why discovery reads both of its lines:
+//
+//   - Started with --remote-debugging-port, Chrome serves the DevTools HTTP
+//     endpoints. /json/version then carries the version string and the browser
+//     target's WebSocket URL, and that URL has to point back at the same
+//     loopback port or brw would follow an address an unrelated listener chose.
+//   - Turned on at chrome://inspect/#remote-debugging, it serves NO HTTP
+//     endpoints at all. Measured on Chrome 153: /json/version, /json/list,
+//     /json and / all answer 404, headless and headed alike. The browser target
+//     is reachable, and its path is on the second line of DevToolsActivePort —
+//     which is where this takes it.
+//
+// The fallback narrows the trust rather than widening it: the WebSocket URL is
+// then built from loopback, the recorded port and the recorded path, so no
+// listener gets to name the address brw dials. What it cannot do is read a
+// version, so Browser is empty and the Chrome-too-old check does not apply —
+// a Chrome that predates the opt-in also predates this file shape.
 func Discover(ctx context.Context, opts Options) (Endpoint, error) {
 	dir := strings.TrimSpace(opts.UserDataDir)
 	if dir == "" {
 		return Endpoint{}, errors.New("chrome opt-in discovery needs a user data directory")
 	}
-	port, err := readActivePort(dir)
+	port, wsPath, err := readActivePort(dir)
 	if err != nil {
 		return Endpoint{}, err
 	}
@@ -102,17 +124,26 @@ func Discover(ctx context.Context, opts Options) (Endpoint, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 3 * time.Second}
 	}
-	version, err := probeVersion(ctx, client, port)
-	if err != nil {
-		return Endpoint{}, err
-	}
 	endpoint := Endpoint{
-		HTTPURL:      fmt.Sprintf("http://127.0.0.1:%d", port),
-		Port:         port,
-		BrowserWSURL: version.WebSocketDebuggerURL,
-		Browser:      version.Browser,
-		Major:        majorVersion(version.Browser),
-		UserDataDir:  dir,
+		HTTPURL:     fmt.Sprintf("http://127.0.0.1:%d", port),
+		Port:        port,
+		UserDataDir: dir,
+	}
+	version, probeErr := probeVersion(ctx, client, port)
+	switch {
+	case probeErr == nil:
+		endpoint.BrowserWSURL = version.WebSocketDebuggerURL
+		endpoint.Browser = version.Browser
+		endpoint.Major = majorVersion(version.Browser)
+	case errors.Is(probeErr, errNoDevToolsHTTP) && wsPath != "":
+		endpoint.BrowserWSURL = fmt.Sprintf("ws://127.0.0.1:%d%s", port, wsPath)
+	case errors.Is(probeErr, errNoDevToolsHTTP):
+		// Bound but silent over HTTP and with no browser target recorded: brw
+		// has a port and no way to reach a browser on it. That is the same
+		// answer as an opt-in that is off, and it takes the same action.
+		return Endpoint{}, fmt.Errorf("%w: %v, and %s records no browser target on its second line. %s", ErrOptInOff, probeErr, filepath.Join(dir, activePortFile), UserAction)
+	default:
+		return Endpoint{}, probeErr
 	}
 	if err := validateBrowserWS(endpoint.BrowserWSURL, port); err != nil {
 		return Endpoint{}, err
@@ -121,6 +152,16 @@ func Discover(ctx context.Context, opts Options) (Endpoint, error) {
 		return Endpoint{}, fmt.Errorf("%w: %s is listening on port %d, but the opt-in lane needs Chrome %d or newer", ErrChromeTooOld, endpoint.Browser, port, MinimumChromeMajor)
 	}
 	return endpoint, nil
+}
+
+// BrowserLabel is Endpoint.Browser for a human, and says so rather than
+// printing an empty pair of brackets when the opt-in served no version
+// document.
+func (e Endpoint) BrowserLabel() string {
+	if strings.TrimSpace(e.Browser) != "" {
+		return e.Browser
+	}
+	return "version not reported: this Chrome serves no DevTools HTTP endpoints"
 }
 
 // maxActivePortBytes bounds the read of DevToolsActivePort. Chrome writes a
@@ -133,44 +174,80 @@ const maxActivePortBytes = 4 << 10
 // without a cap it can stream for the client's whole timeout.
 const maxVersionBytes = 64 << 10
 
-// readActivePort parses the port Chrome recorded. A missing file, an empty one
-// and an unparseable one all mean the same thing to the caller — no opt-in
-// endpoint — so all three answer with ErrOptInOff and the action.
-func readActivePort(dir string) (int, error) {
+// readActivePort parses the port Chrome recorded and, when there is one, the
+// browser target path on the second line. A missing file, an empty one and an
+// unparseable one all mean the same thing to the caller — no opt-in endpoint —
+// so all three answer with ErrOptInOff and the action.
+//
+// A second line that is not a rooted path with nothing but a path in it comes
+// back empty rather than as an error: the HTTP probe may still produce a
+// browser target, and this file sits in a directory brw does not own, so a line
+// brw cannot vouch for is one it declines to dial rather than one it repeats.
+func readActivePort(dir string) (int, string, error) {
 	path := filepath.Join(dir, activePortFile)
 	// Lstat, not Stat: a symlink here would let whoever placed it choose the
 	// file brw reads, and a fifo would let them choose how long the read takes.
 	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return 0, fmt.Errorf("%w: %s does not exist, so this Chrome has no debugging endpoint. %s", ErrOptInOff, path, UserAction)
+			return 0, "", fmt.Errorf("%w: %s does not exist, so this Chrome has no debugging endpoint. %s", ErrOptInOff, path, UserAction)
 		}
-		return 0, fmt.Errorf("%w: cannot read %s: %v. %s", ErrOptInOff, path, err, UserAction)
+		return 0, "", fmt.Errorf("%w: cannot read %s: %v. %s", ErrOptInOff, path, err, UserAction)
 	}
 	if !info.Mode().IsRegular() {
-		return 0, fmt.Errorf("%w: %s is not a regular file. %s", ErrOptInOff, path, UserAction)
+		return 0, "", fmt.Errorf("%w: %s is not a regular file. %s", ErrOptInOff, path, UserAction)
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return 0, fmt.Errorf("%w: cannot read %s: %v. %s", ErrOptInOff, path, err, UserAction)
+		return 0, "", fmt.Errorf("%w: cannot read %s: %v. %s", ErrOptInOff, path, err, UserAction)
 	}
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, maxActivePortBytes))
 	if err != nil {
-		return 0, fmt.Errorf("%w: cannot read %s: %v. %s", ErrOptInOff, path, err, UserAction)
+		return 0, "", fmt.Errorf("%w: cannot read %s: %v. %s", ErrOptInOff, path, err, UserAction)
 	}
 	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
 	port, convErr := strconv.Atoi(strings.TrimSpace(lines[0]))
 	if convErr != nil || port <= 0 || port > 65535 {
-		return 0, fmt.Errorf("%w: %s does not start with a port number. %s", ErrOptInOff, path, UserAction)
+		return 0, "", fmt.Errorf("%w: %s does not start with a port number. %s", ErrOptInOff, path, UserAction)
 	}
-	return port, nil
+	wsPath := ""
+	if len(lines) > 1 {
+		wsPath = browserTargetPath(lines[1])
+	}
+	return port, wsPath, nil
+}
+
+// browserTargetPath accepts the second line of DevToolsActivePort only when it
+// is a path and nothing else. Chrome writes "/devtools/browser/<uuid>"; a line
+// carrying a scheme, an authority or a leading "//" would let whoever wrote the
+// file choose the host brw opens a CDP session to, which is the one thing the
+// rest of this package exists to prevent.
+func browserTargetPath(line string) string {
+	raw := strings.TrimSpace(line)
+	if !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "" || parsed.Host != "" || parsed.Opaque != "" || parsed.User != nil {
+		return ""
+	}
+	return raw
 }
 
 type versionInfo struct {
 	Browser              string `json:"Browser"`
 	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
 }
+
+// errNoDevToolsHTTP reports a port that IS bound but serves no DevTools HTTP
+// endpoint. It is separated from every other probe failure because it is the
+// signature of the opt-in itself — a Chrome whose user turned remote debugging
+// on at chrome://inspect answers 404 to every DevTools HTTP path — and Discover
+// reads the browser target out of DevToolsActivePort instead. Every other
+// failure still means "no endpoint": nothing answered, or what answered was not
+// speaking DevTools.
+var errNoDevToolsHTTP = errors.New("the port is bound but serves no DevTools HTTP endpoint")
 
 // probeVersion confirms something is listening on the recorded port AND that it
 // is a Chrome DevTools endpoint. A stale file whose port another process has
@@ -186,6 +263,9 @@ func probeVersion(ctx context.Context, client *http.Client, port int) (versionIn
 		return versionInfo{}, fmt.Errorf("%w: nothing answered %s (%v), so the recorded port is stale. %s", ErrOptInOff, target, err, UserAction)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return versionInfo{}, fmt.Errorf("%w: %s answered %s", errNoDevToolsHTTP, target, resp.Status)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return versionInfo{}, fmt.Errorf("%w: %s answered %s rather than a DevTools version document. %s", ErrOptInOff, target, resp.Status, UserAction)
 	}

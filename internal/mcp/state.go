@@ -12,7 +12,7 @@ import (
 // capability answers. The upstream HTTP proxy implements the capability and
 // forwards it to the browser host, so this is the honest "this controller
 // cannot do it at all" case rather than a routing gap.
-var errSessionStateUnavailable = errors.New("this browser transport does not support session snapshots: brw_state reads and writes cookies at the browser-context level, which needs a direct-CDP profile — and is refused on a browser you are personally signed into whatever its CDP can do")
+var errSessionStateUnavailable = errors.New("this browser transport does not support session snapshots: brw_state reads and writes cookies at the browser-context level, which needs the CDP browser target — and is refused on a browser you are personally signed into whatever its CDP can do")
 
 func (s *Server) callSessionState(ctx context.Context, args json.RawMessage) (any, *rpcError) {
 	state, ok := s.manager.(browser.SessionStateController)

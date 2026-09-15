@@ -192,11 +192,13 @@ With both switched on the agent sees two browser tool sets and may drive the
 wrong one. `brwctl doctor` emits the `claude_in_chrome_enabled` warning when it
 finds it; run `/chrome` in Claude Code and turn it off.
 
-## Three transports, different capabilities
+## The transports, and what each can do
 
-`brw_identity` reports which one a namespace resolved to, and `brwctl doctor`
-names it with the capabilities it implies. `tools/list` is narrowed to the lane,
-so a tool that cannot work on it is not advertised at all.
+Three ways to set brw up, and a fourth `brw_identity` can report — `brwd
+--remote <endpoint>`, covered below the table. `brw_identity` names which one a
+namespace resolved to, and `brwctl doctor` names it with the capabilities it
+implies. `tools/list` is narrowed to the lane, so a tool that cannot work on it
+is not advertised at all.
 
 | | Extension bridge | Direct CDP | Chrome opt-in |
 |---|---|---|---|
@@ -210,6 +212,18 @@ so a tool that cannot work on it is not advertised at all.
 | Deterministic download capture | No, uses the browser's download folder | Yes, staged in brw's cache | No, uses the browser's download folder |
 | Session snapshots (`brw_state`) | No, by policy | Yes | No, by the same policy |
 | Headless | No | Yes | No, it is your window |
+| `brw_identity` transport | `extension-bridge` | `direct-cdp` | `chrome-opt-in-cdp` |
+
+`brwd --remote <endpoint>` attaches to a DevTools endpoint another process
+opened, and reports `transport: "remote-cdp"`. It is the direct-CDP column with
+one row changed: no deterministic download capture. `Browser.setDownloadBehavior`
+has no scope narrower than a browser context, and brw did not start that
+browser, so pointing its downloads at brw's staging directory would move files
+belonging to whoever did — and brw deletes that directory when the daemon stops.
+`brw_downloads` still reports every download, with `file_paths: false` and no
+path. That holds however the endpoint was produced, including when it is the
+port a Chrome opt-in published: the refusal reads whether brw started the
+browser, not which flag the operator passed.
 
 ### The Chrome opt-in lane
 
@@ -243,19 +257,39 @@ It is a human action by design, and brw treats it that way:
 
 The port is discovered, not configured: the opt-in allocates one dynamically
 and Chrome records it in `DevToolsActivePort` in the user data directory, which
-is the only place it appears. Measured on Chrome 153, that file is written only
-for a dynamically allocated port — start Chrome with an explicit
-`--remote-debugging-port` and there is no file at all, because the caller
-already knows the port. The opt-in allocates dynamically, so the file is the
-right channel; a future Chrome that changed this would make brw report the
-opt-in as off.
+is the only place it appears. Measured on Chrome 153.0.8010.37: with the opt-in
+on, that file holds `9222` and `/devtools/browser/<uuid>`; start Chrome with an
+explicit `--remote-debugging-port` instead and there is no file at all, because
+the caller already knows the port. brw never passes that flag on this lane, so
+the file is the channel.
 
-brw reads that file, probes the port, and checks that the browser WebSocket URL
-the endpoint reports points back at the same loopback port — a file left behind
-by an exited Chrome names a port anything else on the machine may since have
-taken. That checked URL is then the one brw dials, rather than re-asking the
-endpoint at connect time: a listener holding a stale port can answer the first
-question honestly and the second one however it likes.
+**The opt-in serves no DevTools HTTP endpoints.** Measured on the same Chrome,
+headless and headed alike: `/json/version`, `/json/list`, `/json` and `/` all
+answer 404 on an opted-in browser, where a Chrome started with
+`--remote-debugging-port` serves them. So the second line of
+`DevToolsActivePort` is not a convenience — it is the only place the browser
+target appears, and brw reads it. It builds the WebSocket URL itself from
+loopback, the recorded port and the recorded path, which is narrower than
+trusting `/json/version`: no listener gets to name the address brw dials. A
+second line carrying a scheme or an authority is refused for that reason. There
+is no version to read that way, so `brwctl doctor` says so rather than printing
+an empty version.
+
+When the endpoint does answer `/json/version` — a Chrome someone started with
+`--remote-debugging-port=0` — brw uses that answer and checks that the browser
+WebSocket URL it reports points back at the same loopback port, because a file
+left behind by an exited Chrome names a port anything else on the machine may
+since have taken. The checked URL is then the one brw dials, rather than
+re-asking the endpoint at connect time: a listener holding a stale port can
+answer the first question honestly and the second one however it likes.
+
+**Chrome asks before it answers.** On Chrome 144+ each remote debugging
+connection is approved by the person at the browser, so the WebSocket handshake
+sits unanswered until they allow it — measured against Chrome 153, the dial
+never completed and nothing on the wire said why. brw waits two minutes for
+that and then fails with a sentence naming the prompt, rather than hanging until
+someone kills the daemon. It cannot answer the prompt for you, by the same
+design that keeps it from turning the opt-in on.
 
 `brw_state` is refused on this lane. It is the same refusal as on the extension
 bridge and for the same reason: sealing the cookies of the browser you are

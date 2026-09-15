@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Don-Works/brw/internal/browser"
@@ -105,11 +106,15 @@ func TestChromeOptInRefusalsNameFlagsBrwdRegisters(t *testing.T) {
 }
 
 // fakeOptInChrome stages the endpoint shape Chrome records when a user turns
-// the opt-in on.
-func fakeOptInChrome(t *testing.T) string {
+// the opt-in on. The returned counter is every request the fixture served: a
+// gate that is supposed to run before discovery is only proven by that counter
+// staying at zero.
+func fakeOptInChrome(t *testing.T) (string, *atomic.Int64) {
 	t.Helper()
+	hits := &atomic.Int64{}
 	var doc map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
 		if r.URL.Path != "/json/version" {
 			http.NotFound(w, r)
 			return
@@ -130,14 +135,14 @@ func fakeOptInChrome(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(dir, "DevToolsActivePort"), []byte(strconv.Itoa(port)+"\n/devtools/browser/fake\n"), 0o600); err != nil {
 		t.Fatalf("write DevToolsActivePort: %v", err)
 	}
-	return dir
+	return dir, hits
 }
 
 // On the opt-in lane brw attaches to the endpoint the user turned on, and marks
 // the config as driving a browser its user is signed into.
 func TestConfigureChromeOptInAttachesToTheDiscoveredEndpoint(t *testing.T) {
-	dir := fakeOptInChrome(t)
-	cfg, endpoint, err := configureChromeOptIn(context.Background(), browser.Config{}, dir)
+	dir, _ := fakeOptInChrome(t)
+	cfg, endpoint, err := configureChromeOptIn(context.Background(), browser.Config{}, chromeOptInRequest{UserDataDir: dir})
 	if err != nil {
 		t.Fatalf("configureChromeOptIn: %v", err)
 	}
@@ -174,7 +179,7 @@ func TestConfigureChromeOptInRefusesWithoutLaunching(t *testing.T) {
 		{name: "no directory known for this browser", dir: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, _, err := configureChromeOptIn(context.Background(), browser.Config{}, tc.dir)
+			cfg, _, err := configureChromeOptIn(context.Background(), browser.Config{}, chromeOptInRequest{UserDataDir: tc.dir})
 			if err == nil {
 				t.Fatal("configureChromeOptIn succeeded with no endpoint")
 			}

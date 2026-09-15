@@ -220,8 +220,9 @@ hold them, and the error says so.
 Chrome through the extension) `brw_cookies` returns an explicit error: the
 extension's security policy blocks cookie CDP methods so a rogue server can
 never exfiltrate HttpOnly cookies through brw. `brw_identity`'s `transport`
-field (`direct-cdp` | `chrome-opt-in-cdp` | `extension-bridge`) tells you which
-you are on; the first two both reach browser-level CDP and both read cookies.
+field (`direct-cdp` | `remote-cdp` | `chrome-opt-in-cdp` | `extension-bridge`)
+tells you which you are on; every one but `extension-bridge` reaches
+browser-level CDP and reads cookies.
 Use a dedicated direct-CDP profile — or an incognito context there
 (`brw_open_incognito` + `brw_close_context`) for disposable cookie states.
 
@@ -280,9 +281,10 @@ where to look when a flow did something you did not expect.
 ## Faking the page's surroundings
 
 Seven tools override what a page believes about where it is and what it is
-talking to. All of them are DevTools session overrides, so they need the
-direct-CDP transport; on the extension bridge they are not advertised and return
-a named capability error if called anyway.
+talking to. All of them are DevTools session overrides, so they need a
+DevTools session that survives between calls, which every CDP transport has; on
+the extension bridge they are not advertised and return a named capability error
+if called anyway.
 
 `brw_set_geolocation {latitude, longitude, accuracy?}` is what
 `navigator.geolocation` reports. brw grants the page's geolocation permission so
@@ -365,10 +367,9 @@ miss saying the body never arrived.
 recent reasons when a replay could not answer something, so a half-loaded page
 points at the fixture rather than at nothing.
 
-`fulfill` and `replay` need the DevTools `Fetch` domain, so they work on
-direct CDP and on the Chrome opt-in lane. On the extension-bridge transport they
-return a named capability error and `abort` is what works; see the matrix in
-`docs/install.md`.
+`fulfill` and `replay` need the DevTools `Fetch` domain, so they work on every
+CDP transport. On the extension-bridge transport they return a named capability
+error and `abort` is what works; see the matrix in `docs/install.md`.
 
 ## When a page is contained
 
@@ -501,8 +502,8 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` | 87 | ~31.2k tokens |
-| `core` | 26 | ~10.2k tokens |
+| `all` | 87 | ~31.3k tokens |
+| `core` | 26 | ~10.3k tokens |
 | `minimal` | 13 | ~5.8k tokens |
 | `auto` (default) | 14, growing | ~6.0k tokens to start |
 

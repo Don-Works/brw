@@ -281,10 +281,15 @@ type Manager struct {
 	// refuses to seal that browser's cookies whatever store is installed.
 	signedInProfile bool
 
-	// attachOnly marks a lane that attached to a browser brw did not start, so
-	// the user data directory belongs to that browser. resolveDownloadDir reads
-	// it to keep brw's staging out of somebody else's profile.
-	attachOnly bool
+	// attachedBrowser reports that brw did not start this browser: some other
+	// process did, and brw holds only a DevTools connection to it.
+	//
+	// It is computed from what brw actually did — whether New built a launcher —
+	// and never from the lane, the flag the operator passed or the transport
+	// brw_identity reports, so an attach lane added later answers true here
+	// without an edit. stagesDownloads (manager_downloads.go) and connect below
+	// are its two readers.
+	attachedBrowser bool
 
 	// events is the CDP event stream every wait and post-action settle reads
 	// instead of re-asking the page. One subscription per context; see events.go.
@@ -481,7 +486,7 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 		emulationStates:    map[string]deviceEmulationState{},
 		incognitoContexts:  map[string]bool{},
 		signedInProfile:    cfg.SignedInProfile,
-		attachOnly:         cfg.AttachOnly,
+		attachedBrowser:    launcher == nil,
 	}
 
 	if err := m.connect(); err != nil {
@@ -521,21 +526,74 @@ func (m *Manager) Close() error {
 	return closeErr
 }
 
+// attachApprovalWindow bounds the first CDP round trip against a browser brw
+// did not start.
+//
+// Chrome 144+ asks the person at the browser to approve each remote debugging
+// connection, so the WebSocket handshake can sit unanswered until they click:
+// measured against an opted-in Chrome 153, the dial never completed and nothing
+// on the wire said why. The window is long enough for somebody to notice a
+// prompt and short enough that an unattended daemon fails with a sentence
+// instead of hanging until it is killed. A browser brw launched itself has no
+// such prompt, so its connect keeps the caller's own deadline.
+//
+// A var rather than a const so the test that proves the bound is applied does
+// not have to wait two minutes for it.
+var attachApprovalWindow = 2 * time.Minute
+
+// ErrAttachNotApproved says why a browser brw attached to never answered, and
+// names the only thing that can fix it. It is a separate error because the
+// answer is an action by a human at that browser, not a retry: Chrome 144 and
+// newer show a per-connection approval prompt, and until somebody allows it the
+// WebSocket handshake does not complete and nothing on the wire says why.
+var ErrAttachNotApproved = errors.New("the browser never answered brw's DevTools connection. Chrome 144 and newer ask the person at the browser to approve each remote debugging connection, so look for that prompt in the browser window and allow it; brw cannot answer it for you. If there is no prompt, the endpoint brw was pointed at is not speaking CDP")
+
 func (m *Manager) connect() error {
 	// Reclaim per-tab state when a target is destroyed/crashes (tabs closed
 	// outside brw_close_tab), so contexts, goroutines, and per-tab maps don't
 	// leak over a long session. chromedp keeps target discovery enabled, so the
 	// browser connection delivers these events.
 	chromedp.ListenBrowser(m.browserCtx, m.handleTargetLifecycle)
-	return chromedp.Run(m.browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		c := chromedp.FromContext(ctx)
-		if c == nil || c.Browser == nil {
-			return errors.New("browser executor is not available")
+	firstRoundTrip := func() error {
+		return chromedp.Run(m.browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			c := chromedp.FromContext(ctx)
+			if c == nil || c.Browser == nil {
+				return errors.New("browser executor is not available")
+			}
+			ctx = cdp.WithExecutor(ctx, c.Browser)
+			_, _, _, _, _, err := browser.GetVersion().Do(ctx)
+			return err
+		}))
+	}
+	if !m.attachedBrowser {
+		return firstRoundTrip()
+	}
+	// What is bounded is the WAIT, not the connection. chromedp allocates the
+	// browser on the first Run and gives it the lifetime of the context that Run
+	// was handed, so running this round trip under a timeout context closes the
+	// CDP session as soon as that context is cancelled — on the success path
+	// too, which leaves every later call failing with "context canceled".
+	//
+	// So the round trip keeps m.browserCtx and this waits beside it. On the
+	// timeout New closes the Manager, which cancels m.browserCtx and ends the
+	// goroutine; the channel is buffered so it cannot block even if nobody is
+	// left to read it.
+	done := make(chan error, 1)
+	go func() { done <- firstRoundTrip() }()
+	timer := time.NewTimer(attachApprovalWindow)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		if err != nil && errors.Is(err, context.DeadlineExceeded) {
+			// The caller's own deadline ran out first. Indistinguishable from
+			// the timeout below as far as the browser is concerned, so it gets
+			// the same answer.
+			return fmt.Errorf("%w (%v)", ErrAttachNotApproved, err)
 		}
-		ctx = cdp.WithExecutor(ctx, c.Browser)
-		_, _, _, _, _, err := browser.GetVersion().Do(ctx)
 		return err
-	}))
+	case <-timer.C:
+		return fmt.Errorf("%w (waited %s)", ErrAttachNotApproved, attachApprovalWindow)
+	}
 }
 
 // openNavigateTimeout bounds the navigation brw drives after attaching to a
