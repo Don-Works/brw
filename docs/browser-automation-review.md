@@ -282,7 +282,9 @@ parity argument alone:
 - Playwright can record and replay HAR files and intercept HTTP/WebSocket
   traffic. `brw` redacts captured headers, can replay one in-page request, and
   on direct-CDP can capture a HAR artifact and replay it as a `brw_route`
-  fixture. Fulfill and HAR replay are not available on the extension bridge.
+  fixture. Fulfilling a request outright, and replaying a whole HAR, both need
+  a direct CDP attachment; over the extension bridge those tools abort and
+  observe but cannot synthesise a response.
   See [Playwright network mocking](https://playwright.dev/docs/mock).
 - Playwright supports isolated contexts, reusable storage state, locale,
   timezone, geolocation, permissions, and visual/ARIA baselines. `brw` has

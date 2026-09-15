@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/plugin"
@@ -45,11 +46,12 @@ func standInEndpoint(t *testing.T) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	launcher, err := cdp.Launch(ctx, cdp.LaunchConfig{UserDataDir: t.TempDir(), Headless: true})
+	profile := browsertest.NewProfile(t)
+	launcher, err := cdp.Launch(ctx, cdp.LaunchConfig{UserDataDir: profile.Dir(), Headless: true})
 	if err != nil {
 		t.Skipf("stand-in Chrome did not start: %v", err)
 	}
-	t.Cleanup(func() { _ = launcher.Close() })
+	profile.StopWith(func() { _ = launcher.Close() })
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, launcher.Endpoint()+"/json/version", nil)
 	if err != nil {

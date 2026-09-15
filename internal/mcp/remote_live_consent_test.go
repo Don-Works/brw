@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/siteconsent"
@@ -32,11 +33,12 @@ func standInRemoteManager(t *testing.T) *browser.Manager {
 	}
 	launchCtx, cancelLaunch := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelLaunch()
-	launcher, err := cdp.Launch(launchCtx, cdp.LaunchConfig{UserDataDir: t.TempDir(), Headless: true})
+	profile := browsertest.NewProfile(t)
+	launcher, err := cdp.Launch(launchCtx, cdp.LaunchConfig{UserDataDir: profile.Dir(), Headless: true})
 	if err != nil {
 		t.Skipf("stand-in Chrome did not start: %v", err)
 	}
-	t.Cleanup(func() { _ = launcher.Close() })
+	profile.StopWith(func() { _ = launcher.Close() })
 
 	request, err := http.NewRequestWithContext(launchCtx, http.MethodGet, launcher.Endpoint()+"/json/version", nil)
 	if err != nil {
