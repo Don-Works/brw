@@ -258,6 +258,7 @@ func StepCredentialReference(step Step) (string, bool) {
 		return "", false
 	}
 	return credential.Reference(step.Value)
+}
 
 // actuationActions are the steps that do something to the page rather than read
 // it. One table, because "is this an action" decides what a step must declare,
