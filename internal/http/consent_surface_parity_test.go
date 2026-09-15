@@ -218,7 +218,10 @@ func TestEveryConsentInstallerIsAnEnumeratedSurface(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if name := d.Name(); name == ".git" || name == "node_modules" || name == "testdata" {
+			// .claude holds this repo's git worktrees, each a complete second
+			// copy of the tree; walking into one reports another checkout's
+			// surfaces as though they were this one's.
+			if name := d.Name(); name == ".git" || name == ".claude" || name == "node_modules" || name == "testdata" {
 				return fs.SkipDir
 			}
 			return nil

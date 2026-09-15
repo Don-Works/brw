@@ -33,7 +33,10 @@ func TestNoTestHandsATempDirStraightToABrowser(t *testing.T) {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", "node_modules", "bin", "store-assets":
+			// .claude holds this repo's git worktrees, each a complete second
+			// copy of the tree. Walking into one reports every finding once per
+			// worktree and keeps reporting a violation already fixed here.
+			case ".git", ".claude", "node_modules", "bin", "store-assets":
 				return fs.SkipDir
 			}
 			return nil
