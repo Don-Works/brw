@@ -8,7 +8,7 @@
 # running shards on separate runners instead.
 #
 # usage:
-#   test-shard.sh rest                      # every package no other shard claims
+#   test-shard.sh rest [index count]        # every package no other shard claims
 #   test-shard.sh package <index> <count> <package>...
 #
 # `package` slices by test NAME, so one package can span several runners. The
@@ -22,7 +22,7 @@ set -eu
 
 # The packages the other shards claim. `rest` excludes exactly these, so a new
 # package is picked up by the rest shard without editing this list.
-slow_groups='./internal/browser ./internal/snapshot ./internal/artifact ./internal/extensionbridge'
+slow_groups='./internal/browser ./internal/snapshot ./internal/extensionbridge'
 
 mode=${1:-}
 case "$mode" in
@@ -55,6 +55,18 @@ case "$mode" in
       exit 1
     fi
     echo "== rest shard: $rest_count of $total packages (claimed elsewhere: $slow_groups)"
+    index=${2:-1}
+    count=${3:-1}
+    if [ "$count" -gt 1 ]; then
+      # Sliced by package rather than by test name: these are all small, and
+      # slicing whole packages keeps each one's tests in a single process.
+      rest=$(printf '%s\n' "$rest" | awk -v i="$index" -v n="$count" '(NR - 1) % n == (i - 1)')
+      if [ -z "$rest" ]; then
+        echo "rest shard $index/$count selected no packages" >&2
+        exit 1
+      fi
+      echo "== rest shard $index/$count: $(printf '%s\n' "$rest" | wc -l | tr -d ' ') packages"
+    fi
     # shellcheck disable=SC2086 # the package list is deliberately word-split
     go test -p=1 $rest
     ;;

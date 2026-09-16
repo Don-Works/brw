@@ -60,23 +60,35 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # browser is ~greatest part of the suite's wall clock (312s of 508s
-          # measured locally), so it gets the most runners; snapshot is the other
-          # heavyweight at 81s. Everything else is ~20s in total.
+          # The split follows measured cost, not package count. Of 508s locally:
+          # browser 312s, snapshot 81s, artifact 24s, extensionbridge 14s, and all
+          # 41 other packages 20s together. The -race build below is the other
+          # heavyweight: it recompiles the world with instrumentation, which is why
+          # it lives in its own shard rather than inside the static checks.
           - name: browser-1
-            run: ./scripts/test-shard.sh package 1 3 ./internal/browser
+            run: ./scripts/test-shard.sh package 1 4 ./internal/browser
           - name: browser-2
-            run: ./scripts/test-shard.sh package 2 3 ./internal/browser
+            run: ./scripts/test-shard.sh package 2 4 ./internal/browser
           - name: browser-3
-            run: ./scripts/test-shard.sh package 3 3 ./internal/browser
+            run: ./scripts/test-shard.sh package 3 4 ./internal/browser
+          - name: browser-4
+            run: ./scripts/test-shard.sh package 4 4 ./internal/browser
           - name: snapshot-1
             run: ./scripts/test-shard.sh package 1 2 ./internal/snapshot
           - name: snapshot-2
             run: ./scripts/test-shard.sh package 2 2 ./internal/snapshot
-          - name: artifact-and-bridge
-            run: go test -p=1 ./internal/artifact ./internal/extensionbridge
-          - name: rest
-            run: ./scripts/test-shard.sh rest
+          - name: bridge-1
+            run: ./scripts/test-shard.sh package 1 2 ./internal/extensionbridge
+          - name: bridge-2
+            run: ./scripts/test-shard.sh package 2 2 ./internal/extensionbridge
+          - name: rest-1
+            run: ./scripts/test-shard.sh rest 1 2
+          - name: rest-2
+            run: ./scripts/test-shard.sh rest 2 2
+          - name: race-bridge
+            run: go test -race ./internal/extensionbridge
+          - name: race-core
+            run: go test -race ./internal/artifact ./internal/recipe ./internal/mcp ./internal/http ./internal/httpclient ./internal/navpolicy
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
