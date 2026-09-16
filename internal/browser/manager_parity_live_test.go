@@ -34,6 +34,15 @@ func TestSetLocaleIsWhatThePageReports(t *testing.T) {
 	if _, err := m.SetLocale(ctx, LocaleOptions{Locale: "en-GB", Timezone: "Europe/London"}); err != nil {
 		t.Fatalf("SetLocale: %v", err)
 	}
+	// navigator.language and navigator.languages are read when the document is
+	// created, so they only follow the override on a fresh document. That is
+	// exactly what the tool tells the caller ("a document that already parsed its
+	// language needs a reload"), so the test reloads rather than asserting a
+	// guarantee the product does not make: macOS Chrome happened to apply it to
+	// the live document and the Linux CI Chrome did not.
+	if _, err := m.Navigate(ctx, "reload"); err != nil {
+		t.Fatalf("reload after SetLocale: %v", err)
+	}
 	if got := evaluateString(t, m, ctx, `navigator.language`); got != "en-GB" {
 		t.Fatalf("navigator.language = %q, want en-GB", got)
 	}
@@ -129,7 +138,7 @@ func TestTouchDispatchReachesThePage(t *testing.T) {
 	if _, err := m.Touch(ctx, TouchOptions{Action: "tap", X: &x, Y: &y}); err != nil {
 		t.Fatalf("tap: %v", err)
 	}
-	log := evaluateString(t, m, ctx, `window.touchLog.join(",")`)
+	log := evaluateString(t, m, ctx, `(window.touchLog || []).join(",")`)
 	if log == "" {
 		t.Fatal("the page received no touch events from a tap")
 	}
@@ -138,15 +147,20 @@ func TestTouchDispatchReachesThePage(t *testing.T) {
 	if _, err := m.Evaluate(ctx, `window.touchLog = []`); err != nil {
 		t.Fatalf("reset log: %v", err)
 	}
-	toX, toY := 260.0, 40.0
+	// The swipe is VERTICAL on purpose. A horizontal drag across the viewport is
+	// Chrome's overscroll swipe-to-navigate gesture on a touch-enabled profile,
+	// and on the Linux CI Chrome it navigated the tab away mid-test, so the next
+	// read found the fixture's window global gone. A vertical swipe exercises the
+	// same touchmove path without triggering that gesture.
+	toX, toY := 40.0, 260.0
 	if _, err := m.Touch(ctx, TouchOptions{Action: "swipe", X: &x, Y: &y, ToX: &toX, ToY: &toY, DurationMS: 120}); err != nil {
 		t.Fatalf("swipe: %v", err)
 	}
-	log = evaluateString(t, m, ctx, `window.touchLog.join(",")`)
+	log = evaluateString(t, m, ctx, `(window.touchLog || []).join(",")`)
 	if log == "" {
 		t.Fatal("the page received no touch events from a swipe")
 	}
-	if got := evaluateString(t, m, ctx, `window.touchLog.filter(function (e) { return e.indexOf("move:") === 0; }).length`); got == "0" {
+	if got := evaluateString(t, m, ctx, `(window.touchLog || []).filter(function (e) { return e.indexOf("move:") === 0; }).length`); got == "0" {
 		t.Fatalf("a swipe produced no touchmove events: %s", log)
 	}
 	t.Logf("swipe log: %s", log)
