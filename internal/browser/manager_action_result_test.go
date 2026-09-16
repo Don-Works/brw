@@ -23,6 +23,19 @@ func openHTMLInManager(t *testing.T, m *Manager, ctx context.Context, html strin
 	}
 	tabID := string(id)
 	m.refs.SetActive(tabID)
+	// CreateTarget returns when the target exists, not when its document is
+	// usable, so a snapshot taken straight afterwards can see an empty page and
+	// report zero elements. This surfaced on CI as
+	// TestManagerClickSurfacesDispatchedButNoObservableChange failing with
+	// "snapshot elements = 0, want 1" — a race that had nothing to do with the
+	// assertion, and that CI only caught once the suite was sharded.
+	//
+	// WaitFor("load") is order-safe: it resolves from the load event, resolves
+	// immediately if that event already fired, and reads the document itself if
+	// brw attached too late to see one.
+	if err := m.WaitFor(ctx, "load", 10*time.Second); err != nil {
+		t.Fatalf("wait for fixture to load: %v", err)
+	}
 	return tabID
 }
 
