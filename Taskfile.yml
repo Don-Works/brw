@@ -201,6 +201,17 @@ tasks:
         if command -v codesign >/dev/null 2>&1; then
           codesign --force --sign - "{{.MAC_APPDIR}}/bin/brw" "{{.MAC_APPDIR}}/bin/brwd" "{{.MAC_APPDIR}}/bin/brwcheck" "{{.MAC_APPDIR}}/bin/brwctl" "{{.MAC_APPDIR}}/bin/brw-devtools-mcp"
         fi
+      # Link into BINDIR, the same as the Linux `install` target above. Without
+      # this the payload installs and stays unreachable: this machine had brwd,
+      # brwctl and brwcheck on PATH from a hand-made link set predating the brw
+      # CLI, so every install-mac since copied bin/brw into the app dir and left
+      # `brw` missing from PATH entirely.
+      - mkdir -p "{{.BINDIR}}"
+      - ln -sf "{{.MAC_APPDIR}}/bin/brw" "{{.BINDIR}}/brw"
+      - ln -sf "{{.MAC_APPDIR}}/bin/brwd" "{{.BINDIR}}/brwd"
+      - ln -sf "{{.MAC_APPDIR}}/bin/brwcheck" "{{.BINDIR}}/brwcheck"
+      - ln -sf "{{.MAC_APPDIR}}/bin/brwctl" "{{.BINDIR}}/brwctl"
+      - ln -sf "{{.MAC_APPDIR}}/bin/brw-devtools-mcp" "{{.BINDIR}}/brw-devtools-mcp"
 
   # Keep every existing unpacked extension payload current. rsync's exclusion
   # preserves the local bridge endpoint/token file in each copy while --delete
