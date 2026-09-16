@@ -56,6 +56,10 @@ tasks:
     # browser, snapshot, and readability tests each launch real headless Chrome.
     # Serialize package test binaries so CI does not run dozens of Chrome roots at
     # once and turn the Manager's intentional 20s operation timeout into a load race.
+    #
+    # CI runs the same set split across runners instead of serially: each shard
+    # still passes -p=1, and the parallelism is the runner matrix. See
+    # scripts/test-shard.sh and the test-shard job in .github/workflows/ci.yml.
     cmds:
       - task: test-extension
       - go test -p=1 ./...

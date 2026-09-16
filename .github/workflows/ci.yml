@@ -13,9 +13,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  # The Go suite cannot just use `go test -p=N`. The browser, snapshot and
+  # artifact tests each launch a real headless Chrome, and many Chrome roots on
+  # one runner turn the Manager's 20s operation timeout into a load race. So each
+  # shard keeps -p=1 and the parallelism comes from this matrix instead — see
+  # scripts/test-shard.sh for how a single package is split across runners.
+  test-shard:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # browser is ~greatest part of the suite's wall clock (312s of 508s
+          # measured locally), so it gets the most runners; snapshot is the other
+          # heavyweight at 81s. Everything else is ~20s in total.
+          - name: browser-1
+            run: ./scripts/test-shard.sh package 1 3 ./internal/browser
+          - name: browser-2
+            run: ./scripts/test-shard.sh package 2 3 ./internal/browser
+          - name: browser-3
+            run: ./scripts/test-shard.sh package 3 3 ./internal/browser
+          - name: snapshot-1
+            run: ./scripts/test-shard.sh package 1 2 ./internal/snapshot
+          - name: snapshot-2
+            run: ./scripts/test-shard.sh package 2 2 ./internal/snapshot
+          - name: artifact-and-bridge
+            run: go test -p=1 ./internal/artifact ./internal/extensionbridge
+          - name: rest
+            run: ./scripts/test-shard.sh rest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -24,22 +50,34 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-      - name: Install Task
-        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
-        with:
-          version: 3.50.0
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Verify dependency checksums
         run: go mod verify
+      - name: Test shard ${{ matrix.name }}
+        run: ${{ matrix.run }}
+
+  # One job named `test` so a `needs:` or a required-status setting still has a
+  # single name to point at, and it cannot go green unless every shard did.
+  test:
+    needs: test-shard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every test shard passed
+        run: echo "all Go test shards passed"
+
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Lint GitHub Actions workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-      - name: Test every package and the real extension worker
-        run: task test
-      - name: Run deterministic real-browser functional suite
-        run: task test-functional
       - name: Enforce open-source privacy boundary
         shell: bash
         run: |
@@ -61,3 +99,29 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
       - name: Race-test transport and policy boundaries
         run: go test -race ./internal/artifact ./internal/recipe ./internal/mcp ./internal/http ./internal/httpclient ./internal/navpolicy ./internal/extensionbridge
+
+  functional:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Install Task
+        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+        with:
+          version: 3.50.0
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify dependency checksums
+        run: go mod verify
+      - name: Test the real extension worker
+        run: task test-extension
+      - name: Run deterministic real-browser functional suite
+        run: task test-functional

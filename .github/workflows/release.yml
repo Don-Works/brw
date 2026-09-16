@@ -22,9 +22,11 @@ env:
   BRW_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
-  test:
+  # A release must run from the exact tag commit. Every other job needs this one,
+  # so a mis-tagged run fails before any of the expensive work starts.
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,23 +47,71 @@ jobs:
           git show-ref --verify --quiet "refs/tags/$tag"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git rev-list -n 1 "refs/tags/$tag")" = "$GITHUB_SHA"
+
+  # Each shard keeps -p=1: the browser, snapshot and artifact tests each launch a
+  # real headless Chrome, and many Chrome roots on one runner turn the Manager's
+  # 20s operation timeout into a load race. The parallelism is the matrix — see
+  # scripts/test-shard.sh.
+  test-shard:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # browser is ~greatest part of the suite's wall clock (312s of 508s
+          # measured locally), so it gets the most runners; snapshot is the other
+          # heavyweight at 81s. Everything else is ~20s in total.
+          - name: browser-1
+            run: ./scripts/test-shard.sh package 1 3 ./internal/browser
+          - name: browser-2
+            run: ./scripts/test-shard.sh package 2 3 ./internal/browser
+          - name: browser-3
+            run: ./scripts/test-shard.sh package 3 3 ./internal/browser
+          - name: snapshot-1
+            run: ./scripts/test-shard.sh package 1 2 ./internal/snapshot
+          - name: snapshot-2
+            run: ./scripts/test-shard.sh package 2 2 ./internal/snapshot
+          - name: artifact-and-bridge
+            run: go test -p=1 ./internal/artifact ./internal/extensionbridge
+          - name: rest
+            run: ./scripts/test-shard.sh rest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-      - name: Install Task
-        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
-        with:
-          version: 3.50.0
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Verify dependency checksums
         run: go mod verify
-      - name: Test
-        run: task test
-      - name: Run deterministic real-browser functional suite
-        run: task test-functional
+      - name: Test shard ${{ matrix.name }}
+        run: ${{ matrix.run }}
+
+  # One job named `test` so the packaging jobs keep a single name to gate on, and
+  # it cannot go green unless every shard did.
+  test:
+    needs: test-shard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every test shard passed
+        run: echo "all Go test shards passed"
+
+  static:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
       - name: Enforce open-source privacy boundary
         shell: bash
         run: |
@@ -76,8 +126,35 @@ jobs:
       - name: Reachable vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
+  functional:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Install Task
+        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+        with:
+          version: 3.50.0
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify dependency checksums
+        run: go mod verify
+      - name: Test the real extension worker
+        run: task test-extension
+      - name: Run deterministic real-browser functional suite
+        run: task test-functional
+
   linux-packages:
-    needs: test
+    needs: [test, static, functional]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -130,7 +207,7 @@ jobs:
           if-no-files-found: error
 
   macos-package:
-    needs: test
+    needs: [test, static, functional]
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -313,114 +390,14 @@ jobs:
           path: dist/reports/*.signing.md
           if-no-files-found: error
 
-  windows-packages:
-    needs: test
-    runs-on: windows-latest
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          dotnet-version: 8.0.x
-      - name: Install WiX
-        shell: pwsh
-        run: dotnet tool install --global wix --version 5.0.2
-      - name: Resolve version
-        shell: pwsh
-        run: |
-          $tag = $env:BRW_RELEASE_TAG
-          $version = $tag -replace "^v", ""
-          if ($version -notmatch "^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$") {
-            throw "Tag must be vX.Y.Z, got $tag"
-          }
-          "BRW_RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "BRW_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      # As on macOS: no certificate yet, so absence has to leave the build unsigned
-      # rather than fail it.
-      - name: Stage Authenticode signing material
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
-          WINDOWS_SIGN_DLIB: ${{ vars.WINDOWS_SIGN_DLIB }}
-        run: |
-          if ($env:WINDOWS_CERTIFICATE_PFX) {
-            $Pfx = Join-Path $env:RUNNER_TEMP "brw-signing.pfx"
-            [System.IO.File]::WriteAllBytes($Pfx, [System.Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX))
-            "WINDOWS_CERTIFICATE_PATH=$Pfx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "BRW_WINDOWS_SIGNING=authenticode" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          } elseif ($env:WINDOWS_SIGN_DLIB) {
-            # A cloud signing service holds the key, so there is nothing to stage
-            # here; its own credential step has to run before the build.
-            "BRW_WINDOWS_SIGNING=authenticode" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          } else {
-            Write-Host "::warning title=Windows artifacts are unsigned::Neither WINDOWS_CERTIFICATE_PFX nor WINDOWS_SIGN_DLIB is set. The MSIs carry no Authenticode signature, so SmartScreen warns on download and blocks the install behind More info. See docs/release-signing.md."
-            "BRW_WINDOWS_SIGNING=unsigned" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          }
-      - name: Build Windows package
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_SIGN_DLIB: ${{ vars.WINDOWS_SIGN_DLIB }}
-          WINDOWS_SIGN_DMDF: ${{ vars.WINDOWS_SIGN_DMDF }}
-          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
-          BRW_SIGNING_REPORT: ${{ github.workspace }}/dist/reports/20-windows-${{ matrix.arch }}.signing.md
-        run: scripts/package-windows.ps1 -Version "$env:BRW_VERSION" -Arch "${{ matrix.arch }}" -OutDir dist/release
-      - name: Verify Windows signing
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $Msi = "dist/release/brw_$($env:BRW_VERSION)_windows_${{ matrix.arch }}.msi"
-          $Log = Join-Path $env:RUNNER_TEMP "windows-verification.txt"
-
-          if ($env:BRW_WINDOWS_SIGNING -eq "authenticode") {
-            $SignTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
-              Sort-Object FullName -Descending |
-              Select-Object -First 1
-            if (-not $SignTool) { throw "signtool.exe not found for verification" }
-            # /pa applies the Authenticode policy a client actually uses, rather
-            # than the default driver-signing policy which would pass differently.
-            & $SignTool.FullName verify /pa /v $Msi *>&1 | Tee-Object -FilePath $Log
-            if ($LASTEXITCODE -ne 0) { throw "signtool verify failed with exit code $LASTEXITCODE" }
-          } else {
-            "unsigned MSI: no Authenticode signature, no publisher, no timestamp" | Tee-Object -FilePath $Log
-          }
-
-          $Summary = @("## Windows ${{ matrix.arch }} signing verification", "", '```') +
-            (Get-Content $Log) + @('```')
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $Summary
-      - name: Remove signing material
-        if: always()
-        shell: pwsh
-        run: |
-          if ($env:WINDOWS_CERTIFICATE_PATH -and (Test-Path $env:WINDOWS_CERTIFICATE_PATH)) {
-            Remove-Item -Force $env:WINDOWS_CERTIFICATE_PATH
-          }
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: brw-windows-${{ matrix.arch }}
-          path: dist/release/*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: brw-windows-${{ matrix.arch }}-signing
-          path: dist/reports/*.signing.md
-          if-no-files-found: error
-
+  # The Windows MSI job was removed on 2026-09-16: the MSIs shipped unsigned
+  # (no Authenticode certificate), so they only produced SmartScreen warnings and
+  # a signing-verification report nobody could act on. Restore it by reverting
+  # this hunk and re-adding windows-packages to publish-release's needs list.
   publish-release:
     needs:
       - linux-packages
       - macos-package
-      - windows-packages
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
