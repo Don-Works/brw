@@ -49,6 +49,11 @@ type Route struct {
 	Body        string            `json:"body,omitempty"`
 	ContentType string            `json:"content_type,omitempty"`
 	Headers     map[string]string `json:"headers,omitempty"`
+	// ResourceTypes narrows the rule to named request kinds; empty matches every
+	// kind. The names are the canonical set in RouteResourceTypeNames, chosen to
+	// match agent-browser's --resource-type vocabulary and to map onto Chrome's
+	// declarativeNetRequest resource types on the extension bridge.
+	ResourceTypes []string `json:"resource_types,omitempty"`
 	// Times, when positive, retires the route after that many matches. Zero
 	// means it applies until cleared.
 	Times int `json:"times,omitempty"`
@@ -127,6 +132,9 @@ func (r *routeState) match(tabID, url string, resource network.ResourceType) *Ro
 	routes := r.routes[tabID]
 	for i, route := range routes {
 		if !matchURLGlob(route.Pattern, url) {
+			continue
+		}
+		if !resourceTypeMatches(route.ResourceTypes, resource) {
 			continue
 		}
 		if route.Behaviour == RouteReplay && !harReplayableResourceType(resource) {
@@ -386,8 +394,11 @@ type RouteOptions struct {
 	Body        string            `json:"body"`
 	ContentType string            `json:"content_type"`
 	Headers     map[string]string `json:"headers"`
-	Times       int               `json:"times"`
-	TabID       string            `json:"tab_id"`
+	// ResourceTypes narrows the rule to named request kinds; empty matches every
+	// kind. Validated against browser.RouteResourceTypeNames.
+	ResourceTypes []string `json:"resource_types"`
+	Times         int      `json:"times"`
+	TabID         string   `json:"tab_id"`
 
 	// HARArtifactID names the recorded HAR a replay answers from.
 	HARArtifactID string `json:"har_artifact_id"`
@@ -427,6 +438,11 @@ func buildRoute(opts RouteOptions) (*Route, error) {
 		Headers:     opts.Headers,
 		Times:       opts.Times,
 	}
+	resourceTypes, err := NormalizeResourceTypes(opts.ResourceTypes)
+	if err != nil {
+		return nil, err
+	}
+	route.ResourceTypes = resourceTypes
 	if behaviour == RouteFulfill {
 		if route.Status == 0 {
 			route.Status = 200
@@ -472,11 +488,16 @@ func buildReplayRoute(opts RouteOptions) (*Route, error) {
 	if pattern == "" {
 		pattern = "*"
 	}
+	resourceTypes, err := NormalizeResourceTypes(opts.ResourceTypes)
+	if err != nil {
+		return nil, err
+	}
 	return &Route{
-		Pattern:   pattern,
-		Behaviour: RouteReplay,
-		Times:     opts.Times,
-		har:       newHARFixture(artifactID, opts.HAR, match, onMiss),
+		Pattern:       pattern,
+		Behaviour:     RouteReplay,
+		Times:         opts.Times,
+		ResourceTypes: resourceTypes,
+		har:           newHARFixture(artifactID, opts.HAR, match, onMiss),
 	}, nil
 }
 

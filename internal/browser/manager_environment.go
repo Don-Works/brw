@@ -41,6 +41,9 @@ type environmentState struct {
 	// permission is browser-wide rather than per tab, so clearing an override
 	// would otherwise revoke a grant the human made themselves.
 	geoPermissions map[string]string
+	// initScripts is the per-tab registry of Page.addScriptToEvaluateOnNewDocument
+	// identifiers, which is the only handle CDP gives back for removing a script.
+	initScripts map[string][]InitScript
 }
 
 // armedCredential is alive only between Authenticate arming it and the deferred
@@ -70,6 +73,49 @@ func (e *environmentState) initLocked() {
 	if e.geoPermissions == nil {
 		e.geoPermissions = map[string]string{}
 	}
+	if e.initScripts == nil {
+		e.initScripts = map[string][]InitScript{}
+	}
+}
+
+func (e *environmentState) addInitScript(tabID string, script InitScript) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.initLocked()
+	e.initScripts[tabID] = append(e.initScripts[tabID], script)
+}
+
+func (e *environmentState) removeInitScript(tabID, id string) (InitScript, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.initLocked()
+	scripts := e.initScripts[tabID]
+	for i, script := range scripts {
+		if script.ID == id {
+			e.initScripts[tabID] = append(scripts[:i], scripts[i+1:]...)
+			if len(e.initScripts[tabID]) == 0 {
+				delete(e.initScripts, tabID)
+			}
+			return script, true
+		}
+	}
+	return InitScript{}, false
+}
+
+func (e *environmentState) listInitScripts(tabID string) []InitScript {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.initLocked()
+	return append([]InitScript(nil), e.initScripts[tabID]...)
+}
+
+func (e *environmentState) clearInitScripts(tabID string) []InitScript {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.initLocked()
+	scripts := append([]InitScript(nil), e.initScripts[tabID]...)
+	delete(e.initScripts, tabID)
+	return scripts
 }
 
 // authLock serialises Authenticate calls on one tab.
@@ -444,6 +490,55 @@ func (m *Manager) EmulateMedia(ctx context.Context, opts MediaEmulationOptions) 
 		message = "cleared emulated media; the tab is back on the browser's own media type and user preferences"
 	}
 	return EnvironmentResult{OK: true, TabID: tabID, Cleared: clear, Media: &cfg, Message: message}, nil
+}
+
+// SetLocale overrides the language and time zone the tab reports. Both are
+// independent Emulation commands: an empty value restores the host's own for
+// that one field, so a request that names only a timezone leaves the locale
+// untouched. clear:true restores both.
+func (m *Manager) SetLocale(ctx context.Context, opts LocaleOptions) (EnvironmentResult, error) {
+	cfg, clear, err := NormalizeLocale(opts)
+	if err != nil {
+		return EnvironmentResult{}, err
+	}
+	tabID, tabCtx, cancel, err := m.contextForTab(ctx, strings.TrimSpace(opts.TabID))
+	if err != nil {
+		return EnvironmentResult{}, err
+	}
+	defer cancel()
+
+	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(runCtx context.Context) error {
+		// Emulation.setLocaleOverride takes an ICU locale ("en_GB"), while the
+		// caller and navigator.language use BCP 47 ("en-GB"). Convert on the way
+		// in so either spelling works.
+		if cfg.Locale != "" || clear {
+			if err := cdpe.SetLocaleOverride().WithLocale(icuLocale(cfg.Locale)).Do(runCtx); err != nil {
+				return err
+			}
+		}
+		if cfg.Timezone != "" || clear {
+			if err := cdpe.SetTimezoneOverride(cfg.Timezone).Do(runCtx); err != nil {
+				return fmt.Errorf("set timezone override: %w", err)
+			}
+		}
+		return nil
+	})); err != nil {
+		return EnvironmentResult{}, err
+	}
+	m.invalidateState(tabID)
+
+	message := "locale override applied to this tab; Date, Intl and Accept-Language use it immediately, but the language a document already parsed for itself needs a reload"
+	if clear {
+		message = "cleared the locale and timezone overrides; the tab is back on the host's own locale and zone"
+	}
+	return EnvironmentResult{OK: true, TabID: tabID, Cleared: clear, Locale: &cfg, Message: message}, nil
+}
+
+// icuLocale converts a BCP 47 tag ("en-GB") to the ICU form CDP documents
+// ("en_GB"). Chrome accepts the hyphenated form too, but the documented one is
+// what a version bump is least likely to change.
+func icuLocale(tag string) string {
+	return strings.ReplaceAll(tag, "-", "_")
 }
 
 // SetExtraHeaders declares extra request headers and the origins allowed to

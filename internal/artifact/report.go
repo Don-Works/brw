@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/devtools"
 )
 
@@ -13,6 +14,14 @@ import (
 // document. It is not a brw_artifact_capture kind: a report is produced by the
 // tool that ran the audit, not by asking the store to go and fetch something.
 const KindAccessibilityReport = "a11y_report"
+
+// KindPerformanceTrace and KindCPUProfile are the store kinds for a Chrome
+// performance trace and a V8 CPU profile. Like the accessibility report they are
+// produced by the tool that ran the capture, not fetched by the store.
+const (
+	KindPerformanceTrace = "perf_trace"
+	KindCPUProfile       = "cpu_profile"
+)
 
 // maxReportBytes bounds one stored report. An axe document for a large single
 // page application runs to a few megabytes; anything past this is a runaway, not
@@ -45,7 +54,7 @@ func (s *Service) PutReport(ctx context.Context, opts ReportOptions, data []byte
 	if s == nil || s.store == nil {
 		return Meta{}, errors.New("artifact store is not configured on the browser host")
 	}
-	if opts.Kind != KindAccessibilityReport {
+	if opts.Kind != KindAccessibilityReport && opts.Kind != KindPerformanceTrace && opts.Kind != KindCPUProfile {
 		return Meta{}, errors.New("unsupported report kind")
 	}
 	if len(data) == 0 {
@@ -127,4 +136,38 @@ func noteAlso(existing, added string) string {
 		return added
 	}
 	return existing + "; " + added
+}
+
+// AttachPerformanceReport moves a captured trace or CPU profile out of result
+// and into the store, leaving a payload-free handle in its place. On a lane
+// without a store (an upstream proxy whose host already stored it) the result is
+// returned untouched.
+func AttachPerformanceReport(ctx context.Context, api API, result browser.ProfileResult, ttl time.Duration) browser.ProfileResult {
+	data := result.Data
+	result.Data = nil
+	if result.Artifact != nil || len(data) == 0 {
+		return result
+	}
+	putter, ok := api.(reportPutter)
+	if !ok || putter == nil {
+		result.Note = noteAlso(result.Note, "the browser host has no artifact store, so the capture was discarded")
+		return result
+	}
+	kind := KindPerformanceTrace
+	if result.Kind == browser.ProfileKindCPU {
+		kind = KindCPUProfile
+	}
+	meta, err := putter.PutReport(ctx, ReportOptions{Kind: kind, TTL: ttl}, data)
+	if err != nil {
+		result.Note = noteAlso(result.Note, "the capture could not be stored: "+err.Error())
+		return result
+	}
+	result.Artifact = &browser.ProfileArtifact{
+		ID:        meta.ID,
+		MIMEType:  meta.MIMEType,
+		SizeBytes: meta.SizeBytes,
+		SHA256:    meta.SHA256,
+		ExpiresAt: meta.ExpiresAt,
+	}
+	return result
 }

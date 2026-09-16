@@ -77,6 +77,8 @@ var takeoverGuardedActions = map[string]bool{
 	"key_down":     true,
 	"key_up":       true,
 	"scroll":       true,
+	"scroll_to":    true,
+	"touch":        true,
 	"focus":        true,
 	"clipboard":    true,
 	"navigate":     true,

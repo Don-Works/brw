@@ -84,6 +84,11 @@ func TestTakeoverRefusesEveryAgentInputAction(t *testing.T) {
 		{"key_down", func(m *Manager) error { _, err := m.KeyDown(ctx, KeyHoldOptions{Key: "Control"}); return err }},
 		{"key_up", func(m *Manager) error { _, err := m.KeyUp(ctx, KeyHoldOptions{Key: "Control"}); return err }},
 		{"scroll", func(m *Manager) error { _, err := m.Scroll(ctx, "down"); return err }},
+		{"scroll_to", func(m *Manager) error { _, err := m.ScrollTo(ctx, "e1"); return err }},
+		{"touch", func(m *Manager) error {
+			_, err := m.Touch(ctx, TouchOptions{Action: "tap", Ref: "e1"})
+			return err
+		}},
 		{"focus", func(m *Manager) error { _, err := m.Focus(ctx, "e1"); return err }},
 		{"focus", func(m *Manager) error { return m.FocusRef(ctx, "e1") }},
 		{"clipboard", func(m *Manager) error {

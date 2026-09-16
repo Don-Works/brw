@@ -20,6 +20,10 @@ var cookieDomainAddressesTheCookie = map[string]bool{
 	"list":   false,
 	"set":    true,
 	"delete": true,
+	// An import writes the cookies it was handed, and a declared domain is the
+	// address they are written to. With no domain the import falls back to the
+	// tab's own URL, which CookieScopeIsTab reports as reaching the tab.
+	"import": true,
 }
 
 // CookieScopeIsTab reports whether a brw_cookies call resolves its scope from

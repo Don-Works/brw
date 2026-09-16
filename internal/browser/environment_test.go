@@ -373,3 +373,53 @@ func TestNormalizeNetworkConditionsClearsToUnthrottled(t *testing.T) {
 		t.Fatalf("cleared config = %+v, want online with no latency and no throughput cap", cfg)
 	}
 }
+
+// A locale override is two independent Emulation commands, so the normalizer
+// must accept either alone and reject only a request that names neither.
+func TestNormalizeLocale(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       LocaleOptions
+		wantLocale string
+		wantZone   string
+		wantErr    bool
+	}{
+		{name: "locale alone", opts: LocaleOptions{Locale: "en-GB"}, wantLocale: "en-GB"},
+		{name: "timezone alone", opts: LocaleOptions{Timezone: "Europe/London"}, wantZone: "Europe/London"},
+		{name: "both", opts: LocaleOptions{Locale: "fr-FR", Timezone: "America/New_York"}, wantLocale: "fr-FR", wantZone: "America/New_York"},
+		{name: "whitespace is trimmed", opts: LocaleOptions{Locale: " de-DE "}, wantLocale: "de-DE"},
+		{name: "clear needs nothing else", opts: LocaleOptions{Clear: true}},
+		{name: "nothing at all", opts: LocaleOptions{}, wantErr: true},
+		{name: "a locale with a space", opts: LocaleOptions{Locale: "en GB"}, wantErr: true},
+		{name: "a locale with a newline", opts: LocaleOptions{Locale: "en\nGB"}, wantErr: true},
+		{name: "a timezone with a space", opts: LocaleOptions{Timezone: "Europe London"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _, err := NormalizeLocale(tt.opts)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NormalizeLocale(%+v) error = %v, wantErr %v", tt.opts, err, tt.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if got.Locale != tt.wantLocale || got.Timezone != tt.wantZone {
+				t.Fatalf("config = %+v, want locale %q timezone %q", got, tt.wantLocale, tt.wantZone)
+			}
+		})
+	}
+}
+
+// CDP documents an ICU locale, so the BCP 47 tag the caller and the page use has
+// to be converted on the way in.
+func TestICULocaleConvertsBCP47(t *testing.T) {
+	if got := icuLocale("en-GB"); got != "en_GB" {
+		t.Fatalf("icuLocale(en-GB) = %q, want en_GB", got)
+	}
+	if got := icuLocale("en_GB"); got != "en_GB" {
+		t.Fatalf("icuLocale(en_GB) = %q, want en_GB", got)
+	}
+	if got := icuLocale(""); got != "" {
+		t.Fatalf("icuLocale(\"\") = %q, want empty", got)
+	}
+}

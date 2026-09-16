@@ -72,6 +72,12 @@ var remoteSafeSurface = []string{
 	"SetExtraHeaders", "SetGeolocation", "SetNetworkConditions",
 	"SetUserAgent", "Snapshot", "Type", "UngroupTabs", "WaitFor",
 	"WaitForOutcome", "WindowBounds", "Authenticate", "Fill", "CheckRouteReplay",
+	// Added with the 2026-09 Vercel-parity wave. All six are CDP over the same
+	// socket: locale/touch/scroll are renderer and input commands, init scripts
+	// and React introspection run in the page, and a profile is bytes Chrome
+	// sends back for brw to write HERE. None names a path or a store on the
+	// browser's host, so all six are safe against somebody else's browser.
+	"SetLocale", "InitScript", "Touch", "Profile", "React", "ScrollTo", "Check",
 	// Reached through the optional capabilities and through *Manager itself.
 	// Assert is safe because its own refusals come from the primitives it is
 	// built on: a download assertion resolves through AssertSource.Downloads,
@@ -136,6 +142,12 @@ func remoteSurfaceInterfaces() map[string]reflect.Type {
 		"FindActFinder":            reflect.TypeOf((*FindActFinder)(nil)).Elem(),
 		"LiveFinder":               reflect.TypeOf((*LiveFinder)(nil)).Elem(),
 		"FindActController":        reflect.TypeOf((*FindActController)(nil)).Elem(),
+		"InitScriptController":     reflect.TypeOf((*InitScriptController)(nil)).Elem(),
+		"TouchController":          reflect.TypeOf((*TouchController)(nil)).Elem(),
+		"ProfilerController":       reflect.TypeOf((*ProfilerController)(nil)).Elem(),
+		"ReactController":          reflect.TypeOf((*ReactController)(nil)).Elem(),
+		"ScrollToController":       reflect.TypeOf((*ScrollToController)(nil)).Elem(),
+		"CheckController":          reflect.TypeOf((*CheckController)(nil)).Elem(),
 	}
 }
 

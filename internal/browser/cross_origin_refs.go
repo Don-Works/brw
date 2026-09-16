@@ -98,6 +98,11 @@ var ControllerRefMethods = map[string][]string{
 	"WaitForOutcome": {"condition ref:<ref>"},
 	"Focus":          {"ref"},
 	"Assert":         {"req.Ref"},
+	// Optional capability methods added with the 2026-09 parity wave.
+	"Touch":    {"opts.Ref", "opts.ToRef"},
+	"ScrollTo": {"target"},
+	"React":    {"opts.Target"},
+	"Check":    {"opts.Ref"},
 }
 
 // ControllerRefFreeMethods names every Controller method that takes no element
@@ -155,4 +160,17 @@ var ControllerRefFreeMethods = map[string]bool{
 	"ReadWindow":       true,
 	"ActiveTabID":      true,
 	"DocumentIdentity": true,
+	// Added with the 2026-09 parity wave: none takes an element ref.
+	"SetLocale":  true,
+	"InitScript": true,
+	"Profile":    true,
+	// EnvironmentController: every one of these overrides a per-tab renderer or
+	// network setting and names no element.
+	"SetGeolocation":       true,
+	"SetNetworkConditions": true,
+	"EmulateMedia":         true,
+	"SetExtraHeaders":      true,
+	"SetUserAgent":         true,
+	"Authenticate":         true,
+	"SetDownloadPath":      true,
 }

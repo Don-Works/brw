@@ -515,8 +515,8 @@ Core MCP tools include:
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: on a direct-CDP daemon `all` costs ~30.9k tokens across
-88 tools, `core` ~10.5k, `minimal` ~6.0k, and `auto` starts at ~6.3k and grows
+tokens on every turn: on a direct-CDP daemon `all` costs ~33.3k tokens across
+94 tools, `core` ~10.5k, `minimal` ~6.0k, and `auto` starts at ~6.3k and grows
 only as the agent discovers tools it needs via `brw_tools` (measure with
 `scripts/measure-tool-catalogue.py`).
 

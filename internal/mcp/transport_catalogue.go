@@ -96,9 +96,20 @@ var toolRequirements = map[string][]toolRequirement{
 	"brw_set_geolocation":        {needsCDPSession},
 	"brw_set_network_conditions": {needsCDPSession},
 	"brw_emulate_media":          {needsCDPSession},
-	"brw_set_extra_headers":      {needsCDPSession},
-	"brw_set_user_agent":         {needsCDPSession},
-	"brw_authenticate":           {needsCDPSession},
+	"brw_set_locale":             {needsCDPSession},
+	"brw_init_script":            {needsCDPSession},
+	// Touch input is dispatched through the DevTools Protocol. It holds no state
+	// between calls, so needsCDPSession is a slight stretch; it is used here as
+	// "a lane where brw owns the debugger session it dispatches through", which
+	// is exactly the set that reaches the Manager rather than the extension
+	// bridge (whose per-operation attach has no touch path).
+	"brw_touch": {needsCDPSession},
+	// A trace or CPU profile needs a debugger session held open for the whole
+	// capture, which the extension bridge's per-operation attach cannot do.
+	"brw_profile":           {needsCDPSession},
+	"brw_set_extra_headers": {needsCDPSession},
+	"brw_set_user_agent":    {needsCDPSession},
+	"brw_authenticate":      {needsCDPSession},
 	// Not needsCDPSession: the Chrome opt-in lane has the session and still
 	// cannot route downloads. See needsDownloadRouting. The second requirement
 	// is a different refusal, not a restatement: off host the routing command

@@ -146,6 +146,36 @@ var refVerbInvokers = map[string]refVerbInvoker{
 		_, err := browser.Assert(ctx, c, browser.AssertRequest{Assertion: "element_state", Ref: crossOriginRef, State: "visible"})
 		return err
 	}},
+	// Optional capability methods added with the 2026-09 parity wave.
+	"Touch": {
+		capability: reflect.TypeOf((*browser.TouchController)(nil)).Elem(),
+		invoke: func(ctx context.Context, c browser.Controller) error {
+			_, err := c.(browser.TouchController).Touch(ctx, browser.TouchOptions{Action: "tap", Ref: crossOriginRef})
+			return err
+		},
+	},
+	"ScrollTo": {
+		capability: reflect.TypeOf((*browser.ScrollToController)(nil)).Elem(),
+		invoke: func(ctx context.Context, c browser.Controller) error {
+			_, err := c.(browser.ScrollToController).ScrollTo(ctx, crossOriginRef)
+			return err
+		},
+	},
+	"React": {
+		capability: reflect.TypeOf((*browser.ReactController)(nil)).Elem(),
+		invoke: func(ctx context.Context, c browser.Controller) error {
+			_, err := c.(browser.ReactController).React(ctx, browser.ReactOptions{Action: "inspect", Target: crossOriginRef})
+			return err
+		},
+	},
+	"Check": {
+		capability: reflect.TypeOf((*browser.CheckController)(nil)).Elem(),
+		invoke: func(ctx context.Context, c browser.Controller) error {
+			want := true
+			_, err := c.(browser.CheckController).Check(ctx, browser.CheckOptions{Ref: crossOriginRef, Checked: &want})
+			return err
+		},
+	},
 }
 
 // capabilityInterfaces are the optional transport capabilities alongside
@@ -154,6 +184,7 @@ var refVerbInvokers = map[string]refVerbInvoker{
 // would leave two ref-taking verbs outside the table.
 var capabilityInterfaces = []reflect.Type{
 	reflect.TypeOf((*browser.WaitObserver)(nil)).Elem(),
+	reflect.TypeOf((*browser.EnvironmentController)(nil)).Elem(),
 	reflect.TypeOf((*browser.DialogController)(nil)).Elem(),
 	reflect.TypeOf((*browser.RouteController)(nil)).Elem(),
 	reflect.TypeOf((*browser.RouteReplayer)(nil)).Elem(),
@@ -171,6 +202,16 @@ var capabilityInterfaces = []reflect.Type{
 	// unguarded on both transports while its four siblings were covered. Naming
 	// the interface is what puts it back inside the property.
 	reflect.TypeOf((*browser.ValueContainsAsserter)(nil)).Elem(),
+	// Added with the 2026-09 parity wave. Touch, init scripts and profiles are
+	// debugger-session state, so the extension bridge genuinely does not serve
+	// them and they are recorded in transportsWithoutCapability; React and
+	// ScrollTo run through the bridge's own Evaluate and are guarded there.
+	reflect.TypeOf((*browser.TouchController)(nil)).Elem(),
+	reflect.TypeOf((*browser.InitScriptController)(nil)).Elem(),
+	reflect.TypeOf((*browser.ProfilerController)(nil)).Elem(),
+	reflect.TypeOf((*browser.ReactController)(nil)).Elem(),
+	reflect.TypeOf((*browser.ScrollToController)(nil)).Elem(),
+	reflect.TypeOf((*browser.CheckController)(nil)).Elem(),
 }
 
 // transportsWithoutCapability records the (transport, verb) pairs where the
@@ -182,7 +223,13 @@ var capabilityInterfaces = []reflect.Type{
 // has to be written down here, which is what separates "this verb cannot be
 // reached on this transport" from "this verb is reachable and ungated" — two
 // states the invoker used to report identically.
-var transportsWithoutCapability = map[string]map[string]bool{}
+var transportsWithoutCapability = map[string]map[string]bool{
+	// Init scripts, touch synthesis and CPU/trace profiling all live on the
+	// debugger session, which the extension bridge attaches and detaches per
+	// operation. The bridge returns a named capability error for each rather
+	// than pretending they worked, so there is no call to guard here.
+	"extension-bridge": {"Touch": true, "InitScript": true, "Profile": true},
+}
 
 // routesInsteadOfRefusing names the (transport, method) pairs that REACH into a
 // cross-origin frame rather than refusing. Direct CDP attaches a session to the

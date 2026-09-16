@@ -432,6 +432,12 @@ async function setTabRouteRules(tabId, rules) {
     if (rule?.behaviour !== "abort") {
       throw new Error(`route behaviour ${JSON.stringify(rule?.behaviour)} cannot be enforced by declarativeNetRequest; only abort can`);
     }
+    if (rule.resourceTypes !== undefined) {
+      if (!Array.isArray(rule.resourceTypes) || !rule.resourceTypes.length
+          || rule.resourceTypes.some((type) => typeof type !== "string" || !type)) {
+        throw new Error("a rule's resourceTypes must be a non-empty array of type names");
+      }
+    }
   }
 
   // Reconcile against the browser, not against worker memory: after a restart
@@ -460,6 +466,13 @@ async function setTabRouteRules(tabId, rules) {
   for (const rule of rules) {
     const id = allocateRuleId();
     addedIds.push(id);
+    // A rule that names resourceTypes narrows to those; the daemon sends the
+    // canonical declarativeNetRequest names. An empty/absent list means every
+    // kind, spelled out so a top-level navigation is refused here too; the
+    // default set excludes main_frame. See ROUTE_RESOURCE_TYPES.
+    const ruleResourceTypes = Array.isArray(rule.resourceTypes) && rule.resourceTypes.length
+      ? rule.resourceTypes.filter((type) => resourceTypes.includes(type))
+      : resourceTypes;
     addRules.push({
       id,
       // Rules are evaluated highest-priority-first and brw installs the tab's set
@@ -473,9 +486,7 @@ async function setTabRouteRules(tabId, rules) {
         // pattern that meant two different things per transport would be worse
         // than one that works on neither.
         isUrlFilterCaseSensitive: true,
-        // Spelled out so a top-level navigation is refused here too; the default
-        // set excludes main_frame. See ROUTE_RESOURCE_TYPES.
-        resourceTypes,
+        resourceTypes: ruleResourceTypes,
         tabIds: [tabId]
       }
     });

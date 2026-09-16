@@ -291,6 +291,39 @@ func (s *Server) environmentController() (browser.EnvironmentController, bool) {
 	return env, ok
 }
 
+// initScriptController resolves the optional init-script capability. A lane
+// without it answers with browser.ErrInitScriptUnsupported, which names the
+// reason rather than saying only "unsupported".
+func (s *Server) initScriptController() (browser.InitScriptController, bool) {
+	ctl, ok := s.manager.(browser.InitScriptController)
+	return ctl, ok
+}
+
+// touchController resolves the optional touch-gesture capability.
+func (s *Server) touchController() (browser.TouchController, bool) {
+	ctl, ok := s.manager.(browser.TouchController)
+	return ctl, ok
+}
+
+// profileController resolves the optional performance-trace / CPU-profiler
+// capability.
+func (s *Server) profileController() (browser.ProfilerController, bool) {
+	ctl, ok := s.manager.(browser.ProfilerController)
+	return ctl, ok
+}
+
+// reactController resolves the optional React-introspection capability.
+func (s *Server) reactController() (browser.ReactController, bool) {
+	ctl, ok := s.manager.(browser.ReactController)
+	return ctl, ok
+}
+
+// checkController resolves the optional checkbox/radio capability.
+func (s *Server) checkController() (browser.CheckController, bool) {
+	ctl, ok := s.manager.(browser.CheckController)
+	return ctl, ok
+}
+
 // supportedOnTransport reports whether a tool can succeed on this server's
 // transport. An unset Transport (a daemon that never recorded its identity)
 // advertises everything: hiding a tool because the transport is merely unknown
@@ -1027,6 +1060,71 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		return toolJSON(env.EmulateMedia(ctx, req))
+	case "brw_set_locale":
+		env, ok := s.environmentController()
+		if !ok {
+			return toolError(browser.ErrEnvironmentUnsupported), nil
+		}
+		var req browser.LocaleOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(env.SetLocale(ctx, req))
+	case "brw_init_script":
+		ctl, ok := s.initScriptController()
+		if !ok {
+			return toolError(browser.ErrInitScriptUnsupported), nil
+		}
+		var req browser.InitScriptOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(ctl.InitScript(ctx, req))
+	case "brw_touch":
+		ctl, ok := s.touchController()
+		if !ok {
+			return toolError(browser.ErrTouchUnsupported), nil
+		}
+		var req browser.TouchOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(ctl.Touch(ctx, req))
+	case "brw_profile":
+		ctl, ok := s.profileController()
+		if !ok {
+			return toolError(browser.ErrProfileUnsupported), nil
+		}
+		var req browser.ProfileOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		result, err := ctl.Profile(ctx, req)
+		if err != nil {
+			return toolError(err), nil
+		}
+		stored := artifact.AttachPerformanceReport(ctx, s.artifacts, result, time.Duration(req.TTLSeconds)*time.Second)
+		return toolJSON(stored, nil)
+	case "brw_react":
+		ctl, ok := s.reactController()
+		if !ok {
+			return toolError(errors.New("react introspection is not available on this transport")), nil
+		}
+		var req browser.ReactOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(ctl.React(ctx, req))
+	case "brw_check":
+		ctl, ok := s.checkController()
+		if !ok {
+			return toolError(errors.New("setting a checkbox is not available on this transport")), nil
+		}
+		var req browser.CheckOptions
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(ctl.Check(ctx, req))
 	case "brw_set_extra_headers":
 		env, ok := s.environmentController()
 		if !ok {
@@ -1421,6 +1519,8 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	case "brw_scroll":
 		var req struct {
 			Direction string `json:"direction"`
+			Target    string `json:"target"`
+			Ref       string `json:"ref"`
 			Repeat    int    `json:"repeat"`
 			Snapshot  bool   `json:"snapshot"`
 		}
@@ -1438,6 +1538,19 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		ctx, obsErr = obs.wantSnapshot(ctx, req.Snapshot)
 		if obsErr != nil {
 			return nil, invalid(obsErr)
+		}
+		target := strings.TrimSpace(req.Target)
+		if target == "" {
+			target = strings.TrimSpace(req.Ref)
+		}
+		if target != "" {
+			st, ok := s.manager.(browser.ScrollToController)
+			if !ok {
+				return toolError(errors.New("scrolling an element into view is not available on this transport")), nil
+			}
+			return obs.action(repeatAction(ctx, repeat, func(ctx context.Context) (browser.ActionResult, error) {
+				return st.ScrollTo(ctx, target)
+			}))
 		}
 		return obs.action(repeatAction(ctx, repeat, func(ctx context.Context) (browser.ActionResult, error) {
 			return s.manager.Scroll(ctx, req.Direction)
@@ -2531,6 +2644,51 @@ func tools() []map[string]any {
 			"clear":          boolSchema("Remove the media override and go back to the browser's own media type and user preferences."),
 			"tab_id":         stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
+		tool("brw_set_locale", "Override the language and time zone a tab reports, so Intl formatting, Date.toString and the Accept-Language header use a locale you chose instead of the host's. Set locale (BCP 47, e.g. en-GB), timezone (IANA, e.g. Europe/London), or both; the fields are independent, so naming only a timezone leaves the language alone. clear:true restores the host's own locale AND timezone, because CDP exposes no way to read back which override is in force. Values apply immediately, but a document that already parsed its language needs a reload. Returns {ok, tab_id, locale:{locale, timezone}, message}. NOT ON THE EXTENSION BRIDGE: it is a DevTools Protocol session override, so there it returns a named capability error.", object(map[string]any{
+			"locale":   stringSchema("BCP 47 language tag to report, for example en-GB, fr-FR, or de-DE. Omit to leave the language unchanged."),
+			"timezone": stringSchema("IANA time zone name to report, for example Europe/London or America/New_York. Omit to leave the zone unchanged. Chrome rejects an unknown zone with the offending value."),
+			"clear":    boolSchema("Remove both the locale and timezone overrides and go back to the host's own."),
+			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, nil)),
+		tool("brw_init_script", "Register, remove, list, or clear JavaScript that runs BEFORE every new document's own scripts in a tab — the place to stub window.__TEST, install a fetch shim, or seed localStorage before the app boots. action=add returns an opaque id; keep it and pass it to action=remove (CDP removes a script by identifier, not by source). action=clear removes every script brw registered on the tab. The registration is debugger-session state, so it runs on the next navigation in this tab, and NOT ON THE EXTENSION BRIDGE: it returns a named capability error there. Returns {ok, tab_id, action, added?, removed?, scripts:[{id,bytes,preview}], message}.", object(map[string]any{
+			"action": stringEnumSchema("add registers a script and returns its id; remove deletes one by id; list shows what is registered; clear removes every script brw registered on the tab.", "add", "remove", "list", "clear"),
+			"source": stringSchema("JavaScript to run before each new document. Required for action=add; capped at 256 KiB."),
+			"id":     stringSchema("Identifier returned by action=add. Required for action=remove."),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"action"})),
+		tool("brw_touch", "Synthesize a TOUCH gesture: action=tap presses and releases at one point, action=swipe drags from one point to another through interpolated steps. This is the input primitive for mobile flows — brw_emulate_device sets the viewport, DPR and touch capability, and this is what actually taps and swipes them. Name the start with ref or x/y, and a swipe's end with to_ref or to_x/to_y. Every gesture returns the usual post-action observation. Returns {ok, message, changed, ...}.", object(map[string]any{
+			"action":      stringEnumSchema("tap presses and releases at one point; swipe drags from the start to the end point.", "tap", "swipe"),
+			"ref":         stringSchema("Start point as a brw ref from brw_snapshot or brw_find. Wins over x/y when both are given."),
+			"x":           numberSchema("Start X in CSS viewport pixels. Required with y when ref is omitted."),
+			"y":           numberSchema("Start Y in CSS viewport pixels. Required with x when ref is omitted."),
+			"to_ref":      stringSchema("Swipe end point as a brw ref."),
+			"to_x":        numberSchema("Swipe end X in CSS viewport pixels. Required with to_y when to_ref is omitted."),
+			"to_y":        numberSchema("Swipe end Y in CSS viewport pixels. Required with to_x when to_ref is omitted."),
+			"duration_ms": integerSchema("How long a swipe takes in milliseconds. Defaults to 300, capped at 10000."),
+			"repeat":      integerSchema("Perform the gesture this many times (1-100) in one call."),
+			"tab_id":      stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"action"})),
+		tool("brw_profile", "Start or stop a Chrome PERFORMANCE TRACE (kind=trace) or a V8 CPU PROFILE (kind=cpu) on a tab. action=start begins collecting; action=stop ends the capture, stores the result as an artifact, and returns its handle so the multi-megabyte JSON never enters model context. A trace is Chrome's own timeline (frames, script, layout, paint); a CPU profile is V8's sampled stack profile. Both are debugger-session captures, so NOT ON THE EXTENSION BRIDGE: they return a named capability error there. Read the stored capture with brw_artifact_read or search it with brw_artifact_search. Returns {ok, action, kind, running, bytes?, artifact?, note?}.", object(map[string]any{
+			"action":      stringEnumSchema("start begins a capture; stop ends it and stores the result.", "start", "stop"),
+			"kind":        stringEnumSchema("trace is a Chrome performance trace; cpu is a V8 CPU profile.", "trace", "cpu"),
+			"categories":  map[string]any{"type": "array", "description": "Trace categories to include, e.g. [\"devtools.timeline\",\"v8.execute\"]. Omit for a general timeline set. Ignored for kind=cpu.", "items": stringSchema("A Chrome trace category.")},
+			"ttl_seconds": integerSchema("Shorten how long the stored trace/profile is kept, up to the artifact store's own retention."),
+			"tab_id":      stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"action"})),
+		tool("brw_react", "Read a page's REACT component tree without a browser extension or the DevTools panel. action=tree walks the fiber tree React attaches to the DOM and returns component names with depth; action=inspect names the component that owns one element (by brw ref or CSS selector) with its props, hook count and component ancestors. action=renders and action=suspense are accepted and answered with a note: they need the React DevTools hook, which brw does not inject. Output is bounded (depth/limit) and prop values are summarised, never deeply serialised, so secrets in props do not stream into context. Works on every transport. Returns {ok, action, present, nodes?, count, inspect?, note?}.", object(map[string]any{
+			"action": stringEnumSchema("tree lists components; inspect describes the component owning one element.", "tree", "inspect", "renders", "suspense"),
+			"target": stringSchema("Element for action=inspect: a brw ref from brw_snapshot, or a CSS selector."),
+			"depth":  integerSchema("How deep action=tree walks. Defaults to 30, capped at 100."),
+			"limit":  integerSchema("How many nodes action=tree returns. Defaults to 300, capped at 2000."),
+			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"action"})),
+		tool("brw_check", "Set a checkbox or radio button to an explicit state instead of toggling it. checked:true checks, checked:false unchecks; the element is named by ref (from brw_snapshot/brw_find) or by query+role when no ref is known. Drives the native checked setter and dispatches input and change, so a framework listening for them (React among them) sees the change. Returns {ok, checked, changed, tag, name} plus the usual post-action observation; changed:false means it was already in the requested state. Prefer this over brw_click on a checkbox: a click toggles and you cannot tell which way it landed.", object(map[string]any{
+			"ref":     stringSchema("Element ref for the checkbox or radio, for example e17."),
+			"query":   stringSchema("Accessible name to locate the checkbox when no ref is known. Takes ref or query, not both."),
+			"role":    stringSchema("Optional aria role filter for query, for example checkbox or radio."),
+			"checked": boolSchema("The state to enforce. Required: omitting it is refused rather than toggling blind."),
+			"tab_id":  stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
+		}, []string{"checked"})),
 		tool("brw_set_extra_headers", "Attach extra request headers to the origins you name, and to nothing else. Each entry binds a header set to one origin (scheme://host[:port]); a request to any other origin is left exactly as the page made it. That scoping is the point: the browser-wide way to add headers puts them on every request a page makes, so an Authorization header set that way also reaches the page's analytics beacons, font CDNs and tracking pixels. Header VALUES are never echoed back - the result lists only origins and header names. Host, Content-Length and Transfer-Encoding are refused: they change which server or which body the request is for, behind the checks the navigation policy already made. clear:true removes the table and turns request interception back off when nothing else on the tab needs it. Returns {ok, tab_id, extra_headers:[{origin, headers:[name]}], message}. NOT ON THE EXTENSION BRIDGE: it is a DevTools Protocol session override, so there it returns a named capability error.", object(map[string]any{
 			"origins": map[string]any{
 				"type":        "array",
@@ -2701,13 +2859,14 @@ func tools() []map[string]any {
 			"tab_id":    stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"url"})),
 		tool("brw_cookies", "List, set, or delete browser cookies for a tab's origin at the CDP level — including HttpOnly cookies that document.cookie cannot see or write. Actions: list (cookies applicable to url, defaulting to the tab's current URL; returns name, value, domain, path, expires, size, http_only, secure, session, same_site), set (write name/value with optional domain, path, secure, http_only, same_site strict|lax|none, and expires as unix seconds — session cookie when omitted; the stored cookie is read back), delete (remove cookies matching name for the url or domain/path; reports how many same-name cookies remain). Use it to scrub auth state between multi-role test runs, inspect session cookies, or build clean-room setups. NOT ON THE EXTENSION BRIDGE: there (driving the user's existing signed-in Chrome through the extension) this returns an error — the extension's security policy blocks cookie access to protect the signed-in profile. Use a direct-CDP profile (or an incognito context there), or the chrome-opt-in-cdp transport, which reads cookies on the signed-in profile because the user turned that access on themselves.", object(map[string]any{
-			"action":    stringEnumSchema("list, set, or delete.", "list", "set", "delete"),
+			"action":    stringEnumSchema("list, set, delete, or import.", "list", "set", "delete", "import"),
 			"tab_id":    stringSchema("Tab id from brw_list_tabs. Omit for the active tab; its current URL becomes the cookie scope."),
 			"url":       stringSchema("URL (or bare host, https assumed) scoping the operation. Defaults to the target tab's current URL."),
-			"domain":    stringSchema("Cookie domain for set/delete, as an alternative to url scoping (path defaults to /). For list, filters results to this domain."),
+			"domain":    stringSchema("Cookie domain for set/delete/import, as an alternative to url scoping (path defaults to /). For list, filters results to this domain. For import, it overrides any domain in the input, scoping the whole import to one site."),
 			"path":      stringSchema("Cookie path. Defaults to / (set with domain) or the url's path."),
 			"name":      stringSchema("Cookie name. Required for set and delete; optional exact-name filter for list."),
 			"value":     stringSchema("Cookie value for set."),
+			"curl":      stringSchema("Cookies to import: a \"Copy as cURL\" command, a bare Cookie header, or a JSON array of {name,value,domain,path,secure,http_only,same_site,expires} objects. Read only by action=import."),
 			"secure":    boolSchema("Mark the cookie Secure (https origins only)."),
 			"http_only": boolSchema("Mark the cookie HttpOnly — invisible to document.cookie. The reason this tool exists; only CDP can write these."),
 			"same_site": stringEnumSchema("SameSite attribute: strict, lax, or none (none requires secure).", "strict", "lax", "none"),
@@ -2758,13 +2917,15 @@ func tools() []map[string]any {
 			"observe":  observeSchema(),
 			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"key"})),
-		tool("brw_scroll", "Scroll the active page or scroll container in a direction.", object(map[string]any{
-			"direction": stringEnumSchema("up, down, left, or right.", "up", "down", "left", "right"),
+		tool("brw_scroll", "Scroll the active page or scroll container. Pass direction to move by a viewport, or target/ref to bring one element into view (the usual \"show me this\" scroll).", object(map[string]any{
+			"direction": stringEnumSchema("up, down, left, or right. Omit when target/ref is given.", "up", "down", "left", "right"),
+			"target":    stringSchema("A brw ref or CSS selector to scroll into view (centred). Alternative to direction."),
+			"ref":       stringSchema("Alias for target when scrolling an element into view."),
 			"repeat":    integerSchema("Scroll this many times (1-100) in one call, instead of one call per scroll. Only the final observation is returned."),
 			"snapshot":  boolSchema("Include a full page snapshot in the response."),
 			"observe":   observeSchema(),
 			"tab_id":    stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
-		}, []string{"direction"})),
+		}, nil)),
 		tool("brw_screenshot", "Visual fallback — you almost never need this. brw is semantic-first: brw_snapshot/brw_find expose every control with a ref, brw_read returns page prose/result/status/badge text, and EVERY action (click/type/fill/select/press/drag) returns a post-action observation that confirms its effect (changed elements, new values, navigation). To VERIFY an outcome (a cart badge, a result message, a swapped item, an editor's text), read that observation or call brw_read — do NOT screenshot to check. Reserve brw_screenshot for opaque visual content with no DOM text (canvas, maps, charts, image-only widgets). Set annotate:true for a Set-of-Marks capture: in-viewport elements get labelled boxes carrying the SAME refs brw_snapshot returns, plus a legend mapping each ref to its box, role, and name — so you can read a label off the image and act on it with brw_click. Pass ref OR region for a tight annotated crop (far fewer vision tokens on a dense page); both imply annotate. The overlay never mutates the page.", object(map[string]any{
 			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 			"annotate": boolSchema("Draw Set-of-Marks ref labels over frontier elements and return a ref->box legend. Defaults false (plain screenshot)."),
@@ -2798,6 +2959,7 @@ func tools() []map[string]any {
 			"content_type":    stringSchema("Response Content-Type. Inferred from the body or the pattern's extension when omitted."),
 			"headers":         map[string]any{"type": "object", "description": "Extra response headers for behaviour=fulfill.", "additionalProperties": map[string]any{"type": "string"}},
 			"times":           map[string]any{"type": "integer", "description": "Retire the route after this many matches. Omit for a rule that applies until cleared."},
+			"resource_types":  map[string]any{"type": "array", "description": "Narrow the rule to named request kinds, e.g. [\"script\"] to block only scripts. Omit to match every kind. Names: main_frame, sub_frame, stylesheet, script, image, font, object, xmlhttprequest, ping, csp_report, media, websocket, other (and document as an alias for both frame kinds).", "items": stringSchema("A resource type name.")},
 			"har_artifact_id": stringSchema("For action=replay: the artifact_id of a HAR captured with brw_artifact_capture{kind:\"har\"}."),
 			"match": map[string]any{
 				"type":        "array",
@@ -3144,6 +3306,10 @@ func boolSchema(description string) map[string]any {
 
 func integerSchema(description string) map[string]any {
 	return map[string]any{"type": "integer", "description": description}
+}
+
+func numberSchema(description string) map[string]any {
+	return map[string]any{"type": "number", "description": description}
 }
 
 // mousePointSchema describes a drag endpoint: a semantic ref OR x,y coordinates.

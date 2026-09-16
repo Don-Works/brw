@@ -3,7 +3,9 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"time"
 
+	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/browser"
 )
 
@@ -56,6 +58,117 @@ func (s *Server) emulateMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := env.EmulateMedia(s.contextWithTabID(r.Context(), req.TabID), req)
+	writeResult(w, result, err)
+}
+
+// initScriptController resolves the optional init-script capability, answering
+// with the named error rather than a generic 400 when the transport lacks it.
+func (s *Server) initScriptController(w http.ResponseWriter) (browser.InitScriptController, bool) {
+	ctl, ok := s.manager.(browser.InitScriptController)
+	if !ok {
+		writeError(w, browser.ErrInitScriptUnsupported)
+		return nil, false
+	}
+	return ctl, true
+}
+
+func (s *Server) initScript(w http.ResponseWriter, r *http.Request) {
+	var req browser.InitScriptOptions
+	if !decode(w, r, &req) {
+		return
+	}
+	ctl, ok := s.initScriptController(w)
+	if !ok {
+		return
+	}
+	result, err := ctl.InitScript(s.contextWithTabID(r.Context(), req.TabID), req)
+	writeResult(w, result, err)
+}
+
+// touchController resolves the optional touch capability.
+func (s *Server) touchController(w http.ResponseWriter) (browser.TouchController, bool) {
+	ctl, ok := s.manager.(browser.TouchController)
+	if !ok {
+		writeError(w, browser.ErrTouchUnsupported)
+		return nil, false
+	}
+	return ctl, true
+}
+
+func (s *Server) touch(w http.ResponseWriter, r *http.Request) {
+	var req browser.TouchOptions
+	if !decode(w, r, &req) {
+		return
+	}
+	ctl, ok := s.touchController(w)
+	if !ok {
+		return
+	}
+	result, err := ctl.Touch(s.contextWithTabID(r.Context(), req.TabID), req)
+	writeResult(w, result, err)
+}
+
+// profileController resolves the optional performance-trace capability.
+func (s *Server) profileController(w http.ResponseWriter) (browser.ProfilerController, bool) {
+	ctl, ok := s.manager.(browser.ProfilerController)
+	if !ok {
+		writeError(w, browser.ErrProfileUnsupported)
+		return nil, false
+	}
+	return ctl, true
+}
+
+func (s *Server) profile(w http.ResponseWriter, r *http.Request) {
+	var req browser.ProfileOptions
+	if !decode(w, r, &req) {
+		return
+	}
+	ctl, ok := s.profileController(w)
+	if !ok {
+		return
+	}
+	result, err := ctl.Profile(s.contextWithTabID(r.Context(), req.TabID), req)
+	if err != nil {
+		writeResult(w, result, err)
+		return
+	}
+	result = artifact.AttachPerformanceReport(r.Context(), s.artifacts, result, time.Duration(req.TTLSeconds)*time.Second)
+	writeResult(w, result, nil)
+}
+
+// reactController resolves the optional React-introspection capability.
+func (s *Server) reactController(w http.ResponseWriter) (browser.ReactController, bool) {
+	ctl, ok := s.manager.(browser.ReactController)
+	if !ok {
+		writeError(w, errors.New("react introspection is not available on this transport"))
+		return nil, false
+	}
+	return ctl, true
+}
+
+func (s *Server) react(w http.ResponseWriter, r *http.Request) {
+	var req browser.ReactOptions
+	if !decode(w, r, &req) {
+		return
+	}
+	ctl, ok := s.reactController(w)
+	if !ok {
+		return
+	}
+	result, err := ctl.React(s.contextWithTabID(r.Context(), req.TabID), req)
+	writeResult(w, result, err)
+}
+
+func (s *Server) setLocale(w http.ResponseWriter, r *http.Request) {
+	var req browser.LocaleOptions
+	if !decode(w, r, &req) {
+		return
+	}
+	env, ok := s.environmentController(w)
+	if !ok {
+		return
+	}
+	result, err := env.SetLocale(s.contextWithTabID(r.Context(), req.TabID), req)
 	writeResult(w, result, err)
 }
 

@@ -230,6 +230,9 @@ type Manager struct {
 	// scoped extra-header table, the credential armed for one in-flight
 	// navigation, and the user-agent baseline. Zero value is usable.
 	env environmentState
+	// profiles holds the in-flight performance trace / CPU profile state. Zero
+	// value is usable.
+	profiles profileState
 
 	// cancels tracks in-flight long-running operations (plan / batch / wait
 	// loops) keyed by an operation token so brw_cancel can stop a specific

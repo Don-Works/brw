@@ -31,6 +31,9 @@ type CookieParams struct {
 	HTTPOnly bool    `json:"http_only,omitempty"`
 	SameSite string  `json:"same_site,omitempty"`
 	Expires  float64 `json:"expires,omitempty"`
+	// Curl carries cookies to import: a "Copy as cURL" command, a bare Cookie
+	// header, or a JSON array of cookie objects. It is read only by action=import.
+	Curl string `json:"curl,omitempty"`
 }
 
 // Cookie is one browser cookie as reported by CDP Network.getCookies. Value is
@@ -77,6 +80,7 @@ const (
 	CookieActionList   = "list"
 	CookieActionSet    = "set"
 	CookieActionDelete = "delete"
+	CookieActionImport = "import"
 )
 
 // Validate checks the action-specific required fields before any browser I/O,
@@ -93,10 +97,14 @@ func (p CookieParams) Validate() error {
 		if strings.TrimSpace(p.Name) == "" {
 			return errors.New("name is required for delete")
 		}
+	case CookieActionImport:
+		if strings.TrimSpace(p.Curl) == "" {
+			return errors.New("curl is required for import: a cURL command, a Cookie header, or a JSON array of cookies")
+		}
 	case "":
-		return errors.New(`action is required: "list", "set", or "delete"`)
+		return errors.New(`action is required: "list", "set", "delete", or "import"`)
 	default:
-		return fmt.Errorf("unknown action %q: want list, set, or delete", p.Action)
+		return fmt.Errorf("unknown action %q: want list, set, delete, or import", p.Action)
 	}
 	return nil
 }
@@ -344,6 +352,24 @@ func (m *Manager) Cookies(ctx context.Context, params CookieParams) (CookieResul
 		}
 		return CookieResult{Action: action, URL: scopeURL, Cookie: &stored[0], Cookies: stored}, nil
 
+	case CookieActionImport:
+		imported, err := ParseCookieImport(params.Curl, params.Domain)
+		if err != nil {
+			return CookieResult{}, err
+		}
+		out := make([]Cookie, 0, len(imported))
+		for _, c := range imported {
+			if err := m.setImportedCookie(tabCtx, scopeURL, c); err != nil {
+				return CookieResult{}, fmt.Errorf("import cookie %q: %w", c.Name, err)
+			}
+			stored, err := m.listCookiesForURL(tabCtx, CookieParams{Name: c.Name, Domain: c.Domain, Path: c.Path}, scopeURL)
+			if err != nil || len(stored) == 0 {
+				return CookieResult{}, fmt.Errorf("chrome refused to store imported cookie %q for %s", c.Name, scopeURL)
+			}
+			out = append(out, stored[0])
+		}
+		return CookieResult{Action: action, URL: scopeURL, Cookies: out, Count: len(out)}, nil
+
 	case CookieActionDelete:
 		cmd := network.DeleteCookies(params.Name)
 		if strings.TrimSpace(params.Domain) != "" {
@@ -377,4 +403,44 @@ func cookiePathOrDefault(p string) string {
 		return "/"
 	}
 	return p
+}
+
+// setImportedCookie writes one cookie parsed from an import. It uses the same
+// domain/URL split as the set action, so a cookie with a declared domain is
+// addressed by that domain and one without falls back to the scope URL.
+func (m *Manager) setImportedCookie(ctx context.Context, scopeURL string, c ImportedCookie) error {
+	cmd := network.SetCookie(c.Name, c.Value)
+	if strings.TrimSpace(c.Domain) != "" {
+		cmd = cmd.WithDomain(strings.TrimSpace(c.Domain))
+		cmd = cmd.WithPath(cookiePathOrDefault(c.Path))
+	} else {
+		cmd = cmd.WithURL(scopeURL)
+		if strings.TrimSpace(c.Path) != "" {
+			cmd = cmd.WithPath(strings.TrimSpace(c.Path))
+		}
+	}
+	if c.Secure {
+		cmd = cmd.WithSecure(true)
+	}
+	if c.HTTPOnly {
+		cmd = cmd.WithHTTPOnly(true)
+	}
+	if c.SameSite != "" {
+		sameSite, ok, err := sameSiteFromUser(c.SameSite)
+		if err != nil {
+			return err
+		}
+		if ok {
+			cmd = cmd.WithSameSite(sameSite)
+		}
+	}
+	if c.Expires > 0 {
+		exp := cdp.TimeSinceEpoch(time.Unix(int64(c.Expires), 0))
+		cmd = cmd.WithExpires(&exp)
+	}
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return cdp.Execute(ctx, network.CommandSetCookie, cmd, &struct {
+			Success bool `json:"success"`
+		}{})
+	}))
 }

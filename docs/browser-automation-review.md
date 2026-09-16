@@ -125,18 +125,21 @@ live binary, isolated `--session brw-compare`, then `close --all`). Status is
 | Signed-in profile | extension bridge into the live profile; no copy | live Chrome session | `--profile` copies to a temp dir; `--cdp` / `--auto-connect` | shipped |
 | MCP server | stdio, catalogue grows on demand | native messaging | stdio, fixed profiles, `tools/list` paginated at 64 | shipped |
 | HTTP JSON API | yes | no | no | shipped |
-| Per-action CLI | ~20 verbs bound to HTTP routes | no | ~120 verbs | open, `2AR4JB` |
+| Per-action CLI | ~20 verbs bound to HTTP routes | no | ~120 verbs | shipped (`2AR4JB`) |
 | Artifacts held off model context | store, search, TTL, quota | no | files on disk / temp paths | shipped |
 | Deterministic replay | immutable recipes, digest and origin guard | recorded workflows | batch JSON | shipped |
-| Promote a successful run to a recipe | no | yes, side-panel recording | no | open, `E8X4QH` |
+| Promote a successful run to a recipe | `brwctl recipe draft`: a trace compiler that emits a recipe with fail-closed guards | yes, side-panel recording | no | shipped (`E8X4QH`) |
 | Scheduled and recurring runs | no | daily/weekly/monthly | no | non-goal; trigger contract `5SFWAD` |
-| Network interception | `brw_route` fulfill/abort (fulfill is direct-CDP) | read-only | route, unroute | shipped |
+| Network interception | `brw_route` fulfill/abort, optionally narrowed by resource type (`script`, `xhr`, …) | read-only | route, unroute, `--resource-type` | shipped |
 | HAR record and replay as a fixture | capture + `brw_route` replay on direct-CDP | no | start/stop, replay | shipped |
-| Device and environment emulation | viewport, device, geo, media, offline, headers, UA, HTTP auth | no | viewport, device, geo, media, offline | shipped |
+| Device and environment emulation | viewport, device, geo, media, locale/timezone, offline, headers, UA, HTTP auth, touch gestures | no | viewport, device, geo, media, offline | shipped |
 | Storage and auth state save/load | `brw_state` cookies only, refused on signed-in transports and on a plugin-supplied browser, never exports values | n/a | `state save` cookies+localStorage; `auth save` vault | shipped, host-only and redacted |
 | Credential manager integration | plugin `credential.read` only; not a vault | 1Password, macOS beta | plugin + encrypted auth vault | shipped |
-| Accessibility audit and Web Vitals | axe-core + vitals + highlight | no | axe-core + vitals | shipped |
-| React DevTools introspection | no | no | `react tree` / inspect / renders / suspense | open, `M7T2Z7` |
+| Init scripts before `document_start` | `brw_init_script` add/remove/list/clear (direct-CDP) | no | `addinitscript`, `--init-script` | shipped |
+| Performance trace / CPU profile | `brw_profile` Chrome trace or V8 CPU profile, stored as an artifact | no | `trace start/stop`, `profiler start/stop` | shipped |
+| Accessibility audit and Web Vitals | axe-core (tags, rules, selector scope) + vitals + highlight | no | axe-core + vitals | shipped |
+| React introspection | `brw_react` reads the fiber tree (`tree`) and one element/component's props, hooks and DOM node (`inspect`), no DevTools extension needed; `renders`/`suspense` need the DevTools hook and are not injected | no | `react tree` / inspect / renders / suspense | shipped (`M7T2Z7`); renders/suspense deliberately not followed |
+| Touch gestures | `brw_touch` tap/swipe over CDP touch input | no | tap/swipe | shipped |
 | Cloud browser providers | `browser.provider` plugin capability, one backend kind (`exec`); no vendor ships in brw | no | 6 providers | shipped |
 | Remote operation over SSH | yes | no | no (cloud instead) | shipped |
 | WebMCP page-declared tools | list, invoke, detach, poll, cancel | no | list, invoke, detach, poll, cancel | shipped |
@@ -149,10 +152,11 @@ live binary, isolated `--session brw-compare`, then `close --all`). Status is
 | Assertion vocabulary | `brw_assert` plus retrying visible/text/value/hidden | n/a | `is` / `get` family | shipped |
 | Event-driven waits | CDP events; extension still polls some | n/a | yes | shipped (transport-dependent) |
 | Failure evidence bundle | recipe failure artifact | no | no | shipped |
-| Operation receipts for writes | recipe run receipts, not a provider ledger | no | no | open, `MVJT36` |
+| Operation receipts for writes | provider-backed, idempotency + read-back required | no | no | shipped (`MVJT36`) |
 | Regression baselines | visual + ARIA, keyed to recipe digest | no | `diff snapshot` / screenshot / url | shipped |
-| Non-Chromium browsers | no (BiDi prototype) | no | Lightpanda, iOS Safari via Appium | open, `6QWNYJ` |
-| Plugin and capability model | manifest, `credential.read` only | no | manifest + credential/provider/launch/command | shipped |
+| Non-Chromium browsers | BiDi prototype; deferred — Firefox marks `navigator.webdriver=true` for the whole remote-agent session | no | Lightpanda, iOS Safari via Appium | deferred (`6QWNYJ`), blocker recorded in `docs/bidi-prototype.md` |
+| Plugin and capability model | manifest; `credential.read` + `browser.provider` granted, `launch.mutate` and `command.run` refused by design | no | manifest + credential/provider/launch/command | shipped |
+| Action vocabulary | `brw_click`/`brw_click_text`/`brw_click_xy`, `brw_type`/`brw_fill`/`brw_select`, `brw_check` (explicit checkbox/radio state), `brw_press`, `brw_scroll` (direction or `target`), `brw_touch` (tap/swipe), `brw_hover`, `brw_drag`, `brw_upload_file` | n/a | click, type, fill, select, check/uncheck, press, scroll, scrollintoview, hover, drag, upload | shipped |
 | Licence | AGPL-3.0 | closed | Apache-2.0 | — |
 
 agent-browser's headline "93% fewer tokens" is measured against Playwright's MCP
@@ -324,48 +328,84 @@ parity argument alone:
 
 ## Prioritized next level
 
-1. **Trace-to-recipe authoring.** Compile a successful scoped trace into a
-   private draft with semantic targets, explicit runtime input placeholders,
-   inferred postconditions, and a human review gate. Never auto-promote a write,
-   secret value, pixel coordinate, ambiguous selector, or cross-origin step.
-   Publish through a provider-owned write API; do not write it into this repo.
-2. **Failure evidence bundles.** On opt-in recipe failure, capture a correlated
-   manifest containing redacted action trace, console summary, bounded network
-   metadata, semantic snapshot, and screenshot artifact IDs. Keep payloads as
-   separate expiring artifacts and make capture-on-failure configurable because
-   traces can be expensive and sensitive.
-3. **Provider-backed operation receipts.** For high-consequence writes, let the
-   private provider record hashed idempotency keys and reviewed completion
-   evidence across daemon restarts. Prefer the site's native idempotency API
-   where one exists; never mistake a local receipt for proof that the remote
-   transaction committed.
-4. **Event stream on the extension bridge.** Direct-CDP already answers several
-   waits from CDP events, and HAR capture/replay plus `brw_route` interception
-   ship on that lane. The remaining work is event subscriptions on the
-   extension transport, which still polls some conditions.
-5. **Artifact efficiency.** Use CDP stream mode for PDFs/downloads where
-   available, content-addressed deduplication under opaque per-capture handles,
-   optional at-rest encryption, and a manifest artifact that links related
-   captures without inlining them. The download half of this was since measured
-   and declined: the only CDP stream for a download's bytes is
-   `Fetch.takeResponseBodyAsStream`, and taking it cancels the download the rest
-   of brw tracks. See "A rendered PDF is pulled from the browser as a stream" in
-   [recipes and artifacts](recipes-and-artifacts.md).
-6. **Locale and timezone profiles.** Device, geo, media, offline, headers, UA
-   and HTTP auth already exist on direct-CDP. Locale/timezone/permission
-   bundles are still missing. Auth-state import/export must remain a separately
-   permissioned feature and must not weaken the cookie/storage denylist of the
-   signed-in extension bridge.
-7. **Cross-browser backend.** Prototype WebDriver BiDi after its required event,
-   actionability, download, and artifact primitives are stable enough to retain
-   the same fail-closed recipe guarantees.
-8. **Regression comparison.** Add opt-in visual and ARIA artifact comparisons
-   with environment fingerprints and tolerances. Shipped, including the
-   destination: a baseline for a recipe the private provider owns is stored with
-   that provider rather than in the local root.
+All eight items below were shipped in the 2026-09 parity wave, except where the
+note says otherwise. The list is kept so the acceptance criteria and the ledger
+rows they map to stay readable.
+
+1. **Trace-to-recipe authoring.** Shipped: `brwctl recipe draft` compiles a
+   successful scoped trace into a private draft with semantic targets, runtime
+   input placeholders, inferred postconditions and a human review gate; the
+   compiler refuses writes, secret values, pixel coordinates, ambiguous selectors
+   and cross-origin steps. Publishing stays with the provider's own write API.
+2. **Failure evidence bundles.** Shipped: an opt-in recipe/batch failure manifest
+   carries the redacted action trace, console summary, bounded network metadata,
+   semantic snapshot and screenshot artifact IDs as separate expiring artifacts.
+3. **Provider-backed operation receipts.** Shipped: high-consequence writes get
+   hashed idempotency keys and reviewed completion evidence from the private
+   provider, durable across daemon restarts; the site's native idempotency API is
+   preferred where one exists.
+4. **Event stream on the extension bridge.** Shipped: event subscriptions cover
+   the waits that still polled on the extension transport. (The bridge still
+   cannot serve debugger-session capabilities — env overrides, init scripts,
+   touch, profiles — and refuses each by name.)
+5. **Artifact efficiency.** Shipped for content-addressed deduplication under
+   opaque per-capture handles and a manifest artifact that links related captures.
+   The download-stream half was measured and declined: the only CDP stream for a
+   download's bytes is `Fetch.takeResponseBodyAsStream`, and taking it cancels the
+   download the rest of brw tracks. See "A rendered PDF is pulled from the browser
+   as a stream" in [recipes and artifacts](recipes-and-artifacts.md).
+6. **Locale and timezone profiles.** Shipped: `brw_set_locale` sets the BCP 47
+   language and IANA zone per tab on direct-CDP, and `brw_profile` (below) rounds
+   out the profiling story. Auth-state import/export remains separately
+   permissioned and does not weaken the signed-in extension bridge's cookie and
+   storage denylist. Two CLI conveniences from this wave are the last open
+   items: `brw_scroll --target` covers scroll-into-view, and `brw_cookies
+   --curl` imports cookies from a cURL command.
+7. **Cross-browser backend.** Deferred: WebDriver BiDi is prototyped
+   (`internal/bidi`, `docs/bidi-prototype.md`) but Firefox marks
+   `navigator.webdriver=true` for the whole remote-agent session, so it is not
+   shipped as a supported lane until that is addressed. The name and the blocker
+   are recorded in the ledger rather than left implicit.
+8. **Regression comparison.** Shipped: opt-in visual and ARIA artifact
+   comparisons with environment fingerprints and tolerances, keyed to the recipe
+   digest; a baseline for a provider-owned recipe is stored with that provider.
+
+Two further parity gaps closed in the same wave, after the original audit:
+
+- **React introspection.** `brw_react` reads the fiber tree (`action:"tree"`) and
+  one element or component's props, hooks and owned DOM node
+  (`action:"inspect"`). It needs no DevTools extension and works on both
+  transports through the shared in-page walker. `renders` and `suspense` are not
+  followed: they require `__REACT_DEVTOOLS_GLOBAL_HOOK__`, which brw deliberately
+  does not inject.
+- **Performance trace and CPU profile.** `brw_profile` starts and stops a Chrome
+  performance trace (`kind:"trace"`) or a V8 CPU profile (`kind:"cpu"`) and
+  stores the document as an expiring artifact, so big trace JSON never enters
+  model context. There is no functional gap left against the audited
+  agent-browser 0.37.1 surface.
 
 Features intentionally left outside `brw`: long-running scheduling, a hosted
 vector database, secret resolution, human approval policy, notifications to
 third-party systems, and a fleet/session orchestrator. Those systems decide
 *when* and *whether* to run; `brw` deterministically controls one authorized
 browser and returns bounded evidence.
+
+### Deliberate non-goals from the agent-browser surface
+
+Three agent-browser conveniences are consciously not implemented, with the
+reason recorded rather than left implicit:
+
+- **`get cdp-url`.** brw owns the debugger session it drives and does not hand
+  out its raw CDP WebSocket endpoint; a caller who wants their own CDP client
+  should launch the browser with `--remote-debugging-port` and attach directly.
+  Exposing brw's endpoint would let a caller bypass the navigation policy,
+  consent gate and artifact redaction on the very session carrying the user's
+  signed-in profile.
+- **`--enable-unsafe-webgpu` launch preset.** brw does not drive WebGPU
+  workloads; a caller who needs it can pass the switch through the browser's own
+  launch configuration. Shipping a preset would imply brw's actionability
+  primitives reason about GPU state, which they do not.
+- **HAR `--content all|none`.** brw records bounded network metadata (method,
+  URL, status, headers, timing) and stores bodies separately as expiring,
+  redacted artifacts, so a HAR export cannot quietly inline a page's payloads —
+  including tokens and personal data — into a capture the agent then reads.

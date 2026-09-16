@@ -41,6 +41,10 @@ type AuditOptions struct {
 	// Rules limits the run to these exact axe rule ids, for re-checking one
 	// finding after a fix without paying for a whole audit.
 	Rules []string `json:"rules,omitempty"`
+	// Selector scopes the audit to the subtree matching one CSS selector, so a
+	// component can be audited without the rest of the page's violations in the
+	// way. Empty audits the whole document.
+	Selector string `json:"selector,omitempty"`
 	// IncludePasses keeps the passing nodes in the stored report. Off by
 	// default: on a large page the passes outweigh everything else combined.
 	IncludePasses bool `json:"include_passes,omitempty"`
@@ -73,6 +77,7 @@ func (o AuditOptions) Normalize() AuditOptions {
 	}
 	o.Tags = trimmedList(o.Tags)
 	o.Rules = trimmedList(o.Rules)
+	o.Selector = strings.TrimSpace(o.Selector)
 	return o
 }
 
@@ -186,11 +191,14 @@ func AxeInstallExpression() string {
 })()`
 }
 
-// BuildAuditExpression renders one axe run for already-normalized options.
+// BuildAuditExpression renders one axe run. It normalizes defensively so a
+// caller that skipped Normalize still gets a trimmed selector and lists.
 func BuildAuditExpression(opts AuditOptions) string {
+	opts = opts.Normalize()
 	args, _ := json.Marshal(map[string]any{
 		"tags":           opts.Tags,
 		"rules":          opts.Rules,
+		"selector":       opts.Selector,
 		"include_passes": opts.IncludePasses,
 	})
 	return fmt.Sprintf("%s(%s)", AuditScript, args)
@@ -268,7 +276,12 @@ const AuditScript = `(function(opts) {
   };
   if (opts.rules && opts.rules.length) runOptions.runOnly = { type: 'rule', values: opts.rules };
   else if (opts.tags && opts.tags.length) runOptions.runOnly = { type: 'tag', values: opts.tags };
-  return window.axe.run(document, runOptions).then(function(results) {
+  var scope = document;
+  if (opts.selector) {
+    try { scope = document.querySelector(opts.selector); } catch (_) { scope = null; }
+    if (!scope) return Promise.resolve({ ok: false, error: 'no element matches selector ' + JSON.stringify(opts.selector) });
+  }
+  return window.axe.run(scope, runOptions).then(function(results) {
     annotate(results.violations);
     annotate(results.incomplete);
     return {

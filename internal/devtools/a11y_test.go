@@ -293,3 +293,16 @@ func TestAuditOptionsNormalize(t *testing.T) {
 		})
 	}
 }
+
+// The selector has to reach the page, and an empty one must not scope the audit
+// to nothing.
+func TestBuildAuditExpressionCarriesSelector(t *testing.T) {
+	withSelector := BuildAuditExpression(AuditOptions{Selector: " #main "})
+	if !strings.Contains(withSelector, `"selector":"#main"`) {
+		t.Fatalf("selector was not trimmed into the expression: %s", withSelector)
+	}
+	without := BuildAuditExpression(AuditOptions{})
+	if strings.Contains(without, `"selector":"`) && !strings.Contains(without, `"selector":""`) {
+		t.Fatalf("an empty selector produced a scoped run: %s", without)
+	}
+}

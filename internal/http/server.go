@@ -341,6 +341,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/geolocation", s.geolocation)
 	mux.HandleFunc("POST /api/page/network_conditions", s.networkConditions)
 	mux.HandleFunc("POST /api/page/emulate_media", s.emulateMedia)
+	mux.HandleFunc("POST /api/page/locale", s.setLocale)
+	mux.HandleFunc("POST /api/page/init_script", s.initScript)
+	mux.HandleFunc("POST /api/page/touch", s.touch)
+	mux.HandleFunc("POST /api/page/profile", s.profile)
+	mux.HandleFunc("POST /api/page/react", s.react)
 	mux.HandleFunc("POST /api/page/extra_headers", s.extraHeaders)
 	mux.HandleFunc("POST /api/page/user_agent", s.userAgent)
 	mux.HandleFunc("POST /api/page/authenticate", s.authenticate)
@@ -1508,6 +1513,8 @@ func (s *Server) pushState(w http.ResponseWriter, r *http.Request) {
 func (s *Server) scroll(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Direction string `json:"direction"`
+		Target    string `json:"target"`
+		Ref       string `json:"ref"`
 		Snapshot  bool   `json:"snapshot"`
 		TabID     string `json:"tab_id"`
 	}
@@ -1517,6 +1524,20 @@ func (s *Server) scroll(w http.ResponseWriter, r *http.Request) {
 	ctx := s.contextWithTabID(r.Context(), req.TabID)
 	if req.Snapshot {
 		ctx = browser.WithWantSnapshot(ctx)
+	}
+	target := strings.TrimSpace(req.Target)
+	if target == "" {
+		target = strings.TrimSpace(req.Ref)
+	}
+	if target != "" {
+		st, ok := s.manager.(browser.ScrollToController)
+		if !ok {
+			writeError(w, errors.New("scrolling an element into view is not available on this transport"))
+			return
+		}
+		result, err := st.ScrollTo(ctx, target)
+		writeResult(w, result, err)
+		return
 	}
 	result, err := s.manager.Scroll(ctx, req.Direction)
 	writeResult(w, result, err)

@@ -130,7 +130,7 @@ var ToolRules = map[string]ToolRule{
 		Scope: ScopeRead, Target: TargetURL,
 		Fields:   []DestinationField{FieldURL, FieldDomain},
 		PageAlso: cookiesReachTheTab,
-		Escalate: &Escalation{Field: "action", Values: []string{"set", "delete"}},
+		Escalate: &Escalation{Field: "action", Values: []string{"set", "delete", "import"}},
 	},
 	// Authenticating hands an HTTP credential to an origin. That is not reading
 	// it, so it needs the act scope. The required argument is origin; url is
@@ -139,6 +139,16 @@ var ToolRules = map[string]ToolRule{
 	// Extra headers are the same shape as authenticating: an Authorization
 	// header bound to an origin is a credential handed to that origin.
 	"brw_set_extra_headers": {Scope: ScopeAct, Target: TargetURL, Fields: []DestinationField{FieldOrigins}},
+	// Registering an init script puts executable JavaScript into the page before
+	// every navigation. That is script execution, exactly like brw_evaluate, so
+	// it needs the act scope on the tab it is registered against.
+	"brw_init_script": {Scope: ScopeAct, Target: TargetPage},
+	// A touch gesture is input: it changes the page the same way a click does.
+	"brw_touch": {Scope: ScopeAct, Target: TargetPage},
+	// Setting a checkbox to a known state changes the page. It is a distinct
+	// action rather than a click because a click toggles and the caller cannot
+	// say which way it landed.
+	"brw_check": {Scope: ScopeAct, Target: TargetPage},
 	// A snapshot seals the cookies an origin holds and puts them back into a
 	// browser context. Sealing reads that site's session and restoring hands it
 	// to a browser, so the origins the call names need the act scope on both
@@ -202,6 +212,8 @@ var ToolRules = map[string]ToolRule{
 	"brw_screenshot_element": {Scope: ScopeRead, Target: TargetPage},
 	"brw_artifact_capture":   {Scope: ScopeRead, Target: TargetPage},
 	"brw_scroll":             {Scope: ScopeRead, Target: TargetPage},
+	"brw_profile":            {Scope: ScopeRead, Target: TargetPage},
+	"brw_react":              {Scope: ScopeRead, Target: TargetPage},
 	"brw_hover":              {Scope: ScopeRead, Target: TargetPage},
 	"brw_vitals":             {Scope: ScopeRead, Target: TargetPage},
 	"brw_a11y_audit":         {Scope: ScopeRead, Target: TargetPage},
@@ -245,6 +257,7 @@ var UngatedTools = map[string]string{
 	"brw_set_geolocation":        "overrides what navigator.geolocation reports to a tab",
 	"brw_set_network_conditions": "throttles or disconnects a tab's network",
 	"brw_set_user_agent":         "overrides what the tab calls itself",
+	"brw_set_locale":             "overrides the language, time zone and calendar the renderer reports; it reads nothing and submits nothing",
 	"brw_artifact_info":          "reads metadata for an already-captured artifact, never the live page",
 	"brw_artifact_read":          "reads an already-captured artifact, never the live page",
 	"brw_artifact_search":        "searches an already-captured artifact, never the live page",

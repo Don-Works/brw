@@ -43,6 +43,7 @@ type EnvironmentController interface {
 	SetGeolocation(context.Context, GeolocationOptions) (EnvironmentResult, error)
 	SetNetworkConditions(context.Context, NetworkConditionsOptions) (EnvironmentResult, error)
 	EmulateMedia(context.Context, MediaEmulationOptions) (EnvironmentResult, error)
+	SetLocale(context.Context, LocaleOptions) (EnvironmentResult, error)
 	SetExtraHeaders(context.Context, ExtraHeadersOptions) (EnvironmentResult, error)
 	SetUserAgent(context.Context, UserAgentOptions) (EnvironmentResult, error)
 	Authenticate(context.Context, CredentialsOptions) (EnvironmentResult, error)
@@ -59,6 +60,7 @@ type EnvironmentResult struct {
 	Geolocation *GeolocationConfig       `json:"geolocation,omitempty"`
 	Network     *NetworkConditionsConfig `json:"network_conditions,omitempty"`
 	Media       *MediaEmulationConfig    `json:"media,omitempty"`
+	Locale      *LocaleConfig            `json:"locale,omitempty"`
 	// ExtraHeaders echoes the declared origins and header NAMES. Values are never
 	// echoed: the common use is a bearer token, and a result that repeats it puts
 	// it in the agent transcript, the MCP client's log and the usage ledger's
@@ -226,6 +228,76 @@ func NormalizeMediaEmulation(opts MediaEmulationOptions) (MediaEmulationConfig, 
 		return MediaEmulationConfig{}, false, errors.New("media emulation needs at least one of media, color_scheme, or reduced_motion, or clear:true to remove the override")
 	}
 	return cfg, false, nil
+}
+
+// LocaleOptions overrides the language and time zone a tab reports, which decide
+// Intl formatting, Date.toString, and the Accept-Language the page sends. Both
+// are independent: a caller may set one and leave the other with the browser.
+type LocaleOptions struct {
+	// Locale is a BCP 47 language tag, for example en-GB or fr-FR. Empty leaves
+	// the browser's own locale, unless Clear is set.
+	Locale string `json:"locale,omitempty"`
+	// Timezone is an IANA zone name, for example Europe/London or America/New_York.
+	Timezone string `json:"timezone,omitempty"`
+	Clear    bool   `json:"clear,omitempty"`
+	TabID    string `json:"tab_id,omitempty"`
+}
+
+// LocaleConfig is the resolved override. An empty field was left to the browser.
+type LocaleConfig struct {
+	Locale   string `json:"locale,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
+}
+
+// NormalizeLocale validates a locale/timezone request. Validation is deliberately
+// structural rather than a table of every IANA zone: Chrome answers an unknown
+// locale or zone by throwing, and that error names the value, so brw only has to
+// reject the shapes that would corrupt a CDP parameter or inject into a header.
+func NormalizeLocale(opts LocaleOptions) (LocaleConfig, bool, error) {
+	if opts.Clear {
+		return LocaleConfig{}, true, nil
+	}
+	cfg := LocaleConfig{
+		Locale:   strings.TrimSpace(opts.Locale),
+		Timezone: strings.TrimSpace(opts.Timezone),
+	}
+	if cfg.Locale == "" && cfg.Timezone == "" {
+		return LocaleConfig{}, false, errors.New("locale needs locale and/or timezone, or clear:true to remove the override")
+	}
+	if cfg.Locale != "" && !validLocaleTag(cfg.Locale) {
+		return LocaleConfig{}, false, fmt.Errorf("locale %q is not a BCP 47 language tag such as en-GB or fr-FR", cfg.Locale)
+	}
+	if cfg.Timezone != "" && !validTimezone(cfg.Timezone) {
+		return LocaleConfig{}, false, fmt.Errorf("timezone %q is not an IANA zone name such as Europe/London or America/New_York", cfg.Timezone)
+	}
+	return cfg, false, nil
+}
+
+// validLocaleTag accepts the RFC 5646 subtag alphabet. It is not a completeness
+// check — Chrome owns the registry — only a guard against a value that would
+// change what the CDP parameter means.
+func validLocaleTag(tag string) bool {
+	for _, r := range tag {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validTimezone accepts the characters that appear in IANA zone names, plus the
+// UTC/GMT aliases.
+func validTimezone(zone string) bool {
+	for _, r := range zone {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '/', r == '_', r == '+', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ExtraHeadersOptions declares extra request headers and the origins allowed to

@@ -365,6 +365,9 @@ var notADestination = map[string]string{
 	"brw_network_requests/pattern": "filters requests the page already made; it names no request brw issues",
 	"brw_network_capture/pattern":  "selects which of the page's own requests to record",
 	"brw_route/pattern":            "selects which of the page's own requests a rule applies to",
+	"brw_init_script/source":       "the JavaScript body to register, not a place brw goes",
+	"brw_react/target":             "names an element ref or frame, not a destination; it is resolved against the page already loaded",
+	"brw_scroll/target":            "names an element ref or CSS selector, not a destination; ScrollTo resolves it in the page already loaded",
 }
 
 // destinationValue is the un-granted value to drive one argument with, chosen

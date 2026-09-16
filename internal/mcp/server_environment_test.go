@@ -86,6 +86,7 @@ type recordingEnvironmentController struct {
 	media       browser.MediaEmulationOptions
 	headers     browser.ExtraHeadersOptions
 	userAgent   browser.UserAgentOptions
+	locale      browser.LocaleOptions
 	credentials browser.CredentialsOptions
 	download    browser.DownloadPathOptions
 }
@@ -112,6 +113,11 @@ func (c *recordingEnvironmentController) SetExtraHeaders(_ context.Context, opts
 
 func (c *recordingEnvironmentController) SetUserAgent(_ context.Context, opts browser.UserAgentOptions) (browser.EnvironmentResult, error) {
 	c.userAgent = opts
+	return browser.EnvironmentResult{OK: true}, nil
+}
+
+func (c *recordingEnvironmentController) SetLocale(_ context.Context, opts browser.LocaleOptions) (browser.EnvironmentResult, error) {
+	c.locale = opts
 	return browser.EnvironmentResult{OK: true}, nil
 }
 
@@ -195,6 +201,16 @@ func TestEnvironmentToolsForwardTheirArguments(t *testing.T) {
 			check: func(t *testing.T, ctrl *recordingEnvironmentController) {
 				if ctrl.userAgent.UserAgent != "Fabricated/1.0" || ctrl.userAgent.AcceptLanguage != "fr-FR" || ctrl.userAgent.Platform != "FabricatedOS" {
 					t.Fatalf("user agent options = %+v", ctrl.userAgent)
+				}
+			},
+		},
+		{
+			name: "locale",
+			tool: "brw_set_locale",
+			args: map[string]any{"locale": "fr-FR", "timezone": "Europe/Paris"},
+			check: func(t *testing.T, ctrl *recordingEnvironmentController) {
+				if ctrl.locale.Locale != "fr-FR" || ctrl.locale.Timezone != "Europe/Paris" {
+					t.Fatalf("locale options = %+v", ctrl.locale)
 				}
 			},
 		},

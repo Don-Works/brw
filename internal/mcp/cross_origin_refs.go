@@ -66,4 +66,10 @@ var refTakingTools = map[string]struct {
 	"brw_get":                {refToolGuardedHere, "the target reaches the transport as JavaScript through Evaluate, which is ref-free"},
 	"brw_highlight":          {refToolGuardedHere, "the overlay is drawn in the top document by the devtools observer, not through a Controller ref method"},
 	"brw_artifact_capture":   {refToolGuardedHere, "the ref reaches the artifact service, which captures from the top document"},
+	// Added with the 2026-09 parity wave. Each ref becomes a capability-method
+	// argument and GuardCrossOriginRefs refuses it in both backends.
+	"brw_touch":  {refToolGuardedAtTransport, "Touch resolves both its ref and its to_ref against the top document"},
+	"brw_scroll": {refToolGuardedAtTransport, "Scrolling to a target resolves the ref or selector against the top document"},
+	"brw_react":  {refToolGuardedAtTransport, "React inspection resolves its target against the top document"},
+	"brw_check":  {refToolGuardedAtTransport, "Check resolves its ref against the top document and refuses a cross-origin one by name"},
 }

@@ -36,6 +36,14 @@ func (b *Bridge) EmulateMedia(context.Context, browser.MediaEmulationOptions) (b
 	return browser.EnvironmentResult{}, browser.ErrEnvironmentUnsupported
 }
 
+func (b *Bridge) SetLocale(context.Context, browser.LocaleOptions) (browser.EnvironmentResult, error) {
+	return browser.EnvironmentResult{}, browser.ErrEnvironmentUnsupported
+}
+
+func (b *Bridge) InitScript(context.Context, browser.InitScriptOptions) (browser.InitScriptResult, error) {
+	return browser.InitScriptResult{}, browser.ErrInitScriptUnsupported
+}
+
 func (b *Bridge) SetExtraHeaders(context.Context, browser.ExtraHeadersOptions) (browser.EnvironmentResult, error) {
 	return browser.EnvironmentResult{}, browser.ErrEnvironmentUnsupported
 }

@@ -163,17 +163,26 @@ func bridgeRoute(opts browser.RouteOptions) (browser.Route, error) {
 	if opts.Times > 0 {
 		return browser.Route{}, ErrRouteTimesUnsupported
 	}
-	return browser.Route{Pattern: pattern, Behaviour: browser.RouteAbort}, nil
+	resourceTypes, err := browser.NormalizeResourceTypes(opts.ResourceTypes)
+	if err != nil {
+		return browser.Route{}, err
+	}
+	return browser.Route{Pattern: pattern, Behaviour: browser.RouteAbort, ResourceTypes: resourceTypes}, nil
 }
 
 // pushRoutes replaces the tab's declarativeNetRequest session rules.
 func (b *Bridge) pushRoutes(ctx context.Context, tabID string, routes []browser.Route) error {
 	rules := make([]map[string]any, 0, len(routes))
 	for _, route := range routes {
-		rules = append(rules, map[string]any{
+		rule := map[string]any{
 			"regex":     browser.RoutePatternRegex(route.Pattern),
 			"behaviour": string(route.Behaviour),
-		})
+		}
+		// Empty means every kind; the extension falls back to its full list.
+		if len(route.ResourceTypes) > 0 {
+			rule["resourceTypes"] = route.ResourceTypes
+		}
+		rules = append(rules, rule)
 	}
 	_, err := b.call(ctx, "set_routes", map[string]any{
 		"tabId": parseTabID(tabID),

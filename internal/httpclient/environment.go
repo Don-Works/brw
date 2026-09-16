@@ -12,6 +12,11 @@ import (
 // browser.ErrEnvironmentUnsupported verbatim when it is not.
 
 var _ browser.EnvironmentController = (*Controller)(nil)
+var _ browser.InitScriptController = (*Controller)(nil)
+var _ browser.TouchController = (*Controller)(nil)
+var _ browser.ProfilerController = (*Controller)(nil)
+var _ browser.ReactController = (*Controller)(nil)
+var _ browser.ScrollToController = (*Controller)(nil)
 
 func (c *Controller) SetGeolocation(ctx context.Context, opts browser.GeolocationOptions) (browser.EnvironmentResult, error) {
 	return c.postEnvironment(ctx, "/api/page/geolocation", opts)
@@ -23,6 +28,40 @@ func (c *Controller) SetNetworkConditions(ctx context.Context, opts browser.Netw
 
 func (c *Controller) EmulateMedia(ctx context.Context, opts browser.MediaEmulationOptions) (browser.EnvironmentResult, error) {
 	return c.postEnvironment(ctx, "/api/page/emulate_media", opts)
+}
+
+func (c *Controller) SetLocale(ctx context.Context, opts browser.LocaleOptions) (browser.EnvironmentResult, error) {
+	return c.postEnvironment(ctx, "/api/page/locale", opts)
+}
+
+func (c *Controller) InitScript(ctx context.Context, opts browser.InitScriptOptions) (browser.InitScriptResult, error) {
+	var out browser.InitScriptResult
+	err := c.post(ctx, "/api/page/init_script", opts, &out)
+	return out, err
+}
+
+func (c *Controller) Touch(ctx context.Context, opts browser.TouchOptions) (browser.ActionResult, error) {
+	var out browser.ActionResult
+	err := c.post(ctx, "/api/page/touch", opts, &out)
+	return out, err
+}
+
+func (c *Controller) Profile(ctx context.Context, opts browser.ProfileOptions) (browser.ProfileResult, error) {
+	var out browser.ProfileResult
+	err := c.post(ctx, "/api/page/profile", opts, &out)
+	return out, err
+}
+
+func (c *Controller) React(ctx context.Context, opts browser.ReactOptions) (browser.ReactResult, error) {
+	var out browser.ReactResult
+	err := c.post(ctx, "/api/page/react", opts, &out)
+	return out, err
+}
+
+func (c *Controller) ScrollTo(ctx context.Context, target string) (browser.ActionResult, error) {
+	var out browser.ActionResult
+	err := c.post(ctx, "/api/page/scroll", map[string]any{"target": target}, &out)
+	return out, err
 }
 
 func (c *Controller) SetExtraHeaders(ctx context.Context, opts browser.ExtraHeadersOptions) (browser.EnvironmentResult, error) {

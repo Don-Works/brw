@@ -21,6 +21,7 @@ type environmentRecorder struct {
 	media       browser.MediaEmulationOptions
 	headers     browser.ExtraHeadersOptions
 	userAgent   browser.UserAgentOptions
+	locale      browser.LocaleOptions
 	credentials browser.CredentialsOptions
 	download    browser.DownloadPathOptions
 	// authSensitive records whether the handler marked the call as carrying a
@@ -51,6 +52,11 @@ func (c *environmentRecorder) SetExtraHeaders(_ context.Context, opts browser.Ex
 
 func (c *environmentRecorder) SetUserAgent(_ context.Context, opts browser.UserAgentOptions) (browser.EnvironmentResult, error) {
 	c.userAgent = opts
+	return browser.EnvironmentResult{OK: true}, nil
+}
+
+func (c *environmentRecorder) SetLocale(_ context.Context, opts browser.LocaleOptions) (browser.EnvironmentResult, error) {
+	c.locale = opts
 	return browser.EnvironmentResult{OK: true}, nil
 }
 
@@ -121,6 +127,16 @@ func TestEnvironmentRoutesForwardTheirBodies(t *testing.T) {
 			check: func(t *testing.T, ctrl *environmentRecorder) {
 				if ctrl.userAgent.UserAgent != "Fabricated/1.0" || ctrl.userAgent.Platform != "FabricatedOS" {
 					t.Fatalf("user agent options = %+v", ctrl.userAgent)
+				}
+			},
+		},
+		{
+			name: "locale",
+			path: "/api/page/locale",
+			body: `{"locale":"fr-FR","timezone":"Europe/Paris"}`,
+			check: func(t *testing.T, ctrl *environmentRecorder) {
+				if ctrl.locale.Locale != "fr-FR" || ctrl.locale.Timezone != "Europe/Paris" {
+					t.Fatalf("locale options = %+v", ctrl.locale)
 				}
 			},
 		},
