@@ -25,6 +25,11 @@ set -eu
 slow_groups='./internal/browser ./internal/snapshot ./internal/extensionbridge'
 
 mode=${1:-}
+shard_failed=0
+# The check runs on every exit path below, including a failing go test: a suite
+# that fails AND leaks is the case most likely to leave browsers behind, since a
+# killed test binary is what strands them.
+repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 case "$mode" in
   rest)
     # Resolve through `go list` rather than matching the paths above directly:
@@ -68,7 +73,7 @@ case "$mode" in
       echo "== rest shard $index/$count: $(printf '%s\n' "$rest" | wc -l | tr -d ' ') packages"
     fi
     # shellcheck disable=SC2086 # the package list is deliberately word-split
-    go test -p=1 $rest
+    go test -p=1 $rest || shard_failed=1
     ;;
   package)
     index=${2:-}
@@ -93,11 +98,16 @@ case "$mode" in
       fi
       pattern=$(printf '%s\n' "$chosen" | awk 'BEGIN { ORS = "" } { printf "%s%s", (NR > 1 ? "|" : ""), $0 }')
       echo "== $pkg shard $index/$count: $picked of $total tests"
-      go test -p=1 -run "^($pattern)$" "$pkg"
+      go test -p=1 -run "^($pattern)$" "$pkg" || shard_failed=1
     done
     ;;
   *)
-    echo "usage: test-shard.sh rest | test-shard.sh package <index> <count> <package>..." >&2
+    echo "usage: test-shard.sh rest [index count] | test-shard.sh package <index> <count> <package>..." >&2
     exit 2
     ;;
 esac
+
+# A killed test binary cannot reap its own browser, so this is the only place
+# that notices one was left holding a temp profile.
+"$repo_root/scripts/check-no-orphan-browsers.sh" || shard_failed=1
+exit "$shard_failed"

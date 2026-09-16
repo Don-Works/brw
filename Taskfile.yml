@@ -63,6 +63,9 @@ tasks:
     cmds:
       - task: test-extension
       - go test -p=1 ./...
+      # A killed test binary cannot reap its own browser; fail the task rather
+      # than leave throwaway Chromes running against the machine.
+      - ./scripts/check-no-orphan-browsers.sh
 
   # Everything CI runs, in CI's order, so a release cannot fail on a check that
   # was never run locally. `go vet` alone is not the gate: staticcheck catches
@@ -150,6 +153,7 @@ tasks:
     cmds:
       - task: build
       - ./scripts/test-functional.sh
+      - ./scripts/check-no-orphan-browsers.sh
 
   # The binaries live under DATADIR and reach PATH through BINDIR symlinks, the
   # same shape scripts/install.sh produces. brwctl doctor's default --app-dir on
