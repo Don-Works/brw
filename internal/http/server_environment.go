@@ -108,6 +108,28 @@ func (s *Server) touch(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
+func (s *Server) check(w http.ResponseWriter, r *http.Request) {
+	var req browser.CheckOptions
+	if !decode(w, r, &req) {
+		return
+	}
+	ctl, ok := s.checkController(w)
+	if !ok {
+		return
+	}
+	result, err := ctl.Check(s.contextWithTabID(r.Context(), req.TabID), req)
+	writeResult(w, result, err)
+}
+
+func (s *Server) checkController(w http.ResponseWriter) (browser.CheckController, bool) {
+	ctl, ok := s.manager.(browser.CheckController)
+	if !ok {
+		writeError(w, errors.New("setting a checkbox is not available on this transport"))
+		return nil, false
+	}
+	return ctl, true
+}
+
 // profileController resolves the optional performance-trace capability.
 func (s *Server) profileController(w http.ResponseWriter) (browser.ProfilerController, bool) {
 	ctl, ok := s.manager.(browser.ProfilerController)

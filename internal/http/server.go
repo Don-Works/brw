@@ -344,6 +344,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/locale", s.setLocale)
 	mux.HandleFunc("POST /api/page/init_script", s.initScript)
 	mux.HandleFunc("POST /api/page/touch", s.touch)
+	mux.HandleFunc("POST /api/page/check", s.check)
 	mux.HandleFunc("POST /api/page/profile", s.profile)
 	mux.HandleFunc("POST /api/page/react", s.react)
 	mux.HandleFunc("POST /api/page/extra_headers", s.extraHeaders)

@@ -14,6 +14,7 @@ import (
 var _ browser.EnvironmentController = (*Controller)(nil)
 var _ browser.InitScriptController = (*Controller)(nil)
 var _ browser.TouchController = (*Controller)(nil)
+var _ browser.CheckController = (*Controller)(nil)
 var _ browser.ProfilerController = (*Controller)(nil)
 var _ browser.ReactController = (*Controller)(nil)
 var _ browser.ScrollToController = (*Controller)(nil)
@@ -43,6 +44,12 @@ func (c *Controller) InitScript(ctx context.Context, opts browser.InitScriptOpti
 func (c *Controller) Touch(ctx context.Context, opts browser.TouchOptions) (browser.ActionResult, error) {
 	var out browser.ActionResult
 	err := c.post(ctx, "/api/page/touch", opts, &out)
+	return out, err
+}
+
+func (c *Controller) Check(ctx context.Context, opts browser.CheckOptions) (browser.ActionResult, error) {
+	var out browser.ActionResult
+	err := c.post(ctx, "/api/page/check", opts, &out)
 	return out, err
 }
 

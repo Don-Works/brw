@@ -22,6 +22,7 @@ type environmentRecorder struct {
 	headers     browser.ExtraHeadersOptions
 	userAgent   browser.UserAgentOptions
 	locale      browser.LocaleOptions
+	check       browser.CheckOptions
 	credentials browser.CredentialsOptions
 	download    browser.DownloadPathOptions
 	// authSensitive records whether the handler marked the call as carrying a
@@ -58,6 +59,11 @@ func (c *environmentRecorder) SetUserAgent(_ context.Context, opts browser.UserA
 func (c *environmentRecorder) SetLocale(_ context.Context, opts browser.LocaleOptions) (browser.EnvironmentResult, error) {
 	c.locale = opts
 	return browser.EnvironmentResult{OK: true}, nil
+}
+
+func (c *environmentRecorder) Check(_ context.Context, opts browser.CheckOptions) (browser.ActionResult, error) {
+	c.check = opts
+	return browser.ActionResult{OK: true}, nil
 }
 
 func (c *environmentRecorder) Authenticate(ctx context.Context, opts browser.CredentialsOptions) (browser.EnvironmentResult, error) {
@@ -137,6 +143,16 @@ func TestEnvironmentRoutesForwardTheirBodies(t *testing.T) {
 			check: func(t *testing.T, ctrl *environmentRecorder) {
 				if ctrl.locale.Locale != "fr-FR" || ctrl.locale.Timezone != "Europe/Paris" {
 					t.Fatalf("locale options = %+v", ctrl.locale)
+				}
+			},
+		},
+		{
+			name: "check",
+			path: "/api/page/check",
+			body: `{"ref":"e17","checked":true}`,
+			check: func(t *testing.T, ctrl *environmentRecorder) {
+				if ctrl.check.Ref != "e17" || ctrl.check.Checked == nil || !*ctrl.check.Checked {
+					t.Fatalf("check options = %+v", ctrl.check)
 				}
 			},
 		},

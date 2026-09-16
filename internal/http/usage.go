@@ -66,6 +66,7 @@ var usageOperations = map[string]string{
 	"/api/page/locale":               "brw_set_locale",
 	"/api/page/init_script":          "brw_init_script",
 	"/api/page/touch":                "brw_touch",
+	"/api/page/check":                "brw_check",
 	"/api/page/profile":              "brw_profile",
 	"/api/page/react":                "brw_react",
 	"/api/page/extra_headers":        "brw_set_extra_headers",
