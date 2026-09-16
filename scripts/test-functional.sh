@@ -17,7 +17,19 @@ cleanup() {
     kill "$fixture_pid" 2>/dev/null || :
     wait "$fixture_pid" 2>/dev/null || :
   fi
-  rm -rf "$run_root"
+  # The browser the daemon launched is a GRANDCHILD: SIGTERM to brwd is
+  # acknowledged and reaped before Chrome has finished flushing its profile,
+  # and a renderer still writing under $run_root while rm walks the tree makes
+  # rm exit "Directory not empty". Because this runs from an EXIT trap with
+  # `set -e` still active, that turned a fully green suite (20 passed, 0 failed)
+  # into a failed release. Retry briefly, and if the directory is still held,
+  # leave it in TMPDIR rather than report a suite failure that did not happen.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    rm -rf "$run_root" 2>/dev/null && return 0
+    sleep 1
+  done
+  printf 'warning: could not remove %s; leaving it in TMPDIR\n' "$run_root" >&2
+  return 0
 }
 trap cleanup EXIT INT TERM
 
