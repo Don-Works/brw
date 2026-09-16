@@ -128,9 +128,9 @@ than embed the recipe. See [recipes and artifacts](recipes-and-artifacts.md).
   `brw_batch` cost ~743 bytes, so batch first and trim second (see
   [benchmarks](benchmarks.md#observation-size)).
 
-### MCPlexer and approval-bound harnesses
+### Approval-bound harnesses
 
-When `brw` is routed through `mcpx__execute_code`, an interactive per-call
+When `brw` is routed through a gateway's `execute_code`, an interactive per-call
 approval can consume the same outer script deadline. Until approval is already
 settled, place only one approval-gated `brw` call in each script, let it return,
 then issue the next call. Batching several calls behind the first approval can

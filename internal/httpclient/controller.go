@@ -130,10 +130,15 @@ func sanitizeAgentName(name string) string {
 // stableOwnerID converts the gateway's logical browser-session id into a
 // privacy-safe fixed-width lease owner. The fallback remains this proxy's
 // correlation session, so direct brwd --upstream-http users are isolated too.
+//
+// BRW_OWNER_ID is the gateway-neutral input. MCPLEXER_BROWSER_SESSION_ID is
+// still read as a deprecated fallback so a gateway that has not moved over yet
+// keeps a stable lease owner across disposable proxy restarts; drop that read
+// once every caller sets BRW_OWNER_ID.
 func stableOwnerID(fallback string) string {
 	raw := strings.TrimSpace(os.Getenv("BRW_OWNER_ID"))
 	if raw == "" {
-		raw = strings.TrimSpace(os.Getenv("MCPLEXER_BROWSER_SESSION_ID"))
+		raw = strings.TrimSpace(os.Getenv("MCPLEXER_BROWSER_SESSION_ID")) // Deprecated: prefer BRW_OWNER_ID.
 	}
 	if raw == "" {
 		return fallback

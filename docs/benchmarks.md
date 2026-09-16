@@ -324,9 +324,9 @@ grown since. At that point the CLI default was `all`: 55 tools and about
 12,109 tokens. The new default `auto` started at 13 tools and about 4,060 tokens,
 which was **66.5% less catalogue context than the old default**. The opt-in full
 surface grew by seven tools and about 11.4% (12,109 to 13,488 tokens) because it
-now describes the recipe and artifact APIs; MCPlexer installations continue to
+now describes the recipe and artifact APIs; gateway installations continue to
 index that full surface once and expose individual tools through semantic tool
-search. Keep MCPlexer downstream routes on `all`: its pinned catalogue does not
+search. Keep gateway downstream routes on `all`: a pinned catalogue does not
 adopt brw's session-local `list_changed` growth after `brw_tools`, while its own
 six-tool code-mode façade already keeps the downstream definitions out of model
 context. `auto` is for direct MCP clients that honor dynamic tool-list changes.

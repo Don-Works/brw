@@ -10,7 +10,7 @@ Written for a client that calls brw's MCP tools directly: your tool list contain
 `brw_open`, `brw_snapshot`, `brw_identity`, and you call them one tool call at a time.
 If instead brw reaches you through a gateway that exposes one *namespace* per browser
 profile and a code-execution tool (`brw_chromium.brw_open(...)` inside
-`mcpx__execute_code`), read [references/mcplexer-gateway.md](references/mcplexer-gateway.md)
+`execute_code`), read [references/execute-code-gateway.md](references/execute-code-gateway.md)
 — the tool names are the same, the calling convention is not.
 
 A brw profile is usually a browser a human is signed into, not a sandbox; a
@@ -171,7 +171,7 @@ the old surface with nothing to say so. Ask the daemon instead:
 `brw_skill({document?})` → `{skill, path, version, source, documents, bytes, content}`.
 `content` is this markdown out of the daemon's own binary, `version` is that binary's
 build, and `documents` lists the deeper pages — pass one back as `document`
-(`references/recipes.md`, `references/mcplexer-gateway.md`). `source` is always
+(`references/recipes.md`, `references/execute-code-gateway.md`). `source` is always
 `brwd-binary`; nothing on this path reads disk. The same answer is on the HTTP API at
 `GET /api/skill`, and `brw skill` prints it from a shell. If the `version` it reports
 is not the one `brw_identity` reports, you are talking to two different brws.

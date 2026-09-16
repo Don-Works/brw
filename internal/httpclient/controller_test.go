@@ -181,8 +181,8 @@ func TestAgentNameEnvOverridesClientInfo(t *testing.T) {
 }
 
 func TestLogicalOwnerIsStableAcrossDisposableProxyRestarts(t *testing.T) {
-	t.Setenv("BRW_OWNER_ID", "")
-	t.Setenv("MCPLEXER_BROWSER_SESSION_ID", "worker:agent-42")
+	t.Setenv("MCPLEXER_BROWSER_SESSION_ID", "")
+	t.Setenv("BRW_OWNER_ID", "worker:agent-42")
 	first, err := New("http://localhost:1234", time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -199,6 +199,25 @@ func TestLogicalOwnerIsStableAcrossDisposableProxyRestarts(t *testing.T) {
 	}
 	if first.OwnerID() == "worker:agent-42" {
 		t.Fatal("raw gateway session id must not be forwarded as the lease owner")
+	}
+}
+
+// The pre-decoupling env var still produces a stable owner so a gateway that
+// has not moved to BRW_OWNER_ID yet does not silently lose lease ownership
+// across proxy restarts. Delete this test with the fallback read.
+func TestDeprecatedGatewaySessionIDStillYieldsStableOwner(t *testing.T) {
+	t.Setenv("BRW_OWNER_ID", "")
+	t.Setenv("MCPLEXER_BROWSER_SESSION_ID", "worker:agent-42")
+	first, err := New("http://localhost:1234", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New("http://localhost:1234", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.OwnerID() == "" || first.OwnerID() != second.OwnerID() {
+		t.Fatalf("deprecated fallback owner changed across proxy restart: %q != %q", first.OwnerID(), second.OwnerID())
 	}
 }
 

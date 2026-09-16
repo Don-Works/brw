@@ -1,4 +1,4 @@
-# brw behind a code-execution gateway (MCPlexer / Maix)
+# brw behind a code-execution gateway
 
 Read this when brw does NOT appear in your tool list as bare `brw_open` /
 `brw_snapshot`, but as one namespace per browser profile invoked from inside a
@@ -12,12 +12,16 @@ Tool names, arguments and return shapes are the ones in [../SKILL.md](../SKILL.m
 that file is the reference for what each call does. This file covers only what the
 gateway changes: discovery, batching, and output handling.
 
+Nothing here is specific to one gateway. Any harness that multiplexes MCP servers
+into namespaces and runs JavaScript through a code-execution tool produces this
+situation; brw only needs the calling convention below to be the same.
+
 ## Which situation am I in
 
 | you see | read |
 |---|---|
 | `brw_open`, `brw_snapshot`, `brw_identity` in your tool list | ../SKILL.md, call them directly |
-| `mcpx__execute_code` / `mcpx__call_tool` and no `brw_*` tools | this file |
+| a code-execution tool (`execute_code` / `call_tool`) and no `brw_*` tools | this file |
 
 ## One namespace per profile, and the set grows
 
@@ -44,6 +48,11 @@ Pick by what the user asked for. If two profiles could match, show the list and 
 incognito contexts and `brw_cookies`, `extension-bridge` has Chrome tab groups and
 drives the human's signed-in Chrome. A gateway with one namespace per profile usually
 has both lanes available — check, rather than telling the user a capability is missing.
+
+When the gateway stamps an owner id onto the calls it makes, brw hashes it into the
+tab-lease owner so leases survive a restart of the disposable proxy in front of the
+daemon. `BRW_OWNER_ID` is that input; the older `MCPLEXER_BROWSER_SESSION_ID` is read
+as a deprecated fallback by brw builds that still support it.
 
 ## Batch the flow, not the call
 

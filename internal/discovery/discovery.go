@@ -16,8 +16,8 @@ import (
 )
 
 // Record is one configured browser-profile bridge daemon, as emitted by
-// `brwctl daemons`. It is the discovery contract a gateway (e.g. mcplexer)
-// consumes to register one namespace per brw profile-daemon. http_addr/ws_addr
+// `brwctl daemons`. It is the discovery contract a gateway consumes to
+// register one namespace per brw profile-daemon. http_addr/ws_addr
 // are the daemon's loopback control + extension-bridge addresses; identity is the
 // live /health identity when the daemon is reachable.
 type Record struct {

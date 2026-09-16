@@ -95,7 +95,7 @@ REPEATING A FLOW: after completing a multi-step flow, brw_trace { format:
 re-planning, one round trip. It inserts assert steps so a replay against a
 changed page fails instead of acting on the wrong element.
 
-MCPLEXER/HARNESS EXECUTION (when brw is routed through execute_code):
+CODE-MODE GATEWAY EXECUTION (when brw is routed through execute_code):
 - If interactive per-call approval is enabled, put only ONE approval-gated brw
   call in each execute_code script and wait for approval before the next. An
   approval wait can consume the outer script's deadline and invalidate later

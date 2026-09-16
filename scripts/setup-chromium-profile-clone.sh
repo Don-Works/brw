@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scaffold a dedicated Chromium clone + brw bridge daemon for one signed-in
 # Chrome profile, so an agent can drive it reliably (Chromium is the recommended
-# brw target; the real Chrome is fragile for automation). MCPlexer v0.4.0+
+# brw target; the real Chrome is fragile for automation). A gateway with
 # auto-discovery then registers each clone as its own namespace.
 #
 # It automates the mechanical + verified-recipe parts and CLEARLY marks the two
@@ -130,5 +130,5 @@ Two manual steps remain (GUI):
   1. Launch the clone:  $LAUNCHER
   2. In that Chromium window: chrome://extensions → brw → Options →
      set bridge URL to ws://127.0.0.1:$WS_PORT/extension (and status http://127.0.0.1:$HTTP_PORT/status), Save.
-Then it self-registers in MCPlexer (v0.4.0 auto-discovery) as namespace brw_$NAME.
+Then it self-registers in the gateway (auto-discovery) as namespace brw_$NAME.
 DONE

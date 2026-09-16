@@ -356,7 +356,7 @@ site nonce rather than running it with the declaration switched off.
 
 Timers and browser/page events belong inside the deterministic recipe because
 they are part of one bounded browser transaction. Long-lived scheduling does
-not. Use MCPlexer, cron, a workflow engine, or a webhook receiver to decide
+not. Use a gateway, cron, a workflow engine, or a webhook receiver to decide
 *when* to search/run a recipe. That outer system owns retry policy,
 authorization, calendars, notifications, and audit. It invokes `brw`; `brw`
 does not keep an invisible scheduler alive beside a browser profile.

@@ -147,10 +147,10 @@ brwctl daemons
 Each entry is one MCP server's worth of wiring: the `http_addr` is the
 `--upstream-http` a stdio `brwd --mcp` child proxies to. An offline daemon still
 appears with `"reachable": false` so a consumer can decide whether to register
-it. This is the discovery contract behind the gateway-side sync — for
-[MCPlexer](https://mcplexer.com), `mcplexer brw sync` turns this roster into one
-namespace + route per browser, so an agent can pick which browser to drive by
-namespace (`brw__*`, `brw_chromium__*`, …) and existing tabs are never stomped
+it. This is the discovery contract behind gateway-side sync — a gateway turns
+this roster into one namespace + route per browser, so an agent can pick which
+browser to drive by namespace (`brw__*`, `brw_chromium__*`, …) and existing tabs
+are never stomped
 (see the tab-isolation note above; pass `tab_id` to act on a specific tab).
 
 ## HTTP Tunnel

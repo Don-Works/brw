@@ -284,7 +284,7 @@ func TestOpenInGroupMakesOpenedTabForeground(t *testing.T) {
 		focusedWindow: 1,
 		nextTabID:     200,
 		groups: map[int]*gaGroup{
-			9: {id: 9, windowID: 1, title: "mcplexer-ui-ux-pass", collapsed: true},
+			9: {id: 9, windowID: 1, title: "brw-ui-ux-pass", collapsed: true},
 		},
 		tabs: []*gaTab{
 			{id: 100, windowID: 1, groupID: -1, active: true, url: "https://chat.google.com/", title: "Google Chat"},
@@ -296,7 +296,7 @@ func TestOpenInGroupMakesOpenedTabForeground(t *testing.T) {
 
 	ctx := context.Background()
 	const target = "http://127.0.0.1:13333/workspaces/routes?ux_check=1"
-	res, err := b.OpenInGroup(ctx, target, browser.TabGroupOptions{Name: "mcplexer-ui-ux-pass"})
+	res, err := b.OpenInGroup(ctx, target, browser.TabGroupOptions{Name: "brw-ui-ux-pass"})
 	if err != nil {
 		t.Fatalf("OpenInGroup: %v", err)
 	}
