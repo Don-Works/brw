@@ -16,7 +16,7 @@ falls back to today's behaviour and prints a warning annotation on the job:
 | Platform | Without secrets | With secrets |
 | --- | --- | --- |
 | macOS | Binaries ad-hoc signed (`codesign --sign -`), `.pkg` unsigned. Gatekeeper says "unidentified developer". | Binaries signed with Developer ID Application, hardened runtime, secure timestamp; `.pkg` signed with Developer ID Installer, notarized by Apple, ticket stapled. |
-| Windows | `.msi` and the `.exe` files inside it unsigned. SmartScreen warns on download and hides Run behind More info. | Authenticode SHA-256 with an RFC 3161 timestamp on the four executables and on each `.msi`. |
+| Windows | **Not built.** The MSI job is disabled because, with no Authenticode certificate, the MSIs shipped unsigned and only earned SmartScreen warnings plus a signing report nothing could act on. Restore the job per the comment in `.github/workflows/release.yml`. | Authenticode SHA-256 with an RFC 3161 timestamp over the four executables and each `.msi`. |
 | Linux | `.deb` / `.rpm` unsigned. No change planned; there is no distribution GPG key. | Unchanged. |
 | Relocatable `.tar.gz` | macOS binaries ad-hoc signed, Linux binaries unsigned. This is the archive `scripts/install.sh` and the Homebrew formula download. | Unchanged. `scripts/package-tarball.sh` ad-hoc signs on macOS whatever else is configured, because `install.sh` re-signs the unpacked copy the same way and would discard a Developer ID signature anyway. |
 
@@ -236,6 +236,11 @@ gh variable set WINDOWS_TIMESTAMP_URL --repo Don-Works/brw --body "http://timest
 These are repository variables, not secrets: they are paths, and the credential
 never appears in them.
 
+**The `windows-packages` job is currently disabled** (see the Windows row in the
+table above): the release workflow does not build MSIs at all, so nothing below
+runs today. This section is the restore path — re-enable the job first, per the
+comment in `.github/workflows/release.yml`, then work through it.
+
 **One step is still missing and has to be added when you pick a vendor.** The
 plugin authenticates to the service on its own, and nothing in
 `windows-packages` does that yet. For Azure Trusted Signing that means an
@@ -336,8 +341,8 @@ Repository variables, `gh variable set <NAME> --repo Don-Works/brw`:
 | `WINDOWS_SIGN_DLIB` | Path on the runner to a cloud signing service's signtool dispatch library |
 | `WINDOWS_SIGN_DMDF` | Path on the runner to that service's signing metadata JSON |
 
-Each group is independent. Setting only the macOS secrets signs the `.pkg` and
-leaves the MSIs unsigned, and the release notes will say exactly that.
+Each group is independent. Setting only the macOS secrets signs the `.pkg`; the
+Windows variables do nothing until the `windows-packages` job is re-enabled.
 `HOMEBREW_TAP_TOKEN` is independent of both and buys nothing about signatures.
 
 ## Renewals and what expires

@@ -134,8 +134,11 @@ brew install don-works/tap/brw
 ```
 
 and platform packages on the
-[releases page](https://github.com/Don-Works/brw/releases) — `.pkg`, `.msi`,
+[releases page](https://github.com/Don-Works/brw/releases) — `.pkg`,
 `.deb`, `.rpm` — for managed machines where a system-wide install is wanted.
+Windows packaging is not built yet: without a code-signing certificate the MSIs
+shipped unsigned and only earned SmartScreen warnings, so that job is disabled
+until there is a certificate to sign them with. See `docs/release-signing.md`.
 
 Setup binds to whichever Chromium-based browser you already use:
 `--browser chrome|chromium|edge|brave|vivaldi|opera|arc`, or any other Chromium

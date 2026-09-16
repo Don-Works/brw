@@ -45,9 +45,13 @@ brwctl doctor --app-dir "$(brew --prefix brw)"
 For managed and multi-user machines, GitHub releases ship platform packages:
 
 - macOS: `brw_<version>_macos_universal.pkg`
-- Windows: `brw_<version>_windows_amd64.msi` and `..._arm64.msi`
 - Debian/Ubuntu: `brw_<version>_linux_amd64.deb` and `..._arm64.deb`
 - Fedora/RHEL: `brw_<version>_linux_amd64.rpm` and `..._arm64.rpm`
+
+Windows has no native installer yet. The `.msi` job is disabled because, with no
+Authenticode certificate, the MSIs shipped unsigned and only earned SmartScreen
+warnings. On Windows use `scripts/install.ps1`, or the relocatable `.tar.gz`,
+until a certificate makes an installer worth shipping.
 
 These install to the system PATH and need sudo or an administrator. They put the
 extension, tests, bundled agent skill, README and license in the platform share
