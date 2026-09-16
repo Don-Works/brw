@@ -527,7 +527,7 @@ func (m *Manager) SetLocale(ctx context.Context, opts LocaleOptions) (Environmen
 	}
 	m.invalidateState(tabID)
 
-	message := "locale override applied to this tab; Date, Intl and Accept-Language use it immediately, but the language a document already parsed for itself needs a reload"
+	message := "locale override applied to this tab; Intl formatting, Date and the Accept-Language header use it immediately. navigator.language follows only on the browser builds that derive it from the locale override — where it does not, use brw_set_user_agent with accept_language, which always does"
 	if clear {
 		message = "cleared the locale and timezone overrides; the tab is back on the host's own locale and zone"
 	}

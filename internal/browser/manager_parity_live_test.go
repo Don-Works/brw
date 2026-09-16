@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,7 +24,24 @@ func serveParityFixture(t *testing.T, page string) string {
 }
 
 // The override is only real if the page sees it: Intl formatting and Date have
-// to resolve in the chosen zone, not just for CDP to have accepted the command.
+// to resolve in the chosen locale and zone, not just for CDP to have accepted
+// the command.
+//
+// This asserts Intl/Date, NOT navigator.language, and that is deliberate.
+// Emulation.setLocaleOverride and Emulation.setUserAgentOverride's
+// accept_language are two different overrides with two different effects, and a
+// Linux Chromium 152 probe shows it plainly:
+//
+//	setLocaleOverride(en_GB)      -> Intl locale en-GB, Date "Greenwich Mean
+//	                                 Time"; navigator.language STAYS en-US
+//	accept_language(fr-FR)        -> navigator.language fr-FR; Intl locale
+//	                                 STAYS en-US
+//
+// brw exposes both on purpose (brw_set_locale and brw_set_user_agent's
+// accept_language), so the locale tool is tested for what it actually drives.
+// Asserting navigator.language here passed on macOS Chrome 153, which happens to
+// apply the locale override to it too, and failed on Linux CI: that is a
+// browser difference the test should not paper over.
 func TestSetLocaleIsWhatThePageReports(t *testing.T) {
 	m := newHeadlessManager(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -34,29 +52,24 @@ func TestSetLocaleIsWhatThePageReports(t *testing.T) {
 	if _, err := m.SetLocale(ctx, LocaleOptions{Locale: "en-GB", Timezone: "Europe/London"}); err != nil {
 		t.Fatalf("SetLocale: %v", err)
 	}
-	// navigator.language and navigator.languages are read when the document is
-	// created, so they only follow the override on a fresh document. That is
-	// exactly what the tool tells the caller ("a document that already parsed its
-	// language needs a reload"), so the test reloads rather than asserting a
-	// guarantee the product does not make: macOS Chrome happened to apply it to
-	// the live document and the Linux CI Chrome did not.
-	if _, err := m.Navigate(ctx, "reload"); err != nil {
-		t.Fatalf("reload after SetLocale: %v", err)
-	}
-	if got := evaluateString(t, m, ctx, `navigator.language`); got != "en-GB" {
-		t.Fatalf("navigator.language = %q, want en-GB", got)
+	if got := evaluateString(t, m, ctx, `Intl.DateTimeFormat().resolvedOptions().locale`); got != "en-GB" {
+		t.Fatalf("Intl locale = %q, want en-GB", got)
 	}
 	if got := evaluateString(t, m, ctx, `Intl.DateTimeFormat().resolvedOptions().timeZone`); got != "Europe/London" {
 		t.Fatalf("page time zone = %q, want Europe/London", got)
 	}
+	// Date formatting follows the zone, which is the observable a caller reads.
+	if got := evaluateString(t, m, ctx, `new Date(2020,0,1).toString()`); !strings.Contains(got, "Greenwich Mean Time") && !strings.Contains(got, "GMT") {
+		t.Fatalf("Date.toString() = %q, want it to resolve in London", got)
+	}
 
-	// A timezone-only request must leave the language alone, because the two are
+	// A timezone-only request must leave the locale alone, because the two are
 	// independent Emulation commands.
 	if _, err := m.SetLocale(ctx, LocaleOptions{Timezone: "America/New_York"}); err != nil {
 		t.Fatalf("SetLocale timezone only: %v", err)
 	}
-	if got := evaluateString(t, m, ctx, `navigator.language`); got != "en-GB" {
-		t.Fatalf("after a timezone-only override navigator.language = %q, want it left at en-GB", got)
+	if got := evaluateString(t, m, ctx, `Intl.DateTimeFormat().resolvedOptions().locale`); got != "en-GB" {
+		t.Fatalf("after a timezone-only override Intl locale = %q, want it left at en-GB", got)
 	}
 	if got := evaluateString(t, m, ctx, `Intl.DateTimeFormat().resolvedOptions().timeZone`); got != "America/New_York" {
 		t.Fatalf("page time zone = %q, want America/New_York", got)
