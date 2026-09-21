@@ -48,6 +48,22 @@ type navigationFakeExtension struct {
 	readyRaceDone       bool
 	suppressNavCommit   bool
 	spuriousLoaderRoute bool
+
+	// uncommitted models a tab still on its initial empty document: no trusted
+	// identity, no frame URL, location.href about:blank.
+	uncommitted bool
+	// rejectInlineArm models an extension build that predates the
+	// arm_inline_document message.
+	rejectInlineArm bool
+	// abortNavigate makes Page.navigate report net::ERR_ABORTED, which is what a
+	// download-shaped response produces, without committing anything.
+	abortNavigate bool
+	// messages records every message type (and cdp method) in arrival order.
+	messages []string
+	// hangWaitScript leaves the in-page wait promise unanswered; hangMethods
+	// names cdp methods that never get a reply.
+	hangWaitScript bool
+	hangMethods    map[string]bool
 }
 
 func (f *navigationFakeExtension) commitTarget() {
@@ -88,25 +104,49 @@ func (f *navigationFakeExtension) serve(ctx context.Context, conn *websocket.Con
 		ok := true
 		errText := ""
 		f.mu.Lock()
+		f.messages = append(f.messages, msg.Type)
+		blank := f.uncommitted && !f.replaced
 		switch msg.Type {
+		case "arm_inline_document", "disarm_inline_document":
+			if f.rejectInlineArm {
+				ok = false
+				errText = "unknown message type " + msg.Type
+			}
 		case "get_document_identity":
+			if blank {
+				ok = false
+				errText = "main-document identity is unavailable"
+				break
+			}
 			result = map[string]any{
 				"document_id": f.documentID, "document_epoch": f.epoch,
 				"worker_instance": f.worker, "origin": f.origin, "tab_id": 42,
 			}
 		case "cdp":
 			method, _ := msg.Params["method"].(string)
+			f.messages = append(f.messages, method)
+			if f.hangMethods[method] {
+				f.mu.Unlock()
+				continue
+			}
 			switch method {
 			case "Page.getFrameTree":
 				frameURL := f.url
 				if f.reportedFrameURL != "" {
 					frameURL = f.reportedFrameURL
 				}
+				if blank {
+					frameURL = ""
+				}
 				result = map[string]any{"frameTree": map[string]any{"frame": map[string]any{
 					"id": f.frameID, "loaderId": f.loaderID, "url": frameURL,
 				}}}
 			case "Page.navigate":
 				f.navigateCalls++
+				if f.abortNavigate {
+					result = map[string]any{"frameId": f.frameID, "errorText": "net::ERR_ABORTED"}
+					break
+				}
 				loaderID := f.targetLoaderID
 				if f.sameDocument {
 					loaderID = ""
@@ -136,10 +176,19 @@ func (f *navigationFakeExtension) serve(ctx context.Context, conn *websocket.Con
 				}
 			case "Runtime.evaluate":
 				expression, _ := msg.Params["params"].(map[string]any)["expression"].(string)
+				if f.hangWaitScript && strings.Contains(expression, "MutationObserver") {
+					// A renderer that never answers: the wait's round trip has to be
+					// bounded by the caller's timeout, not by the daemon's.
+					f.mu.Unlock()
+					continue
+				}
 				value := any(true)
 				locationRead := expression == "location.href" || expression == "globalThis.location.href"
 				if locationRead {
 					value = f.url
+					if blank {
+						value = "about:blank"
+					}
 				}
 				if isSnapshotWalkExpression(expression) {
 					// the in-page snapshot walker, which an observed action runs

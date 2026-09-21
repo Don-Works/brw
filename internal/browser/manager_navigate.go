@@ -116,7 +116,12 @@ func (m *Manager) NavigateTo(ctx context.Context, url string) (ActionResult, err
 	// arrives while this call is still in flight, and the content boundary has to
 	// already know the agent asked for it.
 	m.recordAgentNavigation(tabID, url)
+	disarm := m.armInlineDocument(tabCtx, tabID)
+	defer disarm()
 	if err := chromedp.Run(tabCtx, chromedp.Navigate(url)); err != nil {
+		if IsNavigationAbortedError(err) {
+			return ActionResult{}, NavigationAbortedError("navigate_to")
+		}
 		return ActionResult{}, err
 	}
 

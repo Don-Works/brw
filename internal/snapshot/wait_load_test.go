@@ -97,3 +97,58 @@ func TestWaitForLoadIsNotAnAliasForReady(t *testing.T) {
 		})
 	}
 }
+
+// networkidle used to fall through to the plain-text form and wait for the
+// literal word to appear on the page, which ran the whole timeout on every
+// site. It is now the page's own quiet signal: load fired and no resource has
+// finished for 500 ms. Resource Timing records completions, so a request that
+// finishes inside the window pushes idle back; one still in flight after 500 ms
+// of silence is not seen, which docs/waiting.md states.
+func TestWaitForNetworkIdleWaitsForLateResourcesToFinish(t *testing.T) {
+	const holdResource = 300 * time.Millisecond
+	const idleWindow = 500 * time.Millisecond
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/late" {
+			time.Sleep(holdResource)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"late":true}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		// The fetch starts after load, so load alone does not cover it.
+		fmt.Fprint(w, `<!doctype html><html><body><p>fixture</p><script>
+window.addEventListener('load', function(){ fetch('/late').then(function(r){ return r.text(); }).then(function(){ document.body.dataset.late = 'done'; }); });
+</script></body></html>`)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := newHeadlessSettleCtx(t)
+	defer cancel()
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		_, _, _, _, err := page.Navigate(srv.URL).Do(ctx)
+		return err
+	})); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+
+	started := time.Now()
+	matched, err := WaitForCondition(ctx, "networkidle", 6000)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("WaitForCondition(networkidle): %v", err)
+	}
+	if !matched {
+		t.Fatalf("WaitForCondition(networkidle) timed out after %s", elapsed)
+	}
+	var late string
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`document.body.dataset.late || ''`, &late)); err != nil {
+		t.Fatalf("read the late marker: %v", err)
+	}
+	if late != "done" {
+		t.Fatalf("networkidle resolved after %s while the late fetch was still in flight", elapsed)
+	}
+	if elapsed < holdResource+idleWindow-100*time.Millisecond {
+		t.Fatalf("networkidle resolved after %s, before the late fetch (%s) plus the idle window (%s)", elapsed, holdResource, idleWindow)
+	}
+}
