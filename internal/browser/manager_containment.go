@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"encoding/base64"
 	"sync"
 	"time"
 
@@ -33,6 +34,10 @@ type containmentState struct {
 	armed   map[string]bool
 	enables map[string]*sync.Mutex
 	blocked map[string][]BlockedRequest
+	// inlineDocument marks a tab whose next main-document response is rewritten
+	// so a text download renders as a page. Set for the span of one brw-driven
+	// navigation and cleared when it settles.
+	inlineDocument map[string]bool
 }
 
 // forget drops a closed tab's containment bookkeeping. Safe only once the tab is
@@ -44,6 +49,7 @@ func (c *containmentState) forget(tabID string) {
 	delete(c.armed, tabID)
 	delete(c.enables, tabID)
 	delete(c.blocked, tabID)
+	delete(c.inlineDocument, tabID)
 }
 
 func (c *containmentState) initLocked() {
@@ -56,6 +62,82 @@ func (c *containmentState) initLocked() {
 	if c.blocked == nil {
 		c.blocked = make(map[string][]BlockedRequest)
 	}
+	if c.inlineDocument == nil {
+		c.inlineDocument = make(map[string]bool)
+	}
+}
+
+func (c *containmentState) setInlineDocument(tabID string, armed bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.initLocked()
+	if armed {
+		c.inlineDocument[tabID] = true
+		return
+	}
+	delete(c.inlineDocument, tabID)
+}
+
+func (c *containmentState) inlineDocumentArmed(tabID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.inlineDocument[tabID]
+}
+
+// armInlineDocument makes the tab's next main-document response render inline
+// (see InlineDocumentHeaders) and returns the call that puts interception back
+// the way it was. Both ends go through syncFetchInterception, so a tab that
+// intercepts for containment keeps doing so and one that intercepted for this
+// alone stops paying for it once the navigation has settled.
+func (m *Manager) armInlineDocument(ctx context.Context, tabID string) func() {
+	tabCtx, err := m.tabContext(tabID)
+	if err != nil {
+		return func() {}
+	}
+	m.containment.setInlineDocument(tabID, true)
+	m.armInterception(tabID, tabCtx)
+	_ = m.syncFetchInterception(ctx, tabID)
+	return func() {
+		m.containment.setInlineDocument(tabID, false)
+		disarmCtx, cancel := context.WithTimeout(tabCtx, m.timeout)
+		defer cancel()
+		_ = m.syncFetchInterception(disarmCtx, tabID)
+	}
+}
+
+// answerResponseStage answers a request paused at the response stage. Only an
+// inline-document arm asks Chrome to pause there, and only the main frame's
+// document is rewritten; anything else continues untouched.
+func (m *Manager) answerResponseStage(runCtx context.Context, tabID string, paused *fetch.EventRequestPaused) error {
+	if !m.containment.inlineDocumentArmed(tabID) || paused.ResourceType != network.ResourceTypeDocument {
+		return fetch.ContinueResponse(paused.RequestID).Do(runCtx)
+	}
+	rewrite := InlineDocumentHeaders(paused.ResponseHeaders)
+	switch {
+	case !rewrite.Changed:
+		return fetch.ContinueResponse(paused.RequestID).Do(runCtx)
+	case !rewrite.NeedsBody:
+		return fetch.ContinueResponse(paused.RequestID).
+			WithResponseCode(paused.ResponseStatusCode).
+			WithResponseHeaders(rewrite.Headers).
+			Do(runCtx)
+	case !InlineDocumentBodyWithinLimit(paused.ResponseHeaders):
+		return fetch.ContinueResponse(paused.RequestID).Do(runCtx)
+	}
+	body, err := fetch.GetResponseBody(paused.RequestID).Do(runCtx)
+	if err != nil {
+		return fetch.ContinueResponse(paused.RequestID).Do(runCtx)
+	}
+	return fetch.FulfillRequest(paused.RequestID, paused.ResponseStatusCode).
+		WithResponseHeaders(rewrite.Headers).
+		WithBody(base64.StdEncoding.EncodeToString(body)).
+		Do(runCtx)
+}
+
+// pausedAtResponse reports whether a Fetch.requestPaused event carries a
+// response, which is how CDP tells the two interception stages apart.
+func pausedAtResponse(paused *fetch.EventRequestPaused) bool {
+	return paused.ResponseStatusCode != 0 || paused.ResponseErrorReason != "" || len(paused.ResponseHeaders) > 0
 }
 
 // enableLock serialises Fetch.enable and Fetch.disable for one tab. Both the
@@ -140,6 +222,16 @@ func (m *Manager) armInterception(tabID string, tabCtx context.Context) {
 		}
 		paused, ok := ev.(*fetch.EventRequestPaused)
 		if !ok {
+			return
+		}
+		if pausedAtResponse(paused) {
+			go func() {
+				answerCtx, cancel := context.WithTimeout(tabCtx, 10*time.Second)
+				defer cancel()
+				_ = chromedp.Run(answerCtx, chromedp.ActionFunc(func(runCtx context.Context) error {
+					return m.answerResponseStage(runCtx, tabID, paused)
+				}))
+			}()
 			return
 		}
 		allow, reason, errorReason := m.containmentVerdict(tabID, paused)

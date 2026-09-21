@@ -1,6 +1,7 @@
 package readability
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -32,7 +33,7 @@ type ReadOptions struct {
 	// Offset is the rune offset into the prose, for paging with NextOffset.
 	Offset int `json:"offset,omitempty"`
 	// Include selects sections by name. Empty means every section.
-	Include []string `json:"include,omitempty"`
+	Include SectionList `json:"include,omitempty"`
 	// Section names a heading; the prose returned is that heading's span, ending
 	// at the next heading of the same or higher level. Applied before MaxChars
 	// and Offset, which then page within the section.
@@ -40,6 +41,25 @@ type ReadOptions struct {
 	// MaxLinks and MaxHeadings cap their lists. Zero selects the defaults.
 	MaxLinks    int `json:"max_links,omitempty"`
 	MaxHeadings int `json:"max_headings,omitempty"`
+}
+
+// SectionList is the include parameter's wire form. It decodes from a JSON
+// array of names or from one comma-separated string, because callers send both
+// and the array-only form rejected the string with an unmarshal error.
+type SectionList []string
+
+func (l *SectionList) UnmarshalJSON(data []byte) error {
+	var names []string
+	if err := json.Unmarshal(data, &names); err == nil {
+		*l = names
+		return nil
+	}
+	var joined string
+	if err := json.Unmarshal(data, &joined); err != nil {
+		return fmt.Errorf("include must be an array of section names or a comma-separated string")
+	}
+	*l = strings.Split(joined, ",")
+	return nil
 }
 
 // Validate reports unknown section names rather than silently dropping them, so

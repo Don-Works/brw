@@ -426,6 +426,10 @@ func (c *Controller) WaitFor(ctx context.Context, condition string, timeout time
 	return err
 }
 
+// waitClientHeadroom is added to a wait's own timeout to bound the HTTP call
+// that carries it, covering the daemon's final chunk and the response.
+const waitClientHeadroom = 5 * time.Second
+
 // WaitForOutcome runs the wait on the upstream daemon and reports how it
 // resolved, so brw_wait_for answers the same shape when it is proxying as when
 // it drives Chrome itself. Condition and the elapsed time are filled in here
@@ -435,7 +439,14 @@ func (c *Controller) WaitFor(ctx context.Context, condition string, timeout time
 func (c *Controller) WaitForOutcome(ctx context.Context, condition string, timeout time.Duration) (browser.WaitOutcome, error) {
 	started := time.Now()
 	var out browser.WaitOutcome
-	err := c.post(ctx, "/api/page/wait_for", map[string]any{
+	// The HTTP round trip has to outlast the wait it carries: with the client's
+	// flat timeout a timeout_ms above it was cut off by this side while the
+	// daemon was still legitimately waiting.
+	client := c.client
+	if timeout > 0 {
+		client = withMinimumTimeout(c.client, timeout+waitClientHeadroom)
+	}
+	err := c.postWithClient(ctx, client, "/api/page/wait_for", map[string]any{
 		"condition":  condition,
 		"timeout_ms": int(timeout / time.Millisecond),
 	}, &out)

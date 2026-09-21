@@ -23,6 +23,9 @@ import (
 const (
 	waitFallbackPollStart = 60 * time.Millisecond
 	waitFallbackPollMax   = 400 * time.Millisecond
+	// waitChunkGrace is how long past its own in-page timer one awaited chunk
+	// may take to answer before the wait gives up on that round trip.
+	waitChunkGrace = 2 * time.Second
 )
 
 // The NAMED capability failures for the two waits the extension answers from its
@@ -100,14 +103,19 @@ func (b *Bridge) waitForConditionInPage(ctx context.Context, condition string, t
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return browser.WaitOutcome{Wakeups: attempts}, fmt.Errorf("timed out waiting for %q after %s; the condition was never met — check that the page is loaded and the condition is correct (valid: ready, committed, load, text:..., url:..., title:..., ref:..., selector:..., fn:..., dialog, download, page_ready)", condition, timeout)
+			return browser.WaitOutcome{Wakeups: attempts}, fmt.Errorf("timed out waiting for %q after %s; the condition was never met — check that the page is loaded and the condition is correct (valid: ready, committed, load, networkidle, text:..., url:..., title:..., ref:..., selector:..., fn:..., dialog, download, page_ready)", condition, timeout)
 		}
 		chunk := remaining
 		if limit := b.waitChunkLimit(); chunk > limit {
 			chunk = limit
 		}
 		attempts++
-		matched, err := b.waitConditionOnce(ctx, condition, chunk)
+		// The in-page promise resolves at chunk on its own timer; the round trip
+		// is bounded just past that so a renderer that never answers ends the
+		// wait at the caller's timeout_ms rather than at the daemon's --timeout.
+		chunkCtx, cancelChunk := context.WithTimeout(ctx, chunk+waitChunkGrace)
+		matched, err := b.waitConditionOnce(chunkCtx, condition, chunk)
+		cancelChunk()
 		if err == nil && matched {
 			return browser.WaitOutcome{ResolvedBy: browser.WaitResolvedByScript, Wakeups: attempts}, nil
 		}

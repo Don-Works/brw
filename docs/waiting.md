@@ -58,7 +58,7 @@ on a bounded, backing-off cadence (60 ms rising to a 400 ms ceiling).
 | --- | --- | --- |
 | `load` | `event` — `Page.loadEventFired`, or immediate when the subscription already recorded the load. Falls back to `script` when brw attached after the document had already loaded, since no event is coming for it. | `script` |
 | `ready`, `page_ready` | `event` when the document has already fired its load event; otherwise `script`, because a document is interactive before it is loaded and only the document knows that. | `script` |
-| `committed`, `text:`, `not_text:`, `url:`, `not_url:`, `title:`, `not_title:`, `ref:`, `not_ref:`, `selector:`, `not_selector:`, `fn:` | `script` | `script` |
+| `committed`, `networkidle`, `text:`, `not_text:`, `url:`, `not_url:`, `title:`, `not_title:`, `ref:`, `not_ref:`, `selector:`, `not_selector:`, `fn:` | `script` | `script` |
 | `dialog`, `dialog:<substring>` | `event` — `Page.javascriptDialogOpening`, including one already answered inside the recency window. | `poll` — `get_dialogs`, peeked so the wait does not consume the ring `brw_dialog` reads. |
 | `download`, `download:<substring>` | `event` — `Browser.downloadProgress`. | `poll` — `get_downloads`, which does not consume a recipe's change cursor. |
 
@@ -66,6 +66,20 @@ on a bounded, backing-off cadence (60 ms rising to a 400 ms ceiling).
 satisfied as soon as the document is interactive; `load` is the load event, and
 the in-page script that answers it where no subscription can requires
 `document.readyState === 'complete'` (`TestWaitForLoadIsNotAnAliasForReady`).
+
+`networkidle` is the page's own view of quiet: the load event has fired and no
+resource has finished loading for 500 ms, read from Resource Timing inside the
+document. It sees completions, not in-flight requests, so a long-poll or an
+open EventSource does not hold it open the way Playwright's `networkidle` does.
+Before it existed, the word fell through to the plain-text form and waited for
+the literal text "networkidle" to appear on the page, which ran the whole
+timeout. Any other bare word still behaves that way.
+
+`timeout_ms` bounds the whole wait on every transport. On the extension bridge
+each awaited chunk's round trip is cut off two seconds after the in-page timer
+it carries, so a renderer that stops answering ends the wait at `timeout_ms`
+plus that grace instead of at the daemon's `--timeout`; a proxying daemon
+(`--upstream-http`) extends its HTTP call to outlast the wait it carries.
 
 Every transport applies the same 15-second recency window, so "did my click cause
 this?" is answered the same way on all of them: a DevTools Protocol wait times a

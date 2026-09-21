@@ -198,6 +198,10 @@ const state = {
   // an allowlisted page can still fetch, beacon and socket anywhere it likes.
   containment: { allowed: [], blocked: [], enabled: false },
   containmentTabs: new Set(),
+  // inlineDocumentTabs names the tabs whose next main-document response is
+  // rewritten so a text download renders as a page, for the span of one
+  // daemon-driven navigation (see inlineDocumentRewrite).
+  inlineDocumentTabs: new Set(),
   blockedRequests: new Map(),
   // routeRuleIds maps a tab to the declarativeNetRequest session rule ids brw
   // installed for it in THIS worker lifetime. DNR is the only interception
@@ -325,6 +329,121 @@ function recordBlockedRequest(tabId, record) {
   entries.push(record);
   if (entries.length > MAX_BLOCKED_REQUESTS) entries.splice(0, entries.length - MAX_BLOCKED_REQUESTS);
   state.blockedRequests.set(tabId, entries);
+}
+
+// Media types Chrome downloads although the body is text. Mirrors
+// browser.inlineDocumentTextTypes; the daemon's test measures the list against
+// a real Chromium.
+const INLINE_DOCUMENT_TEXT_TYPES = new Set([
+  "text/csv", "text/tab-separated-values", "application/csv",
+  "application/x-ndjson", "application/ndjson", "application/jsonl", "application/x-jsonlines",
+  "application/yaml", "application/x-yaml", "application/toml"
+]);
+// Bodies above this are left to download: a media-type change only takes
+// effect through Fetch.fulfillRequest, which carries the body through here.
+const INLINE_DOCUMENT_BODY_LIMIT = 8 << 20;
+
+// inlineDocumentRewrite mirrors browser.InlineDocumentHeaders: drop an
+// attachment disposition, turn a downloaded text type into text/plain, and say
+// whether the change needs the body re-served.
+function inlineDocumentRewrite(headers) {
+  const out = [];
+  let changed = false;
+  let needsBody = false;
+  for (const header of Array.isArray(headers) ? headers : []) {
+    const name = String(header?.name || "");
+    const value = String(header?.value || "");
+    const lower = name.toLowerCase();
+    if (lower === "content-disposition") {
+      const kind = value.split(";")[0].trim().toLowerCase();
+      if (kind === "attachment") { changed = true; continue; }
+    } else if (lower === "content-type") {
+      const [mediaType, ...params] = value.split(";");
+      if (INLINE_DOCUMENT_TEXT_TYPES.has(mediaType.trim().toLowerCase())) {
+        const rest = params.join(";");
+        out.push({ name, value: rest.trim() ? "text/plain;" + rest : "text/plain" });
+        changed = true;
+        needsBody = true;
+        continue;
+      }
+    }
+    out.push({ name, value });
+  }
+  const kept = needsBody
+    ? out.filter((h) => !["content-encoding", "content-length", "transfer-encoding"].includes(h.name.toLowerCase()))
+    : out;
+  return { headers: kept, changed, needsBody };
+}
+
+function inlineDocumentBodyWithinLimit(headers) {
+  for (const header of Array.isArray(headers) ? headers : []) {
+    if (String(header?.name || "").toLowerCase() !== "content-length") continue;
+    const length = Number(String(header?.value || "").trim());
+    return !Number.isFinite(length) || length <= INLINE_DOCUMENT_BODY_LIMIT;
+  }
+  return true;
+}
+
+// answerInlineDocumentResponse answers a request paused at the response stage.
+async function answerInlineDocumentResponse(tabId, params, resourceType) {
+  const requestId = params.requestId;
+  const continueAsIs = () => chrome.debugger.sendCommand({ tabId }, "Fetch.continueResponse", { requestId });
+  if (!state.inlineDocumentTabs.has(tabId) || resourceType !== "Document") return continueAsIs();
+  const rewrite = inlineDocumentRewrite(params.responseHeaders);
+  if (!rewrite.changed) return continueAsIs();
+  if (!rewrite.needsBody) {
+    return chrome.debugger.sendCommand({ tabId }, "Fetch.continueResponse", {
+      requestId,
+      responseCode: params.responseStatusCode,
+      responseHeaders: rewrite.headers
+    });
+  }
+  if (!inlineDocumentBodyWithinLimit(params.responseHeaders)) return continueAsIs();
+  let body;
+  try {
+    body = await chrome.debugger.sendCommand({ tabId }, "Fetch.getResponseBody", { requestId });
+  } catch (_) {
+    return continueAsIs();
+  }
+  const encoded = body?.base64Encoded ? body.body : btoa(unescape(encodeURIComponent(String(body?.body || ""))));
+  return chrome.debugger.sendCommand({ tabId }, "Fetch.fulfillRequest", {
+    requestId,
+    responseCode: params.responseStatusCode,
+    responseHeaders: rewrite.headers,
+    body: encoded
+  });
+}
+
+// fetchPatternsForTab is the one place the Fetch.enable pattern set is built,
+// so containment and an inline-document arm compose instead of overwriting each
+// other: Fetch.enable replaces the whole set every time it is sent.
+function fetchPatternsForTab(tabId) {
+  const patterns = [];
+  if (state.containmentTabs.has(tabId)) patterns.push({ urlPattern: "*" });
+  if (state.inlineDocumentTabs.has(tabId)) {
+    patterns.push({ urlPattern: "*", resourceType: "Document", requestStage: "Response" });
+  }
+  return patterns;
+}
+
+async function syncFetchInterception(tabId) {
+  const patterns = fetchPatternsForTab(tabId);
+  if (!patterns.length) {
+    if (state.attachedTabs.has(tabId)) await sendDebuggerCommand(tabId, "Fetch.disable", {}).catch(() => {});
+    return;
+  }
+  await sendDebuggerCommand(tabId, "Fetch.enable", { patterns });
+}
+
+async function armInlineDocument(tabId) {
+  await attach(tabId);
+  state.inlineDocumentTabs.add(tabId);
+  await syncFetchInterception(tabId);
+}
+
+async function disarmInlineDocument(tabId) {
+  if (!state.inlineDocumentTabs.delete(tabId)) return;
+  await syncFetchInterception(tabId);
 }
 
 // MAX_ROUTE_RULES mirrors browser.MaxRoutesPerTab: the daemon bounds its own
@@ -935,6 +1054,7 @@ chrome.debugger.onDetach.addListener((source) => {
     state.attachUsedAt.delete(source.tabId);
     state.fileChooserEvents.delete(source.tabId);
   state.containmentTabs.delete(source.tabId);
+  state.inlineDocumentTabs.delete(source.tabId);
   state.blockedRequests.delete(source.tabId);
   state.dialogArm.delete(source.tabId);
   state.dialogLog.delete(source.tabId);
@@ -982,6 +1102,13 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     const url = params?.request?.url || "";
     const resourceType = params?.resourceType || "";
     if (!requestId) return;
+    // A response-stage pause was already permitted at the request stage. Only
+    // an inline-document arm asks for it, and only the document itself is
+    // rewritten; everything else continues untouched.
+    if (params?.responseStatusCode !== undefined || Array.isArray(params?.responseHeaders)) {
+      answerInlineDocumentResponse(source.tabId, params, resourceType).catch(() => {});
+      return;
+    }
     if (!state.containment.enabled || containmentPermits(url)) {
       chrome.debugger.sendCommand({ tabId: source.tabId }, "Fetch.continueRequest", { requestId }).catch(() => {});
       return;
@@ -1559,7 +1686,12 @@ async function handle(message) {
       // never call chrome.windows.update({focused:true}), so automation never
       // raises Chrome over the user's other OS apps.
       const makeActive = message.params?.active !== false;
-      const createParams = { url: message.params?.url || "about:blank", active: makeActive };
+      const targetUrl = message.params?.url || "about:blank";
+      // With inlineDocument the tab is created blank, armed, and only then sent
+      // to its URL, so a text response the server flags as an attachment renders
+      // as the tab's first document instead of leaving an empty tab and a file.
+      const inlineDocument = message.params?.inlineDocument === true && targetUrl !== "about:blank";
+      const createParams = { url: inlineDocument ? "about:blank" : targetUrl, active: makeActive };
       // chrome.tabs.create without windowId inherits Chrome's last-focused
       // window — including a popup created by the previous automation step.
       // Popup windows cannot host tab groups, so the new tab would be created
@@ -1585,6 +1717,10 @@ async function handle(message) {
         });
         tab = win?.tabs?.[0];
         if (!tab) throw err;
+      }
+      if (inlineDocument && tab.id) {
+        await armInlineDocument(tab.id).catch(() => {});
+        tab = await chrome.tabs.update(tab.id, { url: targetUrl });
       }
       // brw drives this tab for the rest of the agent session, usually in the
       // background. Memory Saver would see an idle background tab and discard
@@ -1993,7 +2129,8 @@ async function handle(message) {
       const tabId = Number(message.params?.tabId || (await activeTabId()));
       await attach(tabId);
       if (!state.containmentTabs.has(tabId)) {
-        await sendDebuggerCommand(tabId, "Fetch.enable", { patterns: [{ urlPattern: "*" }] });
+        state.containmentTabs.add(tabId);
+        await syncFetchInterception(tabId);
         if (typeof message.params?.guard === "string" && message.params.guard) {
           await sendDebuggerCommand(tabId, "Page.enable", {}).catch(() => {});
           // Runs before each new document's own scripts, so the wrappers land
@@ -2007,9 +2144,20 @@ async function handle(message) {
             returnByValue: true
           }).catch(() => {});
         }
-        state.containmentTabs.add(tabId);
       }
       send({ id: message.id, ok: true, result: { enabled: true, tabId } });
+      return;
+    }
+    if (message.type === "arm_inline_document") {
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      await armInlineDocument(tabId);
+      send({ id: message.id, ok: true, result: { armed: true, tabId } });
+      return;
+    }
+    if (message.type === "disarm_inline_document") {
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      await disarmInlineDocument(tabId);
+      send({ id: message.id, ok: true, result: { armed: false, tabId } });
       return;
     }
     if (message.type === "set_routes") {
@@ -2450,6 +2598,7 @@ async function detach(tabId) {
   // must re-arm on the next attach. Leaving it in the set would silently drop
   // containment on a tab that still believes it is contained.
   state.containmentTabs.delete(tabId);
+  state.inlineDocumentTabs.delete(tabId);
   try {
     await chrome.debugger.detach({ tabId });
   } catch (_) {
@@ -2470,6 +2619,7 @@ async function forceDetach(tabId) {
   state.observerInjected.delete(tabId);
   state.fileChooserEvents.delete(tabId);
   state.containmentTabs.delete(tabId);
+  state.inlineDocumentTabs.delete(tabId);
   try { await chrome.debugger.detach({ tabId }); } catch (_) {}
 }
 

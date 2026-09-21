@@ -712,6 +712,7 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		// tabContext publishes the target's context and arms console capture on it.
 		if tabCtx, ctxErr := m.tabContext(tabID); ctxErr == nil {
 			navCtx, cancelNav := context.WithTimeout(tabCtx, openNavigateTimeout)
+			defer m.armInlineDocument(navCtx, tabID)()
 			// Start the navigation without waiting for the load event, matching
 			// what CreateTarget(url) did. chromedp.Navigate blocks until load,
 			// which never arrives when the navigation policy aborts a
@@ -779,6 +780,9 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	// readiness wait concluded. Report it rather than let a caller act on a
 	// blank tab believing it holds the requested URL.
 	if navErr != nil && strings.HasPrefix(tab.URL, "about:") {
+		if IsNavigationAbortedError(navErr) {
+			navErr = NavigationAbortedError("open")
+		}
 		stalled := fmt.Errorf("navigate new tab to %s: %w", url, navErr)
 		recordOpen(url, stalled)
 		return OpenResult{Tab: tab, Ready: false}, stalled

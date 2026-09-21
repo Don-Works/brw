@@ -170,6 +170,9 @@ src += `
   clearTabRouteRules,
   dropOrphanedRouteRules,
   routeResourceTypes,
+  inlineDocumentRewrite,
+  inlineDocumentBodyWithinLimit,
+  fetchPatternsForTab,
   RESPONSE_DIRECT_MAX_BYTES,
   RESPONSE_CHUNK_BYTES,
   RESPONSE_TOTAL_MAX_BYTES
@@ -1195,6 +1198,101 @@ async function scenarioDialogArmingAndSafeDefaults() {
 
 // --allowed-domains must confine SUBRESOURCES, not just navigation: without this
 // an allowlisted page can still fetch, socket and beacon anywhere it likes.
+// A main-document response the server flags as an attachment (Google's suggest
+// endpoint) or serves as a type Chrome downloads (text/csv) used to abort the
+// navigation and leave the tab without a document. While a daemon-driven
+// navigation is armed, the response stage is paused and the headers rewritten so
+// the body renders as the page.
+async function scenarioInlineDocumentRendering() {
+  await reset();
+  const savedSend = overrides["debugger.sendCommand"];
+  const sent = [];
+  try {
+    overrides["debugger.sendCommand"] = async (target, method, params) => {
+      sent.push({ method, ...params });
+      if (method === "Fetch.getResponseBody") return { body: "c2t1LHByaWNlCkExLDkuOTkK", base64Encoded: true };
+      return {};
+    };
+    setWin({ id: 1, type: "normal", focused: true });
+    setTab({ id: 11, windowId: 1, active: true, url: "about:blank", title: "" });
+
+    const rewrite = T.inlineDocumentRewrite([
+      { name: "Content-Type", value: "text/javascript; charset=UTF-8" },
+      { name: "Content-Disposition", value: 'attachment; filename="f.txt"' }
+    ]);
+    check("an attachment disposition is dropped without touching the type",
+      rewrite.changed && !rewrite.needsBody && rewrite.headers.length === 1 && rewrite.headers[0].value === "text/javascript; charset=UTF-8");
+    const csv = T.inlineDocumentRewrite([
+      { name: "content-type", value: "text/csv; charset=utf-8" },
+      { name: "Content-Length", value: "18" },
+      { name: "Content-Encoding", value: "gzip" }
+    ]);
+    check("csv becomes text/plain, keeps its charset and needs the body re-served",
+      csv.changed && csv.needsBody && csv.headers.length === 1 && csv.headers[0].value === "text/plain; charset=utf-8");
+    const json = T.inlineDocumentRewrite([{ name: "Content-Type", value: "application/json" }]);
+    check("json already renders and is left alone", !json.changed);
+    check("inline disposition is kept", !T.inlineDocumentRewrite([{ name: "Content-Disposition", value: "inline" }]).changed);
+    check("an undeclared length is within the limit", T.inlineDocumentBodyWithinLimit([]));
+    check("a body over the limit is not re-served", !T.inlineDocumentBodyWithinLimit([{ name: "Content-Length", value: "99999999" }]));
+
+    await T.handle({ id: "inl-1", type: "arm_inline_document", params: { tabId: 11 } });
+    const enable = sent.findLast((s) => s.method === "Fetch.enable");
+    check("arming pauses main-document responses",
+      enable && enable.patterns.some((p) => p.requestStage === "Response" && p.resourceType === "Document"));
+    check("arming records the tab", T.state.inlineDocumentTabs.has(11));
+
+    const pausedResponse = (requestId, resourceType, responseHeaders) =>
+      fireEvent("debugger.onEvent", { tabId: 11 }, "Fetch.requestPaused",
+        { requestId, request: { url: "https://api.test/x" }, resourceType, responseStatusCode: 200, responseHeaders });
+    sent.length = 0;
+    pausedResponse("r1", "Document", [
+      { name: "Content-Type", value: "application/json" },
+      { name: "Content-Disposition", value: "attachment; filename=f.txt" }
+    ]);
+    await new Promise((r) => setTimeout(r, 0));
+    let answer = sent.findLast((s) => s.method === "Fetch.continueResponse");
+    check("an attachment document continues with the disposition removed",
+      answer && answer.responseCode === 200 && Array.isArray(answer.responseHeaders) &&
+      !answer.responseHeaders.some((h) => h.name.toLowerCase() === "content-disposition"));
+
+    sent.length = 0;
+    pausedResponse("r2", "Document", [{ name: "Content-Type", value: "text/csv" }, { name: "Content-Length", value: "18" }]);
+    await new Promise((r) => setTimeout(r, 0));
+    answer = sent.findLast((s) => s.method === "Fetch.fulfillRequest");
+    check("a downloaded text type is re-served as text/plain with its body",
+      answer && answer.body === "c2t1LHByaWNlCkExLDkuOTkK" &&
+      answer.responseHeaders.some((h) => h.value === "text/plain") &&
+      !answer.responseHeaders.some((h) => h.name.toLowerCase() === "content-length"));
+
+    sent.length = 0;
+    pausedResponse("r3", "Script", [{ name: "Content-Type", value: "text/csv" }]);
+    await new Promise((r) => setTimeout(r, 0));
+    answer = sent.findLast((s) => s.method === "Fetch.continueResponse");
+    check("a subresource at the response stage continues untouched", answer && answer.responseHeaders === undefined);
+
+    sent.length = 0;
+    pausedResponse("r4", "Document", [{ name: "Content-Type", value: "text/html" }]);
+    await new Promise((r) => setTimeout(r, 0));
+    answer = sent.findLast((s) => s.method === "Fetch.continueResponse");
+    check("an ordinary page continues untouched", answer && answer.responseHeaders === undefined);
+
+    T.state.containmentTabs.add(11);
+    const both = T.fetchPatternsForTab(11);
+    check("containment and the inline arm compose into one pattern set",
+      both.length === 2 && both.some((p) => p.urlPattern === "*" && !p.requestStage) && both.some((p) => p.requestStage === "Response"));
+    T.state.containmentTabs.delete(11);
+
+    sent.length = 0;
+    await T.handle({ id: "inl-2", type: "disarm_inline_document", params: { tabId: 11 } });
+    check("disarming forgets the tab", !T.state.inlineDocumentTabs.has(11));
+    check("disarming with nothing else to intercept disables Fetch", sent.some((s) => s.method === "Fetch.disable"));
+    check("disarming an unarmed tab is a no-op", (await T.handle({ id: "inl-3", type: "disarm_inline_document", params: { tabId: 11 } }), true));
+  } finally {
+    overrides["debugger.sendCommand"] = savedSend;
+    T.state.inlineDocumentTabs.clear();
+  }
+}
+
 async function scenarioSubresourceContainment() {
   await reset();
   const savedSend = overrides["debugger.sendCommand"];
@@ -1680,6 +1778,7 @@ async function scenarioStoredConfigChangeKeepsThePackagedEndpoint() {
   await scenarioCloseTabIsBoundedAndFailClosed();
   await scenarioDialogArmingAndSafeDefaults();
   await scenarioSubresourceContainment();
+  await scenarioInlineDocumentRendering();
   await scenarioRouteRulesAreTabScopedAndReplaced();
   await scenarioRouteRulesSurviveAServiceWorkerRestart();
   await scenarioRouteResourceTypesFollowTheBuild();

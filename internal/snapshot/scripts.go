@@ -1945,9 +1945,24 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
       }
     }
   }
+  // networkidle is the page's own view of quiet: load has fired and no
+  // resource has finished for NETWORK_IDLE_MS. Resource Timing records
+  // completions, not in-flight requests, so a long-poll does not hold it open.
+  var NETWORK_IDLE_MS = 500;
+  function lastResourceEnd(){
+    var end = 0;
+    try{
+      var entries = performance.getEntriesByType('resource');
+      for(var i=0;i<entries.length;i++){ if(entries[i].responseEnd > end) end = entries[i].responseEnd; }
+      var nav = performance.getEntriesByType('navigation');
+      for(var j=0;j<nav.length;j++){ if(nav[j].loadEventEnd > end) end = nav[j].loadEventEnd; }
+    }catch(e){}
+    return end;
+  }
   function check(){
     if(condition==='ready') return document.readyState==='complete'||document.readyState==='interactive';
     if(condition==='load') return document.readyState==='complete';
+    if(condition==='networkidle'||condition==='network_idle') return document.readyState==='complete' && performance.now() - lastResourceEnd() >= NETWORK_IDLE_MS;
     if(condition==='committed') return (document.readyState==='complete'||document.readyState==='interactive') && location.href !== 'about:blank' && location.href !== '';
     if(condition.indexOf('url:')===0) return location.href.includes(condition.slice(4));
     if(condition.indexOf('not_url:')===0) return !location.href.includes(condition.slice(8));

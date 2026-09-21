@@ -917,7 +917,12 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// stored shape, but package-web-store.sh names the ZIP after this version
 	// and the Web Store refuses an update that does not raise it — so two
 	// different builds sharing 0.6.0 is the defect the bump prevents.
-	const wantManifest = "0.7.0"
+	// 0.7.1 adds arm_inline_document / disarm_inline_document and the
+	// inlineDocument open_tab flag, which render a download-shaped text
+	// response (an attachment-flagged JSON body, a CSV) as the page instead of
+	// leaving an empty tab. Additive: the daemon ignores an older extension's
+	// "unknown message type" and navigates exactly as before.
+	const wantManifest = "0.7.1"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

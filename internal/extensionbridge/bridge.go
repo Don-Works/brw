@@ -1598,6 +1598,7 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 // the reply within ctx. A write failure or a disconnect-drained reply is wrapped
 // as errBridgeTransport so call() can decide whether to retry.
 func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any) (json.RawMessage, error) {
+	dispatched := time.Now()
 	conn, err := b.getConn(ctx)
 	if err != nil {
 		return nil, err
@@ -1681,8 +1682,22 @@ func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any
 		b.mu.Lock()
 		delete(b.pending, id)
 		b.mu.Unlock()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("extension bridge: no reply to %s within %s; the tab's renderer or the extension worker is busy or hung: %w", describeBridgeRequest(typ, params), time.Since(dispatched).Round(time.Millisecond), ctx.Err())
+		}
 		return nil, ctx.Err()
 	}
+}
+
+// describeBridgeRequest names a bridge request for an error: the cdp
+// passthrough by its method, everything else by its message type.
+func describeBridgeRequest(typ string, params map[string]any) string {
+	if typ == "cdp" {
+		if method, _ := params["method"].(string); method != "" {
+			return "cdp " + method
+		}
+	}
+	return typ
 }
 
 // getConn returns the live socket, parking briefly for the MV3 service worker to
@@ -1899,6 +1914,10 @@ func (b *Bridge) openTabParams(params map[string]any) map[string]any {
 		params = map[string]any{}
 	}
 	params["active"] = b.followFocus
+	// The extension creates the tab blank, arms the inline-document rewrite and
+	// only then navigates, so an attachment-flagged text response is the tab's
+	// first document rather than an empty tab plus a file.
+	params["inlineDocument"] = true
 	return params
 }
 
@@ -1943,6 +1962,7 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	// that already ran in it can hold pristine WebSocket/RTC references.
 	b.ensureContainment(ctx, out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
+	b.disarmInlineDocument(out.ID)
 	// Re-read the tab after commit so the agent gets a real url/title instead of
 	// the empty fields chrome.tabs.create often returns mid-navigation.
 	out = b.refreshOpenedTab(ctx, out, url)
@@ -2153,6 +2173,7 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 	}
 	b.setActiveTabID(out.ID)
 	ready := b.waitOpenReady(ctx, url, out.ID)
+	b.disarmInlineDocument(out.ID)
 	// Same rehydrate as Open — agents need url/title on the open observation.
 	out = b.refreshOpenedTab(ctx, out, url)
 	b.recordTabGroupDegradation(out.GroupWarning)
@@ -3481,13 +3502,21 @@ func (b *Bridge) navigateToURLAndWait(ctx context.Context, targetURL string) err
 	navCtx := browser.WithTabID(ctx, tabID)
 	commitCtx, cancelCommit := context.WithTimeout(navCtx, navigationCommitTimeout)
 	defer cancelCommit()
-	beforeIdentity, err := b.extensionDocumentIdentity(commitCtx)
-	if err != nil {
-		return fmt.Errorf("navigate_to: pre-arm main-document identity: %w", err)
-	}
-	beforeFrame, err := b.mainFrameState(commitCtx, tabID)
-	if err != nil {
-		return fmt.Errorf("navigate_to: pre-arm main-frame loader: %w", err)
+	beforeIdentity, identityErr := b.extensionDocumentIdentity(commitCtx)
+	beforeFrame, frameErr := b.mainFrameState(commitCtx, tabID)
+	if identityErr != nil || frameErr != nil {
+		// A tab whose only navigation became a download (or was aborted) holds
+		// the initial empty document: no committed URL, so no trusted identity
+		// and no loader to pre-arm against. It is still a valid place to
+		// navigate from. The zero-value boundary makes the first committed
+		// replacement count as the document change the loop waits for.
+		if !b.tabHasNoCommittedDocument(commitCtx, tabID) {
+			if identityErr != nil {
+				return fmt.Errorf("navigate_to: pre-arm main-document identity: %w", identityErr)
+			}
+			return fmt.Errorf("navigate_to: pre-arm main-frame loader: %w", frameErr)
+		}
+		beforeIdentity, beforeFrame = extensionDocumentIdentityPayload{}, bridgeMainFrameState{}
 	}
 	// Page.navigate is not a reliable reload primitive for an exact-current URL:
 	// Chromium may return a loader id without ever committing a replacement
@@ -3511,8 +3540,12 @@ func (b *Bridge) navigateToURLAndWait(ctx context.Context, targetURL string) err
 	// replacement loader even if the old document transiently reports the target.
 	sameDocumentTarget := currentURLErr == nil && isExactFragmentTransition(currentURL, targetURL)
 
+	defer b.armInlineDocument(navCtx, tabID)()
 	raw, err := b.cdp(commitCtx, tabID, "Page.navigate", map[string]any{"url": targetURL})
 	if err != nil {
+		if browser.IsNavigationAbortedError(err) {
+			return browser.NavigationAbortedError("navigate_to")
+		}
 		return fmt.Errorf("navigate_to: %w", err)
 	}
 	var started struct {
@@ -3523,8 +3556,11 @@ func (b *Bridge) navigateToURLAndWait(ctx context.Context, targetURL string) err
 	if err := json.Unmarshal(raw, &started); err != nil {
 		return fmt.Errorf("navigate_to: parse Page.navigate response: %w", err)
 	}
-	if strings.TrimSpace(started.ErrorText) != "" {
-		return fmt.Errorf("navigate_to: Page.navigate failed: %s", strings.TrimSpace(started.ErrorText))
+	if errorText := strings.TrimSpace(started.ErrorText); errorText != "" {
+		if strings.Contains(errorText, "net::ERR_ABORTED") {
+			return browser.NavigationAbortedError("navigate_to")
+		}
+		return fmt.Errorf("navigate_to: Page.navigate failed: %s", errorText)
 	}
 	if started.IsDownload {
 		return errors.New("navigate_to: destination started a download instead of replacing the page")
@@ -3693,7 +3729,7 @@ func (b *Bridge) mainDocumentURL(ctx context.Context, tabID string) (string, err
 		return "", errors.New("runtime exception while reading main-document URL")
 	}
 	if strings.TrimSpace(payload.Result.Value) == "" {
-		return "", errors.New("main-document URL is unavailable")
+		return "", errMainDocumentURLUnavailable
 	}
 	return payload.Result.Value, nil
 }
@@ -3731,6 +3767,49 @@ func (b *Bridge) mainFrameState(ctx context.Context, tabID string) (bridgeMainFr
 	}
 	return bridgeMainFrameState{ID: frame.ID, LoaderID: frame.LoaderID, URL: frame.URL}, nil
 }
+
+// tabHasNoCommittedDocument reports whether the tab still shows the initial
+// empty document: location.href is about:blank or unreadable while chrome.tabs
+// and the frame tree report no URL. That is the state a tab is left in when its
+// only navigation turned into a download.
+func (b *Bridge) tabHasNoCommittedDocument(ctx context.Context, tabID string) bool {
+	liveURL, err := b.mainDocumentURL(ctx, tabID)
+	if err != nil {
+		return errors.Is(err, errMainDocumentURLUnavailable)
+	}
+	return liveURL == "about:blank"
+}
+
+// armInlineDocument asks the extension to pause the tab's next main-document
+// response and rewrite a download-shaped text response so it renders as a page
+// (see browser.InlineDocumentHeaders). Best effort: an extension that predates
+// the message leaves navigation exactly as it was. The returned function
+// releases the arm and is safe to call after ctx has ended.
+func (b *Bridge) armInlineDocument(ctx context.Context, tabID string) func() {
+	if strings.TrimSpace(tabID) == "" {
+		return func() {}
+	}
+	params := map[string]any{"tabId": parseTabID(tabID)}
+	if _, err := b.call(ctx, "arm_inline_document", params); err != nil {
+		return func() {}
+	}
+	return func() {
+		b.disarmInlineDocument(tabID)
+	}
+}
+
+func (b *Bridge) disarmInlineDocument(tabID string) {
+	if strings.TrimSpace(tabID) == "" {
+		return
+	}
+	disarmCtx, cancel := context.WithTimeout(browser.WithTabID(context.Background(), tabID), inlineDocumentDisarmTimeout)
+	defer cancel()
+	_, _ = b.call(disarmCtx, "disarm_inline_document", map[string]any{"tabId": parseTabID(tabID)})
+}
+
+const inlineDocumentDisarmTimeout = 5 * time.Second
+
+var errMainDocumentURLUnavailable = errors.New("main-document URL is unavailable")
 
 func (b *Bridge) navigateDirection(ctx context.Context, dir string) error {
 	var expr string

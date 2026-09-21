@@ -208,7 +208,25 @@ const StructuredDataScript = `(function() {
     }
     return null;
   }
+  // A JSON document (an API response, a .json file) has no markup to mine: the
+  // body Chrome renders is the data. Also covers a JSON body brw rendered as
+  // text/plain so the browser would show it instead of downloading it. Never
+  // consulted for HTML, where a leading <pre> is a code sample, not the page.
+  function fromJsonDocument() {
+    var type = String(document.contentType || '').toLowerCase();
+    var jsonType = type === 'application/json' || type === 'text/json' || /\+json$/.test(type);
+    if (!jsonType && type !== 'text/plain') return null;
+    var body = document.body;
+    if (!body) return null;
+    var pre = body.querySelector(':scope > pre') || body.querySelector('pre');
+    var text = String((pre ? pre.textContent : body.textContent) || '').trim();
+    if (!text || (text[0] !== '{' && text[0] !== '[')) return null;
+    var parsed = parseJSON(text);
+    if (parsed === null || typeof parsed !== 'object') return null;
+    return parsed;
+  }
   var chain = [
+    ['json_document', fromJsonDocument],
     ['next_data', fromNextData],
     ['json_ld', fromJsonLd],
     ['microdata', fromMicrodata],
