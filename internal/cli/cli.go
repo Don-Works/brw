@@ -15,7 +15,9 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/user"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -301,6 +303,7 @@ func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Write
 		fmt.Fprintf(stderr, "brw: %v\n", err)
 		return ExitNoDaemon
 	}
+	ctrl.UseOwnerUnlessSet(cliOwner())
 
 	if opts.tab != "" {
 		ctx = browser.WithTabID(ctx, opts.tab)
@@ -498,7 +501,8 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: brw <verb> [flags] [arguments]
 
 brw drives a running brwd over its HTTP API. Refs print as @e17 and paste
-straight into the next command.
+straight into the next command: every brw run by one OS user shares one
+working tab. Set BRW_OWNER_ID to give a script or agent its own tab.
 
 verbs:
 `)
@@ -548,4 +552,12 @@ func verbUsage(w io.Writer, v verb, fs *flag.FlagSet) {
 type request struct {
 	Query url.Values
 	Body  any
+}
+
+func cliOwner() string {
+	name := strconv.Itoa(os.Getuid())
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		name = u.Username
+	}
+	return "brw-cli:" + name
 }
