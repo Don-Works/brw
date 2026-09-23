@@ -136,15 +136,35 @@ func sanitizeAgentName(name string) string {
 // keeps a stable lease owner across disposable proxy restarts; drop that read
 // once every caller sets BRW_OWNER_ID.
 func stableOwnerID(fallback string) string {
+	raw := ownerFromEnv()
+	if raw == "" {
+		return fallback
+	}
+	return hashOwner(raw)
+}
+
+func ownerFromEnv() string {
 	raw := strings.TrimSpace(os.Getenv("BRW_OWNER_ID"))
 	if raw == "" {
 		raw = strings.TrimSpace(os.Getenv("MCPLEXER_BROWSER_SESSION_ID")) // Deprecated: prefer BRW_OWNER_ID.
 	}
-	if raw == "" {
-		return fallback
-	}
+	return raw
+}
+
+func hashOwner(raw string) string {
 	sum := sha256.Sum256([]byte("brw-tab-owner-v1\x00" + raw))
 	return fmt.Sprintf("owner-%x", sum[:12])
+}
+
+// UseOwnerUnlessSet makes raw this controller's lease owner when BRW_OWNER_ID
+// names none, so a caller whose process is not the session (one brw CLI
+// invocation per verb) keeps its tab across processes.
+func (c *Controller) UseOwnerUnlessSet(raw string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || ownerFromEnv() != "" {
+		return
+	}
+	c.ownerID = hashOwner(raw)
 }
 
 // SessionID is the non-secret correlation id forwarded to the long-lived brw
