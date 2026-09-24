@@ -128,6 +128,14 @@ open → snapshot for refs → act by ref → wait/assert → read → close.
 {"name":"brw_close_tab","arguments":{"tab_id":"235935873"}}
 ```
 
+A navigation that fails (DNS, refused connection, an HTTP auth challenge) lands
+the tab on `chrome-error://chromewebdata/`. `brw_open` then returns a tool error
+(`error:"navigation_failed"`) that still carries the tab plus `ready:false`,
+`navigation_error`, `http_status` and `auth_required:{scheme,realm}`; close that
+tab. `brw_navigate_to` and the batch `open`/`navigate_to` steps fail with the same
+message. For a Basic/Digest challenge, call `brw_authenticate` on a CDP lane; the
+extension bridge cannot answer one.
+
 Refs come from a snapshot and only from a snapshot. Labels and captions get refs too
 (`e1 label "Email"` sits next to `e2 textbox "Email"`), so counting elements by eye and
 guessing `e1` fills the label and fails with *"ref e1 is not fillable"*. Take the

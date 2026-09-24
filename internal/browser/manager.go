@@ -705,6 +705,7 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	// the result so a tab still sitting on about:blank is not reported as a page
 	// that loaded.
 	var navErr error
+	var navErrorText string
 	if url != "about:blank" {
 		// The agent asked for this destination, so the content boundary must not
 		// mistake the tab's first document for something the page initiated.
@@ -723,7 +724,8 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 			// one either) but it is not silent: without it, a tab that never
 			// left about:blank came back as a successful open.
 			navErr = chromedp.Run(navCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-				_, _, _, _, err := page.Navigate(url).Do(ctx)
+				_, _, errorText, _, err := page.Navigate(url).Do(ctx)
+				navErrorText = errorText
 				return err
 			}))
 			cancelNav()
@@ -787,8 +789,24 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		recordOpen(url, stalled)
 		return OpenResult{Tab: tab, Ready: false}, stalled
 	}
-	recordOpen(tab.URL, nil)
-	return OpenResult{Tab: tab, Ready: ready}, nil
+	result := OpenResult{Tab: tab, Ready: ready}
+	if url != "about:blank" {
+		result.ApplyNavigationOutcome(m.navigationOutcome(tabID, url, tab.URL, navErrorText), true)
+	}
+	recordOpen(tab.URL, result.NavigationErr())
+	return result, nil
+}
+
+// navigationOutcome gathers what the CDP lane knows about a tab's last
+// brw-driven navigation: Page.navigate's errorText, the committed URL, and the
+// main document's status and auth challenge from the inline-document pause.
+func (m *Manager) navigationOutcome(tabID, requestedURL, committedURL, errorText string) NavigationOutcome {
+	outcome := NavigationOutcome{URL: requestedURL, Error: strings.TrimSpace(errorText)}
+	if IsErrorPageURL(committedURL) {
+		outcome.CommittedURL = committedURL
+	}
+	outcome.HTTPStatus, outcome.AuthRequired = m.containment.lastDocumentResponse(tabID)
+	return outcome
 }
 
 // OpenInGroup, GroupTabs, and UngroupTabs live in manager_tabgroups.go. Chrome
@@ -2888,6 +2906,9 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 		var openRes OpenResult
 		openRes, actionErr = m.Open(ctx, step.URL)
 		sr.Result = openRes
+		if actionErr == nil {
+			actionErr = openRes.NavigationErr()
+		}
 	case "navigate_to":
 		// Distinct from "open": navigate the plan's current working tab and
 		// wait for the destination document before the following step runs.
@@ -3147,7 +3168,11 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 			actionErr = errors.New("open requires url")
 			break
 		}
-		_, actionErr = m.Open(tabCtx, step.URL)
+		var openRes OpenResult
+		openRes, actionErr = m.Open(tabCtx, step.URL)
+		if actionErr == nil {
+			actionErr = openRes.NavigationErr()
+		}
 	case "navigate_to":
 		// Distinct from "open": this drives the batch's existing working tab to
 		// a new URL, where open spawns a new one. A multi-step flow that crosses

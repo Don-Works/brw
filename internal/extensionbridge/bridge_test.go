@@ -928,7 +928,10 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// new url param (an older daemon sends none and keeps the old pattern).
 	// 0.7.3 reloads itself when the payload on disk is a different build from the
 	// one running, once no command is in flight and the agent is idle.
-	const wantManifest = "0.7.3"
+	// 0.7.4 adds navigation_outcome: the status, auth challenge and net error of
+	// the last navigation the daemon armed. Additive: the daemon falls back to the
+	// committed frame URL when an older extension answers "unknown message type".
+	const wantManifest = "0.7.4"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

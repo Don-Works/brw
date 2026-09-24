@@ -473,6 +473,11 @@ func ClassifyError(err error) string {
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
+	// browser.NavigationOutcome.Describe writes this phrase. Matched first: the
+	// net::ERR_* code it quotes can contain words the transport cases below
+	// match on, and a failed page load is not a bridge fault worth retrying.
+	case strings.Contains(msg, "navigation failed:"):
+		return "navigation_failed"
 	case strings.Contains(msg, "tab is leased by another browser session"):
 		return "tab_contended"
 	// A human holds the browser through the dashboard. Kept distinct from

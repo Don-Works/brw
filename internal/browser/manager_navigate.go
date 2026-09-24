@@ -122,6 +122,13 @@ func (m *Manager) NavigateTo(ctx context.Context, url string) (ActionResult, err
 		if IsNavigationAbortedError(err) {
 			return ActionResult{}, NavigationAbortedError("navigate_to")
 		}
+		if errorText, ok := strings.CutPrefix(err.Error(), "page load error "); ok {
+			return ActionResult{}, &NavigationFailedError{
+				Verb:          "navigate_to",
+				Outcome:       m.navigationOutcome(tabID, url, "", errorText),
+				AuthAvailable: true,
+			}
+		}
 		return ActionResult{}, err
 	}
 

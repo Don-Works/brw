@@ -311,3 +311,15 @@ func TestNavigateToFollowsACrossOriginRedirectToAnInlineDocument(t *testing.T) {
 		t.Fatalf("read main = %q, want the JSON body rendered inline", read.Main)
 	}
 }
+
+func TestArmingForgetsThePreviousDocumentResponse(t *testing.T) {
+	m := &Manager{}
+	m.containment.recordDocumentResponse("t1", &fetch.EventRequestPaused{
+		ResponseStatusCode: 401,
+		ResponseHeaders:    []*fetch.HeaderEntry{{Name: "WWW-Authenticate", Value: `Basic realm="Old"`}},
+	})
+	m.armInlineDocument(context.Background(), "t1", "data:text/html,next")
+	if status, challenge := m.containment.lastDocumentResponse("t1"); status != 0 || challenge != nil {
+		t.Fatalf("after re-arming for a destination with no pattern, got status %d challenge %+v; want none", status, challenge)
+	}
+}
