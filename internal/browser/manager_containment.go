@@ -182,6 +182,7 @@ var fetchPatternEscaper = strings.NewReplacer(`\`, `\\`, "*", `\*`, "?", `\?`)
 // and one that intercepted for this alone stops paying for it once the
 // navigation has settled.
 func (m *Manager) armInlineDocument(ctx context.Context, tabID, destination string) func() {
+	m.containment.resetDocumentResponse(tabID)
 	pattern := inlineDocumentPattern(destination)
 	if pattern == "" {
 		return func() {}
@@ -190,7 +191,6 @@ func (m *Manager) armInlineDocument(ctx context.Context, tabID, destination stri
 	if err != nil {
 		return func() {}
 	}
-	m.containment.resetDocumentResponse(tabID)
 	m.containment.addInlineDocumentPattern(tabID, pattern)
 	m.armInterception(tabID, tabCtx)
 	_ = m.syncFetchInterception(ctx, tabID)
