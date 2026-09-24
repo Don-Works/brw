@@ -1212,6 +1212,7 @@ async function scenarioInlineDocumentRendering() {
     overrides["debugger.sendCommand"] = async (target, method, params) => {
       sent.push({ method, ...params });
       if (method === "Fetch.getResponseBody") return { body: "c2t1LHByaWNlCkExLDkuOTkK", base64Encoded: true };
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
       return {};
     };
     setWin({ id: 1, type: "normal", focused: true });
@@ -1236,46 +1237,76 @@ async function scenarioInlineDocumentRendering() {
     check("an undeclared length is within the limit", T.inlineDocumentBodyWithinLimit([]));
     check("a body over the limit is not re-served", !T.inlineDocumentBodyWithinLimit([{ name: "Content-Length", value: "99999999" }]));
 
-    await T.handle({ id: "inl-1", type: "arm_inline_document", params: { tabId: 11 } });
-    const enable = sent.findLast((s) => s.method === "Fetch.enable");
-    check("arming pauses main-document responses",
-      enable && enable.patterns.some((p) => p.requestStage === "Response" && p.resourceType === "Document"));
-    check("arming records the tab", T.state.inlineDocumentTabs.has(11));
-
-    const pausedResponse = (requestId, resourceType, responseHeaders) =>
+    T.state.containmentTabs.clear();
+    const arm = (id, url) => T.handle({ id, type: "arm_inline_document", params: { tabId: 11, url } });
+    const pausedResponse = (requestId, resourceType, responseHeaders, extra = {}) =>
       fireEvent("debugger.onEvent", { tabId: 11 }, "Fetch.requestPaused",
-        { requestId, request: { url: "https://api.test/x" }, resourceType, responseStatusCode: 200, responseHeaders });
+        { requestId, request: { url: "https://api.test/x" }, resourceType, frameId: "main", responseStatusCode: 200, responseHeaders, ...extra });
+    const settleAnswer = () => new Promise((r) => setTimeout(r, 0));
+
+    await arm("inl-1", "https://api.test/data.json?q=1");
+    const enable = sent.findLast((s) => s.method === "Fetch.enable");
+    check("arming pauses main-document responses from the destination's origin only",
+      enable && enable.patterns.length === 1 && enable.patterns[0].urlPattern === "https://api.test/*" &&
+      enable.patterns[0].requestStage === "Response" && enable.patterns[0].resourceType === "Document");
+    check("arming records the tab and its main frame", T.state.inlineDocumentTabs.get(11)?.mainFrameId === "main");
+
+    sent.length = 0;
+    pausedResponse("f1", "Document", [{ name: "Content-Type", value: "text/csv" }], { frameId: "child" });
+    await settleAnswer();
+    let answer = sent.findLast((s) => s.method === "Fetch.continueResponse");
+    check("a frame's document continues untouched and keeps the arm",
+      answer && answer.responseHeaders === undefined && T.state.inlineDocumentTabs.has(11));
+
+    sent.length = 0;
+    pausedResponse("d1", "Document", [{ name: "Location", value: "https://cdn.test/file.json" }], { responseStatusCode: 302 });
+    await settleAnswer();
+    const redirected = sent.findLast((s) => s.method === "Fetch.enable");
+    check("a redirect arms its destination's origin before it proceeds",
+      redirected && redirected.patterns.some((p) => p.urlPattern === "https://cdn.test/*") &&
+      sent.findLast((s) => s.method === "Fetch.continueResponse")?.requestId === "d1" && T.state.inlineDocumentTabs.has(11));
+
     sent.length = 0;
     pausedResponse("r1", "Document", [
       { name: "Content-Type", value: "application/json" },
       { name: "Content-Disposition", value: "attachment; filename=f.txt" }
     ]);
-    await new Promise((r) => setTimeout(r, 0));
-    let answer = sent.findLast((s) => s.method === "Fetch.continueResponse");
+    await settleAnswer();
+    answer = sent.findLast((s) => s.method === "Fetch.continueResponse");
     check("an attachment document continues with the disposition removed",
       answer && answer.responseCode === 200 && Array.isArray(answer.responseHeaders) &&
       !answer.responseHeaders.some((h) => h.name.toLowerCase() === "content-disposition"));
+    check("answering the main document releases the arm at once",
+      !T.state.inlineDocumentTabs.has(11) && sent.some((s) => s.method === "Fetch.disable"));
 
+    await arm("inl-2", "https://api.test/rows.csv");
     sent.length = 0;
     pausedResponse("r2", "Document", [{ name: "Content-Type", value: "text/csv" }, { name: "Content-Length", value: "18" }]);
-    await new Promise((r) => setTimeout(r, 0));
+    await settleAnswer();
     answer = sent.findLast((s) => s.method === "Fetch.fulfillRequest");
     check("a downloaded text type is re-served as text/plain with its body",
       answer && answer.body === "c2t1LHByaWNlCkExLDkuOTkK" &&
       answer.responseHeaders.some((h) => h.value === "text/plain") &&
       !answer.responseHeaders.some((h) => h.name.toLowerCase() === "content-length"));
 
+    await arm("inl-3", "https://api.test/");
     sent.length = 0;
     pausedResponse("r3", "Script", [{ name: "Content-Type", value: "text/csv" }]);
-    await new Promise((r) => setTimeout(r, 0));
+    await settleAnswer();
     answer = sent.findLast((s) => s.method === "Fetch.continueResponse");
     check("a subresource at the response stage continues untouched", answer && answer.responseHeaders === undefined);
 
     sent.length = 0;
     pausedResponse("r4", "Document", [{ name: "Content-Type", value: "text/html" }]);
-    await new Promise((r) => setTimeout(r, 0));
+    await settleAnswer();
     answer = sent.findLast((s) => s.method === "Fetch.continueResponse");
     check("an ordinary page continues untouched", answer && answer.responseHeaders === undefined);
+
+    await T.handle({ id: "inl-4", type: "arm_inline_document", params: { tabId: 11 } });
+    check("a daemon that sends no url gets the every-document pattern",
+      T.state.inlineDocumentTabs.get(11)?.patterns.join() === "*");
+    await arm("inl-5", "about:blank");
+    check("a non-http destination leaves the previous arm alone", T.state.inlineDocumentTabs.get(11)?.patterns.join() === "*");
 
     T.state.containmentTabs.add(11);
     const both = T.fetchPatternsForTab(11);
@@ -1284,10 +1315,10 @@ async function scenarioInlineDocumentRendering() {
     T.state.containmentTabs.delete(11);
 
     sent.length = 0;
-    await T.handle({ id: "inl-2", type: "disarm_inline_document", params: { tabId: 11 } });
+    await T.handle({ id: "inl-6", type: "disarm_inline_document", params: { tabId: 11 } });
     check("disarming forgets the tab", !T.state.inlineDocumentTabs.has(11));
     check("disarming with nothing else to intercept disables Fetch", sent.some((s) => s.method === "Fetch.disable"));
-    check("disarming an unarmed tab is a no-op", (await T.handle({ id: "inl-3", type: "disarm_inline_document", params: { tabId: 11 } }), true));
+    check("disarming an unarmed tab is a no-op", (await T.handle({ id: "inl-7", type: "disarm_inline_document", params: { tabId: 11 } }), true));
   } finally {
     overrides["debugger.sendCommand"] = savedSend;
     T.state.inlineDocumentTabs.clear();

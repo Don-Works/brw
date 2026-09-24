@@ -712,7 +712,7 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		// tabContext publishes the target's context and arms console capture on it.
 		if tabCtx, ctxErr := m.tabContext(tabID); ctxErr == nil {
 			navCtx, cancelNav := context.WithTimeout(tabCtx, openNavigateTimeout)
-			defer m.armInlineDocument(navCtx, tabID)()
+			defer m.armInlineDocument(navCtx, tabID, url)()
 			// Start the navigation without waiting for the load event, matching
 			// what CreateTarget(url) did. chromedp.Navigate blocks until load,
 			// which never arrives when the navigation policy aborts a

@@ -211,10 +211,13 @@ const state = {
   // an allowlisted page can still fetch, beacon and socket anywhere it likes.
   containment: { allowed: [], blocked: [], enabled: false },
   containmentTabs: new Set(),
-  // inlineDocumentTabs names the tabs whose next main-document response is
-  // rewritten so a text download renders as a page, for the span of one
-  // daemon-driven navigation (see inlineDocumentRewrite).
-  inlineDocumentTabs: new Set(),
+  // inlineDocumentTabs maps each tab whose next main-document response is
+  // rewritten so a text download renders as a page to { patterns, mainFrameId }:
+  // the Fetch URL patterns covering the destination's origin and each redirect
+  // it takes, and the frame whose document is the one rewritten. Set by one
+  // daemon-driven navigation and cleared once that document is answered (see
+  // inlineDocumentRewrite).
+  inlineDocumentTabs: new Map(),
   blockedRequests: new Map(),
   // routeRuleIds maps a tab to the declarativeNetRequest session rule ids brw
   // installed for it in THIS worker lifetime. DNR is the only interception
@@ -397,11 +400,68 @@ function inlineDocumentBodyWithinLimit(headers) {
   return true;
 }
 
+// inlineDocumentPattern mirrors browser.inlineDocumentPattern: the Fetch URL
+// pattern covering every document on url's origin, or "" when url is not
+// http(s). The origin rather than "*" keeps a cross-site iframe from pausing
+// under it: a frame document paused as Fetch.disable lands is neither reported
+// nor released by Chrome, and the frame stays on about:blank for good.
+function inlineDocumentPattern(url) {
+  let parsed;
+  try {
+    parsed = new URL(String(url || ""));
+  } catch (_) {
+    return "";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+  return parsed.origin.replace(/[\\*?]/g, (c) => "\\" + c) + "/*";
+}
+
+// redirectLocation resolves the Location of a paused 3xx response against the
+// request URL, or returns "" when the response is not a redirect.
+function redirectLocation(params) {
+  const status = Number(params?.responseStatusCode) || 0;
+  if (status < 300 || status > 399) return "";
+  const header = (params.responseHeaders || []).find((h) => String(h?.name || "").toLowerCase() === "location");
+  if (!header) return "";
+  try {
+    return new URL(String(header.value || "").trim(), params.request?.url).href;
+  } catch (_) {
+    return "";
+  }
+}
+
 // answerInlineDocumentResponse answers a request paused at the response stage.
+// Once the main frame's document is answered the arm has done its job and is
+// released at once rather than on the daemon's disarm, which arrives while the
+// page's frames are loading.
 async function answerInlineDocumentResponse(tabId, params, resourceType) {
   const requestId = params.requestId;
   const continueAsIs = () => chrome.debugger.sendCommand({ tabId }, "Fetch.continueResponse", { requestId });
-  if (!state.inlineDocumentTabs.has(tabId) || resourceType !== "Document") return continueAsIs();
+  const arm = state.inlineDocumentTabs.get(tabId);
+  if (!arm || resourceType !== "Document") return continueAsIs();
+  if (arm.mainFrameId && params.frameId && params.frameId !== arm.mainFrameId) return continueAsIs();
+  const location = redirectLocation(params);
+  if (location) {
+    const pattern = inlineDocumentPattern(location);
+    if (pattern && !arm.patterns.includes(pattern)) {
+      arm.patterns.push(pattern);
+      await syncFetchInterception(tabId).catch(() => {});
+    }
+    return continueAsIs();
+  }
+  try {
+    return await answerInlineDocument(tabId, params);
+  } finally {
+    if (state.inlineDocumentTabs.get(tabId) === arm) {
+      state.inlineDocumentTabs.delete(tabId);
+      await syncFetchInterception(tabId).catch(() => {});
+    }
+  }
+}
+
+async function answerInlineDocument(tabId, params) {
+  const requestId = params.requestId;
+  const continueAsIs = () => chrome.debugger.sendCommand({ tabId }, "Fetch.continueResponse", { requestId });
   const rewrite = inlineDocumentRewrite(params.responseHeaders);
   if (!rewrite.changed) return continueAsIs();
   if (!rewrite.needsBody) {
@@ -433,8 +493,8 @@ async function answerInlineDocumentResponse(tabId, params, resourceType) {
 function fetchPatternsForTab(tabId) {
   const patterns = [];
   if (state.containmentTabs.has(tabId)) patterns.push({ urlPattern: "*" });
-  if (state.inlineDocumentTabs.has(tabId)) {
-    patterns.push({ urlPattern: "*", resourceType: "Document", requestStage: "Response" });
+  for (const urlPattern of state.inlineDocumentTabs.get(tabId)?.patterns || []) {
+    patterns.push({ urlPattern, resourceType: "Document", requestStage: "Response" });
   }
   return patterns;
 }
@@ -448,9 +508,15 @@ async function syncFetchInterception(tabId) {
   await sendDebuggerCommand(tabId, "Fetch.enable", { patterns });
 }
 
-async function armInlineDocument(tabId) {
+// armInlineDocument arms tabId for the next main-document response from url's
+// origin. A daemon that predates the url param sends none, and gets the old
+// every-document pattern.
+async function armInlineDocument(tabId, url) {
+  const pattern = url ? inlineDocumentPattern(url) : "*";
+  if (!pattern) return;
   await attach(tabId);
-  state.inlineDocumentTabs.add(tabId);
+  const tree = await sendDebuggerCommand(tabId, "Page.getFrameTree", {}).catch(() => null);
+  state.inlineDocumentTabs.set(tabId, { patterns: [pattern], mainFrameId: tree?.frameTree?.frame?.id || "" });
   await syncFetchInterception(tabId);
 }
 
@@ -1770,7 +1836,7 @@ async function handle(message) {
         if (!tab) throw err;
       }
       if (inlineDocument && tab.id) {
-        await armInlineDocument(tab.id).catch(() => {});
+        await armInlineDocument(tab.id, targetUrl).catch(() => {});
         tab = await chrome.tabs.update(tab.id, { url: targetUrl });
       }
       // brw drives this tab for the rest of the agent session, usually in the
@@ -2201,7 +2267,7 @@ async function handle(message) {
     }
     if (message.type === "arm_inline_document") {
       const tabId = Number(message.params?.tabId || (await activeTabId()));
-      await armInlineDocument(tabId);
+      await armInlineDocument(tabId, typeof message.params?.url === "string" ? message.params.url : "");
       send({ id: message.id, ok: true, result: { armed: true, tabId } });
       return;
     }

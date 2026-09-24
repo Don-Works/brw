@@ -923,7 +923,9 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// leaving an empty tab. Additive: the daemon ignores an older extension's
 	// "unknown message type" and navigates exactly as before.
 	// 0.7.2 holds the badge on Refused while the daemon closes each new socket
-	// with 1013 or 1008, instead of cycling Idle/Down/Reconnecting. No wire change.
+	// with 1013 or 1008, instead of cycling Idle/Down/Reconnecting, and scopes the
+	// inline-document pause to the destination origin named by arm_inline_document's
+	// new url param (an older daemon sends none and keeps the old pattern).
 	const wantManifest = "0.7.2"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)

@@ -82,6 +82,14 @@ func TestNavigateToArmsInlineDocumentAroundPageNavigate(t *testing.T) {
 	if !(arm < navigate && navigate < disarm) {
 		t.Fatalf("messages = %v, want arm before Page.navigate and disarm after it", messages)
 	}
+	// The extension scopes its pause to this URL's origin, so a cross-site
+	// iframe loading during the navigation is never paused.
+	fake.mu.Lock()
+	armURL := fake.armURL
+	fake.mu.Unlock()
+	if armURL != target {
+		t.Fatalf("arm_inline_document url = %q, want the destination %q", armURL, target)
+	}
 }
 
 func TestNavigateToWorksWithAnExtensionThatCannotArmInlineDocuments(t *testing.T) {

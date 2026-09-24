@@ -191,14 +191,21 @@ func TestManagerClicksARefInsideACrossOriginFrame(t *testing.T) {
 			}
 			tabCtx := WithTabID(ctx, opened.Tab.ID)
 			t.Cleanup(func() { _ = m.CloseTab(ctx, opened.Tab.ID) })
-			// Give the out-of-process frame a beat to commit its own document.
-			time.Sleep(700 * time.Millisecond)
-
-			snap, err := m.Snapshot(tabCtx, snapshot.SnapshotOptions{Mode: "all", IncludeFrames: true})
-			if err != nil {
-				t.Fatalf("snapshot with include_frames: %v", err)
+			// Until the iframe commits its cross-origin document it holds a
+			// same-origin about:blank, which the walker rightly reports as no frame
+			// to read. A fixed sleep lost that race on a loaded CI runner.
+			var snap snapshot.PageSnapshot
+			var ref string
+			for deadline := time.Now().Add(15 * time.Second); ; {
+				snap, err = m.Snapshot(tabCtx, snapshot.SnapshotOptions{Mode: "all", IncludeFrames: true})
+				if err != nil {
+					t.Fatalf("snapshot with include_frames: %v", err)
+				}
+				if ref = refNamed(snap.Elements, "Frame Go"); ref != "" || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(200 * time.Millisecond)
 			}
-			ref := refNamed(snap.Elements, "Frame Go")
 			if ref == "" {
 				t.Fatalf("include_frames did not surface the cross-origin frame's button; elements: %v", elementSummary(snap.Elements))
 			}
@@ -363,4 +370,66 @@ func TestClickIntoACrossOriginFrameAsksAboutTheFramesOwnOrigin(t *testing.T) {
 	if refNamed(after.Elements, "frame click recorded") == "" {
 		t.Fatalf("the granted click did not reach the frame's document; elements: %v", elementSummary(after.Elements))
 	}
+}
+
+// TestOpenDoesNotStrandACrossSiteFrameThatLoadsDuringTheNavigation loads a
+// cross-site frame while Open's inline-document arm is live: the host page holds
+// its own document open until the frame's response has been served. Armed for
+// every document, a frame response paused as Fetch.disable landed stayed on
+// about:blank for good.
+func TestOpenDoesNotStrandACrossSiteFrameThatLoadsDuringTheNavigation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	m := newOOPIFManager(t, ctx)
+
+	served := make(chan struct{}, 1)
+	inner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(oopifInnerDoc))
+		select {
+		case served <- struct{}{}:
+		default:
+		}
+	}))
+	t.Cleanup(inner.Close)
+	innerURL := strings.Replace(inner.URL, "127.0.0.1", "localhost", 1)
+
+	outer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><title>frame host</title></head><body>
+<iframe id="embed" src="%s" style="position:absolute;left:100px;top:80px;width:320px;height:220px;border:0"></iframe>
+`, innerURL)
+		w.(http.Flusher).Flush()
+		select {
+		case <-served:
+			time.Sleep(300 * time.Millisecond)
+		case <-time.After(10 * time.Second):
+		case <-r.Context().Done():
+		}
+		fmt.Fprint(w, `</body></html>`)
+	}))
+	t.Cleanup(outer.Close)
+
+	opened, err := m.Open(ctx, outer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabCtx := WithTabID(ctx, opened.Tab.ID)
+	t.Cleanup(func() { _ = m.CloseTab(ctx, opened.Tab.ID) })
+
+	var snap snapshot.PageSnapshot
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		snap, err = m.Snapshot(tabCtx, snapshot.SnapshotOptions{Mode: "all", IncludeFrames: true})
+		if err != nil {
+			t.Fatalf("snapshot with include_frames: %v", err)
+		}
+		if refNamed(snap.Elements, "Frame Go") != "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("the cross-site frame never committed its document; elements: %v", elementSummary(snap.Elements))
 }
