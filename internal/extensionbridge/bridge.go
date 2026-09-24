@@ -2112,6 +2112,9 @@ func (b *Bridge) CloseTab(ctx context.Context, id string) error {
 	tabKey := strings.TrimSpace(id)
 	start := time.Now()
 	_, err = b.call(ctx, "close_tab", map[string]any{"tabId": tabID})
+	if err != nil && b.tabGoneAfterFailedClose(ctx, tabID) {
+		err = nil
+	}
 	// Recorded before the tab state is dropped: the entry is scoped by the
 	// tab's lease, and forgetting the tab first leaves the close unattributable.
 	b.recordObservation(tabKey, browser.TraceActionCloseTab, "", start, err)
@@ -2119,6 +2122,67 @@ func (b *Bridge) CloseTab(ctx context.Context, id string) error {
 		b.invalidateTabState(tabKey)
 	}
 	return err
+}
+
+// closeTabVerifyWindow bounds how long CloseTab keeps checking the tab list
+// after the extension reported a failed close.
+const (
+	closeTabVerifyWindow   = 3 * time.Second
+	closeTabVerifyInterval = 250 * time.Millisecond
+)
+
+// tabGoneAfterFailedClose reports whether tabID has left the browser even
+// though close_tab returned an error. The extension's error means removal was
+// not observed inside its budget, not that the tab survived: Chrome can finish
+// an accepted close after the budget, and a tab that was already gone fails
+// the close with "No tab with id". The close's post-condition is that the tab
+// no longer exists, so that is what decides the outcome.
+func (b *Bridge) tabGoneAfterFailedClose(ctx context.Context, tabID int) bool {
+	deadline := time.Now().Add(closeTabVerifyWindow)
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		present, err := b.tabListed(ctx, tabID)
+		if err != nil {
+			return false
+		}
+		if !present {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		timer := time.NewTimer(closeTabVerifyInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+		}
+	}
+}
+
+// tabListed asks the extension whether tabID is still in the browser. It reads
+// the raw list rather than going through ListTabs, which also refreshes the
+// cached active tab.
+func (b *Bridge) tabListed(ctx context.Context, tabID int) (bool, error) {
+	raw, err := b.call(ctx, "list_tabs", nil)
+	if err != nil {
+		return false, err
+	}
+	var tabs []struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &tabs); err != nil {
+		return false, err
+	}
+	for _, tab := range tabs {
+		if tab.ID == tabID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (b *Bridge) GroupTabs(ctx context.Context, tabIDs []string, opts browser.TabGroupOptions) error {

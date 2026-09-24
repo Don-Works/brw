@@ -751,6 +751,26 @@ async function scenarioCloseTabIsBoundedAndFailClosed() {
 			resolveLateClose?.({});
 			await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
 			check("late Page.close resolution cannot emit a second reply", wedgedSocket.sent.length === 2);
+
+			// Chrome accepts Page.close but removes the tab after the close
+			// budget, as a Gmail tab mid-download did. The close happened, so
+			// close_tab must report success rather than "did not close".
+			overrides["debugger.sendCommand"] = async ({ tabId }, method) => {
+				if (method === "Page.close") {
+					globalThis.setTimeout(() => model.tabs.delete(tabId), 2600);
+				}
+				return {};
+			};
+			await reset();
+			setWin({ id: 1, type: "normal", focused: true });
+			setTab({ id: 38, windowId: 1, active: true, url: "https://mail.test/", title: "slow close" });
+			const slowSocket = new MockWebSocket(); slowSocket.readyState = MockWebSocket.OPEN; T.state.socket = slowSocket;
+			const slowStartedAt = Date.now();
+			await T.handle({ id: "close-slow-removal", type: "close_tab", params: { tabId: 38 } });
+			const slowElapsed = Date.now() - slowStartedAt;
+			check("an accepted close whose tab disappears after the budget reports success",
+				slowElapsed >= 2500 && slowSocket.sent.length === 1 && slowSocket.sent[0]?.ok === true &&
+				slowSocket.sent[0]?.result?.closed === 38 && !model.tabs.has(38));
 		} finally {
 			sandbox.setTimeout = savedSetTimeout;
 			sandbox.clearTimeout = savedClearTimeout;

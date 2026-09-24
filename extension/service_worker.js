@@ -58,6 +58,12 @@ const BRW_ACTING_WINDOW_MS = 8 * 1000;
 // pending forever. Bound command + disappearance confirmation to one budget so
 // a single dirty tab cannot strand its request handler indefinitely.
 const CLOSE_TAB_BUDGET_MS = 2 * 1000;
+// Once Chrome has accepted Page.close the close is committed, but removal can
+// lag the budget: a Gmail tab that had just started a 34 MB attachment
+// download stayed in the strip for longer than 2s and then went away, after
+// close_tab had already reported failure. Keep watching for removal this much
+// longer before calling an accepted close a failure.
+const CLOSE_TAB_SETTLE_MS = 8 * 1000;
 // An install writes the unpacked payload one file at a time, so a new manifest
 // is only trusted once it has stayed put this long. SELF_UPDATE_RETRY_MS stops a
 // payload Chrome refuses to load from being retried on every alarm tick.
@@ -2048,7 +2054,10 @@ async function handle(message) {
           closeError = error;
         }
         const remaining = Math.max(0, closeDeadline - Date.now());
-        if (!(await waitForTabGone(tabId, remaining))) {
+        const closeAccepted = !closeError || isDetachedDebuggerError(closeError);
+        const gone = (await waitForTabGone(tabId, remaining)) ||
+          (closeAccepted && (await waitForTabGone(tabId, CLOSE_TAB_SETTLE_MS)));
+        if (!gone) {
           // Do not await detach here: a debugger command already exceeded the
           // whole close budget, so another Chrome API wait would make the
           // timeout nominal rather than real. forceDetach clears bookkeeping
@@ -2056,7 +2065,8 @@ async function handle(message) {
           forceDetach(tabId).catch(() => {});
           if (closeError && !isDetachedDebuggerError(closeError)) throw closeError;
           const detail = closeError ? `: ${String(closeError?.message || closeError)}` : "";
-          throw new Error(`tab ${tabId} did not close within ${CLOSE_TAB_BUDGET_MS}ms${detail}`);
+          const waited = closeAccepted ? CLOSE_TAB_BUDGET_MS + CLOSE_TAB_SETTLE_MS : CLOSE_TAB_BUDGET_MS;
+          throw new Error(`tab ${tabId} did not close within ${waited}ms${detail}`);
         }
       }
       if (!(await waitForTabGone(tabId, 2000))) {
