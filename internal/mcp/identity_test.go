@@ -30,8 +30,8 @@ func decodeToolJSON(t *testing.T, result any) map[string]any {
 func TestBrwIdentityReportsProfile(t *testing.T) {
 	srv := New(fakeController{})
 	srv.SetIdentity(brwidentity.Identity{
-		Workspace:        "brw-chromium-work",
-		Profile:          "chromium-work-profile",
+		Workspace:        "brw-example",
+		Profile:          "example-profile",
 		UserDataDir:      "/Users/x/Library/Application Support/Chromium",
 		ProfileDirectory: "Default",
 		Mode:             "bridge",
@@ -54,8 +54,8 @@ func TestBrwIdentityReportsProfile(t *testing.T) {
 		t.Fatalf("identity missing or wrong type: %+v", payload["identity"])
 	}
 	for field, want := range map[string]string{
-		"workspace":         "brw-chromium-work",
-		"profile":           "chromium-work-profile",
+		"workspace":         "brw-example",
+		"profile":           "example-profile",
 		"profile_directory": "Default",
 		"mode":              "bridge",
 	} {
