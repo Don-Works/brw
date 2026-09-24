@@ -313,6 +313,16 @@ func TestClassifyErrorSeparatesNonDrivableTabsFromToolFailures(t *testing.T) {
 			want: "document_changed",
 		},
 		{
+			name: "failed navigation behind HTTP auth on the extension bridge",
+			err:  errors.New(`open: navigation failed: https://preview.test/ answered HTTP 401 (net::ERR_INVALID_AUTH_CREDENTIALS). brw_authenticate is not available on the extension bridge, which cannot answer an HTTP authentication challenge.`),
+			want: "navigation_failed",
+		},
+		{
+			name: "failed navigation whose net error names a timeout",
+			err:  errors.New("navigate_to: navigation failed: https://slow.test/ did not load (net::ERR_CONNECTION_TIMED_OUT)."),
+			want: "navigation_failed",
+		},
+		{
 			name: "a real transport drop is unaffected",
 			err:  errors.New("extension bridge is not connected; load/click the Chrome extension first"),
 			want: "transport",
@@ -325,7 +335,7 @@ func TestClassifyErrorSeparatesNonDrivableTabsFromToolFailures(t *testing.T) {
 			}
 			// Neither new class is retryable: retrying re-fails until the human
 			// closes the popout or DevTools, so retrying only burns the deadline.
-			if tc.want == "tab_not_drivable" || tc.want == "debugger_conflict" {
+			if tc.want == "tab_not_drivable" || tc.want == "debugger_conflict" || tc.want == "navigation_failed" {
 				if Retryable(tc.want) {
 					t.Errorf("Retryable(%q) = true, want false", tc.want)
 				}

@@ -1984,6 +1984,7 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	// Re-read the tab after commit so the agent gets a real url/title instead of
 	// the empty fields chrome.tabs.create often returns mid-navigation.
 	out = b.refreshOpenedTab(ctx, out, url)
+	result := b.openResult(ctx, out, url, ready)
 	// In isolation we resolve no-tab_id actions by the owned id (b.active), so the
 	// opened tab need not be foregrounded — keeping it in the background means the
 	// open never disturbs the tab the user is on. Only follow-focus mode, where
@@ -1991,15 +1992,15 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	if b.followFocus {
 		if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
 			recordOpen(out.URL, err)
-			return browser.OpenResult{Tab: out, Ready: ready}, err
+			return result, err
 		}
 	}
 	if err := b.verifyOpenedTabURL(ctx, out.ID); err != nil {
 		recordOpen(out.URL, err)
 		return browser.OpenResult{}, err
 	}
-	recordOpen(out.URL, nil)
-	return browser.OpenResult{Tab: out, Ready: ready}, nil
+	recordOpen(out.URL, result.NavigationErr())
+	return result, nil
 }
 
 // waitOpenReady blocks until the freshly opened tab is usable, matching the
@@ -2195,21 +2196,22 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 	// Same rehydrate as Open — agents need url/title on the open observation.
 	out = b.refreshOpenedTab(ctx, out, url)
 	b.recordTabGroupDegradation(out.GroupWarning)
+	result := b.openResult(ctx, out, url, ready)
 	// See Open: in isolation the owned id drives resolution, so we leave the tab in
 	// the background and never steal the user's current tab; only follow-focus mode
 	// foregrounds it.
 	if b.followFocus {
 		if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
 			recordOpen(out.URL, err)
-			return browser.OpenResult{Tab: out, Ready: ready}, err
+			return result, err
 		}
 	}
 	if err := b.verifyOpenedTabURL(ctx, out.ID); err != nil {
 		recordOpen(out.URL, err)
 		return browser.OpenResult{}, err
 	}
-	recordOpen(out.URL, nil)
-	return browser.OpenResult{Tab: out, Ready: ready}, nil
+	recordOpen(out.URL, result.NavigationErr())
+	return result, nil
 }
 
 // refreshOpenedTab re-lists tabs after open readiness so the returned Tab carries
@@ -3578,7 +3580,7 @@ func (b *Bridge) navigateToURLAndWait(ctx context.Context, targetURL string) err
 		if strings.Contains(errorText, "net::ERR_ABORTED") {
 			return browser.NavigationAbortedError("navigate_to")
 		}
-		return fmt.Errorf("navigate_to: Page.navigate failed: %s", errorText)
+		return b.navigationFailure(navCtx, tabID, targetURL, "", errorText)
 	}
 	if started.IsDownload {
 		return errors.New("navigate_to: destination started a download instead of replacing the page")
@@ -3675,6 +3677,12 @@ func (b *Bridge) waitForAcceptedNavigationDestination(
 	acceptedFrame bridgeMainFrameState,
 	requireExactURL bool,
 ) error {
+	// A failed navigation commits Chrome's error page as a real replacement
+	// document, so the loop above accepts it. Say why instead of running the
+	// policy check and readiness against chrome-error://.
+	if browser.IsErrorPageURL(acceptedFrame.URL) {
+		return b.navigationFailure(ctx, tabID, targetURL, acceptedFrame.URL, "")
+	}
 	// Validate the accepted main-frame URL before executing even the readiness
 	// predicate in that document. This closes the redirect gap without requiring
 	// equality to targetURL for replacement navigations.
@@ -4097,8 +4105,11 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 		var openRes browser.OpenResult
 		openRes, actionErr = b.Open(ctx, step.URL)
 		if actionErr == nil {
-			retargetTo = openRes.Tab.ID
 			sr.Result = openRes
+			actionErr = openRes.NavigationErr()
+		}
+		if actionErr == nil {
+			retargetTo = openRes.Tab.ID
 		}
 	case "navigate_to":
 		// Distinct from "open": this drives the plan's existing working tab to a
@@ -5510,6 +5521,9 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 		}
 		var openRes browser.OpenResult
 		openRes, actionErr = b.Open(ctx, step.URL)
+		if actionErr == nil {
+			actionErr = openRes.NavigationErr()
+		}
 		if actionErr == nil {
 			retargetTo = openRes.Tab.ID
 		}

@@ -35,6 +35,12 @@ type groupAwareExtension struct {
 	// wedged extension for the auto-open cooldown regression test.
 	failOpen  bool
 	openCalls int
+	// frameURL, when set, is the main frame's committed URL Page.getFrameTree
+	// reports; chrome-error://chromewebdata/ models a failed navigation.
+	frameURL string
+	// navOutcome, when set, is the navigation_outcome reply. Unset models an
+	// extension that predates the message.
+	navOutcome map[string]any
 }
 
 type gaTab struct {
@@ -143,9 +149,23 @@ func (f *groupAwareExtension) serve(ctx context.Context, conn *websocket.Conn) {
 		case "get_active_tab_id":
 			result = map[string]any{"tabId": f.foregroundID()}
 		case "cdp":
-			// The only cdp call on the open path is the readiness-wait
+			method, _ := msg.Params["method"].(string)
+			if method == "Page.getFrameTree" && f.frameURL != "" {
+				result = map[string]any{"frameTree": map[string]any{"frame": map[string]any{
+					"id": "frame-main", "loaderId": "loader-main", "url": f.frameURL,
+				}}}
+				break
+			}
+			// The only other cdp call on the open path is the readiness-wait
 			// Runtime.evaluate (condition "committed"); report it satisfied.
 			result = map[string]any{"result": map[string]any{"value": true}}
+		case "navigation_outcome":
+			if f.navOutcome == nil {
+				ok = false
+				result = map[string]any{}
+				break
+			}
+			result = f.navOutcome
 		case "open_tab":
 			f.openCalls++
 			if f.failOpen {

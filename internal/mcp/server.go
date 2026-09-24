@@ -973,13 +973,13 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		}
 		req.URL = normalizedURL
 		if req.Group != "" || req.GroupID != "" {
-			return toolJSON(s.manager.OpenInGroup(ctx, req.URL, browser.TabGroupOptions{
+			return openToolResult(s.manager.OpenInGroup(ctx, req.URL, browser.TabGroupOptions{
 				GroupID: req.GroupID,
 				Name:    req.Group,
 				Color:   req.GroupColor,
 			}))
 		}
-		return toolJSON(s.manager.Open(ctx, req.URL))
+		return openToolResult(s.manager.Open(ctx, req.URL))
 	case "brw_open_incognito":
 		var req struct {
 			URL string `json:"url"`
@@ -2465,6 +2465,20 @@ func toolJSONWithFailureDetail[T any](value T, err error) (any, *rpcError) {
 	}
 	out["structuredContent"] = structured
 	return out, nil
+}
+
+// openToolResult reports an open whose navigation failed as a tool error, so
+// an agent cannot read ready:false as a page it can act on. The tab exists
+// either way: the result fields ride along in structuredContent and the text
+// names the tab to close.
+func openToolResult(result browser.OpenResult, err error) (any, *rpcError) {
+	if err != nil {
+		return toolJSON(result, err)
+	}
+	if navErr := result.NavigationErr(); navErr != nil {
+		return toolJSONWithFailureDetail(result, navErr)
+	}
+	return toolJSON(result, nil)
 }
 
 func toolJSON[T any](value T, err error) (any, *rpcError) {

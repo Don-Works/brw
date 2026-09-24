@@ -228,6 +228,12 @@ const state = {
   // daemon-driven navigation and cleared once that document is answered (see
   // inlineDocumentRewrite).
   inlineDocumentTabs: new Map(),
+  // navigationOutcomes maps a tab to what its last daemon-driven navigation
+  // ended with: { url, status, authenticate, error }. Reset when the daemon arms
+  // a navigation, filled from the paused main-document response and from
+  // webNavigation.onErrorOccurred, and read back with navigation_outcome so the
+  // daemon can say why a tab holds chrome-error://chromewebdata/.
+  navigationOutcomes: new Map(),
   blockedRequests: new Map(),
   // routeRuleIds maps a tab to the declarativeNetRequest session rule ids brw
   // installed for it in THIS worker lifetime. DNR is the only interception
@@ -440,6 +446,25 @@ function redirectLocation(params) {
   }
 }
 
+// recordDocumentResponse keeps the main document's status and, for a 401 or
+// 407, its authentication challenges. Chrome under a debugger cancels the auth
+// prompt and commits its error page, so this is the only place the challenge is
+// visible.
+function recordDocumentResponse(tabId, params) {
+  const outcome = state.navigationOutcomes.get(tabId);
+  if (!outcome) return;
+  const status = Number(params?.responseStatusCode) || 0;
+  const headerName = status === 407 ? "proxy-authenticate" : "www-authenticate";
+  outcome.status = status;
+  outcome.url = String(params?.request?.url || outcome.url).slice(0, 2000);
+  outcome.authenticate = (status === 401 || status === 407)
+    ? (params?.responseHeaders || [])
+      .filter((h) => String(h?.name || "").toLowerCase() === headerName)
+      .map((h) => String(h?.value || "").slice(0, 1000))
+      .slice(0, 8)
+    : [];
+}
+
 // answerInlineDocumentResponse answers a request paused at the response stage.
 // Once the main frame's document is answered the arm has done its job and is
 // released at once rather than on the daemon's disarm, which arrives while the
@@ -451,6 +476,7 @@ async function answerInlineDocumentResponse(tabId, params, resourceType) {
   if (!arm || resourceType !== "Document") return continueAsIs();
   if (arm.mainFrameId && params.frameId && params.frameId !== arm.mainFrameId) return continueAsIs();
   const location = redirectLocation(params);
+  if (!location) recordDocumentResponse(tabId, params);
   if (location) {
     const pattern = inlineDocumentPattern(location);
     if (pattern && !arm.patterns.includes(pattern)) {
@@ -522,8 +548,10 @@ async function syncFetchInterception(tabId) {
 // origin. A daemon that predates the url param sends none, and gets the old
 // every-document pattern.
 async function armInlineDocument(tabId, url) {
+  state.navigationOutcomes.delete(tabId);
   const pattern = url ? inlineDocumentPattern(url) : "*";
   if (!pattern) return;
+  state.navigationOutcomes.set(tabId, { url: String(url || ""), status: 0, authenticate: [], error: "" });
   await attach(tabId);
   const tree = await sendDebuggerCommand(tabId, "Page.getFrameTree", {}).catch(() => null);
   state.inlineDocumentTabs.set(tabId, { patterns: [pattern], mainFrameId: tree?.frameTree?.frame?.id || "" });
@@ -1111,6 +1139,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   state.snapshotCache.delete(tabId);
   state.observerInjected.delete(tabId);
   state.documentEpochs.delete(tabId);
+  state.navigationOutcomes.delete(tabId);
   state.fileChooserEvents.delete(tabId);
   state.actingUntil.delete(tabId);
 	state.consoleMessages.delete(tabId);
@@ -1286,6 +1315,15 @@ chrome.webNavigation.onCommitted.addListener((details) => {
 // re-evaluates against the new route. The injected MutationObserver/console hook
 // survive (same execution context), so observerInjected is intentionally NOT
 // cleared here — only the stale snapshot is dropped.
+// A failed main-frame navigation commits chrome-error://chromewebdata/, which
+// says nothing about why. Keep the net error for the navigation the daemon
+// armed; one it did not arm is not its to explain.
+chrome.webNavigation.onErrorOccurred.addListener((details) => {
+  if (typeof details?.tabId !== "number" || details.frameId !== 0) return;
+  const outcome = state.navigationOutcomes.get(details.tabId);
+  if (!outcome) return;
+  outcome.error = String(details.error || "").slice(0, 200);
+});
 chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
   if (typeof details.tabId === "number" && details.frameId === 0) {
     state.snapshotCache.delete(details.tabId);
@@ -2333,6 +2371,12 @@ async function handle(message) {
       const tabId = Number(message.params?.tabId || (await activeTabId()));
       await armInlineDocument(tabId, typeof message.params?.url === "string" ? message.params.url : "");
       send({ id: message.id, ok: true, result: { armed: true, tabId } });
+      return;
+    }
+    if (message.type === "navigation_outcome") {
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      const outcome = state.navigationOutcomes.get(tabId);
+      send({ id: message.id, ok: true, result: outcome ? { known: true, ...outcome } : { known: false } });
       return;
     }
     if (message.type === "disarm_inline_document") {

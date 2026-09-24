@@ -42,6 +42,16 @@ type containmentState struct {
 	// the destination's origin, plus the origin of each redirect it takes. Set by
 	// one brw-driven navigation and cleared once its main document is answered.
 	inlineDocument map[string][]string
+	// documentResponse holds, per tab, the status and auth challenge of the main
+	// document the last inline-document arm paused. Chrome under CDP cancels an
+	// HTTP auth prompt and commits its error page, so the paused response is the
+	// only place the challenge is visible.
+	documentResponse map[string]documentResponse
+}
+
+type documentResponse struct {
+	status    int
+	challenge *AuthChallenge
 }
 
 // forget drops a closed tab's containment bookkeeping. Safe only once the tab is
@@ -54,6 +64,7 @@ func (c *containmentState) forget(tabID string) {
 	delete(c.enables, tabID)
 	delete(c.blocked, tabID)
 	delete(c.inlineDocument, tabID)
+	delete(c.documentResponse, tabID)
 }
 
 func (c *containmentState) initLocked() {
@@ -69,6 +80,46 @@ func (c *containmentState) initLocked() {
 	if c.inlineDocument == nil {
 		c.inlineDocument = make(map[string][]string)
 	}
+	if c.documentResponse == nil {
+		c.documentResponse = make(map[string]documentResponse)
+	}
+}
+
+func (c *containmentState) resetDocumentResponse(tabID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.documentResponse, tabID)
+}
+
+func (c *containmentState) recordDocumentResponse(tabID string, paused *fetch.EventRequestPaused) {
+	status := int(paused.ResponseStatusCode)
+	response := documentResponse{status: status}
+	if status == 401 || status == 407 {
+		name := "www-authenticate"
+		if status == 407 {
+			name = "proxy-authenticate"
+		}
+		var values []string
+		for _, header := range paused.ResponseHeaders {
+			if header != nil && strings.EqualFold(header.Name, name) {
+				values = append(values, header.Value)
+			}
+		}
+		response.challenge = ParseAuthChallenge(values)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.initLocked()
+	c.documentResponse[tabID] = response
+}
+
+// lastDocumentResponse is the status and challenge recordDocumentResponse kept
+// for the tab's last armed navigation; zero when none was paused.
+func (c *containmentState) lastDocumentResponse(tabID string) (int, *AuthChallenge) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	response := c.documentResponse[tabID]
+	return response.status, response.challenge
 }
 
 // addInlineDocumentPattern arms the tab for pattern and reports whether it was
@@ -139,6 +190,7 @@ func (m *Manager) armInlineDocument(ctx context.Context, tabID, destination stri
 	if err != nil {
 		return func() {}
 	}
+	m.containment.resetDocumentResponse(tabID)
 	m.containment.addInlineDocumentPattern(tabID, pattern)
 	m.armInterception(tabID, tabCtx)
 	_ = m.syncFetchInterception(ctx, tabID)
@@ -172,6 +224,7 @@ func (m *Manager) answerResponseStage(runCtx context.Context, tabID string, paus
 		}
 		return fetch.ContinueResponse(paused.RequestID).Do(runCtx)
 	}
+	m.containment.recordDocumentResponse(tabID, paused)
 	err := answerInlineDocument(runCtx, paused)
 	m.containment.clearInlineDocument(tabID)
 	_ = m.syncFetchInterception(runCtx, tabID)

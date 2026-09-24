@@ -1328,6 +1328,72 @@ async function scenarioInlineDocumentRendering() {
   }
 }
 
+// A daemon-armed navigation that Chrome ends on chrome-error://chromewebdata/
+// has to be explainable: the paused main document carries the HTTP status and
+// auth challenge, webNavigation.onErrorOccurred the net error, and
+// navigation_outcome hands both back.
+async function scenarioNavigationOutcome() {
+  await reset();
+  const savedSend = overrides["debugger.sendCommand"];
+  try {
+    overrides["debugger.sendCommand"] = async (target, method) => {
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+      return {};
+    };
+    setWin({ id: 1, type: "normal", focused: true });
+    setTab({ id: 11, windowId: 1, active: true, url: "about:blank", title: "" });
+    const socket = new MockWebSocket(); socket.readyState = MockWebSocket.OPEN; T.state.socket = socket;
+    const outcome = async (id) => {
+      await T.handle({ id, type: "navigation_outcome", params: { tabId: 11 } });
+      return socket.sent.at(-1)?.result;
+    };
+    const paused = (status, responseHeaders, extra = {}) =>
+      fireEvent("debugger.onEvent", { tabId: 11 }, "Fetch.requestPaused",
+        { requestId: "n" + status, request: { url: "https://preview.test/" }, resourceType: "Document",
+          frameId: "main", responseStatusCode: status, responseHeaders, ...extra });
+
+    check("an unarmed tab has no outcome", (await outcome("no-1"))?.known === false);
+
+    await T.handle({ id: "no-arm", type: "arm_inline_document", params: { tabId: 11, url: "https://preview.test/" } });
+    const armed = await outcome("no-2");
+    check("arming starts an empty outcome for the destination",
+      armed?.known === true && armed.url === "https://preview.test/" && armed.status === 0 && armed.error === "");
+
+    paused(401, [
+      { name: "Content-Type", value: "text/html" },
+      { name: "WWW-Authenticate", value: 'Basic realm="Preview"' }
+    ]);
+    await settle();
+    fireEvent("webNavigation.onErrorOccurred", { tabId: 11, frameId: 3, error: "net::ERR_BLOCKED_BY_CLIENT" });
+    fireEvent("webNavigation.onErrorOccurred", { tabId: 11, frameId: 0, error: "net::ERR_INVALID_AUTH_CREDENTIALS" });
+    const failed = await outcome("no-3");
+    check("the paused 401 keeps its status and challenge",
+      failed?.status === 401 && failed.authenticate.length === 1 && failed.authenticate[0] === 'Basic realm="Preview"');
+    check("the main frame's net error is kept and a subframe's is not",
+      failed?.error === "net::ERR_INVALID_AUTH_CREDENTIALS");
+
+    await T.handle({ id: "no-arm-2", type: "arm_inline_document", params: { tabId: 11, url: "https://preview.test/next" } });
+    const rearmed = await outcome("no-4");
+    check("a new navigation forgets the previous outcome",
+      rearmed?.status === 0 && rearmed.error === "" && rearmed.authenticate.length === 0);
+
+    paused(200, [{ name: "Content-Type", value: "text/html" }, { name: "WWW-Authenticate", value: "Basic" }]);
+    await settle();
+    const loaded = await outcome("no-5");
+    check("a 200 records its status and no challenge", loaded?.status === 200 && loaded.authenticate.length === 0);
+
+    fireEvent("webNavigation.onErrorOccurred", { tabId: 12, frameId: 0, error: "net::ERR_FAILED" });
+    check("an error on a tab brw did not arm is not recorded", !T.state.navigationOutcomes.has(12));
+
+    fireEvent("tabs.onRemoved", 11);
+    check("closing the tab drops its outcome", !T.state.navigationOutcomes.has(11));
+  } finally {
+    overrides["debugger.sendCommand"] = savedSend;
+    T.state.inlineDocumentTabs.clear();
+    T.state.navigationOutcomes.clear();
+  }
+}
+
 async function scenarioSubresourceContainment() {
   await reset();
   const savedSend = overrides["debugger.sendCommand"];
@@ -1950,6 +2016,7 @@ async function scenarioSelfUpdateReloadsAStalePayload() {
   await scenarioDialogArmingAndSafeDefaults();
   await scenarioSubresourceContainment();
   await scenarioInlineDocumentRendering();
+  await scenarioNavigationOutcome();
   await scenarioRouteRulesAreTabScopedAndReplaced();
   await scenarioRouteRulesSurviveAServiceWorkerRestart();
   await scenarioRouteResourceTypesFollowTheBuild();

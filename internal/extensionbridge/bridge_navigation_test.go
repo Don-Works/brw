@@ -58,6 +58,12 @@ type navigationFakeExtension struct {
 	// abortNavigate makes Page.navigate report net::ERR_ABORTED, which is what a
 	// download-shaped response produces, without committing anything.
 	abortNavigate bool
+	// navigateErrorText makes Page.navigate report this errorText without
+	// committing, the way Chrome reports a cancelled HTTP auth challenge.
+	navigateErrorText string
+	// navOutcome, when set, is the navigation_outcome reply; unset models an
+	// extension that predates the message.
+	navOutcome map[string]any
 	// messages records every message type (and cdp method) in arrival order.
 	messages []string
 	// armURL is the url param of the last arm_inline_document.
@@ -152,6 +158,10 @@ func (f *navigationFakeExtension) serve(ctx context.Context, conn *websocket.Con
 					result = map[string]any{"frameId": f.frameID, "errorText": "net::ERR_ABORTED"}
 					break
 				}
+				if f.navigateErrorText != "" {
+					result = map[string]any{"frameId": f.frameID, "loaderId": f.targetLoaderID, "errorText": f.navigateErrorText}
+					break
+				}
 				loaderID := f.targetLoaderID
 				if f.sameDocument {
 					loaderID = ""
@@ -213,6 +223,13 @@ func (f *navigationFakeExtension) serve(ctx context.Context, conn *websocket.Con
 				}
 				result = map[string]any{"result": map[string]any{"value": value}}
 			}
+		case "navigation_outcome":
+			if f.navOutcome == nil {
+				ok = false
+				errText = "unknown message type " + msg.Type
+				break
+			}
+			result = f.navOutcome
 		case "cached_snapshot":
 			result = map[string]any{"cached": true, "snapshot": f.snapshotLocked()}
 		case "snapshot_result":

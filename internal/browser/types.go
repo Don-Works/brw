@@ -198,8 +198,19 @@ type OpenResult struct {
 	// immediate brw_evaluate / brw_read without racing the transient
 	// about:blank state Chrome reports mid-navigation. False means readiness
 	// could not be confirmed within the wait window — the tab still exists, but a
-	// caller may want to brw_wait before acting on it.
+	// caller may want to brw_wait before acting on it. It is also false when the
+	// navigation failed and the tab holds Chrome's error page; NavigationError
+	// then says why.
 	Ready bool `json:"ready"`
+	// NavigationError is the network error the navigation failed with, such as
+	// net::ERR_INVALID_AUTH_CREDENTIALS. Empty when the page loaded.
+	NavigationError string `json:"navigation_error,omitempty"`
+	// HTTPStatus is the main document's HTTP status when it was 400 or above.
+	HTTPStatus int `json:"http_status,omitempty"`
+	// AuthRequired is the HTTP authentication challenge the server answered with.
+	AuthRequired *AuthChallenge `json:"auth_required,omitempty"`
+	// Warning explains a failed navigation and names the way past it.
+	Warning string `json:"warning,omitempty"`
 }
 
 type ActionResult struct {
