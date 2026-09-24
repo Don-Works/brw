@@ -229,7 +229,7 @@ func TestDoctorFlagsADaemonOnAReplacedBuild(t *testing.T) {
 // TestDoctorExtensionsPageNamesTheBrowser: a hand-written policy often has no
 // kind, and the fix line used to read `open -a ""`, which opens nothing.
 func TestDoctorExtensionsPageNamesTheBrowser(t *testing.T) {
-	home := "/Users/someone"
+	home := t.TempDir()
 	cases := []struct {
 		name    string
 		profile profilepolicy.Profile
