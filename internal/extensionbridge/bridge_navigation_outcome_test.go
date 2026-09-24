@@ -218,3 +218,24 @@ func TestBridgeNavigateToReportsHowTheNavigationFailed(t *testing.T) {
 		}
 	}
 }
+
+func TestBridgeOpenDoesNotWaitOutAPendingDocument(t *testing.T) {
+	b := New("", 20*time.Second, "")
+	fake := newOpenOutcomeFake("", map[string]any{"known": true, "url": "https://slow.test/"})
+	fake.frameTreeHangs = true
+	cleanup := connectGroupAwareExtension(t, b, fake)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	result, err := b.Open(ctx, "https://slow.test/")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > navigationOutcomeCallTimeout+3*time.Second {
+		t.Fatalf("Open took %s with the frame tree unanswered; the outcome read must give up after %s, not the bridge timeout", elapsed, navigationOutcomeCallTimeout)
+	}
+	if result.NavigationError != "" {
+		t.Fatalf("navigation_error = %q for a navigation that has not ended", result.NavigationError)
+	}
+}

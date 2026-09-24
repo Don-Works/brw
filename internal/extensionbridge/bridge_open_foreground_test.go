@@ -41,6 +41,9 @@ type groupAwareExtension struct {
 	// navOutcome, when set, is the navigation_outcome reply. Unset models an
 	// extension that predates the message.
 	navOutcome map[string]any
+	// frameTreeHangs leaves Page.getFrameTree unanswered, as Chrome does while
+	// the tab's document request is still waiting for the server.
+	frameTreeHangs bool
 }
 
 type gaTab struct {
@@ -150,6 +153,10 @@ func (f *groupAwareExtension) serve(ctx context.Context, conn *websocket.Conn) {
 			result = map[string]any{"tabId": f.foregroundID()}
 		case "cdp":
 			method, _ := msg.Params["method"].(string)
+			if method == "Page.getFrameTree" && f.frameTreeHangs {
+				f.mu.Unlock()
+				continue
+			}
 			if method == "Page.getFrameTree" && f.frameURL != "" {
 				result = map[string]any{"frameTree": map[string]any{"frame": map[string]any{
 					"id": "frame-main", "loaderId": "loader-main", "url": f.frameURL,
