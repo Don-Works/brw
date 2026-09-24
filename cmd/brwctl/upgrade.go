@@ -326,7 +326,7 @@ func reloadExtensionNote(refreshed []string) []string {
 	if len(refreshed) == 0 {
 		return nil
 	}
-	return []string{"Reload the brw extension in each browser (chrome://extensions, Reload) or restart it, so it runs the payload this upgrade wrote."}
+	return []string{"An extension on 0.7.3 or later reloads itself onto the new payload once the agent is idle. An older one needs one reload by hand (chrome://extensions, Reload) or a browser restart."}
 }
 
 // upgradePolicy is best-effort: a machine with no readable policy still gets
