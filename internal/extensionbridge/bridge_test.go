@@ -935,7 +935,10 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// budget, so a tab Chrome closes late is reported closed, not failed.
 	// 0.7.6 closes a tab whose navigation is still waiting for its server
 	// through the tabs API, since Page.enable is never answered there.
-	const wantManifest = "0.7.6"
+	// 0.7.7 answers page reads through chrome.scripting when another extension's
+	// frame in the page makes Chrome refuse the debugger, and otherwise fails with
+	// a foreign_extension_frame error that names that extension.
+	const wantManifest = "0.7.7"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

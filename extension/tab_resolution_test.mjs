@@ -1151,6 +1151,141 @@ async function scenarioForeignExtensionPopoutNeverStealsForeground() {
   check("the real page is reported active", listed.find((t) => t.id === 11)?.active === true);
 }
 
+// A password manager's inline menu is a chrome-extension:// iframe from ANOTHER
+// extension inside an ordinary https page. Chrome then refuses the debugger for
+// the whole tab (TestChromeRefusesTheDebuggerForATabHoldingAForeignExtensionFrame
+// measures it). Page reads must keep working in the top frame through
+// chrome.scripting, never enter the foreign frame, and every refusal must name
+// the extension that caused it.
+async function scenarioForeignExtensionFrameInsideThePage() {
+  const BITWARDEN_ID = "nngceckbapebfimnlniiiahkandclblb";
+  const MENU = `chrome-extension://${BITWARDEN_ID}/overlay/menu-list.html`;
+  const REFUSAL = "Cannot access a chrome-extension:// URL of different extension";
+  const keys = ["debugger.attach", "debugger.detach", "debugger.sendCommand", "debugger.getTargets",
+    "scripting.executeScript", "webNavigation.getAllFrames"];
+  const saved = new Map(keys.map((key) => [key, overrides[key]]));
+  const injections = [];
+  let scriptingRefuses = null;
+  let debuggerCommands = 0;
+  const run = async (id, type, params) => {
+    const socket = new MockWebSocket(); socket.readyState = MockWebSocket.OPEN; T.state.socket = socket;
+    await T.handle({ id, type, params });
+    return socket.sent.at(-1);
+  };
+  try {
+    overrides["debugger.attach"] = async () => { throw new Error(REFUSAL); };
+    overrides["debugger.detach"] = async () => {};
+    overrides["debugger.sendCommand"] = async () => { debuggerCommands++; throw new Error(REFUSAL); };
+    overrides["debugger.getTargets"] = async () => [
+      { type: "page", url: "https://beta.test/contact", tabId: 51, attached: false },
+      { type: "other", url: MENU, attached: false },
+    ];
+    overrides["webNavigation.getAllFrames"] = async () => [
+      { frameId: 0, parentFrameId: -1, url: "https://beta.test/contact" },
+      { frameId: 4, parentFrameId: 0, url: "https://pay.test/card" },
+    ];
+    overrides["scripting.executeScript"] = async (injection) => {
+      injections.push(injection);
+      if (scriptingRefuses) throw new Error(scriptingRefuses);
+      const frameId = injection.target.frameIds?.[0] ?? 0;
+      const result = await injection.func(...(injection.args || []));
+      return [{ frameId, documentId: "doc", result }];
+    };
+
+    await reset();
+    T.state.foreignExtensionFrames?.clear();
+    setWin({ id: 1, type: "normal", focused: true });
+    setTab({ id: 51, windowId: 1, active: true, url: "https://beta.test/contact", title: "Contact" });
+    fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 0, url: "https://beta.test/contact" });
+    fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 9, url: MENU });
+
+    const evaluated = await run("ext-eval", "cdp", { tabId: 51, method: "Runtime.evaluate", params: { expression: "6 * 7", returnByValue: true, awaitPromise: true } });
+    check("Runtime.evaluate still answers when another extension's frame blocks the debugger",
+      evaluated?.ok === true && evaluated.result?.result?.type === "number" && evaluated.result?.result?.value === 42);
+    const first = injections.at(-1);
+    check("the fallback targets the top frame only, in the page's own world",
+      JSON.stringify(first?.target) === JSON.stringify({ tabId: 51, frameIds: [0] }) && first?.world === "MAIN");
+    check("the answer says it came through chrome.scripting and names the skipped frame",
+      evaluated?.result?.brwTransport?.path === "scripting" &&
+      evaluated.result.brwTransport.skipped_extension_frames === 1 &&
+      evaluated.result.brwTransport.blocked_by?.[0]?.extension_id === BITWARDEN_ID);
+
+    const awaited = await run("ext-await", "cdp", { tabId: 51, method: "Runtime.evaluate", params: { expression: "Promise.resolve({ ok: true, n: 3 })", awaitPromise: true } });
+    check("an awaited promise resolves to its value", awaited?.ok === true && awaited.result?.result?.value?.n === 3);
+
+    const thrown = await run("ext-throw", "cdp", { tabId: 51, method: "Runtime.evaluate", params: { expression: "(() => { throw new Error('boom'); })()" } });
+    check("a page exception comes back as CDP exceptionDetails, not as a bridge failure",
+      thrown?.ok === true && String(thrown.result?.exceptionDetails?.exception?.description || "").includes("boom"));
+
+    const undef = await run("ext-undefined", "cdp", { tabId: 51, method: "Runtime.evaluate", params: { expression: "void 0" } });
+    check("an undefined result carries no value", undef?.ok === true && undef.result?.result?.type === "undefined" && !("value" in undef.result.result));
+
+    const key = await run("ext-key", "cdp", { tabId: 51, method: "Input.dispatchKeyEvent", params: { type: "keyDown", key: "Enter" } });
+    check("a method with no scripting equivalent fails with the named error",
+      key?.ok === false && String(key.error).startsWith("foreign_extension_frame:"));
+    check("the named error says which extension frame blocked the debugger",
+      String(key?.error).includes(BITWARDEN_ID) && String(key?.error).includes(MENU) && String(key?.error).includes("tab 51"));
+    check("the named error keeps Chrome's own words", String(key?.error).includes(REFUSAL));
+
+    scriptingRefuses = 'Cannot access contents of url "https://beta.test/contact". Extension manifest must request permission to access this host.';
+    const noHost = await run("ext-nohost", "cdp", { tabId: 51, method: "Runtime.evaluate", params: { expression: "1" } });
+    check("without host access the named error is returned, with the scripting reason attached",
+      noHost?.ok === false && String(noHost.error).startsWith("foreign_extension_frame:") &&
+      String(noHost.error).includes(BITWARDEN_ID) && String(noHost.error).includes("No fallback"));
+    scriptingRefuses = null;
+
+    const frames = await run("ext-frames", "read_cross_origin_frames", { tabId: 51, origins: ["https://pay.test"], expression: "({ elements: [{ ref: 'e1' }] })" });
+    check("cross-origin frames are still read, one injection per frame",
+      frames?.ok === true && frames.result?.frames?.length === 1 &&
+      frames.result.frames[0].origin === "https://pay.test" && frames.result.frames[0].snapshot?.elements?.[0]?.ref === "e1");
+    check("the frame read reports how many extension frames it skipped", frames?.result?.skippedExtensionFrames === 1);
+    check("no injection ever targets the foreign extension's frame",
+      injections.every((injection) => !(injection.target.frameIds || []).includes(9) && !injection.target.allFrames));
+
+    // The frame is gone once the menu navigates away or the page replaces its
+    // document; a later refusal must not blame an extension that left.
+    fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 9, url: "about:blank" });
+    check("a foreign frame that navigates away is forgotten", !T.state.foreignExtensionFrames?.has(51));
+    fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 9, url: MENU });
+    fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 0, url: "https://beta.test/thanks" });
+    check("a new top document forgets the old page's frames", !T.state.foreignExtensionFrames?.has(51));
+    fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 3, url: "chrome-extension://amocjcgddnoakjijfggdpnefdnboilpe/options.html" });
+    check("brw's own extension frames are not foreign", !T.state.foreignExtensionFrames?.has(51));
+
+    // A session that WAS attached when the frame committed is detached by
+    // Chrome; the next command must fall back rather than surface the raw text.
+    fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 9, url: MENU });
+    T.state.attachedTabs.add(51);
+    debuggerCommands = 0;
+    const afterDetach = await run("ext-attached", "cdp", { tabId: 51, method: "Runtime.evaluate", params: { expression: "'still here'" } });
+    check("an already-attached tab falls back when Chrome refuses the next command",
+      afterDetach?.ok === true && afterDetach.result?.result?.value === "still here" && debuggerCommands === 1);
+    check("the refused session is no longer counted as attached", !T.state.attachedTabs.has(51));
+
+    // A tab that IS another extension's page keeps Chrome's own refusal: there
+    // is no page around a frame to fall back to.
+    setTab({ id: 52, windowId: 1, active: false, url: MENU, title: "vault" });
+    const injectionsBefore = injections.length;
+    const popout = await run("ext-popout", "cdp", { tabId: 52, method: "Runtime.evaluate", params: { expression: "1" } });
+    check("a foreign extension's own tab is not reported as a frame inside a page",
+      popout?.ok === false && String(popout.error).startsWith(REFUSAL) && injections.length === injectionsBefore);
+
+    // The snapshot cache's dirty probe goes through the debugger. When that is
+    // refused the cache is unknown, and must not be served as fresh.
+    T.state.snapshotCache.set(51, { cacheKey: "k", url: "https://beta.test/thanks", dirty: false, snapshot: { url: "stale" } });
+    model.tabs.get(51).url = "https://beta.test/thanks";
+    const cached = await run("ext-cache", "cached_snapshot", { tabId: 51, cacheKey: "k" });
+    check("a cached snapshot is not served while the debugger is refused", cached?.ok === true && cached.result?.cached === false);
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete overrides[key];
+      else overrides[key] = value;
+    }
+    T.state.foreignExtensionFrames?.clear();
+    T.state.snapshotCache.clear();
+  }
+}
+
 // brw ALWAYS answers a JS dialog, because an unanswered one blocks the renderer
 // and wedges the tab. These scenarios pin down WHAT it answers: a pre-declared
 // arm wins, and without one the non-destructive choice is taken.
@@ -2055,6 +2190,7 @@ async function scenarioSelfUpdateReloadsAStalePayload() {
   await scenarioFrozenDiscardedRevival();
   await scenarioStatusProbeToleratesTransientFailure();
   await scenarioForeignExtensionPopoutNeverStealsForeground();
+  await scenarioForeignExtensionFrameInsideThePage();
   await scenarioDownloadSnapshotsAndFailClosedProvenance();
   await scenarioMainDocumentIdentityIsExactAndMonotonic();
   await scenarioLargeResponsesUseBoundedFrames();

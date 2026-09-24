@@ -14,7 +14,7 @@ Build the current package from the repository root:
 
 ```sh
 task package-web-store
-unzip -l dist/web-store/brw-extension-0.7.6.zip
+unzip -l dist/web-store/brw-extension-0.7.7.zip
 ```
 
 The packager puts `manifest.json` at the ZIP root and includes only runtime
@@ -37,7 +37,7 @@ use the existing matching item or update the daemon trust/configuration first.
 
 | Asset | Requirement | Current source |
 |---|---|---|
-| Package | Current ZIP, manifest at root | `dist/web-store/brw-extension-0.7.6.zip` |
+| Package | Current ZIP, manifest at root | `dist/web-store/brw-extension-0.7.7.zip` |
 | Icon | 128×128 PNG, with appropriate transparent padding | `extension/icons/icon-128.png` |
 | Screenshots | At least one; preferably 3–5; exactly 1280×800 or 640×400 | `store-assets/brw-store-screenshot-consent-1280x800.png`; also capture the healthy popup and a real controlled-tab result |
 | Small promo | 440×280, brand-led rather than a UI screenshot | `store-assets/brw-store-promo-440x280.png` (editable SVG beside it) |
@@ -114,7 +114,13 @@ Paste one concrete justification for every permission shown by the dashboard.
   sustained bridge failure.
 - **webNavigation** — Observes main-frame navigation/document changes so waits,
   post-action observations, and recipe artifact capture do not act on stale
-  page state.
+  page state. It also records which subframes committed another extension's
+  page, so a tab the debugger refuses can name the extension responsible.
+- **scripting** — Chrome refuses the debugger for a whole tab while the page
+  embeds another extension's frame, such as a password manager's autofill
+  menu. brw then runs the same page read or text insertion in the tab's top
+  frame with `chrome.scripting`, only on pages it already holds host access
+  to, and never inside the other extension's frame.
 - **alarms** — Schedules local reconnect and health checks required by the
   Manifest V3 service-worker lifecycle.
 - **storage** — Stores the user's consent choice, localhost endpoints, optional
@@ -207,7 +213,7 @@ reviewer infer that architecture is avoidable delay.
    package and disclosures rather than waiting for a predictable rejection.
 3. Run `task test-extension package-web-store`; load the exact staged runtime
    files unpacked in a clean profile and complete the reviewer flow above.
-4. Upload `dist/web-store/brw-extension-0.7.6.zip` to the matching draft item.
+4. Upload `dist/web-store/brw-extension-0.7.7.zip` to the matching draft item.
 5. Add the icon, 440×280 promo, and 3–5 real 1280×800 screenshots. Fill the
    listing, privacy practices, permission justifications, and test instructions.
 6. Save every tab, re-open the privacy answers, and compare them line by line

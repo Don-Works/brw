@@ -283,6 +283,11 @@ func TestClassifyErrorSeparatesNonDrivableTabsFromToolFailures(t *testing.T) {
 			want: "tab_not_drivable",
 		},
 		{
+			name: "another extension's frame inside the page",
+			err:  errors.New("extension bridge: foreign_extension_frame: Chrome refuses brw's debugger for tab 7 while the page embeds a frame from another extension (extension abc at chrome-extension://abc/menu.html). Chrome said: Cannot access a chrome-extension:// URL of different extension"),
+			want: "foreign_extension_frame",
+		},
+		{
 			name: "no drivable tab surfaced by the extension",
 			err:  errors.New("no drivable tab: the active tab is chrome://settings/, which Chrome does not allow brw to control."),
 			want: "tab_not_drivable",
@@ -335,7 +340,7 @@ func TestClassifyErrorSeparatesNonDrivableTabsFromToolFailures(t *testing.T) {
 			}
 			// Neither new class is retryable: retrying re-fails until the human
 			// closes the popout or DevTools, so retrying only burns the deadline.
-			if tc.want == "tab_not_drivable" || tc.want == "debugger_conflict" || tc.want == "navigation_failed" {
+			if tc.want == "tab_not_drivable" || tc.want == "debugger_conflict" || tc.want == "navigation_failed" || tc.want == "foreign_extension_frame" {
 				if Retryable(tc.want) {
 					t.Errorf("Retryable(%q) = true, want false", tc.want)
 				}

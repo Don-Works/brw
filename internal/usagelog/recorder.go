@@ -302,6 +302,11 @@ func failureShape(message string) string {
 	// in "other" and so was invisible in the ledger, exactly like ref_not_found
 	// before it, which is why a recurring, very fixable outage read as random
 	// "brw is degraded" noise.
+	// The page itself is fine but embeds another extension's frame (an
+	// autofill menu), which closes the debugger to the whole tab. Counted apart
+	// from tab_not_drivable because the human's remedy is different.
+	case strings.Contains(message, "foreign_extension_frame"):
+		return "foreign_extension_frame"
 	case strings.Contains(message, "cannot access a chrome-extension"),
 		strings.Contains(message, "cannot access contents of the page"),
 		strings.Contains(message, "cannot attach to this target"),
@@ -487,6 +492,8 @@ func ClassifyError(err error) string {
 		return "takeover_held"
 	// Not retryable and not a bridge fault: the tab itself cannot be driven.
 	// Kept distinct from "tool" so a recurring foreground hijack is countable.
+	case strings.Contains(msg, "foreign_extension_frame"):
+		return "foreign_extension_frame"
 	case strings.Contains(msg, "cannot access a chrome-extension"),
 		strings.Contains(msg, "cannot access contents of the page"),
 		strings.Contains(msg, "cannot attach to this target"),
