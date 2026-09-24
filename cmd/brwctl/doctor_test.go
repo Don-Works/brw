@@ -226,6 +226,29 @@ func TestDoctorFlagsADaemonOnAReplacedBuild(t *testing.T) {
 	}
 }
 
+// TestDoctorExtensionsPageNamesTheBrowser: a hand-written policy often has no
+// kind, and the fix line used to read `open -a ""`, which opens nothing.
+func TestDoctorExtensionsPageNamesTheBrowser(t *testing.T) {
+	home := "/Users/someone"
+	cases := []struct {
+		name    string
+		profile profilepolicy.Profile
+		want    string
+	}{
+		{name: "kind set", profile: profilepolicy.Profile{Kind: setup.BrowserChrome}, want: `open -a "Google Chrome" chrome://extensions`},
+		{name: "kind from a default user data dir", profile: profilepolicy.Profile{UserDataDir: home + "/Library/Application Support/Chromium"}, want: `open -a "Chromium" chrome://extensions`},
+		{name: "unknown browser", profile: profilepolicy.Profile{UserDataDir: home + "/custom"}, want: "open chrome://extensions in the profile's browser"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &doctorRun{req: doctorRequest{GOOS: "darwin", Home: home}, profile: tc.profile}
+			if got := d.reloadExtensionCommand(); !strings.HasPrefix(got, tc.want) {
+				t.Fatalf("command = %q, want prefix %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func checkByName(t *testing.T, report doctorResult, name string) doctorCheck {
 	t.Helper()
 	for _, check := range report.Checks {

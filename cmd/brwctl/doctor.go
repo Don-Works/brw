@@ -483,14 +483,38 @@ func (d *doctorRun) checkBridgeExtension() {
 // extension in a running browser profile, so the closest thing to a next
 // command is opening the page with the work already named.
 func (d *doctorRun) extensionsPageCommand(note string) string {
+	kind := d.browserKind()
 	if d.req.GOOS == "darwin" {
-		return fmt.Sprintf("open -a %q chrome://extensions   # %s", setup.BrowserDisplayName(d.profile.Kind), note)
+		if kind == "" {
+			return "open chrome://extensions in the profile's browser   # " + note
+		}
+		return fmt.Sprintf("open -a %q chrome://extensions   # %s", setup.BrowserDisplayName(kind), note)
 	}
 	exe := d.result.BrowserExecutable
 	if exe == "" {
-		exe = d.profile.Kind
+		exe = kind
 	}
 	return exe + " chrome://extensions   # " + note
+}
+
+// browserKind is the profile's browser. A hand-written policy often omits kind,
+// so it is recovered from the user data directory when that is a browser's
+// default one.
+func (d *doctorRun) browserKind() string {
+	if d.profile.Kind != "" {
+		return d.profile.Kind
+	}
+	dir := filepath.Clean(d.profile.UserDataDir)
+	for _, name := range setup.BrowserNames() {
+		known := setup.BrowserUserDataDir(d.req.GOOS, name)
+		if rest, ok := strings.CutPrefix(known, "~/"); ok {
+			known = filepath.Join(d.req.Home, rest)
+		}
+		if known != "" && filepath.Clean(known) == dir {
+			return name
+		}
+	}
+	return ""
 }
 
 func (d *doctorRun) loadUnpackedCommand() string {
