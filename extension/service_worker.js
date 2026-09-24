@@ -2033,40 +2033,61 @@ async function handle(message) {
         // skipRevive avoids flashing a frozen/background tab active just to
         // close it. requirePageEvents makes Page.enable a hard prerequisite:
         // without its dialog event an unsaved page can wedge forever.
-        await attach(tabId, { skipRevive: true, requirePageEvents: true });
-        markActing(tabId);
-        const closeDeadline = Date.now() + CLOSE_TAB_BUDGET_MS;
-        let closeError = null;
+        let closedWhilePending = false;
         try {
-          // Page.close is explicitly defined to run beforeunload hooks. Use the
-          // raw command rather than sendDebuggerCommand: a successful close may
-          // detach/destroy the target while replying, which is success here and
-          // must not trigger the generic detached-session reattach retry.
           await promiseWithin(
-            chrome.debugger.sendCommand({ tabId }, "Page.close", {}),
+            attach(tabId, { skipRevive: true, requirePageEvents: true }),
             CLOSE_TAB_BUDGET_MS,
-            `Page.close timed out after ${CLOSE_TAB_BUDGET_MS}ms`
+            `Page.enable timed out after ${CLOSE_TAB_BUDGET_MS}ms`
           );
         } catch (error) {
-          // Closing destroys the target and can reject the command with a
-          // detached-session error after the tab is already gone. Record the
-          // error, then let tab disappearance—not error-string timing—decide.
-          closeError = error;
-        }
-        const remaining = Math.max(0, closeDeadline - Date.now());
-        const closeAccepted = !closeError || isDetachedDebuggerError(closeError);
-        const gone = (await waitForTabGone(tabId, remaining)) ||
-          (closeAccepted && (await waitForTabGone(tabId, CLOSE_TAB_SETTLE_MS)));
-        if (!gone) {
-          // Do not await detach here: a debugger command already exceeded the
-          // whole close budget, so another Chrome API wait would make the
-          // timeout nominal rather than real. forceDetach clears bookkeeping
-          // synchronously before issuing its best-effort asynchronous detach.
+          // Chrome answers no debugger command on a tab whose navigation is
+          // still waiting for its server, so Page.enable never settles. The
+          // document being replaced already ran beforeunload when that
+          // navigation began, so the tabs API can close it without a prompt.
+          // Any other failure keeps the tab open, as above.
+          const current = await chrome.tabs.get(tabId).catch(() => null);
+          if (!current?.pendingUrl) throw error;
           forceDetach(tabId).catch(() => {});
-          if (closeError && !isDetachedDebuggerError(closeError)) throw closeError;
-          const detail = closeError ? `: ${String(closeError?.message || closeError)}` : "";
-          const waited = closeAccepted ? CLOSE_TAB_BUDGET_MS + CLOSE_TAB_SETTLE_MS : CLOSE_TAB_BUDGET_MS;
-          throw new Error(`tab ${tabId} did not close within ${waited}ms${detail}`);
+          chrome.tabs.remove(tabId).catch(() => {});
+          if (!(await waitForTabGone(tabId, CLOSE_TAB_SETTLE_MS))) throw error;
+          closedWhilePending = true;
+        }
+        if (!closedWhilePending) {
+          markActing(tabId);
+          const closeDeadline = Date.now() + CLOSE_TAB_BUDGET_MS;
+          let closeError = null;
+          try {
+            // Page.close is explicitly defined to run beforeunload hooks. Use the
+            // raw command rather than sendDebuggerCommand: a successful close may
+            // detach/destroy the target while replying, which is success here and
+            // must not trigger the generic detached-session reattach retry.
+            await promiseWithin(
+              chrome.debugger.sendCommand({ tabId }, "Page.close", {}),
+              CLOSE_TAB_BUDGET_MS,
+              `Page.close timed out after ${CLOSE_TAB_BUDGET_MS}ms`
+            );
+          } catch (error) {
+            // Closing destroys the target and can reject the command with a
+            // detached-session error after the tab is already gone. Record the
+            // error, then let tab disappearance—not error-string timing—decide.
+            closeError = error;
+          }
+          const remaining = Math.max(0, closeDeadline - Date.now());
+          const closeAccepted = !closeError || isDetachedDebuggerError(closeError);
+          const gone = (await waitForTabGone(tabId, remaining)) ||
+            (closeAccepted && (await waitForTabGone(tabId, CLOSE_TAB_SETTLE_MS)));
+          if (!gone) {
+            // Do not await detach here: a debugger command already exceeded the
+            // whole close budget, so another Chrome API wait would make the
+            // timeout nominal rather than real. forceDetach clears bookkeeping
+            // synchronously before issuing its best-effort asynchronous detach.
+            forceDetach(tabId).catch(() => {});
+            if (closeError && !isDetachedDebuggerError(closeError)) throw closeError;
+            const detail = closeError ? `: ${String(closeError?.message || closeError)}` : "";
+            const waited = closeAccepted ? CLOSE_TAB_BUDGET_MS + CLOSE_TAB_SETTLE_MS : CLOSE_TAB_BUDGET_MS;
+            throw new Error(`tab ${tabId} did not close within ${waited}ms${detail}`);
+          }
         }
       }
       if (!(await waitForTabGone(tabId, 2000))) {

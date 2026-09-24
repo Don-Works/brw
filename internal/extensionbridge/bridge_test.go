@@ -933,7 +933,9 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// committed frame URL when an older extension answers "unknown message type".
 	// 0.7.5 keeps watching an accepted close_tab for removal past the 2s close
 	// budget, so a tab Chrome closes late is reported closed, not failed.
-	const wantManifest = "0.7.5"
+	// 0.7.6 closes a tab whose navigation is still waiting for its server
+	// through the tabs API, since Page.enable is never answered there.
+	const wantManifest = "0.7.6"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}
