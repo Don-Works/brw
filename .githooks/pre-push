@@ -1,0 +1,46 @@
+#!/bin/sh
+# The release gate runs here, on this machine, before anything reaches GitHub.
+# There is no CI on hosted runners: headless Chrome on a shared runner missed its
+# startup budget often enough that a red run said nothing about the change.
+#
+# Enable with `task install-hooks`. `git push --no-verify` skips it.
+set -eu
+
+remote=${1:-origin}
+zero=0000000000000000000000000000000000000000
+head=$(git rev-parse HEAD)
+needs_check=false
+
+while read -r local_ref local_sha remote_ref _remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+  case "$remote_ref" in
+    refs/tags/*)
+      commit=$(git rev-parse "$local_sha^{commit}")
+      # A tag on a commit the remote's main already carries was checked when
+      # that commit was pushed.
+      if git merge-base --is-ancestor "$commit" "refs/remotes/$remote/main" 2>/dev/null; then
+        continue
+      fi
+      ;;
+    *)
+      commit=$local_sha
+      ;;
+  esac
+  if [ "$commit" != "$head" ]; then
+    echo "pre-push: $local_ref is not the checked-out commit, and the gate runs against the working tree." >&2
+    echo "pre-push: check it out and push again." >&2
+    exit 1
+  fi
+  needs_check=true
+done
+
+$needs_check || exit 0
+
+if [ -n "$(git status --porcelain)" ]; then
+  echo "pre-push: the working tree has changes that are not in the pushed commit; commit or stash them first." >&2
+  git status --short >&2
+  exit 1
+fi
+
+echo "pre-push: running task check against $head" >&2
+exec task check

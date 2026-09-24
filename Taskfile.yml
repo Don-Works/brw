@@ -54,12 +54,9 @@ tasks:
   test:
     desc: Run every Go package test plus the extension service-worker tests
     # browser, snapshot, and readability tests each launch real headless Chrome.
-    # Serialize package test binaries so CI does not run dozens of Chrome roots at
-    # once and turn the Manager's intentional 20s operation timeout into a load race.
-    #
-    # CI runs the same set split across runners instead of serially: each shard
-    # still passes -p=1, and the parallelism is the runner matrix. See
-    # scripts/test-shard.sh and the test-shard job in .github/workflows/ci.yml.
+    # Serialize package test binaries so the machine does not run dozens of Chrome
+    # roots at once and turn the Manager's intentional 20s operation timeout into
+    # a load race.
     cmds:
       - task: test-extension
       - go test -p=1 ./...
@@ -67,15 +64,13 @@ tasks:
       # than leave throwaway Chromes running against the machine.
       - ./scripts/check-no-orphan-browsers.sh
 
-  # Everything CI runs, in CI's order, so a release cannot fail on a check that
-  # was never run locally. `go vet` alone is not the gate: staticcheck catches
-  # unused declarations and error-string style that vet does not, and a v0.13.0
-  # release job failed on exactly those two after a local vet-only pass.
-  #
-  # Tool versions are pinned to the same ones .github/workflows/ci.yml uses; when
-  # you bump one there, bump it here in the same commit or this stops predicting CI.
+  # The whole gate. There is no CI on hosted runners; .githooks/pre-push runs
+  # this before a commit or tag reaches GitHub (`task install-hooks` enables it).
+  # `go vet` alone is not the gate: staticcheck catches unused declarations and
+  # error-string style that vet does not, and a v0.13.0 release job failed on
+  # exactly those two after a local vet-only pass.
   check:
-    desc: The full release gate, in CI's order — run this before any tag
+    desc: The full gate, run by the pre-push hook — lint, tests, functional, hygiene, secrets, race
     cmds:
       - task: lint
       - task: test
@@ -83,6 +78,11 @@ tasks:
       - python3 scripts/check-oss-hygiene.py
       - go run github.com/zricethezav/gitleaks/v8@v8.30.1 git . --redact --no-banner
       - go test -race ./internal/artifact ./internal/recipe ./internal/mcp ./internal/http ./internal/httpclient ./internal/navpolicy ./internal/extensionbridge
+
+  install-hooks:
+    desc: Point git at the tracked hooks, so every push runs `task check` first
+    cmds:
+      - git config core.hooksPath .githooks
 
   # The incremental hygiene gate in `check` only sees lines a change adds, so
   # anything committed before its rule existed is grandfathered in and no build

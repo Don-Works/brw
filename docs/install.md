@@ -573,7 +573,9 @@ If `~/.local/bin` is not on your PATH, the installer prints the line to add.
 
 Builds run through [Task](https://taskfile.dev) rather than Make:
 `brew install go-task` on macOS, or see the Task install docs. `task --list`
-shows every target; `task check` is the full release gate CI runs.
+shows every target; `task check` is the full gate. There is no hosted CI:
+`task install-hooks` makes every `git push` run `task check` first, and the
+release workflow on GitHub only builds, attests and publishes a pushed tag.
 
 ```sh
 task test
