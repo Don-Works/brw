@@ -60,6 +60,8 @@ type navigationFakeExtension struct {
 	abortNavigate bool
 	// messages records every message type (and cdp method) in arrival order.
 	messages []string
+	// armURL is the url param of the last arm_inline_document.
+	armURL string
 	// hangWaitScript leaves the in-page wait promise unanswered; hangMethods
 	// names cdp methods that never get a reply.
 	hangWaitScript bool
@@ -108,6 +110,9 @@ func (f *navigationFakeExtension) serve(ctx context.Context, conn *websocket.Con
 		blank := f.uncommitted && !f.replaced
 		switch msg.Type {
 		case "arm_inline_document", "disarm_inline_document":
+			if msg.Type == "arm_inline_document" {
+				f.armURL, _ = msg.Params["url"].(string)
+			}
 			if f.rejectInlineArm {
 				ok = false
 				errText = "unknown message type " + msg.Type

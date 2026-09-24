@@ -3540,7 +3540,7 @@ func (b *Bridge) navigateToURLAndWait(ctx context.Context, targetURL string) err
 	// replacement loader even if the old document transiently reports the target.
 	sameDocumentTarget := currentURLErr == nil && isExactFragmentTransition(currentURL, targetURL)
 
-	defer b.armInlineDocument(navCtx, tabID)()
+	defer b.armInlineDocument(navCtx, tabID, targetURL)()
 	raw, err := b.cdp(commitCtx, tabID, "Page.navigate", map[string]any{"url": targetURL})
 	if err != nil {
 		if browser.IsNavigationAbortedError(err) {
@@ -3781,15 +3781,16 @@ func (b *Bridge) tabHasNoCommittedDocument(ctx context.Context, tabID string) bo
 }
 
 // armInlineDocument asks the extension to pause the tab's next main-document
-// response and rewrite a download-shaped text response so it renders as a page
-// (see browser.InlineDocumentHeaders). Best effort: an extension that predates
-// the message leaves navigation exactly as it was. The returned function
-// releases the arm and is safe to call after ctx has ended.
-func (b *Bridge) armInlineDocument(ctx context.Context, tabID string) func() {
+// response from destination's origin and rewrite a download-shaped text
+// response so it renders as a page (see browser.InlineDocumentHeaders). Best
+// effort: an extension that predates the message leaves navigation exactly as it
+// was, and one that predates the url param pauses every document. The returned
+// function releases the arm and is safe to call after ctx has ended.
+func (b *Bridge) armInlineDocument(ctx context.Context, tabID, destination string) func() {
 	if strings.TrimSpace(tabID) == "" {
 		return func() {}
 	}
-	params := map[string]any{"tabId": parseTabID(tabID)}
+	params := map[string]any{"tabId": parseTabID(tabID), "url": destination}
 	if _, err := b.call(ctx, "arm_inline_document", params); err != nil {
 		return func() {}
 	}

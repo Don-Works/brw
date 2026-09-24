@@ -251,3 +251,63 @@ func TestOpenRendersDownloadShapedDocumentInline(t *testing.T) {
 		t.Fatalf("read main = %q, want the JSON body", read.Main)
 	}
 }
+
+func TestInlineDocumentPatternCoversOnlyTheDestinationOrigin(t *testing.T) {
+	cases := []struct {
+		url  string
+		want string
+	}{
+		{"https://www.google.com/complete/search?q=wine#frag", "https://www.google.com/*"},
+		{"http://127.0.0.1:54882/data.json", "http://127.0.0.1:54882/*"},
+		{"HTTP://Example.COM:80/a", "http://example.com/*"},
+		{"https://example.com:443/", "https://example.com/*"},
+		{"https://example.com:8443/", "https://example.com:8443/*"},
+		{"http://[::1]:9000/x", "http://[::1]:9000/*"},
+		{"about:blank", ""},
+		{"file:///tmp/x.json", ""},
+		{"data:text/plain,hi", ""},
+		{"::not a url", ""},
+	}
+	for _, tc := range cases {
+		if got := inlineDocumentPattern(tc.url); got != tc.want {
+			t.Errorf("inlineDocumentPattern(%q) = %q, want %q", tc.url, got, tc.want)
+		}
+	}
+
+	m := &Manager{}
+	m.containment.addInlineDocumentPattern("tab", inlineDocumentPattern("http://127.0.0.1:1/x"))
+	_, _, patterns := m.fetchInterceptionCommand("tab")
+	if len(patterns) != 1 || patterns[0].URLPattern != "http://127.0.0.1:1/*" || patterns[0].RequestStage != fetch.RequestStageResponse {
+		t.Fatalf("patterns = %+v, want one response-stage pattern for the destination origin", patterns)
+	}
+}
+
+func TestNavigateToFollowsACrossOriginRedirectToAnInlineDocument(t *testing.T) {
+	m := newHeadlessManager(t)
+	docs := rawDocumentServer(t)
+	// localhost and 127.0.0.1 are different origins, so the redirect leaves the
+	// origin the navigation was armed for.
+	target := strings.Replace(docs.URL, "127.0.0.1", "localhost", 1) + "/suggest.json"
+	redirector := httptest.NewServer(http.RedirectHandler(target, http.StatusFound))
+	t.Cleanup(redirector.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := m.Open(ctx, "about:blank"); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	result, err := m.NavigateTo(ctx, redirector.URL+"/go")
+	if err != nil {
+		t.Fatalf("navigate_to through a cross-origin redirect: %v", err)
+	}
+	if result.URL != target {
+		t.Fatalf("navigate_to landed on %q, want %q", result.URL, target)
+	}
+	read, err := m.Read(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(read.Main, `"wine rack"`) {
+		t.Fatalf("read main = %q, want the JSON body rendered inline", read.Main)
+	}
+}

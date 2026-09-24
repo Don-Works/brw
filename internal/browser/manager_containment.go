@@ -3,6 +3,9 @@ package browser
 import (
 	"context"
 	"encoding/base64"
+	"net/url"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,10 +37,11 @@ type containmentState struct {
 	armed   map[string]bool
 	enables map[string]*sync.Mutex
 	blocked map[string][]BlockedRequest
-	// inlineDocument marks a tab whose next main-document response is rewritten
-	// so a text download renders as a page. Set for the span of one brw-driven
-	// navigation and cleared when it settles.
-	inlineDocument map[string]bool
+	// inlineDocument holds, per tab, the Fetch URL patterns under which the next
+	// main-document response is rewritten so a text download renders as a page:
+	// the destination's origin, plus the origin of each redirect it takes. Set by
+	// one brw-driven navigation and cleared once its main document is answered.
+	inlineDocument map[string][]string
 }
 
 // forget drops a closed tab's containment bookkeeping. Safe only once the tab is
@@ -63,42 +67,83 @@ func (c *containmentState) initLocked() {
 		c.blocked = make(map[string][]BlockedRequest)
 	}
 	if c.inlineDocument == nil {
-		c.inlineDocument = make(map[string]bool)
+		c.inlineDocument = make(map[string][]string)
 	}
 }
 
-func (c *containmentState) setInlineDocument(tabID string, armed bool) {
+// addInlineDocumentPattern arms the tab for pattern and reports whether it was
+// not already armed for it.
+func (c *containmentState) addInlineDocumentPattern(tabID, pattern string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.initLocked()
-	if armed {
-		c.inlineDocument[tabID] = true
-		return
+	if slices.Contains(c.inlineDocument[tabID], pattern) {
+		return false
 	}
+	c.inlineDocument[tabID] = append(c.inlineDocument[tabID], pattern)
+	return true
+}
+
+func (c *containmentState) clearInlineDocument(tabID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	delete(c.inlineDocument, tabID)
 }
 
 func (c *containmentState) inlineDocumentArmed(tabID string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.inlineDocument[tabID]
+	return len(c.inlineDocumentPatterns(tabID)) > 0
 }
 
-// armInlineDocument makes the tab's next main-document response render inline
-// (see InlineDocumentHeaders) and returns the call that puts interception back
-// the way it was. Both ends go through syncFetchInterception, so a tab that
-// intercepts for containment keeps doing so and one that intercepted for this
-// alone stops paying for it once the navigation has settled.
-func (m *Manager) armInlineDocument(ctx context.Context, tabID string) func() {
+func (c *containmentState) inlineDocumentPatterns(tabID string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.inlineDocument[tabID])
+}
+
+// inlineDocumentPattern is the Fetch URL pattern covering every document on
+// rawURL's origin, or "" when rawURL is not an http(s) URL.
+//
+// The pattern is the origin rather than "*" so that a cross-site iframe never
+// pauses under it. A frame document paused as Fetch.disable lands is neither
+// reported nor released by Chrome, and the frame stays on about:blank for good;
+// iframes load while the navigation that armed this is still settling.
+func inlineDocumentPattern(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port := u.Port(); port != "" && !(u.Scheme == "http" && port == "80") && !(u.Scheme == "https" && port == "443") {
+		host += ":" + port
+	}
+	return fetchPatternEscaper.Replace(u.Scheme+"://"+host) + "/*"
+}
+
+var fetchPatternEscaper = strings.NewReplacer(`\`, `\\`, "*", `\*`, "?", `\?`)
+
+// armInlineDocument makes the tab's next main-document response from
+// destination's origin render inline (see InlineDocumentHeaders) and returns the
+// call that puts interception back the way it was. Both ends go through
+// syncFetchInterception, so a tab that intercepts for containment keeps doing so
+// and one that intercepted for this alone stops paying for it once the
+// navigation has settled.
+func (m *Manager) armInlineDocument(ctx context.Context, tabID, destination string) func() {
+	pattern := inlineDocumentPattern(destination)
+	if pattern == "" {
+		return func() {}
+	}
 	tabCtx, err := m.tabContext(tabID)
 	if err != nil {
 		return func() {}
 	}
-	m.containment.setInlineDocument(tabID, true)
+	m.containment.addInlineDocumentPattern(tabID, pattern)
 	m.armInterception(tabID, tabCtx)
 	_ = m.syncFetchInterception(ctx, tabID)
 	return func() {
-		m.containment.setInlineDocument(tabID, false)
+		m.containment.clearInlineDocument(tabID)
 		disarmCtx, cancel := context.WithTimeout(tabCtx, m.timeout)
 		defer cancel()
 		_ = m.syncFetchInterception(disarmCtx, tabID)
@@ -108,10 +153,34 @@ func (m *Manager) armInlineDocument(ctx context.Context, tabID string) func() {
 // answerResponseStage answers a request paused at the response stage. Only an
 // inline-document arm asks Chrome to pause there, and only the main frame's
 // document is rewritten; anything else continues untouched.
+//
+// Once the main frame's document is answered the arm has done its job and is
+// released at once, not when the brw call returns. Fetch.disable landing while
+// a frame's document is paused can strand that frame for good, and at this
+// point the page has not yet parsed far enough to request any frame.
 func (m *Manager) answerResponseStage(runCtx context.Context, tabID string, paused *fetch.EventRequestPaused) error {
-	if !m.containment.inlineDocumentArmed(tabID) || paused.ResourceType != network.ResourceTypeDocument {
+	if !m.containment.inlineDocumentArmed(tabID) || paused.ResourceType != network.ResourceTypeDocument ||
+		paused.FrameID.String() != tabID {
 		return fetch.ContinueResponse(paused.RequestID).Do(runCtx)
 	}
+	// A redirect off the armed origin would otherwise land its document outside
+	// every pattern and download it. Arm the next origin before letting the
+	// redirect proceed.
+	if location := redirectLocation(paused); location != "" {
+		if pattern := inlineDocumentPattern(location); pattern != "" && m.containment.addInlineDocumentPattern(tabID, pattern) {
+			_ = m.syncFetchInterception(runCtx, tabID)
+		}
+		return fetch.ContinueResponse(paused.RequestID).Do(runCtx)
+	}
+	err := answerInlineDocument(runCtx, paused)
+	m.containment.clearInlineDocument(tabID)
+	_ = m.syncFetchInterception(runCtx, tabID)
+	return err
+}
+
+// answerInlineDocument answers the main frame's paused document response,
+// rewriting it to render inline when it is a download-shaped text document.
+func answerInlineDocument(runCtx context.Context, paused *fetch.EventRequestPaused) error {
 	rewrite := InlineDocumentHeaders(paused.ResponseHeaders)
 	switch {
 	case !rewrite.Changed:
@@ -132,6 +201,29 @@ func (m *Manager) answerResponseStage(runCtx context.Context, tabID string, paus
 		WithResponseHeaders(rewrite.Headers).
 		WithBody(base64.StdEncoding.EncodeToString(body)).
 		Do(runCtx)
+}
+
+// redirectLocation resolves the Location of a paused 3xx response against the
+// request URL, or returns "" when the response is not a redirect.
+func redirectLocation(paused *fetch.EventRequestPaused) string {
+	if paused.ResponseStatusCode < 300 || paused.ResponseStatusCode > 399 {
+		return ""
+	}
+	for _, header := range paused.ResponseHeaders {
+		if !strings.EqualFold(header.Name, "Location") {
+			continue
+		}
+		base, err := url.Parse(paused.Request.URL)
+		if err != nil {
+			return ""
+		}
+		next, err := base.Parse(strings.TrimSpace(header.Value))
+		if err != nil {
+			return ""
+		}
+		return next.String()
+	}
+	return ""
 }
 
 // pausedAtResponse reports whether a Fetch.requestPaused event carries a

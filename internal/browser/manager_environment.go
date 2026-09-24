@@ -908,8 +908,8 @@ func (m *Manager) fetchInterceptionCommand(tabID string) (enable, handleAuth boo
 		len(m.env.listHeaders(tabID)) > 0
 	// The content boundary decides document requests, which it can only do while
 	// Chrome is pausing them.
-	inlineDocument := m.containment.inlineDocumentArmed(tabID)
-	enable = everything || m.contentNavGuard || inlineDocument
+	inlineDocument := m.containment.inlineDocumentPatterns(tabID)
+	enable = everything || m.contentNavGuard || len(inlineDocument) > 0
 	if !enable {
 		return false, false, nil
 	}
@@ -919,9 +919,9 @@ func (m *Manager) fetchInterceptionCommand(tabID string) (enable, handleAuth boo
 	case m.contentNavGuard:
 		patterns = []*fetch.RequestPattern{{URLPattern: "*", ResourceType: network.ResourceTypeDocument}}
 	}
-	if inlineDocument {
+	for _, pattern := range inlineDocument {
 		patterns = append(patterns, &fetch.RequestPattern{
-			URLPattern:   "*",
+			URLPattern:   pattern,
 			ResourceType: network.ResourceTypeDocument,
 			RequestStage: fetch.RequestStageResponse,
 		})

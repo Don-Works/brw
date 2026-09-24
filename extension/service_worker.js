@@ -17,6 +17,15 @@ const MAX_DAEMON_STATUS_FAILURES = 3;
 // window where an agent call hits a dead bridge. Keep reconnects fast; the
 // offscreen keepalive port re-pins the worker the instant it comes back.
 const MAX_RECONNECT_DELAY_MS = 3 * 1000;
+// The daemon sends no frame when it accepts a hello; it refuses by closing the
+// socket within milliseconds of reading it. A socket still open after this long,
+// or one that has delivered a daemon frame, has been accepted.
+const BRIDGE_ACCEPT_GRACE_MS = 1000;
+// Close codes the daemon uses to refuse a connection rather than drop one:
+// 1013 while another browser profile holds the bridge (flap guard), 1008 when
+// the hello fails authentication.
+const WS_CLOSE_TRY_AGAIN_LATER = 1013;
+const WS_CLOSE_POLICY_VIOLATION = 1008;
 // Detach a tab's debugger after this long without a CDP command, so brw doesn't
 // hold debugger sessions on idle tabs of the user's real Chrome.
 const IDLE_DETACH_MS = 120 * 1000;
@@ -160,6 +169,10 @@ const state = {
   // tab closes or stops being controllable.
   agentTabId: null,
   reconnectAttempt: 0,
+  // acceptedSocket is the socket the daemon has accepted. An open socket is not
+  // a live bridge until then, and the badge must not go green for it.
+  acceptedSocket: null,
+  acceptTimer: null,
   lastError: "",
   // lastAgentActivityAt is the wall-clock of the most recent agent-driven work
   // (CDP / tab ops). Drives the green "used" badge pulse while the bridge is up.
@@ -198,10 +211,13 @@ const state = {
   // an allowlisted page can still fetch, beacon and socket anywhere it likes.
   containment: { allowed: [], blocked: [], enabled: false },
   containmentTabs: new Set(),
-  // inlineDocumentTabs names the tabs whose next main-document response is
-  // rewritten so a text download renders as a page, for the span of one
-  // daemon-driven navigation (see inlineDocumentRewrite).
-  inlineDocumentTabs: new Set(),
+  // inlineDocumentTabs maps each tab whose next main-document response is
+  // rewritten so a text download renders as a page to { patterns, mainFrameId }:
+  // the Fetch URL patterns covering the destination's origin and each redirect
+  // it takes, and the frame whose document is the one rewritten. Set by one
+  // daemon-driven navigation and cleared once that document is answered (see
+  // inlineDocumentRewrite).
+  inlineDocumentTabs: new Map(),
   blockedRequests: new Map(),
   // routeRuleIds maps a tab to the declarativeNetRequest session rule ids brw
   // installed for it in THIS worker lifetime. DNR is the only interception
@@ -384,11 +400,68 @@ function inlineDocumentBodyWithinLimit(headers) {
   return true;
 }
 
+// inlineDocumentPattern mirrors browser.inlineDocumentPattern: the Fetch URL
+// pattern covering every document on url's origin, or "" when url is not
+// http(s). The origin rather than "*" keeps a cross-site iframe from pausing
+// under it: a frame document paused as Fetch.disable lands is neither reported
+// nor released by Chrome, and the frame stays on about:blank for good.
+function inlineDocumentPattern(url) {
+  let parsed;
+  try {
+    parsed = new URL(String(url || ""));
+  } catch (_) {
+    return "";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+  return parsed.origin.replace(/[\\*?]/g, (c) => "\\" + c) + "/*";
+}
+
+// redirectLocation resolves the Location of a paused 3xx response against the
+// request URL, or returns "" when the response is not a redirect.
+function redirectLocation(params) {
+  const status = Number(params?.responseStatusCode) || 0;
+  if (status < 300 || status > 399) return "";
+  const header = (params.responseHeaders || []).find((h) => String(h?.name || "").toLowerCase() === "location");
+  if (!header) return "";
+  try {
+    return new URL(String(header.value || "").trim(), params.request?.url).href;
+  } catch (_) {
+    return "";
+  }
+}
+
 // answerInlineDocumentResponse answers a request paused at the response stage.
+// Once the main frame's document is answered the arm has done its job and is
+// released at once rather than on the daemon's disarm, which arrives while the
+// page's frames are loading.
 async function answerInlineDocumentResponse(tabId, params, resourceType) {
   const requestId = params.requestId;
   const continueAsIs = () => chrome.debugger.sendCommand({ tabId }, "Fetch.continueResponse", { requestId });
-  if (!state.inlineDocumentTabs.has(tabId) || resourceType !== "Document") return continueAsIs();
+  const arm = state.inlineDocumentTabs.get(tabId);
+  if (!arm || resourceType !== "Document") return continueAsIs();
+  if (arm.mainFrameId && params.frameId && params.frameId !== arm.mainFrameId) return continueAsIs();
+  const location = redirectLocation(params);
+  if (location) {
+    const pattern = inlineDocumentPattern(location);
+    if (pattern && !arm.patterns.includes(pattern)) {
+      arm.patterns.push(pattern);
+      await syncFetchInterception(tabId).catch(() => {});
+    }
+    return continueAsIs();
+  }
+  try {
+    return await answerInlineDocument(tabId, params);
+  } finally {
+    if (state.inlineDocumentTabs.get(tabId) === arm) {
+      state.inlineDocumentTabs.delete(tabId);
+      await syncFetchInterception(tabId).catch(() => {});
+    }
+  }
+}
+
+async function answerInlineDocument(tabId, params) {
+  const requestId = params.requestId;
+  const continueAsIs = () => chrome.debugger.sendCommand({ tabId }, "Fetch.continueResponse", { requestId });
   const rewrite = inlineDocumentRewrite(params.responseHeaders);
   if (!rewrite.changed) return continueAsIs();
   if (!rewrite.needsBody) {
@@ -420,8 +493,8 @@ async function answerInlineDocumentResponse(tabId, params, resourceType) {
 function fetchPatternsForTab(tabId) {
   const patterns = [];
   if (state.containmentTabs.has(tabId)) patterns.push({ urlPattern: "*" });
-  if (state.inlineDocumentTabs.has(tabId)) {
-    patterns.push({ urlPattern: "*", resourceType: "Document", requestStage: "Response" });
+  for (const urlPattern of state.inlineDocumentTabs.get(tabId)?.patterns || []) {
+    patterns.push({ urlPattern, resourceType: "Document", requestStage: "Response" });
   }
   return patterns;
 }
@@ -435,9 +508,15 @@ async function syncFetchInterception(tabId) {
   await sendDebuggerCommand(tabId, "Fetch.enable", { patterns });
 }
 
-async function armInlineDocument(tabId) {
+// armInlineDocument arms tabId for the next main-document response from url's
+// origin. A daemon that predates the url param sends none, and gets the old
+// every-document pattern.
+async function armInlineDocument(tabId, url) {
+  const pattern = url ? inlineDocumentPattern(url) : "*";
+  if (!pattern) return;
   await attach(tabId);
-  state.inlineDocumentTabs.add(tabId);
+  const tree = await sendDebuggerCommand(tabId, "Page.getFrameTree", {}).catch(() => null);
+  state.inlineDocumentTabs.set(tabId, { patterns: [pattern], mainFrameId: tree?.frameTree?.frame?.id || "" });
   await syncFetchInterception(tabId);
 }
 
@@ -880,10 +959,10 @@ function queueAgentActivity(tabId) {
 // resolves the connected→used pulse.
 function touchAgentActivity() {
   state.lastAgentActivityAt = Date.now();
-  if (isSocketOpen() || state.reportedStatus === "connected") {
+  if (isBridgeLive() || state.reportedStatus === "connected") {
     // Prefer socket: per-request faults used to stamp reportedStatus "error"
-    // while the bridge stayed up; isSocketOpen keeps the badge honest.
-    setBridgeBadge(isSocketOpen() ? "connected" : state.reportedStatus);
+    // while the bridge stayed up; isBridgeLive keeps the badge honest.
+    setBridgeBadge(isBridgeLive() ? "connected" : state.reportedStatus);
   }
 }
 
@@ -1246,10 +1325,25 @@ async function connectOnce() {
     await markBridgeStatus("consent_required", "Browser control has not been enabled by the user.");
     return;
   }
-  await markBridgeStatus("connecting");
+  // While the daemon is refusing this browser, each retry would otherwise flash
+  // Reconnecting between two Refused frames. Stay on Refused until accepted.
+  if (state.reportedStatus !== "rejected") await markBridgeStatus("connecting");
 
   const socket = new WebSocket(config.bridgeUrl);
   state.socket = socket;
+  clearTimeout(state.acceptTimer);
+  state.acceptTimer = null;
+  let acceptDetail = "";
+  const accept = () => {
+    if (state.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+    if (state.acceptedSocket === socket) return;
+    clearTimeout(state.acceptTimer);
+    state.acceptTimer = null;
+    state.acceptedSocket = socket;
+    state.reconnectAttempt = 0;
+    state.lastError = acceptDetail;
+    markBridgeStatus("connected", acceptDetail).catch(() => {});
+  };
 
   socket.onopen = async () => {
     if (state.socket !== socket) return;
@@ -1261,10 +1355,7 @@ async function connectOnce() {
       await disconnectForConsent();
       return;
     }
-    state.reconnectAttempt = 0;
     state.statusProbeFailures = 0;
-    state.lastError = "";
-    await markBridgeStatus("connected");
     const platform = await chrome.runtime.getPlatformInfo().catch(() => ({}));
     // Read the per-launch handshake token from the daemon's loopback /status
     // (our host_permissions let us read the body; a web page's cross-origin fetch
@@ -1277,10 +1368,10 @@ async function connectOnce() {
       // The daemon refuses a tokenless hello, so this connection is about to be
       // closed. Say why HERE: the daemon logs its rejection, the extension logs
       // nothing, and neither half of that diagnosis is conclusive alone.
-      state.lastError = auth.reachable
+      acceptDetail = auth.reachable
         ? `${auth.detail} at ${config.statusUrl}. A daemon that requires the token will refuse this connection; it is probably older than the extension.`
         : `${auth.detail} at ${config.statusUrl}. The connection will be refused. Check the bridge address on the options page.`;
-      await markBridgeStatus("connected", state.lastError);
+      state.lastError = acceptDetail;
     }
     send({
       type: "hello",
@@ -1318,6 +1409,7 @@ async function connectOnce() {
     // Start keepalive only AFTER the hello so hello is guaranteed to be the
     // bridge's first frame — the authenticated handshake requires it.
     startKeepAlive();
+    if (state.socket === socket) state.acceptTimer = setTimeout(accept, BRIDGE_ACCEPT_GRACE_MS);
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
     if (tabs[0]?.id) await publishActiveTab(tabs[0].id);
     probeDaemonStatus().catch(() => {});
@@ -1325,17 +1417,27 @@ async function connectOnce() {
   socket.onclose = (event) => {
     if (state.socket !== socket) return;
     state.socket = null;
+    clearTimeout(state.acceptTimer);
+    state.acceptTimer = null;
+    const wasAccepted = state.acceptedSocket === socket;
+    if (wasAccepted) state.acceptedSocket = null;
     // The daemon is gone — release every debugger so brw never keeps the user's
     // real Chrome in a debugged state while disconnected (the next CDP call
     // re-attaches lazily, so this is safe). This is the primary fix for
     // debugger sessions accumulating and destabilizing Chrome / corrupting tab
     // storage (e.g. WhatsApp Web logging out).
     detachAll().catch(() => {});
+    const refusal = wasAccepted ? "" : refusalDetail(event, acceptDetail);
+    if (refusal) {
+      state.lastError = refusal;
+      scheduleReconnect(refusal, { rejected: true });
+      return;
+    }
     scheduleReconnect(`closed ${event?.code || ""}`.trim());
   };
   socket.onerror = (event) => {
     state.lastError = `websocket error ${String(event?.type || "")}`;
-    markBridgeStatus("error", state.lastError).catch(() => {});
+    if (state.reportedStatus !== "rejected") markBridgeStatus("error", state.lastError).catch(() => {});
     try { socket.close(); } catch (_) {}
   };
   socket.onmessage = async (event) => {
@@ -1346,6 +1448,7 @@ async function connectOnce() {
       await disconnectForConsent();
       return;
     }
+    accept();
     let message;
     try {
       message = JSON.parse(event.data);
@@ -1355,6 +1458,20 @@ async function connectOnce() {
     }
     await handle(message);
   };
+}
+
+// refusalDetail names why the daemon refused a socket it never accepted, or
+// returns "" for an ordinary close.
+function refusalDetail(event, handshakeDetail) {
+  const code = Number(event?.code) || 0;
+  const reason = String(event?.reason || "").trim();
+  if (code === WS_CLOSE_TRY_AGAIN_LATER) {
+    return `the daemon refused this browser because another browser profile already holds the bridge${reason ? ` (${reason})` : ""}. Disable brw in the other profile, or give this one its own bridge port.`;
+  }
+  if (code === WS_CLOSE_POLICY_VIOLATION) {
+    return `the daemon refused the handshake${reason ? ` (${reason})` : ""}.${handshakeDetail ? ` ${handshakeDetail}` : " Reload the extension and restart the daemon so both run the same build."}`;
+  }
+  return "";
 }
 
 function agentOwnedTabIdForHello() {
@@ -1488,7 +1605,7 @@ async function bridgeDebugStatus() {
     configSource: state.bridgeConfigSource,
     consent,
     bridge: data[BRIDGE_STATUS_KEY] || null,
-    socket: isSocketOpen() ? "open" : (isSocketConnecting() ? "connecting" : "closed"),
+    socket: isBridgeLive() ? "open" : (isSocketOpen() || isSocketConnecting() ? "connecting" : "closed"),
     daemon,
     badge,
     agentActive: isAgentActive(),
@@ -1719,7 +1836,7 @@ async function handle(message) {
         if (!tab) throw err;
       }
       if (inlineDocument && tab.id) {
-        await armInlineDocument(tab.id).catch(() => {});
+        await armInlineDocument(tab.id, targetUrl).catch(() => {});
         tab = await chrome.tabs.update(tab.id, { url: targetUrl });
       }
       // brw drives this tab for the rest of the agent session, usually in the
@@ -2150,7 +2267,7 @@ async function handle(message) {
     }
     if (message.type === "arm_inline_document") {
       const tabId = Number(message.params?.tabId || (await activeTabId()));
-      await armInlineDocument(tabId);
+      await armInlineDocument(tabId, typeof message.params?.url === "string" ? message.params.url : "");
       send({ id: message.id, ok: true, result: { armed: true, tabId } });
       return;
     }
@@ -2311,7 +2428,7 @@ async function handle(message) {
     // A single CDP/tab fault is not a bridge drop. Demoting the badge to red
     // "off" while the socket is still open is what made the toolbar lie during
     // routine evaluate failures (e.g. extension pages / missing contexts).
-    if (isSocketOpen()) {
+    if (isBridgeLive()) {
       noteRequestFault(state.lastError).catch(() => {});
     } else {
       markBridgeStatus("error", state.lastError).catch(() => {});
@@ -3633,12 +3750,12 @@ function assertDaemonIdentity(config, identity) {
   }
 }
 
-function scheduleReconnect(reason) {
+function scheduleReconnect(reason, { rejected = false } = {}) {
   stopKeepAlive();
   clearTimeout(state.reconnectTimer);
   const delay = Math.min(1000 * (state.reconnectAttempt + 1), MAX_RECONNECT_DELAY_MS);
   state.reconnectAttempt += 1;
-  markBridgeStatus("disconnected", `${reason}; reconnecting in ${delay}ms`).catch(() => {});
+  markBridgeStatus(rejected ? "rejected" : "disconnected", `${reason}; reconnecting in ${delay}ms`).catch(() => {});
   state.reconnectTimer = setTimeout(() => {
     connect({ probe: true });
   }, delay);
@@ -3646,6 +3763,11 @@ function scheduleReconnect(reason) {
 
 function isSocketOpen() {
   return Boolean(state.socket && state.socket.readyState === WebSocket.OPEN);
+}
+
+// isBridgeLive is an open socket the daemon has accepted.
+function isBridgeLive() {
+  return isSocketOpen() && state.acceptedSocket === state.socket;
 }
 
 function isSocketConnecting() {
@@ -3676,7 +3798,8 @@ function resolveBadgeMode(status) {
   // Transport socket wins over last markBridgeStatus stamp. Per-request faults
   // briefly set status "error" while the WS stayed open; the badge must stay
   // Idle (or Agent active) in that case, never Down.
-  if (isSocketOpen()) return isAgentActive() ? "used" : "connected";
+  if (isBridgeLive()) return isAgentActive() ? "used" : "connected";
+  if (status === "rejected") return "rejected";
   if (status === "connected") return isAgentActive() ? "used" : "connected";
   if (status === "connecting" || status === "starting" || status === "configured") {
     return "connecting";
@@ -3689,8 +3812,8 @@ function resolveBadgeMode(status) {
 // noteRequestFault records lastError without demoting the connection badge.
 async function noteRequestFault(detail = "") {
   const config = state.bridgeConfig || normalizeBridgeConfig({});
-  const status = isSocketOpen() ? "connected" : (state.reportedStatus || "error");
-  if (isSocketOpen()) state.reportedStatus = "connected";
+  const status = isBridgeLive() ? "connected" : (state.reportedStatus || "error");
+  if (isBridgeLive()) state.reportedStatus = "connected";
   const value = {
     status,
     badge: resolveBadgeMode(status),
@@ -3741,6 +3864,10 @@ function applyBadgeFrame(mode, phase) {
   }
   if (mode === "consent") {
     setBadgeVisual("!", BADGE_CONNECTING_BG, "brw · Browser control not enabled");
+    return;
+  }
+  if (mode === "rejected") {
+    setBadgeVisual("!", BADGE_DOWN_BG, "brw · Refused by the daemon — click for status");
     return;
   }
   setBadgeVisual("off", BADGE_DOWN_BG, "brw · Down — click for status");
@@ -3811,7 +3938,7 @@ function noteConnectionLifecycle(status) {
   if (disconnectNotifyTimer) return;
   disconnectNotifyTimer = setTimeout(() => {
     disconnectNotifyTimer = null;
-    if (isSocketOpen() || state.reportedStatus === "connected") return;
+    if (isBridgeLive() || state.reportedStatus === "connected") return;
     const now = Date.now();
     if (now - lastDisconnectNotifyAt < DISCONNECT_NOTIFY_COOLDOWN_MS) return;
     lastDisconnectNotifyAt = now;
