@@ -338,7 +338,8 @@ group, or close them. Acting on one returns `{"error":"tab_contended","retryable
 Leases last 30 minutes and are renewed by use. They are keyed to the session, and they
 outlive your process: an MCP client that exits without closing its tabs leaves them
 open and leased, and the restarted client is a new owner that cannot reclaim them until
-the lease expires. Close every tab you opened before you finish, and
+the lease expires. A call cancelled mid-flight renews its lease for 2 minutes rather
+than 30. Close every tab you opened before you finish, and
 `brw_close_context` every incognito context.
 
 ## Gotchas, verified 2026-09-11 against a live daemon

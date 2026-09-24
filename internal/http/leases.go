@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,12 @@ import (
 )
 
 const defaultTabLeaseTTL = 30 * time.Minute
+
+// abandonedTabLeaseTTL is how long a lease outlives a call whose caller went
+// away before it finished: the request's context was cancelled because the
+// proxy dropped the connection, was killed, or relayed an MCP cancellation. A
+// caller that is still alive renews the full TTL on its next call.
+const abandonedTabLeaseTTL = 2 * time.Minute
 
 type leaseContextKey struct{}
 
@@ -30,6 +37,10 @@ type tabLease struct {
 	// to flag drift — a human dragging the tab out of the agent's lane — as a
 	// signal, never as enforcement.
 	groupID string
+	// opened is set when the daemon opened this tab for the owner rather than
+	// the owner claiming a tab that already existed. A session release with
+	// close_tabs closes only these.
+	opened bool
 }
 
 // tabLeaseManager gives every shared-daemon browser session exclusive ownership
@@ -37,12 +48,13 @@ type tabLease struct {
 // RPCs; these longer-lived leases protect the multi-call agent workflow around
 // those RPCs (snapshot -> reason -> action -> verify).
 type tabLeaseManager struct {
-	mu          sync.Mutex
-	allocateMu  sync.Mutex
-	ttl         time.Duration
-	now         func() time.Time
-	byTab       map[string]*tabLease
-	defaultTabs map[string]string
+	mu           sync.Mutex
+	allocateMu   sync.Mutex
+	ttl          time.Duration
+	abandonedTTL time.Duration
+	now          func() time.Time
+	byTab        map[string]*tabLease
+	defaultTabs  map[string]string
 }
 
 func newTabLeaseManager(ttl time.Duration) *tabLeaseManager {
@@ -50,7 +62,7 @@ func newTabLeaseManager(ttl time.Duration) *tabLeaseManager {
 		ttl = defaultTabLeaseTTL
 	}
 	return &tabLeaseManager{
-		ttl: ttl, now: time.Now,
+		ttl: ttl, abandonedTTL: min(ttl, abandonedTabLeaseTTL), now: time.Now,
 		byTab: make(map[string]*tabLease), defaultTabs: make(map[string]string),
 	}
 }
@@ -76,6 +88,13 @@ func (m *tabLeaseManager) sweepLocked(now time.Time) {
 }
 
 func (m *tabLeaseManager) acquire(owner, tabID string, makeDefault bool) (func(), error) {
+	return m.acquireFor(context.Background(), owner, tabID, makeDefault)
+}
+
+// acquireFor takes the lease for one call made under ctx. The returned release
+// renews it for the full TTL, or for abandonedTTL when ctx was cancelled
+// before the call finished.
+func (m *tabLeaseManager) acquireFor(ctx context.Context, owner, tabID string, makeDefault bool) (func(), error) {
 	owner = strings.TrimSpace(owner)
 	tabID = strings.TrimSpace(tabID)
 	if owner == "" || tabID == "" {
@@ -102,10 +121,19 @@ func (m *tabLeaseManager) acquire(owner, tabID string, makeDefault bool) (func()
 		m.defaultTabs[owner] = tabID
 	}
 	m.mu.Unlock()
+	return m.releaser(ctx, owner, tabID), nil
+}
 
+// releaser ends one in-flight use of owner's lease on tabID. Only the first
+// call of the returned func counts.
+func (m *tabLeaseManager) releaser(ctx context.Context, owner, tabID string) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			ttl := m.ttl
+			if ctx.Err() != nil {
+				ttl = m.abandonedTTL
+			}
 			now := m.now()
 			m.mu.Lock()
 			defer m.mu.Unlock()
@@ -114,13 +142,17 @@ func (m *tabLeaseManager) acquire(owner, tabID string, makeDefault bool) (func()
 					current.inFlight--
 				}
 				current.updatedAt = now
-				current.expiresAt = now.Add(m.ttl)
+				current.expiresAt = now.Add(ttl)
 			}
 		})
-	}, nil
+	}
 }
 
 func (m *tabLeaseManager) acquireDefault(owner string) (string, func(), bool) {
+	return m.acquireDefaultFor(context.Background(), owner)
+}
+
+func (m *tabLeaseManager) acquireDefaultFor(ctx context.Context, owner string) (string, func(), bool) {
 	now := m.now()
 	m.mu.Lock()
 	m.sweepLocked(now)
@@ -135,30 +167,15 @@ func (m *tabLeaseManager) acquireDefault(owner string) (string, func(), bool) {
 	lease.updatedAt = now
 	lease.expiresAt = now.Add(m.ttl)
 	m.mu.Unlock()
-
-	var once sync.Once
-	return tabID, func() {
-		once.Do(func() {
-			now := m.now()
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			if current := m.byTab[tabID]; current != nil && current.owner == owner {
-				if current.inFlight > 0 {
-					current.inFlight--
-				}
-				current.updatedAt = now
-				current.expiresAt = now.Add(m.ttl)
-			}
-		})
-	}, true
+	return tabID, m.releaser(ctx, owner, tabID), true
 }
 
 func (m *tabLeaseManager) resolveOrOpen(ctx context.Context, owner, explicitTabID string, open func(context.Context) (browser.OpenResult, error)) (string, func(), error) {
 	if explicitTabID = strings.TrimSpace(explicitTabID); explicitTabID != "" {
-		release, err := m.acquire(owner, explicitTabID, true)
+		release, err := m.acquireFor(ctx, owner, explicitTabID, true)
 		return explicitTabID, release, err
 	}
-	if tabID, release, ok := m.acquireDefault(owner); ok {
+	if tabID, release, ok := m.acquireDefaultFor(ctx, owner); ok {
 		return tabID, release, nil
 	}
 
@@ -166,7 +183,7 @@ func (m *tabLeaseManager) resolveOrOpen(ctx context.Context, owner, explicitTabI
 	// first calls from the same session each opening a different scratch tab.
 	m.allocateMu.Lock()
 	defer m.allocateMu.Unlock()
-	if tabID, release, ok := m.acquireDefault(owner); ok {
+	if tabID, release, ok := m.acquireDefaultFor(ctx, owner); ok {
 		return tabID, release, nil
 	}
 	result, err := open(ctx)
@@ -176,11 +193,67 @@ func (m *tabLeaseManager) resolveOrOpen(ctx context.Context, owner, explicitTabI
 	if strings.TrimSpace(result.Tab.ID) == "" {
 		return "", nil, fmt.Errorf("automatic working-tab allocation returned no tab id")
 	}
-	release, err := m.acquire(owner, result.Tab.ID, true)
+	release, err := m.acquireFor(ctx, owner, result.Tab.ID, true)
 	if err == nil {
+		m.noteOpened(owner, result.Tab.ID)
 		m.noteGroup(owner, result.Tab.ID, result.Tab.GroupID)
 	}
 	return result.Tab.ID, release, err
+}
+
+// noteOpened marks tabID as a tab the daemon opened for owner.
+func (m *tabLeaseManager) noteOpened(owner, tabID string) {
+	owner = strings.TrimSpace(owner)
+	tabID = strings.TrimSpace(tabID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if lease := m.byTab[tabID]; lease != nil && lease.owner == owner {
+		lease.opened = true
+	}
+}
+
+// ownedTabs lists, sorted, the tabs owner holds a lease on and the subset the
+// daemon opened for it.
+func (m *tabLeaseManager) ownedTabs(owner string) (all, opened []string) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for tabID, lease := range m.byTab {
+		if lease.owner != owner {
+			continue
+		}
+		all = append(all, tabID)
+		if lease.opened {
+			opened = append(opened, tabID)
+		}
+	}
+	sort.Strings(all)
+	sort.Strings(opened)
+	return all, opened
+}
+
+// releaseOwner drops every lease owner holds, including ones a call is still
+// using, and forgets its default tab. It returns the released tab ids, sorted.
+func (m *tabLeaseManager) releaseOwner(owner string) []string {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var released []string
+	for tabID, lease := range m.byTab {
+		if lease.owner == owner {
+			delete(m.byTab, tabID)
+			released = append(released, tabID)
+		}
+	}
+	delete(m.defaultTabs, owner)
+	sort.Strings(released)
+	return released
 }
 
 // noteGroup records the tab group the daemon opened tabID into for owner, so
@@ -415,7 +488,12 @@ func (s *Server) leaseMiddleware(next http.Handler) http.Handler {
 		tabID, release, err := s.leases.resolveOrOpen(r.Context(), owner, explicitTabID, func(ctx context.Context) (browser.OpenResult, error) {
 			// The session's isolated working tab opens straight into its per-agent
 			// tab group, so each concurrent agent gets a named lane in the strip.
-			return s.openInOwnerGroup(ctx, "about:blank", owner)
+			result, err := s.openInOwnerGroup(ctx, "about:blank", owner)
+			if err == nil && ctx.Err() != nil {
+				s.closeAbandonedTab(ctx, result.Tab.ID)
+				return browser.OpenResult{}, ctx.Err()
+			}
+			return result, err
 		})
 		if err != nil {
 			writeLeaseError(w, err)

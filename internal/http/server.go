@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -335,6 +336,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /dashboard/takeover", s.dashboardTakeover)
 	mux.HandleFunc("POST /dashboard/input", s.dashboardInput)
 	mux.HandleFunc("GET /api/session/stream", s.sessionStream)
+	mux.HandleFunc("POST /api/session/release", s.releaseSession)
 	mux.HandleFunc("POST /api/browser/open", s.open)
 	mux.HandleFunc("POST /api/browser/open_incognito", s.openIncognito)
 	mux.HandleFunc("POST /api/browser/close_context", s.closeContext)
@@ -812,13 +814,46 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request) {
 	default:
 		result, err = s.manager.Open(r.Context(), req.URL)
 	}
+	if s.discardIfAbandoned(r.Context(), result) {
+		writeResult(w, browser.OpenResult{}, r.Context().Err())
+		return
+	}
 	if err == nil {
 		err = s.leases.bind(owner, result.Tab.ID, true)
+	}
+	if err == nil {
+		s.leases.noteOpened(owner, result.Tab.ID)
 	}
 	if err == nil && daemonGrouped {
 		s.leases.noteGroup(owner, result.Tab.ID, result.Tab.GroupID)
 	}
 	writeResult(w, result, err)
+}
+
+// discardIfAbandoned closes a tab an open created after the caller went away.
+// The caller never learns the tab's id, so leaving it open, and leased to the
+// caller's session, only strands it.
+func (s *Server) discardIfAbandoned(ctx context.Context, result browser.OpenResult) bool {
+	if ctx.Err() == nil || strings.TrimSpace(result.Tab.ID) == "" {
+		return false
+	}
+	s.closeAbandonedTab(ctx, result.Tab.ID)
+	return true
+}
+
+// abandonedTabCloseTimeout bounds closing a tab whose opener went away. The
+// close runs on a context detached from the cancelled request.
+const abandonedTabCloseTimeout = 10 * time.Second
+
+func (s *Server) closeAbandonedTab(ctx context.Context, tabID string) {
+	if strings.TrimSpace(tabID) == "" {
+		return
+	}
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abandonedTabCloseTimeout)
+	defer cancel()
+	// A failed close leaves the tab open but unleased, so any session can
+	// close it; there is no caller left to report the failure to.
+	_ = s.manager.CloseTab(closeCtx, tabID)
 }
 
 func (s *Server) openIncognito(w http.ResponseWriter, r *http.Request) {
@@ -834,8 +869,16 @@ func (s *Server) openIncognito(w http.ResponseWriter, r *http.Request) {
 	}
 	req.URL = normalizedURL
 	result, err := s.manager.OpenIncognito(r.Context(), req.URL)
+	if s.discardIfAbandoned(r.Context(), result) {
+		writeResult(w, browser.OpenResult{}, r.Context().Err())
+		return
+	}
+	owner := leaseOwner(r.Context())
 	if err == nil {
-		err = s.leases.bind(leaseOwner(r.Context()), result.Tab.ID, true)
+		err = s.leases.bind(owner, result.Tab.ID, true)
+	}
+	if err == nil {
+		s.leases.noteOpened(owner, result.Tab.ID)
 	}
 	writeResult(w, result, err)
 }
@@ -941,7 +984,7 @@ func (s *Server) focus(w http.ResponseWriter, r *http.Request) {
 	}
 	tabID := tabIDArg(req.TabID, req.ID)
 	owner := leaseOwner(r.Context())
-	release, err := s.leases.acquire(owner, tabID, true)
+	release, err := s.leases.acquireFor(r.Context(), owner, tabID, true)
 	if err != nil {
 		writeLeaseError(w, err)
 		return
@@ -964,7 +1007,7 @@ func (s *Server) closeTab(w http.ResponseWriter, r *http.Request) {
 	}
 	tabID := tabIDArg(req.TabID, req.ID)
 	owner := leaseOwner(r.Context())
-	release, err := s.leases.acquire(owner, tabID, false)
+	release, err := s.leases.acquireFor(r.Context(), owner, tabID, false)
 	if err != nil {
 		writeLeaseError(w, err)
 		return
@@ -975,6 +1018,58 @@ func (s *Server) closeTab(w http.ResponseWriter, r *http.Request) {
 		s.leases.release(owner, tabID)
 	}
 	writeResult(w, browser.ActionResult{OK: err == nil, TabID: tabID}, err)
+}
+
+// releaseSession is POST /api/session/release: the caller's session is over.
+// It drops every lease the calling owner holds so its tabs show as available
+// at once instead of after the lease TTL. With close_tabs it first closes the
+// tabs the daemon opened for that owner; tabs the owner merely claimed are
+// left open. A supervisor that ends an agent session calls this, since the
+// daemon cannot tell a finished session from an idle one.
+func (s *Server) releaseSession(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CloseTabs bool `json:"close_tabs"`
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if len(bytes.TrimSpace(body)) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+	}
+	owner := leaseOwner(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "no session owner: send " + usagelog.HeaderOwnerID + " or " + usagelog.HeaderSessionID,
+		})
+		return
+	}
+	closed := []string{}
+	closeErrors := map[string]string{}
+	if req.CloseTabs {
+		_, opened := s.leases.ownedTabs(owner)
+		for _, tabID := range opened {
+			err := s.manager.CloseTab(r.Context(), tabID)
+			if err == nil || usagelog.ClassifyError(err) == "tab_lost" {
+				closed = append(closed, tabID)
+				continue
+			}
+			closeErrors[tabID] = err.Error()
+		}
+	}
+	released := s.leases.releaseOwner(owner)
+	if released == nil {
+		released = []string{}
+	}
+	out := map[string]any{"ok": len(closeErrors) == 0, "released": released, "closed": closed}
+	if len(closeErrors) > 0 {
+		out["close_errors"] = closeErrors
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) emulateDevice(w http.ResponseWriter, r *http.Request) {

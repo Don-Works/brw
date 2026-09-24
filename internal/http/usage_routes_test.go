@@ -30,6 +30,9 @@ var routesNotRecorded = map[string]string{
 	// It is one hop inside another operation, which is already recorded on both
 	// daemons, so a ledger entry of its own would double-count the agent's call.
 	"/api/browser/active_tab": "internal tab-naming hop inside another operation",
+	// A supervisor ending an agent session, not a call any agent makes, and no
+	// MCP tool shares its name.
+	"/api/session/release": "session lifecycle call from a supervisor, not a tool call",
 }
 
 // TestEveryAPIRouteHasAUsageOperation pins the route table to the usage

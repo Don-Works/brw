@@ -451,7 +451,11 @@ hard, non-retryable signal to use `brw_open` for a fresh leased tab. With no
 `tab_id`, the daemon renews the session's current lease or opens a fresh
 background working tab. Closing a tab through brw releases its lease; otherwise
 an idle lease expires after 30 minutes, and an operation already in flight is
-never expired out from under the caller.
+never expired out from under the caller. A call whose caller goes away before
+it finishes (the proxy is killed, or the MCP client cancels the call) leaves
+the lease 2 minutes instead of 30, and a `brw_open` cancelled that way closes
+the tab it opened. A supervisor ending an agent session can free everything
+that session holds at once with `POST /api/session/release` (see the README).
 
 ## When semantics run out: screenshots and coordinates
 

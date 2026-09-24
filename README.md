@@ -668,7 +668,17 @@ leases per logical agent session. `brw_list_tabs` labels targets `mine`,
 and batches all reject a tab leased by another session with HTTP 409 /
 `tab_contended`. A no-`tab_id` call reuses the caller's leased working tab or
 opens a new background tab. Leases renew on use, cannot expire during an active
-operation, release on brw-driven close, and expire after 30 idle minutes.
+operation, release on brw-driven close, and expire after 30 idle minutes, or 2
+minutes after a call whose caller disconnected or cancelled before it finished.
+An open cancelled that way closes the tab it created.
+
+A supervisor that ends agent sessions (an MCP gateway) should tell the daemon,
+because the daemon cannot tell a finished session from an idle one:
+`POST /api/session/release` with the session's `X-Brw-Owner` header drops every
+lease that owner holds and returns `{ok, released, closed}`. With
+`{"close_tabs":true}` it first closes the tabs the daemon opened for that owner
+(`brw_open`, `brw_open_incognito` and automatic working tabs); tabs the session
+only claimed stay open.
 
 ### Privacy-safe usage ledger
 
