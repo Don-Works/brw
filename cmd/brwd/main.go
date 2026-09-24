@@ -117,6 +117,7 @@ func main() {
 	var confirmActions bool
 	var contentNavGuard bool
 	var chromeOptIn bool
+	var exitOnUpgrade string
 	var chromeOptInBrowser string
 	var chromeOptInUserDataDir string
 	var configPath string
@@ -183,6 +184,7 @@ func main() {
 	flag.StringVar(&chromeOptInBrowser, "chrome-opt-in-browser", envDefault("BRW_CHROME_OPT_IN_BROWSER", "chrome"), "which browser's user data directory --chrome-opt-in looks in for the endpoint (chrome, chromium, edge, brave, vivaldi)")
 	flag.StringVar(&chromeOptInUserDataDir, "chrome-opt-in-user-data-dir", os.Getenv("BRW_CHROME_OPT_IN_USER_DATA_DIR"), "explicit user data directory for --chrome-opt-in, when the browser is not one brw knows the default path for. brw only reads from it.")
 	flag.StringVar(&configPath, "config", os.Getenv("BRW_CONFIG"), "brw.json holding this machine's daemon defaults, with optional per-profile sections. Defaults to brw.json in the user config directory, which is read when it exists and ignored when it does not. It is the weakest source: a flag on the command line wins, then the environment, then the file.")
+	flag.StringVar(&exitOnUpgrade, "exit-on-upgrade", envDefault("BRW_EXIT_ON_UPGRADE", "auto"), "extension bridge daemon: exit once an install replaces this binary and no request is in flight, so the service manager restarts it on the new build. auto (the default) turns it on only under launchd or systemd, which restart it; on and off force it.")
 	flag.Parse()
 
 	// brw.json is applied after Parse and before anything reads a flag, and it
@@ -933,6 +935,18 @@ func main() {
 				stop()
 			}
 		}()
+	}
+
+	if bridge != nil && !mcpMode {
+		enabled, err := exitOnUpgradeEnabled(exitOnUpgrade, runtime.GOOS, os.Getppid(), os.Getenv)
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		if enabled {
+			go watchForUpgrade(ctx, stop, func() bool {
+				return bridge.Busy() || (api != nil && api.InFlight() > 0)
+			})
+		}
 	}
 
 	if mcpMode {

@@ -45,6 +45,7 @@ var flagEnv = map[string]string{
 	"headless":                   "BRW_HEADLESS",
 	"http":                       "BRW_HTTP_ADDR",
 	"idle-exit":                  "BRW_IDLE_EXIT",
+	"exit-on-upgrade":            "BRW_EXIT_ON_UPGRADE",
 	"ignore-https-errors":        "BRW_IGNORE_HTTPS_ERRORS",
 	"mcp-idle-exit":              "BRW_MCP_IDLE_EXIT",
 	"mcp-tools":                  "BRW_MCP_TOOLS",

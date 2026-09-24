@@ -189,18 +189,26 @@ grep '"error_class":"tab_not_drivable"' \
 
 ## Making a new extension build live
 
-> **Do not run this unattended.** `chrome.runtime.reload()` can leave the MV3
-> service worker unloaded with nothing able to wake it, and recovering needs a
-> human at the browser. Read the recovery note below before you start.
+From extension 0.7.3 the worker does this itself: when `manifest.json` in its
+payload directory names a different build from the one running, it waits for
+the agent to go idle and calls `chrome.runtime.reload()`. The reload fires
+`onInstalled`, whose listener re-creates the reconnect alarm and connects, and
+the bridge log shows `extension bridge connected (build <new>)` within a second
+or two. See the Upgrade section of `docs/install.md`.
 
-`chrome.runtime.reload()` reloads an unpacked extension from disk without
+A browser still on 0.7.2 or older has no self-update and needs one reload by
+hand. `chrome.runtime.reload()` reloads an unpacked extension from disk without
 restarting the browser or losing tabs. Drive it with brw:
 
 ```
 brw_open({url: "chrome-extension://amocjcgddnoakjijfggdpnefdnboilpe/options.html"})
 brw_evaluate({expression: "chrome.runtime.getManifest().version"})   // confirm what is RUNNING
-brw_evaluate({expression: "chrome.runtime.reload(); 'go'"})          // bridge drops; expected
+brw_evaluate({expression: "setTimeout(() => chrome.runtime.reload(), 200); 'go'"})  // bridge drops; expected
 ```
+
+The deferred reload lets the evaluate answer before the bridge drops. On
+2026-09-24 this brought three profiles on two machines back within a second
+each.
 
 ### When the bridge does not come back
 
@@ -230,9 +238,8 @@ Attaching a debugger port is not a way out either: a browser started without
 `--remote-debugging-port` cannot be given one without restarting it, and since
 Chrome 136 that flag is ignored against the default user-data directory anyway.
 
-So: reload only when someone can reach the browser, and prefer a browser restart
-when the session is unattended. Restarting the daemon alone is always safe — it
-reconnects to the running extension within seconds and never disturbs it.
+Restarting the daemon alone is always safe: it reconnects to the running
+extension within seconds and never disturbs it.
 
 Then re-check `/status` (or the daemon log) for the new `build`. `make
 install-mac` refreshes the canonical extension and every existing

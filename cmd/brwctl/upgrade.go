@@ -877,42 +877,51 @@ func busyDaemons(policy profilepolicy.Policy, client *http.Client) []busyDaemon 
 	return busy
 }
 
-// restartServices restarts the per-user daemon of every profile that has a unit
-// installed, so the upgraded binary is the one actually running afterwards.
+// restartServices restarts every per-user daemon running this install's brwd,
+// so the upgraded binary is the one actually running afterwards. That is the
+// unit `brwctl setup` wrote for each profile, plus any unit under another label
+// whose program is this install's brwd: a hand-made unit is left as written,
+// but restarting it is the only way its daemon picks up the new build.
 //
 // A profile with no unit is passed over in silence: a direct-CDP profile has no
 // daemon of its own, and a stdio daemon is launched by the agent client, so a
 // line per profile telling the operator to start something by hand is noise
 // around the one case that is real — no unit anywhere.
 func restartServices(opts upgradeOptions, policy profilepolicy.Policy) ([]string, []string) {
-	var restarted, manual []string
-	units := 0
+	var labels []string
+	seen := map[string]bool{}
+	add := func(label string) {
+		if !seen[label] {
+			seen[label] = true
+			labels = append(labels, label)
+		}
+	}
 	for _, profile := range policy.Profiles {
 		params := setup.ServiceParams{GOOS: opts.goos, Profile: profile.Name, Home: opts.home}
-		if _, err := os.Stat(params.UnitPath()); err != nil {
-			continue
+		if _, err := os.Stat(params.UnitPath()); err == nil {
+			add(params.Label())
 		}
-		units++
-		args := serviceRestartArgs(opts.goos, params)
+	}
+	brwd := filepath.Join(opts.appDir, "bin", "brwd")
+	for _, unit := range brwdServiceUnits(opts.goos, opts.home, brwd) {
+		add(unit.Label)
+	}
+
+	var restarted, manual []string
+	for _, label := range labels {
+		args := serviceRestartArgsForLabel(opts.goos, label)
 		if out, err := opts.runner.run(args[0], args[1:]...); err != nil {
 			manual = append(manual, fmt.Sprintf("%s failed (%v %s); run it yourself", setup.Command(args), err, out))
 			continue
 		}
-		restarted = append(restarted, params.Label())
+		restarted = append(restarted, label)
 	}
-	if units == 0 && len(policy.Profiles) > 0 {
+	if len(labels) == 0 && len(policy.Profiles) > 0 {
 		manual = append(manual, "No profile has an installed service unit, so nothing was restarted: restart the daemon yourself (or the agent client that launches it) to run the new binary.")
 	}
 	return restarted, manual
 }
 
 func serviceRestartArgs(goos string, params setup.ServiceParams) []string {
-	switch goos {
-	case "darwin":
-		return []string{"launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/%s", os.Getuid(), params.Label())}
-	case "windows":
-		return []string{"schtasks", "/Run", "/TN", params.Label()}
-	default:
-		return []string{"systemctl", "--user", "restart", params.Label() + ".service"}
-	}
+	return serviceRestartArgsForLabel(goos, params.Label())
 }

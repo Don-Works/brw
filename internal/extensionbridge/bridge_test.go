@@ -926,7 +926,9 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// with 1013 or 1008, instead of cycling Idle/Down/Reconnecting, and scopes the
 	// inline-document pause to the destination origin named by arm_inline_document's
 	// new url param (an older daemon sends none and keeps the old pattern).
-	const wantManifest = "0.7.2"
+	// 0.7.3 reloads itself when the payload on disk is a different build from the
+	// one running, once no command is in flight and the agent is idle.
+	const wantManifest = "0.7.3"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

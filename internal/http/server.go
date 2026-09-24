@@ -129,6 +129,13 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	return s
 }
 
+// InFlight is the number of API requests currently executing against a leased
+// tab.
+func (s *Server) InFlight() int {
+	inFlight, _ := s.leases.stats()["in_flight"].(int)
+	return inFlight
+}
+
 // SetUsageRecorder installs the metadata-only operational ledger. The recorder
 // never sees request bodies, query values, page content, or response bodies.
 func (s *Server) SetUsageRecorder(recorder *usagelog.Recorder) {
@@ -482,6 +489,9 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.identity.Empty() {
 		payload["identity"] = s.identity
+	}
+	if s.version != "" {
+		payload["version"] = s.version
 	}
 	// A plugin-supplied browser has a provider, a session id and an expiry, and
 	// nothing else reports them: the startup log line is written before this
