@@ -668,7 +668,7 @@ leases per logical agent session. `brw_list_tabs` labels targets `mine`,
 and batches all reject a tab leased by another session with HTTP 409 /
 `tab_contended`. A no-`tab_id` call reuses the caller's leased working tab or
 opens a new background tab. Leases renew on use, cannot expire during an active
-operation, release on brw-driven close, and expire after 30 idle minutes, or 2
+operation of up to 35 minutes, release on brw-driven close, and expire after 30 idle minutes, or 2
 minutes after a call whose caller disconnected or cancelled before it finished.
 An open cancelled that way closes the tab it created.
 

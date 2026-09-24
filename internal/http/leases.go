@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/recipe"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
@@ -76,9 +77,30 @@ func (e *tabLeaseConflictError) Error() string {
 	return fmt.Sprintf("tab is leased by another browser session until %s; do not retry or focus it—call brw_open to get a new leased tab, or choose a tab marked available by brw_list_tabs", e.expiresAt.UTC().Format(time.RFC3339))
 }
 
+// maxInFlightHold is how long an operation that has not finished keeps its
+// lease past the lease's own expiry. It covers the longest legitimate call, a
+// recipe run, plus headroom. An in-flight count older than that is a call that
+// will never release (its handler is wedged or its release was lost), and
+// honouring it left a tab refusing every other session with an expiry already
+// half an hour in the past.
+const maxInFlightHold = recipe.DefaultMaxRunDuration + 5*time.Minute
+
+// heldUntil is when lease stops being enforced: its expiry, extended while an
+// operation that started less than maxInFlightHold ago is still running.
+func heldUntil(lease *tabLease) time.Time {
+	if lease.inFlight > 0 {
+		if hold := lease.updatedAt.Add(maxInFlightHold); hold.After(lease.expiresAt) {
+			return hold
+		}
+	}
+	return lease.expiresAt
+}
+
+// sweepLocked drops every lease no longer held at now. Every path that
+// enforces a lease sweeps first, so expiry is decided at enforcement time.
 func (m *tabLeaseManager) sweepLocked(now time.Time) {
 	for tabID, lease := range m.byTab {
-		if lease.inFlight == 0 && !lease.expiresAt.After(now) {
+		if !heldUntil(lease).After(now) {
 			delete(m.byTab, tabID)
 			if m.defaultTabs[lease.owner] == tabID {
 				delete(m.defaultTabs, lease.owner)
@@ -106,7 +128,7 @@ func (m *tabLeaseManager) acquireFor(ctx context.Context, owner, tabID string, m
 	m.sweepLocked(now)
 	lease := m.byTab[tabID]
 	if lease != nil && lease.owner != owner {
-		expiresAt := lease.expiresAt
+		expiresAt := heldUntil(lease)
 		m.mu.Unlock()
 		return nil, &tabLeaseConflictError{tabID: tabID, expiresAt: expiresAt}
 	}
@@ -302,7 +324,7 @@ func (m *tabLeaseManager) claimAll(owner string, tabIDs []string) ([]string, err
 		}
 		unique[tabID] = struct{}{}
 		if lease := m.byTab[tabID]; lease != nil && lease.owner != owner {
-			return nil, &tabLeaseConflictError{tabID: tabID, expiresAt: lease.expiresAt}
+			return nil, &tabLeaseConflictError{tabID: tabID, expiresAt: heldUntil(lease)}
 		}
 	}
 	var newlyClaimed []string
@@ -366,7 +388,7 @@ func (m *tabLeaseManager) annotate(owner string, tabs []browser.Tab) []browser.T
 		case lease == nil:
 			out[i].Lease = &browser.TabLeaseInfo{Status: "available"}
 		case owner != "" && lease.owner == owner:
-			info := &browser.TabLeaseInfo{Status: "mine", Mine: true, ExpiresAt: lease.expiresAt.UTC().Format(time.RFC3339)}
+			info := &browser.TabLeaseInfo{Status: "mine", Mine: true, ExpiresAt: heldUntil(lease).UTC().Format(time.RFC3339)}
 			// Drift: the daemon grouped this tab into the agent's lane, but it is
 			// no longer there (a human dragged it out, or Chrome rearranged the
 			// strip). Ownership is unchanged — leases enforce that — so this is a
@@ -377,7 +399,7 @@ func (m *tabLeaseManager) annotate(owner string, tabs []browser.Tab) []browser.T
 			}
 			out[i].Lease = info
 		default:
-			out[i].Lease = &browser.TabLeaseInfo{Status: "leased", ExpiresAt: lease.expiresAt.UTC().Format(time.RFC3339)}
+			out[i].Lease = &browser.TabLeaseInfo{Status: "leased", ExpiresAt: heldUntil(lease).UTC().Format(time.RFC3339)}
 		}
 	}
 	return out

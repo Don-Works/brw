@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"testing"
 	"time"
@@ -46,6 +47,68 @@ func TestLeaseReleaseRenewsLessForAnAbandonedCall(t *testing.T) {
 			now = now.Add(2 * time.Second)
 			if _, err := leases.acquire("owner-b", "tab-1", false); err != nil {
 				t.Fatalf("lease still held %s after the call ended: %v", tc.wantTTL+time.Second, err)
+			}
+		})
+	}
+}
+
+// A lease whose holder's call never returned was still enforced after its
+// reported expiry: close_tab from another session at 21:48 was refused with
+// "leased by another browser session until 21:18:56Z".
+func TestExpiredLeaseIsNotEnforced(t *testing.T) {
+	cases := []struct {
+		name      string
+		released  bool
+		elapsed   time.Duration
+		wantTaken bool
+	}{
+		{name: "released, before expiry", released: true, elapsed: 29 * time.Minute},
+		{name: "released, past expiry", released: true, elapsed: 31 * time.Minute, wantTaken: true},
+		{name: "call still running, within the in-flight hold", elapsed: maxInFlightHold - time.Minute},
+		{name: "call never returned, past expiry and hold", elapsed: maxInFlightHold + time.Minute, wantTaken: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Date(2026, 9, 24, 20, 48, 56, 0, time.UTC)
+			now := start
+			ctrl := &recordingCloseController{leaseTestController: leaseTestController{tabs: []browser.Tab{{ID: "235941495"}}}}
+			server := New("", ctrl)
+			server.leases.now = func() time.Time { return now }
+
+			release, err := server.leases.acquire("owner-a", "235941495", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.released {
+				release()
+			}
+			now = start.Add(tc.elapsed)
+
+			rec := httptest.NewRecorder()
+			server.server.Handler.ServeHTTP(rec, ownerRequest(http.MethodPost, "/api/browser/close", "owner-b", `{"tab_id":"235941495"}`))
+			if tc.wantTaken {
+				if rec.Code != http.StatusOK || !slices.Equal(ctrl.closed, []string{"235941495"}) {
+					t.Fatalf("close by another session = %d %s (closed %v), want it to succeed on an expired lease", rec.Code, rec.Body.String(), ctrl.closed)
+				}
+				return
+			}
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("close by another session = %d %s, want 409 while the lease is held", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Error string `json:"error"`
+			}
+			_ = json.Unmarshal(rec.Body.Bytes(), &body)
+			match := regexp.MustCompile(`until (\S+);`).FindStringSubmatch(body.Error)
+			if match == nil {
+				t.Fatalf("conflict message has no expiry: %q", body.Error)
+			}
+			until, err := time.Parse(time.RFC3339, match[1])
+			if err != nil {
+				t.Fatalf("conflict message has no expiry: %q (%v)", body.Error, err)
+			}
+			if !until.After(now) {
+				t.Fatalf("conflict names an expiry %s that is not after now %s", until, now)
 			}
 		})
 	}
