@@ -22,6 +22,12 @@ type extensionNavigationOutcome struct {
 // after Chrome has already committed its error page.
 const navigationOutcomeSettle = 500 * time.Millisecond
 
+// navigationOutcomeCallTimeout bounds each call that reads the outcome. While
+// the document request is still waiting for the server, Chrome answers no
+// debugger command on the tab, and the bridge's default call timeout would
+// hold the open that long after its readiness wait gave up.
+const navigationOutcomeCallTimeout = 2 * time.Second
+
 // navigationOutcome reports how the tab's last brw-driven navigation ended.
 // committedURL is the main frame's URL when the caller has it; empty reads it
 // here. An extension older than navigation_outcome still yields the committed
@@ -29,7 +35,10 @@ const navigationOutcomeSettle = 500 * time.Millisecond
 func (b *Bridge) navigationOutcome(ctx context.Context, tabID, requestedURL, committedURL string) browser.NavigationOutcome {
 	out := browser.NavigationOutcome{URL: requestedURL, CommittedURL: committedURL}
 	if out.CommittedURL == "" {
-		if frame, err := b.mainFrameState(ctx, tabID); err == nil {
+		frameCtx, cancel := context.WithTimeout(ctx, navigationOutcomeCallTimeout)
+		frame, err := b.mainFrameState(frameCtx, tabID)
+		cancel()
+		if err == nil {
 			out.CommittedURL = frame.URL
 		}
 	}
@@ -56,7 +65,9 @@ func (b *Bridge) navigationOutcome(ctx context.Context, tabID, requestedURL, com
 }
 
 func (b *Bridge) readNavigationOutcome(ctx context.Context, tabID string) (extensionNavigationOutcome, bool) {
-	raw, err := b.call(ctx, "navigation_outcome", map[string]any{"tabId": parseTabID(tabID)})
+	callCtx, cancel := context.WithTimeout(ctx, navigationOutcomeCallTimeout)
+	defer cancel()
+	raw, err := b.call(callCtx, "navigation_outcome", map[string]any{"tabId": parseTabID(tabID)})
 	if err != nil {
 		return extensionNavigationOutcome{}, false
 	}
