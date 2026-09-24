@@ -771,6 +771,35 @@ async function scenarioCloseTabIsBoundedAndFailClosed() {
 			check("an accepted close whose tab disappears after the budget reports success",
 				slowElapsed >= 2500 && slowSocket.sent.length === 1 && slowSocket.sent[0]?.ok === true &&
 				slowSocket.sent[0]?.result?.closed === 38 && !model.tabs.has(38));
+
+			// A navigation still waiting for its server leaves Page.enable
+			// unanswered. The tab is closed through the tabs API when Chrome
+			// reports the navigation as pending, and stays open otherwise.
+			overrides["debugger.sendCommand"] = async (_target, method) => {
+				if (method === "Page.enable") return new Promise(() => {});
+				return {};
+			};
+			for (const pending of [true, false]) {
+				await reset();
+				removeCalls = 0;
+				setWin({ id: 1, type: "normal", focused: true });
+				const tab = { id: 39, windowId: 1, active: true, url: "about:blank", title: "" };
+				if (pending) tab.pendingUrl = "https://slow.test/";
+				setTab(tab);
+				const socket = new MockWebSocket(); socket.readyState = MockWebSocket.OPEN; T.state.socket = socket;
+				const startedAt = Date.now();
+				await T.handle({ id: "close-pending-" + pending, type: "close_tab", params: { tabId: 39 } });
+				const elapsed = Date.now() - startedAt;
+				if (pending) {
+					check("a tab whose navigation is pending closes through the tabs API",
+						elapsed < 4000 && socket.sent.length === 1 && socket.sent[0]?.ok === true &&
+						removeCalls === 1 && !model.tabs.has(39));
+				} else {
+					check("an unanswered Page.enable without a pending navigation leaves the tab open",
+						elapsed < 4000 && socket.sent.length === 1 && socket.sent[0]?.ok === false &&
+						socket.sent[0]?.error?.includes("Page.enable timed out") && removeCalls === 0 && model.tabs.has(39));
+				}
+			}
 		} finally {
 			sandbox.setTimeout = savedSetTimeout;
 			sandbox.clearTimeout = savedClearTimeout;

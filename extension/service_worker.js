@@ -2033,7 +2033,26 @@ async function handle(message) {
         // skipRevive avoids flashing a frozen/background tab active just to
         // close it. requirePageEvents makes Page.enable a hard prerequisite:
         // without its dialog event an unsaved page can wedge forever.
-        await attach(tabId, { skipRevive: true, requirePageEvents: true });
+        try {
+          await promiseWithin(
+            attach(tabId, { skipRevive: true, requirePageEvents: true }),
+            CLOSE_TAB_BUDGET_MS,
+            `Page.enable timed out after ${CLOSE_TAB_BUDGET_MS}ms`
+          );
+        } catch (error) {
+          // Chrome answers no debugger command on a tab whose navigation is
+          // still waiting for its server, so Page.enable never settles. The
+          // document being replaced already ran beforeunload when that
+          // navigation began, so the tabs API can close it without a prompt.
+          // Any other failure keeps the tab open, as above.
+          const current = await chrome.tabs.get(tabId).catch(() => null);
+          if (!current?.pendingUrl) throw error;
+          forceDetach(tabId).catch(() => {});
+          chrome.tabs.remove(tabId).catch(() => {});
+          if (!(await waitForTabGone(tabId, CLOSE_TAB_SETTLE_MS))) throw error;
+          send({ id: message.id, ok: true, result: { closed: tabId } });
+          return;
+        }
         markActing(tabId);
         const closeDeadline = Date.now() + CLOSE_TAB_BUDGET_MS;
         let closeError = null;
