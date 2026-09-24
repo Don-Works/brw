@@ -58,6 +58,12 @@ const BRW_ACTING_WINDOW_MS = 8 * 1000;
 // pending forever. Bound command + disappearance confirmation to one budget so
 // a single dirty tab cannot strand its request handler indefinitely.
 const CLOSE_TAB_BUDGET_MS = 2 * 1000;
+// An install writes the unpacked payload one file at a time, so a new manifest
+// is only trusted once it has stayed put this long. SELF_UPDATE_RETRY_MS stops a
+// payload Chrome refuses to load from being retried on every alarm tick.
+const SELF_UPDATE_SETTLE_MS = 5 * 1000;
+const SELF_UPDATE_RETRY_MS = 10 * 60 * 1000;
+const SELF_UPDATE_KEY = "brwSelfUpdate";
 // The daemon deliberately keeps a 4 MiB WebSocket read limit per frame. Large
 // snapshots/PDF responses therefore travel as independently bounded base64
 // frames, while the receiver enforces the matching aggregate limit. Two MiB of
@@ -168,6 +174,10 @@ const state = {
   // same time. Set only by agent intent (open_tab / focus_tab); cleared when that
   // tab closes or stops being controllable.
   agentTabId: null,
+  // handling counts daemon commands still being executed, so a self-update
+  // reload never lands in the middle of one.
+  handling: 0,
+  selfUpdateCheck: null,
   reconnectAttempt: 0,
   // acceptedSocket is the socket the daemon has accepted. An open socket is not
   // a live bridge until then, and the badge must not go green for it.
@@ -1079,6 +1089,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "brw-connect") {
     ensureOffscreen();
     connect({ probe: true });
+    selfUpdateIfStale().catch(() => {});
   }
 });
 chrome.runtime.onSuspend.addListener(() => {
@@ -1288,6 +1299,53 @@ dropOrphanedRouteRules().catch(() => {});
 markBridgeStatus("starting").catch(() => {});
 connect();
 
+// onDiskBuild is the manifest version of the payload directory this extension
+// was loaded from. Chrome serves an unpacked extension's files from disk on
+// every request, so this is what a reload would run, while getManifest() is
+// what is running now.
+async function onDiskBuild() {
+  try {
+    const response = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" });
+    if (!response.ok) return "";
+    const manifest = await response.json();
+    return String(manifest?.version || "");
+  } catch (_) {
+    return "";
+  }
+}
+
+function selfUpdateBusy() {
+  return state.handling > 0 || isAgentActive();
+}
+
+// selfUpdateIfStale reloads the extension when an install has put a different
+// build on disk than the one running. Without it a browser keeps executing the
+// old payload until someone clicks Reload. It waits for the agent to go idle,
+// and the reload fires onInstalled, which reconnects the bridge.
+function selfUpdateIfStale(options = {}) {
+  if (state.selfUpdateCheck) return state.selfUpdateCheck;
+  state.selfUpdateCheck = selfUpdateCheckOnce(options).finally(() => {
+    state.selfUpdateCheck = null;
+  });
+  return state.selfUpdateCheck;
+}
+
+async function selfUpdateCheckOnce({ settleMs = SELF_UPDATE_SETTLE_MS, now = Date.now } = {}) {
+  const loaded = (chrome.runtime.getManifest?.() || {}).version || "";
+  const disk = await onDiskBuild();
+  if (!loaded || !disk || disk === loaded) return "current";
+  if (selfUpdateBusy()) return "busy";
+  const stored = await chrome.storage.local.get(SELF_UPDATE_KEY).catch(() => ({}));
+  const last = stored?.[SELF_UPDATE_KEY];
+  if (last?.to === disk && now() - Number(last.at || 0) < SELF_UPDATE_RETRY_MS) return "held";
+  if (settleMs > 0) await new Promise((resolve) => setTimeout(resolve, settleMs));
+  if ((await onDiskBuild()) !== disk) return "settling";
+  if (selfUpdateBusy()) return "busy";
+  await chrome.storage.local.set({ [SELF_UPDATE_KEY]: { from: loaded, to: disk, at: now() } });
+  chrome.runtime.reload();
+  return "reloading";
+}
+
 async function connect(options = {}) {
   if (!(await hasBrowserControlConsent())) {
     if (state.socket) await disconnectForConsent();
@@ -1413,6 +1471,7 @@ async function connectOnce() {
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
     if (tabs[0]?.id) await publishActiveTab(tabs[0].id);
     probeDaemonStatus().catch(() => {});
+    selfUpdateIfStale().catch(() => {});
   };
   socket.onclose = (event) => {
     if (state.socket !== socket) return;
@@ -1456,7 +1515,12 @@ async function connectOnce() {
       send({ id: null, ok: false, error: String(error) });
       return;
     }
-    await handle(message);
+    state.handling += 1;
+    try {
+      await handle(message);
+    } finally {
+      state.handling -= 1;
+    }
   };
 }
 

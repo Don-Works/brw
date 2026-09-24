@@ -173,6 +173,9 @@ src += `
   inlineDocumentRewrite,
   inlineDocumentBodyWithinLimit,
   fetchPatternsForTab,
+  selfUpdateIfStale,
+  SELF_UPDATE_KEY,
+  SELF_UPDATE_RETRY_MS,
   RESPONSE_DIRECT_MAX_BYTES,
   RESPONSE_CHUNK_BYTES,
   RESPONSE_TOTAL_MAX_BYTES,
@@ -1869,6 +1872,61 @@ async function scenarioRefusedBridgeDoesNotFlapTheBadge() {
   }
 }
 
+// An install replaces the unpacked payload on disk, but Chrome keeps running
+// the code it loaded until the extension reloads. The worker compares the two
+// and reloads itself, but never mid-command, never while an agent is working,
+// and never twice in a row for a build Chrome would not load.
+async function scenarioSelfUpdateReloadsAStalePayload() {
+  await reset();
+  const savedFetch = sandbox.fetch;
+  const savedGet = overrides["storage.local.get"];
+  const savedSet = overrides["storage.local.set"];
+  let disk = "0.7.3";
+  let reloads = 0;
+  let stored = {};
+  try {
+    overrides["runtime.getManifest"] = () => ({ version: "0.7.2" });
+    overrides["runtime.reload"] = () => { reloads += 1; };
+    overrides["storage.local.get"] = async (key) => key === T.SELF_UPDATE_KEY ? stored : {};
+    overrides["storage.local.set"] = async (value) => { stored = { ...stored, ...value }; };
+    sandbox.fetch = async (url) => {
+      if (String(url) !== "mock://manifest.json") return { ok: false, json: async () => ({}) };
+      return { ok: true, json: async () => ({ version: disk }) };
+    };
+    const at = 1_000_000;
+    const run = (now = at) => T.selfUpdateIfStale({ settleMs: 0, now: () => now });
+
+    disk = "0.7.2";
+    check("a payload matching the running build is left alone", (await run()) === "current" && reloads === 0);
+
+    disk = "0.7.3";
+    T.state.handling = 1;
+    check("a reload waits for the command in progress", (await run()) === "busy" && reloads === 0);
+    T.state.handling = 0;
+    T.state.lastAgentActivityAt = Date.now();
+    check("a reload waits for an active agent to go idle", (await run()) === "busy" && reloads === 0);
+    T.state.lastAgentActivityAt = 0;
+
+    check("an idle worker reloads onto the newer payload",
+      (await run()) === "reloading" && reloads === 1 && stored[T.SELF_UPDATE_KEY]?.to === "0.7.3");
+    check("a build that did not take is not retried on every tick",
+      (await run(at + 1000)) === "held" && reloads === 1);
+    check("it is retried once the hold expires",
+      (await run(at + T.SELF_UPDATE_RETRY_MS + 1)) === "reloading" && reloads === 2);
+
+    sandbox.fetch = async () => { throw new Error("unreadable"); };
+    check("an unreadable payload never triggers a reload", (await run(at * 10)) === "current" && reloads === 2);
+  } finally {
+    delete overrides["runtime.getManifest"];
+    delete overrides["runtime.reload"];
+    overrides["storage.local.get"] = savedGet;
+    overrides["storage.local.set"] = savedSet;
+    sandbox.fetch = savedFetch;
+    T.state.handling = 0;
+    T.state.lastAgentActivityAt = 0;
+  }
+}
+
 (async () => {
   await scenarioConsentGateIsFailClosed();
   await scenarioPinBeatsForeground();
@@ -1900,6 +1958,7 @@ async function scenarioRefusedBridgeDoesNotFlapTheBadge() {
   await scenarioHelloReportsTheEndpointActuallyInUse();
   await scenarioStoredConfigChangeKeepsThePackagedEndpoint();
   await scenarioRefusedBridgeDoesNotFlapTheBadge();
+  await scenarioSelfUpdateReloadsAStalePayload();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })();

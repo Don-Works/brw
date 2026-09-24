@@ -17,6 +17,7 @@ import (
 
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/discovery"
+	"github.com/Don-Works/brw/internal/mcp"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/setup"
 )
@@ -112,8 +113,11 @@ type doctorRequest struct {
 	// MCP registration ought to name, so a registration left behind by an
 	// install that has since moved reads as stale instead of as fine.
 	Executable string
-	Runner     commandRunner
-	Timeout    time.Duration
+	// Version is the installed build, the one a daemon should be running.
+	// "dev" or empty skips the daemon build comparison.
+	Version string
+	Runner  commandRunner
+	Timeout time.Duration
 	// SkipLiveChecks leaves the daemon and the bridge unprobed. `brwctl setup`
 	// sets it because loading the extension is the first thing setup tells the
 	// operator to do by hand afterwards: probing a bridge nothing has connected
@@ -166,6 +170,7 @@ func doctor(args []string) error {
 		AppDir:       appDir,
 		Home:         home,
 		Executable:   executable,
+		Version:      mcp.Version,
 		Timeout:      timeout,
 		ResolveError: resolveErr,
 	})
@@ -478,14 +483,38 @@ func (d *doctorRun) checkBridgeExtension() {
 // extension in a running browser profile, so the closest thing to a next
 // command is opening the page with the work already named.
 func (d *doctorRun) extensionsPageCommand(note string) string {
+	kind := d.browserKind()
 	if d.req.GOOS == "darwin" {
-		return fmt.Sprintf("open -a %q chrome://extensions   # %s", setup.BrowserDisplayName(d.profile.Kind), note)
+		if kind == "" {
+			return "open chrome://extensions in the profile's browser   # " + note
+		}
+		return fmt.Sprintf("open -a %q chrome://extensions   # %s", setup.BrowserDisplayName(kind), note)
 	}
 	exe := d.result.BrowserExecutable
 	if exe == "" {
-		exe = d.profile.Kind
+		exe = kind
 	}
 	return exe + " chrome://extensions   # " + note
+}
+
+// browserKind is the profile's browser. A hand-written policy often omits kind,
+// so it is recovered from the user data directory when that is a browser's
+// default one.
+func (d *doctorRun) browserKind() string {
+	if d.profile.Kind != "" {
+		return d.profile.Kind
+	}
+	dir := filepath.Clean(d.profile.UserDataDir)
+	for _, name := range setup.BrowserNames() {
+		known := setup.BrowserUserDataDir(d.req.GOOS, name)
+		if rest, ok := strings.CutPrefix(known, "~/"); ok {
+			known = filepath.Join(d.req.Home, rest)
+		}
+		if known != "" && filepath.Clean(known) == dir {
+			return name
+		}
+	}
+	return ""
 }
 
 func (d *doctorRun) loadUnpackedCommand() string {
@@ -519,10 +548,16 @@ func (d *doctorRun) serviceParams() setup.ServiceParams {
 // is sent to setup instead.
 func (d *doctorRun) serviceRestartCommand() string {
 	params := d.serviceParams()
-	if _, err := os.Stat(params.UnitPath()); err != nil {
-		return "brwctl setup" + d.workspaceFlag()
+	if _, err := os.Stat(params.UnitPath()); err == nil {
+		return serviceRestartCommand(d.req.GOOS, params)
 	}
-	return serviceRestartCommand(d.req.GOOS, params)
+	brwd := filepath.Join(d.req.AppDir, "bin", "brwd")
+	for _, unit := range brwdServiceUnits(d.req.GOOS, d.req.Home, brwd) {
+		if unitProfile(unit) == d.result.Profile {
+			return setup.Command(serviceRestartArgsForLabel(d.req.GOOS, unit.Label))
+		}
+	}
+	return "brwctl setup" + d.workspaceFlag()
 }
 
 func serviceRestartCommand(goos string, params setup.ServiceParams) string {
@@ -555,7 +590,20 @@ func (d *doctorRun) checkDaemon() {
 		return
 	}
 	d.health = &health
+	if want := d.req.Version; want != "" && want != "dev" && health.Version != want {
+		running := "a build that does not report its version"
+		if health.Version != "" {
+			running = "build " + health.Version
+		}
+		d.add(checkFail, "daemon", "daemon",
+			fmt.Sprintf("%s is up but runs %s; the installed build is %s", url, running, want),
+			d.serviceRestartCommand())
+		return
+	}
 	detail := url + " is up"
+	if health.Version != "" {
+		detail += " on build " + health.Version
+	}
 	if health.TabLeases.ActiveTabs > 0 {
 		detail += fmt.Sprintf(", %d tab lease(s) held, %d request(s) in flight", health.TabLeases.ActiveTabs, health.TabLeases.InFlight)
 	}
@@ -891,6 +939,7 @@ func (d *doctorRun) checkNamed(name string) (doctorCheck, bool) {
 // TabLeases is what says whether an agent is mid-operation right now.
 type daemonHealth struct {
 	OK        bool                 `json:"ok"`
+	Version   string               `json:"version"`
 	Identity  brwidentity.Identity `json:"identity"`
 	TabLeases tabLeaseStats        `json:"tab_leases"`
 }

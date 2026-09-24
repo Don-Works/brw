@@ -820,7 +820,9 @@ brwctl upgrade           # replace this install with it
 `upgrade` resolves the latest release, verifies the archive's SHA256 against the
 published checksum and its GitHub build provenance with `gh attestation verify`
 when `gh` is installed, then replaces the binaries and the extension payload,
-refreshes every per-profile extension copy, and restarts the per-user daemons.
+refreshes every per-profile extension copy, and restarts the per-user daemons:
+the unit `brwctl setup` wrote for each profile, and any other launchd agent or
+systemd user unit, whatever its label, whose program is this install's `brwd`.
 The verification rules are the ones `install.sh` uses: an archive with no
 published checksum, a checksum that does not match, or a provenance check that
 runs and fails all abort before anything on disk is replaced. Unpacking also
@@ -833,8 +835,26 @@ It refuses while a daemon reports work in flight rather than pulling the binary
 out from under a running agent; `--force` overrides that. `--refresh-extensions`
 re-syncs the per-profile extension copies from the installed payload without
 downloading anything, which is what `doctor` sends you to when one has fallen
-behind. Reload the extension in the browser afterwards (`chrome://extensions`,
-Reload) so it runs the payload the upgrade wrote.
+behind.
+
+Nothing has to be reloaded by hand afterwards, whichever way the new build
+arrived (`upgrade`, `install.sh`, `task install-mac`, a package manager):
+
+- A bridge daemon running under launchd or systemd watches its own executable.
+  Once an install has replaced it, the new file has stayed put for two polls
+  (about ten seconds) and no request is in flight, it exits and the service
+  manager starts the new build. `--exit-on-upgrade on|off` (or
+  `BRW_EXIT_ON_UPGRADE`) overrides the default, `auto`, which enables it only
+  under a service manager: a daemon started from a terminal would stay down.
+- The extension compares the build it is running with `manifest.json` in the
+  directory it was loaded from, on every bridge connect and every 30 seconds.
+  When they differ, no command is running and the agent has been idle for ten
+  seconds, it reloads itself. A reload to the same build is not retried for ten
+  minutes, so a payload Chrome refuses to load cannot put it in a loop.
+
+`brwctl doctor` fails the `daemon` check when the daemon's `/health` reports a
+different build from the installed `brwctl`, and the `extension version` check
+when the loaded extension differs from the payload on disk.
 
 Every refusal above happens before the swap, so the install is left exactly as
 it was. Once the swap has begun, each payload directory is removed and then

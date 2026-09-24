@@ -84,6 +84,7 @@ type Bridge struct {
 	// reconnect waiters and handlers that raced the HTTP shutdown from
 	// registering new work after the pending/chunk maps have been drained.
 	shuttingDown bool
+	acceptLog    acceptLogLimiter
 	hello        hello
 	active       string
 	// agentPinKnown is true only after the CURRENT connection has
@@ -695,6 +696,17 @@ func (b *Bridge) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
+// Busy reports whether any RPC is on the wire, queued for a slot, or awaiting
+// the extension's response.
+func (b *Bridge) Busy() bool {
+	if b.inflight.Load() > 0 || b.queued.Load() > 0 {
+		return true
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.pending) > 0
+}
+
 // isLoopbackHostname reports whether the Host header (with optional port) refers
 // to a loopback name/IP.
 func isLoopbackHostname(hostport string) bool {
@@ -752,7 +764,13 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		OriginPatterns: originPatterns,
 	})
 	if err != nil {
-		log.Printf("extension websocket accept: %v", err)
+		if ok, skipped := b.acceptLog.admit(r.Header.Get("Origin"), time.Now()); ok {
+			if skipped > 0 {
+				log.Printf("extension websocket accept: %v (%d more from this origin since the last line)", err, skipped)
+			} else {
+				log.Printf("extension websocket accept: %v", err)
+			}
+		}
 		return
 	}
 	conn.SetReadLimit(extensionFrameReadLimitBytes)

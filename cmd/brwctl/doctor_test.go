@@ -48,6 +48,8 @@ type doctorFixture struct {
 	// no DevToolsActivePort file by default, so the suite's result does not
 	// depend on whether the person running it has the opt-in switched on.
 	optInDir string
+	// version is the installed build the report compares the daemon against.
+	version string
 }
 
 func newDoctorFixture(t *testing.T) *doctorFixture {
@@ -179,9 +181,72 @@ func (fx *doctorFixture) report() doctorResult {
 		Home:                   fx.home,
 		GOOS:                   "linux",
 		Executable:             filepath.Join(fx.appDir, "bin", "brwctl"),
+		Version:                fx.version,
 		Runner:                 fx.runner,
 		ChromeOptInUserDataDir: fx.optInDir,
 	})
+}
+
+// TestDoctorFlagsADaemonOnAReplacedBuild: an install replaces the binary on
+// disk, and a daemon that was never restarted keeps serving the old one with
+// every other check green.
+func TestDoctorFlagsADaemonOnAReplacedBuild(t *testing.T) {
+	cases := []struct {
+		name       string
+		installed  string
+		running    string
+		handMade   bool
+		wantStatus string
+		wantDetail string
+		wantFix    string
+	}{
+		{name: "daemon on the installed build", installed: "1.2.0", running: "1.2.0", wantStatus: checkOK, wantDetail: "on build 1.2.0"},
+		{name: "daemon on an older build", installed: "1.2.0", running: "1.1.0", wantStatus: checkFail, wantDetail: "runs build 1.1.0; the installed build is 1.2.0", wantFix: "systemctl --user restart"},
+		{name: "daemon too old to report a build", installed: "1.2.0", wantStatus: checkFail, wantDetail: "does not report its version"},
+		{name: "development brwctl", installed: "dev", running: "1.1.0", wantStatus: checkOK},
+		{name: "hand-made unit is named in the fix", installed: "1.2.0", running: "1.1.0", handMade: true, wantStatus: checkFail, wantFix: "systemctl --user restart hand-made.service"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newDoctorFixture(t)
+			fx.version = tc.installed
+			fx.health.Version = tc.running
+			if tc.handMade {
+				if err := os.Remove(setup.ServiceParams{GOOS: "linux", Profile: fixtureProfile, Home: fx.home}.UnitPath()); err != nil {
+					t.Fatal(err)
+				}
+				fx.writeFile(filepath.Join(fx.home, ".config/systemd/user/hand-made.service"),
+					"[Service]\nExecStart=\""+filepath.Join(fx.appDir, "bin", "brwd")+"\" --profile "+fixtureProfile+"\n")
+			}
+			check := checkByName(t, fx.report(), "daemon")
+			if check.Status != tc.wantStatus || !strings.Contains(check.Detail, tc.wantDetail) || !strings.Contains(check.Fix, tc.wantFix) {
+				t.Fatalf("daemon check = %+v, want %s containing %q, fix containing %q", check, tc.wantStatus, tc.wantDetail, tc.wantFix)
+			}
+		})
+	}
+}
+
+// TestDoctorExtensionsPageNamesTheBrowser: a hand-written policy often has no
+// kind, and the fix line used to read `open -a ""`, which opens nothing.
+func TestDoctorExtensionsPageNamesTheBrowser(t *testing.T) {
+	home := t.TempDir()
+	cases := []struct {
+		name    string
+		profile profilepolicy.Profile
+		want    string
+	}{
+		{name: "kind set", profile: profilepolicy.Profile{Kind: setup.BrowserChrome}, want: `open -a "Google Chrome" chrome://extensions`},
+		{name: "kind from a default user data dir", profile: profilepolicy.Profile{UserDataDir: home + "/Library/Application Support/Chromium"}, want: `open -a "Chromium" chrome://extensions`},
+		{name: "unknown browser", profile: profilepolicy.Profile{UserDataDir: home + "/custom"}, want: "open chrome://extensions in the profile's browser"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &doctorRun{req: doctorRequest{GOOS: "darwin", Home: home}, profile: tc.profile}
+			if got := d.reloadExtensionCommand(); !strings.HasPrefix(got, tc.want) {
+				t.Fatalf("command = %q, want prefix %q", got, tc.want)
+			}
+		})
+	}
 }
 
 func checkByName(t *testing.T, report doctorResult, name string) doctorCheck {
