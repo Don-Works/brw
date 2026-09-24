@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestNormalBridgeDisconnectIsNotLoggedAsFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
 	defer srv.Close()
 
-	var logs bytes.Buffer
+	var logs lockedLogBuffer
 	previousLogOutput := log.Writer()
 	log.SetOutput(&logs)
 	defer log.SetOutput(previousLogOutput)
@@ -116,10 +117,31 @@ func TestNormalBridgeDisconnectIsNotLoggedAsFailure(t *testing.T) {
 	if disconnectReason != "normal closure" {
 		t.Fatalf("disconnectReason = %q, want canonical normal closure", disconnectReason)
 	}
+	// The handler logs the lifecycle line after it records the usage event, on
+	// its own goroutine, so wait for it rather than read a half-written log.
+	waitUntil(t, func() bool {
+		return strings.Contains(logs.String(), "extension bridge disconnected cleanly: normal closure")
+	})
 	if strings.Contains(logs.String(), "PRIVATE_CLOSE_REASON") || strings.Contains(logs.String(), "extension bridge read:") {
 		t.Fatalf("normal-close logs retained peer text or duplicate read failure: %s", logs.String())
 	}
-	if !strings.Contains(logs.String(), "extension bridge disconnected cleanly: normal closure") {
-		t.Fatalf("normal-close log missing clean lifecycle message: %s", logs.String())
-	}
+}
+
+// lockedLogBuffer is a log destination the test can read while the bridge's
+// handler goroutine is still writing to it.
+type lockedLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *lockedLogBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedLogBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
 }
