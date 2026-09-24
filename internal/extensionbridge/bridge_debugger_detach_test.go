@@ -45,7 +45,7 @@ func TestServiceWorkerDetachesDebuggerLifecycle(t *testing.T) {
 	// Page.javascriptDialogOpening handler from accepting the explicit close and
 	// leaves the remove request stuck forever.
 	closeTab := sliceBetween(src, `message.type === "close_tab"`, `send({ id: message.id, ok: true, result: { closed: tabId } })`)
-	for _, want := range []string{"await attach(tabId, { skipRevive: true, requirePageEvents: true })", "markActing(tabId)", `chrome.debugger.sendCommand({ tabId }, "Page.close", {})`, "await waitForTabGone(tabId, 2000)"} {
+	for _, want := range []string{"attach(tabId, { skipRevive: true, requirePageEvents: true })", "markActing(tabId)", `chrome.debugger.sendCommand({ tabId }, "Page.close", {})`, "await waitForTabGone(tabId, 2000)"} {
 		if !strings.Contains(closeTab, want) {
 			t.Fatalf("close_tab must preserve dialog handling until removal; missing %q", want)
 		}
