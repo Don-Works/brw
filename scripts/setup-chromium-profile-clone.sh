@@ -8,7 +8,7 @@
 # steps that need a human: the macOS Keychain approval (GUI) when reading Chrome's
 # Safe Storage secret, and pointing the clone's extension at its bridge port.
 #
-#   setup-chromium-profile-clone.sh --profile-dir "Profile 2" --name max-personal [--http-port 17510] [--apply]
+#   setup-chromium-profile-clone.sh --profile-dir "Profile 2" --name personal [--http-port 17510] [--apply]
 #
 # Dry-run by default: prints the plan and writes nothing until --apply.
 set -euo pipefail
