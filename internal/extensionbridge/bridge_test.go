@@ -931,7 +931,9 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// 0.7.4 adds navigation_outcome: the status, auth challenge and net error of
 	// the last navigation the daemon armed. Additive: the daemon falls back to the
 	// committed frame URL when an older extension answers "unknown message type".
-	const wantManifest = "0.7.4"
+	// 0.7.5 keeps watching an accepted close_tab for removal past the 2s close
+	// budget, so a tab Chrome closes late is reported closed, not failed.
+	const wantManifest = "0.7.5"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}
