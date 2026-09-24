@@ -179,6 +179,7 @@ code {
 }
 
 .popup[data-state="disconnected"],
+.popup[data-state="rejected"],
 .popup[data-state="error"] {
   --state: var(--bad);
   --state-line: var(--bad-line);
@@ -480,6 +481,7 @@ code {
 /* Reconnect is the one thing a popup is opened to do when something is wrong,
  * so it carries the single accent — and only while it would actually help. */
 .popup[data-state="disconnected"] #reconnect,
+.popup[data-state="rejected"] #reconnect,
 .popup[data-state="error"] #reconnect,
 .popup[data-state="consent"] #reconnect {
   color: var(--accent-ink);

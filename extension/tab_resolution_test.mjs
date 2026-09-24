@@ -175,7 +175,8 @@ src += `
   fetchPatternsForTab,
   RESPONSE_DIRECT_MAX_BYTES,
   RESPONSE_CHUNK_BYTES,
-  RESPONSE_TOTAL_MAX_BYTES
+  RESPONSE_TOTAL_MAX_BYTES,
+  BRIDGE_ACCEPT_GRACE_MS
 };`;
 
 vm.createContext(sandbox);
@@ -1756,6 +1757,87 @@ async function scenarioStoredConfigChangeKeepsThePackagedEndpoint() {
   }
 }
 
+// A daemon that refuses this browser (another profile holds the bridge, or the
+// hello fails authentication) closes the socket right after it opens. The badge
+// must hold one steady Refused state across retries instead of cycling
+// Idle / Down / Reconnecting, and goes green only once the daemon accepts.
+async function scenarioRefusedBridgeDoesNotFlapTheBadge() {
+  await reset();
+  const savedGet = overrides["storage.local.get"];
+  const savedFetch = sandbox.fetch;
+  const savedBadge = overrides["action.setBadgeText"];
+  const savedSetTimeout = sandbox.setTimeout;
+  const consent = { granted: true, version: 1, grantedAt: "2026-09-10T00:00:00.000Z" };
+  const badges = [];
+  const timers = [];
+  try {
+    T.setPackagedDefaults({});
+    overrides["storage.local.get"] = async (key) =>
+      key === "brwBrowserControlConsent" ? { brwBrowserControlConsent: consent } : {};
+    overrides["action.setBadgeText"] = async ({ text }) => { badges.push(text); };
+    sandbox.fetch = async () => ({ ok: true, json: async () => ({ token: "t", connected: true }) });
+    sandbox.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+    T.state.reportedStatus = "disconnected";
+    T.state.reconnectAttempt = 0;
+    T.state.lastAgentActivityAt = 0;
+
+    const openThenClose = async (code, reason) => {
+      T.state.socket = null;
+      await T.connect({ probe: true });
+      const socket = T.state.socket;
+      socket.readyState = MockWebSocket.OPEN;
+      await socket.onopen();
+      socket.readyState = MockWebSocket.CLOSED;
+      socket.onclose({ code, reason });
+      await settle();
+    };
+
+    await openThenClose(1013, "another extension already holds this bridge (flap-hold active)");
+    check("a flap-hold refusal reports rejected, not connected",
+      T.state.reportedStatus === "rejected" && /another browser profile/.test(T.state.lastError));
+    badges.length = 0;
+    await openThenClose(1013, "another extension already holds this bridge (flap-hold active)");
+    await openThenClose(1013, "another extension already holds this bridge (flap-hold active)");
+    check("repeated refusals never show Idle, Down or Reconnecting",
+      badges.length > 0 && badges.every((text) => text === "!"));
+    const status = await T.bridgeDebugStatus();
+    check("the popup sees the refused socket as not open",
+      status.socket !== "open" && status.badge === "rejected");
+
+    await openThenClose(1008, "handshake failed");
+    check("a handshake refusal is also reported as rejected",
+      T.state.reportedStatus === "rejected" && /refused the handshake/.test(T.state.lastError));
+
+    // The daemon accepts: the socket stays open past the grace timer.
+    T.state.socket = null;
+    timers.length = 0;
+    badges.length = 0;
+    await T.connect({ probe: true });
+    const socket = T.state.socket;
+    socket.readyState = MockWebSocket.OPEN;
+    await socket.onopen();
+    check("an open socket is not Idle before the daemon accepts it",
+      T.state.reportedStatus === "rejected" && !badges.includes("on"));
+    timers.find((t) => t.ms === T.BRIDGE_ACCEPT_GRACE_MS)?.fn();
+    await settle();
+    check("an accepted socket goes Idle and clears the refusal",
+      T.state.reportedStatus === "connected" && badges.at(-1) === "on" &&
+      T.state.lastError === "" && T.state.reconnectAttempt === 0);
+    check("a close after acceptance is an ordinary drop, not a refusal",
+      (() => { socket.readyState = MockWebSocket.CLOSED; socket.onclose({ code: 1013 }); return T.state.reportedStatus === "disconnected"; })());
+  } finally {
+    overrides["storage.local.get"] = savedGet;
+    overrides["action.setBadgeText"] = savedBadge;
+    sandbox.fetch = savedFetch;
+    sandbox.setTimeout = savedSetTimeout;
+    T.setPackagedDefaults(null);
+    T.state.socket = null;
+    T.state.acceptedSocket = null;
+    T.state.lastError = "";
+    T.state.reportedStatus = "starting";
+  }
+}
+
 (async () => {
   await scenarioConsentGateIsFailClosed();
   await scenarioPinBeatsForeground();
@@ -1786,6 +1868,7 @@ async function scenarioStoredConfigChangeKeepsThePackagedEndpoint() {
   await scenarioSiteConsentSurface();
   await scenarioHelloReportsTheEndpointActuallyInUse();
   await scenarioStoredConfigChangeKeepsThePackagedEndpoint();
+  await scenarioRefusedBridgeDoesNotFlapTheBadge();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })();

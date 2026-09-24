@@ -922,7 +922,9 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// response (an attachment-flagged JSON body, a CSV) as the page instead of
 	// leaving an empty tab. Additive: the daemon ignores an older extension's
 	// "unknown message type" and navigates exactly as before.
-	const wantManifest = "0.7.1"
+	// 0.7.2 holds the badge on Refused while the daemon closes each new socket
+	// with 1013 or 1008, instead of cycling Idle/Down/Reconnecting. No wire change.
+	const wantManifest = "0.7.2"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

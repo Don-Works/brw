@@ -4,6 +4,7 @@ const LEXICON = {
   connected: { state: "connected", label: "Idle", heading: "Idle", summary: "" },
   used: { state: "used", label: "Agent active", heading: "Agent active", summary: "An agent is driving a page in this browser right now." },
   consent: { state: "consent", label: "Not enabled", heading: "Enable browser control", summary: "Open Options to review the data disclosure and enable the local bridge." },
+  rejected: { state: "rejected", label: "Refused", heading: "Refused by the daemon", summary: "" },
   connecting: { state: "connecting", label: "Reconnecting", heading: "Reconnecting", summary: "Retrying automatically. Use Reconnect if this sticks." },
   disconnected: { state: "disconnected", label: "Down", heading: "Down", summary: "" },
   error: { state: "error", label: "Down", heading: "Worker unavailable", summary: "" },
@@ -133,6 +134,7 @@ function render(status, announce) {
   if (!consentGranted) mode = "consent";
   else if (badge === "used" || (connected && status.agentActive)) mode = "used";
   else if (connected) mode = "connected";
+  else if (badge === "rejected") mode = "rejected";
   else if (connecting) mode = "connecting";
 
   const name = profileName(status);
@@ -144,6 +146,8 @@ function render(status, announce) {
       : `Extension and daemon connected${port ? ` · :${port}` : ""}.`;
   } else if (mode === "disconnected") {
     summary = actionable(status);
+  } else if (mode === "rejected") {
+    summary = bridge.lastError ? humanize(bridge.lastError) : actionable(status);
   }
 
   reconnectButton.textContent = consentGranted ? "Reconnect" : "Enable in Options";
@@ -177,7 +181,7 @@ function render(status, announce) {
     }
   }
 
-  if (announce && mode === "disconnected") setMessage(summary, "error");
+  if (announce && (mode === "disconnected" || mode === "rejected")) setMessage(summary, "error");
   if (!announce && mode === "connected" && formMessage.dataset.kind !== "success") {
     clearMessage();
   }
@@ -203,6 +207,7 @@ function lexiconName(mode) {
   if (mode === "connected") return "Idle";
   if (mode === "connecting") return "Reconnecting";
   if (mode === "consent") return "Not enabled";
+  if (mode === "rejected") return "Refused";
   return "Down";
 }
 
