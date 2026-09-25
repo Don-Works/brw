@@ -178,6 +178,7 @@ src += `
   selfUpdateIfStale,
   SELF_UPDATE_KEY,
   SELF_UPDATE_RETRY_MS,
+  SELF_UPDATE_MAX_DEFER_MS,
   RESPONSE_DIRECT_MAX_BYTES,
   RESPONSE_CHUNK_BYTES,
   RESPONSE_TOTAL_MAX_BYTES,
@@ -2125,6 +2126,15 @@ async function scenarioSelfUpdateReloadsAStalePayload() {
     T.state.handling = 0;
     T.state.lastAgentActivityAt = Date.now();
     check("a reload waits for an active agent to go idle", (await run()) === "busy" && reloads === 0);
+    T.state.handling = 1;
+    check("an overdue reload still waits for the command in flight",
+      (await run(at + T.SELF_UPDATE_MAX_DEFER_MS + 1)) === "busy" && reloads === 0);
+    T.state.handling = 0;
+    check("agents that never go idle cannot hold an update past the deferral",
+      (await run(at + T.SELF_UPDATE_MAX_DEFER_MS + 1)) === "reloading" && reloads === 1);
+    stored = {};
+    T.state.selfUpdatePending = null;
+    reloads = 0;
     T.state.lastAgentActivityAt = 0;
 
     check("an idle worker reloads onto the newer payload",

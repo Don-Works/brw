@@ -68,6 +68,10 @@ const CLOSE_TAB_SETTLE_MS = 8 * 1000;
 // is only trusted once it has stayed put this long. SELF_UPDATE_RETRY_MS stops a
 // payload Chrome refuses to load from being retried on every alarm tick.
 const SELF_UPDATE_SETTLE_MS = 5 * 1000;
+// Several agents sharing one browser can keep it "active" indefinitely, and an
+// update that waits for a quiet moment then never lands. Past this deferral it
+// waits only for the command in flight, not for the agents to go idle.
+const SELF_UPDATE_MAX_DEFER_MS = 5 * 60 * 1000;
 const SELF_UPDATE_RETRY_MS = 10 * 60 * 1000;
 const SELF_UPDATE_KEY = "brwSelfUpdate";
 // The daemon deliberately keeps a 4 MiB WebSocket read limit per frame. Large
@@ -184,6 +188,7 @@ const state = {
   // reload never lands in the middle of one.
   handling: 0,
   selfUpdateCheck: null,
+  selfUpdatePending: null,
   reconnectAttempt: 0,
   // acceptedSocket is the socket the daemon has accepted. An open socket is not
   // a live bridge until then, and the badge must not go green for it.
@@ -1370,8 +1375,8 @@ async function onDiskBuild() {
   }
 }
 
-function selfUpdateBusy() {
-  return state.handling > 0 || isAgentActive();
+function selfUpdateBusy(overdue = false) {
+  return state.handling > 0 || (!overdue && isAgentActive());
 }
 
 // selfUpdateIfStale reloads the extension when an install has put a different
@@ -1389,14 +1394,19 @@ function selfUpdateIfStale(options = {}) {
 async function selfUpdateCheckOnce({ settleMs = SELF_UPDATE_SETTLE_MS, now = Date.now } = {}) {
   const loaded = (chrome.runtime.getManifest?.() || {}).version || "";
   const disk = await onDiskBuild();
-  if (!loaded || !disk || disk === loaded) return "current";
-  if (selfUpdateBusy()) return "busy";
+  if (!loaded || !disk || disk === loaded) {
+    state.selfUpdatePending = null;
+    return "current";
+  }
+  if (state.selfUpdatePending?.to !== disk) state.selfUpdatePending = { to: disk, since: now() };
+  const overdue = now() - state.selfUpdatePending.since >= SELF_UPDATE_MAX_DEFER_MS;
+  if (selfUpdateBusy(overdue)) return "busy";
   const stored = await chrome.storage.local.get(SELF_UPDATE_KEY).catch(() => ({}));
   const last = stored?.[SELF_UPDATE_KEY];
   if (last?.to === disk && now() - Number(last.at || 0) < SELF_UPDATE_RETRY_MS) return "held";
   if (settleMs > 0) await new Promise((resolve) => setTimeout(resolve, settleMs));
   if ((await onDiskBuild()) !== disk) return "settling";
-  if (selfUpdateBusy()) return "busy";
+  if (selfUpdateBusy(overdue)) return "busy";
   await chrome.storage.local.set({ [SELF_UPDATE_KEY]: { from: loaded, to: disk, at: now() } });
   chrome.runtime.reload();
   return "reloading";
