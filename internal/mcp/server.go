@@ -37,6 +37,7 @@ var Version = "dev"
 
 type Server struct {
 	manager     browser.Controller
+	skew        versionSkew
 	artifacts   artifact.API
 	recipes     recipe.API
 	toolProfile string // all, core, minimal, or progressive auto
@@ -821,7 +822,7 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 		started := time.Now()
 		result, rpcErr := s.callTool(ctx, call.Name, call.Arguments)
 		s.recordToolUsage(call.Name, started, result, rpcErr)
-		return result, rpcErr
+		return withSkewNote(result, s.versionSkewNote(ctx)), rpcErr
 	default:
 		return nil, &rpcError{Code: -32601, Message: "method not found"}
 	}
