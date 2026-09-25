@@ -851,8 +851,15 @@ arrived (`upgrade`, `install.sh`, `task install-mac`, a package manager):
 - The extension compares the build it is running with `manifest.json` in the
   directory it was loaded from, on every bridge connect and every 30 seconds.
   When they differ, no command is running and the agent has been idle for ten
-  seconds, it reloads itself. A reload to the same build is not retried for ten
-  minutes, so a payload Chrome refuses to load cannot put it in a loop.
+  seconds, it reloads itself. Agents that never go idle cannot hold it back: five
+  minutes after it first sees the new build it waits only for the command in
+  flight. A reload to the same build is not retried for ten minutes, so a payload
+  Chrome refuses to load cannot put it in a loop.
+- An MCP proxy (`brwd --mcp --upstream-http …`, one per agent session) is the
+  exception. It builds the page scripts for WebMCP, reads and snapshots itself,
+  so it keeps its own build until the session reconnects. While its build differs
+  from the daemon's, every tool result carries a one-line `brw version skew`
+  note saying so; reconnect brw (`/mcp` in Claude Code) or start a new session.
 
 `brwctl doctor` fails the `daemon` check when the daemon's `/health` reports a
 different build from the installed `brwctl`, and the `extension version` check

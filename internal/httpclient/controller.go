@@ -68,6 +68,9 @@ type Health struct {
 	// It is the posture of the whole chain: a daemon that forwards to another
 	// merges that daemon's answer into its own before reporting it.
 	Consent *siteconsent.Posture `json:"consent,omitempty"`
+	// Version is the daemon's build. A proxy compares it with its own because
+	// it, not the daemon, builds the page scripts for WebMCP and reads.
+	Version string `json:"version,omitempty"`
 }
 
 func New(baseURL string, timeout time.Duration) (*Controller, error) {
@@ -175,6 +178,12 @@ func (c *Controller) SessionID() string { return c.sessionID }
 // OwnerID is the stable, non-secret tab-lease identity sent to the shared
 // daemon. It can outlive a disposable upstream proxy for the same agent session.
 func (c *Controller) OwnerID() string { return c.ownerID }
+
+// UpstreamVersion reports the build of the daemon this controller drives.
+func (c *Controller) UpstreamVersion(ctx context.Context) (string, error) {
+	health, err := c.Health(ctx)
+	return health.Version, err
+}
 
 func (c *Controller) Health(ctx context.Context) (Health, error) {
 	var out Health
