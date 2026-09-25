@@ -73,7 +73,7 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
       for (var i = 0; i < hosts.length; i++) {
         var sr = hosts[i].shadowRoot;
         if (sr) {
-          var st = visibleTextFrom(sr) || clean(sr.textContent || '');
+          var st = visibleTextFrom(sr);
           if (st) parts.push(st);
         }
       }
@@ -89,7 +89,12 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
     return r.width > 0 && r.height > 0;
   }
   function text(el) {
-    return clean(el ? (el.innerText || el.textContent || '') : '');
+    // innerText is '' for an element that renders nothing of its own, such as
+    // a body whose content lives in shadow roots. textContent there is the
+    // source of its <script>, <style> and <noscript> children, so it is only a
+    // fallback where innerText does not exist at all.
+    if (!el) return '';
+    return clean(typeof el.innerText === 'string' ? el.innerText : (el.textContent || ''));
   }
   function bestMain() {
     const body = document.body || document.documentElement;
