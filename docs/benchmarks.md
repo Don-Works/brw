@@ -153,7 +153,7 @@ script.
 ### A booking flow: page tools against the DOM
 
 ```
-darwin/arm64 Apple M4 Max | Chromium 152.0.7977.82, signed-in profile, extension bridge | brw 0.15.2   (3 runs per path, 2026-09-25)
+darwin/arm64 Apple M4 Max | Chromium (installed build on max-mac), signed-in profile, extension bridge | brw 0.15.2   (3 runs per path, 2026-09-25)
 ```
 
 **Target.** `https://revitt.co/book`, which registers five WebMCP tools,
