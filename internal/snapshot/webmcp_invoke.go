@@ -252,6 +252,14 @@ const webmcpRuntimeHelpers = FrameWalkHelpers + `
       var v = typeof src[k] === 'boolean' ? src[k] : src[bare];
       if (typeof v === 'boolean') { out = out || {}; out[k] = v; }
     }
+    // Chromium's native getTools passes readOnlyHint and untrustedContentHint
+    // through and drops consequentialHint, so a booking or checkout tool reads as
+    // merely "not read-only". A tool that says it writes and says nothing about
+    // consequence is treated as consequential, and marked as inferred.
+    if (out && out.readOnlyHint === false && out.consequentialHint === undefined && out.destructiveHint === undefined) {
+      out.consequentialHint = true;
+      out.consequentialInferred = true;
+    }
     return out;
   }
   function __brwWebMCPEntry(tool, extra){
