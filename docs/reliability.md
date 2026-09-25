@@ -187,6 +187,44 @@ grep '"error_class":"tab_not_drivable"' \
   ~/Library/"Application Support"/brw/usage/*-bridge.ndjson | wc -l
 ```
 
+### Another extension's frame inside the page (extension 0.7.7+)
+
+A password manager or autofill extension can put its own `chrome-extension://`
+iframe into an ordinary page, usually an inline menu under a focused login or
+contact field. Chrome then refuses `chrome.debugger` for the whole tab, not just
+that frame: the frame committing detaches brw's session, and every later
+attach or command fails with the same "different extension" text until the
+frame is gone. `TestChromeRefusesTheDebuggerForATabHoldingAForeignExtensionFrame`
+measures this against a real browser.
+
+What brw does on such a tab:
+
+- `Runtime.evaluate` and `Input.insertText` run in the tab's top frame through
+  `chrome.scripting`, so snapshot, find, read, evaluate, the in-page click and
+  type keep working. The foreign frame is never entered. The snapshot and find
+  metadata say so: `page_transport: "scripting"`,
+  `skipped_extension_frames`, `skipped_extension_ids` and `frames_note`.
+  `include_frames` reads cross-origin frames one `chrome.scripting` injection
+  per frame. The expression is evaluated in the page's own world, so a page
+  whose Content-Security-Policy forbids `eval` answers with an `EvalError`.
+- `chrome.scripting` needs host access to the page, and the shipped manifest
+  holds it for loopback only (see the redirect notes in `docs/install.md`). On
+  any other site, and for methods with no `chrome.scripting` equivalent (trusted
+  mouse and key input, screenshots, navigation's frame-tree checks), the call
+  fails with a named error instead:
+
+```
+extension bridge: foreign_extension_frame: Chrome refuses brw's debugger for
+tab 235941517 while the page embeds a frame from another extension (extension
+<id> at chrome-extension://<id>/overlay/menu-list.html). ...
+```
+
+The extension ID comes from `webNavigation.onCommitted`, which reports the
+frame even though `webNavigation.getAllFrames` leaves it out. The tab is
+drivable again once the frame closes: dismiss the menu, move focus off the
+field, or turn that extension's inline menu off for the site. In the usage
+ledger this class is `foreign_extension_frame`.
+
 ## Making a new extension build live
 
 From extension 0.7.3 the worker does this itself: when `manifest.json` in its

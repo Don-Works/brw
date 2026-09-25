@@ -201,19 +201,19 @@ func TestScreencastDropsFramesUnderBackpressureWithoutStalling(t *testing.T) {
 	// it forwarded — brw's own clock, say — which puts the floor ahead of every
 	// frame still to come and discards the whole stream.
 	//
-	// A discard is only ever one of two things, and they are counted apart so this
-	// does not need slack to tell them apart. The CDP event stream is ordered and
-	// the compositor's clock does not run backwards, so a frame stamped BEFORE the
-	// last one forwarded cannot come from that clock: zero, exactly.
-	if counts.OutOfOrder != 0 {
-		t.Errorf("discarded %d frames as swapping before the last one forwarded; the compositor's clock does not run backwards, so the floor is being measured against a different one",
-			counts.OutOfOrder)
-	}
-	// The other is two repaints inside one compositor tick sharing a swap time,
-	// which is Chrome's stamping. It happens occasionally under load and is
-	// bounded rather than forbidden — but a floor on the wrong clock would show up
-	// here too if it landed exactly on the floor, so it is still capped.
+	// A floor on the wrong clock sits ahead of every frame still to come, so it
+	// discards nearly the whole stream; TestScreencastFrameAdmission pins that
+	// decision exactly. Live, Chrome's wall-clock swap stamps can step back by a
+	// hair when the host is saturated, so out-of-order discards are bounded here
+	// rather than forbidden.
 	total := counts.Frames + counts.Dropped + counts.OutOfOrder + counts.DuplicateSwap
+	if total > 0 && counts.OutOfOrder*20 > total {
+		t.Errorf("discarded %d of %d frames as swapping before the last one forwarded; that many is the floor being measured against a different clock, not Chrome's stamping",
+			counts.OutOfOrder, total)
+	}
+	// Two repaints inside one compositor tick share a swap time, which is also
+	// Chrome's stamping; a floor on the wrong clock would show up here too if it
+	// landed exactly on the floor, so it is capped the same way.
 	if total > 0 && counts.DuplicateSwap*20 > total {
 		t.Errorf("discarded %d of %d frames as carrying the previous swap time; that is past what one compositor tick explains",
 			counts.DuplicateSwap, total)

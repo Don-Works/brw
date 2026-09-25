@@ -211,6 +211,11 @@ const state = {
   // A -> B -> back-to-A BFCache round trip cannot masquerade as uninterrupted
   // capture. SPA history updates intentionally do not increment it.
   documentEpochs: new Map(),
+  // tabId -> Map(frameId -> url) of subframes that committed another extension's
+  // chrome-extension:// page. webNavigation.getAllFrames hides those frames from
+  // brw, but onCommitted reports them, and they are what makes Chrome refuse the
+  // debugger for the whole tab. Kept so the refusal can name the extension.
+  foreignExtensionFrames: new Map(),
   // Per-tab capture of the most recent Page.fileChooserOpened CDP event, keyed
   // by tabId. File-chooser-interception upload mode enables interception, clicks
   // the trigger, then reads the chooser's backendNodeId from here to set the file
@@ -1140,6 +1145,7 @@ chrome.tabs.onCreated.addListener(async (tab) => {
   if (tab?.active) await publishActiveTab(tab.id);
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
+  state.foreignExtensionFrames.delete(tabId);
   state.attachedTabs.delete(tabId);
   state.attachUsedAt.delete(tabId);
   state.snapshotCache.delete(tabId);
@@ -1309,7 +1315,11 @@ chrome.webNavigation.onCommitted.addListener((details) => {
   if (typeof details.tabId === "number" && details.frameId === 0) {
     state.snapshotCache.delete(details.tabId);
     state.observerInjected.delete(details.tabId);
+    state.foreignExtensionFrames.delete(details.tabId);
     state.documentEpochs.set(details.tabId, (state.documentEpochs.get(details.tabId) || 0) + 1);
+  }
+  if (typeof details.tabId === "number" && details.frameId !== 0) {
+    noteSubframeCommit(details.tabId, details.frameId, details.url);
   }
 });
 // SPA route changes via history.pushState/replaceState (the way frameworks like
@@ -2231,7 +2241,11 @@ async function handle(message) {
             { expression: "!!window.__brwDirty", returnByValue: true }
           );
           pageDirty = Boolean(evalResult?.result?.value);
-        } catch (_) {}
+        } catch (_) {
+          // Unknown is not clean: a tab whose debugger is refused (another
+          // extension's frame) would otherwise serve this snapshot forever.
+          pageDirty = true;
+        }
         if (!pageDirty && !cached.dirty) {
           send({ id: message.id, ok: true, result: { cached: true, snapshot: cached.snapshot } });
           return;
@@ -2336,8 +2350,7 @@ async function handle(message) {
         return;
       }
       const tabId = Number(message.params?.tabId || (await activeTabId()));
-      await attach(tabId);
-      const result = await sendPolicedCdp(tabId, null, method, message.params?.params || {});
+      const result = await runCdpForTab(tabId, method, message.params?.params || {});
       send({ id: message.id, ok: true, result: result || {} });
       return;
     }
@@ -2521,7 +2534,8 @@ async function handle(message) {
         return;
       }
       const frames = await readCrossOriginFrames(tabId, expression, origins).catch(() => []);
-      send({ id: message.id, ok: true, result: { frames } });
+      const skipped = Number(frames.skippedExtensionFrames || 0);
+      send({ id: message.id, ok: true, result: skipped ? { frames, skippedExtensionFrames: skipped } : { frames } });
       return;
     }
     if (message.type === "show_indicator") {
@@ -2585,7 +2599,14 @@ async function handle(message) {
 // returns [] on any failure.
 async function readCrossOriginFrames(tabId, expression, origins) {
   const allowed = origins ? new Set(origins.map((o) => String(o))) : null;
-  await attach(tabId);
+  try {
+    await attach(tabId);
+  } catch (error) {
+    if (error?.code !== FOREIGN_EXTENSION_FRAME) throw error;
+    const frames = await readCrossOriginFramesWithoutDebugger(tabId, expression, origins);
+    frames.skippedExtensionFrames = (error.blockingFrames || []).length;
+    return frames;
+  }
   let tree;
   try {
     tree = await sendDebuggerCommand(tabId, "Page.getFrameTree", {});
@@ -2775,13 +2796,20 @@ async function attach(tabId, opts = {}) {
   if (state.attachedTabs.has(tabId)) {
     state.attachUsedAt.set(tabId, Date.now());
     if (opts.requirePageEvents) {
-      await chrome.debugger.sendCommand({ tabId }, "Page.enable", {});
+      try {
+        await chrome.debugger.sendCommand({ tabId }, "Page.enable", {});
+      } catch (error) {
+        if (!isForeignExtensionRefusal(error)) throw error;
+        state.attachedTabs.delete(tabId);
+        throw await foreignExtensionFrameError(tabId, error);
+      }
     }
     return;
   }
   try {
     await chrome.debugger.attach({ tabId }, "1.3");
   } catch (error) {
+    if (isForeignExtensionRefusal(error)) throw await foreignExtensionFrameError(tabId, error);
     if (!String(error?.message || error).includes("Another debugger is already attached")) throw error;
     // A debugger is already attached. It is EITHER ours (a previous attach this
     // service worker lost track of — e.g. across an SW restart) OR the user's
@@ -2906,6 +2934,10 @@ async function sendDebuggerCommand(tabId, method, params) {
   try {
     return await chrome.debugger.sendCommand({ tabId }, method, params);
   } catch (error) {
+    if (isForeignExtensionRefusal(error)) {
+      state.attachedTabs.delete(tabId);
+      throw await foreignExtensionFrameError(tabId, error);
+    }
     if (!isDetachedDebuggerError(error)) throw error;
     state.attachedTabs.delete(tabId);
     await attach(tabId);
@@ -3170,6 +3202,226 @@ function isAgentDrivableUrl(url) {
   if (/^https?:\/\/chromewebstore\.google\.com(\/|$)/.test(lower)) return false;
   if (/^https?:\/\/chrome\.google\.com\/webstore(\/|$)/.test(lower)) return false;
   return true;
+}
+
+// A page that embeds ANOTHER extension's frame (a password manager's inline
+// autofill menu is the usual one) is off limits to chrome.debugger for the whole
+// tab, not just that frame. Measured in TestChromeRefusesTheDebuggerForATabHoldingAForeignExtensionFrame:
+// the frame committing detaches a live session ("target_closed"), and every
+// later attach or sendCommand, by tabId or by targetId, fails with
+// "Cannot access a chrome-extension:// URL of different extension" until the
+// frame is gone. chrome.scripting is not subject to that rule; it needs host
+// access to the page instead, and webNavigation.getAllFrames leaves the foreign
+// frame out of the list it returns.
+const FOREIGN_EXTENSION_FRAME = "foreign_extension_frame";
+
+function isForeignExtensionRefusal(error) {
+  return String(error?.message || error || "").includes("Cannot access a chrome-extension:// URL of different extension");
+}
+
+function isForeignExtensionUrl(url) {
+  const lower = String(url || "").toLowerCase();
+  if (!lower.startsWith("chrome-extension://")) return false;
+  const ownID = String(chrome.runtime?.id || "").toLowerCase();
+  return !ownID || !lower.startsWith(`chrome-extension://${ownID}/`);
+}
+
+function extensionIdOf(url) {
+  const match = /^chrome-extension:\/\/([^/?#]+)/i.exec(String(url || ""));
+  return match ? match[1] : "";
+}
+
+function noteSubframeCommit(tabId, frameId, url) {
+  let frames = state.foreignExtensionFrames.get(tabId);
+  if (isForeignExtensionUrl(url)) {
+    if (!frames) {
+      frames = new Map();
+      state.foreignExtensionFrames.set(tabId, frames);
+    }
+    frames.set(frameId, String(url));
+    return;
+  }
+  if (!frames) return;
+  frames.delete(frameId);
+  if (!frames.size) state.foreignExtensionFrames.delete(tabId);
+}
+
+// foreignExtensionFramesIn lists the other-extension frames recorded for a tab.
+// webNavigation has no frame-removed event, so a recorded frame whose URL no
+// longer has a debugger target anywhere is treated as closed.
+async function foreignExtensionFramesIn(tabId) {
+  const recorded = Array.from(state.foreignExtensionFrames.get(tabId)?.entries() || [])
+    .map(([frameId, url]) => ({ frame_id: frameId, url, extension_id: extensionIdOf(url) }));
+  if (!recorded.length) return recorded;
+  let live = null;
+  try {
+    const targets = await chrome.debugger.getTargets();
+    live = new Set((targets || []).map((target) => String(target?.url || "")).filter(isForeignExtensionUrl));
+  } catch (_) {
+    return recorded;
+  }
+  const present = recorded.filter((frame) => live.has(frame.url));
+  return present.length ? present : recorded;
+}
+
+async function foreignExtensionFrameError(tabId, cause) {
+  // The same refusal answers a tab that IS another extension's page (a vault
+  // popped out into its own window). That is not a frame in a page, and
+  // nothing below applies to it.
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (isForeignExtensionUrl(tab?.url)) return cause?.message ? cause : new Error(String(cause));
+  const frames = await foreignExtensionFramesIn(tabId).catch(() => []);
+  const which = frames.length
+    ? `${frames.length === 1 ? "a frame" : `${frames.length} frames`} from another extension (${frames.map((frame) => `extension ${frame.extension_id} at ${frame.url}`).join("; ")})`
+    : "a frame from another extension";
+  const error = new Error(
+    `${FOREIGN_EXTENSION_FRAME}: Chrome refuses brw's debugger for tab ${tabId} while the page embeds ${which}. ` +
+    "A password manager or autofill menu is the usual source; the tab is drivable again once that frame closes " +
+    "(dismiss the menu or move focus off the field) or once that extension's inline menu is turned off for the site. " +
+    `Chrome said: ${String(cause?.message || cause)}`
+  );
+  error.code = FOREIGN_EXTENSION_FRAME;
+  error.blockingFrames = frames;
+  return error;
+}
+
+// scriptingEvaluate runs inside the page (frame 0, main world) as the
+// chrome.scripting stand-in for Runtime.evaluate. It is serialized by Chrome,
+// so it must not reference anything outside its own body.
+async function scriptingEvaluate(expression, awaitPromise) {
+  try {
+    let value = (0, eval)(expression);
+    if (awaitPromise && value && typeof value.then === "function") value = await value;
+    if (value === undefined) return { type: "undefined" };
+    let copy = null;
+    try {
+      const encoded = JSON.stringify(value);
+      copy = encoded === undefined ? null : JSON.parse(encoded);
+    } catch (_) {}
+    return { type: value === null ? "object" : typeof value, value: copy };
+  } catch (error) {
+    const description = error && (error.stack || error.message) ? String(error.stack || error.message) : String(error);
+    return { exception: description };
+  }
+}
+
+// scriptingInsertText is the chrome.scripting stand-in for Input.insertText.
+function scriptingInsertText(text) {
+  let el = document.activeElement;
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  if (!el || el === document.body) return { ok: false, error: "no focused element to insert text into" };
+  if (typeof document.execCommand === "function" && document.execCommand("insertText", false, text)) return { ok: true };
+  if ("value" in el) {
+    el.value = String(el.value || "") + text;
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true };
+  }
+  return { ok: false, error: "focused element does not accept text" };
+}
+
+function runtimeEvaluateResultFromScripting(out) {
+  if (out && out.exception != null) {
+    const exception = { type: "object", subtype: "error", description: String(out.exception) };
+    return {
+      result: exception,
+      exceptionDetails: { text: "Uncaught", lineNumber: 0, columnNumber: 0, exception }
+    };
+  }
+  const type = out?.type || "undefined";
+  return type === "undefined" ? { result: { type } } : { result: { type, value: out.value } };
+}
+
+// cdpWithoutDebugger answers the CDP methods that have a chrome.scripting
+// equivalent, in the tab's top frame only. Other extensions' frames are never
+// entered: they are why the debugger was refused, and brw has no access to
+// them either way. Returns null for a method with no equivalent. A page brw
+// holds no host access to rejects the injection, and that becomes part of the
+// named error rather than a second, unrelated one.
+async function cdpWithoutDebugger(tabId, method, params, refusal) {
+  if (!chrome.scripting?.executeScript) return null;
+  let func;
+  let args;
+  if (method === "Runtime.evaluate") {
+    func = scriptingEvaluate;
+    args = [String(params?.expression || ""), params?.awaitPromise === true];
+  } else if (method === "Input.insertText") {
+    func = scriptingInsertText;
+    args = [String(params?.text || "")];
+  } else {
+    return null;
+  }
+  let injected;
+  try {
+    injected = await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, world: "MAIN", func, args });
+  } catch (error) {
+    refusal.message += ` No fallback: chrome.scripting could not reach the page either (${String(error?.message || error)}).`;
+    throw refusal;
+  }
+  const out = injected?.[0]?.result;
+  const transport = {
+    path: "scripting",
+    frame_id: 0,
+    skipped_extension_frames: (refusal.blockingFrames || []).length,
+    blocked_by: refusal.blockingFrames || []
+  };
+  if (method === "Input.insertText") {
+    if (!out?.ok) throw new Error(`Input.insertText via chrome.scripting: ${out?.error || "insert failed"}`);
+    return { brwTransport: transport };
+  }
+  return { ...runtimeEvaluateResultFromScripting(out), brwTransport: transport };
+}
+
+// runCdpForTab is the "cdp" message's route to the page: the debugger when
+// Chrome allows it, chrome.scripting when a foreign extension frame blocks it.
+async function runCdpForTab(tabId, method, params) {
+  try {
+    await attach(tabId);
+    return await sendPolicedCdp(tabId, null, method, params);
+  } catch (error) {
+    if (error?.code !== FOREIGN_EXTENSION_FRAME) throw error;
+    markActing(tabId);
+    const answered = await cdpWithoutDebugger(tabId, method, params, error);
+    if (answered === null) throw error;
+    return answered;
+  }
+}
+
+// readCrossOriginFramesWithoutDebugger is readCrossOriginFrames for a tab whose
+// debugger is refused. getAllFrames omits other extensions' frames, and each
+// frame is injected separately so one frame brw cannot reach costs only itself.
+async function readCrossOriginFramesWithoutDebugger(tabId, expression, origins) {
+  if (!chrome.scripting?.executeScript) return [];
+  const allowed = origins ? new Set(origins.map((o) => String(o))) : null;
+  let frames = [];
+  try { frames = await chrome.webNavigation.getAllFrames({ tabId }); } catch (_) { return []; }
+  const top = (frames || []).find((frame) => frame.frameId === 0);
+  let topOrigin = "";
+  try { topOrigin = new URL(top?.url || "").origin; } catch (_) {}
+  const out = [];
+  for (const frame of frames || []) {
+    if (!frame || frame.frameId === 0 || isForeignExtensionUrl(frame.url)) continue;
+    let origin = "";
+    try { origin = new URL(frame.url).origin; } catch (_) {}
+    if (!/^https?:/i.test(frame.url || "") || !origin || origin === topOrigin) continue;
+    if (!allowed || !allowed.has(origin)) {
+      out.push({ url: frame.url, origin });
+      continue;
+    }
+    let snapshot = null;
+    try {
+      const injected = await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frame.frameId] },
+        world: "MAIN",
+        func: scriptingEvaluate,
+        args: [expression, true]
+      });
+      const value = injected?.[0]?.result?.value;
+      snapshot = value && typeof value === "object" ? value : null;
+    } catch (_) {}
+    out.push({ url: frame.url, origin, snapshot });
+  }
+  return out;
 }
 
 // preferredNormalWindowId returns the safest window for a newly-created agent
