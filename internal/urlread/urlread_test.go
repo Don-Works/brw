@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -58,10 +59,15 @@ func TestFetchExtractsBySourceType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
 			var gotPath, gotAccept string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotPath = r.URL.Path
-				gotAccept = r.Header.Get("Accept")
+				if tt.llms || r.URL.Path == "/page" {
+					mu.Lock()
+					gotPath = r.URL.Path
+					gotAccept = r.Header.Get("Accept")
+					mu.Unlock()
+				}
 				w.Header().Set("Content-Type", tt.contentType)
 				fmt.Fprint(w, tt.body)
 			}))
@@ -87,6 +93,8 @@ func TestFetchExtractsBySourceType(t *testing.T) {
 					t.Errorf("main should not contain chrome %q; got:\n%s", notWant, result.Main)
 				}
 			}
+			mu.Lock()
+			defer mu.Unlock()
 			if !strings.Contains(gotAccept, "text/markdown") {
 				t.Errorf("Accept header %q should prefer markdown", gotAccept)
 			}
@@ -103,9 +111,14 @@ func TestFetchExtractsBySourceType(t *testing.T) {
 // The read must never carry the user's session: that is the whole reason it is
 // safe to point at an arbitrary URL.
 func TestFetchSendsNoCookies(t *testing.T) {
-	var sawCookie string
+	var mu sync.Mutex
+	var sawCookie []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawCookie = r.Header.Get("Cookie")
+		mu.Lock()
+		if c := r.Header.Get("Cookie"); c != "" {
+			sawCookie = append(sawCookie, r.URL.Path+": "+c)
+		}
+		mu.Unlock()
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprint(w, "<html><body><main><p>hi</p></main></body></html>")
 	}))
@@ -113,7 +126,9 @@ func TestFetchSendsNoCookies(t *testing.T) {
 	if _, err := Fetch(context.Background(), Options{URL: srv.URL}); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if sawCookie != "" {
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sawCookie) != 0 {
 		t.Fatalf("read sent a Cookie header: %q", sawCookie)
 	}
 }

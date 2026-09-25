@@ -165,6 +165,8 @@ src += `
   // any earlier scenario has already resolved it.
   setPackagedDefaults(value) { packagedDefaultConfigPromise = value === null ? null : Promise.resolve(value); },
   ensureObserver,
+  attach,
+  detach,
   handle,
   send,
   clearTabRouteRules,
@@ -1443,6 +1445,109 @@ async function scenarioNavigationOutcome() {
   }
 }
 
+// The WebMCP shim and containment both live on the tab's debugger session, and
+// the idle sweep detaches that session. Each fresh attach has to put them back,
+// or a tab brw left alone for two minutes is silently uncontained and loses the
+// page tools it registered.
+async function scenarioWebMCPAndContainmentSurviveADetach() {
+  await reset();
+  const savedSend = overrides["debugger.sendCommand"];
+  const savedDetach = overrides["debugger.detach"];
+  const savedCreate = overrides["tabs.create"];
+  const savedUpdate = overrides["tabs.update"];
+  const calls = [];
+  try {
+    overrides["debugger.sendCommand"] = async (target, method, params) => {
+      calls.push({ tabId: target.tabId, method, params: params || {} });
+      return {};
+    };
+    overrides["debugger.detach"] = async () => {};
+    setWin({ id: 1, type: "normal", focused: true });
+    setTab({ id: 21, windowId: 1, active: true, url: "https://app.test/", title: "app" });
+    const socket = new MockWebSocket();
+    socket.readyState = MockWebSocket.OPEN;
+    T.state.socket = socket;
+    T.state.webmcpSource = "";
+    T.state.webmcpTabs.clear();
+    T.state.containmentTabs.clear();
+    T.state.containment = { allowed: [], blocked: [], enabled: false };
+    T.state.containmentGuard = "";
+
+    const scripts = (tabId, source) => calls.filter((c) => c.tabId === tabId &&
+      c.method === "Page.addScriptToEvaluateOnNewDocument" && c.params.source === source).length;
+    const evaluated = (tabId, source) => calls.filter((c) => c.tabId === tabId &&
+      c.method === "Runtime.evaluate" && c.params.expression === source).length;
+
+    await T.handle({ id: "wm-1", type: "set_webmcp", params: { tabId: 21, enabled: true, source: "SHIM()", catchUp: true } });
+    const reply = socket.sent.find((m) => m.id === "wm-1");
+    check("set_webmcp arms the tab and says so", reply?.ok === true && reply.result.armed === true && reply.result.installed === true);
+    check("set_webmcp registers the shim at document-start once", scripts(21, "SHIM()") === 1);
+    check("set_webmcp runs the shim in the document already loaded", evaluated(21, "SHIM()") === 1);
+
+    await T.handle({ id: "wm-2", type: "set_webmcp", params: { tabId: 21, enabled: true, source: "SHIM()", catchUp: false } });
+    check("arming the same session again does not register a second copy", scripts(21, "SHIM()") === 1);
+
+    await T.handle({ id: "ct-1", type: "set_containment",
+      params: { tabId: 21, enabled: true, allowed: ["app.test"], blocked: [], guard: "GUARD()" } });
+    check("containment registers its guard on the tab", scripts(21, "GUARD()") === 1);
+    check("containment runs its guard in the loaded document", evaluated(21, "GUARD()") === 1);
+    const fetchEnables = () => calls.filter((c) => c.tabId === 21 && c.method === "Fetch.enable").length;
+    const enablesBefore = fetchEnables();
+
+    await T.detach(21);
+    check("a detach forgets the session's WebMCP registration", !T.state.webmcpTabs.has(21));
+    check("a detach forgets the session's containment", !T.state.containmentTabs.has(21));
+
+    await T.attach(21);
+    check("the next attach registers the shim again", scripts(21, "SHIM()") === 2 && T.state.webmcpTabs.has(21));
+    check("the next attach re-contains the tab", T.state.containmentTabs.has(21) && fetchEnables() === enablesBefore + 1);
+    check("the next attach registers the guard again", scripts(21, "GUARD()") === 2);
+
+    // A tab brw never armed is still covered once WebMCP is on for the daemon.
+    setTab({ id: 22, windowId: 1, active: false, url: "https://app.test/2", title: "two" });
+    await T.attach(22);
+    check("any tab brw attaches to gets the shim while WebMCP is on", scripts(22, "SHIM()") === 1);
+
+    await T.handle({ id: "wm-3", type: "set_webmcp", params: { enabled: false } });
+    setTab({ id: 23, windowId: 1, active: false, url: "https://app.test/3", title: "three" });
+    await T.attach(23);
+    check("turning WebMCP off stops arming new sessions", scripts(23, "SHIM()") === 0);
+
+    // open_tab arms the shim on a blank tab before the first document loads.
+    await T.handle({ id: "wm-4", type: "set_webmcp", params: { tabId: 21, enabled: true, source: "SHIM()", catchUp: false } });
+    const created = [];
+    const updated = [];
+    overrides["tabs.create"] = async (params) => {
+      created.push(params);
+      setTab({ id: 31, windowId: 1, active: false, url: params.url, title: "" });
+      return { ...model.tabs.get(31) };
+    };
+    overrides["tabs.update"] = async (id, patch) => {
+      updated.push({ id, ...patch });
+      const tab = model.tabs.get(id);
+      if (patch.url) tab.url = patch.url;
+      return { ...tab };
+    };
+    await T.handle({ id: "open-1", type: "open_tab", params: { url: "https://shop.test/", active: false, webmcp: "SHIM()" } });
+    const opened = socket.sent.find((m) => m.id === "open-1");
+    check("open_tab with webmcp creates the tab blank", created.at(-1)?.url === "about:blank");
+    check("open_tab registers the shim before navigating", scripts(31, "SHIM()") === 1);
+    check("open_tab then navigates to the destination", updated.some((u) => u.id === 31 && u.url === "https://shop.test/"));
+    check("open_tab reports the tab armed", opened?.ok === true && opened.result.webmcpArmed === true);
+  } finally {
+    for (const [key, saved] of [["debugger.sendCommand", savedSend], ["debugger.detach", savedDetach],
+      ["tabs.create", savedCreate], ["tabs.update", savedUpdate]]) {
+      if (saved === undefined) delete overrides[key]; else overrides[key] = saved;
+    }
+    T.state.webmcpSource = "";
+    T.state.webmcpTabs.clear();
+    T.state.containmentTabs.clear();
+    T.state.containment = { allowed: [], blocked: [], enabled: false };
+    T.state.containmentGuard = "";
+    T.state.attachedTabs.clear();
+  }
+}
+
 async function scenarioSubresourceContainment() {
   await reset();
   const savedSend = overrides["debugger.sendCommand"];
@@ -2064,6 +2169,7 @@ async function scenarioSelfUpdateReloadsAStalePayload() {
   await scenarioCloseTabIsBoundedAndFailClosed();
   await scenarioDialogArmingAndSafeDefaults();
   await scenarioSubresourceContainment();
+  await scenarioWebMCPAndContainmentSurviveADetach();
   await scenarioInlineDocumentRendering();
   await scenarioNavigationOutcome();
   await scenarioRouteRulesAreTabScopedAndReplaced();

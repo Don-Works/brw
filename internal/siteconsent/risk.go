@@ -22,6 +22,9 @@ const (
 	// RiskBlocklistedCategory covers any action at all on an origin in a shipped
 	// blocklist category. It is not about what the action says it does.
 	RiskBlocklistedCategory RiskClass = "blocklisted-category"
+	// RiskConsequential covers a WebMCP page tool the page itself declares
+	// consequential or destructive.
+	RiskConsequential RiskClass = "consequential"
 )
 
 // riskRule matches an action's own words. Signals are lowercase substrings
@@ -81,6 +84,9 @@ type ActionRequest struct {
 	Label  string
 	Text   string
 	Fields []string
+	// Consequential is set when the target declares its own effects need a
+	// person's agreement, as a WebMCP tool's consequentialHint does.
+	Consequential bool
 }
 
 // Risk is one classification hit, with the evidence that produced it.
@@ -127,6 +133,9 @@ func Classify(request ActionRequest, categories CategorySet) []Risk {
 			risks = append(risks, Risk{Class: RiskPersonalData, Evidence: matched, Detail: strings.TrimSpace(lowered)})
 			break
 		}
+	}
+	if request.Consequential {
+		risks = append(risks, Risk{Class: RiskConsequential, Evidence: "declared consequential by the page", Detail: strings.TrimSpace(request.Label)})
 	}
 	if category, blocked := categories.CategoryOf(request.Origin); blocked {
 		risks = append(risks, Risk{Class: RiskBlocklistedCategory, Evidence: category.Name, Detail: category.Title})

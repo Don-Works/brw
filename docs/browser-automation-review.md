@@ -203,8 +203,8 @@ its own tool catalogue. See [install.md](install.md#the-chrome-opt-in-lane).
 `brw`'s adaptive post-action settle is the achievable approximation of that last
 one. Knowing where the ceiling is set by a fork is worth more than the protocol
 comparison: no single protocol is consolidating, ABP has no second
-implementation, and WebMCP (`navigator.modelContext`, origin trial in Chrome
-149) is the only cross-vendor surface — `brw`, Chrome DevTools MCP, Stagehand v4
+implementation, and WebMCP (`document.modelContext`, formerly `navigator.modelContext`; origin
+trial in Chrome 149–156) is the only cross-vendor surface — `brw`, Chrome DevTools MCP, Stagehand v4
 and agent-browser all added it within about four months of each other.
 
 The trend that bears on a 74-tool MCP surface is not protocol consolidation.

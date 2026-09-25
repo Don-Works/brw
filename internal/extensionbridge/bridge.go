@@ -54,7 +54,11 @@ type Bridge struct {
 	consent *siteconsent.Guard
 	// containment records which tabs already have subresource containment
 	// installed, so arming costs one message per tab rather than one per action.
-	containment containmentArm
+	containment tabArm
+	// webmcp, when true, arms the WebMCP shim (snapshot.WebMCPInstallScript) on
+	// every tab brw opens or drives; webmcpArm records which tabs have it.
+	webmcp    bool
+	webmcpArm tabArm
 	// routes mirrors the declarativeNetRequest session rules the extension holds
 	// per tab, so brw_route can list and rebuild them without asking Chrome.
 	routes bridgeRouteTable
@@ -858,6 +862,10 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	}
 	b.conn = conn
 	b.hello = verifiedHello
+	// A new socket can be a restarted service worker, which has lost every
+	// per-tab arm; re-send them rather than trust a record of the old worker.
+	b.containment.reset()
+	b.webmcpArm.reset()
 	// Reconcile the extension-owned pin before publishing this connection through
 	// connReady. A tabs.onRemoved frame is best-effort and can be lost while the
 	// MV3 worker/socket is down; the next hello is the authoritative recovery
@@ -1936,6 +1944,9 @@ func (b *Bridge) openTabParams(params map[string]any) map[string]any {
 	// only then navigates, so an attachment-flagged text response is the tab's
 	// first document rather than an empty tab plus a file.
 	params["inlineDocument"] = true
+	if b.webmcp {
+		params["webmcp"] = snapshot.WebMCPInstallScript
+	}
 	return params
 }
 
@@ -1979,6 +1990,7 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	// interception covers that document's subresources from here; only scripts
 	// that already ran in it can hold pristine WebSocket/RTC references.
 	b.ensureContainment(ctx, out.ID)
+	b.noteOpenedWebMCP(ctx, out.ID, tab.WebMCPArmed)
 	ready := b.waitOpenReady(ctx, url, out.ID)
 	b.disarmInlineDocument(out.ID)
 	// Re-read the tab after commit so the agent gets a real url/title instead of
@@ -2255,6 +2267,8 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 		b.recordObservation(out.ID, browser.TraceActionOpen, finalURL, start, err)
 	}
 	b.setActiveTabID(out.ID)
+	b.ensureContainment(ctx, out.ID)
+	b.noteOpenedWebMCP(ctx, out.ID, tab.WebMCPArmed)
 	ready := b.waitOpenReady(ctx, url, out.ID)
 	b.disarmInlineDocument(out.ID)
 	// Same rehydrate as Open — agents need url/title on the open observation.
@@ -2324,6 +2338,7 @@ func (b *Bridge) refreshOpenedTab(ctx context.Context, tab browser.Tab, requeste
 }
 
 func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
+	b.ensureWebMCP(ctx, b.cachedTabID(ctx))
 	return b.snapshot(ctx, opts, false)
 }
 
@@ -2514,6 +2529,7 @@ func snapshotCacheKey(opts snapshot.SnapshotOptions) string {
 }
 
 func (b *Bridge) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
+	b.ensureWebMCP(ctx, b.cachedTabID(ctx))
 	return b.find(ctx, opts, false)
 }
 
@@ -3539,6 +3555,7 @@ func (b *Bridge) NavigateTo(ctx context.Context, url string) (browser.ActionResu
 	// Arm before navigating: the in-page guard only beats page scripts for a
 	// document that has not loaded yet.
 	b.ensureContainment(ctx, b.contextTabID(ctx))
+	b.ensureWebMCP(ctx, b.contextTabID(ctx))
 	before := b.captureSemanticState(ctx)
 	before.Trace = browser.TraceEntry{Action: "navigate_to", Text: url}
 	beforeTabs := b.captureTabIDs(ctx)
@@ -5238,6 +5255,7 @@ type extTab struct {
 	GroupColor     string `json:"groupColor"`
 	GroupCollapsed bool   `json:"groupCollapsed"`
 	GroupWarning   string `json:"groupWarning"`
+	WebMCPArmed    bool   `json:"webmcpArmed"`
 	OpenerTabID    int    `json:"openerTabId"`
 	Discarded      bool   `json:"discarded"`
 	Frozen         bool   `json:"frozen"`

@@ -259,7 +259,7 @@ type Manager struct {
 	documentReady   map[string]bool
 	documentEpoch   map[string]uint64
 
-	// webmcpEnabled gates the opt-in WebMCP runtime (navigator.modelContext); when
+	// webmcpEnabled gates the opt-in WebMCP runtime (document.modelContext); when
 	// true, webmcpTabs records which tabs have had its document-start shim armed.
 	webmcpEnabled bool
 	webmcpMu      sync.Mutex
@@ -712,6 +712,9 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		m.recordAgentNavigation(tabID, url)
 		// tabContext publishes the target's context and arms console capture on it.
 		if tabCtx, ctxErr := m.tabContext(tabID); ctxErr == nil {
+			// Armed on the blank tab, so the shim is in place before the first
+			// document's own scripts register their tools.
+			m.ensureWebMCP(tabID, tabCtx)
 			navCtx, cancelNav := context.WithTimeout(tabCtx, openNavigateTimeout)
 			defer m.armInlineDocument(navCtx, tabID, url)()
 			// Start the navigation without waiting for the load event, matching

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/siteconsent"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
@@ -86,6 +87,9 @@ func (s *Server) callPageTool(ctx context.Context, args json.RawMessage) (any, *
 	if req.ValidateInput != nil {
 		validate = *req.ValidateInput
 	}
+	if err := s.confirmPageTool(ctx, strings.TrimSpace(req.Name), req.Frame); err != nil {
+		return toolError(err), nil
+	}
 	invocation, err := snapshot.InvokePageTool(ctx, s.pageToolEvaluator("call "+strings.TrimSpace(req.Name)), snapshot.PageToolInvokeOptions{
 		Name:      req.Name,
 		Arguments: req.Arguments,
@@ -154,7 +158,47 @@ func (s *Server) pageToolReport(ctx context.Context, invocation snapshot.PageToo
 	if invocation.TabID == "" {
 		invocation.TabID = s.pageToolTabID(ctx)
 	}
+	if len(invocation.Result) > 0 {
+		invocation.UntrustedOutput = true
+	}
 	return evaluateResult(invocation, nil, offset, maxBytes)
+}
+
+// confirmPageTool puts a page tool through the high-risk confirmation gate
+// before it runs, when the operator turned that gate on. A tool the page marks
+// consequential (or destructive) always counts as high risk; any other tool is
+// classified by its name and description like a button label would be.
+//
+// Without confirm-actions it costs nothing: the listing it needs is one
+// evaluate, and it is skipped entirely.
+func (s *Server) confirmPageTool(ctx context.Context, name, frame string) error {
+	if !s.consent.Enabled() || !s.consent.ConfirmActions() {
+		return nil
+	}
+	listing, err := snapshot.ListPageTools(ctx, s.pageToolEvaluator("list "+name), frame)
+	if err != nil {
+		return fmt.Errorf("confirm-actions is on and the page tool %s could not be classified before it ran: %w", name, err)
+	}
+	var tool *snapshot.PageToolDescriptor
+	for i := range listing.Tools {
+		if listing.Tools[i].Name == name {
+			tool = &listing.Tools[i]
+			break
+		}
+	}
+	if tool == nil {
+		return nil
+	}
+	origin, err := s.currentPageOrigin(ctx, "")
+	if err != nil {
+		return err
+	}
+	return s.consent.CheckAction(siteconsent.ActionRequest{
+		Tool:          "brw_call_page_tool " + name,
+		Origin:        origin,
+		Label:         strings.TrimSpace(strings.NewReplacer("_", " ", "-", " ").Replace(name) + " " + tool.Description),
+		Consequential: tool.Consequential(),
+	})
 }
 
 // pageToolTabID names the tab the report has to be polled back into.

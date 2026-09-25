@@ -11,6 +11,7 @@ import (
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/harness"
 	"github.com/Don-Works/brw/internal/snapshot"
+	"github.com/Don-Works/brw/internal/urlread"
 )
 
 // Options configures a run.
@@ -59,6 +60,7 @@ var flowDefs = []flowDef{
 	{id: "shop", fixture: "decathlon-shop.html", build: (*flowRunner).shopCommands},
 	{id: "dynamic", fixture: "dynamic.html", build: (*flowRunner).dynamicCommands},
 	{id: "structured", fixture: "structured-product.html", build: (*flowRunner).structuredCommands},
+	{id: "read_paths", fixture: "content.html", build: (*flowRunner).readPathCommands},
 }
 
 // Run drives the fixture suite and returns the record.
@@ -446,6 +448,23 @@ func (f *flowRunner) structuredCommands() []commandDef {
 		}},
 		{name: "snapshot", tool: "brw_snapshot", run: func() (any, error) {
 			return mgr.Snapshot(f.tabContext(), snapshot.SnapshotOptions{})
+		}},
+	}
+}
+
+// readPathCommands times the two ways to read one page: a tab (open, then
+// read) and brw_read_url, which fetches and extracts in the daemon with no
+// browser. The flow opens first only because every flow must; read_url touches
+// no tab, so the order does not favour either path.
+func (f *flowRunner) readPathCommands() []commandDef {
+	mgr := f.manager()
+	return []commandDef{
+		{name: "open", tool: "brw_open", run: f.open},
+		{name: "read", tool: "brw_read", run: func() (any, error) {
+			return mgr.Read(f.tabContext())
+		}},
+		{name: "read_url", tool: "brw_read_url", run: func() (any, error) {
+			return urlread.Fetch(f.ctx, urlread.Options{URL: f.url})
 		}},
 	}
 }
