@@ -235,8 +235,8 @@ func (d *discovery) apply(s *AgentSurfaces, markdownVariant bool) {
 		if hrefs, ok := linksetHrefs(out.body); ok {
 			setOnce(&s.APICatalog, d.apiCatalog.url)
 			base := parseOr(out.url, d.apiCatalog.url)
-			for _, href := range hrefs {
-				s.addLink(base, surfaceLink{href: href, rels: []string{"service-desc"}})
+			for _, h := range hrefs {
+				s.addLink(base, h)
 			}
 		}
 	}
@@ -261,29 +261,41 @@ func parseOr(primary, fallback string) *url.URL {
 
 // linksetHrefs reads an RFC 9727 API catalog (an RFC 9264 linkset) and returns
 // the hrefs of its service-desc, service-doc and item links.
-func linksetHrefs(body []byte) ([]string, bool) {
+func linksetHrefs(body []byte) ([]surfaceLink, bool) {
 	var doc struct {
 		Linkset []map[string]json.RawMessage `json:"linkset"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil || doc.Linkset == nil {
 		return nil, false
 	}
-	var hrefs []string
+	var links []surfaceLink
 	for _, entry := range doc.Linkset {
-		for _, rel := range []string{"service-desc", "service-doc", "item"} {
+		// service-desc names a machine-readable API description. An item is
+		// classified by its path like a prose link, so an OpenAPI file or a
+		// retired plugin manifest is recognised and the API's own base URL is
+		// not. service-doc is documentation for people and is not reported.
+		for _, rel := range []string{"service-desc", "item"} {
 			var targets []struct {
 				Href string `json:"href"`
+				Type string `json:"type"`
 			}
-			if raw, ok := entry[rel]; ok && json.Unmarshal(raw, &targets) == nil {
-				for _, t := range targets {
-					if strings.TrimSpace(t.Href) != "" {
-						hrefs = append(hrefs, t.Href)
-					}
+			raw, ok := entry[rel]
+			if !ok || json.Unmarshal(raw, &targets) != nil {
+				continue
+			}
+			for _, t := range targets {
+				if strings.TrimSpace(t.Href) == "" {
+					continue
+				}
+				if rel == "service-desc" {
+					links = append(links, surfaceLink{href: t.Href, rels: []string{"service-desc"}, typ: t.Type})
+				} else {
+					links = append(links, surfaceLink{href: t.Href, typ: t.Type, prose: true})
 				}
 			}
 		}
 	}
-	return hrefs, true
+	return links, true
 }
 
 var mcpURLKeys = map[string]bool{"url": true, "endpoint": true, "href": true, "uri": true, "server_url": true, "serverurl": true, "mcp_url": true, "remote": true}

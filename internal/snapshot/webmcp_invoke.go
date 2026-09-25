@@ -146,6 +146,17 @@ type PageToolEvaluator func(ctx context.Context, expression string) (any, error)
 // the same-origin window walk both the frame target and the id lookup use, and
 // the reporting shape. Every script below embeds it, because a navigation can
 // have replaced the document between any two calls.
+// Sites commonly register WebMCP tools from a lazily loaded chunk, a second or
+// so after the load event an open or navigation waits for. A listing that finds
+// no tools on a document younger than webmcpSettleWindowMsJS waits for them, up
+// to the per-call budget, instead of reporting an empty page.
+const (
+	webmcpSettleWindowMsJS = "10000"
+	webmcpListSettleMsJS   = "2000"
+	webmcpDigestSettleMsJS = "1200"
+	webmcpInvokeSettleMsJS = "2500"
+)
+
 const webmcpRuntimeHelpers = FrameWalkHelpers + `
   var __BRW_WEBMCP_FRAME_DEPTH = 5;
   var __BRW_WEBMCP_KEEP_MS = 300000;
@@ -214,7 +225,8 @@ const webmcpRuntimeHelpers = FrameWalkHelpers + `
   }
   function __brwWebMCPContext(win){
     var mc = null;
-    try { mc = (win.document && win.document.modelContext) || null; } catch (e) { mc = null; }
+    try { mc = win.__brwWebMCPRuntime || null; } catch (e) { mc = null; }
+    if (!mc) { try { mc = (win.document && win.document.modelContext) || null; } catch (e) { mc = null; } }
     if (!mc) { try { mc = (win.navigator && win.navigator.modelContext) || null; } catch (e) { mc = null; } }
     if (!mc) { try { mc = (win.navigator && win.navigator.modelContextTesting) || null; } catch (e) { mc = null; } }
     return mc;
@@ -357,6 +369,29 @@ const webmcpRuntimeHelpers = FrameWalkHelpers + `
   function __brwWebMCPSupported(win){
     return !!__brwWebMCPContext(win);
   }
+  async function __brwWebMCPAwaitTools(win, wanted, maxMs, explicit){
+    var list = await __brwWebMCPToolList(win);
+    var start = Date.now();
+    function satisfied(l){
+      if (!wanted) return l.length > 0;
+      for (var i = 0; i < l.length; i++) { if (l[i].name === wanted) return true; }
+      return false;
+    }
+    var mc = __brwWebMCPContext(win);
+    // An explicit listing or call waits on any young document: a site that
+    // registers from a post-hydration effect has not touched the API yet when
+    // the load event fires. The per-navigation digest waits only once the page
+    // has feature-detected brw's runtime, so ordinary pages cost nothing.
+    var expecting = !!mc && (!!explicit || (!!mc.__brw && !!win.__brwWebMCPTouched));
+    while (!satisfied(list) && expecting && Date.now() - start < maxMs) {
+      var age = 0;
+      try { age = win.performance.now(); } catch (e) { age = ` + webmcpSettleWindowMsJS + `; }
+      if (age >= ` + webmcpSettleWindowMsJS + ` && win.document.readyState === 'complete') break;
+      await new Promise(function(r){ setTimeout(r, 100); });
+      list = await __brwWebMCPToolList(win);
+    }
+    return list;
+  }
   function __brwWebMCPStringInput(win){
     var m = null;
     try { m = /Chrom(?:e|ium)\/(\d+)/.exec(win.navigator.userAgent); } catch (e) { m = null; }
@@ -460,7 +495,7 @@ func BuildPageToolsExpression(frame string) string {
 	return `(async function(){` + webmcpRuntimeHelpers + `
   var target = __brwWebMCPFrameWindow(` + string(frameJSON) + `);
   if (!target.ok) return { supported: false, frame: String(` + string(frameJSON) + ` || 'main'), tools: [], error: target.error };
-  var list = await __brwWebMCPToolList(target.win);
+  var list = await __brwWebMCPAwaitTools(target.win, '', ` + webmcpListSettleMsJS + `, true);
   var tools = [];
   for (var i = 0; i < list.length; i++) tools.push(__brwWebMCPDescribe(list[i]));
   var mc = __brwWebMCPContext(target.win);
@@ -516,7 +551,7 @@ func BuildPageSurfacesExpression() string {
 	return `(async function(){` + webmcpRuntimeHelpers + `
   var MAX = ` + strconv.Itoa(MaxPageToolSummaries) + `, CHARS = ` + strconv.Itoa(pageToolSummaryChars) + `, LINKS = ` + strconv.Itoa(maxPageSurfaceEntries) + `;
   var list = [];
-  try { list = await __brwWebMCPToolList(window); } catch (e) { list = []; }
+  try { list = await __brwWebMCPAwaitTools(window, '', ` + webmcpDigestSettleMsJS + `, false); } catch (e) { list = []; }
   var tools = [];
   for (var i = 0; i < list.length && tools.length < MAX; i++) {
     var t = list[i], a = t.annotations || {};
@@ -659,7 +694,7 @@ func BuildPageToolInvokeExpression(opts PageToolInvokeOptions) (string, error) {
   var target = __brwWebMCPFrameWindow(FRAME);
   if (!target.ok) return { ok: false, status: 'not_found', error: target.error };
   var win = target.win;
-  var list = await __brwWebMCPToolList(win);
+  var list = await __brwWebMCPAwaitTools(win, NAME, ` + webmcpInvokeSettleMsJS + `, true);
   var tool = null;
   for (var i = 0; i < list.length; i++) { if (list[i].name === NAME) { tool = list[i]; break; } }
   if (!tool) return { ok: false, status: 'not_found', frame: target.frame,

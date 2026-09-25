@@ -54,6 +54,9 @@ const (
 var (
 	mcpPathPattern     = regexp.MustCompile(`(?i)(^|/)(mcp|mcp/sse|sse)/?$`)
 	openAPIPathPattern = regexp.MustCompile(`(?i)(openapi\.(json|ya?ml)|swagger\.json)$`)
+	// documentPathPattern is a page for people: a link labelled "MCP" that
+	// points at one is an article about MCP, not an endpoint.
+	documentPathPattern = regexp.MustCompile(`(?i)\.(md|markdown|html?|txt|pdf)$`)
 )
 
 // surfaceLink is one hyperlink from any source, before classification.
@@ -111,7 +114,8 @@ func (s *AgentSurfaces) addLink(base *url.URL, l surfaceLink) {
 		s.Markdown = appendCapped(s.Markdown, resolved)
 	case l.prose && openAPIPathPattern.MatchString(path):
 		s.APIDescriptions = appendCapped(s.APIDescriptions, resolved)
-	case l.prose && (mcpPathPattern.MatchString(path) || strings.Contains(l.text, "MCP")):
+	case l.prose && (mcpPathPattern.MatchString(path) || strings.HasSuffix(path, "/server-card") ||
+		(strings.Contains(l.text, "MCP") && !documentPathPattern.MatchString(path))):
 		s.MCP = appendCapped(s.MCP, resolved)
 	}
 }

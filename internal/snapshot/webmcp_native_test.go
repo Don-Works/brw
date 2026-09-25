@@ -289,3 +289,55 @@ func TestPageSurfacesOnAPlainPageAreEmpty(t *testing.T) {
 		t.Fatalf("plain page digest = %+v, want nothing", digest)
 	}
 }
+
+// lazyToolsPage feature-detects WebMCP straight away and registers its tool from
+// a timer, the way a site that code-splits its tool definitions does.
+const lazyToolsPage = `<!doctype html><html><body><h1>lazy</h1><script>
+  var mc = document.modelContext || navigator.modelContext;
+  if (mc) setTimeout(function(){
+    mc.registerTool({ name: 'late_tool', description: 'registered after load', inputSchema: { type: 'object' },
+      execute: function(){ return { late: true }; } });
+  }, 900);
+</script></body></html>`
+
+func TestLateRegisteredToolsAreWaitedFor(t *testing.T) {
+	t.Run("listing", func(t *testing.T) {
+		srv := servePage(t, lazyToolsPage)
+		ctx := openArmed(t, srv.URL)
+		listing := listTools(t, ctx, "")
+		if len(listing.Tools) != 1 || listing.Tools[0].Name != "late_tool" {
+			t.Fatalf("tools = %+v, want late_tool once it registers", listing.Tools)
+		}
+	})
+	t.Run("digest", func(t *testing.T) {
+		srv := servePage(t, lazyToolsPage)
+		ctx := openArmed(t, srv.URL)
+		digest, err := snapshot.ReadPageSurfaces(ctx, chromedpEvaluator(ctx))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(digest.Tools) != 1 || digest.Tools[0].Name != "late_tool" {
+			t.Fatalf("digest tools = %+v, want late_tool", digest.Tools)
+		}
+	})
+	t.Run("invoke", func(t *testing.T) {
+		srv := servePage(t, lazyToolsPage)
+		ctx := openArmed(t, srv.URL)
+		got := callTool(t, ctx, "late_tool", `{}`)
+		if got.Status != snapshot.PageToolDone {
+			t.Fatalf("invocation = %+v, want done once the tool registers", got)
+		}
+	})
+}
+
+func TestPageThatNeverTouchesWebMCPIsNotWaitedFor(t *testing.T) {
+	srv := servePage(t, `<!doctype html><html><body><h1>plain</h1></body></html>`)
+	ctx := openArmed(t, srv.URL)
+	start := time.Now()
+	if _, err := snapshot.ReadPageSurfaces(ctx, chromedpEvaluator(ctx)); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("digest of a page that never touched modelContext took %v, want no settle wait", elapsed)
+	}
+}

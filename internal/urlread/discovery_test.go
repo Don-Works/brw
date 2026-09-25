@@ -47,6 +47,27 @@ func TestFetchDiscoversSurfacesFromLLMsTxtAndLinks(t *testing.T) {
 			},
 		},
 		{
+			name: "an article about MCP and human API docs are not endpoints",
+			routes: map[string]fixtureRoute{
+				"/page": article,
+				"/llms.txt": {contentType: "text/markdown", body: "# Shop\n\n> Book a call.\n\n" +
+					"- [MCP Server Development](/services/mcp-development.md)\n" +
+					"- [Booking over MCP](/mcp)\n"},
+				"/.well-known/api-catalog": {contentType: "application/linkset+json", body: `{"linkset":[
+					{"anchor":"/api","service-desc":[{"href":"/openapi.json"}],"service-doc":[{"href":"/llms-full.txt"},{"href":"/book.md"}]},
+					{"anchor":"/.well-known/api-catalog","item":[{"href":"/api"}]}]}`},
+			},
+			want: func(base string) *AgentSurfaces {
+				return &AgentSurfaces{
+					APIDescriptions: []string{base + "/openapi.json"},
+					APICatalog:      base + "/.well-known/api-catalog",
+					MCP:             []string{base + "/mcp"},
+					LLMsTxt:         "present",
+					LLMsTxtURL:      base + "/llms.txt",
+				}
+			},
+		},
+		{
 			name: "rel=mcp links, the Link header and well-known anchors",
 			routes: map[string]fixtureRoute{
 				"/page": {
@@ -82,7 +103,7 @@ func TestFetchDiscoversSurfacesFromLLMsTxtAndLinks(t *testing.T) {
 			},
 			want: func(base string) *AgentSurfaces {
 				return &AgentSurfaces{
-					APIDescriptions:    []string{"https://api.acme.test/v1/openapi.json", base + "/docs/api", base + "/v2/openapi.json"},
+					APIDescriptions:    []string{"https://api.acme.test/v1/openapi.json", base + "/v2/openapi.json"},
 					APICatalog:         base + "/.well-known/api-catalog",
 					MCP:                []string{"https://mcp.acme.test/shop", "https://mcp.acme.test/cards"},
 					UCP:                base + "/.well-known/ucp",

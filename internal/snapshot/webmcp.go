@@ -96,8 +96,13 @@ const WebMCPInstallScript = `(function(){
       removeEventListener: function(type, fn, o){ if (events) events.removeEventListener(type, fn, o); },
       get tools(){ return reg.slice(); }
     };
-    Object.defineProperty(document, 'modelContext', { configurable: true, value: mc });
-    Object.defineProperty(navigator, 'modelContext', { configurable: true, value: mc });
+    // brw reads the runtime through __brwWebMCPRuntime; any read of the public
+    // property is the page feature-detecting WebMCP, which is how a listing
+    // knows tools may still be on their way from a lazily loaded chunk.
+    Object.defineProperty(window, '__brwWebMCPRuntime', { configurable: true, value: mc });
+    function touched(){ window.__brwWebMCPTouched = true; return mc; }
+    Object.defineProperty(document, 'modelContext', { configurable: true, get: touched });
+    Object.defineProperty(navigator, 'modelContext', { configurable: true, get: touched });
   } catch (_) {}
 })()`
 
