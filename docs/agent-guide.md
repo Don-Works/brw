@@ -176,8 +176,8 @@ When a site offers an agent surface, use it before its human UI, in this order:
 
 1. a WebMCP page tool, via `brw_call_page_tool`;
 2. an MCP or API endpoint the site declares (`agent_surfaces.mcp`,
-   `agent_surfaces.api_descriptions`), called directly — brw reports these and
-   does not proxy them;
+   `agent_surfaces.api_descriptions`, `agent_surfaces.api_catalog`), called
+   directly — brw reports these and does not proxy them;
 3. llms.txt or a markdown copy, via `brw_read_url`;
 4. snapshot and act by ref.
 
@@ -190,11 +190,45 @@ or MCP endpoints it carries `agent_surfaces`. Neither appears on an ordinary
 page, and `observe:"none"` skips the read. If `page_tools` is present and one
 fits, call it instead of clicking.
 
+That digest waits for late tools only when the page has already touched brw's
+fallback runtime, so a site that registers its tools from a post-hydration
+effect can land with no `page_tools` yet. On a page you expect to offer tools,
+call `brw_page_tools` once: on a document less than ten seconds old it waits up
+to 2s for tools to appear, and `brw_call_page_tool` waits up to 2.5s for the
+named tool.
+
+`brw_read_url` runs the wider discovery with no tab at all. On top of the page's
+own `<link>` elements and `Link:` header it probes `/llms.txt`, the page's `.md`
+variant, `/.well-known/api-catalog` (RFC 9727), `/.well-known/ai-catalog.json`
+(MCP server cards) and `/.well-known/ucp`, and reads an A2A agent card when the
+page links one. An `ai-plugin.json` manifest is reported as
+`deprecated_ai_plugin`, never as an API description. The probes run
+concurrently and are bounded at about 2s. The read sends an honest user agent,
+`brw/<version> (+https://brw.donworks.co.uk)`, and echoes the site's
+`Content-Signal` header as `content_signal` and `x-markdown-tokens` as
+`markdown_tokens`.
+
+`fallback_hint` on a `brw_read_url` result is the signal to step up to a real
+tab:
+
+| `fallback_hint` | What the read saw | Next step |
+| --- | --- | --- |
+| `login_wall` | a sign-in form in place of the page | `brw_open` + `brw_read` in a signed-in profile |
+| `js_shell` | an empty app shell that renders in JavaScript | `brw_open` + `brw_read` |
+| `challenge` | a bot check | `brw_open` in a real profile |
+| `auth_required` | a 401 or 403, returned as a tool error carrying the hint | `brw_open` + `brw_read` in a signed-in profile |
+
+A recorded booking run on a site with five WebMCP tools took 3 tool calls and
+6.7–7.7 KB of results through its page tools, against 11 calls and about 55 KB
+driving the form; tool time was similar. See
+[benchmarks](benchmarks.md#a-booking-flow-page-tools-against-the-dom).
+
 ## WebMCP: use the page's own tools when it offers them
 
-Some sites expose callable tools via the W3C WebMCP API (`document.modelContext`,
-formerly `navigator.modelContext`) — calling them is more reliable and far
-cheaper than driving the UI. brw reads a native implementation on every
+Some sites expose callable tools via the W3C WebMCP API (`document.modelContext`;
+`navigator.modelContext` is the older name, kept by brw's fallback runtime as an
+alias and still read when a page's own polyfill installed it). Calling one takes
+fewer calls and returns fewer bytes than driving the UI to the same result. brw reads a native implementation on every
 transport with no flag, never replaces it, and lists `<form toolname>` forms as
 `declarative` tools. `--enable-webmcp` adds brw's fallback runtime for browsers
 without one; it works on direct CDP and on the extension bridge, and is armed on
@@ -527,6 +561,15 @@ them), so those controls show up as normal refs without you doing anything.
 For MFA, CAPTCHA, payment confirmation, or anything you are not authorized to
 complete, call `brw_notify { kind: "needs_input" }` and stop. `brw` never
 bypasses logins, CAPTCHAs, MFA, or fraud checks — and neither should the agent.
+
+## When a result says `brw version skew`
+
+The MCP proxy a session starts builds the page scripts (WebMCP, reads,
+snapshots) itself and asks the daemon only to evaluate them. When the proxy's
+build differs from the daemon's, every tool result gains a one-line
+`brw version skew` note naming both versions: fixes in the newer daemon do not
+apply to this session until its brw connection restarts. Tell the user to
+reconnect it (`/mcp` in Claude Code) or start a new session.
 
 ## Safety
 

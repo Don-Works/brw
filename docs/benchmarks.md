@@ -2,7 +2,10 @@
 
 Every number on this page is produced by something in this repository, against
 fixtures in this repository, on a machine whose identity is printed next to the
-result.
+result. One section is the exception and says so:
+[live runs against a public site](#live-runs-against-a-public-site) were
+recorded with a script that is not in this repository, and its method is
+described there in full.
 
 A head-to-head against Claude-in-Chrome used to be described here. It was run
 before release, its transcripts were never published, and nothing in this
@@ -139,6 +142,66 @@ the tab path also waits for the page's own subresources and settle, which the
 fixture does not exercise. Both rows exclude the MCP layer: the `brw_open` row
 does not include the one evaluate the MCP handler adds to report `page_tools`
 and `agent_surfaces`.
+
+## Live runs against a public site
+
+These runs drive a real site over the network through a signed-in browser, so
+they depend on that site, the network and the account. Nothing in this
+repository reproduces them. The method below is complete enough to rebuild the
+script.
+
+### A booking flow: page tools against the DOM
+
+```
+darwin/arm64 Apple M4 Max | Chromium (installed build on max-mac), signed-in profile, extension bridge | brw 0.15.2   (3 runs per path, 2026-09-25)
+```
+
+**Target.** `https://revitt.co/book`, which registers five WebMCP tools,
+including `list_meeting_types`, `find_available_slots` and `book_meeting`. The
+end state for both paths is the same: a bookable slot is chosen and the booking
+can be submitted. Nothing was submitted.
+
+**Method.** A Node script spawns `brwd -mcp -mcp-tools all -upstream-http
+http://127.0.0.1:17510 -http off` as a stdio MCP proxy in front of the running
+daemon, sends `initialize`, then calls tools with `tools/call` exactly as an
+agent harness would. The two paths alternate, three runs each. Per call it
+records the wall time from request to response as seen by the client, and the
+length of the result's concatenated `content[].text` in characters, shown
+below as KB. The closing
+`brw_close_tab` is not counted.
+
+- *Page tools*: `brw_open` → `brw_page_tools` → `brw_call_page_tool`
+  `find_available_slots {meetingType:"intro-15", limit:3}`. Success is a
+  non-empty `slots` array in the result.
+- *DOM*: `brw_open` → `brw_snapshot` → `brw_click` the "Quick Intro" meeting
+  type → `brw_snapshot` every 300 ms until an enabled weekday button appears →
+  `brw_click` it → poll `brw_snapshot` until an enabled `HH:MM` time button
+  appears → `brw_click` it → poll `brw_snapshot` until the email field appears.
+
+| Path | Tool calls | Tool time (s) | Returned to the agent | Result |
+| --- | ---: | ---: | ---: | --- |
+| Page tools | 3 | 1.17–1.34 | 6.7–7.7 KB | slots across several days in one call |
+| DOM | 11 | 0.84–1.32 | ~55 KB | one day's slots at a time; name, email and submit still to do |
+
+Tool time is similar on both paths. The difference is in agent round trips,
+each of which is a model turn, and in the bytes the agent reads, which are
+tokens. On the page-tools path one more call, `book_meeting`, completes the
+booking; the DOM path still needs the name and email filled and the form
+submitted.
+
+Individual timings seen across the runs and the checks around them:
+
+| Call | Time |
+| --- | ---: |
+| `brw_read_url` of `revitt.co/book` (served markdown, with `agent_surfaces`) | 95–143 ms |
+| `brw_open` | 347–779 ms |
+| `brw_page_tools` | 3–18 ms |
+| `list_meeting_types` | 19–310 ms |
+| `find_available_slots` | 710–794 ms |
+| `book_meeting` refusing an off-grid time | 711–807 ms |
+
+`brw_read_url` on `https://github.com/settings/profile` returned
+`fallback_hint:"login_wall"`.
 
 ## The agent evaluations
 

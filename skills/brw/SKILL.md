@@ -125,6 +125,18 @@ Before driving a page's human UI, use what the site offers agents, in this order
    `/llms.txt`).
 4. **The DOM**: snapshot, act by ref, read.
 
+For a page you only need to read, start with `brw_read_url`: no tab, and it
+reports `agent_surfaces` from the page's links plus probes of `/llms.txt`, the
+`.md` variant and the `/.well-known/` catalogues. When it returns
+`fallback_hint` (`login_wall`, `js_shell`, `challenge`, `auth_required`), the
+read did not see the real page: step up to `brw_open` + `brw_read` in a
+signed-in profile.
+
+A site that registers its tools after hydration can land with no `page_tools`
+in the open result. On a page you expect to offer tools, call `brw_page_tools`
+once: it waits up to 2s on a young document, and `brw_call_page_tool` waits up
+to 2.5s for the named tool.
+
 Native WebMCP (`document.modelContext`) is read on every transport with no flag.
 `brwd --enable-webmcp` adds brw's fallback runtime for browsers without it, on
 direct CDP and the extension bridge alike, armed on the blank tab before the

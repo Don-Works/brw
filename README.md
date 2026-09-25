@@ -21,6 +21,13 @@ for normal web work.
 - Exposes an HTTP JSON API for custom clients.
 - Drives that same API from a shell with `brw <verb>`, refs and all.
 - Returns semantic snapshots from DOM plus accessibility data.
+- Uses a site's agent surfaces before its human UI: WebMCP page tools (native
+  `document.modelContext` on every transport, including the signed-in extension
+  bridge), declared MCP and API endpoints, llms.txt and markdown copies. On a
+  booking site with five page tools, reaching a submittable slot took 3 tool
+  calls and about 7 KB of results against 11 calls and about 55 KB through the
+  form ([agent guide](docs/agent-guide.md#agent-surfaces-first-then-the-dom),
+  [recorded run](docs/benchmarks.md#a-booking-flow-page-tools-against-the-dom)).
 - Reads page prose, links, headings, forms, tables, and structured product data.
 - Clicks, types, fills, selects, scrolls, drags, uploads, waits, and asserts by ref.
 - Returns a post-action observation after every action.
