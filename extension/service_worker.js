@@ -226,7 +226,18 @@ const state = {
   // The nav policy alone only gates the URL an agent asks to open; without this
   // an allowlisted page can still fetch, beacon and socket anywhere it likes.
   containment: { allowed: [], blocked: [], enabled: false },
+  // containmentGuard is the in-page guard source the daemon last sent. Kept so a
+  // tab whose debugger session was dropped (idle sweep, SW-side detach) is
+  // re-contained on its next attach instead of running uncontained.
+  containmentGuard: "",
   containmentTabs: new Set(),
+  // webmcpSource is the daemon's WebMCP shim, set once by set_webmcp when the
+  // daemon runs with --enable-webmcp. Every debugger session brw opens while it
+  // is set registers it to run at document-start, so a session lost to an idle
+  // detach re-arms on the next attach. webmcpTabs holds the tabs whose CURRENT
+  // session carries the registration.
+  webmcpSource: "",
+  webmcpTabs: new Set(),
   // inlineDocumentTabs maps each tab whose next main-document response is
   // rewritten so a text download renders as a page to { patterns, mainFrameId }:
   // the Fetch URL patterns covering the destination's origin and each redirect
@@ -1179,6 +1190,7 @@ chrome.debugger.onDetach.addListener((source) => {
     state.attachUsedAt.delete(source.tabId);
     state.fileChooserEvents.delete(source.tabId);
   state.containmentTabs.delete(source.tabId);
+  state.webmcpTabs.delete(source.tabId);
   state.inlineDocumentTabs.delete(source.tabId);
   state.blockedRequests.delete(source.tabId);
   state.dialogArm.delete(source.tabId);
@@ -1916,7 +1928,11 @@ async function handle(message) {
       // to its URL, so a text response the server flags as an attachment renders
       // as the tab's first document instead of leaving an empty tab and a file.
       const inlineDocument = message.params?.inlineDocument === true && targetUrl !== "about:blank";
-      const createParams = { url: inlineDocument ? "about:blank" : targetUrl, active: makeActive };
+      // With webmcp the tab is likewise created blank and armed first, so the
+      // shim is in place before the first document's own scripts register tools.
+      const webmcpSource = typeof message.params?.webmcp === "string" ? message.params.webmcp : "";
+      const armFirst = inlineDocument || (webmcpSource !== "" && targetUrl !== "about:blank");
+      const createParams = { url: armFirst ? "about:blank" : targetUrl, active: makeActive };
       // chrome.tabs.create without windowId inherits Chrome's last-focused
       // window — including a popup created by the previous automation step.
       // Popup windows cannot host tab groups, so the new tab would be created
@@ -1943,8 +1959,12 @@ async function handle(message) {
         tab = win?.tabs?.[0];
         if (!tab) throw err;
       }
-      if (inlineDocument && tab.id) {
-        await armInlineDocument(tab.id, targetUrl).catch(() => {});
+      let webmcpArmed = false;
+      if (armFirst && tab.id) {
+        if (webmcpSource) {
+          webmcpArmed = await armWebMCP(tab.id, webmcpSource, false).then((r) => r.armed).catch(() => false);
+        }
+        if (inlineDocument) await armInlineDocument(tab.id, targetUrl).catch(() => {});
         tab = await chrome.tabs.update(tab.id, { url: targetUrl });
       }
       // brw drives this tab for the rest of the agent session, usually in the
@@ -1985,6 +2005,7 @@ async function handle(message) {
       }
       const summary = await tabSummary(resultTab);
       if (groupWarning) summary.groupWarning = groupWarning;
+      if (webmcpArmed) summary.webmcpArmed = true;
       send({ id: message.id, ok: true, result: summary });
       return;
     }
@@ -2372,30 +2393,37 @@ async function handle(message) {
       const blocked = Array.isArray(message.params?.blocked) ? message.params.blocked.map(String) : [];
       const enabled = message.params?.enabled === true;
       state.containment = { allowed, blocked, enabled };
+      state.containmentGuard = enabled && typeof message.params?.guard === "string" ? message.params.guard : "";
       if (!enabled) {
         send({ id: message.id, ok: true, result: { enabled: false } });
         return;
       }
       const tabId = Number(message.params?.tabId || (await activeTabId()));
+      // A fresh attach arms the tab itself (rearmContainment); an existing
+      // session is armed here. The guard then runs before each new document's
+      // own scripts, so its wrappers land before page code captures the originals.
       await attach(tabId);
-      if (!state.containmentTabs.has(tabId)) {
-        state.containmentTabs.add(tabId);
-        await syncFetchInterception(tabId);
-        if (typeof message.params?.guard === "string" && message.params.guard) {
-          await sendDebuggerCommand(tabId, "Page.enable", {}).catch(() => {});
-          // Runs before each new document's own scripts, so the wrappers land
-          // before page code can capture the originals.
-          await sendDebuggerCommand(tabId, "Page.addScriptToEvaluateOnNewDocument", {
-            source: message.params.guard
-          }).catch(() => {});
-          // Catch-up for the document already loaded; best-effort only.
-          await sendDebuggerCommand(tabId, "Runtime.evaluate", {
-            expression: message.params.guard,
-            returnByValue: true
-          }).catch(() => {});
-        }
+      await rearmContainment(tabId);
+      if (state.containmentGuard) {
+        // Catch-up for the document already loaded; best-effort only.
+        await sendDebuggerCommand(tabId, "Runtime.evaluate", {
+          expression: state.containmentGuard,
+          returnByValue: true
+        }).catch(() => {});
       }
       send({ id: message.id, ok: true, result: { enabled: true, tabId } });
+      return;
+    }
+    if (message.type === "set_webmcp") {
+      const source = typeof message.params?.source === "string" ? message.params.source : "";
+      if (message.params?.enabled !== true || !source) {
+        state.webmcpSource = "";
+        send({ id: message.id, ok: true, result: { enabled: false } });
+        return;
+      }
+      const tabId = Number(message.params?.tabId || (await activeTabId()));
+      const result = await armWebMCP(tabId, source, message.params?.catchUp !== false);
+      send({ id: message.id, ok: true, result: { enabled: true, tabId, ...result } });
       return;
     }
     if (message.type === "arm_inline_document") {
@@ -2812,6 +2840,51 @@ async function attach(tabId, opts = {}) {
 	  await detach(tabId).catch(() => {});
 	  throw new Error(`cannot safely arm Page events for tab ${tabId}: ${String(error?.message || error)}`);
 	}
+	await rearmContainment(tabId).catch(() => {});
+	await registerWebMCP(tabId).catch(() => {});
+}
+
+// rearmContainment puts a tab under the daemon's containment policy for its
+// current debugger session. Fetch interception and document-start scripts both
+// die with the session, so this runs on every fresh attach while containment is
+// enabled, not only when the daemon first arms the tab.
+async function rearmContainment(tabId) {
+  if (!state.containment.enabled || state.containmentTabs.has(tabId) || !state.attachedTabs.has(tabId)) return false;
+  state.containmentTabs.add(tabId);
+  await syncFetchInterception(tabId);
+  if (state.containmentGuard) {
+    await chrome.debugger.sendCommand({ tabId }, "Page.addScriptToEvaluateOnNewDocument", { source: state.containmentGuard })
+      .catch(() => {});
+  }
+  return true;
+}
+
+// registerWebMCP adds the daemon's WebMCP shim to the tab's debugger session so
+// it runs before each new document's own scripts. It talks to chrome.debugger
+// directly because it runs inside attach(), which sendDebuggerCommand would
+// re-enter on a detached session.
+async function registerWebMCP(tabId) {
+  const source = state.webmcpSource;
+  if (!source || state.webmcpTabs.has(tabId) || !state.attachedTabs.has(tabId)) return false;
+  await chrome.debugger.sendCommand({ tabId }, "Page.addScriptToEvaluateOnNewDocument", { source });
+  state.webmcpTabs.add(tabId);
+  return true;
+}
+
+// armWebMCP records the shim, registers it on the tab, and optionally runs it in
+// the document already loaded. The shim is idempotent, so the catch-up is safe
+// on a document that already has it.
+async function armWebMCP(tabId, source, catchUp) {
+  state.webmcpSource = source;
+  await attach(tabId);
+  await registerWebMCP(tabId);
+  let installed = false;
+  if (catchUp) {
+    await sendDebuggerCommand(tabId, "Runtime.evaluate", { expression: source, returnByValue: true })
+      .then(() => { installed = true; })
+      .catch(() => {});
+  }
+  return { armed: state.webmcpTabs.has(tabId), installed };
 }
 
 // reconcileDebuggerAttachments releases brw debugger sessions that leaked across
@@ -2854,6 +2927,7 @@ async function detach(tabId) {
   // must re-arm on the next attach. Leaving it in the set would silently drop
   // containment on a tab that still believes it is contained.
   state.containmentTabs.delete(tabId);
+  state.webmcpTabs.delete(tabId);
   state.inlineDocumentTabs.delete(tabId);
   try {
     await chrome.debugger.detach({ tabId });
@@ -2875,6 +2949,7 @@ async function forceDetach(tabId) {
   state.observerInjected.delete(tabId);
   state.fileChooserEvents.delete(tabId);
   state.containmentTabs.delete(tabId);
+  state.webmcpTabs.delete(tabId);
   state.inlineDocumentTabs.delete(tabId);
   try { await chrome.debugger.detach({ tabId }); } catch (_) {}
 }

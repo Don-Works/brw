@@ -1,9 +1,17 @@
 // Package urlread fetches and extracts a page WITHOUT a browser.
 //
-// A large share of "read this page" work needs no tab, no profile and no
-// Chrome: the daemon can negotiate for markdown, fall back to llms.txt, and
-// otherwise extract the HTML itself. That removes a tab lease, a navigation and
-// a settle from the common case.
+// A read asks for markdown first through the Accept header and uses it as
+// served; otherwise it extracts the HTML in the daemon. The origin's /llms.txt
+// is read in place of the URL only when Options.LLMs is set.
+//
+// Every other read also runs a small batch of discovery probes concurrently
+// with the main request, each gated by the same PolicyCheck on the URL and
+// every redirect: /llms.txt, the page's .md variant, /.well-known/api-catalog,
+// /.well-known/ai-catalog.json and /.well-known/ucp. Their findings, the page's
+// declared <link> surfaces and the response's Link header are reported as
+// Result.AgentSurfaces. A response that is a login page, an empty JavaScript
+// shell, a bot challenge or an auth refusal is flagged in Result.FallbackHint,
+// since its prose is not the page a person would see.
 //
 // The read is deliberately UNAUTHENTICATED: it carries no cookies, no profile
 // and no credentials. Anything behind a login must go through a real tab, which
@@ -18,8 +26,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Don-Works/brw/internal/readability"
 )
@@ -35,7 +45,19 @@ const DefaultTimeout = 20 * time.Second
 // acceptHeader asks for markdown first. Servers that publish a markdown
 // rendering (Cloudflare-style endpoints and a growing number of docs sites)
 // answer with prose that needs no extraction at all.
-const acceptHeader = "text/markdown;q=1.0, text/plain;q=0.9, text/html;q=0.8, application/xhtml+xml;q=0.8"
+const acceptHeader = "text/markdown, text/plain;q=0.95, text/html;q=0.9, application/xhtml+xml;q=0.9"
+
+// UserAgentFor is the honest user agent brw reads with: it names brw and where
+// to find out about it. An empty version reads as "dev".
+func UserAgentFor(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		version = "dev"
+	}
+	return "brw/" + version + " (+https://brw.donworks.co.uk)"
+}
+
+const maxContentSignalChars = 200
 
 // Options selects one no-browser read.
 type Options struct {
@@ -69,6 +91,17 @@ type Result struct {
 	Bytes           int    `json:"bytes"`
 	Truncated       bool   `json:"fetch_truncated,omitempty"`
 	Unauthenticated bool   `json:"unauthenticated"`
+	// AgentSurfaces is what the site offers agents instead of this page.
+	AgentSurfaces *AgentSurfaces `json:"agent_surfaces,omitempty"`
+	// FallbackHint is login_wall, js_shell, challenge or auth_required when the
+	// response is not the page's real content and a signed-in tab is needed.
+	FallbackHint string `json:"fallback_hint,omitempty"`
+	// ContentSignal is the response's Content-Signal header, the site's stated
+	// terms for AI use of the content.
+	ContentSignal string `json:"content_signal,omitempty"`
+	// MarkdownTokens is the server's own token estimate for a markdown
+	// response (x-markdown-tokens).
+	MarkdownTokens int `json:"markdown_tokens,omitempty"`
 }
 
 // Fetch performs the read.
@@ -106,22 +139,9 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	client := &http.Client{
-		Timeout:   timeout,
-		Transport: guardedTransport(),
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return errors.New("stopped after 10 redirects")
-			}
-			// A redirect is a fresh destination and is re-gated. Without this a
-			// permitted URL could bounce the read anywhere.
-			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-				return fmt.Errorf("redirect to unsupported scheme %q refused", req.URL.Scheme)
-			}
-			if opts.PolicyCheck != nil {
-				return opts.PolicyCheck(req.URL.String())
-			}
-			return nil
-		},
+		Timeout:       timeout,
+		Transport:     guardedTransport(),
+		CheckRedirect: redirectCheck(opts),
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
@@ -132,9 +152,16 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 	request.Header.Set("Accept-Encoding", "identity")
 	userAgent := strings.TrimSpace(opts.UserAgent)
 	if userAgent == "" {
-		userAgent = "brw/urlread (+https://brw.donworks.co.uk)"
+		userAgent = UserAgentFor("")
 	}
 	request.Header.Set("User-Agent", userAgent)
+
+	var found *discovery
+	if !opts.LLMs && !strings.EqualFold(target.Path, "/llms.txt") && !skipDiscovery {
+		probeCtx, cancelProbes := context.WithCancel(ctx)
+		defer cancelProbes()
+		found = startDiscovery(probeCtx, target, opts, userAgent)
+	}
 
 	response, err := client.Do(request)
 	if err != nil {
@@ -161,12 +188,28 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 		Bytes:           len(body),
 		Truncated:       truncated,
 		Unauthenticated: true,
+		ContentSignal:   contentSignal(response.Header),
+		MarkdownTokens:  markdownTokens(response.Header),
+	}
+	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	isHTML := mediaType == "" || mediaType == "text/html" || mediaType == "application/xhtml+xml"
+	var sig htmlSignals
+	if isHTML {
+		sig = scanHTML(response.Request.URL, body)
 	}
 	if response.StatusCode >= 400 {
+		switch {
+		case isChallenge(response.Header, body, sig.title):
+			result.FallbackHint = HintChallenge
+		case response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden:
+			result.FallbackHint = HintAuthRequired
+		}
+		if result.FallbackHint != "" {
+			return result, fmt.Errorf("fetch %s: HTTP %d (%s)", target.Redacted(), response.StatusCode, hintAdvice(result.FallbackHint))
+		}
 		return result, fmt.Errorf("fetch %s: HTTP %d", target.Redacted(), response.StatusCode)
 	}
 
-	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
 	var read readability.PageRead
 	switch {
 	case opts.LLMs:
@@ -186,6 +229,27 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 		if err != nil {
 			return result, fmt.Errorf("extract %s: %w", target.Redacted(), err)
 		}
+	}
+
+	surfaces := &AgentSurfaces{}
+	if isHTML && !opts.LLMs {
+		*surfaces = sig.surfaces
+		if isChallenge(response.Header, body, sig.title) {
+			result.FallbackHint = HintChallenge
+		} else {
+			result.FallbackHint = successHint(response.Request.URL, sig, utf8.RuneCountInString(strings.TrimSpace(read.Main)))
+		}
+	}
+	if !opts.LLMs {
+		for _, link := range parseLinkHeader(response.Header.Values("Link")) {
+			surfaces.addLink(response.Request.URL, link)
+		}
+	}
+	if found != nil {
+		found.apply(surfaces, result.Source == "html")
+	}
+	if !surfaces.empty() {
+		result.AgentSurfaces = surfaces
 	}
 
 	// Same windowing as an in-tab read, so offset/max_chars/section behave
@@ -273,4 +337,20 @@ func checkDialIP(ip net.IP) error {
 		}
 	}
 	return nil
+}
+
+func contentSignal(header http.Header) string {
+	value := strings.TrimSpace(strings.Join(header.Values("Content-Signal"), ", "))
+	if runes := []rune(value); len(runes) > maxContentSignalChars {
+		value = string(runes[:maxContentSignalChars])
+	}
+	return value
+}
+
+func markdownTokens(header http.Header) int {
+	n, err := strconv.Atoi(strings.TrimSpace(header.Get("X-Markdown-Tokens")))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }

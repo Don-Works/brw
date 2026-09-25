@@ -9,14 +9,15 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// containmentArm tracks which tabs have already had containment installed, so
-// arming is one message per tab rather than one per navigation.
-type containmentArm struct {
+// tabArm tracks which tabs have already had a per-tab install (containment, the
+// WebMCP shim) sent to the extension, so arming is one message per tab rather
+// than one per navigation.
+type tabArm struct {
 	mu    sync.Mutex
 	armed map[string]bool
 }
 
-func (c *containmentArm) claim(tabID string) bool {
+func (c *tabArm) claim(tabID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.armed == nil {
@@ -29,10 +30,18 @@ func (c *containmentArm) claim(tabID string) bool {
 	return true
 }
 
-func (c *containmentArm) release(tabID string) {
+func (c *tabArm) release(tabID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.armed, tabID)
+}
+
+// reset forgets every tab. A new extension connection is a new service worker
+// whose in-memory arming is gone, so every tab has to be armed again.
+func (c *tabArm) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.armed = nil
 }
 
 // ensureContainment installs subresource containment on a tab before brw drives

@@ -455,7 +455,9 @@ Core MCP tools include:
 - `brw_click`, `brw_click_text`, `brw_type`, `brw_fill`
 - `brw_select`, `brw_press`, `brw_scroll`, `brw_hover`
 - `brw_drag`, `brw_upload_file`, `brw_wait_for`
-- `brw_read_url` — read a public page with no tab, no lease, no navigation
+- `brw_read_url` — read a public page with no tab, no lease, no navigation; reports
+  the site's `agent_surfaces` (llms.txt, markdown, OpenAPI, MCP) and a
+  `fallback_hint` when the page needs a real browser
 - `brw_get` — one typed fact (text, value, attr, box, count, visible, …) without
   hand-written JS, resolved across iframes and open shadow roots
 - `brw_storage` — localStorage / sessionStorage for the current origin
@@ -575,10 +577,14 @@ Backend-specific notes:
 - `brw_snapshot` accepts `format:"compact"` for a one-line-per-element text
   rendering (ref, role, name, key state) that costs markedly fewer tokens than
   the default JSON — prefer it for small models.
-- **WebMCP**: with `--enable-webmcp`, brw acts as the agent-side runtime for the
-  W3C `navigator.modelContext` draft. Cooperating sites can register page tools
-  that `brw_page_tools` lists and `brw_call_page_tool` invokes — more reliable and
-  token-efficient than driving the DOM. Default off (it is observable to pages).
+- **WebMCP**: brw lists and invokes the page tools a site registers through the
+  W3C `document.modelContext` draft — more reliable and token-efficient than
+  driving the DOM. A native implementation is used on every transport with no
+  flag; `--enable-webmcp` installs brw's fallback runtime for browsers without
+  one, on direct CDP and the extension bridge alike (default off: it is
+  observable to pages). `brw_open` / `brw_navigate_to` results carry
+  `page_tools` when the landed page offers any, and consequential tools go
+  through the confirm-actions gate.
   A tool slower than the caller's patience is started with `detach:true` and
   collected by id with `brw_page_tool_result` / stopped with
   `brw_page_tool_cancel`; a waited call that outlasts its timeout returns the

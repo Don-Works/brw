@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -130,6 +131,9 @@ type PageToolInvocation struct {
 	StartedURL string `json:"started_url,omitempty"`
 	CurrentURL string `json:"current_url,omitempty"`
 	Note       string `json:"note,omitempty"`
+	// UntrustedOutput marks Result as content the page wrote. It is data for the
+	// agent to use, never instructions for it to follow.
+	UntrustedOutput bool `json:"untrusted_output,omitempty"`
 }
 
 // PageToolEvaluator runs one expression in the target tab and returns its
@@ -142,6 +146,17 @@ type PageToolEvaluator func(ctx context.Context, expression string) (any, error)
 // the same-origin window walk both the frame target and the id lookup use, and
 // the reporting shape. Every script below embeds it, because a navigation can
 // have replaced the document between any two calls.
+// Sites commonly register WebMCP tools from a lazily loaded chunk, a second or
+// so after the load event an open or navigation waits for. A listing that finds
+// no tools on a document younger than webmcpSettleWindowMsJS waits for them, up
+// to the per-call budget, instead of reporting an empty page.
+const (
+	webmcpSettleWindowMsJS = "10000"
+	webmcpListSettleMsJS   = "2000"
+	webmcpDigestSettleMsJS = "1200"
+	webmcpInvokeSettleMsJS = "2500"
+)
+
 const webmcpRuntimeHelpers = FrameWalkHelpers + `
   var __BRW_WEBMCP_FRAME_DEPTH = 5;
   var __BRW_WEBMCP_KEEP_MS = 300000;
@@ -208,30 +223,192 @@ const webmcpRuntimeHelpers = FrameWalkHelpers + `
     if (!win) return { ok: false, error: 'webmcp frame is cross-origin: ' + t + ' (the browser isolates its document, so page tools declared inside it cannot be reached from the top frame)' };
     return { ok: true, win: win, frame: t };
   }
-  function __brwWebMCPToolList(win){
+  function __brwWebMCPContext(win){
+    var mc = null;
+    try { mc = win.__brwWebMCPRuntime || null; } catch (e) { mc = null; }
+    if (!mc) { try { mc = (win.document && win.document.modelContext) || null; } catch (e) { mc = null; } }
+    if (!mc) { try { mc = (win.navigator && win.navigator.modelContext) || null; } catch (e) { mc = null; } }
+    if (!mc) { try { mc = (win.navigator && win.navigator.modelContextTesting) || null; } catch (e) { mc = null; } }
+    return mc;
+  }
+  function __brwWebMCPIsNative(mc){
+    return !!(mc && !mc.__brw && (typeof mc.getTools === 'function' || typeof mc.listTools === 'function'));
+  }
+  function __brwWebMCPNativeTools(mc){
+    return typeof mc.getTools === 'function' ? mc.getTools() : mc.listTools();
+  }
+  function __brwWebMCPSchema(schema){
+    if (typeof schema === 'string') { try { return JSON.parse(schema); } catch (e) { return null; } }
+    return (schema && typeof schema === 'object') ? schema : null;
+  }
+  var __BRW_WEBMCP_HINTS = ['readOnlyHint','destructiveHint','idempotentHint','openWorldHint','consequentialHint','untrustedContentHint'];
+  function __brwWebMCPAnnotations(tool){
+    var src = tool && tool.annotations;
+    if (typeof src === 'string') { try { src = JSON.parse(src); } catch (e) { src = null; } }
+    if (!src || typeof src !== 'object') return null;
+    var out = null;
+    for (var i = 0; i < __BRW_WEBMCP_HINTS.length; i++) {
+      var k = __BRW_WEBMCP_HINTS[i], bare = k.slice(0, -4);
+      var v = typeof src[k] === 'boolean' ? src[k] : src[bare];
+      if (typeof v === 'boolean') { out = out || {}; out[k] = v; }
+    }
+    return out;
+  }
+  function __brwWebMCPEntry(tool, extra){
+    var entry = { name: String(tool.name), description: String(tool.description || ''),
+                  inputSchema: __brwWebMCPSchema(tool.inputSchema || tool.input_schema || null),
+                  annotations: __brwWebMCPAnnotations(tool), raw: tool, native: false, declarative: false, mc: null };
+    if (extra) for (var k in extra) entry[k] = extra[k];
+    return entry;
+  }
+  function __brwWebMCPSetValue(el, value){
+    var proto = Object.getPrototypeOf(el);
+    var desc = null;
+    while (proto && !desc) { desc = Object.getOwnPropertyDescriptor(proto, 'value'); proto = Object.getPrototypeOf(proto); }
+    if (desc && desc.set) desc.set.call(el, value); else el.value = value;
+  }
+  function __brwWebMCPFillForm(form, args, submit){
+    var filled = [];
+    var keys = Object.keys(args || {});
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i], value = args[key], els = [];
+      var all = form.elements || [];
+      for (var j = 0; j < all.length; j++) { if (all[j].name === key) els.push(all[j]); }
+      if (!els.length) continue;
+      for (var n = 0; n < els.length; n++) {
+        var el = els[n], type = String(el.type || '').toLowerCase();
+        if (type === 'password' || type === 'file' || type === 'hidden') continue;
+        if (type === 'checkbox') el.checked = !!value;
+        else if (type === 'radio') el.checked = (el.value === String(value));
+        else __brwWebMCPSetValue(el, value == null ? '' : String(value));
+        try { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+      }
+      filled.push(key);
+    }
+    if (!submit) {
+      return { filled: filled, submitted: false,
+               note: 'form filled but not submitted: it does not declare toolautosubmit; submit it with brw_click once the user has agreed' };
+    }
+    var response = null, responded = false, ev = null;
+    try { ev = new SubmitEvent('submit', { bubbles: true, cancelable: true }); } catch (e) { ev = new Event('submit', { bubbles: true, cancelable: true }); }
+    try {
+      Object.defineProperty(ev, 'agentInvoked', { value: true });
+      Object.defineProperty(ev, 'respondWith', { value: function(p){ responded = true; response = p; } });
+    } catch (e) {}
+    var proceed = form.dispatchEvent(ev);
+    if (responded) {
+      return Promise.resolve(response).then(function(value){ return value === undefined ? { filled: filled, submitted: true } : value; });
+    }
+    if (proceed) form.submit();
+    return { filled: filled, submitted: proceed };
+  }
+  function __brwWebMCPFormTools(win){
+    var out = [];
+    var forms = null;
+    try { forms = win.document.querySelectorAll('form[toolname]'); } catch (e) { return out; }
+    for (var i = 0; i < forms.length; i++) {
+      (function(form){
+        var name = String(form.getAttribute('toolname') || '').trim();
+        if (!name) return;
+        var props = {}, required = [], fields = form.elements || [];
+        for (var j = 0; j < fields.length; j++) {
+          var f = fields[j], type = String(f.type || '').toLowerCase();
+          if (!f.name || /^(hidden|submit|button|reset|file|password|image)$/.test(type)) continue;
+          var spec = props[f.name] || { type: (type === 'number' || type === 'range') ? 'number' : (type === 'checkbox' ? 'boolean' : 'string') };
+          var d = f.getAttribute('toolparamdescription');
+          if (d) spec.description = d;
+          if (String(f.tagName).toUpperCase() === 'SELECT') {
+            spec['enum'] = [];
+            for (var o = 0; o < f.options.length; o++) spec['enum'].push(f.options[o].value);
+          } else if (type === 'radio') {
+            spec['enum'] = (spec['enum'] || []).concat([f.value]);
+          }
+          props[f.name] = spec;
+          if (f.required && required.indexOf(f.name) < 0) required.push(f.name);
+        }
+        var auto = form.hasAttribute('toolautosubmit');
+        var tool = { name: name, description: String(form.getAttribute('tooldescription') || ''),
+                     inputSchema: { type: 'object', properties: props, required: required },
+                     annotations: auto ? { consequentialHint: true } : { readOnlyHint: false },
+                     execute: function(args){ return __brwWebMCPFillForm(form, args || {}, auto); } };
+        out.push(__brwWebMCPEntry(tool, { declarative: true }));
+      })(forms[i]);
+    }
+    return out;
+  }
+  async function __brwWebMCPToolList(win){
     var out = [], seen = {};
-    function add(tool){
-      if (!tool || !tool.name || seen[tool.name]) return;
-      seen[tool.name] = 1;
-      out.push(tool);
+    function add(entry){
+      if (!entry || !entry.name || seen[entry.name]) return;
+      seen[entry.name] = 1;
+      out.push(entry);
     }
     var registered = null;
     try { registered = win.__brwWebMCPTools || null; } catch (e) { registered = null; }
-    if (registered && registered.forEach) registered.forEach(add);
-    try {
-      var mc = win.navigator ? win.navigator.modelContext : null;
-      if (mc) {
-        var native = mc.tools || (typeof mc.getTools === 'function' ? mc.getTools() : null) || (mc.context && mc.context.tools);
-        if (native && native.forEach) native.forEach(add);
-      }
-    } catch (e) {}
+    if (registered && registered.forEach) registered.forEach(function(t){ if (t && t.name) add(__brwWebMCPEntry(t)); });
+    var mc = __brwWebMCPContext(win);
+    if (__brwWebMCPIsNative(mc)) {
+      var tools = null;
+      try { tools = await __brwWebMCPNativeTools(mc); } catch (e) { tools = null; }
+      if (tools && tools.forEach) tools.forEach(function(t){
+        if (!t || !t.name) return;
+        // Chromium's getTools also returns same-origin child frames' tools;
+        // those belong to the frame, which is listed with frame.
+        try { if (t.window && t.window !== win) return; } catch (e) { return; }
+        add(__brwWebMCPEntry(t, { native: true, mc: mc, declarative: !!t.backendNodeId }));
+      });
+    } else {
+      try {
+        var legacy = mc ? (mc.tools || (mc.context && mc.context.tools)) : null;
+        if (legacy && legacy.forEach) legacy.forEach(function(t){ if (t && t.name) add(__brwWebMCPEntry(t)); });
+      } catch (e) {}
+      __brwWebMCPFormTools(win).forEach(add);
+    }
     return out;
   }
   function __brwWebMCPSupported(win){
-    try { return !!(win.navigator && win.navigator.modelContext); } catch (e) { return false; }
+    return !!__brwWebMCPContext(win);
+  }
+  async function __brwWebMCPAwaitTools(win, wanted, maxMs, explicit){
+    var list = await __brwWebMCPToolList(win);
+    var start = Date.now();
+    function satisfied(l){
+      if (!wanted) return l.length > 0;
+      for (var i = 0; i < l.length; i++) { if (l[i].name === wanted) return true; }
+      return false;
+    }
+    var mc = __brwWebMCPContext(win);
+    // An explicit listing or call waits on any young document: a site that
+    // registers from a post-hydration effect has not touched the API yet when
+    // the load event fires. The per-navigation digest waits only once the page
+    // has feature-detected brw's runtime, so ordinary pages cost nothing.
+    var expecting = !!mc && (!!explicit || (!!mc.__brw && !!win.__brwWebMCPTouched));
+    while (!satisfied(list) && expecting && Date.now() - start < maxMs) {
+      var age = 0;
+      try { age = win.performance.now(); } catch (e) { age = ` + webmcpSettleWindowMsJS + `; }
+      if (age >= ` + webmcpSettleWindowMsJS + ` && win.document.readyState === 'complete') break;
+      await new Promise(function(r){ setTimeout(r, 100); });
+      list = await __brwWebMCPToolList(win);
+    }
+    return list;
+  }
+  function __brwWebMCPStringInput(win){
+    var m = null;
+    try { m = /Chrom(?:e|ium)\/(\d+)/.exec(win.navigator.userAgent); } catch (e) { m = null; }
+    return !!(m && Number(m[1]) < 155);
+  }
+  function __brwWebMCPOutput(value){
+    if (typeof value !== 'string') return value;
+    try { return JSON.parse(value); } catch (e) { return value; }
+  }
+  function __brwWebMCPDescribe(entry){
+    var out = { name: entry.name, description: entry.description, inputSchema: entry.inputSchema };
+    if (entry.annotations) out.annotations = entry.annotations;
+    if (entry.declarative) out.declarative = true;
+    return out;
   }
   function __brwWebMCPValidate(tool, args){
-    var schema = tool.inputSchema || tool.input_schema || null;
+      var schema = tool.inputSchema;
     if (!schema || typeof schema !== 'object') return '';
     var isObject = (args !== null && typeof args === 'object' && !Array.isArray(args));
     if (!isObject) {
@@ -311,21 +488,178 @@ const webmcpRuntimeHelpers = FrameWalkHelpers + `
 `
 
 // BuildPageToolsExpression lists the WebMCP tools one document exposes, merging
-// brw's captured registry with a native navigator.modelContext. frame targets a
+// brw's captured registry with a native document.modelContext. frame targets a
 // same-origin iframe; empty or "main" is the top document.
 func BuildPageToolsExpression(frame string) string {
 	frameJSON, _ := json.Marshal(frame)
-	return `(function(){` + webmcpRuntimeHelpers + `
+	return `(async function(){` + webmcpRuntimeHelpers + `
   var target = __brwWebMCPFrameWindow(` + string(frameJSON) + `);
   if (!target.ok) return { supported: false, frame: String(` + string(frameJSON) + ` || 'main'), tools: [], error: target.error };
-  var list = __brwWebMCPToolList(target.win);
+  var list = await __brwWebMCPAwaitTools(target.win, '', ` + webmcpListSettleMsJS + `, true);
   var tools = [];
-  for (var i = 0; i < list.length; i++) {
-    tools.push({ name: String(list[i].name), description: String(list[i].description || ''),
-                 inputSchema: list[i].inputSchema || list[i].input_schema || null });
-  }
-  return { supported: !!(__brwWebMCPSupported(target.win) || tools.length), frame: target.frame, tools: tools };
+  for (var i = 0; i < list.length; i++) tools.push(__brwWebMCPDescribe(list[i]));
+  var mc = __brwWebMCPContext(target.win);
+  var runtime = __brwWebMCPIsNative(mc) ? 'native' : (mc && mc.__brw ? 'brw' : (mc ? 'legacy' : (tools.length ? 'declarative' : 'none')));
+  return { supported: !!(__brwWebMCPSupported(target.win) || tools.length), runtime: runtime, frame: target.frame, tools: tools };
 })()`
+}
+
+// MaxPageToolSummaries caps the tools a page-state result lists, and
+// pageToolSummaryChars the description kept for each. The full list with input
+// schemas is one brw_page_tools call away.
+const (
+	MaxPageToolSummaries  = 20
+	pageToolSummaryChars  = 120
+	maxPageSurfaceEntries = 5
+)
+
+// PageToolSummary is one page tool as a page-state result reports it: enough to
+// decide whether to call brw_page_tools, not enough to call the tool.
+type PageToolSummary struct {
+	Name          string `json:"name"`
+	Description   string `json:"description,omitempty"`
+	ReadOnly      bool   `json:"read_only,omitempty"`
+	Consequential bool   `json:"consequential,omitempty"`
+	Declarative   bool   `json:"declarative,omitempty"`
+}
+
+// PageSurfaces are the agent-facing endpoints a document declares in its own
+// <link> elements. brw does not call or proxy them; it reports them so an agent
+// can use them directly instead of driving the page.
+type PageSurfaces struct {
+	Markdown        []string `json:"markdown,omitempty"`
+	LLMs            []string `json:"llms,omitempty"`
+	APIDescriptions []string `json:"api_descriptions,omitempty"`
+	MCP             []string `json:"mcp,omitempty"`
+}
+
+// Empty reports whether the document declared nothing.
+func (p PageSurfaces) Empty() bool {
+	return len(p.Markdown)+len(p.LLMs)+len(p.APIDescriptions)+len(p.MCP) == 0
+}
+
+// PageSurfaceDigest is what one evaluate learns about a document's agent
+// surfaces: its page tools (capped) and its declared endpoints.
+type PageSurfaceDigest struct {
+	Tools      []PageToolSummary `json:"tools,omitempty"`
+	ToolsTotal int               `json:"tools_total,omitempty"`
+	Surfaces   PageSurfaces      `json:"surfaces"`
+}
+
+// BuildPageSurfacesExpression renders the digest script for the top document.
+func BuildPageSurfacesExpression() string {
+	return `(async function(){` + webmcpRuntimeHelpers + `
+  var MAX = ` + strconv.Itoa(MaxPageToolSummaries) + `, CHARS = ` + strconv.Itoa(pageToolSummaryChars) + `, LINKS = ` + strconv.Itoa(maxPageSurfaceEntries) + `;
+  var list = [];
+  try { list = await __brwWebMCPAwaitTools(window, '', ` + webmcpDigestSettleMsJS + `, false); } catch (e) { list = []; }
+  var tools = [];
+  for (var i = 0; i < list.length && tools.length < MAX; i++) {
+    var t = list[i], a = t.annotations || {};
+    var d = String(t.description || '').split(/\r?\n/)[0].trim();
+    if (d.length > CHARS) d = d.slice(0, CHARS - 1) + '\u2026';
+    var row = { name: t.name };
+    if (d) row.description = d;
+    if (a.readOnlyHint === true) row.read_only = true;
+    if (a.consequentialHint === true || a.destructiveHint === true) row.consequential = true;
+    if (t.declarative) row.declarative = true;
+    tools.push(row);
+  }
+  var surfaces = { markdown: [], llms: [], api_descriptions: [], mcp: [] };
+  function put(key, href){
+    if (!href || surfaces[key].length >= LINKS || surfaces[key].indexOf(href) >= 0) return;
+    surfaces[key].push(href);
+  }
+  var links = [];
+  try { links = document.querySelectorAll('link[rel][href]'); } catch (e) { links = []; }
+  for (var j = 0; j < links.length; j++) {
+    var l = links[j];
+    var rel = ' ' + String(l.getAttribute('rel') || '').toLowerCase().split(/\s+/).join(' ') + ' ';
+    var type = String(l.getAttribute('type') || '').toLowerCase().split(';')[0].trim();
+    var href = '';
+    try { href = l.href; } catch (e) { href = ''; }
+    if (!/^https?:/i.test(href)) continue;
+    if (rel.indexOf(' alternate ') >= 0 && (type === 'text/markdown' || type === 'text/x-markdown')) put('markdown', href);
+    if (rel.indexOf(' llms ') >= 0 || rel.indexOf(' llms-txt ') >= 0 || rel.indexOf(' llms-full ') >= 0) put('llms', href);
+    if (rel.indexOf(' service-desc ') >= 0 || rel.indexOf(' api-catalog ') >= 0 || /openapi|vnd\.oai/.test(type)) put('api_descriptions', href);
+    if (rel.indexOf(' mcp ') >= 0 || type === 'application/mcp+json') put('mcp', href);
+  }
+  return { tools: tools, tools_total: list.length, surfaces: surfaces };
+})()`
+}
+
+// ReadPageSurfaces runs BuildPageSurfacesExpression through eval.
+func ReadPageSurfaces(ctx context.Context, eval PageToolEvaluator) (PageSurfaceDigest, error) {
+	if eval == nil {
+		return PageSurfaceDigest{}, errors.New("no page evaluator available")
+	}
+	raw, err := eval(ctx, BuildPageSurfacesExpression())
+	if err != nil {
+		return PageSurfaceDigest{}, err
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return PageSurfaceDigest{}, err
+	}
+	var digest PageSurfaceDigest
+	if err := json.Unmarshal(encoded, &digest); err != nil {
+		return PageSurfaceDigest{}, fmt.Errorf("page surfaces could not be decoded: %w", err)
+	}
+	if digest.ToolsTotal <= len(digest.Tools) {
+		digest.ToolsTotal = 0
+	}
+	for _, list := range []*[]string{&digest.Surfaces.Markdown, &digest.Surfaces.LLMs, &digest.Surfaces.APIDescriptions, &digest.Surfaces.MCP} {
+		if len(*list) == 0 {
+			*list = nil
+		}
+	}
+	if len(digest.Tools) == 0 {
+		digest.Tools = nil
+	}
+	return digest, nil
+}
+
+// PageToolDescriptor is one entry of the brw_page_tools listing.
+type PageToolDescriptor struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+	Annotations map[string]bool `json:"annotations,omitempty"`
+	Declarative bool            `json:"declarative,omitempty"`
+}
+
+// Consequential reports whether the page says calling the tool has effects a
+// person should agree to first.
+func (d PageToolDescriptor) Consequential() bool {
+	return d.Annotations["consequentialHint"] || d.Annotations["destructiveHint"]
+}
+
+// PageToolListing is the brw_page_tools result.
+type PageToolListing struct {
+	Supported bool                 `json:"supported"`
+	Runtime   string               `json:"runtime,omitempty"`
+	Frame     string               `json:"frame,omitempty"`
+	Tools     []PageToolDescriptor `json:"tools"`
+	Error     string               `json:"error,omitempty"`
+}
+
+// ListPageTools runs BuildPageToolsExpression through eval.
+func ListPageTools(ctx context.Context, eval PageToolEvaluator, frame string) (PageToolListing, error) {
+	if eval == nil {
+		return PageToolListing{}, errors.New("no page evaluator available")
+	}
+	raw, err := eval(ctx, BuildPageToolsExpression(frame))
+	if err != nil {
+		return PageToolListing{}, err
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return PageToolListing{}, err
+	}
+	var listing PageToolListing
+	if err := json.Unmarshal(encoded, &listing); err != nil {
+		return PageToolListing{}, fmt.Errorf("page tools could not be decoded: %w", err)
+	}
+	return listing, nil
 }
 
 // BuildPageToolInvokeExpression renders the start-an-invocation script. It
@@ -352,7 +686,7 @@ func BuildPageToolInvokeExpression(opts PageToolInvokeOptions) (string, error) {
 	if opts.Validate {
 		validate = "true"
 	}
-	return `(function(){` + webmcpRuntimeHelpers + `
+	return `(async function(){` + webmcpRuntimeHelpers + `
   var NAME = ` + string(nameJSON) + `;
   var ARGS = ` + args + `;
   var FRAME = ` + string(frameJSON) + `;
@@ -360,13 +694,35 @@ func BuildPageToolInvokeExpression(opts PageToolInvokeOptions) (string, error) {
   var target = __brwWebMCPFrameWindow(FRAME);
   if (!target.ok) return { ok: false, status: 'not_found', error: target.error };
   var win = target.win;
-  var list = __brwWebMCPToolList(win);
+  var list = await __brwWebMCPAwaitTools(win, NAME, ` + webmcpInvokeSettleMsJS + `, true);
   var tool = null;
   for (var i = 0; i < list.length; i++) { if (list[i].name === NAME) { tool = list[i]; break; } }
   if (!tool) return { ok: false, status: 'not_found', frame: target.frame,
                       error: 'page tool not found: ' + NAME + ' (call brw_page_tools to list available page tools)' };
-  var fn = tool.execute || tool.call || tool.run || tool.handler;
-  if (typeof fn !== 'function') return { ok: false, status: 'not_found', frame: target.frame,
+  var raw = tool.raw;
+  var direct = raw && (raw.execute || raw.call || raw.run || raw.handler);
+  var fn = null;
+  if (typeof direct === 'function') {
+    fn = function(args, options){ return options ? direct.call(raw, args, options) : direct.call(raw, args); };
+  } else if (tool.native && typeof tool.mc.executeTool === 'function') {
+    // Native executeTool answers a JSON string. Before Chromium 155 it took its
+    // input as one too, and says "Failed to parse input arguments" when handed
+    // an object, so that refusal is retried once with the string.
+    var mc = tool.mc;
+    var testing = typeof mc.getTools !== 'function';
+    var stringFirst = testing || __brwWebMCPStringInput(win);
+    fn = function(args, options){
+      var subject = testing ? raw.name : raw;
+      function run(input){ return Promise.resolve(mc.executeTool(subject, input, options)); }
+      var first = run(stringFirst ? JSON.stringify(args) : args);
+      if (stringFirst) return first.then(__brwWebMCPOutput);
+      return first.catch(function(err){
+        if (!/parse input/i.test(String(err && err.message || err))) throw err;
+        return run(JSON.stringify(args));
+      }).then(__brwWebMCPOutput);
+    };
+  }
+  if (!fn) return { ok: false, status: 'not_found', frame: target.frame,
                       error: 'page tool has no callable execute: ' + NAME };
   if (VALIDATE) {
     var invalid = __brwWebMCPValidate(tool, ARGS);
@@ -394,7 +750,7 @@ func BuildPageToolInvokeExpression(opts PageToolInvokeOptions) (string, error) {
     if (status === 'done') rec.result = value; else rec.error = message;
   }
   try {
-    var pending = controller ? fn.call(tool, ARGS, { signal: controller.signal }) : fn.call(tool, ARGS);
+    var pending = controller ? fn(ARGS, { signal: controller.signal }) : fn(ARGS);
     Promise.resolve(pending).then(
       function(value){ settle('done', value); },
       function(err){ settle('failed', null, String(err && err.message || err)); });

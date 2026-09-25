@@ -19,7 +19,7 @@ minimal` trade surface for it.
 
 ## The fixture benchmark harness
 
-`task bench` drives four flows against `tests/fixtures`, served over a loopback
+`task bench` drives five flows against `tests/fixtures`, served over a loopback
 HTTP origin it starts itself, in a headless Chrome on a throwaway profile. It
 needs no daemon, no network and no account. Per command it records wall time,
 the CDP messages sent and received, the bytes those cost on the transport, and
@@ -114,6 +114,31 @@ with these.
 
 Token figures use the same 4-chars-per-token estimator as
 `scripts/measure-tool-catalogue.py`. It compares arms; it is not a tokenizer.
+
+### Reading a page with and without a tab
+
+The `read_paths` flow reads `content.html` both ways: `brw_open` then
+`brw_read` in a tab, and `brw_read_url`, which fetches and extracts in the
+daemon with no browser. The first recorded table above predates the flow and
+does not include it.
+
+```
+darwin/arm64 Apple M4 Max x16 | Chrome/154.0.8037.58 | brw dev | go1.26.6 | fixtures 9ca97ef688ad
+go run ./cmd/brwcheck --bench --bench-only read_paths --repo-root .   (3 runs, 2026-09-25)
+```
+
+| Path | Commands | Wall ms | CDP sent | CDP received | Bytes sent | Observation bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `brw_open` + `brw_read` | 2 | 28.4–49.0 | 30 | 70–71 | 94,549 | 4,248 |
+| `brw_read_url` | 1 | 0.9–1.6 | 0 | 0 | 0 | 3,394 |
+
+The `brw_read_url` row includes its discovery probes (`/llms.txt`, the page's
+`.md` variant and three `/.well-known/` documents), which the loopback fixture
+origin answers with 404. Against a remote origin both paths add network time;
+the tab path also waits for the page's own subresources and settle, which the
+fixture does not exercise. Both rows exclude the MCP layer: the `brw_open` row
+does not include the one evaluate the MCP handler adds to report `page_tools`
+and `agent_surfaces`.
 
 ## The agent evaluations
 

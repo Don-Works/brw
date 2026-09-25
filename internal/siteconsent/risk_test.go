@@ -66,6 +66,21 @@ func TestClassify(t *testing.T) {
 			want:    nil,
 		},
 		{
+			name:    "a page tool the page declares consequential",
+			request: ActionRequest{Tool: "brw_call_page_tool", Origin: "https://example.test", Label: "archive thread", Consequential: true},
+			want:    []RiskClass{RiskConsequential},
+		},
+		{
+			name:    "a page tool is classified by its words too",
+			request: ActionRequest{Tool: "brw_call_page_tool", Origin: "https://example.test", Label: "place order Place the order in the cart", Consequential: true},
+			want:    []RiskClass{RiskConsequential, RiskPurchase},
+		},
+		{
+			name:    "a read-only page tool with plain words is not high risk",
+			request: ActionRequest{Tool: "brw_call_page_tool", Origin: "https://example.test", Label: "search products"},
+			want:    nil,
+		},
+		{
 			name:    "an opaque ref with no label carries no words to classify",
 			request: ActionRequest{Tool: "brw_click", Origin: "https://example.test"},
 			want:    nil,

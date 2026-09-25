@@ -935,7 +935,10 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// budget, so a tab Chrome closes late is reported closed, not failed.
 	// 0.7.6 closes a tab whose navigation is still waiting for its server
 	// through the tabs API, since Page.enable is never answered there.
-	const wantManifest = "0.7.6"
+	// 0.7.7 adds set_webmcp and open_tab's webmcp param, which arm the WebMCP
+	// shim at document-start, and re-arms containment and the shim on every
+	// fresh debugger attach so an idle detach no longer drops either.
+	const wantManifest = "0.7.7"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

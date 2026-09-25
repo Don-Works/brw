@@ -152,7 +152,7 @@ func main() {
 	flag.BoolVar(&printSystemPrompt, "print-system-prompt", false, "print the recommended agent system prompt to stdout and exit")
 	flag.StringVar(&blockedDomains, "blocked-domains", os.Getenv("BRW_BLOCKED_DOMAINS"), "comma-separated domains the agent may never open (subdomains included); guardrail enforced on brw_open and brw_replay_request")
 	flag.StringVar(&allowedDomains, "allowed-domains", os.Getenv("BRW_ALLOWED_DOMAINS"), "comma-separated allowlist; when set, the agent may ONLY open these domains (and subdomains)")
-	flag.BoolVar(&enableWebMCP, "enable-webmcp", envBool("BRW_ENABLE_WEBMCP"), "expose a WebMCP runtime (navigator.modelContext) so cooperating sites can register page tools brw_page_tools/brw_call_page_tool can use")
+	flag.BoolVar(&enableWebMCP, "enable-webmcp", envBool("BRW_ENABLE_WEBMCP"), "install a fallback WebMCP runtime (document.modelContext) at document-start, on direct CDP and the extension bridge alike, so cooperating sites can register page tools brw_page_tools/brw_call_page_tool can use; a native WebMCP implementation is used without this flag")
 	flag.StringVar(&usageLog, "usage-log", envDefault("BRW_USAGE_LOG", "auto"), "privacy-safe metadata usage ledger path; auto writes under the user config directory, off disables. Never records tool arguments, typed text, page content, URLs, headers, or response bodies.")
 	flag.IntVar(&usageLogMaxMB, "usage-log-max-mb", envInt("BRW_USAGE_LOG_MAX_MB", 20), "rotate the usage ledger at this many MiB; 0 disables size rotation")
 	flag.IntVar(&usageLogBackups, "usage-log-backups", envInt("BRW_USAGE_LOG_BACKUPS", 7), "number of rotated usage-ledger files to retain")
@@ -628,6 +628,7 @@ func main() {
 		// theft) and corral the agent's tabs into one labelled group.
 		bridge.SetRaiseWindowOnFocus(bridgeRaiseWindow)
 		bridge.SetDefaultGroup(bridgeTabGroup)
+		bridge.SetWebMCP(enableWebMCP)
 		// Isolation by default: work in brw's own tab group on tabs it opened,
 		// never the user's focused/existing tabs. --bridge-follow-focus restores
 		// the legacy follow-the-user's-tab behavior.

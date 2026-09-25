@@ -60,9 +60,10 @@ type Config struct {
 	Extensions       []string
 	ChromeArgs       []string
 	Timeout          time.Duration
-	// WebMCP, when true, installs a WebMCP runtime (navigator.modelContext) at
-	// document-start so cooperating sites can register page tools that
-	// brw_page_tools / brw_call_page_tool surface. Not on the extension bridge.
+	// WebMCP, when true, installs a fallback WebMCP runtime (document.modelContext,
+	// aliased as navigator.modelContext) at document-start so cooperating sites
+	// can register page tools that brw_page_tools / brw_call_page_tool surface.
+	// A native implementation is read without it and never replaced.
 	WebMCP bool
 	// AllowRealProfile overrides the safety refusal to direct-CDP launch Chrome
 	// against the user's real browser profile (which corrupts it). Diagnostics
