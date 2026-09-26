@@ -1560,6 +1560,8 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return obs.action(repeatAction(ctx, repeat, func(ctx context.Context) (browser.ActionResult, error) {
 			return s.manager.Scroll(ctx, req.Direction)
 		}))
+	case "brw_screenshot_save":
+		return s.screenshotSave(ctx, args)
 	case "brw_screenshot":
 		var req struct {
 			Annotate bool   `json:"annotate"`
@@ -2951,7 +2953,8 @@ func tools() []map[string]any {
 			"observe":   observeSchema(),
 			"tab_id":    stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
-		tool("brw_screenshot", "Visual fallback — you almost never need this. brw is semantic-first: brw_snapshot/brw_find expose every control with a ref, brw_read returns page prose/result/status/badge text, and EVERY action (click/type/fill/select/press/drag) returns a post-action observation that confirms its effect (changed elements, new values, navigation). To VERIFY an outcome (a cart badge, a result message, a swapped item, an editor's text), read that observation or call brw_read — do NOT screenshot to check. Reserve brw_screenshot for opaque visual content with no DOM text (canvas, maps, charts, image-only widgets). Set annotate:true for a Set-of-Marks capture: in-viewport elements get labelled boxes carrying the SAME refs brw_snapshot returns, plus a legend mapping each ref to its box, role, and name — so you can read a label off the image and act on it with brw_click. Pass ref OR region for a tight annotated crop (far fewer vision tokens on a dense page); both imply annotate. The overlay never mutates the page.", object(map[string]any{
+		screenshotSaveTool(),
+		tool("brw_screenshot", "Visual fallback — you almost never need this. For presentation-quality files on disk with a small preview, use brw_screenshot_save. brw is semantic-first: brw_snapshot/brw_find expose every control with a ref, brw_read returns page prose/result/status/badge text, and EVERY action (click/type/fill/select/press/drag) returns a post-action observation that confirms its effect (changed elements, new values, navigation). To VERIFY an outcome (a cart badge, a result message, a swapped item, an editor's text), read that observation or call brw_read — do NOT screenshot to check. Reserve brw_screenshot for opaque visual content with no DOM text (canvas, maps, charts, image-only widgets). Set annotate:true for a Set-of-Marks capture: in-viewport elements get labelled boxes carrying the SAME refs brw_snapshot returns, plus a legend mapping each ref to its box, role, and name — so you can read a label off the image and act on it with brw_click. Pass ref OR region for a tight annotated crop (far fewer vision tokens on a dense page); both imply annotate. The overlay never mutates the page.", object(map[string]any{
 			"tab_id":   stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 			"annotate": boolSchema("Draw Set-of-Marks ref labels over frontier elements and return a ref->box legend. Defaults false (plain screenshot)."),
 			"ref":      stringSchema("Crop to this element's box (smaller image, fewer vision tokens). Implies annotate."),

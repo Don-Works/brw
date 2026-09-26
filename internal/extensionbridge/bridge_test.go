@@ -938,7 +938,7 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	// 0.7.7 adds set_webmcp and open_tab's webmcp param, which arm the WebMCP
 	// shim at document-start, and re-arms containment and the shim on every
 	// fresh debugger attach so an idle detach no longer drops either.
-	const wantManifest = "0.7.7"
+	const wantManifest = "0.7.9"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

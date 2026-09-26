@@ -187,9 +187,9 @@ snapshot, read the ref, use it.
 `brwd --mcp` defaults to `--mcp-tools auto`: it advertises 14 tools — `brw_tools`,
 `brw_open`, `brw_navigate_to`, `brw_read`, `brw_read_url`, `brw_snapshot`, `brw_find`,
 `brw_click`, `brw_fill`, `brw_select`, `brw_press`, `brw_wait_for`, `brw_observe`,
-`brw_batch` — and grows as you search. The full surface is 94 tools on a direct-CDP
-daemon (93 on `--remote`, 92 on the Chrome opt-in lane, 89 on a plugin-supplied
-off-host browser, 78 on the extension bridge, each missing only what its lane
+`brw_batch` — and grows as you search. The full surface is 95 tools on a direct-CDP
+daemon (94 on `--remote`, 93 on the Chrome opt-in lane, 89 on a plugin-supplied
+off-host browser, 79 on the extension bridge, each missing only what its lane
 cannot serve); the catalogue is re-sent on every request, so the small default is
 a per-turn saving.
 
@@ -246,6 +246,7 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `brw_observe({tab_id?})` → `{version,url,title,focus,changed[]}` — the cheap "what changed" check.
 - `brw_react({action:"tree"|"inspect", target?, depth?, tab_id?})` → the page's React component tree read straight from the fiber tree React attaches to the DOM (`action:"tree"`, `depth` to bound it) or the props, state, hooks and owned DOM node of one element or component (`action:"inspect"`, `target` a ref or component name). No DevTools extension needed. `is_react:false` when the page has no React on it, and a production build exposes component names only when it ships display names.
 - `brw_console({tab_id?, only_errors?, level?, pattern?, limit?, clear?})` → `{messages,returned,matched,retained}`. Filtered-out messages stay buffered.
+- `brw_screenshot_save({save_path, tab_id?, format?, quality?, scale?, full_page?, ref?, region?, omit_background?, hide?, settle_ms?, preview?})` → file metadata plus a bounded JPEG preview, never full capture bytes. Absolute path on the browser host, inside home unless explicitly configured otherwise. Default PNG, scale 1; scale 2/3 for retina; preview small (512 px / 40 KiB), medium or none. Exact crops without labels. CDP and extension bridge; no PDF fallback. See `docs/screenshots.md`.
 - `brw_screenshot({tab_id?, annotate?, ref?, region?})` and `brw_screenshot_element({ref, tab_id?})` → an image content block. Visual fallback for canvas/map/chart/image-only widgets, not a verification step. `annotate:true` labels elements with the same refs you click with.
 
 **Acting**

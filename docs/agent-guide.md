@@ -528,6 +528,15 @@ the lease 2 minutes instead of 30, and a `brw_open` cancelled that way closes
 the tab it opened. A supervisor ending an agent session can free everything
 that session holds at once with `POST /api/session/release` (see the README).
 
+## Saving presentation images
+
+Use `brw_screenshot_save` with an absolute `save_path` to save a high-quality
+PNG on the browser host. `scale:2` or `scale:3` produces retina captures;
+`full_page`, `ref` or `region` selects the content, and `hide` removes overlays
+for the duration of the capture. The response is metadata plus a 512 px / 40 KiB
+JPEG preview by default. See [all options and path policy](screenshots.md).
+The compositor-only save path fails if Chrome cannot supply a surface.
+
 ## When semantics run out: screenshots and coordinates
 
 Screenshots are a **fallback**, not a verification step. Use `brw_screenshot`
@@ -593,15 +602,15 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` | 94 | ~34.9k tokens |
-| `core` | 26 | ~10.5k tokens |
-| `minimal` | 13 | ~6.0k tokens |
-| `auto` (default) | 14, growing | ~6.3k tokens to start |
+| `all` | 95 | ~36.0k tokens |
+| `core` | 26 | ~10.9k tokens |
+| `minimal` | 13 | ~6.3k tokens |
+| `auto` (default) | 14, growing | ~6.5k tokens to start |
 
 Measured on a direct-CDP daemon. A tool a transport cannot serve is never
-advertised on it, so the `all` row is 97 tools unfiltered, 94 on direct CDP, 93
-on `--remote`, 92 on the Chrome opt-in lane, 89 on a plugin-supplied off-host
-browser and 78 on the extension bridge; the narrower profiles are the same size
+advertised on it, so the `all` row is 98 tools unfiltered, 95 on direct CDP, 94
+on `--remote`, 93 on the Chrome opt-in lane, 89 on a plugin-supplied off-host
+browser and 79 on the extension bridge; the narrower profiles are the same size
 on every transport.
 
 `core` advertises the common-flow tools (open/snapshot/find/click/type/fill/

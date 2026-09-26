@@ -208,6 +208,7 @@ var ToolRules = map[string]ToolRule{
 	"brw_frame":              {Scope: ScopeRead, Target: TargetPage},
 	"brw_console":            {Scope: ScopeRead, Target: TargetPage},
 	"brw_network_requests":   {Scope: ScopeRead, Target: TargetPage},
+	"brw_screenshot_save":    {Scope: ScopeRead, Target: TargetPage},
 	"brw_screenshot":         {Scope: ScopeRead, Target: TargetPage},
 	"brw_screenshot_element": {Scope: ScopeRead, Target: TargetPage},
 	"brw_artifact_capture":   {Scope: ScopeRead, Target: TargetPage},

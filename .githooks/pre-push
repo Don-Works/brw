@@ -1,9 +1,4 @@
 #!/bin/sh
-# The release gate runs here, on this machine, before anything reaches GitHub.
-# There is no CI on hosted runners: headless Chrome on a shared runner missed its
-# startup budget often enough that a red run said nothing about the change.
-#
-# Enable with `task install-hooks`. `git push --no-verify` skips it.
 set -eu
 
 remote=${1:-origin}

@@ -51,3 +51,19 @@ task agent-eval-verify    # the same four with the decisive act removed, which m
 
 The recorded first run and what each column means are in
 [docs/benchmarks.md](../docs/benchmarks.md).
+
+## Presentation capture regression
+
+`go test -p=1 ./internal/browser ./internal/extensionbridge -run ScreenshotSave -count=1`
+exercises the disk policy and compositor captures against `presentation.html`.
+The live tests use disposable profiles, WebGL and a playing canvas-stream video,
+including native DPR 2 and exact 1×/2×/3× element/region captures. The bridge test
+requires an installed Chromium that supports unpacked extensions. It never uses
+a signed-in profile. MCP and HTTP forwarding/preview contracts run in their
+respective package tests; the service-worker suite covers cleanup on failure.
+
+The full pre-push gate remains `task check` (lint, serialized package tests,
+functional fixtures, hygiene, secrets and race checks). The `screenshot` PR
+workflow runs the disk/preview/MCP/HTTP contracts and service-worker tests on a
+hosted runner; real Chromium capture stays in the local gate to avoid shared
+runner compositor/startup failures. No release is created by that workflow.
