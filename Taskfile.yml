@@ -59,7 +59,7 @@ tasks:
     # a load race.
     cmds:
       - task: test-extension
-      - go test -p=1 ./...
+      - go test -timeout=15m -p=1 ./...
       # A killed test binary cannot reap its own browser; fail the task rather
       # than leave throwaway Chromes running against the machine.
       - ./scripts/check-no-orphan-browsers.sh
