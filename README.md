@@ -92,8 +92,8 @@ The full MCP surface is large. For lean agent contexts, run:
 
 ```sh
 brwd --mcp --mcp-tools auto     # 14 tools to start, grows on demand
-brwd --mcp --mcp-tools core     # 26 tools, ~10.5k tokens of catalogue
-brwd --mcp --mcp-tools minimal  # 13 tools, ~6.0k tokens of catalogue
+brwd --mcp --mcp-tools core     # 26 tools, ~10.9k tokens of catalogue
+brwd --mcp --mcp-tools minimal  # 13 tools, ~6.3k tokens of catalogue
 ```
 
 For a ready-to-paste agent system prompt that encodes the fast, token-efficient
@@ -480,6 +480,8 @@ Core MCP tools include:
 - `brw_route` — mock or abort matching requests without touching the network
 - `brw_batch`, `brw_cancel`, `brw_observe`
 - `brw_screenshot`, `brw_screenshot_element`
+- `brw_screenshot_save` — presentation-quality PNG/JPEG/WebP files with retina
+  scaling, exact crops and a small preview; see [screenshots](docs/screenshots.md)
 - `brw_artifact_capture`, `brw_artifact_info`, `brw_artifact_read`,
   `brw_artifact_search`, `brw_artifact_delete`
 - `brw_recipe_search`, `brw_recipe_run` (only when a private provider is configured)
@@ -527,8 +529,8 @@ Core MCP tools include:
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: on a direct-CDP daemon `all` costs ~33.3k tokens across
-94 tools, `core` ~10.5k, `minimal` ~6.0k, and `auto` starts at ~6.3k and grows
+tokens on every turn: on a direct-CDP daemon `all` costs ~36.0k tokens across
+95 tools, `core` ~10.9k, `minimal` ~6.3k, and `auto` starts at ~6.5k and grows
 only as the agent discovers tools it needs via `brw_tools` (measure with
 `scripts/measure-tool-catalogue.py`).
 

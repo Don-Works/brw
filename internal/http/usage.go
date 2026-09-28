@@ -92,6 +92,7 @@ var usageOperations = map[string]string{
 	"/api/page/downloads":            "brw_downloads",
 	"/api/page/trace":                "brw_trace",
 	"/api/page/clear_trace":          "brw_clear_trace",
+	"/api/visual/screenshot_save":    "brw_screenshot_save",
 	"/api/visual/screenshot":         "brw_screenshot",
 	"/api/visual/screenshot_element": "brw_screenshot_element",
 	"/api/artifacts/capture":         "brw_artifact_capture",

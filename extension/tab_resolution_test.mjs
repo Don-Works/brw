@@ -140,6 +140,7 @@ sandbox.self = sandbox;
 src += `
 ;globalThis.__test = {
   get state() { return state; },
+  capturePresentation,
   resolveForegroundTabId,
   publishActiveTab,
   isControllableWindowType,
@@ -2157,6 +2158,28 @@ async function scenarioSelfUpdateReloadsAStalePayload() {
   }
 }
 
+async function scenarioPresentationCaptureRestoresOnFailure() {
+  await reset();
+  setWin({id:1,type:"normal",focused:true});
+  setTab({id:42,windowId:1,active:true,url:"https://fixture.test/"});
+  const saved = overrides["debugger.sendCommand"];
+  const calls = [];
+  overrides["debugger.sendCommand"] = async (_target,method,params) => {
+    calls.push({method,params});
+    if (method === "Runtime.evaluate" && params.expression === "prepare") return {result:{value:{clip:{x:0,y:0,width:100,height:100,scale:2}}}};
+    if (method === "Page.captureScreenshot") throw new Error("compositor unavailable");
+    return {};
+  };
+  try {
+    let failure;
+    try { await T.capturePresentation(42,{prepare:"prepare",cleanup:"restore",format:"png",omitBackground:true}); } catch(error) { failure=error; }
+    check("presentation reports compositor failure", /compositor unavailable/.test(failure?.message));
+    check("presentation never falls back to PDF", !calls.some(c=>c.method === "Page.printToPDF"));
+    check("presentation restores hidden elements on failure", calls.some(c=>c.method === "Runtime.evaluate" && c.params.expression === "restore"));
+    check("presentation restores the default background", calls.some(c=>c.method === "Emulation.setDefaultBackgroundColorOverride" && Object.keys(c.params).length === 0));
+  } finally { if(saved === undefined) delete overrides["debugger.sendCommand"]; else overrides["debugger.sendCommand"] = saved; }
+}
+
 (async () => {
   await scenarioConsentGateIsFailClosed();
   await scenarioPinBeatsForeground();
@@ -2191,6 +2214,7 @@ async function scenarioSelfUpdateReloadsAStalePayload() {
   await scenarioStoredConfigChangeKeepsThePackagedEndpoint();
   await scenarioRefusedBridgeDoesNotFlapTheBadge();
   await scenarioSelfUpdateReloadsAStalePayload();
+  await scenarioPresentationCaptureRestoresOnFailure();
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 })();

@@ -64,11 +64,6 @@ tasks:
       # than leave throwaway Chromes running against the machine.
       - ./scripts/check-no-orphan-browsers.sh
 
-  # The whole gate. There is no CI on hosted runners; .githooks/pre-push runs
-  # this before a commit or tag reaches GitHub (`task install-hooks` enables it).
-  # `go vet` alone is not the gate: staticcheck catches unused declarations and
-  # error-string style that vet does not, and a v0.13.0 release job failed on
-  # exactly those two after a local vet-only pass.
   check:
     desc: The full gate, run by the pre-push hook — lint, tests, functional, hygiene, secrets, race
     cmds:

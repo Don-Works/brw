@@ -55,6 +55,7 @@ var refTakingTools = map[string]struct {
 	"brw_mouse_down":         {refToolGuardedAtTransport, "MouseDown resolves against the top document"},
 	"brw_mouse_up":           {refToolGuardedAtTransport, "MouseUp resolves against the top document"},
 	"brw_upload_file":        {refToolGuardedAtTransport, "UploadFile resolves both its ref and its click_ref against the top document"},
+	"brw_screenshot_save":    {refToolGuardedAtTransport, "SaveScreenshot guards cross-origin refs before any capture or disk write"},
 	"brw_screenshot":         {refToolGuardedAtTransport, "a ref makes this an annotated crop, which goes through ScreenshotAnnotated"},
 	"brw_screenshot_element": {refToolGuardedAtTransport, "ScreenshotElement resolves against the top document"},
 	"brw_assert":             {refToolGuardedAtTransport, "Assert resolves against the top document"},
