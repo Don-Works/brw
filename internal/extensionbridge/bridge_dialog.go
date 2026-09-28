@@ -10,16 +10,13 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// dialogsUnsupportedNote is returned when the connected extension predates
-// dialog arming. The extension has always ANSWERED dialogs (so the renderer
-// never hangs on either build); what an old build lacks is the arm/observe
-// surface, hence a graceful Supported=false rather than an error.
+// dialogsUnsupportedNote: older extensions still answer dialogs but cannot arm
+// or list them.
 const dialogsUnsupportedNote = "Dialog control is unavailable: the connected brw extension predates brw_dialog support. Dialogs are still answered automatically (alert accepted, confirm/prompt given the non-destructive answer), but they cannot be pre-armed or listed. Reload the brw extension to enable it, or check supported=false to detect this programmatically"
 
-// Dialog implements the browser.DialogController capability over the extension
-// bridge. Arming is stored extension-side so the answer is already present when
-// Page.javascriptDialogOpening fires, and the renderer is never held open across
-// a daemon round trip.
+// Dialog implements browser.DialogController. Arming is stored extension-side
+// so the answer is ready when Page.javascriptDialogOpening fires, without a
+// daemon round trip holding the renderer.
 func (b *Bridge) Dialog(ctx context.Context, opts browser.DialogOptions) (browser.DialogResult, error) {
 	tabID := strings.TrimSpace(opts.TabID)
 	action := strings.ToLower(strings.TrimSpace(opts.Action))

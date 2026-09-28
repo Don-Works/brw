@@ -16,13 +16,8 @@ func (b *Bridge) finishObservedTrace(before bridgeActionBaseline, message string
 	}
 	result.DurationMS = time.Since(before.Started).Milliseconds()
 	entry := bridgeTraceEntry(message)
-	// Structured operands from the call site win over anything parsed out of the
-	// display message; the parse remains the fallback for actions supplying none.
-	//
-	// Taken as a whole struct rather than field by field. The field list this
-	// replaced silently dropped every TraceEntry field added after it was
-	// written, which is how the credential-sourced mark reached the direct-CDP
-	// trace and not this one. Everything the outcome owns is assigned below.
+	// Call-site operands win over parsing the message. Copy the whole struct:
+	// a field-by-field copy silently drops fields added to TraceEntry later.
 	if before.Trace.Action != "" {
 		entry = before.Trace
 	}
@@ -47,10 +42,8 @@ func (b *Bridge) appendTrace(entry browser.TraceEntry) {
 	b.traceMu.Unlock()
 }
 
-// recordObservation records a navigation or read. It mirrors the direct-CDP
-// Manager method of the same name, including its rule: a trace entry with no
-// tab id is unscoped and visible to every caller of the shared daemon, so an
-// observation that cannot name its tab is dropped rather than broadcast.
+// recordObservation drops an entry with no tab id, as the direct-CDP Manager
+// does: an unscoped entry is visible to every caller of the shared daemon.
 func (b *Bridge) recordObservation(tabID, action, text string, start time.Time, err error) {
 	if strings.TrimSpace(tabID) == "" {
 		return

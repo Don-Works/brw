@@ -19,11 +19,8 @@ import (
 )
 
 func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
-	// Reject any connection that does not present a chrome-extension Origin. This
-	// closes the coder/websocket gap where an ABSENT Origin (a non-browser local
-	// client — curl, a rogue script) is treated as same-origin and accepted; only
-	// a real extension carries a chrome-extension:// Origin, and a browser web
-	// page cannot forge one.
+	// coder/websocket treats an ABSENT Origin as same-origin, so a local non-browser
+	// client would pass; a web page cannot forge a chrome-extension:// Origin.
 	if !extensionOriginOK(r.Header.Get("Origin")) {
 		http.Error(w, "forbidden: a chrome-extension origin is required", http.StatusForbidden)
 		return
@@ -52,10 +49,8 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		log.Printf("WARNING: extension bridge accepting connections from any Chrome extension (chrome-extension://*); set a profile policy with bridge_extension_id to restrict")
 	}
 
-	// When a per-launch token is configured, authenticate the hello BEFORE this
-	// connection becomes the live bridge — so an unverified client can neither
-	// displace the real extension nor receive a single command. With no token
-	// (library/embedder/test) the connection goes live immediately, as before.
+	// Authenticate before this connection goes live, so an unverified client can
+	// neither displace the real extension nor receive a command.
 	verifiedHello := hello{}
 	if b.authToken != "" {
 		h, herr := b.verifyHandshake(r.Context(), conn)
@@ -75,12 +70,8 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		_ = conn.CloseNow()
 		return
 	}
-	// Flap guard: two browser profiles running brw against one bridge otherwise
-	// displace each other forever (the flashing icon). While holding after a
-	// detected flap and the current connection is still live, reject the newcomer
-	// and extend the hold so the live connection stays put. Once the live
-	// connection actually dies, b.conn is nil and the next connection is accepted
-	// normally — so a legitimate reconnect after a real drop still works.
+	// Flap guard: two profiles on one bridge displace each other forever. While
+	// holding with a live connection, reject the newcomer and extend the hold.
 	if b.conn != nil && now.Before(b.flapHoldUntil) {
 		b.flapHoldUntil = now.Add(flapHoldDuration)
 		b.mu.Unlock()
@@ -88,8 +79,6 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if b.conn != nil {
-		// A live connection is being replaced. Track the churn rate; a burst within
-		// flapWindow means two extensions are colliding, not a single reconnect.
 		cutoff := now.Add(-flapWindow)
 		kept := b.recentReplaces[:0]
 		for _, t := range b.recentReplaces {
@@ -99,7 +88,6 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		}
 		b.recentReplaces = append(kept, now)
 		if len(b.recentReplaces) >= flapThreshold {
-			// Collision: keep the CURRENT connection, reject this newcomer, hold.
 			b.flapHoldUntil = now.Add(flapHoldDuration)
 			b.recentReplaces = b.recentReplaces[:0]
 			b.mu.Unlock()
@@ -107,23 +95,14 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 			_ = conn.Close(websocket.StatusTryAgainLater, "extension flap: holding current connection")
 			return
 		}
-		// CloseNow, not Close: a graceful close performs a close handshake and
-		// waits up to 5s for the displaced peer's ack — while this whole block
-		// holds b.mu, so an unresponsive displaced connection froze every
-		// dispatch and /status probe on the bridge for those 5 seconds. The
-		// socket is being force-discarded either way; tear it down immediately
-		// (its readLoop unblocks at once and releaseConn no-ops as stale).
+		// CloseNow, not Close: a graceful close waits up to 5s for the peer's ack while
+		// b.mu is held, freezing every dispatch and /status probe.
 		_ = b.conn.CloseNow()
-		// A logical response may never span connection generations: a missing
-		// frame from the displaced socket would otherwise be silently combined
-		// with a new response that happens to reuse its request id.
+		// A logical response must not span connection generations: a new response
+		// could reuse the request id of a displaced partial one.
 		b.clearAllResponseChunksLocked()
-		// Pending RPCs survive a SAME-extension replace on purpose: an MV3
-		// service worker reconnecting mid-call can still answer them over the
-		// new socket. But when the newcomer presents a DIFFERENT identity
-		// (another browser profile colliding onto this bridge), the displaced
-		// extension will never answer — fail those calls now rather than
-		// letting each one hang for its full timeout.
+		// Pending RPCs survive a same-extension replace (a reconnecting MV3 worker
+		// can still answer them); a different identity never will, so fail them now.
 		if !sameExtensionIdentity(b.hello, verifiedHello) {
 			b.drainPendingLocked(replacedDrainReason)
 			b.resetProfileStateLocked()
@@ -131,23 +110,17 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	}
 	b.conn = conn
 	b.hello = verifiedHello
-	// A new socket can be a restarted service worker, which has lost every
-	// per-tab arm; re-send them rather than trust a record of the old worker.
+	// A new socket can be a restarted service worker that has lost every per-tab arm.
 	b.containment.reset()
 	b.webmcpArm.reset()
-	// Reconcile the extension-owned pin before publishing this connection through
-	// connReady. A tabs.onRemoved frame is best-effort and can be lost while the
-	// MV3 worker/socket is down; the next hello is the authoritative recovery
-	// boundary. Missing agent_tab_id means an old extension and is accepted but
-	// fails closed (no cached ownership), never falling back to foreground state.
+	// Reconcile the pin before publishing via connReady: a tabs.onRemoved frame
+	// can be lost while the worker is down, so the hello is authoritative.
 	b.reconcileAgentPinLocked(verifiedHello)
 	b.connectedAt = now
 	b.lastSeenAt = now
 	b.disconnectedAt = time.Time{}
 	b.disconnectReason = ""
-	// Wake any calls parked in getConn waiting for the socket to come back, and
-	// arm a fresh gate for the next disconnect→reconnect cycle. Always
-	// close-then-replace under mu so the channel is closed exactly once.
+	// Close-then-replace under mu so the channel is closed exactly once.
 	close(b.connReady)
 	b.connReady = make(chan struct{})
 	b.mu.Unlock()
@@ -159,11 +132,7 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	}
 	b.recordBridgeUsage("bridge_connect", "ok", "", "", verifiedHello.Build)
 
-	// Keepalive: ping the extension periodically so a half-open link (laptop
-	// sleep, NAT timeout, dropped Wi-Fi) is detected promptly instead of hanging
-	// until a request times out. A failed ping closes the conn, which unblocks
-	// readLoop's conn.Read and drains b.pending. The pinger exits cleanly when the
-	// read loop returns (pingCancel) so it never leaks.
+	// Ping so a half-open link (sleep, NAT timeout) is detected before a request times out.
 	pingCtx, pingCancel := context.WithCancel(r.Context())
 	pingFailure := make(chan struct{}, 1)
 	go b.keepAliveWithFailure(pingCtx, conn, pingKeepaliveInterval, pingFailure)
@@ -173,16 +142,12 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	reason, expected := bridgeDisconnectReason(readErr)
 	select {
 	case <-pingFailure:
-		// The close frame used to unblock readLoop is intentionally routine, but
-		// the ping failure that caused it is not. Preserve that classification for
-		// the single unexpected-disconnect record below.
+		// The close frame that unblocked readLoop looks routine; the ping failure is not.
 		reason, expected = "keepalive ping failed", false
 	default:
 	}
-	// A replaced connection is stale by definition. Its read loop normally ends
-	// with "use of closed network connection" after the new socket is already
-	// live; do not emit a false disconnect log or ledger error for that routine
-	// MV3 lifecycle event.
+	// A replaced connection's read loop ends with "use of closed network
+	// connection"; that is routine MV3 lifecycle, not a disconnect.
 	if !b.releaseConn(conn, reason) {
 		return
 	}
@@ -195,9 +160,8 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	b.recordBridgeUsage("bridge_disconnect", "error", "transport", reason, verifiedHello.Build)
 }
 
-// bridgeDisconnectReason separates routine WebSocket lifecycle from a real
-// transport failure. WebSocket close reasons are canonical rather than copied
-// from the peer, keeping arbitrary close-frame text out of logs and status.
+// bridgeDisconnectReason separates routine WebSocket lifecycle from transport
+// failure. Close reasons are canonical so peer close-frame text stays out of logs.
 func bridgeDisconnectReason(err error) (reason string, expected bool) {
 	if err == nil {
 		return "connection closed", true
@@ -217,14 +181,9 @@ func bridgeDisconnectReason(err error) (reason string, expected bool) {
 	return err.Error(), false
 }
 
-// releaseConn tears down a connection that has stopped reading. It only acts
-// when conn is still the bridge's ACTIVE connection: an MV3 service worker
-// reconnects constantly, and handleExtension deliberately replaces an old conn
-// with a new one (b.conn = newConn). When the displaced (stale) conn's readLoop
-// finally returns it must NOT drain pending RPCs that now belong to the live
-// connection, nor stamp the bridge "disconnected" while b.conn points at a
-// healthy socket — doing so spuriously fails in-flight calls and reports a
-// disconnect reason alongside connected:true.
+// releaseConn acts only when conn is still the ACTIVE connection: a displaced
+// conn's read loop must not drain the live connection's pending RPCs or mark
+// the bridge disconnected.
 func (b *Bridge) releaseConn(conn *websocket.Conn, reason string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -254,12 +213,9 @@ func (b *Bridge) recordBridgeUsage(operation, outcome, errorClass, errorMessage,
 	})
 }
 
-// recordTabGroupDegradation captures the important middle state where opening
-// the tab succeeded but Chromium refused the organizational group assignment.
-// This happens with tab-strip implementations that report a normal window yet
-// reject extension grouping, or when Chromium itself regresses the capability.
-// Only the fixed capability class/failure shape reaches the metadata ledger;
-// the group title, URL, and raw warning never do.
+// recordTabGroupDegradation records a tab that opened but whose group
+// assignment Chromium refused. Only the capability class reaches the ledger,
+// never the title, URL or raw warning.
 func (b *Bridge) recordTabGroupDegradation(warning string) {
 	if strings.TrimSpace(warning) == "" {
 		return
@@ -270,8 +226,7 @@ func (b *Bridge) recordTabGroupDegradation(warning string) {
 	b.recordBridgeUsage("tab_group_assignment", "degraded", "capability", warning, build)
 }
 
-// drainPendingLocked fails every in-flight RPC with the given reason. Callers
-// must hold b.mu.
+// drainPendingLocked fails every in-flight RPC. Caller holds b.mu.
 func (b *Bridge) drainPendingLocked(reason string) {
 	b.clearAllResponseChunksLocked()
 	for id, ch := range b.pending {
@@ -281,8 +236,7 @@ func (b *Bridge) drainPendingLocked(reason string) {
 	}
 }
 
-// clearResponseChunksLocked releases one partial logical response. Callers must
-// hold b.mu.
+// clearResponseChunksLocked releases one partial response. Caller holds b.mu.
 func (b *Bridge) clearResponseChunksLocked(id string) {
 	assembly := b.responseChunks[id]
 	if assembly == nil {
@@ -295,8 +249,7 @@ func (b *Bridge) clearResponseChunksLocked(id string) {
 	delete(b.responseChunks, id)
 }
 
-// clearAllResponseChunksLocked releases every partial response. Callers must
-// hold b.mu.
+// clearAllResponseChunksLocked releases every partial response. Caller holds b.mu.
 func (b *Bridge) clearAllResponseChunksLocked() {
 	clear(b.responseChunks)
 	b.responseChunkBytes = 0
@@ -315,9 +268,8 @@ func invalidChunkResponse(id string, err error) response {
 	}
 }
 
-// decodeResponseChunk validates the self-contained envelope fields and decodes
-// one frame. Cross-frame ordering and accounting are checked while holding the
-// bridge mutex in consumeResponseChunk.
+// decodeResponseChunk validates one frame's own fields. Cross-frame checks run
+// under b.mu in consumeResponseChunk.
 func decodeResponseChunk(frame response) (index, count, total int, data []byte, err error) {
 	if frame.Encoding != "base64" {
 		return 0, 0, 0, nil, fmt.Errorf("unsupported encoding %q", frame.Encoding)
@@ -338,8 +290,7 @@ func decodeResponseChunk(frame response) (index, count, total int, data []byte, 
 	if frame.ChunkData == "" {
 		return 0, 0, 0, nil, errors.New("empty chunk data")
 	}
-	// A padded base64 length can overstate decoded bytes by at most two. Reject
-	// obviously impossible envelopes before allocating their decoded buffer.
+	// Padded base64 overstates decoded bytes by at most two; reject before allocating.
 	if decodedUpperBound := base64.StdEncoding.DecodedLen(len(frame.ChunkData)); decodedUpperBound > total+2 {
 		return 0, 0, 0, nil, fmt.Errorf("encoded chunk cannot fit within total_bytes %d", total)
 	}
@@ -353,9 +304,8 @@ func decodeResponseChunk(frame response) (index, count, total int, data []byte, 
 	return index, count, total, data, nil
 }
 
-// rejectResponseChunk discards the partial response and turns a protocol fault
-// into the one response awaited by dispatch. A stale socket may not clear state
-// belonging to its replacement, and a cancelled request receives no late reply.
+// rejectResponseChunk fails the awaiting RPC on a protocol fault. A stale socket
+// may not clear its replacement's state, and a cancelled request gets no reply.
 func (b *Bridge) rejectResponseChunk(conn *websocket.Conn, id string, err error) (response, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -369,12 +319,11 @@ func (b *Bridge) rejectResponseChunk(conn *websocket.Conn, id string, err error)
 	return invalidChunkResponse(id, err), true
 }
 
-// consumeResponseChunk accepts only a contiguous, metadata-consistent sequence
-// for an outstanding request. It returns ready=true exactly once, either for the
-// complete logical response or for a bounded protocol error that fails the RPC.
+// consumeResponseChunk accepts only a contiguous, consistent sequence for an
+// outstanding request and returns ready=true exactly once.
 func (b *Bridge) consumeResponseChunk(conn *websocket.Conn, frame response) (logical response, ready bool) {
-	// Avoid decoding a multi-megabyte frame for a cancelled/unknown request. This
-	// first check is repeated after decoding because dispatch may cancel meanwhile.
+	// Skip decoding for a cancelled request; rechecked after decoding because
+	// dispatch may cancel meanwhile.
 	b.mu.Lock()
 	if b.conn != conn {
 		b.mu.Unlock()
@@ -487,14 +436,10 @@ func (b *Bridge) consumeResponseChunk(conn *websocket.Conn, frame response) (log
 	return logical, true
 }
 
-// deliverResponse atomically claims an outstanding request before sending its
-// result, so a final chunk, duplicate frame, cancellation, or disconnect can
-// never dispatch the same logical response twice.
+// deliverResponse claims the request atomically so no response is dispatched twice.
 func (b *Bridge) deliverResponse(conn *websocket.Conn, resp response) {
 	b.mu.Lock()
-	// A decoded response can be waiting on b.mu while handleExtension replaces
-	// its socket. Never let that displaced connection claim a request belonging
-	// to the live connection generation.
+	// A decoded response may wait on b.mu while its socket is replaced.
 	if b.conn != conn {
 		b.mu.Unlock()
 		return
@@ -509,11 +454,8 @@ func (b *Bridge) deliverResponse(conn *websocket.Conn, resp response) {
 	}
 }
 
-// handleDecodedFrame applies the connection-generation gate shared by every
-// successfully decoded frame. Control frames mutate live bridge state while the
-// same lock still proves their socket is current; response paths repeat the
-// check when they claim a pending request because chunk decoding/reassembly can
-// yield between this gate and delivery.
+// handleDecodedFrame gates every decoded frame on connection generation.
+// Response paths recheck when claiming, since chunk decoding can yield between.
 func (b *Bridge) handleDecodedFrame(conn *websocket.Conn, resp response) {
 	b.mu.Lock()
 	if b.conn != conn {
@@ -525,18 +467,14 @@ func (b *Bridge) handleDecodedFrame(conn *websocket.Conn, resp response) {
 		h := resp.Hello
 		h.Token = "" // never store or echo the handshake secret
 		b.hello = h
-		// Tokenless library/test embedders publish the socket before receiving a
-		// hello for backwards compatibility. Treat a later hello as the same
-		// authoritative pin boundary used by the authenticated handshake.
+		// Tokenless embedders go live before the hello; treat a later hello as the pin boundary.
 		b.reconcileAgentPinLocked(h)
 		b.mu.Unlock()
 		return
 	}
 	if resp.Type == "active_tab" {
-		// active_tab is the USER's live-focus hint, pushed when they switch
-		// tabs. Honor it only in follow-focus mode; in isolation the cached
-		// active id must track the tab brw OWNS, so a user tab-switch must not
-		// repoint it onto the user's tab (that is the stomping we prevent).
+		// active_tab is the user's focus hint. In isolation b.active must track the
+		// tab brw owns, so it is honoured only in follow-focus mode.
 		if resp.TabID != 0 && b.followFocus {
 			b.active = strconv.Itoa(resp.TabID)
 		}
@@ -569,16 +507,11 @@ func (b *Bridge) handleDecodedFrame(conn *websocket.Conn, resp response) {
 	b.deliverResponse(conn, resp)
 }
 
-// resetProfileStateLocked discards state whose keys and values only make sense
-// inside the connected browser profile. Chrome tab ids and download GUIDs can
-// both be reused by another profile, so retaining any of this state across an
-// identity-changing replacement can target an unrelated tab or suppress a new
-// download as already observed. The same-extension MV3 reconnect path does not
-// call this helper and deliberately retains all of this state.
+// resetProfileStateLocked discards profile-scoped state: another profile can
+// reuse tab ids and download GUIDs. Not called on a same-extension reconnect.
 //
-// Caller must hold b.mu. The lock order is b.mu -> observeMu -> downloadsMu ->
-// emulationMu; code using the subordinate locks must not acquire b.mu while one
-// is held.
+// Caller holds b.mu. Lock order: b.mu -> observeMu -> downloadsMu ->
+// emulationMu; never acquire b.mu while holding a subordinate lock.
 func (b *Bridge) resetProfileStateLocked() {
 	b.active = ""
 	b.agentPinKnown = false
@@ -601,17 +534,10 @@ func (b *Bridge) resetProfileStateLocked() {
 	b.emulationMu.Unlock()
 }
 
-// reconcileAgentPinLocked makes the newly connected extension's owned-tab pin
-// authoritative. In isolation this closes the reconnect-gap hole where a lost
-// tab_removed frame left b.active pointing at a numeric tab id Chrome had since
-// reused for an unrelated page. The user's foreground hint is intentionally not
-// consulted. Old extensions omit AgentTabID; accepting their connection while
-// clearing ownership preserves protocol compatibility without weakening
-// isolation. Same-pin reconnects retain per-tab caches across ordinary MV3
-// worker churn.
-//
-// Caller must hold b.mu and therefore follows the subordinate lock order
-// documented by resetProfileStateLocked.
+// reconcileAgentPinLocked makes the new connection's owned-tab pin
+// authoritative, so a lost tab_removed cannot leave b.active on a tab id Chrome
+// has reused. A missing AgentTabID clears ownership. Caller holds b.mu (lock
+// order as resetProfileStateLocked).
 func (b *Bridge) reconcileAgentPinLocked(h hello) {
 	b.agentPinKnown = true
 	if b.followFocus {
@@ -629,21 +555,16 @@ func (b *Bridge) reconcileAgentPinLocked(h hello) {
 	if previous != "" {
 		b.invalidateTabStateLocked(previous)
 	}
-	// Chrome may already have reused next for a fresh tab while the daemon still
-	// carries cache/cursor/emulation entries under that numeric id. A changed pin
-	// establishes a new ownership epoch, so scrub the destination too.
+	// Chrome may have reused next already; a changed pin is a new ownership epoch.
 	if next != "" {
 		b.invalidateTabStateLocked(next)
 	}
 	b.active = next
 }
 
-// invalidateTabStateLocked forgets everything keyed by an authoritatively
-// disappeared Chrome tab. Numeric tab ids can later be reused, so retaining
-// ownership, observation/cursor state, or an emulation baseline could either
-// suppress fresh events or apply old-tab state to an unrelated target.
-// Caller must hold b.mu and therefore follows the same subordinate lock order
-// documented by resetProfileStateLocked.
+// invalidateTabStateLocked forgets everything keyed by a closed tab, since
+// Chrome reuses numeric tab ids. Caller holds b.mu (lock order as
+// resetProfileStateLocked).
 func (b *Bridge) invalidateTabStateLocked(tabID string) {
 	tabID = strings.TrimSpace(tabID)
 	if tabID == "" {
@@ -662,10 +583,8 @@ func (b *Bridge) invalidateTabStateLocked(tabID string) {
 	b.emulationMu.Lock()
 	delete(b.emulationStates, tabID)
 	b.emulationMu.Unlock()
-	// Chrome reuses numeric tab ids. The extension drops the closed tab's
-	// declarativeNetRequest rules, so keeping the daemon's copy would make the
-	// next brw_route on a replacement tab re-push a rule set the agent driving it
-	// never asked for.
+	// The extension drops a closed tab's rules; a stale copy would be re-pushed
+	// onto a replacement tab that reuses the id.
 	b.routes.set(tabID, nil)
 }
 
@@ -675,12 +594,9 @@ func (b *Bridge) invalidateTabState(tabID string) {
 	b.mu.Unlock()
 }
 
-// sameExtensionIdentity reports whether two hellos describe the same configured
-// extension instance (source + workspace/profile/label). Build, browser UA, and
-// protocol version are deliberately ignored: the same extension reconnecting
-// after a code upgrade is still the same identity. Two token-less or
-// identically-configured extensions compare equal — the flap guard, not this
-// check, handles that pathological case.
+// sameExtensionIdentity compares source, workspace, profile and label only, so
+// an upgraded extension is the same identity. Identical configs collide; the
+// flap guard handles that.
 func sameExtensionIdentity(a, b hello) bool {
 	return a.Source == b.Source &&
 		a.Workspace == b.Workspace &&
@@ -688,28 +604,19 @@ func sameExtensionIdentity(a, b hello) bool {
 		a.Label == b.Label
 }
 
-// pingKeepaliveInterval is how often the bridge pings the connected extension to
-// detect a half-open link. Each ping is bounded by its own short deadline so a
-// dead link is surfaced well within the interval.
 const (
 	pingKeepaliveInterval = 30 * time.Second
 	pingTimeout           = 10 * time.Second
 )
 
-// keepAlive pings the extension every interval. A ping that fails (or times out)
-// means the link is dead/half-open: the conn is closed, which unblocks readLoop
-// and drains b.pending. The goroutine exits when ctx is cancelled (the read loop
-// returned) — no leak. It pings only while this conn is still the bridge's
-// active conn, so a replaced connection's pinger goes quiet on its next tick.
-// interval is a parameter (not the const directly) so tests can drive it fast.
+// keepAlive closes conn when a ping fails, which unblocks readLoop. It stops
+// once conn is no longer the active connection.
 func (b *Bridge) keepAlive(ctx context.Context, conn *websocket.Conn, interval time.Duration) {
 	b.keepAliveWithFailure(ctx, conn, interval, nil)
 }
 
-// keepAliveWithFailure is keepAlive with an optional one-shot failure report
-// for handleExtension. Reporting before closing the socket lets the read-loop
-// teardown distinguish a peer's normal StatusGoingAway from a StatusGoingAway
-// sent locally to unblock a dead connection.
+// keepAliveWithFailure reports a failure before closing so the teardown can tell
+// our own StatusGoingAway from the peer's.
 func (b *Bridge) keepAliveWithFailure(ctx context.Context, conn *websocket.Conn, interval time.Duration, failures chan<- struct{}) {
 	if interval <= 0 {
 		interval = pingKeepaliveInterval
@@ -747,18 +654,10 @@ func (b *Bridge) keepAliveWithFailure(ctx context.Context, conn *websocket.Conn,
 	}
 }
 
-// verifyHandshake reads the first frame of a freshly-accepted connection. It
-// must be a hello (any other first frame is refused). A token that is PRESENT
-// must match the configured one — a wrong token is always rejected. A MISSING
-// token is accepted by default (graceful: a pre-0.2.0 extension that hasn't been
-// reloaded still works, so upgrading the daemon never bricks it) unless
-// requireToken is set, which makes the token mandatory. Bounded by
-// handshakeTimeout so a silent client cannot hold the slot open. Only called
-// when b.authToken != "".
-//
-// A REFUSED hello is still returned alongside the error, with its token zeroed:
-// the caller records the endpoint config it reported, which is the only evidence
-// anywhere on the machine of which status URL the extension is really using.
+// verifyHandshake reads the first frame, which must be a hello, within
+// handshakeTimeout. A wrong token is always rejected; a missing one when
+// requireToken is set. A refused hello is returned with the error (token
+// zeroed) so its reported endpoints can be recorded.
 func (b *Bridge) verifyHandshake(ctx context.Context, conn *websocket.Conn) (hello, error) {
 	verifyCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
@@ -770,10 +669,7 @@ func (b *Bridge) verifyHandshake(ctx context.Context, conn *websocket.Conn) (hel
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return hello{}, fmt.Errorf("invalid hello frame: %w", err)
 	}
-	// Lift the secret out of the struct immediately: every path below returns
-	// resp.Hello, including the rejection paths whose value is recorded on
-	// /status, and a secret that is still in the struct is one refactor away from
-	// being echoed there.
+	// Zero the secret at once: rejection paths return resp.Hello to /status.
 	presented := resp.Hello.Token
 	resp.Hello.Token = ""
 	if resp.Type != "hello" {
@@ -781,10 +677,8 @@ func (b *Bridge) verifyHandshake(ctx context.Context, conn *websocket.Conn) (hel
 	}
 	switch {
 	case presented == "":
-		// No token. The Origin check above rejects browser web pages, but a local
-		// process running as this user can forge an Origin header, so without a
-		// token the bridge authenticates nothing: any such process can displace the
-		// real extension and drive the signed-in browser. Refuse by default.
+		// A local process can forge an Origin header, so without a token the bridge
+		// authenticates nothing.
 		if b.requireToken {
 			return resp.Hello, errors.New("missing handshake token: the extension must present the per-launch token from /status (set BRW_BRIDGE_ALLOW_TOKENLESS=1 only for a pre-0.2.0 extension)")
 		}
@@ -792,7 +686,6 @@ func (b *Bridge) verifyHandshake(ctx context.Context, conn *websocket.Conn) (hel
 			log.Printf("WARNING: extension connected without a handshake token and BRW_BRIDGE_ALLOW_TOKENLESS is set — the bridge is authenticating nothing and any local process can drive this browser. Reload the brw extension and unset the variable.")
 		})
 	case subtle.ConstantTimeCompare([]byte(presented), []byte(b.authToken)) != 1:
-		// A token was presented but does not match — tampering or a stale token.
 		return resp.Hello, errors.New("invalid handshake token")
 	}
 	return resp.Hello, nil
@@ -806,11 +699,8 @@ func (b *Bridge) readLoop(ctx context.Context, conn *websocket.Conn) error {
 		}
 		var resp response
 		if err := json.Unmarshal(data, &resp); err != nil {
-			// A syntactically valid chunk envelope can still fail typed decoding
-			// (for example chunk_index:"zero" or an overflowing total_bytes).
-			// Recover just its routing header on this cold error path so the one
-			// affected RPC fails immediately and its partial buffer is released,
-			// rather than hanging until its context deadline.
+			// A chunk envelope can be valid JSON yet fail typed decoding. Recover its
+			// routing header so that RPC fails now instead of at its deadline.
 			var header struct {
 				ID   string `json:"id"`
 				Type string `json:"type"`

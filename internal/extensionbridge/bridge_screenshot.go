@@ -33,9 +33,8 @@ func (b *Bridge) Screenshot(ctx context.Context) (browser.Screenshot, error) {
 	return b.captureScreenshot(ctx, tabID, params)
 }
 
-// CaptureArtifactScreenshot drops the duplicate model-facing base64 field once
-// the extension transport has been decoded. The extension protocol itself is
-// JSON/base64, but browser-host artifact storage needs only the raw bytes.
+// CaptureArtifactScreenshot returns the decoded bytes only; artifact storage
+// does not need the base64 copy.
 func (b *Bridge) CaptureArtifactScreenshot(ctx context.Context, ref string) (browser.Screenshot, error) {
 	var (
 		shot browser.Screenshot
@@ -50,11 +49,9 @@ func (b *Bridge) CaptureArtifactScreenshot(ctx context.Context, ref string) (bro
 	return shot, err
 }
 
-// DocumentIdentity asks the extension for Chrome's main-frame documentId.
-// Unlike a URL, documentId changes on every committed replacement document and
-// remains stable for same-document SPA history updates. The extension obtains
-// it through chrome.webNavigation, avoiding an extra debugger attachment for
-// text/semantic recipe captures.
+// DocumentIdentity returns Chrome's main-frame documentId (via
+// chrome.webNavigation, no debugger attach), which changes on every committed
+// replacement but not on same-document SPA history updates.
 func (b *Bridge) DocumentIdentity(ctx context.Context) (browser.DocumentIdentity, error) {
 	payload, err := b.extensionDocumentIdentity(ctx)
 	if err != nil {
@@ -69,11 +66,9 @@ func (b *Bridge) DocumentIdentity(ctx context.Context) (browser.DocumentIdentity
 	}, nil
 }
 
-// extensionDocumentIdentity returns the raw trusted document boundary used by
-// both recipe artifact guards and navigation completion. Opaque origins are
-// valid here (data:/about: replacement documents still have exact document
-// identities); DocumentIdentity applies the stronger concrete-origin check
-// required before recipe capture.
+// extensionDocumentIdentity returns the raw document boundary used by recipe
+// guards and navigation. Opaque origins are valid here; DocumentIdentity adds
+// the concrete-origin check recipes need.
 func (b *Bridge) extensionDocumentIdentity(ctx context.Context) (extensionDocumentIdentityPayload, error) {
 	tabID := b.contextTabID(ctx)
 	params := map[string]any{}
@@ -98,10 +93,8 @@ func (b *Bridge) extensionDocumentIdentity(ctx context.Context) (extensionDocume
 	return payload, nil
 }
 
-// CapturePDF renders the current page through CDP and returns the decoded PDF
-// bytes to artifact.Service on this browser host. The control-plane and MCP
-// layers expose only an opaque artifact handle unless a caller later requests a
-// bounded byte window explicitly.
+// CapturePDF returns decoded PDF bytes for artifact.Service; callers above see
+// only an opaque artifact handle.
 func (b *Bridge) CapturePDF(ctx context.Context) ([]byte, error) {
 	tabID := b.contextTabID(ctx)
 	raw, err := b.cdp(ctx, tabID, "Page.printToPDF", map[string]any{"printBackground": true})
@@ -161,11 +154,8 @@ func (b *Bridge) viewportDimensions(ctx context.Context, tabID string) (float64,
 	return dims[0], dims[1]
 }
 
-// ScreenshotAnnotated draws a Set-of-Marks overlay (ref-labelled boxes over the
-// in-viewport frontier elements), captures the page, removes the overlay, and
-// returns the PNG plus a ref->box legend. It mirrors the direct-CDP manager path
-// but runs the overlay JS over the bridge's own Runtime.evaluate channel. The
-// overlay is removed in every path so the page the agent acts on is unmutated.
+// ScreenshotAnnotated captures the page under a Set-of-Marks overlay and returns
+// the PNG plus a ref->box legend. The overlay is removed on every path.
 func (b *Bridge) ScreenshotAnnotated(ctx context.Context, aopts browser.AnnotatedScreenshotOptions) (browser.AnnotatedScreenshot, error) {
 	if err := browser.GuardCrossOriginRefs("screenshot annotate", browser.BridgeCrossOriginRemedy, aopts.Ref); err != nil {
 		return browser.AnnotatedScreenshot{}, err
@@ -182,9 +172,8 @@ func (b *Bridge) ScreenshotAnnotated(ctx context.Context, aopts browser.Annotate
 
 	tabID := b.contextTabID(ctx)
 
-	// Resolve the optional crop clip (ref -> element box, or explicit region),
-	// clamped to the viewport, in top-level viewport space — the same space the
-	// overlay labels are painted at. nil means a full-viewport capture.
+	// The clip is in top-level viewport space, where the labels are painted. nil
+	// means full viewport.
 	clip, clipErr := b.resolveAnnotationClip(ctx, tabID, aopts)
 	if clipErr != nil {
 		return browser.AnnotatedScreenshot{}, clipErr
@@ -206,7 +195,6 @@ func (b *Bridge) ScreenshotAnnotated(ctx context.Context, aopts browser.Annotate
 	}
 	var overlay snapshot.AnnotationOverlayResult
 	err = b.evaluate(ctx, injectExpr, tabID, &overlay)
-	// Always remove the overlay, even when injection errored partway.
 	defer func() {
 		var discard json.RawMessage
 		_ = b.evaluate(ctx, snapshot.RemoveAnnotationOverlayExpr(), tabID, &discard)
@@ -276,12 +264,9 @@ func (b *Bridge) ScreenshotAnnotated(ctx context.Context, aopts browser.Annotate
 	}, nil
 }
 
-// captureScreenshot asks the extension to make a background target briefly
-// active inside its existing Chrome window, capture its compositor surface, and
-// restore the previously active tab. Chrome's debugger API only permits surface
-// screenshots and can leave Page.captureScreenshot pending forever for an
-// inactive tab. The dedicated RPC bounds that command and restores user state.
-// Older extensions fall back to the legacy direct command.
+// captureScreenshot uses the extension's capture_screenshot RPC, which briefly
+// activates a background tab: Chrome's debugger can leave Page.captureScreenshot
+// pending forever on an inactive tab. Older extensions use the direct command.
 func (b *Bridge) captureScreenshot(ctx context.Context, tabID string, params map[string]any) (browser.Screenshot, error) {
 	raw, err := b.call(ctx, "capture_screenshot", map[string]any{
 		"tabId":  parseTabID(tabID),
@@ -328,18 +313,15 @@ func (b *Bridge) captureScreenshot(ctx context.Context, tabID string, params map
 	}, nil
 }
 
-// annotationClipMargin pads a ref-derived crop so the label badge and border are
-// not sliced off the edge of the crop.
+// annotationClipMargin keeps the label badge and border inside a ref crop.
 const annotationClipMargin = 18.0
 
-// annotationClip is the bridge's resolved viewport clip for an annotated crop.
 type annotationClip struct {
 	X, Y, Width, Height float64
 }
 
-// resolveAnnotationClip turns the requested ref/region into a viewport clip,
-// clamped to the page viewport. Returns nil for a full-viewport capture. Box and
-// viewport resolution run over the bridge's own evaluate channel.
+// resolveAnnotationClip turns ref/region into a viewport-clamped clip; nil means
+// full viewport.
 func (b *Bridge) resolveAnnotationClip(ctx context.Context, tabID string, aopts browser.AnnotatedScreenshotOptions) (*annotationClip, error) {
 	var x, y, w, h float64
 	switch {
@@ -383,8 +365,6 @@ func (b *Bridge) resolveAnnotationClip(ctx context.Context, tabID string, aopts 
 	return &annotationClip{X: x, Y: y, Width: w, Height: h}, nil
 }
 
-// annotationBoxIntersects reports whether an overlay box overlaps the clip
-// rectangle (both in top-level viewport space), used to prune the legend.
 func annotationBoxIntersects(box snapshot.AnnotationBox, clip *annotationClip) bool {
 	return box.X < clip.X+clip.Width && box.X+box.Width > clip.X &&
 		box.Y < clip.Y+clip.Height && box.Y+box.Height > clip.Y

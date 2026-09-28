@@ -21,9 +21,7 @@ func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (bro
 	defer release()
 	ctx = entry.ctx
 
-	// Resolve the active tab once for the whole plan and pin it into the step
-	// context (re-pinned after focus_tab / open steps that move focus) so each
-	// step's contextTabID() short-circuits instead of re-resolving per step.
+	// Pin the tab once for the plan; retargetPinnedTab re-pins after focus_tab/open.
 	stepCtx := b.pinActiveTab(ctx)
 
 	result := browser.PlanResult{OK: true, Steps: make([]browser.PlanStepResult, 0, len(steps))}
@@ -58,16 +56,14 @@ func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (bro
 	return result, nil
 }
 
-// executePlanStep runs one plan step and returns its result plus the retarget
-// target tab id — the KNOWN id a successful focus_tab/open moved focus to ("" for
-// any other step or on failure) — so the loop re-pins without the active cache.
+// executePlanStep returns the step result and the tab id a successful
+// focus_tab/open moved to, or "".
 func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.PlanStep) (browser.PlanStepResult, string) {
 	sr := browser.PlanStepResult{Index: index, Action: step.Action, OK: true}
 	retargetTo := ""
 
-	// Site consent, re-checked against where the tab is NOW. The plan was gated
-	// once from its arguments, and an earlier step may since have navigated the
-	// tab somewhere those arguments never named.
+	// Re-check site consent against where the tab is NOW; an earlier step may
+	// have navigated.
 	if err := browser.GateSequenceStep(ctx, index, b.contextTabID(ctx), step.ConsentProbe()); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
@@ -106,8 +102,7 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 		}
 		b.settle(ctx, batchActionSettle)
 	case "find_act":
-		// Locate and act in one step, with the same exactly-one-match rule the
-		// standalone tool enforces: several matches is an error, never a guess.
+		// Several matches is an error, never a guess.
 		if step.Find == nil {
 			actionErr = errors.New("find_act requires find")
 			break
@@ -213,9 +208,8 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			retargetTo = openRes.Tab.ID
 		}
 	case "navigate_to":
-		// Distinct from "open": this drives the plan's existing working tab to a
-		// new URL where open spawns a new one. Stay on raw primitives so plans do
-		// not pay for the observed wrapper plus their own final observation.
+		// Drives the existing tab; raw primitives so plans do not pay for an observed
+		// wrapper on top of their own final observation.
 		if step.URL == "" {
 			actionErr = errors.New("navigate_to requires url")
 			break
@@ -263,9 +257,8 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 	return sr, retargetTo
 }
 
-// waitChunkLimit bounds a single in-page wait await so the held Runtime.evaluate
-// resolves (false at the chunk timeout) before the bridge request timeout would
-// cancel it, leaving headroom for the WS round-trip.
+// waitChunkLimit keeps one in-page wait inside the bridge request timeout, with
+// headroom for the WS round-trip.
 func (b *Bridge) waitChunkLimit() time.Duration {
 	limit := waitConditionChunk
 	if budget := b.timeout - 2*time.Second; budget > 0 && budget < limit {
@@ -277,11 +270,9 @@ func (b *Bridge) waitChunkLimit() time.Duration {
 	return limit
 }
 
-// waitConditionOnce arms the in-page WaitConditionScript promise once and awaits
-// its resolution: true the instant the condition holds, false at chunk. The heavy
-// condition check (innerText / shadow-DOM walk for text:/ref:) runs inside the
-// renderer on DOM mutations, NOT as repeated cross-process evaluates — so N
-// concurrent waits cost N held evaluates, not N*(rate) heavy round-trips.
+// waitConditionOnce awaits WaitConditionScript once: true when the condition
+// holds, false at chunk. The check runs in the renderer on DOM mutations, so N
+// concurrent waits cost N held evaluates, not N polling loops.
 func (b *Bridge) waitConditionOnce(ctx context.Context, condition string, chunk time.Duration) (bool, error) {
 	chunkMs := chunk.Milliseconds()
 	if chunkMs < 0 {

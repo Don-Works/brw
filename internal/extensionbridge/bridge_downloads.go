@@ -10,17 +10,13 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// downloadsUnsupportedNote is returned when the connected extension is too old to
-// answer get_downloads (pre-issue-#6 builds) so callers still get the graceful
-// Supported=false contract instead of a hard error.
+// downloadsUnsupportedNote is returned for an extension predating get_downloads
+// (issue #6), keeping the Supported=false contract.
 const downloadsUnsupportedNote = "Download capture is unavailable: the connected brw extension predates chrome.downloads support (issue #6). Reload the brw extension, or restart brw with the direct-CDP backend. Check Supported=false to detect this programmatically."
 
-// Downloads captures retained snapshots from the extension's chrome.downloads
-// registry. Page.downloadWillBegin provenance is correlated extension-side and
-// arrives as DownloadEntry.TabID. Recipe-scoped contexts receive only entries
-// changed after their per-tab baseline and require exact provenance; ordinary
-// calls receive the complete bounded snapshot. An extension too old to know the
-// message returns the legacy Supported=false note rather than erroring.
+// Downloads returns the extension's retained chrome.downloads snapshot, with
+// tab provenance correlated extension-side. Recipe-scoped contexts get only
+// entries from their tab changed since their baseline; other calls get it all.
 func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error) {
 	payload, err := b.downloadSnapshot(ctx)
 	if err != nil {
@@ -60,31 +56,23 @@ func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error)
 		Downloads: result,
 		Count:     len(result),
 		Supported: payload.Supported,
-		// chrome.downloads reports the file's own local path, so an entry the
-		// bridge supports always carries one.
+		// chrome.downloads always reports the local path.
 		FilePaths: payload.Supported,
 		Note:      payload.Note,
 	}, nil
 }
 
-// downloadSnapshotPayload is the extension's bounded registry as it arrives,
-// before any caller-scoped filtering.
+// downloadSnapshotPayload is the extension's registry before caller filtering.
 type downloadSnapshotPayload struct {
 	Downloads []browser.DownloadEntry `json:"downloads"`
 	Supported bool                    `json:"supported"`
 	Note      string                  `json:"note"`
-	// ChangedAt maps a download guid to when the extension last saw that
-	// download change state. It is decoded separately from Downloads (see
-	// decodeDownloadChangeTimes) so the wire field does not widen
-	// browser.DownloadEntry, which is both the shape brw_downloads returns and
-	// the shape this bridge fingerprints for change detection.
+	// ChangedAt is decoded separately so browser.DownloadEntry, which is fingerprinted, stays unchanged.
 	ChangedAt map[string]time.Time `json:"-"`
 }
 
-// decodeDownloadChangeTimes reads the per-entry changed_at_ms the extension
-// sends alongside each download. An extension build that predates the field
-// reports nothing here, and a wait then treats every already-terminal download
-// as old news, exactly as it did before the field existed.
+// decodeDownloadChangeTimes reads per-entry changed_at_ms. Older extensions
+// send none, and a wait then treats already-terminal downloads as old.
 func decodeDownloadChangeTimes(raw []byte) map[string]time.Time {
 	var timing struct {
 		Downloads []struct {
@@ -105,10 +93,8 @@ func decodeDownloadChangeTimes(raw []byte) map[string]time.Time {
 	return out
 }
 
-// downloadSnapshot performs the get_downloads RPC and updates the change
-// bookkeeping, without applying a recipe context's per-tab cursor. A download
-// wait polls through here so repeatedly asking "has it finished yet?" cannot
-// consume the baseline a recipe's own download polling depends on.
+// downloadSnapshot fetches and ingests without advancing a recipe's per-tab
+// cursor, so a download wait's polling cannot consume that baseline.
 func (b *Bridge) downloadSnapshot(ctx context.Context) (downloadSnapshotPayload, error) {
 	var payload downloadSnapshotPayload
 	raw, err := b.call(ctx, "get_downloads", nil)

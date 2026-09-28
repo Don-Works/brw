@@ -15,73 +15,42 @@ import (
 )
 
 const (
-	// observedActionSettle / batchActionSettle are the CAPS for the adaptive
-	// settle (b.settle): the page-change poll never blocks longer than this, so
-	// settling is never slower than the previous blind time.Sleep, only faster
-	// when the page stabilises early.
+	// observedActionSettle and batchActionSettle cap the adaptive settle.
 	observedActionSettle = 75 * time.Millisecond
 	menuHoverSettleDelay = 325 * time.Millisecond
 	batchActionSettle    = 25 * time.Millisecond
 	waitForPollInterval  = 250 * time.Millisecond
-	// settlePollStart / settlePollMax bound the adaptive settle poll cadence:
-	// start tight so a quiescent page returns in ~one short interval, then back
-	// off so a busy page does not spin. settleStableReads is how many consecutive
-	// equal fingerprints count as "settled".
+	// Adaptive settle poll cadence: start tight, back off to settlePollMax.
 	settlePollStart   = 12 * time.Millisecond
 	settlePollMax     = 40 * time.Millisecond
 	settleStableReads = 2
-	// settleMinFloor is the minimum settle duration: we never return "settled"
-	// before it even when the page already looks stable, so a handler's
-	// setTimeout(0) / framework render / rAF that lands a few ms after the action
-	// is still observed (preserving the debounce the old fixed sleep gave). Capped
-	// by capDur, so a batch step's 25ms cap is honoured.
+	// settleMinFloor keeps a setTimeout(0), render or rAF just after the action
+	// observable even when the page already looks stable.
 	settleMinFloor = 24 * time.Millisecond
-	// waitConditionChunk bounds a single in-page wait-promise await so one held
-	// Runtime.evaluate resolves (returning false at the chunk timeout) before the
-	// bridge request timeout (b.timeout) would cancel it; WaitFor re-arms the promise
-	// until its own deadline. waitForErrBackoff paces re-arming after a navigation
-	// destroys the in-page execution context mid-await, so WaitFor never hot-loops.
+	// waitConditionChunk resolves one in-page wait before b.timeout would cancel
+	// it; WaitFor re-arms. waitForErrBackoff paces re-arming after a navigation.
 	waitConditionChunk = 6 * time.Second
 	waitForErrBackoff  = 100 * time.Millisecond
-	// activeTabResolveAttempts/Backoff bound how hard contextTabID retries live
-	// active-tab resolution before falling back to the last-known cached tab. The
-	// MV3 service worker can be mid-reconnect when a call lands; a couple of quick
-	// retries ride that out so we don't act on a stale tab.
+	// Bound contextTabID's retries through an MV3 reconnect before using the cache.
 	activeTabResolveAttempts = 3
 	activeTabResolveBackoff  = 150 * time.Millisecond
-	// fileChooserPollTimeout/Interval bound how long file-chooser-interception
-	// upload mode waits for the Page.fileChooserOpened event after clicking the
-	// trigger before giving up, and how often it polls the extension for it.
+	// File-chooser upload wait for Page.fileChooserOpened.
 	fileChooserPollTimeout  = 5 * time.Second
 	fileChooserPollInterval = 200 * time.Millisecond
-	// bridgeWriteTimeout bounds a single WS frame write with a deadline INDEPENDENT of
-	// the request context. coder/websocket registers context.AfterFunc(writeCtx, close)
-	// for the duration of a write, so binding the write to the request ctx means a
-	// request that cancels (a long wait hitting b.timeout, the upstream 20s HTTP cap, or
-	// a caller giving up) while a frame is queued behind a busy extension tears down the
-	// WHOLE shared socket — every in-flight RPC then drains "extension disconnected" and
-	// the extension reconnects (~1s). That is the observed "10 concurrent heavy calls
-	// wedge the bridge, then it auto-recovers". A write completes in well under this cap;
-	// decoupling it stops one slow/cancelled request from wedging every concurrent call.
+	// bridgeWriteTimeout is independent of the request ctx: coder/websocket closes
+	// the WHOLE socket when a write's ctx is cancelled, so one cancelled request
+	// queued behind a busy extension would drain every in-flight RPC.
 	bridgeWriteTimeout = 10 * time.Second
 )
 
-// settleFingerprintExpr is a cheap in-page snapshot of "has the page changed?"
-// signals: readyState, the DOM node count, the body text length, the active
-// element tag, and the current URL. It is intentionally O(1)-ish (no full DOM
-// serialization) so polling it a few times is far cheaper than a real snapshot.
+// settleFingerprintExpr is a cheap O(1)-ish "has the page changed?" probe.
 const settleFingerprintExpr = `(function(){try{
   var ae=document.activeElement;
   return document.readyState+'|'+(document.getElementsByTagName('*').length)+'|'+((document.body&&document.body.innerText)?document.body.innerText.length:0)+'|'+(ae?ae.tagName+'#'+(ae.id||''):'')+'|'+location.href;
 }catch(e){return 'err';}})()`
 
-// settle replaces the previous blind time.Sleep(capDur) before observing an
-// action. It polls a cheap in-page fingerprint and returns as soon as the page
-// is stable (two consecutive equal reads) and ready, or when capDur elapses — so
-// it is NEVER slower than the old fixed sleep, only faster on a quiescent page.
-// It is cancellation-aware (returns immediately if ctx is done) and degrades to
-// honouring the remaining cap if the fingerprint cannot be read (disconnected /
-// mid-navigation).
+// settle polls settleFingerprintExpr and returns once the page is stable and
+// ready, or when capDur elapses. An unreadable page just waits out the cap.
 func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 	if capDur <= 0 {
 		return
@@ -99,13 +68,8 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 	}
 	prev := ""
 	stable := 0
-	// Each fingerprint read is bounded by the settle deadline (not b.timeout), so a
-	// connected-but-unresponsive extension cannot turn a 25/75ms settle into a
-	// multi-second b.call wait. We bound the WAIT with a watchdog rather than
-	// passing a cap-short context to b.evaluate: a context cancelled mid-write
-	// makes coder/websocket drop the whole connection, so a slow-but-healthy write
-	// must not be force-cancelled. An abandoned read completes harmlessly in the
-	// background via the normal b.timeout.
+	// Bound the wait with a watchdog, not a short ctx: cancelling mid-write makes
+	// coder/websocket drop the whole connection. An abandoned read finishes under b.timeout.
 	read := func() (string, bool) {
 		type fpRes struct {
 			fp string
@@ -114,9 +78,8 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 		resCh := make(chan fpRes, 1)
 		go func() {
 			var fp string
-			// withoutTabLock: this probe can be abandoned by the watchdog below
-			// while it keeps running, so it must not hold the tab's serialization
-			// lock and stall the next foreground action on that tab.
+			// withoutTabLock: an abandoned probe must not hold the tab lock and stall the
+			// next action on that tab.
 			err := b.evaluate(withoutTabLock(ctx), settleFingerprintExpr, "", &fp)
 			resCh <- fpRes{fp: fp, ok: err == nil && fp != "" && fp != "err"}
 		}()
@@ -145,8 +108,6 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 		}
 		fp, ok := read()
 		if !ok {
-			// Cannot read the page (navigating / disconnected): keep honouring
-			// the remaining cap as a plain wait, matching the old behaviour.
 			continue
 		}
 		if fp == prev {
@@ -193,15 +154,12 @@ func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) 
 	return b.observeActionWithBeforeAndTabs(ctx, "clicked text "+strconv.Quote(label), before, beforeTabs), nil
 }
 
-// clickTextRaw performs the semantic click without pre/post observations. Batch
-// and plan callers use it so they retain their one-final-observation contract.
+// clickTextRaw clicks without pre/post observations, for batch and plan.
 func (b *Bridge) clickTextRaw(ctx context.Context, opts snapshot.ClickTextOptions) (string, error) {
 	optsJSON, _ := json.Marshal(opts)
 	var clicked snapshot.ClickXYResult
-	// User gesture on the FIRST evaluation, not only on the deferred retry: a
-	// gesture-gated handler registered with addEventListener is invisible to the
-	// deferral check, so it never reached the retry and its window.open was
-	// dropped under a click that reported success.
+	// User gesture on the FIRST evaluation too: an addEventListener handler is
+	// invisible to the deferral check, so its window.open would be dropped.
 	if err := b.evaluateWithUserGesture(ctx, fmt.Sprintf("%s(%s)", snapshot.ClickTextScript, optsJSON), "", &clicked); err != nil {
 		return "", err
 	}
@@ -212,12 +170,8 @@ func (b *Bridge) clickTextRaw(ctx context.Context, opts snapshot.ClickTextOption
 		return "", fmt.Errorf("click text: %s", clicked.Error)
 	}
 	if clicked.Deferred {
-		// The resolved control only responds to a real input gesture, so the
-		// script deliberately did not dispatch anything. Re-run it under
-		// Runtime.evaluate's userGesture flag, which grants the transient
-		// activation window.open/target=_blank/download/fullscreen require while
-		// keeping the single in-page round trip. Real CDP input is the fallback
-		// when that still does not take.
+		// The control needs a real gesture, so the script dispatched nothing. Retry
+		// under Runtime.evaluate's userGesture; real CDP input is the fallback.
 		if err := b.clickTextTrusted(ctx, opts, clicked); err != nil {
 			return "", err
 		}
@@ -247,11 +201,9 @@ func (b *Bridge) hoverRef(ctx context.Context, ref string) error {
 	if err != nil {
 		return err
 	}
-	// Fire JS hover listeners synchronously in one fast evaluate, then let the
-	// extension apply deterministic CSS :hover to the hit-tested ancestor chain.
-	// A genuinely foreground tab also gets trusted CDP pointer input; background
-	// or locked tabs avoid the multi-second Input ACK that would block nested menu
-	// work. Old extensions fall back to the blocking CDP command for compatibility.
+	// JS hover listeners in one evaluate, then extension-applied CSS :hover. Only a
+	// foreground tab gets trusted CDP pointer input: background tabs stall for
+	// seconds on the Input ACK. Old extensions fall back to the blocking CDP command.
 	refJSON, _ := json.Marshal(box.Ref)
 	var hovered struct {
 		OK    bool   `json:"ok"`
@@ -301,23 +253,15 @@ func (b *Bridge) clickRef(ctx context.Context, ref string) error {
 		}
 		return err
 	}
-	// Fast path: actuate the click with a single in-page round-trip. CDP
-	// Input.dispatchMouseEvent blocks on a renderer ack that can cost ~1.5s per
-	// call on heavy pages (≈5s for the three-event sequence below); the in-page
-	// pointer/mouse/click sequence fires the same handlers in one Runtime.evaluate
-	// (~tens of ms). Trusted CDP dispatch stays as the fallback when the point is
-	// not hit-testable in-page (e.g. element scrolled out of the layout viewport).
+	// In-page click first: CDP Input.dispatchMouseEvent waits on a renderer ack
+	// that costs ~1.5s per event on heavy pages. CDP stays the fallback when the
+	// point is not hit-testable in-page.
 	xJSON, _ := json.Marshal(box.ViewportX)
 	yJSON, _ := json.Marshal(box.ViewportY)
 	var inPage snapshot.ClickXYResult
 	expression := fmt.Sprintf("%s(%s,%s)", snapshot.ClickXYScript, xJSON, yJSON)
-	// Runtime.evaluate's userGesture flag grants the transient activation that
-	// window.open/download/fullscreen controls require, while retaining the
-	// one-round-trip in-page click path. It is applied to EVERY click, not only
-	// the shapes resolveBox could recognise: a listener registered with
-	// addEventListener cannot be read back from page script, so "this control is
-	// gesture-gated" is not decidable in advance. Predicting it wrongly meant a
-	// dropped window.open under a click that reported success.
+	// userGesture on EVERY click: whether a listener is gesture-gated cannot be
+	// read back from page script, and guessing wrong drops window.open.
 	evalErr := b.evaluateWithUserGesture(ctx, expression, "", &inPage)
 	if evalErr == nil && inPage.OK {
 		return nil
@@ -342,8 +286,7 @@ func (b *Bridge) clickRef(ctx context.Context, ref string) error {
 	return nil
 }
 
-// clickTextTrusted actuates a click_text target that needs a genuine input
-// gesture, which the ordinary in-page dispatch cannot provide.
+// clickTextTrusted clicks a click_text target that needs a genuine input gesture.
 func (b *Bridge) clickTextTrusted(ctx context.Context, opts snapshot.ClickTextOptions, deferred snapshot.ClickXYResult) error {
 	retry := opts
 	retry.NoDefer = true
@@ -378,11 +321,7 @@ func (b *Bridge) activate(ctx context.Context, ref string) error {
 		OK    bool   `json:"ok"`
 		Error string `json:"error,omitempty"`
 	}
-	// The lookup is the shared one (__abFindDeep), not a private copy. This used
-	// to walk only the top document and its open shadow roots, so the click
-	// fallback silently failed on refs the rest of brw resolves fine — anything in
-	// a same-origin iframe — and it was the one ref path that did not name a
-	// cross-origin ref for what it is.
+	// Uses the shared __abFindDeep lookup so same-origin iframe and shadow refs resolve.
 	expr := fmt.Sprintf(`(function(ref) {`+snapshot.FrameWalkHelpers+`
 	  function findByRef(ref) {
 	    var hit = __abFindDeep(ref);
@@ -433,8 +372,7 @@ func (b *Bridge) typeRef(ctx context.Context, ref, text string) error {
 	return err
 }
 
-// Focus gives one element the keyboard focus and reports the page afterwards,
-// matching the observation contract every action tool answers on.
+// Focus focuses one element and reports the page afterwards.
 func (b *Bridge) Focus(ctx context.Context, ref string) (browser.ActionResult, error) {
 	if err := browser.GuardCrossOriginRefs("focus", browser.BridgeCrossOriginRemedy, ref); err != nil {
 		return browser.ActionResult{}, err
@@ -451,8 +389,7 @@ func (b *Bridge) Focus(ctx context.Context, ref string) (browser.ActionResult, e
 	return b.observeActionWithBefore(ctx, "focused "+ref, before), nil
 }
 
-// FocusRef supports deterministic recipe key presses without exposing another
-// model-facing tool or relying on ambient focus from a previous step.
+// FocusRef focuses an element for deterministic recipe key presses.
 func (b *Bridge) FocusRef(ctx context.Context, ref string) error {
 	if err := browser.GuardCrossOriginRefs("focus", browser.BridgeCrossOriginRemedy, ref); err != nil {
 		return err
@@ -520,10 +457,8 @@ func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (b
 	if err := browser.GuardCrossOriginRefs("upload file", browser.BridgeCrossOriginRemedy, opts.Ref, opts.ClickRef); err != nil {
 		return browser.ActionResult{}, err
 	}
-	// Resolve the upload source (local path(s), inline bytes_base64, or remote
-	// URL). bytes/url sources are materialized to temp files on the daemon host
-	// and retained briefly after DOM.setFileInputFiles so a later form submission
-	// can still read their contents.
+	// bytes/url sources become temp files, retained briefly after
+	// DOM.setFileInputFiles so a later form submit can still read them.
 	paths, cleanup, err := browser.ResolveUploadPaths(ctx, opts)
 	if err != nil {
 		return browser.ActionResult{}, err
@@ -535,11 +470,9 @@ func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (b
 		}
 	}()
 
-	// File-chooser-interception mode: when a trigger is named, click it with the
-	// native chooser intercepted and set the file on whatever input the chooser
-	// reports. Handles SPAs that create the input on click (which would otherwise
-	// freeze the CDP session behind a native OS dialog) and inputs in cross-origin
-	// iframes (backendNodeId is frame-agnostic).
+	// With a trigger named, intercept the native chooser and set the file on the
+	// input it reports. Covers inputs created on click (a native dialog would
+	// freeze the CDP session) and cross-origin iframes (backendNodeId is frame-agnostic).
 	if opts.ClickRef != "" || opts.ClickText != "" {
 		result, err := b.uploadViaFileChooser(ctx, opts, paths)
 		if err != nil {
@@ -622,14 +555,11 @@ func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (b
 	return result, nil
 }
 
-// uploadViaFileChooser drives the file-chooser-interception upload path: enable
-// native-dialog interception, click the trigger, capture the chooser's
-// backendNodeId from the Page.fileChooserOpened event the extension stashes, and
-// set the file with DOM.setFileInputFiles. Interception is ALWAYS disabled on
-// exit so the user's manual uploads in this Chrome are unaffected.
+// uploadViaFileChooser clicks the trigger with native-dialog interception on
+// and sets the file on the chooser's backendNodeId. Interception is always
+// disabled on exit so the user's own uploads work.
 func (b *Bridge) uploadViaFileChooser(ctx context.Context, opts snapshot.UploadOptions, paths []string) (browser.ActionResult, error) {
-	// Pin the tab for the whole sequence so interception, click, poll, and set all
-	// target the same tab even if the user switches tabs mid-upload.
+	// Pin the tab so every step hits the same tab if the user switches mid-upload.
 	tabID := b.contextTabID(ctx)
 
 	if _, err := b.call(ctx, "set_intercept_file_chooser", map[string]any{
@@ -639,8 +569,7 @@ func (b *Bridge) uploadViaFileChooser(ctx context.Context, opts snapshot.UploadO
 		return browser.ActionResult{}, fmt.Errorf("enable file chooser interception: %w", err)
 	}
 	defer func() {
-		// Always restore manual uploads, even on error. Use a fresh context so a
-		// cancelled/expired ctx cannot leave interception stuck on.
+		// Fresh context so a cancelled ctx cannot leave interception on.
 		disableCtx, cancel := context.WithTimeout(context.Background(), b.timeout)
 		defer cancel()
 		_, _ = b.call(disableCtx, "set_intercept_file_chooser", map[string]any{
@@ -651,7 +580,6 @@ func (b *Bridge) uploadViaFileChooser(ctx context.Context, opts snapshot.UploadO
 
 	before := b.captureSemanticState(ctx)
 
-	// Click the trigger that opens the (now intercepted) native chooser.
 	if opts.ClickRef != "" {
 		if err := b.clickRef(ctx, opts.ClickRef); err != nil {
 			return browser.ActionResult{}, fmt.Errorf("click upload trigger %s: %w", opts.ClickRef, err)
@@ -671,7 +599,6 @@ func (b *Bridge) uploadViaFileChooser(ctx context.Context, opts snapshot.UploadO
 		}
 	}
 
-	// Poll for the captured Page.fileChooserOpened event (up to ~5s).
 	var backendNodeID int64
 	deadline := time.Now().Add(fileChooserPollTimeout)
 	for {
@@ -813,9 +740,8 @@ func (b *Bridge) pressKey(ctx context.Context, key string) error {
 	if desc.Key == "" {
 		return errors.New("key is required")
 	}
-	// Chrome silently discards Input.dispatchKeyEvent for an inactive tab. Do not
-	// activate it (which would flash-switch the user's current tab); use a bounded
-	// standards-DOM fallback there. Foreground tabs keep the trusted CDP path.
+	// Chrome silently drops Input.dispatchKeyEvent for an inactive tab, and
+	// activating it would flash-switch the user's tab; use the DOM fallback there.
 	rawState, stateErr := b.call(ctx, "get_tab_input_state", map[string]any{
 		"tabId": parseTabID(b.contextTabID(ctx)),
 	})
@@ -854,8 +780,7 @@ func (b *Bridge) pressKey(ctx context.Context, key string) error {
 	}
 	for _, typ := range []string{"keyDown", "keyUp"} {
 		if typ == "keyDown" && desc.Text == "" {
-			// rawKeyDown is required for Chrome's native non-text default actions
-			// (ArrowUp on number inputs, navigation keys, and similar controls).
+			// rawKeyDown triggers Chrome's native non-text defaults (ArrowUp on number inputs).
 			typ = "rawKeyDown"
 		}
 		params := map[string]any{

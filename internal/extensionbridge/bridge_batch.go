@@ -14,18 +14,14 @@ func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (b
 	if err := browser.GuardCrossOriginRefs("batch", browser.BridgeCrossOriginRemedy, browser.BatchStepRefs(steps)...); err != nil {
 		return browser.BatchResult{}, err
 	}
-	// Keep the caller context for the final observation so a cancelled run can
-	// still report current page state; step execution uses the cancel-aware ctx.
+	// The final observation uses the caller ctx so a cancelled run still reports state.
 	obsCtx := ctx
 	entry, release := b.cancels.register(ctx, cancelToken(ctx, ""))
 	defer release()
 	ctx = entry.ctx
 
-	// Resolve the active tab ONCE for the whole sequence and pin it into the
-	// step context, so each step's contextTabID() short-circuits instead of
-	// re-issuing get_active_tab_id per step (3-11x per step otherwise). A
-	// focus_tab / open step legitimately moves the active tab, so we re-pin after
-	// any retargeting step (see retargetPinnedTab).
+	// Pin the tab once so steps skip get_active_tab_id (3-11x per step
+	// otherwise); retargetPinnedTab re-pins after focus_tab/open.
 	stepCtx := b.pinActiveTab(ctx)
 
 	result := browser.BatchResult{OK: true, Steps: make([]browser.BatchStepResult, 0, len(steps)), TabID: browser.TabIDFromContext(stepCtx)}
@@ -53,16 +49,9 @@ func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (b
 		}
 	}
 	result.StepsCompleted = len(result.Steps)
-	// Pin the observation to the tab the sequence ended on (the step pin, which
-	// already tracked focus_tab/open moves) so the closing snapshot resolves the
-	// active tab once via the pinned id instead of re-issuing get_active_tab_id
-	// across its tryCached/store/evaluate sub-calls. Falls back to obsCtx when no
-	// tab could be pinned, preserving the prior per-call behaviour.
+	// Observe the tab the sequence ended on, via the pin.
 	if pinned := browser.TabIDFromContext(stepCtx); pinned != "" {
 		obsCtx = browser.WithTabID(obsCtx, pinned)
-		// Refresh the reported tab id to the tab the sequence actually ended on
-		// (focus_tab/open retargets), so a batch that moved focus does not return
-		// the initial tab_id alongside the new tab's URL/title.
 		result.TabID = pinned
 	} else {
 		obsCtx = b.pinActiveTab(obsCtx)
@@ -91,17 +80,15 @@ func (b *Bridge) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (b
 	return result, nil
 }
 
-// executeBatchStep runs one batch step and returns its result plus the retarget
-// target tab id — the KNOWN id of the tab a successful focus_tab/open moved focus
-// to ("" for any other step or on failure), used by the loop to re-pin without
-// reading the mutable active-tab cache.
+// executeBatchStep returns the step result and the tab id a successful
+// focus_tab/open moved to, or "".
 func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.BatchStep) (browser.BatchStepResult, string) {
 	sr := browser.BatchStepResult{Index: index, Action: step.Action, OK: true}
 	var actionErr error
 	retargetTo := ""
 
-	// Site consent, re-checked against where the tab is NOW: the batch was gated
-	// once from arguments that stopped being true as soon as a step navigated.
+	// Re-check site consent against where the tab is NOW; an earlier step may
+	// have navigated.
 	if err := browser.GateSequenceStep(ctx, index, b.contextTabID(ctx), step.ConsentProbe()); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
@@ -130,9 +117,7 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 		_, actionErr = b.clickTextRaw(ctx, snapshot.ClickTextOptions{Text: step.Text})
 		b.settle(ctx, batchActionSettle)
 	case "find_act":
-		// Locate and act in one step. The search must resolve to exactly one
-		// element or the step fails, so a batch can never act on the
-		// highest-ranked of several rivals.
+		// Must resolve to exactly one element, never the best of several rivals.
 		if step.Find == nil {
 			actionErr = errors.New("find_act requires find")
 			break
@@ -195,9 +180,7 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 			retargetTo = openRes.Tab.ID
 		}
 	case "navigate_to":
-		// Keep batch parity with the plan and direct-CDP runners. This reuses the
-		// batch's pinned working tab; unlike open it must not create or retarget to
-		// another tab.
+		// Reuses the pinned tab; unlike open it must not create or retarget a tab.
 		if step.URL == "" {
 			actionErr = errors.New("navigate_to requires url")
 			break
@@ -260,10 +243,8 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 		}
 		actionErr = b.AssertHidden(ctx, step.Ref, timeout)
 	case "assert":
-		// Deliberately has no timeout, matching the direct-CDP runner: these
-		// assertions read current state once. A batch that needs the page to
-		// settle first puts a wait step in front of the assertion, where the
-		// wait is visible in the replayable flow.
+		// No timeout, as in the direct-CDP runner: read once. A batch that needs the
+		// page settled puts a visible wait step first.
 		if step.Assertion == nil {
 			actionErr = errors.New("assert requires assertion")
 			break
