@@ -43,6 +43,8 @@ for (const ns of [brw_chromium, brw_chromium_work]) {
 ```
 
 Pick by what the user asked for. If two profiles could match, show the list and ask.
+A namespace whose identity says `headless` is the lane for public, signed-out work;
+../SKILL.md ("Headless or the signed-in browser") has the table for choosing it.
 
 `identity.transport` decides capabilities exactly as in ../SKILL.md: `direct-cdp` has
 incognito contexts and `brw_cookies`, `extension-bridge` has Chrome tab groups and

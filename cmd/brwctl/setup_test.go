@@ -813,3 +813,59 @@ func readBytes(t *testing.T, path string) []byte {
 	}
 	return data
 }
+
+func TestSetupHeadlessLaneProxiesTheWarmDaemon(t *testing.T) {
+	runner := newFakeRunner("launchctl print", "claude mcp get")
+	runner.onPath["claude"] = true
+	var out bytes.Buffer
+	opts := newTestOptions(t, runner, &out)
+	opts.transport = setup.TransportHeadless
+	opts.profileName = ""
+	opts.workspace = ""
+	opts.httpPort = 17710
+	if err := opts.normalise(); err != nil {
+		t.Fatal(err)
+	}
+	if opts.profileName != "chrome-headless" || opts.workspace != "brw-chrome-headless" {
+		t.Fatalf("derived names = %q / %q", opts.profileName, opts.workspace)
+	}
+
+	if _, err := runSetup(opts); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+
+	policy, _, err := setup.LoadPolicyFile(opts.policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := policy.ResolveProfile(opts.workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !profile.Headless || !profile.DirectCDPAllowed || profile.ExtensionBridgeAllowed || profile.UserDataDir != "~/.brw/chrome-headless" {
+		t.Fatalf("headless profile = %+v", profile)
+	}
+
+	plist, err := os.ReadFile(filepath.Join(opts.home, "Library", "LaunchAgents", "co.donworks.brwd.chrome-headless.plist"))
+	if err != nil {
+		t.Fatalf("LaunchAgent not written: %v", err)
+	}
+	if strings.Contains(string(plist), "--bridge") || !strings.Contains(string(plist), "127.0.0.1:17710") {
+		t.Fatalf("headless LaunchAgent:\n%s", plist)
+	}
+	if runner.called("defaults write") {
+		t.Fatalf("App Nap was changed for a windowless browser: %v", runner.calls)
+	}
+	if !runner.called("claude mcp add -s user brw-headless") {
+		t.Fatalf("headless MCP server was not registered under its own name: %v", runner.calls)
+	}
+	var registration string
+	for _, call := range runner.calls {
+		if strings.HasPrefix(call, "claude mcp add") {
+			registration = call
+		}
+	}
+	if !strings.Contains(registration, "--upstream-http http://127.0.0.1:17710") {
+		t.Fatalf("the MCP server must attach to the service daemon, not launch its own browser: %s", registration)
+	}
+}

@@ -547,6 +547,14 @@ against different profiles is supported: one `brwd` per profile, one MCP server
 per daemon. Testing several signed-in roles at once wants a second browser
 profile rather than a second transport.
 
+`brwctl setup --transport headless --http-port 17710` adds a headless lane: a
+brw-owned profile in `~/.brw/<browser>-headless` that is never signed in, a
+background `brwd` that keeps its browser running, and an MCP server named
+`brw-headless` that proxies to that daemon with `--upstream-http`, so an agent
+session starts no browser of its own. Agents use it for public pages and the
+signed-in profile for anything behind a login; the skill carries the rule.
+Pick a port that no other profile's daemon uses.
+
 ## Runtime layout
 
 macOS:
