@@ -2348,9 +2348,10 @@ async function handle(message) {
 	  }});
 	  return;
 	}
-	if (message.type === "capture_screenshot") {
+	if (message.type === "capture_screenshot" || message.type === "capture_presentation") {
 	  const tabId = Number(message.params?.tabId || (await activeTabId()));
 	  const params = { ...(message.params?.params || {}), fromSurface: true };
+	  if (message.type === "capture_presentation") params.presentation = true;
 	  const result = await captureScreenshotForTab(tabId, params);
 	  send({ id: message.id, ok: true, result });
 	  return;
@@ -3115,6 +3116,7 @@ async function captureScreenshotJuggled(tabId, params) {
       await chrome.tabs.update(tabId, { active: true });
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    if (params.presentation) return await capturePresentation(tabId, params);
     const captureParams = { ...params };
     const fallbackViewport = captureParams.fallbackViewport || null;
     delete captureParams.fallbackViewport;
@@ -3176,6 +3178,66 @@ async function captureScreenshotJuggled(tabId, params) {
       await chrome.tabs.update(restoreTabId, { active: true }).catch(() => {});
     }
   }
+}
+
+async function capturePresentation(tabId, params) {
+  await attach(tabId, { skipRevive: true });
+  markActing(tabId);
+  const bounded = async (promise, milliseconds, label) => {
+    let timer;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(label + " timed out; unlock and expose the browser window")), milliseconds);
+        })
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+  const evaluate = async (expression, timeout) => {
+    const result = await bounded(sendDebuggerCommand(tabId, "Runtime.evaluate", {
+      expression, awaitPromise: true, returnByValue: true
+    }), timeout, "presentation preparation/restoration");
+    if (result?.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+    return result?.result?.value;
+  };
+  let failure;
+  let result;
+  try {
+    const plan = await evaluate(params.prepare, 18000);
+    if (!plan?.clip) throw new Error("capture preparation returned no clip");
+    if (params.omitBackground) {
+      await sendDebuggerCommand(tabId, "Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
+    }
+    const capture = { format: plan.crop ? "png" : params.format, clip: plan.clip, fromSurface: true, captureBeyondViewport: true };
+    if (params.format !== "png" && !plan.crop) capture.quality = params.quality;
+    result = await bounded(sendDebuggerCommand(tabId, "Page.captureScreenshot", capture), 10000, "presentation compositor capture");
+    if (plan.crop) {
+      const tree = await sendDebuggerCommand(tabId, "Page.getFrameTree", {});
+      const world = await sendDebuggerCommand(tabId, "Page.createIsolatedWorld", { frameId: tree.frameTree.frame.id, worldName: "brw screenshot encoding" });
+      const encoded = await bounded(sendDebuggerCommand(tabId, "Runtime.evaluate", {
+        expression: params.encode + ".apply(null," + JSON.stringify([result.data, plan.crop, params.format, params.quality]) + ")",
+        contextId: world.executionContextId, awaitPromise: true, returnByValue: true
+      }), 10000, "presentation bitmap encoding");
+      if (encoded?.exceptionDetails) throw new Error(encoded.exceptionDetails.exception?.description || encoded.exceptionDetails.text);
+      result.data = encoded.result.value;
+    }
+    result.width = plan.width;
+    result.height = plan.height;
+  } catch (error) {
+    failure = error;
+  } finally {
+    try { await evaluate(params.cleanup, 3000); } catch (error) { failure ||= error; }
+    if (params.omitBackground) {
+      try {
+        await bounded(sendDebuggerCommand(tabId, "Emulation.setDefaultBackgroundColorOverride", {}), 3000, "background restoration");
+      } catch (error) { failure ||= error; }
+    }
+  }
+  if (failure) throw failure;
+  return result;
 }
 
 function isDetachedDebuggerError(error) {

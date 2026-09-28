@@ -121,8 +121,9 @@ var toolRequirements = map[string][]toolRequirement{
 	// pair — brw_downloads would report paths that do not exist here, and
 	// brw_upload_file would hand the provider's Chrome a path naming a file on
 	// its disk rather than the one the caller meant.
-	"brw_downloads":   {needsLocalBrowserHost},
-	"brw_upload_file": {needsLocalBrowserHost},
+	"brw_downloads":       {needsLocalBrowserHost},
+	"brw_upload_file":     {needsLocalBrowserHost},
+	"brw_screenshot_save": {needsLocalBrowserHost},
 	// Held keys need the transport to stamp a modifier mask onto every later
 	// input event, and a policy-checked same-document history change needs the
 	// controller to resolve the target against the live document across calls.

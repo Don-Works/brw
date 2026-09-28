@@ -418,6 +418,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/page/clear_trace", s.clearTrace)
 	mux.HandleFunc("POST /api/browser/group_tabs", s.groupTabs)
 	mux.HandleFunc("POST /api/browser/ungroup_tabs", s.ungroupTabs)
+	mux.HandleFunc("POST /api/visual/screenshot_save", s.screenshotSave)
 	mux.HandleFunc("GET /api/visual/screenshot", s.screenshot)
 	mux.HandleFunc("GET /api/visual/screenshot_element", s.screenshotElement)
 	mux.HandleFunc("POST /api/artifacts/capture", s.captureArtifact)

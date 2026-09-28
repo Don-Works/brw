@@ -1,0 +1,30 @@
+name: screenshot
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screenshot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '22'
+      - run: go mod verify
+      - run: go vet ./...
+      - run: go test -race -p=1 ./internal/browser ./internal/mcp ./internal/http ./internal/httpclient -run 'TestScreenshotSave(Options|PolicyAndAtomicReplacement|MCPReturnsOnlyMetadataAndPreview|HTTPForwardsToBrowserHost|HTTPUsesTheConsentCheckedQueryTab)$|TestScreenshotPreviewMediumAndTransparent$'
+      - run: node extension/tab_resolution_test.mjs && node extension/surface_test.mjs

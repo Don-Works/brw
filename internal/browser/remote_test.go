@@ -35,6 +35,7 @@ func remoteMarked() *Manager {
 // and set_download_path was not, in the first draft of this work, is that
 // nothing enumerated the pair.
 var refusedSurface = map[string]string{
+	"SaveScreenshot":  "local_screenshot_files",
 	"UploadFile":      "local_upload",
 	"Downloads":       "local_downloads",
 	"SetDownloadPath": "local_downloads",
@@ -277,6 +278,10 @@ func TestRefusedVerbsAnswerWithTheNamedCapabilityClass(t *testing.T) {
 		capability string
 		call       func(*Manager) error
 	}{
+		"SaveScreenshot": {"local_screenshot_files", func(m *Manager) error {
+			_, err := m.SaveScreenshot(ctx, ScreenshotSaveOptions{SavePath: "/tmp/capture.png"})
+			return err
+		}},
 		"UploadFile": {"local_upload", func(m *Manager) error {
 			_, err := m.UploadFile(ctx, snapshot.UploadOptions{Ref: "e1", Paths: []string{"/tmp/fixture.txt"}})
 			return err

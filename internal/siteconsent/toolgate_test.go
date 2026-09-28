@@ -24,8 +24,8 @@ var stepRunners = []struct {
 }{
 	{"../browser/manager.go", "executePlanStep"},
 	{"../browser/manager.go", "executeBatchStep"},
-	{"../extensionbridge/bridge.go", "executePlanStep"},
-	{"../extensionbridge/bridge.go", "executeBatchStep"},
+	{"../extensionbridge/bridge_plan.go", "executePlanStep"},
+	{"../extensionbridge/bridge_batch.go", "executeBatchStep"},
 }
 
 // TestEveryPlanAndBatchStepActionIsClassified is the anti-drift guard for the
@@ -59,7 +59,7 @@ func TestEveryPlanAndBatchStepActionIsClassified(t *testing.T) {
 func TestBothBackendsRunTheSameSteps(t *testing.T) {
 	for _, function := range []string{"executePlanStep", "executeBatchStep"} {
 		direct := stepSet(t, "../browser/manager.go", function)
-		bridge := stepSet(t, "../extensionbridge/bridge.go", function)
+		bridge := stepSet(t, map[string]string{"executePlanStep": "../extensionbridge/bridge_plan.go", "executeBatchStep": "../extensionbridge/bridge_batch.go"}[function], function)
 		if strings.Join(direct, ",") != strings.Join(bridge, ",") {
 			t.Errorf("%s: direct CDP runs %v, the extension bridge runs %v", function, direct, bridge)
 		}

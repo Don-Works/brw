@@ -1,0 +1,118 @@
+package extensionbridge
+
+import (
+	"strings"
+	"time"
+
+	"github.com/Don-Works/brw/internal/browser"
+)
+
+func (b *Bridge) finishObservedTrace(before bridgeActionBaseline, message string, result *browser.ActionResult) {
+	if result == nil {
+		return
+	}
+	if before.Started.IsZero() {
+		before.Started = time.Now()
+	}
+	result.DurationMS = time.Since(before.Started).Milliseconds()
+	entry := bridgeTraceEntry(message)
+	// Call-site operands win over parsing the message. Copy the whole struct:
+	// a field-by-field copy silently drops fields added to TraceEntry later.
+	if before.Trace.Action != "" {
+		entry = before.Trace
+	}
+	entry.TabID = result.TabID
+	entry.OK = result.OK
+	entry.DurationMS = result.DurationMS
+	entry.Timestamp = time.Now().Format(time.RFC3339Nano)
+	if result.OK {
+		entry.Error = result.Warning
+	} else {
+		entry.Error = result.Message
+	}
+	b.appendTrace(entry)
+}
+
+func (b *Bridge) appendTrace(entry browser.TraceEntry) {
+	b.traceMu.Lock()
+	b.trace = append(b.trace, entry)
+	if len(b.trace) > 500 {
+		b.trace = b.trace[len(b.trace)-500:]
+	}
+	b.traceMu.Unlock()
+}
+
+// recordObservation drops an entry with no tab id, as the direct-CDP Manager
+// does: an unscoped entry is visible to every caller of the shared daemon.
+func (b *Bridge) recordObservation(tabID, action, text string, start time.Time, err error) {
+	if strings.TrimSpace(tabID) == "" {
+		return
+	}
+	entry := browser.NewObservationTrace(action, text, start, err)
+	entry.TabID = tabID
+	b.appendTrace(entry)
+}
+
+func bridgeTraceEntry(message string) browser.TraceEntry {
+	message = strings.TrimSpace(message)
+	lower := strings.ToLower(message)
+	entry := browser.TraceEntry{Action: "action", Text: message}
+	setRef := func(action, value string) {
+		entry.Action = action
+		if fields := strings.Fields(strings.TrimSpace(value)); len(fields) > 0 {
+			entry.Ref = fields[0]
+			entry.Text = ""
+		}
+	}
+	switch {
+	case strings.HasPrefix(lower, "clicked text "):
+		entry.Action = "click_text"
+		entry.Text = strings.TrimSpace(message[len("clicked text "):])
+	case strings.HasPrefix(lower, "clicked "):
+		setRef("click", message[len("clicked "):])
+	case strings.HasPrefix(lower, "hovered "):
+		setRef("hover", message[len("hovered "):])
+	case strings.HasPrefix(lower, "typed into "):
+		setRef("type", message[len("typed into "):])
+	case strings.HasPrefix(lower, "filled "):
+		setRef("fill", message[len("filled "):])
+	case strings.HasPrefix(lower, "selected "):
+		setRef("select", message[len("selected "):])
+	case strings.HasPrefix(lower, "pressed "):
+		entry.Action = "press"
+		entry.Text = strings.TrimSpace(message[len("pressed "):])
+	case strings.HasPrefix(lower, "scrolled "):
+		entry.Action = "scroll"
+		entry.Text = strings.TrimSpace(message[len("scrolled "):])
+	case strings.HasPrefix(lower, "navigated to "):
+		entry.Action = "navigate_to"
+		entry.Text = strings.TrimSpace(message[len("navigated to "):])
+	case strings.HasPrefix(lower, "navigated "):
+		entry.Action = "navigate"
+		entry.Text = strings.TrimSpace(message[len("navigated "):])
+	case strings.HasPrefix(lower, "uploaded "):
+		entry.Action = "upload_file"
+	case strings.HasPrefix(lower, "dragged "):
+		entry.Action = "drag"
+	case strings.HasPrefix(lower, "mouse_down "):
+		entry.Action = "mouse_down"
+	case strings.HasPrefix(lower, "mouse_up "):
+		entry.Action = "mouse_up"
+	case strings.Contains(lower, "-clicked"):
+		entry.Action = "click_button"
+	}
+	return entry
+}
+
+func (b *Bridge) GetTrace() browser.TraceResult {
+	b.traceMu.Lock()
+	entries := append([]browser.TraceEntry(nil), b.trace...)
+	b.traceMu.Unlock()
+	return browser.TraceResult{Entries: entries, Count: len(entries)}
+}
+
+func (b *Bridge) ClearTrace() {
+	b.traceMu.Lock()
+	b.trace = b.trace[:0]
+	b.traceMu.Unlock()
+}

@@ -71,7 +71,8 @@ var ErrRemoteSessionExpired = errors.New("the plugin-supplied browser session ha
 // Every value here is a REASON, written for whoever reads the error. A reason
 // that only says "not supported" tells an agent nothing about what to do next.
 var RemoteUnavailable = map[string]string{
-	"profile_reuse": "a profile lives on the machine running the browser, and a browser on another machine has none of this machine's profiles, so --user-data-dir, --profile-directory and a workspace profile policy cannot be honoured",
+	"local_screenshot_files": "screenshot destinations name files on this host; an off-host browser has no access to this account or its home-directory policy. Use a browser on this machine to save presentation files",
+	"profile_reuse":          "a profile lives on the machine running the browser, and a browser on another machine has none of this machine's profiles, so --user-data-dir, --profile-directory and a workspace profile policy cannot be honoured",
 	"extension_bridge": "the extension bridge drives the Chrome you are personally signed into on this machine; there is no such Chrome at the other end of a websocket to another machine. " +
 		"The print-renderer screenshot fallback goes with it: it is a bridge-only path that shells out to a local PDF rasteriser",
 	"profile_session": "a recipe that declares it needs the signed-in profile needs a browser a human already signed into on this machine; a browser somewhere else carries a session brw did not create and cannot attest to, so running it anyway would run a login-shaped flow signed out",

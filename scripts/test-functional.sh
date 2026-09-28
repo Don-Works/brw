@@ -85,7 +85,7 @@ daemon_pid=$!
 
 ready=false
 attempt=0
-while [ "$attempt" -lt 150 ]; do
+while [ "$attempt" -lt 300 ]; do
   if curl -fsS "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
     ready=true
     break

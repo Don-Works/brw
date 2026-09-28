@@ -41,6 +41,35 @@ absent means windowed. Read `transport`, not `mode`: `mode` is how this process
 reaches the daemon (`direct`, `upstream-http`, `bridge`, `chrome-opt-in`) and
 says nothing about capabilities.
 
+## Headless or the signed-in browser: you choose
+
+A machine can run a headless profile beside the signed-in ones. `brw_identity`
+reports it as `headless: true` on `direct-cdp`; `brwctl setup --transport
+headless` creates one (MCP server `brw-headless`, workspace
+`brw-<browser>-headless`, user data in `~/.brw/<browser>-headless`). Its daemon
+keeps the browser running between calls, so picking it costs no browser launch,
+and it never opens a window or touches a human's profile.
+
+Pick the lane per request. Do not ask the user when the table decides it:
+
+| The request | Lane |
+|---|---|
+| Read a public page's text | `brw_read_url` on any profile; it opens no tab |
+| Render, screenshot, click through or fill a form on a public site; call a public site's WebMCP tools | headless |
+| Anything behind the user's login, their cookies or their open tabs | the signed-in profile the user means |
+| The user wants to watch, take over, or solve a CAPTCHA | a windowed profile |
+
+- The headless profile is never signed in, and you do not sign it in. A
+  `fallback_hint` of `login_wall` or `auth_required`, or a login form where
+  content was expected, means switch to the signed-in profile.
+- Some sites refuse headless Chrome: a `challenge` hint, a CAPTCHA, or an empty
+  403. Switch to a windowed profile instead of retrying.
+- Headless is `direct-cdp`, so incognito contexts, `brw_cookies`, `brw_state`
+  and download paths work there and tab groups do not.
+- With no headless profile available, use the profile you have and carry on;
+  mention `brwctl setup --transport headless` once in your reply if public work
+  had to open the user's browser.
+
 ## Transport decides capabilities
 
 | | `extension-bridge` | `direct-cdp` | `chrome-opt-in-cdp` | `remote-cdp` | `off-host-cdp` |
@@ -187,9 +216,9 @@ snapshot, read the ref, use it.
 `brwd --mcp` defaults to `--mcp-tools auto`: it advertises 14 tools — `brw_tools`,
 `brw_open`, `brw_navigate_to`, `brw_read`, `brw_read_url`, `brw_snapshot`, `brw_find`,
 `brw_click`, `brw_fill`, `brw_select`, `brw_press`, `brw_wait_for`, `brw_observe`,
-`brw_batch` — and grows as you search. The full surface is 94 tools on a direct-CDP
-daemon (93 on `--remote`, 92 on the Chrome opt-in lane, 89 on a plugin-supplied
-off-host browser, 78 on the extension bridge, each missing only what its lane
+`brw_batch` — and grows as you search. The full surface is 95 tools on a direct-CDP
+daemon (94 on `--remote`, 93 on the Chrome opt-in lane, 89 on a plugin-supplied
+off-host browser, 79 on the extension bridge, each missing only what its lane
 cannot serve); the catalogue is re-sent on every request, so the small default is
 a per-turn saving.
 
@@ -246,6 +275,7 @@ own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` ste
 - `brw_observe({tab_id?})` → `{version,url,title,focus,changed[]}` — the cheap "what changed" check.
 - `brw_react({action:"tree"|"inspect", target?, depth?, tab_id?})` → the page's React component tree read straight from the fiber tree React attaches to the DOM (`action:"tree"`, `depth` to bound it) or the props, state, hooks and owned DOM node of one element or component (`action:"inspect"`, `target` a ref or component name). No DevTools extension needed. `is_react:false` when the page has no React on it, and a production build exposes component names only when it ships display names.
 - `brw_console({tab_id?, only_errors?, level?, pattern?, limit?, clear?})` → `{messages,returned,matched,retained}`. Filtered-out messages stay buffered.
+- `brw_screenshot_save({save_path, tab_id?, format?, quality?, scale?, full_page?, ref?, region?, omit_background?, hide?, settle_ms?, preview?})` → file metadata plus a bounded JPEG preview, never full capture bytes. Absolute path on the browser host, inside home unless explicitly configured otherwise. Default PNG, scale 1; scale 2/3 for retina; preview small (512 px / 40 KiB), medium or none. Exact crops without labels. CDP and extension bridge; no PDF fallback. See `docs/screenshots.md`.
 - `brw_screenshot({tab_id?, annotate?, ref?, region?})` and `brw_screenshot_element({ref, tab_id?})` → an image content block. Visual fallback for canvas/map/chart/image-only widgets, not a verification step. `annotate:true` labels elements with the same refs you click with.
 
 **Acting**
