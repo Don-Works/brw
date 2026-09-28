@@ -276,10 +276,8 @@ func (s *Server) currentPageOrigin(ctx context.Context, tabID string) (string, e
 	if tabID != "" {
 		return "", fmt.Errorf("site consent cannot decide: tab %s is not open, so there is no origin to check this action against", tabID)
 	}
-	for _, tab := range tabs {
-		if tab.Active {
-			return tab.URL, nil
-		}
+	if tab, ok := browser.UntargetedTab(ctx, s.manager, tabs); ok {
+		return tab.URL, nil
 	}
 	return "", errors.New("site consent cannot decide: no active tab, so there is no origin to check this action against")
 }

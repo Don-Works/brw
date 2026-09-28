@@ -207,6 +207,27 @@ type ActiveTabReporter interface {
 	ActiveTabID(context.Context) (string, error)
 }
 
+// UntargetedTab is the tab an untargeted call acts on: the controller's own
+// answer when it reports one, else the tab the browser marks active. Direct CDP
+// never marks a tab active, so the report is the only answer there.
+func UntargetedTab(ctx context.Context, controller any, tabs []Tab) (Tab, bool) {
+	if reporter, ok := controller.(ActiveTabReporter); ok {
+		if id, err := reporter.ActiveTabID(ctx); err == nil {
+			for _, tab := range tabs {
+				if tab.ID == id {
+					return tab, true
+				}
+			}
+		}
+	}
+	for _, tab := range tabs {
+		if tab.Active {
+			return tab, true
+		}
+	}
+	return Tab{}, false
+}
+
 // DocumentIdentity is an opaque, main-frame document identity plus its exact
 // security origin. ID must remain stable across same-document history changes
 // (pushState/replaceState/hash changes) and change whenever Chrome commits a

@@ -64,7 +64,7 @@ func newConsentServer(t *testing.T) (*Server, *siteconsent.Guard) {
 	return server, guard
 }
 
-func newConsentServerWithController(t *testing.T, ctrl *consentController) (*Server, *siteconsent.Guard, *consentController) {
+func newConsentServerWithController[C browser.Controller](t *testing.T, ctrl C) (*Server, *siteconsent.Guard, C) {
 	t.Helper()
 	store, err := siteconsent.NewStoreWithKey(filepath.Join(t.TempDir(), "site-grants.json"), fixtureConsentKey)
 	if err != nil {
@@ -437,5 +437,29 @@ func TestASequenceIsRegatedInsideTheRunnerOverHTTP(t *testing.T) {
 	}
 	if ctrl.ranSteps != 2 {
 		t.Fatalf("the granted batch ran %d steps, want 2", ctrl.ranSteps)
+	}
+}
+
+type directCDPConsentController struct {
+	consentController
+}
+
+func (c *directCDPConsentController) ListTabs(context.Context) ([]browser.Tab, error) {
+	return []browser.Tab{{ID: "other", URL: "https://elsewhere.test/"}, {ID: "tab1", URL: c.tabURL}}, nil
+}
+
+func (c *directCDPConsentController) ActiveTabID(context.Context) (string, error) {
+	return "tab1", nil
+}
+
+func TestConsentActResolvesTheTabTheControllerReportsOverHTTP(t *testing.T) {
+	ctrl := &directCDPConsentController{consentController{tabURL: "https://shop.test/cart"}}
+	server, guard, _ := newConsentServerWithController(t, ctrl)
+	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://shop.test", Scope: siteconsent.ScopeAct, Actor: "fixture-user"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := doJSON(t, server, http.MethodPost, "/api/page/click", `{"ref":"e1"}`)
+	if rec.Code != http.StatusOK || !ctrl.clicked {
+		t.Fatalf("an act grant for the reported tab's origin did not authorise the click: %d %s", rec.Code, rec.Body.String())
 	}
 }
