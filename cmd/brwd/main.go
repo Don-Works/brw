@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -36,6 +37,7 @@ import (
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/recipe"
 	"github.com/Don-Works/brw/internal/sessionstate"
+	"github.com/Don-Works/brw/internal/setup"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
@@ -391,6 +393,9 @@ func main() {
 			// inside it.
 			cfg.UserDataDir = profile.UserDataDir
 			cfg.ProfileDirectory = profile.ProfileDirectory
+		}
+		if cfg.ChromePath == "" && upstreamHTTP == "" && !bridgeMode && !chromeOptIn && cfg.RemoteURL == "" {
+			cfg.ChromePath = profileBrowserExecutable(profile.Kind)
 		}
 		if profile.Headless {
 			headless = true
@@ -1797,4 +1802,18 @@ func isLoopback(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// profileBrowserExecutable is the installed binary for the browser a profile
+// names, or "" to let the launcher pick. A "chromium" profile must not start
+// Google Chrome just because Chrome comes first in the discovery order.
+func profileBrowserExecutable(kind string) string {
+	browser, ok := setup.LookupBrowser(kind)
+	if !ok {
+		return ""
+	}
+	return setup.BrowserExecutable(runtime.GOOS, browser, func(name string) (string, bool) {
+		path, err := exec.LookPath(name)
+		return path, err == nil
+	})
 }
