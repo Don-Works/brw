@@ -50,7 +50,9 @@ options:
                         (default: the first existing one, else Default)
   --user-data-dir PATH  browser user data directory. Only needed for a Chromium build brw has
                         no entry for; with it, --browser accepts any name
-  --transport NAME      bridge or direct-cdp (default: bridge). This is the runtime lane, not an
+  --transport NAME      bridge, direct-cdp or headless (default: bridge). headless is direct CDP on a
+                        brw-owned, never-signed-in headless profile for quick public browsing.
+                        This is the runtime lane, not an
                         entry in the policy's "transports" array; setup writes a policy transport
                         named "local" either way.
   --mcp-client NAME     claude, codex, both, or none (default: claude). A named client is recorded
@@ -147,7 +149,7 @@ func setupCommand(args []string) error {
 	fs.StringVar(&opts.browser, "browser", "", "chrome, chromium, edge, brave, vivaldi, opera, arc, or any Chromium build with --user-data-dir")
 	fs.StringVar(&opts.profileDirectory, "profile-directory", "", `browser profile directory inside the user data dir, for example "Profile 1"`)
 	fs.StringVar(&opts.userDataDir, "user-data-dir", "", "browser user data directory, for a Chromium build brw does not know")
-	fs.StringVar(&opts.transport, "transport", setup.TransportBridge, "bridge or direct-cdp")
+	fs.StringVar(&opts.transport, "transport", setup.TransportBridge, "bridge, direct-cdp or headless")
 	fs.StringVar(&opts.mcpClient, "mcp-client", "", "claude (default), codex, both, or none")
 	fs.StringVar(&opts.policyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path")
 	fs.StringVar(&opts.appDir, "app-dir", defaultAppDir(), "brw app install directory")
@@ -222,11 +224,11 @@ func setupCommand(args []string) error {
 
 func (o *setupOptions) normalise() error {
 	switch o.transport {
-	case setup.TransportBridge, setup.TransportDirectCDP:
+	case setup.TransportBridge, setup.TransportDirectCDP, setup.TransportHeadless:
 	case "":
 		o.transport = setup.TransportBridge
 	default:
-		return fmt.Errorf("--transport must be %s or %s", setup.TransportBridge, setup.TransportDirectCDP)
+		return fmt.Errorf("--transport must be %s, %s or %s", setup.TransportBridge, setup.TransportDirectCDP, setup.TransportHeadless)
 	}
 	switch o.mcpClient {
 	case "claude", "codex", "both", "none":
@@ -544,6 +546,10 @@ func (r *setupRunner) bundleIDs() []string {
 
 func (r *setupRunner) stepAppNap() {
 	r.begin("browser App Nap")
+	if r.opts.transport == setup.TransportHeadless {
+		r.act(statusSkip, "a headless browser has no window for App Nap to throttle")
+		return
+	}
 	if r.opts.goos != "darwin" {
 		r.act(statusSkip, "App Nap is macOS only; nothing to do on %s", r.opts.goos)
 		return
@@ -748,16 +754,23 @@ func (r *setupRunner) serviceWindows() {
 
 func (r *setupRunner) stepMCPClient() {
 	r.begin("MCP client registration")
+	mode := "auto"
+	if r.opts.transport != setup.TransportBridge && !r.opts.noService {
+		mode = "upstream-http"
+	}
 	spec, err := deriveMCPServer(r.policy, mcpConfigRequest{
 		Workspace:  r.opts.workspace,
 		Profile:    r.opts.profileName,
 		Transport:  setup.LocalTransportName,
 		PolicyPath: r.resolvedPath,
-		Mode:       "auto",
+		Mode:       mode,
 	})
 	if err != nil {
 		r.act(statusFail, "derive MCP server config: %v", err)
 		return
+	}
+	if r.opts.transport == setup.TransportHeadless {
+		spec.Name = "brw-headless"
 	}
 	r.act(statusOK, "server %q runs %s", spec.Name, setup.Command(append([]string{spec.Command}, spec.Args...)))
 

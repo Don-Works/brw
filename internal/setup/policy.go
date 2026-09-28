@@ -23,6 +23,9 @@ import (
 const (
 	TransportBridge    = "bridge"
 	TransportDirectCDP = "direct-cdp"
+	// TransportHeadless is direct CDP on a brw-owned headless profile that is
+	// never signed in: the lane for quick public browsing.
+	TransportHeadless = "headless"
 )
 
 // The two browsers with special standing: Chrome is the fallback when nothing
@@ -84,8 +87,11 @@ type Change struct {
 // none. The browser and lane are both in the name because a machine ends up
 // with one profile per (browser, lane) pair and they must not collide.
 func DefaultProfileName(browser, transport string) string {
-	if transport == TransportDirectCDP {
+	switch transport {
+	case TransportDirectCDP:
 		return browser + "-agent"
+	case TransportHeadless:
+		return browser + "-headless"
 	}
 	return browser + "-profile"
 }
@@ -110,6 +116,22 @@ func (r PolicyRequest) userDataDir() string {
 // a second Chrome on a live profile directory corrupts it. A direct-CDP profile
 // gets its own brw-owned directory for the same reason.
 func NewProfile(req PolicyRequest) profilepolicy.Profile {
+	port := req.HTTPPort
+	if port <= 0 {
+		port = DefaultHTTPPort
+	}
+	if req.Transport == TransportHeadless {
+		return profilepolicy.Profile{
+			Name:                   req.Profile,
+			Description:            "brw-owned headless " + BrowserDisplayName(req.Browser) + " for quick public browsing. Never signed in and separate from every human profile.",
+			Kind:                   req.Browser,
+			UserDataDir:            "~/.brw/" + req.Browser + "-headless",
+			DirectCDPAllowed:       true,
+			ExtensionBridgeAllowed: false,
+			Headless:               true,
+			BridgeHTTPAddr:         "127.0.0.1:" + strconv.Itoa(port),
+		}
+	}
 	if req.Transport == TransportDirectCDP {
 		return profilepolicy.Profile{
 			Name:                   req.Profile,
@@ -118,11 +140,8 @@ func NewProfile(req PolicyRequest) profilepolicy.Profile {
 			UserDataDir:            "~/.brw/" + req.Browser + "-agent",
 			DirectCDPAllowed:       true,
 			ExtensionBridgeAllowed: false,
+			BridgeHTTPAddr:         "127.0.0.1:" + strconv.Itoa(port),
 		}
-	}
-	port := req.HTTPPort
-	if port <= 0 {
-		port = DefaultHTTPPort
 	}
 	profileDirectory := req.ProfileDirectory
 	if profileDirectory == "" {
@@ -233,8 +252,11 @@ func Merge(existing profilepolicy.Policy, req PolicyRequest) (profilepolicy.Poli
 }
 
 func laneLabel(transport string) string {
-	if transport == TransportDirectCDP {
+	switch transport {
+	case TransportDirectCDP:
 		return "direct CDP"
+	case TransportHeadless:
+		return "headless direct CDP"
 	}
 	return "extension bridge"
 }

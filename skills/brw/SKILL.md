@@ -41,6 +41,35 @@ absent means windowed. Read `transport`, not `mode`: `mode` is how this process
 reaches the daemon (`direct`, `upstream-http`, `bridge`, `chrome-opt-in`) and
 says nothing about capabilities.
 
+## Headless or the signed-in browser: you choose
+
+A machine can run a headless profile beside the signed-in ones. `brw_identity`
+reports it as `headless: true` on `direct-cdp`; `brwctl setup --transport
+headless` creates one (MCP server `brw-headless`, workspace
+`brw-<browser>-headless`, user data in `~/.brw/<browser>-headless`). Its daemon
+keeps the browser running between calls, so picking it costs no browser launch,
+and it never opens a window or touches a human's profile.
+
+Pick the lane per request. Do not ask the user when the table decides it:
+
+| The request | Lane |
+|---|---|
+| Read a public page's text | `brw_read_url` on any profile; it opens no tab |
+| Render, screenshot, click through or fill a form on a public site; call a public site's WebMCP tools | headless |
+| Anything behind the user's login, their cookies or their open tabs | the signed-in profile the user means |
+| The user wants to watch, take over, or solve a CAPTCHA | a windowed profile |
+
+- The headless profile is never signed in, and you do not sign it in. A
+  `fallback_hint` of `login_wall` or `auth_required`, or a login form where
+  content was expected, means switch to the signed-in profile.
+- Some sites refuse headless Chrome: a `challenge` hint, a CAPTCHA, or an empty
+  403. Switch to a windowed profile instead of retrying.
+- Headless is `direct-cdp`, so incognito contexts, `brw_cookies`, `brw_state`
+  and download paths work there and tab groups do not.
+- With no headless profile available, use the profile you have and carry on;
+  mention `brwctl setup --transport headless` once in your reply if public work
+  had to open the user's browser.
+
 ## Transport decides capabilities
 
 | | `extension-bridge` | `direct-cdp` | `chrome-opt-in-cdp` | `remote-cdp` | `off-host-cdp` |
