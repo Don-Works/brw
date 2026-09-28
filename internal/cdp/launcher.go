@@ -249,7 +249,7 @@ func EnsureSafeUserDataDir(userDataDir string, allowRealProfile bool) error {
 	if !allowRealProfile && isKnownBrowserProfileRoot(userDataDir) {
 		return fmt.Errorf("refusing to launch Chrome against what looks like your real browser profile (%s): a second Chrome on a live profile corrupts it and logs you out of sites like WhatsApp Web. Use a dedicated --user-data-dir, the extension bridge, or --remote to attach; pass --unsafe-real-profile to override", userDataDir)
 	}
-	if runningChromeOwns(userDataDir) {
+	if runningChromeOwns(userDataDir) && !reclaimOrphanedChrome(userDataDir) {
 		return fmt.Errorf("another Chrome is already running on %s (SingletonLock held by a live process); launching a second Chrome on the same profile can corrupt it — close that Chrome, or use --remote to attach to it instead", userDataDir)
 	}
 	return nil
@@ -344,19 +344,76 @@ func pathIdentities(p string) []string {
 // missing lock, a non-symlink, an unparseable target, or a dead pid (stale lock
 // Chrome will clear itself) all return false.
 func runningChromeOwns(dir string) bool {
+	pid, ok := singletonLockPID(dir)
+	return ok && processAlive(pid)
+}
+
+func singletonLockPID(dir string) (int, bool) {
 	target, err := os.Readlink(filepath.Join(dir, "SingletonLock"))
 	if err != nil {
-		return false
+		return 0, false
 	}
 	i := strings.LastIndex(target, "-")
 	if i < 0 || i+1 >= len(target) {
-		return false
+		return 0, false
 	}
 	pid, err := strconv.Atoi(target[i+1:])
 	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
+}
+
+// reclaimOrphanedChrome stops the Chrome holding dir's lock when it is one a
+// dead brwd launched: re-parented to init and started with remote debugging on
+// exactly this user data dir. A daemon killed with SIGKILL cannot close its
+// browser, and without this the profile stays locked until a human kills it.
+func reclaimOrphanedChrome(dir string) bool {
+	pid, ok := singletonLockPID(dir)
+	if !ok {
 		return false
 	}
-	return processAlive(pid)
+	out, err := exec.Command("ps", "-ww", "-o", "ppid=,args=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return false
+	}
+	line := strings.TrimSpace(string(out))
+	ppidText, cmdline, found := strings.Cut(line, " ")
+	if !found {
+		return false
+	}
+	ppid, err := strconv.Atoi(ppidText)
+	if err != nil || !isOrphanedAutomationChrome(ppid, strings.TrimSpace(cmdline), dir) {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "reclaiming %s: stopping orphaned Chrome pid %d left by a daemon that was killed\n", dir, pid)
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
+		_ = proc.Signal(sig)
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if !processAlive(pid) {
+				return true
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	return !processAlive(pid)
+}
+
+func isOrphanedAutomationChrome(ppid int, cmdline, dir string) bool {
+	if ppid != 1 {
+		return false
+	}
+	padded := " " + cmdline + " "
+	if !strings.Contains(padded, " --remote-debugging-port=") && !strings.Contains(padded, " --remote-debugging-pipe ") {
+		return false
+	}
+	want := filepath.Clean(dir)
+	return strings.Contains(padded, " --user-data-dir="+want+" ") || strings.Contains(padded, " --user-data-dir "+want+" ")
 }
 
 func processAlive(pid int) bool {
