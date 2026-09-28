@@ -397,7 +397,7 @@ func main() {
 		if cfg.ChromePath == "" && upstreamHTTP == "" && !bridgeMode && !chromeOptIn && cfg.RemoteURL == "" {
 			cfg.ChromePath = profileBrowserExecutable(profile.Kind)
 		}
-		if profile.Headless {
+		if profile.Headless && upstreamHTTP == "" {
 			headless = true
 		}
 		mode := daemonMode(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn, useBrowserProvider)
