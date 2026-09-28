@@ -251,8 +251,8 @@ func TestLaunchArgsHeadlessAndExtensions(t *testing.T) {
 				t.Errorf("last arg = %q, want about:blank", got)
 			}
 			if tt.name == "operator args come after ours so they win" {
-				if !strings.Contains(joined, "--headless=new --window-size=1280,900") {
-					t.Errorf("operator args must follow brw's own\ngot: %s", joined)
+				if strings.LastIndex(joined, "--window-size=") != strings.Index(joined, "--window-size=1280,900") {
+					t.Errorf("the operator's --window-size must be the last one so it wins\ngot: %s", joined)
 				}
 			}
 		})

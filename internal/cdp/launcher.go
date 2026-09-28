@@ -118,7 +118,8 @@ func launchArgs(cfg LaunchConfig, port int) []string {
 		"--disable-renderer-backgrounding",
 	}
 	if cfg.Headless {
-		args = append(args, "--headless=new")
+		// headless=new opens an 800x600 window, which sites lay out as a tablet.
+		args = append(args, "--headless=new", "--window-size=1440,900")
 	}
 	if cfg.ProfileDirectory != "" {
 		args = append(args, "--profile-directory="+cfg.ProfileDirectory)
