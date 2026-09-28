@@ -771,3 +771,27 @@ func TestASequenceIsRegatedInsideTheRunner(t *testing.T) {
 		t.Fatalf("the granted batch ran %d steps, want 2", ctrl.ranSteps)
 	}
 }
+
+type directCDPConsentController struct {
+	consentController
+}
+
+func (c *directCDPConsentController) ListTabs(context.Context) ([]browser.Tab, error) {
+	return []browser.Tab{{ID: "other", URL: "https://elsewhere.test/"}, {ID: "tab1", URL: c.tabURL}}, nil
+}
+
+func (c *directCDPConsentController) ActiveTabID(context.Context) (string, error) {
+	return "tab1", nil
+}
+
+func TestConsentActResolvesTheTabTheControllerReports(t *testing.T) {
+	ctrl := &directCDPConsentController{consentController{tabURL: "https://shop.test/cart"}}
+	srv, guard := newConsentServer(t, ctrl, siteconsent.AdminConfig{})
+	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://shop.test", Scope: siteconsent.ScopeAct, Actor: "fixture-user"}); err != nil {
+		t.Fatal(err)
+	}
+	response := callConsentTool(t, srv, "brw_click", map[string]any{"ref": "e1"})
+	if strings.Contains(response, `"isError":true`) || !ctrl.clicked {
+		t.Fatalf("an act grant for the reported tab's origin did not authorise the click: %s", response)
+	}
+}

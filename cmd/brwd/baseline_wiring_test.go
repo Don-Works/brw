@@ -45,6 +45,10 @@ func (d *wiredDaemon) ListTabs(context.Context) ([]browser.Tab, error) {
 	return []browser.Tab{{ID: "tab-1", URL: d.pageURL, Active: true}}, nil
 }
 
+func (d *wiredDaemon) ActiveTabID(context.Context) (string, error) {
+	return "tab-1", nil
+}
+
 func (d *wiredDaemon) Screenshot(context.Context) (browser.Screenshot, error) {
 	img := image.NewRGBA(image.Rect(0, 0, 8, 4))
 	for y := 0; y < 4; y++ {
