@@ -202,14 +202,8 @@ func TestBridgeStatusReportsIdentity(t *testing.T) {
 }
 
 func TestBatchAndPlanUseFastPrimitives(t *testing.T) {
-	srcPath := filepath.Join("bridge.go")
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, srcPath, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, funcName := range []string{"executeBatchStep", "executePlanStep"} {
-		fn := findFunc(file, funcName)
+		fn := findPackageFunc(t, ".", funcName)
 		if fn == nil {
 			t.Fatalf("missing %s", funcName)
 		}
@@ -243,12 +237,7 @@ func TestBatchAndPlanUseFastPrimitives(t *testing.T) {
 // whoever added an action to one remembered the other.
 func stepActionCases(t *testing.T, path, funcName string) map[string]bool {
 	t.Helper()
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fn := findFunc(file, funcName)
+	fn := findPackageFunc(t, path, funcName)
 	if fn == nil {
 		t.Fatalf("missing %s in %s", funcName, path)
 	}
@@ -290,8 +279,8 @@ func TestBatchAndPlanBackendsImplementTheSameActions(t *testing.T) {
 		{runner: "plan", funcName: "executePlanStep", required: []string{"navigate_to", "click_text", "find_act"}},
 	} {
 		t.Run(tc.runner, func(t *testing.T) {
-			direct := stepActionCases(t, filepath.Join("..", "browser", "manager.go"), tc.funcName)
-			bridge := stepActionCases(t, "bridge.go", tc.funcName)
+			direct := stepActionCases(t, filepath.Join("..", "browser"), tc.funcName)
+			bridge := stepActionCases(t, ".", tc.funcName)
 			if !reflect.DeepEqual(direct, bridge) {
 				t.Fatalf("%s action parity drift: direct-CDP=%v extension=%v", tc.runner, direct, bridge)
 			}
@@ -701,12 +690,7 @@ func TestContextTabIDPrefersExplicitContextTab(t *testing.T) {
 func TestBridgeConditionSupportsCommitted(t *testing.T) {
 	// The committed condition (used by Open for non-blank URLs) must be present
 	// in the shared in-page wait script so it is not silently ignored.
-	srcPath := filepath.Join("bridge.go")
-	data, err := os.ReadFile(srcPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(data)
+	src := packageSource(t, ".")
 	if !strings.Contains(snapshot.WaitConditionScript, `condition==='committed'`) {
 		t.Fatal("shared wait script must handle the 'committed' condition")
 	}
@@ -851,94 +835,9 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatalf("parse manifest: %v", err)
 	}
-	// The manifest VERSION is the extension's release marker (0.3.10 added a
-	// precise vertical-tab/grouping capability fallback; 0.4.0 adds frozen/
-	// discarded tab revival before every drive, opts brw-opened tabs out of
-	// Memory Saver discard, reports discarded/frozen in tab summaries, and
-	// serializes all activate→restore juggles on one queue; 0.4.1 recovers from
-	// a zero-window browser by creating the window tabs.create refuses to; 0.4.2
-	// hardens the offscreen keepalive — genuine silent-audio playback plus a
-	// long-lived worker port — so the MV3 service worker stops idling out and
-	// severing the bridge with StatusGoingAway; 0.4.3 adds the toolbar status
-	// popup, coloured badge modes (green idle / green pulse used / amber flash
-	// connecting / red off), and a debounced disconnect desktop notification;
-	// 0.4.4 keeps the badge honest: per-request CDP faults no longer paint red
-	// while the socket is up, and chrome-extension pages don't light "used";
-	// 0.4.5 distills the popup (progressive disclosure), one lexicon
-	// (Idle / Agent active / Reconnecting / Down), magenta agent-active badge,
-	// verified reconnect, and state-dependent primary actions; 0.4.6 stops
-	// foreground resolution from ever landing on a tab Chrome refuses to let brw
-	// drive — a foreign extension's page (a password manager popping its vault
-	// out into a focused window), chrome://, devtools:// or the Web Store — and
-	// reports the reason on get_active_tab_id so the daemon does not fall back
-	// onto that same tab from its cache); 0.4.7 adds the resize_window handler
-	// behind brw_window_resize, moving the real OS window via chrome.windows
-	// rather than overriding renderer viewport metrics; 0.4.8 stops a size-only
-	// resize from leaving a minimized or maximized window in the normal state it
-	// was temporarily put into to apply the size; 0.4.9 keeps Page attached while
-	// closing a tab, 0.4.10 uses Page.close so an explicit close can accept a
-	// beforeunload dialog instead of leaving chrome.tabs.remove wedged, and 0.4.11
-	// waits for the closing target to disappear before acknowledging close_tab;
-	// 0.4.12 closes without reviving frozen/discarded tabs, requires Page events,
-	// handles detach races, and fails closed on a pinned non-drivable target;
-	// 0.4.13 exposes exact main-document identity plus a monotonic navigation
-	// epoch so recipe artifact capture cannot cross a document boundary; 0.4.14
-	// reports the extension-owned tab pin in each hello so reconnect can recover
-	// a lost tab_removed frame without reusing a human foreground tab; 0.4.15
-	// gates every connection on a stored affirmative consent grant, so a fresh
-	// install holds at consent_required until the user enables browser control;
-	// 0.4.16 marks a tab's cached snapshot dirty on input/change as well as on
-	// DOM mutation, so a fill, a select, a ticked box or the human typing — each
-	// of which writes a DOM property and mutates no node — is no longer answered
-	// from the pre-edit snapshot; 0.5.0 adds two capability groups. Dialogs:
-	// arm_dialog pre-declares the answer to the next JS dialog(s) on a tab and
-	// get_dialogs reports the ones already answered, so an agent can decide a
-	// confirm()/prompt() outcome without the renderer ever blocking on a round
-	// trip, and can see that a dialog happened at all. Containment:
-	// set_containment enables Fetch interception plus the in-page
-	// WebSocket/EventSource/sendBeacon/WebRTC guard so --allowed-domains confines
-	// subresources rather than only navigation, and get_blocked_requests reports
-	// what was refused so a contained page is explainable instead of mysteriously
-	// half-rendered. 0.6.0 states the bridge endpoint it is actually using, and
-	// which config layer supplied it, in every hello — including a hello that is
-	// about to be refused, which is what a bridge config pointing at a dead port
-	// now produces. Nothing outside the browser can read chrome.storage.local, so
-	// without this the endpoint in use is unknowable and `brwctl doctor` can only
-	// read a packaged file that may be overridden.
-	// It is DECOUPLED from the wire PROTOCOL_VERSION below: the manifest moves
-	// with every feature release, while PROTOCOL_VERSION only moves on a breaking
-	// bridge-handshake change. 0.4.0-0.7.0 add fields, message types and
-	// in-extension behaviour only. A new message type is additive in both
-	// directions: an older extension answers resize_window with "unknown message
-	// type", which the daemon reports as an upgrade note rather than a failure.
-	// So the protocol stays 0.2.0 (the daemon still accepts it).
-	//
-	// 0.7.0 is the options and popup rebuild. It changes no message and no
-	// stored shape, but package-web-store.sh names the ZIP after this version
-	// and the Web Store refuses an update that does not raise it — so two
-	// different builds sharing 0.6.0 is the defect the bump prevents.
-	// 0.7.1 adds arm_inline_document / disarm_inline_document and the
-	// inlineDocument open_tab flag, which render a download-shaped text
-	// response (an attachment-flagged JSON body, a CSV) as the page instead of
-	// leaving an empty tab. Additive: the daemon ignores an older extension's
-	// "unknown message type" and navigates exactly as before.
-	// 0.7.2 holds the badge on Refused while the daemon closes each new socket
-	// with 1013 or 1008, instead of cycling Idle/Down/Reconnecting, and scopes the
-	// inline-document pause to the destination origin named by arm_inline_document's
-	// new url param (an older daemon sends none and keeps the old pattern).
-	// 0.7.3 reloads itself when the payload on disk is a different build from the
-	// one running, once no command is in flight and the agent is idle.
-	// 0.7.4 adds navigation_outcome: the status, auth challenge and net error of
-	// the last navigation the daemon armed. Additive: the daemon falls back to the
-	// committed frame URL when an older extension answers "unknown message type".
-	// 0.7.5 keeps watching an accepted close_tab for removal past the 2s close
-	// budget, so a tab Chrome closes late is reported closed, not failed.
-	// 0.7.6 closes a tab whose navigation is still waiting for its server
-	// through the tabs API, since Page.enable is never answered there.
-	// 0.7.7 adds set_webmcp and open_tab's webmcp param, which arm the WebMCP
-	// shim at document-start, and re-arms containment and the shim on every
-	// fresh debugger attach so an idle detach no longer drops either.
-	const wantManifest = "0.7.7"
+	// The manifest version moves with every extension release; PROTOCOL_VERSION
+	// below moves only on a breaking handshake change. Release notes: CHANGELOG.md.
+	const wantManifest = "0.7.8"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}
@@ -964,6 +863,49 @@ func waitUntil(t *testing.T, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("condition not met within timeout")
+}
+
+func packageFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, p := range paths {
+		if !strings.HasSuffix(p, "_test.go") {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func findPackageFunc(t *testing.T, dir, name string) *ast.FuncDecl {
+	t.Helper()
+	fset := token.NewFileSet()
+	for _, p := range packageFiles(t, dir) {
+		file, err := parser.ParseFile(fset, p, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fn := findFunc(file, name); fn != nil {
+			return fn
+		}
+	}
+	return nil
+}
+
+func packageSource(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, p := range packageFiles(t, dir) {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(data)
+	}
+	return b.String()
 }
 
 func findFunc(file *ast.File, name string) *ast.FuncDecl {
