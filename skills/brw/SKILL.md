@@ -64,6 +64,9 @@ Pick the lane per request. Do not ask the user when the table decides it:
   content was expected, means switch to the signed-in profile.
 - Some sites refuse headless Chrome: a `challenge` hint, a CAPTCHA, or an empty
   403. Switch to a windowed profile instead of retrying.
+- The signed-in lanes pace actions like a person by default: a gap of up to
+  2.5s between actions and typing at key speed. Batch the flow rather than
+  expecting instant steps; `brw_identity` does not change because of it.
 - Headless is `direct-cdp`, so incognito contexts, `brw_cookies`, `brw_state`
   and download paths work there and tab groups do not.
 - With no headless profile available, use the profile you have and carry on;

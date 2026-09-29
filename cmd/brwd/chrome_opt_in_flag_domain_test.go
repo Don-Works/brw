@@ -41,6 +41,7 @@ var notAboutWhichBrowser = map[string]string{
 	"blocked-domains":             "navigation guardrail",
 	"allowed-domains":             "navigation guardrail",
 	"enable-webmcp":               "page-side runtime brw installs after attaching",
+	"pacing":                      "how fast brw issues its own actions; it decides nothing about which browser is driven",
 	"usage-log":                   "usage ledger path",
 	"usage-log-max-mb":            "usage ledger rotation",
 	"usage-log-backups":           "usage ledger retention",

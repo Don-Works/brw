@@ -69,6 +69,11 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 		sr.Error = err.Error()
 		return sr, retargetTo
 	}
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		sr.OK = false
+		sr.Error = err.Error()
+		return sr, retargetTo
+	}
 
 	if step.ExpectRef != "" {
 		findResult, err := b.Find(ctx, snapshot.FindOptions{Query: step.ExpectRef, Limit: 1})

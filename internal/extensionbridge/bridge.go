@@ -40,6 +40,7 @@ type Bridge struct {
 	allowedExtensionID string
 	identity           brwidentity.Identity
 	navPolicy          *navpolicy.Policy
+	pacer              *browser.Pacer
 	// consent backs the options page's /consent surface. Nil when site consent is off.
 	consent *siteconsent.Guard
 	// containment records tabs that already have subresource containment armed.
@@ -609,3 +610,9 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
+
+// SetPacing makes the bridge space and type agent actions like a person.
+func (b *Bridge) SetPacing(mode browser.PacingMode) { b.pacer = browser.NewPacer(mode) }
+
+// Pacing reports the pacing mode in force.
+func (b *Bridge) Pacing() browser.PacingMode { return b.pacer.Mode() }

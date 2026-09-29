@@ -129,6 +129,9 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 }
 
 func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return browser.ActionResult{}, err
+	}
 	if err := browser.GuardCrossOriginRefs("click", browser.BridgeCrossOriginRemedy, ref); err != nil {
 		return browser.ActionResult{}, err
 	}
@@ -143,6 +146,9 @@ func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, e
 }
 
 func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) (browser.ActionResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return browser.ActionResult{}, err
+	}
 	before := b.captureSemanticState(ctx)
 	before.Trace = browser.TraceEntry{Action: "click_text", Text: opts.Text}
 	beforeTabs := b.captureTabIDs(ctx)
@@ -184,6 +190,9 @@ func (b *Bridge) clickTextRaw(ctx context.Context, opts snapshot.ClickTextOption
 }
 
 func (b *Bridge) Hover(ctx context.Context, ref string) (browser.ActionResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return browser.ActionResult{}, err
+	}
 	if err := browser.GuardCrossOriginRefs("hover", browser.BridgeCrossOriginRemedy, ref); err != nil {
 		return browser.ActionResult{}, err
 	}
@@ -352,6 +361,9 @@ func (b *Bridge) activate(ctx context.Context, ref string) error {
 }
 
 func (b *Bridge) Type(ctx context.Context, ref, text string) (browser.ActionResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return browser.ActionResult{}, err
+	}
 	if err := browser.GuardCrossOriginRefs("type", browser.BridgeCrossOriginRemedy, ref); err != nil {
 		return browser.ActionResult{}, err
 	}
@@ -368,8 +380,10 @@ func (b *Bridge) typeRef(ctx context.Context, ref, text string) error {
 	if err := b.focus(ctx, ref); err != nil {
 		return err
 	}
-	_, err := b.cdp(ctx, "", "Input.insertText", map[string]any{"text": text})
-	return err
+	return b.pacer.Type(ctx, text, func(chunk string) error {
+		_, err := b.cdp(ctx, "", "Input.insertText", map[string]any{"text": chunk})
+		return err
+	})
 }
 
 // Focus focuses one element and reports the page afterwards.
@@ -398,6 +412,9 @@ func (b *Bridge) FocusRef(ctx context.Context, ref string) error {
 }
 
 func (b *Bridge) Fill(ctx context.Context, opts snapshot.FillOptions) (browser.ActionResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return browser.ActionResult{}, err
+	}
 	if err := browser.GuardCrossOriginRefs("fill", browser.BridgeCrossOriginRemedy, opts.Ref); err != nil {
 		return browser.ActionResult{}, err
 	}
@@ -454,6 +471,9 @@ func (b *Bridge) resolveFillRef(ctx context.Context, opts snapshot.FillOptions) 
 }
 
 func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (browser.ActionResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return browser.ActionResult{}, err
+	}
 	if err := browser.GuardCrossOriginRefs("upload file", browser.BridgeCrossOriginRemedy, opts.Ref, opts.ClickRef); err != nil {
 		return browser.ActionResult{}, err
 	}
@@ -637,6 +657,9 @@ func (b *Bridge) uploadViaFileChooser(ctx context.Context, opts snapshot.UploadO
 }
 
 func (b *Bridge) Select(ctx context.Context, ref, value string) (browser.ActionResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return browser.ActionResult{}, err
+	}
 	if err := browser.GuardCrossOriginRefs("select", browser.BridgeCrossOriginRemedy, ref); err != nil {
 		return browser.ActionResult{}, err
 	}
@@ -723,6 +746,9 @@ func (b *Bridge) findOptionCandidate(ctx context.Context, value string) (snapsho
 }
 
 func (b *Bridge) Press(ctx context.Context, key string) (browser.ActionResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return browser.ActionResult{}, err
+	}
 	before := b.captureSemanticState(ctx)
 	before.Trace = browser.TraceEntry{Action: "press", Value: key}
 	if err := b.pressKey(ctx, key); err != nil {
@@ -803,6 +829,9 @@ func (b *Bridge) pressKey(ctx context.Context, key string) error {
 }
 
 func (b *Bridge) Scroll(ctx context.Context, direction string) (browser.ActionResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return browser.ActionResult{}, err
+	}
 	before := b.captureSemanticState(ctx)
 	before.Trace = browser.TraceEntry{Action: "scroll", Value: direction}
 	message, err := b.scrollDirection(ctx, direction)
@@ -865,6 +894,9 @@ func (b *Bridge) focus(ctx context.Context, ref string) error {
 }
 
 func (b *Bridge) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return snapshot.ClickXYResult{}, err
+	}
 	var result snapshot.ClickXYResult
 	xJSON, _ := json.Marshal(x)
 	yJSON, _ := json.Marshal(y)
