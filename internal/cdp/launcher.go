@@ -324,6 +324,49 @@ func isKnownBrowserProfileRoot(dir string) bool {
 	return false
 }
 
+// IsInsideRealBrowserProfile reports whether dir is one of the user's real
+// browser user-data-dirs or any path inside one. It resolves symlinks through
+// the nearest existing ancestor, so a link to the real profile, or a not yet
+// created child of one, is still caught.
+func IsInsideRealBrowserProfile(dir string) bool {
+	if strings.TrimSpace(dir) == "" {
+		return false
+	}
+	candidates := append(pathIdentities(dir), resolvedThroughAncestor(filepath.Clean(dir)))
+	for _, root := range knownBrowserProfileRoots() {
+		for _, rootID := range pathIdentities(root) {
+			for _, cand := range candidates {
+				if pathIsWithin(cand, rootID) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func pathIsWithin(path, root string) bool {
+	p, r := strings.ToLower(path), strings.ToLower(root)
+	return p == r || strings.HasPrefix(p, strings.TrimSuffix(r, string(filepath.Separator))+string(filepath.Separator))
+}
+
+func resolvedThroughAncestor(p string) string {
+	var rest []string
+	for cur := p; ; cur = filepath.Dir(cur) {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			for i := len(rest) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, rest[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p
+		}
+		rest = append(rest, filepath.Base(cur))
+	}
+}
+
 // pathIdentities returns the cleaned path plus, when it exists, its
 // symlink-resolved form, so a symlink pointing at the real profile cannot slip
 // past an exact-string comparison.

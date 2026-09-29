@@ -170,6 +170,21 @@ func (c *Controller) UseOwnerUnlessSet(raw string) {
 	c.ownerID = hashOwner(raw)
 }
 
+// UseOwner makes raw this controller's lease owner even when BRW_OWNER_ID names
+// another, for a caller that is its own session rather than part of the agent
+// session that launched it.
+func (c *Controller) UseOwner(raw string) {
+	if raw = strings.TrimSpace(raw); raw != "" {
+		c.ownerID = hashOwner(raw)
+	}
+}
+
+// ReleaseSession drops every tab lease this controller's owner holds on the
+// daemon, and with closeTabs also closes the tabs the daemon opened for it.
+func (c *Controller) ReleaseSession(ctx context.Context, closeTabs bool) error {
+	return c.post(ctx, "/api/session/release", map[string]bool{"close_tabs": closeTabs}, nil)
+}
+
 // SessionID is the non-secret correlation id forwarded to the long-lived brw
 // daemon. It lets usage logs group calls made by one disposable MCP proxy
 // without recording prompts, arguments, URLs, or browser content.
