@@ -126,6 +126,23 @@ type options struct {
 	clear      bool
 	scroll     bool
 	scope      string
+
+	clickCount int
+	button     string
+	level      string
+	pattern    string
+	onlyErrors bool
+	width      int
+	height     int
+	kind       string
+	filter     string
+	origin     string
+	domain     string
+	cookiePath string
+	secure     bool
+	httpOnly   bool
+	sameSite   string
+	timezone   string
 }
 
 // Run executes one brw invocation and returns its process exit code. args

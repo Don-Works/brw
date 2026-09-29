@@ -108,6 +108,11 @@ var usageOperations = map[string]string{
 	"/api/consent/revoke":            "brw_consent_revoke",
 	"/api/plugins":                   "brw_plugins",
 	"/api/plugins/revoke":            "brw_plugin_revoke",
+	"/api/roster/board":              "brw_roster_board",
+	"/api/roster/profiles":           "brw_roster_create",
+	"/api/roster/copy":               "brw_roster_copy",
+	"/api/roster/pin":                "brw_roster_pin",
+	"/api/roster/open":               "brw_roster_open",
 }
 
 type usageResponseWriter struct {

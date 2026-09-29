@@ -107,6 +107,7 @@ func TestEveryDestinationArgumentIsChecked(t *testing.T) {
 		{name: "cookies by domain", tool: "brw_cookies", args: map[string]any{"action": "list", "domain": "ungranted.test"}, want: ScopeRead},
 		{name: "cookies by url", tool: "brw_cookies", args: map[string]any{"action": "list", "url": "https://ungranted.test/x"}, want: ScopeRead},
 		{name: "cookies that write", tool: "brw_cookies", args: map[string]any{"action": "set", "domain": "ungranted.test", "name": "a", "value": "b"}, want: ScopeAct},
+		{name: "cookies that write a domain cookie", tool: "brw_cookies", args: map[string]any{"action": "set", "domain": ".ungranted.test", "name": "a", "value": "b"}, want: ScopeAct},
 		{name: "extra headers by origins", tool: "brw_set_extra_headers", args: map[string]any{"origins": []any{map[string]any{"origin": "https://ungranted.test", "headers": map[string]any{"X-Test": "1"}}}}, want: ScopeAct},
 		{name: "replay a GET", tool: "brw_replay_request", args: map[string]any{"method": "GET", "url": "https://ungranted.test/x"}, want: ScopeRead},
 		{name: "replay a POST", tool: "brw_replay_request", args: map[string]any{"method": "POST", "url": "https://ungranted.test/x"}, want: ScopeAct},

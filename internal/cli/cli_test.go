@@ -535,7 +535,8 @@ func TestWaitKeepsClientHeadroomOverTheDaemonTimeout(t *testing.T) {
 		t.Fatalf("body = %q, want the timeout forwarded to the daemon", (*calls)[0].body)
 	}
 	for _, v := range verbs() {
-		if v.serverTimeout != (v.name == "wait") {
+		forwards := v.name == "wait" || strings.HasPrefix(v.name, "assert ")
+		if v.serverTimeout != forwards {
 			t.Errorf("verb %q serverTimeout=%v; only a verb that forwards timeout_ms may claim it", v.name, v.serverTimeout)
 		}
 	}

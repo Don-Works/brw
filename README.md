@@ -204,12 +204,23 @@ brw find "sign in"                 # @e17  button  Sign in
 brw click @e17
 brw fill @e18 someone@example.test
 brw press Enter
+brw get text @e17
+brw goto https://example.com/next
+brw back
+brw eval 'document.title'
+brw console --errors
+brw cookies                        # names, domains and paths; values only with --json
+brw locale en-GB Europe/London
+brw batch '[{"action":"click","ref":"e1"},{"action":"press","key":"Enter"}]'
 brw read                           # the page as text
 brw snapshot --limit 20            # refs for the whole page
 brw screenshot --out shot.png
 brw tabs
+brw tab close 1234
 brw artifact read art_01H...
 ```
+
+`brw help` lists every verb.
 
 `--json` prints the daemon's response envelope verbatim, for piping into `jq`.
 The daemon comes from the profile policy, the same discovery `brwctl daemons`
@@ -741,6 +752,30 @@ signed-in session. To watch a remote browser, forward the port
   counts it under that same class, so an agent never has to match on prose.
   Reads continue — snapshots, `brw_read`, `brw_get`, `brw_frame` and
   `brw_assert` — so the agent can see what the human did before it resumes.
+
+## Profile roster
+
+`http://127.0.0.1:<port>/profiles` on any `brwd` is a loopback-only page listing
+every profile in the policy: its daemon, its transport, and, for each brw-owned
+profile, the cookie names it holds for Google and for every site pinned on it
+(`brwctl profiles pin`). `brwctl profiles` is the same thing from a shell.
+
+```sh
+brwctl profiles list
+brwctl profiles create bookkeeper --account agent@example.test
+brwctl profiles copy --from chromium-agent --to bookkeeper --domain example.com
+brwctl profiles gui                # prints the roster page's URL
+```
+
+`create` adds a direct-CDP profile with its own directory under
+`~/.brw/profiles/` and its own control port, and prints the `brwd` and
+`brwctl setup` commands that start it; it installs nothing itself. `copy`
+(`move` also deletes from the source) moves one site's cookies between two
+brw-owned profiles through each profile's own daemon, so that daemon's site
+consent decides every read and write. It refuses unless both ends are
+`direct-cdp` daemons on this machine outside every daily browser profile
+directory; see [docs/auth-model.md](docs/auth-model.md#copying-a-session-between-brw-owned-profiles).
+The extension can add a Profiles link to its toolbar menu: Options → Advanced.
 
 ## Safety
 

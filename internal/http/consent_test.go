@@ -237,6 +237,15 @@ func TestEveryAPIRouteIsClassifiedForConsent(t *testing.T) {
 		"brw_consent_revoke": "revokes this profile's own grants; it touches no site",
 		"brw_plugins":        "reports which plugins are loaded and what capabilities they hold; it names no origin",
 		"brw_plugin_revoke":  "withdraws a capability from a loaded plugin, which narrows brw rather than reaching a site",
+		// The roster reaches a browser only as an HTTP client of that profile's
+		// own daemon, whose middleware classifies the call as brw_cookies or
+		// brw_open and gates it there. TestRosterCopyIsGatedByTheDestinationsConsent
+		// drives that path.
+		"brw_roster_board":  "lists cookie names through each profile's own daemon, whose brw_cookies gate decides every read",
+		"brw_roster_create": "writes a new profile to the policy file and creates its directory; it touches no site",
+		"brw_roster_copy":   "reads and writes cookies only through the source and destination daemons, whose brw_cookies gates decide every call",
+		"brw_roster_pin":    "records an expected login in the policy file; it touches no site",
+		"brw_roster_open":   "opens a URL through the named profile's own daemon, whose brw_open gate and navigation policy decide it",
 	}
 	for route, operation := range usageOperations {
 		_, gated := siteconsent.ToolRules[operation]

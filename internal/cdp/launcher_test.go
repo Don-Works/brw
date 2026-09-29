@@ -196,6 +196,44 @@ func TestEnsureSafeUserDataDirRefusesRealProfileRoot(t *testing.T) {
 	}
 }
 
+func TestIsInsideRealBrowserProfile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	root := filepath.Join(home, "Library", "Application Support", "Google", "Chrome")
+	if err := os.MkdirAll(filepath.Join(root, "Default"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "decoy")
+	if err := os.Symlink(root, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	for _, dir := range []string{
+		root,
+		strings.ToUpper(root),
+		filepath.Join(root, "Default"),
+		filepath.Join(root, "Not Yet Created", "Deeper"),
+		link,
+		filepath.Join(link, "Default"),
+		filepath.Join(link, "missing"),
+		filepath.Join(home, ".config", "google-chrome", "Profile 1"),
+	} {
+		if !IsInsideRealBrowserProfile(dir) {
+			t.Errorf("IsInsideRealBrowserProfile(%q) = false, want true", dir)
+		}
+	}
+	for _, dir := range []string{
+		"",
+		filepath.Join(home, ".brw", "profiles", "bookkeeper"),
+		filepath.Join(home, "Library", "Application Support", "Google", "Chrome-agent"),
+		t.TempDir(),
+	} {
+		if IsInsideRealBrowserProfile(dir) {
+			t.Errorf("IsInsideRealBrowserProfile(%q) = true, want false", dir)
+		}
+	}
+}
+
 func TestLaunchArgsHeadlessAndExtensions(t *testing.T) {
 	base := LaunchConfig{UserDataDir: "/tmp/brw-agent", Port: 9333}
 	tests := []struct {

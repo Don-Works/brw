@@ -69,6 +69,11 @@ Pick the lane per request. Do not ask the user when the table decides it:
 - With no headless profile available, use the profile you have and carry on;
   mention `brwctl setup --transport headless` once in your reply if public work
   had to open the user's browser.
+- A separate agent identity with its own logins is a brw-owned direct-CDP
+  profile: `brwctl profiles create <name>` makes one, and `brwctl profiles copy
+  --from A --to B --domain example.com` copies one site's cookies between two
+  such profiles. It refuses the user's own browser at either end; that is an
+  operator step, not a way around a login wall.
 
 ## Transport decides capabilities
 
