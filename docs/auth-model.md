@@ -371,3 +371,28 @@ What would contradict the non-goal is a read action. A `brw_state` that returned
 cookie values, or a snapshot format the daemon would decrypt for a caller, would
 make brw an extraction tool no matter how the tool was described. That action
 does not exist, and its absence is what the security argument rests on.
+
+### Copying a session between brw-owned profiles
+
+`brwctl profiles copy` and the `/profiles` roster page copy one site's cookies
+from one brw-owned profile into another, for handing a login to a second agent
+identity without signing in again. It follows the same argument as `brw_state`
+and is narrower:
+
+- **Both ends are browsers brw launched on this machine.** Each end's daemon
+  must answer `/health` as the profile the policy names, on a loopback address,
+  with the `direct-cdp` transport. The extension bridge, the Chrome opt-in lane,
+  `remote-cdp` and `off-host-cdp` are all refused, at either end.
+- **Never a daily browser profile.** A profile whose `user_data_dir`, in the
+  policy or as its live daemon reports it, is or lies inside a real browser's
+  user-data-dir (Chrome, Chromium, Edge, Brave, on macOS, Linux and Windows,
+  symlinks resolved) is refused as source and as destination.
+- **Through each daemon's own gates.** The copy is `brw_cookies` list on the
+  source and set (and, for `move`, delete) on the destination, sent to each
+  profile's daemon over its HTTP API, so each daemon's site consent and
+  navigation policy decide those calls exactly as they would an agent's.
+- **No value leaves.** Values pass through the copying process's memory only;
+  the result carries counts, and the roster page shows cookie names.
+- **Loopback only.** The `/api/roster/*` routes refuse non-loopback peers even
+  on a daemon bound to a wider address, and sit behind the control plane's
+  Host and Origin guards.
