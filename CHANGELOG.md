@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 - 2026-09-29
 
 - Add human pacing (`--pacing human|off`, `BRW_PACING`, or a profile's `"pacing"`):
   random human-length gaps between actions on a tab and typing one character at a
