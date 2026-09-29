@@ -37,6 +37,7 @@ func (b *Bridge) snapshot(ctx context.Context, opts snapshot.SnapshotOptions, sk
 			return cached, nil
 		}
 	}
+	ctx, transport := withPageTransportNote(ctx)
 	// The walker installs once per document; later snapshots ship only the call.
 	// SnapshotCallExpressions is shared with direct CDP so both mint the same refs.
 	hot, cold := snapshot.SnapshotCallExpressions(opts)
@@ -63,6 +64,7 @@ func (b *Bridge) snapshot(ctx context.Context, opts snapshot.SnapshotOptions, sk
 		// Unread frames still become clickable f<i> elements at their center.
 		snapshot.PromoteCrossOriginFrames(&snap, readBoxes)
 	}
+	snap.Metadata = transport.apply(snap.Metadata)
 	if !bypassCache {
 		b.storeCachedSnapshot(ctx, opts, snap)
 	}
@@ -125,13 +127,15 @@ func (b *Bridge) callCrossOriginFrames(ctx context.Context, origins []string, ex
 		return nil, err
 	}
 	var payload struct {
-		Frames []snapshot.CrossOriginFrame `json:"frames"`
+		Frames                 []snapshot.CrossOriginFrame `json:"frames"`
+		SkippedExtensionFrames int                         `json:"skippedExtensionFrames"`
 	}
 	if len(raw) > 0 {
 		if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
 			return nil, fmt.Errorf("parse cross-origin frames: %w", jsonErr)
 		}
 	}
+	pageTransportNoteFrom(ctx).noteSkipped(payload.SkippedExtensionFrames)
 	return payload.Frames, nil
 }
 

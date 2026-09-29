@@ -133,7 +133,7 @@ func (b *Bridge) evaluateRuntime(ctx context.Context, expression, tabID string, 
 	return b.guardCurrentURL(ctx)
 }
 
-func (b *Bridge) cdp(ctx context.Context, tabID, method string, params map[string]any) (json.RawMessage, error) {
+func (b *Bridge) cdpDispatch(ctx context.Context, tabID, method string, params map[string]any) (json.RawMessage, error) {
 	if params == nil {
 		params = map[string]any{}
 	}

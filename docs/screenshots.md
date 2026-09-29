@@ -52,7 +52,7 @@ the proxy receives only metadata and preview bytes. Disk saving is unavailable
 on `off-host-cdp`, consistent with that transport's local filesystem policy.
 
 Both direct CDP and the extension bridge capture Chrome's compositor surface,
-so canvas, WebGL and playing video remain visible. The bundled extension is 0.7.9; reload an older unpacked
+so canvas, WebGL and playing video remain visible. The bundled extension is 0.7.10; reload an older unpacked
 extension before using the new tool. The bridge may briefly activate the target
 tab within its existing window and restores the prior active tab afterward.
 It never raises the OS window. A locked or fully occluded browser may fail to
