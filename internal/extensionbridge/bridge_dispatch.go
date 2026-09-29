@@ -120,6 +120,9 @@ func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any
 			if resp.Error == disconnectDrainReason {
 				return nil, fmt.Errorf("%w: %s", errBridgeTransport, resp.Error)
 			}
+			if detail, ok := strings.CutPrefix(resp.Error, browser.ForeignExtensionFramePrefix); ok {
+				return nil, fmt.Errorf("extension bridge: %w:%s", browser.ErrForeignExtensionFrame, detail)
+			}
 			return nil, fmt.Errorf("extension bridge: %s", resp.Error)
 		}
 		return resp.Result, nil
