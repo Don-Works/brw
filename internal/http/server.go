@@ -70,6 +70,9 @@ type Server struct {
 	// deliberately exposing the daemon, so the Host allowlist is not gated there.
 	allowedHosts map[string]bool
 	enforceHost  bool
+
+	roster            ProfileRoster
+	profilePolicyPath string
 }
 
 type snapshotRequest struct {
@@ -326,6 +329,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", s.health)
+	// The profile roster: loopback-only, and it reaches browsers only through
+	// each profile's own daemon.
+	mux.HandleFunc("GET /profiles", s.rosterPage)
+	mux.HandleFunc("GET /profiles/roster.js", s.rosterScript)
+	mux.HandleFunc("GET /api/roster/board", s.rosterBoard)
+	mux.HandleFunc("POST /api/roster/profiles", s.rosterCreate)
+	mux.HandleFunc("POST /api/roster/copy", s.rosterCopy)
+	mux.HandleFunc("POST /api/roster/pin", s.rosterPin)
+	mux.HandleFunc("POST /api/roster/open", s.rosterOpen)
 	// Off unless BRW_DASHBOARD=1, and loopback-only even then: it streams the
 	// rendered pixels of a signed-in browser.
 	mux.HandleFunc("GET /dashboard", s.dashboardPage)

@@ -397,7 +397,9 @@ func (p Probe) destinations(field DestinationField) []string {
 	case FieldOrigin:
 		return nonEmpty(p.Origin)
 	case FieldDomain:
-		return nonEmpty(p.Domain)
+		// ".example.com" is how a cookie list spells a domain cookie, and it
+		// is the site example.com, not an origin nobody can grant.
+		return nonEmpty(strings.TrimPrefix(strings.TrimSpace(p.Domain), "."))
 	case FieldOrigins:
 		out := make([]string, 0, len(p.Origins))
 		for _, entry := range p.Origins {

@@ -125,7 +125,7 @@ live binary, isolated `--session brw-compare`, then `close --all`). Status is
 | Signed-in profile | extension bridge into the live profile; no copy | live Chrome session | `--profile` copies to a temp dir; `--cdp` / `--auto-connect` | shipped |
 | MCP server | stdio, catalogue grows on demand | native messaging | stdio, fixed profiles, `tools/list` paginated at 64 | shipped |
 | HTTP JSON API | yes | no | no | shipped |
-| Per-action CLI | ~20 verbs bound to HTTP routes | no | ~120 verbs | shipped (`2AR4JB`) |
+| Per-action CLI | ~70 verbs bound to HTTP routes | no | ~120 verbs | shipped (`2AR4JB`) |
 | Artifacts held off model context | store, search, TTL, quota | no | files on disk / temp paths | shipped |
 | Deterministic replay | immutable recipes, digest and origin guard | recorded workflows | batch JSON | shipped |
 | Promote a successful run to a recipe | `brwctl recipe draft`: a trace compiler that emits a recipe with fail-closed guards | yes, side-panel recording | no | shipped (`E8X4QH`) |

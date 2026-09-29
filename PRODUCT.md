@@ -9,7 +9,9 @@ product
 Technical operators and developers who connect an AI-agent harness to a visible,
 installed Chrome or Chromium profile. In the extension UI they are usually doing
 one of two jobs: binding this browser profile to the correct local `brwd` daemon,
-or diagnosing why that bridge is not connected.
+or diagnosing why that bridge is not connected. A third, off by default under
+Options → Advanced, adds a Profiles link to the toolbar menu that opens the
+daemon's profile roster.
 
 ## Product Purpose
 

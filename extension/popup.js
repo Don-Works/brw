@@ -14,6 +14,7 @@ const LEXICON = {
 const popup = document.getElementById("popup");
 const reconnectButton = document.getElementById("reconnect");
 const optionsButton = document.getElementById("openOptions");
+const profilesButton = document.getElementById("openProfiles");
 const formMessage = document.getElementById("formMessage");
 const detailsPanel = document.getElementById("detailsPanel");
 
@@ -30,6 +31,7 @@ reconnectButton.addEventListener("click", reconnect);
 optionsButton.addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
 });
+profilesButton.addEventListener("click", openProfileRoster);
 detailsPanel.addEventListener("toggle", () => {
   if (programmaticDetails) {
     programmaticDetails = false;
@@ -41,6 +43,7 @@ detailsPanel.addEventListener("toggle", () => {
 init();
 
 async function init() {
+  await revealProfileRoster();
   await refresh({ announce: false });
   refreshTimer = window.setInterval(() => {
     if (!document.hidden && !busy) refresh({ announce: false });
@@ -292,4 +295,28 @@ function humanize(error) {
 
 function sleep(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function revealProfileRoster() {
+  const stored = await chrome.storage.local.get("profileRosterEnabled");
+  profilesButton.hidden = stored.profileRosterEnabled !== true;
+}
+
+// The roster page lives on the daemon's HTTP control port, which brwctl setup
+// places one below the bridge port the extension is configured with.
+async function openProfileRoster() {
+  const response = await chrome.runtime.sendMessage({ type: "BRW_GET_STATUS" });
+  const config = response?.status?.config || {};
+  let url = "http://127.0.0.1:17310/profiles";
+  try {
+    const u = new URL(config.statusUrl || config.bridgeUrl || url);
+    u.protocol = "http:";
+    u.pathname = "/profiles";
+    u.search = "";
+    u.hash = "";
+    if (u.port && Number(u.port) % 2 === 1) u.port = String(Number(u.port) - 1);
+    url = u.toString();
+  } catch (_) {}
+  await chrome.tabs.create({ url });
+  window.close();
 }

@@ -58,6 +58,7 @@ revokeAllGrantsButton.addEventListener("click", () => {
 });
 
 async function init() {
+  await loadProfileRosterPref();
   await refreshStatus({ populate: true });
   await refreshGrants();
   refreshTimer = window.setInterval(() => {
@@ -394,6 +395,16 @@ function readForm() {
   const config = {};
   for (const id of fieldIds) config[id] = document.getElementById(id).value.trim();
   return config;
+}
+
+async function loadProfileRosterPref() {
+  const box = document.getElementById("profileRoster");
+  const stored = await chrome.storage.local.get("profileRosterEnabled");
+  box.checked = stored.profileRosterEnabled === true;
+  box.addEventListener("change", async () => {
+    await chrome.storage.local.set({ profileRosterEnabled: box.checked });
+    setFormMessage(box.checked ? "Profiles is in the toolbar menu." : "Profiles is hidden from the toolbar menu.", "success");
+  });
 }
 
 function setFormMessage(message, kind = "") {

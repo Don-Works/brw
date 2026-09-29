@@ -60,6 +60,8 @@ func main() {
 		err = recipeCommand(os.Args[2:])
 	case "grants":
 		err = grantsCommand(os.Args[2:])
+	case "profiles":
+		err = profilesCommand(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -86,7 +88,9 @@ commands:
   daemons         list configured bridge profile-daemons + probe each /health (JSON)
   recipe          draft or compile, validate, and atomically install a private deterministic recipe
   grants          list, allow or revoke the per-origin site permissions this profile holds
-                  (list | allow <origin> | revoke <origin> | revoke-all | ledger)`)
+                  (list | allow <origin> | revoke <origin> | revoke-all | ledger)
+  profiles        brw-owned browser profiles and the sites they are signed in to
+                  (list | sessions | create | pin | copy | move | gui)`)
 }
 
 func recipeCommand(args []string) error {

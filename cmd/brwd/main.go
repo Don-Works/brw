@@ -35,6 +35,7 @@ import (
 	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/plugin"
 	"github.com/Don-Works/brw/internal/profilepolicy"
+	"github.com/Don-Works/brw/internal/profileroster"
 	"github.com/Don-Works/brw/internal/recipe"
 	"github.com/Don-Works/brw/internal/sessionstate"
 	"github.com/Don-Works/brw/internal/setup"
@@ -911,6 +912,9 @@ func main() {
 			api.SetBaselineRouter(recipeBaselines)
 		}
 		api.SetPluginRegistry(plugins)
+		api.SetProfilePolicyPath(profilePolicyPath)
+		self, _ := os.Executable()
+		api.SetProfileRoster(profileroster.Service{BRWDPath: self})
 		if httpIdleExit > 0 {
 			api.SetIdleExit(httpIdleExit)
 			log.Printf("HTTP idle-exit armed: shutting down after %s with no API request", httpIdleExit)
