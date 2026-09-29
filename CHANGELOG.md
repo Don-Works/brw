@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add human pacing (`--pacing human|off`, `BRW_PACING`, or a profile's `"pacing"`):
+  random human-length gaps between actions on a tab and typing one character at a
+  time with varied key delays (long text in word chunks, within 6 seconds). On by
+  default on the extension bridge, off elsewhere.
 - Extension 0.7.10: keep a tab drivable when another extension's frame (a
   password manager's autofill menu) is in the page. Evaluation and text input
   fall back to `chrome.scripting` in the top frame, which needs the new

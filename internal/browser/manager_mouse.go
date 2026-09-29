@@ -234,6 +234,9 @@ func (m *Manager) mouseHalf(ctx context.Context, opts MouseButtonOptions, eventT
 // intermediate steps, then releases — covering sliders/range inputs,
 // drag-and-drop reorder, and canvas/map panning. Pure CDP Input domain.
 func (m *Manager) Drag(ctx context.Context, opts DragOptions) (ActionResult, error) {
+	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+		return ActionResult{}, err
+	}
 	if err := GuardCrossOriginRefs("drag", DirectCrossOriginRemedy, opts.From.Ref, opts.To.Ref); err != nil {
 		return ActionResult{}, err
 	}

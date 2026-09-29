@@ -89,6 +89,9 @@ func (b *Bridge) mouseHalf(ctx context.Context, opts browser.MouseButtonOptions,
 }
 
 func (b *Bridge) Drag(ctx context.Context, opts browser.DragOptions) (browser.ActionResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return browser.ActionResult{}, err
+	}
 	if err := browser.GuardCrossOriginRefs("drag", browser.BridgeCrossOriginRemedy, opts.From.Ref, opts.To.Ref); err != nil {
 		return browser.ActionResult{}, err
 	}

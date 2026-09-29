@@ -102,7 +102,7 @@ var remoteSafeSurface = []string{
 // filed under the wrong one reads as a decision nobody made.
 var remoteManagerPlumbing = []string{
 	"Close", "ContentNavigationGuard", "Remote", "RemoteSession",
-	"SetContentNavigationGuard", "SetNavigationPolicy", "SetSessionStateStore",
+	"SetContentNavigationGuard", "SetNavigationPolicy", "SetSessionStateStore", "Pacing", "SetPacing",
 	// BrowserOnThisHost is the gate's own question, not a verb it guards.
 	"BrowserOnThisHost",
 }

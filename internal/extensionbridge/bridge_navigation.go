@@ -79,6 +79,9 @@ func (b *Bridge) verifyOpenedTabURL(ctx context.Context, tabID string) error {
 // Navigate goes back, forward or reloads via history.back/forward and
 // location.reload, then returns a post-navigation observation.
 func (b *Bridge) Navigate(ctx context.Context, direction string) (browser.ActionResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return browser.ActionResult{}, err
+	}
 	dir, err := normalizeNavigateDirection(direction)
 	if err != nil {
 		return browser.ActionResult{}, err
@@ -95,6 +98,9 @@ func (b *Bridge) Navigate(ctx context.Context, direction string) (browser.Action
 // NavigateTo navigates the active tab (no new tab) to url, waits for load and
 // returns a post-navigation observation.
 func (b *Bridge) NavigateTo(ctx context.Context, url string) (browser.ActionResult, error) {
+	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+		return browser.ActionResult{}, err
+	}
 	var err error
 	url, err = b.prepareNavigationURL(url)
 	if err != nil {

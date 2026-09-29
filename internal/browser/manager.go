@@ -221,6 +221,7 @@ type Manager struct {
 	// PAGE initiated to another site is refused, while the same destination
 	// requested by the agent is allowed. Off by default.
 	contentNavGuard bool
+	pacer           *Pacer
 	// contentNav is the bookkeeping that separates the two. Zero value is usable.
 	contentNav contentNavState
 	// routes holds per-tab request interception rules. Zero value is usable.
@@ -1136,6 +1137,9 @@ func (m *Manager) ReadData(ctx context.Context) (snapshot.StructuredData, error)
 }
 
 func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
+	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+		return ActionResult{}, err
+	}
 	// A ref inside a cross-origin iframe lives in a document the top-document
 	// walker cannot reach, so it has to be resolved through a session attached to
 	// that frame's target before anything is dispatched.
@@ -1215,6 +1219,9 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 }
 
 func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) (ActionResult, error) {
+	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+		return ActionResult{}, err
+	}
 	if err := m.guardTakeover("click_text"); err != nil {
 		return ActionResult{}, err
 	}
@@ -1273,6 +1280,9 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 }
 
 func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
+	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+		return ActionResult{}, err
+	}
 	if err := GuardCrossOriginRefs("hover", DirectCrossOriginRemedy, ref); err != nil {
 		return ActionResult{}, err
 	}
@@ -1479,6 +1489,9 @@ func (m *Manager) NetworkRequests(ctx context.Context, filter string) ([]Network
 }
 
 func (m *Manager) Type(ctx context.Context, ref, text string) (ActionResult, error) {
+	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+		return ActionResult{}, err
+	}
 	if err := GuardCrossOriginRefs("type", DirectCrossOriginRemedy, ref); err != nil {
 		return ActionResult{}, err
 	}
@@ -1522,7 +1535,9 @@ func (m *Manager) typeRef(tabCtx context.Context, ref, text string) error {
 	}
 	return m.runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
 		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			return input.InsertText(text).Do(ctx)
+			return m.pacer.Type(ctx, text, func(chunk string) error {
+				return input.InsertText(chunk).Do(ctx)
+			})
 		}))
 	})
 }
@@ -1597,6 +1612,9 @@ func (m *Manager) FocusRef(ctx context.Context, ref string) error {
 }
 
 func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionResult, error) {
+	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+		return ActionResult{}, err
+	}
 	if err := GuardCrossOriginRefs("fill", DirectCrossOriginRemedy, opts.Ref); err != nil {
 		return ActionResult{}, err
 	}
@@ -1657,6 +1675,9 @@ func (m *Manager) fillRef(tabCtx context.Context, ref, text string, replace bool
 }
 
 func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (ActionResult, error) {
+	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+		return ActionResult{}, err
+	}
 	if err := GuardCrossOriginRefs("upload file", DirectCrossOriginRemedy, opts.Ref, opts.ClickRef); err != nil {
 		return ActionResult{}, err
 	}
@@ -1813,6 +1834,9 @@ func (m *Manager) uploadFileViaChooser(tabID string, tabCtx context.Context, opt
 }
 
 func (m *Manager) Select(ctx context.Context, ref, value string) (ActionResult, error) {
+	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+		return ActionResult{}, err
+	}
 	if err := GuardCrossOriginRefs("select", DirectCrossOriginRemedy, ref); err != nil {
 		return ActionResult{}, err
 	}
@@ -1975,6 +1999,9 @@ func findOptionCandidate(tabCtx context.Context, value string) (snapshot.Element
 }
 
 func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
+	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+		return ActionResult{}, err
+	}
 	if err := m.guardTakeover("press"); err != nil {
 		return ActionResult{}, err
 	}
@@ -2049,6 +2076,9 @@ func (m *Manager) pressKey(tabCtx context.Context, tabID, key string) error {
 }
 
 func (m *Manager) Scroll(ctx context.Context, direction string) (ActionResult, error) {
+	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+		return ActionResult{}, err
+	}
 	if err := m.guardTakeover("scroll"); err != nil {
 		return ActionResult{}, err
 	}
@@ -2216,6 +2246,9 @@ func (m *Manager) CommitField(ctx context.Context, ref string) error {
 }
 
 func (m *Manager) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYResult, error) {
+	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+		return snapshot.ClickXYResult{}, err
+	}
 	if err := m.guardTakeover("click_xy"); err != nil {
 		return snapshot.ClickXYResult{}, err
 	}
@@ -2785,6 +2818,11 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 		sr.Error = err.Error()
 		return sr
 	}
+	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+		sr.OK = false
+		sr.Error = err.Error()
+		return sr
+	}
 
 	if step.ExpectRef != "" {
 		findResult, err := m.Find(ctx, snapshot.FindOptions{Query: step.ExpectRef, Limit: 1})
@@ -3067,6 +3105,11 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 	// the takeover guard is per step: the batch was gated once from arguments
 	// that stopped being true as soon as a step navigated.
 	if err := GateSequenceStep(tabCtx, index, tabID, step.ConsentProbe()); err != nil {
+		sr.OK = false
+		sr.Error = err.Error()
+		return sr
+	}
+	if err := m.pacer.BeforeAction(tabCtx, tabID); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
 		return sr

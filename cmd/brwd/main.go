@@ -92,6 +92,7 @@ func main() {
 	var blockedDomains string
 	var allowedDomains string
 	var enableWebMCP bool
+	var pacingValue string
 	var usageLog string
 	var usageLogMaxMB int
 	var usageLogBackups int
@@ -155,6 +156,7 @@ func main() {
 	flag.BoolVar(&printSystemPrompt, "print-system-prompt", false, "print the recommended agent system prompt to stdout and exit")
 	flag.StringVar(&blockedDomains, "blocked-domains", os.Getenv("BRW_BLOCKED_DOMAINS"), "comma-separated domains the agent may never open (subdomains included); guardrail enforced on brw_open and brw_replay_request")
 	flag.StringVar(&allowedDomains, "allowed-domains", os.Getenv("BRW_ALLOWED_DOMAINS"), "comma-separated allowlist; when set, the agent may ONLY open these domains (and subdomains)")
+	flag.StringVar(&pacingValue, "pacing", os.Getenv("BRW_PACING"), "space agent actions and type text like a person: human or off. Defaults to human on the extension bridge, which drives a signed-in browser, and off elsewhere. A profile may set \"pacing\" instead.")
 	flag.BoolVar(&enableWebMCP, "enable-webmcp", envBool("BRW_ENABLE_WEBMCP"), "install a fallback WebMCP runtime (document.modelContext) at document-start, on direct CDP and the extension bridge alike, so cooperating sites can register page tools brw_page_tools/brw_call_page_tool can use; a native WebMCP implementation is used without this flag")
 	flag.StringVar(&usageLog, "usage-log", envDefault("BRW_USAGE_LOG", "auto"), "privacy-safe metadata usage ledger path; auto writes under the user config directory, off disables. Never records tool arguments, typed text, page content, URLs, headers, or response bodies.")
 	flag.IntVar(&usageLogMaxMB, "usage-log-max-mb", envInt("BRW_USAGE_LOG_MAX_MB", 20), "rotate the usage ledger at this many MiB; 0 disables size rotation")
@@ -398,6 +400,9 @@ func main() {
 		if cfg.ChromePath == "" && upstreamHTTP == "" && !bridgeMode && !chromeOptIn && cfg.RemoteURL == "" {
 			cfg.ChromePath = profileBrowserExecutable(profile.Kind)
 		}
+		if profile.Pacing != "" && !flagWasSet("pacing") && os.Getenv("BRW_PACING") == "" {
+			pacingValue = profile.Pacing
+		}
 		if profile.Headless && upstreamHTTP == "" {
 			headless = true
 		}
@@ -635,6 +640,8 @@ func main() {
 		bridge.SetRaiseWindowOnFocus(bridgeRaiseWindow)
 		bridge.SetDefaultGroup(bridgeTabGroup)
 		bridge.SetWebMCP(enableWebMCP)
+		bridge.SetPacing(resolvePacing(pacingValue, true))
+		log.Printf("action pacing: %s", bridge.Pacing())
 		// Isolation by default: work in brw's own tab group on tabs it opened,
 		// never the user's focused/existing tabs. --bridge-follow-focus restores
 		// the legacy follow-the-user's-tab behavior.
@@ -693,6 +700,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("start browser: %v", err)
 		}
+		manager.SetPacing(resolvePacing(pacingValue, false))
+		log.Printf("action pacing: %s", manager.Pacing())
 		controller = manager
 		defer func() {
 			if err := manager.Close(); err != nil {
@@ -1820,4 +1829,20 @@ func profileBrowserExecutable(kind string) string {
 		path, err := exec.LookPath(name)
 		return path, err == nil
 	})
+}
+
+// resolvePacing turns the --pacing value into a mode. Empty means human on the
+// extension bridge and off on every other lane.
+func resolvePacing(value string, bridge bool) browser.PacingMode {
+	if strings.TrimSpace(value) == "" {
+		if bridge {
+			return browser.PacingHuman
+		}
+		return browser.PacingOff
+	}
+	mode, err := browser.ParsePacing(value)
+	if err != nil {
+		log.Fatalf("--pacing: %v", err)
+	}
+	return mode
 }
