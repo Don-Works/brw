@@ -88,7 +88,7 @@ type rosterDaemon struct {
 func startRosterDaemon(t *testing.T, name string, jar ...browser.Cookie) *rosterDaemon {
 	t.Helper()
 	ctrl := &jarController{jar: jar}
-	id := brwidentity.Identity{Profile: name, Transport: brwidentity.TransportDirectCDP, UserDataDir: filepath.Join(t.TempDir(), name)}
+	id := brwidentity.Identity{Profile: name, Transport: brwidentity.TransportDirectCDP, UserDataDir: filepath.Join("/nonexistent/brw-roster-test", name)}
 	server := NewWithIdentity("127.0.0.1:0", ctrl, id)
 	server.SetProfileRoster(profileroster.Service{})
 	ts := httptest.NewServer(server.Handler())
@@ -104,7 +104,7 @@ func writeRosterPolicy(t *testing.T, daemons map[string]*rosterDaemon) string {
 	for name, d := range daemons {
 		policy.Profiles = append(policy.Profiles, profilepolicy.Profile{
 			Name: name, DirectCDPAllowed: true, BridgeHTTPAddr: d.addr(),
-			UserDataDir: filepath.Join(t.TempDir(), name),
+			UserDataDir: filepath.Join("/nonexistent/brw-roster-test", name),
 		})
 	}
 	path := filepath.Join(t.TempDir(), "browser-profiles.json")
