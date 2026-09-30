@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.0 - 2026-09-30
+
+- Run caller-supplied recipes through `brw_recipe_run` and `/api/recipes/run`
+  using a `recipe` object, or `brw run --file recipe.json`. No recipe provider
+  or installation is required; results identify the executed content by digest.
+- Keep stored recipes and pinned ID/version/digest execution supported. Both
+  sources share validation, origin checks, locking, write safeguards and evidence.
+  Inline recipes are not automatically saved or added to search.
+
 ## 0.16.0 - 2026-09-29
 
 - Add human pacing (`--pacing human|off`, `BRW_PACING`, or a profile's `"pacing"`):

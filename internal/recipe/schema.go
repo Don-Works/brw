@@ -1,6 +1,6 @@
 // Package recipe defines brw's public, deterministic recipe ABI. The package
-// contains no recipe corpus: executable recipes are fetched from an operator-
-// controlled Provider and pinned by immutable id, version, and digest.
+// contains no recipe corpus: recipes are supplied by callers or fetched from an
+// operator-controlled Provider and pinned by immutable id, version, and digest.
 package recipe
 
 import (

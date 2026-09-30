@@ -877,23 +877,21 @@ func main() {
 		if err != nil {
 			log.Fatalf("recipe provider: %v", err)
 		}
-		if provider != nil {
-			runner := recipe.Runner{
-				Surface:     &recipe.BrowserSurface{Browser: controller, Artifacts: artifactAPI},
-				Credentials: plugins,
-				Receipts:    recipeReceiptsFor(provider),
-			}
-			service, err := recipe.NewService(provider, runner)
-			if err != nil {
-				log.Fatalf("recipe service: %v", err)
-			}
-			recipeAPI = service
-			recipeBaselines = recipeBaselinesFor(provider)
-			baselineRouter = recipeBaselines
-			log.Printf("private recipe provider enabled (recipe bodies and inputs are never written to usage logs)")
-			log.Printf("%s", recipeReceiptStatusLine(runner.Receipts))
-			log.Printf("%s", recipeBaselineStatusLine(recipeBaselines))
+		runner := recipe.Runner{
+			Surface:     &recipe.BrowserSurface{Browser: controller, Artifacts: artifactAPI},
+			Credentials: plugins,
+			Receipts:    recipeReceiptsFor(provider),
 		}
+		service, err := recipe.NewService(provider, runner)
+		if err != nil {
+			log.Fatalf("recipe service: %v", err)
+		}
+		recipeAPI = service
+		recipeBaselines = recipeBaselinesFor(provider)
+		baselineRouter = recipeBaselines
+		log.Printf("recipe runtime enabled (stored provider: %t; recipe bodies and inputs are never written to usage logs)", provider != nil)
+		log.Printf("%s", recipeReceiptStatusLine(runner.Receipts))
+		log.Printf("%s", recipeBaselineStatusLine(recipeBaselines))
 	}
 
 	var api *httpapi.Server

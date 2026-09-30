@@ -15,7 +15,7 @@ Do not commit operational recipes to the `brw` repository. A recipe can reveal
 site names, internal workflows, element labels, risk decisions, and business
 processes even when it contains no credential.
 
-Choose one of these private providers:
+To keep a searchable library, choose one of these private providers:
 
 1. `--recipe-root /absolute/private/path` loads owner-only JSON files from a
    directory outside the source checkout. This is convenient for a personal or
@@ -74,6 +74,53 @@ Installing the same content is idempotent. Reusing an existing `id + version`
 with different content is rejected: create a new semantic version. Local search
 advertises only the newest version for each recipe ID while an older version
 remains fetchable by an already-pinned digest.
+
+## Run a caller-supplied recipe
+
+A caller can own the recipe library and pass a complete schema-v1 recipe directly
+to the existing run endpoint. No recipe provider needs to be configured:
+
+```text
+brw_recipe_run { recipe: { schema_version: 1, id: "example.billing.download", version: "1.0.0", ... }, inputs: { month: "2026-09" }, tab_id }
+POST /api/recipes/run
+{ "recipe": { ...complete schema-v1 recipe... }, "inputs": { "month": "2026-09" }, "tab_id": "..." }
+```
+
+Supply exactly one source: `recipe`, or the stored recipe's `id`, `version` and
+`digest`. Mixing the two is rejected. Inline recipes use the same schema,
+validation, exact-origin checks, tab and idempotency locks, credential resolution,
+write verification, and failure evidence as stored recipes. The result includes
+`recipe_id`, `recipe_version` and the computed `recipe_digest` for the body that
+ran. A recipe body is limited to 1 MiB and unknown fields are rejected.
+
+For the CLI, pass a JSON file on the caller's machine:
+
+```sh
+brw run --file /absolute/private/recipe.json --input month=2026-09
+```
+
+`--file` cannot be combined with a positional recipe ID, `--recipe-version` or
+`--digest`. The CLI reads and validates the file once, sends that body to the
+browser host, and reports its computed digest in the usual JSON run report.
+A later invocation reads the file again; use an immutable file or a pinned
+stored recipe when a schedule must always run identical content.
+
+For an orchestrated workflow, the workflow owns the canonical recipe artifact
+and its versions. Verify that artifact's hash before submission and promote
+repairs back to that source. The artifact hash covers its exact bytes;
+`recipe_digest` covers brw's canonical JSON encoding of the parsed recipe, so
+these are separate identities and need not match. Keep business-operation
+identity stable across recipe repairs in the orchestrator; a new recipe digest
+is not evidence that repeating a previously attempted external write is safe.
+
+An inline run does not install the recipe, add it to search, or send it to the
+configured recipe provider. Saving for reuse remains an explicit
+`brwctl recipe install` operation or a write through the provider's authoring API.
+Search returns an empty array when no provider is configured. Execution may
+still persist ordinary write receipts or enabled failure evidence; inline refers
+to recipe storage, not to disabling those safeguards. Receipt-dependent steps
+still require a configured receipt-capable provider and fail before execution
+when it is absent.
 
 ## Search, pin, then run
 

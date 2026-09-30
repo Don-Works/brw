@@ -8,6 +8,23 @@ trace-to-recipe compiler exists, the authorized authoring agent necessarily sees
 the draft in its private working context; do not paste that draft into public
 issues, chat, commits, or other unrelated systems.
 
+## Run without installing
+
+When the caller already owns a complete schema-v1 recipe, pass it directly:
+`brw_recipe_run({recipe, inputs?, tab_id?})`, or
+`brw run --file /absolute/private/recipe.json --input key=value`.
+Do not also pass the stored recipe's `id`, `version` or `digest` fields. The
+inline body still contains its own ID and version; brw computes its digest and
+returns it with the run result. Both sources use the same execution safeguards.
+No configured provider is needed, and the recipe is not installed or added to
+search. Saving for reuse is a separate, explicit operation. For workflow-owned
+recipes, promote repairs to the workflow's canonical versioned artifact instead
+of creating a competing local copy. Verify the source artifact hash before
+submission; brw's returned digest identifies its canonical parsed recipe, not
+the source file bytes. Keep business-operation identity stable across repairs. Keep private bodies
+out of public repositories and logs, and obtain the same action-specific
+authorization as for stored recipes.
+
 ## Search before rebuilding
 
 Search with the natural-language task and, when known, the exact page origin.

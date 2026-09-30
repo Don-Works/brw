@@ -198,3 +198,32 @@ func TestRecipeRunOutlivesOrdinaryProxyTimeout(t *testing.T) {
 		t.Fatalf("timed recipe was cut off by ordinary proxy timeout: result=%+v err=%v", result, err)
 	}
 }
+
+func TestInlineRecipeProxyForwardsBodyInputsAndTab(t *testing.T) {
+	var received recipe.RunRequest
+	var tab string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/recipes/run" || r.Method != http.MethodPost {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var body struct {
+			recipe.RunRequest
+			TabID string `json:"tab_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		received, tab = body.RunRequest, body.TabID
+		json.NewEncoder(w).Encode(recipe.RunResult{RecipeID: "fixture.inline", Status: "done"})
+	}))
+	defer server.Close()
+	client, err := New(server.URL, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := recipe.Recipe{ID: "fixture.inline", Version: "1.0.0", Steps: []recipe.Step{{ID: "pause", Action: "timer", TimerMS: 1}}}
+	result, err := client.RunRecipe(browser.WithTabID(context.Background(), "inline-tab"), recipe.RunRequest{Recipe: &value, Inputs: map[string]string{"month": "September"}})
+	if err != nil || result.Status != "done" || received.Recipe == nil || len(received.Recipe.Steps) != 1 || received.Recipe.Steps[0].TimerMS != 1 || received.Inputs["month"] != "September" || tab != "inline-tab" {
+		t.Fatalf("result=%+v received=%+v tab=%q err=%v", result, received, tab, err)
+	}
+}
