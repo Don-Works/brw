@@ -45,7 +45,7 @@ to create test isolation.
 1. For a public document, try `brw_read_url({url,max_chars:2000})`. Use `llms:true`
    only when the site advertises an llms index; it is not automatic fallback.
 2. On a page, inspect returned `page_tools` and `agent_surfaces` before driving
-   the UI. For a matching WebMCP tool, fetch its schema with `brw_list_page_tools`
+   the UI. For a matching WebMCP tool, fetch its schema with `brw_page_tools`
    and invoke it with `brw_call_page_tool`. Read
    [agent surfaces](references/agent-surfaces.md) for native tools and API discovery.
 3. For embedded data, use `brw_read_data`; for tables/forms, a projected `brw_read`.
