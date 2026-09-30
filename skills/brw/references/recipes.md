@@ -2,11 +2,11 @@
 
 Use this reference after a reusable workflow succeeds or a selected recipe
 fails because the site's stable structure changed. The outcome is a validated,
-immutable recipe version in the configured private provider—not a recipe body
-inside a source repository, bundled skill, or usage log. Until a future
-trace-to-recipe compiler exists, the authorized authoring agent necessarily sees
-the draft in its private working context; do not paste that draft into public
-issues, chat, commits, or other unrelated systems.
+immutable recipe version in the owning workflow's private source or the
+configured private provider. Keep operational bodies out of the public brw
+repository, bundled skill, and usage logs. The authorized authoring agent sees
+the draft in its private working context; do not paste it into public issues,
+commits, or unrelated systems.
 
 ## Run without installing
 
@@ -256,7 +256,7 @@ pass.
 ## Private boundary
 
 The repository and global skill contain only the engine and these authoring
-instructions. Operational recipe bodies belong in an owner-only local store or
-an authenticated private provider. Skills may prompt discovery and maintenance,
+instructions. Operational recipe bodies belong with the owning workflow, in an owner-only
+local store, or in an authenticated private provider. Skills may prompt discovery and maintenance,
 but they are not the recipe corpus. Long-running schedules, webhook triggers,
 human approvals, secrets, and provider authorization remain outside brw.
