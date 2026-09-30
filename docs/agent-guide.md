@@ -81,6 +81,10 @@ a tool returns `ref not found` or `not actionable`, the page changed — call
 
 ## Reusing a known site workflow
 
+If the caller already has a recipe, `brw_recipe_run({recipe, inputs, tab_id})`
+executes that complete schema-v1 body without installing it or requiring a
+provider. Supply the body or the stored ID/version/digest, never both.
+
 When the operator has configured a private recipe provider, describe the goal to
 `brw_recipe_search`, optionally constrained to the current exact origin. Choose
 from its metadata, then pass the returned `id`, `version`, and `digest` unchanged

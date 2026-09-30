@@ -245,3 +245,52 @@ curl -fsS -X DELETE "http://127.0.0.1:$port/api/artifacts/$download_artifact" >/
 curl -fsS -H 'content-type: application/json' -H "$recipe_owner" --data "{\"id\":\"$download_tab\"}" \
   "http://127.0.0.1:$port/api/browser/close" >/dev/null
 echo "PASS recipe download artifact        pre-arm/new-event/source-file continuity"
+
+kill "$daemon_pid"
+wait "$daemon_pid" || :
+daemon_pid=
+BRW_RECIPE_ROOT= BRW_RECIPE_PROVIDER_URL= BRW_RECIPE_PROVIDER_TOKEN_FILE= \
+  "$repo_root/bin/brwd" \
+  --http "127.0.0.1:$port" \
+  --user-data-dir "$run_root/inline-profile" \
+  --artifact-dir "$run_root/inline-artifacts" \
+  --usage-log off \
+  --chrome-arg=--headless=new \
+  --chrome-arg=--disable-gpu \
+  --chrome-arg=--no-sandbox \
+  >"$run_root/inline-brwd.log" 2>&1 &
+daemon_pid=$!
+ready=false
+attempt=0
+while [ "$attempt" -lt 300 ]; do
+  if curl -fsS "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
+    ready=true
+    break
+  fi
+  if ! kill -0 "$daemon_pid" 2>/dev/null; then
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 0.1
+done
+if [ "$ready" != true ]; then
+  cat "$run_root/inline-brwd.log" >&2
+  exit 1
+fi
+inline_tab_json=$(curl -fsS -H 'content-type: application/json' -H "$recipe_owner" \
+  --data '{"url":"http://127.0.0.1:'"$fixture_port"'/downloads.html"}' \
+  "http://127.0.0.1:$port/api/browser/open")
+inline_tab=$(printf '%s' "$inline_tab_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"]["id"])')
+python3 -c 'import json,sys; print(json.dumps({"recipe":json.load(open(sys.argv[1])),"tab_id":sys.argv[2]}))' \
+  "$recipe_root/download.json" "$inline_tab" >"$run_root/inline-request.json"
+inline_run=$(curl -fsS -H 'content-type: application/json' -H "$recipe_owner" \
+  --data-binary "@$run_root/inline-request.json" "http://127.0.0.1:$port/api/recipes/run")
+inline_artifact=$(printf '%s' "$inline_run" | python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["status"]=="done"; assert value["recipe_digest"]==sys.argv[1]; print(value["artifacts"][0]["artifact_id"])' "$download_digest")
+curl -fsS "http://127.0.0.1:$port/api/artifacts/$inline_artifact/read?offset=0&max_bytes=128" \
+  | python3 -c 'import base64,json,sys; value=json.load(sys.stdin); payload=value.get("text", "").encode() if value["encoding"]=="utf-8" else base64.b64decode(value["base64"]); assert b"SYNTHETIC-SOURCE-INVOICE" in payload'
+curl -fsS -H 'content-type: application/json' --data '{"query":"source invoice"}' \
+  "http://127.0.0.1:$port/api/recipes/search" | python3 -c 'import json,sys; assert json.load(sys.stdin)==[]'
+curl -fsS -X DELETE "http://127.0.0.1:$port/api/artifacts/$inline_artifact" >/dev/null
+curl -fsS -H 'content-type: application/json' -H "$recipe_owner" --data "{\"id\":\"$inline_tab\"}" \
+  "http://127.0.0.1:$port/api/browser/close" >/dev/null
+echo "PASS caller-supplied recipe          no provider/exact digest/download bytes/no automatic install"

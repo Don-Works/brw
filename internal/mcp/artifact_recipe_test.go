@@ -130,3 +130,21 @@ func TestArtifactSearchDisclosureCannotBeMistakenForArtifactListing(t *testing.T
 	}
 	t.Fatal("brw_artifact_search missing from tool catalogue")
 }
+
+func TestMCPForwardsInlineRecipeAndRejectsUnknownNestedFields(t *testing.T) {
+	controller := &capabilityController{}
+	server := &Server{manager: controller, toolProfile: "all"}
+	body := json.RawMessage(`{"recipe":{"schema_version":1,"id":"fixture.inline","version":"1.0.0","description":"PRIVATE_RECIPE_BODY"},"inputs":{"month":"private-month"},"tab_id":"inline-tab"}`)
+	result, rpcErr := server.callTool(context.Background(), "brw_recipe_run", body)
+	if rpcErr != nil || controller.runRequest.Recipe == nil || controller.runRequest.Recipe.ID != "fixture.inline" || controller.recipeTabID != "inline-tab" || controller.runRequest.Inputs["month"] != "private-month" {
+		t.Fatalf("inline forwarding failed: %v, %+v", rpcErr, controller)
+	}
+	encoded, _ := json.Marshal(result)
+	if strings.Contains(string(encoded), "PRIVATE_RECIPE_BODY") || strings.Contains(string(encoded), "private-month") {
+		t.Fatalf("inline content echoed: %s", encoded)
+	}
+	_, rpcErr = server.callTool(context.Background(), "brw_recipe_run", json.RawMessage(`{"recipe":{"unknown":true}}`))
+	if rpcErr == nil || controller.recipeCalls != 1 {
+		t.Fatal("unknown nested field reached recipe service")
+	}
+}

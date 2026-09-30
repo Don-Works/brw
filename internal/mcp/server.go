@@ -2260,7 +2260,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	case "brw_recipe_run":
 		api := s.recipeService()
 		if api == nil {
-			return toolError(errors.New("recipe provider is not configured on the browser host")), nil
+			return toolError(errors.New("recipe runtime is not configured on the browser host")), nil
 		}
 		var req struct {
 			recipe.RunRequest
@@ -3283,13 +3283,14 @@ func tools() []map[string]any {
 			"origin": stringSchema("Optional exact page origin, such as https://billing.example.com, to filter candidates."),
 			"limit":  integerSchema("Maximum metadata matches. Defaults to 10."),
 		}, []string{"query"})),
-		tool("brw_recipe_run", "Run one exact immutable recipe selected by brw_recipe_search. You MUST pass the returned id, version and digest together; brw fetches that pinned private recipe and executes deterministic semantic actions, timers and browser/page events with exact-origin checks. Inputs are never echoed in the result. External writes require recipe-declared risk/idempotency/postconditions. When the browser host has failure evidence bundles enabled, a failed run additionally reports failure_bundle_artifact_id and names it in the error: that id is a manifest artifact holding ONLY the artifact ids of the evidence collected at the moment of failure (action trace, console summary, credential-free network metadata, semantic snapshot, screenshot). Read the manifest with brw_artifact_read, then pull only the parts you actually need — the evidence expires sooner than an ordinary capture, so diagnose the failure in the same session rather than re-running the recipe to reproduce it. A recipe may authenticate without you holding any credential: a fill or type step whose entire value is secret://<name> is resolved by the operator's credential provider at the moment that step runs, written into that one field, and wiped. brw never returns the value to you, and a run whose recipe names a credential fails before touching the browser when no provider is configured — so a login that silently did nothing is not a state you can reach.", object(map[string]any{
+		tool("brw_recipe_run", "Run a stored or caller-supplied recipe. Supply EITHER id, version and digest together from brw_recipe_search OR recipe containing a complete schema-v1 recipe object, never both. Inline recipes need no configured provider and are not installed or added to search; the result reports their computed digest. Both sources execute deterministic semantic actions, timers and browser/page events with exact-origin checks. Inputs are never echoed in the result. External writes require recipe-declared risk/idempotency/postconditions. When the browser host has failure evidence bundles enabled, a failed run additionally reports failure_bundle_artifact_id and names it in the error: that id is a manifest artifact holding ONLY the artifact ids of the evidence collected at the moment of failure (action trace, console summary, credential-free network metadata, semantic snapshot, screenshot). Read the manifest with brw_artifact_read, then pull only the parts you actually need — the evidence expires sooner than an ordinary capture, so diagnose the failure in the same session rather than re-running the recipe to reproduce it. A recipe may authenticate without you holding any credential: a fill or type step whose entire value is secret://<name> is resolved by the operator's credential provider at the moment that step runs, written into that one field, and wiped. brw never returns the value to you, and a run whose recipe names a credential fails before touching the browser when no provider is configured — so a login that silently did nothing is not a state you can reach.", recipeRunSchema(map[string]any{
+			"recipe":  map[string]any{"type": "object", "description": "Complete schema-v1 recipe for this run only. Mutually exclusive with id/version/digest. Uses the same validation, origin checks, locking and write safeguards as stored recipes."},
 			"id":      stringSchema("Recipe id returned by search."),
 			"version": stringSchema("Exact recipe version returned by search."),
 			"digest":  stringSchema("Exact content digest returned by search."),
 			"inputs":  map[string]any{"type": "object", "description": "Declared runtime inputs. Never put a credential here: a recipe that needs one declares secret://<name> on its own fill/type step and the daemon resolves it from the operator's credential provider, so you neither supply nor receive the value.", "additionalProperties": map[string]any{"type": "string"}},
 			"tab_id":  stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
-		}, []string{"id", "version", "digest"})),
+		})),
 		tool("brw_trace", "Return the action trace: recent actions with their refs, the element each one acted on, timing, and outcomes. format:\"batch\" instead returns the same flow as a ready-to-run brw_batch steps array — do a flow once, get a deterministic replay script with no model in the loop. Each ref action is preceded by an assert step checking the ref still points at the element that was recorded, so a replay against a changed page fails loudly instead of acting on the wrong element. Coordinate-driven actions (drag, click_xy) and history navigation are not replayable and are reported under skipped_reasons rather than dropped silently.", object(map[string]any{
 			"format":         stringEnumSchema("entries (default, the raw log) or batch (a brw_batch steps array that reproduces the flow).", "entries", "batch"),
 			"guards":         boolSchema("format:batch only. Insert an assert step before each action to verify its ref still points at the recorded element. Defaults true; a replay that clicks the wrong element in silence is worse than one that fails."),
@@ -3307,6 +3308,19 @@ func tools() []map[string]any {
 
 func tool(name, description string, schema map[string]any) map[string]any {
 	return map[string]any{"name": name, "description": description, "inputSchema": schema}
+}
+
+func recipeRunSchema(properties map[string]any) map[string]any {
+	schema := object(properties, nil)
+	schema["oneOf"] = []any{
+		map[string]any{"required": []string{"id", "version", "digest"}, "not": map[string]any{"required": []string{"recipe"}}},
+		map[string]any{"required": []string{"recipe"}, "not": map[string]any{"anyOf": []any{
+			map[string]any{"required": []string{"id"}},
+			map[string]any{"required": []string{"version"}},
+			map[string]any{"required": []string{"digest"}},
+		}}},
+	}
+	return schema
 }
 
 func object(properties map[string]any, required []string) map[string]any {

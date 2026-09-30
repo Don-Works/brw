@@ -70,9 +70,10 @@ func (RealClock) Sleep(ctx context.Context, duration time.Duration) error {
 }
 
 type RunRequest struct {
-	ID      string            `json:"id"`
-	Version string            `json:"version"`
-	Digest  string            `json:"digest"`
+	ID      string            `json:"id,omitempty"`
+	Version string            `json:"version,omitempty"`
+	Digest  string            `json:"digest,omitempty"`
+	Recipe  *Recipe           `json:"recipe,omitempty"`
 	Inputs  map[string]string `json:"inputs,omitempty"`
 }
 
@@ -685,8 +686,8 @@ type serviceRunLock struct {
 }
 
 func NewService(provider Provider, runner Runner) (*Service, error) {
-	if provider == nil || runner.Surface == nil {
-		return nil, errors.New("recipe provider and runner surface are required")
+	if runner.Surface == nil {
+		return nil, errors.New("recipe runner surface is required")
 	}
 	return &Service{provider: provider, runner: runner, locks: map[string]*serviceRunLock{}}, nil
 }
@@ -706,6 +707,9 @@ func (s *Service) SearchRecipes(ctx context.Context, query, origin string, limit
 		if err := validateOrigin(origin); err != nil {
 			return nil, fmt.Errorf("invalid origin filter: %w", err)
 		}
+	}
+	if s.provider == nil {
+		return []Match{}, nil
 	}
 	matches, err := s.provider.Search(ctx, query, origin, limit)
 	if err != nil {
@@ -734,26 +738,12 @@ func (s *Service) SearchRecipes(ctx context.Context, query, origin string, limit
 }
 
 func (s *Service) RunRecipe(ctx context.Context, request RunRequest) (RunResult, error) {
-	decodedDigest, digestErr := hex.DecodeString(request.Digest)
-	if !recipeIDPattern.MatchString(request.ID) || !versionPattern.MatchString(request.Version) || digestErr != nil || len(decodedDigest) != sha256.Size || hex.EncodeToString(decodedDigest) != request.Digest {
-		return RunResult{}, errors.New("invalid recipe identity")
-	}
 	if err := validateInputEnvelope(request.Inputs); err != nil {
 		return RunResult{}, err
 	}
-	value, err := s.provider.Fetch(ctx, request.ID, request.Version, request.Digest)
+	value, err := s.resolveRecipe(ctx, request)
 	if err != nil {
 		return RunResult{}, err
-	}
-	if err := Validate(value); err != nil {
-		return RunResult{}, fmt.Errorf("provider returned invalid recipe: %w", err)
-	}
-	actualDigest, err := Digest(value)
-	if err != nil {
-		return RunResult{}, err
-	}
-	if value.ID != request.ID || value.Version != request.Version || actualDigest != request.Digest {
-		return RunResult{}, errors.New("provider returned a recipe that does not match the pinned identity")
 	}
 	release, err := s.acquireRunLocks(ctx, value, request.Inputs)
 	if err != nil {
@@ -761,6 +751,41 @@ func (s *Service) RunRecipe(ctx context.Context, request RunRequest) (RunResult,
 	}
 	defer release()
 	return s.runner.Run(ctx, value, request.Inputs)
+}
+
+func (s *Service) resolveRecipe(ctx context.Context, request RunRequest) (Recipe, error) {
+	if request.Recipe != nil {
+		if request.ID != "" || request.Version != "" || request.Digest != "" {
+			return Recipe{}, errors.New("supply either recipe or id, version and digest, not both")
+		}
+		value := *request.Recipe
+		if err := Validate(value); err != nil {
+			return Recipe{}, fmt.Errorf("invalid inline recipe: %w", err)
+		}
+		return value, nil
+	}
+	decodedDigest, digestErr := hex.DecodeString(request.Digest)
+	if !recipeIDPattern.MatchString(request.ID) || !versionPattern.MatchString(request.Version) || digestErr != nil || len(decodedDigest) != sha256.Size || hex.EncodeToString(decodedDigest) != request.Digest {
+		return Recipe{}, errors.New("supply a recipe or a valid pinned recipe identity (id, version and digest)")
+	}
+	if s.provider == nil {
+		return Recipe{}, errors.New("recipe provider is not configured on the browser host; supply recipe for an inline run")
+	}
+	value, err := s.provider.Fetch(ctx, request.ID, request.Version, request.Digest)
+	if err != nil {
+		return Recipe{}, err
+	}
+	if err := Validate(value); err != nil {
+		return Recipe{}, fmt.Errorf("provider returned invalid recipe: %w", err)
+	}
+	actualDigest, err := Digest(value)
+	if err != nil {
+		return Recipe{}, err
+	}
+	if value.ID != request.ID || value.Version != request.Version || actualDigest != request.Digest {
+		return Recipe{}, errors.New("provider returned a recipe that does not match the pinned identity")
+	}
+	return value, nil
 }
 
 // acquireRunLocks makes a recipe one transaction with respect to other recipes

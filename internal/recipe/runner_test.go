@@ -676,6 +676,60 @@ func TestServiceSerializesRecipeTransactionsOnTheSameTab(t *testing.T) {
 	}
 }
 
+func TestServiceSerializesStoredAndInlineRecipesOnTheSameTab(t *testing.T) {
+	surface := newFakeSurface()
+	entered := make(chan struct{}, 2)
+	releaseFirst := make(chan struct{})
+	surface.onClick = func(*fakeSurface) error {
+		entered <- struct{}{}
+		<-releaseFirst
+		return nil
+	}
+	value := validRecipe("https://billing.example.test")
+	value.Inputs = nil
+	value.Steps = []Step{{ID: "act", Action: "click", Effect: "read", Target: &Target{Role: "button", Name: "Download invoices"}}}
+	catalog, err := NewCatalog(context.Background(), []Recipe{value}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(catalog, Runner{Surface: surface})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, _ := Digest(value)
+	request := RunRequest{ID: value.ID, Version: value.Version, Digest: digest}
+	ctx := browser.WithTabID(context.Background(), "same-tab")
+	errs := make(chan error, 2)
+	go func() { _, err := service.RunRecipe(ctx, request); errs <- err }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("first recipe never entered its action")
+	}
+	go func() { _, err := service.RunRecipe(ctx, RunRequest{Recipe: &value}); errs <- err }()
+	waitForServiceLockUsers(t, service, "tab:same-tab", 2)
+	select {
+	case <-entered:
+		t.Fatal("second same-tab recipe interleaved before the first completed")
+	default:
+	}
+	close(releaseFirst)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if surface.clicks != 2 {
+		t.Fatalf("clicks=%d, want two serialized actions", surface.clicks)
+	}
+	service.locksMu.Lock()
+	remainingLocks := len(service.locks)
+	service.locksMu.Unlock()
+	if remainingLocks != 0 {
+		t.Fatalf("service retained %d locks after same-tab runs", remainingLocks)
+	}
+}
+
 func TestServiceSerializesSameIdempotencyKeyAcrossTabs(t *testing.T) {
 	surface := newFakeSurface()
 	entered := make(chan struct{}, 2)

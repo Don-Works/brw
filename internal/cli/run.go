@@ -132,6 +132,7 @@ type runOptions struct {
 	daemon     string
 	profile    string
 	policyPath string
+	file       string
 	version    string
 	digest     string
 	inputs     inputList
@@ -168,6 +169,8 @@ func (l inputList) Set(value string) error {
 
 const runUsage = `usage: brw run <recipe-id> --recipe-version <v> --digest <sha256> [--input k=v]...
 
+       brw run --file <recipe.json> [--input k=v]...
+
 Run one recipe non-interactively and report the outcome as JSON on stdout.
 Intended for launchd, systemd or cron; see docs/scheduling.md.
 
@@ -176,8 +179,9 @@ first is going waits for it (--lock-wait, default 5m) and then gives up with
 exit 6 rather than interleaving with it on the same tab.
 
 flags:
-  --recipe-version <v>    the recipe version to run (required)
-  --digest <sha256>       the recipe digest to run (required)
+  --file <path>          pass a recipe JSON file for this run without installing it
+  --recipe-version <v>    stored recipe version (required without --file)
+  --digest <sha256>       stored recipe digest (required without --file)
   --input key=value       a recipe input; repeatable
   --lock-wait <duration>  how long to wait for another run on this profile to
                           finish; 0 refuses immediately (default 5m)
@@ -199,6 +203,7 @@ func newRunFlagSet(opts *runOptions) *flag.FlagSet {
 	fs.StringVar(&opts.daemon, "daemon", "", "daemon base URL")
 	fs.StringVar(&opts.profile, "profile", os.Getenv("BRW_PROFILE"), "bridge profile to act against")
 	fs.StringVar(&opts.policyPath, "profile-policy", os.Getenv("BRW_PROFILE_POLICY"), "profile policy JSON path")
+	fs.StringVar(&opts.file, "file", "", "recipe JSON file to run without installing")
 	fs.StringVar(&opts.version, "recipe-version", "", "recipe version")
 	fs.StringVar(&opts.digest, "digest", "", "recipe digest")
 	fs.Var(opts.inputs, "input", "recipe input as key=value; repeatable")
@@ -231,25 +236,18 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if err := fs.Parse(flagArgs); err != nil {
 		return failRun(stdout, stderr, "usage", runReport{}, err)
 	}
-	if len(positional) != 1 || strings.TrimSpace(positional[0]) == "" {
+	request, err := prepareRunRequest(opts, positional)
+	if err != nil {
 		runUsageText(stderr)
-		return failRun(stdout, stderr, "usage", runReport{}, errors.New("run takes exactly one recipe id"))
-	}
-	request := recipe.RunRequest{
-		ID:      strings.TrimSpace(positional[0]),
-		Version: strings.TrimSpace(opts.version),
-		Digest:  strings.TrimSpace(opts.digest),
-	}
-	if len(opts.inputs) > 0 {
-		request.Inputs = map[string]string(opts.inputs)
+		return failRun(stdout, stderr, "usage", runReport{}, err)
 	}
 	report := runReport{Recipe: runRecipeRef{ID: request.ID, Version: request.Version, Digest: request.Digest}}
-	// Version and digest are what pin the run to one immutable recipe. Leaving
-	// either off would let a scheduled job silently start running a recipe
-	// somebody republished, which is the failure the digest exists to prevent.
-	if request.Version == "" || request.Digest == "" {
-		runUsageText(stderr)
-		return failRun(stdout, stderr, "usage", report, errors.New("run needs --recipe-version and --digest, so a scheduled job cannot silently start running a republished recipe"))
+	if request.Recipe != nil {
+		digest, err := recipe.Digest(*request.Recipe)
+		if err != nil {
+			return failRun(stdout, stderr, "usage", report, err)
+		}
+		report.Recipe = runRecipeRef{ID: request.Recipe.ID, Version: request.Recipe.Version, Digest: digest}
 	}
 
 	baseURL, err := resolveBaseURL(&options{daemon: opts.daemon, profile: opts.profile, policyPath: opts.policyPath})
@@ -339,6 +337,40 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	report.ErrorClass = httpclient.RemoteClass(runErr)
 
 	return finishRun(stdout, stderr, report, classifyRun(runCtx, result, runErr), runErr)
+}
+
+func prepareRunRequest(opts runOptions, positional []string) (recipe.RunRequest, error) {
+	request := recipe.RunRequest{Inputs: map[string]string(opts.inputs)}
+	if opts.file != "" {
+		if len(positional) != 0 || opts.version != "" || opts.digest != "" {
+			return request, errors.New("--file cannot be combined with a recipe id, --recipe-version or --digest")
+		}
+		file, err := os.Open(opts.file)
+		if err != nil {
+			return request, err
+		}
+		defer file.Close()
+		body, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+		if err != nil {
+			return request, err
+		}
+		value, err := recipe.Parse(body)
+		if err != nil {
+			return request, fmt.Errorf("invalid recipe file: %w", err)
+		}
+		request.Recipe = &value
+		return request, nil
+	}
+	if len(positional) != 1 || strings.TrimSpace(positional[0]) == "" {
+		return request, errors.New("run takes one recipe id or --file")
+	}
+	request.ID = strings.TrimSpace(positional[0])
+	request.Version = strings.TrimSpace(opts.version)
+	request.Digest = strings.TrimSpace(opts.digest)
+	if request.Version == "" || request.Digest == "" {
+		return request, errors.New("run needs --recipe-version and --digest, so a scheduled job cannot silently start running a republished recipe")
+	}
+	return request, nil
 }
 
 // classifyRun maps a finished run onto the contract.

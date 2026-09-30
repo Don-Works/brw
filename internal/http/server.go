@@ -710,7 +710,7 @@ type baselineRouteResponse struct {
 
 func (s *Server) runRecipe(w http.ResponseWriter, r *http.Request) {
 	if s.recipes == nil {
-		writeError(w, errors.New("recipe provider is not configured on the browser host"))
+		writeError(w, errors.New("recipe runtime is not configured on the browser host"))
 		return
 	}
 	var req struct {

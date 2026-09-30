@@ -257,3 +257,23 @@ func TestRecipeHTTPRoutesPinTabAndNeverEchoInputs(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 }
+
+func TestInlineRecipeHTTPPreservesBodyAndTab(t *testing.T) {
+	server := New("", &fakeController{})
+	api := &recipeAPIFake{}
+	server.SetRecipeAPI(api)
+	body := `{"recipe":{"schema_version":1,"id":"fixture.inline","version":"1.0.0","description":"PRIVATE_RECIPE_BODY"},"inputs":{"month":"private-month"},"tab_id":"88"}`
+	rec := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/recipes/run", strings.NewReader(body)))
+	if rec.Code != http.StatusOK || api.tabID != "88" || api.request.Recipe == nil || api.request.Recipe.Description != "PRIVATE_RECIPE_BODY" || api.request.Inputs["month"] != "private-month" {
+		t.Fatalf("inline forwarding: %d %s %+v", rec.Code, rec.Body.String(), api.request)
+	}
+	if strings.Contains(rec.Body.String(), "PRIVATE_RECIPE_BODY") || strings.Contains(rec.Body.String(), "private-month") {
+		t.Fatal("inline content echoed")
+	}
+	bad := httptest.NewRecorder()
+	server.server.Handler.ServeHTTP(bad, httptest.NewRequest(http.MethodPost, "/api/recipes/run", strings.NewReader(`{"recipe":{"unknown":true}}`)))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("unknown nested field accepted: %d", bad.Code)
+	}
+}

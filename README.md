@@ -34,7 +34,7 @@ for normal web work.
 - Uses screenshots only as visual fallback, with optional Set-of-Marks overlays and a locked-session print-renderer fallback.
 - Supports tabs, downloads, console, network capture, request replay, and cancellation.
 - Turns a completed flow into a replayable `brw_batch` script, with identity guards.
-- Finds and runs immutable deterministic browser recipes from a private provider, with timers and pre-armed page/browser events.
+- Runs deterministic browser recipes from a private provider or supplied directly by the caller, with timers and pre-armed page/browser events.
 - Bundles an agent skill that searches before repeating work, promotes stable reusable flows, and repairs failures as new immutable recipe versions.
 - Stores page text, semantic JSON, screenshots, PDFs, downloads, and short video as browser-host artifacts instead of flooding model context.
 - Grows its advertised tool catalogue on demand instead of shipping all of it every turn.
@@ -495,7 +495,7 @@ Core MCP tools include:
   scaling, exact crops and a small preview; see [screenshots](docs/screenshots.md)
 - `brw_artifact_capture`, `brw_artifact_info`, `brw_artifact_read`,
   `brw_artifact_search`, `brw_artifact_delete`
-- `brw_recipe_search`, `brw_recipe_run` (only when a private provider is configured)
+- `brw_recipe_search`, `brw_recipe_run` (stored references or inline recipe bodies; a provider is optional)
 - `brw_emulate_device` for DevTools mobile/responsive emulation
 - `brw_set_geolocation`, `brw_set_network_conditions`, `brw_emulate_media` —
   what the page believes about where it is, whether it has a network, and which
