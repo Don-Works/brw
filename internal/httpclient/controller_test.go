@@ -558,7 +558,7 @@ func TestReadWindowPushesEveryBoundToBrowserHost(t *testing.T) {
 		}
 		want := map[string]string{
 			"max_chars": "123", "offset": "45", "max_links": "6", "max_headings": "7",
-			"include": "main,headings", "section": "Invoices",
+			"include": "main,headings", "section": "Invoices", "settle_ms": "0",
 		}
 		for name, expected := range want {
 			if got := r.URL.Query().Get(name); got != expected {
@@ -569,9 +569,10 @@ func TestReadWindowPushesEveryBoundToBrowserHost(t *testing.T) {
 	}))
 	defer srv.Close()
 	c, _ := New(srv.URL, 5*time.Second)
+	zero := 0
 	read, err := c.ReadWindow(context.Background(), readability.ReadOptions{
 		MaxChars: 123, Offset: 45, MaxLinks: 6, MaxHeadings: 7,
-		Include: []string{"main", "headings"}, Section: "Invoices",
+		Include: []string{"main", "headings"}, Section: "Invoices", SettleMS: &zero,
 	})
 	if err != nil || len(read.Main) != 123 || read.NextOffset != 168 {
 		t.Fatalf("read=%+v err=%v", read, err)
@@ -580,6 +581,9 @@ func TestReadWindowPushesEveryBoundToBrowserHost(t *testing.T) {
 
 func TestReadWindowSendsZeroToSelectHostDefaults(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Has("settle_ms") {
+			t.Error("omitted settle budget must retain the host default")
+		}
 		for _, name := range []string{"max_chars", "offset", "max_links", "max_headings"} {
 			if got := r.URL.Query().Get(name); got != "0" {
 				t.Errorf("%s=%q; zero must be explicit", name, got)

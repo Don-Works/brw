@@ -78,14 +78,15 @@ type RunRequest struct {
 }
 
 type RunResult struct {
-	RecipeID      string          `json:"recipe_id"`
-	RecipeVersion string          `json:"recipe_version"`
-	RecipeDigest  string          `json:"recipe_digest"`
-	Status        string          `json:"status"`
-	StartedAt     time.Time       `json:"started_at"`
-	DurationMS    int64           `json:"duration_ms"`
-	Steps         []StepResult    `json:"steps"`
-	Artifacts     []artifact.Meta `json:"artifacts,omitempty"`
+	Outputs       map[string]artifact.Meta `json:"outputs,omitempty"`
+	RecipeID      string                   `json:"recipe_id"`
+	RecipeVersion string                   `json:"recipe_version"`
+	RecipeDigest  string                   `json:"recipe_digest"`
+	Status        string                   `json:"status"`
+	StartedAt     time.Time                `json:"started_at"`
+	DurationMS    int64                    `json:"duration_ms"`
+	Steps         []StepResult             `json:"steps"`
+	Artifacts     []artifact.Meta          `json:"artifacts,omitempty"`
 	// FailureBundle is the manifest artifact id for a failed run, when the
 	// browser host collected evidence. The manifest lists artifact ids only, so
 	// this stays a handle-sized addition to a result, never a payload.
@@ -242,6 +243,9 @@ func (r Runner) runStep(ctx context.Context, value Recipe, step Step, inputs map
 		return 1, r.Surface.WaitEvent(ctx, event)
 	case "capture":
 		capture := *step.Capture
+		if capture.Kind == "extraction_json" && capture.Name == "" {
+			capture.Name = step.ID
+		}
 		if capture.Target != nil {
 			target, err := expandTarget(*capture.Target, inputs)
 			if err != nil {
@@ -267,6 +271,12 @@ func (r Runner) runStep(ctx context.Context, value Recipe, step Step, inputs map
 		meta, err := r.Surface.Capture(ctx, capture)
 		if err == nil {
 			result.Artifacts = append(result.Artifacts, meta)
+			if capture.Kind == "extraction_json" {
+				if result.Outputs == nil {
+					result.Outputs = map[string]artifact.Meta{}
+				}
+				result.Outputs[capture.Name] = meta
+			}
 		}
 		return 1, err
 	case "assert":

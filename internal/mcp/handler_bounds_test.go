@@ -38,6 +38,39 @@ type longPageController struct {
 	fakeController
 }
 
+type settleReadController struct {
+	fakeController
+	budget int
+	calls  int
+}
+
+func (c *settleReadController) Read(ctx context.Context) (readability.PageRead, error) {
+	c.budget = readability.SettleMS(ctx)
+	c.calls++
+	return readability.PageRead{Main: "Ready"}, nil
+}
+
+func TestReadToolSettleBudget(t *testing.T) {
+	controller := &settleReadController{}
+	srv := &Server{manager: controller, toolProfile: "all"}
+	for _, tc := range []struct {
+		args string
+		want int
+	}{{`{}`, 800}, {`{"settle_ms":0}`, 0}, {`{"settle_ms":5000}`, 5000}} {
+		callToolJSON(t, srv, "brw_read", tc.args)
+		if controller.budget != tc.want {
+			t.Fatalf("budget=%d want=%d", controller.budget, tc.want)
+		}
+	}
+	for _, args := range []string{`{"settle_ms":-1}`, `{"settle_ms":5001}`, `{"settle_ms":1.5}`, `{"settle_ms":"0"}`} {
+		before := controller.calls
+		_, rpcErr := srv.callTool(context.Background(), "brw_read", json.RawMessage(args))
+		if rpcErr == nil || controller.calls != before {
+			t.Fatalf("invalid budget reached controller: args=%s error=%v", args, rpcErr)
+		}
+	}
+}
+
 func (longPageController) Read(context.Context) (readability.PageRead, error) {
 	return readability.PageRead{
 		URL:      "https://example.com/long",
@@ -70,12 +103,15 @@ func (c *upstreamWindowController) ReadWindow(_ context.Context, options readabi
 func TestReadToolUsesBrowserHostWindowCapability(t *testing.T) {
 	controller := &upstreamWindowController{}
 	srv := &Server{manager: controller, toolProfile: "all"}
-	got := callToolJSON(t, srv, "brw_read", `{"max_chars":321,"offset":99,"include":["main"]}`)
+	got := callToolJSON(t, srv, "brw_read", `{"max_chars":321,"offset":99,"include":["main"],"settle_ms":0}`)
 	if controller.fullCalls != 0 || controller.windowCalls != 1 {
 		t.Fatalf("full calls=%d window calls=%d", controller.fullCalls, controller.windowCalls)
 	}
 	if controller.options.MaxChars != 321 || controller.options.Offset != 99 || len(controller.options.Include) != 1 {
 		t.Fatalf("forwarded options=%+v", controller.options)
+	}
+	if controller.options.SettleMS == nil || *controller.options.SettleMS != 0 {
+		t.Fatalf("forwarded settle budget=%v", controller.options.SettleMS)
 	}
 	if main, _ := got["main"].(string); len(main) != 321 {
 		t.Fatalf("windowed main len=%d", len(main))

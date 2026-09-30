@@ -1158,7 +1158,11 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	read, err := s.manager.Read(s.requestContext(r))
+	ctx := s.requestContext(r)
+	if opts.SettleMS != nil {
+		ctx = readability.WithSettleMS(ctx, *opts.SettleMS)
+	}
+	read, err := s.manager.Read(ctx)
 	if err != nil {
 		writeResult(w, read, err)
 		return
@@ -1190,6 +1194,14 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request) {
 func parseReadOptions(w http.ResponseWriter, r *http.Request) (readability.ReadOptions, bool) {
 	q := r.URL.Query()
 	opts := readability.ReadOptions{}
+	if q.Has("settle_ms") {
+		ms, err := strconv.Atoi(q.Get("settle_ms"))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "settle_ms must be an integer from 0 to 5000"})
+			return opts, false
+		}
+		opts.SettleMS = &ms
+	}
 
 	bounded := false
 	for _, field := range []struct {

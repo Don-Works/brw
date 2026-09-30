@@ -27,6 +27,7 @@ var ReadSections = []string{"main", "headings", "links", "forms", "tables", "met
 
 // ReadOptions bounds what Window keeps from a full page read.
 type ReadOptions struct {
+	SettleMS *int `json:"settle_ms,omitempty"`
 	// MaxChars caps the returned prose. Zero selects DefaultReadMaxChars;
 	// UnboundedReadChars returns everything.
 	MaxChars int `json:"max_chars,omitempty"`
@@ -65,6 +66,9 @@ func (l *SectionList) UnmarshalJSON(data []byte) error {
 // Validate reports unknown section names rather than silently dropping them, so
 // a typo surfaces as an error instead of a quietly empty read.
 func (o ReadOptions) Validate() error {
+	if o.SettleMS != nil && (*o.SettleMS < 0 || *o.SettleMS > 5000) {
+		return fmt.Errorf("settle_ms must be an integer from 0 to 5000")
+	}
 	for _, name := range o.Include {
 		if !validSection(name) {
 			return fmt.Errorf("unknown include section %q (valid: %s)", name, strings.Join(ReadSections, ", "))
@@ -231,6 +235,11 @@ func Window(read PageRead, opts ReadOptions) PageRead {
 	}
 	if !opts.wants("tables") {
 		out.Tables = nil
+		out.TablesComplete = false
+		out.TablesTruncated = false
+	}
+	if !opts.wants("main") || !opts.wants("headings") || out.MainTruncated || out.HeadingsTruncated || out.Section != "" {
+		out.SectionsAnchored = false
 	}
 	if !opts.wants("metadata") {
 		out.Metadata = Metadata{}

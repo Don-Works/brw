@@ -713,21 +713,13 @@ func BuildPageToolInvokeExpression(opts PageToolInvokeOptions) (string, error) {
   if (typeof direct === 'function') {
     fn = function(args, options){ return options ? direct.call(raw, args, options) : direct.call(raw, args); };
   } else if (tool.native && typeof tool.mc.executeTool === 'function') {
-    // Native executeTool answers a JSON string. Before Chromium 155 it took its
-    // input as one too, and says "Failed to parse input arguments" when handed
-    // an object, so that refusal is retried once with the string.
     var mc = tool.mc;
     var testing = typeof mc.getTools !== 'function';
     var stringFirst = testing || __brwWebMCPStringInput(win);
     fn = function(args, options){
       var subject = testing ? raw.name : raw;
       function run(input){ return Promise.resolve(mc.executeTool(subject, input, options)); }
-      var first = run(stringFirst ? JSON.stringify(args) : args);
-      if (stringFirst) return first.then(__brwWebMCPOutput);
-      return first.catch(function(err){
-        if (!/parse input/i.test(String(err && err.message || err))) throw err;
-        return run(JSON.stringify(args));
-      }).then(__brwWebMCPOutput);
+      return run(stringFirst ? JSON.stringify(args) : args).then(__brwWebMCPOutput);
     };
   }
   if (!fn) return { ok: false, status: 'not_found', frame: target.frame,

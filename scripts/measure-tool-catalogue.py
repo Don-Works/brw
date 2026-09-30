@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 BRWD = os.environ.get("BRWD", "bin/brwd")
 PROFILES = ("all", "core", "minimal", "auto")
@@ -32,10 +33,13 @@ CHARS_PER_TOKEN = 4
 
 
 def catalogue(profile):
-    result = subprocess.run(
-        [BRWD, "--mcp", "--mcp-tools", profile, "--http", "off"],
-        input=INIT + LIST, capture_output=True, text=True, timeout=120,
-    )
+    with tempfile.TemporaryDirectory(prefix="brw-catalogue-") as profile_dir:
+        result = subprocess.run(
+            [BRWD, "--mcp", "--mcp-tools", profile, "--http", "off",
+             "--headless", "--user-data-dir", profile_dir, "--usage-log", "off",
+             "--state-root", "off"],
+            input=INIT + LIST, capture_output=True, text=True, timeout=120,
+        )
     lines = [l for l in result.stdout.splitlines() if '"tools":[' in l]
     if not lines:
         sys.exit(f"{BRWD} returned no tools/list for profile {profile}:\n{result.stderr[-2000:]}")

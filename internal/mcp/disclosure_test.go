@@ -152,6 +152,38 @@ func TestSearchCapsCatalogueGrowthPerQuery(t *testing.T) {
 	}
 }
 
+func TestRepeatedSearchDisclosesAdditionalTools(t *testing.T) {
+	s := autoServer()
+	first, err := s.discoverTools("artifact recipe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Unlocked != maxUnlockPerSearch {
+		t.Fatalf("first search unlocked %d tools, want %d", first.Unlocked, maxUnlockPerSearch)
+	}
+	second, err := s.discoverTools("artifact recipe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Unlocked == 0 || second.Unlocked > maxUnlockPerSearch {
+		t.Fatalf("repeated search unlocked %d tools, want 1..%d", second.Unlocked, maxUnlockPerSearch)
+	}
+	for _, previous := range first.Matches {
+		if !previous.Relevant || previous.Advertised {
+			continue
+		}
+		found := false
+		for _, match := range second.Matches {
+			if match.Name == previous.Name {
+				found = match.Advertised && match.Relevant
+			}
+		}
+		if !found {
+			t.Errorf("repeated search did not distinguish already advertised %s", previous.Name)
+		}
+	}
+}
+
 // Disclosure narrows what is advertised, never what is permitted. A client that
 // ignores list_changed must still be able to call anything.
 func TestUndiscoveredToolsRemainCallable(t *testing.T) {

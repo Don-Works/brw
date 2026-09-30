@@ -284,6 +284,7 @@ func (c *Controller) Read(ctx context.Context) (readability.PageRead, error) {
 	values.Set("max_chars", strconv.Itoa(readability.UnboundedReadChars))
 	values.Set("max_links", strconv.Itoa(readability.UnboundedReadChars))
 	values.Set("max_headings", strconv.Itoa(readability.UnboundedReadChars))
+	values.Set("settle_ms", strconv.Itoa(readability.SettleMS(ctx)))
 	// Section selection is applied by the MCP layer on the full document, so the
 	// proxy deliberately does not forward it here.
 	err := c.get(ctx, "/api/page/read", values, &out)
@@ -304,6 +305,9 @@ func (c *Controller) ReadWindow(ctx context.Context, opts readability.ReadOption
 	values.Set("offset", strconv.Itoa(opts.Offset))
 	values.Set("max_links", strconv.Itoa(opts.MaxLinks))
 	values.Set("max_headings", strconv.Itoa(opts.MaxHeadings))
+	if opts.SettleMS != nil {
+		values.Set("settle_ms", strconv.Itoa(*opts.SettleMS))
+	}
 	if len(opts.Include) > 0 {
 		values.Set("include", strings.Join(opts.Include, ","))
 	}

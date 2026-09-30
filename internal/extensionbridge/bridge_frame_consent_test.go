@@ -69,7 +69,7 @@ func (f *frameExtension) serve(ctx context.Context, conn *websocket.Conn) {
 			if method != "Runtime.evaluate" || expression == "" {
 				break
 			}
-			if expression != f.cold {
+			if normalizedSnapshotExpression(expression) != normalizedSnapshotExpression(f.cold) {
 				reply["ok"] = false
 				reply["error"] = "TypeError: window.__brw_snap is not a function"
 				break
@@ -227,7 +227,7 @@ func TestIncludeFramesReadsOnlyTheOriginsConsentAllows(t *testing.T) {
 				if call.Expression == "" {
 					t.Fatalf("a second-phase frame message carried no expression: %+v", call)
 				}
-				if call.Expression != frameCold {
+				if normalizedSnapshotExpression(call.Expression) != normalizedSnapshotExpression(frameCold) {
 					t.Fatal("the frame message did not carry the shared walker; a second extractor would mint refs nothing guards")
 				}
 				named = append(named, call.Origins...)

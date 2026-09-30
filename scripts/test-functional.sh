@@ -291,6 +291,59 @@ curl -fsS "http://127.0.0.1:$port/api/artifacts/$inline_artifact/read?offset=0&m
 curl -fsS -H 'content-type: application/json' --data '{"query":"source invoice"}' \
   "http://127.0.0.1:$port/api/recipes/search" | python3 -c 'import json,sys; assert json.load(sys.stdin)==[]'
 curl -fsS -X DELETE "http://127.0.0.1:$port/api/artifacts/$inline_artifact" >/dev/null
+curl -fsS -H 'content-type: application/json' -H "$recipe_owner" \
+  --data "{\"url\":\"http://127.0.0.1:$fixture_port/content.html\",\"tab_id\":\"$inline_tab\"}" \
+  "http://127.0.0.1:$port/api/page/navigate_to" >/dev/null
+python3 - "$fixture_port" "$inline_tab" >"$run_root/extraction-request.json" <<'PY'
+import json
+import sys
+
+recipe = {
+    "schema_version": 1, "id": "example.fixture.extract", "version": "1.0.0",
+    "name": "Extract fixture content", "description": "Capture named bounded fixture results.",
+    "intents": ["extract fixture content"], "origins": ["http://127.0.0.1:" + sys.argv[1]],
+    "risk": "read_only", "steps": [
+        {"id": "section", "action": "capture", "capture": {
+            "kind": "extraction_json", "name": "guidance", "ttl_seconds": 300,
+            "extract": {"source": "section", "section": "Controls Under Test", "max_chars": 2000, "max_bytes": 4096}}},
+        {"id": "table", "action": "capture", "capture": {
+            "kind": "extraction_json", "name": "coverage", "ttl_seconds": 300,
+            "extract": {"source": "table", "caption": "Quarterly browser coverage",
+                        "headers": ["Area", "Status", "Owner"], "max_rows": 10,
+                        "max_columns": 3, "max_cell_chars": 100, "max_bytes": 4096}}},
+    ],
+}
+print(json.dumps({"recipe": recipe, "tab_id": sys.argv[2]}))
+PY
+curl -fsS -H 'content-type: application/json' -H "$recipe_owner" \
+  --data-binary "@$run_root/extraction-request.json" "http://127.0.0.1:$port/api/recipes/run" \
+  >"$run_root/extraction-result.json"
+python3 - "$run_root/extraction-result.json" "$port" <<'PY'
+import json
+import sys
+import urllib.request
+
+result = json.load(open(sys.argv[1]))
+assert result["status"] == "done", result
+assert set(result["outputs"]) == {"guidance", "coverage"}, result
+assert len(result["artifacts"]) == 2, result
+for name, meta in result["outputs"].items():
+    assert meta["kind"] == "extraction_json" and meta["size_bytes"] <= 4096, meta
+    url = "http://127.0.0.1:" + sys.argv[2] + "/api/artifacts/" + meta["artifact_id"]
+    with urllib.request.urlopen(url + "/read?offset=0&max_bytes=4096") as response:
+        chunk = json.load(response)
+    value = json.loads(chunk["text"])
+    assert value["name"] == name, value
+    if name == "guidance":
+        assert "page meaning and structured content" in value["data"], value
+        assert "Quarterly browser coverage" not in value["data"], value
+    else:
+        assert value["data"]["headers"] == ["Area", "Status", "Owner"], value
+        assert ["Stable refs", "Required", "store"] in value["data"]["rows"], value
+    with urllib.request.urlopen(urllib.request.Request(url, method="DELETE")) as response:
+        assert response.status == 200
+PY
+echo "PASS named recipe extraction       exact section/table/bounded artifacts/no provider"
 curl -fsS -H 'content-type: application/json' -H "$recipe_owner" --data "{\"id\":\"$inline_tab\"}" \
   "http://127.0.0.1:$port/api/browser/close" >/dev/null
 echo "PASS caller-supplied recipe          no provider/exact digest/download bytes/no automatic install"

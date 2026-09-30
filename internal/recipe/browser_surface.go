@@ -519,7 +519,7 @@ func (s *BrowserSurface) Capture(ctx context.Context, capture CaptureSpec) (arti
 		capture.Ref = matches[0].Ref
 	}
 	opts := artifact.CaptureOptions{
-		Kind: capture.Kind, Ref: capture.Ref, Redaction: capture.Redaction,
+		Kind: capture.Kind, Ref: capture.Ref, Redaction: capture.Redaction, Name: capture.Name, Extract: capture.Extract,
 		TTLSeconds: capture.TTLSeconds, DurationMS: capture.DurationMS, FPS: capture.FPS,
 		DownloadGUID: capture.DownloadGUID, Filename: capture.Filename,
 	}

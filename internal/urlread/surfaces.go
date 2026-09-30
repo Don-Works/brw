@@ -16,13 +16,14 @@ import (
 // variant, /.well-known/api-catalog, /.well-known/ai-catalog.json and
 // /.well-known/ucp).
 type AgentSurfaces struct {
-	Markdown        []string `json:"markdown,omitempty"`
-	LLMs            []string `json:"llms,omitempty"`
-	APIDescriptions []string `json:"api_descriptions,omitempty"`
-	APICatalog      string   `json:"api_catalog,omitempty"`
-	MCP             []string `json:"mcp,omitempty"`
-	A2AAgentCard    string   `json:"a2a_agent_card,omitempty"`
-	UCP             string   `json:"ucp,omitempty"`
+	Markdown        []string    `json:"markdown,omitempty"`
+	LLMs            []string    `json:"llms,omitempty"`
+	APIDescriptions []string    `json:"api_descriptions,omitempty"`
+	APICatalog      string      `json:"api_catalog,omitempty"`
+	MCP             []string    `json:"mcp,omitempty"`
+	A2AAgentCard    string      `json:"a2a_agent_card,omitempty"`
+	UCP             string      `json:"ucp,omitempty"`
+	UCPProfile      *UCPProfile `json:"ucp_profile,omitempty"`
 	// DeprecatedAIPlugin is a legacy ChatGPT-plugin manifest; it is reported
 	// apart from api_descriptions because the format is retired.
 	DeprecatedAIPlugin string `json:"deprecated_ai_plugin,omitempty"`
@@ -34,7 +35,7 @@ type AgentSurfaces struct {
 
 func (s *AgentSurfaces) empty() bool {
 	return s == nil || (len(s.Markdown) == 0 && len(s.LLMs) == 0 && len(s.APIDescriptions) == 0 &&
-		s.APICatalog == "" && len(s.MCP) == 0 && s.A2AAgentCard == "" && s.UCP == "" &&
+		s.APICatalog == "" && len(s.MCP) == 0 && s.A2AAgentCard == "" && s.UCP == "" && s.UCPProfile == nil &&
 		s.DeprecatedAIPlugin == "" && s.LLMsTxt == "")
 }
 

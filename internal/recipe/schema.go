@@ -17,6 +17,8 @@ import (
 	"strings"
 
 	"github.com/Don-Works/brw/internal/credential"
+
+	"github.com/Don-Works/brw/internal/artifact"
 )
 
 const SchemaVersion = 1
@@ -99,8 +101,10 @@ type Event struct {
 }
 
 type CaptureSpec struct {
-	Kind   string  `json:"kind"`
-	Target *Target `json:"target,omitempty"`
+	Name    string                   `json:"name,omitempty"`
+	Extract *artifact.ExtractionSpec `json:"extract,omitempty"`
+	Kind    string                   `json:"kind"`
+	Target  *Target                  `json:"target,omitempty"`
 	// Ref is retained only so strict parsing can return a useful validation
 	// error for old drafts. Persisted observation refs are never executable.
 	Ref          string `json:"ref,omitempty"`
@@ -192,11 +196,39 @@ func Validate(value Recipe) error {
 		problems = append(problems, errors.New("one to 500 bounded steps are required"))
 	}
 	seen := map[string]bool{}
+	outputs := map[string]bool{}
 	for index, step := range value.Steps {
+		if step.Capture != nil && step.Capture.Kind == "extraction_json" {
+			name := step.Capture.Name
+			if name == "" {
+				name = step.ID
+			}
+			if outputs[name] {
+				problems = append(problems, errors.New("extraction output names must be unique"))
+			}
+			outputs[name] = true
+			if err := artifact.ValidateExtraction(name, step.Capture.Extract); err != nil {
+				problems = append(problems, err)
+			}
+		}
 		if err := validateStep(value, step, seen); err != nil {
 			problems = append(problems, fmt.Errorf("step %d: %w", index+1, err))
 		}
 		seen[step.ID] = true
+	}
+	if len(outputs) > 0 {
+		sensitive := false
+		for _, input := range value.Inputs {
+			sensitive = sensitive || input.Secret
+		}
+		for _, step := range value.Steps {
+			if _, ok := StepCredentialReference(step); ok {
+				sensitive = true
+			}
+		}
+		if sensitive {
+			problems = append(problems, errors.New("extraction is unavailable in recipes with secret inputs or credential references; use a signed-in profile session without runtime secrets"))
+		}
 	}
 	encoded, _ := json.Marshal(value)
 	if len(encoded) > 1<<20 {
@@ -600,7 +632,18 @@ func validateEventValue(event Event, inputs map[string]Input, checkTemplates boo
 }
 
 func validateCapture(capture CaptureSpec, inputs map[string]Input) error {
-	if !slices.Contains([]string{"text", "semantic_json", "screenshot", "pdf", "video", "download"}, capture.Kind) {
+	if capture.Kind == "extraction_json" {
+		name := capture.Name
+		if name == "" {
+			name = "output"
+		}
+		if err := artifact.ValidateExtraction(name, capture.Extract); err != nil {
+			return err
+		}
+	} else if capture.Extract != nil || capture.Name != "" {
+		return errors.New("name and extract are only valid for extraction_json")
+	}
+	if !slices.Contains([]string{"text", "semantic_json", "screenshot", "pdf", "video", "download", "extraction_json"}, capture.Kind) {
 		return errors.New("unsupported capture kind")
 	}
 	if capture.TTLSeconds < 0 || capture.TTLSeconds > 7*24*60*60 {

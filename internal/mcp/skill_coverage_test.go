@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -24,10 +25,7 @@ var skillToolCall = regexp.MustCompile(`brw_[a-z0-9_]+\(`)
 // accident. Enumerating the catalogue rather than listing names by hand is the
 // point: a tool added next week fails this test on the commit that adds it.
 func TestEverySkillDocumentsEveryAdvertisedTool(t *testing.T) {
-	skill, err := os.ReadFile("../../skills/brw/SKILL.md")
-	if err != nil {
-		t.Fatalf("read the brw skill: %v", err)
-	}
+	skill := readSkillBundle(t)
 	documented := map[string]bool{}
 	for _, mention := range skillToolMention.FindAllString(string(skill), -1) {
 		documented[mention] = true
@@ -56,6 +54,37 @@ func TestEverySkillDocumentsEveryAdvertisedTool(t *testing.T) {
 			t.Errorf("skills/brw/SKILL.md documents %s({...}), which is not in the catalogue", name)
 		}
 	}
+}
+
+func readSkillBundle(t *testing.T) string {
+	t.Helper()
+	root := "../../skills/brw"
+	main, err := os.ReadFile(filepath.Join(root, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(main) > 16*1024 {
+		t.Fatalf("default skill is %d bytes; keep it within 16 KiB and move details to linked references", len(main))
+	}
+	paths, err := filepath.Glob(filepath.Join(root, "references", "*.md"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("skill reference paths=%v err=%v", paths, err)
+	}
+	var out strings.Builder
+	out.Write(main)
+	for _, path := range paths {
+		name := "references/" + filepath.Base(path)
+		if !strings.Contains(string(main), "("+name+")") {
+			t.Errorf("main skill does not link %s", name)
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out.WriteByte('\n')
+		out.Write(body)
+	}
+	return out.String()
 }
 
 func catalogueHasTool(catalogue []map[string]any, name string) bool {
