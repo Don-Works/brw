@@ -44,8 +44,13 @@ for normal web work.
 - Runs cleanly over SSH so the browser profile stays on the machine that owns it.
 
 See [private recipes and browser-host artifacts](docs/recipes-and-artifacts.md)
-for the architecture and [the browser automation review](docs/browser-automation-review.md)
-for measured gains, security gates, competitive gaps, and prioritized next work.
+for the architecture and [repository-owned recipes](docs/repository-recipes.md)
+for sharing reviewed workflows. The [October competitive review](docs/competitive-review-2026-10.md)
+records current comparisons, measurements and limitations; the
+[wider landscape and planner/executor study](docs/browser-landscape-2026-10.md)
+compares infrastructure, extraction and orchestration approaches. The
+[algorithm research](docs/algorithm-research-2026-10.md) sets out experiments and
+correctness criteria for further performance work.
 
 The extension screenshot path is bounded and background-safe. Chrome may suspend
 its compositor while a desktop session is locked; when that happens, `brw`

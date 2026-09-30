@@ -77,3 +77,17 @@ func TestRenderCompactDeltaHeader(t *testing.T) {
 		t.Fatalf("expected delta header with removed refs, got:\n%s", out)
 	}
 }
+
+func TestRenderCompactPreservesFrameClickCoordinates(t *testing.T) {
+	snap := PageSnapshot{Elements: []Element{
+		{Ref: "f0:e3", Role: "button", Name: "Pay", Source: []string{"dom", "frame"}, CX: 123.5, CY: 0, Visible: true, InViewport: true},
+		{Ref: "e4", Role: "button", Name: "Continue", Source: []string{"dom"}, Visible: true, InViewport: true},
+	}}
+	out := RenderCompact(snap)
+	if !strings.Contains(out, `f0:e3 button "Pay" cx=123.5 cy=0`) {
+		t.Fatalf("frame click coordinates missing: %s", out)
+	}
+	if strings.Contains(out, `e4 button "Continue" cx=`) {
+		t.Fatalf("ordinary element acquired frame coordinates: %s", out)
+	}
+}

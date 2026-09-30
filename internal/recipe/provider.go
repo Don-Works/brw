@@ -1167,6 +1167,12 @@ func cloneRecipe(value Recipe) Recipe {
 		if value.Steps[index].Capture != nil {
 			capture := *value.Steps[index].Capture
 			capture.Target = cloneTarget(value.Steps[index].Capture.Target)
+			if capture.Extract != nil {
+				extraction := *capture.Extract
+				extraction.Headers = append([]string(nil), capture.Extract.Headers...)
+				extraction.Fields = append([]string(nil), capture.Extract.Fields...)
+				capture.Extract = &extraction
+			}
 			cloned.Steps[index].Capture = &capture
 		}
 	}

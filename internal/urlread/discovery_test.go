@@ -107,6 +107,7 @@ func TestFetchDiscoversSurfacesFromLLMsTxtAndLinks(t *testing.T) {
 					APICatalog:         base + "/.well-known/api-catalog",
 					MCP:                []string{"https://mcp.acme.test/shop", "https://mcp.acme.test/cards"},
 					UCP:                base + "/.well-known/ucp",
+					UCPProfile:         &UCPProfile{Status: "invalid"},
 					DeprecatedAIPlugin: base + "/.well-known/ai-plugin.json",
 					LLMsTxt:            "absent",
 					LLMsTxtURL:         base + "/llms.txt",

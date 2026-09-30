@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/runtime"
@@ -21,6 +22,20 @@ import (
 // overwrites it unconditionally so a hostile/colliding page value cannot wedge
 // snapshots. Stable for the process so the fast path keeps hitting.
 var snapshotInstallTarget = "window.__brw_snap_" + randomToken()
+
+var snapshotVersion atomic.Uint64
+
+func nextSnapshotVersion() uint64 {
+	for {
+		previous := snapshotVersion.Load()
+		if previous >= 9007199254740991 {
+			return 0
+		}
+		if snapshotVersion.CompareAndSwap(previous, previous+1) {
+			return previous + 1
+		}
+	}
+}
 
 func randomToken() string {
 	var b [12]byte
@@ -793,19 +808,17 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   const returned = limit > 0 ? allElements.slice(0, limit) : allElements;
   for (const item of returned) delete item._frontier_score;
 
-  state.version = (state.version || 0) + 1;
-
-  // --- since-delta (see snapshot.SnapshotDelta) ---------------------------------
-  // A delta is only emitted when opts.since matches the PRIOR snapshot's version
-  // AND the option envelope is identical (otherwise added/removed would reflect
-  // option changes, not page changes). 'removed' is computed from genuine DOM
-  // presence — every data-brw-ref node still in the tree — so an element merely
-  // scrolled out of the viewport / past the limit is never falsely "removed".
+  const __brwVersion = Number.isSafeInteger(opts.__brw_version) && opts.__brw_version > 0 ? opts.__brw_version : 0;
+  const __brwTracked = __brwVersion > 0 && typeof opts.__brw_epoch === 'string' && opts.__brw_epoch.length > 0;
+  if (__brwTracked && (!state.deltaHistory || state.deltaHistory.epoch !== opts.__brw_epoch)) {
+    state.deltaHistory = { epoch: opts.__brw_epoch, entries: [], bytes: 0 };
+    delete state.delta;
+  }
   function __brwOptsSignature() {
-    return [modeTag, opts.query || '', opts.text || '',
-      opts.role || '', limit, Boolean(opts.viewport_only), includeHidden,
-      textContent, Boolean(opts.visual_islands), includeBoxes,
-      (opts.visual_islands_limit === undefined ? '' : opts.visual_islands_limit)].join('\u0001');
+    return JSON.stringify([modeTag, query, textFilter, roleFilter, limit,
+      viewportOnly, includeHidden, textContent, Boolean(opts.visual_islands), includeBoxes,
+      (Number(opts.visual_islands_limit || 0) || 10),
+      Boolean(opts.include_ax), Boolean(opts.include_frames)]);
   }
   function __brwFingerprint(it) {
     var __fp = {};
@@ -829,8 +842,24 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   for (const it of returned) __brwReturnedFP[it.ref] = __brwFingerprint(it);
   const __brwDomRefSet = __brwDomRefs();
   let __brwDelta = null;
-  const __brwPrev = state.delta;
-  if (opts.since && __brwPrev && __brwPrev.version === opts.since && __brwPrev.optsKey === __brwOptsKey) {
+  let __brwFallback = '';
+  let __brwPrev = null;
+  const __brwHistory = __brwTracked ? state.deltaHistory : null;
+  if (opts.since) {
+    if (!__brwTracked) __brwFallback = 'untracked_snapshot';
+    else if (opts.include_ax || opts.include_frames) __brwFallback = 'enriched_snapshot';
+    else {
+      for (const entry of __brwHistory.entries) {
+        if (entry.version === opts.since) {
+          __brwPrev = JSON.parse(entry.payload);
+          break;
+        }
+      }
+      if (!__brwPrev) __brwFallback = 'baseline_missing';
+      else if (__brwPrev.optsKey !== __brwOptsKey) __brwFallback = 'options_changed';
+    }
+  }
+  if (__brwPrev && !__brwFallback) {
     const added = [], changed = [], removed = [];
     for (const ref in __brwReturnedFP) {
       if (!(ref in __brwPrev.returnedFP)) added.push(ref);
@@ -841,8 +870,23 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     }
     __brwDelta = { added: added, removed: removed, changed: changed };
   }
-  // Persist this snapshot's state for the NEXT delta request (single generation).
-  state.delta = { version: state.version, optsKey: __brwOptsKey, returnedFP: __brwReturnedFP, domRefs: __brwDomRefSet };
+  if (__brwHistory && !opts.include_ax && !opts.include_frames) {
+    const payload = JSON.stringify({ optsKey: __brwOptsKey, returnedFP: __brwReturnedFP, domRefs: __brwDomRefSet });
+    const bytes = new TextEncoder().encode(payload).length;
+    const kept = [];
+    for (const entry of __brwHistory.entries) {
+      if (entry.version === __brwVersion) __brwHistory.bytes -= entry.bytes;
+      else kept.push(entry);
+    }
+    __brwHistory.entries = kept;
+    if (bytes <= 2097152) {
+      while (__brwHistory.entries.length >= 8 || __brwHistory.bytes + bytes > 2097152) {
+        __brwHistory.bytes -= __brwHistory.entries.shift().bytes;
+      }
+      __brwHistory.entries.push({ version: __brwVersion, payload: payload, bytes: bytes });
+      __brwHistory.bytes += bytes;
+    }
+  }
   // On a delta, elements carries ONLY the added+changed elements (a change set);
   // removed refs travel in the delta object.
   let __brwOutElements = returned;
@@ -894,11 +938,12 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     truncated: limit > 0 && (totalCandidates + visualElements.length) > returned.length,
     mode: modeTag,
     include_hidden: includeHidden,
-    version: state.version,
+    version: __brwVersion,
     focused_ref: focusedRef,
     delta: Boolean(__brwDelta),
     low_semantic_coverage: coverage.low
   };
+  if (__brwFallback) metadata.delta_fallback = __brwFallback;
   if (coverage.low) {
     metadata.coverage_hint = 'Sparse semantic surface for a content-heavy page (likely custom web components or client-side rendering). Use brw_screenshot with annotate:true (Set-of-Marks) to read ref labels off the image, or click by coordinates; a region/ref-scoped annotated crop keeps the image small.';
   }
@@ -1667,8 +1712,15 @@ func SnapshotLooksInstalled(snap PageSnapshot) bool {
 	return snap.URL != ""
 }
 
+// SnapshotCallExpressions creates a hot/cold pair sharing one daemon-lifetime
+// version. Each pair is for one snapshot operation; retained versions expire
+// across daemon restarts and when the bounded document history evicts them.
 func SnapshotCallExpressions(opts SnapshotOptions) (hot, cold string) {
-	args, _ := json.Marshal(opts)
+	args, _ := json.Marshal(struct {
+		SnapshotOptions
+		WalkerVersion uint64 `json:"__brw_version"`
+		WalkerEpoch   string `json:"__brw_epoch"`
+	}{opts, nextSnapshotVersion(), snapshotInstallTarget})
 	hot = fmt.Sprintf("%s(%s)", snapshotInstallTarget, args)
 	cold = fmt.Sprintf("(function(){%s=%s;return %s(%s);})()", snapshotInstallTarget, SnapshotFunctionScript, snapshotInstallTarget, args)
 	return hot, cold

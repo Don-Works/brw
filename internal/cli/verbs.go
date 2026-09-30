@@ -176,6 +176,17 @@ func verbs() []verb {
 			method:  http.MethodGet,
 			path:    "/api/page/read",
 			flags: func(fs *flag.FlagSet, opts *options) {
+				fs.Func("settle-ms", "maximum sparse-page text wait: 0-5000 ms (default 800; 0 reads immediately)", func(raw string) error {
+					ms, err := strconv.Atoi(raw)
+					if err != nil {
+						return fmt.Errorf("settle-ms must be an integer from 0 to 5000")
+					}
+					if err := (readability.ReadOptions{SettleMS: &ms}).Validate(); err != nil {
+						return err
+					}
+					opts.readSettleMS = &ms
+					return nil
+				})
 				fs.IntVar(&opts.maxChars, "max-chars", 0, "return at most this many characters of the body")
 				fs.Int64Var(&opts.offset, "offset", 0, "start the body at this character offset")
 				fs.StringVar(&opts.section, "section", "", "read only the section under this heading")
@@ -202,6 +213,9 @@ func verbs() []verb {
 					values.Set("max_headings", strconv.Itoa(readability.UnboundedReadChars))
 				}
 				setString(values, "section", opts.section)
+				if opts.readSettleMS != nil {
+					values.Set("settle_ms", strconv.Itoa(*opts.readSettleMS))
+				}
 				return request{Query: values}, nil
 			},
 			render: renderRead,

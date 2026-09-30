@@ -32,16 +32,18 @@ const (
 )
 
 type probeOutcome struct {
-	state string
-	body  []byte
-	url   string
+	state     string
+	body      []byte
+	url       string
+	oversized bool
 }
 
 type probeSpec struct {
-	url      string
-	accept   string
-	maxBytes int64
-	accepts  func(mediaType string) bool
+	url            string
+	accept         string
+	maxBytes       int64
+	accepts        func(mediaType string) bool
+	detectOverflow bool
 }
 
 // probe fetches one discovery resource concurrently with the main read. It
@@ -107,7 +109,11 @@ func runProbe(ctx context.Context, spec probeSpec, opts Options, userAgent strin
 		out.state = llmsAbsent
 		return out
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, spec.maxBytes))
+	readLimit := spec.maxBytes
+	if spec.detectOverflow {
+		readLimit++
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, readLimit))
 	if err != nil && !errors.Is(err, io.EOF) {
 		return out
 	}
@@ -116,6 +122,10 @@ func runProbe(ctx context.Context, spec probeSpec, opts Options, userAgent strin
 		return out
 	}
 	out.state = llmsPresent
+	out.oversized = int64(len(body)) > spec.maxBytes
+	if out.oversized {
+		body = body[:spec.maxBytes]
+	}
 	out.body = body
 	return out
 }
@@ -210,7 +220,7 @@ func startDiscovery(ctx context.Context, target *url.URL, opts Options, userAgen
 	}
 	d.apiCatalog = start(probeSpec{url: root("/.well-known/api-catalog"), accept: "application/linkset+json, application/json;q=0.9", maxBytes: catalogProbeMaxBytes, accepts: acceptsJSON})
 	d.aiCatalog = start(probeSpec{url: root("/.well-known/ai-catalog.json"), accept: "application/json", maxBytes: catalogProbeMaxBytes, accepts: acceptsJSON})
-	d.ucp = start(probeSpec{url: root("/.well-known/ucp"), accept: "application/json, */*;q=0.5", maxBytes: presenceProbeMaxByte, accepts: acceptsNonHTML})
+	d.ucp = start(probeSpec{url: root("/.well-known/ucp"), accept: "application/json, */*;q=0.5", maxBytes: ucpProbeMaxBytes, accepts: acceptsNonHTML, detectOverflow: true})
 	return d
 }
 
@@ -248,6 +258,7 @@ func (d *discovery) apply(s *AgentSurfaces, markdownVariant bool) {
 	}
 	if out := d.ucp.wait(d.deadline); out.state == llmsPresent {
 		setOnce(&s.UCP, d.ucp.url)
+		s.UCPProfile = parseUCPProfile(out.body, out.oversized)
 	}
 }
 

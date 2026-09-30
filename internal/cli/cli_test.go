@@ -198,6 +198,13 @@ func TestVerbsDriveTheDaemonHTTPAPI(t *testing.T) {
 			},
 		},
 		{
+			name:       "read disables settling without changing output bounds",
+			args:       []string{"read", "--settle-ms", "0"},
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/page/read",
+			wantQuery:  url.Values{"settle_ms": {"0"}},
+		},
+		{
 			// The route bounds every list the moment one bound is present, so an
 			// offset on its own has to say -1 for the rest or the prose comes
 			// back capped at the route's default.

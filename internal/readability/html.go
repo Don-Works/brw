@@ -2,6 +2,7 @@ package readability
 
 import (
 	"net/url"
+	"regexp"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -160,6 +161,9 @@ func pickMainContainer(body *html.Node) *html.Node {
 	best := body
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
+		if n.DataAtom == atom.Pre {
+			return
+		}
 		for child := n.FirstChild; child != nil; child = child.NextSibling {
 			if child.Type != html.ElementNode || skippedContainers[child.DataAtom] {
 				continue
@@ -208,12 +212,33 @@ func renderBlock(n *html.Node, b *strings.Builder) {
 	switch n.Type {
 	case html.TextNode:
 		text := normalizeInlineSpace(n.Data)
+		if b.Len() == 0 || strings.HasSuffix(b.String(), "\n") || strings.HasSuffix(b.String(), " ") {
+			text = strings.TrimLeft(text, " ")
+		}
 		if text != "" {
 			b.WriteString(text)
 		}
 		return
 	case html.ElementNode:
 		if skippedContainers[n.DataAtom] {
+			return
+		}
+		if n.DataAtom == atom.Pre {
+			endBlock(b)
+			text := textOf(n)
+			longest, run := 0, 0
+			for _, char := range text {
+				if char == '`' {
+					run++
+					longest = max(longest, run)
+				} else {
+					run = 0
+				}
+			}
+			fence := strings.Repeat("`", max(3, longest+1))
+			b.WriteString(fence + "\n" + text)
+			endBlock(b)
+			b.WriteString(fence + "\n")
 			return
 		}
 		if level, isHeading := headingLevels[n.DataAtom]; isHeading {
@@ -249,16 +274,32 @@ func endBlock(b *strings.Builder) {
 // how a browser renders inline text and what keeps indented source HTML from
 // arriving as ragged prose.
 func normalizeInlineSpace(s string) string {
-	return strings.Join(strings.FieldsFunc(s, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f' || r == '\v'
-	}), " ")
+	return inlineSpace.ReplaceAllString(s, " ")
 }
+
+var inlineSpace = regexp.MustCompile(`[ \t\n\r\f\v]+`)
 
 func collapseBlankRuns(s string) string {
 	lines := strings.Split(s, "\n")
 	out := make([]string, 0, len(lines))
 	blank := 0
+	fence := ""
 	for _, line := range lines {
+		marker := strings.TrimSpace(line)
+		if fence != "" {
+			out = append(out, line)
+			if len(marker) >= len(fence) && strings.Trim(marker, fence[:1]) == "" {
+				fence = ""
+			}
+			continue
+		}
+		if strings.HasPrefix(marker, "```") || strings.HasPrefix(marker, "~~~") {
+			length := len(marker) - len(strings.TrimLeft(marker, marker[:1]))
+			fence = marker[:length]
+			blank = 0
+			out = append(out, line)
+			continue
+		}
 		trimmed := strings.TrimRight(line, " \t")
 		if strings.TrimSpace(trimmed) == "" {
 			blank++

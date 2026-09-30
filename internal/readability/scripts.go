@@ -173,10 +173,8 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
     metadata.open_graph[m.getAttribute('property')] = clean(m.getAttribute('content'));
   }
 
-  const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
-    .filter(visible)
-    .map(h => ({ level: Number(h.tagName.substring(1)), text: text(h), id: h.id || '' }))
-    .filter(h => h.text);
+  const headingNodes = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6')).filter(visible).filter(h => text(h));
+  const headings = headingNodes.map(h => ({ level: Number(h.tagName.substring(1)), text: text(h), id: h.id || '' }));
 
   const links = Array.from(document.querySelectorAll('a[href]'))
     .filter(visible)
@@ -206,13 +204,15 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
       })
   }));
 
-  const tables = Array.from(document.querySelectorAll('table')).filter(visible).slice(0, 20).map(table => {
+  const visibleTables = Array.from(document.querySelectorAll('table')).filter(visible);
+  const tables = visibleTables.slice(0, 20).map(table => {
     const caption = table.querySelector('caption') ? text(table.querySelector('caption')) : '';
     const headers = Array.from(table.querySelectorAll('thead th, tr:first-child th')).map(th => text(th)).filter(Boolean);
-    const rows = Array.from(table.querySelectorAll('tbody tr, tr')).slice(0, 40).map(tr =>
+    const tableRows = Array.from(table.querySelectorAll('tbody tr, tr'));
+    const rows = tableRows.slice(0, 40).map(tr =>
       Array.from(tr.querySelectorAll('th,td')).map(cell => text(cell))
     ).filter(row => row.length);
-    return { caption, headers, rows };
+    return { caption, headers, rows, truncated: tableRows.length > 40 };
   });
 
   // Primary extraction is the scored semantic main element. On link-heavy pages
@@ -224,10 +224,11 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
   // content rendered inside web components is captured. This only activates on
   // failed/near-empty primary extraction, so well-formed article pages are
   // unaffected.
+  let usedFallback = false;
   let main = text(mainEl).slice(0, 100000);
   if (main.length < minMainLen) {
     const fallback = deepBodyText();
-    if (fallback.length > main.length) main = fallback.slice(0, 100000);
+    if (fallback.length > main.length) { main = fallback.slice(0, 100000); usedFallback = true; }
   }
 
   // Locate each heading inside the extracted prose so a caller can address a
@@ -249,19 +250,23 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
     return count;
   };
   let scanFrom = 0;
-  for (const heading of headings) {
-    // Scanning forward from the previous heading's end keeps repeated heading
-    // texts in document order, and stops prose that merely mentions a heading
-    // ("see Install below") from anchoring that heading's section to itself.
+  let sectionsAnchored = !usedFallback && main.length < 100000;
+  for (const [headingIndex, heading] of headings.entries()) {
+    if (!mainEl.contains(headingNodes[headingIndex])) {
+      heading.offset = -1;
+      continue;
+    }
     const at = main.indexOf(heading.text, scanFrom);
     if (at === -1) {
       // A heading outside the scored main element, or one whose text was
       // rewritten between extractions. Leave it unaddressable rather than
       // guessing an offset that would slice the wrong span.
       heading.offset = -1;
+      sectionsAnchored = false;
       continue;
     }
     heading.offset = codePointsBefore(main, at);
+    if (main.indexOf(heading.text) !== at || main.lastIndexOf(heading.text) !== at) sectionsAnchored = false;
     scanFrom = at + heading.text.length;
   }
 
@@ -273,6 +278,9 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
     links,
     forms,
     tables,
+    tables_truncated: visibleTables.length > 20,
+    tables_complete: visibleTables.length <= 20,
+    sections_anchored: sectionsAnchored,
     metadata
   };
   }
@@ -319,8 +327,12 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
 // min-main-length and CSR settle-cap arguments applied) that resolves to a
 // Promise<PageRead>. Both the direct-CDP path and the extension bridge use it so
 // the script is invoked — not left as a bare function definition — and awaited.
-func ReadExpr() string {
-	return fmt.Sprintf("(%s)(%d,%d)", ReadScript, readMinMainLen, readSettleCapMS)
+func ReadExpr(settleMS ...int) string {
+	budget := readSettleCapMS
+	if len(settleMS) > 0 {
+		budget = min(5000, max(0, settleMS[0]))
+	}
+	return fmt.Sprintf("(%s)(%d,%d)", ReadScript, readMinMainLen, budget)
 }
 
 // Normalize is the shared post-decode hook both transports run on a raw page
@@ -343,9 +355,9 @@ func Normalize(read PageRead) PageRead {
 	return read
 }
 
-func Evaluate(ctx context.Context) (PageRead, error) {
+func Evaluate(ctx context.Context, settleMS ...int) (PageRead, error) {
 	var read PageRead
-	expr := ReadExpr()
+	expr := ReadExpr(settleMS...)
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		obj, exception, err := runtime.Evaluate(expr).
 			WithReturnByValue(true).

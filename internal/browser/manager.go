@@ -1112,7 +1112,7 @@ func (m *Manager) Read(ctx context.Context) (readability.PageRead, error) {
 		}
 		m.refs.Observe(tabID, snap.Elements)
 	}
-	read, readErr := readability.Evaluate(tabCtx)
+	read, readErr := readability.Evaluate(tabCtx, readability.SettleMS(ctx))
 	url := read.URL
 	if url == "" {
 		url = snap.URL
@@ -3177,7 +3177,8 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 			actionErr = errors.New("fill requires ref")
 			break
 		}
-		actionErr = m.fillRef(tabCtx, step.Ref, step.Text, true)
+		opts := snapshot.FillOptions{Text: step.Text, Value: step.Value}
+		actionErr = m.fillRef(tabCtx, step.Ref, opts.EffectiveText(), true)
 	case "select":
 		if step.Ref == "" || step.Value == "" {
 			actionErr = errors.New("select requires ref and value")

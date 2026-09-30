@@ -117,15 +117,16 @@ type options struct {
 	viewportOnly bool
 	appendText   bool
 
-	settleMS   int
-	tags       string
-	rule       string
-	color      string
-	label      string
-	durationMS int
-	clear      bool
-	scroll     bool
-	scope      string
+	settleMS     int
+	readSettleMS *int
+	tags         string
+	rule         string
+	color        string
+	label        string
+	durationMS   int
+	clear        bool
+	scroll       bool
+	scope        string
 
 	clickCount int
 	button     string

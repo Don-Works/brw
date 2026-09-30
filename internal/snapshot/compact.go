@@ -78,6 +78,12 @@ func compactElement(el Element) string {
 	if el.Href != "" {
 		fmt.Fprintf(&b, " ->%s", clip(el.Href, compactValueLimit))
 	}
+	for _, source := range el.Source {
+		if source == "frame" {
+			fmt.Fprintf(&b, " cx=%g cy=%g", el.CX, el.CY)
+			break
+		}
+	}
 
 	for _, flag := range compactFlags(el) {
 		b.WriteByte(' ')

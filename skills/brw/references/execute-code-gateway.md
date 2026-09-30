@@ -31,8 +31,9 @@ Enumerate first; never assume a namespace exists or that there is only one:
 help();   // prints every namespace, e.g. brw_chromium (63 tools), brw_chromium_work (63 tools)
 ```
 
-Namespaces bind at session start — a profile added later is invisible until the session
-restarts. Map each `brw*` namespace to a concrete browser with `brw_identity`, which
+Gateway discovery can cache namespaces and tool schemas. Rediscover after adding a
+profile; if it remains absent, refresh the gateway session. Map each discovered `brw*`
+namespace to a concrete browser with `brw_identity`, which
 needs no tab and no bridge:
 
 ```js
@@ -55,6 +56,22 @@ When the gateway stamps an owner id onto the calls it makes, brw hashes it into 
 tab-lease owner so leases survive a restart of the disposable proxy in front of the
 daemon. `BRW_OWNER_ID` is that input; the older `MCPLEXER_BROWSER_SESSION_ID` is read
 as a deprecated fallback by brw builds that still support it.
+
+## Check the schema as well as the version
+
+`brw_identity` proves which daemon answers, not which schema the gateway exposes.
+Before using a newly added argument, inspect the gateway's exact tool signature.
+If a running daemon supports inline recipes but the gateway still requires
+`id/version/digest`, refresh the downstream catalogue. Some gateways pin reviewed
+tool surfaces: reload discovers a pending change but does not accept it. Follow
+the gateway's authenticated review/acceptance flow, then rediscover and test the
+argument through the same namespace. Do not report an upgrade complete from the
+daemon version alone, and do not bypass a pending approval with another transport.
+
+For Maix, discover the downstream with `mx.list_servers`, reload using its UUID
+with `mx.reload_server`, and inspect the exact `brw_recipe_run` or `brw_read`
+signature with `mx__search_tools`. A pending surface needs acceptance by the
+authorized operator or deployment workflow; repeated reloads will not accept it.
 
 ## Batch the flow, not the call
 
@@ -81,6 +98,12 @@ ns.brw_close_tab({ tab_id: tab });
 
 `brw_batch` still wins inside a script: one tab resolution, one observation at the end.
 Two levels of batching compose — script for the flow, `brw_batch` for the steps.
+
+Use `text` for `fill`/`type`, `value` for `select`/`assert_value`, and both `ref`
+and `text` for `assert_text`. Pin the tab with `focus_tab` in a batch. Assert
+before navigating away from the refs' document; after navigation use `find_act`
+or a fresh snapshot. Put cleanup in `finally` in an executable workflow so a
+failed assertion cannot leak the tab.
 
 ## Output handling
 

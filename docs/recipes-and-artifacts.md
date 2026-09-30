@@ -7,7 +7,9 @@
   into every model response.
 
 The engine, schema, safety checks, provider interface, and MCP/HTTP APIs are open
-source. The recipe corpus is not.
+source. Operational private recipe corpora remain private. An owning project may
+commit separately reviewed, sanitized recipes and execute them through the
+caller-supplied file API; see [repository-owned recipes](repository-recipes.md).
 
 ## Where recipes belong
 
@@ -15,7 +17,10 @@ Do not commit operational recipes to the `brw` repository. A recipe can reveal
 site names, internal workflows, element labels, risk decisions, and business
 processes even when it contains no credential.
 
-To keep a searchable library, choose one of these private providers:
+A project-owned `.brw/recipes/` directory is a convention for reviewed, sanitized
+files passed to `brw run --file`, not an automatically discovered provider. Raw
+compiler drafts still stage outside every Git checkout. To keep a searchable
+private library, choose one of these providers:
 
 1. `--recipe-root /absolute/private/path` loads owner-only JSON files from a
    directory outside the source checkout. This is convenient for a personal or
@@ -53,6 +58,10 @@ bearer credential. The browser host independently revalidates provider metadata
 and the fetched body, so a custom provider cannot bypass identity, origin,
 disclosure, or digest checks.
 
+For optional Maix, Notion or Postgres registry designs, see
+[registry adapters](repository-recipes.md#optional-registry-adapters). These are
+operator-owned deployments over this interface, not bundled integrations.
+
 A Codex or MCP skill is a useful *discovery adapter*: it can tell an agent when
 to call `brw_recipe_search` and how to collect the declared inputs. It should not
 be the canonical recipe database. Skills are commonly synced, installed, or
@@ -61,9 +70,12 @@ versioning, audit, and revocation boundary.
 
 The bundled `brw` skill also tells agents to promote a successfully completed,
 stable workflow when reuse is reasonably likely and to repair deterministic site
-drift after a recipe failure. Promotion still writes through the private provider,
-never into the skill or repository. For a local directory, validate and install an
-owner-only draft atomically with:
+drift after a recipe failure. Operational private promotion writes through the
+private provider,
+never into the bundled skill or public brw repository. Separately reviewed and
+sanitized project artifacts may follow the
+[repository promotion workflow](repository-recipes.md#promote-from-private-staging).
+For a local directory, validate and install an owner-only draft atomically with:
 
 ```sh
 brwctl recipe validate --file /absolute/private/draft.json

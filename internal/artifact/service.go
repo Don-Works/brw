@@ -38,15 +38,17 @@ type API interface {
 }
 
 type CaptureOptions struct {
-	Kind         string        `json:"kind"`
-	Ref          string        `json:"ref,omitempty"`
-	DurationMS   int           `json:"duration_ms,omitempty"`
-	FPS          int           `json:"fps,omitempty"`
-	DownloadGUID string        `json:"download_guid,omitempty"`
-	Filename     string        `json:"filename,omitempty"`
-	Redaction    string        `json:"redaction,omitempty"`
-	TTL          time.Duration `json:"-"`
-	TTLSeconds   int           `json:"ttl_seconds,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	Extract      *ExtractionSpec `json:"extract,omitempty"`
+	Kind         string          `json:"kind"`
+	Ref          string          `json:"ref,omitempty"`
+	DurationMS   int             `json:"duration_ms,omitempty"`
+	FPS          int             `json:"fps,omitempty"`
+	DownloadGUID string          `json:"download_guid,omitempty"`
+	Filename     string          `json:"filename,omitempty"`
+	Redaction    string          `json:"redaction,omitempty"`
+	TTL          time.Duration   `json:"-"`
+	TTLSeconds   int             `json:"ttl_seconds,omitempty"`
 }
 
 type pdfCapturer interface {
@@ -181,6 +183,8 @@ func (s *Service) CaptureArtifact(ctx context.Context, opts CaptureOptions) (Met
 
 func (s *Service) captureArtifact(ctx context.Context, opts CaptureOptions, put PutOptions, continuity *recipeCaptureContinuity) (Meta, error) {
 	switch opts.Kind {
+	case "extraction_json":
+		return s.captureExtraction(ctx, opts, put, continuity)
 	case "text":
 		read, err := s.browser.Read(ctx)
 		if err != nil {
@@ -962,6 +966,13 @@ func resolveFFmpegPath() (string, error) {
 }
 
 func validateCaptureOptions(opts CaptureOptions) error {
+	if opts.Kind == "extraction_json" {
+		if err := ValidateExtraction(opts.Name, opts.Extract); err != nil {
+			return err
+		}
+	} else if opts.Extract != nil || opts.Name != "" {
+		return errors.New("name and extract are only valid for extraction_json")
+	}
 	if len(opts.Redaction) > 256 || !utf8.ValidString(opts.Redaction) {
 		return errors.New("redaction label must be valid UTF-8 and at most 256 bytes")
 	}

@@ -4,14 +4,17 @@ package readability
 // wire payload used to carry the identical string in both "text" and "main",
 // which doubled the cost of every read for no added information.
 type PageRead struct {
-	URL      string    `json:"url"`
-	Title    string    `json:"title"`
-	Main     string    `json:"main"`
-	Headings []Heading `json:"headings"`
-	Links    []Link    `json:"links"`
-	Forms    []Form    `json:"forms"`
-	Tables   []Table   `json:"tables"`
-	Metadata Metadata  `json:"metadata"`
+	URL              string    `json:"url"`
+	Title            string    `json:"title"`
+	Main             string    `json:"main"`
+	Headings         []Heading `json:"headings"`
+	Links            []Link    `json:"links"`
+	Forms            []Form    `json:"forms"`
+	Tables           []Table   `json:"tables"`
+	TablesTruncated  bool      `json:"tables_truncated,omitempty"`
+	TablesComplete   bool      `json:"tables_complete,omitempty"`
+	SectionsAnchored bool      `json:"sections_anchored,omitempty"`
+	Metadata         Metadata  `json:"metadata"`
 
 	// Paging metadata, set by Window when a read is bounded. Absent on an
 	// unbounded read that returned the whole document.
@@ -70,9 +73,10 @@ type FormControl struct {
 }
 
 type Table struct {
-	Caption string     `json:"caption,omitempty"`
-	Headers []string   `json:"headers,omitempty"`
-	Rows    [][]string `json:"rows"`
+	Truncated bool       `json:"truncated,omitempty"`
+	Caption   string     `json:"caption,omitempty"`
+	Headers   []string   `json:"headers,omitempty"`
+	Rows      [][]string `json:"rows"`
 }
 
 type Metadata struct {

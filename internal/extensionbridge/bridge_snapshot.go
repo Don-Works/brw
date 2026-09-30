@@ -217,7 +217,7 @@ func (b *Bridge) find(ctx context.Context, opts snapshot.FindOptions, live bool)
 func (b *Bridge) Read(ctx context.Context) (readability.PageRead, error) {
 	start := time.Now()
 	var read readability.PageRead
-	err := b.evaluateReadOnly(ctx, readability.ReadExpr(), "", &read)
+	err := b.evaluateReadOnly(ctx, readability.ReadExpr(readability.SettleMS(ctx)), "", &read)
 	b.recordObservation(b.contextTabID(ctx), browser.TraceActionRead, read.URL, start, err)
 	if err != nil {
 		return readability.PageRead{}, err

@@ -21,7 +21,7 @@ var vocabularyRun = regexp.MustCompile(`[a-z_]+(?:\|[a-z_]+){3,}`)
 func TestGetVocabularyIsSpelledOutOnceEverywhere(t *testing.T) {
 	want := strings.Join(snapshot.GetKindNames(), "|")
 
-	skill, err := os.ReadFile("../../skills/brw/SKILL.md")
+	skill, err := os.ReadFile("../../skills/brw/references/tool-catalogue.md")
 	if err != nil {
 		t.Fatalf("read the brw skill: %v", err)
 	}

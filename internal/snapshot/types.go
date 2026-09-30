@@ -7,7 +7,7 @@ type PageSnapshot struct {
 	Accessibility AccessibilitySummary `json:"accessibility"`
 	Metadata      map[string]any       `json:"metadata,omitempty"`
 	// Delta is set ONLY on a since-delta response — when opts.Since matched the
-	// prior snapshot's version AND the snapshot options were identical. When
+	// retained snapshot's version AND the snapshot options were identical. When
 	// present, Elements carries just the added+changed elements (a change set, not
 	// the full page). Nil for a full snapshot, so callers that never pass Since are
 	// byte-for-byte unaffected.

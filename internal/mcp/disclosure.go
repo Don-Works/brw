@@ -334,6 +334,9 @@ func (s *Server) discoverTools(query string) (discoveryResult, error) {
 		if !matches[i].Relevant {
 			continue
 		}
+		if matches[i].Advertised {
+			continue
+		}
 		if len(names) >= maxUnlockPerSearch {
 			matches[i].Relevant = false
 			continue
@@ -353,7 +356,7 @@ func discoveryNote(result discoveryResult) string {
 	if result.Unlocked > 0 {
 		notes = append(notes, fmt.Sprintf("%d tool(s) added to the catalogue; their full definitions arrive on the next tools/list", result.Unlocked))
 	} else {
-		notes = append(notes, "every match was already advertised")
+		notes = append(notes, "no new tools added to the catalogue")
 	}
 	if result.Truncated {
 		notes = append(notes, fmt.Sprintf("only the top %d matches are shown; narrow the query for the rest", maxDiscoveryResults))

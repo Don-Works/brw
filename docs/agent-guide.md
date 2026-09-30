@@ -13,6 +13,13 @@ brwd --print-system-prompt
 Prepend its output to your agent's system prompt. The rest of this page explains
 the why.
 
+For a larger planner delegating browser work to a smaller executor, see the
+[planner/executor study](browser-landscape-2026-10.md#larger-planner-smaller-executor-an-orchestrator-design).
+Routing, authority checks and delegation budgets belong in the orchestrator;
+brw supplies semantic actions, tab leases, bounded observations and recipe
+execution. Qualify a model on verified end states and full-task cost before
+choosing it for a cheaper lane.
+
 ## The core loop
 
 1. **`brw_open <url>`** — navigate.

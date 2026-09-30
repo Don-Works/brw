@@ -1183,6 +1183,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := req.Validate(); err != nil {
 			return nil, invalid(err)
 		}
+		if req.SettleMS != nil {
+			ctx = readability.WithSettleMS(ctx, *req.SettleMS)
+		}
 		var (
 			read            readability.PageRead
 			err             error
@@ -2762,6 +2765,7 @@ func tools() []map[string]any {
 			"offset":       integerSchema("Character offset into the prose, for paging with next_offset."),
 			"max_links":    integerSchema("Cap on returned links. Defaults to 300; -1 for no cap."),
 			"max_headings": integerSchema("Cap on returned headings. Defaults to 100; -1 for no cap."),
+			"settle_ms":    map[string]any{"type": "integer", "minimum": 0, "maximum": 5000, "description": "Maximum wait for text on a sparse page (0-5000 ms; omitted: 800). Set 0 to read immediately after an explicit readiness check. This is a text-availability heuristic, not a page-ready assertion or a fixed sleep."},
 		}, nil)),
 		tool("brw_read_data", "Extract embedded structured page data (Next.js __NEXT_DATA__, JSON-LD, microdata, Open Graph) as a compact normalized object without DOM rendering.", object(map[string]any{
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
@@ -3251,8 +3255,10 @@ func tools() []map[string]any {
 			"clear":       boolSchema("Drop the returned messages from the buffer. Defaults true. Set false to re-read them later."),
 		}, nil)),
 		tool("brw_downloads", "Return a retained, bounded snapshot of tracked file downloads with url, suggested_filename, source tab_id when safely known, state (inProgress/completed/canceled), received_bytes, total_bytes, guid, and browser-host path. A returned guid remains available to a following brw_capture_artifact(kind=download) call; deterministic recipes internally receive only post-baseline changes. Branch on supported=false, which only an extension build predating download support returns, and on file_paths=false, which says this transport observes downloads without staging them and therefore reports no path: in a browser brw did not start it leaves the destination alone, so brw_artifact_capture(kind=download) and brw_assert(assertion=download) return a named capability error there.", object(nil, nil)),
-		tool("brw_artifact_capture", "Capture browser output into the private browser-host artifact store and return only an opaque metadata handle (never the payload). Use this for full page text/semantic JSON, screenshots, PDF, a completed download, a short WebM video, or a HAR file of the captured network traffic, when putting the content in model context would be wasteful or sensitive. Inspect later with bounded brw_artifact_read or brw_artifact_search; delete early when no longer needed.", object(map[string]any{
-			"kind":          stringEnumSchema("Artifact type. har exports the tab's captured network traffic as a HAR 1.2 file for DevTools or a bug report; credential headers and request bodies are redacted unless redaction=none.", "text", "semantic_json", "screenshot", "pdf", "download", "video", "har"),
+		tool("brw_artifact_capture", "Capture browser output into the private browser-host artifact store and return only an opaque metadata handle (never the payload). Use this for full page text/semantic JSON, screenshots, PDF, a completed download, a short WebM video, a HAR file of the captured network traffic, or named bounded extraction_json from an exact section/table or normalized structured fields, when putting the content in model context would be wasteful or sensitive. Inspect later with bounded brw_artifact_read or brw_artifact_search; delete early when no longer needed.", object(map[string]any{
+			"kind":          stringEnumSchema("Artifact type. har exports the tab's captured network traffic as a HAR 1.2 file for DevTools or a bug report; credential headers and request bodies are redacted unless redaction=none.", "text", "semantic_json", "screenshot", "pdf", "download", "video", "har", "extraction_json"),
+			"name":          stringSchema("extraction_json only: required lowercase output identifier (max 64 characters)."),
+			"extract":       extractionSchema(),
 			"ref":           stringSchema("For screenshot only, capture this element ref instead of the viewport."),
 			"duration_ms":   integerSchema("For video only: duration from 100 to 30000 milliseconds."),
 			"fps":           integerSchema("For video only: frames per second from 1 to 30."),

@@ -1,4 +1,4 @@
-# Private recipe authoring and repair
+# Recipe ownership, authoring and repair
 
 Use this reference after a reusable workflow succeeds or a selected recipe
 fails because the site's stable structure changed. The outcome is a validated,
@@ -24,6 +24,35 @@ submission; brw's returned digest identifies its canonical parsed recipe, not
 the source file bytes. Keep business-operation identity stable across repairs. Keep private bodies
 out of public repositories and logs, and obtain the same action-specific
 authorization as for stored recipes.
+
+## Repository-owned recipes and registries
+
+An owning project can commit reviewed, sanitized schema-v1 recipes in
+`.brw/recipes/`. Run an explicitly selected file; brw does not automatically
+scan that directory or make it a searchable provider:
+
+```sh
+brwctl recipe validate --file .brw/recipes/catalog-search.1.0.0.json
+brw run --file .brw/recipes/catalog-search.1.0.0.json --input query=chairs
+```
+
+Use only inputs that recipe declares. Pin its repository commit/file path for
+scheduled execution. Validation checks structure; it grants no action authority.
+Stage compiler traces, plans and raw drafts outside every Git checkout, then
+review and sanitize before creating a committed project artifact. Keep private
+operational bodies out of the public brw repository and bundled skill. The
+private directory provider still requires an owner-only root outside every Git
+checkout; do not configure `.brw/recipes/` as `--recipe-root`.
+
+Optional registries use the existing metadata search and immutable pinned fetch
+interface. Maix, Notion and Postgres require operator-owned adapters; they are
+not bundled brw integrations. A Maix adapter must enforce authenticated workspace
+ancestry/context on the server and fail on missing or wrong scope without
+falling back to another workspace. The current brw provider payload has no
+workspace field; binding must come from trusted deployment/authentication
+context. Notion/Postgres adapters must preserve exact approved versions and
+digests, rather than fetch a mutable document head. Search/fetch authorization
+is separate from publication authorization.
 
 ## Search before rebuilding
 
@@ -260,3 +289,9 @@ instructions. Operational recipe bodies belong with the owning workflow, in an o
 local store, or in an authenticated private provider. Skills may prompt discovery and maintenance,
 but they are not the recipe corpus. Long-running schedules, webhook triggers,
 human approvals, secrets, and provider authorization remain outside brw.
+
+## Named extraction
+
+A capture can specify where to find a section, table or normalized data and how
+much may be extracted. See the [extraction contract](extraction.md) for exact
+selectors, explicit budgets, named output handles and completeness requirements.

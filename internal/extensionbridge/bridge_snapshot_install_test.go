@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -79,7 +80,7 @@ func (w *walkerExtension) serve(ctx context.Context, conn *websocket.Conn) {
 			}
 			w.mu.Lock()
 			w.expressions = append(w.expressions, expression)
-			isCold := expression == w.cold
+			isCold := normalizedSnapshotExpression(expression) == normalizedSnapshotExpression(w.cold)
 			installed := w.installed
 			if isCold {
 				w.installed = true
@@ -158,9 +159,9 @@ func TestBridgeSnapshotShipsTheWalkerOncePerDocument(t *testing.T) {
 		t.Fatalf("first snapshot: %v", err)
 	}
 	first := ext.recorded()
-	if len(first) != 2 || first[0] != hot || first[1] != cold {
+	if len(first) != 2 || normalizedSnapshotExpression(first[0]) != normalizedSnapshotExpression(hot) || normalizedSnapshotExpression(first[1]) != normalizedSnapshotExpression(cold) {
 		t.Fatalf("first snapshot should try the call and fall back to the install; got %d expressions (match hot=%v cold=%v)",
-			len(first), len(first) > 0 && first[0] == hot, len(first) > 1 && first[1] == cold)
+			len(first), len(first) > 0 && normalizedSnapshotExpression(first[0]) == normalizedSnapshotExpression(hot), len(first) > 1 && normalizedSnapshotExpression(first[1]) == normalizedSnapshotExpression(cold))
 	}
 
 	ext.reset()
@@ -171,7 +172,7 @@ func TestBridgeSnapshotShipsTheWalkerOncePerDocument(t *testing.T) {
 	if len(second) != 1 {
 		t.Fatalf("second snapshot of the same document sent %d expressions, want 1", len(second))
 	}
-	if second[0] != hot {
+	if normalizedSnapshotExpression(second[0]) != normalizedSnapshotExpression(hot) {
 		t.Fatalf("second snapshot did not use the installed walker; sent %d bytes", len(second[0]))
 	}
 
@@ -211,4 +212,10 @@ func TestBridgeSnapshotRunsTheSameWalkerAsDirectCDP(t *testing.T) {
 			t.Fatalf("call expression %q and install expression do not agree on the walker name", name)
 		}
 	}
+}
+
+var snapshotVersionField = regexp.MustCompile(`"__brw_version":[0-9]+`)
+
+func normalizedSnapshotExpression(expression string) string {
+	return snapshotVersionField.ReplaceAllString(expression, `"__brw_version":0`)
 }

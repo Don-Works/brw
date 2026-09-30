@@ -860,13 +860,14 @@ func validateKind(kind, rawMIME string) (string, error) {
 		return "", errors.New("invalid artifact MIME type")
 	}
 	allowed := map[string][]string{
-		"text":          {"text/plain", "text/markdown", "text/html"},
-		"semantic_json": {"application/json"},
-		"har":           {"application/json"},
-		"screenshot":    {"image/png", "image/jpeg", "image/webp"},
-		"pdf":           {"application/pdf"},
-		"video":         {"video/webm", "video/mp4"},
-		"download":      nil,
+		"text":            {"text/plain", "text/markdown", "text/html"},
+		"semantic_json":   {"application/json"},
+		"extraction_json": {"application/json"},
+		"har":             {"application/json"},
+		"screenshot":      {"image/png", "image/jpeg", "image/webp"},
+		"pdf":             {"application/pdf"},
+		"video":           {"video/webm", "video/mp4"},
+		"download":        nil,
 		// manifest holds artifact IDs and never a payload; evidence holds one
 		// bounded diagnostic part of a failure bundle. Neither is reachable from
 		// brw_artifact_capture: captureArtifact has no case for them, so they can

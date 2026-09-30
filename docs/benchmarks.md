@@ -87,6 +87,12 @@ treats the page as an unpopulated shell and waits out `readSettleCapMS` — the
 up. Read that row as the cost of brw's own settle cap on a page with almost no
 text, not as the page being slow. The flow totals include both.
 
+For callers that have already checked content readiness, `settle_ms:0` now
+skips that optional text wait without changing the default. Reproduce the
+isolated comparison with `scripts/measure-read-settle.py --daemon <loopback-url>`;
+see [the competitive review](competitive-review-2026-10.md) for its method and
+limits. Historical figures above still describe their original invocation.
+
 Bytes sent exceeds bytes received on every flow because brw sends in-page
 scripts and receives semantic results: a `brw_fill` carries roughly 44 KB of
 script to the browser and gets back roughly 6 KB. That is the shape of the

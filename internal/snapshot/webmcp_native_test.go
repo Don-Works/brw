@@ -20,6 +20,7 @@ import (
 // way Chromium includes it, and executeTool answers a JSON string. It refuses an
 // object input the way Chromium before 155 does.
 const fakeNativeWebMCP = `(function(){
+  Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Chrome/154.0.0.0' });
   var tools = [
     { name: 'lookup_order', description: 'Look up an order\nSecond line', window: window,
       inputSchema: '{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}',
