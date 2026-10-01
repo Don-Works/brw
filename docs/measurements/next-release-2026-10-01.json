@@ -3769,5 +3769,23 @@
       "e4d320a6d2e794489378dd07e06f99efd5fe600082dfd13b934ca31d0a9d76a3"
     ],
     "unique_final_states": 1
+  },
+  "catalogue_profile_followup": {
+    "boundary": "MCP result compact JSON encoded UTF-8, excludes JSON-RPC envelope and host/gateway transformations",
+    "samples": [
+      {
+        "profile": "auto",
+        "version": "0.19.0-usage-e26bd41",
+        "tools": 14,
+        "catalogue_result_bytes": 26300
+      },
+      {
+        "profile": "all",
+        "version": "0.19.0-usage-e26bd41",
+        "tools": 95,
+        "catalogue_result_bytes": 149050
+      }
+    ],
+    "provider_tokens_measured": false
   }
 }

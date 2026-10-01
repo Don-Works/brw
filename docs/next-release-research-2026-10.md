@@ -40,6 +40,13 @@ reader qualification before making a helper the default. Current gateway
 schemas still need the gateway's authenticated acceptance workflow after a
 release; a daemon version check alone does not prove the model sees new flags.
 
+A live direct-CDP proxy catalogue probe returned 26,300 UTF-8 bytes for the
+14-tool `auto` catalogue and 149,050 bytes for the 95-tool `all` catalogue,
+an 82.4% reduction in this serialized boundary. This excludes JSON-RPC framing
+and any host/gateway transformation; it does not measure provider token savings.
+Keep full discovery available behind a gateway that requires a stable pinned
+surface, and request only the needed signatures in its model-facing search.
+
 The session event feed, a production host-model timing integration, and a timed
 human baseline remain research work. This implementation does not establish
 human-equivalent speed or complete host-model token accounting.
