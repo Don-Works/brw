@@ -962,7 +962,7 @@ func TestBrowserClickRoutesByButtonAndCount(t *testing.T) {
 		wantButton string
 		wantCount  int
 	}{
-		{"plain left ref click stays on fast path", `{"ref":"e5"}`, "e5", "", 0},
+		{"plain left ref click routes to Click", `{"ref":"e5"}`, "e5", "", 0},
 		{"right click routes to ClickButton", `{"ref":"e5","button":"right"}`, "", "right", 0},
 		{"double click routes to ClickButton", `{"ref":"e5","click_count":2}`, "", "", 2},
 		{"coordinate click routes to ClickButton", `{"x":10,"y":20}`, "", "", 0},
@@ -980,12 +980,12 @@ func TestBrowserClickRoutesByButtonAndCount(t *testing.T) {
 					t.Fatalf("plain click ref = %q, want %q", ctrl.clickRef, tc.wantPlain)
 				}
 				if ctrl.clickButton.Ref != "" || ctrl.clickButton.X != nil {
-					t.Fatalf("expected fast path, but ClickButton called: %#v", ctrl.clickButton)
+					t.Fatalf("expected Click, but ClickButton called: %#v", ctrl.clickButton)
 				}
 				return
 			}
 			if ctrl.clickRef != "" {
-				t.Fatalf("expected ClickButton path, but fast Click called with %q", ctrl.clickRef)
+				t.Fatalf("expected ClickButton, but Click called with %q", ctrl.clickRef)
 			}
 			if ctrl.clickButton.Button != tc.wantButton {
 				t.Fatalf("click button = %q, want %q", ctrl.clickButton.Button, tc.wantButton)

@@ -1,0 +1,299 @@
+package snapshot
+
+import (
+	"encoding/json"
+	"fmt"
+	"github.com/chromedp/chromedp"
+	"slices"
+	"strings"
+	"testing"
+)
+
+func nextScalarSnapshot(t *testing.T) string {
+	t.Helper()
+	s := SnapshotFunctionScript
+	s = strings.Replace(s, "    const item = {\n", "    const cachedVisible = visible(el);\n    const cachedViewport = inViewport(el);\n    const cachedDisabled = disabled(el);\n    const item = {\n", 1)
+	s = strings.Replace(s, "      visible: visible(el),", "      visible: cachedVisible,", 1)
+	s = strings.Replace(s, "      in_viewport: inViewport(el),", "      in_viewport: cachedViewport,", 1)
+	s = strings.Replace(s, "      disabled: disabled(el),", "      disabled: cachedDisabled,", 1)
+	s = strings.Replace(s, "_frontier_score: frontierScore(role, name, signals, visible(el), inViewport(el), disabled(el))", "_frontier_score: frontierScore(role, name, signals, cachedVisible, cachedViewport, cachedDisabled)", 1)
+	if s == SnapshotFunctionScript {
+		t.Fatal("prototype failed")
+	}
+	return s
+}
+
+func nextFormSnapshot(t *testing.T) string {
+	t.Helper()
+	s := strings.Replace(SnapshotFunctionScript, "    if (formLensMode && !formRoles.has(role)) continue;\n", "", 1)
+	s = strings.Replace(s, "    if (roleFilter && role !== roleFilter) continue;\n", "    if (roleFilter && role !== roleFilter) continue;\n    if (formLensMode && !formRoles.has(role)) continue;\n", 1)
+	return s
+}
+func TestNextScalarParity(t *testing.T) {
+	ctx, cancel := structuredTestContext(t)
+	defer cancel()
+	if err := chromedp.Run(ctx, chromedp.Navigate("about:blank")); err != nil {
+		t.Fatal(err)
+	}
+	expr := `(() => {
+      const oldWalk = ` + nextScalarSnapshot(t) + `;
+      const newWalk = ` + SnapshotFunctionScript + `;
+      let seed = 20261001;
+      const rand = n => {seed=(Math.imul(seed,1664525)+1013904223)>>>0; return seed%n;};
+      const roles = ['button','textbox','combobox','link','checkbox'];
+      document.body.innerHTML = '<main></main><section></section><iframe></iframe>';
+      const roots = [document.querySelector('main'), document.querySelector('section').attachShadow({mode:'open'}), document.querySelector('iframe').contentDocument.body];
+      const create = () => {
+        const el = document.createElement('input');
+        el.setAttribute('role', roles[rand(roles.length)]);
+        el.setAttribute('aria-label', 'Control '+rand(12));
+        el.value = 'value '+rand(10);
+        return el;
+      };
+      for (const root of roots) for(let i=0;i<60;i++) root.append(create());
+      oldWalk({mode:'all',include_hidden:true});
+      let checked = 0;
+      for(let round=0;round<120;round++) {
+        const root = roots[rand(roots.length)];
+        const el = root.children[rand(root.children.length)];
+        switch(rand(6)) {
+          case 0: root.prepend(el); break;
+          case 1: el.replaceWith(create()); break;
+          case 2: el.setAttribute('role', roles[rand(roles.length)]); break;
+          case 3: el.disabled = !el.disabled; break;
+          case 4: el.value = 'value '+rand(10); break;
+          case 5: root.append(create()); root.firstElementChild.remove(); break;
+        }
+        for (const role of roles) {
+          const opts = {mode:round%2?'all':'frontier', role, limit:round%3?0:4, query:round%4?'':'Control 1', include_hidden:true};
+          const stateBefore = JSON.stringify(window.__brw);
+          const stamps = roots.flatMap(root => Array.from(root.children).map(el => [el, el.getAttribute('data-brw-ref')]));
+          const before = newWalk(opts);
+          window.__brw = JSON.parse(stateBefore);
+          for(const [el,ref] of stamps) { if(ref===null) el.removeAttribute('data-brw-ref'); else el.setAttribute('data-brw-ref',ref); }
+          const after = oldWalk(opts);
+          if(JSON.stringify(before.elements)!==JSON.stringify(after.elements)) return {ok:false,round,role,details:JSON.stringify({before:before.elements.filter((e,i)=>JSON.stringify(e)!==JSON.stringify(after.elements[i])).slice(0,1),after:after.elements.filter((e,i)=>JSON.stringify(e)!==JSON.stringify(before.elements[i])).slice(0,1)})};
+          checked++;
+        }
+      }
+      return {ok:true,checked};
+    })()`
+	var result struct {
+		OK      bool   `json:"ok"`
+		Checked int    `json:"checked"`
+		Round   int    `json:"round"`
+		Role    string `json:"role"`
+		Details string `json:"details"`
+	}
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result)); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.Checked != 600 {
+		t.Fatalf("differential failure: %+v", result)
+	}
+	t.Logf("%d role-filtered views matched across randomized DOM mutations", result.Checked)
+}
+
+func TestNextSnapshotMeasurement(t *testing.T) {
+	ctx, cancel := structuredTestContext(t)
+	defer cancel()
+	if err := chromedp.Run(ctx, chromedp.Navigate("about:blank")); err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []struct {
+		size  int
+		mode  string
+		noise bool
+	}{{100, "all", false}, {1000, "all", false}, {5000, "all", false}, {5000, "frontier", false}, {1000, "form_lens", true}, {5000, "form_lens", true}} {
+		setup := fmt.Sprintf(`document.body.innerHTML='<main>'+Array.from({length:%d},(_,i)=>%s).join('')+'<input aria-label="Search"><input aria-label="Other"></main>'`, fixture.size, map[bool]string{false: `'<button>Item '+i+'</button>'`, true: `'<a href="#'+i+'">Noise '+i+'</a>'`}[fixture.noise])
+		if err := chromedp.Run(ctx, chromedp.Evaluate(setup, nil)); err != nil {
+			t.Fatal(err)
+		}
+		install := `window.__nextWalkers=[` + SnapshotFunctionScript + `,` + nextScalarSnapshot(t) + `,` + nextFormSnapshot(t) + `]`
+		if err := chromedp.Run(ctx, chromedp.Evaluate(install, nil)); err != nil {
+			t.Fatal(err)
+		}
+		samples := [3][]float64{}
+		for round := 0; round < 33; round++ {
+			for turn := 0; turn < 3; turn++ {
+				arm := (round + turn) % 3
+				var result struct {
+					MS     float64 `json:"ms"`
+					Count  int     `json:"count"`
+					Bounds int     `json:"bounds"`
+					Styles int     `json:"styles"`
+					Rects  int     `json:"rects"`
+					Equal  bool    `json:"equal"`
+				}
+				expr := fmt.Sprintf(`(()=>{const opts={mode:%q,limit:%d,__brw_version:(window.__nextVersion=(window.__nextVersion||0)+1),__brw_epoch:'next'};let bounds=0,styles=0,rects=0;const p=Element.prototype,gb=p.getBoundingClientRect,gc=p.getClientRects,gs=window.getComputedStyle;p.getBoundingClientRect=function(){bounds++;return gb.call(this)};p.getClientRects=function(){rects++;return gc.call(this)};window.getComputedStyle=function(...args){styles++;return gs.apply(this,args)};try{const t=performance.now();const out=window.__nextWalkers[%d](opts);const ms=performance.now()-t;return {ms,count:out.elements.length,bounds,styles,rects,equal:true};}finally{p.getBoundingClientRect=gb;p.getClientRects=gc;window.getComputedStyle=gs}})()`, fixture.mode, map[bool]int{true: 40}[fixture.mode == "frontier"], arm)
+				if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result)); err != nil {
+					t.Fatal(err)
+				}
+				if round > 2 {
+					samples[arm] = append(samples[arm], result.MS)
+				}
+				if round == 32 {
+					t.Logf("COUNTS size=%d mode=%s arm=%d count=%d bounds=%d styles=%d rects=%d", fixture.size, fixture.mode, arm, result.Count, result.Bounds, result.Styles, result.Rects)
+				}
+			}
+		}
+		for _, values := range samples {
+			slices.Sort(values)
+		}
+		out, _ := json.Marshal(map[string]any{"size": fixture.size, "mode": fixture.mode, "samples_ms": samples, "medians_ms": []float64{samples[0][15], samples[1][15], samples[2][15]}})
+		t.Log(string(out))
+	}
+}
+
+func TestNextScalarExpandedParity(t *testing.T) {
+	ctx, cancel := structuredTestContext(t)
+	defer cancel()
+	if err := chromedp.Run(ctx, chromedp.Navigate("about:blank")); err != nil {
+		t.Fatal(err)
+	}
+	expr := `(() => {
+      const oldWalk = ` + nextScalarSnapshot(t) + `;
+      const newWalk = ` + SnapshotFunctionScript + `;
+      let seed = 20261001;
+      const rand = n => {seed=(Math.imul(seed,1664525)+1013904223)>>>0; return seed%n;};
+      const roles = ['button','textbox','combobox','link','checkbox'];
+      document.body.innerHTML = '<main></main><section></section><iframe></iframe>';
+      const roots = [document.querySelector('main'), document.querySelector('section').attachShadow({mode:'open'}), document.querySelector('iframe').contentDocument.body];
+      const create = () => {
+        const el = document.createElement('input');
+        el.setAttribute('role', roles[rand(roles.length)]);
+        el.setAttribute('aria-label', 'Control '+rand(12));
+        el.value = 'value '+rand(10);
+        return el;
+      };
+      for (const root of roots) for(let i=0;i<60;i++) root.append(create());
+      oldWalk({mode:'all',include_hidden:true});
+      let checked = 0;
+      for(let round=0;round<120;round++) {
+        const root = roots[rand(roots.length)];
+        const el = root.children[rand(root.children.length)];
+        switch(rand(12)) {
+          case 0: root.prepend(el); break;
+          case 1: el.replaceWith(create()); break;
+          case 2: el.setAttribute('role', roles[rand(roles.length)]); break;
+          case 3: el.disabled = !el.disabled; break;
+          case 4: el.value = 'value '+rand(10); break;
+          case 5: root.append(create()); root.firstElementChild.remove(); break;
+          case 6: el.style.display = el.style.display ? '' : 'none'; break;
+          case 7: el.style.opacity = el.style.opacity === '0' ? '1' : '0'; break;
+          case 8: el.setAttribute('aria-hidden',el.getAttribute('aria-hidden')==='true'?'false':'true'); break;
+          case 9: el.style.transform = 'translateY('+rand(1500)+'px)'; break;
+          case 10: el.focus(); break;
+          case 11: el.style.width = rand(400)+'px'; break;
+        }
+        for (const role of roles) {
+          const opts = {mode:['all','frontier','form_lens'][round%3], role, limit:round%3?0:4, query:round%4?'':'Control 1', include_hidden:round%2===0,include_boxes:round%3===0};
+          const stateBefore = JSON.stringify(window.__brw);
+          const stamps = roots.flatMap(root => Array.from(root.children).map(el => [el, el.getAttribute('data-brw-ref')]));
+          const before = newWalk(opts);
+          window.__brw = JSON.parse(stateBefore);
+          for(const [el,ref] of stamps) { if(ref===null) el.removeAttribute('data-brw-ref'); else el.setAttribute('data-brw-ref',ref); }
+          const after = oldWalk(opts);
+          if(JSON.stringify(before.elements)!==JSON.stringify(after.elements)) return {ok:false,round,role,details:JSON.stringify({before:before.elements.filter((e,i)=>JSON.stringify(e)!==JSON.stringify(after.elements[i])).slice(0,1),after:after.elements.filter((e,i)=>JSON.stringify(e)!==JSON.stringify(before.elements[i])).slice(0,1)})};
+          checked++;
+        }
+      }
+      return {ok:true,checked};
+    })()`
+	var result struct {
+		OK      bool   `json:"ok"`
+		Checked int    `json:"checked"`
+		Round   int    `json:"round"`
+		Role    string `json:"role"`
+		Details string `json:"details"`
+	}
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result)); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.Checked != 600 {
+		t.Fatalf("differential failure: %+v", result)
+	}
+	t.Logf("%d role-filtered views matched across randomized DOM mutations", result.Checked)
+}
+
+func TestNextFormExpandedParity(t *testing.T) {
+	ctx, cancel := structuredTestContext(t)
+	defer cancel()
+	if err := chromedp.Run(ctx, chromedp.Navigate("about:blank")); err != nil {
+		t.Fatal(err)
+	}
+	expr := `(() => {
+      const oldWalk = ` + nextFormSnapshot(t) + `;
+      const newWalk = ` + SnapshotFunctionScript + `;
+      let seed = 20261001;
+      const rand = n => {seed=(Math.imul(seed,1664525)+1013904223)>>>0; return seed%n;};
+      const roles = ['button','textbox','combobox','link','checkbox'];
+      document.body.innerHTML = '<main></main><section></section><iframe></iframe>';
+      const roots = [document.querySelector('main'), document.querySelector('section').attachShadow({mode:'open'}), document.querySelector('iframe').contentDocument.body];
+      const create = () => {
+        const el = document.createElement('input');
+        el.setAttribute('role', roles[rand(roles.length)]);
+        el.setAttribute('aria-label', 'Control '+rand(12));
+        el.value = 'value '+rand(10);
+        return el;
+      };
+      for (const root of roots) for(let i=0;i<60;i++) root.append(create());
+      oldWalk({mode:'all',include_hidden:true});
+      let checked = 0;
+      for(let round=0;round<120;round++) {
+        const root = roots[rand(roots.length)];
+        const el = root.children[rand(root.children.length)];
+        switch(rand(12)) {
+          case 0: root.prepend(el); break;
+          case 1: el.replaceWith(create()); break;
+          case 2: el.setAttribute('role', roles[rand(roles.length)]); break;
+          case 3: el.disabled = !el.disabled; break;
+          case 4: el.value = 'value '+rand(10); break;
+          case 5: root.append(create()); root.firstElementChild.remove(); break;
+          case 6: el.style.display = el.style.display ? '' : 'none'; break;
+          case 7: el.style.opacity = el.style.opacity === '0' ? '1' : '0'; break;
+          case 8: el.setAttribute('aria-hidden',el.getAttribute('aria-hidden')==='true'?'false':'true'); break;
+          case 9: el.style.transform = 'translateY('+rand(1500)+'px)'; break;
+          case 10: el.focus(); break;
+          case 11: el.style.width = rand(400)+'px'; break;
+        }
+        for (const role of roles) {
+          const opts = {mode:'form_lens', role, limit:round%3?0:4, query:round%4?'':'Control 1', include_hidden:round%2===0,include_boxes:round%3===0};
+          const stateBefore = JSON.stringify(window.__brw);
+          const stamps = roots.flatMap(root => Array.from(root.children).map(el => [el, el.getAttribute('data-brw-ref')]));
+          const before = newWalk(opts);
+          window.__brw = JSON.parse(stateBefore);
+          for(const [el,ref] of stamps) { if(ref===null) el.removeAttribute('data-brw-ref'); else el.setAttribute('data-brw-ref',ref); }
+          const after = oldWalk(opts);
+          if(JSON.stringify(before.elements)!==JSON.stringify(after.elements)) return {ok:false,round,role,details:JSON.stringify({before:before.elements.filter((e,i)=>JSON.stringify(e)!==JSON.stringify(after.elements[i])).slice(0,1),after:after.elements.filter((e,i)=>JSON.stringify(e)!==JSON.stringify(before.elements[i])).slice(0,1)})};
+          checked++;
+        }
+      }
+      return {ok:true,checked};
+    })()`
+	var result struct {
+		OK      bool   `json:"ok"`
+		Checked int    `json:"checked"`
+		Round   int    `json:"round"`
+		Role    string `json:"role"`
+		Details string `json:"details"`
+	}
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result)); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.Checked != 600 {
+		t.Fatalf("differential failure: %+v", result)
+	}
+	t.Logf("%d role-filtered views matched across randomized DOM mutations", result.Checked)
+}
+
+func TestNextFrontierCrowding(t *testing.T) {
+	ctx, cancel := structuredTestContext(t)
+	defer cancel()
+	var result json.RawMessage
+	expr := `(()=>{document.body.innerHTML='<main>'+Array.from({length:150},(_,i)=>'<button style="position:fixed;top:0;left:0">Nav '+i+'</button>').join('')+'<input id="focus" aria-label="Focused" style="position:fixed;top:30px"><input aria-invalid="true" aria-label="Invalid" style="position:fixed;top:60px"><button id="changed" style="position:fixed;top:90px">Changed</button><button id="plain" style="position:fixed;top:120px">Relevant plain</button></main>';const walk=` + SnapshotFunctionScript + `;document.getElementById('focus').focus();const before=walk({mode:'frontier',limit:10,__brw_version:1,__brw_epoch:'crowd'});changed.textContent='Updated';const after=walk({mode:'frontier',limit:10,__brw_version:2,__brw_epoch:'crowd',since:1});const full=walk({mode:'frontier',limit:0});return {before:before.elements.map(e=>({name:e.name,signals:e.signals})),after:after.elements.map(e=>({name:e.name,signals:e.signals})),delta:after.delta,full_count:full.elements.length,changed_in_full:full.elements.some(e=>e.name==='Updated'),plain_in_full:full.elements.some(e=>e.name==='Relevant plain')}})()`
+	if err := chromedp.Run(ctx, chromedp.Navigate("about:blank"), chromedp.Evaluate(expr, &result)); err != nil {
+		t.Fatal(err)
+	}
+	t.Log(string(result))
+}

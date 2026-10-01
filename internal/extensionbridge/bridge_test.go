@@ -837,7 +837,7 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	}
 	// The manifest version moves with every extension release; PROTOCOL_VERSION
 	// below moves only on a breaking handshake change. Release notes: CHANGELOG.md.
-	const wantManifest = "0.7.10"
+	const wantManifest = "0.7.11"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
 	}

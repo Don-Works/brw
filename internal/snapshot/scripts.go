@@ -139,6 +139,22 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     return r.width > 0 && r.height > 0 && r.bottom >= 0 && r.right >= 0 && r.top <= w.innerHeight && r.left <= w.innerWidth;
   }
 
+  function pointerControl(el) {
+    if (!el.matches('input[type="checkbox"],input[type="radio"]')) return false;
+    if (!el.labels || !Array.from(el.labels).some(visible)) return false;
+    for (let node = el; node; node = parentOrHost(node)) {
+      if (node.matches('[hidden],[aria-hidden="true"]')) return false;
+      const style = winFor(node).getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      if (node !== el && Number(style.opacity) === 0) return false;
+    }
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || !inViewport(el)) return false;
+    const root = el.getRootNode();
+    const hit = root.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+    return hit === el;
+  }
+
   function labelText(el) {
     if (!el) return '';
     if (el.labels && el.labels.length) return clean(Array.from(el.labels).map(l => l.innerText || l.textContent).join(' '));
@@ -506,15 +522,25 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   }
   function taskRootFor(node) {
     for (var cur = node; cur; cur = parentOrHost(cur)) {
-      if (cur.matches && cur.matches('[aria-modal="true"],[role="dialog"],[role="alertdialog"]')) return cur;
+      if (cur.matches && cur.matches('dialog[open],[aria-modal="true"],[role="dialog"],[role="alertdialog"]')) return cur;
     }
     return null;
   }
+  function taskRootVisible(el) {
+    if (!visible(el)) return false;
+    for (let node = el; node; node = parentOrHost(node)) {
+      if (node.matches('[hidden],[aria-hidden="true"]')) return false;
+      const style = winFor(node).getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+    }
+    return true;
+  }
   let activeTaskRoot = taskRootFor(active);
-  if (!activeTaskRoot && frontierMode) {
-    const modalCandidates = all('[aria-modal="true"]');
+  if (activeTaskRoot && !taskRootVisible(activeTaskRoot)) activeTaskRoot = null;
+  if (!activeTaskRoot) {
+    const modalCandidates = all('dialog[open],[aria-modal="true"],[role="dialog"],[role="alertdialog"]');
     for (let i = modalCandidates.length - 1; i >= 0; i--) {
-      if (visible(modalCandidates[i])) { activeTaskRoot = modalCandidates[i]; break; }
+      if (taskRootVisible(modalCandidates[i])) { activeTaskRoot = modalCandidates[i]; break; }
     }
   }
   function belongsToActiveTask(el) {
@@ -535,6 +561,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     seen.add(el);
     const role = roleFor(el);
     if (roleFilter && role !== roleFilter) continue;
+    if (formLensMode && !formRoles.has(role)) continue;
     // Salient-image gate: <img> is surfaced as role "image" so agents can target
     // it for hover/click/drag (e.g. hover-reveal avatars, product tiles, map pins)
     // — a class a real accessibility tree exposes and we previously dropped. Bound
@@ -555,18 +582,23 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     const hasImgAlt = el.tagName === 'IMG' && !!clean(el.getAttribute('alt'));
     const isUseful = role !== 'generic' || isFocusable || typeof el.onclick === 'function' || el.draggable === true || hasImgAlt || (textContent && proseText.length > 0);
     if (!isUseful) continue;
-    if (formLensMode && !formRoles.has(role)) continue;
     const key = keyFor(el, role, name);
     const stableKey = stableKeyFor(el, role);
     const ref = refFor(el, key, stableKey);
-    const checked = ('checked' in el) ? Boolean(el.checked) : null;
+    const checked = ('checked' in el) ? Boolean(el.checked) : (el.getAttribute('aria-checked') === 'true' ? true : (el.getAttribute('aria-checked') === 'false' ? false : null));
     const selected = ('selected' in el) ? Boolean(el.selected) : (el.getAttribute('aria-selected') === 'true' ? true : (el.getAttribute('aria-selected') === 'false' ? false : (el.classList && (el.classList.contains('selected') || el.classList.contains('is-selected')) ? true : null)));
     const expanded = el.getAttribute('aria-expanded') === 'true' ? true : (el.getAttribute('aria-expanded') === 'false' ? false : null);
     const signals = structuralSignals(el, role, active);
-    const taskScoped = frontierMode && belongsToActiveTask(el);
-    if (taskScoped && !inViewport(el)) signals.push('task-scope');
     const isSensitive = sensitive(el);
     const rawValue = ('value' in el) ? clean(el.value) : clean(el.getAttribute('data-value') || el.getAttribute('value') || '');
+    const cachedVisible = visible(el);
+    const cachedViewport = inViewport(el);
+    const cachedDisabled = disabled(el);
+    const pointerActionable = !cachedVisible && pointerControl(el);
+    if (pointerActionable) signals.push('pointer-actionable');
+    const inActiveTask = belongsToActiveTask(el) && (pointerActionable || taskRootVisible(el));
+    const taskScoped = frontierMode && inActiveTask;
+    if (inActiveTask) signals.push('task-scope');
     const item = {
       ref,
       role,
@@ -576,15 +608,15 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       test_id: clean(el.getAttribute('data-testid') || el.getAttribute('data-test-id') || el.getAttribute('data-test') || ''),
       href: el.href || el.getAttribute('href') || '',
       value: isSensitive ? '' : rawValue,
-      visible: visible(el),
-      in_viewport: inViewport(el),
-      disabled: disabled(el),
+      visible: cachedVisible,
+      in_viewport: cachedViewport,
+      disabled: cachedDisabled,
       required: Boolean(el.required || el.getAttribute('aria-required') === 'true'),
       controls: el.getAttribute('aria-controls') || '',
       signals,
       source: ['dom'],
       key,
-      _frontier_score: frontierScore(role, name, signals, visible(el), inViewport(el), disabled(el))
+      _frontier_score: frontierScore(role, name, signals, cachedVisible, cachedViewport, cachedDisabled)
     };
     if (isSensitive) item.sensitive = true;
     // Geometry, opt-in. A snapshot taken inside a cross-origin iframe is merged
@@ -750,6 +782,8 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   const totalCandidates = elements.length;
   if (frontierMode) {
     elements.sort((a, b) => {
+      const scopeDiff = Number(hasSignal(b.signals, 'task-scope')) - Number(hasSignal(a.signals, 'task-scope'));
+      if (scopeDiff !== 0) return scopeDiff;
       const diff = (b._frontier_score || 0) - (a._frontier_score || 0);
       if (diff !== 0) return diff;
       return String(a.ref || '').localeCompare(String(b.ref || ''));
@@ -1981,7 +2015,7 @@ func RefDraggable(ctx context.Context, ref string) bool {
 // changes, with a 100ms safety interval for signals those miss (e.g. pushState
 // URL changes) — replacing a fixed-interval CDP poll loop with a single awaited
 // in-page promise.
-const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelpers + `
+const WaitConditionScript = `(function(condition, timeoutMs, cancelKey){` + FrameWalkHelpers + `
   // 'load' is NOT an alias of 'ready': a document is interactive (and satisfies
   // 'ready') before its load event fires, and a caller that asked for the load
   // event must not be told the page is loaded while its subresources are still
@@ -2069,9 +2103,10 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
   }
   return new Promise(function(resolve, reject){
     if(fnCompileError){ reject(new Error('wait fn did not compile: '+fnCompileError)); return; }
-    var done=false, obs=null, iv=0, to=0, pending=false;
+    var done=false, obs=null, iv=0, to=0, pending=false, cancelWait=null;
     function finish(v){
       if(done) return; done=true;
+      if(cancelKey && window[cancelKey] === cancelWait) delete window[cancelKey];
       try{ if(obs) obs.disconnect(); }catch(e){}
       if(iv) clearInterval(iv);
       if(to) clearTimeout(to);
@@ -2080,13 +2115,27 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
     }
     // pending guards against stacking overlapping async predicate evaluations
     // when mutations arrive faster than the predicate resolves.
+    if(cancelKey) { cancelWait=function(){ finish(false); }; window[cancelKey]=cancelWait; }
     function recheck(){
       if(done||pending) return;
       pending=true;
       settle(function(ok){ pending=false; if(ok) finish(true); });
     }
+    to=setTimeout(function(){
+      if(done) return;
+      var finalValue=false;
+      try{
+        finalValue=check();
+        if(finalValue && typeof finalValue.then==='function'){
+          Promise.resolve(finalValue).catch(function(){});
+          finalValue=false;
+        }
+      }catch(e){ finalValue=false; }
+      finish(!!finalValue);
+    }, Math.max(0, timeoutMs|0));
     settle(function(ok){
-      if(ok){ resolve(true); return; }
+      if(done) return;
+      if(ok){ finish(true); return; }
       try{ obs=new MutationObserver(recheck); obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
       try{ window.addEventListener('popstate', recheck); window.addEventListener('hashchange', recheck); }catch(e){}
       // readystatechange and load are what actually move 'ready' and 'load' from
@@ -2094,12 +2143,6 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
       // safety interval below rather than on the event itself.
       try{ window.addEventListener('load', recheck); document.addEventListener('readystatechange', recheck); }catch(e){}
       iv=setInterval(recheck, 100);
-      to=setTimeout(function(){
-        if(done) return;
-        // One last evaluation so a predicate that became true between the final
-        // recheck and the deadline is still honoured.
-        settle(function(ok2){ finish(ok2); });
-      }, Math.max(0, timeoutMs|0));
     });
   });
 })`
@@ -2107,8 +2150,13 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
 // WaitForCondition evaluates WaitConditionScript and awaits its promise, returning
 // whether the condition was met within timeoutMs.
 func WaitForCondition(ctx context.Context, condition string, timeoutMs int64) (bool, error) {
+	return waitForCondition(ctx, condition, timeoutMs, "")
+}
+
+func waitForCondition(ctx context.Context, condition string, timeoutMs int64, cancelKey string) (bool, error) {
 	condJSON, _ := json.Marshal(condition)
-	expr := fmt.Sprintf("%s(%s,%d)", WaitConditionScript, condJSON, timeoutMs)
+	keyJSON, _ := json.Marshal(cancelKey)
+	expr := fmt.Sprintf("%s(%s,%d,%s)", WaitConditionScript, condJSON, timeoutMs, keyJSON)
 	var matched bool
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		obj, exception, err := runtime.Evaluate(expr).
@@ -3319,7 +3367,13 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
   // built here reports shiftKey/ctrlKey false whatever is held.
   var trustedNeeded = (__abRequiresTrustedClick(target) || __abRequiresTrustedClick(el)) && opts.no_defer !== true;
   if (trustedNeeded || opts.locate === true) {
+    var resolvedRef = el.getAttribute('data-brw-ref');
+    if (!resolvedRef) {
+      resolvedRef = 'brw-click-' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+      el.setAttribute('data-brw-ref', resolvedRef);
+    }
     return {
+      ref: resolvedRef,
       ok: true,
       x,
       y,
@@ -3402,6 +3456,7 @@ func CommitField(ctx context.Context, ref string) error {
 }
 
 type ClickXYResult struct {
+	Ref   string  `json:"ref,omitempty"`
 	OK    bool    `json:"ok"`
 	X     float64 `json:"x"`
 	Y     float64 `json:"y"`

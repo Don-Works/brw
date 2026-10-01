@@ -33,6 +33,10 @@ func fakeDaemon(t *testing.T, responses map[string]string) (*httptest.Server, *[
 	t.Helper()
 	var calls []call
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/usage/report" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read request body: %v", err)

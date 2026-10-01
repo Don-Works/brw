@@ -329,6 +329,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("POST /api/usage/report", s.reportUsage)
 	// The profile roster: loopback-only, and it reaches browsers only through
 	// each profile's own daemon.
 	mux.HandleFunc("GET /profiles", s.rosterPage)

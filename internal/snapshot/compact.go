@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -116,7 +117,9 @@ func compactFlags(el Element) []string {
 	if el.Valid != nil && !*el.Valid {
 		flags = append(flags, "invalid")
 	}
-	if !el.Visible {
+	if slices.Contains(el.Signals, "pointer-actionable") {
+		flags = append(flags, "pointer-actionable")
+	} else if !el.Visible {
 		flags = append(flags, "hidden")
 	} else if !el.InViewport {
 		flags = append(flags, "offscreen")

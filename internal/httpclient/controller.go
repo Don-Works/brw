@@ -962,7 +962,11 @@ func (c *Controller) doWithClient(client *http.Client, req *http.Request, out an
 func (c *Controller) doWithClientLimit(client *http.Client, req *http.Request, out any, maxResponseBytes int64) error {
 	req.Header.Set(usagelog.HeaderSessionID, c.sessionID)
 	req.Header.Set(usagelog.HeaderOwnerID, c.ownerID)
-	req.Header.Set(usagelog.HeaderRequestID, fmt.Sprintf("%s:%d", c.sessionID, c.nextRequest.Add(1)))
+	requestID := usagelog.RequestID(req.Context())
+	if requestID == "" {
+		requestID = fmt.Sprintf("%s:%d", c.sessionID, c.nextRequest.Add(1))
+	}
+	req.Header.Set(usagelog.HeaderRequestID, requestID)
 	req.Header.Set(usagelog.HeaderClient, "brw-httpclient")
 	if name, _ := c.agentName.Load().(string); name != "" {
 		req.Header.Set(usagelog.HeaderAgentName, name)

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.20.0 - 2026-10-01
+
+- Prioritize active dialog controls and discover styled native checkboxes with
+  visible labels in bounded snapshots. Preserve checked state and task context.
+- Deliver trusted input for default ref, text and coordinate clicks, including
+  native touch under touch emulation. Validate painted targets, reject inactive
+  profile tabs with an explicit focus remedy, and never replay ambiguous input.
+  Verify application postconditions separately from dispatch receipts.
+- Extension 0.7.11 adds matching input retry protection. Keep passive batch/plan
+  steps outside human-action pacing and enforce extension wait deadlines.
+- Record bounded metadata for operation outcomes, timings and input/output sizes
+  across HTTP, MCP, CLI and reader boundaries. Add `brw usage` reporting; exclude
+  page content, URLs and credentials. Token estimates are not complete host-model
+  context or provider spend, and overlapping layers must not be added together.
+- Add compact filtered tab discovery with explicit truncation. Reuse per-element
+  snapshot state, push down form-role filters, and support explicit following
+  readiness checks for eligible direct actions with document-identity guards.
+- Improve optional reader evidence packing, completeness, cancellation and
+  process cleanup. Keep direct browser use independent of a helper model.
+- Expand owned-fixture differential and transport coverage, including 24 seeded
+  desktop/touch × headed/headless × direct/extension flows with matching semantic
+  views and final states. Measurements still show transport latency differences;
+  this release does not establish human-speed navigation or universal parity.
+
 ## 0.19.0 - 2026-10-01
 
 - Index sibling paths once per DOM walk and apply role filters before expensive

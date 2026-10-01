@@ -86,9 +86,7 @@ func TestClickTextActuatesControlsThatNeedARealGesture(t *testing.T) {
 	}
 }
 
-// An ordinary control must keep the fast single-evaluate in-page path: the whole
-// point of deferring only when needed is that the common case stays cheap.
-func TestClickTextKeepsTheInPagePathForOrdinaryControls(t *testing.T) {
+func TestClickTextActuatesOrdinaryControls(t *testing.T) {
 	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, `<!doctype html><title>Plain</title><body>
@@ -117,6 +115,6 @@ func TestClickTextKeepsTheInPagePathForOrdinaryControls(t *testing.T) {
 		t.Fatalf("evaluate: %v", err)
 	}
 	if got, _ := title.(string); got != "clicked" {
-		t.Fatalf("title = %q, want %q — the ordinary in-page click did not fire", got, "clicked")
+		t.Fatalf("title = %q, want %q — the ordinary control did not receive the click", got, "clicked")
 	}
 }

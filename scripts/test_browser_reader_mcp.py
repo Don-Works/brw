@@ -7,6 +7,7 @@ import queue
 import subprocess
 import sys
 import tempfile
+from unittest.mock import Mock, patch
 import threading
 import time
 import unittest
@@ -52,12 +53,16 @@ print('UNBOUNDED_STDOUT_MUST_NOT_ESCAPE' * 1000)
 
 
 class Client:
-    def __init__(self, directory, timeout=3, concurrent=2, config=None):
+    def __init__(self, directory, timeout=3, concurrent=2, config=None, usage=False):
         self.directory = pathlib.Path(directory)
         self.worker = self.directory / 'fake.py'
         self.worker.write_text(WORKER)
         self.artifacts = self.directory / 'jobs'
         command = [sys.executable, str(PATH), '--worker', str(self.worker), '--artifacts-dir', str(self.artifacts), '--timeout', str(timeout), '--max-concurrent', str(concurrent)]
+        if usage:
+            command.extend(['--usage-dir', str(self.directory / 'usage')])
+        else:
+            command.append('--no-usage-log')
         if config:
             command.extend(['--config', str(config)])
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -299,6 +304,117 @@ class ReaderMCPTests(unittest.TestCase):
         self.assertEqual(len(list(client.artifacts.glob('*/cleanup'))), 1)
         self.assertTrue(json.loads(next(client.artifacts.glob('*/adapter.json')).read_text())['cancelled'])
         self.assertTrue(client.messages.empty())
+
+    def test_completeness_packet_is_bounded_and_preserves_ranges(self):
+        report = {'parent_result': {'answer': 'Answer', 'source': 'https://example.test'}, 'source_chars': 100, 'source_total_chars': 200, 'source_truncated': True, 'evidence_narrowed': True, 'source_sha256': 'a'*64, 'evidence_spans': [{'id': 'p0', 'start': 5, 'end': 20}]}
+        trace = ADAPTER.bounded_result(report, 'test', 1)['trace']
+        self.assertEqual(trace['source_total_chars'], 200)
+        self.assertTrue(trace['source_truncated'])
+        self.assertTrue(trace['evidence_narrowed'])
+        self.assertEqual(trace['evidence_spans'], report['evidence_spans'])
+        report['evidence_spans'] = [{'start': i, 'end': i+1} for i in range(100)]
+        limited = ADAPTER.bounded_result(report, 'test', 1)['trace']
+        self.assertEqual(len(limited['evidence_spans']), 16)
+        self.assertEqual(limited['evidence_span_count'], 100)
+        self.assertTrue(limited['evidence_spans_truncated'])
+        report['evidence_spans'] = [{'start': -1, 'end': 5}]
+        self.assertNotIn('evidence_spans', ADAPTER.bounded_result(report, 'test', 1)['trace'])
+
+    def test_cancellation_interrupts_and_retains_capacity_through_cleanup(self):
+        delayed = WORKER.replace("(f.parent / 'cleanup').write_text('yes')", "time.sleep(.2)\n        (f.parent / 'cleanup').write_text('yes')")
+        with patch.object(sys.modules[__name__], 'WORKER', delayed):
+            client = self.client(concurrent=1, usage=True)
+        client.initialize()
+        client.call('sleep:5', 2)
+        client.wait_started()
+        started = time.monotonic()
+        client.send('notifications/cancelled', {'requestId': 2})
+        client.call('question', 3)
+        self.assertTrue(client.receive()['result']['isError'])
+        deadline = time.monotonic()+2
+        while time.monotonic() < deadline and not list(client.artifacts.glob('*/adapter.json')):
+            time.sleep(.01)
+        self.assertLess(time.monotonic()-started, 2)
+        self.assertEqual(len(list(client.artifacts.glob('*/cleanup'))), 1)
+        self.assertTrue(client.messages.empty())
+        client.call('question', 4)
+        self.assertEqual(client.receive()['id'], 4)
+        path = client.directory / 'usage/reader.jsonl'
+        deadline = time.monotonic()+2
+        cancelled = None
+        rows = []
+        while time.monotonic() < deadline:
+            if path.exists():
+                rows = [json.loads(line) for line in path.read_text().splitlines()]
+                cancelled = next((row for row in rows if row['outcome'] == 'cancelled'), None)
+                if cancelled:
+                    break
+            time.sleep(.01)
+        self.assertIsNotNone(cancelled)
+        self.assertEqual(cancelled['output_bytes'], 0)
+        self.assertGreater(cancelled['cleanup_ms'], 100)
+        self.assertGreater(cancelled['input_bytes'], 0)
+        encoded = json.dumps(rows)
+        for secret in ('PRIVATE', 'https://example', 'sleep:', 'Grounded answer'):
+            self.assertNotIn(secret, encoded)
+
+    def test_darwin_group_probe_permission_race_waits_for_leader_exit(self):
+        server = ADAPTER.Server(argparse_namespace(), io.StringIO())
+        process = Mock(pid=987654, returncode=None)
+        process.poll.return_value = None
+        process.wait.return_value = -2
+        with patch.object(ADAPTER.os, 'name', 'posix'), patch.object(ADAPTER.sys, 'platform', 'darwin'), patch.object(ADAPTER.os, 'killpg', side_effect=[None, PermissionError(1, 'probe')]) as kill:
+            server.stop_process(process)
+        process.wait.assert_called_once_with(timeout=.01)
+        self.assertEqual(kill.call_args_list[-1].args, (process.pid, 0))
+
+    def test_group_probe_permission_failure_with_live_leader_is_preserved(self):
+        server = ADAPTER.Server(argparse_namespace(), io.StringIO())
+        for platform in ('darwin', 'linux'):
+            with self.subTest(platform=platform):
+                process = Mock(pid=987654, returncode=None)
+                process.poll.return_value = None
+                process.wait.side_effect = subprocess.TimeoutExpired('owned worker', .01)
+                with patch.object(ADAPTER.os, 'name', 'posix'), patch.object(ADAPTER.sys, 'platform', platform), patch.object(ADAPTER.os, 'killpg', side_effect=[None, PermissionError(1, 'probe')]):
+                    with self.assertRaises(PermissionError):
+                        server.stop_process(process)
+                if platform == 'linux':
+                    process.wait.assert_not_called()
+
+    def test_cleanup_failure_records_duration_and_private_diagnostic(self):
+        worker = pathlib.Path(self.directory.name) / 'fake.py'
+        worker.write_text(WORKER)
+        for cancelled in (False, True):
+            with self.subTest(cancelled=cancelled):
+                args = ADAPTER.parse_args(['--worker', str(worker), '--artifacts-dir', self.directory.name, '--no-usage-log'])
+                server = ADAPTER.Server(args, io.StringIO())
+                job = {'cancelled': cancelled, 'cancel_event': threading.Event(), 'input_bytes': 123}
+                if cancelled:
+                    job['cancel_event'].set()
+                server.active[2] = job
+                with patch.object(server, 'stop_process', side_effect=PermissionError(1, 'cleanup failed')), patch.object(server.ledger, 'write') as write:
+                    server.run_worker(2, 'https://example.test', 'question', job)
+                fields = write.call_args.kwargs
+                self.assertIsNotNone(fields['cleanup_ms'])
+                self.assertGreaterEqual(fields['cleanup_ms'], 0)
+                diagnostics = [json.loads(path.read_text()) for path in pathlib.Path(self.directory.name).glob('*/adapter.json')]
+                self.assertTrue(any(item['error_kind'] == 'reader_failed' and 'cleanup failed' in item['error_detail'] for item in diagnostics))
+                self.assertNotIn(2, server.active)
+
+    def test_failure_usage_survives_missing_success_report(self):
+        client = self.client(usage=True)
+        client.initialize()
+        client.call('failure')
+        self.assertTrue(client.receive()['result']['isError'])
+        deadline = time.monotonic()+1
+        path = client.directory / 'usage/reader.jsonl'
+        while time.monotonic() < deadline and not path.exists():
+            time.sleep(.01)
+        row = json.loads(path.read_text().splitlines()[0])
+        self.assertEqual(row['operation'], 'adapter')
+        self.assertEqual(row['outcome'], 'error')
+        self.assertGreater(row['output_bytes'], 0)
+        self.assertNotIn('PRIVATE', json.dumps(row))
 
     def test_nonfinite_json_is_rejected(self):
         with self.assertRaises(ValueError):

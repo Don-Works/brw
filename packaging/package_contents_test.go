@@ -90,12 +90,15 @@ func TestInstallersBundleOptionalReader(t *testing.T) {
 		{"macos", "$root_dir/usr/local/share/brw/reader"},
 	} {
 		requireFileContains(t, "../scripts/package-"+target.name+".sh",
-			`cp "$repo_root/scripts/browser-answer-worker.py" "$repo_root/scripts/browser-reader-mcp.py" "`+target.dir+`/"`)
+			`cp "$repo_root/scripts/browser-answer-worker.py" "$repo_root/scripts/browser-reader-mcp.py" "$repo_root/scripts/browser-reader-usage.py" "`+target.dir+`/"`)
 	}
 	requireFileContains(t, "linux/nfpm.yaml", `src: "@BRW_PACKAGE_ROOT@/usr/share/brw/reader"`, "dst: /usr/share/brw/reader")
 	requireFileContains(t, "../scripts/package-windows.ps1",
-		`Copy-Item -Force (Join-Path $RepoRoot "scripts/browser-answer-worker.py"), (Join-Path $RepoRoot "scripts/browser-reader-mcp.py") (Join-Path $StageDir "share/reader")`)
+		`Copy-Item -Force (Join-Path $RepoRoot "scripts/browser-answer-worker.py"), (Join-Path $RepoRoot "scripts/browser-reader-mcp.py"), (Join-Path $RepoRoot "scripts/browser-reader-usage.py") (Join-Path $StageDir "share/reader")`)
 	requireFileContains(t, "../scripts/install.sh", `PAYLOAD="bin extension tests skills reader doc"`)
+	requireFileContains(t, "../Taskfile.yml",
+		`cp scripts/browser-answer-worker.py scripts/browser-reader-mcp.py scripts/browser-reader-usage.py "{{.DATADIR}}/reader/"`,
+		`cp scripts/browser-answer-worker.py scripts/browser-reader-mcp.py scripts/browser-reader-usage.py "{{.MAC_APPDIR}}/reader/"`)
 }
 
 func TestTarballContainsRelocatableReader(t *testing.T) {
@@ -108,7 +111,7 @@ func TestTarballContainsRelocatableReader(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"scripts/package-tarball.sh", "scripts/browser-answer-worker.py", "scripts/browser-reader-mcp.py", "LICENSE", "README.md"} {
+	for _, name := range []string{"scripts/package-tarball.sh", "scripts/browser-answer-worker.py", "scripts/browser-reader-mcp.py", "scripts/browser-reader-usage.py", "LICENSE", "README.md"} {
 		data, err := os.ReadFile(filepath.Join("..", name))
 		if err != nil {
 			t.Fatal(err)
@@ -138,6 +141,10 @@ func TestTarballContainsRelocatableReader(t *testing.T) {
 	defer gz.Close()
 	archive := tar.NewReader(gz)
 	found := map[string]bool{}
+	readerDir := filepath.Join(root, "reader-smoke")
+	if err := os.MkdirAll(readerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for {
 		header, err := archive.Next()
 		if err == io.EOF {
@@ -150,7 +157,7 @@ func TestTarballContainsRelocatableReader(t *testing.T) {
 		if name == header.Name || header.Typeflag != tar.TypeReg {
 			continue
 		}
-		if name != "browser-answer-worker.py" && name != "browser-reader-mcp.py" {
+		if name != "browser-answer-worker.py" && name != "browser-reader-mcp.py" && name != "browser-reader-usage.py" {
 			t.Fatalf("unexpected reader payload %q", name)
 		}
 		got, err := io.ReadAll(archive)
@@ -161,11 +168,27 @@ func TestTarballContainsRelocatableReader(t *testing.T) {
 		if err != nil || string(got) != string(want) {
 			t.Fatalf("reader payload %s differs from source: %v", name, err)
 		}
+		if err := os.WriteFile(filepath.Join(readerDir, name), got, 0o644); err != nil {
+			t.Fatal(err)
+		}
 		found[name] = true
 	}
-	if len(found) != 2 {
-		t.Fatalf("archive reader files = %v, want worker and adapter", found)
+	if len(found) != 3 {
+		t.Fatalf("archive reader files = %v, want worker, adapter and usage helper", found)
 	}
+	t.Run("pythonEntrypoints", func(t *testing.T) {
+		python, err := exec.LookPath("python3")
+		if err != nil {
+			t.Skip("python3 unavailable")
+		}
+		for _, name := range []string{"browser-answer-worker.py", "browser-reader-mcp.py"} {
+			cmd := exec.Command(python, filepath.Join(readerDir, name), "--help")
+			cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("packaged reader %s: %v: %s", name, err, output)
+			}
+		}
+	})
 }
 
 func requireFileContains(t *testing.T, path string, fragments ...string) {

@@ -94,7 +94,7 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 		sr.Error = err.Error()
 		return sr, retargetTo
 	}
-	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+	if err := b.pacer.BeforeSequenceStep(ctx, browser.TabIDFromContext(ctx), step.Action); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
 		return sr, retargetTo

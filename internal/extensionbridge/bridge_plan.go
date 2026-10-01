@@ -69,7 +69,7 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 		sr.Error = err.Error()
 		return sr, retargetTo
 	}
-	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+	if err := b.pacer.BeforeSequenceStep(ctx, browser.TabIDFromContext(ctx), step.Action); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
 		return sr, retargetTo
@@ -279,14 +279,28 @@ func (b *Bridge) waitChunkLimit() time.Duration {
 // holds, false at chunk. The check runs in the renderer on DOM mutations, so N
 // concurrent waits cost N held evaluates, not N polling loops.
 func (b *Bridge) waitConditionOnce(ctx context.Context, condition string, chunk time.Duration) (bool, error) {
+	ctx = b.pinActiveTab(ctx)
+	token, err := NewAuthToken()
+	if err != nil {
+		return false, err
+	}
+	key := "__brw_wait_" + token
+	keyJSON, _ := json.Marshal(key)
 	chunkMs := chunk.Milliseconds()
 	if chunkMs < 0 {
 		chunkMs = 0
 	}
 	condJSON, _ := json.Marshal(condition)
-	expr := fmt.Sprintf("%s(%s,%d)", snapshot.WaitConditionScript, condJSON, chunkMs)
+	expr := fmt.Sprintf("%s(%s,%d,%s)", snapshot.WaitConditionScript, condJSON, chunkMs, keyJSON)
 	var matched bool
 	if err := b.evaluate(ctx, expr, "", &matched); err != nil {
+		go func() {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 250*time.Millisecond)
+			defer cancel()
+			cleanup := fmt.Sprintf(`(() => {const key=%s;if(typeof window[key]==='function') window[key]();})()`, keyJSON)
+			var ignored any
+			_ = b.evaluate(withoutTabLock(cleanupCtx), cleanup, "", &ignored)
+		}()
 		return false, err
 	}
 	return matched, nil

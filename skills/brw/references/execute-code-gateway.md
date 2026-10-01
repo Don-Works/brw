@@ -82,7 +82,7 @@ script; do not spend one gateway call per browser action.
 const ns = brw_chromium;
 const r = ns.brw_open({ url: "https://app.example.test" });
 const tab = String((r.tab || r).id);                        // ids may arrive numeric — stringify
-const s = ns.brw_snapshot({ mode: "all", tab_id: tab });
+const s = ns.brw_snapshot({ tab_id: tab });
 const email = s.elements.find(e => e.role === "textbox" && /email/i.test(e.name)).ref;
 const submit = s.elements.find(e => e.role === "button" && /continue|sign in/i.test(e.name)).ref;
 ns.brw_fill({ ref: email, text: "a@example.com", tab_id: tab });

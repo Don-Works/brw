@@ -43,24 +43,47 @@ const (
 // never add args, text, values, page content, screenshots, headers, bodies,
 // filesystem paths, titles, or URLs (including query strings).
 type Event struct {
-	Timestamp        string `json:"ts"`
-	Version          string `json:"version,omitempty"`
-	Layer            string `json:"layer"`
-	Operation        string `json:"operation"`
-	Outcome          string `json:"outcome"`
-	DurationMS       int64  `json:"duration_ms,omitempty"`
-	HTTPStatus       int    `json:"http_status,omitempty"`
-	ErrorClass       string `json:"error_class,omitempty"`
-	ErrorFingerprint string `json:"error_fingerprint,omitempty"`
-	Retryable        bool   `json:"retryable,omitempty"`
-	SessionID        string `json:"session_id,omitempty"`
-	RequestID        string `json:"request_id,omitempty"`
-	Client           string `json:"client,omitempty"`
-	Workspace        string `json:"workspace,omitempty"`
-	Profile          string `json:"profile,omitempty"`
-	Mode             string `json:"mode,omitempty"`
-	ExtensionBuild   string `json:"extension_build,omitempty"`
-	PID              int    `json:"pid"`
+	SnapshotMode     string `json:"snapshot_mode,omitempty"`
+	OutputFormat     string `json:"output_format,omitempty"`
+	DeltaRequested   *bool  `json:"delta_requested,omitempty"`
+	DeltaReturned    *bool  `json:"delta_returned,omitempty"`
+	ResultTruncated  *bool  `json:"result_truncated,omitempty"`
+	ReadSettleMS     *int64 `json:"read_settle_ms,omitempty"`
+	ElementLimit     *int64 `json:"element_limit,omitempty"`
+	ReturnedElements *int64 `json:"returned_elements,omitempty"`
+
+	Timestamp                   string `json:"ts"`
+	Version                     string `json:"version,omitempty"`
+	Layer                       string `json:"layer"`
+	Operation                   string `json:"operation"`
+	Outcome                     string `json:"outcome"`
+	DurationMS                  int64  `json:"duration_ms,omitempty"`
+	SchemaVersion               int    `json:"schema_version,omitempty"`
+	DurationUS                  int64  `json:"duration_us,omitempty"`
+	Scope                       string `json:"scope,omitempty"`
+	Representation              string `json:"representation,omitempty"`
+	InputBytes                  *int64 `json:"input_bytes,omitempty"`
+	OutputBytes                 *int64 `json:"output_bytes,omitempty"`
+	InputQueryBytes             *int64 `json:"input_query_bytes,omitempty"`
+	InputTextChars              *int64 `json:"input_text_chars,omitempty"`
+	OutputTextChars             *int64 `json:"output_text_chars,omitempty"`
+	EstimatedInputTokensChars4  *int64 `json:"estimated_input_tokens_chars4,omitempty"`
+	EstimatedOutputTokensChars4 *int64 `json:"estimated_output_tokens_chars4,omitempty"`
+	BinaryInputBytes            *int64 `json:"binary_input_bytes,omitempty"`
+	BinaryOutputBytes           *int64 `json:"binary_output_bytes,omitempty"`
+	StructuredOutputBytes       *int64 `json:"structured_output_bytes,omitempty"`
+	HTTPStatus                  int    `json:"http_status,omitempty"`
+	ErrorClass                  string `json:"error_class,omitempty"`
+	ErrorFingerprint            string `json:"error_fingerprint,omitempty"`
+	Retryable                   bool   `json:"retryable,omitempty"`
+	SessionID                   string `json:"session_id,omitempty"`
+	RequestID                   string `json:"request_id,omitempty"`
+	Client                      string `json:"client,omitempty"`
+	Workspace                   string `json:"workspace,omitempty"`
+	Profile                     string `json:"profile,omitempty"`
+	Mode                        string `json:"mode,omitempty"`
+	ExtensionBuild              string `json:"extension_build,omitempty"`
+	PID                         int    `json:"pid"`
 }
 
 type Config struct {
@@ -135,6 +158,10 @@ func (r *Recorder) Record(event Event) error {
 	if event.Mode == "" {
 		event.Mode = r.identity.Mode
 	}
+	SanitizeObservation(&event)
+	event.SchemaVersion = 1
+	event.Scope = safeScope(event.Scope)
+	event.Representation = safeRepresentation(event.Representation)
 	event.Version = SafeVersion(event.Version)
 	event.Layer = SafeID(event.Layer)
 	event.Operation = SafeID(event.Operation)
@@ -169,6 +196,11 @@ func (r *Recorder) Record(event Event) error {
 	defer r.mu.Unlock()
 	if r.closed {
 		return os.ErrClosed
+	}
+	if r.file == nil {
+		if err := r.open(); err != nil {
+			return err
+		}
 	}
 	if r.maxBytes > 0 {
 		info, statErr := r.file.Stat()

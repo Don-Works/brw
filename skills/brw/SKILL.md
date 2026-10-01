@@ -44,7 +44,7 @@ to create test isolation.
 ## Choose the smallest useful surface
 
 1. For a narrow question about a known public URL, use the operator-enabled
-   `brw_ask` reader when available; see [optional workers](references/decision-workers.md).
+   `brw_ask` reader when its quality and whole-job latency have been qualified for that task; see [optional workers](references/decision-workers.md).
    It returns a bounded answer and source while keeping the page in worker artifacts.
    Otherwise, for a public document, try `brw_read_url({url,max_chars:2000})`. Use `llms:true`
    only when the site advertises an llms index; it is not automatic fallback.
@@ -67,7 +67,7 @@ open → snapshot for refs → act by ref → wait/assert → read → close.
 {"name":"brw_open","arguments":{"url":"https://app.example.test"}}
 → {"tab":{"id":"235935873","url":"https://app.example.test/","title":"…"},"ready":true}
 
-{"name":"brw_snapshot","arguments":{"tab_id":"235935873","mode":"all","format":"compact"}}
+{"name":"brw_snapshot","arguments":{"tab_id":"235935873","format":"compact"}}
 → e1 label "Email" · e2 textbox "Email" type=email · e3 label "Plan"
   e4 combobox "Plan" =free · e5 button "Continue" type=submit
 
@@ -92,25 +92,18 @@ be a string, including when a gateway returned a numeric ID.
 
 ## If your tool list looks short
 
-`brwd --mcp` defaults to `--mcp-tools auto`: it advertises 14 tools — `brw_tools`,
-`brw_open`, `brw_navigate_to`, `brw_read`, `brw_read_url`, `brw_snapshot`, `brw_find`,
-`brw_click`, `brw_fill`, `brw_select`, `brw_press`, `brw_wait_for`, `brw_observe`,
-`brw_batch` — and grows as you search. The full surface is 95 tools on a direct-CDP
-daemon (94 on `--remote`, 93 on the Chrome opt-in lane, 89 on a plugin-supplied
-off-host browser, 79 on the extension bridge, each missing only what its lane
-cannot serve); clients that attach schemas to each model request benefit from the small
-starting catalogue throughout the task.
+`brwd --mcp` starts with 14 tools in `auto` mode and grows as you search.
+The full surface is 95 tools on a direct-CDP daemon (94 on `--remote`,
+93 on the Chrome opt-in lane, 89 on a plugin-supplied off-host browser,
+79 on the extension bridge). Small initial catalogues reduce attached schemas.
 
 ```json
 {"name":"brw_tools","arguments":{"query":"read the console"}}
 ```
 
-Strong matches (max 4 per search) are added to the catalogue, the server emits
-`notifications/tools/list_changed`, and the definitions arrive on your next
-`tools/list`. Every brw tool is callable whether or not it is advertised: disclosure
-narrows what you are shown, never what you may call. `brw_identity` and `brw_close_tab`
-are not in the default 14 and answer anyway. Call the tool you need; search only when
-you want its schema.
+Search adds up to four strong matches and emits `notifications/tools/list_changed`.
+Every tool remains callable before disclosure, including `brw_identity` and
+`brw_close_tab`. Search when you need a schema; disclosure is not authorization.
 
 ## Match the running version
 
@@ -148,6 +141,20 @@ screen is ready. Wait for the expected `url:…` and a specific target/text befo
 reading or acting again. For large navigation menus, use `brw_find`, projected
 reads or role-filtered compact snapshots before requesting all controls.
 
+An action's `ok` confirms the input operation completed; `changed_state` can
+describe unrelated page changes. Neither proves that a member was added, a
+message sent, or a setting saved. Pair the action with an expected-state wait
+and a read/assertion of the resulting state before reporting completion. If a
+dialog remains open or the result is uncertain, inspect it before retrying a
+write; a second click can duplicate an operation that already reached the site.
+
+Prefer the active dialog's controls over similarly named background controls.
+The default frontier prioritizes that task scope. A styled native checkbox may
+carry `pointer-actionable` while `visible` is false; use its observed ref and
+verify its checked state. For repeated discovery, reuse the controls returned
+by the preceding action, combine independent reads, and use a bounded batch
+with an explicit final assertion when the next steps are already known.
+
 Batch `fill`/`type` take `text`; `select`/`assert_value` take `value`;
 `assert_text` needs both `ref` and `text`. A failed step stops the batch: inspect
 `ok`, the failing step and its error before continuing. Do not blindly repeat
@@ -163,20 +170,27 @@ Exact signatures and advanced tools (network, debugging, visual evidence,
 profiles, assertions and artifacts): [tool catalogue](references/tool-catalogue.md).
 Load only the section you need; do not read the entire catalogue by default.
 
+## Measure the loop
+
+Use `brw usage --since 1h --layer mcp` to review tool input/output size and latency;
+`--json` includes counter coverage and `--watch 5s` refreshes the report. Keep
+HTTP, MCP, CLI and reader boundaries separate. Character-based token estimates
+are not the host model's complete context or provider usage.
+
+Start with a bounded frontier snapshot; expand only when evidence is missing.
+Reuse a delta baseline only within its document and options. Batch already-known
+steps with explicit postconditions, then return only the evidence needed for the
+next decision. Count errors, expansions and retries alongside bytes and timings:
+smaller output that causes another model turn can make the complete task slower.
+
 ## Optional models and classifiers
 
-brw requires no intermediate model or classifier. Direct use remains available;
-when the operator has enabled a reading worker, prefer it for narrow questions
-about known public URLs. Discover `brw_ask` in the installed tool surface first;
-if absent, use an installed `brw-ask --url URL --question QUESTION` CLI through
-the execution tool. If neither exists, use direct brw reads. A skill does not
-install or register a reader. Do not invent a tool namespace or silently send
-private page contents to a provider. For reading or bounded semantic decisions, use
-the [optional worker guide](references/decision-workers.md). Resolve exact matches
-and invalid targets in code first. Keep providers, models, endpoints and credentials
-configurable, and measure quality, whole-job latency and parent-context size before
-enabling a helper. Full pages stay in worker artifacts; return only the requested
-answer and its source. Classifier confidence does not replace result verification.
+Direct brw needs no model or classifier. Use an operator-enabled reader for narrow
+public-URL questions only after qualifying its quality and whole-job latency.
+Discover `brw_ask` first; if absent, try an installed `brw-ask` CLI, then direct
+reads. Do not invent a namespace or send private pages to a provider. Keep exact
+matching in code and return bounded evidence with its source. Configuration,
+qualification and provider usage: [optional workers](references/decision-workers.md).
 
 ## Tabs, leases, cleanup
 
@@ -184,6 +198,13 @@ No `tab_id` means this session's own working tab, not whatever the human is look
 brw opens one if this session has none. (`--bridge-follow-focus` restores the legacy
 follow-the-human's-tab behaviour and is off by default.) Pass an explicit `tab_id` once
 more than one tab is in play — it also skips per-call tab resolution.
+
+Reuse the `tab_id` returned by `brw_open`. For an existing tab, start with
+`brw_list_tabs({format:"compact",query:"host or title",limit:20})`; narrow the
+query when `truncated:true`. `owned:true` selects only `mine`; unknown ownership
+is never assumed mine. Compact filters reduce returned context after browser
+enumeration. Use the full array only for omitted window/group details. Limits,
+fields and filters: [tool catalogue](references/tool-catalogue.md).
 
 On a daemon shared by several agents, one session holds each tab exclusively, reads
 included. `brw_list_tabs` shows other sessions' tabs as `leased`: do not focus, read,
@@ -212,11 +233,9 @@ with `brw run --file`. Keep raw traces and account data in private staging.
 Optional registry adapters can use Maix, Notion or Postgres behind the existing
 provider contract; none is required. See the [recipe guide](references/recipes.md).
 
-For operational workflow recipes, retain one canonical private artifact, verify its
-source-byte hash before submission, and promote repairs there. The digest brw
-returns identifies the parsed recipe, not the original file bytes. Keep the
-business-operation key stable across recipe upgrades; a new version is not
-permission to repeat an ambiguous write.
+Keep one canonical private operational recipe and verify its source-byte hash;
+brw's digest identifies the parsed recipe. Keep the business-operation key stable
+across upgrades; a new version does not authorize an ambiguous write again.
 
 Before rebuilding a known site workflow by hand, search for a stored one:
 `brw_recipe_search({query, origin?, limit?})` → metadata only

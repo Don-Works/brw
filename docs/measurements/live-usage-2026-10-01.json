@@ -1,0 +1,773 @@
+{
+  "schema": "brw.usage/1",
+  "generated_at": "2026-10-01T14:24:30.741371Z",
+  "since": "2026-10-01T11:24:30.741371+01:00",
+  "files": 10,
+  "scanned_records": 137449,
+  "matched_records": 232,
+  "invalid_records": 0,
+  "incomplete_lines": 0,
+  "read_errors": 0,
+  "bounded": false,
+  "total_groups": 16,
+  "groups": [
+    {
+      "layer": "mcp",
+      "operation": "brw_evaluate",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 83,
+      "errors": 0,
+      "duration_samples": 83,
+      "total_ms": 3019.964,
+      "p50_ms": 4.011,
+      "p95_ms": 70.001,
+      "max_ms": 1880.878,
+      "input_bytes": {
+        "total": 38585,
+        "samples": 83
+      },
+      "output_bytes": {
+        "total": 258153,
+        "samples": 83
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 9681,
+        "samples": 83
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 57184,
+        "samples": 83
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "tools_list",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "catalogue",
+      "representation": "mcp_catalogue",
+      "records": 2,
+      "errors": 0,
+      "duration_samples": 2,
+      "total_ms": 0.299,
+      "p50_ms": 0.147,
+      "p95_ms": 0.152,
+      "max_ms": 0.152,
+      "input_bytes": {
+        "total": 4,
+        "samples": 2
+      },
+      "output_bytes": {
+        "total": 240905,
+        "samples": 2
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 2,
+        "samples": 2
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 60160,
+        "samples": 2
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_list_tabs",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 5,
+      "errors": 0,
+      "duration_samples": 5,
+      "total_ms": 92.956,
+      "p50_ms": 20.208,
+      "p95_ms": 24.491,
+      "max_ms": 24.491,
+      "input_bytes": {
+        "total": 10,
+        "samples": 5
+      },
+      "output_bytes": {
+        "total": 155775,
+        "samples": 5
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 5,
+        "samples": 5
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 35094,
+        "samples": 5
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_batch",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 16,
+      "errors": 0,
+      "duration_samples": 16,
+      "total_ms": 31466.928,
+      "p50_ms": 1380.897,
+      "p95_ms": 5748.889,
+      "max_ms": 5748.889,
+      "input_bytes": {
+        "total": 4240,
+        "samples": 16
+      },
+      "output_bytes": {
+        "total": 85030,
+        "samples": 16
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 1063,
+        "samples": 16
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 10279,
+        "samples": 16
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_read",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 14,
+      "errors": 0,
+      "duration_samples": 14,
+      "total_ms": 160.295,
+      "p50_ms": 7.453,
+      "p95_ms": 39.77,
+      "max_ms": 39.77,
+      "input_bytes": {
+        "total": 891,
+        "samples": 14
+      },
+      "output_bytes": {
+        "total": 51325,
+        "samples": 14
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 230,
+        "samples": 14
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 6218,
+        "samples": 14
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_fill",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 4,
+      "errors": 0,
+      "duration_samples": 4,
+      "total_ms": 581.9680000000001,
+      "p50_ms": 93.745,
+      "p95_ms": 204.239,
+      "max_ms": 204.239,
+      "input_bytes": {
+        "total": 1704,
+        "samples": 4
+      },
+      "output_bytes": {
+        "total": 38099,
+        "samples": 4
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 426,
+        "samples": 4
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 4436,
+        "samples": 4
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_press",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 4,
+      "errors": 0,
+      "duration_samples": 4,
+      "total_ms": 2754.563,
+      "p50_ms": 553.876,
+      "p95_ms": 1225.926,
+      "max_ms": 1225.926,
+      "input_bytes": {
+        "total": 155,
+        "samples": 4
+      },
+      "output_bytes": {
+        "total": 32166,
+        "samples": 4
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 39,
+        "samples": 4
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 3700,
+        "samples": 4
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_snapshot",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 26,
+      "errors": 0,
+      "duration_samples": 26,
+      "total_ms": 636.416,
+      "p50_ms": 15.64,
+      "p95_ms": 66.803,
+      "max_ms": 94.225,
+      "input_bytes": {
+        "total": 1900,
+        "samples": 26
+      },
+      "output_bytes": {
+        "total": 28479,
+        "samples": 26
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 484,
+        "samples": 26
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 5356,
+        "samples": 26
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_open",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 26,
+      "errors": 0,
+      "duration_samples": 26,
+      "total_ms": 23955.857999999997,
+      "p50_ms": 427.644,
+      "p95_ms": 2783.925,
+      "max_ms": 3429.662,
+      "input_bytes": {
+        "total": 3655,
+        "samples": 26
+      },
+      "output_bytes": {
+        "total": 21071,
+        "samples": 26
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 921,
+        "samples": 26
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 2312,
+        "samples": 26
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_click",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 2,
+      "errors": 0,
+      "duration_samples": 2,
+      "total_ms": 279.45,
+      "p50_ms": 138.673,
+      "p95_ms": 140.777,
+      "max_ms": 140.777,
+      "input_bytes": {
+        "total": 68,
+        "samples": 2
+      },
+      "output_bytes": {
+        "total": 16734,
+        "samples": 2
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 18,
+        "samples": 2
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 1928,
+        "samples": 2
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_wait_for",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 10,
+      "errors": 0,
+      "duration_samples": 10,
+      "total_ms": 8209.829,
+      "p50_ms": 876.651,
+      "p95_ms": 1964.338,
+      "max_ms": 1964.338,
+      "input_bytes": {
+        "total": 1235,
+        "samples": 10
+      },
+      "output_bytes": {
+        "total": 3636,
+        "samples": 10
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 313,
+        "samples": 10
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 363,
+        "samples": 10
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_recipe_search",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 1,
+      "errors": 0,
+      "duration_samples": 1,
+      "total_ms": 62.566,
+      "p50_ms": 62.566,
+      "p95_ms": 62.566,
+      "max_ms": 62.566,
+      "input_bytes": {
+        "total": 121,
+        "samples": 1
+      },
+      "output_bytes": {
+        "total": 2322,
+        "samples": 1
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 31,
+        "samples": 1
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 534,
+        "samples": 1
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_close_tab",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 36,
+      "errors": 0,
+      "duration_samples": 36,
+      "total_ms": 1808.827,
+      "p50_ms": 43.289,
+      "p95_ms": 95.061,
+      "max_ms": 129.424,
+      "input_bytes": {
+        "total": 792,
+        "samples": 36
+      },
+      "output_bytes": {
+        "total": 1872,
+        "samples": 36
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 216,
+        "samples": 36
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 108,
+        "samples": 36
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_navigate",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 1,
+      "errors": 0,
+      "duration_samples": 1,
+      "total_ms": 207.274,
+      "p50_ms": 207.274,
+      "p95_ms": 207.274,
+      "max_ms": 207.274,
+      "input_bytes": {
+        "total": 60,
+        "samples": 1
+      },
+      "output_bytes": {
+        "total": 1253,
+        "samples": 1
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 15,
+        "samples": 1
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 141,
+        "samples": 1
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_identity",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 1,
+      "errors": 0,
+      "duration_samples": 1,
+      "total_ms": 0.473,
+      "p50_ms": 0.473,
+      "p95_ms": 0.473,
+      "max_ms": 0.473,
+      "input_bytes": {
+        "total": 2,
+        "samples": 1
+      },
+      "output_bytes": {
+        "total": 652,
+        "samples": 1
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 1,
+        "samples": 1
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 70,
+        "samples": 1
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    },
+    {
+      "layer": "mcp",
+      "operation": "brw_console",
+      "mode": "bridge",
+      "profile": "example-profile",
+      "scope": "tool",
+      "representation": "mcp_arguments_result",
+      "records": 1,
+      "errors": 0,
+      "duration_samples": 1,
+      "total_ms": 1.382,
+      "p50_ms": 1.382,
+      "p95_ms": 1.382,
+      "max_ms": 1.382,
+      "input_bytes": {
+        "total": 52,
+        "samples": 1
+      },
+      "output_bytes": {
+        "total": 174,
+        "samples": 1
+      },
+      "estimated_input_tokens_chars4": {
+        "total": 13,
+        "samples": 1
+      },
+      "estimated_output_tokens_chars4": {
+        "total": 14,
+        "samples": 1
+      },
+      "provider_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_output_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_cached_input_tokens": {
+        "total": 0,
+        "samples": 0
+      },
+      "provider_reasoning_tokens": {
+        "total": 0,
+        "samples": 0
+      }
+    }
+  ],
+  "notes": [
+    "Rows are separate measurement boundaries. Do not add HTTP, MCP, CLI or reader rows together as model context or tool-call totals.",
+    "Token estimates use the recorded chars/4 estimator, exclude binary where measured, and are not provider billing or the host model's complete context.",
+    "A counter with zero samples is unknown. Provider token counters appear only where reported; cached/reasoning counts may be subsets of input/output.",
+    "Only example-profile MCP tool rows describe the live workflow cohort; tools_list is catalogue traffic. Parent model timings and billed context are unavailable. HTTP rows are overlapping observations and are not added to MCP totals."
+  ]
+}

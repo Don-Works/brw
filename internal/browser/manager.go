@@ -68,6 +68,9 @@ func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duratio
 	if err := tabCtx.Err(); err != nil {
 		return err
 	}
+	if readiness, ok := tabCtx.Value(batchReadinessKey{}).(batchReadiness); ok && readiness.target == eventScopeFromCtx(tabCtx) && readiness.document != "" && readiness.document == batchDocumentIdentity(tabCtx) {
+		return m.runWithBatchReadiness(tabCtx, readiness, action)
+	}
 	if cap <= 0 {
 		return action()
 	}
@@ -1172,15 +1175,6 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 	}
 	before := m.cachedBefore(tabID, tabCtx)
 	traceName, traceRole, traceNameIsText := m.refIdentity(tabID, ref)
-	// clickElementCenter already actuates by coordinate (in-page ClickXY at the
-	// element box, CDP MouseClickXY fallback), which is the correct path for an
-	// AX-invisible custom component resolved by hit-test.
-	//
-	// Its fast path builds the MouseEvent in page script, and a synthesised
-	// MouseEvent has ctrlKey/shiftKey false whatever the caller is holding. So a
-	// tab with keys held takes the trusted CDP dispatch instead, which stamps the
-	// modifier mask onto each event — otherwise Shift+click would silently be an
-	// ordinary click.
 	var warning string
 	var clickErr error
 	if modifiers := m.heldModifierMask(tabID); modifiers != 0 {
@@ -1191,7 +1185,7 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 	if clickErr != nil {
 		return ActionResult{}, clickErr
 	}
-	result := m.observeActionWithBefore(tabID, tabCtx, "clicked "+ref, before)
+	result := m.observeActionWithBefore(tabID, tabCtx, "dispatched click "+ref, before)
 	if actionable.Mode == "hit_test" {
 		note := "clicked via geometry hit-test (element reported AX-invisible)"
 		if warning != "" {
@@ -1234,39 +1228,15 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 	m.recordAgentInteraction(tabID, "click_text")
 
 	before := m.cachedBefore(tabID, tabCtx)
-	// A held modifier cannot survive the in-page dispatch: the MouseEvent the
-	// script constructs reports shiftKey/ctrlKey false whatever the tab holds.
-	// Ask for the click POINT instead and actuate it through trusted CDP input,
-	// which stamps the mask onto every event.
-	modifiers := input.Modifier(m.heldModifierMask(tabID))
-	if modifiers != 0 {
-		opts.Locate = true
-	}
-	var clicked snapshot.ClickXYResult
-	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
-		var clickErr error
-		clicked, clickErr = snapshot.ClickText(tabCtx, opts)
-		if clickErr != nil {
-			return clickErr
-		}
-		// The script resolved a control that only responds to a real input
-		// gesture and deliberately did not dispatch anything, so actuate it by
-		// coordinate the way Click does. Without this a target="_blank" link or
-		// a window.open() button reported a successful click and did nothing.
-		if clicked.Deferred {
-			return chromedp.Run(tabCtx, chromedp.ActionFunc(func(c context.Context) error {
-				return dispatchClick(c, clicked.X, clicked.Y, input.Left, 1, modifiers)
-			}))
-		}
-		return nil
-	}); err != nil {
+	clicked, err := m.clickTextTarget(tabCtx, tabID, opts, actionSettleDelay)
+	if err != nil {
 		return ActionResult{}, err
 	}
 	label := opts.Text
 	if clicked.Name != "" {
 		label = clicked.Name
 	}
-	result := m.observeActionWithBefore(tabID, tabCtx, "clicked text "+strconv.Quote(label), before)
+	result := m.observeActionWithBefore(tabID, tabCtx, "dispatched click text "+strconv.Quote(label), before)
 	result.DurationMS = time.Since(start).Milliseconds()
 	m.recordTrace(tabID, TraceEntry{
 		Action:     "click_text",
@@ -1277,6 +1247,20 @@ func (m *Manager) ClickText(ctx context.Context, opts snapshot.ClickTextOptions)
 		Timestamp:  time.Now().Format(time.RFC3339),
 	})
 	return result, nil
+}
+
+func (m *Manager) clickTextTarget(tabCtx context.Context, tabID string, opts snapshot.ClickTextOptions, delay time.Duration) (snapshot.ClickXYResult, error) {
+	opts.Locate = true
+	located, err := snapshot.ClickText(tabCtx, opts)
+	if err != nil {
+		return located, err
+	}
+	if located.Ref == "" {
+		return located, errors.New("click text resolved no target ref")
+	}
+	err = m.trustedClickRefAtPoint(tabCtx, located.Ref, &located, delay, input.Modifier(m.heldModifierMask(tabID)))
+	located.Deferred = false
+	return located, err
 }
 
 func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
@@ -1807,7 +1791,7 @@ func (m *Manager) uploadFileViaChooser(tabID string, tabCtx context.Context, opt
 			return ActionResult{}, fmt.Errorf("click upload trigger %s: %w", opts.ClickRef, err)
 		}
 	} else {
-		if _, err := snapshot.ClickText(tabCtx, snapshot.ClickTextOptions{Text: opts.ClickText, Role: opts.Role}); err != nil {
+		if _, err := m.clickTextTarget(tabCtx, tabID, snapshot.ClickTextOptions{Text: opts.ClickText, Role: opts.Role}, actionSettleDelay); err != nil {
 			return ActionResult{}, fmt.Errorf("click upload trigger %q: %w", opts.ClickText, err)
 		}
 	}
@@ -1919,6 +1903,14 @@ func elementValueMatches(tabCtx context.Context, ref, value string) bool {
 }
 
 func (m *Manager) clickElementCenter(tabCtx context.Context, ref string, delay time.Duration) (string, error) {
+	return m.clickElementCenterTrusted(tabCtx, ref, delay, 0)
+}
+
+func (m *Manager) clickElementCenterWithModifiers(tabCtx context.Context, ref string, modifiers input.Modifier) (string, error) {
+	return m.clickElementCenterTrusted(tabCtx, ref, actionSettleDelay, modifiers)
+}
+
+func (m *Manager) clickElementCenterTrusted(tabCtx context.Context, ref string, delay time.Duration, modifiers input.Modifier) (string, error) {
 	box, err := snapshot.ResolveOrRecoverBox(tabCtx, ref)
 	if err != nil {
 		return "", err
@@ -1927,59 +1919,45 @@ func (m *Manager) clickElementCenter(tabCtx context.Context, ref string, delay t
 	if box.Recovered {
 		warning = fmt.Sprintf("ref recovered: %s -> %s", box.OldRef, box.Ref)
 	}
-	// Fast path: actuate the click with a single in-page round-trip. CDP
-	// Input.dispatchMouseEvent (chromedp.MouseClickXY) blocks on a renderer ack
-	// that costs ~0.8-1.1s per click on heavy pages; the in-page
-	// pointer/mouse/click sequence fires the same handlers in one
-	// Runtime.evaluate (~ms). Mirrors the extension-bridge clickRef fast path.
-	// Both paths hit-test by viewport point, so semantics match; trusted CDP
-	// dispatch stays as the fallback when the point is not hit-testable in-page
-	// (e.g. element scrolled out of the layout viewport, elementFromPoint null).
-	if !box.RequiresTrusted {
-		if err := m.runWithPrearmedSettle(tabCtx, delay, func() error {
-			inPage, evalErr := snapshot.ClickXY(tabCtx, box.ViewportX, box.ViewportY)
-			if evalErr != nil {
-				return evalErr
-			}
-			if !inPage.OK {
-				return errors.New("in-page click point was not hit-testable")
-			}
-			return nil
-		}); err == nil {
-			return warning, nil
-		}
-	}
-	// Popup/download/fullscreen-style controls need a genuine browser input
-	// gesture. ResolveOrRecoverBox marks only those uncommon shapes, keeping the
-	// fast single-evaluate path for ordinary clicks.
-	if err := m.runWithPrearmedSettle(tabCtx, delay, func() error {
-		return chromedp.Run(tabCtx, chromedp.MouseClickXY(box.ViewportX, box.ViewportY))
-	}); err != nil {
+	if err := m.trustedClickRefAtPoint(tabCtx, box.Ref, &snapshot.ClickXYResult{X: box.ViewportX, Y: box.ViewportY}, delay, modifiers); err != nil {
 		return "", err
 	}
 	return warning, nil
 }
 
-// clickElementCenterWithModifiers clicks a ref through the trusted CDP input
-// path with an explicit modifier mask. Kept separate from clickElementCenter so
-// the common no-modifier click keeps its single-evaluate fast path.
-func (m *Manager) clickElementCenterWithModifiers(tabCtx context.Context, ref string, modifiers input.Modifier) (string, error) {
-	box, err := snapshot.ResolveOrRecoverBox(tabCtx, ref)
-	if err != nil {
-		return "", err
+func (m *Manager) trustedClickRefAtPoint(tabCtx context.Context, ref string, located *snapshot.ClickXYResult, delay time.Duration, modifiers input.Modifier) error {
+	resolve := func(ctx context.Context) (snapshot.ClickXYResult, error) {
+		if located != nil {
+			return snapshot.ResolveClickTargetAtPoint(ctx, ref, located.X, located.Y)
+		}
+		return snapshot.ResolveClickTarget(ctx, ref)
 	}
-	warning := ""
-	if box.Recovered {
-		warning = fmt.Sprintf("ref recovered: %s -> %s", box.OldRef, box.Ref)
-	}
-	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
+	return m.runWithPrearmedSettle(tabCtx, delay, func() error {
+		point, err := resolve(tabCtx)
+		if err != nil {
+			return err
+		}
 		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			return dispatchClick(ctx, box.ViewportX, box.ViewportY, input.Left, 1, modifiers)
+			if m.emulatedTouchEnabled(ctx) {
+				point, err = resolve(ctx)
+				if err != nil {
+					return err
+				}
+				return dispatchTrustedTap(ctx, point.X, point.Y, modifiers)
+			}
+			if err := input.DispatchMouseEvent(input.MouseMoved, point.X, point.Y).WithModifiers(modifiers).Do(ctx); err != nil {
+				return err
+			}
+			point, err = resolve(ctx)
+			if err != nil {
+				return err
+			}
+			if err := input.DispatchMouseEvent(input.MousePressed, point.X, point.Y).WithButton(input.Left).WithButtons(1).WithModifiers(modifiers).WithClickCount(1).Do(ctx); err != nil {
+				return err
+			}
+			return input.DispatchMouseEvent(input.MouseReleased, point.X, point.Y).WithButton(input.Left).WithButtons(0).WithModifiers(modifiers).WithClickCount(1).Do(ctx)
 		}))
-	}); err != nil {
-		return "", err
-	}
-	return warning, nil
+	})
 }
 
 func findOptionCandidate(tabCtx context.Context, value string) (snapshot.Element, error) {
@@ -2258,7 +2236,27 @@ func (m *Manager) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYRe
 	}
 	defer cancel()
 	m.recordAgentInteraction(tabID, "click_xy")
-	return snapshot.ClickXY(tabCtx, x, y)
+	point, err := snapshot.ResolveClickPoint(tabCtx, x, y)
+	if err != nil {
+		return point, err
+	}
+	err = chromedp.Run(tabCtx, chromedp.ActionFunc(func(c context.Context) error {
+		modifiers := input.Modifier(m.heldModifierMask(tabID))
+		if m.emulatedTouchEnabled(c) {
+			return dispatchTrustedTap(c, x, y, modifiers)
+		}
+		if err := input.DispatchMouseEvent(input.MouseMoved, x, y).WithModifiers(modifiers).Do(c); err != nil {
+			return err
+		}
+		if _, err := snapshot.ResolveClickPoint(c, x, y); err != nil {
+			return err
+		}
+		if err := input.DispatchMouseEvent(input.MousePressed, x, y).WithButton(input.Left).WithButtons(1).WithModifiers(modifiers).WithClickCount(1).Do(c); err != nil {
+			return err
+		}
+		return input.DispatchMouseEvent(input.MouseReleased, x, y).WithButton(input.Left).WithButtons(0).WithModifiers(modifiers).WithClickCount(1).Do(c)
+	}))
+	return point, err
 }
 
 func (m *Manager) WindowBounds(ctx context.Context) (snapshot.WindowBoundsResult, error) {
@@ -2821,7 +2819,7 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 		sr.Error = err.Error()
 		return sr
 	}
-	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+	if err := m.pacer.BeforeSequenceStep(ctx, TabIDFromContext(ctx), step.Action); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
 		return sr
@@ -3022,7 +3020,11 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 			result.Error = "cancelled"
 			break
 		}
-		sr := m.executeBatchStep(tabCtx, tabID, i, step)
+		stepCtx := tabCtx
+		if i+1 < len(steps) {
+			stepCtx = batchReadinessContext(ctx, tabCtx, step, steps[i+1])
+		}
+		sr := m.executeBatchStep(stepCtx, tabID, i, step)
 		result.Steps = append(result.Steps, sr)
 		if !sr.OK {
 			if entry.Cancelled() {
@@ -3112,7 +3114,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 		sr.Error = err.Error()
 		return sr
 	}
-	if err := m.pacer.BeforeAction(tabCtx, tabID); err != nil {
+	if err := m.pacer.BeforeSequenceStep(tabCtx, tabID, step.Action); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
 		return sr
@@ -3139,23 +3141,11 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 			}
 		}
 	case "click_text":
-		// Clicking by visible/accessible text survives a page whose refs have
-		// been reassigned, which is what a replayed flow needs when the target
-		// page has changed shape since the flow was recorded.
 		if step.Text == "" {
 			actionErr = errors.New("click_text requires text")
 			break
 		}
-		actionErr = m.runWithPrearmedSettle(tabCtx, actionSettleDelay, func() error {
-			modifiers := input.Modifier(m.heldModifierMask(tabID))
-			clicked, clickErr := snapshot.ClickText(tabCtx, snapshot.ClickTextOptions{Text: step.Text, Locate: modifiers != 0})
-			if clickErr != nil || !clicked.Deferred {
-				return clickErr
-			}
-			return chromedp.Run(tabCtx, chromedp.ActionFunc(func(c context.Context) error {
-				return dispatchClick(c, clicked.X, clicked.Y, input.Left, 1, modifiers)
-			}))
-		})
+		_, actionErr = m.clickTextTarget(tabCtx, tabID, snapshot.ClickTextOptions{Text: step.Text}, actionSettleDelay)
 	case "find_act":
 		// Locate and act in one step. The search is deliberately not a ref
 		// lookup: it must resolve to exactly one element or the step fails, so a

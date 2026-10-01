@@ -20,7 +20,7 @@ import (
 const (
 	snapshotScriptMarker = "low_semantic_coverage"
 	resolveBoxMarker     = "viewport_x"
-	clickXYMarker        = "no element at coordinates"
+	clickTargetMarker    = "click target not hit-testable"
 )
 
 // findActExtension is a fake extension that serves a fixed element list to the
@@ -59,9 +59,12 @@ func (f *findActExtension) didRun(kind string) bool {
 
 func (f *findActExtension) reply(expr string) any {
 	switch {
-	case strings.Contains(expr, clickXYMarker):
-		f.note("click")
-		return map[string]any{"ok": true, "x": 10, "y": 20, "tag": "button"}
+	case strings.Contains(expr, clickTargetMarker):
+		f.note("click_target")
+		return map[string]any{"ok": true, "x": 50, "y": 32, "tag": "button"}
+	case strings.Contains(expr, "no element at coordinates"):
+		f.note("synthetic_click")
+		return map[string]any{"ok": false, "error": "synthetic click unsupported by this fixture"}
 	case strings.Contains(expr, resolveBoxMarker):
 		f.note("resolve")
 		return map[string]any{
@@ -99,6 +102,9 @@ func (f *findActExtension) serve(ctx context.Context, conn *websocket.Conn) {
 			result = []map[string]any{{"id": 7, "windowId": 1, "active": true, "url": "https://fixture.test/", "title": "Fixture"}}
 		case "get_active_tab_id":
 			result = map[string]any{"tabId": 7}
+		case "get_tab_input_state":
+			f.note("input_state")
+			result = map[string]any{"active": msg.Params["tabId"] == float64(7), "windowFocused": false}
 		case "cached_snapshot":
 			f.mu.Lock()
 			cached := f.cached
@@ -113,6 +119,16 @@ func (f *findActExtension) serve(ctx context.Context, conn *websocket.Conn) {
 		case "cdp":
 			method, _ := msg.Params["method"].(string)
 			params, _ := msg.Params["params"].(map[string]any)
+			if method == "Input.dispatchMouseEvent" {
+				if msg.Params["tabId"] != float64(7) {
+					f.note("wrong_target")
+				}
+				typ, _ := params["type"].(string)
+				f.note(typ)
+				if typ == "mouseReleased" {
+					f.note("click")
+				}
+			}
 			if method == "Runtime.evaluate" {
 				expr, _ := params["expression"].(string)
 				f.mu.Lock()
@@ -204,6 +220,7 @@ func TestBridgeBatchFindActStep(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
+			ctx = browser.WithTabID(ctx, "7")
 			result, err := b.ExecuteBatch(ctx, []browser.BatchStep{{
 				Action: "find_act",
 				Find:   &browser.FindAct{Query: "Add", Role: "button", Action: "click"},
@@ -221,6 +238,20 @@ func TestBridgeBatchFindActStep(t *testing.T) {
 				t.Fatalf("clicked = %v, want %v — the extension transport %s",
 					got, tt.wantClick,
 					map[bool]string{true: "actuated an element it should have refused", false: "refused an element it should have clicked"}[got])
+			}
+
+			fe.mu.Lock()
+			counts := map[string]int{}
+			for _, kind := range fe.ran {
+				counts[kind]++
+			}
+			fe.mu.Unlock()
+			wantInputs := 0
+			if tt.wantClick {
+				wantInputs = 1
+			}
+			if counts["mousePressed"] != wantInputs || counts["mouseReleased"] != wantInputs || counts["wrong_target"] != 0 || counts["synthetic_click"] != 0 {
+				t.Fatalf("native input counts=%v want=%d", counts, wantInputs)
 			}
 			if tt.wantOK && result.Steps[0].Ref != "e1" {
 				t.Fatalf("step ref = %q, want e1", result.Steps[0].Ref)

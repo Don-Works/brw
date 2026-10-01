@@ -94,7 +94,12 @@ func waitConditionArgument(condition, name string) (string, bool) {
 // navigation that destroys the execution context simply continues against the new
 // document.
 func (b *Bridge) waitForConditionInPage(ctx context.Context, condition string, timeout time.Duration, deadline time.Time) (browser.WaitOutcome, error) {
+	waitCtx, cancelWait := context.WithDeadline(ctx, deadline)
+	defer cancelWait()
 	attempts := 0
+	timedOut := func() (browser.WaitOutcome, error) {
+		return browser.WaitOutcome{Wakeups: attempts}, fmt.Errorf("timed out waiting for %q after %s; the condition was never met — check that the page is loaded and the condition is correct (valid: ready, committed, load, networkidle, text:..., url:..., title:..., ref:..., selector:..., fn:..., dialog, download, page_ready)", condition, timeout)
+	}
 	for {
 		// Cooperative cancellation: a Cancel on the surrounding plan/batch (or this
 		// tab) cancels ctx, unblocking a long wait promptly.
@@ -102,8 +107,8 @@ func (b *Bridge) waitForConditionInPage(ctx context.Context, condition string, t
 			return browser.WaitOutcome{Wakeups: attempts}, fmt.Errorf("wait for %q cancelled", condition)
 		}
 		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return browser.WaitOutcome{Wakeups: attempts}, fmt.Errorf("timed out waiting for %q after %s; the condition was never met — check that the page is loaded and the condition is correct (valid: ready, committed, load, networkidle, text:..., url:..., title:..., ref:..., selector:..., fn:..., dialog, download, page_ready)", condition, timeout)
+		if remaining <= 0 || waitCtx.Err() != nil {
+			return timedOut()
 		}
 		chunk := remaining
 		if limit := b.waitChunkLimit(); chunk > limit {
@@ -113,19 +118,28 @@ func (b *Bridge) waitForConditionInPage(ctx context.Context, condition string, t
 		// The in-page promise resolves at chunk on its own timer; the round trip
 		// is bounded just past that so a renderer that never answers ends the
 		// wait at the caller's timeout_ms rather than at the daemon's --timeout.
-		chunkCtx, cancelChunk := context.WithTimeout(ctx, chunk+waitChunkGrace)
+		chunkCtx, cancelChunk := context.WithTimeout(waitCtx, chunk+waitChunkGrace)
 		matched, err := b.waitConditionOnce(chunkCtx, condition, chunk)
 		cancelChunk()
-		if err == nil && matched {
+		if ctx.Err() != nil {
+			return browser.WaitOutcome{Wakeups: attempts}, fmt.Errorf("wait for %q cancelled", condition)
+		}
+		if err == nil && matched && time.Now().Before(deadline) {
 			return browser.WaitOutcome{ResolvedBy: browser.WaitResolvedByScript, Wakeups: attempts}, nil
+		}
+		if time.Until(deadline) <= 0 || waitCtx.Err() != nil {
+			return timedOut()
 		}
 		if err != nil {
 			// A navigation can destroy the in-page execution context mid-await; pause
 			// briefly, then re-arm the promise against the new document rather than
 			// hot-looping on the transient "context was destroyed" error.
 			select {
-			case <-ctx.Done():
-				return browser.WaitOutcome{Wakeups: attempts}, fmt.Errorf("wait for %q cancelled", condition)
+			case <-waitCtx.Done():
+				if ctx.Err() != nil {
+					return browser.WaitOutcome{Wakeups: attempts}, fmt.Errorf("wait for %q cancelled", condition)
+				}
+				return timedOut()
 			case <-time.After(waitForErrBackoff):
 			}
 		}

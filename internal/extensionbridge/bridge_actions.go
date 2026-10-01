@@ -129,6 +129,7 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 }
 
 func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
+	ctx = b.pinActiveTab(ctx)
 	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
 		return browser.ActionResult{}, err
 	}
@@ -142,10 +143,11 @@ func (b *Bridge) Click(ctx context.Context, ref string) (browser.ActionResult, e
 		return browser.ActionResult{}, err
 	}
 	b.settle(ctx, observedActionSettle)
-	return b.observeActionWithBeforeAndTabs(ctx, "clicked "+ref, before, beforeTabs), nil
+	return b.observeActionWithBeforeAndTabs(ctx, "dispatched click "+ref, before, beforeTabs), nil
 }
 
 func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) (browser.ActionResult, error) {
+	ctx = b.pinActiveTab(ctx)
 	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
 		return browser.ActionResult{}, err
 	}
@@ -157,34 +159,29 @@ func (b *Bridge) ClickText(ctx context.Context, opts snapshot.ClickTextOptions) 
 		return browser.ActionResult{}, err
 	}
 	b.settle(ctx, observedActionSettle)
-	return b.observeActionWithBeforeAndTabs(ctx, "clicked text "+strconv.Quote(label), before, beforeTabs), nil
+	return b.observeActionWithBeforeAndTabs(ctx, "dispatched click text "+strconv.Quote(label), before, beforeTabs), nil
 }
 
-// clickTextRaw clicks without pre/post observations, for batch and plan.
 func (b *Bridge) clickTextRaw(ctx context.Context, opts snapshot.ClickTextOptions) (string, error) {
-	optsJSON, _ := json.Marshal(opts)
-	var clicked snapshot.ClickXYResult
-	// User gesture on the FIRST evaluation too: an addEventListener handler is
-	// invisible to the deferral check, so its window.open would be dropped.
-	if err := b.evaluateWithUserGesture(ctx, fmt.Sprintf("%s(%s)", snapshot.ClickTextScript, optsJSON), "", &clicked); err != nil {
+	ctx = b.pinActiveTab(ctx)
+	if err := b.requireTrustedClickTarget(ctx); err != nil {
 		return "", err
 	}
-	if !clicked.OK {
-		if clicked.Error == "" {
-			clicked.Error = "click text failed"
-		}
-		return "", fmt.Errorf("click text: %s", clicked.Error)
+	opts.Locate = true
+	optsJSON, _ := json.Marshal(opts)
+	var located snapshot.ClickXYResult
+	if err := b.evaluateWithUserGesture(ctx, fmt.Sprintf("%s(%s)", snapshot.ClickTextScript, optsJSON), "", &located); err != nil {
+		return "", err
 	}
-	if clicked.Deferred {
-		// The control needs a real gesture, so the script dispatched nothing. Retry
-		// under Runtime.evaluate's userGesture; real CDP input is the fallback.
-		if err := b.clickTextTrusted(ctx, opts, clicked); err != nil {
-			return "", err
-		}
+	if !located.OK || located.Ref == "" {
+		return "", fmt.Errorf("click text: %s", located.Error)
+	}
+	if err := b.clickRefAtPoint(ctx, located.Ref, &located); err != nil {
+		return "", err
 	}
 	label := opts.Text
-	if clicked.Name != "" {
-		label = clicked.Name
+	if located.Name != "" {
+		label = located.Name
 	}
 	return label, nil
 }
@@ -255,107 +252,83 @@ func (b *Bridge) hoverRef(ctx context.Context, ref string) error {
 }
 
 func (b *Bridge) clickRef(ctx context.Context, ref string) error {
-	box, err := b.resolveBox(ctx, ref)
-	if err != nil {
-		if fallbackErr := b.activate(ctx, ref); fallbackErr == nil {
-			return nil
-		}
+	return b.clickRefAtPoint(ctx, ref, nil)
+}
+
+func (b *Bridge) clickRefAtPoint(ctx context.Context, ref string, point *snapshot.ClickXYResult) (err error) {
+	ctx = b.pinActiveTab(ctx)
+	if err := b.requireTrustedClickTarget(ctx); err != nil {
 		return err
 	}
-	// In-page click first: CDP Input.dispatchMouseEvent waits on a renderer ack
-	// that costs ~1.5s per event on heavy pages. CDP stays the fallback when the
-	// point is not hit-testable in-page.
-	xJSON, _ := json.Marshal(box.ViewportX)
-	yJSON, _ := json.Marshal(box.ViewportY)
-	var inPage snapshot.ClickXYResult
-	expression := fmt.Sprintf("%s(%s,%s)", snapshot.ClickXYScript, xJSON, yJSON)
-	// userGesture on EVERY click: whether a listener is gesture-gated cannot be
-	// read back from page script, and guessing wrong drops window.open.
-	evalErr := b.evaluateWithUserGesture(ctx, expression, "", &inPage)
-	if evalErr == nil && inPage.OK {
-		return nil
+	if point == nil {
+		box, err := b.resolveBox(ctx, ref)
+		if err != nil {
+			return err
+		}
+		ref = box.Ref
+		point = &snapshot.ClickXYResult{X: box.ViewportX, Y: box.ViewportY}
 	}
-	for _, typ := range []string{"mouseMoved", "mousePressed", "mouseReleased"} {
-		if _, err := b.cdp(ctx, "", "Input.dispatchMouseEvent", map[string]any{
-			"type":   typ,
-			"x":      box.ViewportX,
-			"y":      box.ViewportY,
-			"button": "left",
-			"buttons": func() int {
-				if typ == "mousePressed" {
-					return 1
-				}
-				return 0
-			}(),
-			"clickCount": 1,
-		}); err != nil {
+	refJSON, _ := json.Marshal(ref)
+	expression := fmt.Sprintf("%s(%s)", snapshot.ClickTargetScript, refJSON)
+	if point != nil {
+		expression = fmt.Sprintf("%s(%s,%g,%g)", snapshot.ClickTargetScript, refJSON, point.X, point.Y)
+	}
+	var target snapshot.ClickXYResult
+	if err := b.evaluate(ctx, expression, "", &target); err != nil {
+		return err
+	}
+	if !target.OK {
+		return fmt.Errorf("click %q: %s", ref, target.Error)
+	}
+	touchAttempted := false
+	defer func() {
+		if touchAttempted && err != nil {
+			err = b.cancelTrustedTouch(ctx, err)
+		}
+	}()
+	for _, typ := range b.trustedClickEvents(ctx) {
+		if typ == "mousePressed" || typ == "touchStart" {
+			if err := b.requireTrustedClickTarget(ctx); err != nil {
+				return err
+			}
+			if err := b.evaluate(ctx, expression, "", &target); err != nil {
+				return err
+			}
+			if !target.OK {
+				return fmt.Errorf("click %q: %s", ref, target.Error)
+			}
+		}
+		buttons := 0
+		if typ == "mousePressed" {
+			buttons = 1
+		}
+		if typ == "touchStart" {
+			touchAttempted = true
+		}
+		if err := b.dispatchTrustedClickEvent(ctx, typ, target.X, target.Y, buttons); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// clickTextTrusted clicks a click_text target that needs a genuine input gesture.
-func (b *Bridge) clickTextTrusted(ctx context.Context, opts snapshot.ClickTextOptions, deferred snapshot.ClickXYResult) error {
-	retry := opts
-	retry.NoDefer = true
-	retryJSON, _ := json.Marshal(retry)
-	var clicked snapshot.ClickXYResult
-	err := b.evaluateWithUserGesture(ctx, fmt.Sprintf("%s(%s)", snapshot.ClickTextScript, retryJSON), "", &clicked)
-	if err == nil && clicked.OK && !clicked.Deferred {
-		return nil
+func (b *Bridge) requireTrustedClickTarget(ctx context.Context) error {
+	if browser.TabIDFromContext(ctx) == "" {
+		return errors.New("trusted click target could not be pinned; pass an explicit tab_id and refresh the target before retrying")
 	}
-	for _, typ := range []string{"mouseMoved", "mousePressed", "mouseReleased"} {
-		buttons := 0
-		if typ == "mousePressed" {
-			buttons = 1
-		}
-		if _, dispatchErr := b.cdp(ctx, "", "Input.dispatchMouseEvent", map[string]any{
-			"type":       typ,
-			"x":          deferred.X,
-			"y":          deferred.Y,
-			"button":     "left",
-			"buttons":    buttons,
-			"clickCount": 1,
-		}); dispatchErr != nil {
-			return dispatchErr
-		}
+	raw, err := b.call(ctx, "get_tab_input_state", map[string]any{"tabId": parseTabID(b.contextTabID(ctx))})
+	if err != nil {
+		return fmt.Errorf("verify trusted click target focus: %w", err)
 	}
-	return nil
-}
-
-func (b *Bridge) activate(ctx context.Context, ref string) error {
-	refJSON, _ := json.Marshal(ref)
-	var result struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error,omitempty"`
+	var state struct {
+		Active        bool `json:"active"`
+		WindowFocused bool `json:"windowFocused"`
 	}
-	// Uses the shared __abFindDeep lookup so same-origin iframe and shadow refs resolve.
-	expr := fmt.Sprintf(`(function(ref) {`+snapshot.FrameWalkHelpers+`
-	  function findByRef(ref) {
-	    var hit = __abFindDeep(ref);
-	    return hit ? hit.el : null;
-	  }
-	  const el = findByRef(ref);
-	  if (!el) return { ok: false, error: 'ref not found' };
-	  if (el.closest('[hidden],[aria-hidden="true"]')) return { ok: false, error: 'ref hidden' };
-	  el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-	  if (typeof el.focus === 'function') el.focus({ preventScroll: true });
-	  el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
-	  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-	  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-	  if (typeof el.click === 'function') el.click();
-	  else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-	  return { ok: true };
-	})(%s)`, refJSON)
-	if err := b.evaluate(ctx, expr, "", &result); err != nil {
+	if err := json.Unmarshal(raw, &state); err != nil {
 		return err
 	}
-	if !result.OK {
-		if result.Error == "" {
-			result.Error = "ref activation failed"
-		}
-		return fmt.Errorf("activate: %s", result.Error)
+	if !state.Active {
+		return errors.New("trusted click requires an active tab; use brw_focus_tab with this tab_id explicitly, then verify the intended target and retry only if no click was dispatched")
 	}
 	return nil
 }
@@ -893,21 +866,85 @@ func (b *Bridge) focus(ctx context.Context, ref string) error {
 	return nil
 }
 
-func (b *Bridge) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYResult, error) {
+func (b *Bridge) ClickXY(ctx context.Context, x, y float64) (result snapshot.ClickXYResult, err error) {
+	ctx = b.pinActiveTab(ctx)
 	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
 		return snapshot.ClickXYResult{}, err
 	}
-	var result snapshot.ClickXYResult
-	xJSON, _ := json.Marshal(x)
-	yJSON, _ := json.Marshal(y)
-	if err := b.evaluate(ctx, fmt.Sprintf("%s(%s,%s)", snapshot.ClickXYScript, xJSON, yJSON), "", &result); err != nil {
+	if err := b.requireTrustedClickTarget(ctx); err != nil {
 		return snapshot.ClickXYResult{}, err
 	}
-	if !result.OK {
-		if result.Error == "" {
-			result.Error = "click failed"
-		}
-		return result, fmt.Errorf("click xy: %s", result.Error)
+	if err := b.evaluate(ctx, fmt.Sprintf("%s(null,%g,%g)", snapshot.ClickTargetScript, x, y), "", &result); err != nil {
+		return result, err
 	}
+	if !result.OK {
+		return result, fmt.Errorf("click point: %s", result.Error)
+	}
+	touchAttempted := false
+	defer func() {
+		if touchAttempted && err != nil {
+			err = b.cancelTrustedTouch(ctx, err)
+		}
+	}()
+	for _, typ := range b.trustedClickEvents(ctx) {
+		if typ == "mousePressed" || typ == "touchStart" {
+			if err := b.requireTrustedClickTarget(ctx); err != nil {
+				return result, err
+			}
+			if err := b.evaluate(ctx, fmt.Sprintf("%s(null,%g,%g)", snapshot.ClickTargetScript, x, y), "", &result); err != nil {
+				return result, err
+			}
+			if !result.OK {
+				return result, fmt.Errorf("click point: %s", result.Error)
+			}
+		}
+		buttons := 0
+		if typ == "mousePressed" {
+			buttons = 1
+		}
+		if typ == "touchStart" {
+			touchAttempted = true
+		}
+		if err := b.dispatchTrustedClickEvent(ctx, typ, x, y, buttons); err != nil {
+			return result, err
+		}
+	}
+	result.Deferred = false
 	return result, nil
+}
+
+func (b *Bridge) trustedClickEvents(ctx context.Context) []string {
+	tabID := b.contextTabID(ctx)
+	b.emulationMu.Lock()
+	state := b.emulationStates[tabID]
+	b.emulationMu.Unlock()
+	if state.Config.Touch {
+		return []string{"touchStart", "touchEnd"}
+	}
+	return []string{"mouseMoved", "mousePressed", "mouseReleased"}
+}
+
+func (b *Bridge) dispatchTrustedClickEvent(ctx context.Context, typ string, x, y float64, buttons int) error {
+	method := "Input.dispatchMouseEvent"
+	params := map[string]any{"type": typ, "x": x, "y": y, "button": "left", "buttons": buttons, "clickCount": 1}
+	if typ == "touchStart" || typ == "touchEnd" {
+		method = "Input.dispatchTouchEvent"
+		points := []map[string]any{}
+		if typ == "touchStart" {
+			points = append(points, map[string]any{"x": x, "y": y, "id": 1})
+		}
+		params = map[string]any{"type": typ, "touchPoints": points}
+	}
+	_, err := b.cdp(ctx, "", method, params)
+	return err
+}
+
+func (b *Bridge) cancelTrustedTouch(ctx context.Context, original error) error {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 250*time.Millisecond)
+	defer cancel()
+	_, err := b.cdp(cleanup, "", "Input.dispatchTouchEvent", map[string]any{"type": "touchCancel", "touchPoints": []map[string]any{}})
+	if err != nil {
+		return errors.Join(original, fmt.Errorf("touch cancellation unconfirmed: %w", err))
+	}
+	return original
 }
