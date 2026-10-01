@@ -535,6 +535,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     seen.add(el);
     const role = roleFor(el);
     if (roleFilter && role !== roleFilter) continue;
+    if (formLensMode && !formRoles.has(role)) continue;
     // Salient-image gate: <img> is surfaced as role "image" so agents can target
     // it for hover/click/drag (e.g. hover-reveal avatars, product tiles, map pins)
     // — a class a real accessibility tree exposes and we previously dropped. Bound
@@ -555,7 +556,6 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     const hasImgAlt = el.tagName === 'IMG' && !!clean(el.getAttribute('alt'));
     const isUseful = role !== 'generic' || isFocusable || typeof el.onclick === 'function' || el.draggable === true || hasImgAlt || (textContent && proseText.length > 0);
     if (!isUseful) continue;
-    if (formLensMode && !formRoles.has(role)) continue;
     const key = keyFor(el, role, name);
     const stableKey = stableKeyFor(el, role);
     const ref = refFor(el, key, stableKey);
@@ -567,6 +567,9 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     if (taskScoped && !inViewport(el)) signals.push('task-scope');
     const isSensitive = sensitive(el);
     const rawValue = ('value' in el) ? clean(el.value) : clean(el.getAttribute('data-value') || el.getAttribute('value') || '');
+    const cachedVisible = visible(el);
+    const cachedViewport = inViewport(el);
+    const cachedDisabled = disabled(el);
     const item = {
       ref,
       role,
@@ -576,15 +579,15 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       test_id: clean(el.getAttribute('data-testid') || el.getAttribute('data-test-id') || el.getAttribute('data-test') || ''),
       href: el.href || el.getAttribute('href') || '',
       value: isSensitive ? '' : rawValue,
-      visible: visible(el),
-      in_viewport: inViewport(el),
-      disabled: disabled(el),
+      visible: cachedVisible,
+      in_viewport: cachedViewport,
+      disabled: cachedDisabled,
       required: Boolean(el.required || el.getAttribute('aria-required') === 'true'),
       controls: el.getAttribute('aria-controls') || '',
       signals,
       source: ['dom'],
       key,
-      _frontier_score: frontierScore(role, name, signals, visible(el), inViewport(el), disabled(el))
+      _frontier_score: frontierScore(role, name, signals, cachedVisible, cachedViewport, cachedDisabled)
     };
     if (isSensitive) item.sensitive = true;
     // Geometry, opt-in. A snapshot taken inside a cross-origin iframe is merged
