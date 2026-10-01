@@ -93,9 +93,9 @@ be a string, including when a gateway returned a numeric ID.
 ## If your tool list looks short
 
 `brwd --mcp` starts with 14 tools in `auto` mode and grows as you search.
-The full catalogue varies by transport; consult the
-[tool catalogue](references/tool-catalogue.md) for capabilities. Small initial
-catalogues reduce schemas attached to model requests.
+The full surface is 95 tools on a direct-CDP daemon (94 on `--remote`,
+93 on the Chrome opt-in lane, 89 on a plugin-supplied off-host browser,
+79 on the extension bridge). Small initial catalogues reduce attached schemas.
 
 ```json
 {"name":"brw_tools","arguments":{"query":"read the console"}}
