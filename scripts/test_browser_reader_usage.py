@@ -118,10 +118,10 @@ class UsageTest(unittest.TestCase):
         self.assertEqual(ledger.keep, 1)
 
     def test_platform_defaults_and_environment_opt_out(self):
-        with patch.object(USAGE.sys, 'platform', 'darwin'), patch.object(USAGE.pathlib.Path, 'home', return_value=pathlib.Path('/home/operator')):
-            self.assertEqual(USAGE.default_directory(), '/home/operator/Library/Application Support/brw/usage')
-        with patch.object(USAGE.sys, 'platform', 'linux'), patch.object(USAGE.pathlib.Path, 'home', return_value=pathlib.Path('/home/operator')), patch.dict(os.environ, {'XDG_CONFIG_HOME': ''}):
-            self.assertEqual(USAGE.default_directory(), '/home/operator/.config/brw/usage')
+        with patch.object(USAGE.sys, 'platform', 'darwin'), patch.object(USAGE.pathlib.Path, 'home', return_value=pathlib.Path('/test-root/operator')):
+            self.assertEqual(USAGE.default_directory(), '/test-root/operator/Library/Application Support/brw/usage')
+        with patch.object(USAGE.sys, 'platform', 'linux'), patch.object(USAGE.pathlib.Path, 'home', return_value=pathlib.Path('/test-root/operator')), patch.dict(os.environ, {'XDG_CONFIG_HOME': ''}):
+            self.assertEqual(USAGE.default_directory(), '/test-root/operator/.config/brw/usage')
         with patch.object(USAGE.sys, 'platform', 'linux'), patch.dict(os.environ, {'XDG_CONFIG_HOME': '/tmp/operator-config'}):
             self.assertEqual(USAGE.default_directory(), '/tmp/operator-config/brw/usage')
         with patch.dict(os.environ, {'BRW_READER_USAGE_ENABLED': '0'}):

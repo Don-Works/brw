@@ -50,8 +50,8 @@ Operation duration ends before telemetry forwarding. Proxy/CLI metadata reports
 have an independent 100 ms deadline and logging failures do not fail the browser
 action. Reports are best effort, so record coverage matters. The non-streaming
 reader reports request-to-headers timing; first-visible-token timing stays unknown.
-Neither transport duration nor reader timings alone establish page→model→action
-latency for an external controlling model.
+Transport duration and reader timings cannot establish page→model→action
+latency for an external controlling model on their own.
 
 An operation can be `degraded` rather than failed. For example, a successful
 tab open whose Chromium window rejects a requested group records
