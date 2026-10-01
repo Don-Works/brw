@@ -63,3 +63,28 @@ func TestReportUsageHasBoundedDeadline(t *testing.T) {
 		t.Fatal("reporting exceeded bounded budget")
 	}
 }
+
+func TestReportUsageRejectsUnconfiguredController(t *testing.T) {
+	for name, controller := range map[string]*Controller{
+		"nil":            nil,
+		"zero":           {},
+		"missing_url":    {client: &http.Client{}},
+		"missing_client": {baseURL: "http://localhost"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := controller.ReportUsage(context.Background(), usagelog.Event{}); err == nil {
+				t.Fatal("expected unconfigured controller error")
+			}
+		})
+	}
+}
+
+func TestReportUsagePromotedFromNilController(t *testing.T) {
+	wrapper := &struct{ *Controller }{}
+	var reporter interface {
+		ReportUsage(context.Context, usagelog.Event) error
+	} = wrapper
+	if err := reporter.ReportUsage(context.Background(), usagelog.Event{}); err == nil {
+		t.Fatal("expected unconfigured controller error")
+	}
+}
