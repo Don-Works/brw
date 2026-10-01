@@ -38,6 +38,9 @@ for normal web work.
 - Bundles an agent skill that searches before repeating work, promotes stable reusable flows, and repairs failures as new immutable recipe versions.
 - Stores page text, semantic JSON, screenshots, PDFs, downloads, and short video as browser-host artifacts instead of flooding model context.
 - Grows its advertised tool catalogue on demand instead of shipping all of it every turn.
+- Bundles an optional Python reader with a separate `brw_ask` MCP tool: configurable
+  model/classifier services can return a short answer while keeping full pages in
+  private artifacts. Direct browser tools need neither Python nor an intermediate model.
 - Serves an opt-in loopback dashboard: the live viewport, an activity feed of every step, and gated human takeover.
 - Reuses a persistent non-default Chrome profile for signed-in flows.
 - Bridges to an already-authenticated installed Chrome profile through a Chrome extension.
@@ -51,6 +54,10 @@ records current comparisons, measurements and limitations; the
 compares infrastructure, extraction and orchestration approaches. The
 [algorithm research](docs/algorithm-research-2026-10.md) sets out experiments and
 correctness criteria for further performance work.
+
+For the optional reader's deployment paths, model configuration and separate MCP
+registration, see [reader deployment](docs/reader-deployment.md). It reads known
+public URLs; it does not add autonomous interactive browsing or a hosted service.
 
 The extension screenshot path is bounded and background-safe. Chrome may suspend
 its compositor while a desktop session is locked; when that happens, `brw`

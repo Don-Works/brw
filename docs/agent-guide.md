@@ -23,10 +23,13 @@ choosing it for a cheaper lane.
 ## The core loop
 
 1. **`brw_open <url>`** — navigate.
-2. **`brw_snapshot`** — get interactive controls as stable refs (`e17`, `e23`).
+2. **`brw_snapshot {format:"compact"}`** — get interactive controls as stable
+   refs (`e17`, `e23`). Use `format:"json"` when code needs element fields.
    By default it returns only the visible/actionable *frontier* (≤40 elements),
    which is usually all you need. Reach for **`brw_find {query|role}`** when you
    only want one or a few specific controls — it is cheaper than a full snapshot.
+   A frontier is viewport-scoped: an empty result does not prove the target is
+   absent. `brw_find` searches offscreen too unless `viewport_only:true`.
 3. **Act by ref** — `brw_click`, `brw_type`, `brw_fill`, `brw_select`,
    `brw_press`, `brw_hover`, `brw_drag`, `brw_upload_file`.
    Use `brw_fill { ref, text }` (Playwright-style `value` is also accepted as an

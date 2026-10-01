@@ -1,7 +1,8 @@
 ---
 name: brw
 description: Use when driving a browser or automating web pages — opening URLs, reading page content, filling forms, clicking, logging into signed-in sites, taking screenshots, downloading files, checking a site in a real signed-in Chrome profile. Covers brw's MCP tools (brw_open, brw_snapshot, brw_batch, brw_cookies), semantic refs instead of pixel coordinates, tab leases, incognito isolation, and reusable recipes. Excludes non-browser tasks.
-tags: [browser, chrome, chromium, web-automation, signed-in-sites, forms, screenshots, cdp, incognito, browser-automation]
+metadata:
+  tags: [browser, chrome, chromium, web-automation, signed-in-sites, forms, screenshots, cdp, incognito, browser-automation, reader, context-efficiency]
 ---
 
 # brw — driving a real browser over MCP
@@ -20,7 +21,7 @@ opened, never touch a tab another session has leased.
 
 ## First call: brw_identity
 
-Call `brw_identity()` before opening a tab. Check `connected`, `version` and
+For direct browser control, call `brw_identity()` before opening a tab. Check `connected`, `version` and
 `identity.{profile,user_data_dir,profile_directory,transport,headless}`.
 Those identify the browser and account; ask if they do not match the user's
 intent. Read `transport` for capabilities: `mode` only says how this process
@@ -42,7 +43,10 @@ to create test isolation.
 
 ## Choose the smallest useful surface
 
-1. For a public document, try `brw_read_url({url,max_chars:2000})`. Use `llms:true`
+1. For a narrow question about a known public URL, use the operator-enabled
+   `brw_ask` reader when available; see [optional workers](references/decision-workers.md).
+   It returns a bounded answer and source while keeping the page in worker artifacts.
+   Otherwise, for a public document, try `brw_read_url({url,max_chars:2000})`. Use `llms:true`
    only when the site advertises an llms index; it is not automatic fallback.
 2. On a page, inspect returned `page_tools` and `agent_surfaces` before driving
    the UI. For a matching WebMCP tool, fetch its schema with `brw_page_tools`
@@ -139,6 +143,11 @@ comma-separated string. Follow `next_offset` when output is truncated. A zero
 settle budget reads the present DOM; it can return an empty app shell. Use a
 specific content wait/assertion when readiness matters.
 
+On apps with delayed redirects, an action completing does not prove the next
+screen is ready. Wait for the expected `url:…` and a specific target/text before
+reading or acting again. For large navigation menus, use `brw_find`, projected
+reads or role-filtered compact snapshots before requesting all controls.
+
 Batch `fill`/`type` take `text`; `select`/`assert_value` take `value`;
 `assert_text` needs both `ref` and `text`. A failed step stops the batch: inspect
 `ok`, the failing step and its error before continuing. Do not blindly repeat
@@ -153,6 +162,21 @@ bridge, frame controls expose coordinates; see the
 Exact signatures and advanced tools (network, debugging, visual evidence,
 profiles, assertions and artifacts): [tool catalogue](references/tool-catalogue.md).
 Load only the section you need; do not read the entire catalogue by default.
+
+## Optional models and classifiers
+
+brw requires no intermediate model or classifier. Direct use remains available;
+when the operator has enabled a reading worker, prefer it for narrow questions
+about known public URLs. Discover `brw_ask` in the installed tool surface first;
+if absent, use an installed `brw-ask --url URL --question QUESTION` CLI through
+the execution tool. If neither exists, use direct brw reads. A skill does not
+install or register a reader. Do not invent a tool namespace or silently send
+private page contents to a provider. For reading or bounded semantic decisions, use
+the [optional worker guide](references/decision-workers.md). Resolve exact matches
+and invalid targets in code first. Keep providers, models, endpoints and credentials
+configurable, and measure quality, whole-job latency and parent-context size before
+enabling a helper. Full pages stay in worker artifacts; return only the requested
+answer and its source. Classifier confidence does not replace result verification.
 
 ## Tabs, leases, cleanup
 

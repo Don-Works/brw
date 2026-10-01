@@ -52,17 +52,25 @@ tasks:
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw-devtools-mcp ./cmd/brw-devtools-mcp
 
   test:
-    desc: Run every Go package test plus the extension service-worker tests
+    desc: Run Go, extension and optional reader/decision worker tests
     # browser, snapshot, and readability tests each launch real headless Chrome.
     # Serialize package test binaries so the machine does not run dozens of Chrome
     # roots at once and turn the Manager's intentional 20s operation timeout into
     # a load race.
     cmds:
       - task: test-extension
+      - task: test-workers
       - go test -timeout=25m -p=1 ./...
       # A killed test binary cannot reap its own browser; fail the task rather
       # than leave throwaway Chromes running against the machine.
       - ./scripts/check-no-orphan-browsers.sh
+
+  test-workers:
+    desc: Test optional reader and decision workers without browsers or provider credentials
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    cmds:
+      - python3 -m unittest discover -s scripts -p 'test_*.py'
 
   check:
     desc: The full gate, run by the pre-push hook — lint, tests, functional, hygiene, secrets, race
@@ -158,7 +166,7 @@ tasks:
     desc: Install into DATADIR with BINDIR symlinks (the Linux shape)
     cmds:
       - task: build
-      - mkdir -p "{{.BINDIR}}" "{{.DATADIR}}/bin" "{{.DATADIR}}/extension" "{{.DATADIR}}/tests" "{{.DATADIR}}/skills/brw"
+      - mkdir -p "{{.BINDIR}}" "{{.DATADIR}}/bin" "{{.DATADIR}}/extension" "{{.DATADIR}}/tests" "{{.DATADIR}}/skills/brw" "{{.DATADIR}}/reader"
       - cp bin/brw "{{.DATADIR}}/bin/brw"
       - cp bin/brwd "{{.DATADIR}}/bin/brwd"
       - cp bin/brwcheck "{{.DATADIR}}/bin/brwcheck"
@@ -167,6 +175,7 @@ tasks:
       - cp -R extension/. "{{.DATADIR}}/extension/"
       - cp -R tests/. "{{.DATADIR}}/tests/"
       - cp -R skills/brw/. "{{.DATADIR}}/skills/brw/"
+      - cp scripts/browser-answer-worker.py scripts/browser-reader-mcp.py "{{.DATADIR}}/reader/"
       - task: sync-installed-extensions
       # On Apple Silicon, copying a Go binary invalidates its ad-hoc code
       # signature and the OS then SIGKILLs it ("Killed: 9"); re-sign the copies.
@@ -184,7 +193,7 @@ tasks:
     desc: Install into the macOS Application Support app dir
     cmds:
       - task: build
-      - mkdir -p "{{.MAC_APPDIR}}/bin" "{{.MAC_APPDIR}}/extension" "{{.MAC_APPDIR}}/tests" "{{.MAC_APPDIR}}/skills/brw" "{{.MAC_APPDIR}}/config"
+      - mkdir -p "{{.MAC_APPDIR}}/bin" "{{.MAC_APPDIR}}/extension" "{{.MAC_APPDIR}}/tests" "{{.MAC_APPDIR}}/skills/brw" "{{.MAC_APPDIR}}/config" "{{.MAC_APPDIR}}/reader"
       - cp bin/brw "{{.MAC_APPDIR}}/bin/brw"
       - cp bin/brwd "{{.MAC_APPDIR}}/bin/brwd"
       - cp bin/brwcheck "{{.MAC_APPDIR}}/bin/brwcheck"
@@ -193,6 +202,7 @@ tasks:
       - cp -R extension/. "{{.MAC_APPDIR}}/extension/"
       - cp -R tests/. "{{.MAC_APPDIR}}/tests/"
       - cp -R skills/brw/. "{{.MAC_APPDIR}}/skills/brw/"
+      - cp scripts/browser-answer-worker.py scripts/browser-reader-mcp.py "{{.MAC_APPDIR}}/reader/"
       - task: sync-installed-extensions
       - |
         if [ -f "$HOME/.config/brw/browser-profiles.json" ]; then

@@ -211,17 +211,35 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     return 'generic';
   }
 
+  let siblingIndexes = new WeakMap();
+  let siblingScans = new WeakMap();
+  function siblingIndex(el) {
+    const cached = siblingIndexes.get(el);
+    if (cached !== undefined) return cached;
+    const parent = el.parentNode;
+    if (!parent) return 1;
+    let scan = siblingScans.get(parent);
+    if (!scan) {
+      scan = { next: parent.firstElementChild, counts: new Map() };
+      siblingScans.set(parent, scan);
+    }
+    while (scan.next) {
+      const node = scan.next;
+      const index = (scan.counts.get(node.tagName) || 0) + 1;
+      scan.counts.set(node.tagName, index);
+      siblingIndexes.set(node, index);
+      scan.next = node.nextElementSibling;
+      if (node === el) return index;
+    }
+    return 1;
+  }
+
   function pathFor(el) {
     const parts = [];
     let n = el;
     while (n && n.nodeType === Node.ELEMENT_NODE && n !== document.documentElement) {
       const tag = n.tagName.toLowerCase();
-      let idx = 1;
-      let p = n.previousElementSibling;
-      while (p) {
-        if (p.tagName === n.tagName) idx++;
-        p = p.previousElementSibling;
-      }
+      const idx = siblingIndex(n);
       parts.push(tag + ':nth-of-type(' + idx + ')');
       n = n.parentElement;
       if (parts.length > 8) break;
@@ -301,7 +319,13 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     state.byKey[key] = ref;
     if (stableKey) state.byKey[stableKey] = ref;
     state.byRef[ref] = key;
-    try { el.setAttribute('data-brw-ref', ref); } catch (_) {}
+    try {
+      el.setAttribute('data-brw-ref', ref);
+      if (el.localName.includes('-') || el.hasAttribute('is')) {
+        siblingIndexes = new WeakMap();
+        siblingScans = new WeakMap();
+      }
+    } catch (_) {}
     return ref;
   }
 
@@ -510,6 +534,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     if (seen.has(el)) continue;
     seen.add(el);
     const role = roleFor(el);
+    if (roleFilter && role !== roleFilter) continue;
     // Salient-image gate: <img> is surfaced as role "image" so agents can target
     // it for hover/click/drag (e.g. hover-reveal avatars, product tiles, map pins)
     // — a class a real accessibility tree exposes and we previously dropped. Bound
@@ -603,7 +628,6 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       proseText
     ].join(' ').toLowerCase();
     if (viewportOnly && !item.in_viewport && !taskScoped) continue;
-    if (roleFilter && item.role !== roleFilter) continue;
     if (textFilter && !haystack.includes(textFilter)) continue;
     if (query && !haystack.includes(query)) continue;
     if (query || textFilter) {

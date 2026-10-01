@@ -10,6 +10,8 @@
 # Go build artifacts
 bin/
 dist/
+__pycache__/
+*.pyc
 
 # Go test / coverage / profiling artifacts
 *.test

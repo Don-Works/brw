@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.19.0 - 2026-10-01
+
+- Index sibling paths once per DOM walk and apply role filters before expensive
+  names, geometry and paths. Measured extraction improvements range from 3.25x
+  to 9.46x on three public-page role queries; these are extraction timings, not
+  whole browsing task speedups. Add seeded differential mutation coverage.
+- Preserve custom-element reference invalidation and report compact snapshot
+  delta fallback reasons.
+- Bundle optional Python reading workers and a separate stdio MCP adapter with
+  one `brw_ask` tool. Return a bounded answer or excerpt and source; keep full
+  pages, provider usage and phase timings in private job artifacts. Direct brw
+  tools remain independent of models and classifiers.
+- Make answer and classifier models, endpoints, credential environment names,
+  evidence budgets and reasoning settings configurable. Support classifier off,
+  shadow and selection modes; include replay measurements and routing tests.
+- Update and validate the agent skill, including reader discovery, CLI fallback,
+  separate MCP registration and deployment checks. The optional reader is for
+  known public URLs; it does not add autonomous interactive actions, mesh job
+  scheduling, Firefox support or exact-content write approvals.
+
 ## 0.18.1 - 2026-10-01
 
 - Fix direct-CDP viewport screenshots after horizontal or vertical scrolling.

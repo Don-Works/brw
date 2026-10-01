@@ -78,6 +78,16 @@ func TestRenderCompactDeltaHeader(t *testing.T) {
 	}
 }
 
+func TestRenderCompactDeltaFallback(t *testing.T) {
+	for _, reason := range []string{"baseline_missing", "options_changed", "enriched_snapshot", "untracked_snapshot"} {
+		snap := PageSnapshot{Metadata: map[string]any{"delta_fallback": reason}}
+		out := RenderCompact(snap)
+		if !strings.Contains(out, "full snapshot: delta unavailable ("+reason+")") {
+			t.Fatalf("missing fallback explanation: %s", out)
+		}
+	}
+}
+
 func TestRenderCompactPreservesFrameClickCoordinates(t *testing.T) {
 	snap := PageSnapshot{Elements: []Element{
 		{Ref: "f0:e3", Role: "button", Name: "Pay", Source: []string{"dom", "frame"}, CX: 123.5, CY: 0, Visible: true, InViewport: true},
