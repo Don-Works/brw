@@ -17,6 +17,16 @@ func SelectFrontierElements(elements []snapshot.Element, focus string, limit int
 	}
 
 	for _, el := range elements {
+		if hasSignal(el, "task-scope") && (el.Ref == focus || hasSignal(el, "focused") || hasSignal(el, "focus-within")) {
+			add(el)
+		}
+	}
+	for _, el := range elements {
+		if hasSignal(el, "task-scope") {
+			add(el)
+		}
+	}
+	for _, el := range elements {
 		if el.Ref == focus || hasSignal(el, "focused") || hasSignal(el, "focus-within") {
 			add(el)
 		}

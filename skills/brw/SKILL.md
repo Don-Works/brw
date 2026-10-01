@@ -148,6 +148,20 @@ screen is ready. Wait for the expected `url:…` and a specific target/text befo
 reading or acting again. For large navigation menus, use `brw_find`, projected
 reads or role-filtered compact snapshots before requesting all controls.
 
+An action's `ok` confirms the input operation completed; `changed_state` can
+describe unrelated page changes. Neither proves that a member was added, a
+message sent, or a setting saved. Pair the action with an expected-state wait
+and a read/assertion of the resulting state before reporting completion. If a
+dialog remains open or the result is uncertain, inspect it before retrying a
+write; a second click can duplicate an operation that already reached the site.
+
+Prefer the active dialog's controls over similarly named background controls.
+The default frontier prioritizes that task scope. A styled native checkbox may
+carry `pointer-actionable` while `visible` is false; use its observed ref and
+verify its checked state. For repeated discovery, reuse the controls returned
+by the preceding action, combine independent reads, and use a bounded batch
+with an explicit final assertion when the next steps are already known.
+
 Batch `fill`/`type` take `text`; `select`/`assert_value` take `value`;
 `assert_text` needs both `ref` and `text`. A failed step stops the batch: inspect
 `ok`, the failing step and its error before continuing. Do not blindly repeat

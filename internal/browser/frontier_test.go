@@ -1,10 +1,33 @@
 package browser
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/Don-Works/brw/internal/snapshot"
 )
+
+func TestSelectFrontierElementsPrioritizesActiveTask(t *testing.T) {
+	elements := []snapshot.Element{
+		{Ref: "background", Signals: []string{"focused", "has-popup"}},
+		{Ref: "add", Signals: []string{"task-scope"}},
+	}
+	result := SelectFrontierElements(elements, "background", 1)
+	if len(result) != 1 || result[0].Ref != "add" {
+		t.Fatalf("dialog action missing: %+v", result)
+	}
+}
+
+func TestSelectFrontierKeepsFocusedDialogControlWithinLimit(t *testing.T) {
+	elements := []snapshot.Element{{Ref: "background", Signals: []string{"focused"}}}
+	for i := 0; i < 20; i++ {
+		elements = append(elements, snapshot.Element{Ref: fmt.Sprint(i), Signals: []string{"task-scope"}})
+	}
+	result := SelectFrontierElements(elements, "19", 12)
+	if len(result) != 12 || result[0].Ref != "19" {
+		t.Fatalf("focused dialog control lost: %+v", result)
+	}
+}
 
 func TestSelectFrontierElements_FocusedFirst(t *testing.T) {
 	elements := []snapshot.Element{

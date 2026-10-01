@@ -139,6 +139,22 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     return r.width > 0 && r.height > 0 && r.bottom >= 0 && r.right >= 0 && r.top <= w.innerHeight && r.left <= w.innerWidth;
   }
 
+  function pointerControl(el) {
+    if (!el.matches('input[type="checkbox"],input[type="radio"]')) return false;
+    if (!el.labels || !Array.from(el.labels).some(visible)) return false;
+    for (let node = el; node; node = parentOrHost(node)) {
+      if (node.matches('[hidden],[aria-hidden="true"]')) return false;
+      const style = winFor(node).getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      if (node !== el && Number(style.opacity) === 0) return false;
+    }
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || !inViewport(el)) return false;
+    const root = el.getRootNode();
+    const hit = root.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+    return hit === el;
+  }
+
   function labelText(el) {
     if (!el) return '';
     if (el.labels && el.labels.length) return clean(Array.from(el.labels).map(l => l.innerText || l.textContent).join(' '));
@@ -506,15 +522,25 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   }
   function taskRootFor(node) {
     for (var cur = node; cur; cur = parentOrHost(cur)) {
-      if (cur.matches && cur.matches('[aria-modal="true"],[role="dialog"],[role="alertdialog"]')) return cur;
+      if (cur.matches && cur.matches('dialog[open],[aria-modal="true"],[role="dialog"],[role="alertdialog"]')) return cur;
     }
     return null;
   }
+  function taskRootVisible(el) {
+    if (!visible(el)) return false;
+    for (let node = el; node; node = parentOrHost(node)) {
+      if (node.matches('[hidden],[aria-hidden="true"]')) return false;
+      const style = winFor(node).getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+    }
+    return true;
+  }
   let activeTaskRoot = taskRootFor(active);
-  if (!activeTaskRoot && frontierMode) {
-    const modalCandidates = all('[aria-modal="true"]');
+  if (activeTaskRoot && !taskRootVisible(activeTaskRoot)) activeTaskRoot = null;
+  if (!activeTaskRoot) {
+    const modalCandidates = all('dialog[open],[aria-modal="true"],[role="dialog"],[role="alertdialog"]');
     for (let i = modalCandidates.length - 1; i >= 0; i--) {
-      if (visible(modalCandidates[i])) { activeTaskRoot = modalCandidates[i]; break; }
+      if (taskRootVisible(modalCandidates[i])) { activeTaskRoot = modalCandidates[i]; break; }
     }
   }
   function belongsToActiveTask(el) {
@@ -559,17 +585,20 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     const key = keyFor(el, role, name);
     const stableKey = stableKeyFor(el, role);
     const ref = refFor(el, key, stableKey);
-    const checked = ('checked' in el) ? Boolean(el.checked) : null;
+    const checked = ('checked' in el) ? Boolean(el.checked) : (el.getAttribute('aria-checked') === 'true' ? true : (el.getAttribute('aria-checked') === 'false' ? false : null));
     const selected = ('selected' in el) ? Boolean(el.selected) : (el.getAttribute('aria-selected') === 'true' ? true : (el.getAttribute('aria-selected') === 'false' ? false : (el.classList && (el.classList.contains('selected') || el.classList.contains('is-selected')) ? true : null)));
     const expanded = el.getAttribute('aria-expanded') === 'true' ? true : (el.getAttribute('aria-expanded') === 'false' ? false : null);
     const signals = structuralSignals(el, role, active);
-    const taskScoped = frontierMode && belongsToActiveTask(el);
-    if (taskScoped && !inViewport(el)) signals.push('task-scope');
     const isSensitive = sensitive(el);
     const rawValue = ('value' in el) ? clean(el.value) : clean(el.getAttribute('data-value') || el.getAttribute('value') || '');
     const cachedVisible = visible(el);
     const cachedViewport = inViewport(el);
     const cachedDisabled = disabled(el);
+    const pointerActionable = !cachedVisible && pointerControl(el);
+    if (pointerActionable) signals.push('pointer-actionable');
+    const inActiveTask = belongsToActiveTask(el) && (pointerActionable || taskRootVisible(el));
+    const taskScoped = frontierMode && inActiveTask;
+    if (inActiveTask) signals.push('task-scope');
     const item = {
       ref,
       role,
@@ -753,6 +782,8 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
   const totalCandidates = elements.length;
   if (frontierMode) {
     elements.sort((a, b) => {
+      const scopeDiff = Number(hasSignal(b.signals, 'task-scope')) - Number(hasSignal(a.signals, 'task-scope'));
+      if (scopeDiff !== 0) return scopeDiff;
       const diff = (b._frontier_score || 0) - (a._frontier_score || 0);
       if (diff !== 0) return diff;
       return String(a.ref || '').localeCompare(String(b.ref || ''));
