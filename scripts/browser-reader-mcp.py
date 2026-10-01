@@ -67,7 +67,11 @@ def validate_arguments(arguments):
 
 
 def numeric(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return 0 <= value <= 9223372036854775807
+    return isinstance(value, float) and math.isfinite(value) and 0 <= value <= 9223372036854775807
 
 
 def bounded_result(report, trace_id, elapsed_ms, artifact_dir=None):
@@ -82,8 +86,11 @@ def bounded_result(report, trace_id, elapsed_ms, artifact_dir=None):
     trace = {'id': trace_id, 'elapsed_ms': round(elapsed_ms, 3)}
     if artifact_dir is not None:
         trace['artifact_dir'] = str(artifact_dir)
-    for field in ('worker_ms', 'collection_ms', 'source_chars', 'source_total_chars', 'evidence_chars'):
+    for field in ('worker_ms', 'collection_ms'):
         if numeric(report.get(field)):
+            trace[field] = report[field]
+    for field in ('source_chars', 'source_total_chars', 'evidence_chars'):
+        if USAGE.token_count(report.get(field)) is not None:
             trace[field] = report[field]
     for field in ('source_truncated', 'evidence_narrowed'):
         if isinstance(report.get(field), bool):
@@ -95,6 +102,8 @@ def bounded_result(report, trace_id, elapsed_ms, artifact_dir=None):
         validated = []
         for span in spans:
             if not isinstance(span, dict) or not isinstance(span.get('start'), int) or isinstance(span['start'], bool) or not isinstance(span.get('end'), int) or isinstance(span['end'], bool) or not 0 <= span['start'] <= span['end'] <= 9007199254740991:
+                break
+            if 'source_chars' in trace and span['end'] > trace['source_chars']:
                 break
             value = {'start': span['start'], 'end': span['end']}
             if isinstance(span.get('id'), str) and len(span['id']) <= 10 and span['id'].startswith('p') and span['id'][1:].isdigit():
@@ -208,23 +217,34 @@ class Server:
             self.error(request_id, -32601, 'Method not found')
 
     def stop_process(self, process):
-        if process.poll() is not None:
-            return
-        try:
-            if os.name == 'posix':
-                os.killpg(process.pid, signal.SIGINT)
-            else:
-                process.terminate()
-            process.wait(timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
+        if os.name == 'posix':
             try:
-                if os.name == 'posix':
-                    os.killpg(process.pid, signal.SIGKILL)
-                else:
-                    process.kill()
-            except OSError:
-                pass
-            process.wait()
+                os.killpg(process.pid, signal.SIGINT)
+            except ProcessLookupError:
+                process.poll()
+                return
+            deadline = time.monotonic()+5
+            while True:
+                process.poll()
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    return
+                if time.monotonic() >= deadline:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+                    return
+                time.sleep(.01)
+        elif process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
 
     def run_worker(self, request_id, url, question, job):
         trace_id = str(uuid.uuid4())
@@ -239,9 +259,19 @@ class Server:
         error_detail = None
         stderr_bytes = bytearray()
         stderr_thread = None
+        stderr_stop = threading.Event()
         def drain_stderr(stream):
-            while True:
-                chunk = stream.read(4096)
+            descriptor = stream.fileno()
+            if os.name == 'posix':
+                os.set_blocking(descriptor, False)
+            while not stderr_stop.is_set():
+                try:
+                    chunk = os.read(descriptor, 4096)
+                except BlockingIOError:
+                    stderr_stop.wait(.01)
+                    continue
+                except OSError:
+                    return
                 if not chunk:
                     break
                 stderr_bytes.extend(chunk[:max(0, 8192-len(stderr_bytes))])
@@ -255,7 +285,7 @@ class Server:
                 command.extend(['--config', self.args.config])
             command.extend(['--url', url, '--question', question, '--out', str(report_path)])
             environment = dict(os.environ, BRW_READER_TRACE_ID=trace_id, BRW_READER_USAGE_DIR=str(self.ledger.directory), BRW_READER_USAGE_ENABLED='1' if self.ledger.enabled else '0', BRW_READER_USAGE_PARENT='1', BRW_READER_USAGE_MAX_BYTES=str(self.ledger.max_bytes), BRW_READER_USAGE_KEEP=str(self.ledger.keep))
-            with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=os.name == 'posix', env=environment) as process:
+            with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, bufsize=0, start_new_session=os.name == 'posix', env=environment) as process:
                 stderr_thread = threading.Thread(target=drain_stderr, args=(process.stderr,), daemon=True)
                 stderr_thread.start()
                 deadline = started+self.args.timeout
@@ -272,6 +302,12 @@ class Server:
                     except subprocess.TimeoutExpired:
                         pass
                 returncode = process.returncode
+                cleanup_started = time.monotonic()
+                self.stop_process(process)
+                cleanup_ms = round((time.monotonic()-cleanup_started)*1000, 3)
+                stderr_thread.join(timeout=.1)
+                stderr_stop.set()
+                stderr_thread.join(timeout=.1)
             stderr_thread.join(timeout=1)
             if returncode:
                 raise ValueError('worker_failed')
@@ -288,8 +324,9 @@ class Server:
             error_detail = str(error)[:2000]
             result = {'isError': True, 'content': [{'type': 'text', 'text': json.dumps({'error': kind, 'trace_id': trace_id, 'artifact_dir': str(directory) if directory else None}, separators=(',', ':'))}]}
         finally:
+            stderr_stop.set()
             if stderr_thread:
-                stderr_thread.join(timeout=1)
+                stderr_thread.join(timeout=.2)
             if directory:
                 try:
                     detail = bytes(stderr_bytes).decode(errors='replace')

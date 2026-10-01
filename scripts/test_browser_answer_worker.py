@@ -29,6 +29,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_default_has_no_model_or_classifier_calls(self):
         args = worker.parse_args(self.base)
+        self.assertFalse(args.usage_log)
         with patch.object(worker, 'timed_http') as call:
             result = worker.run(args)
         call.assert_not_called()
