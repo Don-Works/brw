@@ -57,6 +57,21 @@ the controlled reproduction. Ref and text identity checks are stronger than
 literal coordinates: a coordinate action still means the currently actionable
 point, not a promise about a previously observed semantic element.
 
+The final conformance matrix runs three seeded forms flows in each of eight
+arms: desktop or touch emulation, headed or headless Chromium, and direct or
+extension control. All 24 flows have the same semantic snapshot hash and
+reach their expected final state. Touch emulation uses native touch input;
+mouse input under touch emulation had stalled on its acknowledgement in the
+reproduction. Failed touch sequences receive one bounded cancellation attempt
+against the original target, preserving the original error. Ambiguous input
+is never replayed automatically.
+
+Whole-flow p50 measured 630–644 ms for direct control and 306–361 ms for the
+extension arms. These small samples establish functional parity in this matrix,
+not equal performance or universal compatibility. They include opening the tab,
+readiness, actions and final verification, but exclude model time and browser
+startup. The remaining direct-control settling cost is a separate improvement.
+
 ## Passive-step pacing
 
 Chrome-profile daemons default to human pacing, while direct daemons default to
