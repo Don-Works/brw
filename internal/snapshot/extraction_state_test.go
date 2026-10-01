@@ -43,7 +43,7 @@ func TestExtractionPushdownSeededParity(t *testing.T) {
         const el = document.createElement(['input','button','select','textarea','a'][rand(5)]);
         if(el.tagName==='SELECT') el.innerHTML='<option value="value 0">Zero</option><option value="value 1">One</option>';
         if(el.tagName==='A') el.href='#'+rand(10);
-        el.textContent = el.tagName==='SELECT'?el.textContent:'Control '+rand(12);
+        if(el.tagName!=='SELECT') el.textContent='Control '+rand(12);
         el.setAttribute('role', roles[rand(roles.length)]);
         el.setAttribute('aria-label', 'Control '+rand(12));
         el.value = 'value '+rand(10);

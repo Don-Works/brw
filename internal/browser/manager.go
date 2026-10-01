@@ -68,6 +68,9 @@ func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duratio
 	if err := tabCtx.Err(); err != nil {
 		return err
 	}
+	if readiness, ok := tabCtx.Value(batchReadinessKey{}).(batchReadiness); ok && readiness.target == eventScopeFromCtx(tabCtx) && readiness.document != "" && readiness.document == batchDocumentIdentity(tabCtx) {
+		return m.runWithBatchReadiness(tabCtx, readiness, action)
+	}
 	if cap <= 0 {
 		return action()
 	}
@@ -3022,7 +3025,11 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 			result.Error = "cancelled"
 			break
 		}
-		sr := m.executeBatchStep(tabCtx, tabID, i, step)
+		stepCtx := tabCtx
+		if i+1 < len(steps) {
+			stepCtx = batchReadinessContext(ctx, tabCtx, step, steps[i+1])
+		}
+		sr := m.executeBatchStep(stepCtx, tabID, i, step)
 		result.Steps = append(result.Steps, sr)
 		if !sr.OK {
 			if entry.Cancelled() {

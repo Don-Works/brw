@@ -1984,7 +1984,7 @@ func RefDraggable(ctx context.Context, ref string) bool {
 // changes, with a 100ms safety interval for signals those miss (e.g. pushState
 // URL changes) — replacing a fixed-interval CDP poll loop with a single awaited
 // in-page promise.
-const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelpers + `
+const WaitConditionScript = `(function(condition, timeoutMs, cancelKey){` + FrameWalkHelpers + `
   // 'load' is NOT an alias of 'ready': a document is interactive (and satisfies
   // 'ready') before its load event fires, and a caller that asked for the load
   // event must not be told the page is loaded while its subresources are still
@@ -2072,9 +2072,10 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
   }
   return new Promise(function(resolve, reject){
     if(fnCompileError){ reject(new Error('wait fn did not compile: '+fnCompileError)); return; }
-    var done=false, obs=null, iv=0, to=0, pending=false;
+    var done=false, obs=null, iv=0, to=0, pending=false, cancelWait=null;
     function finish(v){
       if(done) return; done=true;
+      if(cancelKey && window[cancelKey] === cancelWait) delete window[cancelKey];
       try{ if(obs) obs.disconnect(); }catch(e){}
       if(iv) clearInterval(iv);
       if(to) clearTimeout(to);
@@ -2083,13 +2084,15 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
     }
     // pending guards against stacking overlapping async predicate evaluations
     // when mutations arrive faster than the predicate resolves.
+    if(cancelKey) { cancelWait=function(){ finish(false); }; window[cancelKey]=cancelWait; }
     function recheck(){
       if(done||pending) return;
       pending=true;
       settle(function(ok){ pending=false; if(ok) finish(true); });
     }
     settle(function(ok){
-      if(ok){ resolve(true); return; }
+      if(done) return;
+      if(ok){ finish(true); return; }
       try{ obs=new MutationObserver(recheck); obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
       try{ window.addEventListener('popstate', recheck); window.addEventListener('hashchange', recheck); }catch(e){}
       // readystatechange and load are what actually move 'ready' and 'load' from
@@ -2110,8 +2113,13 @@ const WaitConditionScript = `(function(condition, timeoutMs){` + FrameWalkHelper
 // WaitForCondition evaluates WaitConditionScript and awaits its promise, returning
 // whether the condition was met within timeoutMs.
 func WaitForCondition(ctx context.Context, condition string, timeoutMs int64) (bool, error) {
+	return waitForCondition(ctx, condition, timeoutMs, "")
+}
+
+func waitForCondition(ctx context.Context, condition string, timeoutMs int64, cancelKey string) (bool, error) {
 	condJSON, _ := json.Marshal(condition)
-	expr := fmt.Sprintf("%s(%s,%d)", WaitConditionScript, condJSON, timeoutMs)
+	keyJSON, _ := json.Marshal(cancelKey)
+	expr := fmt.Sprintf("%s(%s,%d,%s)", WaitConditionScript, condJSON, timeoutMs, keyJSON)
 	var matched bool
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		obj, exception, err := runtime.Evaluate(expr).
