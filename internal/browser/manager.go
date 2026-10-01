@@ -2486,10 +2486,11 @@ func (m *Manager) CaptureArtifactScreenshot(ctx context.Context, ref string) (Sc
 		// Read the CSS viewport so we can clip-capture it at a scale that caps the
 		// longest side at screenshotMaxWidth (scale<=1; never upscale).
 		var dims []float64
-		_ = chromedp.Evaluate(`[Math.round(window.innerWidth),Math.round(window.innerHeight)]`, &dims).Do(ctx)
-		var vw, vh float64
-		if len(dims) == 2 {
+		_ = chromedp.Evaluate(`[Math.round(window.innerWidth),Math.round(window.innerHeight),window.scrollX,window.scrollY]`, &dims).Do(ctx)
+		var vw, vh, scrollX, scrollY float64
+		if len(dims) == 4 {
 			vw, vh = dims[0], dims[1]
+			scrollX, scrollY = dims[2], dims[3]
 		}
 		if vw <= 0 || vh <= 0 {
 			// Fall back to a plain capture if viewport metrics are unavailable.
@@ -2509,7 +2510,7 @@ func (m *Manager) CaptureArtifactScreenshot(ctx context.Context, ref string) (Sc
 		d, capErr := page.CaptureScreenshot().
 			WithFormat(page.CaptureScreenshotFormatJpeg).
 			WithQuality(screenshotJPEGQuality).
-			WithClip(&page.Viewport{X: 0, Y: 0, Width: vw, Height: vh, Scale: scale}).Do(ctx)
+			WithClip(&page.Viewport{X: scrollX, Y: scrollY, Width: vw, Height: vh, Scale: scale}).Do(ctx)
 		if capErr != nil {
 			return capErr
 		}
@@ -2578,12 +2579,6 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreen
 	}
 	m.refs.Observe(tabID, snap.Elements)
 
-	// Resolve the optional crop clip. A ref scopes the crop to that element's box
-	// (plus a small margin so the label badge above it is not clipped off);
-	// an explicit Region clips to a given viewport rectangle. clip==nil means a
-	// full-viewport capture (today's default). The clip is in top-level viewport
-	// coordinates — the SAME space the overlay labels are painted at and the CDP
-	// capture clips in — so the labels line up inside the crop.
 	clip, clipErr := m.resolveAnnotationClip(tabCtx, aopts)
 	if clipErr != nil {
 		return AnnotatedScreenshot{}, clipErr
@@ -2629,6 +2624,14 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreen
 		// the longest side keeps labels legible while cutting bytes ~4x. PNG is kept
 		// so the drawn ref badges stay crisp (JPEG would ring around the text).
 		if capClip != nil {
+			var offset [2]float64
+			if err := chromedp.Evaluate(`[window.scrollX,window.scrollY]`, &offset).Do(ctx); err != nil {
+				return err
+			}
+			captureClip := *capClip
+			capClip = &captureClip
+			capClip.X += offset[0]
+			capClip.Y += offset[1]
 			longest := capClip.Width
 			if capClip.Height > longest {
 				longest = capClip.Height

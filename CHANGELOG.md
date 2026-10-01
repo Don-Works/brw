@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.1 - 2026-10-01
+
+- Fix direct-CDP viewport screenshots after horizontal or vertical scrolling.
+  Plain and annotated captures now use the document's scroll offset instead of
+  capturing the page origin. Keep annotation legends in viewport coordinates
+  and preserve element captures.
+
 ## 0.18.0 - 2026-10-01
 
 - Add `settle_ms` to `brw_read` and `--settle-ms` to `brw read`: keep the
