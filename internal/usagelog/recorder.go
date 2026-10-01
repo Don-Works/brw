@@ -197,6 +197,11 @@ func (r *Recorder) Record(event Event) error {
 	if r.closed {
 		return os.ErrClosed
 	}
+	if r.file == nil {
+		if err := r.open(); err != nil {
+			return err
+		}
+	}
 	if r.maxBytes > 0 {
 		info, statErr := r.file.Stat()
 		if statErr != nil {

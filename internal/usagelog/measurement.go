@@ -65,4 +65,13 @@ func MeasureJSON(data []byte) (chars, binary int64) {
 	return chars, binary
 }
 
-func EstimateTokens(chars int64) int64 { return (chars + 3) / 4 }
+func EstimateTokens(chars int64) int64 {
+	if chars <= 0 {
+		return 0
+	}
+	tokens := chars / 4
+	if chars%4 != 0 {
+		tokens++
+	}
+	return tokens
+}
