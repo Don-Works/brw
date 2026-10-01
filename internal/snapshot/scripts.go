@@ -2090,6 +2090,12 @@ const WaitConditionScript = `(function(condition, timeoutMs, cancelKey){` + Fram
       pending=true;
       settle(function(ok){ pending=false; if(ok) finish(true); });
     }
+    to=setTimeout(function(){
+      if(done) return;
+      var finalValue=false;
+      try{ finalValue=check(); }catch(e){}
+      finish(finalValue && typeof finalValue.then==='function' ? false : !!finalValue);
+    }, Math.max(0, timeoutMs|0));
     settle(function(ok){
       if(done) return;
       if(ok){ finish(true); return; }
@@ -2100,12 +2106,6 @@ const WaitConditionScript = `(function(condition, timeoutMs, cancelKey){` + Fram
       // safety interval below rather than on the event itself.
       try{ window.addEventListener('load', recheck); document.addEventListener('readystatechange', recheck); }catch(e){}
       iv=setInterval(recheck, 100);
-      to=setTimeout(function(){
-        if(done) return;
-        // One last evaluation so a predicate that became true between the final
-        // recheck and the deadline is still honoured.
-        settle(function(ok2){ finish(ok2); });
-      }, Math.max(0, timeoutMs|0));
     });
   });
 })`

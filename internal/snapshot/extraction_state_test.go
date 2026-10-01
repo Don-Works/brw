@@ -45,18 +45,19 @@ func TestExtractionPushdownSeededParity(t *testing.T) {
         if(el.tagName==='A') el.href='#'+rand(10);
         if(el.tagName!=='SELECT') el.textContent='Control '+rand(12);
         el.setAttribute('role', roles[rand(roles.length)]);
-        el.setAttribute('aria-label', 'Control '+rand(12));
+        el.setAttribute('aria-label', ['Control ', '日本語 👩🏽‍💻 ', 'é \u202e '][rand(3)]+rand(12));
+        if(el.tagName==='INPUT') el.type=['text','search','email','number','range','checkbox','radio','date'][rand(8)];
         el.value = 'value '+rand(10);
         return el;
       };
       for (const root of roots) for(let i=0;i<60;i++) root.append(create());
       oldWalk({mode:'all',include_hidden:true});
       let checked = 0;
-      for(let round=0;round<360;round++) {
-        if(round%120===0) seed=[20261001,1,12648430][Math.floor(round/120)];
+      for(let round=0;round<600;round++) {
+        if(round%120===0) seed=[20261001,1,12648430,4294967295,8675309][Math.floor(round/120)];
         const root = roots[rand(roots.length)];
         const el = root.children[rand(root.children.length)];
-        switch(rand(12)) {
+        switch(rand(14)) {
           case 0: root.prepend(el); break;
           case 1: el.replaceWith(create()); break;
           case 2: el.setAttribute('role', roles[rand(roles.length)]); break;
@@ -69,6 +70,8 @@ func TestExtractionPushdownSeededParity(t *testing.T) {
           case 9: el.style.transform = 'translateY('+rand(1500)+'px)'; break;
           case 10: el.focus(); break;
           case 11: el.style.width = rand(400)+'px'; break;
+          case 12: if(root.children.length>1) el.remove(); else root.append(create()); break;
+          case 13: el.setAttribute('aria-label',['日本語','👩🏽‍💻','é','\u202e'][rand(4)]+rand(12)); break;
         }
         for (const role of roles) {
           const opts = {mode:['all','frontier','form_lens'][round%3], role, limit:round%3?0:4, query:round%4?'':'Control 1', include_hidden:round%2===0,include_boxes:round%3===0};
@@ -94,7 +97,7 @@ func TestExtractionPushdownSeededParity(t *testing.T) {
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result)); err != nil {
 		t.Fatal(err)
 	}
-	if !result.OK || result.Checked != 1800 {
+	if !result.OK || result.Checked != 3000 {
 		t.Fatalf("differential failure: %+v", result)
 	}
 	t.Logf("%d role-filtered views matched across randomized DOM mutations", result.Checked)

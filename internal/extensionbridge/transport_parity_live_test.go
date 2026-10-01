@@ -9,10 +9,12 @@ import (
 	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/cdp"
 	"github.com/Don-Works/brw/internal/snapshot"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +23,14 @@ import (
 func TestControlledTransportParity(t *testing.T) {
 	if os.Getenv("BRW_MEASURE_TRANSPORT_PARITY") != "1" {
 		t.Skip("set BRW_MEASURE_TRANSPORT_PARITY=1 for disposable headed/headless transport parity")
+	}
+	rounds := 3
+	if value := os.Getenv("BRW_PARITY_ROUNDS"); value != "" {
+		var err error
+		rounds, err = strconv.Atoi(value)
+		if err != nil || rounds < 3 || rounds > 100 {
+			t.Fatal("BRW_PARITY_ROUNDS must be between 3 and 100")
+		}
 	}
 	var baselineAcrossModes string
 	for _, headless := range []bool{true, false} {
@@ -88,9 +98,14 @@ func TestControlledTransportParity(t *testing.T) {
 			defer m.Close()
 			m.SetPacing(browser.PacingOff)
 			t.Logf("ENV browser=%s headless=%t pacing=off", browserVersion(t, browsers[0]), headless)
-			for round := 0; round < 3; round++ {
+			for round := 0; round < rounds; round++ {
 				for turn := 0; turn < 2; turn++ {
 					arm := (round + turn) % 2
+					seed := int64(20261001 + round)
+					rng := rand.New(rand.NewSource(seed))
+					email := fmt.Sprintf("speed-%d@example.test", rng.Intn(1000000))
+					name := fmt.Sprintf("Parity 👩🏽‍💻 日本語 é %d", rng.Intn(1000000))
+					expected := "Submitted " + email + " " + name + " pro accepted"
 					ctrl := []browser.Controller{m, b}[arm]
 					transport := []string{"direct", "extension"}[arm]
 					totalStart := time.Now()
@@ -160,16 +175,16 @@ func TestControlledTransportParity(t *testing.T) {
 						record(name, s, r)
 					}
 					action("fill_email", func() (browser.ActionResult, error) {
-						return ctrl.Fill(tabctx, snapshot.FillOptions{Ref: refs["textbox:Email"], Text: "speed@example.test", Replace: true})
+						return ctrl.Fill(tabctx, snapshot.FillOptions{Ref: refs["textbox:Email"], Text: email, Replace: true})
 					})
 					action("fill_name", func() (browser.ActionResult, error) {
-						return ctrl.Fill(tabctx, snapshot.FillOptions{Ref: refs["textbox:Full name"], Text: "Parity User", Replace: true})
+						return ctrl.Fill(tabctx, snapshot.FillOptions{Ref: refs["textbox:Full name"], Text: name, Replace: true})
 					})
 					action("select_plan", func() (browser.ActionResult, error) { return ctrl.Select(tabctx, refs["combobox:Plan"], "pro") })
 					action("click_terms", func() (browser.ActionResult, error) { return ctrl.Click(tabctx, refs["checkbox:Accept terms"]) })
 					action("click_submit", func() (browser.ActionResult, error) { return ctrl.Click(tabctx, refs["button:Submit request"]) })
 					start = time.Now()
-					if err := ctrl.AssertText(tabctx, refs["status:"], "Submitted speed@example.test Parity User pro accepted", 10*time.Second); err != nil {
+					if err := ctrl.AssertText(tabctx, refs["status:"], expected, 10*time.Second); err != nil {
 						t.Fatal(err)
 					}
 					record("assert", start, map[string]bool{"ok": true})
@@ -178,10 +193,10 @@ func TestControlledTransportParity(t *testing.T) {
 						t.Fatal(err)
 					}
 					encoded, _ := json.Marshal(final)
-					if !strings.Contains(string(encoded), "Submitted speed@example.test Parity User pro accepted") {
+					if !strings.Contains(string(encoded), expected) {
 						t.Fatalf("final state failed: %s", encoded)
 					}
-					output, _ := json.Marshal(map[string]any{"headless": headless, "transport": transport, "round": round, "viewport": viewport, "stages_ms": stages, "observation_json_bytes": bytes, "total_verified_ms": float64(time.Since(totalStart).Microseconds()) / 1000, "semantic_elements": len(snap.Elements), "semantic_sha256": fmt.Sprintf("%x", sha256.Sum256(norm)), "final_state": final})
+					output, _ := json.Marshal(map[string]any{"headless": headless, "transport": transport, "round": round, "seed": seed, "viewport": viewport, "stages_ms": stages, "observation_json_bytes": bytes, "total_verified_ms": float64(time.Since(totalStart).Microseconds()) / 1000, "semantic_elements": len(snap.Elements), "semantic_sha256": fmt.Sprintf("%x", sha256.Sum256(norm)), "final_state": final})
 					t.Log(string(output))
 					if err := ctrl.CloseTab(tabctx, opened.Tab.ID); err != nil {
 						t.Fatal(err)

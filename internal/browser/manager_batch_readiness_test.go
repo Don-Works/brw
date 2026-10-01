@@ -288,3 +288,42 @@ func TestBatchReadinessRejectsReplacedDocument(t *testing.T) {
 		t.Fatalf("stale document postcondition bypassed ordinary settle: %v err=%v", value, err)
 	}
 }
+
+func TestBatchReadinessSeededPropertyAndSameDocumentWorkflow(t *testing.T) {
+	m := newHeadlessManager(t)
+	m.SetPacing(PacingOff)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	opened, err := m.Open(ctx, "about:blank")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = WithTabID(ctx, opened.Tab.ID)
+	if _, err := m.Evaluate(ctx, `document.body.innerHTML='<input aria-label="Name">';window.ready=false`); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := m.Snapshot(ctx, snapshot.SnapshotOptions{})
+	if err != nil || len(snap.Elements) != 1 {
+		t.Fatalf("snapshot=%+v err=%v", snap, err)
+	}
+	seed := uint32(20261001)
+	for round := 0; round < 48; round++ {
+		seed = seed*1664525 + 1013904223
+		delay := int(seed%23) + 1
+		text := fmt.Sprintf("日本語 👩🏽‍💻 é %d", seed)
+		setup := fmt.Sprintf(`window.ready=false;document.querySelector('input').oninput=()=>setTimeout(()=>{window.ready=true;location.hash=%q},%d)`, fmt.Sprintf("step-%d", round), delay)
+		if _, err := m.Evaluate(ctx, setup); err != nil {
+			t.Fatal(err)
+		}
+		condition := fmt.Sprintf(`fn:window.ready === true && location.hash === %q && document.querySelector('input').value === %q`, fmt.Sprintf("#step-%d", round), text)
+		result, err := m.ExecuteBatch(ctx, []BatchStep{{Action: "fill", Ref: snap.Elements[0].Ref, Text: text}, {Action: "wait", Condition: condition, TimeoutMS: 1000}})
+		if err != nil || !result.OK || result.StepsCompleted != 2 {
+			t.Fatalf("seed=%d round=%d result=%+v err=%v", seed, round, result, err)
+		}
+		verified, err := m.Evaluate(ctx, strings.TrimPrefix(condition, "fn:"))
+		if err != nil || verified != true {
+			t.Fatalf("seed=%d round=%d verification=%v err=%v", seed, round, verified, err)
+		}
+	}
+	t.Log("seed=20261001 verified 48 delayed property-only + same-document navigation workflows")
+}
