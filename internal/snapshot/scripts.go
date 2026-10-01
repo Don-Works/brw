@@ -2093,8 +2093,14 @@ const WaitConditionScript = `(function(condition, timeoutMs, cancelKey){` + Fram
     to=setTimeout(function(){
       if(done) return;
       var finalValue=false;
-      try{ finalValue=check(); }catch(e){}
-      finish(finalValue && typeof finalValue.then==='function' ? false : !!finalValue);
+      try{
+        finalValue=check();
+        if(finalValue && typeof finalValue.then==='function'){
+          Promise.resolve(finalValue).catch(function(){});
+          finalValue=false;
+        }
+      }catch(e){ finalValue=false; }
+      finish(!!finalValue);
     }, Math.max(0, timeoutMs|0));
     settle(function(ok){
       if(done) return;
