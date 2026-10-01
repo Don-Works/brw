@@ -69,7 +69,7 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 		sr.Error = err.Error()
 		return sr, retargetTo
 	}
-	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
+	if err := b.pacer.BeforeSequenceStep(ctx, browser.TabIDFromContext(ctx), step.Action); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
 		return sr, retargetTo

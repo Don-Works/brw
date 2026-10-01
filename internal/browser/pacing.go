@@ -91,6 +91,16 @@ func (p *Pacer) BeforeAction(ctx context.Context, tab string) error {
 	return p.sleep(ctx, start.Sub(now))
 }
 
+// BeforeSequenceStep paces UI actions while passive observations preserve the action clock.
+func (p *Pacer) BeforeSequenceStep(ctx context.Context, tab, action string) error {
+	switch action {
+	case "wait", "read", "snapshot", "assert", "assert_visible", "assert_text", "assert_value", "assert_hidden":
+		return ctx.Err()
+	default:
+		return p.BeforeAction(ctx, tab)
+	}
+}
+
 // Type sends text through insert: one character at a time with key delays for
 // short text, and word-sized chunks for text longer than perRuneLimit.
 func (p *Pacer) Type(ctx context.Context, text string, insert func(string) error) error {

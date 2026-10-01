@@ -2824,7 +2824,7 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 		sr.Error = err.Error()
 		return sr
 	}
-	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
+	if err := m.pacer.BeforeSequenceStep(ctx, TabIDFromContext(ctx), step.Action); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
 		return sr
@@ -3119,7 +3119,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 		sr.Error = err.Error()
 		return sr
 	}
-	if err := m.pacer.BeforeAction(tabCtx, tabID); err != nil {
+	if err := m.pacer.BeforeSequenceStep(tabCtx, tabID, step.Action); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
 		return sr
