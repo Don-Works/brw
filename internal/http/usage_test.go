@@ -102,6 +102,7 @@ func TestArtifactUsageLogNeverContainsHandleQueryOrBackingError(t *testing.T) {
 // row found a newly added route missing from the allowlist, which is invisible
 // rather than noisy - the middleware simply skips an unknown path.
 var unloggedAPIRoutes = map[string]string{
+	"/api/usage/report":          "metadata ingestion excluded to prevent recursive accounting",
 	"/api/artifacts/{id}":        "wildcard handle route, classified by the middleware's /api/artifacts/ prefix fallback",
 	"/api/artifacts/{id}/info":   "wildcard handle route, classified by the prefix fallback",
 	"/api/artifacts/{id}/read":   "wildcard handle route, classified by the prefix fallback",

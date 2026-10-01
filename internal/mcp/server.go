@@ -810,7 +810,11 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 			},
 		}, nil
 	case "tools/list":
-		return map[string]any{"tools": s.advertisedTools()}, nil
+		ctx = usagelog.WithRequestID(ctx, usageRequestID(ctx))
+		started := time.Now()
+		result := map[string]any{"tools": s.advertisedTools()}
+		s.recordMCPUsage(ctx, "tools_list", "catalogue", "mcp_catalogue", params, started, result, nil)
+		return result, nil
 	case "tools/call":
 		var call struct {
 			Name      string          `json:"name"`
@@ -819,10 +823,12 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 		if err := json.Unmarshal(params, &call); err != nil {
 			return nil, invalid(err)
 		}
+		ctx = usagelog.WithRequestID(ctx, usageRequestID(ctx))
 		started := time.Now()
 		result, rpcErr := s.callTool(ctx, call.Name, call.Arguments)
-		s.recordToolUsage(call.Name, started, result, rpcErr)
-		return withSkewNote(result, s.versionSkewNote(ctx)), rpcErr
+		result = withSkewNote(result, s.versionSkewNote(ctx))
+		s.recordToolUsage(ctx, call.Name, call.Arguments, started, result, rpcErr)
+		return result, rpcErr
 	default:
 		return nil, &rpcError{Code: -32601, Message: "method not found"}
 	}

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -118,6 +119,7 @@ var usageOperations = map[string]string{
 type usageResponseWriter struct {
 	http.ResponseWriter
 	status int
+	bytes  int64
 }
 
 func (w *usageResponseWriter) WriteHeader(status int) {
@@ -132,7 +134,9 @@ func (w *usageResponseWriter) Write(data []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return w.ResponseWriter.Write(data)
+	n, err := w.ResponseWriter.Write(data)
+	w.bytes += int64(n)
+	return n, err
 }
 
 func (s *Server) usageMiddleware(next http.Handler) http.Handler {
@@ -156,6 +160,11 @@ func (s *Server) usageMiddleware(next http.Handler) http.Handler {
 		}
 		started := time.Now()
 		capture := &usageResponseWriter{ResponseWriter: w}
+		var body *usageBodyReader
+		if r.Body != nil {
+			body = &usageBodyReader{ReadCloser: r.Body}
+			r.Body = body
+		}
 		next.ServeHTTP(capture, r)
 		status := capture.status
 		if status == 0 {
@@ -172,9 +181,17 @@ func (s *Server) usageMiddleware(next http.Handler) http.Handler {
 			}
 			errorFingerprint = usagelog.SafeFingerprint(capture.Header().Get(usagelog.HeaderErrorFingerprint))
 		}
+		elapsed := time.Since(started)
+		var inputBytes *int64
+		if body == nil {
+			inputBytes = usagelog.Count(0)
+		} else if body.eof || (r.ContentLength >= 0 && body.bytes == r.ContentLength) {
+			inputBytes = usagelog.Count(body.bytes)
+		}
 		_ = s.usage.Record(usagelog.Event{
 			Layer: "http", Operation: operation, Outcome: outcome,
-			DurationMS: time.Since(started).Milliseconds(), HTTPStatus: status,
+			DurationMS: elapsed.Milliseconds(), DurationUS: elapsed.Microseconds(), HTTPStatus: status,
+			Scope: "transport", Representation: "http_body", InputBytes: inputBytes, OutputBytes: usagelog.Count(capture.bytes), InputQueryBytes: usagelog.Count(int64(len(r.URL.RawQuery))),
 			ErrorClass: errorClass, ErrorFingerprint: errorFingerprint,
 			Retryable: usagelog.Retryable(errorClass),
 			SessionID: r.Header.Get(usagelog.HeaderSessionID),
@@ -182,4 +199,19 @@ func (s *Server) usageMiddleware(next http.Handler) http.Handler {
 			Client:    r.Header.Get(usagelog.HeaderClient),
 		})
 	})
+}
+
+type usageBodyReader struct {
+	io.ReadCloser
+	bytes int64
+	eof   bool
+}
+
+func (r *usageBodyReader) Read(data []byte) (int, error) {
+	n, err := r.ReadCloser.Read(data)
+	r.bytes += int64(n)
+	if err == io.EOF {
+		r.eof = true
+	}
+	return n, err
 }
