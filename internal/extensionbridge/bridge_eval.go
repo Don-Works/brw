@@ -156,11 +156,15 @@ func (b *Bridge) cdpDispatch(ctx context.Context, tabID, method string, params m
 		delete(req, "tabId")
 		return b.call(ctx, "cdp", req)
 	}
-	if err != nil && tabID != "" && isBridgeDebuggerDetachedError(err) {
+	if err != nil && tabID != "" && isBridgeDebuggerDetachedError(err) && !ambiguousInputAcknowledgement(method, params) {
 		retryRaw, retryErr := b.call(ctx, "cdp", req)
 		if retryErr == nil {
 			return retryRaw, nil
 		}
 	}
 	return raw, err
+}
+
+func ambiguousInputAcknowledgement(method string, params map[string]any) bool {
+	return method == "Input.dispatchTouchEvent" || method == "Input.dispatchMouseEvent" && (params["type"] == "mousePressed" || params["type"] == "mouseReleased")
 }

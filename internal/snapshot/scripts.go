@@ -3367,7 +3367,13 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
   // built here reports shiftKey/ctrlKey false whatever is held.
   var trustedNeeded = (__abRequiresTrustedClick(target) || __abRequiresTrustedClick(el)) && opts.no_defer !== true;
   if (trustedNeeded || opts.locate === true) {
+    var resolvedRef = el.getAttribute('data-brw-ref');
+    if (!resolvedRef) {
+      resolvedRef = 'brw-click-' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+      el.setAttribute('data-brw-ref', resolvedRef);
+    }
     return {
+      ref: resolvedRef,
       ok: true,
       x,
       y,
@@ -3450,6 +3456,7 @@ func CommitField(ctx context.Context, ref string) error {
 }
 
 type ClickXYResult struct {
+	Ref   string  `json:"ref,omitempty"`
 	OK    bool    `json:"ok"`
 	X     float64 `json:"x"`
 	Y     float64 `json:"y"`

@@ -63,6 +63,8 @@ func (r *evalRecorder) serve(ctx context.Context, conn *websocket.Conn) {
 		switch msg.Type {
 		case "list_tabs":
 			result = []map[string]any{{"id": 7, "windowId": 1, "active": true, "url": "https://fixture.test/", "title": "Fixture"}}
+		case "get_tab_input_state":
+			result = map[string]any{"active": true, "windowFocused": true}
 		case "get_active_tab_id":
 			result = map[string]any{"tabId": 7}
 		case "cdp":
@@ -83,7 +85,9 @@ func (r *evalRecorder) serve(ctx context.Context, conn *websocket.Conn) {
 func evalReply(expr string) any {
 	switch {
 	case strings.Contains(expr, clickTextScriptMarker):
-		return map[string]any{"ok": true, "x": 12, "y": 34, "tag": "button", "role": "button", "name": "Add to cart"}
+		return map[string]any{"ok": true, "ref": "eText", "x": 12, "y": 34, "tag": "button", "role": "button", "name": "Add to cart"}
+	case strings.Contains(expr, "click target not hit-testable"):
+		return map[string]any{"ok": true, "x": 12, "y": 34}
 	case strings.Contains(expr, "elements"):
 		return map[string]any{"url": "https://fixture.test/", "title": "Fixture", "elements": []any{}}
 	default:

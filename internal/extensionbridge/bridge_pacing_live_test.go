@@ -19,6 +19,10 @@ import (
 )
 
 func deadlineLiveBridge(t *testing.T, normalTimers bool) (*Bridge, context.Context, string) {
+	return deadlineLiveBridgeMode(t, normalTimers, false)
+}
+
+func deadlineLiveBridgeMode(t *testing.T, normalTimers, headless bool) (*Bridge, context.Context, string) {
 	t.Helper()
 	browsers := installedBrowsers()
 	if len(browsers) == 0 {
@@ -72,7 +76,7 @@ func deadlineLiveBridge(t *testing.T, normalTimers bool) (*Bridge, context.Conte
 		}
 	}
 	profile := browsertest.NewProfile(t)
-	launcher, err := cdp.Launch(context.Background(), cdp.LaunchConfig{ChromePath: chromePath, UserDataDir: profile.Dir(), Extensions: []string{extension}, Headless: false, Args: append(quietLaunchArgs(), "--window-size=1280,1000")})
+	launcher, err := cdp.Launch(context.Background(), cdp.LaunchConfig{ChromePath: chromePath, UserDataDir: profile.Dir(), Extensions: []string{extension}, Headless: headless, Args: append(quietLaunchArgs(), "--window-size=1280,1000")})
 	if err != nil {
 		t.Fatal(err)
 	}

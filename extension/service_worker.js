@@ -3024,7 +3024,7 @@ async function sendDebuggerCommand(tabId, method, params) {
       state.attachedTabs.delete(tabId);
       throw await foreignExtensionFrameError(tabId, error);
     }
-    if (!isDetachedDebuggerError(error)) throw error;
+    if (!isDetachedDebuggerError(error) || method === "Input.dispatchTouchEvent" || (method === "Input.dispatchMouseEvent" && ["mousePressed", "mouseReleased"].includes(params?.type))) throw error;
     state.attachedTabs.delete(tabId);
     await attach(tabId);
     return await chrome.debugger.sendCommand({ tabId }, method, params);
