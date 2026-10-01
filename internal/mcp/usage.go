@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
@@ -51,6 +52,9 @@ func (s *Server) recordMCPUsage(ctx context.Context, operation, scope, represent
 		ErrorClass: errorClass, ErrorFingerprint: fingerprint,
 		Retryable: usagelog.Retryable(errorClass), SessionID: s.sessionID, RequestID: usagelog.RequestID(ctx),
 		InputBytes: usagelog.Count(int64(len(input))),
+	}
+	if observation := usagelog.ObservationFromContext(ctx); observation != nil {
+		observation.Apply(&event)
 	}
 	chars, binary := usagelog.MeasureJSON(input)
 	event.InputTextChars = usagelog.Count(chars)
@@ -149,4 +153,10 @@ func usageRequestID(ctx context.Context) string {
 		return id
 	}
 	return usagelog.NewID()
+}
+
+func setReadObservation(ctx context.Context, read readability.PageRead) {
+	if observation := usagelog.ObservationFromContext(ctx); observation != nil {
+		observation.ResultTruncated = usagelog.Flag(read.MainTruncated || read.LinksTruncated || read.HeadingsTruncated || read.TablesTruncated)
+	}
 }

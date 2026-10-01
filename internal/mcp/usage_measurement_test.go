@@ -58,3 +58,19 @@ func TestUsageMeasurementIncludesCatalogueAndCanonicalizesUnknownTool(t *testing
 		t.Fatalf("events=%+v", controller.events)
 	}
 }
+
+func TestUsageObservationMetadataCoversCompactAndJSONSnapshots(t *testing.T) {
+	for _, format := range []string{"compact", "json"} {
+		controller := &usageForwardingController{}
+		server := New(controller)
+		args := json.RawMessage(`{"name":"brw_snapshot","arguments":{"format":"` + format + `","since":7}}`)
+		_, rpcErr := server.handle(context.Background(), "tools/call", args)
+		if rpcErr != nil || len(controller.events) != 1 {
+			t.Fatalf("rpc=%v events=%+v", rpcErr, controller.events)
+		}
+		event := controller.events[0]
+		if event.SnapshotMode != "frontier" || event.OutputFormat != format || event.ElementLimit == nil || *event.ElementLimit != 40 || event.ReturnedElements == nil || event.DeltaRequested == nil || !*event.DeltaRequested || event.DeltaReturned == nil {
+			t.Fatalf("event=%+v", event)
+		}
+	}
+}

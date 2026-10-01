@@ -43,6 +43,15 @@ const (
 // never add args, text, values, page content, screenshots, headers, bodies,
 // filesystem paths, titles, or URLs (including query strings).
 type Event struct {
+	SnapshotMode     string `json:"snapshot_mode,omitempty"`
+	OutputFormat     string `json:"output_format,omitempty"`
+	DeltaRequested   *bool  `json:"delta_requested,omitempty"`
+	DeltaReturned    *bool  `json:"delta_returned,omitempty"`
+	ResultTruncated  *bool  `json:"result_truncated,omitempty"`
+	ReadSettleMS     *int64 `json:"read_settle_ms,omitempty"`
+	ElementLimit     *int64 `json:"element_limit,omitempty"`
+	ReturnedElements *int64 `json:"returned_elements,omitempty"`
+
 	Timestamp                   string `json:"ts"`
 	Version                     string `json:"version,omitempty"`
 	Layer                       string `json:"layer"`
@@ -149,6 +158,7 @@ func (r *Recorder) Record(event Event) error {
 	if event.Mode == "" {
 		event.Mode = r.identity.Mode
 	}
+	SanitizeObservation(&event)
 	event.SchemaVersion = 1
 	event.Scope = safeScope(event.Scope)
 	event.Representation = safeRepresentation(event.Representation)

@@ -34,6 +34,7 @@ func (s *Server) reportUsage(w http.ResponseWriter, r *http.Request) {
 	clean := usagelog.Event{
 		Layer: event.Layer, Operation: event.Operation, Outcome: event.Outcome, Scope: event.Scope, Representation: event.Representation,
 		DurationMS: event.DurationMS, DurationUS: event.DurationUS,
+		SnapshotMode: event.SnapshotMode, OutputFormat: event.OutputFormat, DeltaRequested: event.DeltaRequested, DeltaReturned: event.DeltaReturned, ResultTruncated: event.ResultTruncated, ReadSettleMS: event.ReadSettleMS, ElementLimit: event.ElementLimit, ReturnedElements: event.ReturnedElements,
 		InputBytes: event.InputBytes, OutputBytes: event.OutputBytes, InputTextChars: event.InputTextChars, OutputTextChars: event.OutputTextChars,
 		EstimatedInputTokensChars4: event.EstimatedInputTokensChars4, EstimatedOutputTokensChars4: event.EstimatedOutputTokensChars4,
 		BinaryInputBytes: event.BinaryInputBytes, BinaryOutputBytes: event.BinaryOutputBytes, StructuredOutputBytes: event.StructuredOutputBytes,
@@ -47,6 +48,9 @@ func (s *Server) reportUsage(w http.ResponseWriter, r *http.Request) {
 }
 
 func validUsageReport(event usagelog.Event) bool {
+	if !usagelog.ValidObservation(event) {
+		return false
+	}
 	if event.Outcome != "ok" && event.Outcome != "error" {
 		return false
 	}

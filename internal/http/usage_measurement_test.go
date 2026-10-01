@@ -99,6 +99,9 @@ func TestUsageReportStrictMetadataAndNoRecursiveRecord(t *testing.T) {
 		strings.Replace(payload, `"input_bytes":4`, `"input_bytes":-1`, 1),
 		strings.Replace(payload, `"scope":"tool"`, `"scope":"SECRET"`, 1),
 		strings.TrimSuffix(payload, "}") + `,"text":"secret"}`,
+		strings.TrimSuffix(payload, "}") + `,"snapshot_mode":"SENSITIVE_MODE"}`,
+		strings.TrimSuffix(payload, "}") + `,"returned_elements":-1}`,
+		strings.TrimSuffix(payload, "}") + `,"delta_returned":"secret"}`,
 		payload + `{}`,
 	} {
 		response = httptest.NewRecorder()

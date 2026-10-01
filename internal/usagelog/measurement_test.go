@@ -51,3 +51,34 @@ func TestMeasurementRecorderPreservesKnownZeroAndDropsUnknownEnums(t *testing.T)
 		t.Fatalf("known vs unknown: %+v", event)
 	}
 }
+
+func TestObservationMetadataIsAllowlistedAndBounded(t *testing.T) {
+	for _, input := range []string{`{"mode":"SECRET_MODE","format":"SECRET_FORMAT","limit":999999999}`, `{"mode":true}`, `{"mode":"all","limit":1.5}`} {
+		observation := ObservationOptions("brw_snapshot", []byte(input))
+		if observation == nil {
+			continue
+		}
+		var event Event
+		observation.Apply(&event)
+		data, _ := json.Marshal(event)
+		if strings.Contains(string(data), "SECRET") || (event.ElementLimit != nil && *event.ElementLimit > 1<<20) {
+			t.Fatalf("unsafe metadata %s", data)
+		}
+	}
+	observation := ObservationOptions("brw_snapshot", []byte(`{"since":17,"mode":"frontier","format":"compact","limit":-5}`))
+	var event Event
+	observation.Apply(&event)
+	if event.ElementLimit == nil || *event.ElementLimit != 40 || event.DeltaRequested == nil || !*event.DeltaRequested || event.OutputFormat != "compact" || event.DeltaReturned != nil {
+		t.Fatalf("event=%+v", event)
+	}
+	read := ObservationOptions("brw_read", []byte(`{"settle_ms":0}`))
+	read.Apply(&event)
+	if event.ReadSettleMS == nil || *event.ReadSettleMS != 0 {
+		t.Fatal("lost explicit zero settle")
+	}
+	for _, unsafe := range []Event{{SnapshotMode: "secret"}, {ReadSettleMS: Count(-1)}, {ElementLimit: Count(-1)}, {ReturnedElements: Count(1 << 21)}} {
+		if ValidObservation(unsafe) {
+			t.Fatalf("accepted unsafe observation %+v", unsafe)
+		}
+	}
+}

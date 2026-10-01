@@ -824,6 +824,7 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 			return nil, invalid(err)
 		}
 		ctx = usagelog.WithRequestID(ctx, usageRequestID(ctx))
+		ctx = usagelog.WithObservation(ctx, usagelog.ObservationOptions(canonicalToolName(call.Name), call.Arguments))
 		started := time.Now()
 		result, rpcErr := s.callTool(ctx, call.Name, call.Arguments)
 		result = withSkewNote(result, s.versionSkewNote(ctx))
@@ -1207,6 +1208,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return toolError(err), nil
 		}
 		if alreadyWindowed {
+			setReadObservation(ctx, read)
 			return toolJSON(read, nil)
 		}
 		// An unmatched section is an argument error, not a silently empty read:
@@ -1226,7 +1228,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 					req.Section, strings.Join(readability.SectionNames(read.Headings), ", ")))
 			}
 		}
-		return toolJSON(readability.Window(read, req), nil)
+		read = readability.Window(read, req)
+		setReadObservation(ctx, read)
+		return toolJSON(read, nil)
 	case "brw_read_data":
 		return toolJSON(s.manager.ReadData(ctx))
 	case "brw_snapshot":
@@ -1235,11 +1239,22 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		req = normalizeMCPSnapshotOptions(req)
+		if observation := usagelog.ObservationFromContext(ctx); observation != nil {
+			observation.SnapshotMode = req.Mode
+			observation.ElementLimit = usagelog.Count(int64(req.Limit))
+		}
 		snap, err := s.manager.Snapshot(ctx, req)
 		if err != nil {
 			return toolError(err), nil
 		}
 		s.refLabels.record(browser.TabIDFromContext(ctx), snap.Elements)
+		if observation := usagelog.ObservationFromContext(ctx); observation != nil {
+			observation.ReturnedElements = usagelog.Count(int64(len(snap.Elements)))
+			observation.DeltaReturned = usagelog.Flag(snap.Delta != nil)
+			if truncated, ok := snap.Metadata["truncated"].(bool); ok {
+				observation.ResultTruncated = usagelog.Flag(truncated)
+			}
+		}
 		if strings.EqualFold(req.Format, "compact") {
 			return map[string]any{"content": []toolContent{{Type: "text", Text: snapshot.RenderCompact(snap)}}}, nil
 		}
