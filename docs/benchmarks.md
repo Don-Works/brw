@@ -1,5 +1,43 @@
 # Benchmarks
 
+## Role-filtered live-page extraction, 2026-10-01
+
+Exact role predicates now run before accessible-name computation, recovery-path
+construction and geometry reads. This applies database predicate pushdown to
+DOM extraction; it adds no persistent cache or invalidation protocol.
+
+| Public page | Role | Before median ms | After median ms | Speedup |
+| --- | --- | ---: | ---: | ---: |
+| Wikipedia, Bloom filter | searchbox | 22.7 | 2.4 | 9.46× |
+| MDN, MutationObserver | button | 2.6 | 0.8 | 3.25× |
+| Hacker News | textbox | 3.1 | 0.5 | 6.20× |
+
+These are paired measurements of the complete tracked in-page walker on live
+pages, with seven alternating samples per arm after two warmup pairs. They
+exclude network, transport and model inference. They do not imply those speedups
+for a whole browser task. [Raw samples](measurements/snapshot-role-pushdown-2026-10-01.json)
+include match counts and the reproduction command.
+
+Regression coverage compares 600 seeded mutated views across normal DOM,
+shadow roots and same-origin frames. Each arm starts from identical ref state;
+sequential comparison without restoration is invalid because extraction stamps
+refs. Cold filtered snapshots also verify unique resolvable refs, stability
+after a full walk, and zero geometry reads on 1,000 irrelevant links. Newly
+assigned ref numbers can differ from an unfiltered cold walk; refs are opaque.
+
+An action-script installation/cache experiment was rejected: the 35-command
+fixture went from 237 to 242 CDP calls, transmitted only 2.46% fewer bytes,
+and took 3,053 ms versus 3,028 ms in single runs. That is no demonstrated
+latency win. The extra installation round trips outweighed the small reduction
+in script traffic on that workload; the prototype was not installed.
+
+Live Wikipedia use also exposed a search field changing from `searchbox` to
+`combobox` during hydration. The previous ref became hidden/stale. Re-observing
+and finding the current control recovered the search successfully. Controllers
+must verify the current target after hydration instead of blindly repeating a
+failed action against the old role/ref.
+
+
 ## Dense-page snapshot round, 2026-10-01
 
 The sibling-path index replaces repeated preceding-sibling scans with a lazy,

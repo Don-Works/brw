@@ -534,6 +534,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     if (seen.has(el)) continue;
     seen.add(el);
     const role = roleFor(el);
+    if (roleFilter && role !== roleFilter) continue;
     // Salient-image gate: <img> is surfaced as role "image" so agents can target
     // it for hover/click/drag (e.g. hover-reveal avatars, product tiles, map pins)
     // — a class a real accessibility tree exposes and we previously dropped. Bound
@@ -627,7 +628,6 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       proseText
     ].join(' ').toLowerCase();
     if (viewportOnly && !item.in_viewport && !taskScoped) continue;
-    if (roleFilter && item.role !== roleFilter) continue;
     if (textFilter && !haystack.includes(textFilter)) continue;
     if (query && !haystack.includes(query)) continue;
     if (query || textFilter) {
