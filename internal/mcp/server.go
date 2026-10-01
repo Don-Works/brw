@@ -1311,10 +1311,6 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		// Plain left single-click on a ref keeps the fast in-page click path.
-		// Any non-default button/count, or a coordinate target, routes through
-		// the decomposed CDP click so right/double/triple/middle clicks and
-		// canvas coordinate clicks all share one tool.
 		if browser.IsDefaultLeftSingleRefClick(req.Button, req.ClickCount, req.Ref, req.X, req.Y) {
 			return obs.action(s.manager.Click(ctx, req.Ref))
 		}
@@ -2827,7 +2823,7 @@ func tools() []map[string]any {
 			"exact":          boolSchema("With action: keep only elements whose accessible name (or value) EQUALS the query after collapsing case and whitespace, rather than containing it. The fastest way to resolve an ambiguous match."),
 			"observe":        observeFindSchema(),
 		}, nil)),
-		tool("brw_click", "Click a semantic element ref (or x,y coordinates) from brw_snapshot. Defaults to a left single-click; set button to right (opens context menus) or middle, and click_count to 2 (double-click) or 3 (triple-click selects a line). When the click opens a new tab, the response includes new_tab_id with the freshly opened tab's id.", object(map[string]any{
+		tool("brw_click", "Dispatch trusted browser input to a semantic element ref (or x,y coordinates) from brw_snapshot. Defaults to a left single-click; set button to right (opens context menus) or middle, and click_count to 2 (double-click) or 3 (triple-click selects a line). Profile-browser targets must be active; an inactive target is refused without input, so explicitly use brw_focus_tab and verify the intended target. ok and changed_state do not prove the application completed the action. Assert the specific final postcondition before continuing or retrying; never blindly repeat a consequential click after an uncertain result. When the click opens a new tab, the response includes new_tab_id.", object(map[string]any{
 			"ref":         stringSchema("Element ref, for example e18. Provide ref or x,y."),
 			"x":           map[string]any{"type": "number", "description": "X coordinate in viewport pixels. Use with y instead of ref for canvas/coordinate clicks."},
 			"y":           map[string]any{"type": "number", "description": "Y coordinate in viewport pixels. Use with x instead of ref for canvas/coordinate clicks."},
@@ -2861,7 +2857,7 @@ func tools() []map[string]any {
 			"observe": observeSchema(),
 			"tab_id":  stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, nil)),
-		tool("brw_click_text", "Click the best visible actionable element whose accessible name or visible text matches text. Useful for controls like \"Check out\" when refs are stale or custom components hide internals. Below-fold matches are scrolled into view before clicking by default. When the click opens a new tab, the response includes new_tab_id.", object(map[string]any{
+		tool("brw_click_text", "Dispatch trusted browser input to the best visible actionable element whose accessible name or visible text matches text. Useful for controls like \"Check out\" when refs are stale or custom components hide internals. Below-fold matches are scrolled into view before clicking by default. Profile-browser targets must be active; use brw_focus_tab explicitly if an inactive target is refused. ok and changed_state do not prove the application completed the action. Assert the specific final postcondition before continuing or retrying; never blindly repeat a consequential click after an uncertain result. When the click opens a new tab, the response includes new_tab_id.", object(map[string]any{
 			"text":        stringSchema("Visible text or accessible name to click."),
 			"role":        stringSchema("Optional role filter, for example button, link, option, or menuitem."),
 			"exact":       boolSchema("Require an exact normalized text/name match instead of allowing substring matches."),
@@ -3256,7 +3252,7 @@ func tools() []map[string]any {
 			"title":   stringSchema("Short notification heading. Defaults to a kind-appropriate title."),
 			"message": stringSchema("Notification body text."),
 		}, nil)),
-		tool("brw_click_xy", "Click at specific viewport coordinates (x, y). Returns the element that was clicked. Use for canvas interactions or when semantic refs are not available.", object(map[string]any{
+		tool("brw_click_xy", "Dispatch trusted browser input at specific viewport coordinates (x, y). Returns the painted target metadata; this does not prove the application completed the action. Use for canvas interactions or when semantic refs are not available. Profile-browser targets must be active; use brw_focus_tab explicitly if an inactive target is refused. Assert the specific final postcondition before continuing or retrying; never blindly repeat a consequential click after an uncertain result.", object(map[string]any{
 			"x":      map[string]any{"type": "number", "description": "X coordinate in viewport pixels."},
 			"y":      map[string]any{"type": "number", "description": "Y coordinate in viewport pixels."},
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
