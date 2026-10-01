@@ -33,11 +33,13 @@ was rerun successfully.
 
 The click lane reproduced two independent acknowledgement/effect mismatches:
 synthetic page events are not trusted browser events, and Chrome can acknowledge
-mouse input to an inactive target without delivering it. Ref clicks now validate
-the painted target and use trusted input. The signed-in extension lane refuses
-an inactive or unfocused target with an explicit focus remedy. It does not
-silently change the user's foreground tab. Ambiguous press/release acknowledgements
-must not replay input automatically.
+mouse input to an inactive target without delivering it. Ref and text clicks
+now validate the painted target and use trusted input. Coordinate clicks validate
+the painted point before and after mouse movement. The signed-in extension lane
+refuses an inactive target with an explicit focus remedy. An active tab in an
+unfocused window remains usable: the headed fixture verified trusted delivery
+without raising that window. Ambiguous press/release acknowledgements must not
+replay input automatically.
 
 A local dialog whose handler requires a trusted event now reaches exactly one
 member-added result and closes on both direct and extension control. Disabled,
@@ -45,6 +47,15 @@ inert and occluded controls are negative cases, including an overlay introduced
 by mouse movement. A separate foreground sentinel checks focus isolation.
 These checks establish the reproduced input-delivery behavior; an application
 can still reject valid input, so its own final state must be verified.
+
+The expanded fixtures cover direct and extension control in both headed and
+headless Chromium. They also cover nested disabled controls, disabled label
+targets, open and captured closed shadow roots, HTTP pages without
+`crypto.randomUUID`, and a tall text target with automatic scrolling disabled.
+The old synthetic path produced one untrusted event and no business effect in
+the controlled reproduction. Ref and text identity checks are stronger than
+literal coordinates: a coordinate action still means the currently actionable
+point, not a promise about a previously observed semantic element.
 
 ## Passive-step pacing
 
