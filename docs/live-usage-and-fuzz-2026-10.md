@@ -87,10 +87,13 @@ successfully inspected.
   budgets; interrupted HTTP error reads close their descriptors; non-finite
   provider JSON and invalid source counters/ranges are rejected or omitted.
 
-The reader suite passes 58 tests, including more than 16,000 seeded/iterative
+The reader suite passes 61 tests, including more than 16,000 seeded/iterative
 local cases and 192 burst requests, with fake providers and isolated log files.
 The descendant cleanup regression was exercised on macOS/POSIX; it does not
-establish equivalent descendant control on Windows.
+establish equivalent descendant control on Windows. The integrated gate also
+found a Darwin process-group exit/reaping race; its fix passed 80 real
+cancellation cycles and 40 repetitions of the existing cleanup timing
+regression. Live-worker permission failures remain errors.
 
 The browser lane compared 6,000 role-filtered views under seeded DOM mutations,
 including Unicode, changing input types, shadow roots, frames, and shrinking
