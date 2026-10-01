@@ -230,6 +230,14 @@ class Server:
                     os.killpg(process.pid, 0)
                 except ProcessLookupError:
                     return
+                except PermissionError as error:
+                    if sys.platform != 'darwin':
+                        raise
+                    try:
+                        process.wait(timeout=.01)
+                    except subprocess.TimeoutExpired:
+                        raise error
+                    return
                 if time.monotonic() >= deadline:
                     try:
                         os.killpg(process.pid, signal.SIGKILL)
@@ -293,8 +301,10 @@ class Server:
                     cancelled = job['cancel_event'].is_set()
                     if cancelled or time.monotonic() >= deadline:
                         cleanup_started = time.monotonic()
-                        self.stop_process(process)
-                        cleanup_ms = round((time.monotonic()-cleanup_started)*1000, 3)
+                        try:
+                            self.stop_process(process)
+                        finally:
+                            cleanup_ms = round((time.monotonic()-cleanup_started)*1000, 3)
                         returncode = process.returncode
                         raise ValueError('cancelled' if cancelled else 'deadline_exceeded')
                     try:
@@ -303,8 +313,10 @@ class Server:
                         pass
                 returncode = process.returncode
                 cleanup_started = time.monotonic()
-                self.stop_process(process)
-                cleanup_ms = round((time.monotonic()-cleanup_started)*1000, 3)
+                try:
+                    self.stop_process(process)
+                finally:
+                    cleanup_ms = round((time.monotonic()-cleanup_started)*1000, 3)
                 stderr_thread.join(timeout=.1)
                 stderr_stop.set()
                 stderr_thread.join(timeout=.1)

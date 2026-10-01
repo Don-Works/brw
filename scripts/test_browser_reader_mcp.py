@@ -7,7 +7,7 @@ import queue
 import subprocess
 import sys
 import tempfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import threading
 import time
 import unittest
@@ -339,14 +339,67 @@ class ReaderMCPTests(unittest.TestCase):
         self.assertTrue(client.messages.empty())
         client.call('question', 4)
         self.assertEqual(client.receive()['id'], 4)
-        rows = [json.loads(line) for line in (client.directory / 'usage/reader.jsonl').read_text().splitlines()]
-        cancelled = next(row for row in rows if row['outcome'] == 'cancelled')
+        path = client.directory / 'usage/reader.jsonl'
+        deadline = time.monotonic()+2
+        cancelled = None
+        rows = []
+        while time.monotonic() < deadline:
+            if path.exists():
+                rows = [json.loads(line) for line in path.read_text().splitlines()]
+                cancelled = next((row for row in rows if row['outcome'] == 'cancelled'), None)
+                if cancelled:
+                    break
+            time.sleep(.01)
+        self.assertIsNotNone(cancelled)
         self.assertEqual(cancelled['output_bytes'], 0)
         self.assertGreater(cancelled['cleanup_ms'], 100)
         self.assertGreater(cancelled['input_bytes'], 0)
         encoded = json.dumps(rows)
         for secret in ('PRIVATE', 'https://example', 'sleep:', 'Grounded answer'):
             self.assertNotIn(secret, encoded)
+
+    def test_darwin_group_probe_permission_race_waits_for_leader_exit(self):
+        server = ADAPTER.Server(argparse_namespace(), io.StringIO())
+        process = Mock(pid=987654, returncode=None)
+        process.poll.return_value = None
+        process.wait.return_value = -2
+        with patch.object(ADAPTER.os, 'name', 'posix'), patch.object(ADAPTER.sys, 'platform', 'darwin'), patch.object(ADAPTER.os, 'killpg', side_effect=[None, PermissionError(1, 'probe')]) as kill:
+            server.stop_process(process)
+        process.wait.assert_called_once_with(timeout=.01)
+        self.assertEqual(kill.call_args_list[-1].args, (process.pid, 0))
+
+    def test_group_probe_permission_failure_with_live_leader_is_preserved(self):
+        server = ADAPTER.Server(argparse_namespace(), io.StringIO())
+        for platform in ('darwin', 'linux'):
+            with self.subTest(platform=platform):
+                process = Mock(pid=987654, returncode=None)
+                process.poll.return_value = None
+                process.wait.side_effect = subprocess.TimeoutExpired('owned worker', .01)
+                with patch.object(ADAPTER.os, 'name', 'posix'), patch.object(ADAPTER.sys, 'platform', platform), patch.object(ADAPTER.os, 'killpg', side_effect=[None, PermissionError(1, 'probe')]):
+                    with self.assertRaises(PermissionError):
+                        server.stop_process(process)
+                if platform == 'linux':
+                    process.wait.assert_not_called()
+
+    def test_cleanup_failure_records_duration_and_private_diagnostic(self):
+        worker = pathlib.Path(self.directory.name) / 'fake.py'
+        worker.write_text(WORKER)
+        for cancelled in (False, True):
+            with self.subTest(cancelled=cancelled):
+                args = ADAPTER.parse_args(['--worker', str(worker), '--artifacts-dir', self.directory.name, '--no-usage-log'])
+                server = ADAPTER.Server(args, io.StringIO())
+                job = {'cancelled': cancelled, 'cancel_event': threading.Event(), 'input_bytes': 123}
+                if cancelled:
+                    job['cancel_event'].set()
+                server.active[2] = job
+                with patch.object(server, 'stop_process', side_effect=PermissionError(1, 'cleanup failed')), patch.object(server.ledger, 'write') as write:
+                    server.run_worker(2, 'https://example.test', 'question', job)
+                fields = write.call_args.kwargs
+                self.assertIsNotNone(fields['cleanup_ms'])
+                self.assertGreaterEqual(fields['cleanup_ms'], 0)
+                diagnostics = [json.loads(path.read_text()) for path in pathlib.Path(self.directory.name).glob('*/adapter.json')]
+                self.assertTrue(any(item['error_kind'] == 'reader_failed' and 'cleanup failed' in item['error_detail'] for item in diagnostics))
+                self.assertNotIn(2, server.active)
 
     def test_failure_usage_survives_missing_success_report(self):
         client = self.client(usage=True)

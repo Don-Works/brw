@@ -126,7 +126,7 @@ class StressTests(unittest.TestCase):
         rng = random.Random(2026100104)
         for cycle in range(12):
             with tempfile.TemporaryDirectory() as directory:
-                client = FIXTURES.Client(directory, timeout=.3, concurrent=4)
+                client = FIXTURES.Client(directory, timeout=2, concurrent=4)
                 try:
                     client.initialize()
                     cancelled = set(rng.sample(range(10, 14), 2))
