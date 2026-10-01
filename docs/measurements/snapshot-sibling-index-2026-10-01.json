@@ -1,0 +1,235 @@
+{
+  "schema": "brw.snapshot-sibling-index/v1",
+  "date": "2026-10-01",
+  "baseline_commit": "fd1c8c8",
+  "environment": {
+    "captured_at": "2026-10-01T09:10:14.865806Z",
+    "brw_version": "dev",
+    "go_version": "go1.26.6",
+    "os": "darwin",
+    "arch": "arm64",
+    "cpu_model": "Apple M4 Max",
+    "cpus": 16,
+    "browser": "Chrome/154.0.8037.93",
+    "cdp_protocol": "1.3",
+    "headless": true,
+    "fixture_digest": "b27bba7d598f0905762bc159e78a155a92dc0c8cc788cf12291ca2d11dee5fad"
+  },
+  "method": "Same browser, alternating legacy and indexed path generation. Two warmup pairs discarded; nine measured pairs per size/mode. performance.now measures complete in-page snapshot extraction including versioned delta history, excluding CDP transport and Go decoding. Legacy arm retains unused indexing helpers.",
+  "measurements": [
+    {
+      "indexed_median_ms": 0.7999999523162842,
+      "legacy_median_ms": 1,
+      "mode": "frontier",
+      "samples": [
+        [
+          0.9000000953674316,
+          0.9000000953674316,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1.0999999046325684,
+          1.1999998092651367
+        ],
+        [
+          0.6999998092651367,
+          0.7000000476837158,
+          0.7999999523162842,
+          0.7999999523162842,
+          0.7999999523162842,
+          0.7999999523162842,
+          0.7999999523162842,
+          0.7999999523162842,
+          0.9000000953674316
+        ]
+      ],
+      "size": 100
+    },
+    {
+      "indexed_median_ms": 0.7000000476837158,
+      "legacy_median_ms": 0.7999999523162842,
+      "mode": "all",
+      "samples": [
+        [
+          0.7999999523162842,
+          0.7999999523162842,
+          0.7999999523162842,
+          0.7999999523162842,
+          0.7999999523162842,
+          0.7999999523162842,
+          0.8000001907348633,
+          0.8000001907348633,
+          0.9000000953674316
+        ],
+        [
+          0.5999999046325684,
+          0.6000001430511475,
+          0.7000000476837158,
+          0.7000000476837158,
+          0.7000000476837158,
+          0.7000000476837158,
+          0.7000000476837158,
+          0.7999999523162842,
+          0.7999999523162842
+        ]
+      ],
+      "size": 100
+    },
+    {
+      "indexed_median_ms": 6.099999904632568,
+      "legacy_median_ms": 17.5,
+      "mode": "frontier",
+      "samples": [
+        [
+          17.299999952316284,
+          17.5,
+          17.5,
+          17.5,
+          17.5,
+          17.700000047683716,
+          17.90000009536743,
+          17.90000009536743,
+          18.399999856948853
+        ],
+        [
+          5.700000047683716,
+          5.700000047683716,
+          5.799999952316284,
+          6,
+          6.099999904632568,
+          6.3999998569488525,
+          6.400000095367432,
+          6.5,
+          6.900000095367432
+        ]
+      ],
+      "size": 1000
+    },
+    {
+      "indexed_median_ms": 7.8999998569488525,
+      "legacy_median_ms": 19.399999856948853,
+      "mode": "all",
+      "samples": [
+        [
+          18.5,
+          19,
+          19.200000047683716,
+          19.299999952316284,
+          19.399999856948853,
+          19.5,
+          19.600000143051147,
+          19.600000143051147,
+          19.800000190734863
+        ],
+        [
+          6.8999998569488525,
+          7.099999904632568,
+          7.299999952316284,
+          7.799999952316284,
+          7.8999998569488525,
+          8,
+          8,
+          8.100000143051147,
+          8.299999952316284
+        ]
+      ],
+      "size": 1000
+    },
+    {
+      "indexed_median_ms": 32.40000009536743,
+      "legacy_median_ms": 301.7999999523163,
+      "mode": "frontier",
+      "samples": [
+        [
+          299.90000009536743,
+          300.59999990463257,
+          301,
+          301.39999985694885,
+          301.7999999523163,
+          306,
+          308.09999990463257,
+          308.7000000476837,
+          309.09999990463257
+        ],
+        [
+          30.799999952316284,
+          31.399999856948853,
+          31.5,
+          31.700000047683716,
+          32.40000009536743,
+          32.80000019073486,
+          34,
+          34.5,
+          36.200000047683716
+        ]
+      ],
+      "size": 5000
+    },
+    {
+      "indexed_median_ms": 40.299999952316284,
+      "legacy_median_ms": 311.7000000476837,
+      "mode": "all",
+      "samples": [
+        [
+          307.5,
+          309.2999999523163,
+          310,
+          310.69999980926514,
+          311.7000000476837,
+          312.7999999523163,
+          313.5,
+          317.2000000476837,
+          320.7999999523163
+        ],
+        [
+          38,
+          38.299999952316284,
+          39.200000047683716,
+          39.5,
+          40.299999952316284,
+          40.799999952316284,
+          43.700000047683716,
+          43.799999952316284,
+          44.40000009536743
+        ]
+      ],
+      "size": 5000
+    }
+  ],
+  "fixture_suite": {
+    "before": {
+      "commands": 35,
+      "wall_ms": 3017.304,
+      "cdp_commands": 237,
+      "cdp_messages": 474,
+      "transport_bytes_tx": 1197442,
+      "transport_bytes_rx": 230629,
+      "observation_bytes": 52954,
+      "observation_tokens": 13227
+    },
+    "after": {
+      "commands": 35,
+      "wall_ms": 3027.845,
+      "cdp_commands": 237,
+      "cdp_messages": 474,
+      "transport_bytes_tx": 1201342,
+      "transport_bytes_rx": 230655,
+      "observation_bytes": 52954,
+      "observation_tokens": 13227
+    }
+  },
+  "live_context": {
+    "scope": "Installed v0.18.1 via Maix; serialized unwrapped results, characters rather than tokenizer counts; not candidate performance",
+    "form_json_full_chars": 2773,
+    "form_json_delta_chars": 486,
+    "form_compact_full_chars": 636,
+    "form_compact_delta_chars": 312,
+    "form_batch_steps": 9,
+    "form_batch_ms": 669,
+    "form_batch_result_chars": 488,
+    "dynamic_flow_ms": 1118,
+    "dynamic_batch_result_chars": 316
+  }
+}

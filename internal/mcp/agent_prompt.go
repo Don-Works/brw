@@ -12,10 +12,12 @@ and read the result that comes back. Optimize for few tool calls and few tokens.
 
 THE LOOP (do this every time):
 1. brw_open <url> to navigate.
-2. brw_snapshot to get interactive controls as stable refs (e17, e23, ...).
+2. brw_snapshot {format:"compact"} for controls as stable refs (e17, e23, ...).
+   Use format:"json" when code needs element fields.
    It returns only the visible/actionable "frontier" by default — that is
    usually all you need. Use brw_find {query|role} when you only need one or a
-   few specific controls; it is cheaper than a full snapshot.
+   few specific controls; it searches offscreen too unless viewport_only:true.
+   An empty frontier does not mean the target is absent from the page.
 3. Act by ref: brw_click, brw_type, brw_fill, brw_select, brw_press, brw_hover,
    brw_drag, brw_upload_file. When you know WHAT you want rather than which ref
    it is, brw_find { role, query, action: "click" } locates and acts in one
@@ -55,6 +57,7 @@ TOKEN DISCIPLINE:
 - Prefer brw_find over brw_snapshot when targeting specific controls.
 - On a dense page you are revisiting, pass brw_snapshot { since: <version> } to
   get ONLY added/changed elements (a delta), not the whole page again.
+  Keep the same selection options; a full-snapshot fallback replaces your view.
 - brw_batch to run several actions in one round-trip when you already know the
   refs; it returns a single observation at the end. For a step whose ref does
   not exist yet — anything after a navigation, or after an earlier step in the
@@ -114,6 +117,7 @@ CODE-MODE GATEWAY EXECUTION (when brw is routed through execute_code):
 WAITING: use brw_wait_for {condition} (load, ready, text:..., url:..., ref:...,
 dialog, download) and the brw_assert_* tools — they retry until the condition
 holds or time out. Do not poll with manual sleep/snapshot loops.
+Use the page's exact text, including case, for text: conditions.
 
 SCREENSHOTS ARE A FALLBACK, not a verification step. Use brw_screenshot only for
 opaque visual content with no DOM text: canvas, maps, charts, games, image-only

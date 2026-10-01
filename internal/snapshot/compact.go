@@ -149,6 +149,9 @@ func compactFooter(meta map[string]any) string {
 	if len(parts) > 0 {
 		fmt.Fprintf(&b, "# %s\n", strings.Join(parts, " · "))
 	}
+	if fallback, ok := meta["delta_fallback"].(string); ok && fallback != "" {
+		fmt.Fprintf(&b, "# full snapshot: delta unavailable (%s)\n", fallback)
+	}
 	if hint, ok := meta["coverage_hint"].(string); ok && hint != "" {
 		fmt.Fprintf(&b, "# hint: %s\n", hint)
 	}

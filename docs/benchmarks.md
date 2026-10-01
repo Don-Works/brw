@@ -1,8 +1,67 @@
 # Benchmarks
 
-Every number on this page is produced by something in this repository, against
-fixtures in this repository, on a machine whose identity is printed next to the
-result. One section is the exception and says so:
+## Dense-page snapshot round, 2026-10-01
+
+The sibling-path index replaces repeated preceding-sibling scans with a lazy,
+per-walk index keyed by DOM nodes. Each visited parent's children are indexed
+only as far as needed. Nothing persists into the next snapshot. Custom-element
+ref writes invalidate the index because their attribute callbacks can change
+the DOM synchronously. Recovery keys and returned elements keep their existing
+shape; the optimization is shared by direct CDP and the extension bridge.
+The tradeoff is O(n) transient index memory for visited siblings. Repeated cold
+custom-element reactions can invalidate that work and require rescanning.
+
+Paired measurements on Apple M4 Max, Chrome 154.0.8037.93, Go 1.26.6:
+
+| Sibling controls | Mode | Legacy median ms | Indexed median ms | Speedup |
+| ---: | --- | ---: | ---: | ---: |
+| 100 | frontier | 1.0 | 0.8 | 1.25× |
+| 1,000 | frontier | 17.5 | 6.1 | 2.87× |
+| 5,000 | frontier | 301.8 | 32.4 | 9.31× |
+| 5,000 | all | 311.7 | 40.3 | 7.73× |
+
+These measure the complete in-page walker, including versioned delta history,
+with nine alternating pairs after two discarded warmup pairs. They exclude
+CDP transport, Go decoding, model inference and page loading. Both arms run in
+the same browser; the legacy arm replaces only path generation. Raw samples,
+environment and fixture totals are in
+[the measurement record](measurements/snapshot-sibling-index-2026-10-01.json).
+
+```sh
+BRW_MEASURE_SNAPSHOT=1 go test ./internal/snapshot -run 'TestSnapshot(SiblingIndex|WideDOM)' -count=1 -v
+```
+
+The regular regression verifies identical element JSON across mixed siblings,
+shadow roots and same-origin frames, then repeats after insertion, deletion
+and reordering. It also counts sibling accesses to catch quadratic work without
+using a flaky timing threshold. A separate regression covers a custom element
+inserting a sibling synchronously when its ref is assigned.
+
+The existing small-fixture suite's 35 commands took 3,017 ms before and 3,028 ms
+after in single runs: no demonstrated overall latency win there. Both runs
+sent 237 CDP commands and returned 52,954 MCP observation bytes. Script traffic
+increased by 3,900 bytes (0.33%) for the new helper and custom-element
+invalidation guard. This change targets dense-page CPU cost.
+
+Live use of installed v0.18.1 covered form submission, delayed controls,
+Wikipedia and MDN snapshots, and Hacker News pagination. A nine-step form batch
+with assertions took 669 ms and returned 488 characters. A delayed-control
+fill/save flow took 1,118 ms, including the fixture's 800 ms timer. An initial
+wait used the wrong capitalization and timed out; retrying with the actual
+page text passed. This was caller error, and the operating guide now explicitly
+names the case-sensitive text contract.
+
+For five unchanged form observations, repeated full JSON would cost 13,865
+characters. One compact snapshot plus four compact deltas cost 1,884 (86.4%
+less). These are serialized gateway-result character counts, not tokenizer
+measurements. Compact output and deltas already existed; this round promotes
+compact output in the operating guide and preserves delta-fallback reasons in
+that format. It does not claim a new compression algorithm or measured model
+inference speedup.
+
+Unless explicitly identified as live browsing above or below, numbers on this
+page come from repository harnesses and fixtures, with the machine identity
+printed next to the result. The historical
 [live runs against a public site](#live-runs-against-a-public-site) were
 recorded with a script that is not in this repository, and its method is
 described there in full.

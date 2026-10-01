@@ -166,6 +166,40 @@ conditional Merkle summaries and isolated-world installation. It gives complexit
 bounds, correctness hazards and proposed acceptance experiments. Those five
 experiments are not shipped optimizations and have no measured gain here.
 
+## Dense-page follow-up: measured findings and algorithm choices
+
+The [October 1 performance round](benchmarks.md#dense-page-snapshot-round-2026-10-01)
+found a quadratic recovery-path calculation even when output was capped to 40
+controls. A small response does not imply cheap extraction. A lazy per-walk
+sibling index now preserves exact paths while eliminating repeated traversal;
+the paired 5,000-control frontier measurement improved from 302 to 32 ms.
+
+Live use confirmed that semantic find-and-act, batch assertions and compact
+deltas are effective. It also exposed three easy mistakes: reading an empty
+viewport frontier as an absent target, guessing capitalization for a text wait,
+and missing the reason a compact delta request returned a full snapshot. The
+prompt now addresses the first two; the renderer explicitly reports the third.
+
+The research choices below are engineering conclusions, not measured claims
+about unimplemented changes:
+
+| Technique | Fit and next experiment |
+| --- | --- |
+| Per-walk exact index | Implemented. A node-keyed WeakMap and incremental per-parent counts avoid quadratic sibling scans without cross-call staleness. [WeakMap semantics](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakMap) support object-identity keys without retaining nodes indefinitely. |
+| Dirty-subtree cache / Merkle-style fingerprints | Promising for repeated unchanged snapshots. Prototype only with invalidation for mutation records, form properties, focus, viewport, stylesheet/layout changes, shadow roots and frame navigation. [Mutation observers](https://dom.spec.whatwg.org/#mutation-observers) report DOM mutations; they are not a complete UI-state invalidation oracle. Compare exact results to a fresh walker before enabling reuse. |
+| Bloom filters | Useful as a negative prefilter before an exact lookup if candidate sets become very large. Do not use them to decide that a change has already been seen or a target is unique: their [false positives](https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=903775) would suppress information. Current DOM lookup work is better served by an exact index. |
+| Read/write phase separation | Profile forced layouts before moving ref writes. [Chrome's guidance](https://web.dev/articles/avoid-large-complex-layouts-and-layout-thrashing) explains why interleaving geometry reads with style-invalidating writes can be expensive. Existing pages may style ref attributes or react synchronously, so prove behavior as well as speed. |
+| Install reusable action scripts once | The small-fixture suite sent about 1.2 MB for 35 commands; snapshot code is already installed once, but several actions resend large helper blocks. Measure per-document action-module caching on remote CDP, including cold install, navigation, frame changes and tampering recovery. |
+| Bounded top-k selection | A heap can replace a full sort when candidate ranking dominates. Instrument candidate counts and sorting time first: reducing path traversal paid off without changing which controls win. |
+| Intent-based waits and scoped observations | Keep explicit postcondition assertions and semantic targets. [Playwright actionability](https://playwright.dev/docs/actionability) is a useful reference for readiness rather than fixed delays. [Agent-browser's scoped/compact diffs](https://github.com/vercel-labs/agent-browser) and [Playwright MCP's file snapshots](https://github.com/microsoft/playwright.dev/blob/main/mcp/snapshots.mdx) support the same principle of sending only useful observations to the model. |
+| Gateway result deduplication | Measure whether a client actually feeds both MCP representations to its model. The [MCP contract](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2026-07-28/server/tools.mdx) recommends a text copy for compatibility alongside structured content. Keep brw interoperable; remove redundant model-context copies in clients that understand both. |
+
+The next highest-value experiments are reusable action modules for remote
+transport, then conservative dirty-subtree caching for repeat observations.
+Neither was enabled in this round. Measure end-to-end task completion and
+serialized model context alongside extraction time; a faster walker cannot
+remove network waits or the cost of another model turn.
+
 ## Remaining priorities
 
 1. Matched, reproducible cross-tool task fixtures measuring end-state success,
