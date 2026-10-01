@@ -13,10 +13,7 @@ import (
 // brw_a11y_audit reads as brw_a.
 var skillToolMention = regexp.MustCompile(`brw_[a-z0-9_]+`)
 
-// skillToolCall matches only a call-shaped mention. The reverse check uses it
-// because the skill file also names DOM ids and profile directories that share
-// the prefix, and those are prose, not a claim that a tool exists.
-var skillToolCall = regexp.MustCompile(`brw_[a-z0-9_]+\(`)
+var skillToolCall = regexp.MustCompile("brw_[a-z0-9_]+\\(|`brw_[a-z0-9_]+`")
 
 // TestEverySkillDocumentsEveryAdvertisedTool: skills/brw/SKILL.md is the
 // agent-facing surface doc, it ships in the package (see
@@ -48,9 +45,10 @@ func TestEverySkillDocumentsEveryAdvertisedTool(t *testing.T) {
 	// The reverse direction catches the other drift: a skill entry for a tool
 	// that was renamed or removed sends an agent after something that no longer
 	// answers.
+	callable := append(advertised, (&Server{toolProfile: "auto"}).advertisedTools()...)
 	for _, call := range skillToolCall.FindAllString(string(skill), -1) {
-		name := strings.TrimSuffix(call, "(")
-		if !catalogueHasTool(advertised, name) {
+		name := strings.Trim(call, "`(")
+		if !catalogueHasTool(callable, name) {
 			t.Errorf("skills/brw/SKILL.md documents %s({...}), which is not in the catalogue", name)
 		}
 	}
