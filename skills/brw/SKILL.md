@@ -44,7 +44,7 @@ to create test isolation.
 ## Choose the smallest useful surface
 
 1. For a narrow question about a known public URL, use the operator-enabled
-   `brw_ask` reader when available; see [optional workers](references/decision-workers.md).
+   `brw_ask` reader when its quality and whole-job latency have been qualified for that task; see [optional workers](references/decision-workers.md).
    It returns a bounded answer and source while keeping the page in worker artifacts.
    Otherwise, for a public document, try `brw_read_url({url,max_chars:2000})`. Use `llms:true`
    only when the site advertises an llms index; it is not automatic fallback.
@@ -67,7 +67,7 @@ open → snapshot for refs → act by ref → wait/assert → read → close.
 {"name":"brw_open","arguments":{"url":"https://app.example.test"}}
 → {"tab":{"id":"235935873","url":"https://app.example.test/","title":"…"},"ready":true}
 
-{"name":"brw_snapshot","arguments":{"tab_id":"235935873","mode":"all","format":"compact"}}
+{"name":"brw_snapshot","arguments":{"tab_id":"235935873","format":"compact"}}
 → e1 label "Email" · e2 textbox "Email" type=email · e3 label "Plan"
   e4 combobox "Plan" =free · e5 button "Continue" type=submit
 
@@ -163,11 +163,24 @@ Exact signatures and advanced tools (network, debugging, visual evidence,
 profiles, assertions and artifacts): [tool catalogue](references/tool-catalogue.md).
 Load only the section you need; do not read the entire catalogue by default.
 
+## Measure the loop
+
+Use `brw usage --since 1h --layer mcp` to review tool input/output size and latency;
+`--json` includes counter coverage and `--watch 5s` refreshes the report. Keep
+HTTP, MCP, CLI and reader boundaries separate. Character-based token estimates
+are not the host model's complete context or provider usage.
+
+Start with a bounded frontier snapshot; expand only when evidence is missing.
+Reuse a delta baseline only within its document and options. Batch already-known
+steps with explicit postconditions, then return only the evidence needed for the
+next decision. Count errors, expansions and retries alongside bytes and timings:
+smaller output that causes another model turn can make the complete task slower.
+
 ## Optional models and classifiers
 
 brw requires no intermediate model or classifier. Direct use remains available;
-when the operator has enabled a reading worker, prefer it for narrow questions
-about known public URLs. Discover `brw_ask` in the installed tool surface first;
+when the operator has enabled and qualified a reading worker, use it for narrow
+questions about known public URLs. An unqualified worker needs comparison with direct reads before becoming the default. Discover `brw_ask` in the installed tool surface first;
 if absent, use an installed `brw-ask --url URL --question QUESTION` CLI through
 the execution tool. If neither exists, use direct brw reads. A skill does not
 install or register a reader. Do not invent a tool namespace or silently send

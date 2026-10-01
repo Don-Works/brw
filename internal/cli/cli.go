@@ -23,6 +23,7 @@ import (
 
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/httpclient"
+	"github.com/Don-Works/brw/internal/usagelog"
 )
 
 // Version is stamped at link time (-X github.com/Don-Works/brw/internal/cli.Version),
@@ -76,6 +77,7 @@ var builtinCommandTable = []builtinCommand{
 	{name: "help", summary: "print the verb list"},
 	{name: "run", summary: "run one recipe non-interactively for a scheduler", flags: runCommandFlags},
 	{name: "version", summary: "print the brw version"},
+	{name: "usage", summary: "review local context usage and latency logs", flags: usageCommandFlags},
 }
 
 // builtinCommands lists the words a verb may not start with, or it would never
@@ -175,6 +177,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	case "completion":
 		return runCompletion(rest[1:], stdout, stderr)
+	case "usage":
+		return usageCommand(ctx, append(leading, rest[1:]...), stdout, stderr)
 	case "run":
 		// The scheduled entry point takes the global flags itself: its output is
 		// a fixed JSON contract, so --json means nothing to it and hoisting one
@@ -264,7 +268,10 @@ func lookupVerb(all []verb, args []string) (verb, []string, bool) {
 	return verb{}, nil, false
 }
 
-func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Writer) int {
+func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Writer) (exitCode int) {
+	started := time.Now()
+	output := &cliUsageWriter{Writer: stdout}
+	stdout = output
 	opts := &options{timeout: defaultTimeout}
 	fs := flag.NewFlagSet("brw "+v.name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -322,6 +329,8 @@ func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Write
 		return ExitNoDaemon
 	}
 	ctrl.UseOwnerUnlessSet(cliOwner())
+	ctx = usagelog.WithRequestID(ctx, usagelog.NewID())
+	defer func() { recordCLIUsage(ctx, ctrl, v, args, output, started, exitCode, opts.json) }()
 
 	if opts.tab != "" {
 		ctx = browser.WithTabID(ctx, opts.tab)

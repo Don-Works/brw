@@ -215,3 +215,10 @@ func (r *usageBodyReader) Read(data []byte) (int, error) {
 	}
 	return n, err
 }
+
+func UsageOperation(path string) string {
+	if path == "/health" {
+		return "brw_identity"
+	}
+	return usageOperations[path]
+}

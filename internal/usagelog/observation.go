@@ -99,7 +99,7 @@ func ValidObservation(event Event) bool {
 		return false
 	}
 	switch event.OutputFormat {
-	case "", "json", "compact":
+	case "", "json", "compact", "human":
 	default:
 		return false
 	}
@@ -121,7 +121,7 @@ func SanitizeObservation(event *Event) {
 		event.SnapshotMode = ""
 	}
 	switch event.OutputFormat {
-	case "json", "compact":
+	case "json", "compact", "human":
 	default:
 		event.OutputFormat = ""
 	}
