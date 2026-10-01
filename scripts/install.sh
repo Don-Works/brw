@@ -26,7 +26,7 @@ REPO="Don-Works/brw"
 COMMANDS="brw brwd brwctl brwcheck brw-devtools-mcp"
 # Everything the archive owns. The install replaces exactly these names and
 # nothing else, so a re-run cannot reach config/ or a per-profile extension copy.
-PAYLOAD="bin extension tests skills doc"
+PAYLOAD="bin extension tests skills reader doc"
 
 step() { printf '==> %s\n' "$*"; }
 info() { printf '    %s\n' "$*"; }

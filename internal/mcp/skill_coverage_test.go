@@ -46,9 +46,10 @@ func TestEverySkillDocumentsEveryAdvertisedTool(t *testing.T) {
 	// that was renamed or removed sends an agent after something that no longer
 	// answers.
 	callable := append(advertised, (&Server{toolProfile: "auto"}).advertisedTools()...)
+	externalReaderTools := map[string]bool{"brw_ask": true}
 	for _, call := range skillToolCall.FindAllString(string(skill), -1) {
 		name := strings.Trim(call, "`(")
-		if !catalogueHasTool(callable, name) {
+		if !externalReaderTools[name] && !catalogueHasTool(callable, name) {
 			t.Errorf("skills/brw/SKILL.md documents %s({...}), which is not in the catalogue", name)
 		}
 	}

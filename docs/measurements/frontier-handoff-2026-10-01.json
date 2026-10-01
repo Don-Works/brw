@@ -1,0 +1,2040 @@
+{
+  "model": "anthropic/claude-opus-5.5",
+  "settings": {
+    "reasoning_effort": "low",
+    "max_tokens": 1024,
+    "temperature": "provider default"
+  },
+  "scope": "Matched source questions: actual frontier calls using bounded full source versus replayed worker packets. Worker cost/timing copied from prior measured runs; composite time is additive counterfactual, not a fresh end-to-end workflow. Two repetitions of three questions, not six independent tasks. Does not measure navigation planning, general browser automation or Codex/ChatGPT credit billing.",
+  "results": [
+    {
+      "page": "hopkins",
+      "repeat": 0,
+      "lane": "frontier-direct",
+      "evidence_chars": 30035,
+      "source_chars": 30035,
+      "worker_replayed": false,
+      "frontier": {
+        "ms": 3667.374,
+        "request_to_headers_ms": 1983.292,
+        "ttft_ms": null,
+        "request_bytes": 31074,
+        "response_bytes": 1178,
+        "request_sha256": "8f7ef966070a8fb0f1605b3d08b37c67418bcd3cb9e0766db8b920cb4c73dc47",
+        "request_id": "da6d8c25-7483-40c0-be90-c1aae7169231",
+        "provider_request_id": null,
+        "response_id": "gen-1790853075-WftQzeVsi3e047Te25aI",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 11196,
+          "completion_tokens": 118,
+          "total_tokens": 11314,
+          "cost": 0.047144,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.047144,
+            "upstream_inference_prompt_cost": 0.044784,
+            "upstream_inference_completions_cost": 0.00236
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "Johns Hopkins (1795\u20131873) was an American merchant, investor, and Quaker philanthropist who made his fortune largely through the Baltimore and Ohio Railroad, and whose bequest funded Johns Hopkins University and Johns Hopkins Hospital, at the time the largest philanthropic bequest ever made to an American educational institution.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "hopkins",
+      "repeat": 0,
+      "lane": "local-full",
+      "evidence_chars": 236,
+      "source_chars": 30035,
+      "worker_replayed": true,
+      "worker_ms": 709.885,
+      "worker_usage": {
+        "answer": {
+          "prompt_tokens": 7201,
+          "completion_tokens": 30,
+          "total_tokens": 7231,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 3569.906,
+        "request_to_headers_ms": 1445.427,
+        "ttft_ms": null,
+        "request_bytes": 855,
+        "response_bytes": 2437,
+        "request_sha256": "f36a6548221f7dee4054cd03e73984698bbc765e539675380fa7abc6c8bc5d66",
+        "request_id": "7c4f958d-8695-4fe9-b363-08c9b12d5498",
+        "provider_request_id": null,
+        "response_id": "gen-1790853079-CTjU3sjyixpH2isw46Hj",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 254,
+          "completion_tokens": 103,
+          "total_tokens": 357,
+          "cost": 0.003076,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.003076,
+            "upstream_inference_prompt_cost": 0.001016,
+            "upstream_inference_completions_cost": 0.00206
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 44,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "Johns Hopkins was an American merchant, investor, and philanthropist best known for funding the establishment of Johns Hopkins University and Johns Hopkins Hospital.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "hopkins",
+      "repeat": 0,
+      "lane": "local-jev",
+      "evidence_chars": 236,
+      "source_chars": 30035,
+      "worker_replayed": true,
+      "worker_ms": 751.872,
+      "worker_usage": {
+        "jev": {
+          "input_tokens": 4183,
+          "output_tokens": 92,
+          "cost": 0.000175686
+        },
+        "answer": {
+          "prompt_tokens": 534,
+          "completion_tokens": 30,
+          "total_tokens": 564,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 2812.632,
+        "request_to_headers_ms": 1649.217,
+        "ttft_ms": null,
+        "request_bytes": 855,
+        "response_bytes": 994,
+        "request_sha256": "f36a6548221f7dee4054cd03e73984698bbc765e539675380fa7abc6c8bc5d66",
+        "request_id": "1b7275f4-f5cc-4060-90dc-5417ffd96cf5",
+        "provider_request_id": null,
+        "response_id": "gen-1790853082-8JGsUDZteJdxrsZQ3UPs",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 254,
+          "completion_tokens": 59,
+          "total_tokens": 313,
+          "cost": 0.002196,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.002196,
+            "upstream_inference_prompt_cost": 0.001016,
+            "upstream_inference_completions_cost": 0.00118
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "Johns Hopkins was an American merchant, investor, and philanthropist best known for funding the establishment of Johns Hopkins University and Johns Hopkins Hospital.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "hopkins",
+      "repeat": 0,
+      "lane": "cheap-hosted-full",
+      "evidence_chars": 236,
+      "source_chars": 30035,
+      "worker_replayed": true,
+      "worker_ms": 1435.746,
+      "worker_usage": {
+        "answer": {
+          "prompt_tokens": 6635,
+          "completion_tokens": 28,
+          "total_tokens": 6663,
+          "cost": 0.0009025974,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 384,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0009025974,
+            "upstream_inference_prompt_cost": 0.0008868054,
+            "upstream_inference_completions_cost": 1.5792e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 2998.034,
+        "request_to_headers_ms": 1782.306,
+        "ttft_ms": null,
+        "request_bytes": 855,
+        "response_bytes": 994,
+        "request_sha256": "f36a6548221f7dee4054cd03e73984698bbc765e539675380fa7abc6c8bc5d66",
+        "request_id": "e18ac3b3-1ce8-46f4-985e-15fa3bb495b8",
+        "provider_request_id": null,
+        "response_id": "gen-1790853085-cSA3Nl2bVubuN96cL3YG",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 254,
+          "completion_tokens": 59,
+          "total_tokens": 313,
+          "cost": 0.002196,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.002196,
+            "upstream_inference_prompt_cost": 0.001016,
+            "upstream_inference_completions_cost": 0.00118
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "Johns Hopkins was an American merchant, investor, and philanthropist best known for funding the establishment of Johns Hopkins University and Johns Hopkins Hospital.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "bloom",
+      "repeat": 0,
+      "lane": "frontier-direct",
+      "evidence_chars": 32000,
+      "source_chars": 66256,
+      "worker_replayed": false,
+      "frontier": {
+        "ms": 3213.047,
+        "request_to_headers_ms": 2043.611,
+        "ttft_ms": null,
+        "request_bytes": 36189,
+        "response_bytes": 982,
+        "request_sha256": "90a662002c7570c2586f45a1a30bb689144b99b12e6792aadf3e3eb4aa5a50ae",
+        "request_id": "8f3be13c-2d87-4b34-af3e-cb51236bfeeb",
+        "provider_request_id": null,
+        "response_id": "gen-1790853088-WsFEMsBDSkgbqeSDh4s8",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 12664,
+          "completion_tokens": 44,
+          "total_tokens": 12708,
+          "cost": 0.051536,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.051536,
+            "upstream_inference_prompt_cost": 0.050656,
+            "upstream_inference_completions_cost": 0.00088
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A standard Bloom filter can return false positives but not false negatives, so a query means either \"possibly in set\" or \"definitely not in set.\"",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "bloom",
+      "repeat": 0,
+      "lane": "local-full",
+      "evidence_chars": 146,
+      "source_chars": 66256,
+      "worker_replayed": true,
+      "worker_ms": 7514.391,
+      "worker_usage": {
+        "answer": {
+          "prompt_tokens": 9624,
+          "completion_tokens": 14,
+          "total_tokens": 9638,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 2554.948,
+        "request_to_headers_ms": 1686.953,
+        "ttft_ms": null,
+        "request_bytes": 774,
+        "response_bytes": 905,
+        "request_sha256": "e575aeec9e223b56e9ecb4b59799c1d13dd20bc7ccc72157d419006755934a8e",
+        "request_id": "f76e7855-8986-4a67-9da6-dd82a32aa235",
+        "provider_request_id": null,
+        "response_id": "gen-1790853091-jjPtA6ZTmus2dQNhltG4",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 213,
+          "completion_tokens": 23,
+          "total_tokens": 236,
+          "cost": 0.001312,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.001312,
+            "upstream_inference_prompt_cost": 0.000852,
+            "upstream_inference_completions_cost": 0.00046
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Bloom filter can return false positives but never returns false negatives.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "bloom",
+      "repeat": 0,
+      "lane": "local-jev",
+      "evidence_chars": 146,
+      "source_chars": 66256,
+      "worker_replayed": true,
+      "worker_ms": 880.564,
+      "worker_usage": {
+        "jev": {
+          "input_tokens": 3882,
+          "output_tokens": 94,
+          "cost": 0.000163044
+        },
+        "answer": {
+          "prompt_tokens": 533,
+          "completion_tokens": 14,
+          "total_tokens": 547,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 3924.114,
+        "request_to_headers_ms": 1526.14,
+        "ttft_ms": null,
+        "request_bytes": 774,
+        "response_bytes": 2303,
+        "request_sha256": "217ce9b60bd3eda62c5d9d0ea4e9ee638a6d4ec781f3f82ec1eef28381d82f59",
+        "request_id": "459e1307-17e8-4bd4-a8cf-34a502a76f23",
+        "provider_request_id": null,
+        "response_id": "gen-1790853094-xwv1A8BkwzqYpVB305Mg",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 214,
+          "completion_tokens": 49,
+          "total_tokens": 263,
+          "cost": 0.001836,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.001836,
+            "upstream_inference_prompt_cost": 0.000856,
+            "upstream_inference_completions_cost": 0.00098
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 28,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Bloom filter can return false positives but never false negatives.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "bloom",
+      "repeat": 0,
+      "lane": "cheap-hosted-full",
+      "evidence_chars": 150,
+      "source_chars": 66256,
+      "worker_replayed": true,
+      "worker_ms": 1345.046,
+      "worker_usage": {
+        "answer": {
+          "prompt_tokens": 8759,
+          "completion_tokens": 15,
+          "total_tokens": 8774,
+          "cost": 0.001243479,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.001243479,
+            "upstream_inference_prompt_cost": 0.001235019,
+            "upstream_inference_completions_cost": 8.46e-06
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 3150.705,
+        "request_to_headers_ms": 2959.364,
+        "ttft_ms": null,
+        "request_bytes": 778,
+        "response_bytes": 905,
+        "request_sha256": "b5f6c0bad6f1e3a9ea5c8b760efc751f7707d72296ac37841462264ec6f67e8c",
+        "request_id": "96766fc2-78eb-495c-ac6b-9e77eadb1f5d",
+        "provider_request_id": null,
+        "response_id": "gen-1790853098-wfSwvVe2OpFxVIqG7BJW",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 215,
+          "completion_tokens": 25,
+          "total_tokens": 240,
+          "cost": 0.00136,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00136,
+            "upstream_inference_prompt_cost": 0.00086,
+            "upstream_inference_completions_cost": 0.0005
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Bloom filter can return false positives, but false negatives are not possible.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "merkle",
+      "repeat": 0,
+      "lane": "frontier-direct",
+      "evidence_chars": 12007,
+      "source_chars": 12007,
+      "worker_replayed": false,
+      "frontier": {
+        "ms": 5841.717,
+        "request_to_headers_ms": 4551.368,
+        "ttft_ms": null,
+        "request_bytes": 12870,
+        "response_bytes": 1223,
+        "request_sha256": "66792a648df96c048467961e773b88d27050a21126a6c54f379c8ce4780320a6",
+        "request_id": "6c4c57de-bcec-40c6-a5ed-efc7df587840",
+        "provider_request_id": null,
+        "response_id": "gen-1790853101-ELNew8Y3XnZ2NUUvJac6",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 5050,
+          "completion_tokens": 122,
+          "total_tokens": 5172,
+          "cost": 0.02264,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.02264,
+            "upstream_inference_prompt_cost": 0.0202,
+            "upstream_inference_completions_cost": 0.00244
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Merkle tree (hash tree) is a tree in which each leaf node is labelled with the cryptographic hash of a data block and each non-leaf node with the hash of its children's labels, allowing efficient and secure verification of the contents of a large data structure, such as confirming that data blocks received from peers are undamaged and unaltered or that a leaf belongs to the tree.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "merkle",
+      "repeat": 0,
+      "lane": "local-full",
+      "evidence_chars": 373,
+      "source_chars": 12007,
+      "worker_replayed": true,
+      "worker_ms": 3193.986,
+      "worker_usage": {
+        "answer": {
+          "prompt_tokens": 3508,
+          "completion_tokens": 55,
+          "total_tokens": 3563,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 3048.657,
+        "request_to_headers_ms": 2073.371,
+        "ttft_ms": null,
+        "request_bytes": 1002,
+        "response_bytes": 1107,
+        "request_sha256": "7f0e476449321a3c2d02af7481f0274ae18204c8feb98f7160fc844d2463e138",
+        "request_id": "6512b816-7bad-401e-8069-c21e8a382431",
+        "provider_request_id": null,
+        "response_id": "gen-1790853107-aDq5ceH0H1wtNTaxLKkK",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 280,
+          "completion_tokens": 85,
+          "total_tokens": 365,
+          "cost": 0.00282,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00282,
+            "upstream_inference_prompt_cost": 0.00112,
+            "upstream_inference_completions_cost": 0.0017
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Merkle tree is a hierarchical hash structure in which each leaf node holds the cryptographic hash of a data block and each internal node is labeled with the hash of its children, allowing efficient and secure verification that a specific data block is part of a larger commitment.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "merkle",
+      "repeat": 0,
+      "lane": "local-jev",
+      "evidence_chars": 331,
+      "source_chars": 12007,
+      "worker_replayed": true,
+      "worker_ms": 1287.158,
+      "worker_usage": {
+        "jev": {
+          "input_tokens": 3891,
+          "output_tokens": 82,
+          "cost": 0.000163422
+        },
+        "answer": {
+          "prompt_tokens": 557,
+          "completion_tokens": 48,
+          "total_tokens": 605,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 3263.204,
+        "request_to_headers_ms": 2286.39,
+        "ttft_ms": null,
+        "request_bytes": 960,
+        "response_bytes": 1078,
+        "request_sha256": "0f2d49d4c1dd04ed9916b38e6ce35232c76c0d4053729ef1c8772c5a74b2d165",
+        "request_id": "b52133a0-a0d9-42eb-b007-922075e3b866",
+        "provider_request_id": null,
+        "response_id": "gen-1790853110-KfHVzvDAhAJqZP1SMX14",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 275,
+          "completion_tokens": 81,
+          "total_tokens": 356,
+          "cost": 0.00272,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00272,
+            "upstream_inference_prompt_cost": 0.0011,
+            "upstream_inference_completions_cost": 0.00162
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Merkle tree is a binary hash tree in which leaf nodes contain cryptographic hashes of data blocks and internal nodes contain hashes of their children, allowing efficient and secure verification that a specific data block is part of a larger structure.",
+      "finish_reason": "stop",
+      "reviewed_correct": false,
+      "review_note": "Incorrectly generalizes that all Merkle trees are binary."
+    },
+    {
+      "page": "merkle",
+      "repeat": 0,
+      "lane": "cheap-hosted-full",
+      "evidence_chars": 348,
+      "source_chars": 12007,
+      "worker_replayed": true,
+      "worker_ms": 533.131,
+      "worker_usage": {
+        "answer": {
+          "prompt_tokens": 3229,
+          "completion_tokens": 55,
+          "total_tokens": 3284,
+          "cost": 0.0010347,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0010347,
+            "upstream_inference_prompt_cost": 0.0009687,
+            "upstream_inference_completions_cost": 6.6e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 3625.006,
+        "request_to_headers_ms": 2719.209,
+        "ttft_ms": null,
+        "request_bytes": 977,
+        "response_bytes": 1111,
+        "request_sha256": "bda9f9612abc35417164db8491939143598201ba5aa97efbe734805c255c2a4f",
+        "request_id": "c91197b1-a72a-4843-8cae-63821da37c3e",
+        "provider_request_id": null,
+        "response_id": "gen-1790853113-FjYNl4X7HHsucJZPDot2",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 280,
+          "completion_tokens": 94,
+          "total_tokens": 374,
+          "cost": 0.003,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.003,
+            "upstream_inference_prompt_cost": 0.00112,
+            "upstream_inference_completions_cost": 0.00188
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Merkle tree is a tree whose leaf nodes are labelled with the cryptographic hashes of data blocks and whose non-leaf nodes are labelled with the cryptographic hashes of their child nodes, which allows efficient and secure verification of the contents of a large data structure.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "hopkins",
+      "repeat": 1,
+      "lane": "cheap-hosted-full",
+      "evidence_chars": 236,
+      "source_chars": 30035,
+      "worker_replayed": true,
+      "worker_ms": 1526.779,
+      "worker_usage": {
+        "answer": {
+          "prompt_tokens": 6635,
+          "completion_tokens": 28,
+          "total_tokens": 6663,
+          "cost": 0.0001229238,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 6528,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0001229238,
+            "upstream_inference_prompt_cost": 0.0001071318,
+            "upstream_inference_completions_cost": 1.5792e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 3859.518,
+        "request_to_headers_ms": 1387.987,
+        "ttft_ms": null,
+        "request_bytes": 855,
+        "response_bytes": 2222,
+        "request_sha256": "f36a6548221f7dee4054cd03e73984698bbc765e539675380fa7abc6c8bc5d66",
+        "request_id": "b922c860-df9c-4844-a816-23c26f90c100",
+        "provider_request_id": null,
+        "response_id": "gen-1790853117-D48IoeGB0c6XpwiELy85",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 254,
+          "completion_tokens": 76,
+          "total_tokens": 330,
+          "cost": 0.002536,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.002536,
+            "upstream_inference_prompt_cost": 0.001016,
+            "upstream_inference_completions_cost": 0.00152
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 17,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "Johns Hopkins was an American merchant, investor, and philanthropist best known for funding the establishment of Johns Hopkins University and Johns Hopkins Hospital.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "hopkins",
+      "repeat": 1,
+      "lane": "local-jev",
+      "evidence_chars": 236,
+      "source_chars": 30035,
+      "worker_replayed": true,
+      "worker_ms": 829.458,
+      "worker_usage": {
+        "jev": {
+          "input_tokens": 4183,
+          "output_tokens": 92,
+          "cost": 0.000175686
+        },
+        "answer": {
+          "prompt_tokens": 534,
+          "completion_tokens": 30,
+          "total_tokens": 564,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 5863.622,
+        "request_to_headers_ms": 4702.977,
+        "ttft_ms": null,
+        "request_bytes": 855,
+        "response_bytes": 1005,
+        "request_sha256": "f36a6548221f7dee4054cd03e73984698bbc765e539675380fa7abc6c8bc5d66",
+        "request_id": "53c078f3-38df-457b-bce5-79868cf502f6",
+        "provider_request_id": null,
+        "response_id": "gen-1790853120-9ovZUTKRVuueZPGi5mHz",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 254,
+          "completion_tokens": 59,
+          "total_tokens": 313,
+          "cost": 0.002196,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.002196,
+            "upstream_inference_prompt_cost": 0.001016,
+            "upstream_inference_completions_cost": 0.00118
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "Johns Hopkins was an American merchant, investor, and philanthropist best known for funding the establishment of Johns Hopkins University and Johns Hopkins Hospital.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "hopkins",
+      "repeat": 1,
+      "lane": "local-full",
+      "evidence_chars": 236,
+      "source_chars": 30035,
+      "worker_replayed": true,
+      "worker_ms": 556.298,
+      "worker_usage": {
+        "answer": {
+          "prompt_tokens": 7201,
+          "completion_tokens": 30,
+          "total_tokens": 7231,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 2764.007,
+        "request_to_headers_ms": 1561.303,
+        "ttft_ms": null,
+        "request_bytes": 855,
+        "response_bytes": 994,
+        "request_sha256": "f36a6548221f7dee4054cd03e73984698bbc765e539675380fa7abc6c8bc5d66",
+        "request_id": "2446708e-b2e7-42bb-9acd-c3ee27c4aea7",
+        "provider_request_id": null,
+        "response_id": "gen-1790853126-mnOFzmBR7dcocQyP4e82",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 254,
+          "completion_tokens": 59,
+          "total_tokens": 313,
+          "cost": 0.002196,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.002196,
+            "upstream_inference_prompt_cost": 0.001016,
+            "upstream_inference_completions_cost": 0.00118
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "Johns Hopkins was an American merchant, investor, and philanthropist best known for funding the establishment of Johns Hopkins University and Johns Hopkins Hospital.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "hopkins",
+      "repeat": 1,
+      "lane": "frontier-direct",
+      "evidence_chars": 30035,
+      "source_chars": 30035,
+      "worker_replayed": false,
+      "frontier": {
+        "ms": 4857.421,
+        "request_to_headers_ms": 3040.548,
+        "ttft_ms": null,
+        "request_bytes": 31074,
+        "response_bytes": 1203,
+        "request_sha256": "8f7ef966070a8fb0f1605b3d08b37c67418bcd3cb9e0766db8b920cb4c73dc47",
+        "request_id": "742c1e32-d601-412d-a721-100e512da6ad",
+        "provider_request_id": null,
+        "response_id": "gen-1790853129-RnmFq5P3NF7bzDzJVSts",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 11196,
+          "completion_tokens": 130,
+          "total_tokens": 11326,
+          "cost": 0.047384,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.047384,
+            "upstream_inference_prompt_cost": 0.044784,
+            "upstream_inference_completions_cost": 0.0026
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "Johns Hopkins (May 19, 1795 \u2013 December 24, 1873) was an American merchant, investor, and Quaker philanthropist from Maryland who made his fortune largely through the Baltimore and Ohio Railroad and whose bequest funded Johns Hopkins University and Johns Hopkins Hospital, the largest philanthropic bequest to an American educational institution at the time.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "bloom",
+      "repeat": 1,
+      "lane": "cheap-hosted-full",
+      "evidence_chars": 150,
+      "source_chars": 66256,
+      "worker_replayed": true,
+      "worker_ms": 1303.809,
+      "worker_usage": {
+        "answer": {
+          "prompt_tokens": 8759,
+          "completion_tokens": 15,
+          "total_tokens": 8774,
+          "cost": 0.0001389414,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 8704,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0001389414,
+            "upstream_inference_prompt_cost": 0.0001304814,
+            "upstream_inference_completions_cost": 8.46e-06
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 3490.215,
+        "request_to_headers_ms": 3282.452,
+        "ttft_ms": null,
+        "request_bytes": 778,
+        "response_bytes": 906,
+        "request_sha256": "b5f6c0bad6f1e3a9ea5c8b760efc751f7707d72296ac37841462264ec6f67e8c",
+        "request_id": "cc11c671-3b1c-4e0c-9543-36f4bcabb086",
+        "provider_request_id": null,
+        "response_id": "gen-1790853134-vipa7JfKG2n5fKrWnXOH",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 215,
+          "completion_tokens": 26,
+          "total_tokens": 241,
+          "cost": 0.00138,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00138,
+            "upstream_inference_prompt_cost": 0.00086,
+            "upstream_inference_completions_cost": 0.00052
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Bloom filter can return false positives, but it cannot return false negatives.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "bloom",
+      "repeat": 1,
+      "lane": "local-jev",
+      "evidence_chars": 146,
+      "source_chars": 66256,
+      "worker_replayed": true,
+      "worker_ms": 578.734,
+      "worker_usage": {
+        "jev": {
+          "input_tokens": 3882,
+          "output_tokens": 94,
+          "cost": 0.000163044
+        },
+        "answer": {
+          "prompt_tokens": 533,
+          "completion_tokens": 14,
+          "total_tokens": 547,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 4160.335,
+        "request_to_headers_ms": 3258.9,
+        "ttft_ms": null,
+        "request_bytes": 774,
+        "response_bytes": 908,
+        "request_sha256": "217ce9b60bd3eda62c5d9d0ea4e9ee638a6d4ec781f3f82ec1eef28381d82f59",
+        "request_id": "e4dc685f-31fe-44a2-91f2-219178bcd55a",
+        "provider_request_id": null,
+        "response_id": "gen-1790853137-SuNkFEpuCyz0gUWc30Ub",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 214,
+          "completion_tokens": 21,
+          "total_tokens": 235,
+          "cost": 0.001276,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.001276,
+            "upstream_inference_prompt_cost": 0.000856,
+            "upstream_inference_completions_cost": 0.00042
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Bloom filter can return false positives but never false negatives.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "bloom",
+      "repeat": 1,
+      "lane": "local-full",
+      "evidence_chars": 146,
+      "source_chars": 66256,
+      "worker_replayed": true,
+      "worker_ms": 464.906,
+      "worker_usage": {
+        "answer": {
+          "prompt_tokens": 9624,
+          "completion_tokens": 14,
+          "total_tokens": 9638,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 2268.126,
+        "request_to_headers_ms": 1381.742,
+        "ttft_ms": null,
+        "request_bytes": 774,
+        "response_bytes": 897,
+        "request_sha256": "e575aeec9e223b56e9ecb4b59799c1d13dd20bc7ccc72157d419006755934a8e",
+        "request_id": "26e9736b-fa20-48ff-9eb5-c8b1bee9d9d8",
+        "provider_request_id": null,
+        "response_id": "gen-1790853142-Le8lBXjB1mztzH0icrRh",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 213,
+          "completion_tokens": 21,
+          "total_tokens": 234,
+          "cost": 0.001272,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.001272,
+            "upstream_inference_prompt_cost": 0.000852,
+            "upstream_inference_completions_cost": 0.00042
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Bloom filter can return false positives but never false negatives.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "bloom",
+      "repeat": 1,
+      "lane": "frontier-direct",
+      "evidence_chars": 32000,
+      "source_chars": 66256,
+      "worker_replayed": false,
+      "frontier": {
+        "ms": 5489.277,
+        "request_to_headers_ms": 5237.446,
+        "ttft_ms": null,
+        "request_bytes": 36189,
+        "response_bytes": 994,
+        "request_sha256": "90a662002c7570c2586f45a1a30bb689144b99b12e6792aadf3e3eb4aa5a50ae",
+        "request_id": "40c16cc9-aa4e-460b-b01c-f44250f5ec8c",
+        "provider_request_id": null,
+        "response_id": "gen-1790853144-y4XTYH8oxykXj2Vbn5YM",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 12664,
+          "completion_tokens": 45,
+          "total_tokens": 12709,
+          "cost": 0.051556,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.051556,
+            "upstream_inference_prompt_cost": 0.050656,
+            "upstream_inference_completions_cost": 0.0009
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A standard Bloom filter can return false positives but not false negatives, so a query answers either \"possibly in set\" or \"definitely not in set.\"",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "merkle",
+      "repeat": 1,
+      "lane": "cheap-hosted-full",
+      "evidence_chars": 343,
+      "source_chars": 12007,
+      "worker_replayed": true,
+      "worker_ms": 1501.086,
+      "worker_usage": {
+        "answer": {
+          "prompt_tokens": 3229,
+          "completion_tokens": 52,
+          "total_tokens": 3281,
+          "cost": 0.0004196442,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 512,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0004196442,
+            "upstream_inference_prompt_cost": 0.0003903162,
+            "upstream_inference_completions_cost": 2.9328e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 2777.414,
+        "request_to_headers_ms": 1877.294,
+        "ttft_ms": null,
+        "request_bytes": 972,
+        "response_bytes": 1107,
+        "request_sha256": "26bd6fd16df1f4ce31afedbd155d30ef6f4ca177de110954af15089b147692c4",
+        "request_id": "3fd4bb8b-2cc2-4120-a69e-58e148b92aae",
+        "provider_request_id": null,
+        "response_id": "gen-1790853149-fRp54tdVyuMb5VVjpGvP",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 279,
+          "completion_tokens": 94,
+          "total_tokens": 373,
+          "cost": 0.002996,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.002996,
+            "upstream_inference_prompt_cost": 0.001116,
+            "upstream_inference_completions_cost": 0.00188
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Merkle tree is a tree whose leaf nodes are labelled with the cryptographic hashes of data blocks and whose non-leaf nodes are labelled with the cryptographic hashes of their child nodes, which allows efficient and secure verification of the contents of a large data structure.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "merkle",
+      "repeat": 1,
+      "lane": "local-jev",
+      "evidence_chars": 331,
+      "source_chars": 12007,
+      "worker_replayed": true,
+      "worker_ms": 1049.866,
+      "worker_usage": {
+        "jev": {
+          "input_tokens": 3891,
+          "output_tokens": 82,
+          "cost": 0.000163422
+        },
+        "answer": {
+          "prompt_tokens": 557,
+          "completion_tokens": 48,
+          "total_tokens": 605,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 2904.769,
+        "request_to_headers_ms": 1993.082,
+        "ttft_ms": null,
+        "request_bytes": 960,
+        "response_bytes": 1081,
+        "request_sha256": "0f2d49d4c1dd04ed9916b38e6ce35232c76c0d4053729ef1c8772c5a74b2d165",
+        "request_id": "86f3a345-c2a7-4384-b4fa-43a58935469d",
+        "provider_request_id": null,
+        "response_id": "gen-1790853152-hMAq5liIvKhSaKIzIwq1",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 275,
+          "completion_tokens": 83,
+          "total_tokens": 358,
+          "cost": 0.00276,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00276,
+            "upstream_inference_prompt_cost": 0.0011,
+            "upstream_inference_completions_cost": 0.00166
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Merkle tree is a binary hash tree whose leaf nodes contain cryptographic hashes of data blocks and whose internal nodes contain hashes of their children, allowing efficient and secure verification that a specific data block is part of a larger structure.",
+      "finish_reason": "stop",
+      "reviewed_correct": false,
+      "review_note": "Incorrectly generalizes that all Merkle trees are binary."
+    },
+    {
+      "page": "merkle",
+      "repeat": 1,
+      "lane": "local-full",
+      "evidence_chars": 372,
+      "source_chars": 12007,
+      "worker_replayed": true,
+      "worker_ms": 876.005,
+      "worker_usage": {
+        "answer": {
+          "prompt_tokens": 3508,
+          "completion_tokens": 55,
+          "total_tokens": 3563,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 3079.239,
+        "request_to_headers_ms": 2071.243,
+        "ttft_ms": null,
+        "request_bytes": 1001,
+        "response_bytes": 1115,
+        "request_sha256": "10118dd21be1d7c9d1988bcdd9dd1befe1473535b02beb27333bc87cf729a51f",
+        "request_id": "bfb4fce5-c4d2-4d00-a900-181f0896acae",
+        "provider_request_id": null,
+        "response_id": "gen-1790853155-F0AvI3XpATb0aKmNuuyW",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 279,
+          "completion_tokens": 86,
+          "total_tokens": 365,
+          "cost": 0.002836,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.002836,
+            "upstream_inference_prompt_cost": 0.001116,
+            "upstream_inference_completions_cost": 0.00172
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Merkle tree is a hierarchical hash structure in which each leaf node holds the cryptographic hash of a data block and each internal node is labeled with the hash of its children, allowing efficient and secure verification that a specific data block belongs to a larger data structure.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "merkle",
+      "repeat": 1,
+      "lane": "frontier-direct",
+      "evidence_chars": 12007,
+      "source_chars": 12007,
+      "worker_replayed": false,
+      "frontier": {
+        "ms": 3832.871,
+        "request_to_headers_ms": 2177.956,
+        "ttft_ms": null,
+        "request_bytes": 12870,
+        "response_bytes": 1188,
+        "request_sha256": "66792a648df96c048467961e773b88d27050a21126a6c54f379c8ce4780320a6",
+        "request_id": "5c48fd56-a0a6-4379-b9d8-56350c0e5d39",
+        "provider_request_id": null,
+        "response_id": "gen-1790853158-3hvj6tc1SRXlG1ZHeQx0",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 5050,
+          "completion_tokens": 109,
+          "total_tokens": 5159,
+          "cost": 0.02238,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.02238,
+            "upstream_inference_prompt_cost": 0.0202,
+            "upstream_inference_completions_cost": 0.00218
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Merkle tree (hash tree) is a tree in which each leaf node is labelled with the cryptographic hash of a data block and each non-leaf node with the hash of its children's labels, allowing efficient and secure verification of the contents of a large data structure, such as confirming that data blocks received from peers are undamaged and unaltered.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "hopkins",
+      "repeat": 0,
+      "lane": "cheap-hosted-jev",
+      "evidence_chars": 236,
+      "source_chars": 30035,
+      "worker_replayed": true,
+      "worker_ms": 1597.317,
+      "worker_usage": {
+        "jev": {
+          "input_tokens": 4183,
+          "output_tokens": 92,
+          "cost": 0.000175686
+        },
+        "answer": {
+          "prompt_tokens": 496,
+          "completion_tokens": 28,
+          "total_tokens": 524,
+          "cost": 3.69984e-05,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 384,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 3.69984e-05,
+            "upstream_inference_prompt_cost": 2.12064e-05,
+            "upstream_inference_completions_cost": 1.5792e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 2976.17,
+        "request_to_headers_ms": 1513.152,
+        "ttft_ms": null,
+        "request_bytes": 855,
+        "response_bytes": 994,
+        "request_sha256": "f36a6548221f7dee4054cd03e73984698bbc765e539675380fa7abc6c8bc5d66",
+        "request_id": "171509bb-6c85-4722-be9c-4536d78eb1f7",
+        "provider_request_id": null,
+        "response_id": "gen-1790853370-jrfvtADXmrh1K1UZhnsw",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 254,
+          "completion_tokens": 59,
+          "total_tokens": 313,
+          "cost": 0.002196,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.002196,
+            "upstream_inference_prompt_cost": 0.001016,
+            "upstream_inference_completions_cost": 0.00118
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "Johns Hopkins was an American merchant, investor, and philanthropist best known for funding the establishment of Johns Hopkins University and Johns Hopkins Hospital.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "bloom",
+      "repeat": 0,
+      "lane": "cheap-hosted-jev",
+      "evidence_chars": 150,
+      "source_chars": 66256,
+      "worker_replayed": true,
+      "worker_ms": 1894.962,
+      "worker_usage": {
+        "jev": {
+          "input_tokens": 3882,
+          "output_tokens": 94,
+          "cost": 0.000163044
+        },
+        "answer": {
+          "prompt_tokens": 501,
+          "completion_tokens": 15,
+          "total_tokens": 516,
+          "cost": 7.9101e-05,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 7.9101e-05,
+            "upstream_inference_prompt_cost": 7.0641e-05,
+            "upstream_inference_completions_cost": 8.46e-06
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 2698.133,
+        "request_to_headers_ms": 2523.208,
+        "ttft_ms": null,
+        "request_bytes": 778,
+        "response_bytes": 906,
+        "request_sha256": "b5f6c0bad6f1e3a9ea5c8b760efc751f7707d72296ac37841462264ec6f67e8c",
+        "request_id": "bcb1fa11-d6c9-4107-9c07-89783ca4a573",
+        "provider_request_id": null,
+        "response_id": "gen-1790853373-TvjSHIMUQZrK5x4CE9KW",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 215,
+          "completion_tokens": 26,
+          "total_tokens": 241,
+          "cost": 0.00138,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00138,
+            "upstream_inference_prompt_cost": 0.00086,
+            "upstream_inference_completions_cost": 0.00052
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Bloom filter can return false positives, but it cannot return false negatives.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "merkle",
+      "repeat": 0,
+      "lane": "cheap-hosted-jev",
+      "evidence_chars": 356,
+      "source_chars": 12007,
+      "worker_replayed": true,
+      "worker_ms": 1914.622,
+      "worker_usage": {
+        "jev": {
+          "input_tokens": 3891,
+          "output_tokens": 82,
+          "cost": 0.000163422
+        },
+        "answer": {
+          "prompt_tokens": 542,
+          "completion_tokens": 56,
+          "total_tokens": 598,
+          "cost": 0.000108006,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.000108006,
+            "upstream_inference_prompt_cost": 7.6422e-05,
+            "upstream_inference_completions_cost": 3.1584e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 3896.211,
+        "request_to_headers_ms": 2903.583,
+        "ttft_ms": null,
+        "request_bytes": 985,
+        "response_bytes": 1119,
+        "request_sha256": "294b9d047fbb373a2c33a846071f69fa2befd485d589f66064079fa34f3c01b3",
+        "request_id": "d5df8191-286b-4b4d-9bac-54ac3aac9378",
+        "provider_request_id": null,
+        "response_id": "gen-1790853376-NGakhs1ZkeinagocruZp",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 283,
+          "completion_tokens": 94,
+          "total_tokens": 377,
+          "cost": 0.003012,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.003012,
+            "upstream_inference_prompt_cost": 0.001132,
+            "upstream_inference_completions_cost": 0.00188
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Merkle tree is a tree whose leaf nodes are labelled with the cryptographic hash of a data block and whose non-leaf nodes are labelled with the cryptographic hash of their child nodes' labels, allowing efficient and secure verification of the contents of a large data structure.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "hopkins",
+      "repeat": 1,
+      "lane": "cheap-hosted-jev",
+      "evidence_chars": 236,
+      "source_chars": 30035,
+      "worker_replayed": true,
+      "worker_ms": 1423.144,
+      "worker_usage": {
+        "jev": {
+          "input_tokens": 4183,
+          "output_tokens": 92,
+          "cost": 0.000175686
+        },
+        "answer": {
+          "prompt_tokens": 496,
+          "completion_tokens": 28,
+          "total_tokens": 524,
+          "cost": 3.69984e-05,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 384,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 3.69984e-05,
+            "upstream_inference_prompt_cost": 2.12064e-05,
+            "upstream_inference_completions_cost": 1.5792e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 2557.658,
+        "request_to_headers_ms": 1302.637,
+        "ttft_ms": null,
+        "request_bytes": 855,
+        "response_bytes": 994,
+        "request_sha256": "f36a6548221f7dee4054cd03e73984698bbc765e539675380fa7abc6c8bc5d66",
+        "request_id": "1b55aab8-e540-408f-89e6-8b0372c4b8d7",
+        "provider_request_id": null,
+        "response_id": "gen-1790853380-b3RpJHQvWFjeexnuFbU5",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 254,
+          "completion_tokens": 59,
+          "total_tokens": 313,
+          "cost": 0.002196,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.002196,
+            "upstream_inference_prompt_cost": 0.001016,
+            "upstream_inference_completions_cost": 0.00118
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "Johns Hopkins was an American merchant, investor, and philanthropist best known for funding the establishment of Johns Hopkins University and Johns Hopkins Hospital.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "bloom",
+      "repeat": 1,
+      "lane": "cheap-hosted-jev",
+      "evidence_chars": 150,
+      "source_chars": 66256,
+      "worker_replayed": true,
+      "worker_ms": 637.617,
+      "worker_usage": {
+        "jev": {
+          "input_tokens": 3882,
+          "output_tokens": 94,
+          "cost": 0.000163044
+        },
+        "answer": {
+          "prompt_tokens": 501,
+          "completion_tokens": 16,
+          "total_tokens": 517,
+          "cost": 0.0001695,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0001695,
+            "upstream_inference_prompt_cost": 0.0001503,
+            "upstream_inference_completions_cost": 1.92e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 2852.266,
+        "request_to_headers_ms": 2692.746,
+        "ttft_ms": null,
+        "request_bytes": 778,
+        "response_bytes": 905,
+        "request_sha256": "b5f6c0bad6f1e3a9ea5c8b760efc751f7707d72296ac37841462264ec6f67e8c",
+        "request_id": "755a2d80-4ee0-4f15-8d9c-40d2bb338bf3",
+        "provider_request_id": null,
+        "response_id": "gen-1790853382-i7Ms1UmLKh5ayhiwRrOR",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 215,
+          "completion_tokens": 25,
+          "total_tokens": 240,
+          "cost": 0.00136,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00136,
+            "upstream_inference_prompt_cost": 0.00086,
+            "upstream_inference_completions_cost": 0.0005
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Bloom filter can return false positives, but false negatives are not possible.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    },
+    {
+      "page": "merkle",
+      "repeat": 1,
+      "lane": "cheap-hosted-jev",
+      "evidence_chars": 348,
+      "source_chars": 12007,
+      "worker_replayed": true,
+      "worker_ms": 1641.799,
+      "worker_usage": {
+        "jev": {
+          "input_tokens": 3891,
+          "output_tokens": 82,
+          "cost": 0.000163422
+        },
+        "answer": {
+          "prompt_tokens": 542,
+          "completion_tokens": 54,
+          "total_tokens": 596,
+          "cost": 4.19052e-05,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 512,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 4.19052e-05,
+            "upstream_inference_prompt_cost": 1.14492e-05,
+            "upstream_inference_completions_cost": 3.0456e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "frontier": {
+        "ms": 3451.126,
+        "request_to_headers_ms": 2891.477,
+        "ttft_ms": null,
+        "request_bytes": 977,
+        "response_bytes": 1088,
+        "request_sha256": "bda9f9612abc35417164db8491939143598201ba5aa97efbe734805c255c2a4f",
+        "request_id": "a1b6ad82-d8f3-4ab3-a680-7098a7f1b901",
+        "provider_request_id": null,
+        "response_id": "gen-1790853385-G07vzyguiE31xp7WDP5x",
+        "requested_model": "anthropic/claude-opus-5.5",
+        "returned_model": "anthropic/claude-opus-5.5",
+        "usage": {
+          "prompt_tokens": 280,
+          "completion_tokens": 83,
+          "total_tokens": 363,
+          "cost": 0.00278,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00278,
+            "upstream_inference_prompt_cost": 0.00112,
+            "upstream_inference_completions_cost": 0.00166
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        }
+      },
+      "answer": "A Merkle tree is a tree in which every leaf node is labelled with the cryptographic hash of a data block and every non-leaf node with the cryptographic hash of its child nodes, allowing efficient and secure verification of the contents of a large data structure.",
+      "finish_reason": "stop",
+      "reviewed_correct": true,
+      "review_note": "Inspected against question and captured public source; small exploratory sample."
+    }
+  ],
+  "summaries": [
+    {
+      "lane": "frontier-direct",
+      "runs": 6,
+      "frontier_input_tokens": 57820,
+      "frontier_output_tokens": 568,
+      "frontier_cost_usd": 0.24264,
+      "reported_worker_cost_usd": null,
+      "worker_calls_cost_unknown": 0,
+      "reported_composite_cost_usd": 0.24264,
+      "frontier_p50_ms": 4345.146000000001,
+      "additive_p50_ms": 4345.146000000001,
+      "frontier_input_reduction_pct": 0.0,
+      "reported_cost_reduction_pct": 0.0,
+      "reviewed_correct": 6
+    },
+    {
+      "lane": "local-full",
+      "runs": 6,
+      "frontier_input_tokens": 1493,
+      "frontier_output_tokens": 377,
+      "frontier_cost_usd": 0.013512,
+      "reported_worker_cost_usd": 0,
+      "worker_calls_cost_unknown": 6,
+      "reported_composite_cost_usd": 0.013512,
+      "frontier_p50_ms": 2906.3320000000003,
+      "additive_p50_ms": 4117.5175,
+      "frontier_input_reduction_pct": 97.41784849533033,
+      "reported_cost_reduction_pct": 94.43125618199802,
+      "reviewed_correct": 6
+    },
+    {
+      "lane": "local-jev",
+      "runs": 6,
+      "frontier_input_tokens": 1486,
+      "frontier_output_tokens": 352,
+      "frontier_cost_usd": 0.012984,
+      "reported_worker_cost_usd": 0.0010043040000000001,
+      "worker_calls_cost_unknown": 6,
+      "reported_composite_cost_usd": 0.013988304,
+      "frontier_p50_ms": 3593.659,
+      "additive_p50_ms": 4644.7155,
+      "frontier_input_reduction_pct": 97.4299550328606,
+      "reported_cost_reduction_pct": 94.23495548961425,
+      "reviewed_correct": 4
+    },
+    {
+      "lane": "cheap-hosted-full",
+      "runs": 6,
+      "frontier_input_tokens": 1497,
+      "frontier_output_tokens": 374,
+      "frontier_cost_usd": 0.013468,
+      "reported_worker_cost_usd": 0.0038622858,
+      "worker_calls_cost_unknown": 0,
+      "reported_composite_cost_usd": 0.0173302858,
+      "frontier_p50_ms": 3320.46,
+      "additive_p50_ms": 4464.7655,
+      "frontier_input_reduction_pct": 97.41093047388448,
+      "reported_cost_reduction_pct": 92.85761383119025,
+      "reviewed_correct": 6
+    },
+    {
+      "lane": "cheap-hosted-jev",
+      "runs": 6,
+      "frontier_input_tokens": 1501,
+      "frontier_output_tokens": 346,
+      "frontier_cost_usd": 0.012924,
+      "reported_worker_cost_usd": 0.001476813,
+      "worker_calls_cost_unknown": 0,
+      "reported_composite_cost_usd": 0.014400813,
+      "frontier_p50_ms": 2914.218,
+      "additive_p50_ms": 4583.290999999999,
+      "frontier_input_reduction_pct": 97.40401245243861,
+      "reported_cost_reduction_pct": 94.06494683481701,
+      "reviewed_correct": 6
+    }
+  ],
+  "limitations": [
+    "Three unique public reading questions repeated twice, not a production browser-automation qualification.",
+    "Actual frontier API usage/cost; replayed worker packets with earlier measured worker cost. Composite latency is additive, not a fresh integrated latency measurement.",
+    "Main model is metered Claude Opus5.5 via OpenRouter, not this Codex session. No assertion about Codex/ChatGPT credit conversion.",
+    "All frontier requests reported zero cached input tokens in this sample; real cached sessions may save less money.",
+    "Local compute cost is not priced; two local-Jev Merkle answers propagated a factual error.",
+    "Full-source baseline is bounded to32000characters; Bloom-filter page has66256characters. Shared prompt/instructions match across lanes, but worker summaries contain less detail."
+  ]
+}

@@ -125,6 +125,11 @@ func TestInstallPayloadReplacesOnlyWhatTheArchiveOwns(t *testing.T) {
 	appDir := t.TempDir()
 	unpacked := t.TempDir()
 
+	for _, name := range []string{"browser-answer-worker.py", "browser-reader-mcp.py"} {
+		writeFixture(t, filepath.Join(unpacked, "reader", name), "new reader "+name)
+		writeFixture(t, filepath.Join(appDir, "reader", name), "old reader "+name)
+	}
+	writeFixture(t, filepath.Join(appDir, "reader", "stale-helper.py"), "old helper")
 	writeFixture(t, filepath.Join(unpacked, "bin", "brwd"), "new brwd")
 	if err := os.Chmod(filepath.Join(unpacked, "bin", "brwd"), 0o755); err != nil {
 		t.Fatal(err)
@@ -141,6 +146,15 @@ func TestInstallPayloadReplacesOnlyWhatTheArchiveOwns(t *testing.T) {
 	refreshed, err := InstallPayload(unpacked, appDir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, name := range []string{"browser-answer-worker.py", "browser-reader-mcp.py"} {
+		data, err := os.ReadFile(filepath.Join(appDir, "reader", name))
+		if err != nil || string(data) != "new reader "+name {
+			t.Fatalf("reader %s = %q (%v)", name, data, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(appDir, "reader", "stale-helper.py")); !os.IsNotExist(err) {
+		t.Fatalf("obsolete reader helper remains installed: %v", err)
 	}
 	if len(refreshed) != 1 || refreshed[0] != "extension-work" {
 		t.Fatalf("refreshed = %v", refreshed)

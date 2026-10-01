@@ -1,7 +1,12 @@
 package packaging
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -75,6 +80,92 @@ func TestInstallersShipTheBrwCLI(t *testing.T) {
 		`- cp bin/brw "{{.DATADIR}}/bin/brw"`,
 		`- cp bin/brw "{{.MAC_APPDIR}}/bin/brw"`,
 	)
+}
+
+func TestInstallersBundleOptionalReader(t *testing.T) {
+	t.Parallel()
+	for _, target := range []struct{ name, dir string }{
+		{"tarball", "$stage_dir/reader"},
+		{"linux", "$root_dir/usr/share/brw/reader"},
+		{"macos", "$root_dir/usr/local/share/brw/reader"},
+	} {
+		requireFileContains(t, "../scripts/package-"+target.name+".sh",
+			`cp "$repo_root/scripts/browser-answer-worker.py" "$repo_root/scripts/browser-reader-mcp.py" "`+target.dir+`/"`)
+	}
+	requireFileContains(t, "linux/nfpm.yaml", `src: "@BRW_PACKAGE_ROOT@/usr/share/brw/reader"`, "dst: /usr/share/brw/reader")
+	requireFileContains(t, "../scripts/package-windows.ps1",
+		`Copy-Item -Force (Join-Path $RepoRoot "scripts/browser-answer-worker.py"), (Join-Path $RepoRoot "scripts/browser-reader-mcp.py") (Join-Path $StageDir "share/reader")`)
+	requireFileContains(t, "../scripts/install.sh", `PAYLOAD="bin extension tests skills reader doc"`)
+}
+
+func TestTarballContainsRelocatableReader(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash unavailable")
+	}
+	root := t.TempDir()
+	for _, dir := range []string{"scripts", "extension", "tests", "skills", "fake-bin"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"scripts/package-tarball.sh", "scripts/browser-answer-worker.py", "scripts/browser-reader-mcp.py", "LICENSE", "README.md"} {
+		data, err := os.ReadFile(filepath.Join("..", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stub := "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\nif [ \"$1\" = -o ]; then shift; printf binary > \"$1\"; exit; fi\nshift\ndone\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(root, "fake-bin", "go"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "package-tarball.sh"), "1.2.3", "linux", "amd64")
+	cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "fake-bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("package: %v: %s", err, out)
+	}
+	file, err := os.Open(filepath.Join(root, "dist", "release", "brw_1.2.3_linux_amd64.tar.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+	archive := tar.NewReader(gz)
+	found := map[string]bool{}
+	for {
+		header, err := archive.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := strings.TrimPrefix(header.Name, "brw_1.2.3_linux_amd64/reader/")
+		if name == header.Name || header.Typeflag != tar.TypeReg {
+			continue
+		}
+		if name != "browser-answer-worker.py" && name != "browser-reader-mcp.py" {
+			t.Fatalf("unexpected reader payload %q", name)
+		}
+		got, err := io.ReadAll(archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := os.ReadFile(filepath.Join("..", "scripts", name))
+		if err != nil || string(got) != string(want) {
+			t.Fatalf("reader payload %s differs from source: %v", name, err)
+		}
+		found[name] = true
+	}
+	if len(found) != 2 {
+		t.Fatalf("archive reader files = %v, want worker and adapter", found)
+	}
 }
 
 func requireFileContains(t *testing.T, path string, fragments ...string) {

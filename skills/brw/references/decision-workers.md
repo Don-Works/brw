@@ -27,11 +27,20 @@ Agreement and confidence are not independent proof of correctness.
 ## Portable experiment runner
 
 The source checkout includes `scripts/browser-answer-worker.py`, a public-page
-reader experiment, not an additional MCP tool or an unattended navigation agent.
+reader experiment. The optional `scripts/browser-reader-mcp.py` adapter exposes
+it as one `brw_ask` MCP tool. Neither is an unattended navigation agent or part of
+the standard browser daemon's tool catalogue.
 It uses the `brw` CLI and a healthy headless daemon, creates a unique tab owner,
 and closes only its own tab. It supports replaying the same captured page for
 paired measurements. Other callers can use their existing brw MCP transport
 instead of this collector. No private profile credentials are copied.
+
+When an operator has enabled the reader, discover `brw_ask` and use it for narrow
+questions about known public URLs. Gateway namespace prefixes are installation
+specific. If the tool is absent but the operator installed `brw-ask`, invoke
+`brw-ask --url URL --question QUESTION` through the execution surface. Otherwise
+use the direct brw tools. Do not treat this skill's presence as proof that the
+worker, credentials, models or tool registration exist on the current host.
 
 ```sh
 python3 scripts/browser-answer-worker.py \
@@ -95,6 +104,43 @@ prefill times stay unmeasured. Failed calls and shadow failures remain visible.
 The source and report directories must already exist; use a unique private output
 path per concurrent job. The host scheduler remains responsible for the whole-job
 deadline and terminating a cancelled process.
+
+## Optional MCP surface and deployment verification
+
+Launch the stdio adapter with an operator-controlled worker and configuration:
+
+```sh
+python3 scripts/browser-reader-mcp.py \
+  --worker /opt/brw/scripts/browser-answer-worker.py \
+  --config /private/config/reader.json \
+  --artifacts-dir /private/jobs/brw-reader
+```
+
+A `.py` worker runs with the adapter's Python interpreter; an installed `brw-ask`
+executable can be used instead. Credentials must be supplied by the host or the
+operator's wrapper. Tool arguments contain only `url` and `question`; they cannot
+change the worker executable, provider configuration or output path. The adapter
+returns a bounded result and trace location, with full evidence retained in
+private job artifacts. Model output remains untrusted evidence.
+
+Register this as a separate optional MCP server in each intended host or gateway.
+Installing brw's skill, publishing a registry bundle, or installing the browser
+binary does not register this adapter. The adapter uses newline-delimited stdio
+and negotiates the initialize-based MCP protocol through `2025-11-25`; do not
+claim support for newer protocol families without an integration test.
+
+Verify each deployment through its actual client: initialize, list `brw_ask`,
+invoke it on a public test page, inspect the concise answer and source, and
+confirm the private report records the intended provider and model. Repeat the
+discovery check after any gateway tool-schema acceptance or reload. A local
+stdio test does not verify a cloud deployment or an existing client's cache.
+
+Calls run synchronously from the caller's perspective. The adapter can service
+other requests while a bounded number of reads run; use the host's job scheduler
+for background execution and mesh completion delivery. Cancellation suppresses
+delivery while allowing the worker to finish cleanup within its timeout; it does
+not promise immediate provider cancellation or zero further spend. The adapter
+does not install a mesh trigger or an approval channel for browser writes.
 
 ## Evidence and promotion
 

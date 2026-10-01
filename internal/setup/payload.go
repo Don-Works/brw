@@ -22,7 +22,7 @@ const BridgeDefaultsFile = "bridge-defaults.json"
 // PayloadItems are the top-level names a release archive owns. An install or
 // upgrade replaces exactly these and nothing else, so neither can reach config/
 // or a per-profile extension copy. Same list as scripts/install.sh.
-var PayloadItems = []string{"bin", "extension", "tests", "skills", "doc"}
+var PayloadItems = []string{"bin", "extension", "tests", "skills", "reader", "doc"}
 
 // perProfileExtensionPrefix names the per-profile unpacked extension copies. A
 // machine driving more than one browser profile has one per profile, each with

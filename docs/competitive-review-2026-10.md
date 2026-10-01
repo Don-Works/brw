@@ -464,3 +464,33 @@ retuned after seeing this result. This shifts the observed error from an incorre
 action to abstention; it does not establish those thresholds on new workloads.
 The resolver also passed 240 seeded observation-order permutations. All proposed
 actions in these classifier/model tests remained unexecuted.
+
+### Metered frontier handoff replay
+
+On three public-page questions repeated twice, actual Claude Opus 5.5 calls via
+OpenRouter consumed 57,820 input tokens from bounded full-page evidence versus
+1,501 from replayed DeepSeek V4.1 Flash + Jev answer packets: 97.4% fewer frontier
+input tokens. Summing reported worker costs from the earlier measured calls and
+the new frontier calls gave $0.01440 versus $0.24264, a 94.1% reduction. Both paths
+were reviewed correct on all six responses. The full-source baseline was capped
+at 32,000 characters and summaries supplied less detail.
+
+This is a small API replay comparison, not a fresh integrated browsing benchmark
+or a measurement of Codex credits. All frontier calls reported zero cached input
+tokens; cached production sessions may save less. Adding worker and frontier
+times yielded a 4.58 s median for the DeepSeek/Jev path versus 4.35 s direct, so
+this sample establishes no whole-job latency improvement. Local compute is
+unpriced, and the local-model/Jev path propagated the Merkle factual error in two
+of six answers. See the [complete usage and review record](measurements/frontier-handoff-2026-10-01.json).
+
+### Independent AWS dogfood report
+
+An operator-relayed agent report on 2026-10-01 described reliable AWS form and
+JSON-editor use with targeted reads and batches, without coordinate clicks. It
+also reported actions completing before delayed redirects/loading finished and
+oversized snapshots of AWS navigation menus. Its first identity check already
+showed `0.18.1-4-g82d59b6`, so this is qualitative feedback, not a measured upgrade
+comparison. No AWS account contents or browser traces were collected for this
+report. The v0.19.0 extraction changes do not claim to fix either remaining issue;
+future measurements should pair action completion with expected URL/target
+readiness and record snapshot size on these large-menu pages.
