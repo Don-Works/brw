@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
@@ -71,6 +72,39 @@ func TestUsageObservationMetadataCoversCompactAndJSONSnapshots(t *testing.T) {
 		event := controller.events[0]
 		if event.SnapshotMode != "frontier" || event.OutputFormat != format || event.ElementLimit == nil || *event.ElementLimit != 40 || event.ReturnedElements == nil || event.DeltaRequested == nil || !*event.DeltaRequested || event.DeltaReturned == nil {
 			t.Fatalf("event=%+v", event)
+		}
+	}
+}
+
+type tabUsageController struct{ usageForwardingController }
+
+func (c *tabUsageController) ListTabs(context.Context) ([]browser.Tab, error) {
+	return tabProjectionFixture(3), nil
+}
+
+func TestUsageRecordsActualTabProjection(t *testing.T) {
+	for _, format := range []string{"json", "compact"} {
+		controller := &tabUsageController{}
+		server := New(controller)
+		arguments := map[string]any{"format": format}
+		if format == "compact" {
+			arguments["limit"] = 1
+		}
+		args, _ := json.Marshal(map[string]any{"name": "brw_list_tabs", "arguments": arguments})
+		result, rpcErr := server.handle(context.Background(), "tools/call", args)
+		if rpcErr != nil || len(controller.events) != 1 {
+			t.Fatalf("rpc=%v events=%+v", rpcErr, controller.events)
+		}
+		event := controller.events[0]
+		encoded, _ := json.Marshal(result)
+		if event.OutputFormat != format || event.OutputBytes == nil || *event.OutputBytes != int64(len(encoded)) || event.SnapshotMode != "" || event.ElementLimit != nil {
+			t.Fatalf("event=%+v", event)
+		}
+		if format == "compact" && (event.ResultTruncated == nil || !*event.ResultTruncated) {
+			t.Fatalf("missing truncation: %+v", event)
+		}
+		if format == "json" && event.ResultTruncated != nil {
+			t.Fatalf("legacy truncation inferred: %+v", event)
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/usagelog"
 )
 
 type tabListRequest struct {
@@ -119,11 +120,22 @@ func (s *Server) listTabs(ctx context.Context, args json.RawMessage) (any, *rpcE
 	if err != nil {
 		return nil, invalid(err)
 	}
+	observation := usagelog.ObservationFromContext(ctx)
+	if observation != nil {
+		observation.OutputFormat = "json"
+		if opts.compact {
+			observation.OutputFormat = "compact"
+		}
+	}
 	tabs, err := s.manager.ListTabs(ctx)
 	if !opts.compact || err != nil {
 		return toolJSON(tabs, err)
 	}
-	data, err := json.Marshal(projectTabList(tabs, opts))
+	projection := projectTabList(tabs, opts)
+	if observation != nil {
+		observation.ResultTruncated = usagelog.Flag(projection.Truncated)
+	}
+	data, err := json.Marshal(projection)
 	if err != nil {
 		return toolError(err), nil
 	}

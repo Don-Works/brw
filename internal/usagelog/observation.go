@@ -43,7 +43,7 @@ func (o *Observation) Apply(event *Event) {
 }
 
 func ObservationOptions(operation string, input []byte) *Observation {
-	if operation != "brw_snapshot" && operation != "brw_read" {
+	if operation != "brw_snapshot" && operation != "brw_read" && operation != "brw_list_tabs" {
 		return nil
 	}
 	var options struct {
@@ -57,6 +57,9 @@ func ObservationOptions(operation string, input []byte) *Observation {
 		return nil
 	}
 	result := &Observation{}
+	if operation == "brw_list_tabs" {
+		return result
+	}
 	if operation == "brw_read" {
 		if options.SettleMS != nil && *options.SettleMS >= 0 && *options.SettleMS <= 5000 {
 			result.ReadSettleMS = options.SettleMS
