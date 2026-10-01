@@ -52,7 +52,7 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(args.request_timeout, 12)
 
     def test_chat_classifier_and_answer_receive_configured_models(self):
-        args = worker.parse_args(self.base + ['--classifier-mode', 'select', '--classifier-protocol', 'openai-chat', '--classifier-model', 'selector', '--classifier-endpoint', 'http://selector.test/chat', '--answer-model', 'writer', '--answer-endpoint', 'http://writer.test/chat'])
+        args = worker.parse_args(self.base + ['--classifier-mode', 'select', '--classifier-protocol', 'openai-chat', '--classifier-model', 'selector', '--classifier-endpoint', 'http://selector.test/chat', '--answer-model', 'writer', '--answer-endpoint', 'http://writer.test/chat', '--evidence-max-chars', '70'])
         selector = {'choices': [{'message': {'content': '{"choice":"p0"}'}}]}
         answer = {'choices': [{'message': {'content': 'Johns Hopkins funded a university and a hospital.'}, 'finish_reason': 'stop'}]}
         with patch.object(worker, 'timed_http', side_effect=[(selector, {}), (answer, {})]) as call:
@@ -62,6 +62,7 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(call.call_args_list[1].args[1]['model'], 'writer')
         evidence = json.loads(call.call_args_list[1].args[1]['messages'][-1]['content'])['evidence']
         self.assertNotIn('Another passage', evidence)
+        self.assertLessEqual(len(evidence), 70)
         self.assertIn('funded', result['answer'])
 
     def test_unknown_candidate_and_truncated_answer_fail(self):
@@ -91,7 +92,7 @@ class WorkerTest(unittest.TestCase):
 
     def test_unknown_or_fractional_config_fails(self):
         config = self.root / 'config.json'
-        for value in [{'typo': True}, {'passage_count': 1.5}]:
+        for value in [{'typo': True}, {'passage_count': 1.5}, [], {'request_timeout': float('nan')}]:
             config.write_text(json.dumps(value))
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 worker.parse_args(self.base + ['--config', str(config)])

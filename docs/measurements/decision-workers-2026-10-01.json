@@ -13628,5 +13628,281 @@
       "owned_tab_closed": true,
       "action": "Used a different public source; did not retry the blocked page."
     }
-  ]
+  ],
+  "adapter_format_failure": {
+    "error": {
+      "kind": "RuntimeError",
+      "message": "Provider HTTP 400, request a39c884d-d7f1-4672-ad1c-1e44b91ad9a6: {\"error\":\"'response_format.type' must be 'json_schema' or 'text'\"}"
+    }
+  },
+  "adapter_format_resolution": "LM Studio rejected response_format.type=json_object and accepted json_schema; both are configurable. Failure was the adapter contract, before model inference.",
+  "diagnostics_smoke": {
+    "model": "qwen3.5-4b-mlx",
+    "structured": true,
+    "examples": false,
+    "tool_examples": false,
+    "scope": "Proposed tool calls only; no browser effects executed. Seeded synthetic decisions, including a real Wikipedia role-change pattern.",
+    "settings": {
+      "temperature": 0,
+      "max_tokens": 128,
+      "thinking_requested": false,
+      "reasoning_effort": "none",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "brw_fill",
+            "description": "Fill a visible editable control from the current observation.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ref",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "brw_click",
+            "description": "Click a visible enabled control from the current observation.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ref"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "brw_snapshot",
+            "description": "Get fresh evidence when the current observation is stale or has no unique actionable match.",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "brw_press",
+            "description": "Press a key in the active tab, whose search control is focused.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "cold": {
+      "case": "hydrated-search-0",
+      "pass": true,
+      "request_id": "f32084d0-0638-47b1-a650-4a76a1de475d",
+      "request_bytes": 2228,
+      "request_sha256": "77f9f93b2984aa1e8595f3327cd87cd2344b92b539fbee45bb5d1b53da21d2e3",
+      "tool_schema_bytes": 1106,
+      "message_chars": 909,
+      "ttft_ms": null,
+      "queue_ms": null,
+      "prefill_ms": null,
+      "unmeasured": "Non-streaming endpoint; queue, prefill and first-token timing require server telemetry.",
+      "http_status": 200,
+      "provider_request_id": null,
+      "request_to_headers_ms": 973.527,
+      "response_read_ms": 0.042,
+      "response_bytes": 846,
+      "decode_ms": 0.065,
+      "usage": {
+        "prompt_tokens": 705,
+        "completion_tokens": 45,
+        "total_tokens": 750,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "returned_model": "qwen3.5-4b-mlx",
+      "response_id": "chatcmpl-ep2xnzwmyxqy2pvigx8kyq",
+      "finish_reason": "tool_calls",
+      "content": "",
+      "model_identity_mismatch": false,
+      "actual": [
+        {
+          "name": "brw_fill",
+          "arguments": {
+            "ref": "e338",
+            "value": "Merkle tree"
+          }
+        }
+      ],
+      "outcome": "correct",
+      "validation_ms": 0.013,
+      "ms": 973.65
+    },
+    "cases": [
+      {
+        "name": "hydrated-search-0",
+        "goal": "Enter Merkle tree in Search Wikipedia.",
+        "observation": [
+          "e253 searchbox Search Wikipedia hidden stale",
+          "e338 combobox Search Wikipedia visible editable",
+          "e378 button Search visible enabled"
+        ],
+        "expected": {
+          "name": "brw_fill",
+          "arguments": {
+            "ref": "e338",
+            "value": "Merkle tree"
+          }
+        }
+      },
+      {
+        "name": "disabled-button-0",
+        "goal": "Click Next.",
+        "observation": [
+          "e338 button Next visible enabled",
+          "e378 button Previous visible enabled",
+          "e253 button Next visible disabled"
+        ],
+        "expected": {
+          "name": "brw_click",
+          "arguments": {
+            "ref": "e338"
+          }
+        }
+      }
+    ],
+    "results": [
+      {
+        "case": "hydrated-search-0",
+        "pass": true,
+        "request_id": "c181d054-ded9-4c1d-b47e-5f41bfdb45fb",
+        "request_bytes": 2228,
+        "request_sha256": "77f9f93b2984aa1e8595f3327cd87cd2344b92b539fbee45bb5d1b53da21d2e3",
+        "tool_schema_bytes": 1106,
+        "message_chars": 909,
+        "ttft_ms": null,
+        "queue_ms": null,
+        "prefill_ms": null,
+        "unmeasured": "Non-streaming endpoint; queue, prefill and first-token timing require server telemetry.",
+        "http_status": 200,
+        "provider_request_id": null,
+        "request_to_headers_ms": 816.398,
+        "response_read_ms": 0.034,
+        "response_bytes": 845,
+        "decode_ms": 0.055,
+        "usage": {
+          "prompt_tokens": 705,
+          "completion_tokens": 45,
+          "total_tokens": 750,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        },
+        "returned_model": "qwen3.5-4b-mlx",
+        "response_id": "chatcmpl-78f5oivak73wqkqkhv2ib",
+        "finish_reason": "tool_calls",
+        "content": "",
+        "model_identity_mismatch": false,
+        "actual": [
+          {
+            "name": "brw_fill",
+            "arguments": {
+              "ref": "e338",
+              "value": "Merkle tree"
+            }
+          }
+        ],
+        "outcome": "correct",
+        "validation_ms": 0.016,
+        "ms": 816.5
+      },
+      {
+        "case": "disabled-button-0",
+        "pass": true,
+        "request_id": "91c85a5f-c3e2-4818-aa7c-45b6c757ae34",
+        "request_bytes": 2174,
+        "request_sha256": "eb20d97b4e9c57ffc3f85501851d3b77026586a028f3d90aca2b8febc26a715c",
+        "tool_schema_bytes": 1106,
+        "message_chars": 855,
+        "ttft_ms": null,
+        "queue_ms": null,
+        "prefill_ms": null,
+        "unmeasured": "Non-streaming endpoint; queue, prefill and first-token timing require server telemetry.",
+        "http_status": 200,
+        "provider_request_id": null,
+        "request_to_headers_ms": 618.861,
+        "response_read_ms": 0.059,
+        "response_bytes": 820,
+        "decode_ms": 0.043,
+        "usage": {
+          "prompt_tokens": 696,
+          "completion_tokens": 31,
+          "total_tokens": 727,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        },
+        "returned_model": "qwen3.5-4b-mlx",
+        "response_id": "chatcmpl-se02qxesm4303zz01rtj7",
+        "finish_reason": "tool_calls",
+        "content": "",
+        "model_identity_mismatch": false,
+        "actual": [
+          {
+            "name": "brw_click",
+            "arguments": {
+              "ref": "e338"
+            }
+          }
+        ],
+        "outcome": "correct",
+        "validation_ms": 0.012,
+        "ms": 618.98
+      }
+    ],
+    "summary": {
+      "passed": 2,
+      "total": 2,
+      "requested": 2,
+      "complete": true,
+      "median_ms": 717.74,
+      "p95_ms": 816.5,
+      "outcomes": {
+        "correct": 2
+      },
+      "prompt_tokens_total": 1401,
+      "usage_missing_requests": 0,
+      "response_bytes_total": 1665
+    }
+  }
 }

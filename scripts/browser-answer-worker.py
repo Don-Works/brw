@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -35,8 +36,8 @@ def timed_http(endpoint, body, key=None, timeout=45):
     return result, {'ms': round((time.perf_counter()-started)*1000, 3), 'request_to_headers_ms': round((headers_at-started)*1000, 3), 'ttft_ms': None, 'request_bytes': len(payload), 'response_bytes': len(raw), 'request_sha256': hashlib.sha256(payload).hexdigest(), 'request_id': request_id, 'provider_request_id': provider_request_id, 'response_id': result.get('id'), 'requested_model': body.get('model'), 'returned_model': result.get('model'), 'usage': result.get('usage')}
 
 
-def collect(url, daemon, binary):
-    environment = dict(os.environ, BRW_OWNER_ID='brw-answer-' + str(uuid.uuid4()))
+def collect(url, daemon, binary, owner=None, event=None):
+    environment = dict(os.environ, BRW_OWNER_ID=owner or 'brw-answer-' + str(uuid.uuid4()))
     def call(command, arguments=None):
         process = subprocess.run([binary, *command, '--daemon', daemon, '--json', *(arguments or [])], env=environment, capture_output=True, text=True, timeout=40)
         try:
@@ -49,11 +50,15 @@ def collect(url, daemon, binary):
     health = call(['health'])
     if not health.get('ok') or not health.get('identity', {}).get('headless'):
         raise ValueError('This public-page experiment requires a healthy headless daemon')
+    if event:
+        event('browser_ready', owner=environment['BRW_OWNER_ID'], brw_version=health['version'])
     tab = None
     started = time.perf_counter()
     try:
         opened = call(['open'], [url])
         tab = opened.get('tab', {}).get('id')
+        if event:
+            event('browser_opened', tab_id=tab, http_status=opened.get('http_status'))
         if not tab:
             raise RuntimeError('Open returned no tab ID')
         if opened.get('http_status', 200) >= 400 or not opened.get('ready'):
@@ -65,6 +70,8 @@ def collect(url, daemon, binary):
     finally:
         if tab:
             call(['tab', 'close'], [str(tab)])
+            if event:
+                event('browser_closed', tab_id=tab)
 
 
 def passages(text, question, width=2000, limit=8):
@@ -108,13 +115,15 @@ def parse_args(argv=None):
     parser.add_argument('--reasoning-effort', choices=['none', 'low', 'medium', 'high', 'omit'], default='none')
     if known.config:
         configuration = json.loads(pathlib.Path(known.config).read_text())
+        if not isinstance(configuration, dict):
+            parser.error('Configuration must be a JSON object')
         allowed = {action.dest for action in parser._actions} - {'help', 'config', 'url', 'source_artifact', 'question', 'out'}
         if set(configuration) - allowed:
             parser.error('Unknown configuration keys: ' + ', '.join(sorted(set(configuration)-allowed)))
         parser.set_defaults(**configuration)
     args = parser.parse_args(argv)
     for field in ['request_timeout', 'answer_max_tokens', 'answer_max_chars', 'evidence_max_chars', 'passage_chars', 'passage_count']:
-        if not isinstance(getattr(args, field), (int, float)) or getattr(args, field) <= 0:
+        if isinstance(getattr(args, field), bool) or not isinstance(getattr(args, field), (int, float)) or not math.isfinite(getattr(args, field)) or getattr(args, field) <= 0:
             parser.error(field + ' must be positive')
     for field in ['answer_max_tokens', 'answer_max_chars', 'evidence_max_chars', 'passage_chars', 'passage_count']:
         if not isinstance(getattr(args, field), int):
@@ -146,7 +155,7 @@ def run(args):
         with open(args.out + '.jsonl', 'a') as journal:
             journal.write(json.dumps({'job_id': job_id, 'at_unix': time.time(), 'event': kind, **fields}) + '\n')
     event('started')
-    page = json.loads(pathlib.Path(args.source_artifact).read_text()) if args.source_artifact else collect(args.url, args.daemon, args.brw)
+    page = json.loads(pathlib.Path(args.source_artifact).read_text()) if args.source_artifact else collect(args.url, args.daemon, args.brw, owner='brw-answer-' + job_id, event=event)
     text = page.get('main', '')
     if not text:
         raise ValueError('No readable page evidence')
@@ -181,7 +190,7 @@ def run(args):
             phases['classifier']['decision'] = decision
             event('classifier_finished', **phases['classifier'])
             if args.classifier_mode == 'select':
-                evidence = candidates.get(selected, '')
+                evidence = candidates.get(selected, '')[:args.evidence_max_chars]
         except Exception as error:
             if args.classifier_mode != 'shadow':
                 raise
@@ -204,6 +213,7 @@ def run(args):
     parent_result = {'answer' if args.answer_model else 'excerpt': answer, 'source': page.get('url')}
     report = {'question': args.question, 'mode': {'answer_model': args.answer_model, 'classifier': args.classifier_mode, 'classifier_protocol': args.classifier_protocol, 'classifier_model': args.classifier_model if args.classifier_mode != 'off' else None}, 'source_sha256': hashlib.sha256(text.encode()).hexdigest(), 'source_chars': len(text), 'source_bytes': len(text.encode()), 'source_total_chars': page.get('main_total_chars'), 'source_truncated': page.get('main_total_chars', len(text)) > len(text), 'collection_ms': page.get('collection_ms'), 'collection_replayed': bool(args.source_artifact), 'evidence_chars': len(evidence), 'selected_passage': selected, 'parent_result': parent_result, 'parent_result_chars': len(json.dumps(parent_result, ensure_ascii=False)), 'phases': phases, 'worker_ms': round((time.perf_counter()-started)*1000, 3), 'scope': 'Public-page reader experiment; no browser actions proposed by models. Answer factuality requires evaluation; bounded output is not proof of correctness.'}
     report['job_id'] = job_id
+    report['evidence_narrowed'] = len(evidence) < len(text)
     report['configuration'] = {key: value for key, value in vars(args).items() if key not in ['question', 'url', 'source_artifact', 'config', 'out']}
     pathlib.Path(args.out).write_text(json.dumps(report, indent=2) + '\n')
     event('finished', parent_result_chars=report['parent_result_chars'], worker_ms=report['worker_ms'])
