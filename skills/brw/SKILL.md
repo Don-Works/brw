@@ -92,25 +92,18 @@ be a string, including when a gateway returned a numeric ID.
 
 ## If your tool list looks short
 
-`brwd --mcp` defaults to `--mcp-tools auto`: it advertises 14 tools — `brw_tools`,
-`brw_open`, `brw_navigate_to`, `brw_read`, `brw_read_url`, `brw_snapshot`, `brw_find`,
-`brw_click`, `brw_fill`, `brw_select`, `brw_press`, `brw_wait_for`, `brw_observe`,
-`brw_batch` — and grows as you search. The full surface is 95 tools on a direct-CDP
-daemon (94 on `--remote`, 93 on the Chrome opt-in lane, 89 on a plugin-supplied
-off-host browser, 79 on the extension bridge, each missing only what its lane
-cannot serve); clients that attach schemas to each model request benefit from the small
-starting catalogue throughout the task.
+`brwd --mcp` starts with 14 tools in `auto` mode and grows as you search.
+The full catalogue varies by transport; consult the
+[tool catalogue](references/tool-catalogue.md) for capabilities. Small initial
+catalogues reduce schemas attached to model requests.
 
 ```json
 {"name":"brw_tools","arguments":{"query":"read the console"}}
 ```
 
-Strong matches (max 4 per search) are added to the catalogue, the server emits
-`notifications/tools/list_changed`, and the definitions arrive on your next
-`tools/list`. Every brw tool is callable whether or not it is advertised: disclosure
-narrows what you are shown, never what you may call. `brw_identity` and `brw_close_tab`
-are not in the default 14 and answer anyway. Call the tool you need; search only when
-you want its schema.
+Search adds up to four strong matches and emits `notifications/tools/list_changed`.
+Every tool remains callable before disclosure, including `brw_identity` and
+`brw_close_tab`. Search when you need a schema; disclosure is not authorization.
 
 ## Match the running version
 
@@ -192,18 +185,12 @@ smaller output that causes another model turn can make the complete task slower.
 
 ## Optional models and classifiers
 
-brw requires no intermediate model or classifier. Direct use remains available;
-when the operator has enabled and qualified a reading worker, use it for narrow
-questions about known public URLs. An unqualified worker needs comparison with direct reads before becoming the default. Discover `brw_ask` in the installed tool surface first;
-if absent, use an installed `brw-ask --url URL --question QUESTION` CLI through
-the execution tool. If neither exists, use direct brw reads. A skill does not
-install or register a reader. Do not invent a tool namespace or silently send
-private page contents to a provider. For reading or bounded semantic decisions, use
-the [optional worker guide](references/decision-workers.md). Resolve exact matches
-and invalid targets in code first. Keep providers, models, endpoints and credentials
-configurable, and measure quality, whole-job latency and parent-context size before
-enabling a helper. Full pages stay in worker artifacts; return only the requested
-answer and its source. Classifier confidence does not replace result verification.
+Direct brw needs no model or classifier. Use an operator-enabled reader for narrow
+public-URL questions only after qualifying its quality and whole-job latency.
+Discover `brw_ask` first; if absent, try an installed `brw-ask` CLI, then direct
+reads. Do not invent a namespace or send private pages to a provider. Keep exact
+matching in code and return bounded evidence with its source. Configuration,
+qualification and provider usage: [optional workers](references/decision-workers.md).
 
 ## Tabs, leases, cleanup
 
@@ -212,17 +199,12 @@ brw opens one if this session has none. (`--bridge-follow-focus` restores the le
 follow-the-human's-tab behaviour and is off by default.) Pass an explicit `tab_id` once
 more than one tab is in play — it also skips per-call tab resolution.
 
-Keep the `tab_id` returned by `brw_open`; do not list all tabs again to recover an
-id you already have. To find an existing tab, start with
-`brw_list_tabs({format:"compact", query:"host or title", limit:20})`. This returns
-text-only JSON with full ids, titles, URLs and lease status, plus `total`, `matched`,
-`returned`, `truncated` and `ownership_unknown`. `owned:true` selects only tabs
-marked `mine`; `owned:false` or omitted applies no ownership filter. Unknown
-ownership is explicit and never assumed mine. Narrow the query before increasing
-the limit when `truncated:true`; the compact default is 40 rows, maximum 1000.
-Filters require `format:"compact"` and reduce the returned context after the browser
-lists its tabs. Use the default full array only when omitted Chrome window/group
-details are needed. Reuse the selected id for subsequent reads and actions.
+Reuse the `tab_id` returned by `brw_open`. For an existing tab, start with
+`brw_list_tabs({format:"compact",query:"host or title",limit:20})`; narrow the
+query when `truncated:true`. `owned:true` selects only `mine`; unknown ownership
+is never assumed mine. Compact filters reduce returned context after browser
+enumeration. Use the full array only for omitted window/group details. Limits,
+fields and filters: [tool catalogue](references/tool-catalogue.md).
 
 On a daemon shared by several agents, one session holds each tab exclusively, reads
 included. `brw_list_tabs` shows other sessions' tabs as `leased`: do not focus, read,
@@ -251,11 +233,9 @@ with `brw run --file`. Keep raw traces and account data in private staging.
 Optional registry adapters can use Maix, Notion or Postgres behind the existing
 provider contract; none is required. See the [recipe guide](references/recipes.md).
 
-For operational workflow recipes, retain one canonical private artifact, verify its
-source-byte hash before submission, and promote repairs there. The digest brw
-returns identifies the parsed recipe, not the original file bytes. Keep the
-business-operation key stable across recipe upgrades; a new version is not
-permission to repeat an ambiguous write.
+Keep one canonical private operational recipe and verify its source-byte hash;
+brw's digest identifies the parsed recipe. Keep the business-operation key stable
+across upgrades; a new version does not authorize an ambiguous write again.
 
 Before rebuilding a known site workflow by hand, search for a stored one:
 `brw_recipe_search({query, origin?, limit?})` → metadata only

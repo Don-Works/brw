@@ -15,6 +15,7 @@ func legacyExtractionSnapshot(t *testing.T) string {
 	s := SnapshotFunctionScript
 	s = strings.Replace(s, "    const cachedVisible = visible(el);\n    const cachedViewport = inViewport(el);\n    const cachedDisabled = disabled(el);\n", "", 1)
 	s = strings.Replace(s, "visible: cachedVisible,", "visible: visible(el),", 1)
+	s = strings.Replace(s, "!cachedVisible && pointerControl(el)", "!visible(el) && pointerControl(el)", 1)
 	s = strings.Replace(s, "in_viewport: cachedViewport,", "in_viewport: inViewport(el),", 1)
 	s = strings.Replace(s, "disabled: cachedDisabled,", "disabled: disabled(el),", 1)
 	s = strings.Replace(s, "_frontier_score: frontierScore(role, name, signals, cachedVisible, cachedViewport, cachedDisabled)", "_frontier_score: frontierScore(role, name, signals, visible(el), inViewport(el), disabled(el))", 1)
