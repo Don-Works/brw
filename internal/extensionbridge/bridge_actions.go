@@ -333,42 +333,6 @@ func (b *Bridge) requireTrustedClickTarget(ctx context.Context) error {
 	return nil
 }
 
-func (b *Bridge) activate(ctx context.Context, ref string) error {
-	refJSON, _ := json.Marshal(ref)
-	var result struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error,omitempty"`
-	}
-	// Uses the shared __abFindDeep lookup so same-origin iframe and shadow refs resolve.
-	expr := fmt.Sprintf(`(function(ref) {`+snapshot.FrameWalkHelpers+`
-	  function findByRef(ref) {
-	    var hit = __abFindDeep(ref);
-	    return hit ? hit.el : null;
-	  }
-	  const el = findByRef(ref);
-	  if (!el) return { ok: false, error: 'ref not found' };
-	  if (el.closest('[hidden],[aria-hidden="true"]')) return { ok: false, error: 'ref hidden' };
-	  el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-	  if (typeof el.focus === 'function') el.focus({ preventScroll: true });
-	  el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
-	  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-	  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-	  if (typeof el.click === 'function') el.click();
-	  else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-	  return { ok: true };
-	})(%s)`, refJSON)
-	if err := b.evaluate(ctx, expr, "", &result); err != nil {
-		return err
-	}
-	if !result.OK {
-		if result.Error == "" {
-			result.Error = "ref activation failed"
-		}
-		return fmt.Errorf("activate: %s", result.Error)
-	}
-	return nil
-}
-
 func (b *Bridge) Type(ctx context.Context, ref, text string) (browser.ActionResult, error) {
 	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
 		return browser.ActionResult{}, err
