@@ -189,7 +189,7 @@ about unimplemented changes:
 | Dirty-subtree cache / Merkle-style fingerprints | Promising for repeated unchanged snapshots. Prototype only with invalidation for mutation records, form properties, focus, viewport, stylesheet/layout changes, shadow roots and frame navigation. [Mutation observers](https://dom.spec.whatwg.org/#mutation-observers) report DOM mutations; they are not a complete UI-state invalidation oracle. Compare exact results to a fresh walker before enabling reuse. |
 | Bloom filters | Useful as a negative prefilter before an exact lookup if candidate sets become very large. Do not use them to decide that a change has already been seen or a target is unique: their [false positives](https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=903775) would suppress information. Current DOM lookup work is better served by an exact index. |
 | Read/write phase separation | Profile forced layouts before moving ref writes. [Chrome's guidance](https://web.dev/articles/avoid-large-complex-layouts-and-layout-thrashing) explains why interleaving geometry reads with style-invalidating writes can be expensive. Existing pages may style ref attributes or react synchronously, so prove behavior as well as speed. |
-| Install reusable action scripts once | The small-fixture suite sent about 1.2 MB for 35 commands; snapshot code is already installed once, but several actions resend large helper blocks. Measure per-document action-module caching on remote CDP, including cold install, navigation, frame changes and tampering recovery. |
+| Install reusable action scripts once | Tested and rejected for this local workload: fill/select caching cut transmitted bytes only 2.46%, added five CDP round trips and showed no latency improvement. A future remote-CDP experiment needs a different installation strategy and its own paired evidence. |
 | Bounded top-k selection | A heap can replace a full sort when candidate ranking dominates. Instrument candidate counts and sorting time first: reducing path traversal paid off without changing which controls win. |
 | Intent-based waits and scoped observations | Keep explicit postcondition assertions and semantic targets. [Playwright actionability](https://playwright.dev/docs/actionability) is a useful reference for readiness rather than fixed delays. [Agent-browser's scoped/compact diffs](https://github.com/vercel-labs/agent-browser) and [Playwright MCP's file snapshots](https://github.com/microsoft/playwright.dev/blob/main/mcp/snapshots.mdx) support the same principle of sending only useful observations to the model. |
 | Gateway result deduplication | Measure whether a client actually feeds both MCP representations to its model. The [MCP contract](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2026-07-28/server/tools.mdx) recommends a text copy for compatibility alongside structured content. Keep brw interoperable; remove redundant model-context copies in clients that understand both. |
@@ -211,3 +211,256 @@ remove network waits or the cost of another model turn.
 Native Safari/Firefox breadth, hosted agent orchestration and provider-specific
 infrastructure remain separate product decisions. Shipping nominal commands
 without reliable execution and verification would not establish parity.
+
+## Role pushdown and local executor follow-up
+
+The next confirmed win applies [database predicate pushdown](https://duckdb.org/2024/11/14/optimizers)
+to the DOM walker: reject nonmatching roles before computing names, paths and
+geometry. Live-page extraction medians improve 3.25–9.46×; the
+[benchmark record](benchmarks.md#role-filtered-live-page-extraction-2026-10-01)
+separates this in-page CPU result from network and model latency.
+
+A DOM has no general ordering by semantic relevance, so binary search cannot
+find an arbitrary named control. Useful structures are exact role/name indexes,
+bounded top-k selection and progressively refined subtrees. Persisting an index
+requires a complete invalidation model. [DBSP](https://www.vldb.org/pvldb/vol16/p1601-budiu.pdf)
+and [self-adjusting computation](https://www.cs.cmu.edu/~guyb/papers/ABBHT09.pdf)
+are useful research models for maintaining derived views, but DOM mutation
+notifications alone do not capture focus, form properties, layout or viewport
+state. This round deliberately uses a per-walk optimization with no retained
+cache to invalidate.
+
+For asynchronous browsing, keep one bounded job per leased tab. A deterministic
+controller owns navigation, action validation, deadlines, cancellation and
+postconditions. It supplies a model only the goal and relevant fresh controls,
+with a small action vocabulary. Run exact recipes and unique semantic matches
+without inference. Escalate ambiguous or repeatedly unsuccessful decisions to
+the parent. Do not let a model's self-reported confidence substitute for checks.
+
+Maix already has delegation result routing to the parent's durable mesh address;
+reuse that transport for one bounded result containing outcome, final URL,
+evidence and a failure reason. Intermediate snapshots should stay with the
+worker. A queued mesh result becomes visible at the parent's next receive/tool
+boundary; it is not proof that a busy parent immediately resumed. Avoid creating
+a repository worktree for every model-only browser decision.
+
+Two local Maix adapter canaries did not qualify the path: the existing 27B alias
+hit a 30-second deadline and finished after 51.67 seconds including failed
+worktree cleanup; an older 0.5B baseline returned an invented ref after 9.82
+seconds, and its post-hook binding failed. Both results were reviewed and
+rejected. Neither is a measurement of the newer candidate models below. The
+in-process HTTP benchmark isolates model/serving latency from that adapter
+setup. No autonomous small-model browser worker is enabled by this change.
+
+### Model selection method
+
+The shortlist uses current small tool-trained models, not legacy Qwen 2.5 or
+Llama 3.2 merely because those files were already present. Primary model cards
+for [Qwen 3.5 0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B),
+[Qwen 3.5 2B](https://huggingface.co/Qwen/Qwen3.5-2B),
+[Liquid LFM2.5 230M](https://huggingface.co/LiquidAI/LFM2.5-230M) and
+[Liquid LFM2.5 1.2B](https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct)
+explicitly document tool use. Documented capability is not a passing local
+qualification. The official Qwen catalog has newer 3.8 models at much larger
+sizes; the installed `qwen-local-3.8` alias resolves to 27B, not 3.8B.
+
+[Qwen 3.6 35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) is a useful MoE
+candidate: 35B total parameters, 3B active per token. Active parameter count is
+not the resident weight size, prefill cost or a latency guarantee. Its installed
+8-bit MLX weights occupy about 37.75 GB on disk. The first two local requests
+timed out after 30 seconds each while the server reported `processingPrompt`;
+the repeated run was stopped. After warmup and an explicit reasoning-off request, the MoE completed the
+same cohort at 813 ms median, scoring 15/24. All 15 unambiguous cases passed;
+all nine stale/missing/ambiguous cases failed. A tiny-model latency comparison
+therefore needs both cold-start and warm execution evidence.
+
+The benchmark supplies four narrowed browser tool schemas through the server's
+[tool-calling API](https://lmstudio.ai/docs/developer/openai-compat/tools),
+not an instruction to print an arbitrary JSON object. Scoring requires exactly
+the right tool and arguments; extra calls, invented refs, prose and incorrect
+abstention fail. It compares terse text with explicit control-state objects,
+and separately tries two examples. It never executes a model-proposed action.
+The real browser trial is separately supervised and checked after each step.
+
+Run `python3 scripts/measure-local-browser-model.py --model MODEL --structured
+--out result.json` against an already running local endpoint. Default requests
+have a 128-token output cap, temperature zero and `reasoning_effort:none`.
+`--reasoning-effort template` reproduces the older template-only request.
+On 9B, the template flag left reasoning enabled: 1/24 passed at 3.66 seconds
+median. Explicit reasoning-off improved that to 16/24 at 1.31 seconds; it did
+not cure all targeting failures. Both input/output usage and reasoning tokens
+are retained. The rendered model inputs were checked to verify that the
+controller instructions actually reached the models. The
+script stops after consecutive transport errors. The eight decision patterns
+are each repeated with three seeded ref/order permutations: useful for finding
+failures, not an independent 24-task production qualification. The evidence
+records warm p50/p95, first-request time, actual calls and reported token usage.
+
+### Observed local configurations
+
+| Configuration | Correct calls | Warm median ms | Warm p95 ms |
+| --- | ---: | ---: | ---: |
+| LFM2.5 230M Q8 | 3/24 | 63 | 139 |
+| Qwen 3.5 0.8B MLX 4-bit | 6/24 | 228 | 286 |
+| LFM2.5 1.2B Q8 | 13/24 | 233 | 388 |
+| Qwen 3.5 2B MLX 4-bit | 11/24 | 318 | 394 |
+| Qwen 3.5 4B MLX 8-bit | 16/24 | 767 | 1031 |
+| Qwen 3.5 4B + prose examples | 21/24 | 899 | 1159 |
+| Qwen 3.5 9B MLX 8-bit, explicit off | 16/24 | 1305 | 1690 |
+| Qwen 3.6 35B-A3B MLX 8-bit, explicit off | 15/24 | 813 | 1181 |
+| MoE + prose examples | 1/24 | 575 | 725 |
+| MoE + actual tool-call examples | 17/24 | 1347 | 1805 |
+
+These are configuration results, not intrinsic model rankings. Quantization,
+format, served templates and prompts differ; CPU browser tests ran alongside
+some measurements. The primary shortlist comparison uses structured observations
+without examples. All tested configurations still make consequential errors.
+The 4B model reaches 21/24 with prose examples, but that same example style
+causes the MoE to print calls as plain text and scores only 1/24. Actual tool-call
+history examples raise the MoE to 17/24, with more input and latency. A harness
+change can dominate a model-size change. None of these runs qualifies an
+unattended worker.
+
+The [raw evidence](measurements/local-browser-models-2026-10-01.json) retains
+configuration, quantization, actual outputs, per-case timing and token usage.
+Earlier drafts that omitted field values or used a noncanonical keypress schema
+were corrected before this recorded cohort. A supervised Wikipedia trial let
+4B choose the correct fill target, verified the value with brw, then rejected an
+incorrect repeated-fill proposal; the parent completed and verified navigation
+to Merkle tree. That is a harness-assisted recovery, not autonomous model success.
+
+The practical next experiment is a worker with exact candidate/action validation
+and a small, canonical observation packet, evaluated on held-out public-site
+jobs. Select the fastest configuration that meets the task-success bar after
+counting refreshes, retries, escalation and parent review. Preserve the same
+jobs and request contract when comparing hosted models. Keep raw snapshots out
+of the parent's context and send one bounded mesh result when the job completes.
+
+## Optional reading workers and shadow classifiers
+
+Direct brw remains the default. The experimental
+`scripts/browser-answer-worker.py` is a separate, configurable public-page worker;
+it adds no model dependency to the daemon or MCP tools. It accepts local or cloud
+OpenAI-compatible answer endpoints, TypeSafe-compatible decision endpoints or
+OpenAI-compatible JSON classifiers, model IDs, credential environment-variable
+names, request budgets and a JSON configuration file. Either helper can be off.
+The worker collects under a unique tab owner, closes its tab, stores the source
+outside parent context and returns a bounded answer/source packet. Its supported
+wire formats are explicit; arbitrary provider APIs are not interchangeable.
+
+A generic coding-worker harness was a poor fit for these small jobs. An offline
+DeepSeek Flash batch answered eight typed cases correctly in 2.956 seconds total,
+but a mandatory coding-report wrapper conflicted with the requested JSON-only
+format. Two attempted tool-enabled reader delegations failed their cumulative
+input/tool budgets without delivering an answer. That is harness evidence, not
+proof that the model cannot browse. The direct adapter subsequently completed the
+one-sentence job. The cumulative input-spend cap is distinct from context-window
+capacity. The local model benchmark now journals request IDs/hashes, tool-schema
+size, input/output/reasoning tokens, response bytes, serving identity, phase times
+and classified failures. Queue, prefill and first-token times are explicitly
+unmeasured by these non-streaming clients.
+
+### Reading results
+
+The Johns Hopkins canary kept a 30,035-character page in a worker artifact and
+returned a 236-character answer/source JSON packet: 99.21% fewer characters in
+that returned payload. This is not a measured reduction in the main model's total
+billed tokens or its response time. The no-generator mode returns an excerpt,
+leaving interpretation to the caller. The JHU history URL returned a 403, so its
+owned tab was closed and the canary used a different public source, Wikipedia.
+
+A subsequent paired replay used three pages (Johns Hopkins, Bloom filter, Merkle
+tree), three repetitions, and alternating local/hosted and full/selected order.
+The later deterministic-ranking cohort is separate, not interleaved with that
+first cohort. All paths used the same captured source per question. Timings below
+exclude fresh collection, process startup, main-model review and delivery. The
+first cold-looking local canary took 5.3 seconds; it is not the warm median.
+
+| Answer configuration | Calls | Median worker ms | Reported provider spend for cohort |
+| --- | ---: | ---: | ---: |
+| Local Qwen 3.5 4B, full evidence | 9 | 710 | Local compute unpriced |
+| Local 4B, Jev-selected evidence | 9 | 829 | $0.001506 plus local compute |
+| Local 4B, deterministic passage | 9 | 441 | Local compute unpriced |
+| Hosted DeepSeek V4.1 Flash, full evidence | 9 | 1345 | $0.004203 |
+| Hosted Flash, Jev-selected evidence | 9 | 1553 | $0.002089 |
+| Hosted Flash, deterministic passage | 9 | 1264 | $0.000327 |
+
+Jev reduced reported hosted spend here but added median latency. Deterministic
+selection was faster and cheaper, but all six shortened-evidence local Merkle
+answers incorrectly generalized that Merkle trees are binary. Full-evidence local
+answers and the hosted answers did not make that specific error. The raw answers
+are retained for inspection; this is a small exploratory correctness review, not
+independent expert scoring or a production qualification. The performance gain
+therefore does not justify automatically dropping full evidence. Cache effects,
+source length and answer length matter, and nine repetitions are not nine distinct
+jobs. A source hash and context sizes make each result reproducible without
+committing copied full pages.
+
+### Tool decision results
+
+The existing eight synthetic patterns, each with three ref/order permutations,
+were evaluated without executing proposed actions:
+
+| Contract/configuration | Correct / cases | Median ms |
+| --- | ---: | ---: |
+| Native tool calls: local 4B with prose examples | 21/24 | 899 |
+| Native tool calls: hosted Flash, no examples | 22/24 | 1124 |
+| Filtered candidate choice: local 4B, JSON schema | 16/24 | See per-case evidence |
+| Filtered candidate choice: Jev | 24/24 | 271 |
+| Narrow exact-match resolver | 24/24 | No inference call |
+
+These contracts differ: the typed classifier receives prefiltered candidates;
+free-form native calls must also produce arguments. Neither table is an intrinsic
+model ranking. Flash's two native failures filled stale controls. The 4B's three
+example-assisted failures were two ambiguous choices and one page-instruction
+misdirection. Exact validity/uniqueness checks are required around every model.
+
+Twelve additional semantic cases exposed a Jev ambiguity error with confidence
+0.88. Its raw result was 10/12; review found one incorrect expected label: without
+ordering evidence, “following page” cannot be mapped uniquely to “Older.” Jev
+correctly abstained there. The adjudicated result is 11/12; both original and
+corrected labels are retained. Local 4B candidate choice scored 7/12 against the
+corrected labels. The exact resolver abstained on all twelve; five abstentions
+were required and seven were unresolved answerable cases. This is an exploratory
+cohort, not held-out proof. The global `jev-decisions` skill now defines shadow
+trials, independent outcome review, context/cost accounting and promotion gates.
+
+The relevant algorithm is often decomposition: code filters impossible targets,
+a classifier judges semantic relevance, and code enforces uniqueness. TypeSafe's
+[fan-out pattern](https://docs.typesafe.ai/patterns/fan-out) and
+[Noul primitive](https://docs.typesafe.ai/primitives/noul) support asking independent
+candidate-relevance questions in one request. This is tested separately from
+winner-takes-all choice; probability thresholds remain workload-specific.
+
+### What remains worth measuring
+
+- Mutation-scoped reuse of unchanged subtrees, with conservative invalidation for
+  visibility, layout, accessible-name dependencies, frames and shadow roots.
+  A cache that misses an invalidation is a correctness regression, not a speedup.
+- Indexed candidate discovery and role/name predicate pushdown before geometry;
+  search a semantic index rather than applying binary search to an unordered DOM.
+- Action-plus-postcondition responses that avoid a second whole-page observation;
+  existing assertions, batch steps and bounded recipe extraction already help.
+- Native structured data and exact category routing before any model/classifier.
+- Bounded asynchronous jobs with small result packets and explicit escalation;
+  measure completion quality and parent interruption as well as inference time.
+- Request-level CDP, extraction, serialization, proxy and model-serving telemetry.
+  Aggregate dogfood logs showed no new disconnect/panic/timeout cohort, but no
+  substantial peer workload has yet established an end-to-end performance win.
+
+The rejected action-script cache saved only 2.46% of protocol bytes while adding
+round trips and slightly increasing fixture elapsed time. It remains uninstalled.
+The role-filter pushdown and exact per-walk indexing are installed; classifiers
+and reading workers remain optional experiments. See
+[worker/decision evidence](measurements/decision-workers-2026-10-01.json) and the
+[worker operating guide](../skills/brw/references/decision-workers.md).
+
+The batched relevance experiment resolved 35/36 at median 278 ms (p95 464 ms).
+Unlike winner-takes-all choice, it made no wrong-target proposal in this cohort:
+the sole miss was an unnecessary refresh because “Documentation” received 0.78,
+below the preselected 0.8 yes threshold. Alternatives had to be at or below 0.2;
+multiple supported candidates triggered refresh in code. Thresholds were not
+retuned after seeing this result. This shifts the observed error from an incorrect
+action to abstention; it does not establish those thresholds on new workloads.
+The resolver also passed 240 seeded observation-order permutations. All proposed
+actions in these classifier/model tests remained unexecuted.

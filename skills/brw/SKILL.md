@@ -154,6 +154,16 @@ Exact signatures and advanced tools (network, debugging, visual evidence,
 profiles, assertions and artifacts): [tool catalogue](references/tool-catalogue.md).
 Load only the section you need; do not read the entire catalogue by default.
 
+## Optional models and classifiers
+
+Direct use by the caller's model remains the default; brw requires no intermediate
+model or classifier. For asynchronous reading or bounded semantic decisions, use
+the [optional worker guide](references/decision-workers.md). Resolve exact matches
+and invalid targets in code first. Keep providers, models, endpoints and credentials
+configurable, and measure quality, whole-job latency and parent-context size before
+enabling a helper. Full pages stay in worker artifacts; return only the requested
+answer and its source. Classifier confidence does not replace result verification.
+
 ## Tabs, leases, cleanup
 
 No `tab_id` means this session's own working tab, not whatever the human is looking at;
