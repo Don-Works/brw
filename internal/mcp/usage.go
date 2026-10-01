@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
@@ -44,7 +45,7 @@ func (s *Server) recordMCPUsage(ctx context.Context, operation, scope, represent
 	if s.usage == nil && !forwarding {
 		return
 	}
-	outcome, errorClass, fingerprint := mcpUsageOutcome(result, rpcErr)
+	outcome, errorClass, fingerprint := mcpUsageOperationOutcome(operation, result, rpcErr)
 	elapsed := time.Since(started)
 	event := usagelog.Event{
 		Layer: "mcp", Operation: operation, Outcome: outcome, Scope: scope, Representation: representation,
@@ -111,6 +112,40 @@ func (s *Server) recordMCPUsage(ctx context.Context, operation, scope, represent
 	if err := reporter.ReportUsage(ctx, event); err != nil {
 		log.Print("usage metadata report failed")
 	}
+}
+
+func mcpUsageOperationOutcome(operation string, result any, rpcErr *rpcError) (outcome, errorClass, fingerprint string) {
+	outcome, errorClass, fingerprint = mcpUsageOutcome(result, rpcErr)
+	if outcome != "ok" {
+		return
+	}
+	payload, ok := result.(map[string]any)
+	if !ok {
+		return
+	}
+	var failed, cancelled bool
+	var message string
+	switch operation {
+	case "brw_batch":
+		if batch, ok := payload["structuredContent"].(browser.BatchResult); ok {
+			failed, cancelled, message = !batch.OK, batch.Cancelled, batch.Error
+		}
+	case "brw_plan":
+		if plan, ok := payload["structuredContent"].(browser.PlanResult); ok {
+			failed, cancelled, message = !plan.OK, plan.Cancelled, plan.Error
+		}
+	}
+	if !failed {
+		return
+	}
+	if message == "" {
+		message = "sequence failed"
+	}
+	errorClass = usagelog.ClassifyError(errors.New(message))
+	if cancelled {
+		errorClass = "canceled"
+	}
+	return "error", errorClass, usagelog.Fingerprint(message)
 }
 
 func mcpUsageOutcome(result any, rpcErr *rpcError) (outcome, errorClass, fingerprint string) {
