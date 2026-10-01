@@ -32,11 +32,16 @@ in-page samples; compare their semantics and complete workflows before landing
 either optimization. The crowding case is an observation probe and logs its
 result; it is not a task-success assertion.
 
-Back in the original repository, the deterministic reader probes use fake
-providers and subprocess fixtures:
+The deterministic reader probe asserts the original v0.19.0 behavior, including
+the shortcomings subsequently fixed. From the original repository, copy it into
+the same disposable v0.19.0 checkout and run it there. It uses fake providers and
+subprocess fixtures. It refuses the newer instrumented worker so synthetic jobs
+cannot enter the installed usage ledger:
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 docs/experiments/next-release-2026-10-01/reader_probe.py
+mkdir -p "$brw_research_tree/docs/experiments/next-release-2026-10-01"
+cp docs/experiments/next-release-2026-10-01/reader_probe.py "$brw_research_tree/docs/experiments/next-release-2026-10-01/reader_probe.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$brw_research_tree/docs/experiments/next-release-2026-10-01/reader_probe.py"
 ```
 
 They write `/tmp/brw-next-reader-probe.json`. The separate model probe makes six

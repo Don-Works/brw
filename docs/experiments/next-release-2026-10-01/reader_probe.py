@@ -22,6 +22,8 @@ def load(name, path):
     return mod
 
 worker = load('probe_worker', ROOT / 'scripts/browser-answer-worker.py')
+if hasattr(worker, 'USAGE'):
+    raise SystemExit('Run this baseline probe in the disposable v0.19.0 checkout described in README.md.')
 adapter = load('probe_adapter', ROOT / 'scripts/browser-reader-mcp.py')
 fixtures = load('probe_fixtures', ROOT / 'scripts/test_browser_reader_mcp.py')
 METRICS = {}
