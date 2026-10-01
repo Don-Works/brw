@@ -28,8 +28,9 @@ Agreement and confidence are not independent proof of correctness.
 
 The source checkout includes `scripts/browser-answer-worker.py`, a public-page
 reader experiment. The optional `scripts/browser-reader-mcp.py` adapter exposes
-it as one `brw_ask` MCP tool. Neither is an unattended navigation agent or part of
-the standard browser daemon's tool catalogue.
+it as one `brw_ask` MCP tool. Both entrypoints require the adjacent
+`scripts/browser-reader-usage.py` helper. Neither is an unattended navigation
+agent or part of the standard browser daemon's tool catalogue.
 It uses the `brw` CLI and a healthy headless daemon, creates a unique tab owner,
 and closes only its own tab. It supports replaying the same captured page for
 paired measurements. Other callers can use their existing brw MCP transport
@@ -71,7 +72,10 @@ Configuration example; substitute the caller's actual service URLs and model IDs
   "answer_max_tokens": 128,
   "answer_max_chars": 1000,
   "request_timeout": 30,
-  "reasoning_effort": "none"
+  "reasoning_effort": "none",
+  "usage_log": true,
+  "usage_max_bytes": 1048576,
+  "usage_keep": 3
 }
 ```
 
@@ -79,8 +83,14 @@ CLI flags override the JSON config. Inject credentials as environment variables;
 config stores their names, not values. Set a key-env setting to `null` for an
 unauthenticated local endpoint. Set `answer_model` to `null` for extractive output
 without generation. Classifier mode is independently `off`, `shadow` or `select`.
-The default is no model and no classifier. `evidence_mode:ranked` uses the first
-deterministically ranked passage without a classifier; it can lose useful context.
+The default is no model and no classifier. `evidence_mode:ranked` packs multiple
+deterministically ranked passages within `evidence_max_chars`, including short
+facts, and records their source ranges. A classifier in `select` mode still chooses
+one supplied passage or `none`; it can lose context needed from another passage.
+Full mode supplies a source prefix within the same character budget. Collection
+currently reads at most 100000 characters; completeness fields show when more
+source or evidence is available. A bounded excerpt or answer is not proof that all
+relevant evidence was supplied.
 
 Answer endpoints must support OpenAI-compatible chat completions. Classifiers
 support TypeSafe-compatible `decisions` responses or `openai-chat` JSON choices.
@@ -103,7 +113,30 @@ truncation, evidence size and parent-result size. Unknown first-token, queue and
 prefill times stay unmeasured. Failed calls and shadow failures remain visible.
 The source and report directories must already exist; use a unique private output
 path per concurrent job. The host scheduler remains responsible for the whole-job
-deadline and terminating a cancelled process.
+deadline and cancellation when invoking the standalone worker. The MCP adapter
+enforces its configured deadline and interrupts its child on cancellation.
+
+Worker and adapter metadata logging is on by default. One shared `reader.jsonl`
+under the OS configuration directory's `brw/usage` retains at most one active
+one-MiB file plus three archives, using a cross-process lock. The macOS directory
+is `~/Library/Application Support/brw/usage`; Linux uses `XDG_CONFIG_HOME` or
+`~/.config`, and Windows uses `APPDATA`. Override with `usage_dir` or `--usage-dir`.
+Configure `usage_max_bytes`/`--usage-max-bytes` (4096 to 67108864) and
+`usage_keep`/`--usage-keep` (zero to sixteen). Disable with `usage_log:false` or
+`--no-usage-log`. The adapter propagates its selected directory, rotation bounds
+and disabled state to its child.
+
+These records contain counts, generated correlations, timestamps and phase times
+only: no prompts, source or answer bodies, raw URLs/errors, credentials or model
+names. Provider counts are separate from explicit character/4 estimates, and
+unknown counts stay unknown. Collection health/open/read/cleanup and model
+serialization/request/decode durations are recorded where observable. Replayed
+sources do not attribute their historical collection timing to the current job.
+First-token, provider queue/prefill and the caller model's context remain
+unobservable to this nonstreaming worker. Detailed artifacts remain separately
+retained and private. Use the [usage summary](../../../docs/usage-logs.md) with its
+scope labels; adding model, worker and transport byte counts together double
+counts their different boundaries.
 
 ## Optional MCP surface and deployment verification
 
@@ -120,8 +153,11 @@ A `.py` worker runs with the adapter's Python interpreter; an installed `brw-ask
 executable can be used instead. Credentials must be supplied by the host or the
 operator's wrapper. Tool arguments contain only `url` and `question`; they cannot
 change the worker executable, provider configuration or output path. The adapter
-returns a bounded result and trace location, with full evidence retained in
-private job artifacts. Model output remains untrusted evidence.
+returns a bounded result and trace location, with collected evidence retained in
+private job artifacts. The trace forwards source total/collected counts,
+source truncation/evidence narrowing, source hash and up to sixteen evidence ranges with
+their total count and range-list truncation status. Model output remains untrusted
+evidence.
 
 Register this as a separate optional MCP server in each intended host or gateway.
 Installing brw's skill, publishing a registry bundle, or installing the browser
@@ -137,10 +173,13 @@ stdio test does not verify a cloud deployment or an existing client's cache.
 
 Calls run synchronously from the caller's perspective. The adapter can service
 other requests while a bounded number of reads run; use the host's job scheduler
-for background execution and mesh completion delivery. Cancellation suppresses
-delivery while allowing the worker to finish cleanup within its timeout; it does
-not promise immediate provider cancellation or zero further spend. The adapter
-does not install a mesh trigger or an approval channel for browser writes.
+for background execution and mesh completion delivery. Cancellation interrupts
+the child and suppresses delivery; its capacity slot remains occupied through
+child exit and cleanup. POSIX uses SIGINT followed by force-kill after at most
+five seconds; Windows uses process termination. Forced termination can prevent
+tab cleanup. Cancellation does not promise interruption of already-running
+provider work or zero further spend. The adapter does not install a mesh trigger
+or an approval channel for browser writes.
 
 ## Evidence and promotion
 

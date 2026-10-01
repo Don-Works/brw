@@ -197,7 +197,7 @@ try {
   Copy-Item -Recurse -Force (Join-Path $RepoRoot "tests") (Join-Path $StageDir "share/tests")
   Copy-Item -Recurse -Force (Join-Path $RepoRoot "skills") (Join-Path $StageDir "share/skills")
   New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "share/reader") | Out-Null
-  Copy-Item -Force (Join-Path $RepoRoot "scripts/browser-answer-worker.py"), (Join-Path $RepoRoot "scripts/browser-reader-mcp.py") (Join-Path $StageDir "share/reader")
+  Copy-Item -Force (Join-Path $RepoRoot "scripts/browser-answer-worker.py"), (Join-Path $RepoRoot "scripts/browser-reader-mcp.py"), (Join-Path $RepoRoot "scripts/browser-reader-usage.py") (Join-Path $StageDir "share/reader")
   Copy-Item -Force (Join-Path $RepoRoot "LICENSE") (Join-Path $StageDir "share/doc/LICENSE")
   Copy-Item -Force (Join-Path $RepoRoot "README.md") (Join-Path $StageDir "share/doc/README.md")
 

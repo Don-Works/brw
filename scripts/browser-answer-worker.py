@@ -317,7 +317,18 @@ def _run(args, ledger, trace_id):
     if not evidence:
         answer = 'The supplied page does not provide sufficient unambiguous evidence.'
     parent_result = {'answer' if args.answer_model else 'excerpt': answer, 'source': page.get('url')}
-    report = {'question': args.question, 'mode': {'answer_model': args.answer_model, 'classifier': args.classifier_mode, 'classifier_protocol': args.classifier_protocol, 'classifier_model': args.classifier_model if args.classifier_mode != 'off' else None}, 'source_sha256': hashlib.sha256(text.encode()).hexdigest(), 'source_chars': len(text), 'source_bytes': len(text.encode()), 'source_total_chars': page.get('main_total_chars'), 'source_truncated': bool(page.get('main_truncated')) or page.get('main_total_chars', len(text)) > len(text), 'collection_ms': page.get('collection_ms'), 'collection_replayed': bool(args.source_artifact), 'evidence_chars': len(evidence), 'selected_passage': selected, 'parent_result': parent_result, 'parent_result_chars': len(json.dumps(parent_result, ensure_ascii=False)), 'phases': phases, 'worker_ms': round((time.perf_counter()-started)*1000, 3), 'scope': 'Public-page reader experiment; no browser actions proposed by models. Answer factuality requires evaluation; bounded output is not proof of correctness.'}
+    source_total = page.get('main_total_chars')
+    if not isinstance(source_total, int) or isinstance(source_total, bool) or source_total < len(text):
+        source_total = None
+    truncated = page.get('main_truncated')
+    source_truncated = None
+    if truncated is True:
+        source_truncated = True
+    elif source_total is not None:
+        source_truncated = source_total > len(text)
+    elif truncated is False:
+        source_truncated = False
+    report = {'question': args.question, 'mode': {'answer_model': args.answer_model, 'classifier': args.classifier_mode, 'classifier_protocol': args.classifier_protocol, 'classifier_model': args.classifier_model if args.classifier_mode != 'off' else None}, 'source_sha256': hashlib.sha256(text.encode()).hexdigest(), 'source_chars': len(text), 'source_bytes': len(text.encode()), 'source_total_chars': source_total, 'source_truncated': source_truncated, 'collection_ms': page.get('collection_ms'), 'collection_replayed': bool(args.source_artifact), 'evidence_chars': len(evidence), 'selected_passage': selected, 'parent_result': parent_result, 'parent_result_chars': len(json.dumps(parent_result, ensure_ascii=False)), 'phases': phases, 'worker_ms': round((time.perf_counter()-started)*1000, 3), 'scope': 'Public-page reader experiment; no browser actions proposed by models. Answer factuality requires evaluation; bounded output is not proof of correctness.'}
     report['job_id'] = job_id
     report['evidence_narrowed'] = len(evidence) < len(text)
     report['collection_phases'] = page.get('collection_phases')

@@ -62,7 +62,7 @@ cp -R "$repo_root/extension" "$root_dir/usr/share/brw/extension"
 cp -R "$repo_root/tests" "$root_dir/usr/share/brw/tests"
 cp -R "$repo_root/skills" "$root_dir/usr/share/brw/skills"
 mkdir -p "$root_dir/usr/share/brw/reader"
-cp "$repo_root/scripts/browser-answer-worker.py" "$repo_root/scripts/browser-reader-mcp.py" "$root_dir/usr/share/brw/reader/"
+cp "$repo_root/scripts/browser-answer-worker.py" "$repo_root/scripts/browser-reader-mcp.py" "$repo_root/scripts/browser-reader-usage.py" "$root_dir/usr/share/brw/reader/"
 cp "$repo_root/LICENSE" "$root_dir/usr/share/brw/doc/LICENSE"
 cp "$repo_root/README.md" "$root_dir/usr/share/brw/doc/README.md"
 find "$root_dir" -name '._*' -delete

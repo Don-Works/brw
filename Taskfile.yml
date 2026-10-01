@@ -175,7 +175,7 @@ tasks:
       - cp -R extension/. "{{.DATADIR}}/extension/"
       - cp -R tests/. "{{.DATADIR}}/tests/"
       - cp -R skills/brw/. "{{.DATADIR}}/skills/brw/"
-      - cp scripts/browser-answer-worker.py scripts/browser-reader-mcp.py "{{.DATADIR}}/reader/"
+      - cp scripts/browser-answer-worker.py scripts/browser-reader-mcp.py scripts/browser-reader-usage.py "{{.DATADIR}}/reader/"
       - task: sync-installed-extensions
       # On Apple Silicon, copying a Go binary invalidates its ad-hoc code
       # signature and the OS then SIGKILLs it ("Killed: 9"); re-sign the copies.
@@ -202,7 +202,7 @@ tasks:
       - cp -R extension/. "{{.MAC_APPDIR}}/extension/"
       - cp -R tests/. "{{.MAC_APPDIR}}/tests/"
       - cp -R skills/brw/. "{{.MAC_APPDIR}}/skills/brw/"
-      - cp scripts/browser-answer-worker.py scripts/browser-reader-mcp.py "{{.MAC_APPDIR}}/reader/"
+      - cp scripts/browser-answer-worker.py scripts/browser-reader-mcp.py scripts/browser-reader-usage.py "{{.MAC_APPDIR}}/reader/"
       - task: sync-installed-extensions
       - |
         if [ -f "$HOME/.config/brw/browser-profiles.json" ]; then

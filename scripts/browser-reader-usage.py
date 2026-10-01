@@ -14,9 +14,9 @@ def default_directory():
     if sys.platform == 'darwin':
         root = pathlib.Path.home() / 'Library/Application Support'
     elif os.name == 'nt':
-        root = pathlib.Path(os.environ.get('APPDATA', pathlib.Path.home() / 'AppData/Roaming'))
+        root = pathlib.Path(os.environ.get('APPDATA') or pathlib.Path.home() / 'AppData/Roaming')
     else:
-        root = pathlib.Path(os.environ.get('XDG_CONFIG_HOME', pathlib.Path.home() / '.config'))
+        root = pathlib.Path(os.environ.get('XDG_CONFIG_HOME') or pathlib.Path.home() / '.config')
     return str(root / 'brw/usage')
 
 
@@ -145,6 +145,14 @@ class Ledger:
                         os.replace(path, paths[1])
                     else:
                         path.unlink()
+                for archive in self.directory.glob('reader.jsonl.*'):
+                    suffix = archive.name[len('reader.jsonl.'):]
+                    if not suffix.isdigit():
+                        continue
+                    if archive.is_symlink():
+                        raise OSError('Usage file is a symlink')
+                    if int(suffix) > self.keep or archive.stat().st_size > self.max_bytes:
+                        archive.unlink()
                 with self.private_open(path) as output:
                     output.write(raw)
                     output.flush()

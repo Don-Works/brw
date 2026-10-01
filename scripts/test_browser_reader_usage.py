@@ -44,6 +44,21 @@ class UsageTest(unittest.TestCase):
                 self.assertNotIn('url', row)
         self.assertEqual(json.loads((self.root/'usage/reader.jsonl').read_text().splitlines()[-1])['input_bytes'], 99)
 
+    def test_lower_retention_limits_remove_old_oversized_archives(self):
+        directory = self.root/'usage'
+        ledger = USAGE.Ledger(directory, max_bytes=8192, keep=4)
+        for index in range(250):
+            ledger.write('job', 'reader', str(uuid.uuid4()), input_bytes=index)
+        self.assertTrue((directory/'reader.jsonl.4').exists())
+        USAGE.Ledger(directory, max_bytes=4096, keep=1).write('job', 'reader', str(uuid.uuid4()), input_bytes=999)
+        files = list(directory.glob('reader.jsonl*'))
+        self.assertLessEqual(len(files), 2)
+        self.assertTrue(all(file.stat().st_size <= 4096 for file in files))
+        self.assertFalse((directory/'reader.jsonl.4').exists())
+        self.assertEqual(json.loads((directory/'reader.jsonl').read_text().splitlines()[-1])['input_bytes'], 999)
+        USAGE.Ledger(directory, max_bytes=4096, keep=0).write('job', 'reader', str(uuid.uuid4()))
+        self.assertEqual(len(list(directory.glob('reader.jsonl*'))), 1)
+
     def test_concurrent_processes_share_complete_records(self):
         code = "import importlib.util,sys,uuid; s=importlib.util.spec_from_file_location('u',sys.argv[1]); u=importlib.util.module_from_spec(s); s.loader.exec_module(u); l=u.Ledger(sys.argv[2],max_bytes=65536); [l.write('job','reader',str(uuid.uuid4()),input_bytes=i) for i in range(20)]"
         environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
@@ -105,6 +120,8 @@ class UsageTest(unittest.TestCase):
     def test_platform_defaults_and_environment_opt_out(self):
         with patch.object(USAGE.sys, 'platform', 'darwin'), patch.object(USAGE.pathlib.Path, 'home', return_value=pathlib.Path('/home/operator')):
             self.assertEqual(USAGE.default_directory(), '/home/operator/Library/Application Support/brw/usage')
+        with patch.object(USAGE.sys, 'platform', 'linux'), patch.object(USAGE.pathlib.Path, 'home', return_value=pathlib.Path('/home/operator')), patch.dict(os.environ, {'XDG_CONFIG_HOME': ''}):
+            self.assertEqual(USAGE.default_directory(), '/home/operator/.config/brw/usage')
         with patch.object(USAGE.sys, 'platform', 'linux'), patch.dict(os.environ, {'XDG_CONFIG_HOME': '/tmp/operator-config'}):
             self.assertEqual(USAGE.default_directory(), '/tmp/operator-config/brw/usage')
         with patch.dict(os.environ, {'BRW_READER_USAGE_ENABLED': '0'}):

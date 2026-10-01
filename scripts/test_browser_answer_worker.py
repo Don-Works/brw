@@ -34,6 +34,9 @@ class WorkerTest(unittest.TestCase):
         call.assert_not_called()
         self.assertIn('excerpt', result)
         self.assertNotIn('answer', result)
+        report = json.loads((self.root/'report.json').read_text())
+        self.assertIsNone(report['source_total_chars'])
+        self.assertIsNone(report['source_truncated'])
 
     def test_shadow_failure_preserves_baseline_evidence(self):
         args = worker.parse_args(self.base + ['--classifier-mode', 'shadow'])

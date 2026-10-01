@@ -1,13 +1,14 @@
 # Deploying the optional reader
 
-brw v0.19.0 bundles two standard-library Python scripts, separately from its
-normal browser tool surface. Python is needed only when using this optional
-reader. The browser daemon continues to work without a model or classifier.
+brw bundles an optional reader separately from its normal browser tool surface.
+Python is needed only when using this reader. The browser daemon continues to
+work without a model or classifier.
 
 ## Payload and startup
 
-Unix archives contain `reader/browser-answer-worker.py` and
-`reader/browser-reader-mcp.py`. The shell installer places them in
+Unix archives contain `reader/browser-answer-worker.py`,
+`reader/browser-reader-mcp.py` and their shared `reader/browser-reader-usage.py`
+helper. Keep these files together. The shell installer places them in
 `<app-dir>/reader/`. Native packages use `/usr/share/brw/reader/` on Linux and
 `/usr/local/share/brw/reader/` on macOS. Homebrew retains the archive's `reader/`
 under the formula prefix. The Windows packaging source includes `share/reader/`;
@@ -37,9 +38,47 @@ retention for reports, source evidence, progress events and diagnostics.
 
 The adapter validates HTTP(S) URLs and rejects embedded credentials. This is
 not public-IP or redirect isolation; apply the deployment's normal browser
-navigation and network policy. Calls may continue until their deadline after
-client cancellation. A forced kill after the cleanup grace cannot guarantee tab
-cleanup; inspect the job journal and owned browser resources after failures.
+navigation and network policy. Cancellation interrupts the child worker and
+suppresses its reply. The adapter retains its capacity slot until the child has
+exited and cleanup has completed. On POSIX it first sends SIGINT, allowing Python
+`finally` cleanup, then force-kills after at most five seconds. Windows uses
+process termination. A forced kill or termination cannot guarantee tab cleanup;
+inspect the job journal and owned browser resources after failures. Interrupting
+the client does not promise cancellation of work already running at a provider or
+zero further provider spend.
+
+## Automatic usage metadata
+
+The worker and adapter automatically append metadata to `reader.jsonl` under the
+OS user configuration directory: `~/Library/Application Support/brw/usage` on
+macOS, `${XDG_CONFIG_HOME:-~/.config}/brw/usage` on Linux and `%APPDATA%/brw/usage`
+on Windows. The directory and files must be private; POSIX modes are 0700 and
+0600. All reader processes coordinate through `.reader.lock`, rotating one shared
+file with a default one-MiB limit and three archives. Logging waits at most
+200 milliseconds for the lock; unavailable logging emits a generic warning and
+allows the reader operation to continue.
+
+Configure `usage_dir`, `usage_max_bytes`, `usage_keep` and `usage_log` in the worker
+JSON config, or pass `--usage-dir`, `--usage-max-bytes`, `--usage-keep` and
+`--no-usage-log` to either entrypoint. The adapter applies its chosen directory,
+rotation bounds and disabled state to its child. For example, a cloud service can
+use `--usage-dir /var/lib/brw-reader/usage --usage-max-bytes 1048576 --usage-keep 3`.
+Set `usage_log` to `false` to disable logging. Bounds are 4096 to 67108864 bytes
+and zero to sixteen archives.
+
+Records contain timestamps, generated job/request correlations, counts and phase
+durations. They exclude prompts, page text, answers, URLs, raw errors, credential
+values and model names. Model requests record actual serialized input/output
+bytes, explicit character/4 estimates and provider-reported input, output,
+cached-input, cache-write and reasoning tokens where supplied. Missing provider
+counts remain unknown rather than zero. Nonstreaming first-token timing remains
+unknown. Replayed sources do not report historical collection timing as current
+work. See [usage logs](usage-logs.md) for the shared summary and accounting scopes.
+
+The bounded result trace includes collected/total source counts, source truncation and
+evidence narrowing, a source hash and up to sixteen evidence ranges. Full ranges
+and detailed source/progress reports remain in the private artifacts; configure
+their retention separately from the metadata ledger.
 
 ## Maix handoff
 
@@ -47,7 +86,7 @@ The brw release does not register a server, install a mesh scheduler, deploy
 models or update a Maix image. The Maix deployment owner must:
 
 1. Pin the brw release and verify its archive checksum/provenance. Include Python
-   and both reader files in the image alongside the headless browser runtime.
+   and all three reader files in the image alongside the headless browser runtime.
 2. Supply operator configuration and credentials, and create the private artifact
    volume. Use the intended local or hosted answer model and independently choose
    classifier `off`, `shadow` or `select`.

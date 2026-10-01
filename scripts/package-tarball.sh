@@ -95,7 +95,7 @@ cp -R "$repo_root/extension" "$stage_dir/extension"
 cp -R "$repo_root/tests" "$stage_dir/tests"
 cp -R "$repo_root/skills" "$stage_dir/skills"
 mkdir -p "$stage_dir/reader"
-cp "$repo_root/scripts/browser-answer-worker.py" "$repo_root/scripts/browser-reader-mcp.py" "$stage_dir/reader/"
+cp "$repo_root/scripts/browser-answer-worker.py" "$repo_root/scripts/browser-reader-mcp.py" "$repo_root/scripts/browser-reader-usage.py" "$stage_dir/reader/"
 cp "$repo_root/LICENSE" "$stage_dir/doc/LICENSE"
 cp "$repo_root/README.md" "$stage_dir/doc/README.md"
 find "$stage_dir" -name '._*' -delete
