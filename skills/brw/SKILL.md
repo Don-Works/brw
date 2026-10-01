@@ -198,6 +198,18 @@ brw opens one if this session has none. (`--bridge-follow-focus` restores the le
 follow-the-human's-tab behaviour and is off by default.) Pass an explicit `tab_id` once
 more than one tab is in play — it also skips per-call tab resolution.
 
+Keep the `tab_id` returned by `brw_open`; do not list all tabs again to recover an
+id you already have. To find an existing tab, start with
+`brw_list_tabs({format:"compact", query:"host or title", limit:20})`. This returns
+text-only JSON with full ids, titles, URLs and lease status, plus `total`, `matched`,
+`returned`, `truncated` and `ownership_unknown`. `owned:true` selects only tabs
+marked `mine`; `owned:false` or omitted applies no ownership filter. Unknown
+ownership is explicit and never assumed mine. Narrow the query before increasing
+the limit when `truncated:true`; the compact default is 40 rows, maximum 1000.
+Filters require `format:"compact"` and reduce the returned context after the browser
+lists its tabs. Use the default full array only when omitted Chrome window/group
+details are needed. Reuse the selected id for subsequent reads and actions.
+
 On a daemon shared by several agents, one session holds each tab exclusively, reads
 included. `brw_list_tabs` shows other sessions' tabs as `leased`: do not focus, read,
 group, or close them. Acting on one returns `{"error":"tab_contended","retryable":false}`
