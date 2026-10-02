@@ -852,6 +852,8 @@ type activeTabResolver interface {
 // focus_tab/open). list_tabs in particular must stay free of the extra round
 // trip the task brief calls out.
 var tabAgnosticTools = map[string]bool{
+	"brw_approval_status": true,
+	"brw_approval_resume": true,
 	"brw_identity":        true,
 	skillToolName:         true,
 	"brw_list_tabs":       true,
