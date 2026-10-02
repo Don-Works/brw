@@ -16,4 +16,3 @@ outcome is uncertain, inspect it and involve the operator before taking another
 consequential action. Split gated mutations into single visible actions:
 mutating batches, plans and recipes require splitting or human takeover.
 Ordinary read calls do not capture approval evidence or access its store.
-
