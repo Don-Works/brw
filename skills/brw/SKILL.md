@@ -90,12 +90,14 @@ find results or action observations. Labels also get refs: select the actual
 control, never guess by number. Discard refs across navigation. `tab_id` must
 be a string, including when a gateway returned a numeric ID.
 
+For `approval_required`, follow [operator approvals](references/approvals.md).
+
 ## If your tool list looks short
 
 `brwd --mcp` starts with 14 tools in `auto` mode and grows as you search.
-The full surface is 95 tools on a direct-CDP daemon (94 on `--remote`,
-93 on the Chrome opt-in lane, 89 on a plugin-supplied off-host browser,
-79 on the extension bridge). Small initial catalogues reduce attached schemas.
+The full surface is 97 tools on a direct-CDP daemon (96 on `--remote`,
+95 on the Chrome opt-in lane, 91 on a plugin-supplied off-host browser,
+81 on the extension bridge). Small initial catalogues reduce attached schemas.
 
 ```json
 {"name":"brw_tools","arguments":{"query":"read the console"}}

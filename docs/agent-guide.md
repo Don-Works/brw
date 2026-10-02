@@ -155,6 +155,19 @@ settled, place only one approval-gated `brw` call in each script, let it return,
 then issue the next call. Batching several calls behind the first approval can
 leave every later call with no usable time budget.
 
+The browser-host daemon's opt-in `--approvals` workflow returns immediately
+with `approval_required` and an `approval_id`. Preserve the exact original tool
+and arguments while the operator decides. Check
+`brw_approval_status({approval_id})`, then, only once approved, call
+`brw_approval_resume({approval_id,tool,arguments})` with that original argument
+object. The original tool also accepts unchanged arguments plus `approval_id`.
+No operator token belongs in these calls. Approval expires after ten minutes,
+binds the observed page, tab and session, and is consumed before execution.
+A consumed approval cannot be replayed and does not prove a backend transaction
+succeeded; inspect an uncertain outcome before requesting another action.
+Mutating batches, plans and recipes require individual actions or human takeover.
+See [human approvals](approvals.md) for setup, privacy and operator isolation.
+
 Large values can be rendered as a short preview even though the complete value
 is available to code inside the script. Parse, filter, group, or select fields
 inside `execute_code`, then print compact one-line records. For example, parse a
@@ -616,15 +629,15 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` | 95 | ~36.0k tokens |
-| `core` | 26 | ~10.9k tokens |
-| `minimal` | 13 | ~6.3k tokens |
-| `auto` (default) | 14, growing | ~6.5k tokens to start |
+| `all` | 97 | ~37.4k tokens |
+| `core` | 26 | ~11.4k tokens |
+| `minimal` | 13 | ~6.4k tokens |
+| `auto` (default) | 14, growing | ~6.6k tokens to start |
 
 Measured on a direct-CDP daemon. A tool a transport cannot serve is never
-advertised on it, so the `all` row is 98 tools unfiltered, 95 on direct CDP, 94
-on `--remote`, 93 on the Chrome opt-in lane, 89 on a plugin-supplied off-host
-browser and 79 on the extension bridge; the narrower profiles are the same size
+advertised on it, so the `all` row is 100 tools unfiltered, 97 on direct CDP, 96
+on `--remote`, 95 on the Chrome opt-in lane, 91 on a plugin-supplied off-host
+browser and 81 on the extension bridge; the narrower profiles are the same size
 on every transport.
 
 `core` advertises the common-flow tools (open/snapshot/find/click/type/fill/

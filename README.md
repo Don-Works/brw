@@ -104,8 +104,8 @@ The full MCP surface is large. For lean agent contexts, run:
 
 ```sh
 brwd --mcp --mcp-tools auto     # 14 tools to start, grows on demand
-brwd --mcp --mcp-tools core     # 26 tools, ~10.9k tokens of catalogue
-brwd --mcp --mcp-tools minimal  # 13 tools, ~6.3k tokens of catalogue
+brwd --mcp --mcp-tools core     # 26 tools, ~11.4k tokens of catalogue
+brwd --mcp --mcp-tools minimal  # 13 tools, ~6.4k tokens of catalogue
 ```
 
 For a ready-to-paste agent system prompt that encodes the fast, token-efficient
@@ -552,8 +552,8 @@ Core MCP tools include:
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: on a direct-CDP daemon `all` costs ~36.0k tokens across
-95 tools, `core` ~10.9k, `minimal` ~6.3k, and `auto` starts at ~6.5k and grows
+tokens on every turn: on a direct-CDP daemon `all` costs ~37.4k tokens across
+97 tools, `core` ~11.4k, `minimal` ~6.4k, and `auto` starts at ~6.6k and grows
 only as the agent discovers tools it needs via `brw_tools` (measure with
 `scripts/measure-tool-catalogue.py`).
 
@@ -652,6 +652,9 @@ Backend-specific notes:
   plan/batch steps alike, and fails CLOSED when nobody is there to confirm. List and revoke with `brwctl grants`, the extension
   options page, or `brw grants`. Opt-in; off by default.
   See [docs/site-permissions.md](docs/site-permissions.md).
+  `--approvals` adds a separate authenticated operator inbox for asynchronous
+  decisions and exact, single-use retries; it implies `--confirm-actions`.
+  Setup and boundaries: [human approvals](docs/approvals.md).
 - **Content-boundary navigation guard**: `--content-nav-guard` (any CDP transport; not the extension bridge)
   refuses a top-level navigation that page content initiated to another site — an
   injected link click, a meta refresh, a script `location` assignment — while
