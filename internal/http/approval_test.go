@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -112,7 +113,7 @@ func TestApprovalInboxRequiresIndependentOperatorToken(t *testing.T) {
 		r.RemoteAddr = "127.0.0.1:40001"
 		switch source {
 		case "query":
-			r.URL.RawQuery = "token=" + testApprovalOperatorToken
+			r.URL.RawQuery = url.Values{"token": []string{testApprovalOperatorToken}}.Encode()
 		case "cookie":
 			r.AddCookie(&http.Cookie{Name: "operator_token", Value: testApprovalOperatorToken})
 		case "alternate header":
