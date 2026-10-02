@@ -193,7 +193,7 @@ func (g *Gate) Check(ctx context.Context, tool string, raw json.RawMessage, sess
 			}
 		}
 	}
-	state, err := g.capture(ctx)
+	state, err := g.capture(ctx, tool, args)
 	if err != nil {
 		return ctx, clean, err
 	}

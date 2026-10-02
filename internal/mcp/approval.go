@@ -24,6 +24,9 @@ func (s *Server) checkApproval(ctx context.Context, name string, args json.RawMe
 		return ctx, args, consentErr
 	}
 	if s.approvalGate == nil {
+		if strings.HasPrefix(name, "brw_approval_") {
+			return ctx, args, nil
+		}
 		var probe struct {
 			ID string `json:"approval_id"`
 		}
