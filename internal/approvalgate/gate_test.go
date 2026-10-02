@@ -543,3 +543,24 @@ func TestRiskyDestructiveAndAccessLabelsRequireApproval(t *testing.T) {
 		})
 	}
 }
+
+func TestRiskyBenignBatchRetainsFastPath(t *testing.T) {
+	g, c, _ := newGate(t, "risky")
+	raw := json.RawMessage(`{"steps":[{"action":"fill","ref":"search","text":"example"},{"action":"assert_value","ref":"search","value":"example"},{"action":"click","ref":"expand"}]}`)
+	label := func(ref string) string {
+		if ref == "search" {
+			return "Search"
+		}
+		return "Expand details"
+	}
+	if _, _, err := g.Check(context.Background(), "brw_batch", raw, "session", label, false); err != nil {
+		t.Fatal(err)
+	}
+	if c.lists.Load() != 0 || c.evaluations.Load() != 0 || len(g.Store.List()) != 0 {
+		t.Fatal("benign batch used approval slow path")
+	}
+	protected := json.RawMessage(`{"steps":[{"action":"click_text","text":"Publish"}]}`)
+	if _, _, err := g.Check(context.Background(), "brw_batch", protected, "session", label, false); err == nil || !strings.Contains(err.Error(), "approval_split_required") {
+		t.Fatalf("protected batch was not split before dispatch: %v", err)
+	}
+}

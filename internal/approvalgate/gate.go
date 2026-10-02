@@ -241,6 +241,38 @@ func (g *Gate) needs(tool string, raw []byte, label siteconsent.LabelFunc) (bool
 		return false, nil
 	}
 	probe := siteconsent.ParseProbe(raw)
+	if siteconsent.SequenceTools[tool] && g.mode == "risky" {
+		stepLabel := label
+		for _, step := range probe.Steps {
+			class, known := siteconsent.StepActions[step.Action]
+			if !known {
+				return true, nil
+			}
+			if class == siteconsent.StepNavigate || class == siteconsent.StepRetarget {
+				if err := g.CheckURL(step.URL); err != nil {
+					return false, err
+				}
+				stepLabel = nil
+				continue
+			}
+			if class != siteconsent.StepAct {
+				if step.Action == "wait" && strings.HasPrefix(strings.TrimSpace(step.Condition), "fn:") {
+					return true, nil
+				}
+				continue
+			}
+			stepTool := "brw_" + step.Action
+			if _, ok := siteconsent.ToolRules[stepTool]; !ok {
+				return true, nil
+			}
+			args, _ := json.Marshal(step)
+			needed, err := g.needs(stepTool, args, stepLabel)
+			if err != nil || needed {
+				return needed, err
+			}
+		}
+		return false, nil
+	}
 	checks, err := siteconsent.Checks(tool, probe)
 	if err != nil {
 		return false, err
