@@ -27,7 +27,7 @@ func (s *Server) approvalMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		operation := usageOperations[r.URL.Path]
-		if operation == "" || approvalgate.ReadOnly(operation) {
+		if operation == "" || (approvalgate.ReadOnly(operation) && r.Header.Get("X-Brw-Approval-Id") == "") {
 			next.ServeHTTP(w, r)
 			return
 		}

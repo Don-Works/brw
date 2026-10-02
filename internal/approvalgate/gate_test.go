@@ -564,3 +564,13 @@ func TestRiskyBenignBatchRetainsFastPath(t *testing.T) {
 		t.Fatalf("protected batch was not split before dispatch: %v", err)
 	}
 }
+
+func TestApprovalBindingStillAppliesWhenChangedArgumentsLookBenign(t *testing.T) {
+	g, _, _ := newGate(t, "risky")
+	original := json.RawMessage(`{"ref":"button-ref"}`)
+	req := pending(t, g, context.Background(), original, "session")
+	approved(t, g, req.RequestID)
+	changed := json.RawMessage(`{"ref":"different-ref","approval_id":"` + req.RequestID + `"}`)
+	_, _, err := g.Check(context.Background(), "brw_click", changed, "session", func(string) string { return "Expand details" }, false)
+	code(t, err, "binding_mismatch")
+}

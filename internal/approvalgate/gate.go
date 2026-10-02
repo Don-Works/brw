@@ -1,6 +1,7 @@
 package approvalgate
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -124,12 +125,24 @@ func (g *Gate) Check(ctx context.Context, tool string, raw json.RawMessage, sess
 	if g == nil {
 		return ctx, raw, nil
 	}
+	if tool == "brw_approval_status" || tool == "brw_approval_resume" {
+		return ctx, raw, nil
+	}
 	needed, err := g.needs(tool, raw, label)
 	if err != nil {
 		return ctx, raw, err
 	}
 	if !needed && !required {
-		return ctx, raw, nil
+		if !bytes.Contains(raw, []byte(`"approval_id"`)) {
+			return ctx, raw, nil
+		}
+		var probe map[string]json.RawMessage
+		if json.Unmarshal(raw, &probe) != nil {
+			return ctx, raw, errors.New("approval requires valid arguments")
+		}
+		if _, present := probe["approval_id"]; !present {
+			return ctx, raw, nil
+		}
 	}
 	if siteconsent.SequenceTools[tool] || tool == "brw_recipe_run" {
 		return ctx, raw, errors.New("approval_split_required: run state-changing steps individually; an approval cannot safely resume or replay a whole batch, plan or recipe")

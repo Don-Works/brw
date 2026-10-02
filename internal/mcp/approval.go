@@ -31,6 +31,11 @@ func (s *Server) checkApproval(ctx context.Context, name string, args json.RawMe
 			ID string `json:"approval_id"`
 		}
 		if json.Unmarshal(args, &probe) == nil && probe.ID != "" {
+			if _, remote := s.manager.(interface {
+				ApprovalStatus(context.Context, string) (map[string]any, error)
+			}); !remote {
+				return ctx, args, errors.New("approvals are not enabled")
+			}
 			var fields map[string]json.RawMessage
 			_ = json.Unmarshal(args, &fields)
 			delete(fields, "approval_id")
