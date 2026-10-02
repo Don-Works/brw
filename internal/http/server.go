@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Don-Works/brw/internal/approval"
 	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
@@ -29,9 +30,11 @@ import (
 )
 
 type Server struct {
-	manager   browser.Controller
-	artifacts artifact.API
-	recipes   recipe.API
+	approvals             *approval.Store
+	approvalOperatorToken string
+	manager               browser.Controller
+	artifacts             artifact.API
+	recipes               recipe.API
 	// baselineRoutes answers "does the private provider own this recipe, or the
 	// page this capture is of". A proxying daemon runs brw_baseline itself and
 	// has no provider of its own, so without this hop it would route every
@@ -328,6 +331,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /approvals", s.approvalPage)
+	mux.HandleFunc("GET /operator/approvals", s.approvalList)
+	mux.HandleFunc("POST /operator/approvals/{id}/decision", s.approvalDecide)
+	mux.HandleFunc("GET /api/approvals/{id}", s.approvalStatus)
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("POST /api/usage/report", s.reportUsage)
 	// The profile roster: loopback-only, and it reaches browsers only through
