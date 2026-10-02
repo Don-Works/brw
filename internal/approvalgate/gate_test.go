@@ -531,3 +531,15 @@ func TestIncompleteEvidenceRefusesRetry(t *testing.T) {
 		t.Fatal("incomplete evidence spent the approval")
 	}
 }
+
+func TestRiskyDestructiveAndAccessLabelsRequireApproval(t *testing.T) {
+	for _, label := range []string{"Delete account", "Grant access", "Transfer ownership", "Permissions"} {
+		t.Run(label, func(t *testing.T) {
+			g, _, _ := newGate(t, "risky")
+			needed, err := g.needs("brw_click", []byte(`{"ref":"e1"}`), func(string) string { return label })
+			if err != nil || !needed {
+				t.Fatalf("label %q did not require approval: %v %v", label, needed, err)
+			}
+		})
+	}
+}

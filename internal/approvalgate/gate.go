@@ -226,8 +226,14 @@ func (g *Gate) required(req approval.Request) error {
 	return &RequiredError{RequestID: req.ID, Status: req.Status, ExpiresAt: req.ExpiresAt, StatusURL: g.operatorOrigin + "/api/approvals/" + req.ID, ApprovalURL: g.operatorOrigin + "/approvals"}
 }
 
+// ReadOnly identifies page observations without decoding or buffering arguments.
+func ReadOnly(tool string) bool {
+	rule, ok := siteconsent.ToolRules[tool]
+	return ok && rule.Scope == siteconsent.ScopeRead && rule.Target == siteconsent.TargetPage && rule.Escalate == nil && !rule.ScriptCondition && tool != "brw_find"
+}
+
 func (g *Gate) needs(tool string, raw []byte, label siteconsent.LabelFunc) (bool, error) {
-	if rule, ok := siteconsent.ToolRules[tool]; ok && rule.Scope == siteconsent.ScopeRead && rule.Target == siteconsent.TargetPage && rule.Escalate == nil && !rule.ScriptCondition && tool != "brw_find" {
+	if ReadOnly(tool) {
 		return false, nil
 	}
 	probe := siteconsent.ParseProbe(raw)
@@ -255,6 +261,12 @@ func (g *Gate) needs(tool string, raw []byte, label siteconsent.LabelFunc) (bool
 					action.Request.Fields = append(action.Request.Fields, name)
 				} else if action.Request.Label == "" {
 					action.Request.Label = name
+				}
+			}
+			words := strings.ToLower(action.Request.Label + " " + action.Request.Text)
+			for _, signal := range []string{"delete", "remove account", "deactivate", "grant access", "revoke access", "permissions", "make admin", "transfer ownership"} {
+				if strings.Contains(words, signal) {
+					return true, nil
 				}
 			}
 			if len(siteconsent.Classify(action.Request, siteconsent.CategorySet{})) != 0 {

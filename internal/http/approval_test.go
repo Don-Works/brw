@@ -258,7 +258,7 @@ func TestApprovalPageStaticLockedAndSafe(t *testing.T) {
 			t.Fatalf("static locked page contains unsafe or private data %q", forbidden)
 		}
 	}
-	for _, required := range []string{`type="password"`, `id="inbox" hidden`, "Approve once", "Reject", "Lock inbox", "textContent", "Notification.requestPermission()", "setTimeout(refresh,3000)", "document.hidden", "Authorization: Bearer"} {
+	for _, required := range []string{`type="password"`, `id="inbox" hidden`, "Approve once", "Reject", "Lock inbox", "textContent", "Notification.requestPermission()", "document.hidden?15000:3000", "document.hidden", "browser the agent controls"} {
 		if !strings.Contains(body, required) {
 			t.Fatalf("missing approval page behavior %q", required)
 		}
@@ -270,5 +270,23 @@ func TestApprovalPageStaticLockedAndSafe(t *testing.T) {
 	}
 	if got.Header().Get("Cache-Control") != "no-store" || got.Header().Get("Referrer-Policy") != "no-referrer" {
 		t.Fatal("approval page missing privacy headers")
+	}
+}
+
+func TestApprovalCanBeRevokedBeforeConsumption(t *testing.T) {
+	s, request := newApprovalHTTPTest(t)
+	path := "/operator/approvals/" + request.ID + "/decision"
+	if got := serveApprovalHTTP(s, "POST", path, `{"decision":"approved"}`, testApprovalOperatorToken); got.Code != http.StatusOK {
+		t.Fatal(got.Code)
+	}
+	if got := serveApprovalHTTP(s, "POST", path, `{"decision":"revoke"}`, testApprovalOperatorToken); got.Code != http.StatusOK {
+		t.Fatal(got.Code)
+	}
+	current, _ := s.approvals.Get(request.ID)
+	if current.Status != "stale" || current.DecisionNote != "revoked by operator" {
+		t.Fatalf("revocation not persisted: %+v", current)
+	}
+	if _, err := s.approvals.Consume(request.ID, request.Fingerprint, request.StateDigest); err == nil {
+		t.Fatal("revoked approval consumed")
 	}
 }
