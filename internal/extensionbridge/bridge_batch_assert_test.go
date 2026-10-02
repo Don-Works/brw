@@ -82,6 +82,16 @@ func (f *assertFakeExtension) serve(ctx context.Context, conn *websocket.Conn) {
 			params, _ := msg.Params["params"].(map[string]any)
 			expression, _ := params["expression"].(string)
 			switch {
+			case strings.HasPrefix(expression, snapshot.AssertValueScript):
+				question := strings.TrimPrefix(expression, snapshot.AssertValueScript)
+				f.asked = append(f.asked, question)
+				value, known := f.getters[question]
+				if !known {
+					ok = false
+					errText = "fake extension has no answer for " + question
+					break
+				}
+				result = map[string]any{"result": map[string]any{"value": value}}
 			case strings.HasPrefix(expression, snapshot.GetScript):
 				question := strings.TrimPrefix(expression, snapshot.GetScript)
 				f.asked = append(f.asked, question)
@@ -104,6 +114,32 @@ func (f *assertFakeExtension) serve(ctx context.Context, conn *websocket.Conn) {
 		f.mu.Unlock()
 		reply, _ := json.Marshal(response{ID: msg.ID, OK: ok, Result: mustAssertFakeJSON(result), Error: errText})
 		_ = conn.Write(ctx, websocket.MessageText, reply)
+	}
+}
+
+func TestBridgeBatchAssertValueAcceptsEmptyAndStopsOnMismatch(t *testing.T) {
+	fake := &assertFakeExtension{getters: map[string]any{
+		`("empty","",100)`:  true,
+		`("filled","",100)`: false,
+	}}
+	b, cleanup := connectAssertFake(t, fake)
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(browser.WithTabID(context.Background(), "42"), 10*time.Second)
+	defer cancel()
+	result, err := b.ExecuteBatch(ctx, []browser.BatchStep{
+		{Action: "assert_value", Ref: "empty", Value: "", TimeoutMS: 100},
+		{Action: "assert_value", Ref: "filled", Value: "", TimeoutMS: 100},
+		{Action: "assert_value", Ref: "must-not-run", Value: "", TimeoutMS: 100},
+	})
+	if err != nil || result.OK || len(result.Steps) != 2 || !result.Steps[0].OK || result.Steps[1].OK {
+		t.Fatalf("batch=%+v err=%v", result, err)
+	}
+	if got := fake.questionsAsked(); !reflect.DeepEqual(got, []string{`("empty","",100)`, `("filled","",100)`}) {
+		t.Fatalf("assertions evaluated=%v", got)
+	}
+	result, err = b.ExecuteBatch(ctx, []browser.BatchStep{{Action: "assert_value", Value: "", TimeoutMS: 100}})
+	if err != nil || result.OK || !strings.Contains(result.Error, "requires ref") {
+		t.Fatalf("missing ref batch=%+v err=%v", result, err)
 	}
 }
 

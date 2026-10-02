@@ -3257,8 +3257,8 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 		}
 		actionErr = snapshot.EvalAssert(tabCtx, snapshot.AssertTextScript, step.Ref, step.Text, timeout.Milliseconds())
 	case "assert_value":
-		if step.Ref == "" || step.Value == "" {
-			actionErr = errors.New("assert_value requires ref and value")
+		if step.Ref == "" {
+			actionErr = errors.New("assert_value requires ref")
 			break
 		}
 		timeout := time.Duration(step.TimeoutMS) * time.Millisecond

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.1 - 2026-10-02
+
+- Allow batch `assert_value` steps to check for an empty field on both direct
+  CDP and the extension bridge. A cleared field now passes; a non-empty field
+  still fails and stops the batch. Missing refs remain an error.
+- Keep extension 0.7.11; this fix is in the daemon's batch runners.
+
 ## 0.20.0 - 2026-10-01
 
 - Prioritize active dialog controls and discover styled native checkboxes with
