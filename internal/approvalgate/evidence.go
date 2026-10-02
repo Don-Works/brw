@@ -12,6 +12,7 @@ type evidence struct {
 	URL     string
 	Digest  string
 	Preview any
+	Target  string
 }
 
 func (g *Gate) capture(ctx context.Context, tool string, args map[string]json.RawMessage) (evidence, error) {
@@ -38,11 +39,12 @@ func (g *Gate) capture(ctx context.Context, tool string, args map[string]json.Ra
 		URL      string `json:"url"`
 		Complete bool   `json:"complete"`
 		Preview  any    `json:"preview"`
+		Target   string `json:"target"`
 	}
 	if json.Unmarshal(encoded, &state) != nil || state.URL == "" || !state.Complete {
 		return evidence{}, errors.New("approval could not bind complete page state; use human takeover")
 	}
-	return evidence{URL: state.URL, Digest: digest(encoded), Preview: state.Preview}, nil
+	return evidence{URL: state.URL, Digest: digest(encoded), Preview: state.Preview, Target: state.Target}, nil
 }
 
 const evidenceScript = `(settings => {
@@ -53,12 +55,16 @@ const evidenceScript = `(settings => {
   const visible = [];
   let complete = true;
   let targetSeen = !settings.ref;
+  let targetLabel = '';
   let nodes = 0;
   const walk = root => {
     for (const el of root.querySelectorAll('*')) {
       if (++nodes > 12000) { complete = false; return; }
       if (el.shadowRoot) roots.push(el.shadowRoot);
-      if (el.getAttribute('data-brw-ref') === settings.ref) targetSeen = true;
+      if (settings.ref && el.getAttribute('data-brw-ref') === settings.ref) {
+        targetSeen = true;
+        targetLabel = (el.getAttribute('aria-label') || el.innerText || el.name || el.tagName).trim().slice(0,240);
+      }
       if (el.matches('a,button,input,textarea,select,form,[role],[contenteditable="true"]')) {
         const attrs = Array.from(el.attributes).map(a => [a.name,a.value]).filter(a => a[0] !== 'style' && !a[0].startsWith('data-brw-')).sort((a,b) => a[0].localeCompare(b[0]));
         targets.push({tag:el.tagName,attrs:attrs,disabled:!!el.disabled});
@@ -85,6 +91,6 @@ const evidenceScript = `(settings => {
   }
   const text = document.body ? document.body.innerText : '';
   if (text.length > 64000) complete = false;
-  return {url:location.href,complete:complete&&targetSeen,time_origin:performance.timeOrigin,frames:frames,
+  return {url:location.href,complete:complete&&targetSeen,target:targetLabel,time_origin:performance.timeOrigin,frames:frames,
     targets:targets,controls:controls,text:text.slice(0,64000),preview:{title:document.title,fields:visible,text:text.slice(0,16000)}};
 })`

@@ -215,7 +215,11 @@ func (g *Gate) Check(ctx context.Context, tool string, raw json.RawMessage, sess
 	display, _ := json.Marshal(preview)
 	parsed, _ := url.Parse(state.URL)
 	origin := parsed.Scheme + "://" + parsed.Host
-	req, err := g.Store.Enqueue(approval.Request{Fingerprint: fingerprint, Tool: tool, Origin: origin, TabID: tabID, SessionID: session, Summary: tool + " on " + origin, StateDigest: state.Digest, Arguments: display})
+	summary := strings.ReplaceAll(strings.TrimPrefix(tool, "brw_"), "_", " ")
+	if state.Target != "" {
+		summary += ": " + state.Target
+	}
+	req, err := g.Store.Enqueue(approval.Request{Fingerprint: fingerprint, Tool: tool, Origin: origin, TabID: tabID, SessionID: session, Summary: summary, StateDigest: state.Digest, Arguments: display})
 	if err != nil {
 		return ctx, clean, err
 	}
