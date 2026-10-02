@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Don-Works/brw/internal/approvalgate"
 	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/baseline"
 	"github.com/Don-Works/brw/internal/browser"
@@ -119,6 +120,11 @@ func main() {
 	var siteConsentConfig string
 	var siteConsentPrompt bool
 	var confirmActions bool
+	var approvals bool
+	var approvalTokenFile string
+	var approvalStorePath string
+	var approvalMode string
+	var approvalModeSet bool
 	var contentNavGuard bool
 	var chromeOptIn bool
 	var exitOnUpgrade string
@@ -184,6 +190,10 @@ func main() {
 	flag.StringVar(&siteConsentConfig, "site-consent-config", os.Getenv("BRW_SITE_CONSENT_CONFIG"), "admin consent config JSON (allowed_origins, blocked_origins, category_domains, confirm_actions, default_grant_ttl). Defaults to site-consent.json beside the profile policy, so a managed machine needs no UI.")
 	flag.BoolVar(&siteConsentPrompt, "site-consent-prompt", envBool("BRW_SITE_CONSENT_PROMPT"), "ask on this terminal when an un-granted origin comes up, and record the answer. Requires a terminal on stdin and is incompatible with --mcp (which owns stdin); without it the daemon is non-interactive and refuses instead of asking.")
 	flag.BoolVar(&confirmActions, "confirm-actions", envBool("BRW_CONFIRM_ACTIONS"), "require confirmation before a high-risk action (publishing, purchasing, submitting a form carrying personal data, anything on a blocklisted category). Fails CLOSED: with nobody to ask, the action is refused rather than approved. Requires --site-consent.")
+	flag.BoolVar(&approvals, "approvals", false, "enable asynchronous operator approval on this browser-host daemon. Requires --site-consent and loopback --http, implies --confirm-actions, and cannot use --site-consent-prompt or --upstream-http.")
+	flag.StringVar(&approvalTokenFile, "approval-token-file", "", "absolute path to an operator-only non-symlink 0600 file containing a random token of at least 32 characters. Required with --approvals; must live outside the artifact directory; never logged.")
+	flag.StringVar(&approvalStorePath, "approval-store", "", "absolute approval request store path; defaults to approvals/requests.json beside the profile policy. Its dedicated parent must be 0700 and outside the artifact directory.")
+	flag.StringVar(&approvalMode, "approval-mode", "risky", "approval policy: risky (default, best-effort risk detection) or all (every mutation). Requires --approvals when explicitly set.")
 	flag.BoolVar(&contentNavGuard, "content-nav-guard", envBool("BRW_CONTENT_NAV_GUARD"), "refuse a top-level navigation that page content initiated to another site (an injected link click, a meta refresh, a script location assignment). What the agent asked for still works: the destination it named, and the navigation its own click or keypress causes. Any CDP transport; not the extension bridge or an upstream HTTP proxy.")
 	flag.BoolVar(&chromeOptIn, "chrome-opt-in", envBool("BRW_CHROME_OPT_IN"), "attach to a Chrome 144+ instance whose user has turned on remote debugging at chrome://inspect/#remote-debugging. This is full browser-target CDP against the real signed-in profile, with none of the extension bridge's incognito or cookie limits and no extension at all. Downloads are reported but not routed, and brw_state is refused: brw will not move or seal what belongs to the browser's own user. A profile policy grants this lane with chrome_opt_in_allowed: true. brw never turns the opt-in on: it is a human action by design, and with it off the daemon says so and exits rather than launching a browser with a debugging flag. Chrome 144+ also asks you to approve each debugging connection in the browser window; brw waits two minutes for that and then exits naming the prompt, rather than hanging.")
 	flag.StringVar(&chromeOptInBrowser, "chrome-opt-in-browser", envDefault("BRW_CHROME_OPT_IN_BROWSER", "chrome"), "which browser's user data directory --chrome-opt-in looks in for the endpoint (chrome, chromium, edge, brave, vivaldi)")
@@ -191,6 +201,7 @@ func main() {
 	flag.StringVar(&configPath, "config", os.Getenv("BRW_CONFIG"), "brw.json holding this machine's daemon defaults, with optional per-profile sections. Defaults to brw.json in the user config directory, which is read when it exists and ignored when it does not. It is the weakest source: a flag on the command line wins, then the environment, then the file.")
 	flag.StringVar(&exitOnUpgrade, "exit-on-upgrade", envDefault("BRW_EXIT_ON_UPGRADE", "auto"), "extension bridge daemon: exit once an install replaces this binary and no request is in flight, so the service manager restarts it on the new build. auto (the default) turns it on only under launchd or systemd, which restart it; on and off force it.")
 	flag.Parse()
+	approvalModeSet = flagWasSet("approval-mode")
 
 	// brw.json is applied after Parse and before anything reads a flag, and it
 	// only fills in what the command line and the environment left alone. The
@@ -207,6 +218,7 @@ func main() {
 		if len(applied) > 0 {
 			settings := make([]string, 0, len(applied))
 			for _, setting := range applied {
+				approvalModeSet = approvalModeSet || setting.Flag == "approval-mode"
 				settings = append(settings, setting.String())
 			}
 			log.Printf("config %s supplied %s", configFile, strings.Join(settings, ", "))
@@ -224,6 +236,17 @@ func main() {
 		fmt.Println(mcp.AgentSystemPrompt)
 		return
 	}
+
+	approvalOpts := approvalOptions{
+		enabled: approvals, tokenFile: approvalTokenFile, storePath: approvalStorePath,
+		mode: approvalMode, modeSet: approvalModeSet, siteConsent: siteConsent,
+		prompt: siteConsentPrompt, httpAddr: httpAddr, upstream: upstreamHTTP,
+		policyPath: profilePolicyPath, artifactDir: artifactDir,
+	}
+	if err := validateApprovalOptions(approvalOpts); err != nil {
+		log.Fatalf("approvals: %v", err)
+	}
+	confirmActions = confirmActions || approvals
 
 	cfg.Extensions = extensions
 	cfg.ChromeArgs = chromeArgs
@@ -536,6 +559,20 @@ func main() {
 		IgnoreHTTPSErrors: ignoreHTTPSErrors,
 		OptInUserDataDir:  chromeOptInEndpoint.UserDataDir,
 	})
+
+	approvalOpts.identity = runtimeIdentity
+	approvalOpts.policyPath = profilePolicyPath
+	approvalStore, approvalOperatorToken, err := buildApprovalStore(approvalOpts)
+	if err != nil {
+		log.Fatalf("approvals: %v", err)
+	}
+	if approvalStore != nil {
+		defer func() {
+			if err := approvalStore.Close(); err != nil {
+				log.Printf("close approval store: %v", err)
+			}
+		}()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -894,6 +931,15 @@ func main() {
 		log.Printf("%s", recipeBaselineStatusLine(recipeBaselines))
 	}
 
+	var actionApprovalGate *approvalgate.Gate
+	if approvalStore != nil {
+		actionApprovalGate, err = approvalgate.New(controller, approvalStore, approvalMode)
+		if err != nil {
+			log.Fatalf("approvals: %v", err)
+		}
+		actionApprovalGate.SetOperatorOrigin("http://" + httpAddr)
+	}
+
 	var api *httpapi.Server
 	if httpAddr != "" && httpAddr != "off" {
 		// usageIdentity, not runtimeIdentity: the resolved one carries Mode,
@@ -909,6 +955,12 @@ func main() {
 		api.SetVersion(mcp.Version)
 		api.SetNavigationPolicy(navPolicy)
 		api.SetSiteConsent(consentGuard)
+		api.SetApprovalGate(actionApprovalGate)
+		if approvalStore != nil {
+			if err := api.SetApprovalStore(approvalStore, approvalOperatorToken); err != nil {
+				log.Fatalf("approvals: %v", err)
+			}
+		}
 		api.SetUsageRecorder(usage)
 		api.SetArtifactAPI(artifactAPI)
 		api.SetRecipeAPI(recipeAPI)
@@ -982,6 +1034,7 @@ func main() {
 		server := mcp.NewWithToolProfile(controller, mcpToolProfile)
 		server.SetNavigationPolicy(navPolicy)
 		server.SetSiteConsent(consentGuard)
+		server.SetApprovalGate(actionApprovalGate)
 		server.SetArtifactAPI(artifactAPI)
 		server.SetRecipeAPI(recipeAPI)
 		// usageIdentity is the fully-resolved workspace/profile/mode for this

@@ -21,6 +21,10 @@ import (
 // what it listens on, what it records, what it lets an agent do once the
 // browser is reached — and none of them reaches the browser.
 var notAboutWhichBrowser = map[string]string{
+	"approvals":                   "daemon's operator approval policy",
+	"approval-token-file":         "daemon's operator credential",
+	"approval-store":              "daemon's private approval request store",
+	"approval-mode":               "daemon's operator approval policy",
 	"http":                        "daemon's own HTTP listen address",
 	"config":                      "supplies defaults for other flags; the lane conflicts are decided after the file is merged",
 	"idle-exit":                   "when an idle daemon exits; a lifetime setting, not a browser decision",
