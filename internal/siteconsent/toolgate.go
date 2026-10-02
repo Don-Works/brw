@@ -235,6 +235,8 @@ var ToolRules = map[string]ToolRule{
 // requires membership here or in ToolRules, so the reason is what a reviewer
 // argues with when a tool is put in the wrong half.
 var UngatedTools = map[string]string{
+	"brw_approval_resume":        "dispatches the original tool through its full consent and approval gates",
+	"brw_approval_status":        "reads only lifecycle metadata of an approval request; cannot authorize execution",
 	"brw_list_tabs":              "lists targets and their URLs, which is what a user reads before granting anything; it reads no page content",
 	"brw_list_tab_groups":        "reads Chrome's own tab-group metadata, not any page",
 	"brw_group_tabs":             "moves tabs between Chrome groups; tab-strip organisation touches no site",

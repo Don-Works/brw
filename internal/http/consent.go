@@ -177,8 +177,12 @@ func (s *Server) consentMiddleware(next http.Handler) http.Handler {
 			}
 			return s.currentPageOrigin(r.Context(), want)
 		}, nil); err != nil {
-			writeError(w, err)
-			return
+			var confirmation *siteconsent.ConfirmationRequiredError
+			if s.approvalGate == nil || !errors.As(err, &confirmation) {
+				writeError(w, err)
+				return
+			}
+			r = r.WithContext(markApprovalRequired(r.Context()))
 		}
 		// The checks that cannot be made here: a plan or batch step lands where
 		// an earlier step left the tab, and a daemon-side fetch lands where a
@@ -270,6 +274,9 @@ func (s *Server) currentPageOrigin(ctx context.Context, tabID string) (string, e
 	}
 	for _, tab := range tabs {
 		if tabID != "" && tab.ID == tabID {
+			if err := s.approvalGate.CheckURL(tab.URL); err != nil {
+				return "", err
+			}
 			return tab.URL, nil
 		}
 	}
@@ -277,6 +284,9 @@ func (s *Server) currentPageOrigin(ctx context.Context, tabID string) (string, e
 		return "", fmt.Errorf("site consent cannot decide: tab %s is not open, so there is no origin to check this action against", tabID)
 	}
 	if tab, ok := browser.UntargetedTab(ctx, s.manager, tabs); ok {
+		if err := s.approvalGate.CheckURL(tab.URL); err != nil {
+			return "", err
+		}
 		return tab.URL, nil
 	}
 	return "", errors.New("site consent cannot decide: no active tab, so there is no origin to check this action against")

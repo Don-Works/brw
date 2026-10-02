@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Don-Works/brw/internal/approvalgate"
 	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/baseline"
 	"github.com/Don-Works/brw/internal/browser"
@@ -36,13 +37,14 @@ import (
 var Version = "dev"
 
 type Server struct {
-	manager     browser.Controller
-	skew        versionSkew
-	artifacts   artifact.API
-	recipes     recipe.API
-	toolProfile string // all, core, minimal, or progressive auto
-	navPolicy   *navpolicy.Policy
-	idleExit    time.Duration
+	approvalGate *approvalgate.Gate
+	manager      browser.Controller
+	skew         versionSkew
+	artifacts    artifact.API
+	recipes      recipe.API
+	toolProfile  string // all, core, minimal, or progressive auto
+	navPolicy    *navpolicy.Policy
+	idleExit     time.Duration
 	// activity reports work to an owner outside this server. Nil by default;
 	// see SetActivityHook.
 	activity  func() func()
@@ -918,8 +920,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	}
 	// Site consent runs before the switch, so a refused call dispatches nothing.
 	// It is a no-op unless a consent store was configured.
-	if err := s.enforceSiteConsent(ctx, name, args); err != nil {
-		return toolError(err), nil
+	consentErr := s.enforceSiteConsent(ctx, name, args)
+	var approvalErr error
+	ctx, args, approvalErr = s.checkApproval(ctx, name, args, consentErr)
+	if approvalErr != nil {
+		return toolError(approvalErr), nil
 	}
 	// The checks the dispatch-time gate cannot make: a step lands where an
 	// earlier step left the tab, and a daemon-side fetch lands where a redirect
@@ -927,6 +932,16 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	// actually reaches.
 	ctx = s.withConsentHooks(ctx, name, args)
 	switch name {
+	case "brw_approval_status":
+		var req struct {
+			ID string `json:"approval_id"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.approvalStatus(ctx, req.ID))
+	case "brw_approval_resume":
+		return s.resumeApproval(ctx, args)
 	case discoveryToolName:
 		var req struct {
 			Query string `json:"query"`
@@ -2575,6 +2590,9 @@ func toolOK(err error) (any, *rpcError) {
 }
 
 func toolError(err error) any {
+	if detail := approvalgate.ErrorDetails(err); detail != nil {
+		return map[string]any{"isError": true, "structuredContent": detail, "content": []toolContent{{Type: "text", Text: err.Error()}}}
+	}
 	out := map[string]any{
 		"isError": true,
 		"content": []toolContent{{Type: "text", Text: err.Error()}},
@@ -2630,6 +2648,8 @@ func canonicalToolName(name string) string {
 
 func tools() []map[string]any {
 	catalogue := []map[string]any{
+		tool("brw_approval_resume", "Execute one approved request using its exact original tool and arguments. Changed state or arguments require new approval; consumed requests cannot be replayed. This tool cannot approve requests.", object(map[string]any{"approval_id": stringSchema("Approved request ID."), "tool": stringSchema("Original brw tool name."), "arguments": map[string]any{"type": "object", "description": "Exact original tool arguments."}}, []string{"approval_id", "tool", "arguments"})),
+		tool("brw_approval_status", "Check an approval request status without exposing its contents. After approved, retry the exact original tool arguments with approval_id. Never retry a consumed action with an uncertain outcome. This tool cannot approve or reject requests.", object(map[string]any{"approval_id": stringSchema("Request ID returned by approval_required.")}, []string{"approval_id"})),
 		tool("brw_open", "Open a URL in a Chrome/Chromium browser tab and exclusively lease it to this session. With no group/group_id the tab lands in this session's per-agent tab group automatically; pass group only for a deliberately different run-scoped group. Close every tab you opened before finishing unless handing it to the human; never close pre-existing tabs. On the extension bridge tabs open in the BACKGROUND, so brw never stomps the human's current tab. To use an existing tab, pass the tab_id of one brw_list_tabs marks available — never one marked leased. When the page offers them the result carries page_tools (WebMCP tools: call them with brw_call_page_tool instead of clicking) and agent_surfaces (MCP, API, markdown or llms endpoints it declares: use those directly).", object(map[string]any{
 			"url":         stringSchema("URL to open. Scheme defaults to https."),
 			"group":       stringSchema("Optional Chrome tab group title overriding the automatic per-agent group. Keep it short, run-scoped, and free of secrets; when set without group_id, the extension reuses an existing same-title group or creates one."),

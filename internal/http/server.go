@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Don-Works/brw/internal/approval"
+	"github.com/Don-Works/brw/internal/approvalgate"
 	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
@@ -30,6 +31,7 @@ import (
 )
 
 type Server struct {
+	approvalGate          *approvalgate.Gate
 	approvals             *approval.Store
 	approvalOperatorToken string
 	manager               browser.Controller
@@ -132,7 +134,7 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	// The idle tracker sits outermost so a request that a guard refuses still
 	// counts as somebody using the daemon: a client being told no repeatedly is
 	// not an abandoned daemon.
-	s.server.Handler = s.idleMiddleware(s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.consentMiddleware(s.leaseMiddleware(mux))))))
+	s.server.Handler = s.idleMiddleware(s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.consentMiddleware(s.leaseMiddleware(s.approvalMiddleware(mux)))))))
 	return s
 }
 
@@ -2656,6 +2658,12 @@ func writeResult(w http.ResponseWriter, value any, err error) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
+	if detail := approvalgate.ErrorDetails(err); detail != nil {
+		w.Header().Set(usagelog.HeaderErrorClass, "approval_required")
+		w.Header().Set(usagelog.HeaderErrorFingerprint, usagelog.Fingerprint("approval required"))
+		writeJSON(w, http.StatusConflict, detail)
+		return
+	}
 	var refused *browser.TakeoverRefusedError
 	if errors.As(err, &refused) {
 		w.Header().Set(usagelog.HeaderErrorClass, usagelog.ClassifyError(err))
