@@ -228,8 +228,8 @@ func (b *Bridge) executeBatchStep(ctx context.Context, index int, step browser.B
 		}
 		actionErr = b.AssertText(ctx, step.Ref, step.Text, timeout)
 	case "assert_value":
-		if step.Ref == "" || step.Value == "" {
-			actionErr = errors.New("assert_value requires ref and value")
+		if step.Ref == "" {
+			actionErr = errors.New("assert_value requires ref")
 			break
 		}
 		timeout := time.Duration(step.TimeoutMS) * time.Millisecond
