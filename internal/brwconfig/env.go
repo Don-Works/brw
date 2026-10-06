@@ -57,6 +57,8 @@ var flagEnv = map[string]string{
 	"proxy-bypass-list":          "BRW_PROXY_BYPASS_LIST",
 	"proxy-server":               "BRW_PROXY_SERVER",
 	"recipe-provider-token-file": "BRW_RECIPE_PROVIDER_TOKEN_FILE",
+	"http-token-file":            "BRW_HTTP_TOKEN_FILE",
+	"upstream-token-file":        "BRW_UPSTREAM_TOKEN_FILE",
 	"recipe-provider-url":        "BRW_RECIPE_PROVIDER_URL",
 	"recipe-root":                "BRW_RECIPE_ROOT",
 	"remote":                     "BRW_REMOTE_URL",

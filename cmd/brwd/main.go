@@ -110,6 +110,8 @@ func main() {
 	var recipeRoot string
 	var recipeProviderURL string
 	var recipeProviderTokenFile string
+	var httpTokenFile string
+	var upstreamTokenFile string
 	var pluginDir string
 	var proxyServer string
 	var proxyBypassList string
@@ -139,6 +141,8 @@ func main() {
 	flag.BoolVar(&bridgeFollowFocus, "bridge-follow-focus", envBool("BRW_BRIDGE_FOLLOW_FOCUS"), "bridge: follow the user's manually-focused Chrome tab for no-tab_id actions (legacy behavior). OFF by default: brw works in its own tab group on tabs it opened (opening a fresh one when needed) and never touches your existing tabs unless you pass tab_id. Turn on for an interactive session where you want brw to act on whatever tab you have selected.")
 	flag.IntVar(&bridgeMaxInflight, "bridge-max-inflight", envInt("BRW_BRIDGE_MAX_INFLIGHT", 6), "bridge: max concurrent operations on the shared extension socket. Excess calls queue and, past the deadline, fail fast with a busy signal. Caps load on the single Chrome extension worker so many parallel agents can't wedge it. 0 disables the cap.")
 	flag.StringVar(&upstreamHTTP, "upstream-http", os.Getenv("BRW_UPSTREAM_HTTP"), "proxy MCP/HTTP control to an existing local brw HTTP daemon")
+	flag.StringVar(&httpTokenFile, "http-token-file", os.Getenv("BRW_HTTP_TOKEN_FILE"), "absolute path to an owner-only file holding a bearer token of at least 32 characters; every HTTP request must then send Authorization: Bearer <token>. Use it whenever --http binds a non-loopback address. Never logged.")
+	flag.StringVar(&upstreamTokenFile, "upstream-token-file", os.Getenv("BRW_UPSTREAM_TOKEN_FILE"), "absolute path to an owner-only file holding the bearer token the --upstream-http daemon requires. BRW_UPSTREAM_TOKEN supplies the token itself when no file is given. Never logged.")
 	flag.StringVar(&cfg.RemoteURL, "remote", os.Getenv("BRW_REMOTE_URL"), "attach to an existing CDP endpoint, for example http://127.0.0.1:9222, or \"auto\" to find one: brw reads DevToolsActivePort in the user data directory (which is the only place an ephemeral port is written) and then tries the conventional loopback debugging ports, attaching only to something that answers /json/version as a browser. An endpoint brw cannot prove is on this machine is the off-host-cdp transport, not direct-cdp: downloads, uploads, the clipboard and brw_state are refused by name there, because each of them belongs to the host the browser runs on.")
 	flag.StringVar(&profileName, "profile", os.Getenv("BRW_PROFILE"), "workspace-allowed browser profile name")
 	flag.StringVar(&workspaceName, "workspace", os.Getenv("BRW_WORKSPACE"), "workspace binding name for default/restricted profiles")
@@ -610,6 +614,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("upstream HTTP controller: %v", err)
 		}
+		upstreamToken, err := resolveUpstreamToken(upstreamTokenFile, os.Getenv("BRW_UPSTREAM_TOKEN"))
+		if err != nil {
+			log.Fatalf("upstream HTTP controller: %v", err)
+		}
+		upstream.SetAuthToken(upstreamToken)
 		verifyCtx, cancel := context.WithTimeout(context.Background(), timeout)
 		health, healthErr := upstream.Health(verifyCtx)
 		cancel()
@@ -913,6 +922,15 @@ func main() {
 		// surfaces on one daemon then disagreed about what they were driving,
 		// and a caller gating on transport silently got no answer.
 		api = httpapi.NewWithIdentity(httpAddr, controller, usageIdentity)
+		if strings.TrimSpace(httpTokenFile) != "" {
+			httpToken, err := readBearerTokenFile("http-token-file", httpTokenFile)
+			if err != nil {
+				log.Fatalf("http: %v", err)
+			}
+			api.SetAuthToken(httpToken)
+		} else if !httpBindIsLoopback(httpAddr) {
+			log.Printf("WARNING: --http %s is not loopback and no --http-token-file is set; anything that can reach it can drive this browser", httpAddr)
+		}
 		// /api/skill serves this binary's own copy of the agent manual, and the
 		// version is what lets a caller tell it apart from the copy on disk.
 		api.SetVersion(mcp.Version)

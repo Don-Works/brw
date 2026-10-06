@@ -22,6 +22,8 @@ import (
 // browser is reached — and none of them reaches the browser.
 var notAboutWhichBrowser = map[string]string{
 	"http":                        "daemon's own HTTP listen address",
+	"http-token-file":             "credential callers present to this daemon's HTTP listener",
+	"upstream-token-file":         "credential sent to an --upstream-http daemon, which this lane refuses",
 	"config":                      "supplies defaults for other flags; the lane conflicts are decided after the file is merged",
 	"idle-exit":                   "when an idle daemon exits; a lifetime setting, not a browser decision",
 	"exit-on-upgrade":             "whether a bridge daemon exits when its binary is replaced; a lifetime setting, not a browser decision",

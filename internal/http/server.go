@@ -73,6 +73,10 @@ type Server struct {
 
 	roster            ProfileRoster
 	profilePolicyPath string
+
+	// authDigest is the SHA-256 of the bearer token every request must carry.
+	// Nil leaves the listener unauthenticated.
+	authDigest []byte
 }
 
 type snapshotRequest struct {
@@ -129,7 +133,7 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	// The idle tracker sits outermost so a request that a guard refuses still
 	// counts as somebody using the daemon: a client being told no repeatedly is
 	// not an abandoned daemon.
-	s.server.Handler = s.idleMiddleware(s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.consentMiddleware(s.leaseMiddleware(mux))))))
+	s.server.Handler = s.idleMiddleware(s.bearerGuard(s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.consentMiddleware(s.leaseMiddleware(mux)))))))
 	return s
 }
 
