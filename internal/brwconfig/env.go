@@ -43,6 +43,7 @@ var flagEnv = map[string]string{
 	"content-nav-guard":          "BRW_CONTENT_NAV_GUARD",
 	"enable-webmcp":              "BRW_ENABLE_WEBMCP",
 	"pacing":                     "BRW_PACING",
+	"page-watch-root":            "BRW_PAGE_WATCH_ROOT",
 	"headless":                   "BRW_HEADLESS",
 	"http":                       "BRW_HTTP_ADDR",
 	"idle-exit":                  "BRW_IDLE_EXIT",
