@@ -9,6 +9,9 @@ The running daemon's tool schema remains authoritative.
 own working tab. `brw_batch` and `brw_plan` pin their tab with a `focus_tab` step instead.
 
 **Identity and tabs**
+- `brw_watch_page({id?, url, selector?, mode?:"title"|"text"|"count", interval_ms?, refresh_interval_ms?})` → persistent metadata-only page activity watcher on its own background tab. Default sample5000 ms; refresh0 disables reloads. Exact URL, navigation policy and read consent stay enforced. First successful sample establishes a baseline. See [page watcher documentation](../../../docs/page-watchers.md).
+- `brw_page_watchers({action?:"list"|"pause"|"resume"|"remove", id?})` → `{watchers[],removed?}` with durable seq/status/last_error. Pause stops sampling; resume retries; remove closes the private tab and erases history.
+- `brw_page_events({watcher_id, since_seq?, limit?})` → `{watcher_id,events[],latest_seq,oldest_seq,gap,has_more}`. Events are `changed`, `unavailable`, or `recovered`, carry only URL/digest/count/timestamp/reason metadata, and retain512 per watcher. Persist your cursor after delivery; read with your own tab when activity arrives.
 - `brw_identity()` → above.
 - `brw_open({url, group?, group_id?, group_color?})` → `{tab:{id,url,title,group_id,group_title,group_color,window_id,active}, ready}`. On the extension bridge tabs open in the background, so brw never stomps the human's current tab, and land in this session's own Chrome tab group (title derived from your MCP client name plus an owner hash). Pass `group` only for a deliberately different run-scoped group.
 - `brw_list_tabs()` → `[{id,url,title,type,window_id,group_id?,group_title?,lease?}]`. `lease.status` is `mine` | `leased` | `available`; `lease.group_drift` means a human dragged your tab out of your group (ownership unchanged). No `lease` key means a daemon this process owns alone — a standalone `brwd --mcp` that launched its own browser.

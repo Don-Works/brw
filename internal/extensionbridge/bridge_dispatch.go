@@ -21,6 +21,11 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if b.tabAccessGuard != nil {
+		if err := b.tabAccessGuard(ctx, tabKeyFromParams(params)); err != nil {
+			return nil, err
+		}
+	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 
@@ -76,6 +81,12 @@ func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any
 		b.mu.Unlock()
 		return nil, fmt.Errorf("%w: extension connection changed before request dispatch", errBridgeTransport)
 	}
+	if browser.IsBackgroundPage(ctx) {
+		if tabID := tabKeyFromParams(params); tabID != "" && b.backgroundTabs[tabID] != conn {
+			b.mu.Unlock()
+			return nil, browser.ErrBackgroundOwnershipLost
+		}
+	}
 	// An implicit isolation pin is valid only while the current generation still
 	// claims it: tab 42 may have closed and been reused during a reconnect.
 	// Checked under the lock that proves the generation. An explicit tab_id wins.
@@ -124,6 +135,22 @@ func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any
 				return nil, fmt.Errorf("extension bridge: %w:%s", browser.ErrForeignExtensionFrame, detail)
 			}
 			return nil, fmt.Errorf("extension bridge: %s", resp.Error)
+		}
+		if typ == "open_tab" && browser.IsBackgroundPage(ctx) {
+			var opened extTab
+			if err := json.Unmarshal(resp.Result, &opened); err != nil || opened.ID == 0 {
+				return nil, errors.New("background tab open returned no tab id")
+			}
+			b.mu.Lock()
+			if b.conn != conn {
+				b.mu.Unlock()
+				return nil, browser.ErrBackgroundOwnershipLost
+			}
+			if b.backgroundTabs == nil {
+				b.backgroundTabs = make(map[string]*websocket.Conn)
+			}
+			b.backgroundTabs[strconv.Itoa(opened.ID)] = conn
+			b.mu.Unlock()
 		}
 		return resp.Result, nil
 	case <-ctx.Done():

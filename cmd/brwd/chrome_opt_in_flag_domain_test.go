@@ -58,6 +58,7 @@ var notAboutWhichBrowser = map[string]string{
 	"state-root":                  "snapshot store location",
 	"state-key-file":              "snapshot key material",
 	"baseline-root":               "baseline store location",
+	"page-watch-root":             "persistent watcher store location; does not choose the browser",
 	"recipe-root":                 "recipe source",
 	"recipe-provider-url":         "recipe source",
 	"recipe-provider-token-file":  "recipe provider credential",

@@ -109,6 +109,7 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	b.conn = conn
+	b.backgroundTabs = make(map[string]*websocket.Conn)
 	b.hello = verifiedHello
 	// A new socket can be a restarted service worker that has lost every per-tab arm.
 	b.containment.reset()

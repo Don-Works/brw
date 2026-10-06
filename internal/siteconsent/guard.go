@@ -299,6 +299,16 @@ func (g *Guard) Authorize(rawURL string, scope Scope) error {
 	return nil
 }
 
+// AuthorizeUnattended checks current grants without asking a terminal user.
+func (g *Guard) AuthorizeUnattended(rawURL string, scope Scope) error {
+	if !g.Enabled() {
+		return nil
+	}
+	guard := *g
+	guard.prompter = nil
+	return guard.Authorize(rawURL, scope)
+}
+
 // hasExpired reports whether an expired record exists for origin+scope, so the
 // refusal can say "expired" rather than "never granted". Those are different
 // facts for the person reading the message.
