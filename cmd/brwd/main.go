@@ -152,7 +152,7 @@ func main() {
 	flag.Var(&extensions, "extension", "extension directory to load; repeatable")
 	flag.BoolVar(&loginMode, "login", false, "direct CDP: force a headed window even on a headless profile, so you can sign in once. The profile keeps the session; later headless runs on the same --user-data-dir are still signed in. Stop this daemon before starting the headless one — one Chrome per profile directory.")
 	flag.Var(&chromeArgs, "chrome-arg", "extra Chrome argument; repeatable")
-	flag.DurationVar(&timeout, "timeout", 20*time.Second, "default browser operation timeout")
+	flag.DurationVar(&timeout, "timeout", 20*time.Second, "default browser operation timeout; 0 removes the fixed limit, so an operation ends only by its own step timeouts or the caller's cancellation (a profile's operation_timeout sets it when this flag is not given)")
 	flag.BoolVar(&printSystemPrompt, "print-system-prompt", false, "print the recommended agent system prompt to stdout and exit")
 	flag.StringVar(&blockedDomains, "blocked-domains", os.Getenv("BRW_BLOCKED_DOMAINS"), "comma-separated domains the agent may never open (subdomains included); guardrail enforced on brw_open and brw_replay_request")
 	flag.StringVar(&allowedDomains, "allowed-domains", os.Getenv("BRW_ALLOWED_DOMAINS"), "comma-separated allowlist; when set, the agent may ONLY open these domains (and subdomains)")
@@ -227,6 +227,7 @@ func main() {
 
 	cfg.Extensions = extensions
 	cfg.ChromeArgs = chromeArgs
+	timeout = browser.OperationTimeout(timeout)
 	cfg.Timeout = timeout
 	cfg.WebMCP = enableWebMCP
 	cfg.Network = cdplaunch.NetworkEnvironment{
@@ -402,6 +403,14 @@ func main() {
 		}
 		if profile.Pacing != "" && !flagWasSet("pacing") && os.Getenv("BRW_PACING") == "" {
 			pacingValue = profile.Pacing
+		}
+		if profile.OperationTimeout != "" && !flagWasSet("timeout") {
+			parsed, err := browser.ParseOperationTimeout(profile.OperationTimeout)
+			if err != nil {
+				log.Fatalf("profile %q: %v", profile.Name, err)
+			}
+			timeout = parsed
+			cfg.Timeout = timeout
 		}
 		if profile.Headless && upstreamHTTP == "" {
 			headless = true

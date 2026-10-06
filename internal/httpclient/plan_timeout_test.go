@@ -29,3 +29,10 @@ func TestPlanClientTimeoutCoversEveryStep(t *testing.T) {
 		t.Fatalf("a one-step plan keeps at least its own budget")
 	}
 }
+
+func TestPlanClientTimeoutWithoutAFixedLimitStaysUnlimited(t *testing.T) {
+	steps := make([]browser.PlanStep, 40)
+	if got := planClientTimeout(browser.NoOperationTimeout, steps); got != browser.NoOperationTimeout {
+		t.Fatalf("planClientTimeout = %s, want no fixed limit", got)
+	}
+}

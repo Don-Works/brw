@@ -646,6 +646,9 @@ func planClientTimeout(perOperation time.Duration, steps []browser.PlanStep) tim
 	if perOperation <= 0 {
 		perOperation = 20 * time.Second
 	}
+	if perOperation >= browser.NoOperationTimeout {
+		return perOperation
+	}
 	var total time.Duration
 	for _, step := range steps {
 		wait := perOperation

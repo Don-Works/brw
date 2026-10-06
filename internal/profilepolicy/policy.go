@@ -59,6 +59,10 @@ type Profile struct {
 	Headless bool `json:"headless,omitempty"`
 	// Pacing is "human" or "off"; empty leaves the daemon default.
 	Pacing             string `json:"pacing,omitempty"`
+	// OperationTimeout overrides the daemon's per-operation timeout for this
+	// profile, as a Go duration. "0" removes the fixed limit: an operation then
+	// runs until its own step timeouts or the caller's cancellation end it.
+	OperationTimeout string `json:"operation_timeout,omitempty"`
 	BridgeExtensionID  string `json:"bridge_extension_id,omitempty"`
 	BridgeInstallMode  string `json:"bridge_install_mode,omitempty"`
 	BridgeHTTPAddr     string `json:"bridge_http_addr,omitempty"`
