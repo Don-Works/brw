@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/cdp"
 )
 
@@ -44,11 +45,12 @@ func TestLiveStaticPageRefreshAndPrivateTabIsolation(t *testing.T) {
 	defer site.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	m, err := browser.New(ctx, browser.Config{ChromePath: chrome, UserDataDir: t.TempDir(), Headless: true, Timeout: 10 * time.Second})
+	profile := browsertest.NewProfile(t)
+	m, err := browser.New(ctx, browser.Config{ChromePath: chrome, UserDataDir: profile.Dir(), Headless: true, Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	profile.StopWith(func() { _ = m.Close() })
 	working, err := m.Open(ctx, site.URL+"/working")
 	if err != nil {
 		t.Fatal(err)
