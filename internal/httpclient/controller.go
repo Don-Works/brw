@@ -629,8 +629,32 @@ func (c *Controller) Cookies(ctx context.Context, params browser.CookieParams) (
 
 func (c *Controller) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {
 	var out browser.PlanResult
-	err := c.post(ctx, "/api/page/execute_plan", map[string]any{"steps": steps}, &out)
+	client := withMinimumTimeout(c.client, planClientTimeout(c.client.Timeout, steps))
+	err := c.postWithClient(ctx, client, "/api/page/execute_plan", map[string]any{"steps": steps}, &out)
 	return out, err
+}
+
+// planStepMargin is the slack each plan step gets on top of its own wait, for
+// the browser work around it.
+const planStepMargin = 5 * time.Second
+
+// planClientTimeout is how long the proxy waits for a whole plan: every step's
+// own timeout_ms, or the per-operation timeout for a step without one, plus a
+// margin per step. A plan is several operations in one request, so the
+// per-operation timeout alone cuts it off mid-plan while the browser carries on.
+func planClientTimeout(perOperation time.Duration, steps []browser.PlanStep) time.Duration {
+	if perOperation <= 0 {
+		perOperation = 20 * time.Second
+	}
+	var total time.Duration
+	for _, step := range steps {
+		wait := perOperation
+		if step.TimeoutMS > 0 {
+			wait = time.Duration(step.TimeoutMS) * time.Millisecond
+		}
+		total += wait + planStepMargin
+	}
+	return total
 }
 
 func (c *Controller) GroupTabs(ctx context.Context, tabIDs []string, opts browser.TabGroupOptions) error {
