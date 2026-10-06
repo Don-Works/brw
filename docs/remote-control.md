@@ -123,6 +123,35 @@ Every baked-in value is overridable at runtime via the matching `BRW_*` env var
 (for example `BRW_SERVER_ALIVE_INTERVAL`), and `--ssh-option` appends any extra
 `ssh -o` setting.
 
+## Tailnet HTTP With A Bearer Token
+
+When SSH is not the transport — a browser host on a private network such as a
+Tailscale tailnet — bind the browser-host daemon to that interface and require a
+bearer token:
+
+```sh
+brwd --workspace brw --profile work-profile \
+  --http 100.64.0.10:17310 --http-token-file /etc/brw/http-token
+```
+
+Every request, `/health` included, must then send
+`Authorization: Bearer <token>`; anything else gets `401`. The token file must be
+an absolute, owner-only, non-symlink regular file holding at least 32 printable
+characters. A non-loopback `--http` without a token starts with a warning.
+
+The agent-side proxy sends the same token:
+
+```sh
+brwd --workspace brw --upstream-http http://100.64.0.10:17310 --mcp --http off \
+  --upstream-token-file ~/.config/brw/upstream-token
+```
+
+`BRW_UPSTREAM_TOKEN` supplies the token itself when no file is given, for a
+supervisor that injects credentials as environment variables. The token is sent
+only to the upstream host, never to a redirect target. Network policy still has
+to restrict who can reach the port; the token is the second layer, not the only
+one.
+
 ## Discovering Profile Daemons
 
 When you run several profile daemons (e.g. one per browser profile, each
