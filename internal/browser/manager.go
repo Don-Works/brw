@@ -148,15 +148,17 @@ func awaitPrearmedSettle(ctx context.Context, sub <-chan pageEvent, cap time.Dur
 const settleAwaitGrace = 250 * time.Millisecond
 
 type Manager struct {
-	mu            sync.RWMutex
-	launcher      *cdplaunch.Launcher
-	allocCancel   context.CancelFunc
-	browserCtx    context.Context
-	browserCancel context.CancelFunc
-	tabContexts   map[string]tabContext
-	refs          *store.RefStore
-	timeout       time.Duration
-	navPolicy     *navpolicy.Policy
+	backgroundTabs sync.Map
+	tabAccessGuard func(context.Context, string) error
+	mu             sync.RWMutex
+	launcher       *cdplaunch.Launcher
+	allocCancel    context.CancelFunc
+	browserCtx     context.Context
+	browserCancel  context.CancelFunc
+	tabContexts    map[string]tabContext
+	refs           *store.RefStore
+	timeout        time.Duration
+	navPolicy      *navpolicy.Policy
 	// remote is set when a plugin holding browser.provider lent brw this
 	// browser. It carries the provider session: who minted it, when it expires
 	// and how to give it back.
@@ -693,6 +695,9 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		return OpenResult{}, err
 	}
 	tabID := string(id)
+	if IsBackgroundPage(ctx) {
+		m.backgroundTabs.Store(tabID, true)
+	}
 	// The tab exists from here on, so every exit below records what became of
 	// it. tabID is read at call time because the attach-failure path recreates
 	// the target and reassigns it. Earlier failures create no tab and are not
@@ -748,7 +753,13 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 			tabID = string(id)
 		}
 	}
-	m.refs.SetActive(tabID)
+	if IsBackgroundPage(ctx) {
+		m.backgroundTabs.Store(tabID, true)
+	}
+	if !IsBackgroundPage(ctx) {
+		m.refs.SetActive(tabID)
+	}
+	ctx = WithTabID(ctx, tabID)
 	// Wait for the target document to actually commit, not the transient
 	// about:blank that a freshly created target reports as "ready" before the
 	// real navigation lands — otherwise an immediate snapshot races to an empty
@@ -845,6 +856,9 @@ func (m *Manager) ListTabs(ctx context.Context) ([]Tab, error) {
 }
 
 func (m *Manager) FocusTab(ctx context.Context, id string) error {
+	if err := m.checkTabAccess(ctx, id); err != nil {
+		return err
+	}
 	if err := m.guardTakeover(TraceActionFocusTab); err != nil {
 		return err
 	}
@@ -864,6 +878,9 @@ func (m *Manager) FocusTab(ctx context.Context, id string) error {
 }
 
 func (m *Manager) CloseTab(ctx context.Context, id string) error {
+	if err := m.checkTabAccess(ctx, id); err != nil {
+		return err
+	}
 	// Closing the tab the human is driving is the most complete form of racing
 	// them for it: their next click lands in a tab that no longer exists.
 	if err := m.guardTakeover(TraceActionCloseTab); err != nil {
@@ -879,6 +896,7 @@ func (m *Manager) CloseTab(ctx context.Context, id string) error {
 		m.recordObservation(id, TraceActionCloseTab, "", start, err)
 		return err
 	}
+	m.backgroundTabs.Delete(id)
 	// Recorded before forgetTab: the entry is scoped by the tab's lease, and
 	// dropping the tab first would leave the close itself unattributable.
 	m.recordObservation(id, TraceActionCloseTab, "", start, nil)
@@ -3631,6 +3649,9 @@ func (m *Manager) activeContext(ctx context.Context) (string, context.Context, c
 }
 
 func (m *Manager) contextForTab(ctx context.Context, tabID string) (string, context.Context, context.CancelFunc, error) {
+	if err := m.checkTabAccess(ctx, tabID); err != nil {
+		return "", nil, nil, err
+	}
 	if tabID == "" {
 		return m.activeContext(ctx)
 	}
@@ -3639,12 +3660,20 @@ func (m *Manager) contextForTab(ctx context.Context, tabID string) (string, cont
 		return "", nil, nil, err
 	}
 	timeoutCtx, timeoutCancel := context.WithTimeout(tabCtx, m.timeout)
-	return tabID, timeoutCtx, timeoutCancel, nil
+	stop := context.AfterFunc(ctx, timeoutCancel)
+	return tabID, timeoutCtx, func() { stop(); timeoutCancel() }, nil
 }
 
 func (m *Manager) activeContextWithTimeout(ctx context.Context, timeout time.Duration) (string, context.Context, context.CancelFunc, error) {
-	tabID, err := m.ensureActive(ctx)
-	if err != nil {
+	tabID := tabIDFromCtx(ctx)
+	if tabID == "" {
+		var err error
+		tabID, err = m.ensureActive(ctx)
+		if err != nil {
+			return "", nil, nil, err
+		}
+	}
+	if err := m.checkTabAccess(ctx, tabID); err != nil {
 		return "", nil, nil, err
 	}
 	tabCtx, err := m.tabContext(tabID)
@@ -3652,7 +3681,8 @@ func (m *Manager) activeContextWithTimeout(ctx context.Context, timeout time.Dur
 		return "", nil, nil, err
 	}
 	timeoutCtx, timeoutCancel := context.WithTimeout(tabCtx, timeout)
-	return tabID, timeoutCtx, timeoutCancel, nil
+	stop := context.AfterFunc(ctx, timeoutCancel)
+	return tabID, timeoutCtx, func() { stop(); timeoutCancel() }, nil
 }
 
 func (m *Manager) tabContext(tabID string) (context.Context, error) {

@@ -35,6 +35,7 @@ const (
 )
 
 type Bridge struct {
+	tabAccessGuard     func(context.Context, string) error
 	addr               string
 	timeout            time.Duration
 	allowedExtensionID string
@@ -63,8 +64,9 @@ type Bridge struct {
 	// compatWarnOnce keeps the no-token notice from repeating on every MV3 reconnect.
 	compatWarnOnce sync.Once
 
-	mu   sync.RWMutex
-	conn *websocket.Conn
+	mu             sync.RWMutex
+	conn           *websocket.Conn
+	backgroundTabs map[string]*websocket.Conn
 	// shuttingDown stops reconnect waiters and racing handlers from registering
 	// work after Shutdown has drained the pending/chunk maps.
 	shuttingDown bool

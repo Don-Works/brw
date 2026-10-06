@@ -616,15 +616,15 @@ every turn — not a one-off. Four profiles trade breadth against that cost:
 
 | `--mcp-tools` | Tools | Catalogue cost |
 | --- | --- | --- |
-| `all` | 95 | ~36.0k tokens |
-| `core` | 26 | ~10.9k tokens |
-| `minimal` | 13 | ~6.3k tokens |
-| `auto` (default) | 14, growing | ~6.5k tokens to start |
+| `all` | 98 | ~37.9k tokens |
+| `core` | 26 | ~11.4k tokens |
+| `minimal` | 13 | ~6.4k tokens |
+| `auto` (default) | 14, growing | ~6.6k tokens to start |
 
 Measured on a direct-CDP daemon. A tool a transport cannot serve is never
-advertised on it, so the `all` row is 98 tools unfiltered, 95 on direct CDP, 94
-on `--remote`, 93 on the Chrome opt-in lane, 89 on a plugin-supplied off-host
-browser and 79 on the extension bridge; the narrower profiles are the same size
+advertised on it, so the `all` row is 101 tools unfiltered, 98 on direct CDP, 97
+on `--remote`, 96 on the Chrome opt-in lane, 92 on a plugin-supplied off-host
+browser and 82 on the extension bridge; the narrower profiles are the same size
 on every transport.
 
 `core` advertises the common-flow tools (open/snapshot/find/click/type/fill/

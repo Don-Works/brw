@@ -93,9 +93,9 @@ be a string, including when a gateway returned a numeric ID.
 ## If your tool list looks short
 
 `brwd --mcp` starts with 14 tools in `auto` mode and grows as you search.
-The full surface is 95 tools on a direct-CDP daemon (94 on `--remote`,
-93 on the Chrome opt-in lane, 89 on a plugin-supplied off-host browser,
-79 on the extension bridge). Small initial catalogues reduce attached schemas.
+The full surface is 98 tools on a direct-CDP daemon (97 on `--remote`,
+96 on the Chrome opt-in lane, 92 on a plugin-supplied off-host browser,
+82 on the extension bridge). Small initial catalogues reduce attached schemas.
 
 ```json
 {"name":"brw_tools","arguments":{"query":"read the console"}}

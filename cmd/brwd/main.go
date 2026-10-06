@@ -33,6 +33,7 @@ import (
 	"github.com/Don-Works/brw/internal/httpclient"
 	"github.com/Don-Works/brw/internal/mcp"
 	"github.com/Don-Works/brw/internal/navpolicy"
+	"github.com/Don-Works/brw/internal/pagewatch"
 	"github.com/Don-Works/brw/internal/plugin"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/profileroster"
@@ -59,6 +60,8 @@ func (s *stringList) Set(value string) error {
 }
 
 func main() {
+	var pageWatchRoot string
+	flag.StringVar(&pageWatchRoot, "page-watch-root", envDefault("BRW_PAGE_WATCH_ROOT", "auto"), "persistent page watcher store: auto uses an owner-only workspace/profile directory outside the repository; off disables watchers; otherwise an absolute directory. Sampling runs on the browser host, independently of MCP clients.")
 	log.SetOutput(os.Stderr)
 	// An exported HAR names the brw that produced it, so the build's version has
 	// to reach the artifact package as well as the usage ledger.
@@ -913,6 +916,58 @@ func main() {
 	}
 
 	var api *httpapi.Server
+	var pageWatchAPI pagewatch.API
+	if upstreamHTTP != "" {
+		pageWatchAPI, _ = controller.(pagewatch.API)
+	} else if !strings.EqualFold(pageWatchRoot, "off") {
+		root := pageWatchRoot
+		if strings.EqualFold(root, "auto") {
+			watchIdentity := usageIdentity
+			if watchIdentity.UserDataDir == "" {
+				watchIdentity.UserDataDir = cfg.UserDataDir
+				if watchIdentity.UserDataDir == "" && manager != nil && cfg.RemoteURL == "" && cfg.BrowserWSURL == "" && cfg.Remote == nil {
+					watchIdentity.UserDataDir = cdplaunch.DefaultProfileDir("")
+				}
+			}
+			if watchIdentity.ProfileDirectory == "" {
+				watchIdentity.ProfileDirectory = cfg.ProfileDirectory
+			}
+			if watchIdentity.UserDataDir != "" {
+				watchIdentity.UserDataDir, err = filepath.Abs(watchIdentity.UserDataDir)
+				if err != nil {
+					log.Fatalf("page watcher profile path: %v", err)
+				}
+			}
+			if watchIdentity.Workspace == "" && watchIdentity.Profile == "" && watchIdentity.UserDataDir == "" {
+				switch {
+				case bridge != nil:
+					watchIdentity.Profile = "bridge:" + bridgeAddr
+				case cfg.Remote != nil:
+					watchIdentity.Profile = "provider:" + cfg.Remote.ProviderID + ":" + cfg.Remote.SessionID
+				case cfg.RemoteURL != "":
+					watchIdentity.Profile = "remote:" + cfg.RemoteURL
+				case cfg.BrowserWSURL != "":
+					watchIdentity.Profile = "remote:" + cfg.BrowserWSURL
+				}
+			}
+			root, err = pagewatch.DefaultRoot(watchIdentity)
+			if err != nil {
+				log.Fatalf("page watchers: %v", err)
+			}
+		}
+		watchers, watchErr := pagewatch.New(ctx, controller, root, navPolicy, consentGuard)
+		if watchErr != nil {
+			log.Fatalf("page watchers: %v", watchErr)
+		}
+		defer watchers.Close()
+		pageWatchAPI = watchers
+		if manager != nil {
+			manager.SetTabAccessGuard(watchers.CheckTabAccess)
+		}
+		if bridge != nil {
+			bridge.SetTabAccessGuard(watchers.CheckTabAccess)
+		}
+	}
 	if httpAddr != "" && httpAddr != "off" {
 		// usageIdentity, not runtimeIdentity: the resolved one carries Mode,
 		// Transport and Headless, which this process derives from its own flags
@@ -934,6 +989,7 @@ func main() {
 		// /api/skill serves this binary's own copy of the agent manual, and the
 		// version is what lets a caller tell it apart from the copy on disk.
 		api.SetVersion(mcp.Version)
+		api.SetPageWatchAPI(pageWatchAPI)
 		api.SetNavigationPolicy(navPolicy)
 		api.SetSiteConsent(consentGuard)
 		api.SetUsageRecorder(usage)
@@ -1007,6 +1063,7 @@ func main() {
 		// outlive an abandoned session.
 		go watchParentExit(stop)
 		server := mcp.NewWithToolProfile(controller, mcpToolProfile)
+		server.SetPageWatchAPI(pageWatchAPI)
 		server.SetNavigationPolicy(navPolicy)
 		server.SetSiteConsent(consentGuard)
 		server.SetArtifactAPI(artifactAPI)

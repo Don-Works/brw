@@ -52,3 +52,15 @@ func TestBearerGuardCoversTheWholeHandler(t *testing.T) {
 		t.Fatalf("/health without a bearer = %d, want 401", rec.Code)
 	}
 }
+
+func TestBearerGuardCoversWatcherRoutes(t *testing.T) {
+	s := NewWithIdentity("100.64.0.10:17712", &fakeController{}, brwidentity.Identity{})
+	s.SetAuthToken(strings.Repeat("k", 32))
+	for _, path := range []string{"/api/watchers/register", "/api/watchers/manage", "/api/watchers/events"} {
+		rec := httptest.NewRecorder()
+		s.server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}")))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s without a token = %d, want 401", path, rec.Code)
+		}
+	}
+}

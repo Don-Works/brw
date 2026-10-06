@@ -20,6 +20,7 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/navpolicy"
+	"github.com/Don-Works/brw/internal/pagewatch"
 	"github.com/Don-Works/brw/internal/plugin"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/recipe"
@@ -29,6 +30,7 @@ import (
 )
 
 type Server struct {
+	pageWatch pagewatch.API
 	manager   browser.Controller
 	artifacts artifact.API
 	recipes   recipe.API
@@ -332,6 +334,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/watchers/register", s.watchPage)
+	mux.HandleFunc("POST /api/watchers/manage", s.pageWatchers)
+	mux.HandleFunc("POST /api/watchers/events", s.pageEvents)
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("POST /api/usage/report", s.reportUsage)
 	// The profile roster: loopback-only, and it reaches browsers only through
@@ -948,6 +953,13 @@ func (s *Server) tabs(w http.ResponseWriter, r *http.Request) {
 	tabs, err := s.manager.ListTabs(r.Context())
 	if err == nil {
 		tabs = s.leases.annotate(leaseOwner(r.Context()), tabs)
+		if owned, ok := s.pageWatch.(interface{ OwnsTab(string) bool }); ok {
+			for i := range tabs {
+				if owned.OwnsTab(tabs[i].ID) {
+					tabs[i].Lease = &browser.TabLeaseInfo{Status: "leased"}
+				}
+			}
+		}
 	}
 	writeResult(w, tabs, err)
 }

@@ -37,7 +37,7 @@ def catalogue(profile):
         result = subprocess.run(
             [BRWD, "--mcp", "--mcp-tools", profile, "--http", "off",
              "--headless", "--user-data-dir", profile_dir, "--usage-log", "off",
-             "--state-root", "off"],
+             "--state-root", "off", "--page-watch-root", "off"],
             input=INIT + LIST, capture_output=True, text=True, timeout=120,
         )
     lines = [l for l in result.stdout.splitlines() if '"tools":[' in l]

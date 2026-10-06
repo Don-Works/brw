@@ -17,6 +17,9 @@ import (
 // consent gate finds a route's rule through this map, so a route whose operation
 // is spelled differently from its tool is a route with no rule.
 var usageOperations = map[string]string{
+	"/api/watchers/register":         "brw_watch_page",
+	"/api/watchers/manage":           "brw_page_watchers",
+	"/api/watchers/events":           "brw_page_events",
 	"/api/browser/open":              "brw_open",
 	"/api/browser/open_incognito":    "brw_open_incognito",
 	"/api/browser/close_context":     "brw_close_context",

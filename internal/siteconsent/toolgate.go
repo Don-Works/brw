@@ -111,6 +111,7 @@ type ToolRule struct {
 var ToolRules = map[string]ToolRule{
 	// Navigation and daemon-side fetches: the destination is the origin.
 	"brw_open":           {Scope: ScopeRead, Target: TargetURL, Fields: []DestinationField{FieldURL}},
+	"brw_watch_page":     {Scope: ScopeRead, Target: TargetURL, Fields: []DestinationField{FieldURL}},
 	"brw_open_incognito": {Scope: ScopeRead, Target: TargetURL, Fields: []DestinationField{FieldURL}},
 	"brw_navigate_to":    {Scope: ScopeRead, Target: TargetURL, Fields: []DestinationField{FieldURL}},
 	"brw_read_url":       {Scope: ScopeRead, Target: TargetURL, Fields: []DestinationField{FieldURL}},
@@ -235,6 +236,8 @@ var ToolRules = map[string]ToolRule{
 // requires membership here or in ToolRules, so the reason is what a reviewer
 // argues with when a tool is put in the wrong half.
 var UngatedTools = map[string]string{
+	"brw_page_watchers":          "manages browser-host registration metadata; the service checks consent before resuming",
+	"brw_page_events":            "reads only registered URLs and previously captured digest/count signals; metadata remains available to deliver refused/unavailable after consent revocation, without reading any page",
 	"brw_list_tabs":              "lists targets and their URLs, which is what a user reads before granting anything; it reads no page content",
 	"brw_list_tab_groups":        "reads Chrome's own tab-group metadata, not any page",
 	"brw_group_tabs":             "moves tabs between Chrome groups; tab-strip organisation touches no site",
