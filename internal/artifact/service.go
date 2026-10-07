@@ -399,6 +399,11 @@ func (s *Service) CaptureCompletedDownload(ctx context.Context, item browser.Dow
 }
 
 func (s *Service) captureDownloadEntry(ctx context.Context, item browser.DownloadEntry, put PutOptions) (Meta, error) {
+	if check := browser.FrameReadCheckFromContext(ctx); check != nil {
+		if err := check(item.URL); err != nil {
+			return Meta{}, err
+		}
+	}
 	info, err := os.Lstat(item.Path)
 	if err != nil {
 		return Meta{}, err
