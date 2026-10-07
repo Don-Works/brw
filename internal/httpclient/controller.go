@@ -32,11 +32,7 @@ import (
 const (
 	maxUpstreamResponseBytes = int64(64 << 20)
 	maxUpstreamErrorBytes    = 8 << 10
-	// maxCapturedFailureBytes bounds a refused body that carries a structured
-	// verdict rather than a message. 8 KiB is the right ceiling for error text
-	// but truncates a 500-step run result, and a truncated body is not decoded
-	// at all — which is how failure_bundle_artifact_id would go missing on
-	// exactly the long runs most worth diagnosing.
+
 	maxCapturedFailureBytes        = 256 << 10
 	maxArtifactInfoResponseBytes   = int64(64 << 10)
 	maxArtifactReadResponseBytes   = int64(8 << 20)
@@ -49,29 +45,16 @@ type Controller struct {
 	client      *http.Client
 	sessionID   string
 	ownerID     string
-	agentName   atomic.Value // string; display name for the daemon's per-agent tab group
+	agentName   atomic.Value
 	nextRequest atomic.Uint64
 }
 
 type Health struct {
 	OK       bool                 `json:"ok"`
 	Identity brwidentity.Identity `json:"identity,omitempty"`
-	// Consent says whether this daemon gates sites, and whether it has a human
-	// to ask. An unattended caller needs the second half before it starts: a
-	// daemon that can prompt will block on a terminal read nobody answers, and a
-	// scheduled run that hangs until its timeout looks like a slow site.
-	//
-	// A pointer so "this daemon says it has no prompter" and "this daemon said
-	// nothing at all" are different answers. A build from before /health carried
-	// the block decodes to the zero value, and reading that as "no prompter"
-	// would let the caller fail OPEN against exactly the daemon it cannot see
-	// into. Nil means unreported.
-	//
-	// It is the posture of the whole chain: a daemon that forwards to another
-	// merges that daemon's answer into its own before reporting it.
+	// Consent says whether this daemon gates sites, and whether it has a human to ask.
 	Consent *siteconsent.Posture `json:"consent,omitempty"`
-	// Version is the daemon's build. A proxy compares it with its own because
-	// it, not the daemon, builds the page scripts for WebMCP and reads.
+	// Version is the daemon's build.
 	Version string `json:"version,omitempty"`
 }
 
@@ -100,10 +83,7 @@ func New(baseURL string, timeout time.Duration) (*Controller, error) {
 	return c, nil
 }
 
-// SetAgentName installs the MCP client's display name (whoami) as this
-// session's tab-group label, unless the operator already pinned one via
-// BRW_AGENT_NAME. The daemon appends a per-owner suffix, so two agents with
-// the same display name still get separate tab groups.
+// SetAgentName installs the MCP client's display name (whoami) as this session's tab-group label, unless the operator already pinned one via BRW_AGENT_NAME.
 func (c *Controller) SetAgentName(name string) {
 	if current, _ := c.agentName.Load().(string); current != "" {
 		return
@@ -113,8 +93,6 @@ func (c *Controller) SetAgentName(name string) {
 	}
 }
 
-// sanitizeAgentName keeps the header value header-safe and title-shaped. The
-// daemon applies its own (stricter) sanitization before showing it in Chrome.
 func sanitizeAgentName(name string) string {
 	var b strings.Builder
 	for _, r := range strings.TrimSpace(name) {
@@ -132,14 +110,6 @@ func sanitizeAgentName(name string) string {
 	return b.String()
 }
 
-// stableOwnerID converts the gateway's logical browser-session id into a
-// privacy-safe fixed-width lease owner. The fallback remains this proxy's
-// correlation session, so direct brwd --upstream-http users are isolated too.
-//
-// BRW_OWNER_ID is the gateway-neutral input. MCPLEXER_BROWSER_SESSION_ID is
-// still read as a deprecated fallback so a gateway that has not moved over yet
-// keeps a stable lease owner across disposable proxy restarts; drop that read
-// once every caller sets BRW_OWNER_ID.
 func stableOwnerID(fallback string) string {
 	raw := ownerFromEnv()
 	if raw == "" {
@@ -161,9 +131,7 @@ func hashOwner(raw string) string {
 	return fmt.Sprintf("owner-%x", sum[:12])
 }
 
-// UseOwnerUnlessSet makes raw this controller's lease owner when BRW_OWNER_ID
-// names none, so a caller whose process is not the session (one brw CLI
-// invocation per verb) keeps its tab across processes.
+// UseOwnerUnlessSet makes raw this controller's lease owner when BRW_OWNER_ID names none, so a caller whose process is not the session (one brw CLI invocation per verb) keeps its tab across processes.
 func (c *Controller) UseOwnerUnlessSet(raw string) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || ownerFromEnv() != "" {
@@ -172,28 +140,22 @@ func (c *Controller) UseOwnerUnlessSet(raw string) {
 	c.ownerID = hashOwner(raw)
 }
 
-// UseOwner makes raw this controller's lease owner even when BRW_OWNER_ID names
-// another, for a caller that is its own session rather than part of the agent
-// session that launched it.
+// UseOwner makes raw this controller's lease owner even when BRW_OWNER_ID names another, for a caller that is its own session rather than part of the agent session that launched it.
 func (c *Controller) UseOwner(raw string) {
 	if raw = strings.TrimSpace(raw); raw != "" {
 		c.ownerID = hashOwner(raw)
 	}
 }
 
-// ReleaseSession drops every tab lease this controller's owner holds on the
-// daemon, and with closeTabs also closes the tabs the daemon opened for it.
+// ReleaseSession drops every tab lease this controller's owner holds on the daemon, and with closeTabs also closes the tabs the daemon opened for it.
 func (c *Controller) ReleaseSession(ctx context.Context, closeTabs bool) error {
 	return c.post(ctx, "/api/session/release", map[string]bool{"close_tabs": closeTabs}, nil)
 }
 
-// SessionID is the non-secret correlation id forwarded to the long-lived brw
-// daemon. It lets usage logs group calls made by one disposable MCP proxy
-// without recording prompts, arguments, URLs, or browser content.
+// SessionID is the non-secret correlation id forwarded to the long-lived brw daemon.
 func (c *Controller) SessionID() string { return c.sessionID }
 
-// OwnerID is the stable, non-secret tab-lease identity sent to the shared
-// daemon. It can outlive a disposable upstream proxy for the same agent session.
+// OwnerID is the stable, non-secret tab-lease identity sent to the shared daemon.
 func (c *Controller) OwnerID() string { return c.ownerID }
 
 // UpstreamVersion reports the build of the daemon this controller drives.
@@ -208,13 +170,7 @@ func (c *Controller) Health(ctx context.Context) (Health, error) {
 	return out, err
 }
 
-// UpstreamConsentPosture reports the consent posture of the daemon this
-// controller drives, so a brw daemon proxying through it can report the whole
-// chain's posture rather than its own flags.
-//
-// A daemon that answers without a consent block is not treated as "no
-// prompter": it is a build from before the block existed, and the difference
-// between "said no" and "said nothing" is the entire point of asking.
+// UpstreamConsentPosture reports the consent posture of the daemon this controller drives, so a brw daemon proxying through it can report the whole chain's posture rather than its own flags.
 func (c *Controller) UpstreamConsentPosture(ctx context.Context) (siteconsent.Posture, error) {
 	health, err := c.Health(ctx)
 	if err != nil {
@@ -276,10 +232,7 @@ func (c *Controller) CloseTab(ctx context.Context, id string) error {
 	return c.post(ctx, "/api/browser/close", map[string]string{"id": id}, &out)
 }
 
-// Read fetches the page unbounded. In proxy mode the MCP server applies the
-// caller's own max_chars/offset window to what comes back, so letting the
-// upstream apply its default bound too would silently cap an explicitly
-// unbounded read at the upstream default.
+// Read fetches the page unbounded.
 func (c *Controller) Read(ctx context.Context) (readability.PageRead, error) {
 	var out readability.PageRead
 	values := url.Values{}
@@ -287,22 +240,18 @@ func (c *Controller) Read(ctx context.Context) (readability.PageRead, error) {
 	values.Set("max_links", strconv.Itoa(readability.UnboundedReadChars))
 	values.Set("max_headings", strconv.Itoa(readability.UnboundedReadChars))
 	values.Set("settle_ms", strconv.Itoa(readability.SettleMS(ctx)))
-	// Section selection is applied by the MCP layer on the full document, so the
-	// proxy deliberately does not forward it here.
+
 	err := c.get(ctx, "/api/page/read", values, &out)
 	return out, err
 }
 
-// ReadWindow applies the requested section/include/paging bounds on the browser
-// host. MCP uses this optional capability in upstream mode, avoiding full-page
-// transfer merely to return a small context window.
+// ReadWindow applies the requested section/include/paging bounds on the browser host.
 func (c *Controller) ReadWindow(ctx context.Context, opts readability.ReadOptions) (readability.PageRead, error) {
 	if err := opts.Validate(); err != nil {
 		return readability.PageRead{}, err
 	}
 	values := url.Values{}
-	// Send zero explicitly: on the HTTP surface zero means the normal bounded
-	// default, while absence preserves the legacy unbounded endpoint contract.
+
 	values.Set("max_chars", strconv.Itoa(opts.MaxChars))
 	values.Set("offset", strconv.Itoa(opts.Offset))
 	values.Set("max_links", strconv.Itoa(opts.MaxLinks))
@@ -339,18 +288,7 @@ func (c *Controller) Find(ctx context.Context, opts snapshot.FindOptions) (snaps
 	return out, err
 }
 
-// FindLive asks the daemon that owns the browser for a search that bypasses its
-// snapshot cache, which is what a locate-and-act resolves through on every
-// transport (see browser.LiveFinder). Without it the proxy fell back to the
-// cached Find above, so a standalone brw_find with an action decided from the
-// pre-action page on exactly the topology — an extension bridge behind
-// --upstream-http — where the cache is real.
-//
-// The upstream has to CONFIRM it answered live. A daemon that predates the
-// parameter ignores the unknown query value and returns its cached list with a
-// 200, which is indistinguishable from a live answer at the wire. Refusing is
-// the fail-closed half: brw would rather say it cannot resolve than act on a
-// page state it cannot vouch for.
+// FindLive asks the daemon that owns the browser for a search that bypasses its snapshot cache, which is what a locate-and-act resolves through on every transport (see browser.LiveFinder).
 func (c *Controller) FindLive(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
 	values := findValues(opts)
 	values.Set(snapshot.FindLiveKey, "true")
@@ -476,22 +414,13 @@ func (c *Controller) WaitFor(ctx context.Context, condition string, timeout time
 	return err
 }
 
-// waitClientHeadroom is added to a wait's own timeout to bound the HTTP call
-// that carries it, covering the daemon's final chunk and the response.
 const waitClientHeadroom = 5 * time.Second
 
-// WaitForOutcome runs the wait on the upstream daemon and reports how it
-// resolved, so brw_wait_for answers the same shape when it is proxying as when
-// it drives Chrome itself. Condition and the elapsed time are filled in here
-// because only this side knows what was asked and when; resolved_by and wakeups
-// can only come from the daemon that did the waiting, so an upstream too old to
-// report them leaves those two fields empty.
+// WaitForOutcome runs the wait on the upstream daemon and reports how it resolved, so brw_wait_for answers the same shape when it is proxying as when it drives Chrome itself.
 func (c *Controller) WaitForOutcome(ctx context.Context, condition string, timeout time.Duration) (browser.WaitOutcome, error) {
 	started := time.Now()
 	var out browser.WaitOutcome
-	// The HTTP round trip has to outlast the wait it carries: with the client's
-	// flat timeout a timeout_ms above it was cut off by this side while the
-	// daemon was still legitimately waiting.
+
 	client := c.client
 	if timeout > 0 {
 		client = withMinimumTimeout(c.client, timeout+waitClientHeadroom)
@@ -517,9 +446,7 @@ func (c *Controller) Screenshot(ctx context.Context) (browser.Screenshot, error)
 
 func (c *Controller) ScreenshotAnnotated(ctx context.Context, aopts browser.AnnotatedScreenshotOptions) (browser.AnnotatedScreenshot, error) {
 	var out browser.AnnotatedScreenshot
-	// annotate=1 routes the bridge to the Set-of-Marks path; base64=1 forces the
-	// JSON response so the ref->box legend (not representable in a raw PNG body)
-	// comes back. ref/region scope the capture to a tight annotated crop.
+
 	vals := url.Values{
 		"base64":   []string{"1"},
 		"annotate": []string{"1"},
@@ -564,10 +491,7 @@ func (c *Controller) Hover(ctx context.Context, ref string) (browser.ActionResul
 func (c *Controller) Evaluate(ctx context.Context, expression string) (any, error) {
 	var out any
 	body := map[string]any{"expression": expression}
-	// brw_get and brw_frame label their generated script so the daemon's trace
-	// names the verb instead of the walker expression. The label is a context
-	// value and cannot cross HTTP, so re-materialize it as body fields the
-	// daemon reads back — the same trick withSnapshot uses.
+
 	if label, ok := browser.TraceLabelFromCtx(ctx); ok {
 		body["trace_action"] = label.Action
 		body["trace_value"] = label.Value
@@ -578,11 +502,7 @@ func (c *Controller) Evaluate(ctx context.Context, expression string) (any, erro
 
 var _ browser.ActiveTabReporter = (*Controller)(nil)
 
-// ActiveTabID names the tab an untargeted page call lands in on the daemon this
-// controller proxies to. A proxying process holds no browser, so the answer can
-// only come from the one that does — and a WebMCP page-tool report has to carry
-// a tab for the agent to poll back into on this transport too, not only where
-// the extension bridge pins one into the context.
+// ActiveTabID names the tab an untargeted page call lands in on the daemon this controller proxies to.
 func (c *Controller) ActiveTabID(ctx context.Context) (string, error) {
 	var out struct {
 		TabID string `json:"tab_id"`
@@ -623,8 +543,7 @@ func (c *Controller) ReplayRequest(ctx context.Context, params browser.ReplayReq
 
 func (c *Controller) Cookies(ctx context.Context, params browser.CookieParams) (browser.CookieResult, error) {
 	var out browser.CookieResult
-	// withTabID folds the context's tab_id into the marshalled body, keeping the
-	// daemon-side lease/ownership semantics identical to every other page tool.
+
 	err := c.post(ctx, "/api/page/cookies", params, &out)
 	return out, err
 }
@@ -636,14 +555,8 @@ func (c *Controller) ExecutePlan(ctx context.Context, steps []browser.PlanStep) 
 	return out, err
 }
 
-// planStepMargin is the slack each plan step gets on top of its own wait, for
-// the browser work around it.
 const planStepMargin = 5 * time.Second
 
-// planClientTimeout is how long the proxy waits for a whole plan: every step's
-// own timeout_ms, or the per-operation timeout for a step without one, plus a
-// margin per step. A plan is several operations in one request, so the
-// per-operation timeout alone cuts it off mid-plan while the browser carries on.
 func planClientTimeout(perOperation time.Duration, steps []browser.PlanStep) time.Duration {
 	if perOperation <= 0 {
 		perOperation = 20 * time.Second
@@ -699,9 +612,7 @@ func (c *Controller) Observe(ctx context.Context) (browser.ObserveResult, error)
 	return out, err
 }
 
-// ConsoleMessages drains the upstream console unfiltered. The MCP server keeps
-// its own retention buffer and applies the caller's filter to that, so an
-// upstream limit here would truncate messages before brw ever buffered them.
+// ConsoleMessages drains the upstream console unfiltered.
 func (c *Controller) ConsoleMessages(ctx context.Context) ([]browser.ConsoleMessage, error) {
 	var out []browser.ConsoleMessage
 	values := url.Values{}
@@ -722,8 +633,7 @@ func (c *Controller) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickX
 	return out, err
 }
 
-// ResizeWindow proxies a real OS window change to the upstream daemon, which
-// owns the browser and therefore the window.
+// ResizeWindow proxies a real OS window change to the upstream daemon, which owns the browser and therefore the window.
 func (c *Controller) ResizeWindow(ctx context.Context, opts browser.WindowResizeOptions) (browser.WindowResizeResult, error) {
 	var out browser.WindowResizeResult
 	err := c.post(ctx, "/api/browser/resize_window", opts, &out)
@@ -762,14 +672,7 @@ func (c *Controller) AssertHidden(ctx context.Context, ref string, timeout time.
 	return c.post(ctx, "/api/page/assert_hidden", map[string]any{"ref": ref, "timeout_ms": timeout.Milliseconds()}, nil)
 }
 
-// Assert forwards the whole assertion to the browser host rather than
-// re-deriving it here. A download digest hashes a file that exists only on that
-// host, so an assertion evaluated on this side of the proxy would hash nothing.
-//
-// A failed assertion answers 400 with expected against actual still in the body,
-// which is decoded so this transport honours the same AssertResult contract as
-// direct CDP: a caller that renders the result and one that only checks err both
-// see what the page said.
+// Assert forwards the whole assertion to the browser host rather than re-deriving it here.
 func (c *Controller) Assert(ctx context.Context, req browser.AssertRequest) (browser.AssertResult, error) {
 	var out browser.AssertResult
 	err := c.post(ctx, "/api/page/assert", req, failureCapture{Into: &out})
@@ -790,9 +693,7 @@ func (c *Controller) Notify(ctx context.Context, opts browser.NotifyOptions) (br
 	return out, err
 }
 
-// CaptureArtifact delegates capture to the browser host. In upstream mode this
-// is the critical data-locality boundary: only payload-free metadata crosses
-// back to the disposable MCP process.
+// CaptureArtifact delegates capture to the browser host.
 func (c *Controller) CaptureArtifact(ctx context.Context, opts artifact.CaptureOptions) (artifact.Meta, error) {
 	if opts.TTL > 0 && opts.TTLSeconds == 0 {
 		seconds := opts.TTL / time.Second
@@ -854,8 +755,7 @@ func artifactClientError(ctx context.Context, operation string, err error) error
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	// An older or compromised upstream may reflect request values in its error
-	// body. Never forward that text across the artifact privacy boundary.
+
 	return fmt.Errorf("artifact %s request failed", operation)
 }
 
@@ -866,33 +766,16 @@ func (c *Controller) SearchRecipes(ctx context.Context, query, origin string, li
 }
 
 // RouteBaseline forwards the baseline routing question to the browser host.
-//
-// Only the question crosses, never a capture: this daemon has no private
-// provider of its own, so a baseline that belongs with one is refused by name
-// in internal/mcp rather than written to this daemon's local root. Answering it
-// from here rather than assuming "not the provider's" is the whole point — the
-// assumption is what put a private page's screenshot in a proxy's baseline root.
-//
-// A browser host that does not serve the route fails the call. That is
-// deliberate: an unanswerable routing question is exactly the case where
-// falling back to local storage is wrong.
 func (c *Controller) RouteBaseline(ctx context.Context, digest, pageURL string) (recipe.BaselineRoute, error) {
 	var out struct {
 		Destination string `json:"destination"`
 	}
-	// The whole page URL, not its origin. The host reduces it to an origin
-	// before anything reaches a provider, and it needs the difference this hop
-	// would throw away: a page with no origin (about:blank, a file:// fixture)
-	// is not the same as an action that captures no page, and only the second
-	// lets an owned digest decide on its own.
+
 	body := map[string]any{"recipe_digest": digest, "page_url": pageURL}
 	if err := c.postExactWithLimit(ctx, "/api/baselines/route", body, &out, maxBaselineRouteResponseBytes); err != nil {
 		return recipe.BaselineRoute{}, fmt.Errorf("ask the browser host where this baseline belongs: %w", err)
 	}
-	// A destination this build does not know is an error, not a local-root
-	// default: a host answering something unrecognised has told this daemon
-	// nothing about who owns the capture, and that is the case where writing it
-	// here is wrong.
+
 	route, err := recipe.ParseBaselineDestination(out.Destination)
 	if err != nil {
 		return recipe.BaselineRoute{}, fmt.Errorf("the browser host answered where this baseline belongs with an answer this daemon cannot act on: %w", err)
@@ -900,22 +783,15 @@ func (c *Controller) RouteBaseline(ctx context.Context, digest, pageURL string) 
 	return route, nil
 }
 
-// maxBaselineRouteResponseBytes bounds a reply that is one word.
 const maxBaselineRouteResponseBytes = int64(4 << 10)
 
 var _ recipe.BaselineRouter = (*Controller)(nil)
 
 func (c *Controller) RunRecipe(ctx context.Context, request recipe.RunRequest) (recipe.RunResult, error) {
 	var out recipe.RunResult
-	// Ordinary browser calls default to a short transport timeout, but one valid
-	// recipe may contain bounded timers/events up to the runner's 30-minute cap.
-	// Keep caller context cancellation authoritative while preventing the proxy
-	// client from terminating a still-valid recipe at 20 seconds.
+
 	client := withMinimumTimeout(c.client, recipe.DefaultMaxRunDuration+30*time.Second)
-	// A failed run answers 400 with the result still in the body, because that is
-	// where failure_bundle_artifact_id lives. Decoding it keeps the RunResult
-	// contract — a populated result AND an error — the same on both sides of the
-	// proxy as it is on direct CDP.
+
 	err := c.postWithClient(ctx, client, "/api/recipes/run", request, failureCapture{Into: &out})
 	return out, err
 }
@@ -946,7 +822,7 @@ func (c *Controller) get(ctx context.Context, path string, values url.Values, ou
 	if err != nil {
 		return err
 	}
-	return c.do(req, out)
+	return c.doWithClientLimit(c.client, req, out, maxUpstreamResponseBytes)
 }
 
 func (c *Controller) post(ctx context.Context, path string, body any, out any) error {
@@ -954,15 +830,9 @@ func (c *Controller) post(ctx context.Context, path string, body any, out any) e
 }
 
 func (c *Controller) postWithClient(ctx context.Context, client *http.Client, path string, body any, out any) error {
-	body = withTabID(ctx, body)
-	body = withSnapshot(ctx, body)
-	return c.postJSONWithLimit(ctx, client, path, body, out, maxUpstreamResponseBytes)
+	return c.postJSONWithLimit(ctx, client, path, withRequestContext(ctx, body), out, maxUpstreamResponseBytes)
 }
 
-// postExactWithLimit intentionally does not add tab_id or snapshot fields.
-// Artifact handle operations are host-local and use strict, fixed request
-// schemas; keeping this separate prevents unrelated context values from making
-// those requests invalid or widening what crosses the proxy boundary.
 func (c *Controller) postExactWithLimit(ctx context.Context, path string, body any, out any, maxResponseBytes int64) error {
 	return c.postJSONWithLimit(ctx, c.client, path, body, out, maxResponseBytes)
 }
@@ -978,14 +848,6 @@ func (c *Controller) postJSONWithLimit(ctx context.Context, client *http.Client,
 	}
 	req.Header.Set("content-type", "application/json")
 	return c.doWithClientLimit(client, req, out, maxResponseBytes)
-}
-
-func (c *Controller) do(req *http.Request, out any) error {
-	return c.doWithClient(c.client, req, out)
-}
-
-func (c *Controller) doWithClient(client *http.Client, req *http.Request, out any) error {
-	return c.doWithClientLimit(client, req, out, maxUpstreamResponseBytes)
 }
 
 func (c *Controller) doWithClientLimit(client *http.Client, req *http.Request, out any, maxResponseBytes int64) error {
@@ -1006,10 +868,6 @@ func (c *Controller) doWithClientLimit(client *http.Client, req *http.Request, o
 	return c.doRequestWithLimit(client, req, out, maxResponseBytes)
 }
 
-// failureCapture wraps an out value whose caller also wants the body of a
-// refused (non-2xx) response decoded into it. Only a response that carries a
-// structured verdict alongside its message uses it; everything else keeps the
-// rule that a failed request yields an error and no data.
 type failureCapture struct{ Into any }
 
 func (c *Controller) doRequestWithLimit(client *http.Client, req *http.Request, out any, maxResponseBytes int64) error {
@@ -1027,8 +885,6 @@ func (c *Controller) doRequestWithLimit(client *http.Client, req *http.Request, 
 	}
 	limit := maxResponseBytes
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Error text is diagnostic, not a data result. Never read tens of MiB only
-		// to throw almost all of it away after allocation.
 		limit = maxUpstreamErrorBytes
 		if capturing {
 			limit = maxCapturedFailureBytes
@@ -1050,8 +906,6 @@ func (c *Controller) doRequestWithLimit(client *http.Client, req *http.Request, 
 			data = data[:limit]
 		}
 		if capturing && !truncated {
-			// Best effort: the error below is the result either way, and a body
-			// that does not carry the structured verdict leaves out zero-valued.
 			_ = json.Unmarshal(data, out)
 		}
 		var payload struct {
@@ -1062,9 +916,6 @@ func (c *Controller) doRequestWithLimit(client *http.Client, req *http.Request, 
 			ExpiresAt string `json:"expires_at"`
 		}
 		if err := json.Unmarshal(data, &payload); err == nil && payload.Error != "" {
-			// A refusal a human's hold produced has to stay a typed refusal
-			// across the proxy hop. errors.As is the contract an agent branches
-			// on, and it is exactly what flattening this to prose would break.
 			if strings.HasPrefix(payload.Code, "approval_") {
 				var required approvalgate.RequiredError
 				if json.Unmarshal(data, &required) == nil && required.RequestID != "" && required.Status != "" {
@@ -1084,9 +935,7 @@ func (c *Controller) doRequestWithLimit(client *http.Client, req *http.Request, 
 					ExpiresAt: payload.ExpiresAt,
 				}
 			}
-			// Typed, not prose: the daemon classified this refusal and the
-			// caller has to be able to tell a policy decision from a transport
-			// fault without reading the sentence. Error() is still the message.
+
 			return newRemoteError(resp, boundedUpstreamError(payload.Error), data)
 		}
 		message := boundedUpstreamError(string(data))
@@ -1125,50 +974,27 @@ func boundedUpstreamError(value string) string {
 	return value + "… [truncated]"
 }
 
-func withTabID(ctx context.Context, body any) any {
+func withRequestContext(ctx context.Context, body any) any {
 	tabID := browser.TabIDFromContext(ctx)
-	if tabID == "" {
+	wantSnapshot := browser.WantSnapshotFromCtx(ctx)
+	if tabID == "" && !wantSnapshot {
 		return body
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
 		return body
 	}
-	payload := map[string]any{}
+	payload := map[string]json.RawMessage{}
 	if len(data) > 0 && string(data) != "null" {
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return body
 		}
 	}
-	if _, ok := payload["tab_id"]; !ok {
-		payload["tab_id"] = tabID
+	if _, ok := payload["tab_id"]; !ok && tabID != "" {
+		payload["tab_id"], _ = json.Marshal(tabID)
 	}
-	return payload
-}
-
-// withSnapshot forwards the post-action snapshot request across the HTTP boundary.
-// The MCP server signals snapshot:true by stashing a flag in the context
-// (browser.WithWantSnapshot); a context value cannot cross to the bridge over
-// HTTP, so we re-materialize it as an explicit body field that the bridge's HTTP
-// handlers read back into WithWantSnapshot. Without this, snapshot:true is
-// silently dropped on the upstream-http topology (works only in single-process
-// direct-CDP mode).
-func withSnapshot(ctx context.Context, body any) any {
-	if !browser.WantSnapshotFromCtx(ctx) {
-		return body
-	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		return body
-	}
-	payload := map[string]any{}
-	if len(data) > 0 && string(data) != "null" {
-		if err := json.Unmarshal(data, &payload); err != nil {
-			return body
-		}
-	}
-	if _, ok := payload["snapshot"]; !ok {
-		payload["snapshot"] = true
+	if _, ok := payload["snapshot"]; !ok && wantSnapshot {
+		payload["snapshot"] = json.RawMessage(`true`)
 	}
 	return payload
 }

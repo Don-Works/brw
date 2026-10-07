@@ -6,13 +6,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// The proxy transport forwards the interaction long tail to the daemon that
-// owns the browser. Each of these is an optional browser.Controller capability
-// (ClipboardController, KeyHoldController, HistoryController, ElementFocuser):
-// the upstream daemon answers with its own transport's capability error when it
-// cannot do the work, so the refusal an agent sees names the real reason rather
-// than "the proxy does not implement it".
-
 func (c *Controller) Clipboard(ctx context.Context, opts browser.ClipboardOptions) (browser.ClipboardResult, error) {
 	var out browser.ClipboardResult
 	err := c.post(ctx, "/api/page/clipboard", opts, &out)

@@ -13,6 +13,9 @@ func TestCanonicalOrigin(t *testing.T) {
 		{name: "http default port is dropped", in: "http://example.test:80/x", want: "http://example.test"},
 		{name: "https default port is dropped", in: "https://example.test:443/x", want: "https://example.test"},
 		{name: "non-default port is kept", in: "http://example.test:8080/x", want: "http://example.test:8080"},
+		{name: "IPv6 keeps brackets", in: "https://[::1]/x", want: "https://[::1]"},
+		{name: "IPv6 default port is dropped", in: "https://[::1]:443/x", want: "https://[::1]"},
+		{name: "IPv6 non-default port is kept", in: "http://[::1]:8080/x", want: "http://[::1]:8080"},
 		{name: "bare host takes the https default", in: "example.test/x", want: "https://example.test"},
 		{name: "protocol-relative pins https", in: "//example.test/x", want: "https://example.test"},
 		{name: "unicode host normalises to punycode", in: "https://münchen.test/", want: "https://xn--mnchen-3ya.test"},
@@ -46,9 +49,6 @@ func TestCanonicalOrigin(t *testing.T) {
 	}
 }
 
-// TestUnicodeAndPunycodeAreOneGrant is the reason CanonicalOrigin runs IDNA: two
-// spellings of one site must not become two records, one of which the user never
-// saw and cannot find to revoke.
 func TestUnicodeAndPunycodeAreOneGrant(t *testing.T) {
 	guard := newTestGuard(t, AdminConfig{})
 	if _, err := guard.Allow(GrantOptions{Origin: "https://münchen.test", Scope: ScopeAct, Actor: "fixture-user"}); err != nil {
@@ -67,6 +67,8 @@ func TestHostOfOrigin(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"https://example.test", "example.test"},
 		{"https://example.test:8443", "example.test"},
+		{"https://[::1]", "::1"},
+		{"http://[::1]:8080", "::1"},
 		{"example.test", "example.test"},
 		{"", ""},
 	}

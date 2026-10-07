@@ -5,9 +5,6 @@ import (
 	"testing"
 )
 
-// TestCategoryDataIsWellFormed is the gate the shipped list's update path names:
-// a pull request that adds a domain has to keep the file loadable and keep the
-// provenance fields filled in, or this fails.
 func TestCategoryDataIsWellFormed(t *testing.T) {
 	set, err := ShippedCategories()
 	if err != nil {
@@ -84,8 +81,7 @@ func TestExtendAddsAndCreatesCategories(t *testing.T) {
 	if category, found := extended.CategoryOf("https://admin.example.test"); !found || category.Name != "internal-tooling" {
 		t.Fatalf("a new category was not created: %q/%v", category.Name, found)
 	}
-	// Extend must not mutate the shipped list in place; a second reader of
-	// ShippedCategories would otherwise inherit one machine's admin config.
+
 	if _, found := set.CategoryOf("https://treasury.example.test"); found {
 		t.Fatal("Extend mutated the shipped category list")
 	}

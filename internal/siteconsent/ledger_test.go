@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// unwritableLedger makes every ledger append fail, the way a full disk or a
-// permissions change does: the ledger path is taken by a directory.
 func unwritableLedger(t *testing.T, store *Store) {
 	t.Helper()
 	if err := os.MkdirAll(LedgerPathFor(store.Path()), 0o700); err != nil {
@@ -17,9 +15,6 @@ func unwritableLedger(t *testing.T, store *Store) {
 	}
 }
 
-// TestLedgerFailuresAreReported covers the events that are recorded ONLY in the
-// ledger. A prompt answered, a grant revoked and a confirmation given leave no
-// other trace, so a swallowed write makes them vanish with no signal at all.
 func TestLedgerFailuresAreReported(t *testing.T) {
 	cases := []struct {
 		name string
@@ -80,9 +75,6 @@ func TestLedgerFailuresAreReported(t *testing.T) {
 	}
 }
 
-// TestAllowReturnsTheGrantWhenOnlyTheLedgerFailed: the grant is already
-// persisted and already authorising by then, so reporting a bare error said
-// "nothing happened" about a record that exists.
 func TestAllowReturnsTheGrantWhenOnlyTheLedgerFailed(t *testing.T) {
 	guard := newTestGuard(t, AdminConfig{})
 	unwritableLedger(t, guard.Store())
@@ -101,8 +93,6 @@ func TestAllowReturnsTheGrantWhenOnlyTheLedgerFailed(t *testing.T) {
 	}
 }
 
-// TestLedgerPathIsBesideTheStore keeps the two files together, since operating
-// on one without the other is how a ledger ends up describing another profile.
 func TestLedgerPathIsBesideTheStore(t *testing.T) {
 	store := newTestStore(t)
 	if filepath.Dir(LedgerPathFor(store.Path())) != filepath.Dir(store.Path()) {

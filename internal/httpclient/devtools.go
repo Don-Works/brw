@@ -7,19 +7,8 @@ import (
 	"github.com/Don-Works/brw/internal/devtools"
 )
 
-// auditClientFloor keeps the proxy's HTTP deadline clear of the audit the
-// browser host is running. axe walks every node against every rule, so on a
-// large application the answer legitimately takes longer than any interaction
-// the default client timeout was sized for.
 const auditClientFloor = 120 * time.Second
 
-// The proxy forwards the developer observations to the daemon that owns the
-// browser. The accessibility report is stored on that side and only its handle
-// comes back, which is the data-locality rule the artifact capture path already
-// follows: no page payload crosses into the disposable MCP process.
-//
-// It has to satisfy the capability itself, or an upstream process would answer
-// "this transport cannot" for a daemon that can.
 var _ devtools.Observer = (*Controller)(nil)
 
 func (c *Controller) Vitals(ctx context.Context, opts devtools.VitalsOptions) (devtools.Vitals, error) {

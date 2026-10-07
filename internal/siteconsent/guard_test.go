@@ -3,6 +3,7 @@ package siteconsent
 import (
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -44,9 +45,6 @@ func newTestGuard(t *testing.T, admin AdminConfig) *Guard {
 	return guard
 }
 
-// TestUngrantedOriginIsRefusedByNameAndScope is acceptance criterion 1's first
-// half: the refusal has to tell the agent which origin and which scope, because
-// that is the whole of what the user has to be asked for.
 func TestUngrantedOriginIsRefusedByNameAndScope(t *testing.T) {
 	guard := newTestGuard(t, AdminConfig{})
 	err := guard.Authorize("https://unknown.test/page", ScopeAct)
@@ -102,8 +100,6 @@ func TestUnattendedAuthorizationNeverPromptsAndHonorsRevocation(t *testing.T) {
 	}
 }
 
-// TestExpiredGrantRePromptsInsteadOfPassing is acceptance criterion 1's second
-// half.
 func TestExpiredGrantRePromptsInsteadOfPassing(t *testing.T) {
 	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	guard := newTestGuard(t, AdminConfig{})
@@ -122,7 +118,6 @@ func TestExpiredGrantRePromptsInsteadOfPassing(t *testing.T) {
 		t.Fatalf("an expired grant must refuse and say so, got %v", err)
 	}
 
-	// Interactive: the same expired grant re-prompts rather than passing.
 	prompter := &scriptedPrompter{siteAnswer: true}
 	guard.SetPrompter(prompter)
 	if err := guard.Authorize("https://expiring.test/", ScopeAct); err != nil {
@@ -133,8 +128,6 @@ func TestExpiredGrantRePromptsInsteadOfPassing(t *testing.T) {
 	}
 }
 
-// TestRevocationAppliesToTheNextAuthorize is acceptance criterion 1's third
-// half: no restart, no new Guard.
 func TestRevocationAppliesToTheNextAuthorize(t *testing.T) {
 	guard := newTestGuard(t, AdminConfig{})
 	if _, err := guard.Allow(GrantOptions{Origin: "https://revokeme.test", Scope: ScopeAct, Actor: "fixture-user"}); err != nil {
@@ -152,13 +145,11 @@ func TestRevocationAppliesToTheNextAuthorize(t *testing.T) {
 	}
 }
 
-// TestInteractivePromptIsAskedOnceAndTheAnswerRecorded covers both directions:
-// a yes is not re-asked, and a no is not re-asked either.
 func TestInteractivePromptIsAskedOnceAndTheAnswerRecorded(t *testing.T) {
 	cases := []struct {
 		name       string
 		answer     bool
-		wantSecond bool // whether the second Authorize should succeed
+		wantSecond bool
 	}{
 		{name: "yes is recorded", answer: true, wantSecond: true},
 		{name: "no is recorded", answer: false, wantSecond: false},
@@ -190,10 +181,9 @@ func TestInteractivePromptIsAskedOnceAndTheAnswerRecorded(t *testing.T) {
 	}
 }
 
-// TestBlocklistedCategoryNeedsAnExplicitOverride is acceptance criterion 2.
 func TestBlocklistedCategoryNeedsAnExplicitOverride(t *testing.T) {
 	guard := newTestGuard(t, AdminConfig{})
-	// Interactive: a prompt must NOT be able to grant a blocklisted category.
+
 	prompter := &scriptedPrompter{siteAnswer: true}
 	guard.SetPrompter(prompter)
 
@@ -212,11 +202,10 @@ func TestBlocklistedCategoryNeedsAnExplicitOverride(t *testing.T) {
 		t.Fatalf("refusal must name the override and the list source: %v", err)
 	}
 
-	// Allow without the flag is refused too.
 	if _, err := guard.Allow(GrantOptions{Origin: "https://paypal.com", Scope: ScopeAct, Actor: "fixture-user"}); !errors.As(err, &blocked) {
 		t.Fatalf("Allow without an override must refuse, got %v", err)
 	}
-	// The wrong category name is not an override either.
+
 	if _, err := guard.Allow(GrantOptions{Origin: "https://paypal.com", Scope: ScopeAct, OverrideCategory: "adult", Actor: "fixture-user"}); !errors.As(err, &blocked) {
 		t.Fatalf("an override naming another category must refuse, got %v", err)
 	}
@@ -224,7 +213,6 @@ func TestBlocklistedCategoryNeedsAnExplicitOverride(t *testing.T) {
 		t.Fatalf("a refused override must leave the origin refused, got %v", err)
 	}
 
-	// With the right override it is granted, and the ledger says who and when.
 	grant, err := guard.Allow(GrantOptions{Origin: "https://paypal.com", Scope: ScopeAct, OverrideCategory: "financial-services", Actor: "fixture-operator", Note: "fixture reason"})
 	if err != nil {
 		t.Fatalf("override grant failed: %v", err)
@@ -293,7 +281,6 @@ func TestAdminCategoryDomainsExtendTheShippedList(t *testing.T) {
 	}
 }
 
-// TestHighRiskActionIsRefusedWhenNonInteractive is acceptance criterion 4.
 func TestHighRiskActionIsRefusedWhenNonInteractive(t *testing.T) {
 	guard := newTestGuard(t, AdminConfig{ConfirmActions: true})
 	if _, err := guard.Allow(GrantOptions{Origin: "https://shop.example.test", Scope: ScopeAct, Actor: "fixture-user"}); err != nil {
@@ -352,7 +339,7 @@ func TestHighRiskActionIsRefusedWhenNonInteractive(t *testing.T) {
 			for _, risk := range required.Risks {
 				classes = append(classes, risk.Class)
 			}
-			if !containsClass(classes, c.class) {
+			if !slices.Contains(classes, c.class) {
 				t.Fatalf("classified as %v, want %s", classes, c.class)
 			}
 			if !strings.Contains(err.Error(), "non-interactive") {
@@ -411,13 +398,4 @@ func TestOriginlessTargetsNeedNoConsent(t *testing.T) {
 			t.Errorf("Authorize(%q) = %v, want nil: there is no site there to consent to", target, err)
 		}
 	}
-}
-
-func containsClass(classes []RiskClass, want RiskClass) bool {
-	for _, class := range classes {
-		if class == want {
-			return true
-		}
-	}
-	return false
 }

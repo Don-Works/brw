@@ -128,6 +128,52 @@ func TestUsageReportRetainsHostGuard(t *testing.T) {
 	}
 }
 
+func TestUsageReportRetainsOnlySafeFailureMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name, outcome, class, fingerprint, wantClass string
+		wantRetryable                                bool
+	}{
+		{"timeout", "error", "timeout", "0123456789abcdef01234567", "timeout", true},
+		{"page failure", "error", "page_script_error", "0123456789abcdef01234567", "page_script_error", false},
+		{"approval", "error", "approval_consumed", "0123456789abcdef01234567", "approval_consumed", false},
+		{"private class", "error", "SENSITIVE_ERROR_CLASS", "SENSITIVE_FINGERPRINT", "tool", false},
+		{"success", "ok", "timeout", "0123456789abcdef01234567", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder, path := usageRecorderFixture(t)
+			server := New("", &fakeController{})
+			server.SetUsageRecorder(recorder)
+			payload, err := json.Marshal(usagelog.Event{
+				Layer: "mcp", Operation: "brw_fill", Outcome: tc.outcome, Scope: "tool", Representation: "mcp_arguments_result",
+				ErrorClass: tc.class, ErrorFingerprint: tc.fingerprint, Retryable: !tc.wantRetryable,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			server.server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/usage/report", bytes.NewReader(payload)))
+			if response.Code != http.StatusNoContent {
+				t.Fatalf("status=%d", response.Code)
+			}
+			events := readUsageEvents(t, path)
+			if len(events) != 1 || events[0].ErrorClass != tc.wantClass || events[0].Retryable != tc.wantRetryable {
+				t.Fatalf("failure metadata lost: %+v", events)
+			}
+			wantFingerprint := ""
+			if tc.outcome == "error" {
+				wantFingerprint = usagelog.SafeFingerprint(tc.fingerprint)
+			}
+			if events[0].ErrorFingerprint != wantFingerprint {
+				t.Fatalf("fingerprint=%s want=%s", events[0].ErrorFingerprint, wantFingerprint)
+			}
+			data, _ := os.ReadFile(path)
+			if strings.Contains(string(data), "SENSITIVE") {
+				t.Fatalf("private failure metadata retained: %s", data)
+			}
+		})
+	}
+}
+
 func TestUsageProxyRecordsHTTPAndActualMCPContextInCanonicalLedger(t *testing.T) {
 	recorder, path := usageRecorderFixture(t)
 	daemon := New("", &fakeController{})

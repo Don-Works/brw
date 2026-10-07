@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"strings"
@@ -181,10 +182,7 @@ func (g *Gate) Check(ctx context.Context, tool string, raw json.RawMessage, sess
 		tabID = tab.ID
 		ctx = browser.WithTabID(ctx, tabID)
 	}
-	boundArgs := make(map[string]json.RawMessage, len(args)+1)
-	for key, value := range args {
-		boundArgs[key] = value
-	}
+	boundArgs := maps.Clone(args)
 	boundArgs["tab_id"], _ = json.Marshal(tabID)
 	bound, _ := json.Marshal(boundArgs)
 	fingerprint := digest([]byte(tool + "\x00" + session + "\x00" + tabID + "\x00" + string(bound)))

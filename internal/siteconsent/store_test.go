@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
-// fixtureKey is an obviously fabricated 32-byte consent key. It is not a secret
-// and never leaves the test process.
 var fixtureKey = []byte("fixture-consent-key-one-two-three")
 
 func newTestStore(t *testing.T) *Store {
@@ -91,9 +90,6 @@ func TestStoreRecordsAndLooksUpGrants(t *testing.T) {
 	}
 }
 
-// TestHandWrittenRecordWithoutValidMACIsRefused is the forgery test. A local
-// process writes itself a grant straight into the file; the store must not
-// honour it, and Lookup must keep answering "no grant".
 func TestHandWrittenRecordWithoutValidMACIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "site-grants.json")
@@ -141,8 +137,6 @@ func TestHandWrittenRecordWithoutValidMACIsRefused(t *testing.T) {
 	}
 }
 
-// TestTamperedFieldInvalidatesTheMAC proves the MAC covers each authorising
-// field, so a record cannot be widened in place by editing the file.
 func TestTamperedFieldInvalidatesTheMAC(t *testing.T) {
 	base := Grant{
 		Origin:    "https://example.test",
@@ -181,8 +175,6 @@ func TestTamperedFieldInvalidatesTheMAC(t *testing.T) {
 	}
 }
 
-// TestDifferentKeyRejectsRecords proves the MAC is keyed: a grant file copied
-// from another user's profile does not authorise anything here.
 func TestDifferentKeyRejectsRecords(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "site-grants.json")
@@ -202,9 +194,6 @@ func TestDifferentKeyRejectsRecords(t *testing.T) {
 	}
 }
 
-// TestRevocationTakesEffectWithoutReopeningTheStore proves the "next action, no
-// daemon restart" requirement: one Store handle answers differently after
-// another process rewrites the file.
 func TestRevocationTakesEffectWithoutReopeningTheStore(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "site-grants.json")
@@ -222,8 +211,7 @@ func TestRevocationTakesEffectWithoutReopeningTheStore(t *testing.T) {
 	if _, found := daemon.Lookup("https://example.test", ScopeAct, time.Now()); !found {
 		t.Fatal("the long-lived handle never saw the grant another process wrote")
 	}
-	// Move the file's timestamp backwards is not needed: the write above and the
-	// revoke below are separate rename operations, so mtime or size moves.
+
 	if removed, err := control.Revoke("https://example.test", ""); err != nil || removed != 1 {
 		t.Fatalf("revoke: removed=%d err=%v", removed, err)
 	}
@@ -284,4 +272,81 @@ func macOf(t *testing.T, g Grant) string {
 	t.Helper()
 	g.Sign(fixtureKey)
 	return g.MAC
+}
+
+func TestAdminConfigRequiresOneCompleteObject(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "admin.json")
+	for _, input := range []string{
+		`{"allowed_origins":["example.test"]}`,
+		`{"allowed_origins":["example.test"]} {"blocked_origins":["example.test"]}`,
+		`{"allowed_origins":["example.test"]} trailing`,
+		`{"allowd_origins":["example.test"]}`,
+		`null`,
+	} {
+		if err := os.WriteFile(path, []byte(input), 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := LoadAdminConfig(path)
+		if (err == nil) != (input == `{"allowed_origins":["example.test"]}`) {
+			t.Fatalf("LoadAdminConfig(%q) = %v", input, err)
+		}
+	}
+}
+
+func TestLookupRevalidatesInMemoryGrants(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.Record(Grant{Origin: "https://example.test", Scope: ScopeRead, Decision: DecisionAllow, GrantedBy: "fixture-user"}); err != nil {
+		t.Fatal(err)
+	}
+	store.grants[0].Scope = ScopeAct
+	if _, found := store.Lookup("https://example.test", ScopeAct, time.Now()); found {
+		t.Fatal("an unverified in-memory grant authorized an action")
+	}
+}
+
+func TestGrantMACSeparatesAuthorizingFields(t *testing.T) {
+	grant := Grant{Origin: "https://example.test", Scope: ScopeAct, Decision: DecisionAllow, GrantedBy: "fixture\n", OverrideCategory: "financial-services"}
+	grant.Sign(fixtureKey)
+	shifted := grant
+	shifted.GrantedBy, shifted.OverrideCategory = "fixture", "\nfinancial-services"
+	if err := shifted.Verify(fixtureKey); err == nil {
+		t.Fatal("moving a separator between authorizing fields preserved the MAC")
+	}
+}
+
+func TestConsentKeyIsPrivateRegularAndPersistent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "private", "key")
+	key, err := LoadOrCreateKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadOrCreateKey(path)
+	if err != nil || string(loaded) != string(key) {
+		t.Fatalf("key changed after reopening: %v", err)
+	}
+	for _, kind := range []string{"short", "public", "symlink", "directory"} {
+		t.Run(kind, func(t *testing.T) {
+			if runtime.GOOS == "windows" && kind == "public" {
+				t.Skip("Windows does not expose key permissions through FileMode")
+			}
+			bad := filepath.Join(t.TempDir(), "key")
+			var err error
+			switch kind {
+			case "short":
+				err = os.WriteFile(bad, []byte("short"), 0600)
+			case "public":
+				err = os.WriteFile(bad, key, 0644)
+			case "symlink":
+				err = os.Symlink(path, bad)
+			case "directory":
+				err = os.Mkdir(bad, 0700)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadOrCreateKey(bad); err == nil {
+				t.Fatalf("accepted %s key", kind)
+			}
+		})
+	}
 }

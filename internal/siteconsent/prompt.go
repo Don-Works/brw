@@ -9,16 +9,7 @@ import (
 	"sync"
 )
 
-// TerminalPrompter asks the person running brwd, on the terminal it was started
-// from.
-//
-// It is the only interactive surface brw ships. It is deliberately narrow: a
-// daemon that has been detached from a terminal has nobody to ask, and an
-// automatic "yes" there is the failure the whole consent model exists to
-// prevent, so a detached daemon gets no prompter at all and refuses instead.
-//
-// Anything but an explicit yes is a no. A prompt that treats a stray newline, an
-// EOF or a closed pipe as consent is not a prompt.
+// TerminalPrompter asks the person running brwd, on the terminal it was started from.
 type TerminalPrompter struct {
 	mu     sync.Mutex
 	reader *bufio.Reader
@@ -65,10 +56,6 @@ func (p *TerminalPrompter) ask(question string) (bool, error) {
 	line, err := p.reader.ReadString('\n')
 	if err != nil && line == "" {
 		if errors.Is(err, io.EOF) {
-			// Nobody is there. Say so with the sentinel rather than returning a
-			// plain false: the caller records whatever a prompt answers, and a
-			// recorded deny from a closed stdin is a "no" the user never gave -
-			// one that survives restarts and needs manual revocation.
 			fmt.Fprintln(p.out, "no answer (input closed); refusing")
 			return false, ErrPromptUnanswerable
 		}

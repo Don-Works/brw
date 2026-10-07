@@ -4,7 +4,8 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -21,10 +22,6 @@ type Category struct {
 }
 
 // CategorySet is the shipped blocklist plus whatever an operator added.
-//
-// Source and Update carry the list's provenance into every surface that shows a
-// refusal, so a user told "this origin is in the financial-services category"
-// can find out who decided that and how to change it without reading the source.
 type CategorySet struct {
 	Version    string     `json:"version"`
 	Source     string     `json:"source"`
@@ -33,21 +30,19 @@ type CategorySet struct {
 	Categories []Category `json:"categories"`
 }
 
-var (
-	shippedOnce sync.Once
-	shipped     CategorySet
-	shippedErr  error
-)
+var shippedCategories = sync.OnceValues(func() (CategorySet, error) {
+	var shipped CategorySet
+	err := json.Unmarshal(categoriesJSON, &shipped)
+	if err == nil {
+		err = shipped.validate()
+	}
+	return shipped, err
+})
 
 // ShippedCategories returns the list embedded in the binary.
 func ShippedCategories() (CategorySet, error) {
-	shippedOnce.Do(func() {
-		shippedErr = json.Unmarshal(categoriesJSON, &shipped)
-		if shippedErr == nil {
-			shippedErr = shipped.validate()
-		}
-	})
-	return shipped.clone(), shippedErr
+	shipped, err := shippedCategories()
+	return shipped.clone(), err
 }
 
 func (c CategorySet) clone() CategorySet {
@@ -88,28 +83,15 @@ func (c CategorySet) validate() error {
 	return nil
 }
 
-// Extend merges operator-supplied domains into the shipped categories. A name
-// that is not already a shipped category becomes a new one, so a managed machine
-// can carry categories brw never heard of.
+// Extend merges operator-supplied domains into the shipped categories.
 func (c CategorySet) Extend(extra map[string][]string) CategorySet {
 	if len(extra) == 0 {
 		return c.clone()
 	}
 	out := c.clone()
-	names := make([]string, 0, len(extra))
-	for name := range extra {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
+	for _, name := range slices.Sorted(maps.Keys(extra)) {
 		domains := extra[name]
-		index := -1
-		for i := range out.Categories {
-			if out.Categories[i].Name == name {
-				index = i
-				break
-			}
-		}
+		index := slices.IndexFunc(out.Categories, func(category Category) bool { return category.Name == name })
 		if index < 0 {
 			out.Categories = append(out.Categories, Category{
 				Name:    name,
@@ -124,11 +106,7 @@ func (c CategorySet) Extend(extra map[string][]string) CategorySet {
 	return out
 }
 
-// CategoryOf returns the first category whose domain list covers the origin's
-// host, and whether one did. Subdomains count: a grant for
-// "https://secure.example-bank.test" is the same decision as one for the
-// apex, and a category list that only matched apexes would be trivially
-// side-stepped.
+// CategoryOf returns the first category whose domain list covers the origin's host, and whether one did.
 func (c CategorySet) CategoryOf(origin string) (Category, bool) {
 	host := HostOfOrigin(origin)
 	if host == "" {

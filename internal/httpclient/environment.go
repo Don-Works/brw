@@ -6,11 +6,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// The proxy forwards page-environment overrides to the daemon that owns the
-// browser. It implements the capability unconditionally: whether the override is
-// actually possible is the upstream transport's answer, and the upstream returns
-// browser.ErrEnvironmentUnsupported verbatim when it is not.
-
 var _ browser.EnvironmentController = (*Controller)(nil)
 var _ browser.InitScriptController = (*Controller)(nil)
 var _ browser.TouchController = (*Controller)(nil)
