@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Prints packaging/homebrew/brw.rb with the version and the four release sha256
-# sums filled in, so bumping the tap after a release is mechanical.
-#
-# Sums come from dist/release when the archives were just built locally, and
-# otherwise from the published release's SHA256SUMS.txt.
 
 usage() {
   echo "usage: packaging/homebrew/render-formula.sh <version> [sums-dir]" >&2
@@ -71,9 +66,6 @@ sum_for() {
   '
 }
 
-# Assigned one per line, not inline in the perl invocation's environment: a
-# missing sum inside an env-prefix substitution would leave an empty sha256 in
-# an otherwise valid-looking formula.
 SHA256_DARWIN_ARM64="$(sum_for darwin_arm64)"
 SHA256_DARWIN_AMD64="$(sum_for darwin_amd64)"
 SHA256_LINUX_ARM64="$(sum_for linux_arm64)"

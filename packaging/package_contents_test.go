@@ -27,8 +27,7 @@ func TestInstallersBundlePublicAgentSkill(t *testing.T) {
 	requireFileContains(t, "../scripts/package-windows.ps1",
 		`Copy-Item -Recurse -Force (Join-Path $RepoRoot "skills") (Join-Path $StageDir "share/skills")`,
 	)
-	// The second fragment is what makes the first load-bearing: staging the
-	// skill only ships it because $stage_dir is the directory tar archives.
+
 	requireFileContains(t, "../scripts/package-tarball.sh",
 		`cp -R "$repo_root/skills" "$stage_dir/skills"`,
 		`tar -C "$work_dir" -cf - "$name"`,
@@ -48,9 +47,6 @@ func TestInstallersBundlePublicAgentSkill(t *testing.T) {
 	}
 }
 
-// A binary that ships from one installer and not the others is the failure
-// this guards: brw is a separate command from brwd/brwctl, so every packaging
-// target has to name it explicitly.
 func TestInstallersShipTheBrwCLI(t *testing.T) {
 	t.Parallel()
 
@@ -70,8 +66,7 @@ func TestInstallersShipTheBrwCLI(t *testing.T) {
 	requireFileContains(t, "../scripts/package-tarball.sh",
 		"for cmd in brw brwd brwctl brwcheck brw-devtools-mcp; do",
 	)
-	// The one-line installer links what it lists; a binary missing from
-	// COMMANDS is unpacked but never reaches PATH.
+
 	requireFileContains(t, "../scripts/install.sh",
 		`COMMANDS="brw brwd brwctl brwcheck brw-devtools-mcp"`,
 	)
@@ -201,5 +196,82 @@ func requireFileContains(t *testing.T, path string, fragments ...string) {
 		if !strings.Contains(string(data), fragment) {
 			t.Errorf("%s does not include required package rule %q", path, fragment)
 		}
+	}
+}
+
+func TestTarballSignsAfterCleanupAndPreservesKeychainArgument(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"scripts", "extension", "tests", "skills", "fake-bin"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"scripts/package-tarball.sh", "scripts/browser-answer-worker.py", "scripts/browser-reader-mcp.py", "scripts/browser-reader-usage.py", "LICENSE", "README.md"} {
+		data, err := os.ReadFile(filepath.Join("..", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stubs := map[string]string{
+		"go": `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then shift; printf binary > "$1"; exit; fi
+  shift
+done
+exit 1
+`,
+		"xattr": "#!/bin/sh\nrm -f \"$2\"/bin/*.signed\n",
+		"codesign": `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --keychain ]; then
+    shift
+    [ "$1" = "$BRW_TEST_KEYCHAIN" ] || exit 7
+  fi
+  last=$1
+  shift
+done
+printf signed > "$last.signed"
+`,
+	}
+	for name, body := range stubs {
+		if err := os.WriteFile(filepath.Join(root, "fake-bin", name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keychain := filepath.Join(root, "keychain with spaces")
+	cmd := exec.Command("bash", filepath.Join(root, "scripts/package-tarball.sh"), "1.2.3", "darwin", "arm64")
+	cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "fake-bin")+string(os.PathListSeparator)+os.Getenv("PATH"), "MACOS_SIGN_IDENTITY=fixture identity", "MACOS_KEYCHAIN="+keychain, "BRW_TEST_KEYCHAIN="+keychain)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("signing package: %v: %s", err, output)
+	}
+	file, err := os.Open(filepath.Join(root, "dist/release/brw_1.2.3_darwin_arm64.tar.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	zipped, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zipped.Close()
+	archive := tar.NewReader(zipped)
+	signed := 0
+	for {
+		header, err := archive.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasSuffix(header.Name, ".signed") {
+			signed++
+		}
+	}
+	if signed != 5 {
+		t.Fatalf("cleanup removed completed signatures: found %d, want5", signed)
 	}
 }

@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds the relocatable archive that scripts/install.sh and the Homebrew
-# formula consume. Unlike the .pkg/.deb/.msi, nothing in here is anchored to a
-# system prefix, so it can be unpacked into a user's home without a privileged
-# step.
 
 usage() {
   echo "usage: scripts/package-tarball.sh <version> <darwin|linux> <amd64|arm64> [out-dir]" >&2
@@ -67,30 +63,6 @@ for cmd in brw brwd brwctl brwcheck brw-devtools-mcp; do
   chmod 0755 "$stage_dir/bin/$cmd"
 done
 
-# A Go binary's signature is what lets Apple Silicon run it at all; an unsigned
-# one is SIGKILLed on launch. Only a macOS host can produce it, and the release
-# workflow already builds the darwin archives on macOS. Sign with the Developer
-# ID identity when the release has one, so the archives the one-line installer
-# downloads carry the same provenance as the .pkg rather than an anonymous
-# ad-hoc signature.
-if [ "$os" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
-  sign_identity="${MACOS_SIGN_IDENTITY:--}"
-  sign_flags=""
-  if [ "$sign_identity" != "-" ]; then
-    sign_flags="--timestamp --options runtime"
-    # The release imports the certificate into a temporary keychain that is not
-    # in the default search list, so codesign has to be told where to look.
-    if [ -n "${MACOS_KEYCHAIN:-}" ]; then
-      sign_flags="$sign_flags --keychain ${MACOS_KEYCHAIN}"
-    fi
-  fi
-  for cmd in brw brwd brwctl brwcheck brw-devtools-mcp; do
-    # shellcheck disable=SC2086 # sign_flags is a deliberate word list
-    codesign --force --sign "$sign_identity" $sign_flags "$stage_dir/bin/$cmd" >/dev/null
-  done
-  echo "signed the darwin binaries with identity: $sign_identity" >&2
-fi
-
 cp -R "$repo_root/extension" "$stage_dir/extension"
 cp -R "$repo_root/tests" "$stage_dir/tests"
 cp -R "$repo_root/skills" "$stage_dir/skills"
@@ -103,9 +75,22 @@ if command -v xattr >/dev/null 2>&1; then
   xattr -cr "$stage_dir" || true
 fi
 
+if [ "$os" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
+  sign_identity="${MACOS_SIGN_IDENTITY:--}"
+  sign_flags=()
+  if [ "$sign_identity" != "-" ]; then
+    sign_flags+=(--timestamp --options runtime)
+    if [ -n "${MACOS_KEYCHAIN:-}" ]; then
+      sign_flags+=(--keychain "$MACOS_KEYCHAIN")
+    fi
+  fi
+  for cmd in brw brwd brwctl brwcheck brw-devtools-mcp; do
+    codesign --force --sign "$sign_identity" "${sign_flags[@]}" "$stage_dir/bin/$cmd" >/dev/null
+  done
+  echo "signed the darwin binaries with identity: $sign_identity" >&2
+fi
+
 archive="$out_abs/$name.tar.gz"
-# gzip -n keeps the builder's filename and clock out of the gzip header. The tar
-# entries still carry build mtimes, so the archive is not byte-reproducible.
 tar -C "$work_dir" -cf - "$name" | gzip -9n > "$archive"
 
 if command -v shasum >/dev/null 2>&1; then

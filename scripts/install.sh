@@ -1,31 +1,9 @@
 #!/bin/sh
 set -eu
 
-# curl -fsSL https://brw.donworks.co.uk/install.sh | sh
-#
-# Installs brw entirely under the invoking user's home so that no step needs
-# sudo: an agent running with ordinary permissions can complete the install
-# without handing a script to a human.
-#
-# Environment:
-#   BRW_VERSION           release to install, with or without the leading v
-#                         (default: the latest GitHub release)
-#   BRW_INSTALL_DIR       payload directory (default: the per-OS app dir below)
-#   BRW_BIN_DIR           directory to link the commands into
-#                         (default: ~/.local/bin, or <install dir>/bin when
-#                         BRW_INSTALL_DIR was set, so a relocated install stays
-#                         self-contained)
-#   BRW_BASE_URL          where to fetch the archive from (default: the GitHub
-#                         release download URL for the resolved version)
-#   BRW_NO_SETUP          set to any value to stop before `brwctl setup`
-#   BRW_NO_PATH           set to any value to leave shell startup files alone
-#   BRW_SKIP_ATTESTATION  set to any value to skip the provenance check; the
-#                         SHA256 check still runs
 
 REPO="Don-Works/brw"
 COMMANDS="brw brwd brwctl brwcheck brw-devtools-mcp"
-# Everything the archive owns. The install replaces exactly these names and
-# nothing else, so a re-run cannot reach config/ or a per-profile extension copy.
 PAYLOAD="bin extension tests skills reader doc"
 
 step() { printf '==> %s\n' "$*"; }
@@ -63,8 +41,6 @@ fetch() {
   _dest="$2"
   if [ "$downloader" = "curl" ]; then
     case "$_url" in
-      # Pinning the protocol stops a redirect from downgrading the download to
-      # plaintext. A BRW_BASE_URL override may legitimately be a local mirror.
       https://*) curl -fsSL --proto '=https' --tlsv1.2 --retry 2 -o "$_dest" "$_url" ;;
       *) curl -fsSL --retry 2 -o "$_dest" "$_url" ;;
     esac
@@ -85,17 +61,12 @@ sha256_of() {
   fi
 }
 
-# gh emits its attestation JSON on one line, so a greedy match would return the
-# document's last occurrence of a key. Splitting on commas first makes the first
-# match the first occurrence in document order.
 json_field() {
   tr ',' '\n' < "$1" |
     sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" |
     head -n 1
 }
 
-# Reads either a single-artifact `<sha>  <name>` file or the release-wide
-# SHA256SUMS.txt, whose names carry a ./ prefix and may carry a binary marker.
 expected_sha256() {
   tr -d '*' < "$1" | awk -v want="$2" '
     {
@@ -109,6 +80,39 @@ expected_sha256() {
   '
 }
 
+replace_payload() {
+  _source="$1"
+  _target="$2"
+  _preserve_defaults="${3:-no}"
+  _stage="$(mktemp -d "$install_dir/.brw-replace-XXXXXX")" || die "could not stage $_target"
+  if ! cp -R "$_source" "$_stage/payload"; then
+    rm -rf "$_stage"
+    die "could not copy $_source; $_target was left untouched"
+  fi
+  if [ "$_preserve_defaults" != no ]; then
+    if [ "$_preserve_defaults" = private ]; then
+      rm -f "$_stage/payload/bridge-defaults.json"
+    fi
+    if [ -f "$_target/bridge-defaults.json" ] && ! cp "$_target/bridge-defaults.json" "$_stage/payload/bridge-defaults.json"; then
+      rm -rf "$_stage"
+      die "could not preserve bridge defaults; $_target was left untouched"
+    fi
+  fi
+  if [ -e "$_target" ] || [ -L "$_target" ]; then
+    if ! mv "$_target" "$_stage/previous"; then
+      rm -rf "$_stage"
+      die "could not replace $_target"
+    fi
+  fi
+  if ! mv "$_stage/payload" "$_target"; then
+    if [ -e "$_stage/previous" ] || [ -L "$_stage/previous" ]; then
+      mv "$_stage/previous" "$_target" || die "could not restore $_target; previous payload is in $_stage/previous"
+    fi
+    rm -rf "$_stage"
+    die "could not publish $_target; previous payload was restored"
+  fi
+  rm -rf "$_stage"
+}
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/brw-install.XXXXXX")"
 cleanup() { rm -rf "$tmp_dir"; }
 trap cleanup EXIT
@@ -143,8 +147,6 @@ else
   install_dir="$HOME/.local/share/brw"
 fi
 
-# The install replaces fixed child names of this directory, so refusing a
-# non-absolute path or the filesystem root keeps that replacement bounded.
 case "$install_dir" in
   /) die "BRW_INSTALL_DIR must not be the filesystem root" ;;
   /*) ;;
@@ -222,8 +224,6 @@ elif command -v gh >/dev/null 2>&1; then
     info "workflow ref ${workflow_ref:-unknown}"
     info "issuer       ${issuer:-unknown}"
   elif [ "$attest_status" -eq 4 ]; then
-    # gh reserves exit 4 for "not authenticated", which is an inability to check
-    # rather than a failed check, so the install continues with a warning.
     warn "gh is not authenticated, so build provenance was not verified. Run 'gh auth login', or verify by hand:"
     warn "  gh attestation verify $archive_name --repo $REPO"
   else
@@ -243,44 +243,19 @@ unpacked="$tmp_dir/unpack/brw_${version}_${os}_${arch}"
 [ -d "$unpacked" ] || die "$archive_name did not contain the expected brw_${version}_${os}_${arch} directory"
 
 mkdir -p "$install_dir"
-# The bridge endpoint and token live inside the installed extension directory.
-# They are per-install state rather than payload, so replacing the tree without
-# carrying them over would silently revoke a working bridge.
-if [ -f "$install_dir/extension/bridge-defaults.json" ]; then
-  cp "$install_dir/extension/bridge-defaults.json" "$tmp_dir/bridge-defaults.json"
-fi
 for item in $PAYLOAD; do
   [ -e "$unpacked/$item" ] || continue
-  if [ -e "$install_dir/$item" ] || [ -L "$install_dir/$item" ]; then
-    rm -rf -- "${install_dir:?}/${item:?}"
+  if [ "$item" = extension ]; then
+    replace_payload "$unpacked/$item" "$install_dir/$item" yes
+  else
+    replace_payload "$unpacked/$item" "$install_dir/$item"
   fi
-  cp -R "$unpacked/$item" "$install_dir/$item"
 done
-if [ -f "$tmp_dir/bridge-defaults.json" ]; then
-  cp "$tmp_dir/bridge-defaults.json" "$install_dir/extension/bridge-defaults.json"
-fi
-
-# A machine driving more than one browser profile has a per-profile extension
-# payload per profile, each loaded unpacked from its own directory and each
-# holding its own bridge endpoint and token. Refreshing only extension/ leaves
-# every one of those profiles running the previous extension after an upgrade,
-# with nothing to say so: the daemon moves, the browser does not. This is the
-# same refresh `task sync-installed-extensions` performs.
 synced=""
 for extdir in "$install_dir"/extension-*; do
   [ -d "$extdir" ] || continue
   [ -L "$extdir" ] && continue
-  if [ -f "$extdir/bridge-defaults.json" ]; then
-    cp "$extdir/bridge-defaults.json" "$tmp_dir/profile-bridge-defaults.json"
-  else
-    rm -f "$tmp_dir/profile-bridge-defaults.json"
-  fi
-  rm -rf -- "${extdir:?}"
-  cp -R "$install_dir/extension" "$extdir"
-  rm -f "$extdir/bridge-defaults.json"
-  if [ -f "$tmp_dir/profile-bridge-defaults.json" ]; then
-    cp "$tmp_dir/profile-bridge-defaults.json" "$extdir/bridge-defaults.json"
-  fi
+  replace_payload "$install_dir/extension" "$extdir" private
   synced="$synced $(basename "$extdir")"
 done
 if [ -n "$synced" ]; then
@@ -298,11 +273,6 @@ if [ "$os" = "darwin" ]; then
   fi
   if command -v codesign >/dev/null 2>&1; then
     for cmd in $COMMANDS; do
-      # An unpacked Go binary whose signature did not survive the round trip is
-      # SIGKILLed on Apple Silicon ("Killed: 9"), and an ad-hoc re-sign fixes
-      # that. Only re-sign what actually fails verification: forcing it over a
-      # Developer ID signature would throw away the release's provenance to
-      # solve a problem that signature does not have.
       if codesign --verify --strict "$install_dir/bin/$cmd" >/dev/null 2>&1; then
         continue
       fi
@@ -336,8 +306,6 @@ case ":$PATH:" in
 esac
 if [ "$on_path" = "no" ]; then
   printf '\n'
-  # An installer that leaves "command not found" behind has not installed
-  # anything as far as the person running it is concerned.
   rc_file=""
   case "${SHELL:-}" in
     */zsh)  rc_file="$HOME/.zshrc" ;;
@@ -348,9 +316,6 @@ if [ "$on_path" = "no" ]; then
   if [ "${SHELL:-}" != "${SHELL%fish}" ]; then
     path_line="fish_add_path $bin_dir"
   fi
-  # Only the default location is written into a startup file. A relocated
-  # install is someone testing or packaging, and editing their shell config
-  # behind their back is not what they asked for.
   if [ -n "${BRW_NO_PATH:-}" ] || [ -z "$rc_file" ] || [ "$bin_dir" != "$HOME/.local/bin" ]; then
     warn "$bin_dir is not on your PATH. Add it:"
     warn "  $path_line"
@@ -373,10 +338,6 @@ if [ -n "${BRW_NO_SETUP:-}" ]; then
   info "Next: $bin_dir/brwctl setup"
 elif "$install_dir/bin/brwctl" setup --help >/dev/null 2>&1; then
   step "Running brwctl setup"
-  # Detach stdin: when this script is itself being read from a pipe, a child
-  # reading stdin would consume the rest of the script. That also means setup
-  # cannot ask for confirmation, so answer for it — running this installer is
-  # the consent, and BRW_NO_SETUP stops before this point.
   if ! "$install_dir/bin/brwctl" setup --yes < /dev/null; then
     printf '\n'
     warn "brw is installed in $install_dir but 'brwctl setup' did not finish."
