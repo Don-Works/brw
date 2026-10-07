@@ -122,6 +122,8 @@ def timed_http(endpoint, body, key=None, timeout=45, ledger=None, operation="ans
                 headers_at = time.perf_counter()
                 response_started = True
                 provider_request_id = response.headers.get('x-request-id')
+                if key and provider_request_id and key in provider_request_id:
+                    raise OptionalFailure('invalid_response')
                 raw = response.read(1048577)
         except urllib.error.HTTPError as error:
             response_started = True
@@ -138,6 +140,8 @@ def timed_http(endpoint, body, key=None, timeout=45, ledger=None, operation="ans
         result = USAGE.decode_json(raw)
         if not isinstance(result, dict):
             raise ValueError('Provider response must be a JSON object')
+        if key and json.dumps(key, ensure_ascii=False)[1:-1] in json.dumps(result, ensure_ascii=False):
+            raise OptionalFailure('invalid_response')
         response_decode_ms = round((time.perf_counter()-decode_started)*1000, 3)
         outcome = 'success'
         return result, {'ms': round((time.perf_counter()-started)*1000, 3), 'request_to_headers_ms': round((headers_at-started)*1000, 3), 'ttft_ms': None, 'request_bytes': len(payload), 'response_bytes': len(raw), 'request_sha256': hashlib.sha256(payload).hexdigest(), 'request_id': request_id, 'provider_request_id': bounded_identifier(provider_request_id), 'response_id': bounded_identifier(result.get('id')), 'requested_model': bounded_identifier(body.get('model')), 'returned_model': bounded_identifier(result.get('model')), 'usage': USAGE.provider_tokens(result.get('usage')), 'serialization_ms': serialization_ms, 'response_decode_ms': response_decode_ms}

@@ -33,10 +33,12 @@ class ProviderFixture:
             def do_POST(self):
                 fixture.requests.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
                 fixture.started.set()
-                status, body, delay, drip = fixture.frames.pop(0)
+                status, body, delay, drip, *provider_ids = fixture.frames.pop(0)
                 time.sleep(delay)
                 self.send_response(status)
                 self.send_header('Content-Length', str(len(body)))
+                if provider_ids:
+                    self.send_header('x-request-id', provider_ids[0])
                 self.end_headers()
                 try:
                     if drip:
@@ -174,9 +176,10 @@ class WorkerTest(unittest.TestCase):
     def test_real_provider_success_preserves_answer_and_usage(self):
         response = {'model': 'writer', 'choices': [{'message': {'content': 'Grounded fixture.'}, 'finish_reason': 'stop'}], 'usage': {'prompt_tokens': 10, 'completion_tokens': 3}}
         provider = self.provider([(200, json.dumps(response).encode(), 0, 0)])
-        args = worker.parse_args(self.base + ['--answer-model', 'writer', '--answer-endpoint', provider.endpoint])
+        args = worker.parse_args(self.base + ['--answer-model', 'writer', '--answer-endpoint', provider.endpoint, '--answer-key-env', 'BRW_FIXTURE_AUTH'])
         args.usage_log, args.usage_dir = True, str(self.root/'usage')
-        result = worker.run(args)
+        with patch.dict(os.environ, {'BRW_FIXTURE_AUTH': 'FIXTURE_VALID_CREDENTIAL_ABC123'}):
+            result = worker.run(args)
         self.assertEqual(result, {'answer': 'Grounded fixture.', 'source': self.page['url']})
         rows = [json.loads(line) for line in (self.root/'usage/reader.jsonl').read_text().splitlines()]
         model = next(row for row in rows if row['scope']=='model')
@@ -196,6 +199,33 @@ class WorkerTest(unittest.TestCase):
                 self.assertIn('excerpt', result)
                 self.assertNotIn('PRIVATE', json.dumps(result))
                 self.assertNotIn('PRIVATE', (self.root/'report.json').read_text())
+
+    def test_reflected_auth_key_is_refused_before_content_or_metadata_persistence(self):
+        key = 'FIXTURE_CREDENTIAL_ABC123'
+        for reflected in ('answer', 'response_id', 'provider_request_id', 'escaped_response_id'):
+            with self.subTest(reflected=reflected):
+                response = {'model': 'writer', 'choices': [{'message': {'content': 'Grounded fixture.'}, 'finish_reason': 'stop'}]}
+                provider_id = 'fixture-provider'
+                if reflected == 'answer':
+                    response['choices'][0]['message']['content'] = 'Reflected '+key
+                elif reflected == 'provider_request_id':
+                    provider_id = key
+                else:
+                    response['id'] = key
+                raw = json.dumps(response).encode()
+                if reflected == 'escaped_response_id':
+                    raw = raw.replace(key.encode(), b'\\u0046'+key[1:].encode())
+                    self.assertNotIn(key.encode(), raw)
+                provider = self.provider([(200, raw, 0, 0, provider_id)])
+                args = worker.parse_args(self.base + ['--answer-model', 'writer', '--answer-endpoint', provider.endpoint, '--answer-key-env', 'BRW_FIXTURE_AUTH'])
+                args.usage_log, args.usage_dir = True, str(self.root/'usage')
+                with patch.dict(os.environ, {'BRW_FIXTURE_AUTH': key}):
+                    result = worker.run(args)
+                self.assertIn('excerpt', result)
+                self.assertNotIn('answer', result)
+                self.assertEqual(result['fallback'], {'stage': 'answer', 'reason': 'invalid_response'})
+                for value in (json.dumps(result), (self.root/'report.json').read_text(), (self.root/'report.json.jsonl').read_text(), (self.root/'usage/reader.jsonl').read_text()):
+                    self.assertNotIn(key, value)
 
     def test_slow_drip_is_bounded_and_child_reaped(self):
         response = {'model': 'writer', 'choices': [{'message': {'content': 'Slow fixture.'}, 'finish_reason': 'stop'}]}
