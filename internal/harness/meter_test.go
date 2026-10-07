@@ -16,13 +16,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-// TestMeterCountsRealWebSocketTraffic drives a real websocket client through
-// the relay to a real websocket server and checks what it counted.
-//
-// Nothing here is stubbed on the path under test: coder/websocket masks the
-// client frames and leaves the server frames unmasked, picks the 7-bit, 16-bit
-// and 64-bit length forms by payload size, and does its own close handshake, so
-// the frame walker meets every shape it has to handle.
 func TestMeterCountsRealWebSocketTraffic(t *testing.T) {
 	var observedHost atomic.Value
 	server, wsPath := startEchoServer(t, &observedHost, nil)
@@ -46,8 +39,6 @@ func TestMeterCountsRealWebSocketTraffic(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	conn.SetReadLimit(4 << 20)
 
-	// Short, 16-bit-length and 64-bit-length payloads, so every header form the
-	// walker parses is exercised.
 	payloads := []string{
 		`{"id":1,"method":"Page.enable"}`,
 		strings.Repeat("a", 400),
@@ -88,9 +79,6 @@ func TestMeterCountsRealWebSocketTraffic(t *testing.T) {
 	}
 }
 
-// TestMeterForwardsPayloadsUnchanged is the other half: a meter that counted
-// correctly but corrupted a large frame would make every benchmark run fail in
-// a way that looks like a browser bug.
 func TestMeterForwardsPayloadsUnchanged(t *testing.T) {
 	var observedHost atomic.Value
 	server, _ := startEchoServer(t, &observedHost, nil)
@@ -130,14 +118,6 @@ func TestMeterForwardsPayloadsUnchanged(t *testing.T) {
 	}
 }
 
-// TestMeterCarriesNothingButItsOwnUpgrade is the DNS-rebinding property.
-//
-// Chrome refuses a DevTools request whose Host header is not its own address,
-// which is what keeps web content off the debugging port. The meter sits in
-// front of that check and used to rewrite the header for anything that arrived,
-// so a page that rebound a name to 127.0.0.1 and found the relay's port could
-// read /json/version, take the browser UUID out of it and open a full CDP
-// session. Every row here is a request that must never reach the browser.
 func TestMeterCarriesNothingButItsOwnUpgrade(t *testing.T) {
 	var observedHost atomic.Value
 	var upstream atomic.Int64
@@ -149,8 +129,7 @@ func TestMeterCarriesNothingButItsOwnUpgrade(t *testing.T) {
 	}
 	defer meter.Close()
 	relay := meter.listen
-	// StartMeter resolves the websocket itself; only what arrives through the
-	// relay from here on counts as upstream contact.
+
 	upstream.Store(0)
 
 	upgrade := "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==\r\n"
@@ -203,8 +182,6 @@ func TestMeterCarriesNothingButItsOwnUpgrade(t *testing.T) {
 	}
 }
 
-// speakToMeter writes one raw HTTP head at the relay and returns its status
-// line and whatever body followed.
 func speakToMeter(t *testing.T, address, head string) (string, string) {
 	t.Helper()
 	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
@@ -267,10 +244,6 @@ func startEchoServer(t *testing.T, observedHost *atomic.Value, upstream *atomic.
 	return server, wsPath
 }
 
-// TestFrameCounterHandlesEveryFrameShape drives the walker directly with
-// hand-built frames, because a live client never produces some of them: a
-// fragmented message, an interleaved control frame, and a zero-length frame all
-// have to be classified, and every one of them is a way to miscount.
 func TestFrameCounterHandlesEveryFrameShape(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -335,9 +308,7 @@ func TestFrameCounterHandlesEveryFrameShape(t *testing.T) {
 			for _, f := range testCase.frames {
 				stream = append(stream, f...)
 			}
-			// Feed the same stream in several chunk sizes: a header split across
-			// two reads is the normal case on a real socket and the one a naive
-			// parser gets wrong.
+
 			for _, chunk := range []int{1, 3, 7, 4096, len(stream)} {
 				if chunk <= 0 {
 					continue
@@ -362,7 +333,6 @@ func TestFrameCounterHandlesEveryFrameShape(t *testing.T) {
 	}
 }
 
-// frame builds one websocket frame the way a peer would put it on the wire.
 func frame(fin bool, opcode byte, masked bool, payload []byte) []byte {
 	var out []byte
 	first := opcode & 0x0f

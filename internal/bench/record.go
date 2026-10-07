@@ -1,11 +1,4 @@
-// Package bench measures what one brw command costs against the local fixture
-// suite: wall time, CDP round trips, bytes over the transport, and the token
-// size of the MCP tool result the agent gets back, plus the machine cost of the
-// whole run.
-//
-// It is a measurement, not a gate. Nothing here runs under `go test ./...`;
-// timings taken on a loaded CI machine would fail for reasons that have nothing
-// to do with the change under test.
+// Package bench measures what one brw command costs against the local fixture suite: wall time, CDP round trips, bytes over the transport, and the token size of the MCP tool result the agent gets back, plus the machine cost of the whole run.
 package bench
 
 import (
@@ -19,18 +12,9 @@ import (
 	"github.com/Don-Works/brw/internal/mcp"
 )
 
-// RecordSchema names the shape of the machine-readable record. A consumer that
-// does not recognise it should refuse to compare rather than guess.
-//
-// v2 because the observation columns changed meaning: v1 weighed the internal
-// Go result once, v2 weighs the MCP tool result an agent is actually sent. The
-// two are the same measurement by name and roughly a factor of two apart, which
-// is exactly the comparison the schema field exists to stop.
+// RecordSchema names the shape of the machine-readable record.
 const RecordSchema = "brw.bench/v2"
 
-// charsPerToken is the same rough estimator scripts/measure-tool-catalogue.py
-// uses, kept identical so the two sets of published numbers are on one scale.
-// It compares arms; it is not a tokenizer.
 const charsPerToken = 4
 
 // Record is one complete run.
@@ -60,14 +44,6 @@ type Flow struct {
 }
 
 // Command is one measured call.
-//
-// CDPCommands counts the messages brw sent the browser and CDPMessages what
-// came back — responses and events together. The counters are sampled around
-// each call, so an event that arrives while no call is in flight is attributed
-// to the next command rather than to the one that caused it.
-//
-// ObservationBytes is the MCP tool result, envelope included, not the internal
-// Go value: see ObservationBytes.
 type Command struct {
 	Name              string  `json:"name"`
 	Tool              string  `json:"tool"`
@@ -118,8 +94,7 @@ func (t *Totals) AddTotals(other Totals) {
 	t.ObservationTokens += other.ObservationTokens
 }
 
-// EstimateTokens converts an observation size to the rough token count an agent
-// pays for it.
+// EstimateTokens converts an observation size to the rough token count an agent pays for it.
 func EstimateTokens(bytes int) int {
 	if bytes <= 0 {
 		return 0
@@ -127,16 +102,7 @@ func EstimateTokens(bytes int) int {
 	return bytes / charsPerToken
 }
 
-// ObservationBytes is the size of the MCP tool result an agent receives for a
-// value, measured through the same payload builder the server serializes.
-//
-// It is not the size of the internal Go result. MCP sends the payload twice —
-// once as content[0].text, a JSON string with every quote escaped, and again as
-// structuredContent — so weighing the Go value alone reports roughly half of
-// what the turn costs, under a column heading that says otherwise.
-//
-// A value that cannot be marshalled is reported as zero-sized rather than
-// failing the measurement, because the command itself still ran.
+// ObservationBytes is the size of the MCP tool result an agent receives for a value, measured through the same payload builder the server serializes.
 func ObservationBytes(value any) int {
 	if value == nil {
 		return 0
@@ -159,8 +125,7 @@ func (r Record) WriteJSON(w io.Writer) error {
 	return encoder.Encode(r)
 }
 
-// WriteSummary emits the human form: the fingerprint first, because a table of
-// milliseconds means nothing without it.
+// WriteSummary emits the human form: the fingerprint first, because a table of milliseconds means nothing without it.
 func (r Record) WriteSummary(w io.Writer) {
 	fmt.Fprintf(w, "brw benchmark %s\n", r.Schema)
 	fmt.Fprintf(w, "environment: %s\n", r.Environment.Fingerprint())

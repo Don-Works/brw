@@ -15,11 +15,6 @@ import (
 )
 
 // Environment is the fingerprint every record carries.
-//
-// A latency number without one is not a measurement, because nothing says
-// whether two runs describe the same machine and the same browser. Everything
-// here is hardware, build or fixture identity; nothing identifies the operator
-// or the machine's owner.
 type Environment struct {
 	CapturedAt    time.Time `json:"captured_at"`
 	BrwVersion    string    `json:"brw_version"`
@@ -34,8 +29,7 @@ type Environment struct {
 	FixtureDigest string    `json:"fixture_digest"`
 }
 
-// Fingerprint is the one-line form, for a human deciding at a glance whether
-// two runs are comparable.
+// Fingerprint is the one-line form, for a human deciding at a glance whether two runs are comparable.
 func (e Environment) Fingerprint() string {
 	digest := e.FixtureDigest
 	if len(digest) > 12 {
@@ -45,15 +39,10 @@ func (e Environment) Fingerprint() string {
 		e.OS, e.Arch, e.CPUModel, e.CPUs, e.Browser, e.BrwVersion, e.GoVersion, digest)
 }
 
-// ComparedFields names the parts of the fingerprint that decide whether two
-// records can be held against each other. It is exported so a test can check
-// the list against the struct rather than against itself: a field added to
-// Environment and left out of here would silently stop mattering.
+// ComparedFields names the parts of the fingerprint that decide whether two records can be held against each other.
 var ComparedFields = []string{"os", "arch", "cpu_model", "cpus", "browser", "headless", "fixture_digest"}
 
-// Comparable reports whether two records were taken somewhere the numbers can
-// be held against each other, and names the first thing that differs when they
-// cannot.
+// Comparable reports whether two records were taken somewhere the numbers can be held against each other, and names the first thing that differs when they cannot.
 func (e Environment) Comparable(other Environment) (bool, string) {
 	for _, field := range []struct {
 		name string
@@ -82,18 +71,28 @@ type ChromeVersion struct {
 
 // ReadChromeVersion asks the running browser what build it is.
 func ReadChromeVersion(endpoint string) (ChromeVersion, error) {
+	metadata, err := readChromeMetadata(endpoint)
+	return metadata.ChromeVersion, err
+}
+
+type chromeMetadata struct {
+	ChromeVersion
+	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+}
+
+func readChromeMetadata(endpoint string) (chromeMetadata, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(strings.TrimRight(endpoint, "/") + "/json/version")
 	if err != nil {
-		return ChromeVersion{}, err
+		return chromeMetadata{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return ChromeVersion{}, fmt.Errorf("chrome /json/version returned %s", resp.Status)
+		return chromeMetadata{}, fmt.Errorf("chrome /json/version returned %s", resp.Status)
 	}
-	var version ChromeVersion
+	var version chromeMetadata
 	if err := json.NewDecoder(resp.Body).Decode(&version); err != nil {
-		return ChromeVersion{}, err
+		return chromeMetadata{}, err
 	}
 	return version, nil
 }
@@ -111,9 +110,7 @@ func DescribeEnvironment() Environment {
 	}
 }
 
-// CPUModel names the processor. It is part of the fingerprint because the same
-// harness on a different CPU produces different numbers, and a record that does
-// not say which CPU invites exactly that comparison.
+// CPUModel names the processor.
 func CPUModel() string {
 	switch runtime.GOOS {
 	case "darwin":

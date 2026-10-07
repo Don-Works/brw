@@ -3,6 +3,7 @@ package bench
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"strings"
 	"time"
@@ -18,7 +19,7 @@ import (
 type Options struct {
 	RepoRoot   string
 	ChromePath string
-	// Only restricts the run to one flow id. Empty runs the whole suite.
+	// Only restricts the run to one flow id.
 	Only string
 	// Timeout bounds a single browser operation.
 	Timeout time.Duration
@@ -33,10 +34,6 @@ func FlowIDs() []string {
 	return ids
 }
 
-// warmupFixture is the page the discarded warm-up flow opens. It is named here
-// rather than inline so the fixture audit can include it: it is loaded by every
-// run, and a warm-up that reached the network would still distort the first
-// measured flow.
 const warmupFixture = "content.html"
 
 type flowDef struct {
@@ -51,10 +48,6 @@ type commandDef struct {
 	run  func() (any, error)
 }
 
-// flowDefs is the suite. Each flow drives one fixture through the shape of work
-// an agent actually does on it — locate, act, confirm — rather than timing a
-// verb in isolation, because the cost of a snapshot is only meaningful next to
-// what the actions after it then cost.
 var flowDefs = []flowDef{
 	{id: "forms", fixture: "forms.html", build: (*flowRunner).formsCommands},
 	{id: "shop", fixture: "decathlon-shop.html", build: (*flowRunner).shopCommands},
@@ -64,10 +57,6 @@ var flowDefs = []flowDef{
 }
 
 // Run drives the fixture suite and returns the record.
-//
-// A failed flow does not abort the run: the remaining flows still produce
-// numbers, and the record says which flow failed and where. What it must never
-// do is report OK.
 func Run(ctx context.Context, opts Options) (Record, error) {
 	root, err := filepath.Abs(opts.RepoRoot)
 	if err != nil {
@@ -115,9 +104,7 @@ func Run(ctx context.Context, opts Options) (Record, error) {
 		Environment: environment,
 		OK:          true,
 		Notes: map[string]any{
-			// Named from the identity constant, not a literal: the bench launches its
-			// own throwaway Chrome so the lane is not in doubt, and a rename should
-			// not leave the record claiming a transport that no longer exists.
+
 			"transport":         brwidentity.TransportDirectCDP,
 			"fixture_origin":    "loopback http",
 			"token_estimator":   fmt.Sprintf("%d chars per token", charsPerToken),
@@ -126,10 +113,6 @@ func Run(ctx context.Context, opts Options) (Record, error) {
 		},
 	}
 
-	// One discarded warm-up flow. The first page of a cold browser pays for
-	// renderer startup, font loading and the first script compile, and folding
-	// that into whichever flow happens to run first makes the suite's own order
-	// part of the result.
 	warmup := &flowRunner{ctx: ctx, rig: rig, url: fixtures.URL(warmupFixture)}
 	warmupErr := warmup.warm()
 
@@ -147,9 +130,6 @@ func Run(ctx context.Context, opts Options) (Record, error) {
 
 	record.DurationMS = time.Since(started).Milliseconds()
 
-	// Close the browser BEFORE the final reading: the kernel only accounts for a
-	// child once it has exited and been reaped, so a reading taken with Chrome
-	// still running would report the browser as free.
 	if err := rig.Close(); err != nil {
 		record.Notes["shutdown_error"] = err.Error()
 	}
@@ -193,8 +173,6 @@ func runFlow(ctx context.Context, rig *harness.Browser, def flowDef, url string)
 	return flow
 }
 
-// flowRunner holds the state a flow's commands share: the tab they run against
-// and the refs an earlier snapshot resolved.
 type flowRunner struct {
 	ctx   context.Context
 	rig   *harness.Browser
@@ -205,8 +183,6 @@ type flowRunner struct {
 
 func (f *flowRunner) manager() *browser.Manager { return f.rig.Manager }
 
-// tabContext pins every command in a flow to the tab the flow opened, so a
-// stray tab left by something else cannot silently become the thing measured.
 func (f *flowRunner) tabContext() context.Context {
 	if f.tabID == "" {
 		return f.ctx
@@ -245,8 +221,6 @@ func (f *flowRunner) measure(cmd commandDef) Command {
 	return result
 }
 
-// warm drives a page the suite does not measure, so the first measured command
-// meets a browser that has already started a renderer.
 func (f *flowRunner) warm() error {
 	result, err := f.manager().Open(f.ctx, f.url)
 	if err != nil {
@@ -277,18 +251,12 @@ func (f *flowRunner) open() (any, error) {
 	return result, nil
 }
 
-// captureRefs records the refs a flow's later commands act through, and fails
-// the command that took the snapshot when the fixture does not offer one. A
-// missing control has to fail here, where the record names it, rather than four
-// commands later as an unexplained click failure.
 func (f *flowRunner) captureRefs(elements []snapshot.Element, wanted map[string]harness.ElementQuery) error {
 	refs, err := harness.ResolveRefs(elements, wanted)
 	if err != nil {
 		return err
 	}
-	for key, ref := range refs {
-		f.refs[key] = ref
-	}
+	maps.Copy(f.refs, refs)
 	return nil
 }
 
@@ -300,8 +268,6 @@ func (f *flowRunner) ref(key string) (string, error) {
 	return ref, nil
 }
 
-// findRef resolves one element live and remembers it, for controls a page only
-// renders after an earlier action.
 func (f *flowRunner) findRef(key string, opts snapshot.FindOptions) (any, error) {
 	result, err := f.manager().Find(f.tabContext(), opts)
 	if err != nil {
@@ -452,10 +418,6 @@ func (f *flowRunner) structuredCommands() []commandDef {
 	}
 }
 
-// readPathCommands times the two ways to read one page: a tab (open, then
-// read) and brw_read_url, which fetches and extracts in the daemon with no
-// browser. The flow opens first only because every flow must; read_url touches
-// no tab, so the order does not favour either path.
 func (f *flowRunner) readPathCommands() []commandDef {
 	mgr := f.manager()
 	return []commandDef{
@@ -477,14 +439,6 @@ func (f *flowRunner) fill(key, text string) (any, error) {
 	return f.manager().Fill(f.tabContext(), snapshot.FillOptions{Ref: ref, Text: text, Replace: true})
 }
 
-// waitFor returns what brw_wait_for returns.
-//
-// It used to substitute {"condition": ...} on the grounds that a wait's result
-// IS its condition holding. That was a claim about what an agent ought to be
-// sent, in a column that reports what it IS sent: the tool answers with the
-// whole WaitOutcome — ok, condition, resolved_by, waited_ms, wakeups — and
-// resolved_by in particular is the field that tells a caller whether the
-// condition it picked costs a round trip per check.
 func (f *flowRunner) waitFor(condition string) (any, error) {
 	outcome, err := f.manager().WaitForOutcome(f.tabContext(), condition, 10*time.Second)
 	if err != nil {

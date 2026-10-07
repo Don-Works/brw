@@ -10,9 +10,6 @@ import (
 
 const burnEnv = "BRW_HARNESS_BURN_CPU"
 
-// TestMain lets this test binary re-exec itself as a short-lived child, which
-// is the only honest way to check that child accounting works: getrusage
-// reports a child only once it has exited and been reaped.
 func TestMain(m *testing.M) {
 	if os.Getenv(burnEnv) != "" {
 		burnCPU()
@@ -26,7 +23,7 @@ func burnCPU() {
 	for i := 0; i < 40_000_000; i++ {
 		total += i % 7
 	}
-	// Keep the compiler from deleting the loop.
+
 	if total < 0 {
 		os.Exit(1)
 	}
@@ -52,9 +49,6 @@ func TestNormalizeMaxRSSUsesEachKernelsUnit(t *testing.T) {
 	}
 }
 
-// TestChildCPUIsAccountedAfterReaping is the claim the benchmark's "browser
-// tree" row rests on. If RUSAGE_CHILDREN did not pick a reaped child up, the
-// record would report a browser that cost nothing.
 func TestChildCPUIsAccountedAfterReaping(t *testing.T) {
 	before := ReadResourceUsage()
 	if !before.Supported {
@@ -81,9 +75,6 @@ func TestChildCPUIsAccountedAfterReaping(t *testing.T) {
 	}
 }
 
-// TestCPUDeltaKeepsThePeakAndDifferencesTheTime guards the one piece of
-// arithmetic that is easy to get backwards: a high-water mark must not be
-// subtracted, or every record would report the browser's memory as near zero.
 func TestCPUDeltaKeepsThePeakAndDifferencesTheTime(t *testing.T) {
 	earlier := Usage{PeakRSSBytes: 100, UserCPUMS: 10, SysCPUMS: 4}
 	later := Usage{PeakRSSBytes: 900, UserCPUMS: 35, SysCPUMS: 9}

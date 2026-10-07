@@ -7,8 +7,7 @@ import (
 	"syscall"
 )
 
-// ReadResourceUsage samples the kernel's accounting for this process and for
-// the children it has reaped.
+// ReadResourceUsage samples the kernel's accounting for this process and for the children it has reaped.
 func ReadResourceUsage() ResourceUsage {
 	usage := ResourceUsage{Supported: true}
 	var self, children syscall.Rusage
@@ -31,10 +30,6 @@ func convertRusage(r syscall.Rusage) Usage {
 	}
 }
 
-// normalizeMaxRSS converts ru_maxrss to bytes. The kernels disagree about its
-// unit: Linux reports kilobytes, Darwin and the BSDs report bytes. Reporting
-// one as the other is a 1024x error in a memory figure, which is exactly the
-// kind of number nobody re-checks.
 func normalizeMaxRSS(maxrss int64, goos string) int64 {
 	if goos == "linux" {
 		return maxrss * 1024

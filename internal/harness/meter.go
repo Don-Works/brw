@@ -3,7 +3,6 @@ package harness
 import (
 	"bufio"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,11 +16,6 @@ import (
 )
 
 // Counters is a reading of the metered CDP transport.
-//
-// Commands and messages are counted as complete WebSocket data messages in each
-// direction. Chrome multiplexes every target session over the one browser
-// websocket, so this is the whole conversation between brw and the browser, not
-// one tab's share of it.
 type Counters struct {
 	CDPCommands      int64 `json:"cdp_commands"`
 	CDPMessages      int64 `json:"cdp_messages"`
@@ -39,29 +33,10 @@ func (c Counters) Sub(earlier Counters) Counters {
 	}
 }
 
-// Add accumulates a reading into a running total.
-func (c Counters) Add(other Counters) Counters {
-	return Counters{
-		CDPCommands:      c.CDPCommands + other.CDPCommands,
-		CDPMessages:      c.CDPMessages + other.CDPMessages,
-		TransportBytesTx: c.TransportBytesTx + other.TransportBytesTx,
-		TransportBytesRx: c.TransportBytesRx + other.TransportBytesRx,
-	}
-}
-
-// Meter is a loopback relay between brw's CDP client and Chrome's debugging
-// port. It forwards bytes untouched and counts what crosses it.
-//
-// Counting at the socket is the only place the numbers are real: chromedp
-// exposes no hook for "how many commands did that call issue", and an estimate
-// made from the Go call graph would be an assertion about the code rather than
-// a measurement of the browser conversation.
+// Meter is a loopback relay between brw's CDP client and Chrome's debugging port.
 type Meter struct {
 	ln net.Listener
-	// target and path are Chrome's own address and browser-websocket path;
-	// listen is the relay's address. The handshake check compares against the
-	// relay's address and the rewrite that follows it uses the browser's, so
-	// both have to be kept.
+
 	target   string
 	path     string
 	listen   string
@@ -80,8 +55,7 @@ type counterPair struct {
 	bytes    atomic.Int64
 }
 
-// StartMeter resolves Chrome's browser websocket from its HTTP debugging
-// endpoint and returns a relay in front of it.
+// StartMeter resolves Chrome's browser websocket from its HTTP debugging endpoint and returns a relay in front of it.
 func StartMeter(chromeEndpoint string) (*Meter, error) {
 	wsURL, err := browserWebSocketURL(chromeEndpoint)
 	if err != nil {
@@ -109,9 +83,6 @@ func StartMeter(chromeEndpoint string) (*Meter, error) {
 }
 
 // BrowserWSURL is the endpoint to hand a CDP client so its traffic is metered.
-// It keeps the "/devtools/browser/<id>" path, which is what tells chromedp this
-// is already a browser websocket and stops it re-resolving one straight from
-// Chrome and bypassing the meter.
 func (m *Meter) BrowserWSURL() string { return m.browser }
 
 // Read samples the counters.
@@ -156,12 +127,6 @@ func (m *Meter) accept() {
 	}
 }
 
-// track registers a connection so Close can drop it.
-//
-// A connection registered AFTER Close has swept the list is closed immediately
-// instead: a relay that was mid-dial when Close ran would otherwise leave a
-// socket nothing ever closes, and Close's wait for its goroutines would never
-// return.
 func (m *Meter) track(conn net.Conn) {
 	m.mu.Lock()
 	if m.closed.Load() {
@@ -181,8 +146,7 @@ func (m *Meter) relay(client net.Conn) {
 	if err != nil {
 		return
 	}
-	// Refused before the dial, so a request the relay will not carry never opens
-	// a connection to the browser at all.
+
 	if reason := m.refuseHandshake(head); reason != "" {
 		writeRefusal(client, reason)
 		return
@@ -196,11 +160,6 @@ func (m *Meter) relay(client net.Conn) {
 	m.track(server)
 	serverReader := bufio.NewReader(server)
 
-	// Chrome refuses a DevTools websocket whose Host header names something
-	// other than the port it is listening on, so the relay's own address has to
-	// be swapped out before the handshake is forwarded. refuseHandshake has
-	// already applied the same check against the relay's own address, so this
-	// rewrite no longer stands in for Chrome's.
 	if _, err := server.Write(rewriteHost(head, m.target)); err != nil {
 		return
 	}
@@ -227,19 +186,6 @@ func (m *Meter) relay(client net.Conn) {
 	<-done
 }
 
-// refuseHandshake reports why a request must not be carried, or "" for the one
-// websocket upgrade the meter exists to relay.
-//
-// Chrome's DevTools endpoint refuses a request whose Host header is not its own
-// listening address. That check is what stops web content from reaching the
-// debugging port after rebinding a name to 127.0.0.1, and rewriting the header
-// on the way through replaced it with nothing: anything arriving on the relay's
-// port was re-addressed to the browser and answered, /json/version included,
-// which hands out the browser UUID and with it a full CDP session. The relay
-// therefore applies the same check against its OWN address, and carries nothing
-// but the exact upgrade StartMeter resolved: a rebound name cannot present the
-// relay's literal address as its Host, and an ordinary cross-origin fetch is
-// not an upgrade.
 func (m *Meter) refuseHandshake(head []byte) string {
 	lines := strings.Split(strings.TrimRight(string(head), "\r\n"), "\r\n")
 	fields := strings.Fields(lines[0])
@@ -266,8 +212,7 @@ func (m *Meter) refuseHandshake(head []byte) string {
 			connection = append(connection, value)
 		}
 	}
-	// Exactly one Host: two of them leave the relay and the browser disagreeing
-	// about which is authoritative, which is the shape of request smuggling.
+
 	if len(hosts) != 1 {
 		return "a relayed request carries exactly one host header"
 	}
@@ -280,8 +225,6 @@ func (m *Meter) refuseHandshake(head []byte) string {
 	return ""
 }
 
-// headerHasToken reports whether any of a header's values carries the token,
-// which is how "Connection: keep-alive, Upgrade" has to be read.
 func headerHasToken(values []string, token string) bool {
 	for _, value := range values {
 		for _, part := range strings.Split(value, ",") {
@@ -293,8 +236,6 @@ func headerHasToken(values []string, token string) bool {
 	return false
 }
 
-// writeRefusal answers a request the relay will not carry, so a mis-plumbed
-// client sees why rather than a closed socket.
 func writeRefusal(client net.Conn, reason string) {
 	body := reason + "\n"
 	_, _ = fmt.Fprintf(client,
@@ -302,8 +243,6 @@ func writeRefusal(client net.Conn, reason string) {
 		len(body), body)
 }
 
-// readHTTPHead reads up to and including the blank line that ends an HTTP
-// message head. Everything after it on a 101 connection is websocket frames.
 func readHTTPHead(r *bufio.Reader) ([]byte, error) {
 	const limit = 64 * 1024
 	head := make([]byte, 0, 512)
@@ -333,30 +272,18 @@ func rewriteHost(head []byte, host string) []byte {
 }
 
 func pipeFrames(dst io.Writer, src io.Reader, dir *counterPair) {
-	counter := &frameCounter{dir: dir}
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := src.Read(buf)
-		if n > 0 {
-			counter.consume(buf[:n])
-			if _, werr := dst.Write(buf[:n]); werr != nil {
-				return
-			}
-		}
-		if err != nil {
-			return
-		}
-	}
+	_, _ = io.CopyBuffer(dst, io.TeeReader(src, &frameCounter{dir: dir}), make([]byte, 32*1024))
 }
 
-// frameCounter walks a websocket byte stream and counts complete data messages
-// without buffering a payload: it accumulates a frame header until it parses,
-// then skips the payload length it declares. A 40 MB screenshot therefore costs
-// the meter nothing but the byte count.
 type frameCounter struct {
 	dir     *counterPair
 	header  []byte
 	payload int64
+}
+
+func (f *frameCounter) Write(p []byte) (int, error) {
+	f.consume(p)
+	return len(p), nil
 }
 
 func (f *frameCounter) consume(p []byte) {
@@ -401,18 +328,13 @@ func (f *frameCounter) commit() {
 		length = int64(binary.BigEndian.Uint64(head[2:10]) & 0x7fffffffffffffff)
 	}
 	f.payload = length
-	// A message is counted once, on the frame that finishes it. Opcodes 0, 1
-	// and 2 are continuation, text and binary; 8 and above are control frames
-	// (close, ping, pong), which are transport chatter and not CDP messages.
+
 	if head[0]&0x80 != 0 && head[0]&0x0f < 8 {
 		f.dir.messages.Add(1)
 	}
 	f.header = f.header[:0]
 }
 
-// frameHeaderSize reports how many bytes this frame's header occupies. With
-// fewer than two bytes in hand the answer is "two more", because the second
-// byte carries both the mask bit and the length class that decide the rest.
 func frameHeaderSize(head []byte) int {
 	if len(head) < 2 {
 		return 2
@@ -431,23 +353,12 @@ func frameHeaderSize(head []byte) int {
 }
 
 func browserWebSocketURL(endpoint string) (string, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(strings.TrimRight(endpoint, "/") + "/json/version")
+	metadata, err := readChromeMetadata(endpoint)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("chrome /json/version returned %s", resp.Status)
-	}
-	var payload struct {
-		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", err
-	}
-	if payload.WebSocketDebuggerURL == "" {
+	if metadata.WebSocketDebuggerURL == "" {
 		return "", errors.New("chrome reported no browser websocket")
 	}
-	return payload.WebSocketDebuggerURL, nil
+	return metadata.WebSocketDebuggerURL, nil
 }

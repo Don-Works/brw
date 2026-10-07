@@ -7,8 +7,7 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// ElementQuery names a control the way a harness script refers to it: by role
-// and by a fragment of its accessible name.
+// ElementQuery names a control the way a harness script refers to it: by role and by a fragment of its accessible name.
 type ElementQuery struct {
 	Role string
 	Name string
@@ -32,9 +31,7 @@ func FindElement(elements []snapshot.Element, query ElementQuery) (snapshot.Elem
 	return snapshot.Element{}, false
 }
 
-// ResolveRefs maps each wanted control to a ref, and fails naming the control
-// the page did not offer. A harness that carries on with a missing ref fails
-// several steps later as an unexplained action error.
+// ResolveRefs maps each wanted control to a ref, and fails naming the control the page did not offer.
 func ResolveRefs(elements []snapshot.Element, wanted map[string]ElementQuery) (map[string]string, error) {
 	refs := make(map[string]string, len(wanted))
 	for key, query := range wanted {
