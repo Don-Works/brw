@@ -9,22 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/Don-Works/brw/internal/credential"
 )
 
-// defaultCredentialTimeout applies when a manifest sets none. A vault CLI that
-// has to unlock can take a few seconds; one that takes ten has a problem the
-// recipe should surface rather than wait through.
 const defaultCredentialTimeout = 10 * time.Second
 
-// execWaitDelay is how long Wait may keep running after the context deadline
-// killed the process. exec.CommandContext kills the child but still waits for
-// every inherited writer to close the stdout pipe, so a provider that forks a
-// grandchild and exits holds cmd.Run() open indefinitely. Without this the
-// documented deadline is not a deadline.
 const execWaitDelay = 2 * time.Second
 
 func newCredentialProvider(spec CredentialProviderSpec) (credentialProvider, error) {
@@ -34,10 +27,9 @@ func newCredentialProvider(spec CredentialProviderSpec) (credentialProvider, err
 	}
 	switch spec.Kind {
 	case CredentialKindExec:
-		command := append([]string(nil), spec.Command...)
+		command := slices.Clone(spec.Command)
 		if len(command) == 0 {
-			// Unreachable through Load, which validates the manifest first. Kept
-			// so a future caller cannot reach the index below on an empty argv.
+
 			return nil, errors.New("the exec credential kind requires a command")
 		}
 		program, err := checkProgramTrust("credential command program", command[0])
@@ -59,34 +51,11 @@ func newCredentialProvider(spec CredentialProviderSpec) (credentialProvider, err
 	}
 }
 
-// trustedProgram is the binary an exec provider runs, under both the names that
-// decide which bytes execute: the path the reviewed manifest declared, and the
-// path that declaration resolves to.
 type trustedProgram struct {
 	declared string
 	resolved string
 }
 
-// checkProgramTrust applies the plugin directory's own rule to the binary an
-// exec provider runs. The manifest is 0600 and owner-checked, but that only
-// fixes the argv: if another local user can write the program it names, or any
-// directory on the way to it, they still choose what brwd executes.
-//
-// A location has more than one spelling, so checking the resolved target alone
-// is not the boundary. A symlink points wherever the writer of its directory
-// says, which makes a 0700 binary in a 0700 directory, named through a
-// world-writable directory, a program another local user picks. Both ancestor
-// chains are therefore walked, and the mode and owner rules land on the
-// resolved file, because that is the file that runs.
-//
-// Checked at load so a misconfigured provider is a startup failure rather than
-// a login that fails three steps into a recipe, and again before every exec,
-// because a daemon that has been up for a week is answering with what was true
-// at boot otherwise.
-// It takes the kind of program it is checking as a label rather than assuming
-// the credential one: a browser provider execs two programs of its own, and a
-// check that could only describe one kind of program is a check somebody copies
-// rather than calls.
 func checkProgramTrust(kind, program string) (trustedProgram, error) {
 	resolved, err := filepath.EvalSymlinks(program)
 	if err != nil {
@@ -102,15 +71,6 @@ func checkProgramTrust(kind, program string) (trustedProgram, error) {
 	return trustedProgram{declared: program, resolved: resolved}, nil
 }
 
-// checkProgramFileTrust holds the file that actually runs to the mode, owner
-// and ancestor rules. Split out of checkProgramTrust because it runs again
-// before every exec, on the resolved path the provider pinned at load.
-//
-// The stat is by path, and exec opens that path a second time. What closes the
-// gap between them is the ancestor walk rather than the stat: replacing the
-// file in between needs write access to a directory on the way to it, and that
-// is what the walk has already refused to anyone but the daemon's user and
-// root.
 func checkProgramFileTrust(resolved, what string) error {
 	info, err := os.Stat(resolved)
 	if err != nil {
@@ -128,11 +88,6 @@ func checkProgramFileTrust(resolved, what string) error {
 	return refuseWritableAncestors(resolved, what)
 }
 
-// checkCredentialDirectoryTrust holds the file provider's directory to the same
-// rule, because it carries the same authority: whoever can write the directory
-// chooses the value brw types into a password field, and choosing the answer is
-// choosing the program by another route. Both spellings again, for the reason
-// checkProgramTrust walks both.
 func checkCredentialDirectoryTrust(root string) error {
 	resolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -158,7 +113,6 @@ func checkCredentialDirectoryTrust(root string) error {
 	return refuseWritableAncestors(resolved, what)
 }
 
-// execProvider runs a fixed argv and reads one value from its stdout.
 type execProvider struct {
 	command []string
 	program trustedProgram
@@ -171,33 +125,27 @@ func (p *execProvider) resolve(ctx context.Context, reference string) (credentia
 		return credential.Secret{}, err
 	}
 	argv := substituteReference(p.command, reference)
-	// The path the loader resolved and checked, never the declared name looked
-	// up again here: re-resolving would let a link moved since startup choose
-	// the program, which is the whole thing the check above establishes.
+
 	argv[0] = p.program.resolved
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	// No shell and no stdin. stderr is sent to the void rather than captured:
-	// exec.ExitError would otherwise retain it, and a provider that prints the
-	// value on its failure path would put it in a retained buffer.
+
 	cmd.Stdin = nil
 	cmd.Stderr = io.Discard
 	cmd.WaitDelay = execWaitDelay
-	// One byte over the cap so Validate can tell "at the limit" from "truncated".
+
 	stdout := &boundedBuffer{limit: credential.MaxValueBytes + 1}
 	cmd.Stdout = stdout
 	err := cmd.Run()
-	// Checked before the run error so an expired deadline reads as a timeout on
-	// every path, including the race where Run returns nil as the deadline
-	// passes: output from a call that outran its deadline is not an answer.
+
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return credential.Secret{}, fmt.Errorf("credential provider timed out after %s", p.timeout)
 	}
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			// Deliberately without the provider's stderr: see above.
+
 			return credential.Secret{}, fmt.Errorf("credential provider exited with status %d", exitErr.ExitCode())
 		}
 		return credential.Secret{}, fmt.Errorf("credential provider could not be run: %w", err)
@@ -209,9 +157,6 @@ func (p *execProvider) resolve(ctx context.Context, reference string) (credentia
 	return secret, nil
 }
 
-// boundedBuffer stops a runaway provider filling the daemon's heap. It never
-// reports a write error, because killing the pipe mid-write would turn "printed
-// too much" into a confusing broken-pipe failure instead of a size refusal.
 type boundedBuffer struct {
 	limit int
 	data  []byte
@@ -229,9 +174,6 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 
 func (b *boundedBuffer) bytes() []byte { return b.data }
 
-// fileProvider reads <root>/<reference>. It is the reference implementation the
-// test suite uses, so the credential path is exercised on a machine with no
-// vault CLI installed at all.
 type fileProvider struct {
 	root    string
 	timeout time.Duration
@@ -247,11 +189,7 @@ func (p *fileProvider) resolve(ctx context.Context, reference string) (credentia
 		secret credential.Secret
 		err    error
 	}
-	// os.Stat and os.ReadFile take no context, so the deadline docs/plugins.md
-	// promises can only be kept by waiting on them from the outside. The read
-	// goroutine outlives a timeout on purpose: abandoning a read wedged on a
-	// dead network mount or a named pipe with no writer is the whole point, and
-	// the buffered channel lets it finish and be collected either way.
+
 	done := make(chan outcome, 1)
 	go func() {
 		secret, err := p.read(reference)
@@ -300,9 +238,6 @@ func (p *fileProvider) read(reference string) (credential.Secret, error) {
 	return secret, nil
 }
 
-// resolvePath keeps the read inside the configured directory. The reference
-// pattern already excludes "..", but a symlink inside the directory is a second
-// way out, so the resolved path is re-checked after following links.
 func (p *fileProvider) resolvePath(reference string) (string, error) {
 	candidate := filepath.Join(p.root, filepath.FromSlash(reference))
 	if err := containedIn(p.root, candidate); err != nil {

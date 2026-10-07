@@ -13,9 +13,6 @@ import (
 	"github.com/Don-Works/brw/internal/credential"
 )
 
-// Low-entropy and obviously fabricated. Every non-leakage assertion in this
-// repository searches for a literal like this one, so it must never look like
-// a real secret.
 const fixtureCredentialValue = "fixture-login-value-one"
 
 func writeManifest(t *testing.T, dir, name string, manifest map[string]any) string {
@@ -60,9 +57,6 @@ func browserManifest(t *testing.T, mint, teardown string) map[string]any {
 	}
 }
 
-// fileProviderRegistry builds the reference file provider with one credential
-// in it, which is what lets the credential path run on a machine with no vault
-// CLI installed at all.
 func fileProviderRegistry(t *testing.T, reference, value string) *Registry {
 	t.Helper()
 	root := t.TempDir()
@@ -308,9 +302,6 @@ func TestFileProviderRefusesASharedReadableCredentialAndASymlinkOut(t *testing.T
 	}
 }
 
-// The exec provider is what the 1Password manifest uses. `echo` stands in for
-// `op read` so the argv substitution and the stdout contract are exercised
-// without the test suite depending on a vault CLI being installed.
 func TestExecProviderSubstitutesTheReferenceIntoOneArgument(t *testing.T) {
 	echo, err := exec.LookPath("echo")
 	if err != nil {
@@ -331,7 +322,7 @@ func TestExecProviderSubstitutesTheReferenceIntoOneArgument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// echo appends a newline; the shared validation strips exactly one.
+
 	if secret.Reveal() != "prefix-work/login" {
 		t.Fatalf("exec provider returned %q, want the substituted argument", secret.Reveal())
 	}
@@ -345,9 +336,7 @@ func TestExecProviderFailsClosedOnEveryProviderFailure(t *testing.T) {
 		atLoad    bool
 		wantErr   string
 	}{
-		// A program that is not there is a startup failure now that the loader
-		// pins the binary: a daemon that boots with a provider it can never run
-		// discovers that at the password field.
+
 		"program missing": {
 			program: filepath.Join(t.TempDir(), "no-such-vault-cli"), arguments: []string{ReferenceToken},
 			atLoad: true, wantErr: "resolve credential command program",
@@ -388,7 +377,7 @@ func TestExecProviderFailsClosedOnEveryProviderFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// "30" is a legal reference name and, for sleep, thirty seconds.
+
 			_, err = registry.Resolve(context.Background(), "30")
 			if err == nil {
 				t.Fatalf("%s resolved a credential", name)
@@ -400,12 +389,8 @@ func TestExecProviderFailsClosedOnEveryProviderFailure(t *testing.T) {
 	}
 }
 
-// The manifest an operator reviewed has to determine which binary runs. A bare
-// name is resolved from the daemon's PATH at every call, and a group-writable
-// program is chosen by whoever can write it, not by the manifest.
 func TestLoadPinsTheBinaryAnExecProviderRuns(t *testing.T) {
-	// Chmod after the write, not a mode argument: the process umask clears the
-	// group and other bits this table is about.
+
 	writeProgram := func(t *testing.T, dir, name string, mode os.FileMode) string {
 		t.Helper()
 		path := filepath.Join(dir, name)
@@ -438,7 +423,7 @@ func TestLoadPinsTheBinaryAnExecProviderRuns(t *testing.T) {
 			program: func(t *testing.T) string {
 				dir := t.TempDir()
 				writeProgram(t, dir, "vaultcli", 0o700)
-				// Not filepath.Join, which would clean the path back out.
+
 				return dir + "/sub/../vaultcli"
 			},
 			wantErr: "must already be a clean path",
@@ -475,16 +460,8 @@ func TestLoadPinsTheBinaryAnExecProviderRuns(t *testing.T) {
 	}
 }
 
-// Every credential kind reaches credential.read through the same registry, so a
-// kind classified by one switch over Kind and missed by the other — or accepted
-// by both and trust-checked by neither — is how a gate stops covering what it
-// gates. This enumerates the domain rather than naming the kinds that existed
-// when it was written: a kind added to CredentialKinds with no row below fails
-// here before it can ship.
 func TestEveryCredentialKindIsClassifiedAndHeldToTheTrustBoundary(t *testing.T) {
-	// One spec per kind, each naming a location another local user can write.
-	// The enclosing directory is the daemon's own, so the only thing a row can
-	// trip on is the location its spec points at.
+
 	untrustedSpec := map[string]func(t *testing.T, shared string) CredentialProviderSpec{
 		CredentialKindExec: func(t *testing.T, shared string) CredentialProviderSpec {
 			t.Helper()
@@ -508,7 +485,7 @@ func TestEveryCredentialKindIsClassifiedAndHeldToTheTrustBoundary(t *testing.T) 
 			if err := os.Mkdir(shared, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			// Chmod after Mkdir: the process umask clears the bits under test.
+
 			if err := os.Chmod(shared, 0o777); err != nil {
 				t.Fatal(err)
 			}
@@ -526,8 +503,6 @@ func TestEveryCredentialKindIsClassifiedAndHeldToTheTrustBoundary(t *testing.T) 
 		})
 	}
 
-	// A kind off the list reaches the default of both switches, and neither may
-	// build anything from it.
 	unknown := CredentialProviderSpec{Kind: "vault-agent", Directory: t.TempDir()}
 	if err := validateCredentialSpec(unknown); err == nil || !strings.Contains(err.Error(), "credential kind must be one of") {
 		t.Fatalf("validateCredentialSpec(%q) = %v, want a refusal naming the domain", unknown.Kind, err)
@@ -537,10 +512,6 @@ func TestEveryCredentialKindIsClassifiedAndHeldToTheTrustBoundary(t *testing.T) 
 	}
 }
 
-// docs/plugins.md states the trust boundary as the filesystem permission on the
-// plugin directory. A 0700 directory inside a world-writable parent is not
-// protected by its own mode: the parent's writers rename it away and put their
-// own directory, with their own manifests, in its place.
 func TestLoadRefusesAPluginDirectoryInsideAWritableParent(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "outer")
 	if err := os.Mkdir(parent, 0o700); err != nil {
@@ -550,7 +521,7 @@ func TestLoadRefusesAPluginDirectoryInsideAWritableParent(t *testing.T) {
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// Chmod after Mkdir: the process umask clears the bits under test.
+
 	if err := os.Chmod(parent, 0o777); err != nil {
 		t.Fatal(err)
 	}
@@ -559,8 +530,7 @@ func TestLoadRefusesAPluginDirectoryInsideAWritableParent(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "ancestor") {
 		t.Fatalf("Load error = %v, want a refusal naming the writable ancestor", err)
 	}
-	// The sticky bit is what makes a shared temporary directory safe as a
-	// parent, and it is the reason the walk cannot simply refuse mode 0777.
+
 	if err := os.Chmod(parent, 0o777|os.ModeSticky); err != nil {
 		t.Fatal(err)
 	}
@@ -609,9 +579,6 @@ func TestRevokeFailsClosedAndNamesThePlugin(t *testing.T) {
 	}
 }
 
-// The listing is a control-plane answer. It says which backend kind answers so
-// an operator can tell a vault CLI from a directory of files, and stops there:
-// the daemon's own filesystem layout is not part of it.
 func TestPluginListingCarriesNoFilesystemLayout(t *testing.T) {
 	root, credentials := t.TempDir(), t.TempDir()
 	writeManifest(t, root, "local.json", fileManifest(credentials))

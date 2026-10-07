@@ -15,11 +15,8 @@ import (
 	"github.com/Don-Works/brw/internal/credential"
 )
 
-// Obviously fabricated and low entropy, like every other fixture secret here.
 const fixtureProviderKey = "fixture-provider-key-two"
 
-// writeScript writes an executable shell program. Chmodded after the write
-// because the process umask clears the bits the trust checks are about.
 func writeScript(t *testing.T, path, body string) string {
 	t.Helper()
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
@@ -31,9 +28,6 @@ func writeScript(t *testing.T, path, body string) string {
 	return path
 }
 
-// BrowserKinds is the closed domain of provider backends. Every member has to
-// be constructible and every non-member refused, or the switch in
-// newBrowserProvider is a gate with a hole where a sibling kind should be.
 func TestEveryBrowserKindIsConstructibleAndNothingElseIs(t *testing.T) {
 	dir := t.TempDir()
 	mint := writeScript(t, filepath.Join(dir, "mint"), "echo '{}'")
@@ -115,31 +109,29 @@ func TestBrowserManifestValidation(t *testing.T) {
 	}
 }
 
-// A provider's answer is attacker-shaped input as far as brw is concerned: it
-// arrives as bytes on a pipe and is turned into a URL brw dials and an argv brw
-// execs. Every field is checked.
 func TestSessionEnvelopeRefusesEverythingButAWellFormedAnswer(t *testing.T) {
 	const ok = `{"websocket_url":"ws://127.0.0.1:9222/devtools/browser/abc","session_id":"s-1","expires_in_ms":600000}`
 	for name, test := range map[string]struct {
 		raw     string
 		wantErr string
 	}{
-		"valid":            {ok, ""},
-		"empty":            {``, "valid session envelope"},
-		"not json":         {`nope`, "valid session envelope"},
-		"unknown field":    {`{"websocket_url":"ws://h/p","session_id":"s","expires_in_ms":1000,"extra":1}`, "valid session envelope"},
-		"trailing json":    {ok + `{"x":1}`, "trailing output"},
-		"http scheme":      {`{"websocket_url":"http://127.0.0.1:9222/json","session_id":"s","expires_in_ms":1000}`, "must be ws or wss"},
-		"file scheme":      {`{"websocket_url":"file:///etc/passwd","session_id":"s","expires_in_ms":1000}`, "must be ws or wss"},
-		"no host":          {`{"websocket_url":"ws:///devtools","session_id":"s","expires_in_ms":1000}`, "no host"},
-		"userinfo":         {`{"websocket_url":"wss://key:tok@h/p","session_id":"s","expires_in_ms":1000}`, "userinfo"},
-		"empty url":        {`{"websocket_url":"","session_id":"s","expires_in_ms":1000}`, "empty websocket URL"},
-		"bad session id":   {`{"websocket_url":"ws://h/p","session_id":"s;rm -rf /","expires_in_ms":1000}`, "session_id"},
-		"no session id":    {`{"websocket_url":"ws://h/p","session_id":"","expires_in_ms":1000}`, "session_id"},
-		"no lifetime":      {`{"websocket_url":"ws://h/p","session_id":"s"}`, "must state expires_in_ms"},
-		"negative":         {`{"websocket_url":"ws://h/p","session_id":"s","expires_in_ms":-5}`, "must state expires_in_ms"},
-		"lifetime too big": {`{"websocket_url":"ws://h/p","session_id":"s","expires_in_ms":86400001}`, "lifetime over"},
-		"lifetime tiny":    {`{"websocket_url":"ws://h/p","session_id":"s","expires_in_ms":5}`, "lifetime under"},
+		"valid":             {ok, ""},
+		"empty":             {``, "valid session envelope"},
+		"not json":          {`nope`, "valid session envelope"},
+		"unknown field":     {`{"websocket_url":"ws://h/p","session_id":"s","expires_in_ms":1000,"extra":1}`, "valid session envelope"},
+		"trailing json":     {ok + `{"x":1}`, "trailing output"},
+		"http scheme":       {`{"websocket_url":"http://127.0.0.1:9222/json","session_id":"s","expires_in_ms":1000}`, "must be ws or wss"},
+		"file scheme":       {`{"websocket_url":"file:///etc/passwd","session_id":"s","expires_in_ms":1000}`, "must be ws or wss"},
+		"no host":           {`{"websocket_url":"ws:///devtools","session_id":"s","expires_in_ms":1000}`, "no host"},
+		"userinfo":          {`{"websocket_url":"wss://key:tok@h/p","session_id":"s","expires_in_ms":1000}`, "userinfo"},
+		"empty url":         {`{"websocket_url":"","session_id":"s","expires_in_ms":1000}`, "empty websocket URL"},
+		"bad session id":    {`{"websocket_url":"ws://h/p","session_id":"s;rm -rf /","expires_in_ms":1000}`, "session_id"},
+		"no session id":     {`{"websocket_url":"ws://h/p","session_id":"","expires_in_ms":1000}`, "session_id"},
+		"no lifetime":       {`{"websocket_url":"ws://h/p","session_id":"s"}`, "must state expires_in_ms"},
+		"negative":          {`{"websocket_url":"ws://h/p","session_id":"s","expires_in_ms":-5}`, "must state expires_in_ms"},
+		"lifetime too big":  {`{"websocket_url":"ws://h/p","session_id":"s","expires_in_ms":86400001}`, "lifetime over"},
+		"lifetime overflow": {`{"websocket_url":"ws://h/p","session_id":"s","expires_in_ms":18446744083709}`, "lifetime over"},
+		"lifetime tiny":     {`{"websocket_url":"ws://h/p","session_id":"s","expires_in_ms":5}`, "lifetime under"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			session, err := ParseSessionEnvelope([]byte(test.raw))
@@ -159,13 +151,8 @@ func TestSessionEnvelopeRefusesEverythingButAWellFormedAnswer(t *testing.T) {
 	}
 }
 
-// The path of a CDP websocket URL authenticates the connection: Chrome's
-// /devtools/browser/<uuid> is the whole credential for that browser, and a
-// hosted provider puts its key in the query. Every rendering path must redact,
-// because "we remembered not to log it" is not a property anything can check.
 func TestEndpointRedactsOnEveryRenderingPath(t *testing.T) {
-	// Both halves an endpoint hides: the path Chrome authenticates with, and
-	// the query a hosted provider carries its key in.
+
 	const secretPath = "devtools-session-fixture"
 	const endpointURL = "wss://browsers.example/devtools-session-fixture?token=fixture-provider-key-two"
 	endpoint, err := ParseEndpoint(endpointURL)
@@ -175,9 +162,7 @@ func TestEndpointRedactsOnEveryRenderingPath(t *testing.T) {
 	if !strings.Contains(endpointURL, secretPath) || !strings.Contains(endpointURL, fixtureProviderKey) {
 		t.Fatal("the fixture URL must carry both secrets, or this test proves nothing")
 	}
-	// %s is spelled through a slice so the vet/staticcheck "just call String()"
-	// rewrite does not turn the test into a check that String() equals itself.
-	// The point is what fmt does with the value, not what String returns.
+
 	viaFmtS := fmt.Sprintf("%s", []any{endpoint}...)
 	renderings := map[string]string{
 		"String":  endpoint.String(),
@@ -204,19 +189,17 @@ func TestEndpointRedactsOnEveryRenderingPath(t *testing.T) {
 	if strings.Contains(string(encoded), secretPath) || strings.Contains(string(encoded), fixtureProviderKey) {
 		t.Errorf("marshalled endpoint = %s", encoded)
 	}
-	// And the one caller allowed to use it still gets the whole thing.
+
 	if !strings.Contains(endpoint.Reveal(), secretPath) {
 		t.Fatal("Reveal must return the dialable URL")
 	}
 }
 
-// providerRegistry builds a loaded registry whose browser provider is a shell
-// script, plus the file credential provider when reference is non-empty.
 func providerRegistry(t *testing.T, mintBody, teardownBody, reference, value string) (*Registry, string) {
 	t.Helper()
 	scripts := t.TempDir()
 	root := t.TempDir()
-	// Where the teardown records what it was handed, so a test can read it back.
+
 	record := filepath.Join(scripts, "teardown.log")
 	mint := writeScript(t, filepath.Join(scripts, "mint"), mintBody)
 	teardown := writeScript(t, filepath.Join(scripts, "teardown"), teardownBody)
@@ -269,8 +252,7 @@ func TestOpenBrowserSessionMintsAndReleases(t *testing.T) {
 	if err := release(ctx); err != nil {
 		t.Fatalf("release: %v", err)
 	}
-	// The teardown has to be aimed at the session that was opened, not at
-	// whatever the provider considers current.
+
 	handed, err := os.ReadFile(record)
 	if err != nil {
 		t.Fatalf("teardown recorded nothing: %v", err)
@@ -280,14 +262,8 @@ func TestOpenBrowserSessionMintsAndReleases(t *testing.T) {
 	}
 }
 
-// Criterion 4: a provider credential is passed by reference. brw resolves the
-// reference through the credential.read holder and hands the VALUE to the
-// provider on stdin — never in the argv, which every process on the machine can
-// read out of /proc or ps.
 func TestProviderCredentialTravelsOnStdinAndNeverInTheArgv(t *testing.T) {
-	// The mint script proves both halves at once: it reads the key from stdin
-	// and prints its own argv into the envelope's session id slot, so an argv
-	// carrying the key would fail the session-id pattern AND show up here.
+
 	registry, _ := providerRegistry(t,
 		`read key
 echo "{\"websocket_url\":\"ws://127.0.0.1:9222/devtools/browser/$key\",\"session_id\":\"sess-1\",\"expires_in_ms\":600000}"
@@ -303,12 +279,11 @@ printf '%s' "$key" > "$(dirname "$0")/teardown.log"`,
 	if !strings.HasSuffix(session.Endpoint.Reveal(), "/"+fixtureProviderKey) {
 		t.Fatalf("the provider did not receive the credential on stdin; endpoint path = %q", session.Endpoint.Reveal())
 	}
-	// Redaction still holds for an endpoint that now literally contains the key.
+
 	if rendered := fmt.Sprintf("%v", session.Endpoint); strings.Contains(rendered, fixtureProviderKey) {
 		t.Fatalf("endpoint rendered as %q, exposing the provider credential", rendered)
 	}
-	// And the teardown gets it the same way, resolved fresh rather than from a
-	// value brw held onto for the life of the session.
+
 	if err := release(ctx); err != nil {
 		t.Fatalf("release: %v", err)
 	}
@@ -354,9 +329,7 @@ func TestBrowserProviderFailuresAreAllClosed(t *testing.T) {
 		}
 	})
 	t.Run("credential reference cannot be resolved", func(t *testing.T) {
-		// The browser plugin declares a reference and no plugin holds
-		// credential.read, so there is nothing to resolve it. Failing closed
-		// here is what stops brw minting an unauthenticated session instead.
+
 		scripts := t.TempDir()
 		root := t.TempDir()
 		mint := writeScript(t, filepath.Join(scripts, "mint"), "echo '"+goodEnvelope+"'")
@@ -375,9 +348,6 @@ func TestBrowserProviderFailuresAreAllClosed(t *testing.T) {
 	})
 }
 
-// A session already open has to be returnable. Revoking the plugin narrows what
-// brw will do NEXT; if it also broke the teardown, every revoke would leak the
-// cloud browser (and its bill) that was running at the time.
 func TestRevokeStopsTheNextOpenAndStillAllowsTheRelease(t *testing.T) {
 	registry, record := providerRegistry(t,
 		"echo '"+goodEnvelope+"'",
@@ -401,8 +371,6 @@ func TestRevokeStopsTheNextOpenAndStillAllowsTheRelease(t *testing.T) {
 	}
 }
 
-// The plugins listing is what an operator reads to see what a daemon holds. A
-// browser backend that did not appear there would be a grant nobody can audit.
 func TestStatusNamesTheBrowserBackend(t *testing.T) {
 	registry, _ := providerRegistry(t, "echo '"+goodEnvelope+"'", "true", "", "")
 	statuses := registry.Plugins()
@@ -414,7 +382,6 @@ func TestStatusNamesTheBrowserBackend(t *testing.T) {
 	}
 }
 
-// A provider that hangs must not hang the daemon's startup behind it.
 func TestBrowserProviderDeadlineIsEnforced(t *testing.T) {
 	scripts := t.TempDir()
 	root := t.TempDir()
@@ -437,10 +404,6 @@ func TestBrowserProviderDeadlineIsEnforced(t *testing.T) {
 	}
 }
 
-// ws and wss are accepted on equal terms - a loopback stand-in needs ws, and
-// refusing it would make the capability untestable without a certificate. What
-// the caller must be able to tell apart is a plaintext socket to ANOTHER
-// machine, where the whole CDP session crosses the network in the clear.
 func TestAPlaintextEndpointToAnotherHostIsDistinguishable(t *testing.T) {
 	for name, test := range map[string]struct {
 		raw  string
@@ -465,7 +428,7 @@ func TestAPlaintextEndpointToAnotherHostIsDistinguishable(t *testing.T) {
 			}
 		})
 	}
-	// The zero endpoint describes no socket at all, so it warns about nothing.
+
 	if (Endpoint{}).PlaintextToAnotherHost() {
 		t.Error("the zero endpoint reported a plaintext socket")
 	}

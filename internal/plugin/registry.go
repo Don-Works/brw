@@ -15,17 +15,11 @@ import (
 	"github.com/Don-Works/brw/internal/credential"
 )
 
-// Registry is the daemon's credential.Resolver. The assertion is here so a
-// change to either side is a compile error rather than a runtime nil.
 var _ credential.Resolver = (*Registry)(nil)
 
-// Same for the browser backend: the registry IS the BrowserProvider a daemon
-// holds, so a change to either side is a compile error.
 var _ BrowserProvider = (*Registry)(nil)
 
-// Status is what an operator (never a page, never a page tool) can see about a
-// loaded plugin. It names the backend kind but not the argv or the directory:
-// the daemon's own filesystem layout is not part of the control-plane answer.
+// Status is what an operator (never a page, never a page tool) can see about a loaded plugin.
 type Status struct {
 	ID             string   `json:"id"`
 	Name           string   `json:"name"`
@@ -43,40 +37,24 @@ type loadedPlugin struct {
 	browserKind string
 	credential  credentialProvider
 	browser     browserProvider
-	// browserCredential is the REFERENCE the browser provider needs, never a
-	// value. It is resolved through the credential.read holder at the moment of
-	// each call and wiped when that call returns, so no provider credential is
-	// retained for the life of a session.
+
 	browserCredential string
 	revoked           bool
 }
 
-// Registry holds the plugins one daemon loaded. It implements
-// credential.Resolver and BrowserProvider, and those two are the ONLY runtime
-// surfaces a grant produces: a plugin is asked for a secret or for a browser
-// and has no other way in. Both are consulted per call, so a revoke takes
-// effect on the next step rather than on the next restart.
+// Registry holds the plugins one daemon loaded.
 type Registry struct {
 	mu      sync.RWMutex
 	plugins []*loadedPlugin
 }
 
-// Empty returns a registry with nothing loaded. A daemon started without
-// --plugin-dir uses it, so every credential reference fails closed with
-// ErrNoProvider instead of the caller having to nil-check a resolver.
+// Empty returns a registry with nothing loaded.
 func Empty() *Registry { return &Registry{} }
 
-// MaxPlugins bounds one directory. The point of a plugin directory is a handful
-// of operator-reviewed entries, not a corpus.
+// MaxPlugins bounds one directory.
 const MaxPlugins = 32
 
 // Load reads every *.json manifest directly inside root.
-//
-// It refuses a directory or manifest another local user could write: brw does
-// not sandbox a plugin, so who can write the manifest is the whole trust
-// boundary. That covers the mode, the owner, and every ancestor of the
-// directory, because a 0700 directory inside a world-writable parent is one
-// rename away from being somebody else's directory.
 func Load(root string) (*Registry, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -137,9 +115,7 @@ func Load(root string) (*Registry, error) {
 		loaded := &loadedPlugin{manifest: manifest}
 		if slices.Contains(manifest.Capabilities, CapabilityCredentialRead) {
 			if credentialHolder != "" {
-				// Two vaults make "which one answered?" unanswerable from a
-				// failure, and a silently shadowed provider ends with the wrong
-				// password typed into the right box.
+
 				return nil, fmt.Errorf("plugin manifest %s: %q already holds %s; only one plugin may", name, credentialHolder, CapabilityCredentialRead)
 			}
 			credentialHolder = manifest.ID
@@ -152,10 +128,7 @@ func Load(root string) (*Registry, error) {
 		}
 		if slices.Contains(manifest.Capabilities, CapabilityBrowserProvider) {
 			if browserHolder != "" {
-				// Same reason as the credential half: two backends make "which
-				// browser am I driving?" unanswerable from a failure, and a
-				// silently shadowed provider ends with a recipe running against
-				// the wrong browser entirely.
+
 				return nil, fmt.Errorf("plugin manifest %s: %q already holds %s; only one plugin may", name, browserHolder, CapabilityBrowserProvider)
 			}
 			browserHolder = manifest.ID
@@ -200,11 +173,6 @@ func refuseSharedWrite(mode fs.FileMode, what string) error {
 	return nil
 }
 
-// refuseForeignOwner refuses a path some other local user owns. The mode alone
-// is not the boundary: a 0755 directory owned by another user still lets that
-// user drop a manifest in, and brwd would run its argv as brwd's own user. root
-// is allowed because a system install such as /etc/brw/plugins is a legitimate
-// deployment, and root can replace the daemon binary regardless.
 func refuseForeignOwner(info fs.FileInfo, what string) error {
 	owner, ok := fileOwner(info)
 	if !ok {
@@ -216,14 +184,6 @@ func refuseForeignOwner(info fs.FileInfo, what string) error {
 	return fmt.Errorf("%s is owned by uid %d rather than by the daemon's user or root; brw does not sandbox a plugin, so its owner chooses what the daemon runs", what, owner)
 }
 
-// refuseWritableAncestors walks from path's parent to the filesystem root.
-//
-// Checking only the leaf is not the trust boundary docs/plugins.md claims: a
-// 0700 plugin directory inside a world-writable parent can be renamed away and
-// replaced wholesale by anyone who can write that parent, and the replacement
-// passes every check on the leaf. The sticky bit is the exception, because it
-// is the flag that stops a non-owner renaming or unlinking an entry, which is
-// what makes a shared temporary directory usable as a parent at all.
 func refuseWritableAncestors(path, what string) error {
 	current := filepath.Dir(filepath.Clean(path))
 	for {
@@ -258,7 +218,7 @@ func (r *Registry) Plugins() []Status {
 			Name:           loaded.manifest.Name,
 			Version:        loaded.manifest.Version,
 			Description:    loaded.manifest.Description,
-			Capabilities:   append([]string(nil), loaded.manifest.Capabilities...),
+			Capabilities:   slices.Clone(loaded.manifest.Capabilities),
 			CredentialKind: loaded.kind,
 			BrowserKind:    loaded.browserKind,
 			Revoked:        loaded.revoked,
@@ -267,13 +227,10 @@ func (r *Registry) Plugins() []Status {
 	return out
 }
 
-// ErrPluginNotLoaded names a revoke against an id this daemon never loaded, so
-// a typo does not read as a successful revocation.
+// ErrPluginNotLoaded names a revoke against an id this daemon never loaded, so a typo does not read as a successful revocation.
 var ErrPluginNotLoaded = errors.New("no plugin with that id is loaded")
 
-// Revoke drops a plugin's grants for the life of this process. It narrows what
-// brw can do, which is why it is reachable from the control plane while
-// granting is not: granting stays an operator action against the filesystem.
+// Revoke drops a plugin's grants for the life of this process.
 func (r *Registry) Revoke(id string) error {
 	if r == nil {
 		return ErrPluginNotLoaded
@@ -289,11 +246,7 @@ func (r *Registry) Revoke(id string) error {
 	return fmt.Errorf("%w: %q", ErrPluginNotLoaded, id)
 }
 
-// ProbeProvider implements credential.Prober: it reports the same refusal
-// Resolve would, without asking a provider for anything. The recipe runner
-// calls it before step one, so a daemon with no provider — or one whose
-// provider was revoked a second ago — refuses the whole run rather than
-// stopping at the password field with the username already typed.
+// ProbeProvider implements credential.Prober: it reports the same refusal Resolve would, without asking a provider for anything.
 func (r *Registry) ProbeProvider() error {
 	if r == nil {
 		return credential.ErrNoProvider
@@ -312,22 +265,7 @@ func (r *Registry) ProbeProvider() error {
 	return credential.ErrNoProvider
 }
 
-// OpenBrowserSession implements BrowserProvider: it asks the granted plugin for
-// a browser and returns the session with the release function that gives it
-// back.
-//
-// Every failure mode is closed. No provider, a revoked provider, a provider
-// error, an unparseable envelope and an unresolvable credential all return an
-// error. None of them degrades to "carry on with a local browser", because the
-// operator who configured a provider asked for the browser to be somewhere
-// else, and silently launching Chrome here instead would run their flow on a
-// machine and an IP they did not choose.
-//
-// The credential is resolved per call and wiped when the call returns, so a
-// provider key is never retained for the life of a session. The consequence is
-// stated rather than hidden: a credential.read grant revoked between open and
-// release makes the release fail, and the caller is told which session was left
-// with the provider.
+// OpenBrowserSession implements BrowserProvider: it asks the granted plugin for a browser and returns the session with the release function that gives it back.
 func (r *Registry) OpenBrowserSession(ctx context.Context) (BrowserSession, func(context.Context) error, error) {
 	holder, err := r.browserHolder()
 	if err != nil {
@@ -344,9 +282,7 @@ func (r *Registry) OpenBrowserSession(ctx context.Context) (BrowserSession, func
 	}
 	session.ProviderID = holder.manifest.ID
 	release := func(releaseCtx context.Context) error {
-		// Deliberately NOT re-checking revocation: a session already open has to
-		// be returnable, or revoking a plugin leaks the browser it lent. Revoke
-		// stops the NEXT open, which is what narrowing a grant means here.
+
 		releaseSecret, err := r.browserCredential(releaseCtx, holder)
 		if err != nil {
 			return fmt.Errorf("plugin %q still holds session %q: %w", holder.manifest.ID, session.SessionID, err)
@@ -360,9 +296,7 @@ func (r *Registry) OpenBrowserSession(ctx context.Context) (BrowserSession, func
 	return session, release, nil
 }
 
-// ProbeBrowserProvider reports the same refusal OpenBrowserSession would,
-// without asking a provider for anything. It lets a daemon decide at startup
-// whether it has a remote backend at all.
+// ProbeBrowserProvider reports the same refusal OpenBrowserSession would, without asking a provider for anything.
 func (r *Registry) ProbeBrowserProvider() error {
 	_, err := r.browserHolder()
 	return err
@@ -386,10 +320,6 @@ func (r *Registry) browserHolder() (*loadedPlugin, error) {
 	return nil, ErrNoBrowserProvider
 }
 
-// browserCredential resolves the provider's declared reference through the
-// credential.read holder. A provider that declares no credential gets none:
-// a stand-in endpoint on the operator's own machine needs no key, and inventing
-// one would make the common case need two plugins.
 func (r *Registry) browserCredential(ctx context.Context, holder *loadedPlugin) (credential.Secret, error) {
 	if holder.browserCredential == "" {
 		return credential.Secret{}, nil
@@ -402,11 +332,6 @@ func (r *Registry) browserCredential(ctx context.Context, holder *loadedPlugin) 
 }
 
 // Resolve implements credential.Resolver.
-//
-// Every failure mode here is closed: no provider, a revoked provider, an
-// invalid reference and a provider error all return an error. None of them
-// degrades to an empty value, a prompt, or the literal reference text, because
-// each of those would type something into a password field.
 func (r *Registry) Resolve(ctx context.Context, reference string) (credential.Secret, error) {
 	if err := credential.ValidateReference(reference); err != nil {
 		return credential.Secret{}, err
