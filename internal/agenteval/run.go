@@ -23,10 +23,9 @@ type Options struct {
 	ChromePath string
 	// Only restricts the run to one task id.
 	Only string
-	// Modes selects which solver behaviours to run. Empty means honest only.
+	// Modes selects which solver behaviours to run.
 	Modes []Mode
-	// Judge is the optional LLM layer. Nil runs the deterministic check alone,
-	// which is the default and needs no key and no network.
+	// Judge is the optional LLM layer.
 	Judge *Judge
 	// Timeout bounds a single browser operation.
 	Timeout time.Duration
@@ -41,9 +40,7 @@ type Result struct {
 
 	Passed  bool     `json:"passed"`
 	Reasons []string `json:"reasons,omitempty"`
-	// Expected is what this mode is supposed to produce: an honest run passes, a
-	// sabotaged one fails. A harness whose sabotaged run passes is broken, and
-	// this is the field that says so.
+	// Expected is what this mode is supposed to produce: an honest run passes, a sabotaged one fails.
 	Expected   bool `json:"expected_pass"`
 	AsExpected bool `json:"as_expected"`
 
@@ -64,8 +61,7 @@ type Report struct {
 	StartedAt   time.Time           `json:"started_at"`
 	DurationMS  int64               `json:"duration_ms"`
 	Environment harness.Environment `json:"environment"`
-	// Judge names the model the optional layer used, or says the run was graded
-	// by the deterministic check alone.
+	// Judge names the model the optional layer used, or says the run was graded by the deterministic check alone.
 	Judge      string   `json:"judge"`
 	Results    []Result `json:"results"`
 	AsExpected int      `json:"as_expected"`
@@ -160,13 +156,6 @@ func selectTasks(only string) ([]Task, error) {
 	return []Task{task}, nil
 }
 
-// runTask opens a fresh tab, lets the solver work, then reads the end state out
-// of the page and grades it.
-//
-// The order matters: the probe runs after the solver has stopped and reads the
-// page directly, so what it reports is not something the solver handed over.
-// The return value is named so the deferred duration lands on what the caller
-// receives rather than on a copy already made.
 func runTask(ctx context.Context, rig *harness.Browser, fixtures *harness.Fixtures, task Task, mode Mode, judge *Judge) (result Result) {
 	result = Result{
 		Task:     task.ID,
@@ -201,8 +190,7 @@ func runTask(ctx context.Context, rig *harness.Browser, fixtures *harness.Fixtur
 	end, probeErr := task.Probe(ctx, probe)
 	result.EndState = end
 	if probeErr != nil {
-		// Without an end state there is nothing to grade, and the safe answer to
-		// "did it work" with no evidence is no.
+
 		result.Passed = false
 		result.Reasons = []string{"could not read the end state: " + probeErr.Error()}
 		result.AsExpected = result.Passed == result.Expected
@@ -227,12 +215,6 @@ func runTask(ctx context.Context, rig *harness.Browser, fixtures *harness.Fixtur
 	return result
 }
 
-// applyJudge folds the optional layer into the deterministic verdict.
-//
-// The judge can fail a run the end-state check passed. It cannot pass one the
-// check failed: the page is the evidence, and a model's reading of the page
-// does not outrank the harness reading it. A judge that could not answer leaves
-// the verdict alone, so the harness stays runnable while the API is down.
 func applyJudge(passed bool, reasons []string, judged JudgeVerdict) (bool, []string) {
 	if judged.Error != "" || !passed || judged.Passed {
 		return passed, reasons

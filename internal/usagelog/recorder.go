@@ -1,9 +1,4 @@
 // Package usagelog writes a deliberately metadata-only audit trail for brw.
-//
-// The event schema has no request-argument or response-content fields. That is
-// intentional: callers may type passwords, upload private files, or browse URLs
-// containing tokens. The ledger records enough operational metadata to diagnose
-// reliability and tab hygiene without creating a second store of browser data.
 package usagelog
 
 import (
@@ -33,15 +28,11 @@ const (
 	HeaderClient           = "X-Brw-Client"
 	HeaderErrorClass       = "X-Brw-Error-Class"
 	HeaderErrorFingerprint = "X-Brw-Error-Fingerprint"
-	// HeaderAgentName carries an optional human-readable agent display name used
-	// only to title the session's Chrome tab group. It must never carry secrets;
-	// the daemon re-sanitizes it before use and it is not written to the ledger.
+	// HeaderAgentName carries an optional human-readable agent display name used only to title the session's Chrome tab group.
 	HeaderAgentName = "X-Brw-Agent-Name"
 )
 
-// Event is one privacy-safe operational record. Keep this schema metadata-only:
-// never add args, text, values, page content, screenshots, headers, bodies,
-// filesystem paths, titles, or URLs (including query strings).
+// Event is one privacy-safe operational record.
 type Event struct {
 	SnapshotMode     string `json:"snapshot_mode,omitempty"`
 	OutputFormat     string `json:"output_format,omitempty"`
@@ -94,9 +85,7 @@ type Config struct {
 	Identity brwidentity.Identity
 }
 
-// Recorder appends newline-delimited JSON and rotates it by size. Record is safe
-// for concurrent HTTP/MCP handlers. A recorder is process-local; the long-lived
-// browser daemon is the canonical writer for upstream proxy traffic.
+// Recorder appends newline-delimited JSON and rotates it by size.
 type Recorder struct {
 	mu       sync.Mutex
 	path     string
@@ -214,7 +203,7 @@ func (r *Recorder) Record(event Event) error {
 			}
 		}
 	}
-	_, err = r.file.Write(line) // one append write: a record is never split by us
+	_, err = r.file.Write(line)
 	return err
 }
 
@@ -320,8 +309,7 @@ func SafeFingerprint(value string) string {
 
 var fallbackID atomic.Uint64
 
-// NewID returns a non-secret correlation id. It never incorporates usernames,
-// arguments, URLs, or browser content.
+// NewID returns a non-secret correlation id.
 func NewID() string {
 	buf := make([]byte, 12)
 	if _, err := rand.Read(buf); err == nil {
@@ -330,10 +318,7 @@ func NewID() string {
 	return fmt.Sprintf("fallback-%x-%x", time.Now().UnixNano(), fallbackID.Add(1))
 }
 
-// Fingerprint makes recurring failures correlatable without retaining or even
-// hashing caller-controlled error text. It hashes only an allowlisted failure
-// shape, so a low-entropy password embedded in an error cannot be recovered by
-// guessing candidates against the ledger.
+// Fingerprint makes recurring failures correlatable without retaining or even hashing caller-controlled error text.
 func Fingerprint(message string) string {
 	sum := sha256.Sum256([]byte(failureShape(message)))
 	return hex.EncodeToString(sum[:12])
@@ -344,16 +329,7 @@ func failureShape(message string) string {
 	switch {
 	case strings.Contains(message, "tab is leased by another browser session"):
 		return "tab_contended"
-	// brw resolved a tab Chrome will not let it drive. The common cause is a
-	// password manager (Bitwarden's unlock/passkey prompt) popping its vault out
-	// into a focused window, which then holds the foreground until the human
-	// closes it — every no-tab_id tool fails for as long as it is up. This landed
-	// in "other" and so was invisible in the ledger, exactly like ref_not_found
-	// before it, which is why a recurring, very fixable outage read as random
-	// "brw is degraded" noise.
-	// The page itself is fine but embeds another extension's frame (an
-	// autofill menu), which closes the debugger to the whole tab. Counted apart
-	// from tab_not_drivable because the human's remedy is different.
+
 	case strings.Contains(message, "foreign_extension_frame"):
 		return "foreign_extension_frame"
 	case strings.Contains(message, "cannot access a chrome-extension"),
@@ -361,7 +337,7 @@ func failureShape(message string) string {
 		strings.Contains(message, "cannot attach to this target"),
 		strings.Contains(message, "no drivable tab"):
 		return "tab_not_drivable"
-	// DevTools (or another extension) owns the debugger session for that tab.
+
 	case strings.Contains(message, "another debugger"):
 		return "debugger_conflict"
 	case strings.Contains(message, "no tab"), strings.Contains(message, "tab not found"), strings.Contains(message, "cannot find tab"), strings.Contains(message, "target closed"):
@@ -389,10 +365,7 @@ func failureShape(message string) string {
 	case strings.Contains(message, "unexpected end of json"):
 		return "unexpected_json_eof"
 	case strings.Contains(message, "ref not found"),
-		// snapshot/scripts.go and extensionbridge/bridge.go raise a stale ref as
-		// `element ref %q not recoverable: %s`, which the "ref not found" arm above
-		// never matched — the single most common agent mistake was landing in
-		// "other" and so was invisible in the ledger.
+
 		strings.Contains(message, "not recoverable"):
 		return "ref_not_found"
 	case strings.Contains(message, "not actionable"):
@@ -456,9 +429,6 @@ func failureShape(message string) string {
 	}
 }
 
-// These predicates intentionally match only error strings brw itself emits.
-// Broad patterns such as "must be" would risk deriving fingerprints from page-
-// controlled messages and would also misclassify internal invariant failures.
 func isDeviceArgumentError(message string) bool {
 	return strings.Contains(message, "unknown device preset") ||
 		strings.Contains(message, "width and height are required for") ||
@@ -516,31 +486,21 @@ func ClassifyError(err error) string {
 	if errors.Is(err, os.ErrNotExist) {
 		return "not_found"
 	}
-	// The consent gate saying no is classified by the error's TYPE, before any
-	// message matching. A refusal and a transport fault need opposite handling —
-	// one is settled until a human grants something, the other is worth another
-	// attempt — and an unattended run only ever sees the class. Matching on the
-	// wording would make that distinction a property of a sentence someone may
-	// reword.
+
 	if siteconsent.IsRefusal(err) {
 		return "policy_denied"
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
-	// browser.NavigationOutcome.Describe writes this phrase. Matched first: the
-	// net::ERR_* code it quotes can contain words the transport cases below
-	// match on, and a failed page load is not a bridge fault worth retrying.
+
 	case strings.Contains(msg, "navigation failed:"):
 		return "navigation_failed"
 	case strings.Contains(msg, "tab is leased by another browser session"):
 		return "tab_contended"
-	// A human holds the browser through the dashboard. Kept distinct from
-	// tab_contended: the other actor is a person, and the agent's answer is to
-	// wait for them rather than to retry against another lease.
+
 	case strings.Contains(msg, "holds takeover of this browser"):
 		return "takeover_held"
-	// Not retryable and not a bridge fault: the tab itself cannot be driven.
-	// Kept distinct from "tool" so a recurring foreground hijack is countable.
+
 	case strings.Contains(msg, "foreign_extension_frame"):
 		return "foreign_extension_frame"
 	case strings.Contains(msg, "cannot access a chrome-extension"),
@@ -607,8 +567,7 @@ func ClassifyError(err error) string {
 
 func Retryable(class string) bool {
 	switch class {
-	// takeover_held is retryable in the same sense busy is: nothing about the
-	// call was wrong, another actor has the browser, and the hold expires.
+
 	case "timeout", "busy", "transport", "takeover_held":
 		return true
 	default:

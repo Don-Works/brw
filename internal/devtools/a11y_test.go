@@ -9,10 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/devtools/axe"
 )
 
-// TestEmbeddedAxeMatchesItsDeclaredVersion is what stops the vendored bundle
-// and the constant beside it drifting: the engine announces its own version in
-// the banner comment the minifier keeps, so the two can be compared without
-// running it. README.md points at this test.
 func TestEmbeddedAxeMatchesItsDeclaredVersion(t *testing.T) {
 	if len(axe.Source) < 100000 {
 		t.Fatalf("the embedded engine is %d bytes; that is not an axe-core bundle", len(axe.Source))
@@ -32,9 +28,6 @@ func TestEmbeddedAxeMatchesItsDeclaredVersion(t *testing.T) {
 	}
 }
 
-// axeDocument builds an axe-shaped result for the summarizer. It is written out
-// as JSON rather than as structs because the summarizer's job is to read what
-// the engine actually emits.
 func axeDocument(violations string) json.RawMessage {
 	return json.RawMessage(`{"violations":[` + violations + `],"incomplete":[],"passes":[{"id":"region"}],"inapplicable":[{"id":"video-caption"},{"id":"audio-caption"}]}`)
 }
@@ -88,10 +81,7 @@ func TestSummarizeAudit(t *testing.T) {
 			wantRefs:  []string{"e1", "e2"},
 		},
 		{
-			// The rule is ranked by the worst node so it sorts first, but
-			// by_impact counts elements: one minor element and one critical
-			// element is one of each. Bucketing both as critical would tell a
-			// caller sizing the work there are two critical elements to fix.
+
 			name: "a rule with no impact of its own takes the worst its nodes carry",
 			document: axeDocument(
 				`{"id":"mixed","impact":"","help":"h","helpUrl":"","tags":[],"nodes":[{"target":["#a"],"impact":"minor","brw_ref":"e1"},{"target":["#b"],"impact":"critical","brw_ref":"e2"}]}`),
@@ -100,8 +90,7 @@ func TestSummarizeAudit(t *testing.T) {
 			wantImpact: map[string]int{"critical": 1, "minor": 1},
 		},
 		{
-			// Same rule for a rule that does carry an impact: axe labels nodes
-			// individually and the per-element count follows the node.
+
 			name: "nodes are counted at their own impact under a labelled rule",
 			document: axeDocument(
 				`{"id":"labelled","impact":"serious","help":"h","helpUrl":"","tags":[],"nodes":[{"target":["#a"],"impact":"moderate","brw_ref":"e1"},{"target":["#b"],"impact":"serious","brw_ref":"e2"},{"target":["#c"],"brw_ref":"e3"}]}`),
@@ -168,8 +157,7 @@ func TestSummarizeAudit(t *testing.T) {
 			if got.Note != "" {
 				t.Errorf("note = %q, want none when brw's own engine ran", got.Note)
 			}
-			// The document bound for the artifact has to carry every node,
-			// including the ones the caps dropped from the summary.
+
 			for _, id := range collectRuleIDs(tt.document) {
 				if !strings.Contains(string(got.Report), `"`+id+`"`) {
 					t.Errorf("the stored report dropped rule %s", id)
@@ -179,9 +167,6 @@ func TestSummarizeAudit(t *testing.T) {
 	}
 }
 
-// TestSummarizeAuditNamesWhatRanAndWhatItLeft: an audit is read-shaped but not
-// effect-free, and the engine that produced a rule id may not be the embedded
-// one. Both facts belong in the answer, because a caller cannot see either.
 func TestSummarizeAuditNamesWhatRanAndWhatItLeft(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -193,17 +178,15 @@ func TestSummarizeAuditNamesWhatRanAndWhatItLeft(t *testing.T) {
 		wantEngineNamed string
 	}{
 		{
-			// brw injected the engine, and it stays: the probe on the next
-			// audit finds it and skips the half-megabyte re-injection.
+
 			name:        "brw's own engine is left installed and the answer says so",
 			raw:         RawAudit{OK: true, Ours: true, Engine: "axe-core " + axe.Version, Report: axeDocument("")},
 			wantEffects: []string{"data-brw-ref", "axe-core " + axe.Version, "window.axe"},
-			// Nothing to warn about: the embedded engine is what ran.
+
 			wantNoteAbsent: true,
 		},
 		{
-			// The page shipped its own engine, so brw added nothing beyond the
-			// refs — and the rule ids came from a version that is not this one.
+
 			name:           "a borrowed engine is named next to the embedded version",
 			raw:            RawAudit{OK: true, Ours: false, Engine: "axe-core 3.5.5", Report: axeDocument("")},
 			wantEffects:    []string{"data-brw-ref", "the page's own axe-core"},
@@ -294,8 +277,6 @@ func TestAuditOptionsNormalize(t *testing.T) {
 	}
 }
 
-// The selector has to reach the page, and an empty one must not scope the audit
-// to nothing.
 func TestBuildAuditExpressionCarriesSelector(t *testing.T) {
 	withSelector := BuildAuditExpression(AuditOptions{Selector: " #main "})
 	if !strings.Contains(withSelector, `"selector":"#main"`) {

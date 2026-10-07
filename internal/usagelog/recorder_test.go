@@ -141,25 +141,17 @@ type contextDeadlineError struct{}
 
 func (contextDeadlineError) Error() string { return "operation timed out while waiting" }
 
-// TestFingerprintCoversCommonAgentFailures pins the failure shapes for the
-// errors brw actually raises most often. Before these arms existed, 78% of
-// tool errors in the usage ledger hashed to the "other" catch-all — including
-// every brw_click_text and brw_emulate_device failure — so the ledger could
-// not tell an operator which tools were failing agents or why.
 func TestFingerprintCoversCommonAgentFailures(t *testing.T) {
-	// Fingerprint of a message matching no arm at all: the "other" bucket.
+
 	other := Fingerprint("wholly unrecognised failure text")
 
-	// Real strings, copied from the sites that construct them.
 	cases := map[string]string{
 		"stale ref (not recoverable)": `element ref "e999" not recoverable: no_key`,
 		"text not found":              `click text: no visible element found for text "Sign in"`,
 		"bad device preset":           `unknown device preset "iPhone 15"; use iphone_se, iphone_14, responsive, or explicit width/height`,
 		"runtime exception":           `runtime exception: Error: boom`,
 		"no current window":           `extension bridge: No current window`,
-		// Verbatim from Chrome when brw resolves a foreign extension's page as the
-		// foreground tab — a password-manager popout holding focus. This recurred
-		// all day in the real ledger while sitting in the "other" bucket.
+
 		"foreign extension page": `extension bridge: Cannot access a chrome-extension:// URL of different extension`,
 		"devtools owns the tab":  `cannot control tab 42: another debugger (likely DevTools) is already attached; close DevTools on that tab and retry`,
 	}
@@ -175,24 +167,18 @@ func TestFingerprintCoversCommonAgentFailures(t *testing.T) {
 		seen[fp] = name
 	}
 
-	// Both stale-ref phrasings mean the same thing to an agent (re-snapshot),
-	// so they must aggregate rather than split the ledger.
 	notRecoverable := Fingerprint(`element ref "e4" not recoverable: no_key`)
 	notFound := Fingerprint("ref not found — the page likely changed; re-run brw_snapshot to get current refs")
 	if notRecoverable != notFound {
 		t.Errorf("stale-ref phrasings fingerprint differently: %q vs %q", notRecoverable, notFound)
 	}
 
-	// The privacy guarantee still holds: caller-controlled text must not vary
-	// the fingerprint of a recognised shape.
 	a := Fingerprint(`element ref "SENTINEL_A" not recoverable: no_key`)
 	b := Fingerprint(`element ref "SENTINEL_B" not recoverable: no_key`)
 	if a != b {
 		t.Errorf("fingerprint varies with caller-controlled ref: %q != %q", a, b)
 	}
 
-	// Every phrasing of "brw pointed at a tab it cannot drive" must aggregate, so
-	// the ledger counts the outage once instead of splitting it three ways.
 	drivable := []string{
 		`extension bridge: Cannot access a chrome-extension:// URL of different extension`,
 		`extension bridge: Cannot access contents of the page`,
@@ -207,10 +193,6 @@ func TestFingerprintCoversCommonAgentFailures(t *testing.T) {
 	}
 }
 
-// TestRejectedCallTelemetryStaysSpecific pins the three controlled failures used
-// by the v0.10.1 -> v0.10.2 before/after probe. They previously all produced
-// class "tool" and the same "other" fingerprint, making unrelated caller fixes
-// indistinguishable in the operational ledger.
 func TestRejectedCallTelemetryStaysSpecific(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -275,9 +257,7 @@ func TestClassifyErrorSeparatesNonDrivableTabsFromToolFailures(t *testing.T) {
 		want string
 	}{
 		{
-			// The Bitwarden foreground-hijack failure. It must NOT be "tool" (an
-			// agent mistake) and must NOT be "transport" (a bridge fault) — it is a
-			// tab brw was never allowed to drive.
+
 			name: "foreign extension page",
 			err:  errors.New("extension bridge: Cannot access a chrome-extension:// URL of different extension"),
 			want: "tab_not_drivable",
@@ -338,8 +318,7 @@ func TestClassifyErrorSeparatesNonDrivableTabsFromToolFailures(t *testing.T) {
 			if got := ClassifyError(tc.err); got != tc.want {
 				t.Errorf("ClassifyError(%v) = %q, want %q", tc.err, got, tc.want)
 			}
-			// Neither new class is retryable: retrying re-fails until the human
-			// closes the popout or DevTools, so retrying only burns the deadline.
+
 			if tc.want == "tab_not_drivable" || tc.want == "debugger_conflict" || tc.want == "navigation_failed" || tc.want == "foreign_extension_frame" {
 				if Retryable(tc.want) {
 					t.Errorf("Retryable(%q) = true, want false", tc.want)

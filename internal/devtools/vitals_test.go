@@ -5,11 +5,6 @@ import (
 	"testing"
 )
 
-// TestBuildVitalsExpressionPassesOnlyWhatTheScriptReads: the argument is
-// rendered into an expression that runs in the page, so anything marshalled
-// into it is handed to the document. tab_id is daemon-side routing — the script
-// never reads it — and the two sibling builders already pass only what their
-// scripts use.
 func TestBuildVitalsExpressionPassesOnlyWhatTheScriptReads(t *testing.T) {
 	tests := []struct {
 		name string
@@ -34,8 +29,6 @@ func TestBuildVitalsExpressionPassesOnlyWhatTheScriptReads(t *testing.T) {
 	}
 }
 
-// TestAuditOptionsNormalizeTTL covers the retention knob the stored report
-// needs: it holds the raw HTML of every failing element.
 func TestAuditOptionsNormalizeTTL(t *testing.T) {
 	tests := []struct {
 		name        string

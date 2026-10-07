@@ -5,18 +5,14 @@ import (
 	"fmt"
 )
 
-// Vitals settle bounds. A PerformanceObserver created after load replays the
-// buffered timeline asynchronously, so a read that resolved synchronously would
-// report zero for every metric. The default is the shortest wait that reliably
-// drains the buffer; the ceiling stops a caller turning a read into a sleep.
+// Vitals settle bounds.
 const (
 	DefaultVitalsSettleMS = 250
 	MaxVitalsSettleMS     = 5000
 )
 
 type VitalsOptions struct {
-	// SettleMS is how long to let the buffered performance timeline drain
-	// before answering. Zero means DefaultVitalsSettleMS.
+	// SettleMS is how long to let the buffered performance timeline drain before answering.
 	SettleMS int    `json:"settle_ms,omitempty"`
 	TabID    string `json:"tab_id,omitempty"`
 }
@@ -32,25 +28,18 @@ func (o VitalsOptions) Normalize() VitalsOptions {
 	return o
 }
 
-// Vitals is one reading of the Core Web Vitals for the document currently
-// loaded in the target tab. Every duration is milliseconds from the navigation
-// start; a metric the page has not produced yet is null rather than zero,
-// because "no largest paint yet" and "painted instantly" are different facts.
+// Vitals is one reading of the Core Web Vitals for the document currently loaded in the target tab.
 type Vitals struct {
 	URL   string `json:"url"`
 	Title string `json:"title"`
 
 	LCPMS      *float64 `json:"lcp_ms"`
 	LCPElement string   `json:"lcp_element,omitempty"`
-	// CLS is null, not zero, when this browser cannot observe layout-shift at
-	// all: "nothing moved" and "nobody was watching" are different facts, and
-	// only one of them deserves a "good" rating.
+	// CLS is null, not zero, when this browser cannot observe layout-shift at all: "nothing moved" and "nobody was watching" are different facts, and only one of them deserves a "good" rating.
 	CLS       *float64 `json:"cls"`
 	CLSShifts int      `json:"cls_shifts"`
 	INPMS     *float64 `json:"inp_ms"`
-	// Interactions is how many distinct interactions the timeline retained, not
-	// how many event-timing entries: one tap emits pointerdown, pointerup and
-	// click sharing a single interactionId and counts once.
+	// Interactions is how many distinct interactions the timeline retained, not how many event-timing entries: one tap emits pointerdown, pointerup and click sharing a single interactionId and counts once.
 	Interactions int      `json:"interactions"`
 	TTFBMS       *float64 `json:"ttfb_ms"`
 	FCPMS        *float64 `json:"fcp_ms"`
@@ -60,35 +49,21 @@ type Vitals struct {
 	NavigationType     string   `json:"navigation_type,omitempty"`
 	TransferBytes      int64    `json:"transfer_bytes,omitempty"`
 
-	// Ratings label each metric against the published Core Web Vitals
-	// thresholds, so a caller does not have to carry the numbers. A metric this
-	// browser could not observe is rated "unknown".
+	// Ratings label each metric against the published Core Web Vitals thresholds, so a caller does not have to carry the numbers.
 	Ratings map[string]string `json:"ratings,omitempty"`
-	// Unavailable names the entry types this browser does not support, taken
-	// from PerformanceObserver.supportedEntryTypes. Every metric derived from
-	// one of them is null.
+	// Unavailable names the entry types this browser does not support, taken from PerformanceObserver.supportedEntryTypes.
 	Unavailable []string `json:"unavailable,omitempty"`
 	SettledMS   int      `json:"settled_ms"`
 	Note        string   `json:"note,omitempty"`
 }
 
-// BuildVitalsExpression renders the read for one settle window. Only the
-// fields the in-page script reads are marshalled into the argument: tab_id is
-// daemon-side routing and has no business crossing into the document.
+// BuildVitalsExpression renders the read for one settle window.
 func BuildVitalsExpression(opts VitalsOptions) string {
 	args, _ := json.Marshal(map[string]any{"settle_ms": opts.Normalize().SettleMS})
 	return fmt.Sprintf("%s(%s)", VitalsScript, args)
 }
 
-// VitalsScript reads the Core Web Vitals out of the page's own performance
-// timeline. It is a pure read: it registers observers, waits for the buffered
-// replay, disconnects them and resolves. Nothing is left installed in the page.
-//
-// Each observer is created with buffered:true, which replays entries recorded
-// before brw attached. That is what makes this work on a page brw did not open,
-// and it is also the honest limit on INP — the event-timing buffer only retains
-// interactions at or above the browser's own 104 ms threshold, so a page whose
-// every interaction was fast reports no INP rather than a small one.
+// VitalsScript reads the Core Web Vitals out of the page's own performance timeline.
 const VitalsScript = `(function(opts) {
   return new Promise(function(resolve) {
     var settleMs = (opts && opts.settle_ms) || 250;
