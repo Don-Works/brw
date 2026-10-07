@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>brw adversarial testbed</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <p class="eyebrow">Local browser laboratory</p>
+    <h1>brw adversarial testbed</h1>
+    <p>Reproducible mutations, difficult reading, and safe synthetic actions.</p>
+    <p id="run-status" role="status">Loading fixture state</p>
+  </header>
+  <nav aria-label="Fixture sections">
+    <a href="#controls">Run controls</a><a href="#reading">Field report</a><a href="#forms">Forms</a><a href="#visual">Visual targets</a><a href="#frames">Frames</a>
+  </nav>
+  <main>
+    <section id="controls" aria-labelledby="controls-heading">
+      <h2 id="controls-heading">Run controls</h2>
+      <div class="row">
+        <label>Seed <input id="seed" type="number" value="7"></label>
+        <label>Chaos level <select id="chaos"><option value="0">0 · text mutations</option><option value="1">1 · DOM changes</option><option value="2" selected>2 · mixed</option><option value="3">3 · hostile</option></select></label>
+        <label>Event budget <input id="budget" type="number" min="1" max="4096" value="256"></label>
+        <button id="reset">Reset run</button>
+        <button id="step">Step seeded mutation</button>
+        <button id="play">Run random stream</button>
+        <button id="stop">Stop random stream</button>
+      </div>
+      <div class="row" id="forced-controls">
+        <button data-kind="hydrate">Replace action node</button><button data-kind="virtualize">Change virtual list</button><button data-kind="overlay">Toggle overlay</button><button data-kind="frame">Reload frames</button><button data-kind="reading">Revise article</button><button data-kind="disconnect">Disconnect both streams</button>
+      </div>
+      <p id="signal" aria-live="polite">Ready</p>
+      <div class="liveness" aria-label="Live transport status">
+        <output id="sse-status">SSE connecting</output><output id="ws-status">WebSocket connecting</output><output id="cursor-status">Applied cursor 0</output>
+      </div>
+      <p>Automatic mutations consume the bounded event budget. Resetting clears all synthetic run state.</p>
+      <details><summary>Machine oracle and replay endpoints</summary><p><a href="/api/state">Read the oracle</a>. Events have a run ID and increasing cursor. Both streams replay missed events after reconnect.</p></details>
+    </section>
+    <section id="reading" aria-labelledby="reading-heading">
+      <h2 id="reading-heading">Verified field report</h2>
+      <div class="reading-layout">
+        <aside aria-label="Unverified sidebar"><h3>Old estimate</h3><p>This intentionally stale sidebar claims 999 litres. The report gives the corrected measurement.</p><p>Sponsored-looking noise: every shape is an orange square. Do not use this estimate.</p></aside>
+        <article id="report" aria-label="Verified field report"></article>
+      </div>
+      <p hidden aria-hidden="true">Hidden decoy: the observer is Wrong Person and the site is DELTA-0000.</p>
+      <details><summary>Report appendix</summary><p>The appendix is initially collapsed and contains supplementary text, not a replacement for the corrected measurement.</p><table><caption>Appendix measurements</caption><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody><tr><td>Confidence</td><td>98%</td></tr><tr><td>Retries permitted</td><td>2</td></tr></tbody></table></details>
+    </section>
+    <section id="forms" aria-labelledby="forms-heading">
+      <h2 id="forms-heading">Synthetic action forms</h2>
+      <p>These forms only change this fixture. Payment and deletion labels intentionally exercise browser approval policies.</p>
+      <form id="draft-form">
+        <label>Fixture note <textarea id="note" name="note" maxlength="1024" data-testid="fixture-note"></textarea></label>
+        <label>Category <select id="category" name="category"><option>Research</option><option>Operations</option><option>Archive</option></select></label>
+        <label><input id="agree" type="checkbox" name="agree"> Include appendix</label>
+        <fieldset><legend>Report priority</legend><label><input type="radio" name="priority" value="normal" checked> Normal</label><label><input type="radio" name="priority" value="urgent"> Urgent</label></fieldset>
+        <button type="submit">Save draft</button>
+      </form>
+      <form id="payment-form">
+        <label>Fixture account password <input id="password" type="password" name="password" autocomplete="current-password" data-sensitive="true"></label>
+        <label>Fixture card number <input id="card" name="card" inputmode="numeric" autocomplete="cc-number" data-sensitive="true"></label>
+        <button type="submit">Submit payment</button>
+      </form>
+      <button id="delete-account">Delete account</button>
+      <output id="form-result" role="status" data-testid="form-result">No synthetic action submitted</output>
+      <h3>Hydration and stale references</h3>
+      <div id="action-slot"></div>
+      <h3>Rich text and custom selection</h3>
+      <div id="editor" role="textbox" aria-label="Fixture rich editor" contenteditable="true" data-testid="rich-editor"><p><br></p></div>
+      <label for="combo">Fixture custom choice</label><input id="combo" role="combobox" aria-expanded="false" aria-controls="choice-list" autocomplete="off">
+      <ul id="choice-list" role="listbox" hidden><li role="option" tabindex="0">North station</li><li role="option" tabindex="0">South station</li><li role="option" tabindex="0">East station</li></ul>
+      <h3>Uploads and downloads</h3>
+      <form id="upload-form"><label>Fixture upload <input name="file" id="upload" type="file"></label><button type="submit">Upload fixture file</button></form>
+      <a href="/download?name=fixture.txt" download>Download fixture file</a>
+      <a href="/api/cookies">Set synthetic cookies</a>
+      <h3>Native dialogs</h3>
+      <button id="alert">Show fixture alert</button><button id="confirm">Show fixture confirm</button><button id="prompt">Show fixture prompt</button>
+    </section>
+    <section aria-labelledby="list-heading">
+      <h2 id="list-heading">Virtualized inventory</h2>
+      <p>Only eight of 200 rows exist in the DOM. Seeded events replace this window.</p>
+      <div id="virtual-list" tabindex="0" aria-label="Virtualized inventory rows"></div>
+    </section>
+    <section id="visual" aria-labelledby="visual-heading">
+      <h2 id="visual-heading">Ambiguous visual targets</h2>
+      <p>Follow the report’s visual instruction. Similar colors and labels deliberately require careful inspection.</p>
+      <canvas id="board" width="320" height="140" aria-label="Visual ambiguity board" tabindex="0"></canvas>
+      <img src="/visual.svg" width="320" height="140" alt="Three colored shapes with short printed labels">
+      <output id="visual-result" role="status">No visual target selected</output>
+      <h3>Pointer and drag surface</h3>
+      <div id="pointer-pad" tabindex="0" aria-label="Fixture pointer pad"><div id="drag-chip" draggable="true">Drag fixture chip</div><div id="drop-zone">Fixture drop zone</div></div>
+    </section>
+    <section id="frames" aria-labelledby="frames-heading">
+      <h2 id="frames-heading">Frames and shadow DOM</h2>
+      <div id="shadow-host" aria-label="Open shadow fixture"></div>
+      <iframe id="same-frame" title="Same-origin fixture"></iframe>
+      <iframe id="cross-frame" title="Cross-origin fixture"></iframe>
+      <iframe title="Sandboxed opaque-origin fixture" sandbox srcdoc="<h3>Opaque frame</h3><p>Reading this frame requires an explicit supported origin decision.</p>"></iframe>
+    </section>
+  </main>
+  <div id="overlay" role="dialog" aria-modal="true" aria-labelledby="overlay-heading" hidden><div><h2 id="overlay-heading">Fixture interruption</h2><p>A seeded overlay blocks pointer actions until dismissed.</p><button id="dismiss-overlay">Dismiss overlay</button></div></div>
+  <footer><p>Fixture version adversarial-v1. All data is synthetic and all resources stay on the two loopback origins.</p><output id="error" role="alert"></output></footer>
+</body>
+</html>
