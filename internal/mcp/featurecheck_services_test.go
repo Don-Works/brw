@@ -381,6 +381,7 @@ func featureFiles(t *testing.T, h *featureHarness) {
 	}
 	sum := sha256.Sum256(data)
 	h.Check(t, "brw_downloads", hex.EncodeToString(sum[:]) == h.State(t).DownloadSHA256 && filepath.Dir(downloaded.Downloads[0].Path) == root, "downloaded owned payload/path differ")
+	h.Check(t, "brw_set_download_path", filepath.Dir(downloaded.Downloads[0].Path) == root, "actual browser download ignored requested destination")
 	path := filepath.Join(t.TempDir(), "feature-upload.txt")
 	body := []byte("Owned feature upload bytes.")
 	if err := os.WriteFile(path, body, 0600); err != nil {
@@ -405,7 +406,16 @@ func featurePageTools(t *testing.T, h *featureHarness) {
 	h.Check(t, "brw_page_tool_result", finished.OK && finished.ID == started.ID && strings.Contains(string(finished.Result), "feature-delayed-evidence"), "detached result lost identity/evidence: %+v", finished)
 	second := featureDecode[snapshot.PageToolInvocation](t, h.OK(t, "brw_call_page_tool", map[string]any{"name": "feature_delayed_read", "arguments": map[string]any{"nonce": 2}, "detach": true}))
 	cancelled := featureDecode[snapshot.PageToolInvocation](t, h.OK(t, "brw_page_tool_cancel", map[string]any{"invocation_id": second.ID}))
-	h.Check(t, "brw_page_tool_cancel", cancelled.ID == second.ID && cancelled.Cancelled && !h.State(t).FormState.AccountDeleted, "detached cancellation lost identity or mutated account: %+v", cancelled)
+	h.Check(t, "brw_page_tool_cancel", cancelled.ID == second.ID && cancelled.Cancelled, "detached cancellation lost identity: %+v", cancelled)
+	time.Sleep(1200 * time.Millisecond)
+	terminal := featureDecode[snapshot.PageToolInvocation](t, h.OK(t, "brw_page_tool_result", map[string]any{"invocation_id": second.ID, "timeout_ms": 1}))
+	h.Check(t, "brw_page_tool_cancel", terminal.ID == second.ID && terminal.Status == snapshot.PageToolCancelled && !terminal.OK && len(terminal.Result) == 0, "cancelled invocation published delayed evidence: %+v", terminal)
+	args := map[string]any{"name": "fixture_delete_account", "arguments": map[string]any{}}
+	denied := h.Call(t, "brw_call_page_tool", args)
+	h.Check(t, "brw_call_page_tool", denied.IsError && denied.Data["code"] == "approval_required" && !h.State(t).FormState.AccountDeleted && h.State(t).ActionCounts["webmcp-mutation"] == 0, "consequential page tool bypassed approval: %s", denied.Text)
+	approved := h.approveResult(t, "brw_call_page_tool", args, denied)
+	state := h.Wait(t, func(s testbed.State) bool { return s.FormState.AccountDeleted })
+	h.Check(t, "brw_call_page_tool", !approved.IsError && state.ActionCounts["webmcp-mutation"] == 1, "approved exact page tool did not execute once: %s", approved.Text)
 }
 
 func featureDiff(t *testing.T, h *featureHarness) {
