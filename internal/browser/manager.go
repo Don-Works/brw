@@ -380,6 +380,15 @@ func (m *Manager) guardCurrentURL(tabID string, tabCtx context.Context) error {
 	return m.enforceFinalURL(tabID, tabCtx, current)
 }
 
+func (m *Manager) guardPageError(tabID string, tabCtx context.Context, err error) error {
+	if err != nil {
+		if guardErr := m.guardCurrentURL(tabID, tabCtx); guardErr != nil {
+			return guardErr
+		}
+	}
+	return err
+}
+
 type tabContext struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -1086,7 +1095,7 @@ func (m *Manager) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (
 	m.ensureWebMCP(tabID, tabCtx)
 	snap, err := snapshot.EvaluateWithOptions(tabCtx, opts)
 	if err != nil {
-		return snapshot.PageSnapshot{}, err
+		return snapshot.PageSnapshot{}, m.guardPageError(tabID, tabCtx, err)
 	}
 	if err := m.enforceFinalURL(tabID, tabCtx, snap.URL); err != nil {
 		return snapshot.PageSnapshot{}, err
@@ -1096,6 +1105,11 @@ func (m *Manager) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (
 	}
 	if opts.IncludeAX {
 		snapshot.EnrichAccessibility(tabCtx, &snap)
+	}
+	if opts.IncludeFrames || opts.IncludeAX {
+		if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+			return snapshot.PageSnapshot{}, err
+		}
 	}
 	// Record whether accessibility was opt-in so agents can tell "not requested"
 	// (available:false, requested:false) apart from "requested but the AX fetch
@@ -1117,7 +1131,7 @@ func (m *Manager) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot
 	m.ensureWebMCP(tabID, tabCtx)
 	result, err := snapshot.Find(tabCtx, opts)
 	if err != nil {
-		return snapshot.FindResult{}, err
+		return snapshot.FindResult{}, m.guardPageError(tabID, tabCtx, err)
 	}
 	if err := m.enforceFinalURL(tabID, tabCtx, result.URL); err != nil {
 		return snapshot.FindResult{}, err
@@ -1151,6 +1165,7 @@ func (m *Manager) Read(ctx context.Context) (readability.PageRead, error) {
 		m.refs.Observe(tabID, snap.Elements)
 	}
 	read, readErr := readability.Evaluate(tabCtx, readability.SettleMS(ctx))
+	readErr = m.guardPageError(tabID, tabCtx, readErr)
 	url := read.URL
 	if url == "" {
 		url = snap.URL
@@ -1176,6 +1191,7 @@ func (m *Manager) ReadData(ctx context.Context) (snapshot.StructuredData, error)
 		return snapshot.StructuredData{}, err
 	}
 	data, dataErr := snapshot.EvaluateStructured(tabCtx)
+	dataErr = m.guardPageError(tabID, tabCtx, dataErr)
 	if dataErr == nil {
 		dataErr = m.enforceFinalURL(tabID, tabCtx, data.URL)
 	}
@@ -1462,14 +1478,18 @@ func (m *Manager) Evaluate(ctx context.Context, expression string) (any, error) 
 		}))
 	}
 	err = evaluate(false)
+	if guardErr := m.guardCurrentURL(tabID, tabCtx); guardErr != nil {
+		recordEvaluate(guardErr)
+		return nil, guardErr
+	}
 	if isTopLevelAwaitSyntaxError(err) {
 		err = evaluate(true)
+		if guardErr := m.guardCurrentURL(tabID, tabCtx); guardErr != nil {
+			recordEvaluate(guardErr)
+			return nil, guardErr
+		}
 	}
 	if err != nil {
-		recordEvaluate(err)
-		return nil, err
-	}
-	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
 		recordEvaluate(err)
 		return nil, err
 	}
@@ -2702,7 +2722,11 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreen
 
 	boxes, err := snapshot.InjectAnnotationOverlay(tabCtx, marks)
 	// Always tear the overlay down, even when injection itself errored partway.
-	defer func() { _, _ = snapshot.RemoveAnnotationOverlay(tabCtx) }()
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(tabCtx), 3*time.Second)
+		defer cancel()
+		_, _ = snapshot.RemoveAnnotationOverlay(cleanupCtx)
+	}()
 	if err != nil {
 		return AnnotatedScreenshot{}, err
 	}
@@ -3414,7 +3438,7 @@ func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, 
 	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
 		result.OK = false
-		result.Message = message + "; observation failed: " + err.Error()
+		result.Message = "observation failed: " + m.guardPageError(tabID, tabCtx, err).Error()
 		return result
 	}
 	if err := m.enforceFinalURL(tabID, tabCtx, snap.URL); err != nil {
@@ -3602,7 +3626,7 @@ func (m *Manager) Observe(ctx context.Context) (ObserveResult, error) {
 
 	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
-		return ObserveResult{}, err
+		return ObserveResult{}, m.guardPageError(tabID, tabCtx, err)
 	}
 	if err := m.enforceFinalURL(tabID, tabCtx, snap.URL); err != nil {
 		return ObserveResult{}, err

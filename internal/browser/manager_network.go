@@ -105,7 +105,7 @@ func (m *Manager) NetworkCapture(ctx context.Context, filter string) ([]snapshot
 	}
 	requests, err := snapshot.CaptureNetwork(tabCtx)
 	if err != nil {
-		return nil, err
+		return nil, m.guardPageError(tabID, tabCtx, err)
 	}
 	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
 		return nil, err
@@ -128,7 +128,7 @@ func (m *Manager) ReplayRequest(ctx context.Context, params ReplayRequestParams)
 	}
 	result, err := snapshot.ReplayRequest(tabCtx, params.Method, params.URL, params.Headers, params.Body, params.Offset, params.MaxBytes)
 	if err != nil {
-		return snapshot.ReplayResult{}, err
+		return snapshot.ReplayResult{}, m.guardPageError(tabID, tabCtx, err)
 	}
 	if check := FetchCheckFromContext(tabCtx); check != nil {
 		if err := check(result.URL); err != nil {

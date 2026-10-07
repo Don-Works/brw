@@ -39,6 +39,7 @@ func (m *Manager) Vitals(ctx context.Context, opts devtools.VitalsOptions) (devt
 
 	var vitals devtools.Vitals
 	err = evaluateAwait(tabCtx, devtools.BuildVitalsExpression(opts), &vitals)
+	err = m.guardPageError(tabID, tabCtx, err)
 	if err == nil {
 		err = m.enforceFinalURL(tabID, tabCtx, vitals.URL)
 	}
@@ -70,6 +71,7 @@ func (m *Manager) AccessibilityAudit(ctx context.Context, opts devtools.AuditOpt
 		}
 		return devtools.SummarizeAudit(raw, opts, time.Now())
 	}()
+	err = m.guardPageError(tabID, tabCtx, err)
 	if err == nil {
 		err = m.enforceFinalURL(tabID, tabCtx, result.URL)
 	}
@@ -95,6 +97,7 @@ func (m *Manager) Highlight(ctx context.Context, opts devtools.HighlightOptions)
 
 	var result devtools.HighlightResult
 	err = evaluateAwait(tabCtx, devtools.BuildHighlightExpression(opts), &result)
+	err = m.guardPageError(tabID, tabCtx, err)
 	if err == nil {
 		err = m.guardCurrentURL(tabID, tabCtx)
 	}

@@ -161,7 +161,7 @@ func (m *Manager) SaveScreenshot(ctx context.Context, opts ScreenshotSaveOptions
 			err = m.guardCurrentURL(tabID, tabCtx)
 		}
 		if err != nil {
-			return Screenshot{}, err
+			return Screenshot{}, m.guardPageError(tabID, tabCtx, err)
 		}
 		return shot, err
 	})

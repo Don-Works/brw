@@ -381,7 +381,7 @@ func TestFetchUploadTempGatesEveryRedirectHop(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "fixture gate") {
 		t.Fatalf("the fetch failed with %v, not the gate's refusal", err)
 	}
-	if len(seen) != 1 || !strings.HasPrefix(seen[0], elsewhere.URL) {
+	if len(seen) != 2 || !strings.HasPrefix(seen[0], entry.URL) || !strings.HasPrefix(seen[1], elsewhere.URL) {
 		t.Fatalf("the gate saw %v; it must be asked about the hop", seen)
 	}
 	if got := atomic.LoadInt64(&elsewhereHits); got != 0 {
@@ -397,5 +397,24 @@ func TestFetchUploadTempGatesEveryRedirectHop(t *testing.T) {
 	body, err := os.ReadFile(path)
 	if err != nil || !strings.Contains(string(body), "nobody granted") {
 		t.Fatalf("the ungated fetch returned %q (%v)", body, err)
+	}
+}
+
+func TestFetchUploadTempRejectsInitialDestinationBeforeNetworkWork(t *testing.T) {
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1); _, _ = w.Write([]byte("fixture file")) }))
+	defer server.Close()
+	denied := errors.New("fixture initial destination denied")
+	ctx := WithFetchCheck(context.Background(), func(raw string) error {
+		if raw != server.URL+"/fixture.bin" {
+			t.Fatalf("checked URL %q", raw)
+		}
+		return denied
+	})
+	if _, err := fetchUploadTemp(ctx, server.URL+"/fixture.bin", ""); !errors.Is(err, denied) {
+		t.Fatalf("upload fetch = %v, want initial runtime refusal", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("refused initial upload was fetched %d times", hits.Load())
 	}
 }

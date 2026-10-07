@@ -14,6 +14,7 @@ import (
 	cdpproto "github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -285,7 +286,7 @@ func xframeIndex(node *cdpproto.Node) (int, bool) {
 			continue
 		}
 		index, err := strconv.Atoi(node.Attributes[i+1])
-		if err != nil {
+		if err != nil || index < 0 {
 			return 0, false
 		}
 		return index, true
@@ -309,6 +310,9 @@ func xframeIndex(node *cdpproto.Node) (int, bool) {
 // cancels with it — otherwise a tab operation hitting its deadline mid-read
 // would tear down the session and take the tab with it.
 func attachFrameTarget(ctx context.Context, id target.ID) (context.Context, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	holder := chromedp.FromContext(ctx)
 	if holder == nil || holder.Browser == nil {
 		return nil, nil, errors.New("no browser attached to this context")
@@ -316,22 +320,27 @@ func attachFrameTarget(ctx context.Context, id target.ID) (context.Context, func
 	browser := holder.Browser
 	frameCtx, cancel := chromedp.NewContext(context.WithoutCancel(ctx), chromedp.WithTargetID(id))
 	frameHolder := chromedp.FromContext(frameCtx)
-	if err := chromedp.Run(frameCtx); err != nil {
-		frameHolder.Target = nil
-		cancel()
-		return nil, nil, fmt.Errorf("attach to cross-origin frame target: %w", err)
-	}
-	sessionID := frameHolder.Target.SessionID
 	workCtx, stopWork := context.WithCancel(frameCtx)
 	stopPropagating := context.AfterFunc(ctx, stopWork)
 	release := func() {
 		stopPropagating()
 		stopWork()
+		var sessionID target.SessionID
+		if frameHolder.Target != nil {
+			sessionID = frameHolder.Target.SessionID
+		}
 		frameHolder.Target = nil
 		cancel()
+		if sessionID == "" {
+			return
+		}
 		detachCtx, detachCancel := context.WithTimeout(context.WithoutCancel(ctx), frameDetachTimeout)
 		defer detachCancel()
 		_ = target.DetachFromTarget().WithSessionID(sessionID).Do(cdpproto.WithExecutor(detachCtx, browser))
+	}
+	if err := chromedp.Run(workCtx); err != nil {
+		release()
+		return nil, nil, fmt.Errorf("attach to cross-origin frame target: %w", err)
 	}
 	return workCtx, release, nil
 }
@@ -377,6 +386,12 @@ func SnapshotOutOfProcessFrames(ctx context.Context, opts SnapshotOptions, allow
 		release()
 		if snapErr != nil {
 			continue
+		}
+		origin = (frameHandle{liveURL: snap.URL, box: handle.box}).origin()
+		if allowOrigin != nil {
+			if err := allowOrigin(origin); err != nil {
+				continue
+			}
 		}
 		frames = append(frames, OutOfProcessFrame{
 			Index:    handle.index,
@@ -682,7 +697,7 @@ func ResolveCrossOriginActionPoint(ctx context.Context, ref string, actionableTi
 	return resolveCrossOriginPoint(ctx, ref, actionableTimeoutMS, allowOrigin)
 }
 
-func resolveCrossOriginPoint(ctx context.Context, ref string, actionableTimeoutMS int64, allowOrigin func(origin string) error) (ElementBox, error) {
+func resolveCrossOriginPoint(ctx context.Context, ref string, actionableTimeoutMS int64, allowOrigin func(origin string) error) (result ElementBox, resultErr error) {
 	index, inner, ok := ParseFrameRef(ref)
 	if !ok || inner == "" {
 		return ElementBox{}, fmt.Errorf("ref %q does not name an element inside a cross-origin iframe", ref)
@@ -718,6 +733,24 @@ func resolveCrossOriginPoint(ctx context.Context, ref string, actionableTimeoutM
 		return ElementBox{}, err
 	}
 	defer release()
+	if allowOrigin != nil {
+		defer func() {
+			var tree *page.FrameTree
+			err := chromedp.Run(frameCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+				var err error
+				tree, err = page.GetFrameTree().Do(ctx)
+				return err
+			}))
+			if err == nil && tree != nil && tree.Frame != nil {
+				err = allowOrigin((frameHandle{liveURL: tree.Frame.URL, box: handle.box}).origin())
+			} else if err == nil {
+				err = errors.New("cross-origin frame returned no document metadata")
+			}
+			if err != nil {
+				result, resultErr = ElementBox{}, err
+			}
+		}()
+	}
 	if actionableTimeoutMS > 0 {
 		actionable, waitErr := WaitForActionableResult(frameCtx, inner, actionableTimeoutMS)
 		if waitErr != nil {
