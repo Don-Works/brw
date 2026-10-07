@@ -223,7 +223,7 @@ func repeatAction(ctx context.Context, n int, act func(context.Context) (browser
 		}
 		var err error
 		result, err = act(ctx)
-		if err != nil {
+		if err != nil || !result.OK {
 			return result, err
 		}
 	}

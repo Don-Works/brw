@@ -197,7 +197,7 @@ func TestRepeatActionRunsExactlyNTimes(t *testing.T) {
 	calls := 0
 	got, err := repeatAction(context.Background(), 5, func(context.Context) (browser.ActionResult, error) {
 		calls++
-		return browser.ActionResult{URL: "final"}, nil
+		return browser.ActionResult{OK: true, URL: "final"}, nil
 	})
 	if err != nil {
 		t.Fatalf("repeatAction: %v", err)
@@ -218,7 +218,7 @@ func TestRepeatActionStopsOnFirstError(t *testing.T) {
 		if calls == 3 {
 			return browser.ActionResult{}, boom
 		}
-		return browser.ActionResult{}, nil
+		return browser.ActionResult{OK: true}, nil
 	})
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want boom", err)
@@ -238,12 +238,27 @@ func TestRepeatActionHonoursCancellation(t *testing.T) {
 		if calls == 2 {
 			cancel()
 		}
-		return browser.ActionResult{}, nil
+		return browser.ActionResult{OK: true}, nil
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	if calls != 2 {
 		t.Fatalf("ran %d times after cancellation, want 2", calls)
+	}
+}
+
+func TestRepeatActionStopsOnSemanticFailure(t *testing.T) {
+	calls := 0
+	failed := browser.ActionResult{Message: "target is not actionable"}
+	got, err := repeatAction(context.Background(), 10, func(context.Context) (browser.ActionResult, error) {
+		calls++
+		if calls == 2 {
+			return failed, nil
+		}
+		return browser.ActionResult{OK: true}, nil
+	})
+	if err != nil || calls != 2 || got.OK || got.Message != failed.Message {
+		t.Fatalf("calls=%d result=%+v err=%v", calls, got, err)
 	}
 }

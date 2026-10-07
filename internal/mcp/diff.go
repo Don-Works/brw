@@ -1,8 +1,9 @@
 package mcp
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -125,30 +126,21 @@ func diffSnapshots(baseline diffBaseline, snap snapshot.PageSnapshot, text strin
 		before, existed := baseline.Elements[ref]
 		if !existed {
 			result.AddedCount++
-			if len(result.Added) < maxDiffEntries {
-				result.Added = append(result.Added, ElementChange{Ref: ref, Role: el.Role, Name: el.Name})
-			}
+			result.Added = insertChange(result.Added, ElementChange{Ref: ref, Role: el.Role, Name: el.Name})
 			continue
 		}
 		if from, to, moved := elementMoved(before, el); moved {
 			result.UpdatedCount++
-			if len(result.Updated) < maxDiffEntries {
-				result.Updated = append(result.Updated, ElementChange{Ref: ref, Role: el.Role, Name: el.Name, From: from, To: to})
-			}
+			result.Updated = insertChange(result.Updated, ElementChange{Ref: ref, Role: el.Role, Name: el.Name, From: from, To: to})
 		}
 	}
 	for ref, el := range baseline.Elements {
 		if _, stillThere := current.Elements[ref]; !stillThere {
 			result.RemovedCount++
-			if len(result.Removed) < maxDiffEntries {
-				result.Removed = append(result.Removed, ElementChange{Ref: ref, Role: el.Role, Name: el.Name})
-			}
+			result.Removed = insertChange(result.Removed, ElementChange{Ref: ref, Role: el.Role, Name: el.Name})
 		}
 	}
 
-	sortChanges(result.Added)
-	sortChanges(result.Removed)
-	sortChanges(result.Updated)
 	result.Truncated = result.AddedCount > len(result.Added) ||
 		result.RemovedCount > len(result.Removed) ||
 		result.UpdatedCount > len(result.Updated)
@@ -181,13 +173,15 @@ func elementMoved(before, after snapshot.Element) (from, to string, moved bool) 
 	return "", "", false
 }
 
-func sortChanges(changes []ElementChange) {
-	sort.Slice(changes, func(i, j int) bool {
-		if changes[i].Role != changes[j].Role {
-			return changes[i].Role < changes[j].Role
-		}
-		return changes[i].Ref < changes[j].Ref
+func insertChange(changes []ElementChange, change ElementChange) []ElementChange {
+	index, _ := slices.BinarySearchFunc(changes, change, func(a, b ElementChange) int {
+		return cmp.Or(cmp.Compare(a.Role, b.Role), cmp.Compare(a.Ref, b.Ref))
 	})
+	if index >= maxDiffEntries {
+		return changes
+	}
+	changes = slices.Insert(changes, index, change)
+	return changes[:min(len(changes), maxDiffEntries)]
 }
 
 func diffSummary(result DiffResult) string {
