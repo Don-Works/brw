@@ -16,7 +16,6 @@ import (
 
 	"github.com/Don-Works/brw/internal/approvalgate"
 	"github.com/Don-Works/brw/internal/browser"
-	"github.com/Don-Works/brw/internal/browsertest"
 	httpapi "github.com/Don-Works/brw/internal/http"
 	"github.com/Don-Works/brw/internal/testbed"
 	"github.com/Don-Works/brw/internal/usagelog"
@@ -35,16 +34,7 @@ func TestFeatureTransportExtras(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer fixture.Close()
-	profile := browsertest.NewProfile(t)
-	manager, err := browser.New(ctx, browser.Config{UserDataDir: profile.Dir(), Headless: true, WebMCP: true, Timeout: 20 * time.Second, ChromeArgs: []string{"--disable-gpu", "--site-per-process", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-first-run", "--no-default-browser-check", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE ::1"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile.StopWith(func() {
-		if err := manager.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	manager := featureManager(t, ctx)
 	h := &featureHarness{Ctx: ctx, Manager: manager, Fixture: fixture, Root: t.TempDir()}
 	h.reset(t)
 	daemon := httpapi.New("127.0.0.1:0", manager)

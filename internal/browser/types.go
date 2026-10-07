@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -59,7 +60,9 @@ type Config struct {
 	Port             int
 	Extensions       []string
 	ChromeArgs       []string
-	Timeout          time.Duration
+	// ChromeOutput receives a launched Chrome's stdout and stderr; nil uses this process's stderr. The caller owns the file.
+	ChromeOutput *os.File
+	Timeout      time.Duration
 	// WebMCP, when true, installs a fallback WebMCP runtime (document.modelContext,
 	// aliased as navigator.modelContext) at document-start so cooperating sites
 	// can register page tools that brw_page_tools / brw_call_page_tool surface.

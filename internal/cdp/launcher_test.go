@@ -1,14 +1,61 @@
 package cdp
 
 import (
+	"context"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Don-Works/brw/internal/browsertest"
 )
+
+func TestLaunchSendsInheritedProcessOutputToFile(t *testing.T) {
+	root := t.TempDir()
+	output, err := os.OpenFile(filepath.Join(root, "chrome.log"), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = output.Close() })
+	chrome := filepath.Join(root, "fixture-chrome")
+	if err := os.WriteFile(chrome, []byte("#!/bin/sh\nprintf 'fixture stdout\\n'\nprintf 'fixture stderr\\n' >&2\n(sleep 0.1; printf 'fixture descendant\\n' >&2) &\nexec sleep 30\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"webSocketDebuggerUrl":"ws://127.0.0.1/fixture"}`)
+	}))
+	defer server.Close()
+	profile := browsertest.NewProfile(t)
+	launcher, err := Launch(context.Background(), LaunchConfig{ChromePath: chrome, UserDataDir: profile.Dir(), Port: server.Listener.Addr().(*net.TCPAddr).Port, Output: output})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.StopWith(func() { _ = launcher.Close() })
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		data, err := os.ReadFile(output.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "fixture stdout\n") && strings.Contains(string(data), "fixture stderr\n") && strings.Contains(string(data), "fixture descendant\n") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process output did not reach private file: %q", data)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	info, err := output.Stat()
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("private output permissions: info=%v err=%v", info, err)
+	}
+}
 
 func TestLauncherCloseQuitsGracefullyBeforeKill(t *testing.T) {
 	cmd := exec.Command("sleep", "30")

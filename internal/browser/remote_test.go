@@ -354,6 +354,7 @@ func TestCheckRemoteConfigRefusesLaunchOnlySettings(t *testing.T) {
 		"profile dir":     {Config{Remote: remote(), ProfileDirectory: "Profile 1"}, "profile reuse"},
 		"extension":       {Config{Remote: remote(), Extensions: []string{"/tmp/fixture-ext"}}, "unpacked extension"},
 		"chrome arg":      {Config{Remote: remote(), ChromeArgs: []string{"--mute-audio"}}, "launch settings"},
+		"chrome output":   {Config{Remote: remote(), ChromeOutput: os.Stderr}, "launch settings"},
 		"headless":        {Config{Remote: remote(), Headless: true}, "launch settings"},
 		"debugging port":  {Config{Remote: remote(), Port: 9222}, "launch settings"},
 		"real profile":    {Config{Remote: remote(), AllowRealProfile: true}, "launch settings"},

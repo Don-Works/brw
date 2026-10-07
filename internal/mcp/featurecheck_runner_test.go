@@ -105,6 +105,38 @@ func featureToolNames() []string {
 	return names
 }
 
+func featureManager(t *testing.T, ctx context.Context) *browser.Manager {
+	t.Helper()
+	output, err := os.OpenFile(filepath.Join(t.TempDir(), "chrome.log"), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			if info, err := output.Stat(); err == nil {
+				tail, err := io.ReadAll(io.NewSectionReader(output, max(0, info.Size()-8192), 8192))
+				if err == nil {
+					t.Logf("owned Chrome log tail:\n%s", tail)
+				}
+			}
+		}
+		if err := output.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	profile := browsertest.NewProfile(t)
+	manager, err := browser.New(ctx, browser.Config{UserDataDir: profile.Dir(), ChromeOutput: output, Headless: true, WebMCP: true, Timeout: 20 * time.Second, ChromeArgs: []string{"--disable-gpu", "--site-per-process", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-first-run", "--no-default-browser-check", "--window-size=1280,800", "--force-device-scale-factor=1", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE ::1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.StopWith(func() {
+		if err := manager.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return manager
+}
+
 func TestFeatureExercises(t *testing.T) {
 	if testing.Short() {
 		t.Skip("disposable Chrome feature checks")
@@ -116,16 +148,7 @@ func TestFeatureExercises(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer fixture.Close()
-	profile := browsertest.NewProfile(t)
-	manager, err := browser.New(ctx, browser.Config{UserDataDir: profile.Dir(), Headless: true, WebMCP: true, Timeout: 20 * time.Second, ChromeArgs: []string{"--disable-gpu", "--site-per-process", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-first-run", "--no-default-browser-check", "--window-size=1280,800", "--force-device-scale-factor=1", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE ::1"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile.StopWith(func() {
-		if err := manager.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	manager := featureManager(t, ctx)
 	h := &featureHarness{Ctx: ctx, Manager: manager, Fixture: fixture, Root: t.TempDir()}
 	rows := []map[string]any{}
 	for _, c := range featureCases {

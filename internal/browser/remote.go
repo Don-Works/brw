@@ -93,8 +93,8 @@ func ProviderConfigProblems(cfg Config) error {
 	if len(cfg.Extensions) > 0 {
 		problems = append(problems, errors.New("--extension loads an unpacked extension from this machine's filesystem, which the provider's browser cannot read"))
 	}
-	if len(cfg.ChromeArgs) > 0 || cfg.Headless || cfg.AllowRealProfile || cfg.Port != 0 {
-		problems = append(problems, errors.New("chrome launch settings (--chrome-arg, --headless, --remote-debugging-port, --unsafe-real-profile) are decided by whoever started the provider's browser, not by brw"))
+	if len(cfg.ChromeArgs) > 0 || cfg.ChromeOutput != nil || cfg.Headless || cfg.AllowRealProfile || cfg.Port != 0 {
+		problems = append(problems, errors.New("chrome launch settings (--chrome-arg, --headless, --remote-debugging-port, --unsafe-real-profile, output file) are decided by whoever started the provider's browser, not by brw"))
 	}
 	if !cfg.Network.Empty() {
 		problems = append(problems, errors.New("--proxy-server, --ignore-https-errors and --ca-cert are Chrome launch switches; the provider launched its own browser, so brw cannot apply them"))
