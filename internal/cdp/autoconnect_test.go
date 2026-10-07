@@ -17,7 +17,6 @@ import (
 	"time"
 )
 
-// writeActivePort plants the file Chrome writes into its own profile.
 func writeActivePort(t *testing.T, dir string, port int, extra string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -57,8 +56,7 @@ func TestAutoConnectPrefersTheBrowsersOwnPortFile(t *testing.T) {
 		t.Fatalf("URL = %q", endpoint.URL)
 	}
 	if probed[9222] {
-		// The conventional port is a guess. Probing it when the precise answer
-		// already worked would mean brw could attach to a browser nobody named.
+
 		t.Error("the conventional port was probed even though the profile named one that answered")
 	}
 }
@@ -87,8 +85,6 @@ func TestAutoConnectFallsBackToProbingPortsInOrder(t *testing.T) {
 	}
 }
 
-// TestAutoConnectSkipsAStaleActivePortFile: the file outlives the browser that
-// wrote it, so the port in it is a claim to verify rather than an answer.
 func TestAutoConnectSkipsAStaleActivePortFile(t *testing.T) {
 	stale := writeActivePort(t, filepath.Join(t.TempDir(), "stale"), 41111, "")
 	live := writeActivePort(t, filepath.Join(t.TempDir(), "live"), 41222, "")
@@ -110,8 +106,6 @@ func TestAutoConnectSkipsAStaleActivePortFile(t *testing.T) {
 	}
 }
 
-// TestAutoConnectNamesWhereItLookedWhenItFindsNothing. "no endpoint found" with
-// no list is a message an operator cannot act on.
 func TestAutoConnectNamesWhereItLookedWhenItFindsNothing(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "profile")
 	_, err := AutoConnect(context.Background(), AutoConnectOptions{
@@ -129,9 +123,6 @@ func TestAutoConnectNamesWhereItLookedWhenItFindsNothing(t *testing.T) {
 	}
 }
 
-// TestProbeRefusesSomethingThatIsNotABrowser is the guard that keeps discovery
-// from handing brw a debugger session with whatever happens to be on 9222. The
-// check is the DevTools handshake, not the port number.
 func TestProbeRefusesSomethingThatIsNotABrowser(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -190,8 +181,6 @@ func TestProbeRefusesSomethingThatIsNotABrowser(t *testing.T) {
 	}
 }
 
-// TestAutoConnectDrivesARealListener joins the two halves: a listener that
-// answers like DevTools is found by the real probe, through the real discovery.
 func TestAutoConnectDrivesARealListener(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/json/version" {
@@ -239,21 +228,8 @@ func serverPort(t *testing.T, server *httptest.Server) int {
 	return port
 }
 
-// --remote auto probes conventional ports, so whatever answers there is an
-// untrusted local listener. A decoder reading until EOF from one that never
-// stops sending is a daemon that never starts, and every other upstream read in
-// the tree is bounded.
-//
-// Both cases below assert on what the probe DID, not on how many bytes the
-// listener managed to push into a socket buffer. An earlier version counted the
-// latter and allowed 4x the bound as slack for buffering; on a Linux runner with
-// larger buffers the writer got 4.6MB ahead of a probe that had correctly
-// stopped at 1MB, and the test went red over the machine's socket sizing rather
-// than over anything the probe did.
 func TestProbeDoesNotReadAnUnboundedBody(t *testing.T) {
-	// A complete, valid /json/version that is merely too big. Without the bound
-	// this decodes cleanly and the probe accepts the listener as a browser, so
-	// the assertion fails for the right reason and nothing else can produce it.
+
 	t.Run("an oversized but valid document is refused", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("content-type", "application/json")
@@ -269,8 +245,6 @@ func TestProbeDoesNotReadAnUnboundedBody(t *testing.T) {
 		}
 	})
 
-	// A listener that never finishes its document. The probe has to give up on
-	// its own: reading to EOF here is a daemon that never starts.
 	t.Run("an endless document is refused promptly", func(t *testing.T) {
 		stop := make(chan struct{})
 		var closeOnce sync.Once

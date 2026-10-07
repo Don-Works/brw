@@ -13,36 +13,6 @@ import (
 	"testing"
 )
 
-// The eleventh test to hand t.TempDir() straight to a browser would go red on
-// Linux CI and nowhere else, so nothing anyone runs before pushing would catch
-// it. This catches it here instead, on every platform, in a scan with no
-// browser in it.
-//
-// The scan is over the syntax tree rather than over lines, because the defect is
-// about where a VALUE ends up and a line only shows one spelling of that. The
-// first version matched two literal spellings —
-//
-//	UserDataDir: t.TempDir()
-//	chromedp.UserDataDir(t.TempDir())
-//
-// — and a test that wrote `dir := t.TempDir()` on one line and
-// `"--user-data-dir="+dir` on another was invisible to both. That is the site
-// that reached CI: internal/chromeoptin's opted-in-Chrome test, whose Chrome
-// wrote Default/ into the directory testing was about to RemoveAll. So the walk
-// now follows the value: every identifier that came from t.TempDir(), directly
-// or through filepath.Join or a concatenation, and every place such a value is
-// handed to something that starts a browser.
-//
-// Three sinks name a browser's profile directory:
-//
-//   - chromedp's UserDataDir option;
-//   - the UserDataDir field of a config that LAUNCHES (browser.Config,
-//     cdp.LaunchConfig) — chromeoptin.Options and the other readers take the
-//     same field name to go LOOKING in a directory, and nothing writes there;
-//   - --user-data-dir on a browser command line.
-//
-// A directory reached some other way is not this test's business — the reclaim
-// is what makes it safe, not the spelling.
 func TestNoTestHandsATempDirStraightToABrowser(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -55,9 +25,7 @@ func TestNoTestHandsATempDirStraightToABrowser(t *testing.T) {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			// .claude holds this repo's git worktrees, each a complete second
-			// copy of the tree. Walking into one reports every finding once per
-			// worktree and keeps reporting a violation already fixed here.
+
 			case ".git", ".claude", "node_modules", "bin", "store-assets":
 				return fs.SkipDir
 			}
@@ -90,21 +58,13 @@ func TestNoTestHandsATempDirStraightToABrowser(t *testing.T) {
 	}
 }
 
-// profileSink is one place a t.TempDir()-derived path reaches a browser.
 type profileSink struct {
 	line     int
 	spelling string
 }
 
-// launchConfigTypes are the config types whose UserDataDir field is the
-// directory a browser brw STARTS will write into. The same field name on
-// chromeoptin.Options, cdp.AutoConnectOptions and the policy types names a
-// directory to read, which no browser is writing because of the test.
 var launchConfigTypes = map[string]bool{"Config": true, "LaunchConfig": true}
 
-// browserOnlyFlags say that an argument list is a browser's command line. One of
-// these next to --user-data-dir is what tells a Chrome invocation apart from a
-// brwd invocation that merely carries the same flag through to its config.
 var browserOnlyFlags = []string{
 	"--headless",
 	"--remote-debugging-port",
@@ -162,8 +122,7 @@ func profileSinksInSource(name string, source []byte) ([]profileSink, error) {
 				if !ok || name.Name != "UserDataDir" {
 					continue
 				}
-				// An inline t.TempDir() is unambiguous whatever the type: nothing
-				// else could have meant to write it there.
+
 				if containsTempDir(keyed.Value) {
 					add(keyed.Pos(), "UserDataDir: t.TempDir()")
 					continue
@@ -171,9 +130,7 @@ func profileSinksInSource(name string, source []byte) ([]profileSink, error) {
 				if !rooted(keyed.Value) || !launchConfigType(typed.Type) {
 					continue
 				}
-				// AttachOnly is the lane that refuses to start a browser at all —
-				// attach_only_test asserts the directory is never even created —
-				// so the profile it names is written to by nothing.
+
 				if attachOnly(typed) {
 					continue
 				}
@@ -188,15 +145,11 @@ func profileSinksInSource(name string, source []byte) ([]profileSink, error) {
 	return sinks, nil
 }
 
-// tempRootedNames collects every identifier in the file assigned a value that
-// came from t.TempDir(), which is what lets the scan see a directory that
-// reaches the browser one line later under another name.
 func tempRootedNames(file *ast.File) map[string]bool {
 	names := map[string]bool{}
-	// Two passes: a name can be assigned after the line that uses it (a helper
-	// defined below its caller), and the scan is over the file, not over a
-	// control flow.
-	for pass := 0; pass < 2; pass++ {
+
+	for changed := true; changed; {
+		changed = false
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch typed := node.(type) {
 			case *ast.AssignStmt:
@@ -204,8 +157,9 @@ func tempRootedNames(file *ast.File) map[string]bool {
 					return true
 				}
 				for i, left := range typed.Lhs {
-					if ident, ok := left.(*ast.Ident); ok && tempRooted(typed.Rhs[i], names) {
+					if ident, ok := left.(*ast.Ident); ok && !names[ident.Name] && tempRooted(typed.Rhs[i], names) {
 						names[ident.Name] = true
+						changed = true
 					}
 				}
 			case *ast.ValueSpec:
@@ -213,8 +167,9 @@ func tempRootedNames(file *ast.File) map[string]bool {
 					return true
 				}
 				for i, name := range typed.Names {
-					if tempRooted(typed.Values[i], names) {
+					if !names[name.Name] && tempRooted(typed.Values[i], names) {
 						names[name.Name] = true
+						changed = true
 					}
 				}
 			}
@@ -224,9 +179,6 @@ func tempRootedNames(file *ast.File) map[string]bool {
 	return names
 }
 
-// tempRooted reports whether an expression's value came from t.TempDir() —
-// directly, through one of the names collected above, or through a join or a
-// concatenation of either.
 func tempRooted(expr ast.Expr, names map[string]bool) bool {
 	rooted := false
 	ast.Inspect(expr, func(node ast.Node) bool {
@@ -247,9 +199,6 @@ func tempRooted(expr ast.Expr, names map[string]bool) bool {
 
 func containsTempDir(expr ast.Expr) bool { return tempRooted(expr, nil) }
 
-// userDataDirArgument finds the value bound to --user-data-dir in an argument
-// list, in each of the spellings a command line uses: "--user-data-dir="+dir,
-// "--user-data-dir", dir, and a formatted string carrying the flag.
 func userDataDirArgument(elements []ast.Expr) (ast.Expr, bool) {
 	const flag = "--user-data-dir"
 	for i, element := range elements {

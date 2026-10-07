@@ -1,11 +1,4 @@
-// Package sessionstate seals the session cookies a brw-created browser context
-// already holds so a later throwaway context can start signed in.
-//
-// It is a save/restore pair, deliberately not an export. Nothing here hands a
-// stored cookie value to a caller: Store.Load exists only so the restore path
-// can push the cookies back into a browser, and Meta — the only shape that
-// reaches an MCP result, an HTTP response or a log line — carries origins and
-// counts. The security argument is written down in docs/auth-model.md.
+// Package sessionstate seals the session cookies a brw-created browser context already holds so a later throwaway context can start signed in.
 package sessionstate
 
 import (
@@ -18,8 +11,7 @@ import (
 	"time"
 )
 
-// Cookie is one sealed cookie. It mirrors the fields CDP needs to put the
-// cookie back, and nothing else: a snapshot is not an audit record.
+// Cookie is one sealed cookie.
 type Cookie struct {
 	Name     string  `json:"name"`
 	Value    string  `json:"value"`
@@ -31,18 +23,14 @@ type Cookie struct {
 	SameSite string  `json:"same_site,omitempty"`
 }
 
-// Snapshot is the sealed payload. It never leaves this package except into the
-// restore path.
+// Snapshot is the sealed payload.
 type Snapshot struct {
 	Origins    []string  `json:"origins"`
 	Cookies    []Cookie  `json:"cookies"`
 	CapturedAt time.Time `json:"captured_at"`
 }
 
-// Meta is the redacted view, and the ONLY shape callers outside the restore
-// path see. It deliberately has no field that can hold a cookie name or value:
-// adding one is the change that would turn brw into the extraction tool
-// docs/auth-model.md says it is not.
+// Meta is the only view exposed outside browser restore and contains no cookie names or values.
 type Meta struct {
 	ID          string    `json:"snapshot_id"`
 	Origins     []string  `json:"origins"`
@@ -52,32 +40,23 @@ type Meta struct {
 }
 
 var (
-	// ErrNoOrigins is the refusal that makes the allowlist mandatory. There is
-	// deliberately no "everything" mode: a snapshot always names what it seals.
+	// ErrNoOrigins is the refusal that makes the allowlist mandatory.
 	ErrNoOrigins = errors.New("origins is required: a session snapshot always names the exact origins it seals, and there is no capture-everything mode")
-	// ErrNoRestoreOrigins is what keeps the restore-side filter from checking
-	// the file against itself. Defaulting to the origins recorded IN the
-	// snapshot would make the second pass a no-op, so the restoring caller
-	// always names what it is willing to have installed.
+	// ErrNoRestoreOrigins is what keeps the restore-side filter from checking the file against itself.
 	ErrNoRestoreOrigins = errors.New("origins is required on restore: the allowlist is applied again against the origins the restoring call names, and reading them out of the snapshot would check the file against itself — list the snapshot to see which origins it covers")
-	// ErrExpired is returned by Load once a snapshot outlives its TTL. The file
-	// is deleted on the way out.
+	// ErrExpired is returned by Load once a snapshot outlives its TTL.
 	ErrExpired = errors.New("session snapshot has expired and was deleted; save a new one")
-	// ErrNotFound distinguishes an unknown id from an expired one, so a caller
-	// can tell a typo from a lapsed session.
+	// ErrNotFound distinguishes an unknown id from an expired one, so a caller can tell a typo from a lapsed session.
 	ErrNotFound = errors.New("no session snapshot with that id")
 )
 
-// Allowlist is a parsed, exact set of origins. Entries are exact
-// scheme://host[:port] origins; a leading-dot or wildcard entry is refused,
-// because "allow .test" would sweep every cookie on the suffix.
+// Allowlist is a parsed, exact set of origins.
 type Allowlist struct {
 	origins []string
 	hosts   []string
 }
 
-// ParseAllowlist normalizes and validates the caller's origins. A bare host is
-// read as https, matching how brw_open treats a scheme-less URL.
+// ParseAllowlist normalizes and validates the caller's origins.
 func ParseAllowlist(raw []string) (Allowlist, error) {
 	if len(raw) == 0 {
 		return Allowlist{}, ErrNoOrigins
@@ -129,9 +108,7 @@ func parseOrigin(raw string) (origin, host string, err error) {
 	if strings.HasPrefix(host, ".") {
 		return "", "", fmt.Errorf("origin %q starts with a dot; the session-state allowlist takes exact origins, not domain suffixes", raw)
 	}
-	// A single-label host ("https://test") would domain-match every ".test"
-	// cookie in the jar, which is the suffix sweep the exact-origin rule exists
-	// to prevent. localhost and bare IPs are the legitimate single-label hosts.
+
 	if !strings.Contains(host, ".") && host != "localhost" {
 		return "", "", fmt.Errorf("origin %q is a single-label host; name a full host so the allowlist cannot match a whole suffix", raw)
 	}
@@ -142,8 +119,7 @@ func parseOrigin(raw string) (origin, host string, err error) {
 	return origin, host, nil
 }
 
-// Origins returns the normalized allowlist. Safe to emit: the caller supplied
-// these, so echoing them discloses nothing new.
+// Origins returns the normalized allowlist.
 func (a Allowlist) Origins() []string {
 	return append([]string(nil), a.origins...)
 }
@@ -151,10 +127,7 @@ func (a Allowlist) Origins() []string {
 // Empty reports an allowlist that would seal nothing.
 func (a Allowlist) Empty() bool { return len(a.hosts) == 0 }
 
-// AllowsCookieDomain applies the ordinary cookie domain-match rule: a cookie
-// counts as belonging to an allowlisted origin when its domain is that host, or
-// a leading-dot parent of it. Session cookies are routinely set on the
-// registrable parent, so exact-host-only matching would seal nothing useful.
+// AllowsCookieDomain applies the ordinary cookie domain-match rule: a cookie counts as belonging to an allowlisted origin when its domain is that host, or a leading-dot parent of it.
 func (a Allowlist) AllowsCookieDomain(domain string) bool {
 	domain = strings.ToLower(strings.TrimSpace(domain))
 	if domain == "" {
@@ -164,12 +137,7 @@ func (a Allowlist) AllowsCookieDomain(domain string) bool {
 	if bare == "" {
 		return false
 	}
-	// A parent-domain cookie needs at least two labels of its own. Without it
-	// a cookie scoped to a bare suffix (".test") would match every allowlisted
-	// host under that suffix, which is the sweep the exact-origin rule exists
-	// to prevent. This is not a public-suffix list: ".co.uk" would still pass
-	// the label count, and the backstop there is that Chrome refuses to store a
-	// cookie on a public suffix in the first place.
+
 	parentUsable := strings.HasPrefix(domain, ".") && strings.Contains(bare, ".")
 	for _, host := range a.hosts {
 		if bare == host {
@@ -183,13 +151,6 @@ func (a Allowlist) AllowsCookieDomain(domain string) bool {
 }
 
 // Restrict is the single filter both the capture and the restore path run.
-// Running it again on restore is what makes the allowlist non-bypassable: a
-// snapshot file that somehow carries an off-allowlist cookie still cannot put
-// that cookie into a browser, because the restoring caller's own allowlist is
-// applied to the decrypted contents.
-//
-// redact is an extra narrowing on cookie NAMES (glob syntax, path.Match), never
-// a widening.
 func Restrict(cookies []Cookie, allow Allowlist, redact []string) ([]Cookie, int, error) {
 	if allow.Empty() {
 		return nil, 0, ErrNoOrigins

@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// TestLauncherCloseQuitsGracefullyBeforeKill verifies Close lets a
-// SIGTERM-responsive process exit on its own (flushing its profile) well within
-// the grace window, rather than hard-killing it — the corruption-avoiding path.
 func TestLauncherCloseQuitsGracefullyBeforeKill(t *testing.T) {
 	cmd := exec.Command("sleep", "30")
 	if err := cmd.Start(); err != nil {
@@ -29,12 +26,8 @@ func TestLauncherCloseQuitsGracefullyBeforeKill(t *testing.T) {
 	}
 }
 
-// TestLauncherCloseKillsAfterGrace verifies Close escalates to SIGKILL when the
-// process ignores SIGTERM past the grace window (so shutdown can never hang),
-// but only AFTER giving it the grace period.
 func TestLauncherCloseKillsAfterGrace(t *testing.T) {
-	// A process that hard-ignores SIGTERM, so only SIGKILL can end it. perl's
-	// $SIG{TERM}="IGNORE" is reliable across macOS/Linux (shell `trap` is not).
+
 	perl, err := exec.LookPath("perl")
 	if err != nil {
 		t.Skipf("perl not available to model a SIGTERM-ignoring process: %v", err)
@@ -43,9 +36,7 @@ func TestLauncherCloseKillsAfterGrace(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	// Let perl install the SIG_IGN handler before we signal it; otherwise a TERM
-	// landing during interpreter startup hits the default (terminate) disposition.
-	// Chrome is long-running, so this race never exists in practice.
+
 	time.Sleep(500 * time.Millisecond)
 	grace := 300 * time.Millisecond
 	l := &Launcher{cmd: cmd, grace: grace}
@@ -82,10 +73,6 @@ func TestEnsureSafeUserDataDirAllowsCleanDir(t *testing.T) {
 	}
 }
 
-// TestEffectiveUserDataDirHonorsArgsOverride proves the profile-corruption guard
-// validates the dir Chrome will ACTUALLY use, not the pre-args one: a
-// --user-data-dir smuggled through passthrough args (which Chrome, keeping the
-// last occurrence, would honor) must be the value checked.
 func TestEffectiveUserDataDirHonorsArgsOverride(t *testing.T) {
 	if got := effectiveUserDataDir("/safe/dir", nil); got != "/safe/dir" {
 		t.Fatalf("no args: got %q, want /safe/dir", got)
@@ -101,10 +88,6 @@ func TestEffectiveUserDataDirHonorsArgsOverride(t *testing.T) {
 	}
 }
 
-// TestKnownBrowserProfileRootIsCaseInsensitive proves a case-variant of a real
-// profile root is still recognised — macOS (APFS) and Windows are
-// case-insensitive, so an exact-string compare would let a case-variant dodge
-// the guard while opening the same profile.
 func TestKnownBrowserProfileRootIsCaseInsensitive(t *testing.T) {
 	roots := knownBrowserProfileRoots()
 	if len(roots) == 0 {
@@ -118,8 +101,6 @@ func TestKnownBrowserProfileRootIsCaseInsensitive(t *testing.T) {
 	}
 }
 
-// TestPathIdentitiesResolvesSymlinks proves the symlink-resolution that stops a
-// symlink-to-the-real-profile from slipping past the exact-string comparison.
 func TestPathIdentitiesResolvesSymlinks(t *testing.T) {
 	real := t.TempDir()
 	link := filepath.Join(t.TempDir(), "decoy")
@@ -141,8 +122,7 @@ func TestPathIdentitiesResolvesSymlinks(t *testing.T) {
 
 func TestEnsureSafeUserDataDirRefusesLiveSingletonLock(t *testing.T) {
 	dir := t.TempDir()
-	// A SingletonLock symlinking to OUR live pid models a running Chrome holding
-	// the profile.
+
 	target := fmt.Sprintf("somehost-%d", os.Getpid())
 	if err := os.Symlink(target, filepath.Join(dir, "SingletonLock")); err != nil {
 		t.Fatalf("symlink: %v", err)
@@ -151,8 +131,7 @@ func TestEnsureSafeUserDataDirRefusesLiveSingletonLock(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected refusal when a live Chrome owns the profile (SingletonLock -> live pid)")
 	}
-	// The live-lock guard must hold even with the real-profile override, since it
-	// is about a *running* process, not which profile it is.
+
 	if err := EnsureSafeUserDataDir(dir, true); err == nil {
 		t.Fatal("live SingletonLock must be refused even with allowRealProfile=true")
 	}
@@ -160,8 +139,7 @@ func TestEnsureSafeUserDataDirRefusesLiveSingletonLock(t *testing.T) {
 
 func TestEnsureSafeUserDataDirAllowsStaleSingletonLock(t *testing.T) {
 	dir := t.TempDir()
-	// Spawn and reap a process so its pid is now dead; a SingletonLock pointing at
-	// it is stale and must NOT block launch (Chrome clears stale locks itself).
+
 	c := exec.Command("true")
 	if err := c.Run(); err != nil {
 		c = exec.Command("/usr/bin/true")

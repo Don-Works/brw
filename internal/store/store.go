@@ -15,13 +15,9 @@ type ElementRef struct {
 	Tag   string
 	Type  string
 	Key   string
-	// Sensitive marks a credential-bearing field (password, one-time code,
-	// payment details), as classified in-page where the autocomplete hints are
-	// visible. Carried here so anything recording what was typed can withhold
-	// the value instead of storing it.
+	// Sensitive marks a credential-bearing field (password, one-time code, payment details), as classified in-page where the autocomplete hints are visible.
 	Sensitive bool
-	// NameIsVisibleText reports that the element's own text contains its
-	// accessible name, which is what makes an assert_text guard on it possible.
+	// NameIsVisibleText reports that the element's own text contains its accessible name, which is what makes an assert_text guard on it possible.
 	NameIsVisibleText bool
 	UpdatedAt         time.Time
 }
@@ -66,11 +62,7 @@ func (s *RefStore) Observe(tabID string, elements []snapshot.Element) {
 func (s *RefStore) Get(tabID, ref string) (ElementRef, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	tab := s.byTab[tabID]
-	if tab == nil {
-		return ElementRef{}, false
-	}
-	el, ok := tab[ref]
+	el, ok := s.byTab[tabID][ref]
 	return el, ok
 }
 

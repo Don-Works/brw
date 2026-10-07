@@ -1,13 +1,4 @@
-// Package bidi is a WebDriver BiDi client used to establish, by experiment,
-// which of brw's primitives a BiDi-only browser can reproduce. It is a
-// prototype: nothing in brw's tool surface routes through it, and no capability
-// is advertised on its behalf. docs/bidi-prototype.md records the measurements
-// this package produced and the decision taken from them.
-//
-// It is deliberately not a browser.Controller. A Controller has to answer for
-// settle, actionability, downloads, dialogs and artifacts at once, and the
-// point of the prototype is to find out whether those are reproducible one at a
-// time before any of them is promised.
+// Package bidi is a WebDriver BiDi client used to establish, by experiment, which of brw's primitives a BiDi-only browser can reproduce.
 package bidi
 
 import (
@@ -15,21 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 )
 
-// maxMessageBytes bounds one BiDi frame. A screenshot or a printed PDF arrives
-// base64 in the command result, so the limit has to clear a full-page capture;
-// the library's 32 KiB default truncates one into a read error.
 const maxMessageBytes = 64 << 20
 
-// CommandError is a BiDi error response. Code is the spec's error code
-// ("unknown command", "invalid argument", "no such frame"), which is the part a
-// caller can branch on: an unsupported command and a malformed argument are the
-// same HTTP-less failure otherwise.
+// CommandError is a BiDi error response.
 type CommandError struct {
 	Code    string
 	Message string
@@ -42,19 +28,13 @@ func (e *CommandError) Error() string {
 	return e.Code + ": " + e.Message
 }
 
-// IsUnknownCommand reports whether err is the browser saying it does not
-// implement the command at all, as opposed to rejecting the arguments. The
-// distinction is the whole answer to "does this backend have the primitive".
+// IsUnknownCommand reports whether err is the browser saying it does not implement the command at all, as opposed to rejecting the arguments.
 func IsUnknownCommand(err error) bool {
 	var cmdErr *CommandError
-	if !errors.As(err, &cmdErr) {
-		return false
-	}
-	return cmdErr.Code == "unknown command"
+	return errors.As(err, &cmdErr) && cmdErr.Code == "unknown command"
 }
 
-// Event is one BiDi event, kept as raw params so a caller decodes only the
-// fields it asserts on.
+// Event is one BiDi event, kept as raw params so a caller decodes only the fields it asserts on.
 type Event struct {
 	Method   string
 	Params   json.RawMessage
@@ -66,15 +46,9 @@ type pending struct {
 	fail   chan error
 }
 
-// maxRecordedEvents bounds the event ring. A session that subscribes to
-// network and log events produces thousands a minute, and both the memory and
-// Await's scan are linear in what is kept. The oldest are dropped; Await
-// carries a sequence rather than an index so a drop cannot make it skip one.
 const maxRecordedEvents = 4096
 
-// Conn is a live BiDi session over a WebSocket. It multiplexes command
-// responses by id and records recent events in a bounded ring, so a caller can
-// subscribe first and assert afterwards without racing the browser.
+// Conn is a live BiDi session over a WebSocket.
 type Conn struct {
 	ws *websocket.Conn
 
@@ -84,18 +58,14 @@ type Conn struct {
 	nextID  uint64
 	waiting map[uint64]pending
 	events  []Event
-	// firstSeq is the sequence number of events[0]. Sequence numbers are
-	// assigned in arrival order and never reused, so they stay meaningful after
-	// the ring drops from the front.
+
 	firstSeq uint64
-	// nextSeq is the sequence the next arriving event will take.
+
 	nextSeq uint64
-	// closed carries the reader goroutine's exit reason, so a command still in
-	// flight when the socket drops fails with that reason instead of hanging.
+
 	readErr  error
 	closedCh chan struct{}
-	// eventCh is closed and replaced on every event so waiters wake without a
-	// poll loop.
+
 	eventCh chan struct{}
 }
 
@@ -116,8 +86,7 @@ func Dial(ctx context.Context, url string) (*Conn, error) {
 	return c, nil
 }
 
-// Close ends the session's socket. Commands blocked on a response fail with the
-// close reason rather than waiting out their context.
+// Close ends the session's socket.
 func (c *Conn) Close() error {
 	return c.ws.Close(websocket.StatusNormalClosure, "bidi prototype done")
 }
@@ -142,14 +111,13 @@ func (c *Conn) read() {
 }
 
 type frame struct {
-	Type       string          `json:"type"`
-	ID         *uint64         `json:"id"`
-	Result     json.RawMessage `json:"result"`
-	Method     string          `json:"method"`
-	Params     json.RawMessage `json:"params"`
-	Error      string          `json:"error"`
-	Message    string          `json:"message"`
-	Stacktrace string          `json:"stacktrace"`
+	Type    string          `json:"type"`
+	ID      *uint64         `json:"id"`
+	Result  json.RawMessage `json:"result"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params"`
+	Error   string          `json:"error"`
+	Message string          `json:"message"`
 }
 
 func (c *Conn) dispatch(data []byte) {
@@ -164,7 +132,7 @@ func (c *Conn) dispatch(data []byte) {
 		c.nextSeq++
 		if len(c.events) > maxRecordedEvents {
 			drop := len(c.events) - maxRecordedEvents
-			c.events = append(c.events[:0], c.events[drop:]...)
+			c.events = slices.Delete(c.events, 0, drop)
 			c.firstSeq += uint64(drop)
 		}
 		close(c.eventCh)
@@ -189,10 +157,7 @@ func (c *Conn) dispatch(data []byte) {
 	}
 }
 
-// Command sends one BiDi command and decodes its result into out, which may be
-// nil when the caller only needs the success. A BiDi error response becomes a
-// *CommandError rather than a generic error, so "unknown command" stays
-// distinguishable from "bad arguments".
+// Command sends one BiDi command and decodes its result into out, which may be nil when the caller only needs the success.
 func (c *Conn) Command(ctx context.Context, method string, params any, out any) error {
 	if params == nil {
 		params = map[string]any{}
@@ -214,9 +179,7 @@ func (c *Conn) Command(ctx context.Context, method string, params any, out any) 
 		c.forget(id)
 		return err
 	}
-	// One writer at a time: the WebSocket library rejects concurrent writes, and
-	// a prototype that subscribes while a navigation command is in flight does
-	// exactly that.
+
 	c.writeMu.Lock()
 	err = c.ws.Write(ctx, websocket.MessageText, payload)
 	c.writeMu.Unlock()
@@ -248,21 +211,12 @@ func (c *Conn) forget(id uint64) {
 	c.mu.Unlock()
 }
 
-// Subscribe asks for the named event methods. BiDi refuses an event name it
-// does not implement, so a failed subscribe is itself the capability answer.
+// Subscribe asks for the named event methods.
 func (c *Conn) Subscribe(ctx context.Context, events ...string) error {
 	return c.Command(ctx, "session.subscribe", map[string]any{"events": events}, nil)
 }
 
-// Await returns the first recorded event for method that satisfies match,
-// waiting for one to arrive if none has yet. Events still in the ring when the
-// call starts count: a settle machinery built on this has to be able to
-// subscribe, act, and then ask, without losing an event that landed in between.
-//
-// The cursor is a sequence number, not a slice index, so an event dropped from
-// the ring while this call waits cannot shift the position out from under it.
-//
-// A nil match accepts any event with that method.
+// Await returns the first recorded event for method that satisfies match, waiting for one to arrive if none has yet.
 func (c *Conn) Await(ctx context.Context, method string, match func(json.RawMessage) bool) (Event, error) {
 	var cursor uint64
 	for {

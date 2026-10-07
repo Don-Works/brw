@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Deliberately fabricated, low-entropy fixture material. These are not
-// credentials; they are strings a test can grep the ciphertext for.
 const (
 	fixtureCookieName  = "fixture-session-cookie-one"
 	fixtureCookieValue = "fixture-session-value-one"
@@ -20,9 +18,7 @@ const (
 
 func testStore(t *testing.T, now func() time.Time) *Store {
 	t.Helper()
-	// A nested path, not t.TempDir() itself: the store creates what it owns at
-	// 0700 and refuses a pre-existing permissive directory, and t.TempDir hands
-	// back a 0755 one.
+
 	store, err := NewStore(Config{Root: filepath.Join(t.TempDir(), "state"), Key: []byte(fixtureKey), Now: now})
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -95,8 +91,8 @@ func TestAllowlistCookieDomainMatching(t *testing.T) {
 	}{
 		{"shop.example.test", true},
 		{".shop.example.test", true},
-		{".example.test", true}, // a parent-domain cookie applies to the host
-		{"example.test", false}, // an exact sibling host is not the allowlisted one
+		{".example.test", true},
+		{"example.test", false},
 		{"other.example.test", false},
 		{"evil.test", false},
 		{".test", false},
@@ -212,8 +208,6 @@ func TestStoreRefusesAGroupReadableRoot(t *testing.T) {
 	}
 }
 
-// The whole security argument rests on the snapshot being unreadable beside the
-// ciphertext and unreachable by another local account.
 func TestSealedSnapshotIsCiphertextAndOwnerOnly(t *testing.T) {
 	store := testStore(t, nil)
 	meta, err := store.Save(fixtureSnapshot(), SaveOptions{})
@@ -273,8 +267,7 @@ func TestTamperedOrRelabelledSnapshotFailsAuthentication(t *testing.T) {
 	})
 
 	t.Run("a snapshot renamed onto another id does not decrypt", func(t *testing.T) {
-		// The id is the AEAD's additional data, so copying one snapshot's bytes
-		// over another id must fail rather than restore the wrong session.
+
 		other, err := store.Save(fixtureSnapshot(), SaveOptions{})
 		if err != nil {
 			t.Fatalf("Save: %v", err)
@@ -348,12 +341,17 @@ func TestPerSaveTTLOnlyShortens(t *testing.T) {
 
 func TestLoadKeyRefusesAKeyInsideTheStateRoot(t *testing.T) {
 	root := t.TempDir()
-	inside := filepath.Join(root, "key")
-	if err := os.WriteFile(inside, []byte(fixtureKey), 0o600); err != nil {
-		t.Fatalf("write key: %v", err)
-	}
-	if _, err := LoadKey(inside, root); err == nil || !strings.Contains(err.Error(), "inside the session state root") {
-		t.Fatalf("LoadKey = %v, want a refusal for a key beside the ciphertext", err)
+	for _, dir := range []string{root, filepath.Join(root, "..nested")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		inside := filepath.Join(dir, "key")
+		if err := os.WriteFile(inside, []byte(fixtureKey), 0o600); err != nil {
+			t.Fatalf("write key: %v", err)
+		}
+		if _, err := LoadKey(inside, root); err == nil || !strings.Contains(err.Error(), "inside the session state root") {
+			t.Fatalf("LoadKey(%q) = %v, want a refusal for a key beside the ciphertext", inside, err)
+		}
 	}
 
 	outside := filepath.Join(t.TempDir(), "key")
@@ -374,5 +372,37 @@ func TestLoadKeyRefusesAKeyInsideTheStateRoot(t *testing.T) {
 	}
 	if _, err := LoadKey(loose, root); err == nil || !strings.Contains(err.Error(), "beyond its owner") {
 		t.Fatalf("LoadKey on a 0644 key = %v, want a permissions refusal", err)
+	}
+}
+
+func TestStoreEntryPointsReclaimExpiredSnapshots(t *testing.T) {
+	for _, action := range []string{"list", "save", "sweep"} {
+		t.Run(action, func(t *testing.T) {
+			now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+			store := testStore(t, func() time.Time { return now })
+			meta, err := store.Save(fixtureSnapshot(), SaveOptions{TTL: time.Minute})
+			if err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(time.Minute)
+			switch action {
+			case "list":
+				listed, err := store.List()
+				if err != nil || len(listed) != 0 {
+					t.Fatalf("List = %v, %v, want empty", listed, err)
+				}
+			case "save":
+				if _, err := store.Save(fixtureSnapshot(), SaveOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			case "sweep":
+				if err := store.Sweep(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := os.Stat(store.pathFor(meta.ID)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("expired snapshot still exists: %v", err)
+			}
+		})
 	}
 }

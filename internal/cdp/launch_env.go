@@ -10,27 +10,15 @@ import (
 	"strings"
 )
 
-// NetworkEnvironment is the part of a browser's network setup that can only be
-// chosen when Chrome starts. Unlike the per-tab overrides in
-// internal/browser/manager_environment.go, none of these can be changed over CDP
-// on a running browser: the proxy, the certificate-error policy and the trusted
-// keys are read once during network-service startup.
+// NetworkEnvironment is the part of a browser's network setup that can only be chosen when Chrome starts.
 type NetworkEnvironment struct {
-	// ProxyServer is Chrome's --proxy-server value: "host:port",
-	// "scheme://host:port", or a per-scheme list such as
-	// "https=proxy:8443;http=proxy:8080".
+	// ProxyServer is Chrome's --proxy-server value: "host:port", "scheme://host:port", or a per-scheme list such as "https=proxy:8443;http=proxy:8080".
 	ProxyServer string
-	// ProxyBypassList is Chrome's --proxy-bypass-list value: semicolon-separated
-	// hosts and patterns that go direct, for example "<local>;*.internal".
+	// ProxyBypassList is Chrome's --proxy-bypass-list value: semicolon-separated hosts and patterns that go direct, for example "<local>;*.internal".
 	ProxyBypassList string
 	// IgnoreHTTPSErrors turns off certificate validation for the WHOLE browser.
-	// It is opt-in per launch and reported in brw_identity, because a caller who
-	// does not know it is on cannot tell a valid site from a
-	// man-in-the-middled one.
 	IgnoreHTTPSErrors bool
-	// TrustedSPKI are base64 SHA-256 hashes of SubjectPublicKeyInfo blocks whose
-	// certificate errors Chrome should ignore. See SPKIFingerprintsFromPEM for
-	// what this does and does not amount to.
+	// TrustedSPKI are base64 SHA-256 hashes of SubjectPublicKeyInfo blocks whose certificate errors Chrome should ignore.
 	TrustedSPKI []string
 }
 
@@ -39,10 +27,7 @@ func (n NetworkEnvironment) Empty() bool {
 	return n.ProxyServer == "" && n.ProxyBypassList == "" && !n.IgnoreHTTPSErrors && len(n.TrustedSPKI) == 0
 }
 
-// Validate rejects values that would change Chrome's command line rather than
-// one switch's value. Chrome's flag parser splits on whitespace, so a proxy
-// value carrying a space is a way to smuggle a second switch past every guard in
-// this package, including the real-profile check.
+// Validate rejects values that would change Chrome's command line rather than one switch's value.
 func (n NetworkEnvironment) Validate() error {
 	for name, value := range map[string]string{
 		"proxy server":      n.ProxyServer,
@@ -72,8 +57,6 @@ func (n NetworkEnvironment) Validate() error {
 	return nil
 }
 
-// networkArgs renders the switches for a launch. Order is stable so a test and a
-// log line read the same way twice.
 func networkArgs(n NetworkEnvironment) []string {
 	var args []string
 	if n.ProxyServer != "" {
@@ -91,24 +74,7 @@ func networkArgs(n NetworkEnvironment) []string {
 	return args
 }
 
-// SPKIFingerprintsFromPEM turns a PEM bundle into the base64 SHA-256
-// SubjectPublicKeyInfo hashes Chrome's --ignore-certificate-errors-spki-list
-// switch takes, so a private CA can be trusted for one launch without a flag
-// that trusts everything.
-//
-// What this buys: Chrome stops reporting certificate errors for chains
-// containing one of these public keys. A site signed by the named CA loads
-// without --ignore-certificate-errors, so every OTHER certificate error in the
-// session is still a real error the caller will see.
-//
-// What it is not: the CA is not installed anywhere. Chrome does not gain trust
-// in it, it is told to ignore the errors that not trusting it produces — so the
-// connection is an error Chrome was told to overlook, not a validated one, and
-// nothing but this browser instance is affected. Installing a root into the
-// profile's NSS database or the OS keychain is the only way to make the CA
-// genuinely trusted, and brw deliberately does not write to either: a tool that
-// silently adds roots to a user's trust store is a tool that can silently
-// intercept their traffic long after it exits.
+// SPKIFingerprintsFromPEM turns a PEM bundle into the base64 SHA-256 SubjectPublicKeyInfo hashes Chrome's --ignore-certificate-errors-spki-list switch takes, so a private CA can be trusted for one launch without a flag that trusts everything.
 func SPKIFingerprintsFromPEM(bundle []byte) ([]string, error) {
 	var out []string
 	rest := bundle

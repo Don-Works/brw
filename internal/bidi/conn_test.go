@@ -12,13 +12,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-// fakeBiDi is a BiDi endpoint whose answers the test dictates. It exists so the
-// protocol rules below are checked on a machine with no browser installed: the
-// live Firefox tests skip there, and a settle machinery that loses an event or
-// mismatches a response would then go unmeasured everywhere.
 type fakeBiDi struct {
-	// handle answers one command. Returning a nil reply sends nothing, which is
-	// how the "the socket dropped mid-command" case is staged.
 	handle func(conn *websocket.Conn, id uint64, method string, params json.RawMessage)
 }
 
@@ -62,9 +56,6 @@ func send(t *testing.T, conn *websocket.Conn, payload map[string]any) {
 	}
 }
 
-// A BiDi client sends several commands before any answer comes back, so a reply
-// has to be matched by id. Answering in reverse order is what tells a matched
-// response apart from one that merely happened to arrive next.
 func TestCommandsAreMatchedByID(t *testing.T) {
 	var held []uint64
 	var conns []*websocket.Conn
@@ -76,8 +67,7 @@ func TestCommandsAreMatchedByID(t *testing.T) {
 		if len(held) < 3 {
 			return
 		}
-		// Answer last-first, each with its own id so a correct client cannot
-		// mistake one for another.
+
 		for i := len(held) - 1; i >= 0; i-- {
 			send(t, conns[i], map[string]any{
 				"type":   "success",
@@ -131,10 +121,6 @@ func TestCommandsAreMatchedByID(t *testing.T) {
 	}
 }
 
-// The whole capability question is answered by error codes, so an unimplemented
-// command must be distinguishable from a rejected argument. A client that
-// collapsed both into "error" would report every missing primitive as a bug in
-// the caller.
 func TestErrorCodesAreDistinguishable(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -175,10 +161,6 @@ func TestErrorCodesAreDistinguishable(t *testing.T) {
 	}
 }
 
-// An event that arrives between the action and the wait must still satisfy the
-// wait. brw resolves a wait from the event stream rather than by polling, so a
-// client that only delivered events to a waiter already blocked would drop
-// exactly the load event a fast navigation produces.
 func TestAwaitSeesEventsThatArrivedBeforeTheCall(t *testing.T) {
 	fake := &fakeBiDi{handle: func(conn *websocket.Conn, id uint64, method string, params json.RawMessage) {
 		send(t, conn, map[string]any{"type": "success", "id": id, "result": map[string]any{}})
@@ -199,7 +181,7 @@ func TestAwaitSeesEventsThatArrivedBeforeTheCall(t *testing.T) {
 	if err := c.Command(ctx, "browsingContext.navigate", map[string]any{}, nil); err != nil {
 		t.Fatalf("navigate: %v", err)
 	}
-	// Give the event time to land before anything waits for it.
+
 	deadline := time.Now().Add(5 * time.Second)
 	for len(c.Events()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
@@ -218,8 +200,6 @@ func TestAwaitSeesEventsThatArrivedBeforeTheCall(t *testing.T) {
 		t.Fatalf("awaited event params = %s", got.Params)
 	}
 
-	// A method nobody sent must still time out, or Await would be answering
-	// every question with the first event it holds.
 	missCtx, missCancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer missCancel()
 	if _, err := c.Await(missCtx, "browsingContext.userPromptOpened", nil); err == nil {
@@ -227,9 +207,6 @@ func TestAwaitSeesEventsThatArrivedBeforeTheCall(t *testing.T) {
 	}
 }
 
-// A browser that dies mid-command has to fail the command. Waiting out the
-// context instead turns a crashed browser into a timeout, which reads as a slow
-// page and gets retried.
 func TestCommandFailsWhenTheSocketDrops(t *testing.T) {
 	fake := &fakeBiDi{handle: func(conn *websocket.Conn, id uint64, method string, params json.RawMessage) {
 		_ = conn.Close(websocket.StatusGoingAway, "browser exited")
