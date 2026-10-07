@@ -265,8 +265,9 @@ func featureState(t *testing.T, h *featureHarness) {
 	h.Check(t, "brw_state", restored.RestoredCookies >= 2, "sealed cookies did not restore: %+v", restored)
 	cookies := featureDecode[browser.CookieResult](t, h.OK(t, "brw_cookies", map[string]any{"action": "list", "tab_id": incognitoTab, "url": h.Fixture.URL() + "/?phase=after"}))
 	found := map[string]bool{}
+	expected := map[string]string{"testbed_public": "synthetic", "testbed_private": "synthetic-http-only"}
 	for _, cookie := range cookies.Cookies {
-		found[cookie.Name] = cookie.Value == "synthetic" || cookie.Value == "synthetic-http-only"
+		found[cookie.Name] = cookie.Value == expected[cookie.Name] && cookie.HTTPOnly == (cookie.Name == "testbed_private")
 	}
 	h.Check(t, "brw_state", found["testbed_public"] && found["testbed_private"], "sealed synthetic cookies absent from restored isolated context")
 	h.OK(t, "brw_state", map[string]any{"action": "delete", "snapshot_id": saved.Snapshot.ID})
