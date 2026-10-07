@@ -1,18 +1,15 @@
 ---
 name: brw
-description: Use when driving a browser or automating web pages — opening URLs, reading page content, filling forms, clicking, logging into signed-in sites, taking screenshots, downloading files, checking a site in a real signed-in Chrome profile. Covers brw's MCP tools (brw_open, brw_snapshot, brw_batch, brw_cookies), semantic refs instead of pixel coordinates, tab leases, incognito isolation, and reusable recipes. Excludes non-browser tasks.
+description: Drive browser pages with brw — navigate, read, fill, click, capture, download and inspect signed-in Chrome. Use semantic refs, tab leases and profile capabilities. Applies to browser operations; excludes general repository work.
 metadata:
   tags: [browser, chrome, chromium, web-automation, signed-in-sites, forms, screenshots, cdp, incognito, browser-automation, reader, context-efficiency]
 ---
 
 # brw — driving a real browser over MCP
 
-Written for a client that calls brw's MCP tools directly: your tool list contains bare
-`brw_open`, `brw_snapshot`, `brw_identity`, and you call them one tool call at a time.
-If instead brw reaches you through a gateway that exposes one *namespace* per browser
-profile and a code-execution tool (`brw_chromium.brw_open(...)` inside
-`execute_code`), read [references/execute-code-gateway.md](references/execute-code-gateway.md)
-— the tool names are the same, the calling convention is not.
+Call bare tools such as `brw_open` directly. For a gateway exposing browser
+namespaces inside `execute_code`, read the
+[gateway reference](references/execute-code-gateway.md) for its calling convention.
 
 A brw profile is usually a browser a human is signed into, not a sandbox; a
 brw-owned profile is the exception and `brw_identity`'s `user_data_dir` is how you
@@ -64,24 +61,17 @@ result verification as the equivalent UI action.
 open → snapshot for refs → act by ref → wait/assert → read → close.
 
 ```
-{"name":"brw_open","arguments":{"url":"https://app.example.test"}}
-→ {"tab":{"id":"235935873","url":"https://app.example.test/","title":"…"},"ready":true}
-
-{"name":"brw_snapshot","arguments":{"tab_id":"235935873","format":"compact"}}
-→ e1 label "Email" · e2 textbox "Email" type=email · e3 label "Plan"
-  e4 combobox "Plan" =free · e5 button "Continue" type=submit
-
-{"name":"brw_batch","arguments":{"steps":[
-   {"action":"focus_tab","id":"235935873"},
-   {"action":"fill","ref":"e2","text":"a@example.com"},
-   {"action":"assert_value","ref":"e2","value":"a@example.com"},
-   {"action":"select","ref":"e4","value":"pro"},
-   {"action":"assert_value","ref":"e4","value":"pro"},
-   {"action":"click","ref":"e5"},
-   {"action":"wait","condition":"text:Signed in as","timeout_ms":5000}]}}
-
-{"name":"brw_read","arguments":{"tab_id":"235935873","include":["main"],"max_chars":2000}}
-{"name":"brw_close_tab","arguments":{"tab_id":"235935873"}}
+brw_open({url:"https://app.example.test"}) → retain tab.id as a string
+brw_snapshot({tab_id,format:"compact"}) → observe the actual input/button refs
+brw_batch({steps:[
+  {action:"focus_tab",id:tab_id},
+  {action:"fill",ref:input_ref,text:"fixture note"},
+  {action:"assert_value",ref:input_ref,value:"fixture note"},
+  {action:"click",ref:save_ref},
+  {action:"wait",condition:"text:Draft saved",timeout_ms:5000}
+]})
+brw_read({tab_id,include:["main"],max_chars:2000}) → verify the saved state
+brw_close_tab({tab_id})
 ```
 
 Failed navigation can still create a tab: inspect the error's tab ID and
@@ -265,7 +255,8 @@ Authoring, promotion, validation and drift repair:
 bad inputs are not recipe drift — fix the cause instead of teaching the recipe to
 tolerate it.
 
-- `brw_open`/`brw_navigate_to` refuse a `javascript:` or `vbscript:` URL. Those do not navigate — they run script in the page that is already open, and Chrome then reports the navigation as failed, so the call would lie about what happened. Use `brw_evaluate` to run JavaScript.
+- `brw_open`/`brw_navigate_to` refuse `javascript:` and `vbscript:` URLs.
+  Use `brw_evaluate` for authorized JavaScript execution.
 
 ## Boundaries
 
