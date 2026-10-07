@@ -312,6 +312,7 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request) {
 		Note              string `json:"note"`
 		SensitiveSupplied bool   `json:"sensitive_supplied"`
 		Target            string `json:"target"`
+		FrameVersion      uint64 `json:"frame_version"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -327,9 +328,16 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	form := &s.m.state.FormState
+	if (req.FrameVersion > 0 || req.Kind == "frame-click" || req.Kind == "input-child") && req.FrameVersion != s.m.state.FrameVersion {
+		s.m.mu.Unlock()
+		http.Error(w, "stale frame", http.StatusConflict)
+		return
+	}
 	switch req.Kind {
 	case "input-note":
 		form.Note = req.Note
+	case "input-child":
+		form.ChildNote = req.Note
 	case "input-password":
 		form.PasswordSupplied = req.SensitiveSupplied
 	case "input-card":
@@ -341,6 +349,21 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request) {
 		form.PaymentSubmitted = true
 	case "delete-account":
 		form.AccountDeleted = true
+	case "webmcp-mutation":
+		form.AccountDeleted = true
+	case "focus":
+		if !slices.Contains([]string{"Fixture note", "Fixture account password", "Fixture card number", "Fixture rich editor", "Fixture custom choice", "Child fixture note", "Hover fixture target"}, req.Target) {
+			s.m.mu.Unlock()
+			http.Error(w, "unknown focus target", http.StatusBadRequest)
+			return
+		}
+		s.m.state.FocusName = req.Target
+	case "hover", "hover-exit":
+		if req.Target != "Hover fixture target" {
+			s.m.mu.Unlock()
+			http.Error(w, "unknown hover target", http.StatusBadRequest)
+			return
+		}
 	case "visual-target":
 		valid := slices.ContainsFunc(s.m.state.VisualTargets, func(v VisualTarget) bool { return v.ID == req.Target })
 		if !valid {

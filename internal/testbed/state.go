@@ -59,6 +59,7 @@ type Reading struct {
 // FormState records effects without retaining sensitive input values.
 type FormState struct {
 	Note              string `json:"note"`
+	ChildNote         string `json:"child_note"`
 	DraftSaved        bool   `json:"draft_saved"`
 	PaymentSubmitted  bool   `json:"payment_submitted"`
 	AccountDeleted    bool   `json:"account_deleted"`

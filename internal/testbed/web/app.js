@@ -39,11 +39,12 @@ function renderArticle() {
   text("p", facts.visual_instruction + ". Keep the printed label and geometry together when resolving an ambiguous target.");
 }
 
-function action(kind, extra = {}, epoch = app.state.document_epoch) {
-  return request("/api/action", { run_id: app.state.run_id, document_epoch: epoch, kind, ...extra }).then(state => {
+function action(kind, extra = {}, epoch = app.state.document_epoch, runID = app.state.run_id) {
+  return request("/api/action", { run_id: runID, document_epoch: epoch, kind, ...extra }).then(state => {
     app.state.form_state = state.form_state;
     $("form-result").textContent = `Recorded ${kind}; sensitive values remain redacted`;
     $("form-result").dataset.state = kind;
+    $("interaction-result").textContent = `Hover ${state.action_counts.hover || 0} · focus ${state.action_counts.focus || 0} · ${state.focus_name}`;
     return state;
   });
 }
@@ -57,7 +58,8 @@ function renderView(view, kind) {
     const button = document.createElement("button");
     button.textContent = "Stable action"; button.dataset.testid = "stable-action"; button.dataset.epoch = view.document_epoch;
     const epoch = view.document_epoch;
-    button.onclick = guarded(() => action("stable-action", {}, epoch));
+    const runID = app.state.run_id;
+    button.onclick = guarded(() => action("stable-action", {}, epoch, runID));
     $("action-slot").replaceChildren(button);
   }
   if (kind === "initial" || kind === "virtualize" || kind === "hydrate") {
@@ -143,7 +145,9 @@ function initialize(state) {
   app.state = state; app.applied = state.cursor; app.sseConnections = 0; app.wsConnections = 0;
   $("seed").value = state.seed; $("chaos").value = state.chaos; $("budget").value = state.max_events;
   $("note").value = state.form_state.note; $("password").value = ""; $("card").value = ""; $("error").textContent = "";
-  renderView(state, "initial"); drawBoard(); connectStreams(); acknowledge();
+  $("form-result").textContent = "No synthetic action submitted"; $("form-result").dataset.state = "";
+  $("interaction-result").textContent = "Hover 0 · focus 0"; $("visual-result").textContent = "No visual target selected";
+  renderView(state, "initial"); drawBoard(); connectStreams(); acknowledge(); registerPageTools();
 }
 
 async function step(kind = "") {
@@ -167,6 +171,11 @@ $("note").oninput = guarded(() => action("input-note", { note: $("note").value }
 $("password").oninput = guarded(() => action("input-password", { sensitive_supplied: $("password").value.length > 0 }));
 $("card").oninput = guarded(() => action("input-card", { sensitive_supplied: $("card").value.length > 0 }));
 $("editor").oninput = guarded(() => action("rich-editor"));
+for (const [id, name] of [["note","Fixture note"],["password","Fixture account password"],["card","Fixture card number"],["editor","Fixture rich editor"],["combo","Fixture custom choice"],["hover-target","Hover fixture target"]]) {
+  $(id).addEventListener("focus", guarded(() => action("focus", { target: name })));
+}
+$("hover-target").onmouseenter = guarded(() => action("hover", { target: "Hover fixture target" }));
+$("hover-target").onmouseleave = guarded(() => action("hover-exit", { target: "Hover fixture target" }));
 $("combo").onfocus = () => { $("choice-list").hidden = false; $("combo").setAttribute("aria-expanded", "true"); };
 for (const option of $("choice-list").children) {
   const choose = () => { $("combo").value = option.textContent; $("combo").setAttribute("aria-expanded", "false"); $("choice-list").hidden = true; };
@@ -199,5 +208,21 @@ $("drop-zone").ondrop = guarded(event => { event.preventDefault(); $("drop-zone"
 const shadow = $("shadow-host").attachShadow({ mode: "open" });
 shadow.innerHTML = "<h3>Open shadow report</h3><p>Shadow marker ZETA-42</p><button>Shadow action</button>";
 shadow.querySelector("button").onclick = guarded(() => action("shadow-click"));
+let toolsRegistered = false;
+function registerPageTools() {
+  if (toolsRegistered) return;
+  const runtime = document.modelContext || navigator.modelContext;
+  if (!runtime?.registerTool) { $("page-tools-status").textContent = "No supported WebMCP runtime is available"; return; }
+  const schema = { type: "object", properties: {}, additionalProperties: false };
+  runtime.registerTool({ name: "fixture_read_report", description: "Read the synthetic field report's verified facts", inputSchema: schema, annotations: { readOnlyHint: true }, execute: async () => {
+    const state = await request("/api/state"); return { run_id: state.run_id, ...state.reading.facts };
+  } });
+  runtime.registerTool({ name: "fixture_delete_account", description: "Delete the synthetic fixture account; this destructive mutation requires browser approval", inputSchema: schema, annotations: { readOnlyHint: false, destructiveHint: true }, execute: async () => {
+    const state = await action("webmcp-mutation"); return { account_deleted: state.form_state.account_deleted, mutations: state.action_counts["webmcp-mutation"] };
+  } });
+  toolsRegistered = true;
+  $("page-tools-status").textContent = "Registered fixture_read_report and fixture_delete_account";
+}
+$("register-tools").onclick = guarded(registerPageTools);
 window.addEventListener("beforeunload", closeStreams);
 request("/api/state").then(initialize).catch(fail);

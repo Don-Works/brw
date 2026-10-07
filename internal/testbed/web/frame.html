@@ -1,5 +1,8 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Fixture frame</title><style>body{font:16px system-ui;padding:12px}button{padding:8px}</style></head><body><h3>Owned frame report</h3><p id="version">Frame initializing</p><button id="frame-action">Frame action</button><output id="result" role="status"></output><script>
-let state;
-fetch('/api/state').then(r=>r.json()).then(value=>{state=value;document.getElementById('version').textContent='Frame version '+new URL(location.href).searchParams.get('version')+' · origin '+location.origin;});
-document.getElementById('frame-action').onclick=async()=>{if(!state)return;const response=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run_id:state.run_id,document_epoch:state.document_epoch,kind:'frame-click'})});document.getElementById('result').textContent=response.ok?'Frame action recorded':'Frame document became stale';};
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Fixture frame</title><style>body{font:16px system-ui;padding:12px}button,input{padding:8px}</style></head><body><h3>Owned frame report</h3><p id="version">Frame initializing</p><label>Child fixture note <input id="child-note" name="child-note"></label><button id="frame-action">Frame action</button><output id="result" role="status"></output><script>
+let version,runID;
+fetch('/api/state').then(r=>r.json()).then(state=>{runID=state.run_id;version=Number(new URL(location.href).searchParams.get('version'))||state.frame_version;document.getElementById('version').textContent='Frame version '+version+' · origin '+location.origin;});
+async function action(kind,extra={}){if(!version)return;const state=await fetch('/api/state').then(r=>r.json());const response=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run_id:runID,document_epoch:state.document_epoch,frame_version:version,kind,...extra})});document.getElementById('result').textContent=response.ok?'Frame action recorded':'Frame document became stale';}
+document.getElementById('frame-action').onclick=()=>action('frame-click');
+document.getElementById('child-note').oninput=()=>action('input-child',{note:document.getElementById('child-note').value});
+document.getElementById('child-note').onfocus=()=>action('focus',{target:'Child fixture note'});
 </script></body></html>
