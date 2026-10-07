@@ -43,13 +43,14 @@ tasks:
     silent: true
 
   build:
-    desc: Build brw, brwd, brwcheck, brwctl and brw-devtools-mcp into bin/
+    desc: Build brw, brwd, brwcheck, brwctl, brw-devtools-mcp and brw-testbed into bin/
     cmds:
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw ./cmd/brw
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwd ./cmd/brwd
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwcheck ./cmd/brwcheck
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwctl ./cmd/brwctl
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw-devtools-mcp ./cmd/brw-devtools-mcp
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw-testbed ./cmd/brw-testbed
 
   test:
     desc: Run Go, extension and optional reader/decision worker tests
@@ -172,6 +173,7 @@ tasks:
       - cp bin/brwcheck "{{.DATADIR}}/bin/brwcheck"
       - cp bin/brwctl "{{.DATADIR}}/bin/brwctl"
       - cp bin/brw-devtools-mcp "{{.DATADIR}}/bin/brw-devtools-mcp"
+      - cp bin/brw-testbed "{{.DATADIR}}/bin/brw-testbed"
       - cp -R extension/. "{{.DATADIR}}/extension/"
       - cp -R tests/. "{{.DATADIR}}/tests/"
       - cp -R skills/brw/. "{{.DATADIR}}/skills/brw/"
@@ -181,13 +183,14 @@ tasks:
       # signature and the OS then SIGKILLs it ("Killed: 9"); re-sign the copies.
       - |
         if [ "$(uname)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
-          codesign --force --sign - "{{.DATADIR}}/bin/brw" "{{.DATADIR}}/bin/brwd" "{{.DATADIR}}/bin/brwcheck" "{{.DATADIR}}/bin/brwctl" "{{.DATADIR}}/bin/brw-devtools-mcp"
+          codesign --force --sign - "{{.DATADIR}}/bin/brw" "{{.DATADIR}}/bin/brwd" "{{.DATADIR}}/bin/brwcheck" "{{.DATADIR}}/bin/brwctl" "{{.DATADIR}}/bin/brw-devtools-mcp" "{{.DATADIR}}/bin/brw-testbed"
         fi
       - ln -sf "{{.DATADIR}}/bin/brw" "{{.BINDIR}}/brw"
       - ln -sf "{{.DATADIR}}/bin/brwd" "{{.BINDIR}}/brwd"
       - ln -sf "{{.DATADIR}}/bin/brwcheck" "{{.BINDIR}}/brwcheck"
       - ln -sf "{{.DATADIR}}/bin/brwctl" "{{.BINDIR}}/brwctl"
       - ln -sf "{{.DATADIR}}/bin/brw-devtools-mcp" "{{.BINDIR}}/brw-devtools-mcp"
+      - ln -sf "{{.DATADIR}}/bin/brw-testbed" "{{.BINDIR}}/brw-testbed"
 
   install-mac:
     desc: Install into the macOS Application Support app dir
@@ -199,6 +202,7 @@ tasks:
       - cp bin/brwcheck "{{.MAC_APPDIR}}/bin/brwcheck"
       - cp bin/brwctl "{{.MAC_APPDIR}}/bin/brwctl"
       - cp bin/brw-devtools-mcp "{{.MAC_APPDIR}}/bin/brw-devtools-mcp"
+      - cp bin/brw-testbed "{{.MAC_APPDIR}}/bin/brw-testbed"
       - cp -R extension/. "{{.MAC_APPDIR}}/extension/"
       - cp -R tests/. "{{.MAC_APPDIR}}/tests/"
       - cp -R skills/brw/. "{{.MAC_APPDIR}}/skills/brw/"
@@ -212,7 +216,7 @@ tasks:
       # and the OS SIGKILLs it on launch ("Killed: 9").
       - |
         if command -v codesign >/dev/null 2>&1; then
-          codesign --force --sign - "{{.MAC_APPDIR}}/bin/brw" "{{.MAC_APPDIR}}/bin/brwd" "{{.MAC_APPDIR}}/bin/brwcheck" "{{.MAC_APPDIR}}/bin/brwctl" "{{.MAC_APPDIR}}/bin/brw-devtools-mcp"
+          codesign --force --sign - "{{.MAC_APPDIR}}/bin/brw" "{{.MAC_APPDIR}}/bin/brwd" "{{.MAC_APPDIR}}/bin/brwcheck" "{{.MAC_APPDIR}}/bin/brwctl" "{{.MAC_APPDIR}}/bin/brw-devtools-mcp" "{{.MAC_APPDIR}}/bin/brw-testbed"
         fi
       # Link into BINDIR, the same as the Linux `install` target above. Without
       # this the payload installs and stays unreachable: this machine had brwd,
@@ -225,6 +229,7 @@ tasks:
       - ln -sf "{{.MAC_APPDIR}}/bin/brwcheck" "{{.BINDIR}}/brwcheck"
       - ln -sf "{{.MAC_APPDIR}}/bin/brwctl" "{{.BINDIR}}/brwctl"
       - ln -sf "{{.MAC_APPDIR}}/bin/brw-devtools-mcp" "{{.BINDIR}}/brw-devtools-mcp"
+      - ln -sf "{{.MAC_APPDIR}}/bin/brw-testbed" "{{.BINDIR}}/brw-testbed"
 
   # Keep every existing unpacked extension payload current. rsync's exclusion
   # preserves the local bridge endpoint/token file in each copy while --delete
@@ -297,6 +302,7 @@ tasks:
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwcheck-darwin-arm64 ./cmd/brwcheck
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brwctl-darwin-arm64 ./cmd/brwctl
       - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw-devtools-mcp-darwin-arm64 ./cmd/brw-devtools-mcp
+      - go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw-testbed-darwin-arm64 ./cmd/brw-testbed
 
   package-linux:
     desc: Build the Linux .deb and .rpm into dist/release

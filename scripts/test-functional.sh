@@ -17,13 +17,6 @@ cleanup() {
     kill "$fixture_pid" 2>/dev/null || :
     wait "$fixture_pid" 2>/dev/null || :
   fi
-  # The browser the daemon launched is a GRANDCHILD: SIGTERM to brwd is
-  # acknowledged and reaped before Chrome has finished flushing its profile,
-  # and a renderer still writing under $run_root while rm walks the tree makes
-  # rm exit "Directory not empty". Because this runs from an EXIT trap with
-  # `set -e` still active, that turned a fully green suite (20 passed, 0 failed)
-  # into a failed release. Retry briefly, and if the directory is still held,
-  # leave it in TMPDIR rather than report a suite failure that did not happen.
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     rm -rf "$run_root" 2>/dev/null && return 0
     sleep 1
@@ -33,8 +26,6 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Build a synthetic recipe at runtime in an owner-only directory outside git.
-# No executable recipe corpus or site-specific operator data is checked in.
 recipe_root="$run_root/private-recipe-store"
 mkdir -m 0700 "$recipe_root"
 cat >"$recipe_root/fixture.json" <<EOF
@@ -108,8 +99,6 @@ if ! "$repo_root/bin/brwcheck" --repo-root "$repo_root" --base-url "http://127.0
   exit 1
 fi
 
-# Artifact smoke test on the same real browser. Capture calls must return only
-# compact metadata; bytes are read later through an explicit bounded window.
 fixture_url=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' "$repo_root/tests/fixtures/content.html")
 open_json=$(curl -fsS -H 'content-type: application/json' \
   --data "{\"url\":\"$fixture_url\"}" "http://127.0.0.1:$port/api/browser/open")
@@ -157,9 +146,6 @@ curl -fsS -H 'content-type: application/json' --data "{\"id\":\"$tab_id\"}" \
   "http://127.0.0.1:$port/api/browser/close" >/dev/null
 echo "PASS browser-host artifacts          text/search/screenshot/PDF/video metadata boundary"
 
-# Search returns metadata only. Execution then fetches exactly the pinned
-# id/version/digest, expands the private input without echoing it, waits on a
-# pre-armed postcondition, and returns only the captured artifact handle.
 recipe_query=$(curl -fsS -H 'content-type: application/json' \
   --data '{"query":"submit the deterministic local form","origin":"http://127.0.0.1:'"$fixture_port"'","limit":3}' \
   "http://127.0.0.1:$port/api/recipes/search")
@@ -199,9 +185,6 @@ curl -fsS -H 'content-type: application/json' -H "$recipe_owner" --data "{\"id\"
   "http://127.0.0.1:$port/api/browser/close" >/dev/null
 echo "PASS private deterministic recipe    search/pin/dynamic-target/exact-value/events/timer/redaction/idempotent no-op/artifact"
 
-# Rich browser composers often retain a structural <p><br></p> even while empty.
-# Prove the external-write preflight treats that state as exact empty (zero
-# actuation), then prove a filled contenteditable value using the same event.
 rich_query=$(curl -fsS -H 'content-type: application/json' \
   --data '{"query":"test structural empty rich editor guard","origin":"http://127.0.0.1:'"$fixture_port"'","limit":3}' \
   "http://127.0.0.1:$port/api/recipes/search")
@@ -221,9 +204,6 @@ curl -fsS -H 'content-type: application/json' -H "$recipe_owner" --data "{\"id\"
   "http://127.0.0.1:$port/api/browser/close" >/dev/null
 echo "PASS recipe contenteditable guard     structural-empty no-op/exact filled value"
 
-# A completed-download event is a draining browser queue. This real-browser
-# recipe proves the postcondition retains the new (not pre-arm) event long
-# enough for the following capture step to copy the exact source file.
 download_query=$(curl -fsS -H 'content-type: application/json' \
   --data '{"query":"get the original source invoice","origin":"http://127.0.0.1:'"$fixture_port"'","limit":3}' \
   "http://127.0.0.1:$port/api/recipes/search")

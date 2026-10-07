@@ -111,7 +111,7 @@ mkdir -p "$root_dir/usr/local/bin" "$root_dir/usr/local/share/brw/doc" "$out_abs
 cd "$repo_root"
 export COPYFILE_DISABLE=1
 
-binaries=(brw brwd brwctl brwcheck brw-devtools-mcp)
+binaries=(brw brwd brwctl brwcheck brw-devtools-mcp brw-testbed)
 
 for cmd in "${binaries[@]}"; do
   for arch in amd64 arm64; do
@@ -138,12 +138,8 @@ if command -v xattr >/dev/null 2>&1; then
   xattr -cr "$root_dir" || true
 fi
 
-# Signing is the last mutation of the payload tree: xattr -cr strips the
-# com.apple.cs.* attributes a signature can live in, and any later rewrite of a
-# binary invalidates it silently, leaving pkgbuild to package a broken signature.
 codesign_args=(--force)
 if [ "$binary_mode" = "developer-id" ]; then
-  # --timestamp and --options runtime are both preconditions for notarization.
   codesign_args+=(--timestamp --options runtime --sign "$sign_identity")
   if [ -n "$sign_keychain" ]; then
     codesign_args+=(--keychain "$sign_keychain")

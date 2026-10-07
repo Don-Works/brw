@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""Measure the token cost of the brw MCP tool catalogue, per profile.
 
-The catalogue is re-sent to the model on every request, so its size is a fixed
-tax on every turn an agent takes rather than a one-off. The README and
-docs/agent-guide.md quote these numbers; re-run this after changing a tool
-description or a profile so the docs do not drift.
-
-    go build -o bin/brwd ./cmd/brwd
-    python3 scripts/measure-tool-catalogue.py [--detail]
-
---detail also ranks the individual tools by size, which is where to look first
-when the total moves.
-
-The "auto" figure is the starting catalogue only. It grows as an agent discovers
-tools with brw_tools, which is the point: the surface fits the task instead of
-being paid for up front.
-"""
 import json
 import os
 import subprocess
@@ -27,8 +11,7 @@ PROFILES = ("all", "core", "minimal", "auto")
 INIT = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n'
 LIST = '{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'
 
-# Rough characters-per-token for English prose plus JSON punctuation. Good
-# enough to compare profiles and track a change; not a tokenizer.
+
 CHARS_PER_TOKEN = 4
 
 

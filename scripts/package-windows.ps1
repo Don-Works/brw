@@ -39,8 +39,6 @@ if ($Version -notmatch "^([0-9]+\.[0-9]+\.[0-9]+)([.-].*)?$") {
 }
 $MsiVersion = $Matches[1]
 
-# A native tool that fails sets $LASTEXITCODE but does not trip
-# $ErrorActionPreference, so every invocation has to be checked by hand.
 function Assert-LastExitCode {
   param([string] $What)
   if ($LASTEXITCODE -ne 0) {
@@ -71,8 +69,6 @@ function Resolve-SignTool {
   $Candidates = foreach ($Root in $Roots) {
     Get-ChildItem -Path $Root -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue
   }
-  # Newest SDK first; the x64 build signs arm64 payloads just as well, so host
-  # architecture only decides which copy is reachable, never what it can sign.
   $Best = $Candidates |
     Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
     Sort-Object FullName -Descending |
@@ -124,8 +120,6 @@ function Invoke-Sign {
   if ($SignMode -ne "authenticode") {
     return
   }
-  # /tr with /td sha256 is the RFC 3161 timestamp: without it every signature
-  # expires with the certificate instead of staying valid for what it signed.
   $Arguments = @(
     "sign",
     "/fd", "sha256",
@@ -152,8 +146,6 @@ if ([System.IO.Path]::IsPathRooted($OutDir)) {
 }
 
 try {
-  # Importing inside the try is what guarantees the finally below takes the
-  # private key back out of the certificate store on every exit path.
   if ($SignMode -eq "authenticode") {
     $SignTool = Resolve-SignTool
     if (-not $SignDlib -and -not $SignThumbprint) {
@@ -183,7 +175,7 @@ try {
   $Executables = @()
   Push-Location $RepoRoot
   try {
-    foreach ($CommandName in @("brw", "brwd", "brwctl", "brwcheck", "brw-devtools-mcp")) {
+    foreach ($CommandName in @("brw", "brwd", "brwctl", "brwcheck", "brw-devtools-mcp", "brw-testbed")) {
       $Output = Join-Path $StageDir "bin/$CommandName.exe"
       & go build -trimpath -ldflags="-s -w -X github.com/Don-Works/brw/internal/mcp.Version=$Version -X github.com/Don-Works/brw/internal/cli.Version=$Version" -o $Output "./cmd/$CommandName"
       Assert-LastExitCode "go build ./cmd/$CommandName"
@@ -201,9 +193,6 @@ try {
   Copy-Item -Force (Join-Path $RepoRoot "LICENSE") (Join-Path $StageDir "share/doc/LICENSE")
   Copy-Item -Force (Join-Path $RepoRoot "README.md") (Join-Path $StageDir "share/doc/README.md")
 
-  # Sign the payload before WiX embeds it: an MSI signature covers the package,
-  # not the files it lays down, so an unsigned brwd.exe stays unsigned on disk
-  # and every SmartScreen and AppLocker decision after install sees no publisher.
   Invoke-Sign -Paths $Executables
 
   $Wix = Get-Command wix -ErrorAction SilentlyContinue

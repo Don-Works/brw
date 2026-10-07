@@ -54,7 +54,7 @@ def exact_resolver(goal, descriptions, actions):
 
 
 def unique_relevant(probabilities, yes_threshold, no_threshold):
-    if not probabilities or not all(isinstance(p, (int, float)) and math.isfinite(p) and 0 <= p <= 1 for p in probabilities.values()):
+    if not probabilities or not all(not isinstance(p, bool) and isinstance(p, (int, float)) and math.isfinite(p) and 0 <= p <= 1 for p in probabilities.values()):
         raise ValueError('Invalid relevance probability')
     relevant = [key for key, probability in probabilities.items() if probability >= yes_threshold]
     return relevant[0] if len(relevant) == 1 and all(p <= no_threshold for key, p in probabilities.items() if key != relevant[0]) else 'refresh'
