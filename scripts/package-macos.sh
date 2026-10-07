@@ -111,7 +111,7 @@ mkdir -p "$root_dir/usr/local/bin" "$root_dir/usr/local/share/brw/doc" "$out_abs
 cd "$repo_root"
 export COPYFILE_DISABLE=1
 
-binaries=(brw brwd brwctl brwcheck brw-devtools-mcp)
+binaries=(brw brwd brwctl brwcheck brw-devtools-mcp brw-testbed)
 
 for cmd in "${binaries[@]}"; do
   for arch in amd64 arm64; do

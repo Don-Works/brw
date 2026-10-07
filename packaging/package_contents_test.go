@@ -53,27 +53,32 @@ func TestInstallersShipTheBrwCLI(t *testing.T) {
 	requireFileContains(t, "linux/nfpm.yaml",
 		`src: "@BRW_PACKAGE_ROOT@/usr/bin/brw"`,
 		"dst: /usr/bin/brw",
+		`src: "@BRW_PACKAGE_ROOT@/usr/bin/brw-testbed"`,
+		"dst: /usr/bin/brw-testbed",
 	)
 	requireFileContains(t, "../scripts/package-linux.sh",
-		"for cmd in brw brwd brwctl brwcheck brw-devtools-mcp; do",
+		"for cmd in brw brwd brwctl brwcheck brw-devtools-mcp brw-testbed; do",
 	)
 	requireFileContains(t, "../scripts/package-macos.sh",
-		"binaries=(brw brwd brwctl brwcheck brw-devtools-mcp)",
+		"binaries=(brw brwd brwctl brwcheck brw-devtools-mcp brw-testbed)",
 	)
 	requireFileContains(t, "../scripts/package-windows.ps1",
-		`foreach ($CommandName in @("brw", "brwd", "brwctl", "brwcheck", "brw-devtools-mcp")) {`,
+		`foreach ($CommandName in @("brw", "brwd", "brwctl", "brwcheck", "brw-devtools-mcp", "brw-testbed")) {`,
 	)
 	requireFileContains(t, "../scripts/package-tarball.sh",
-		"for cmd in brw brwd brwctl brwcheck brw-devtools-mcp; do",
+		"for cmd in brw brwd brwctl brwcheck brw-devtools-mcp brw-testbed; do",
 	)
 
 	requireFileContains(t, "../scripts/install.sh",
-		`COMMANDS="brw brwd brwctl brwcheck brw-devtools-mcp"`,
+		`COMMANDS="brw brwd brwctl brwcheck brw-devtools-mcp brw-testbed"`,
 	)
 	requireFileContains(t, "../Taskfile.yml",
 		`- go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw ./cmd/brw`,
 		`- cp bin/brw "{{.DATADIR}}/bin/brw"`,
 		`- cp bin/brw "{{.MAC_APPDIR}}/bin/brw"`,
+		`- go build -ldflags "{{.GO_LDFLAGS}}" -o bin/brw-testbed ./cmd/brw-testbed`,
+		`- cp bin/brw-testbed "{{.DATADIR}}/bin/brw-testbed"`,
+		`- cp bin/brw-testbed "{{.MAC_APPDIR}}/bin/brw-testbed"`,
 	)
 }
 
@@ -136,6 +141,7 @@ func TestTarballContainsRelocatableReader(t *testing.T) {
 	defer gz.Close()
 	archive := tar.NewReader(gz)
 	found := map[string]bool{}
+	testbedPayload := false
 	readerDir := filepath.Join(root, "reader-smoke")
 	if err := os.MkdirAll(readerDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -147,6 +153,9 @@ func TestTarballContainsRelocatableReader(t *testing.T) {
 		}
 		if err != nil {
 			t.Fatal(err)
+		}
+		if header.Name == "brw_1.2.3_linux_amd64/bin/brw-testbed" && header.Typeflag == tar.TypeReg {
+			testbedPayload = true
 		}
 		name := strings.TrimPrefix(header.Name, "brw_1.2.3_linux_amd64/reader/")
 		if name == header.Name || header.Typeflag != tar.TypeReg {
@@ -170,6 +179,9 @@ func TestTarballContainsRelocatableReader(t *testing.T) {
 	}
 	if len(found) != 3 {
 		t.Fatalf("archive reader files = %v, want worker, adapter and usage helper", found)
+	}
+	if !testbedPayload {
+		t.Fatal("release archive omits brw-testbed")
 	}
 	t.Run("pythonEntrypoints", func(t *testing.T) {
 		python, err := exec.LookPath("python3")

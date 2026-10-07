@@ -76,11 +76,14 @@ contains image-relative bounds, shape, color, printed ID, and the correct
 target. Stable accessible names and test IDs live in the embedded page.
 
 `measurements` counts successfully produced JSON/static response body bytes,
-Unicode characters, and the ceiling of characters divided by four. SSE and
-WebSocket application-message bytes are counted separately. Individual body
+Unicode characters, and the ceiling of characters divided by four. The stream
+counter sums SSE text blocks (including `id`, `data`, `event`, and `retry`
+fields) and WebSocket JSON payloads. It excludes HTTP chunk encoding and
+WebSocket frame headers. Stream-message counts include hello and heartbeat
+writes; they are separate from logical event IDs. Individual body
 sizes also appear in `X-Testbed-Body-Bytes` and
 `X-Testbed-Chars4-Estimate` response headers. These are **size estimates, not
-billed tokens**, and exclude transport framing and provider tokenization.
+billed tokens**, and do not measure provider tokenization.
 Counters and connection timing are observational; they are not part of the
 seeded logical-event ground truth. An oracle response reports counters from
 before its own body is produced.

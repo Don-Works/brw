@@ -175,7 +175,7 @@ try {
   $Executables = @()
   Push-Location $RepoRoot
   try {
-    foreach ($CommandName in @("brw", "brwd", "brwctl", "brwcheck", "brw-devtools-mcp")) {
+    foreach ($CommandName in @("brw", "brwd", "brwctl", "brwcheck", "brw-devtools-mcp", "brw-testbed")) {
       $Output = Join-Path $StageDir "bin/$CommandName.exe"
       & go build -trimpath -ldflags="-s -w -X github.com/Don-Works/brw/internal/mcp.Version=$Version -X github.com/Don-Works/brw/internal/cli.Version=$Version" -o $Output "./cmd/$CommandName"
       Assert-LastExitCode "go build ./cmd/$CommandName"

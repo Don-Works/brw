@@ -3,7 +3,7 @@ set -eu
 
 
 REPO="Don-Works/brw"
-COMMANDS="brw brwd brwctl brwcheck brw-devtools-mcp"
+COMMANDS="brw brwd brwctl brwcheck brw-devtools-mcp brw-testbed"
 PAYLOAD="bin extension tests skills reader doc"
 
 step() { printf '==> %s\n' "$*"; }

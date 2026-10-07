@@ -31,6 +31,10 @@ contents:
     dst: /usr/bin/brw-devtools-mcp
     file_info:
       mode: 0755
+  - src: "@BRW_PACKAGE_ROOT@/usr/bin/brw-testbed"
+    dst: /usr/bin/brw-testbed
+    file_info:
+      mode: 0755
   - src: "@BRW_PACKAGE_ROOT@/usr/share/brw/extension"
     dst: /usr/share/brw/extension
     type: tree

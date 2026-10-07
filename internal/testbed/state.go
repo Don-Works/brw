@@ -80,8 +80,10 @@ type Measurements struct {
 	BodyBytes      uint64 `json:"body_bytes"`
 	TextCharacters uint64 `json:"text_characters"`
 	Chars4Estimate uint64 `json:"chars4_estimate"`
+	// StreamMessages counts SSE text blocks and WebSocket JSON messages.
 	StreamMessages uint64 `json:"stream_messages"`
-	StreamBytes    uint64 `json:"stream_bytes"`
+	// StreamBytes includes SSE field/retry text and WebSocket JSON, excluding HTTP chunking and WebSocket frames.
+	StreamBytes uint64 `json:"stream_bytes"`
 }
 
 // State is the machine oracle for one run.
