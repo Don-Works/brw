@@ -240,7 +240,7 @@ func (h *featureHarness) reset(t *testing.T) {
 const featureOperatorToken = "owned-fixture-operator-token-32characters"
 
 func featureTabPinned(tool string) bool {
-	return !slices.Contains([]string{"brw_identity", "brw_skill", "brw_tools", "brw_open", "brw_open_incognito", "brw_focus_tab", "brw_close_tab", "brw_list_tabs", "brw_list_tab_groups", "brw_close_context", "brw_group_tabs", "brw_ungroup_tabs", "brw_approval_status", "brw_approval_resume", "brw_watch_page", "brw_page_watchers", "brw_page_events", "brw_artifact_info", "brw_artifact_read", "brw_artifact_search", "brw_artifact_delete", "brw_recipe_search", "brw_cancel", "brw_state"}, tool)
+	return !slices.Contains([]string{"brw_identity", "brw_skill", "brw_tools", "brw_open", "brw_open_incognito", "brw_focus_tab", "brw_close_tab", "brw_list_tabs", "brw_list_tab_groups", "brw_close_context", "brw_group_tabs", "brw_ungroup_tabs", "brw_approval_status", "brw_approval_resume", "brw_watch_page", "brw_page_watchers", "brw_page_events", "brw_artifact_info", "brw_artifact_read", "brw_artifact_search", "brw_artifact_delete", "brw_recipe_search", "brw_cancel", "brw_state", "brw_set_download_path", "brw_read_url"}, tool)
 }
 
 func (h *featureHarness) startRPC(t *testing.T) {
