@@ -10,15 +10,8 @@ import (
 	"time"
 )
 
-// allRoutePattern reads every route the daemon registers, not only the /api/
-// ones: the idle classification has to have an answer for /health and the
-// dashboard too.
 var allRoutePattern = regexp.MustCompile(`mux\.HandleFunc\("[A-Z]+ ([^"]*)"`)
 
-// TestPersistentDaemonNeverGoesIdle pins the default. The daemon brwctl
-// installs as a background service must outlive every idle window there is; an
-// idle exit that turned itself on would be an agent returning to a daemon that
-// quietly stopped.
 func TestPersistentDaemonNeverGoesIdle(t *testing.T) {
 	server := New("", &fakeController{})
 	if server.IdleExit() != 0 {
@@ -31,8 +24,6 @@ func TestPersistentDaemonNeverGoesIdle(t *testing.T) {
 	}
 }
 
-// TestIdleDaemonExitsAfterItsWindow is the feature: a daemon started for one job
-// lets go of the port and the browser when the job is over.
 func TestIdleDaemonExitsAfterItsWindow(t *testing.T) {
 	server := New("", &fakeController{})
 	server.SetIdleExit(150 * time.Millisecond)
@@ -44,7 +35,6 @@ func TestIdleDaemonExitsAfterItsWindow(t *testing.T) {
 	}
 }
 
-// TestWorkPostponesTheIdleExit: the window measures silence, not uptime.
 func TestWorkPostponesTheIdleExit(t *testing.T) {
 	server := New("", &fakeController{})
 	server.SetIdleExit(300 * time.Millisecond)
@@ -75,7 +65,6 @@ func TestWorkPostponesTheIdleExit(t *testing.T) {
 	close(stop)
 	<-busy
 
-	// And once the traffic stops, it does go idle.
 	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if !server.WatchIdle(ctx) {
@@ -83,9 +72,6 @@ func TestWorkPostponesTheIdleExit(t *testing.T) {
 	}
 }
 
-// TestALongCallIsNotSilence: a recipe run takes minutes and sends nothing while
-// it runs. Measuring from the last request START would have exited underneath
-// one.
 func TestALongCallIsNotSilence(t *testing.T) {
 	server := New("", &fakeController{})
 	server.SetIdleExit(100 * time.Millisecond)
@@ -103,7 +89,6 @@ func TestALongCallIsNotSilence(t *testing.T) {
 	}()
 	<-entered
 
-	// Hold the call open past four idle windows.
 	deadline := time.Now().Add(400 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if idle, armed := server.idle.idleFor(time.Now()); !armed || idle != 0 {
@@ -124,7 +109,6 @@ func TestALongCallIsNotSilence(t *testing.T) {
 	close(release)
 	<-done
 
-	// And when the call finishes, the window starts from there.
 	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if !server.WatchIdle(ctx) {
@@ -132,10 +116,6 @@ func TestALongCallIsNotSilence(t *testing.T) {
 	}
 }
 
-// TestHealthPollsDoNotKeepAnAbandonedDaemonAlive is the reason the exemption
-// table exists. A supervisor polling /health every thirty seconds would
-// otherwise pin an abandoned daemon forever, which is the exact state the idle
-// exit is for.
 func TestHealthPollsDoNotKeepAnAbandonedDaemonAlive(t *testing.T) {
 	server := New("", &fakeController{})
 	server.SetIdleExit(200 * time.Millisecond)
@@ -166,11 +146,6 @@ func TestHealthPollsDoNotKeepAnAbandonedDaemonAlive(t *testing.T) {
 	}
 }
 
-// TestEveryRouteIsClassifiedForIdleActivity enumerates the route table against
-// the exemption list. The question "does this count as somebody using the
-// daemon?" has to have an answer for every route the daemon serves, and the
-// default has to be yes: a route added later that is exempt by accident would
-// let a daemon exit while it is being used.
 func TestEveryRouteIsClassifiedForIdleActivity(t *testing.T) {
 	source, err := os.ReadFile("server.go")
 	if err != nil {
@@ -197,25 +172,18 @@ func TestEveryRouteIsClassifiedForIdleActivity(t *testing.T) {
 			t.Errorf("idleExemptPrefixes lists %s (%q), which is not a route the daemon serves", prefix, reason)
 		}
 	}
-	// The default direction, stated as a fact rather than assumed: an unknown
-	// path counts as work.
+
 	if !countsAsActivity("/api/page/some_route_added_next_week") {
 		t.Error("a route nobody has classified does not count as work, so a daemon could exit while it is being used")
 	}
 }
 
-// TestUseThatDidNotArriveOverHTTPStillCounts: --idle-exit is armed on this
-// server, but the HTTP mux is not the only way to use a daemon. A daemon in
-// --mcp mode keeps the default listener and serves an agent over stdio, and
-// those tool calls reach the controller directly. Counting only the mux meant a
-// live MCP session read as silence and the daemon shut the browser down under
-// the agent driving it.
 func TestUseThatDidNotArriveOverHTTPStillCounts(t *testing.T) {
 	server := New("", &fakeController{})
 	server.SetIdleExit(100 * time.Millisecond)
 
 	done := server.NoteActivity()
-	// Hold it open past four idle windows, as a long MCP tool call would.
+
 	deadline := time.Now().Add(400 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if idle, armed := server.idle.idleFor(time.Now()); !armed || idle != 0 {
@@ -230,8 +198,6 @@ func TestUseThatDidNotArriveOverHTTPStillCounts(t *testing.T) {
 	}
 	cancel()
 
-	// Calling done twice must not unbalance the tracker: the caller defers it
-	// and may also call it on an early return.
 	done()
 	done()
 

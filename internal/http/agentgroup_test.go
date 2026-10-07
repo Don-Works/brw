@@ -47,8 +47,6 @@ func TestOwnerGroupOptionsStableAndDistinct(t *testing.T) {
 		t.Fatalf("title = %q, want claude-code-<suffix>", a1.Name)
 	}
 
-	// Two agents reporting the SAME display name must land in different groups:
-	// the extension reuses same-title groups within a window.
 	b := ownerGroupOptions("owner-b", "claude-code")
 	if b.Name == a1.Name {
 		t.Fatalf("two owners with one display name share the group title %q", b.Name)
@@ -85,8 +83,6 @@ func TestAutoAllocatedTabsJoinPerAgentGroups(t *testing.T) {
 	ctrl := &leaseTestController{}
 	server := New("", ctrl)
 
-	// Two sessions that report the SAME display name each trigger one automatic
-	// working-tab allocation.
 	for _, owner := range []string{"owner-a", "owner-b"} {
 		rec := httptest.NewRecorder()
 		server.server.Handler.ServeHTTP(rec, agentRequest(http.MethodGet, "/api/page/snapshot", owner, "claude-code", ""))
@@ -143,8 +139,6 @@ func TestExplicitGroupWinsOverOwnerGroup(t *testing.T) {
 	}
 }
 
-// groupUnsupportedController mimics the direct-CDP transport: grouping is
-// impossible, opening is not.
 type groupUnsupportedController struct {
 	leaseTestController
 }
@@ -179,7 +173,6 @@ func TestListTabsFlagsGroupDrift(t *testing.T) {
 		t.Fatalf("allocate: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	// A human drags the tab out of the agent's group.
 	ctrl.mu.Lock()
 	expected := ctrl.tabs[0].GroupID
 	ctrl.tabs[0].GroupID = "group-humans-own"
@@ -201,7 +194,6 @@ func TestListTabsFlagsGroupDrift(t *testing.T) {
 		t.Fatalf("lease = %+v, want group_drift with expected_group_id %q", tabs[0].Lease, expected)
 	}
 
-	// Another session sees plain "leased" with no drift chatter.
 	other := httptest.NewRecorder()
 	server.server.Handler.ServeHTTP(other, agentRequest(http.MethodGet, "/api/browser/tabs", "owner-b", "", ""))
 	var otherTabs []browser.Tab

@@ -18,9 +18,6 @@ import (
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
-// takeoverFake is a controller that can take over and can stream. The grant
-// lifecycle is delegated to a real browser.Manager rather than reimplemented,
-// so these tests exercise the same refusal an agent would hit.
 type takeoverFake struct {
 	browser.Controller
 	manager *browser.Manager
@@ -49,10 +46,6 @@ func (f *takeoverFake) DispatchTakeoverInput(ctx context.Context, token string, 
 	return f.manager.DispatchTakeoverInput(ctx, token, event)
 }
 
-// Click is delegated to the same Manager, so the refusal an /api/page route
-// renders is the one an agent would actually receive rather than a stub's idea
-// of one. Without a hold this Manager has no browser and never gets that far,
-// which is fine: the refusal is what these tests are about.
 func (f *takeoverFake) Click(ctx context.Context, ref string) (browser.ActionResult, error) {
 	return f.manager.Click(ctx, ref)
 }
@@ -84,13 +77,8 @@ func (f *takeoverFake) publish(entry browser.TraceEntry) {
 	}
 }
 
-// plainController can neither take over nor stream.
 type plainController struct{ browser.Controller }
 
-// A bind beyond loopback means the operator has decided other machines may
-// reach this daemon. Forwarding keystrokes into a signed-in browser is not
-// something that decision consents to, so the control is not rendered and the
-// routes answer 404 — nothing to re-enable, nothing to POST to.
 func TestTakeoverSurfaceIsAbsentWhenBoundBeyondLoopback(t *testing.T) {
 	t.Setenv(dashboardEnvVar, "1")
 	tests := []struct {
@@ -103,8 +91,7 @@ func TestTakeoverSurfaceIsAbsentWhenBoundBeyondLoopback(t *testing.T) {
 		{"loopback v6", "[::1]:17310", true},
 		{"wildcard", ":17310", false},
 		{"all interfaces", "0.0.0.0:17310", false},
-		// Both built rather than written as literals, so the hygiene scanner does
-		// not read a test table as a leaked internal address.
+
 		{"lan address", net.JoinHostPort(net.IPv4(192, 168, 1, 44).String(), "17310"), false},
 		{"tailscale address", net.JoinHostPort(net.IPv4(100, 101, 102, 103).String(), "17310"), false},
 	}
@@ -122,8 +109,7 @@ func TestTakeoverSurfaceIsAbsentWhenBoundBeyondLoopback(t *testing.T) {
 			if hasControl != tt.want {
 				t.Fatalf("takeover control present = %v, want %v", hasControl, tt.want)
 			}
-			// Absent means absent: no markup AND no script that could drive the
-			// endpoint from the console of an operator's own browser.
+
 			if !tt.want && strings.Contains(body, "/dashboard/input") {
 				t.Error("the page still carries the input-forwarding script")
 			}
@@ -154,8 +140,6 @@ func TestTakeoverSurfaceIsAbsentWhenBoundBeyondLoopback(t *testing.T) {
 	}
 }
 
-// Takeover inherits the dashboard's own switch: pixels and input are the same
-// exposure, and neither is on by default.
 func TestTakeoverRoutesAreOffWithTheDashboard(t *testing.T) {
 	t.Setenv(dashboardEnvVar, "")
 	s := New("127.0.0.1:17310", newTakeoverFake())
@@ -180,8 +164,6 @@ func TestTakeoverRoutesAreOffWithTheDashboard(t *testing.T) {
 	}
 }
 
-// A daemon that bridges or proxies has no Input domain to forward to. It says
-// so by name rather than rendering a control that quietly does nothing.
 func TestTakeoverRefusesTransportsThatCannotForwardInput(t *testing.T) {
 	t.Setenv(dashboardEnvVar, "1")
 	s := New("127.0.0.1:17310", plainController{})
@@ -211,10 +193,6 @@ func TestTakeoverRefusesTransportsThatCannotForwardInput(t *testing.T) {
 	}
 }
 
-// Input must be refused until someone explicitly enables takeover, and the
-// refusal has to come from the grant check rather than from the browser failing
-// later: this daemon's controller has no browser at all, so a request that
-// reached dispatch would not return a clean 403.
 func TestDashboardInputRequiresAnExplicitEnable(t *testing.T) {
 	t.Setenv(dashboardEnvVar, "1")
 	fake := newTakeoverFake()
@@ -239,7 +217,6 @@ func TestDashboardInputRequiresAnExplicitEnable(t *testing.T) {
 		t.Fatal("a refused input request left a hold behind")
 	}
 
-	// Enabling is one explicit request, and it is what mints the token.
 	acquire := httptest.NewRecorder()
 	acquireRequest := httptest.NewRequest(http.MethodPost, "/dashboard/takeover", strings.NewReader(`{"action":"acquire"}`))
 	acquireRequest.RemoteAddr = "127.0.0.1:1"
@@ -258,7 +235,6 @@ func TestDashboardInputRequiresAnExplicitEnable(t *testing.T) {
 		t.Fatal("the browser does not consider itself held after an acquire")
 	}
 
-	// A second viewer cannot take the browser from the first.
 	second := httptest.NewRecorder()
 	secondRequest := httptest.NewRequest(http.MethodPost, "/dashboard/takeover", strings.NewReader(`{"action":"acquire"}`))
 	secondRequest.RemoteAddr = "127.0.0.1:2"
@@ -280,9 +256,6 @@ func TestDashboardInputRequiresAnExplicitEnable(t *testing.T) {
 	}
 }
 
-// An action has to reach the feed while the frame it explains is still on
-// screen. Measured over a real connection, from publish to the SSE line being
-// readable by the client.
 func TestDashboardActivityFeedDeliversAnActionWithin500ms(t *testing.T) {
 	t.Setenv(dashboardEnvVar, "1")
 	fake := newTakeoverFake()
@@ -307,8 +280,7 @@ func TestDashboardActivityFeedDeliversAnActionWithin500ms(t *testing.T) {
 	}
 
 	reader := bufio.NewReader(response.Body)
-	// The preamble proves the handler has subscribed; publishing before it does
-	// would measure the test's own race rather than the feed.
+
 	if _, err := reader.ReadString('\n'); err != nil {
 		t.Fatalf("read the stream preamble: %v", err)
 	}
@@ -318,9 +290,7 @@ func TestDashboardActivityFeedDeliversAnActionWithin500ms(t *testing.T) {
 		OK: true, DurationMS: 42, Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 	published := time.Now()
-	// Give the handler a moment to reach its select before publishing; the
-	// subscription is registered synchronously, so a dropped entry here would
-	// be the handler's buffer, not a race.
+
 	time.Sleep(20 * time.Millisecond)
 	fake.publish(entry)
 
@@ -343,7 +313,6 @@ func TestDashboardActivityFeedDeliversAnActionWithin500ms(t *testing.T) {
 	}
 }
 
-// readSSEData reads until the first "data: " line, returning its payload.
 func readSSEData(t *testing.T, reader *bufio.Reader, within time.Duration) string {
 	t.Helper()
 	type result struct {
@@ -376,8 +345,6 @@ func readSSEData(t *testing.T, reader *bufio.Reader, within time.Duration) strin
 	}
 }
 
-// The feed line is what an operator reads, so its projection of a trace entry is
-// pinned here: what happened, to what, how it went, how long it took.
 func TestActivityLineProjection(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -395,9 +362,7 @@ func TestActivityLineProjection(t *testing.T) {
 			want:  ActivityLine{Seq: 1, Action: "fill", Ref: "e2", Outcome: "failed", Error: "ref not found", DurationMS: 8, At: "2026-01-01T00:00:01Z"},
 		},
 		{
-			// The reason is the failing action's own error string, so a failed
-			// navigate embeds the address it was aimed at. The row keeps the
-			// reason and loses the address.
+
 			name: "a failed navigation keeps its reason and loses its address",
 			entry: browser.TraceEntry{
 				Action: "navigate_to", OK: false, DurationMS: 12, Timestamp: "2026-01-01T00:00:04Z",
@@ -436,9 +401,7 @@ func TestActivityLineProjection(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("line = %+v, want %+v", got, tt.want)
 			}
-			// The feed never carries what the page said or what was typed into
-			// it — not as a field, and not inside a failure reason either, which
-			// is the half a field-name check cannot see.
+
 			payload, err := json.Marshal(got)
 			if err != nil {
 				t.Fatal(err)
@@ -463,9 +426,6 @@ func TestActivityLineProjection(t *testing.T) {
 	})
 }
 
-// An agent that hits a browser a human is holding has to be able to tell that
-// apart from a stale ref without reading prose. Same status and same error class
-// as "ref not found" would leave it with nothing to branch on but the message.
 func TestAnAgentRouteReportsAHumanHoldAsAConflictWithAStableCode(t *testing.T) {
 	fake := newTakeoverFake()
 	server := New("127.0.0.1:17310", fake)
@@ -503,13 +463,11 @@ func TestAnAgentRouteReportsAHumanHoldAsAConflictWithAStableCode(t *testing.T) {
 	if body.ExpiresAt == "" {
 		t.Error("refusal carries no expiry; an agent has nothing to wait for")
 	}
-	// The usage log has to be able to count this condition, which is what
-	// distinguishes a recurring human hold from a run of bad refs.
+
 	if class := recorder.Header().Get(usagelog.HeaderErrorClass); class != "takeover_held" {
 		t.Errorf("error class = %q, want \"takeover_held\"", class)
 	}
-	// And the fingerprint is of the condition, not of this instance: the holder
-	// and the expiry differ on every refusal.
+
 	first := recorder.Header().Get(usagelog.HeaderErrorFingerprint)
 	if first == "" {
 		t.Fatal("refusal carries no error fingerprint")
@@ -524,8 +482,6 @@ func TestAnAgentRouteReportsAHumanHoldAsAConflictWithAStableCode(t *testing.T) {
 	}
 }
 
-// The same refusal has to survive the --upstream-http hop. An agent branching on
-// errors.As must not have to know which transport it is talking through.
 func TestARefusalStaysTypedAcrossTheUpstreamHTTPHop(t *testing.T) {
 	refusal := &browser.TakeoverRefusedError{Action: "click", Holder: "dashboard", ExpiresAt: "2026-01-01T00:01:00Z"}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

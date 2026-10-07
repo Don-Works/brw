@@ -13,9 +13,6 @@ import (
 	"github.com/Don-Works/brw/internal/plugin"
 )
 
-// loopbackRequest builds a request the control-plane host guard accepts: the
-// guard exists to stop a rebound DNS name reaching the daemon, and httptest's
-// default Host is example.com.
 func loopbackRequest(method, path, body string) *http.Request {
 	var reader io.Reader
 	if body != "" {
@@ -82,10 +79,6 @@ func TestPluginRoutesListAndRevoke(t *testing.T) {
 	}
 }
 
-// There is no grant route, and there must not be one: granting widens what brw
-// can do, and a control plane an agent can reach is not where that decision
-// belongs. This reads the daemon's own registration table so adding one is a
-// failing test rather than a review comment nobody makes.
 func TestThereIsNoRouteThatGrantsAPluginCapability(t *testing.T) {
 	source, err := os.ReadFile("server.go")
 	if err != nil {

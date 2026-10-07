@@ -17,44 +17,11 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// This file is about the hole that keeps reopening: a rule enforced on the lane
-// it was reported against, and not on the other one.
-//
-// include_frames attaches a CDP session to every embedded third party's target
-// and runs brw's walker in its document. The MCP surface asked consent about each
-// of those origins. The HTTP surface installed the fetch check and stopped, so
-// `GET /api/page/snapshot?include_frames=true` read the payment form with nothing
-// decided about it — and that is the route a proxied call arrives on, because a
-// daemon running against an upstream one forwards include_frames over it and a Go
-// func cannot cross that boundary. Same daemon, same controller, same tool name;
-// different lane.
-//
-// So the assertions below are about the PROPERTY ("every dispatching surface
-// answers every runtime consent question"), enumerated three ways: the hooks come
-// from the browser.ConsentEnforcer interface, the surfaces are checked against
-// the source tree, and each surface is then driven through its own real entry
-// point and asked what the controller was handed.
-
-// runtimeConsentHookProbes maps each method of browser.ConsentEnforcer to the way
-// a dispatched context is asked whether that hook reached it.
-//
-// It is keyed by method name so the interface itself is the list: add a hook to
-// ConsentEnforcer and this test fails until someone says how to observe it, which
-// is the step that was skipped when the frame-read check was added.
 var runtimeConsentHookProbes = map[string]func(context.Context) bool{
 	"CheckFetchDestination": func(ctx context.Context) bool { return browser.FetchCheckFromContext(ctx) != nil },
 	"CheckFrameRead":        func(ctx context.Context) bool { return browser.FrameReadCheckFromContext(ctx) != nil },
 }
 
-// consentSurfaces are the surfaces that turn an agent's call into a controller
-// call. Each dispatches one gated read of a page carrying a cross-origin iframe,
-// through its own real entry point, and returns the context the controller was
-// handed.
-//
-// The key is the package directory, which is what ties this table to the source
-// scan below: a surface added next year installs the hooks from its own package,
-// and TestEveryConsentInstallerIsAnEnumeratedSurface fails until it is listed
-// here and driven.
 var consentSurfaces = map[string]func(t *testing.T, guard *siteconsent.Guard, ctrl browser.Controller) context.Context{
 	"internal/http": func(t *testing.T, guard *siteconsent.Guard, ctrl browser.Controller) context.Context {
 		t.Helper()
@@ -82,9 +49,6 @@ var consentSurfaces = map[string]func(t *testing.T, guard *siteconsent.Guard, ct
 	},
 }
 
-// surfaceProbeController answers the consent gate with a live tab and keeps the
-// context its Snapshot was called with, which is the only place the runtime hooks
-// can be observed from.
 type surfaceProbeController struct {
 	consentController
 	mu  sync.Mutex
@@ -123,17 +87,13 @@ func newParityGuard(t *testing.T) *siteconsent.Guard {
 		t.Fatal(err)
 	}
 	guard.SetGrantor("fixture-user")
-	// The page itself is granted. That is precisely the grant that must NOT carry
-	// into the documents it embeds.
+
 	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://shop.test", Scope: siteconsent.ScopeRead, Actor: "fixture-user"}); err != nil {
 		t.Fatal(err)
 	}
 	return guard
 }
 
-// TestRuntimeConsentHookProbesCoverTheEnforcer keeps the probe table level with
-// the interface, so a hook added to browser.ConsentEnforcer cannot be shipped
-// with nothing checking that the surfaces install it.
 func TestRuntimeConsentHookProbesCoverTheEnforcer(t *testing.T) {
 	iface := reflect.TypeOf((*browser.ConsentEnforcer)(nil)).Elem()
 	for i := 0; i < iface.NumMethod(); i++ {
@@ -149,13 +109,6 @@ func TestRuntimeConsentHookProbesCoverTheEnforcer(t *testing.T) {
 	}
 }
 
-// TestEveryConsentSurfaceInstallsEveryRuntimeHook drives each surface and asks
-// the controller what it was handed.
-//
-// The hooks are not merely present: each is called with an origin nobody granted
-// and has to refuse it, and with the granted one and has to allow it. A surface
-// that installed a stub, or wired a hook to a guard that is not the daemon's,
-// passes a presence check and fails this one.
 func TestEveryConsentSurfaceInstallsEveryRuntimeHook(t *testing.T) {
 	for surface, dispatch := range consentSurfaces {
 		t.Run(surface, func(t *testing.T) {
@@ -196,19 +149,6 @@ func TestEveryConsentSurfaceInstallsEveryRuntimeHook(t *testing.T) {
 	}
 }
 
-// TestEveryConsentInstallerIsAnEnumeratedSurface is the lane enumeration.
-//
-// A surface is found by what it DOES, not by what it installs: a package that
-// puts a consent.CheckTool call in front of a dispatch is gating an agent's call,
-// and that is the whole definition. Keying the enumeration on the installers
-// would miss the case this file exists for — a surface that installs nothing at
-// all is not an installer, so such a scan would report the tree clean.
-//
-// Three things fail it. A gating surface missing from consentSurfaces, driven by
-// nothing and free to install a subset exactly as this one did. A gating surface
-// that installs no runtime hooks. And production code reaching for an individual
-// installer instead of browser.WithRuntimeConsent, which is how a surface gets to
-// install two hooks out of three in the first place.
 func TestEveryConsentInstallerIsAnEnumeratedSurface(t *testing.T) {
 	root := filepath.Join("..", "..")
 	gates := map[string]bool{}
@@ -218,9 +158,7 @@ func TestEveryConsentInstallerIsAnEnumeratedSurface(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			// .claude holds this repo's git worktrees, each a complete second
-			// copy of the tree; walking into one reports another checkout's
-			// surfaces as though they were this one's.
+
 			if name := d.Name(); name == ".git" || name == ".claude" || name == "node_modules" || name == "testdata" {
 				return fs.SkipDir
 			}

@@ -19,8 +19,6 @@ import (
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
 
-// forwardingController is a controller that is itself a client of another brw
-// daemon, which is what an --upstream-http proxy's controller is.
 type forwardingController struct {
 	browser.Controller
 	posture siteconsent.Posture
@@ -33,8 +31,6 @@ func (c *forwardingController) UpstreamConsentPosture(context.Context) (sitecons
 	return c.posture, c.err
 }
 
-// directOnlyController drives a browser directly, so there is no second daemon to
-// ask and its own flags are the whole answer.
 type directOnlyController struct {
 	browser.Controller
 }
@@ -58,10 +54,6 @@ func healthConsent(t *testing.T, server *Server) map[string]any {
 	return payload.Consent
 }
 
-// The consent posture at /health is a property of the chain a request travels,
-// not of the process that answers. A proxy applies its own guard and then hands
-// the work to a daemon that applies its own, so whichever of them has a
-// prompter is the one an unattended caller would hang on.
 func TestHealthReportsTheConsentPostureOfTheWholeChain(t *testing.T) {
 	upstream := &forwardingController{posture: siteconsent.Posture{Enabled: true, Interactive: true}}
 	server := New("", upstream)
@@ -75,9 +67,6 @@ func TestHealthReportsTheConsentPostureOfTheWholeChain(t *testing.T) {
 	}
 }
 
-// "Could not ask" is not "said no". A hop that cannot be read poisons the
-// chain's answer rather than being dropped, because an unattended caller has to
-// treat "unknown" the way it treats "yes".
 func TestHealthReportsAnUnreadableHopAsUnknown(t *testing.T) {
 	server := New("", &forwardingController{err: errors.New("connection refused")})
 
@@ -90,8 +79,6 @@ func TestHealthReportsAnUnreadableHopAsUnknown(t *testing.T) {
 	}
 }
 
-// And a daemon that drives a browser directly still answers definitely. Without
-// this, the fix would be a daemon that tells every scheduler it might hang.
 func TestHealthOnADirectDaemonIsADefiniteAnswer(t *testing.T) {
 	consent := healthConsent(t, New("", &directOnlyController{}))
 	if unknown, _ := consent["unknown"].(bool); unknown {
@@ -104,15 +91,6 @@ func TestHealthOnADirectDaemonIsADefiniteAnswer(t *testing.T) {
 	}
 }
 
-// The wiring is a type assertion in NewWithIdentity rather than a setter the
-// caller has to remember, so a forwarding controller added next year is covered
-// without an edit there. What that cannot catch is a forwarding controller that
-// never grows the method: the assertion fails silently and the daemon reports
-// its own flags as the chain's answer, which is the bypass this closes.
-//
-// So the types are enumerated out of the source. The marker for "this is a
-// client of another brw daemon" is that it can read that daemon's /health:
-// anything holding an httpclient.Health has a second daemon to answer for.
 func TestEveryControllerThatReadsAnotherDaemonsHealthAlsoReportsItsConsentPosture(t *testing.T) {
 	methods := methodsByReceiver(t)
 
@@ -133,9 +111,6 @@ func TestEveryControllerThatReadsAnotherDaemonsHealthAlsoReportsItsConsentPostur
 	}
 }
 
-// methodsByReceiver maps "package.Type" to the set of method names declared on
-// it, plus the synthetic marker "readsBrwHealth" for a method returning an
-// httpclient.Health.
 func methodsByReceiver(t *testing.T) map[string]map[string]bool {
 	t.Helper()
 	root := filepath.Join("..", "..")
@@ -180,9 +155,6 @@ func methodsByReceiver(t *testing.T) map[string]map[string]bool {
 	return out
 }
 
-// returnsBrwHealth reports whether a result list carries brw's own /health
-// payload: httpclient.Health elsewhere, or a bare Health inside the httpclient
-// package itself.
 func returnsBrwHealth(pkg string, results *ast.FieldList) bool {
 	if results == nil {
 		return false

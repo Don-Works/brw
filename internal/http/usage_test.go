@@ -97,10 +97,6 @@ func TestArtifactUsageLogNeverContainsHandleQueryOrBackingError(t *testing.T) {
 	}
 }
 
-// unloggedAPIRoutes are the /api/ routes deliberately outside usageOperations.
-// Everything else is a tool call and belongs in the ledger; three reviews in a
-// row found a newly added route missing from the allowlist, which is invisible
-// rather than noisy - the middleware simply skips an unknown path.
 var unloggedAPIRoutes = map[string]string{
 	"/api/approvals/{id}":        "approval lifecycle metadata, not browser execution",
 	"/api/usage/report":          "metadata ingestion excluded to prevent recursive accounting",
@@ -113,25 +109,16 @@ var unloggedAPIRoutes = map[string]string{
 	"/api/session/release":       "session lifecycle call from a supervisor, not an agent tool call",
 }
 
-// routePathFromPattern reduces a net/http mux pattern - "[METHOD ][HOST]/[PATH]"
-// - to the path the usage allowlist is keyed by.
-//
-// It reports failure rather than handing back the pattern unchanged because a
-// pattern this parser cannot read is precisely the case the caller must not pass
-// over: a shape it silently skipped would be a route missing from
-// usageOperations that the guard declared fine.
 func routePathFromPattern(pattern string) (string, bool) {
 	rest := strings.TrimSpace(pattern)
 	if method, after, found := strings.Cut(rest, " "); found {
-		// The grammar allows nothing but a method before that space, and every
-		// method this codebase registers is upper-case, which is also the only
-		// spelling net/http will ever match a request against.
+
 		if !isUpperCaseMethod(method) {
 			return "", false
 		}
 		rest = strings.TrimSpace(after)
 	}
-	// The host is optional and ends at the first "/", which begins the path.
+
 	if slash := strings.Index(rest, "/"); slash > 0 {
 		rest = rest[slash:]
 	}
@@ -153,8 +140,6 @@ func isUpperCaseMethod(method string) bool {
 	return true
 }
 
-// TestEveryAPIRouteIsInTheUsageAllowlist reads the route table out of server.go
-// rather than a hand-kept list, so a route added tomorrow is covered too.
 func TestEveryAPIRouteIsInTheUsageAllowlist(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "server.go", nil, 0)
 	if err != nil {
@@ -170,8 +155,7 @@ func TestEveryAPIRouteIsInTheUsageAllowlist(t *testing.T) {
 		if !ok || selector.Sel.Name != "HandleFunc" {
 			return true
 		}
-		// Only the mux registrations: a HandleFunc called on anything else is
-		// not a route this server serves.
+
 		if receiver, ok := selector.X.(*ast.Ident); !ok || receiver.Name != "mux" {
 			return true
 		}
@@ -213,8 +197,6 @@ func TestEveryAPIRouteIsInTheUsageAllowlist(t *testing.T) {
 	}
 }
 
-// The route guard is only as good as its reading of the mux patterns: a method
-// it does not know must not turn into a route it quietly skips.
 func TestRoutePathFromPattern(t *testing.T) {
 	tests := []struct {
 		pattern string
@@ -224,16 +206,14 @@ func TestRoutePathFromPattern(t *testing.T) {
 		{pattern: "GET /api/browser/tabs", want: "/api/browser/tabs", wantOK: true},
 		{pattern: "POST /api/page/fill", want: "/api/page/fill", wantOK: true},
 		{pattern: "DELETE /api/browser/tab", want: "/api/browser/tab", wantOK: true},
-		// Not registered today. Registered tomorrow, it has to reach the
-		// allowlist check rather than fall past both prefixes as "PUT /api/...".
+
 		{pattern: "PUT /api/browser/window", want: "/api/browser/window", wantOK: true},
 		{pattern: "PATCH /api/page/value", want: "/api/page/value", wantOK: true},
 		{pattern: "OPTIONS /api/page/probe", want: "/api/page/probe", wantOK: true},
 		{pattern: "/api/page/methodless", want: "/api/page/methodless", wantOK: true},
 		{pattern: "GET brw.test/api/page/hosted", want: "/api/page/hosted", wantOK: true},
 		{pattern: "  GET   /api/page/padded  ", want: "/api/page/padded", wantOK: true},
-		// net/http matches the method case-sensitively, so a lower-case one never
-		// serves anything; reading it as a path would hide that.
+
 		{pattern: "get /api/page/lower"},
 		{pattern: "GET nopathatall"},
 		{pattern: ""},

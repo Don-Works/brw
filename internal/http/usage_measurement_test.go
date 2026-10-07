@@ -74,6 +74,20 @@ func TestUsageMeasurementHTTPBoundaryAndPrivacy(t *testing.T) {
 	}
 }
 
+func TestUsageMeasurementKeepsUnclassifiedFailuresDiagnosable(t *testing.T) {
+	recorder, path := usageRecorderFixture(t)
+	s := &Server{usage: recorder}
+	h := s.usageMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(usagelog.HeaderErrorClass, "PRIVATE_CLASS")
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/page/read", nil))
+	events := readUsageEvents(t, path)
+	if len(events) != 1 || events[0].ErrorClass != "tool" || events[0].HTTPStatus != http.StatusForbidden {
+		t.Fatalf("failure metadata lost: %+v", events)
+	}
+}
+
 func TestUsageReportStrictMetadataAndNoRecursiveRecord(t *testing.T) {
 	recorder, path := usageRecorderFixture(t)
 	server := New("", &fakeController{})

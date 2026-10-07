@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// hit drives one request through the full server handler (including the
-// host/origin guard) and returns the status code.
 func hit(t *testing.T, addr, host, origin string) int {
 	t.Helper()
 	srv := New(addr, &fakeController{})
@@ -23,8 +21,6 @@ func hit(t *testing.T, addr, host, origin string) int {
 	return rec.Code
 }
 
-// TestHostGuardLoopbackBind: a loopback bind enforces the Host allowlist
-// (DNS-rebinding defense) and rejects cross-origin browser requests (CSRF).
 func TestHostGuardLoopbackBind(t *testing.T) {
 	const addr = "127.0.0.1:17310"
 	cases := []struct {
@@ -50,11 +46,8 @@ func TestHostGuardLoopbackBind(t *testing.T) {
 	}
 }
 
-// TestHostGuardTailscaleBind: a non-loopback (Tailscale/LAN) bind does NOT gate
-// the Host header — a MagicDNS name or any address reaches the daemon — but the
-// cross-origin CSRF guard still applies.
 func TestHostGuardTailscaleBind(t *testing.T) {
-	const addr = "100.64.0.1:17310" // a Tailscale-style CGNAT address
+	const addr = "100.64.0.1:17310"
 	cases := []struct {
 		name, host, origin string
 		want               int
@@ -74,8 +67,6 @@ func TestHostGuardTailscaleBind(t *testing.T) {
 	}
 }
 
-// TestHostGuardWildcardBind: a wildcard bind (":port") does not gate Host (the
-// operator opened it up) but keeps the CSRF guard.
 func TestHostGuardWildcardBind(t *testing.T) {
 	if got := hit(t, ":17310", "whatever.example", ""); got != http.StatusOK {
 		t.Errorf("wildcard bind should not gate Host, got %d", got)

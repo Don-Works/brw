@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -39,50 +40,31 @@ type Server struct {
 	manager               browser.Controller
 	artifacts             artifact.API
 	recipes               recipe.API
-	// baselineRoutes answers "does the private provider own this recipe, or the
-	// page this capture is of". A proxying daemon runs brw_baseline itself and
-	// has no provider of its own, so without this hop it would route every
-	// capture to its own local root.
+
 	baselineRoutes recipe.BaselineRouter
 	identity       brwidentity.Identity
 	navPolicy      *navpolicy.Policy
-	// consent is the per-origin grant guard behind /api/consent/*. Nil means the
-	// daemon was started without site consent.
+
 	consent *siteconsent.Guard
-	// upstreamConsent is the controller's own consent posture, when this
-	// daemon's controller is itself a client of another brw daemon. Taken from
-	// the controller rather than wired by the caller: see upstreamConsentSource.
+
 	upstreamConsent upstreamConsentSource
 	usage           *usagelog.Recorder
 	leases          *tabLeaseManager
-	// version is the build this daemon is, stamped onto the agent skill it
-	// serves so the manual and the tool surface it describes are one thing.
+
 	version string
-	// idle tracks when this daemon was last used, for the optional idle exit.
-	// The zero value is a persistent daemon, which is the default.
+
 	idle    idleTracker
 	server  *http.Server
 	plugins *plugin.Registry
 
-	// loopbackBind records that the daemon listens on loopback only. It gates
-	// the dashboard's takeover surface, which forwards input to a signed-in
-	// browser: a wider bind is the operator exposing the daemon to other
-	// machines, and remote control is not something that decision consents to.
 	loopbackBind bool
 
-	// allowedHosts is the set of Host header values accepted when host
-	// enforcement is on (loopback names plus the configured bind host).
-	// enforceHost is true only for a loopback bind, where DNS-rebinding is the
-	// threat; a non-loopback bind (Tailscale/LAN/wildcard) is the operator
-	// deliberately exposing the daemon, so the Host allowlist is not gated there.
 	allowedHosts map[string]bool
 	enforceHost  bool
 
 	roster            ProfileRoster
 	profilePolicyPath string
 
-	// authDigest is the SHA-256 of the bearer token every request must carry.
-	// Nil leaves the listener unauthenticated.
 	authDigest []byte
 }
 
@@ -91,7 +73,7 @@ type snapshotRequest struct {
 	MaxBytes int
 }
 
-const maxArtifactRequestBodyBytes = 4 << 10 // 4 KiB
+const maxArtifactRequestBodyBytes = 4 << 10
 
 type artifactIDRequest struct {
 	ArtifactID string `json:"artifact_id"`
@@ -117,29 +99,16 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	mux := http.NewServeMux()
 	s := &Server{manager: manager, identity: identity, leases: newTabLeaseManager(defaultTabLeaseTTL), server: &http.Server{
 		Addr: addr,
-		// Bound slow-header clients (slowloris) without a blanket WriteTimeout,
-		// which would truncate long-poll endpoints like wait_for.
+
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}}
 	s.allowedHosts, s.enforceHost = computeAllowedHosts(addr)
 	s.loopbackBind = isLoopbackHost(bindHost(addr))
-	// Not a setter. A daemon whose controller forwards to another daemon has to
-	// report that daemon's consent posture as well as its own, and a proxy that
-	// was merely SUPPOSED to wire that up reports its own flags as the whole
-	// chain's answer — which is exactly the bypass this closes. Asking the
-	// controller means every forwarding controller, including one added later,
-	// is covered without a second edit here.
+
 	s.upstreamConsent, _ = manager.(upstreamConsentSource)
 	s.routes(mux)
-	// Wrap the router so every request first passes the same-machine browser
-	// guard (DNS-rebinding + cross-origin CSRF). A loopback CLI/MCP client sends
-	// a loopback Host and no browser Origin, so it is untouched.
-	// Site consent sits INSIDE the host guard (a rejected cross-origin request
-	// never reaches it) and OUTSIDE the mux, so a refusal means no handler ran.
-	// The idle tracker sits outermost so a request that a guard refuses still
-	// counts as somebody using the daemon: a client being told no repeatedly is
-	// not an abandoned daemon.
+
 	common := func(next http.Handler) http.Handler {
 		return s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.consentMiddleware(s.leaseMiddleware(s.approvalMiddleware(next))))))
 	}
@@ -147,43 +116,26 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	return s
 }
 
-// InFlight is the number of API requests currently executing against a leased
-// tab.
+// InFlight is the number of API requests currently executing against a leased tab.
 func (s *Server) InFlight() int {
 	inFlight, _ := s.leases.stats()["in_flight"].(int)
 	return inFlight
 }
 
-// SetUsageRecorder installs the metadata-only operational ledger. The recorder
-// never sees request bodies, query values, page content, or response bodies.
+// SetUsageRecorder installs the metadata-only operational ledger.
 func (s *Server) SetUsageRecorder(recorder *usagelog.Recorder) {
 	s.usage = recorder
 }
 
-// SetArtifactAPI installs the browser-host artifact capability. Keeping this
-// on the long-lived daemon ensures page bytes, screenshots, PDFs, downloads and
-// video never cross an upstream proxy merely to be written back to disk.
+// SetArtifactAPI installs the browser-host artifact capability.
 func (s *Server) SetArtifactAPI(api artifact.API) { s.artifacts = api }
 
 // SetRecipeAPI installs private recipe discovery and deterministic execution.
-// Recipe contents remain behind the provider boundary; this HTTP surface only
-// exposes metadata search and exact, digest-pinned execution.
 func (s *Server) SetRecipeAPI(api recipe.API) { s.recipes = api }
 
-// SetBaselineRouter installs the baseline routing question for proxying
-// daemons to ask. Only one word from a closed set ever leaves through it: no
-// recipe, no baseline and no capture crosses this route.
+// SetBaselineRouter installs the baseline routing question for proxying daemons to ask.
 func (s *Server) SetBaselineRouter(router recipe.BaselineRouter) { s.baselineRoutes = router }
 
-// computeAllowedHosts derives the Host allowlist and whether to enforce it from
-// the daemon's bind address. The Host check defends against DNS-rebinding — a
-// web page whose domain has been re-resolved to 127.0.0.1 carries its own Host
-// header — which is only a threat for a LOOPBACK bind. A non-loopback bind (a
-// specific Tailscale/LAN IP, a hostname, or a wildcard like ":17310") is the
-// operator intentionally exposing the daemon "behind SSH/Tailscale with caller
-// auth"; its legitimate Host may be a MagicDNS name or address we can't predict,
-// so Host is not gated there. The cross-origin/CSRF guard still applies in all
-// cases.
 func computeAllowedHosts(addr string) (map[string]bool, bool) {
 	allowed := map[string]bool{
 		"127.0.0.1": true,
@@ -198,8 +150,6 @@ func computeAllowedHosts(addr string) (map[string]bool, bool) {
 	return allowed, enforce
 }
 
-// bindHost extracts the lowercased host from a listen address, tolerating a
-// bare host (no port) and stripping IPv6 brackets.
 func bindHost(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -208,9 +158,6 @@ func bindHost(addr string) string {
 	return strings.ToLower(strings.TrimSpace(strings.Trim(host, "[]")))
 }
 
-// isLoopbackHost reports whether host is a loopback name/IP. An empty host (a
-// wildcard bind such as ":17310" or "0.0.0.0:17310") is NOT loopback — it
-// listens on every interface — so Host enforcement is off for it.
 func isLoopbackHost(host string) bool {
 	if host == "localhost" {
 		return true
@@ -219,13 +166,6 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// hostGuard rejects the two same-machine browser attacks the loopback control
-// plane is otherwise open to: DNS-rebinding (caught by the Host allowlist) and
-// cross-origin CSRF (caught by the Origin check). The daemon's POST endpoints
-// are CORS "simple" requests, so no preflight fires and a visited web page could
-// otherwise drive POST /api/page/evaluate (arbitrary JS in the signed-in tab) by
-// side effect even though it cannot read the response. CLI/MCP clients send a
-// loopback Host and no browser Origin, so they pass straight through.
 func (s *Server) hostGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.enforceHost && !s.allowedHosts[bindHost(r.Host)] {
@@ -244,9 +184,6 @@ func (s *Server) hostGuard(next http.Handler) http.Handler {
 	})
 }
 
-// artifactPrivacyHeaders also covers router-generated 404/405 responses, which
-// do not pass through writeJSON. That keeps method-rejection and compatibility
-// behavior from becoming the one cacheable response on this sensitive surface.
 func (s *Server) artifactPrivacyHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/artifacts/") {
@@ -270,11 +207,6 @@ func isCanonicalArtifactPath(path string) bool {
 	}
 }
 
-// allowedOrigin reports whether a browser Origin may drive the control plane. A
-// loopback origin and a same-host origin (a UI served from the daemon's own
-// host, e.g. over Tailscale) are permitted; a genuinely cross-site origin is
-// rejected as CSRF. An unparseable/opaque ("null") Origin is rejected — a
-// non-browser client sends no Origin header at all and never reaches here.
 func (s *Server) allowedOrigin(origin, reqHost string) bool {
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" {
@@ -287,15 +219,11 @@ func (s *Server) allowedOrigin(origin, reqHost string) bool {
 	return oh != "" && oh == bindHost(reqHost)
 }
 
-// SetNavigationPolicy installs the same opt-in allow/deny navigation guardrail
-// the MCP surface enforces. Without it, the loopback HTTP control plane is a
-// silent bypass of --allowed-domains/--blocked-domains (it shares the same
-// controller as the MCP server), so the policy must be applied here too.
+// SetNavigationPolicy installs the same opt-in allow/deny navigation guardrail the MCP surface enforces.
 func (s *Server) SetNavigationPolicy(p *navpolicy.Policy) {
 	s.navPolicy = p
 }
 
-// checkNavPolicy reports a policy violation for rawURL, or nil when allowed.
 func (s *Server) checkNavPolicy(rawURL string) error {
 	if s.navPolicy.Empty() {
 		return nil
@@ -316,8 +244,6 @@ func (s *Server) normalizeNav(w http.ResponseWriter, rawURL string) (string, boo
 	return normalized, true
 }
 
-// denyNav writes a 403 and returns true when rawURL is not permitted by the
-// navigation policy. Callers return early on true.
 func (s *Server) denyNav(w http.ResponseWriter, rawURL string) bool {
 	if err := s.checkNavPolicy(rawURL); err != nil {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
@@ -326,9 +252,7 @@ func (s *Server) denyNav(w http.ResponseWriter, rawURL string) bool {
 	return false
 }
 
-// Handler exposes the routed, middleware-wrapped handler this daemon serves, so
-// a client in another package can be driven against the real request decoding
-// rather than a permissive stand-in that accepts anything sent to it.
+// Handler exposes the routed, middleware-wrapped handler this daemon serves, so a client in another package can be driven against the real request decoding rather than a permissive stand-in that accepts anything sent to it.
 func (s *Server) Handler() http.Handler {
 	return s.server.Handler
 }
@@ -348,8 +272,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/watchers/events", s.pageEvents)
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("POST /api/usage/report", s.reportUsage)
-	// The profile roster: loopback-only, and it reaches browsers only through
-	// each profile's own daemon.
+
 	mux.HandleFunc("GET /profiles", s.rosterPage)
 	mux.HandleFunc("GET /profiles/roster.js", s.rosterScript)
 	mux.HandleFunc("GET /api/roster/board", s.rosterBoard)
@@ -357,13 +280,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/roster/copy", s.rosterCopy)
 	mux.HandleFunc("POST /api/roster/pin", s.rosterPin)
 	mux.HandleFunc("POST /api/roster/open", s.rosterOpen)
-	// Off unless BRW_DASHBOARD=1, and loopback-only even then: it streams the
-	// rendered pixels of a signed-in browser.
+
 	mux.HandleFunc("GET /dashboard", s.dashboardPage)
 	mux.HandleFunc("GET /dashboard/stream", s.dashboardStream)
 	mux.HandleFunc("GET /dashboard/activity", s.dashboardActivity)
-	// Present on every daemon, absent in effect on any bound beyond loopback:
-	// takeoverGuard answers 404 there, and the page omits the control.
+
 	mux.HandleFunc("POST /dashboard/takeover", s.dashboardTakeover)
 	mux.HandleFunc("POST /dashboard/input", s.dashboardInput)
 	mux.HandleFunc("GET /api/session/stream", s.sessionStream)
@@ -453,10 +374,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/visual/screenshot", s.screenshot)
 	mux.HandleFunc("GET /api/visual/screenshot_element", s.screenshotElement)
 	mux.HandleFunc("POST /api/artifacts/capture", s.captureArtifact)
-	// Canonical artifact operations keep opaque handles, search terms, and read
-	// windows in bounded request bodies so reverse-proxy access logs see only a
-	// fixed path. The path-parameter routes below remain for compatibility and
-	// advertise their deprecation on every response.
+
 	mux.HandleFunc("POST /api/artifacts/info", s.artifactInfo)
 	mux.HandleFunc("POST /api/artifacts/read", s.readArtifact)
 	mux.HandleFunc("POST /api/artifacts/search", s.searchArtifact)
@@ -475,28 +393,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/consent/revoke", s.consentRevoke)
 }
 
-// upstreamConsentSource is implemented by a browser.Controller that is itself a
-// client of another brw daemon.
-//
-// The consent posture at /health is a property of the whole chain a request
-// travels, not of the process that answers: a proxy applies its own guard and
-// then hands the work to a daemon that applies its own. Whichever of them has a
-// prompter is the one that blocks, so a proxy reporting only its own flags told
-// an unattended caller "nothing here will ask you" on behalf of a daemon that
-// would.
 type upstreamConsentSource interface {
-	// UpstreamConsentPosture reports the posture of the daemon this controller
-	// forwards to, already merged with anything further upstream. An error means
-	// the hop could not be asked.
+	// UpstreamConsentPosture reports the posture of the daemon this controller forwards to, already merged with anything further upstream.
 	UpstreamConsentPosture(ctx context.Context) (siteconsent.Posture, error)
 }
 
-// upstreamConsentTimeout bounds the extra hop /health makes on a proxy. It is
-// short because /health is what a scheduler polls before every run, and a slow
-// upstream must degrade to "unknown" rather than to a hung poll.
 const upstreamConsentTimeout = 3 * time.Second
 
-// consentPosture answers for this daemon and everything it forwards to.
 func (s *Server) consentPosture(ctx context.Context) siteconsent.Posture {
 	posture := s.consent.Posture()
 	if s.upstreamConsent == nil {
@@ -515,10 +418,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]any{
 		"ok":         true,
 		"tab_leases": s.leases.stats(),
-		// An unattended caller has to know, before it starts a run, whether this
-		// daemon can stop and ask a human. With a prompter on its terminal the
-		// daemon blocks on a read nobody will answer, and the scheduled run that
-		// was meant to fail closed hangs until its timeout instead.
+
 		"consent": s.consentPosture(r.Context()),
 	}
 	if !s.identity.Empty() {
@@ -527,11 +427,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	if s.version != "" {
 		payload["version"] = s.version
 	}
-	// A plugin-supplied browser has a provider, a session id and an expiry, and
-	// nothing else reports them: the startup log line is written before this
-	// server exists. Without it an operator learns the session ended by watching
-	// a call fail. Redacted by construction — RemoteSessionInfo.Endpoint is the
-	// scheme://host form, never the URL that authenticates the socket.
+
 	if reporter, ok := s.manager.(browser.RemoteSessionReporter); ok {
 		if session, live := reporter.RemoteSession(); live {
 			payload["remote_session"] = session
@@ -695,14 +591,6 @@ func (s *Server) searchRecipes(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
-// routeBaseline answers where one baseline belongs, for a daemon that proxies
-// this one.
-//
-// A host with no provider, or one whose provider holds no baselines, owns
-// nothing — which is the honest answer and the one that leaves the proxy free
-// to use its own local root. It is NOT an error: a refusal here would stop a
-// proxy gating public fixtures against a browser host that has no private
-// recipes at all.
 func (s *Server) routeBaseline(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		RecipeDigest string `json:"recipe_digest"`
@@ -719,10 +607,6 @@ func (s *Server) routeBaseline(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, baselineRouteResponse{Destination: route.Destination()}, err)
 }
 
-// baselineRouteResponse is the whole of what this route discloses: one word
-// from a closed set. The destination is the answer the proxy needs; a recipe
-// id, a name or a digest list coming back would make this a way to read the
-// private corpus over HTTP.
 type baselineRouteResponse struct {
 	Destination recipe.BaselineDestination `json:"destination"`
 }
@@ -743,11 +627,6 @@ func (s *Server) runRecipe(w http.ResponseWriter, r *http.Request) {
 	writeRunResult(w, result, err)
 }
 
-// writeRunResult keeps the run result in the failure body. A failed run is the
-// ONLY run that carries failure_bundle_artifact_id, so reducing the failure to
-// its message — which is what the ordinary error writer does — would make the
-// evidence bundle unreachable through this transport while the tool description
-// says it is reported.
 func writeRunResult(w http.ResponseWriter, result recipe.RunResult, err error) {
 	if err == nil {
 		writeJSON(w, http.StatusOK, result)
@@ -765,14 +644,6 @@ func (s *Server) requestContext(r *http.Request) context.Context {
 	return s.contextWithTabID(r.Context(), r.URL.Query().Get("tab_id"))
 }
 
-// contextWithTabID pins the target tab into the context. An explicit tab_id
-// always wins. When none is supplied and the controller can resolve the active
-// tab (only the extension Bridge implements activeTabResolver), it is resolved
-// ONCE here and pinned, so the page handler's downstream sub-calls short-circuit
-// instead of re-resolving the active tab repeatedly per logical request. The
-// direct-CDP Manager and HTTP proxy do not implement the capability, so they are
-// unchanged. Handlers that manage tabs themselves (open/focus/close/groups/list)
-// call r.Context() directly and never reach this path.
 func (s *Server) contextWithTabID(ctx context.Context, tabID string) context.Context {
 	if pinned := browser.TabIDFromContext(ctx); pinned != "" {
 		if strings.TrimSpace(tabID) == "" || strings.TrimSpace(tabID) == pinned {
@@ -790,12 +661,6 @@ func (s *Server) contextWithTabID(ctx context.Context, tabID string) context.Con
 	return ctx
 }
 
-// contextWithExplicitTabID pins ONLY a caller-supplied tab_id and never
-// auto-resolves the active tab. The batch/plan runners and cancel use it because
-// they manage focus themselves: batch/plan re-pin per step after focus_tab/open
-// (auto-pinning here would make retargetPinnedTab treat the pin as an explicit
-// tab and suppress retargeting), and a bare cancel must stay the wildcard kill
-// switch. Mirrors the MCP server excluding these tools from one-shot pinning.
 func contextWithExplicitTabID(ctx context.Context, tabID string) context.Context {
 	if tabID != "" {
 		return browser.WithTabID(ctx, tabID)
@@ -803,8 +668,6 @@ func contextWithExplicitTabID(ctx context.Context, tabID string) context.Context
 	return ctx
 }
 
-// activeTabResolver is the optional capability a Controller may implement to
-// resolve the genuinely focused tab once per request (see contextWithTabID).
 type activeTabResolver interface {
 	ResolveActiveTabID(context.Context) string
 }
@@ -838,9 +701,7 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request) {
 			Color:   req.GroupColor,
 		})
 	case owner != "":
-		// No group requested: default the new tab into this session's per-agent
-		// group so agent tabs never scatter loose (or pile into one shared group)
-		// across the user's tab strip.
+
 		daemonGrouped = true
 		result, err = s.openInOwnerGroup(r.Context(), req.URL, owner)
 	default:
@@ -862,9 +723,6 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
-// discardIfAbandoned closes a tab an open created after the caller went away.
-// The caller never learns the tab's id, so leaving it open, and leased to the
-// caller's session, only strands it.
 func (s *Server) discardIfAbandoned(ctx context.Context, result browser.OpenResult) bool {
 	if ctx.Err() == nil || strings.TrimSpace(result.Tab.ID) == "" {
 		return false
@@ -873,8 +731,6 @@ func (s *Server) discardIfAbandoned(ctx context.Context, result browser.OpenResu
 	return true
 }
 
-// abandonedTabCloseTimeout bounds closing a tab whose opener went away. The
-// close runs on a context detached from the cancelled request.
 const abandonedTabCloseTimeout = 10 * time.Second
 
 func (s *Server) closeAbandonedTab(ctx context.Context, tabID string) {
@@ -883,8 +739,7 @@ func (s *Server) closeAbandonedTab(ctx context.Context, tabID string) {
 	}
 	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abandonedTabCloseTimeout)
 	defer cancel()
-	// A failed close leaves the tab open but unleased, so any session can
-	// close it; there is no caller left to report the failure to.
+
 	_ = s.manager.CloseTab(closeCtx, tabID)
 }
 
@@ -973,21 +828,8 @@ func (s *Server) tabs(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, tabs, err)
 }
 
-// activeTab names the tab an untargeted page call on THIS daemon lands in.
-//
-// It exists for the --upstream-http hop. A WebMCP page-tool report has to carry
-// a tab for the agent to poll back into, because a poll walks only the windows
-// of the tab it lands in and a page tool that opens a tab moves the active one.
-// The proxying daemon has no way to work that out: it holds no browser, and the
-// tab list carries no active flag on direct CDP. So it asks the daemon that does
-// own the browser, here.
-//
-// Reporting only: it opens nothing and pins nothing, so asking which tab to name
-// never changes which tab anything targets.
 func (s *Server) activeTab(w http.ResponseWriter, r *http.Request) {
-	// A session that already holds a working tab lands every untargeted page
-	// call on it, so that lease — not the browser's own active tab — is this
-	// caller's answer. Read it without opening one.
+
 	if owner := leaseOwner(r.Context()); owner != "" {
 		if tabID, release, ok := s.leases.acquireDefault(owner); ok {
 			release()
@@ -1059,12 +901,6 @@ func (s *Server) closeTab(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, browser.ActionResult{OK: err == nil, TabID: tabID}, err)
 }
 
-// releaseSession is POST /api/session/release: the caller's session is over.
-// It drops every lease the calling owner holds so its tabs show as available
-// at once instead of after the lease TTL. With close_tabs it first closes the
-// tabs the daemon opened for that owner; tabs the owner merely claimed are
-// left open. A supervisor that ends an agent session calls this, since the
-// daemon cannot tell a finished session from an idle one.
 func (s *Server) releaseSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		CloseTabs bool `json:"close_tabs"`
@@ -1123,9 +959,6 @@ func (s *Server) emulateDevice(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
-// tabIDArg accepts either the legacy `id` field or the `tab_id` field used by
-// every other page tool, preferring `tab_id` for consistency. Mirrors the MCP
-// server's alias handling so callers get identical behaviour on both surfaces.
 func tabIDArg(tabID, id string) string {
 	if strings.TrimSpace(tabID) != "" {
 		return tabID
@@ -1152,12 +985,6 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, snap, err)
 }
 
-// find serves a page search. `live` is what a locate-and-act asks for: the
-// caller is deciding whether to ACT from this element list, so it must come from
-// the page as it is now rather than from the transport's snapshot cache. The
-// answer says so in its metadata, because a daemon that did not understand the
-// parameter would otherwise return its cached list with the same 200 and the
-// proxy could not tell the difference.
 func (s *Server) find(w http.ResponseWriter, r *http.Request) {
 	opts, live, ok := parseFindOptions(w, r)
 	if !ok {
@@ -1193,9 +1020,7 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, read, err)
 		return
 	}
-	// Window falls back to the whole document when a section cannot be resolved,
-	// so an unresolvable section has to be rejected here. Without this the
-	// endpoint answered ?section=NoSuchHeading with 200 and the entire page.
+
 	if opts.Section != "" {
 		if !readability.SectionsAddressable(read.Headings) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -1214,9 +1039,6 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, readability.Window(read, opts), nil)
 }
 
-// parseReadOptions reads the page-read bounds from the query string. The bounds
-// mirror the brw_read tool so an HTTP client and an MCP client page a long
-// document the same way.
 func parseReadOptions(w http.ResponseWriter, r *http.Request) (readability.ReadOptions, bool) {
 	q := r.URL.Query()
 	opts := readability.ReadOptions{}
@@ -1250,11 +1072,6 @@ func parseReadOptions(w http.ResponseWriter, r *http.Request) (readability.ReadO
 		*field.dst = value
 	}
 
-	// This endpoint bounds a read only when asked to. Bounding belongs at the
-	// model boundary — the MCP layer applies its own window to whatever comes
-	// back — and defaulting here silently truncated any client written against
-	// the older unbounded contract, including an older brw proxy, which then had
-	// no way to ask for the remainder.
 	if !bounded {
 		opts.MaxChars = readability.UnboundedReadChars
 		opts.MaxLinks = readability.UnboundedReadChars
@@ -1272,8 +1089,6 @@ func parseReadOptions(w http.ResponseWriter, r *http.Request) (readability.ReadO
 	return opts, true
 }
 
-// parseBoundParam accepts -1 as the explicit "no cap" sentinel, which
-// parseIntParam rejects along with genuinely negative values.
 func parseBoundParam(w http.ResponseWriter, raw, name string) (int, bool) {
 	if raw == "" {
 		return 0, true
@@ -1475,7 +1290,7 @@ func (s *Server) fill(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	// Playwright-style value alias → text (same contract as the MCP surface).
+
 	req.Text = req.EffectiveText()
 	ctx := s.contextWithTabID(r.Context(), req.TabID)
 	if req.Snapshot {
@@ -1535,9 +1350,6 @@ func (s *Server) press(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
-// keyDown and keyUp are the two halves of a press-and-hold. They are separate
-// routes rather than one with a direction flag because the CLI verbs are
-// separate, and a half that silently did the wrong one would be invisible.
 func (s *Server) keyDown(w http.ResponseWriter, r *http.Request) {
 	s.keyHalf(w, r, true)
 }
@@ -1592,8 +1404,6 @@ func (s *Server) focusElement(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
-// get answers one typed question about the page. It shares snapshot.GetRequest
-// with the MCP tool so both surfaces accept exactly the same vocabulary.
 func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	var req snapshot.GetRequest
 	if r.Method == http.MethodGet {
@@ -1616,9 +1426,6 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, value, err)
 }
 
-// frame switches the page's frame scope. It runs through Evaluate rather than a
-// controller method because the scope lives in the page, which is what lets both
-// transports honour it with one implementation.
 func (s *Server) frame(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Target string `json:"target"`
@@ -1656,10 +1463,7 @@ func (s *Server) pushState(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	// Defense in depth: the controller re-checks the target resolved against the
-	// live document, and an absolute off-policy URL is refused here before it
-	// reaches the browser at all. denyNav tolerates the relative paths that are
-	// the normal shape of a route.
+
 	if s.denyNav(w, req.URL) {
 		return
 	}
@@ -1711,10 +1515,7 @@ func (s *Server) waitFor(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := s.contextWithTabID(r.Context(), req.TabID)
 	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
-	// Report what answered the wait when the backend can say. This body is what
-	// `brw wait` prints and what a proxying brw reads back, so a bare {ok:true}
-	// here is the difference between a caller seeing resolved_by:"poll" and
-	// never learning the condition it picked costs a round trip per check.
+
 	if observer, ok := s.manager.(browser.WaitObserver); ok {
 		outcome, err := observer.WaitForOutcome(ctx, req.Condition, timeout)
 		writeResult(w, outcome, err)
@@ -1744,10 +1545,7 @@ func (s *Server) evaluate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Expression string `json:"expression"`
 		TabID      string `json:"tab_id"`
-		// TraceAction/TraceValue carry the label a proxied brw_get or brw_frame
-		// applied on its own side. A context value cannot cross HTTP, so without
-		// them an --upstream-http client's typed read is recorded here as a
-		// hand-written evaluate carrying the generated walker script.
+		// TraceAction/TraceValue carry the label a proxied brw_get or brw_frame applied on its own side.
 		TraceAction string `json:"trace_action"`
 		TraceValue  string `json:"trace_value"`
 	}
@@ -2012,9 +1810,7 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	// A bare cancel (no tab_id) must stay the wildcard kill switch: only pin when
-	// the caller supplied an explicit tab_id, never auto-resolve the active tab
-	// (that would scope the cancel to one tab).
+
 	result, err := s.manager.Cancel(contextWithExplicitTabID(r.Context(), req.TabID), req.Token)
 	writeResult(w, result, err)
 }
@@ -2099,9 +1895,6 @@ func (s *Server) assertValue(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, browser.ActionResult{OK: true}, s.manager.AssertValue(s.contextWithTabID(r.Context(), req.TabID), req.Ref, req.Value, time.Duration(req.TimeoutMS)*time.Millisecond))
 }
 
-// assertPage is the single route behind the richer deterministic assertions.
-// tab_id is transport routing rather than an assertion parameter, so it is
-// decoded alongside the request instead of living on the request type.
 func (s *Server) assertPage(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		browser.AssertRequest
@@ -2114,10 +1907,6 @@ func (s *Server) assertPage(w http.ResponseWriter, r *http.Request) {
 	writeAssertResult(w, result, err)
 }
 
-// writeAssertResult keeps expected against actual in the failure body. The
-// ordinary error writer reduces a failure to its message, which would make
-// browser.AssertResult's contract — a populated result AND an error — hold on
-// direct CDP and quietly not hold through the upstream proxy.
 func writeAssertResult(w http.ResponseWriter, result browser.AssertResult, err error) {
 	if err == nil {
 		writeJSON(w, http.StatusOK, result)
@@ -2150,8 +1939,7 @@ func (s *Server) windowBounds(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) resizeWindow(w http.ResponseWriter, r *http.Request) {
-	// tab_id is transport routing rather than a resize parameter, so it is
-	// decoded alongside the options instead of living on the options type.
+
 	var req struct {
 		browser.WindowResizeOptions
 		TabID string `json:"tab_id"`
@@ -2170,9 +1958,7 @@ func (s *Server) consoleMessages(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// The console drains on read, so a client that asked for no limit must get
-	// everything: capping it would discard messages it can never fetch again.
-	// Only a caller that named a filter opts into the default cap.
+
 	if q.Get("limit") == "" && q.Get("only_errors") == "" && q.Get("level") == "" && q.Get("pattern") == "" {
 		limit = -1
 	}
@@ -2194,15 +1980,8 @@ func (s *Server) consoleMessages(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, filterConsoleMessages(messages, q.Get("only_errors") == "true", q.Get("level"), match, limit), nil)
 }
 
-// defaultHTTPConsoleLimit mirrors the cap the brw_console tool applies.
 const defaultHTTPConsoleLimit = 100
 
-// filterConsoleMessages narrows a console read the same way brw_console does,
-// and returns a bare slice: the --upstream-http proxy decodes this endpoint
-// into []ConsoleMessage, so an added response envelope would silently empty the
-// console in proxy mode. This endpoint has no retention buffer behind it —
-// each request filters only what its own drain returned — so a caller that
-// needs to keep unmatched messages should read unfiltered.
 func filterConsoleMessages(messages []browser.ConsoleMessage, onlyErrors bool, level string, match *regexp.Regexp, limit int) []browser.ConsoleMessage {
 	kept := make([]browser.ConsoleMessage, 0, len(messages))
 	for _, msg := range messages {
@@ -2244,17 +2023,11 @@ func (s *Server) trace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.scopedTrace(r))
 }
 
-// scopedTrace returns only the actions this caller is entitled to see. The
-// daemon is shared, so an unscoped trace hands one agent session another's
-// browsing — on a signed-in profile that means authenticated URLs. Entries for a
-// tab leased by somebody else are withheld and counted, so a caller can tell a
-// filtered trace from an empty one.
 func (s *Server) scopedTrace(r *http.Request) browser.TraceResult {
 	full := s.manager.GetTrace()
 	owner := leaseOwner(r.Context())
 	if owner == "" {
-		// No lease identity on this request: return only tab-less entries rather
-		// than everything, since there is no way to establish entitlement.
+
 		return filterTrace(full, func(entry browser.TraceEntry) bool {
 			return entry.TabID == ""
 		})
@@ -2334,12 +2107,7 @@ func (s *Server) ungroupTabs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	// Set-of-Marks capture: draw ref-labelled boxes over frontier elements and
-	// return the PNG plus a ref->box legend. The legend is only representable in
-	// the JSON (base64) response; a raw response still returns the annotated PNG
-	// bytes but drops the legend.
-	// A ref or region query implies an annotated (Set-of-Marks) crop even without
-	// annotate=1 — the legend is the point of the crop.
+
 	ref := q.Get("ref")
 	region, hasRegion := parseScreenshotRegion(q)
 	if q.Get("annotate") == "1" || strings.TrimSpace(ref) != "" || hasRegion {
@@ -2392,9 +2160,6 @@ func (s *Server) screenshotElement(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(shot.Data)
 }
 
-// parseScreenshotRegion reads an optional viewport-space clip rectangle from the
-// region_x/region_y/region_w/region_h query params for a tight annotated crop.
-// Returns ok=false (and a zero region) when no usable width/height is supplied.
 func parseScreenshotRegion(q url.Values) (browser.ScreenshotRegion, bool) {
 	parse := func(k string) float64 {
 		v, _ := strconv.ParseFloat(q.Get(k), 64)
@@ -2455,9 +2220,7 @@ func parseSnapshotOptions(w http.ResponseWriter, r *http.Request) (snapshotReque
 		return snapshotRequest{}, false
 	}
 	return snapshotRequest{
-		// Share the MCP surface's default envelope: an unspecified mode collapses
-		// to the bounded frontier so HTTP callers don't get unbounded multi-thousand
-		// element dumps on dense pages.
+
 		Options: snapshot.NormalizeOptions(snapshot.SnapshotOptions{
 			Mode:               q.Get("mode"),
 			Query:              q.Get("query"),
@@ -2477,10 +2240,6 @@ func parseSnapshotOptions(w http.ResponseWriter, r *http.Request) (snapshotReque
 	}, true
 }
 
-// parseFindOptions reads a search off either shape the route accepts: a GET
-// query string and a POST body. `live` is read from BOTH — a guard that only one
-// argument shape can ask for is a guard the other shape routes around, and this
-// route is registered for both methods.
 func parseFindOptions(w http.ResponseWriter, r *http.Request) (snapshot.FindOptions, bool, bool) {
 	if r.Method == http.MethodPost {
 		var req struct {
@@ -2553,13 +2312,17 @@ func parseIntParam(w http.ResponseWriter, raw, name string) (int, bool) {
 }
 
 func trimSnapshotToMaxBytes(snap snapshot.PageSnapshot, maxBytes int) snapshot.PageSnapshot {
-	for len(snap.Elements) > 0 {
-		data, err := json.Marshal(snap)
-		if err != nil || len(data) <= maxBytes {
-			return snap
-		}
-		snap.Elements = snap.Elements[:len(snap.Elements)-1]
+	data, err := json.Marshal(snap)
+	if err != nil || len(data) <= maxBytes {
+		return snap
 	}
+	elements := snap.Elements
+	count := sort.Search(len(elements), func(i int) bool {
+		snap.Elements = elements[:i+1]
+		data, _ := json.Marshal(snap)
+		return len(data) > maxBytes
+	})
+	snap.Elements = elements[:count]
 	return snap
 }
 
@@ -2575,14 +2338,10 @@ func parseInt64Param(w http.ResponseWriter, raw, name string) (int64, bool) {
 	return value, true
 }
 
-// maxRequestBodyBytes caps decoded request bodies so a single oversized payload
-// (forwarded into the browser by several endpoints) can't OOM the daemon.
-const maxRequestBodyBytes = 8 << 20 // 8 MiB
+const maxRequestBodyBytes = 8 << 20
 
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
-	defer r.Body.Close()
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+	if err := decodeBody(w, r, dst, maxRequestBodyBytes, false); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return false
 	}
@@ -2590,37 +2349,32 @@ func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 func decodeStrict(w http.ResponseWriter, r *http.Request, dst any) bool {
-	defer r.Body.Close()
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(dst); err != nil {
+	if err := decodeBody(w, r, dst, maxRequestBodyBytes, true); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return false
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "request contains trailing JSON"})
 		return false
 	}
 	return true
 }
 
-// decodeArtifactRequest deliberately returns one constant error for malformed,
-// oversized, unknown-field, and trailing-JSON requests. Artifact handles and
-// search terms are private bearer-like values; reflecting decoder details can
-// copy attacker-controlled field names into client errors or proxy logs.
-func decodeArtifactRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
+func decodeBody(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64, strict bool) error {
 	defer r.Body.Close()
-	r.Body = http.MaxBytesReader(w, r.Body, maxArtifactRequestBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
+	if strict {
+		decoder.DisallowUnknownFields()
+	}
 	if err := decoder.Decode(dst); err != nil {
-		writeArtifactRequestError(w)
-		return false
+		return err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("request contains trailing JSON")
+	}
+	return nil
+}
+
+func decodeArtifactRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if err := decodeBody(w, r, dst, maxArtifactRequestBodyBytes, true); err != nil {
 		writeArtifactRequestError(w)
 		return false
 	}
@@ -2635,9 +2389,7 @@ func writeArtifactRequestError(w http.ResponseWriter) {
 
 func writeArtifactResult(w http.ResponseWriter, value any, err error) {
 	if err != nil {
-		// Classify the real failure, but fingerprint only the constant public
-		// message: some backing-store errors may incorporate an artifact handle
-		// or literal search term and the operational ledger must not depend on it.
+
 		const publicMessage = "artifact operation failed"
 		errorClass, fingerprintMessage := artifactFailureUsage(err)
 		w.Header().Set(usagelog.HeaderErrorClass, errorClass)
@@ -2648,9 +2400,6 @@ func writeArtifactResult(w http.ResponseWriter, value any, err error) {
 	writeJSON(w, http.StatusOK, value)
 }
 
-// artifactFailureUsage derives only privacy-safe operational metadata. The
-// caller still receives the same constant public error, and neither an artifact
-// handle nor a search query is copied or hashed into the ledger.
 func artifactFailureUsage(err error) (errorClass, fingerprintMessage string) {
 	errorClass = usagelog.ClassifyError(err)
 	switch errorClass {
@@ -2683,13 +2432,9 @@ func writeError(w http.ResponseWriter, err error) {
 	var refused *browser.TakeoverRefusedError
 	if errors.As(err, &refused) {
 		w.Header().Set(usagelog.HeaderErrorClass, usagelog.ClassifyError(err))
-		// Fingerprint the condition, not the instance: the holder label and the
-		// expiry are different on every refusal and would give the ledger a new
-		// fingerprint each time the same contention recurred.
+
 		w.Header().Set(usagelog.HeaderErrorFingerprint, usagelog.Fingerprint("takeover held"))
-		// 409 rather than 400: the request was well formed and arrived at a
-		// browser someone else is holding, which is a conflict that resolves
-		// itself when the hold ends. 400 would read as "fix your arguments".
+
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error":      err.Error(),
 			"code":       browser.TakeoverRefusedCode,
@@ -2705,10 +2450,7 @@ func writeError(w http.ResponseWriter, err error) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
-	// Browser-control responses can contain page text, artifact excerpts, and
-	// recipe metadata.  Even though brwd is normally loopback-only, operators
-	// sometimes put an authenticated reverse proxy in front of it.  Never let a
-	// shared or browser cache retain those responses.
+
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("content-type", "application/json")

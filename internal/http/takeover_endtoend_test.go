@@ -16,12 +16,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// The dashboard's two halves are proven separately elsewhere: the HTTP edge
-// against a fake in this package, the dispatch-to-renderer half against real
-// Chrome in internal/browser. Neither says the two are wired to each other. This
-// runs the whole path once — an HTTP request from a loopback peer, through the
-// daemon's own handlers, into a real browser — because "the routes work" and
-// "the pixels moved" are different claims.
 const dashboardE2EFixture = `<!doctype html><html><head><title>Dashboard fixture</title></head><body style="margin:0">
 <button id="go" style="position:fixed;left:0;top:0;width:240px;height:80px">Go</button>
 <output id="count" style="position:fixed;left:0;top:160px">0</output>
@@ -42,9 +36,7 @@ func TestDashboardInputReachesTheRealBrowserAndAgentActionsAreRefused(t *testing
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	profile := browsertest.NewProfile(t)
-	// Both teardown steps hang off the profile rather than off a defer, so the
-	// browser still closes under a live context: every defer in this function
-	// runs before any cleanup does.
+
 	profile.StopWith(cancel)
 	manager, err := browser.New(ctx, browser.Config{
 		UserDataDir: profile.Dir(),
@@ -68,7 +60,6 @@ func TestDashboardInputReachesTheRealBrowserAndAgentActionsAreRefused(t *testing
 
 	server := New("127.0.0.1:17310", manager)
 
-	// Nothing reaches the renderer before someone asks for the hold.
 	press := `{"token":%q,"event":{"kind":"mouse","type":"mousePressed","x":120,"y":40,"button":"left","buttons":1,"click_count":1}}`
 	release := `{"token":%q,"event":{"kind":"mouse","type":"mouseReleased","x":120,"y":40,"button":"left","click_count":1}}`
 	ungranted := dashboardPost(t, server.dashboardInput, "/dashboard/input", fmt.Sprintf(press, "not-a-token"))
@@ -100,8 +91,6 @@ func TestDashboardInputReachesTheRealBrowserAndAgentActionsAreRefused(t *testing
 		t.Fatalf("the page saw %s clicks after one forwarded click, want 1", got)
 	}
 
-	// And while that hold is live, the agent-facing route for the same browser
-	// answers a conflict rather than driving the page the human is on.
 	agent := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/page/click", strings.NewReader(`{"ref":"e1"}`))
 	request.RemoteAddr = "127.0.0.1:54321"
@@ -135,8 +124,6 @@ func dashboardPost(t *testing.T, handler http.HandlerFunc, path, body string) *h
 	return recorder
 }
 
-// dashboardClickCount reads the counter the way brw_get reads it, which is the
-// one evaluation path a hold leaves open.
 func dashboardClickCount(t *testing.T, ctx context.Context, manager *browser.Manager) string {
 	t.Helper()
 	result, err := manager.Evaluate(browser.WithTraceLabel(ctx, browser.TraceActionGet, "text #count"),

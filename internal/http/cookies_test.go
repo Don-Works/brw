@@ -12,8 +12,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// The /api/page/cookies endpoint must carry every brw_cookies field across the
-// HTTP boundary and return the controller's result JSON verbatim.
 func TestCookiesEndpointForwardsParamsAndResult(t *testing.T) {
 	ctrl := &fakeController{}
 	server := New("", ctrl)
@@ -46,19 +44,16 @@ func TestCookiesEndpointForwardsParamsAndResult(t *testing.T) {
 	}
 }
 
-// A controller-side transport limitation (the extension bridge refusing cookie
-// access) must surface as a 400 with the reason intact, not a 5xx.
 func TestCookiesEndpointSurfacesTransportLimitation(t *testing.T) {
 	server := New("", &fakeController{})
 	body := bytes.NewBufferString(`{"action":"list"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/page/cookies", body)
 	rec := httptest.NewRecorder()
-	// Swap in a refusing controller via the exported surface: easiest is a
-	// dedicated server instance, so re-create with a stub type.
+
 	refusing := &refusingCookiesController{}
 	server2 := New("", refusing)
 	rec2 := httptest.NewRecorder()
-	server.server.Handler.ServeHTTP(rec, req) // sanity: normal controller path
+	server.server.Handler.ServeHTTP(rec, req)
 	req2 := httptest.NewRequest(http.MethodPost, "/api/page/cookies", bytes.NewBufferString(`{"action":"list"}`))
 	server2.server.Handler.ServeHTTP(rec2, req2)
 	if rec.Code != http.StatusOK {

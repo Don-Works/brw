@@ -38,10 +38,6 @@ func TestSnapshotAppliesQueryParams(t *testing.T) {
 	}
 }
 
-// TestSnapshotDefaultsToBoundedFrontier guards the fix for the unbounded-HTTP-
-// snapshot bug a regression test caught: a bare /api/page/snapshot (no mode)
-// must collapse to the bounded frontier so dense pages don't dump thousands of
-// elements, matching the MCP surface.
 func TestSnapshotDefaultsToBoundedFrontier(t *testing.T) {
 	ctrl := &fakeController{snap: sampleSnapshot()}
 	server := New("", ctrl)
@@ -87,11 +83,6 @@ func TestFindForwardsQueryParams(t *testing.T) {
 	}
 }
 
-// A locate-and-act over the upstream-HTTP proxy asks this route for a search
-// that bypasses the browser host's snapshot cache. The route has to honour it on
-// EVERY shape it accepts — it is registered for GET and POST — and has to say in
-// the answer that it did, because a daemon that predates the parameter returns
-// its cached list with the same 200 and the proxy cannot otherwise tell.
 func TestFindLiveBypassesTheCacheOnEveryRequestShape(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -137,8 +128,6 @@ func TestFindLiveBypassesTheCacheOnEveryRequestShape(t *testing.T) {
 	}
 }
 
-// An ordinary find is unchanged: it may still be served from the cache, and it
-// does not claim to be live.
 func TestFindWithoutLiveIsUnchanged(t *testing.T) {
 	ctrl := &fakeController{snap: sampleSnapshot()}
 	server := New("", ctrl)
@@ -378,7 +367,7 @@ func TestNewPageActionRoutes(t *testing.T) {
 	if ctrl.mouseUpOpt.X == nil || *ctrl.mouseUpOpt.X != 12 || ctrl.mouseUpOpt.Y == nil || *ctrl.mouseUpOpt.Y != 34 {
 		t.Fatalf("mouse_up opts = %#v", ctrl.mouseUpOpt)
 	}
-	// A non-default click (right button, double) must route through ClickButton.
+
 	if ctrl.clickButton.Ref != "e1" || ctrl.clickButton.Button != "right" || ctrl.clickButton.ClickCount != 2 {
 		t.Fatalf("click button opts = %#v", ctrl.clickButton)
 	}
@@ -409,9 +398,6 @@ func TestNotifyForwardsBodyAndReturnsDelivery(t *testing.T) {
 	}
 }
 
-// TestScreenshotAnnotateReturnsLegend verifies ?annotate=1&base64=1 routes to
-// the Set-of-Marks path and returns the ref->box legend as JSON, while a plain
-// request stays on the un-annotated path.
 func TestScreenshotAnnotateReturnsLegend(t *testing.T) {
 	ctrl := &fakeController{snap: sampleSnapshot()}
 	server := New("", ctrl)
@@ -542,9 +528,6 @@ func (f *fakeController) Find(_ context.Context, opts snapshot.FindOptions) (sna
 	return snapshot.FindResult{Elements: []snapshot.Element{f.snap.Elements[0]}}, nil
 }
 
-// FindLive answers with every element the fixture page has, while Find above
-// answers with one: a route that served a live search from the cached path
-// returns a different list rather than the same one.
 func (f *fakeController) FindLive(_ context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
 	f.findOpts = opts
 	f.findLiveCalls++
@@ -745,10 +728,6 @@ func TestHealth(t *testing.T) {
 	}
 }
 
-// TestNavPolicyEnforcedOnHTTP guards against the bypass where the navigation
-// guardrail was installed only on the MCP server: the HTTP API shares the same
-// controller, so a malicious/confused caller reaching the loopback port could
-// open any domain. Every navigation entrypoint must honor the policy here too.
 func TestNavPolicyEnforcedOnHTTP(t *testing.T) {
 	post := func(t *testing.T, srv *Server, path, body string) int {
 		t.Helper()
@@ -760,7 +739,7 @@ func TestNavPolicyEnforcedOnHTTP(t *testing.T) {
 
 	ctrl := &fakeController{}
 	srv := New(":", ctrl)
-	srv.SetNavigationPolicy(navpolicy.Parse("corp.example.com", "")) // allowlist mode
+	srv.SetNavigationPolicy(navpolicy.Parse("corp.example.com", ""))
 
 	denied := []struct{ path, body string }{
 		{"/api/browser/open", `{"url":"https://evil.com"}`},
@@ -779,7 +758,6 @@ func TestNavPolicyEnforcedOnHTTP(t *testing.T) {
 		t.Fatal("a denied navigation reached the controller — policy is not gating before dispatch")
 	}
 
-	// An allowlisted destination must still pass through to the controller.
 	if code := post(t, srv, "/api/page/navigate_to", `{"url":"https://corp.example.com/app"}`); code != http.StatusOK {
 		t.Fatalf("allowlisted navigate_to: code = %d, want 200", code)
 	}
@@ -787,16 +765,12 @@ func TestNavPolicyEnforcedOnHTTP(t *testing.T) {
 		t.Fatalf("allowlisted navigate_to did not reach controller, got %q", ctrl.navigateToURL)
 	}
 
-	// With no policy installed, everything passes (back-compat).
 	open := New(":", &fakeController{})
 	if code := post(t, open, "/api/browser/open", `{"url":"https://anything.example"}`); code != http.StatusOK {
 		t.Fatalf("no-policy open: code = %d, want 200", code)
 	}
 }
 
-// Plans and batches are navigation entrypoints too. Guarding only the standalone
-// open handlers would let an HTTP caller smuggle a denied URL through a step.
-// This also proves bare-host convenience input is canonicalized before dispatch.
 func TestNavPolicyGatesAndCanonicalizesHTTPPlanBatch(t *testing.T) {
 	ctrl := &fakeController{}
 	srv := New(":", ctrl)
@@ -841,7 +815,6 @@ func TestNavPolicyGatesAndCanonicalizesHTTPPlanBatch(t *testing.T) {
 	}
 }
 
-// remoteSessionController is a controller driving a plugin-supplied browser.
 type remoteSessionController struct {
 	fakeController
 	session browser.RemoteSessionInfo
@@ -852,10 +825,6 @@ func (c *remoteSessionController) RemoteSession() (browser.RemoteSessionInfo, bo
 	return c.session, c.live
 }
 
-// An operator on a provider-backed daemon has to be able to see which session
-// is running and when it ends. The startup log line is written before this
-// server exists and is gone by the time anybody asks, so without /health the
-// first news of an expiry is a call failing.
 func TestHealthNamesThePluginSuppliedSession(t *testing.T) {
 	expiry := time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second)
 	ctrl := &remoteSessionController{
@@ -889,19 +858,11 @@ func TestHealthNamesThePluginSuppliedSession(t *testing.T) {
 	if !resp.RemoteSession.ExpiresAt.Equal(expiry) {
 		t.Fatalf("expires_at = %v, want %v; an operator cannot see the session ending without it", resp.RemoteSession.ExpiresAt, expiry)
 	}
-	// Deliberately NOT asserted here: that the endpoint is redacted. This test
-	// puts the endpoint on the fake controller itself, so any such check would
-	// re-derive its own input and could not fail whatever Manager.RemoteSession
-	// does. The redaction is a property of the manager and is checked where it
-	// is produced, by TestRemoteSessionReportsTheRedactedEndpoint in
-	// internal/browser (and end to end against a live provider-backed manager
-	// in remote_provider_live_test.go).
+
 	if resp.RemoteSession.Endpoint != "wss://browsers.example" {
 		t.Fatalf("endpoint = %q; /health has to serve what the controller reported", resp.RemoteSession.Endpoint)
 	}
 
-	// A local daemon says nothing, rather than an empty object a client would
-	// have to distinguish from a session with no id.
 	ctrl.live = false
 	w = httptest.NewRecorder()
 	srv.server.Handler.ServeHTTP(w, req)
@@ -988,10 +949,6 @@ func (e *errorController) Open(context.Context, string) (browser.OpenResult, err
 	return browser.OpenResult{}, fmt.Errorf("chrome crashed")
 }
 
-// resolverController is a fakeController that also implements activeTabResolver,
-// exercising the one-shot active-tab pin path that only the extension Bridge
-// triggers in production. It records whether the active tab was resolved and the
-// tab pinned into the context for batch/cancel.
 type resolverController struct {
 	fakeController
 	resolveCalls            int
@@ -1020,12 +977,6 @@ func (r *resolverController) Cancel(ctx context.Context, token string) (browser.
 	return r.fakeController.Cancel(ctx, token)
 }
 
-// TestBatchAndCancelStayTabAgnostic guards the HTTP surface against auto-pinning
-// the active tab for batch/cancel. Those manage focus themselves: batch/plan
-// re-pin per step after focus_tab/open (auto-pinning would make retargetPinnedTab
-// treat the pin as explicit and suppress retargeting), and a bare cancel must
-// stay the wildcard kill switch. A normal page tool (scroll) DOES auto-pin, so
-// the contrast proves the resolver is genuinely wired.
 func TestBatchAndCancelStayTabAgnostic(t *testing.T) {
 	ctrl := &resolverController{}
 	server := New("", ctrl)
@@ -1035,7 +986,6 @@ func TestBatchAndCancelStayTabAgnostic(t *testing.T) {
 		server.server.Handler.ServeHTTP(rec, req)
 	}
 
-	// A normal page tool auto-resolves the active tab (proves the mechanism works).
 	post("/api/page/scroll", `{"direction":"down"}`)
 	if ctrl.resolveCalls == 0 {
 		t.Fatal("scroll did not auto-resolve the active tab; resolver not wired, test would be vacuous")
@@ -1059,7 +1009,6 @@ func TestBatchAndCancelStayTabAgnostic(t *testing.T) {
 		t.Fatalf("bare cancel pinned tab %q (resolves=%d); must stay the wildcard kill switch", ctrl.cancelCtxTab, ctrl.resolveCalls)
 	}
 
-	// An explicit tab_id is still honored on batch.
 	post("/api/page/batch", `{"steps":[],"tab_id":"7"}`)
 	if ctrl.batchCtxTab != "7" {
 		t.Fatalf("explicit batch tab = %q, want 7", ctrl.batchCtxTab)

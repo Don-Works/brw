@@ -13,8 +13,6 @@ import (
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
-// activeTabController names a tab that is deliberately NOT the one the lease
-// manager hands a session, so the two sources are distinguishable.
 type activeTabController struct {
 	*fakeController
 	tabID string
@@ -33,12 +31,6 @@ func activeTabRequest(owner string) *http.Request {
 	return req
 }
 
-// The route exists so a proxying daemon can name the tab its page-tool report
-// has to be polled back into. What it must name is the tab a page call from THAT
-// caller lands in — which, for a session holding a working tab, is its lease and
-// not the browser's own active tab. Naming the wrong tab is worse than naming
-// none: the agent polls a document that never held the invocation and reads back
-// status "lost".
 func TestActiveTabRouteNamesTheTabAPageCallWouldLandIn(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -55,7 +47,7 @@ func TestActiveTabRouteNamesTheTabAPageCallWouldLandIn(t *testing.T) {
 			owner:      "owner-a",
 			takeLease:  true,
 			wantStatus: http.StatusOK,
-			// fakeController.OpenInGroup opens tab1 for the session's lease.
+
 			wantTabID: "tab1",
 		},
 		{
@@ -87,8 +79,7 @@ func TestActiveTabRouteNamesTheTabAPageCallWouldLandIn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server := New("", tc.controller)
 			if tc.takeLease {
-				// One lease-scoped call first, which is what opens the session's
-				// working tab. A page-tool report only ever asks after one.
+
 				rec := httptest.NewRecorder()
 				server.server.Handler.ServeHTTP(rec, ownerRequest(http.MethodPost, "/api/page/evaluate", tc.owner, `{"expression":"1"}`))
 				if rec.Code != http.StatusOK {

@@ -7,8 +7,6 @@ import (
 	"github.com/Don-Works/brw/internal/devtools"
 )
 
-// devtoolsObserver resolves the optional observation capability on whichever
-// transport this daemon drives.
 func (s *Server) devtoolsObserver(w http.ResponseWriter) (devtools.Observer, bool) {
 	observer, ok := s.manager.(devtools.Observer)
 	if !ok {
@@ -31,10 +29,6 @@ func (s *Server) vitals(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
-// accessibilityAudit runs the audit AND stores the full report here on the
-// browser host. Both halves belong on this side: an upstream MCP process is
-// disposable and has no store, and splitting the two would mean auditing the
-// page once for the summary and again for the artifact.
 func (s *Server) accessibilityAudit(w http.ResponseWriter, r *http.Request) {
 	observer, ok := s.devtoolsObserver(w)
 	if !ok {

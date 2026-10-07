@@ -8,8 +8,6 @@ import (
 )
 
 // SetAuthToken makes every request carry "Authorization: Bearer <token>".
-// An empty token leaves the listener open, which is only safe on loopback.
-// Call it before ListenAndServe.
 func (s *Server) SetAuthToken(token string) {
 	if token == "" {
 		s.authDigest = nil

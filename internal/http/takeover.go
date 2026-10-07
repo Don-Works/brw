@@ -13,33 +13,12 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// The dashboard's second half: what the agent is DOING, and the ability to take
-// the keyboard off it.
-//
-// The activity feed is the trace stream the daemon already publishes, rendered
-// beside the frames. Watching a page change with no idea which action caused it
-// is the failure this closes.
-//
-// Takeover is input forwarding, and it is gated twice over. It needs an explicit
-// per-session enable, so a dashboard left open is a viewer and not a driver; and
-// it needs brwd to be bound to loopback, because forwarding Input.dispatch* is
-// remote control of a signed-in browser and a bind beyond loopback means the
-// operator has already decided other machines may reach this daemon. On such a
-// bind the control is not rendered at all and the routes do not exist, rather
-// than being drawn disabled: a disabled button is a thing to be re-enabled by
-// whoever finds the endpoint.
 const (
-	// takeoverHeartbeat is how often the page renews its hold. A grant lives for
-	// twice this, so one missed beat is survivable and a closed tab still frees
-	// the browser without anyone pressing release.
 	takeoverHeartbeat = 45 * time.Second
-	// One event per request, so the body is a handful of numbers.
+
 	takeoverInputBodyBytes = 4 << 10
 )
 
-// takeoverController is the optional transport capability for human takeover.
-// Direct CDP implements it; the extension bridge and the upstream-HTTP proxy do
-// not, and get a named refusal rather than a control that does nothing.
 type takeoverController interface {
 	AcquireTakeover(string, time.Duration) (browser.TakeoverGrant, error)
 	RenewTakeover(string, time.Duration) (browser.TakeoverGrant, error)
@@ -48,9 +27,6 @@ type takeoverController interface {
 	DispatchTakeoverInput(context.Context, string, browser.TakeoverInput) error
 }
 
-// takeoverAvailable reports whether this daemon may offer takeover at all. It is
-// a property of the bind address, not of the request: a loopback peer reaching a
-// daemon bound to a tailnet address is still a daemon other machines can reach.
 func (s *Server) takeoverAvailable() bool {
 	if !s.loopbackBind {
 		return false
@@ -59,7 +35,6 @@ func (s *Server) takeoverAvailable() bool {
 	return ok
 }
 
-// takeoverGuard applies the dashboard's own conditions and then the bind check.
 func (s *Server) takeoverGuard(w http.ResponseWriter, r *http.Request) (takeoverController, bool) {
 	if !s.dashboardGuard(w, r) {
 		return nil, false
@@ -80,8 +55,6 @@ func (s *Server) takeoverGuard(w http.ResponseWriter, r *http.Request) (takeover
 	return controller, true
 }
 
-// dashboardTakeover is POST /dashboard/takeover: acquire, renew or release the
-// human's exclusive hold.
 func (s *Server) dashboardTakeover(w http.ResponseWriter, r *http.Request) {
 	controller, ok := s.takeoverGuard(w, r)
 	if !ok {
@@ -124,26 +97,16 @@ func (s *Server) dashboardTakeover(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// dashboardInput is POST /dashboard/input: one forwarded mouse or key event.
-//
-// The token is re-checked inside the controller, so this handler being reachable
-// is not the same as input being permitted. That duplication is deliberate: the
-// HTTP edge decides whether the surface exists, the browser decides whether the
-// event may reach the renderer.
 func (s *Server) dashboardInput(w http.ResponseWriter, r *http.Request) {
 	controller, ok := s.takeoverGuard(w, r)
 	if !ok {
 		return
 	}
-	defer r.Body.Close()
-	r.Body = http.MaxBytesReader(w, r.Body, takeoverInputBodyBytes)
 	var req struct {
 		Token string                `json:"token"`
 		Event browser.TakeoverInput `json:"event"`
 	}
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
+	if err := decodeBody(w, r, &req, takeoverInputBodyBytes, true); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -154,8 +117,6 @@ func (s *Server) dashboardInput(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// takeoverFailure maps the browser's typed refusals onto status codes. A missing
-// grant is 403 rather than 400: the request was well formed and was refused.
 func takeoverFailure(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, browser.ErrTakeoverNotHeld):
@@ -167,14 +128,6 @@ func takeoverFailure(w http.ResponseWriter, err error) {
 	}
 }
 
-// dashboardActivity is GET /dashboard/activity: the trace stream as one line per
-// step — action, what it acted on, whether it worked, how long it took.
-//
-// Unlike /api/session/stream this is NOT scoped to a lease. The operator running
-// the daemon is already watching the rendered pixels of every tab on this
-// screen; withholding the action that produced them would leave the feed
-// describing a browser other than the one on display. The dashboard's own two
-// gates — opt-in and loopback-only — are what stands in front of it.
 func (s *Server) dashboardActivity(w http.ResponseWriter, r *http.Request) {
 	if !s.dashboardGuard(w, r) {
 		return
@@ -235,15 +188,7 @@ func (s *Server) dashboardActivity(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ActivityLine is one row of the feed. It is a projection of the trace entry
-// rather than the entry itself: the feed is read by a person at a glance, and a
-// row that carried the entry's page text would put page content on a surface
-// whose job is to say what happened, not what the page said.
-//
-// Error is the one field whose CONTENT is not chosen here — it is whatever the
-// failing action said — so a failed navigate_to or open would otherwise carry
-// its target URL into the row. Addresses are replaced before the row is built;
-// see scrubActivityError.
+// ActivityLine is one row of the feed.
 type ActivityLine struct {
 	Seq        uint64 `json:"seq"`
 	Action     string `json:"action"`
@@ -257,15 +202,8 @@ type ActivityLine struct {
 	At         string `json:"at"`
 }
 
-// activityURL matches an absolute URL anywhere in a failure reason. Deliberately
-// greedy about schemes rather than about hosts: the point is that no address
-// reaches the row, not that the row explains which one it was.
 var activityURL = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"'<>)\]]+`)
 
-// scrubActivityError keeps a failure's reason and drops the address in it. An
-// operator needs to know a navigate failed and why; the URL it was aimed at is
-// page-derived and belongs to the tab they are already watching, not to a feed
-// served beside it.
 func scrubActivityError(message string) string {
 	return activityURL.ReplaceAllString(message, "<url>")
 }

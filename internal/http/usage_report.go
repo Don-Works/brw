@@ -1,8 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
-	"io"
 	"net/http"
 
 	"github.com/Don-Works/brw/internal/mcp"
@@ -14,16 +12,8 @@ func (s *Server) reportUsage(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 8192)
 	var event usagelog.Event
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&event); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
+	if err := decodeBody(w, r, &event, 8192, true); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}

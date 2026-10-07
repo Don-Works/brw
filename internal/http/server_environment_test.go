@@ -12,8 +12,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// environmentRecorder is a controller that also holds the page-environment
-// capability, so the routes can be exercised without a browser.
 type environmentRecorder struct {
 	fakeController
 	geolocation browser.GeolocationOptions
@@ -25,9 +23,7 @@ type environmentRecorder struct {
 	check       browser.CheckOptions
 	credentials browser.CredentialsOptions
 	download    browser.DownloadPathOptions
-	// authSensitive records whether the handler marked the call as carrying a
-	// caller-declared secret, which is what keeps the credentialed URL out of the
-	// daemon's replayable trace.
+
 	authSensitive bool
 }
 
@@ -77,8 +73,6 @@ func (c *environmentRecorder) SetDownloadPath(_ context.Context, opts browser.Do
 	return browser.EnvironmentResult{OK: true}, nil
 }
 
-// The CLI drives the HTTP API rather than MCP, so every environment tool needs
-// its own route or the CLI cannot reach the capability at all.
 func TestEnvironmentRoutesForwardTheirBodies(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -202,8 +196,6 @@ func TestEnvironmentRoutesForwardTheirBodies(t *testing.T) {
 	}
 }
 
-// A transport without the capability has to say which transport it is and why,
-// on the HTTP surface as well as over MCP.
 func TestEnvironmentRoutesNameTheMissingCapability(t *testing.T) {
 	paths := []string{
 		"/api/page/geolocation",
@@ -238,9 +230,6 @@ func TestEnvironmentRoutesNameTheMissingCapability(t *testing.T) {
 	}
 }
 
-// The credential route is the one body that must never come back in an error.
-// encoding/json quotes the input it choked on, and here that input is a
-// password.
 func TestAuthenticateRouteDoesNotEchoTheBodyOnADecodeError(t *testing.T) {
 	ctrl := &environmentRecorder{}
 	server := New("", ctrl)
@@ -259,10 +248,6 @@ func TestAuthenticateRouteDoesNotEchoTheBodyOnADecodeError(t *testing.T) {
 	}
 }
 
-// The MCP layer marks brw_authenticate sensitive so the credentialed URL stays
-// out of the replayable trace. Under --upstream-http that mark is applied in one
-// process and the trace is kept in another, so the HTTP route has to apply it
-// too or the proxy topology is unredacted by construction.
 func TestAuthenticateRouteMarksTheCallSensitive(t *testing.T) {
 	ctrl := &environmentRecorder{}
 	server := &Server{manager: ctrl}

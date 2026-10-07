@@ -9,10 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// environmentController resolves the optional page-environment capability once
-// per request. A transport that cannot hold these overrides answers with the
-// named capability error rather than a generic 400, so a caller can tell "wrong
-// transport" from "bad arguments".
 func (s *Server) environmentController(w http.ResponseWriter) (browser.EnvironmentController, bool) {
 	env, ok := s.manager.(browser.EnvironmentController)
 	if !ok {
@@ -61,8 +57,6 @@ func (s *Server) emulateMedia(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
-// initScriptController resolves the optional init-script capability, answering
-// with the named error rather than a generic 400 when the transport lacks it.
 func (s *Server) initScriptController(w http.ResponseWriter) (browser.InitScriptController, bool) {
 	ctl, ok := s.manager.(browser.InitScriptController)
 	if !ok {
@@ -85,7 +79,6 @@ func (s *Server) initScript(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
-// touchController resolves the optional touch capability.
 func (s *Server) touchController(w http.ResponseWriter) (browser.TouchController, bool) {
 	ctl, ok := s.manager.(browser.TouchController)
 	if !ok {
@@ -130,7 +123,6 @@ func (s *Server) checkController(w http.ResponseWriter) (browser.CheckController
 	return ctl, true
 }
 
-// profileController resolves the optional performance-trace capability.
 func (s *Server) profileController(w http.ResponseWriter) (browser.ProfilerController, bool) {
 	ctl, ok := s.manager.(browser.ProfilerController)
 	if !ok {
@@ -158,7 +150,6 @@ func (s *Server) profile(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, nil)
 }
 
-// reactController resolves the optional React-introspection capability.
 func (s *Server) reactController(w http.ResponseWriter) (browser.ReactController, bool) {
 	ctl, ok := s.manager.(browser.ReactController)
 	if !ok {
@@ -220,9 +211,6 @@ func (s *Server) userAgent(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
-// authenticate takes a password in its request body. It is the one page route
-// whose body must never be echoed: decode errors are reported as a constant
-// string rather than the decoder's message, which quotes the offending JSON.
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) {
 	var req browser.CredentialsOptions
 	if !decodeQuiet(w, r, &req) {
@@ -232,9 +220,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Marked sensitive here as well as in the MCP layer: with --upstream-http the
-	// MCP wrapper and the daemon holding the trace are different processes, so a
-	// mark applied only there never reaches the trace this navigation writes.
+
 	ctx := browser.WithSensitiveAction(s.contextWithTabID(r.Context(), req.TabID))
 	result, err := env.Authenticate(ctx, req)
 	writeResult(w, result, err)
@@ -253,23 +239,10 @@ func (s *Server) downloadPath(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, result, err)
 }
 
-// decodeQuiet is decode with the decoder's message withheld. json's errors quote
-// the input they choked on, which for a credential body is the credential.
 func decodeQuiet(w http.ResponseWriter, r *http.Request, dst any) bool {
-	recorder := &quietResponse{ResponseWriter: w}
-	if decode(recorder, r, dst) {
+	if decodeBody(w, r, dst, maxRequestBodyBytes, false) == nil {
 		return true
 	}
 	writeError(w, errors.New("request body is not valid JSON for this endpoint"))
 	return false
 }
-
-// quietResponse swallows the body decode writes so the caller can substitute
-// its own. Status and headers are dropped with it; the substitute writes both.
-type quietResponse struct {
-	http.ResponseWriter
-}
-
-func (q *quietResponse) Write(p []byte) (int, error) { return len(p), nil }
-
-func (q *quietResponse) WriteHeader(int) {}

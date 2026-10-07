@@ -47,10 +47,6 @@ func longRead() readability.PageRead {
 	}
 }
 
-// The raw control plane bounds a read only when asked to. Defaulting here
-// truncated any client written against the older unbounded contract — an older
-// brw proxy among them — which then had no way to fetch the remainder. The
-// bound that protects a model's context is applied by the MCP layer instead.
 func TestHTTPReadIsUnboundedUnlessAsked(t *testing.T) {
 	server := New("", &boundsController{read: longRead()})
 
@@ -77,9 +73,6 @@ func TestHTTPReadIsUnboundedUnlessAsked(t *testing.T) {
 	}
 }
 
-// The --upstream-http proxy asks for max_chars=-1 so the MCP layer can apply
-// the caller's own window. If the endpoint refused or ignored the sentinel, an
-// explicitly unbounded read would come back silently capped in proxy mode.
 func TestHTTPReadHonoursUnboundedSentinel(t *testing.T) {
 	server := New("", &boundsController{read: longRead()})
 
@@ -111,9 +104,6 @@ func TestHTTPReadIncludeAndBadInput(t *testing.T) {
 		t.Fatalf("unknown section status = %d, want 400", code)
 	}
 
-	// Window falls back to the whole document when a section cannot be resolved,
-	// so the handler has to reject one first. Without that, ?section=NoSuch
-	// answered 200 with the entire page — an answer that looks like a hit.
 	if code := getJSON(t, server, "/api/page/read?section=NoSuchHeading", nil); code != http.StatusBadRequest {
 		t.Fatalf("unresolvable section status = %d, want 400 rather than the whole document", code)
 	}
@@ -122,9 +112,6 @@ func TestHTTPReadIncludeAndBadInput(t *testing.T) {
 	}
 }
 
-// The console endpoint must keep returning a bare array: the proxy decodes it
-// straight into []ConsoleMessage, and an envelope would empty the console in
-// --upstream-http mode.
 func TestHTTPConsoleKeepsArrayContractWhileFiltering(t *testing.T) {
 	ctrl := &boundsController{console: []browser.ConsoleMessage{
 		{Level: "log", Text: "mounted"},

@@ -17,9 +17,7 @@ var rosterHTML []byte
 //go:embed roster.js
 var rosterJS []byte
 
-// ProfileRoster is what the /profiles page drives. It is an interface so this
-// package does not import the HTTP client the roster reaches other daemons
-// with; internal/profileroster.Service implements it.
+// ProfileRoster is what the /profiles page drives.
 type ProfileRoster interface {
 	Board(ctx context.Context, policyPath string) (any, error)
 	Create(policyPath, name, account, browserName string) (any, error)
@@ -29,12 +27,10 @@ type ProfileRoster interface {
 	Refused(error) bool
 }
 
-// SetProfileRoster installs the profile roster behind /profiles and
-// /api/roster/*. Without one those routes answer 404.
+// SetProfileRoster installs the profile roster behind /profiles and /api/roster/*.
 func (s *Server) SetProfileRoster(roster ProfileRoster) { s.roster = roster }
 
-// SetProfilePolicyPath names the policy file the profile roster reads and
-// edits. Empty means the standard discovery order.
+// SetProfilePolicyPath names the policy file the profile roster reads and edits.
 func (s *Server) SetProfilePolicyPath(path string) { s.profilePolicyPath = strings.TrimSpace(path) }
 
 func (s *Server) rosterPolicyPath() (string, error) {
@@ -51,9 +47,6 @@ func (s *Server) rosterPolicyPath() (string, error) {
 	return setup.DefaultPolicyPath(home)
 }
 
-// rosterGuard keeps the profile roster on this machine: it edits the policy and
-// moves sessions between profiles, and a daemon bound to a Tailscale or LAN
-// address is not consent to do either for another host.
 func (s *Server) rosterGuard(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if !requestIsLoopback(r) {
 		writeJSON(w, http.StatusForbidden, map[string]any{

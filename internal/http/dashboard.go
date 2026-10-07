@@ -15,18 +15,8 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// The dashboard shows a live picture of the browser so a human can watch the
-// agent work on their own signed-in profile and step in when it needs them.
-//
-// It is OFF unless BRW_DASHBOARD=1 and it refuses non-loopback requests even
-// when the daemon itself is bound wider. A trace stream leaks URLs and titles;
-// this leaks the rendered pixels of a logged-in session — inbox contents, bank
-// balances, anything on screen. That is not something to expose by default or
-// over a network because the daemon happened to be reachable.
 const dashboardEnvVar = "BRW_DASHBOARD"
 
-// screencaster is the direct-CDP fast path: Chrome pushes a frame only when the
-// page actually changes, so an idle page costs nothing.
 type screencaster interface {
 	ScreencastFrames(context.Context, browser.ScreencastOptions) (<-chan browser.ScreencastFrame, func(), error)
 }
@@ -36,8 +26,6 @@ func dashboardEnabled() bool {
 	return value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "on")
 }
 
-// dashboardGuard enforces the two conditions under which live pixels may leave
-// the daemon.
 func (s *Server) dashboardGuard(w http.ResponseWriter, r *http.Request) bool {
 	if !dashboardEnabled() {
 		writeJSON(w, http.StatusNotFound, map[string]any{
@@ -54,9 +42,6 @@ func (s *Server) dashboardGuard(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// requestIsLoopback reports whether the peer is on this machine. The daemon may
-// be bound to a Tailscale or LAN address for the API; that is not consent to
-// stream the screen to those clients.
 func requestIsLoopback(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -66,12 +51,6 @@ func requestIsLoopback(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// dashboardFrame is one rendered frame pushed to a viewer.
-//
-// Width and Height are the page's own DIP viewport, not the JPEG's pixel size.
-// A viewer scales the image into whatever element it has; without the page's
-// dimensions it cannot turn a click on that element back into the coordinates
-// Input.dispatchMouseEvent wants, so takeover would be aiming blind.
 type dashboardFrame struct {
 	Seq        int     `json:"seq"`
 	JPEGBase64 string  `json:"jpeg_base64"`
@@ -80,18 +59,6 @@ type dashboardFrame struct {
 	Height     float64 `json:"height,omitempty"`
 }
 
-// dashboardStream is GET /dashboard/stream: a server-sent event stream of JPEG
-// frames.
-//
-// SSE rather than a WebSocket because the stream is one-directional in phase 1
-// (read-only viewing), and SSE reconnects on its own, needs no upgrade
-// handshake, and cannot be used to send input at a stage where input is not
-// implemented.
-//
-// Pacing: a viewer sets fps, and frames are dropped rather than queued when the
-// viewer cannot keep up, so a slow tab of a browser never becomes back-pressure
-// on the browser itself. The newest frame always wins; a stale frame is worth
-// nothing to someone watching live.
 func (s *Server) dashboardStream(w http.ResponseWriter, r *http.Request) {
 	if !s.dashboardGuard(w, r) {
 		return
@@ -124,9 +91,7 @@ func (s *Server) dashboardStream(w http.ResponseWriter, r *http.Request) {
 		}, interval)
 		return
 	}
-	// Extension-bridge lane: no compositor stream, so poll screenshots while a
-	// viewer is watching. This is why the dashboard works against the user's
-	// real signed-in Chrome at all.
+
 	s.streamViaScreenshots(ctx, w, flusher, interval)
 }
 
@@ -152,7 +117,7 @@ func (s *Server) streamViaScreencast(ctx context.Context, w http.ResponseWriter,
 			if !open {
 				return
 			}
-			// Keep only the newest: a viewer wants now, not a backlog.
+
 			newest := frame
 			pending = &newest
 		case <-ticker.C:
@@ -172,7 +137,7 @@ func (s *Server) streamViaScreenshots(ctx context.Context, w http.ResponseWriter
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	seq := 0
-	var lastLen int
+	var lastBase64 string
 	for {
 		select {
 		case <-ctx.Done():
@@ -182,23 +147,19 @@ func (s *Server) streamViaScreenshots(ctx context.Context, w http.ResponseWriter
 			shot, err := s.manager.Screenshot(shotCtx)
 			cancel()
 			if err != nil {
-				// A transient failure (tab navigating, briefly occluded) must not
-				// end the stream the human is watching.
+
+				continue
+			}
+			if shot.Base64 == lastBase64 && seq > 0 {
 				continue
 			}
 			data, decodeErr := base64.StdEncoding.DecodeString(shot.Base64)
 			if decodeErr != nil {
 				continue
 			}
-			// A byte-identical length is a cheap proxy for "nothing changed" and
-			// keeps an idle page from burning bandwidth every tick.
-			if len(data) == lastLen && seq > 0 {
-				continue
-			}
-			lastLen = len(data)
+			lastBase64 = shot.Base64
 			seq++
-			// No page geometry here: a screenshot carries none, and this lane is
-			// the bridge transport, which offers no takeover to aim anyway.
+
 			if !writeFrame(w, flusher, seq, data, 0, 0) {
 				return
 			}
@@ -246,12 +207,6 @@ func clampInt(value, low, high int) int {
 	return value
 }
 
-// dashboardPage is GET /dashboard.
-//
-// The takeover control is assembled into the page only when this daemon may
-// offer it. On a daemon bound beyond loopback, or one bridging to another
-// browser, the markup and its script are not in the response at all — there is
-// no disabled button to re-enable and no handler to call from the console.
 func (s *Server) dashboardPage(w http.ResponseWriter, r *http.Request) {
 	if !s.dashboardGuard(w, r) {
 		return
@@ -259,8 +214,7 @@ func (s *Server) dashboardPage(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	h.Set("Cache-Control", "no-store")
-	// The page renders frames the browser produced. A strict CSP keeps that
-	// content from doing anything but being displayed.
+
 	h.Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'")
 	h.Set("X-Content-Type-Options", "nosniff")
 	fmt.Fprint(w, s.renderDashboard())
@@ -280,14 +234,8 @@ const (
 	dashboardTakeoverScriptSlot  = "<!--takeover-script-->"
 )
 
-// dashboardTakeoverControl is the enable switch. Absent, not disabled, on any
-// daemon that may not offer takeover.
 const dashboardTakeoverControl = `<button id="takeover" type="button" class="takeover">take over</button>`
 
-// dashboardTakeoverScript forwards the human's pointer and keyboard to the tab.
-// Coordinates are mapped from the rendered image back onto the page's own DIP
-// viewport, which every frame carries; a frame with no geometry (the bridge
-// lane) leaves takeover inert rather than guessing.
 const dashboardTakeoverScript = `<script>
 (function(){
   var button = document.getElementById('takeover');

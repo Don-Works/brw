@@ -123,10 +123,6 @@ func (c *leaseTestController) Open(_ context.Context, targetURL string) (browser
 	return browser.OpenResult{Tab: tab, Ready: true}, nil
 }
 
-// OpenInGroup mirrors the extension bridge: a fresh tab that lands in the
-// requested (title-keyed) group. Without this override the embedded
-// fakeController would hand every session the SAME fixed tab id, which the
-// lease layer correctly rejects as contended.
 func (c *leaseTestController) OpenInGroup(ctx context.Context, targetURL string, opts browser.TabGroupOptions) (browser.OpenResult, error) {
 	result, err := c.Open(ctx, targetURL)
 	if err != nil {
@@ -193,7 +189,6 @@ func TestHTTPLeaseKeepsConcurrentSessionsOnDifferentTabs(t *testing.T) {
 		t.Fatalf("session snapshot tabs = %v, want [tab-1 tab-2]", gotTabs)
 	}
 
-	// Even a read-only operation may not cross into another session's tab.
 	conflict := httptest.NewRecorder()
 	server.server.Handler.ServeHTTP(conflict, ownerRequest(http.MethodGet, "/api/page/snapshot?tab_id=tab-2", "owner-a", ""))
 	if conflict.Code != http.StatusConflict {
