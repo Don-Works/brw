@@ -9,11 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestBootstrapCopyFailurePreservesInstalledDirectories(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bootstrap installer supports macOS and Linux")
+	}
 	for _, mode := range []string{"payload", "profile", "success"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()

@@ -12,16 +12,12 @@ BASE = ARGS[0] if ARGS else "origin/main"
 SELF = "scripts/check-oss-hygiene.py"
 
 
-
 PUBLIC_SYNTHETIC_FIXTURES = {
     SELF,
     "scripts/test-functional.sh",
     "internal/recipe/schema_test.go",
     "internal/recipe/assertions_test.go",
 }
-
-
-
 
 
 SYNTHETIC_HOME_FIXTURES = {
@@ -32,14 +28,12 @@ SYNTHETIC_HOME_FIXTURES = {
 }
 
 
-
-
 SYNTHETIC_VECTOR_WAIVERS = {
     "internal/http/server_guard_test.go": {"tailscale host"},
     "internal/browser/upload_test.go": {"private network address"},
     "internal/extensionbridge/bridge_release_conn_test.go": {"credential literal"},
-    "cmd/brwctl/main_test.go": {"personal email"},  
-    "packaging/linux/nfpm.yaml": {"personal email"},  
+    "cmd/brwctl/main_test.go": {"personal email"},
+    "packaging/linux/nfpm.yaml": {"personal email"},
 }
 
 RECIPE_CORPUS_PATH = re.compile(
@@ -54,13 +48,13 @@ BINARY_SUFFIXES = (
 
 PATTERNS = [
     ("home directory path", r"/Users/[a-z]|/home/[a-z]"),
-    
-    
+
+
     ("personal email", r"[a-zA-Z0-9._%+-]+@(?!example\.(com|org|net|edu)\b)(?![a-zA-Z0-9.-]*\.(test|invalid|example|localhost)\b)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"),
     ("local workspace or profile name", r"brw-chromium-work|chromium-work-profile"),
     ("launchd label", r"co\.revitt\."),
-    
-    
+
+
     ("operator machine name", r"\bmax-(mac|air)\b"),
     ("tailscale host", r"[a-z0-9-]+\.ts\.net"),
     ("private network address", r"\b(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}(\.\d{1,3})?\b"),
@@ -133,7 +127,6 @@ def contains_recipe_document(value):
     return False
 
 
-
 NON_ROUTABLE_EMAIL = re.compile(r"(?i)^no-?reply@|@([a-z0-9.-]*\.)?noreply\.[a-z0-9.-]+$")
 
 
@@ -153,18 +146,16 @@ def commit_messages(base):
 
 def main():
     hits = []
-    
-    
-    
+
+
     repository_paths = set(git(["ls-files"], "list tracked paths").splitlines())
     repository_paths.update(git(["ls-files", "--others", "--exclude-standard"], "list untracked paths").splitlines())
     for repository_path in sorted(repository_paths):
         if RECIPE_CORPUS_PATH.search(repository_path):
             hits.append(("repository recipe corpus", repository_path, "private recipes must live outside the brw repository"))
         try:
-            
-            
-            
+
+
             if os.path.getsize(repository_path) > 2 << 20:
                 continue
             with open(repository_path, encoding="utf-8") as fh:
@@ -189,8 +180,8 @@ def main():
         if contains_recipe_document(value):
             hits.append(("executable recipe JSON", repository_path, "move operational recipes to --recipe-root or the private provider"))
     scanned = 0
-    
-    
+
+
     for ref, line in commit_messages(BASE):
         scanned += 1
         for label, pattern in PATTERNS:
@@ -198,8 +189,8 @@ def main():
             if match and not (label == "personal email" and is_non_routable_email(match.group(0))):
                 hits.append((label, ref, line.strip()[:160]))
     for path, line in (tracked_lines() if FULL else added_lines(BASE)):
-        
-        
+
+
         if path.startswith(".scratch") or path == SELF:
             continue
         scanned += 1

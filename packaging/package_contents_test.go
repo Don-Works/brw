@@ -200,6 +200,9 @@ func requireFileContains(t *testing.T, path string, fragments ...string) {
 }
 
 func TestTarballSignsAfterCleanupAndPreservesKeychainArgument(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash unavailable")
+	}
 	root := t.TempDir()
 	for _, dir := range []string{"scripts", "extension", "tests", "skills", "fake-bin"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
@@ -272,6 +275,6 @@ printf signed > "$last.signed"
 		}
 	}
 	if signed != 5 {
-		t.Fatalf("cleanup removed completed signatures: found %d, want5", signed)
+		t.Fatalf("cleanup removed completed signatures: found %d, want 5", signed)
 	}
 }

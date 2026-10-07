@@ -12,7 +12,6 @@ INIT = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n'
 LIST = '{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'
 
 
-
 CHARS_PER_TOKEN = 4
 
 
