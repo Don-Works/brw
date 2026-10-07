@@ -6,39 +6,23 @@ import (
 	"testing"
 )
 
-// capturedPage paints a capture of a page: one colour, with the changed
-// rectangle in image pixels.
 func capturedPage(t *testing.T, width, height int, patch image.Rectangle) []byte {
 	t.Helper()
 	return solidPNG(t, width, height, pageWhite, patch, brandBlue)
 }
 
-// An ignore region is written in CSS pixels and applied to a capture that is not
-// in CSS pixels. Neither transport captures at the device pixel ratio: both clip
-// the viewport at scale = min(1, 800/viewport_width) on top of the DPR
-// (internal/browser screenshotMaxWidth, internal/extensionbridge
-// bridgeScreenshotMaxWidth), so on any viewport wider than 800 CSS px the DPR is
-// not the factor and a region placed with it lands somewhere else entirely.
-//
-// The rows enumerate what the two transports actually produce — under the cap
-// and over it, at DPR 1 and 2 — with the image rectangle each CSS rectangle
-// covers written out rather than recomputed, so the test cannot agree with the
-// production formula by sharing it. The measured rows are what a throwaway
-// capture against real headless Chrome returned: a 1400x900 viewport yields
-// 800x514 at DPR 1 and 1600x1029 at DPR 2.
 func TestIgnoreRegionsArePlacedByTheCaptureScaleNotTheDevicePixelRatio(t *testing.T) {
 	cases := []struct {
 		name string
-		// The capture conditions.
+
 		viewportWidth           int
 		devicePixelRatio        float64
 		imageWidth, imageHeight int
 		wantScale               float64
-		// The region a caller writes down, in CSS pixels, and the image
-		// rectangle it must cover.
+
 		region  IgnoreRegion
 		covered image.Rectangle
-		// A change outside that rectangle, which must still fail the gate.
+
 		elsewhere image.Rectangle
 	}{
 		{
@@ -77,8 +61,7 @@ func TestIgnoreRegionsArePlacedByTheCaptureScaleNotTheDevicePixelRatio(t *testin
 			name:          "measured: 1400x900 captured at 800x514",
 			viewportWidth: 1400, devicePixelRatio: 1,
 			imageWidth: 800, imageHeight: 514, wantScale: 800.0 / 1400.0,
-			// A region past the image's own width: clamping it away is what
-			// silently dropped the exclusion when the DPR was used as the factor.
+
 			region:    IgnoreRegion{Name: "clock", X: 1000, Y: 100, Width: 100, Height: 50},
 			covered:   image.Rect(575, 60, 625, 83),
 			elsewhere: image.Rect(650, 100, 670, 120),
@@ -125,8 +108,6 @@ func TestIgnoreRegionsArePlacedByTheCaptureScaleNotTheDevicePixelRatio(t *testin
 		})
 	}
 
-	// Half the rows would pass under either rule. These are the ones that tell
-	// the two apart, and a table that loses them stops testing anything.
 	discriminating := 0
 	for _, tc := range cases {
 		if float64(tc.imageWidth)/float64(tc.viewportWidth) != tc.devicePixelRatio {
@@ -138,10 +119,6 @@ func TestIgnoreRegionsArePlacedByTheCaptureScaleNotTheDevicePixelRatio(t *testin
 	}
 }
 
-// The same property through the whole gate, which is where the viewport that
-// places the regions is read from the key rather than passed in by a caller. A
-// 1400x900 page is captured at 800x514, so every region a caller writes down is
-// 1.75x further right and further down than the pixels it names.
 func TestCheckPlacesIgnoreRegionsOnACappedCapture(t *testing.T) {
 	store := newBaselineStore(t)
 	environment := fixtureEnvironment()
@@ -161,7 +138,6 @@ func TestCheckPlacesIgnoreRegionsOnACappedCapture(t *testing.T) {
 		t.Fatalf("record = %+v, want %q", recorded, StatusRecorded)
 	}
 
-	// The clock ticked. Its CSS rectangle lands at image x 571..629, y 57..86.
 	ticked, err := Check(store, CheckOptions{
 		Key: key, Screenshot: capturedPage(t, 800, 514, image.Rect(575, 60, 625, 83)), Tree: tree,
 	})
@@ -178,7 +154,6 @@ func TestCheckPlacesIgnoreRegionsOnACappedCapture(t *testing.T) {
 		t.Fatalf("regions_outside_capture = %v, want the clock placed inside the capture", ticked.RegionsOutsideCapture)
 	}
 
-	// Anything outside it is still a regression.
 	moved, err := Check(store, CheckOptions{
 		Key: key, Screenshot: capturedPage(t, 800, 514, image.Rect(650, 100, 670, 120)), Tree: tree,
 	})

@@ -3,6 +3,7 @@ package baseline
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -12,18 +13,13 @@ import (
 
 // Statuses a baseline check reports.
 const (
-	// StatusMissing means nothing is stored for this key and none of the other
-	// stored environments explains why. The check fails: a gate that passes
-	// because it has never seen the page is not a gate.
+	// StatusMissing means nothing is stored for this key and none of the other stored environments explains why.
 	StatusMissing = "missing"
-	// StatusEnvironmentMismatch means a baseline exists for this recipe step,
-	// but under different capture conditions. The pixels are not compared,
-	// because the diff would be real and meaningless.
+	// StatusEnvironmentMismatch means a baseline exists for this recipe step, but under different capture conditions.
 	StatusEnvironmentMismatch = "environment_mismatch"
 	StatusMatch               = "match"
 	StatusDiff                = "diff"
-	// StatusRecorded is the first capture for a key, and StatusUpdated is an
-	// accepted change. Both require update:true.
+	// StatusRecorded is the first capture for a key, and StatusUpdated is an accepted change.
 	StatusRecorded = "recorded"
 	StatusUpdated  = "updated"
 )
@@ -34,19 +30,15 @@ type CheckOptions struct {
 	Screenshot    []byte
 	Tree          snapshot.AriaTree
 	IgnoreRegions []IgnoreRegion
-	// PixelTolerance and ChannelTolerance are the visual slack; see
-	// VisualOptions.
+	// PixelTolerance and ChannelTolerance are the visual slack; see VisualOptions.
 	PixelTolerance   float64
 	ChannelTolerance uint8
-	// Update is the explicit acceptance. Without it Check never writes, which
-	// is the property that stops a baseline from quietly absorbing the
-	// regression it exists to catch.
+	// Update is the explicit acceptance.
 	Update bool
 	Now    func() time.Time
 }
 
-// EnvironmentMismatch reports one stored environment and how it differs from
-// the one being checked.
+// EnvironmentMismatch reports one stored environment and how it differs from the one being checked.
 type EnvironmentMismatch struct {
 	Stored      Environment `json:"stored"`
 	Differences []string    `json:"differences"`
@@ -57,27 +49,19 @@ type CheckResult struct {
 	Status      string      `json:"status"`
 	BaselineID  string      `json:"baseline_id"`
 	Environment Environment `json:"environment"`
-	// Failed is the single boolean a caller gates on, so nobody has to
-	// enumerate which statuses mean "stop".
+	// Failed is the single boolean a caller gates on, so nobody has to enumerate which statuses mean "stop".
 	Failed              bool                  `json:"failed"`
 	EnvironmentMismatch []EnvironmentMismatch `json:"environment_mismatch,omitempty"`
 	Visual              *VisualDiff           `json:"visual,omitempty"`
 	ARIA                *snapshot.AriaDiff    `json:"aria,omitempty"`
 	BaselineCreatedAt   *time.Time            `json:"baseline_created_at,omitempty"`
 	IgnoredRegions      []string              `json:"ignored_regions,omitempty"`
-	// RegionsOutsideCapture names regions that excluded nothing because they
-	// land off this capture. Without it a mis-typed rectangle looks identical to
-	// a working one in the result.
+	// RegionsOutsideCapture names regions that excluded nothing because they land off this capture.
 	RegionsOutsideCapture []string `json:"regions_outside_capture,omitempty"`
 	Note                  string   `json:"note,omitempty"`
 }
 
 // Check compares one capture against its baseline.
-//
-// The order matters. An unknown key is answered from the OTHER environments
-// stored for the same recipe step before anything is compared, so a run on a
-// retina display against a baseline captured at 1x reports the display, not a
-// screen full of moved pixels.
 func Check(store Storage, opts CheckOptions) (CheckResult, error) {
 	if noStorage(store) {
 		return CheckResult{}, ErrNoStorage
@@ -133,10 +117,7 @@ func Check(store Storage, opts CheckOptions) (CheckResult, error) {
 	}
 
 	regions := unionRegions(stored.IgnoreRegions, opts.IgnoreRegions)
-	// The ignore regions are CSS pixels and the capture is not: place them from
-	// the viewport in the key, which is the CSS width this capture covers, and
-	// never from the device pixel ratio. Both are in the environment and only
-	// one of them is the scale the transport actually captured at.
+
 	visual, err := CompareImages(stored.Screenshot, opts.Screenshot, VisualOptions{
 		PixelTolerance:   opts.PixelTolerance,
 		ChannelTolerance: opts.ChannelTolerance,
@@ -199,15 +180,6 @@ func mismatchSummary(mismatches []EnvironmentMismatch) []string {
 	return out
 }
 
-// diffNote says which of the two checks failed, because they mean different
-// things: pixels moved is a rendering change, and the ARIA structure moving is
-// a semantic one that a pixel diff can miss entirely.
-//
-// The visual half's own note wins whenever it has one. A resized capture and a
-// capture covered by an ignore region both fail with DiffPixels and
-// ComparedPixels at zero, and a count computed over a comparison that never ran
-// reads as "0 of 0 compared pixels moved" — a true sentence about nothing,
-// talking over the one that says what actually happened.
 func diffNote(visual VisualDiff, aria snapshot.AriaDiff) string {
 	pixels := ""
 	switch {
@@ -227,13 +199,10 @@ func diffNote(visual VisualDiff, aria snapshot.AriaDiff) string {
 	}
 }
 
-// unionRegions keeps the regions recorded with the baseline as well as any the
-// current check names. A caller that forgets to pass the clock's rectangle
-// should not be told the clock is a regression.
 func unionRegions(stored, requested []IgnoreRegion) []IgnoreRegion {
 	seen := map[IgnoreRegion]bool{}
 	out := make([]IgnoreRegion, 0, len(stored)+len(requested))
-	for _, region := range append(append([]IgnoreRegion{}, stored...), requested...) {
+	for _, region := range slices.Concat(stored, requested) {
 		if !region.valid() || seen[region] {
 			continue
 		}

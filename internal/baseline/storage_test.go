@@ -6,15 +6,6 @@ import (
 	"testing"
 )
 
-// TestCheckRefusesEveryShapeOfMissingStorage covers the trap the interface
-// introduced.
-//
-// Check took *Store until a baseline gained a second destination. `store ==
-// nil` caught a missing store then; against an interface it catches only the
-// nil interface, and a nil *Store handed over as a Storage is a NON-nil
-// interface value holding a nil pointer. That shape is what a caller with an
-// unset field produces, and it used to nil-deref inside Load instead of
-// returning the refusal.
 func TestCheckRefusesEveryShapeOfMissingStorage(t *testing.T) {
 	var typedNil *Store
 	tests := []struct {
@@ -26,8 +17,7 @@ func TestCheckRefusesEveryShapeOfMissingStorage(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// A panic here is the failure: the whole point is that the refusal
-			// happens before the implementation is called.
+
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					t.Fatalf("Check panicked on %s instead of refusing: %v", tc.name, recovered)

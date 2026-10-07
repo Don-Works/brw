@@ -1,17 +1,4 @@
 // Package baseline turns a one-off page comparison into a regression gate.
-//
-// brw_diff answers "did my click change the page" against a mark taken seconds
-// ago. A baseline answers "did this page change since the last release", which
-// needs three things brw_diff has none of: a stored set rather than one live
-// capture, a key that says what the stored capture was captured UNDER, and an
-// update path that only runs when someone asks for it.
-//
-// The key is (recipe identity digest, step index, environment fingerprint). The
-// environment is in the key because a screenshot taken at a different device
-// pixel ratio, viewport, locale or browser build is not a worse version of the
-// same picture — it is a different picture, and comparing the two produces a
-// diff that is real, meaningless and impossible to act on. Keying on it turns
-// that into a reported environment mismatch instead.
 package baseline
 
 import (
@@ -25,14 +12,7 @@ import (
 	"strings"
 )
 
-// EnvironmentExpression reports the capture conditions that belong in a
-// baseline key, measured from inside the page so every transport can answer it
-// through the ordinary evaluate path. It is an expression, not a function
-// declaration, for the same reason snapshot.AriaTreeExpression is.
-//
-// The operating system is deliberately absent: it is the browser HOST's, which
-// the daemon knows and the page does not (a page's platform string is spoofable
-// and, under the extension bridge, says nothing about where the daemon runs).
+// EnvironmentExpression reports the capture conditions that belong in a baseline key, measured from inside the page so every transport can answer it through the ordinary evaluate path.
 const EnvironmentExpression = `(function(){
   var ua = navigator.userAgent || '';
   var build = (ua.match(/(?:Chrome|Chromium|Edg|Firefox|Version)\/[0-9][0-9.]*/) || [''])[0];
@@ -57,10 +37,7 @@ type Environment struct {
 	OS string `json:"os"`
 }
 
-// Normalize makes two environments that mean the same thing compare equal: the
-// device pixel ratio is rounded to two decimals (a reported 1.9999999 and 2.0
-// are the same display) and text fields are trimmed and lowercased where case
-// carries no meaning.
+// Normalize makes two environments that mean the same thing compare equal: the device pixel ratio is rounded to two decimals (a reported 1.9999999 and 2.0 are the same display) and text fields are trimmed and lowercased where case carries no meaning.
 func (e Environment) Normalize() Environment {
 	e.BrowserBuild = strings.TrimSpace(e.BrowserBuild)
 	e.Locale = strings.ToLower(strings.TrimSpace(e.Locale))
@@ -93,9 +70,6 @@ func (e Environment) Validate() error {
 	return nil
 }
 
-// canonical is the exact string the fingerprint hashes. Field names are in it
-// so adding a field later changes every fingerprint, which is correct: an old
-// baseline was captured without that dimension pinned.
 func (e Environment) canonical() string {
 	n := e.Normalize()
 	return strings.Join([]string{
@@ -113,8 +87,7 @@ func (e Environment) Fingerprint() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Differences names the fields that moved, so a mismatch report says "the
-// device pixel ratio changed from 1 to 2" rather than "different fingerprint".
+// Differences names the fields that moved, so a mismatch report says "the device pixel ratio changed from 1 to 2" rather than "different fingerprint".
 func (e Environment) Differences(other Environment) []string {
 	a, b := e.Normalize(), other.Normalize()
 	var out []string
@@ -140,16 +113,10 @@ func (e Environment) Differences(other Environment) []string {
 
 var recipeDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// ErrRecipeDigest is the single refusal every digest-shaped input gets. It is a
-// named error because the digest is also a path component: anything that is not
-// 64 hex characters is either a typo or a traversal.
+// ErrRecipeDigest is the single refusal every digest-shaped input gets.
 var ErrRecipeDigest = errors.New("recipe_digest must be the 64-character hex content digest of a pinned recipe version")
 
 // NormalizeRecipeDigest is the one gate on a caller-supplied recipe digest.
-// Key.Validate and Store.scopeDir both call it, so there is no way to reach the
-// filesystem with a digest that was never checked, and a provider-backed store
-// calls it for the same reason: the digest is a key there too, and a second
-// spelling of "is this a digest" is a second thing to keep right.
 func NormalizeRecipeDigest(digest string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(digest))
 	if !recipeDigestPattern.MatchString(normalized) {
@@ -158,12 +125,9 @@ func NormalizeRecipeDigest(digest string) (string, error) {
 	return normalized, nil
 }
 
-// Key identifies one baseline: which recipe, which step of it, under which
-// environment.
+// Key identifies one baseline: which recipe, which step of it, under which environment.
 type Key struct {
-	// RecipeDigest is recipe.Digest output — the content digest of the exact
-	// immutable recipe version, so editing a recipe orphans its baselines
-	// rather than silently comparing against the previous behaviour.
+	// RecipeDigest is recipe.Digest output — the content digest of the exact immutable recipe version, so editing a recipe orphans its baselines rather than silently comparing against the previous behaviour.
 	RecipeDigest string      `json:"recipe_digest"`
 	StepIndex    int         `json:"step_index"`
 	Environment  Environment `json:"environment"`
@@ -181,14 +145,12 @@ func (k Key) Validate() error {
 
 func (k Key) digest() string { return strings.ToLower(strings.TrimSpace(k.RecipeDigest)) }
 
-// Scope is the (recipe, step) pair without the environment — the set inside
-// which an environment mismatch is looked for.
+// Scope is the (recipe, step) pair without the environment — the set inside which an environment mismatch is looked for.
 func (k Key) Scope() string {
 	return k.digest() + "/step-" + strconv.Itoa(k.StepIndex)
 }
 
-// ID is the stable identifier of one baseline, safe to report and to use as a
-// directory name.
+// ID is the stable identifier of one baseline, safe to report and to use as a directory name.
 func (k Key) ID() string {
 	return k.digest()[:16] + "-" + strconv.Itoa(k.StepIndex) + "-" + k.Environment.Fingerprint()[:16]
 }
