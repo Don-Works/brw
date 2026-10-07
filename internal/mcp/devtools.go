@@ -10,9 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/devtools"
 )
 
-// devtoolsObserver resolves the optional observation capability. A transport
-// without it answers with a named capability error rather than an empty page
-// report that reads like a clean result.
 func (s *Server) devtoolsObserver() (devtools.Observer, bool) {
 	observer, ok := s.manager.(devtools.Observer)
 	return observer, ok
@@ -51,11 +48,7 @@ func (s *Server) callHighlight(ctx context.Context, args json.RawMessage) (any, 
 	if err := unmarshalArgs(args, &req); err != nil {
 		return nil, invalid(err)
 	}
-	// The overlay is drawn in the TOP document, which cannot see into a
-	// cross-origin frame: without this the ref comes back resolved:false, which
-	// reads as "the page changed" for a ref that is perfectly current. It is
-	// refused before the transport is consulted, because the answer is the same
-	// on every transport.
+
 	if err := browser.GuardCrossOriginRefs("highlight", browser.GenericCrossOriginRemedy, append([]string{req.Ref}, req.Refs...)...); err != nil {
 		return toolError(err), nil
 	}
@@ -66,9 +59,6 @@ func (s *Server) callHighlight(ctx context.Context, args json.RawMessage) (any, 
 	return toolJSON(observer.Highlight(ctx, req))
 }
 
-// devtoolsTools are the catalogue entries for the three observations. They live
-// beside their handlers rather than in the 2.6k-line catalogue so a reader can
-// see what a tool promises and what it does in one place.
 func devtoolsTools() []map[string]any {
 	return []map[string]any{
 		tool("brw_vitals", "Read the Core Web Vitals for the page currently loaded in the tab: LCP (largest contentful paint, ms), CLS (cumulative layout shift, unitless), INP (interaction to next paint, ms), TTFB (time to first byte, ms) and FCP, plus DOMContentLoaded, load and the navigation type. Each metric also comes back with a good/needs-improvement/poor rating against the published thresholds, and lcp_element names the block that painted last (with its brw ref when it has one) so you know what to make faster. This is a pure read — it registers performance observers, drains the buffered timeline and disconnects them, leaving nothing in the page. Works on a page brw did not open, because the browser buffers these entries from navigation start. interactions counts distinct interactions, not timed events: one tap emits pointerdown, pointerup and click sharing an interaction id and counts once, and INP is the worst of that interaction. Three honest limits: LCP is provisional until the first user interaction; INP is null until something has been interacted with — the browser only retains interactions of about 104ms or slower, so a page whose interactions were all fast reports none rather than a small number; and a metric this browser cannot observe at all is null with its rating \"unknown\", with the entry type named in unavailable, never 0 rated good. Raise settle_ms if a slow page reports null metrics you expected; it is capped at 5000.", object(map[string]any{

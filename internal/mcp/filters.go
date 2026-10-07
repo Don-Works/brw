@@ -11,24 +11,16 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// consoleRetention bounds the server-side console buffer. Console output is the
-// most verbose thing a page produces, and an agent that only wants errors used
-// to have to pull every log line into its context to find them.
 const consoleRetention = 1000
 
-// defaultConsoleLimit caps an unfiltered console read. The most recent messages
-// are the ones that explain what just happened, so the window is taken from the
-// tail.
 const defaultConsoleLimit = 100
 
-// consoleQuery is the filter an agent applies to a console read.
 type consoleQuery struct {
 	OnlyErrors bool   `json:"only_errors"`
 	Level      string `json:"level"`
 	Pattern    string `json:"pattern"`
 	Limit      int    `json:"limit"`
-	// Clear defaults to true (the historical drain-on-read behaviour). Pointer
-	// so an omitted field is distinguishable from an explicit false.
+	// Clear defaults to true (the historical drain-on-read behaviour).
 	Clear *bool `json:"clear"`
 }
 
@@ -36,17 +28,11 @@ func (q consoleQuery) clears() bool {
 	return q.Clear == nil || *q.Clear
 }
 
-// consoleBuffer retains messages drained from the browser so that filtering is
-// non-destructive. The backend drains its own buffer on every read, so without
-// this a `pattern` that matched nothing would discard the unmatched messages
-// permanently — the filter would eat the very logs it was meant to search.
 type consoleBuffer struct {
 	mu       sync.Mutex
 	messages []browser.ConsoleMessage
 }
 
-// ingest appends newly drained messages, trimming the oldest past the retention
-// cap.
 func (b *consoleBuffer) ingest(fresh []browser.ConsoleMessage) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -56,10 +42,6 @@ func (b *consoleBuffer) ingest(fresh []browser.ConsoleMessage) {
 	}
 }
 
-// take returns the messages matching q, newest-window first, and removes only
-// those returned when q clears. Messages that did not match are retained.
-// truncated reports that the limit cut the match set, so an agent knows to read
-// again rather than assume it has seen everything that matched.
 func (b *consoleBuffer) take(q consoleQuery, match *regexp.Regexp) (messages []browser.ConsoleMessage, matched int, truncated bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -114,8 +96,6 @@ func consoleMatches(msg browser.ConsoleMessage, q consoleQuery, match *regexp.Re
 	return true
 }
 
-// isErrorLevel treats both error and warning-severity levels as errors, matching
-// what an agent means by "only show me what went wrong".
 func isErrorLevel(level string) bool {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "error", "assert", "exception", "severe":
@@ -125,21 +105,16 @@ func isErrorLevel(level string) bool {
 	}
 }
 
-// consoleResult is the shape brw_console returns. The counts let an agent see
-// that a filter hid something without paying for the hidden messages.
 type consoleResult struct {
 	Messages []browser.ConsoleMessage `json:"messages"`
 	Returned int                      `json:"returned"`
 	// Matched is how many buffered messages passed the filter, before the limit.
 	Matched int `json:"matched"`
-	// Retained is how many messages remain buffered — the ones a filter held
-	// back, still readable by a later call with a wider filter.
+	// Retained is how many messages remain buffered — the ones a filter held back, still readable by a later call with a wider filter.
 	Retained  int  `json:"retained"`
 	Truncated bool `json:"truncated,omitempty"`
 }
 
-// compileURLPattern turns an optional regular expression into a matcher,
-// reporting a bad expression as an argument error rather than matching nothing.
 func compileURLPattern(pattern string) (*regexp.Regexp, error) {
 	if strings.TrimSpace(pattern) == "" {
 		return nil, nil
@@ -151,8 +126,6 @@ func compileURLPattern(pattern string) (*regexp.Regexp, error) {
 	return compiled, nil
 }
 
-// defaultNetworkLimit bounds a network read. A busy page issues hundreds of
-// requests; the recent ones are the ones tied to what the agent just did.
 const defaultNetworkLimit = 100
 
 type networkResult[T any] struct {
@@ -196,12 +169,8 @@ func applyNetworkFilter[T any](entries []T, limit int, keep func(T) bool) networ
 	return networkResult[T]{Requests: out, Returned: len(out), Matched: len(matched), Truncated: truncated}
 }
 
-// maxRepeat bounds a repeated action. Matches the ceiling Claude in Chrome's
-// computer tool uses, and keeps a runaway repeat from holding a tab hostage.
 const maxRepeat = 100
 
-// normalizeRepeat validates a repeat count. Zero means once, so an omitted
-// field behaves exactly as it did before repeat existed.
 func normalizeRepeat(repeat int) (int, error) {
 	if repeat == 0 {
 		return 1, nil
@@ -212,9 +181,6 @@ func normalizeRepeat(repeat int) (int, error) {
 	return repeat, nil
 }
 
-// repeatAction runs act n times and returns the last result. Repeating in the
-// daemon collapses n model round trips into one: "press ArrowDown 20 times" used
-// to cost 20 tool calls and 20 post-action observations.
 func repeatAction(ctx context.Context, n int, act func(context.Context) (browser.ActionResult, error)) (browser.ActionResult, error) {
 	var result browser.ActionResult
 	for i := 0; i < n; i++ {

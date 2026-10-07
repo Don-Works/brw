@@ -37,11 +37,6 @@ func TestServeSupportsFramedStdio(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Serve dispatches requests concurrently on purpose (so a brw_cancel can
-	// jump a long plan), so responses may arrive in either order — that is legal
-	// JSON-RPC and the server documents it. Match responses by id rather than
-	// assuming the first frame is id 1; asserting order here was a latent flake
-	// that surfaced under -race when tools/list finished before initialize.
 	responses := bufio.NewReader(bytes.NewReader(output.Bytes()))
 	byID := map[float64]map[string]any{}
 	for i := 0; i < 2; i++ {
@@ -227,11 +222,11 @@ func TestBrowserSnapshotDefaultsToBoundedFrontier(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if ctrl.snapshotOpts.Mode != defaultSnapshotMode {
-		t.Fatalf("mode = %q, want %q", ctrl.snapshotOpts.Mode, defaultSnapshotMode)
+	if ctrl.snapshotOpts.Mode != "frontier" {
+		t.Fatalf("mode = %q, want %q", ctrl.snapshotOpts.Mode, "frontier")
 	}
-	if ctrl.snapshotOpts.Limit != defaultSnapshotLimit {
-		t.Fatalf("limit = %d, want %d", ctrl.snapshotOpts.Limit, defaultSnapshotLimit)
+	if ctrl.snapshotOpts.Limit != 40 {
+		t.Fatalf("limit = %d, want %d", ctrl.snapshotOpts.Limit, 40)
 	}
 	if !ctrl.snapshotOpts.ViewportOnly {
 		t.Fatal("viewport_only = false, want true for default frontier mode")
@@ -386,16 +381,7 @@ func TestBrowserSnapshotModeAllPreservesExplicitFullInspection(t *testing.T) {
 }
 
 func TestBrowserSnapshotSchemaDocumentsDebugEscalation(t *testing.T) {
-	var snapshotTool map[string]any
-	for _, tool := range tools() {
-		if tool["name"] == "brw_snapshot" {
-			snapshotTool = tool
-			break
-		}
-	}
-	if snapshotTool == nil {
-		t.Fatal("brw_snapshot tool not found")
-	}
+	snapshotTool := toolByName(t, "brw_snapshot")
 	description := snapshotTool["description"].(string)
 	if !strings.Contains(description, `mode:"all"`) || !strings.Contains(description, "include_hidden:true") {
 		t.Fatalf("snapshot description does not document debug escalation: %q", description)
@@ -409,16 +395,7 @@ func TestBrowserSnapshotSchemaDocumentsDebugEscalation(t *testing.T) {
 }
 
 func TestBrowserEmulateDeviceSchemaExposesEnums(t *testing.T) {
-	var emulationTool map[string]any
-	for _, tool := range tools() {
-		if tool["name"] == "brw_emulate_device" {
-			emulationTool = tool
-			break
-		}
-	}
-	if emulationTool == nil {
-		t.Fatal("brw_emulate_device tool not found")
-	}
+	emulationTool := toolByName(t, "brw_emulate_device")
 	props := emulationTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	assertSchemaEnumIncludes(t, props["device"].(map[string]any), "iphone_se", "pixel_7", "ipad_mini", "custom", "clear")
 	assertSchemaEnumIncludes(t, props["orientation"].(map[string]any), "portrait", "landscape")
@@ -453,16 +430,7 @@ func TestPlanAndBatchActionSchemasExposeEnums(t *testing.T) {
 }
 
 func TestBrowserSnapshotSchemaDocumentsContentAndVisualOptions(t *testing.T) {
-	var snapshotTool map[string]any
-	for _, tool := range tools() {
-		if tool["name"] == "brw_snapshot" {
-			snapshotTool = tool
-			break
-		}
-	}
-	if snapshotTool == nil {
-		t.Fatal("brw_snapshot tool not found")
-	}
+	snapshotTool := toolByName(t, "brw_snapshot")
 	props := snapshotTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	if _, ok := props["text_content"]; !ok {
 		t.Fatalf("text_content missing from snapshot schema: %#v", props)
@@ -476,16 +444,7 @@ func TestBrowserSnapshotSchemaDocumentsContentAndVisualOptions(t *testing.T) {
 }
 
 func TestBrowserScreenshotSchemaDocumentsAnnotate(t *testing.T) {
-	var shotTool map[string]any
-	for _, tool := range tools() {
-		if tool["name"] == "brw_screenshot" {
-			shotTool = tool
-			break
-		}
-	}
-	if shotTool == nil {
-		t.Fatal("brw_screenshot tool not found")
-	}
+	shotTool := toolByName(t, "brw_screenshot")
 	desc := shotTool["description"].(string)
 	if !strings.Contains(desc, "annotate") || !strings.Contains(desc, "Set-of-Marks") {
 		t.Fatalf("brw_screenshot description does not document annotate/Set-of-Marks: %q", desc)
@@ -526,7 +485,7 @@ func TestBrowserScreenshotAnnotateReturnsLegend(t *testing.T) {
 }
 
 func TestBrowserScreenshotDefaultUnchanged(t *testing.T) {
-	// annotate omitted -> plain path, no legend.
+
 	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_screenshot","arguments":{}}}` + "\n"
 	var output bytes.Buffer
 	if err := New(fakeController{}).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
@@ -610,16 +569,7 @@ func TestBrowserCancelDispatchesTokenAndReturnsStructured(t *testing.T) {
 }
 
 func TestBrowserCancelToolSchemaDocumentsTokenAndTab(t *testing.T) {
-	var cancelTool map[string]any
-	for _, tool := range tools() {
-		if tool["name"] == "brw_cancel" {
-			cancelTool = tool
-			break
-		}
-	}
-	if cancelTool == nil {
-		t.Fatal("brw_cancel tool not registered")
-	}
+	cancelTool := toolByName(t, "brw_cancel")
 	props := cancelTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	for _, prop := range []string{"token", "tab_id"} {
 		if _, ok := props[prop]; !ok {
@@ -653,16 +603,7 @@ func TestBrowserNotifyDispatchesToController(t *testing.T) {
 }
 
 func TestBrowserNotifyRegisteredInToolsList(t *testing.T) {
-	var notifyTool map[string]any
-	for _, tool := range tools() {
-		if tool["name"] == "brw_notify" {
-			notifyTool = tool
-			break
-		}
-	}
-	if notifyTool == nil {
-		t.Fatal("brw_notify tool not registered")
-	}
+	notifyTool := toolByName(t, "brw_notify")
 	props := notifyTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	for _, prop := range []string{"kind", "title", "message"} {
 		if _, ok := props[prop]; !ok {
@@ -715,16 +656,7 @@ func TestToolSchemasExposeTabScopedErgonomics(t *testing.T) {
 }
 
 func TestUploadFileSchemaExposesFileChooserParams(t *testing.T) {
-	var uploadTool map[string]any
-	for _, tool := range tools() {
-		if tool["name"] == "brw_upload_file" {
-			uploadTool = tool
-			break
-		}
-	}
-	if uploadTool == nil {
-		t.Fatal("brw_upload_file tool not found")
-	}
+	uploadTool := toolByName(t, "brw_upload_file")
 	props := uploadTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	for _, prop := range []string{"click_ref", "click_text"} {
 		schema, ok := props[prop].(map[string]any)
@@ -742,8 +674,7 @@ func TestUploadFileSchemaExposesFileChooserParams(t *testing.T) {
 }
 
 func TestUploadOptionsJSONRoundTripsFileChooserFields(t *testing.T) {
-	// The MCP, HTTP, and httpclient transports all (de)serialize the file-chooser
-	// trigger via these JSON tags, so the round-trip is the contract.
+
 	in := snapshot.UploadOptions{
 		Path:      "/tmp/cv.pdf",
 		ClickRef:  "e17",
@@ -767,7 +698,6 @@ func TestUploadOptionsJSONRoundTripsFileChooserFields(t *testing.T) {
 		t.Fatalf("round-trip mismatch: got %+v want click_ref=%q click_text=%q", out, in.ClickRef, in.ClickText)
 	}
 
-	// Backward compat: omitting both keeps them empty (default in-DOM path).
 	var bare snapshot.UploadOptions
 	if err := json.Unmarshal([]byte(`{"path":"/tmp/cv.pdf"}`), &bare); err != nil {
 		t.Fatalf("unmarshal bare: %v", err)
@@ -778,16 +708,7 @@ func TestUploadOptionsJSONRoundTripsFileChooserFields(t *testing.T) {
 }
 
 func TestBrowserNavigateToolRegistration(t *testing.T) {
-	var navTool map[string]any
-	for _, tool := range tools() {
-		if tool["name"] == "brw_navigate" {
-			navTool = tool
-			break
-		}
-	}
-	if navTool == nil {
-		t.Fatal("brw_navigate tool not found")
-	}
+	navTool := toolByName(t, "brw_navigate")
 	schema := navTool["inputSchema"].(map[string]any)
 	props := schema["properties"].(map[string]any)
 	if _, ok := props["direction"]; !ok {
@@ -933,16 +854,7 @@ func TestBrowserClickTextPassesAutoScroll(t *testing.T) {
 }
 
 func TestBrowserEvaluateDescriptionDocumentsCSP(t *testing.T) {
-	var evalTool map[string]any
-	for _, tool := range tools() {
-		if tool["name"] == "brw_evaluate" {
-			evalTool = tool
-			break
-		}
-	}
-	if evalTool == nil {
-		t.Fatal("brw_evaluate tool not registered")
-	}
+	evalTool := toolByName(t, "brw_evaluate")
 	desc := evalTool["description"].(string)
 	if !strings.Contains(strings.ToLower(desc), "content-security-policy") && !strings.Contains(strings.ToUpper(desc), "CSP") {
 		t.Fatalf("brw_evaluate description does not mention CSP: %q", desc)
@@ -1022,8 +934,7 @@ func TestBrowserDragAndMousePrimitivesDispatch(t *testing.T) {
 
 func TestFillAcceptsValueAliasForText(t *testing.T) {
 	ctrl := &recordingController{}
-	// Playwright-style {value:"…"} must be promoted to Text so the field is
-	// filled instead of silently cleared (empty text + replace:true).
+
 	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_fill","arguments":{"ref":"e4","value":"tomsmith"}}}` + "\n"
 	var output bytes.Buffer
 	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
@@ -1032,7 +943,7 @@ func TestFillAcceptsValueAliasForText(t *testing.T) {
 	if ctrl.fillOpts.Ref != "e4" || ctrl.fillOpts.Text != "tomsmith" {
 		t.Fatalf("fill opts = %#v, want ref=e4 text=tomsmith (value alias)", ctrl.fillOpts)
 	}
-	// Explicit text still wins when both are present.
+
 	ctrl2 := &recordingController{}
 	input2 := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"brw_fill","arguments":{"ref":"e4","text":"via_text","value":"via_value"}}}` + "\n"
 	var output2 bytes.Buffer
@@ -1062,7 +973,7 @@ func TestFillRejectsMissingTextAndValue(t *testing.T) {
 
 func TestDragRejectsFlatRefShapeWithActionableError(t *testing.T) {
 	ctrl := &recordingController{}
-	// Agents commonly pass flat ref/to_ref instead of nested from/to.
+
 	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brw_drag","arguments":{"ref":"e3","to_ref":"e4"}}}` + "\n"
 	var output bytes.Buffer
 	if err := New(ctrl).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
@@ -1070,7 +981,7 @@ func TestDragRejectsFlatRefShapeWithActionableError(t *testing.T) {
 	}
 	out := output.String()
 	if !strings.Contains(out, "from:{ref:") && !strings.Contains(out, `from:{ref:`) {
-		// Message should show the expected nested shape.
+
 		if !strings.Contains(out, "brw_drag({from:") {
 			t.Fatalf("expected drag error to show nested from/to example, got %s", out)
 		}
@@ -1081,16 +992,7 @@ func TestDragRejectsFlatRefShapeWithActionableError(t *testing.T) {
 }
 
 func TestFillSchemaExposesValueAlias(t *testing.T) {
-	var fillTool map[string]any
-	for _, tool := range tools() {
-		if tool["name"] == "brw_fill" {
-			fillTool = tool
-			break
-		}
-	}
-	if fillTool == nil {
-		t.Fatal("brw_fill not registered")
-	}
+	fillTool := toolByName(t, "brw_fill")
 	props := fillTool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	if _, ok := props["value"]; !ok {
 		t.Fatalf("brw_fill schema missing value alias: %#v", props)
@@ -1585,7 +1487,6 @@ func TestServe_UnknownTool(t *testing.T) {
 	}
 }
 
-// errorController returns errors for specific methods.
 type errorController struct {
 	fakeController
 }

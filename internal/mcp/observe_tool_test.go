@@ -11,13 +11,10 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// observeController answers every action with one fully-populated observation,
-// so a trimmed response is visibly smaller rather than accidentally empty.
 type observeController struct {
 	fakeController
 	findElements []snapshot.Element
-	// liveElements is what the page holds NOW, when a test wants the cached
-	// search and the live one to disagree. Unset, the two answer alike.
+
 	liveElements []snapshot.Element
 	liveSearches int
 	acted        []string
@@ -71,8 +68,6 @@ func (c *observeController) Press(_ context.Context, key string) (browser.Action
 	return observeFixtureResult(), nil
 }
 
-// Find answers with the one fixture element unless a test sets its own list, so
-// a locate-and-act resolves without every caller having to arrange a match.
 func (c *observeController) Find(_ context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
 	c.acted = append(c.acted, "find:"+opts.Query+"/"+opts.Role)
 	elements := c.findElements
@@ -80,9 +75,7 @@ func (c *observeController) Find(_ context.Context, opts snapshot.FindOptions) (
 		elements = observeFixtureResult().Elements
 	}
 	result := snapshot.FindResult{URL: "https://fixture.test/cart", Title: "Cart", Elements: elements}
-	// Applying the limit is what lets a test prove the limit was dropped: a fake
-	// that ignored it would answer the same whether or not the caller's limit
-	// reached the search.
+
 	if opts.Limit > 0 && opts.Limit < len(elements) {
 		result.Elements = elements[:opts.Limit]
 		result.Metadata = map[string]any{"truncated": true}
@@ -90,9 +83,6 @@ func (c *observeController) Find(_ context.Context, opts snapshot.FindOptions) (
 	return result, nil
 }
 
-// FindLive is the search a locate-and-act resolves through. It answers from
-// liveElements when a test set them, so a call that took the cached path
-// resolves a different element list.
 func (c *observeController) FindLive(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
 	c.liveSearches++
 	if c.liveElements != nil {
@@ -112,8 +102,6 @@ func (c *observeController) ExecuteBatch(context.Context, []browser.BatchStep) (
 	}, nil
 }
 
-// ExecutePlan answers each step in the shape that verb's runner produces, so a
-// trim keyed on the verb is exercised rather than assumed.
 func (c *observeController) ExecutePlan(_ context.Context, steps []browser.PlanStep) (browser.PlanResult, error) {
 	result := browser.PlanResult{OK: true, StepsCompleted: len(steps)}
 	for i, step := range steps {
@@ -134,8 +122,7 @@ func (c *observeController) ExecutePlan(_ context.Context, steps []browser.PlanS
 				Result:  observeFixtureResult(),
 			}
 		case "navigate_to":
-			// The primitive a navigate_to step reuses: a message written from the
-			// REQUESTED url, and an observed url that is where the browser landed.
+
 			result := observeFixtureResult()
 			result.Message = "navigated to " + step.URL
 			result.URL = observeRedirectedURL
@@ -148,8 +135,6 @@ func (c *observeController) ExecutePlan(_ context.Context, steps []browser.PlanS
 	return result, nil
 }
 
-// observeFixtureSnapshot is what a plan snapshot step hands back: the payload
-// the step exists to fetch.
 func observeFixtureSnapshot() snapshot.PageSnapshot {
 	return snapshot.PageSnapshot{
 		URL: "https://fixture.test/cart", Title: "Cart",
@@ -179,9 +164,6 @@ func toolText(t *testing.T, result map[string]any) string {
 	return content[0].Text
 }
 
-// The exact JSON an action tool returns when observe is absent. Written out by
-// hand rather than derived from the code under test: a default that quietly
-// starts dropping a field would otherwise agree with whatever it now produces.
 const observeDefaultActionJSON = `{"ok":true,"message":"clicked e4","tab_id":"tab1","version":7,` +
 	`"url":"https://fixture.test/cart","title":"Cart","focus":"e9","changed_state":true,` +
 	`"targets":[{"id":"tab1","url":"https://fixture.test/cart","title":"Cart","type":""}],` +
@@ -201,7 +183,7 @@ func TestOmittingObserveIsByteIdenticalToTheOldResponse(t *testing.T) {
 		{name: "select", tool: "brw_select", args: `{"ref":"e4","value":"l"}`},
 		{name: "hover", tool: "brw_hover", args: `{"ref":"e4"}`},
 		{name: "press", tool: "brw_press", args: `{"key":"Enter"}`},
-		// An explicit observe:"full" must produce the same bytes as omitting it.
+
 		{name: "explicit full", tool: "brw_click", args: `{"ref":"e4","observe":"full"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -213,10 +195,6 @@ func TestOmittingObserveIsByteIdenticalToTheOldResponse(t *testing.T) {
 	}
 }
 
-// brw_batch is byte-identical with observe absent as well. brw_plan is the one
-// deliberate exception on the branch: with no observe its intermediate steps
-// report minimal, which its schema and SKILL.md both state, and which is the
-// whole point of the per-step split.
 func TestOmittingObserveIsByteIdenticalOnABatch(t *testing.T) {
 	const want = `{"ok":true,"steps":[{"index":0,"action":"click","ok":true}],"tab_id":"tab1",` +
 		`"url":"https://fixture.test/cart","title":"Cart","focus":"e9",` +
@@ -224,7 +202,7 @@ func TestOmittingObserveIsByteIdenticalOnABatch(t *testing.T) {
 	for _, args := range []string{
 		`{"steps":[{"action":"click","ref":"e4"}]}`,
 		`{"steps":[{"action":"click","ref":"e4"}],"observe":"full"}`,
-		// minimal has nothing to drop on a batch, so it is the same bytes again.
+
 		`{"steps":[{"action":"click","ref":"e4"}],"observe":"minimal"}`,
 	} {
 		if got := toolText(t, observeCallTool(t, &observeController{}, "brw_batch", args)); got != want {
@@ -264,7 +242,7 @@ func TestObserveLevelsShrinkTheActionResponse(t *testing.T) {
 			if tt.smaller && len(got) >= len(observeDefaultActionJSON) {
 				t.Fatalf("observe level did not shrink the response: %d >= %d bytes", len(got), len(observeDefaultActionJSON))
 			}
-			// The reason none is not free: it still answers "did it work".
+
 			var decoded map[string]any
 			if err := json.Unmarshal([]byte(got), &decoded); err != nil {
 				t.Fatalf("decode: %v", err)
@@ -276,10 +254,6 @@ func TestObserveLevelsShrinkTheActionResponse(t *testing.T) {
 	}
 }
 
-// A value brw does not understand is refused whatever JSON type it arrives as.
-// Decoding straight into a string field took every non-string for "absent" and
-// widened it back to full, so a caller who asked for fewer tokens got all of
-// them with nothing said.
 func TestUnknownObserveLevelIsRefused(t *testing.T) {
 	tests := []struct {
 		name string
@@ -302,8 +276,7 @@ func TestUnknownObserveLevelIsRefused(t *testing.T) {
 			}
 		})
 	}
-	// An absent parameter still means "the caller did not ask", including the
-	// explicit JSON null a client may send for an unset field.
+
 	for _, args := range []string{`{"ref":"e4"}`, `{"ref":"e4","observe":null}`} {
 		got := toolText(t, observeCallTool(t, &observeController{}, "brw_click", args))
 		if got != observeDefaultActionJSON {
@@ -312,7 +285,6 @@ func TestUnknownObserveLevelIsRefused(t *testing.T) {
 	}
 }
 
-// brw_batch returns one observation at the end, so observe controls that one.
 func TestBatchObserveTrimsOnlyTheClosingObservation(t *testing.T) {
 	full := toolText(t, observeCallTool(t, &observeController{}, "brw_batch", `{"steps":[{"action":"click","ref":"e4"}]}`))
 	none := toolText(t, observeCallTool(t, &observeController{}, "brw_batch", `{"steps":[{"action":"click","ref":"e4"}],"observe":"none"}`))
@@ -329,8 +301,6 @@ func TestBatchObserveTrimsOnlyTheClosingObservation(t *testing.T) {
 	}
 }
 
-// brw_plan's intermediate steps are where the unread observations are. By
-// default they report minimal and the last one reports full.
 func TestPlanDefaultsIntermediateStepsToMinimal(t *testing.T) {
 	steps := `{"steps":[{"action":"click","ref":"e1"},{"action":"click","ref":"e2"},{"action":"click","ref":"e3"}]}`
 	response := toolText(t, observeCallTool(t, &observeController{}, "brw_plan", steps))
@@ -358,7 +328,6 @@ func TestPlanDefaultsIntermediateStepsToMinimal(t *testing.T) {
 		t.Fatalf("the last plan step lost its element list: %v", decoded.Steps[2].Result)
 	}
 
-	// And an explicit level reaches every step, last one included.
 	explicit := toolText(t, observeCallTool(t, &observeController{}, "brw_plan",
 		`{"steps":[{"action":"click","ref":"e1"},{"action":"click","ref":"e2"}],"observe":"none"}`))
 	if strings.Contains(explicit, `"url"`) || strings.Contains(explicit, `"elements"`) {
@@ -369,9 +338,6 @@ func TestPlanDefaultsIntermediateStepsToMinimal(t *testing.T) {
 	}
 }
 
-// The rest of the action surface answers with the same fully-populated
-// observation, so a tool that ignores observe is visibly bigger than one that
-// honours it rather than accidentally empty.
 func (c *observeController) ClickText(_ context.Context, opts snapshot.ClickTextOptions) (browser.ActionResult, error) {
 	c.acted = append(c.acted, "click_text:"+opts.Text)
 	return observeFixtureResult(), nil
@@ -395,8 +361,6 @@ func (c *observeController) Navigate(_ context.Context, direction string) (brows
 	return result, nil
 }
 
-// NavigateTo answers the way the real one does: a message written from the
-// REQUESTED url, and an observed url that is where the browser actually landed.
 func (c *observeController) NavigateTo(_ context.Context, url string) (browser.ActionResult, error) {
 	c.acted = append(c.acted, "navigate_to:"+url)
 	result := observeFixtureResult()
@@ -425,21 +389,13 @@ func (c *observeController) Focus(_ context.Context, ref string) (browser.Action
 	return observeFixtureResult(), nil
 }
 
-// observeRedirectedURL is where the fixture's navigation actually lands, which
-// is deliberately not the url that was asked for.
 const observeRedirectedURL = "https://fixture.test/login?next=%2Fcart"
 
-// observeToolCall is one valid call for a tool that advertises observe, plus
-// what that tool's default response contains: brw_batch is the one whose
-// closing observation carries no element list at all, which is why its schema
-// says minimal cannot trim there.
 type observeToolCall struct {
 	args            string
 	reportsElements bool
 }
 
-// observeToolCalls must cover observeToolNames() exactly, so a tool cannot join
-// that list without a call that proves it honours the parameter.
 func observeToolCalls() map[string]observeToolCall {
 	return map[string]observeToolCall{
 		"brw_click":       {args: `{"ref":"e4"}`, reportsElements: true},
@@ -462,7 +418,6 @@ func observeToolCalls() map[string]observeToolCall {
 	}
 }
 
-// withObserve splices a level into a call's arguments.
 func withObserve(t *testing.T, args, level string) string {
 	t.Helper()
 	var decoded map[string]any
@@ -477,10 +432,6 @@ func withObserve(t *testing.T, args, level string) string {
 	return string(out)
 }
 
-// Advertising observe and reading it are checked against each other in both
-// directions, because each direction fails silently on its own: a handler that
-// stops reading the parameter keeps advertising it (brw_find shipped that way),
-// and a handler that reads one nobody advertises is a parameter no agent passes.
 func TestObserveIsAdvertisedByExactlyTheToolsThatReadIt(t *testing.T) {
 	advertised := map[string]bool{}
 	for _, tl := range tools() {
@@ -511,10 +462,6 @@ func TestObserveIsAdvertisedByExactlyTheToolsThatReadIt(t *testing.T) {
 	}
 }
 
-// The catalogue test above keys both sides on a hand-written list, so it cannot
-// see a handler that quietly stops applying the level. This calls every tool on
-// that list and reads the response: observe:"none" must leave no element list
-// anywhere in it, and must still say whether the action worked.
 func TestEveryAdvertisedObserveToolHonoursNone(t *testing.T) {
 	calls := observeToolCalls()
 	for _, name := range observeToolNames() {
@@ -552,9 +499,6 @@ func TestEveryAdvertisedObserveToolHonoursNone(t *testing.T) {
 	}
 }
 
-// brw_batch is the one tool where minimal has nothing to drop: its single
-// closing observation carries no element list. Its schema says so, and this
-// pins the schema to the behaviour.
 func TestBatchSaysMinimalIsTheSameAsFull(t *testing.T) {
 	schema, ok := toolProperties(t, "brw_batch")["observe"].(map[string]any)
 	if !ok {
@@ -572,10 +516,6 @@ func TestBatchSaysMinimalIsTheSameAsFull(t *testing.T) {
 	}
 }
 
-// A navigation's outcome IS the destination, and the message names the url that
-// was REQUESTED. Dropping the observed url would leave the caller holding a
-// claim brw never verified: after a redirect or a login wall the message says
-// it arrived somewhere it did not.
 func TestNavigationToolsKeepTheCommittedURLAtEveryLevel(t *testing.T) {
 	for _, name := range navigationToolNames() {
 		if !slices.Contains(observeToolNames(), name) {
@@ -595,8 +535,7 @@ func TestNavigationToolsKeepTheCommittedURLAtEveryLevel(t *testing.T) {
 			})
 		}
 	}
-	// And every tool whose name says it navigates has to be on that list, or
-	// the exception is one tool wide and the next one repeats the defect.
+
 	for _, tl := range tools() {
 		name, _ := tl["name"].(string)
 		if !strings.HasPrefix(name, "brw_navigate") {
@@ -608,21 +547,12 @@ func TestNavigationToolsKeepTheCommittedURLAtEveryLevel(t *testing.T) {
 	}
 }
 
-// navigationPlanSteps is one brw_plan step per navigation verb. A navigation
-// verb the catalogue advertises as a plan step and this map does not name fails
-// the test below rather than going unchecked, which is what the two-tool fix
-// missed: brw_navigate_to was corrected while the plan step running the same
-// primitive was not.
 func navigationPlanSteps() map[string]map[string]any {
 	return map[string]map[string]any{
 		"navigate_to": {"action": "navigate_to", "url": "https://fixture.test/cart"},
 	}
 }
 
-// The url a navigation reports is its outcome, and a brw_plan step runs the same
-// primitive as the standalone tool. Enumerated over the advertised step enum, so
-// the exception cannot be one surface wide: this is the defect the tool-name fix
-// left behind on brw_plan.
 func TestNavigationPlanStepsKeepTheCommittedURLAtEveryLevel(t *testing.T) {
 	steps := navigationPlanSteps()
 	checked := 0
@@ -672,9 +602,7 @@ func TestNavigationPlanStepsKeepTheCommittedURLAtEveryLevel(t *testing.T) {
 	if checked == 0 {
 		t.Fatal("no advertised plan step verb is a navigation, so this test checked nothing")
 	}
-	// A verb the plan advertises whose name says it navigates has to BE a
-	// navigation action, or the classification is a list that the next sibling
-	// is simply left off.
+
 	for _, verb := range advertisedPlanStepVerbs(t) {
 		if strings.HasPrefix(verb, "navigate") && !browser.IsNavigationAction(verb) {
 			t.Errorf("brw_plan step verb %q navigates but browser.NavigationActions() does not name it, so observe drops the url it did not verify", verb)
@@ -682,10 +610,6 @@ func TestNavigationPlanStepsKeepTheCommittedURLAtEveryLevel(t *testing.T) {
 	}
 }
 
-// snapshot:true and observe minimal/none contradict each other: one asks for the
-// page, the other deletes it on the way out. Picking one silently leaves the
-// caller unable to see which. The pairing is read off the catalogue so a new
-// tool carrying both parameters is covered the day it is added.
 func TestSnapshotTrueIsRefusedWithATrimmingLevel(t *testing.T) {
 	calls := observeToolCalls()
 	checked := 0
@@ -727,7 +651,7 @@ func TestSnapshotTrueIsRefusedWithATrimmingLevel(t *testing.T) {
 				}
 			})
 		}
-		// The combination that does not conflict still works.
+
 		t.Run(name+"/full", func(t *testing.T) {
 			var decoded map[string]any
 			if err := json.Unmarshal([]byte(args), &decoded); err != nil {
@@ -746,9 +670,6 @@ func TestSnapshotTrueIsRefusedWithATrimmingLevel(t *testing.T) {
 	}
 }
 
-// brw_find's read-only path returns the match list, which is the whole answer:
-// there is nothing for minimal or none to trim. It used to accept them and
-// ignore them, which is the same silent no-op shape as a dropped option.
 func TestReadOnlyFindRefusesALevelItCannotHonour(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -769,7 +690,7 @@ func TestReadOnlyFindRefusesALevelItCannotHonour(t *testing.T) {
 			}
 		})
 	}
-	// full is what a read-only find already does, so it is accepted.
+
 	full := toolText(t, observeCallTool(t, &observeController{findElements: observeFixtureResult().Elements},
 		"brw_find", `{"query":"Check","observe":"full"}`))
 	if !strings.Contains(full, `"elements"`) {
@@ -777,8 +698,6 @@ func TestReadOnlyFindRefusesALevelItCannotHonour(t *testing.T) {
 	}
 }
 
-// With an action the parameter is real: it trims the post-action observation
-// and leaves matched, which is the answer to "which element did you act on".
 func TestFindActHonoursObserveAndKeepsTheMatch(t *testing.T) {
 	controller := &observeController{findElements: []snapshot.Element{{Ref: "e9", Role: "button", Name: "Checkout"}}}
 	got := toolText(t, observeCallTool(t, controller, "brw_find",
@@ -802,10 +721,6 @@ func TestFindActHonoursObserveAndKeepsTheMatch(t *testing.T) {
 	}
 }
 
-// The step verbs observe classifies and the step verbs brw_plan advertises have
-// to be the same set. An advertised verb missing from the table reports in full
-// whatever the caller asked for; a table entry for a verb nobody can send is a
-// classification of nothing.
 func TestEveryPlanStepVerbIsClassifiedForObserve(t *testing.T) {
 	advertised := advertisedPlanStepVerbs(t)
 	for _, verb := range advertised {
@@ -820,8 +735,6 @@ func TestEveryPlanStepVerbIsClassifiedForObserve(t *testing.T) {
 	}
 }
 
-// advertisedPlanStepVerbs reads the step enum off the catalogue, which is the
-// set of verbs a caller can actually send.
 func advertisedPlanStepVerbs(t *testing.T) []string {
 	t.Helper()
 	steps, ok := toolProperties(t, "brw_plan")["steps"].(map[string]any)
@@ -838,9 +751,6 @@ func advertisedPlanStepVerbs(t *testing.T) []string {
 	return advertised
 }
 
-// A plan step that fetched a snapshot keeps it at every level. SKILL.md sends
-// agents to brw_plan for a mid-flow snapshot, and the default trim used to
-// delete the one thing the step was written to return.
 func TestPlanSnapshotStepSurvivesEveryLevel(t *testing.T) {
 	controller := &observeController{}
 	for _, args := range []string{
@@ -864,4 +774,13 @@ func TestPlanSnapshotStepSurvivesEveryLevel(t *testing.T) {
 			t.Fatalf("a mid-plan snapshot step returned no snapshot for %s: %s", args, response)
 		}
 	}
+}
+
+func navigationToolNames() []string {
+	verbs := browser.NavigationActions()
+	names := make([]string, 0, len(verbs))
+	for _, verb := range verbs {
+		names = append(names, "brw_"+verb)
+	}
+	return names
 }

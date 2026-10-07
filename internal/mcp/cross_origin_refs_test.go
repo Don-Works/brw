@@ -12,13 +12,8 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// crossOriginRef is the shape of a ref that names an element inside a
-// cross-origin iframe: a frame index and a ref minted in that frame's document.
 const crossOriginRef = "f0:e7"
 
-// refParameterNames are the schema properties that carry an element ref. They are
-// listed rather than pattern-matched so a count like max_refs cannot be mistaken
-// for one, and so a new spelling has to be added deliberately.
 var refParameterNames = map[string]bool{
 	"ref":       true,
 	"refs":      true,
@@ -26,15 +21,6 @@ var refParameterNames = map[string]bool{
 	"click_ref": true,
 }
 
-// TestEveryToolTakingARefIsClassifiedForCrossOriginRefs walks the real catalogue
-// and requires each tool advertising a ref parameter to say what it does with a
-// ref inside a cross-origin iframe.
-//
-// The Controller-level enumeration cannot see these: brw_get, brw_highlight and
-// brw_artifact_capture hand their ref to Evaluate, to the devtools observer and
-// to the artifact service, none of which is a ref-taking Controller method. So
-// the tool schema is the second place the property is anchored, and a new tool
-// with a ref parameter fails here until someone decides.
 func TestEveryToolTakingARefIsClassifiedForCrossOriginRefs(t *testing.T) {
 	seen := map[string]bool{}
 	for _, tl := range tools() {
@@ -46,7 +32,7 @@ func TestEveryToolTakingARefIsClassifiedForCrossOriginRefs(t *testing.T) {
 			if !refParameterNames[strings.ToLower(key)] {
 				continue
 			}
-			// max_rules-style integers are not refs; neither is a boolean.
+
 			if kind, _ := spec.(map[string]any)["type"].(string); kind != "string" && kind != "array" {
 				continue
 			}
@@ -72,13 +58,6 @@ func TestEveryToolTakingARefIsClassifiedForCrossOriginRefs(t *testing.T) {
 	}
 }
 
-// TestToolsGuardedHereRefuseCrossOriginRefsByName is the half the Controller
-// enumeration cannot reach: these three refuse in callTool or not at all.
-//
-// The fake controller would happily run each of them, so a refusal here is the
-// guard and nothing else. It has to be recognisable (errors.Is on the sentinel),
-// not just differently worded — a caller that cannot tell the capability gap from
-// a stale ref re-snapshots forever.
 func TestToolsGuardedHereRefuseCrossOriginRefsByName(t *testing.T) {
 	cases := []struct {
 		tool string
@@ -109,19 +88,8 @@ func TestToolsGuardedHereRefuseCrossOriginRefsByName(t *testing.T) {
 	}
 }
 
-// staleFrameRefShape is the ref shape brw no longer mints. The element half of
-// an f<i>: ref is a ref from the FRAME's own walk, so it carries the walker's
-// collision suffixes (e6_edit_2) and is not always e<j>.
 const staleFrameRefShape = "f<i>:e<j>"
 
-// TestNothingAdvertisesTheOldFrameRefShape keeps the tool surface and the skill
-// telling an agent the same thing about a ref it will actually be handed.
-//
-// A tool's prose and its parameter schema drifted apart once already: the
-// description was rewritten to f<i>:<ref> and brw_frame's target schema kept
-// f<i>:e<j>, which is the line an agent reads when it builds the argument. The
-// catalogue and the skill are walked rather than listed so a third copy cannot
-// appear somewhere nobody thought to check.
 func TestNothingAdvertisesTheOldFrameRefShape(t *testing.T) {
 	for _, tl := range tools() {
 		name, _ := tl["name"].(string)
@@ -147,13 +115,8 @@ func TestNothingAdvertisesTheOldFrameRefShape(t *testing.T) {
 	}
 }
 
-// sequenceTools are the tools that take their refs inside steps and refuse the
-// whole call when one of them names a cross-origin frame.
 var sequenceTools = []string{"brw_plan", "brw_batch"}
 
-// routingToolName is the tool the refusal sends an agent to instead, read out of
-// the classification table rather than spelled out here, so renaming it has to
-// move through the table, the tool descriptions and the skill together.
 func routingToolName(t *testing.T) string {
 	t.Helper()
 	var names []string
@@ -168,27 +131,8 @@ func routingToolName(t *testing.T) string {
 	return names[0]
 }
 
-// TestSequenceToolsRefuseACrossOriginRefAndSayTheyDo closes a gap between what
-// brw tells an agent and what it does.
-//
-// brw_snapshot's description tells an agent that an f<i>:<ref> can be passed to
-// brw_click and the click lands in that frame. ExecutePlan and ExecuteBatch then
-// refuse such a ref for the whole call — correctly, since a step does not route
-// into the frame — but nothing an agent reads said so, so it batched the click it
-// had just been told worked and got a refusal.
-//
-// The refusal is DRIVEN, not assumed: each tool is called through callTool with
-// the real Controller, so deleting either guard turns this red. Only then is the
-// prose checked, and it is checked NEAR the phrase rather than anywhere in the
-// file: a source has to say, within one passage, that such a ref is refused and
-// which tool does reach the frame. The old assertion was satisfied by the phrase
-// "cross-origin iframe" appearing anywhere in the skill, including in a passage
-// telling an agent the opposite.
 func TestSequenceToolsRefuseACrossOriginRefAndSayTheyDo(t *testing.T) {
-	// A zero Manager is enough: the guard is the first thing ExecutePlan and
-	// ExecuteBatch do, so a refusal here is the guard and nothing else. Without it
-	// the call reaches a Manager with no browser behind it, which callSequenceTool
-	// turns into this test's verdict.
+
 	server := New(&browser.Manager{})
 	step := map[string]any{"action": "click", "ref": crossOriginRef}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -232,12 +176,6 @@ func TestSequenceToolsRefuseACrossOriginRefAndSayTheyDo(t *testing.T) {
 	}
 }
 
-// callSequenceTool runs one sequence tool and returns whatever the surface said.
-//
-// A zero Manager has no cancel registry, so a call that got PAST the guard dies
-// there instead of returning. Recovering turns that into this test's own verdict
-// — the guard did not refuse — rather than taking the package's other tests down
-// with it.
 func callSequenceTool(t *testing.T, server *Server, ctx context.Context, tool string, payload []byte) (text string) {
 	t.Helper()
 	defer func() {
@@ -249,13 +187,8 @@ func callSequenceTool(t *testing.T, server *Server, ctx context.Context, tool st
 	return rpcErrText(rpcErr) + resultText(result)
 }
 
-// refusalPassage is how much text after a mention of "cross-origin iframe" still
-// counts as the same passage. Two sentences: the claim and its way out.
 const refusalPassage = 260
 
-// saysSuchARefIsRefused reports whether some mention of a cross-origin iframe in
-// text is followed, within one passage, by both the refusal and the tool that
-// does reach the frame.
 func saysSuchARefIsRefused(text, routing string) bool {
 	const phrase = "cross-origin iframe"
 	for at := 0; ; {
@@ -286,4 +219,49 @@ func firstKey(args map[string]any) string {
 		}
 	}
 	return "args"
+}
+
+type refToolDisposition int
+
+const (
+	refToolGuardedAtTransport refToolDisposition = iota
+
+	refToolGuardedHere
+
+	refToolRoutesIntoTheFrame
+
+	refToolNamesTheFrame
+)
+
+var refTakingTools = map[string]struct {
+	Disposition refToolDisposition
+	Reason      string
+}{
+	"brw_click":              {refToolRoutesIntoTheFrame, "direct CDP attaches a session to the frame's own target and clicks there; the extension bridge refuses by name"},
+	"brw_hover":              {refToolGuardedAtTransport, "Hover resolves against the top document"},
+	"brw_type":               {refToolGuardedAtTransport, "Type resolves against the top document"},
+	"brw_fill":               {refToolGuardedAtTransport, "Fill resolves against the top document"},
+	"brw_select":             {refToolGuardedAtTransport, "Select resolves against the top document"},
+	"brw_focus":              {refToolGuardedAtTransport, "Focus resolves against the top document"},
+	"brw_commit":             {refToolGuardedAtTransport, "CommitField resolves against the top document"},
+	"brw_mouse_down":         {refToolGuardedAtTransport, "MouseDown resolves against the top document"},
+	"brw_mouse_up":           {refToolGuardedAtTransport, "MouseUp resolves against the top document"},
+	"brw_upload_file":        {refToolGuardedAtTransport, "UploadFile resolves both its ref and its click_ref against the top document"},
+	"brw_screenshot_save":    {refToolGuardedAtTransport, "SaveScreenshot guards cross-origin refs before any capture or disk write"},
+	"brw_screenshot":         {refToolGuardedAtTransport, "a ref makes this an annotated crop, which goes through ScreenshotAnnotated"},
+	"brw_screenshot_element": {refToolGuardedAtTransport, "ScreenshotElement resolves against the top document"},
+	"brw_assert":             {refToolGuardedAtTransport, "Assert resolves against the top document"},
+	"brw_assert_visible":     {refToolGuardedAtTransport, "AssertVisible resolves against the top document"},
+	"brw_assert_hidden":      {refToolGuardedAtTransport, "AssertHidden resolves against the top document"},
+	"brw_assert_text":        {refToolGuardedAtTransport, "AssertText resolves against the top document"},
+	"brw_assert_value":       {refToolGuardedAtTransport, "AssertValue resolves against the top document"},
+	"brw_frame":              {refToolNamesTheFrame, "the target IS a frame ref: the element half is dropped and the frame's box is reported"},
+	"brw_get":                {refToolGuardedHere, "the target reaches the transport as JavaScript through Evaluate, which is ref-free"},
+	"brw_highlight":          {refToolGuardedHere, "the overlay is drawn in the top document by the devtools observer, not through a Controller ref method"},
+	"brw_artifact_capture":   {refToolGuardedHere, "the ref reaches the artifact service, which captures from the top document"},
+
+	"brw_touch":  {refToolGuardedAtTransport, "Touch resolves both its ref and its to_ref against the top document"},
+	"brw_scroll": {refToolGuardedAtTransport, "Scrolling to a target resolves the ref or selector against the top document"},
+	"brw_react":  {refToolGuardedAtTransport, "React inspection resolves its target against the top document"},
+	"brw_check":  {refToolGuardedAtTransport, "Check resolves its ref against the top document and refuses a cross-origin one by name"},
 }
