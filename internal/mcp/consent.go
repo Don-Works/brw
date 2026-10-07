@@ -40,20 +40,22 @@ func (s *Server) enforceSiteConsent(ctx context.Context, name string, args json.
 // moving the page, the fetch check a daemon-side retrieval needs once a server
 // answers with a redirect, and the frame-read check a cross-origin iframe needs
 // once the page has been walked and its embedded origins are known.
-//
-// All are no-ops on a daemon with no consent store, so a controller reached
-// through this path behaves exactly as it did before consent existed.
 func (s *Server) withConsentHooks(ctx context.Context, name string, args json.RawMessage) context.Context {
-	if !s.consent.Enabled() {
+	if !s.consent.Enabled() && s.approvalGate == nil {
 		return ctx
 	}
 	ctx = browser.WithRuntimeConsent(ctx, s)
 	gate := s.consent.NewStepGate(name, args)
-	if gate == nil {
+	if gate == nil && (s.approvalGate == nil || !siteconsent.SequenceTools[name]) {
 		return ctx
 	}
 	tabID := browser.TabIDFromContext(ctx)
 	return browser.WithSequenceGate(ctx, func(index int, stepTabID string, step siteconsent.StepProbe) error {
+		stepCtx := browser.WithTabID(ctx, stepTabID)
+		raw, _ := json.Marshal(siteconsent.Probe{Steps: []siteconsent.StepProbe{step}})
+		if _, err := s.approvalGate.CheckTargets(stepCtx, name, raw); err != nil {
+			return err
+		}
 		return gate.Check(index, step,
 			func(want string) (string, error) {
 				if want == "" {
@@ -81,6 +83,9 @@ func (s *Server) withConsentHooks(ctx context.Context, name string, args json.Ra
 // It is exported because it is half of browser.ConsentEnforcer, which is what
 // makes "every runtime question is answered" a compile error rather than a habit.
 func (s *Server) CheckFetchDestination(rawURL string) error {
+	if err := s.approvalGate.CheckURL(rawURL); err != nil {
+		return err
+	}
 	if err := s.checkNavPolicy(rawURL); err != nil {
 		return err
 	}
@@ -96,6 +101,9 @@ func (s *Server) CheckFetchDestination(rawURL string) error {
 // an f<i>:<ref> attaches the same session and actuates there, so it asks the same
 // question.
 func (s *Server) CheckFrameRead(frameOrigin string) error {
+	if err := s.approvalGate.CheckURL(frameOrigin); err != nil {
+		return err
+	}
 	return s.consent.Authorize(frameOrigin, siteconsent.ScopeRead)
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/browsertest"
 	"github.com/Don-Works/brw/internal/cdp"
+	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/siteconsent"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -26,10 +27,26 @@ type approvalIntegrationBrowser struct {
 	mu     sync.Mutex
 	state  string
 	clicks int
+	url    string
 }
 
 func (c *approvalIntegrationBrowser) ListTabs(context.Context) ([]browser.Tab, error) {
-	return []browser.Tab{{ID: "approval-tab", URL: "https://approval.test/cart", Active: true}}, nil
+	pageURL := c.url
+	if pageURL == "" {
+		pageURL = "https://approval.test/cart"
+	}
+	return []browser.Tab{{ID: "approval-tab", URL: pageURL, Active: true}}, nil
+}
+
+func (c *approvalIntegrationBrowser) Read(context.Context) (readability.PageRead, error) {
+	return readability.PageRead{Main: "private operator request"}, nil
+}
+
+func (c *approvalIntegrationBrowser) ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.clicks++
+	return browser.ActionResult{OK: true}, nil
 }
 
 func (c *approvalIntegrationBrowser) Evaluate(ctx context.Context, expression string) (any, error) {
@@ -170,6 +187,39 @@ func TestApprovalIntegrationMCPChangedStateInvalidates(t *testing.T) {
 	}
 }
 
+func TestApprovalMCPProtectsOperatorPageWithoutSiteConsent(t *testing.T) {
+	manager := &approvalIntegrationBrowser{url: "http://127.0.0.1:17310/approvals"}
+	srv := New(manager)
+	gate, err := approvalgate.New(manager, approvalIntegrationStore(t), "risky")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.SetOperatorOrigin("http://127.0.0.1:17310")
+	srv.SetApprovalGate(gate)
+	for _, call := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"brw_read", map[string]any{"tab_id": "approval-tab"}},
+		{"brw_click_text", map[string]any{"tab_id": "approval-tab", "text": "Approve once"}},
+	} {
+		result := callApprovalIntegration(t, srv, call.tool, call.args)
+		encoded, _ := json.Marshal(result)
+		if result["isError"] != true || !strings.Contains(string(encoded), "operator approval UI") || manager.clickCount() != 0 || strings.Contains(string(encoded), "private operator request") {
+			t.Fatalf("operator page reached by %s: %s", call.tool, encoded)
+		}
+	}
+	ctx := srv.withConsentHooks(browser.WithTabID(context.Background(), "approval-tab"), "brw_batch", nil)
+	if err := browser.GateSequenceStep(ctx, 0, "approval-tab", siteconsent.StepProbe{Action: "read"}); err == nil {
+		t.Fatal("sequence read the operator page with site consent disabled")
+	}
+	for _, check := range []func(string) error{srv.CheckFetchDestination, srv.CheckFrameRead} {
+		if err := check("http://2130706433:17310/approvals"); err == nil {
+			t.Fatal("runtime destination check allowed numeric operator origin")
+		}
+	}
+}
+
 func TestApprovalIntegrationMCPRevokedSiteGrantPreventsWrite(t *testing.T) {
 	manager := &approvalIntegrationBrowser{state: "original"}
 	srv, guard := newConsentServer(t, manager, siteconsent.AdminConfig{})
@@ -241,7 +291,7 @@ func TestApprovalIntegrationRealChromiumEvidenceAndClick(t *testing.T) {
 	profile.StopWith(func() { _ = manager.Close() })
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!doctype html><html><head><title>Approval fixture</title></head><body><label for="amount">Amount</label><input id="amount" value="10"><button onclick="window.clicks++">Submit purchase</button><script>window.clicks=0</script></body></html>`)
+		fmt.Fprint(w, `<!doctype html><html><head><title>Approval fixture</title></head><body><label for="amount">Amount</label><input id="amount" value="10"><button onclick="window.clicks++">Submit purchase</button><button onclick="window.benignClicks++">Expand details</button><script>window.clicks=0;window.benignClicks=0</script></body></html>`)
 	}))
 	t.Cleanup(fixture.Close)
 	opened, err := manager.Open(ctx, fixture.URL)
@@ -289,5 +339,30 @@ func TestApprovalIntegrationRealChromiumEvidenceAndClick(t *testing.T) {
 				t.Fatalf("real click failed: %+v state=%s", result, current.Status)
 			}
 		})
+	}
+	srv := New(manager)
+	gate, err := approvalgate.New(manager, approvalIntegrationStore(t), "risky")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.SetOperatorOrigin(fixture.URL)
+	srv.SetApprovalGate(gate)
+	for _, call := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"brw_read", map[string]any{"tab_id": opened.Tab.ID}},
+		{"brw_click_text", map[string]any{"tab_id": opened.Tab.ID, "text": "Expand details"}},
+		{"brw_open", map[string]any{"url": strings.Replace(fixture.URL, "127.0.0.1", "2130706433", 1)}},
+	} {
+		result := callApprovalIntegration(t, srv, call.tool, call.args)
+		encoded, _ := json.Marshal(result)
+		if result["isError"] != true || !strings.Contains(string(encoded), "operator approval UI") {
+			t.Fatalf("real operator page reached by %s: %s", call.tool, encoded)
+		}
+	}
+	value, err := manager.Evaluate(tabCtx, "window.benignClicks")
+	if err != nil || fmt.Sprint(value) != "0" {
+		t.Fatalf("real operator page was actuated: %v %v", value, err)
 	}
 }
