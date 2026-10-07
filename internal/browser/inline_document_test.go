@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,8 +10,48 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/fetch"
+	"github.com/chromedp/cdproto/network"
 )
+
+type inlineBodyExecutor struct {
+	body string
+	sent []string
+}
+
+func (e *inlineBodyExecutor) Execute(_ context.Context, method string, _, result any) error {
+	e.sent = append(e.sent, method)
+	if method == fetch.CommandGetResponseBody {
+		raw, _ := json.Marshal(map[string]any{"body": e.body})
+		return json.Unmarshal(raw, result)
+	}
+	return nil
+}
+
+func TestInlineDocumentCapsTheDecodedBody(t *testing.T) {
+	for _, size := range []int{InlineDocumentBodyLimit, InlineDocumentBodyLimit + 1} {
+		executor := &inlineBodyExecutor{body: strings.Repeat("x", size)}
+		paused := &fetch.EventRequestPaused{RequestID: "fixture-request", ResponseStatusCode: 200, ResponseHeaders: []*fetch.HeaderEntry{{Name: "Content-Type", Value: "text/csv"}}}
+		if err := answerInlineDocument(cdp.WithExecutor(context.Background(), executor), paused); err != nil {
+			t.Fatal(err)
+		}
+		want := fetch.CommandFulfillRequest
+		if size > InlineDocumentBodyLimit {
+			want = fetch.CommandContinueResponse
+		}
+		if len(executor.sent) != 2 || executor.sent[0] != fetch.CommandGetResponseBody || executor.sent[1] != want {
+			t.Fatalf("%d-byte decoded document used %v, want GetResponseBody then %s", size, executor.sent, want)
+		}
+	}
+}
+
+func TestRedirectLocationSkipsNullHeaders(t *testing.T) {
+	paused := &fetch.EventRequestPaused{ResponseStatusCode: 302, Request: &network.Request{URL: "https://fixture.test/from"}, ResponseHeaders: []*fetch.HeaderEntry{nil, {Name: "Location", Value: "/destination"}}}
+	if got := redirectLocation(paused); got != "https://fixture.test/destination" {
+		t.Fatalf("redirect=%q", got)
+	}
+}
 
 func TestInlineDocumentHeadersRewritesOnlyDownloadShapedText(t *testing.T) {
 	cases := []struct {
@@ -118,10 +159,6 @@ func renderHeaders(headers []*fetch.HeaderEntry) []string {
 	return out
 }
 
-// rawDocumentServer serves the response shapes that used to turn a navigation
-// into a download: a JSON body flagged as an attachment (what Google's suggest
-// endpoint sends), an XML sitemap flagged the same way, a CSV with no
-// disposition at all, and a binary body that must remain a download.
 func rawDocumentServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -285,8 +322,7 @@ func TestInlineDocumentPatternCoversOnlyTheDestinationOrigin(t *testing.T) {
 func TestNavigateToFollowsACrossOriginRedirectToAnInlineDocument(t *testing.T) {
 	m := newHeadlessManager(t)
 	docs := rawDocumentServer(t)
-	// localhost and 127.0.0.1 are different origins, so the redirect leaves the
-	// origin the navigation was armed for.
+
 	target := strings.Replace(docs.URL, "127.0.0.1", "localhost", 1) + "/suggest.json"
 	redirector := httptest.NewServer(http.RedirectHandler(target, http.StatusFound))
 	t.Cleanup(redirector.Close)

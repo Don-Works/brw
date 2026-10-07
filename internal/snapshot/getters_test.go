@@ -93,8 +93,7 @@ func TestGetScript(t *testing.T) {
 		{name: "focused input", what: "focused", target: "#name", want: true},
 		{name: "unfocused input", what: "focused", target: "#agree", want: false},
 		{name: "navigation http status", what: "status", want: float64(200)},
-		// Frame-awareness is the reason this exists rather than a bare
-		// document.querySelector in brw_evaluate.
+
 		{name: "resolves inside a same-origin iframe", what: "text", target: "#inframe", want: "inside the frame"},
 	}
 
@@ -143,9 +142,53 @@ func TestSensitiveValueAssertionsOnlyReturnTheComparison(t *testing.T) {
 	}
 }
 
-// TestGetScriptStateReportsEveryFlagAtOnce covers the 'state' case: one round
-// trip for every interaction flag, with found reported separately so a caller
-// can tell "disabled" from "not on the page".
+func TestAssertionsReleaseTheirMutationObservers(t *testing.T) {
+	ctx, cancel := newHeadlessSettleCtx(t)
+	defer cancel()
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`document.body.innerHTML='<input id="assertion-fixture" data-brw-ref="fixture-assertion">';
+window.fixtureObservers={active:0,created:0};
+window.MutationObserver=class extends MutationObserver {
+  constructor(fn){ super(fn); fixtureObservers.created++; }
+  observe(...args){ super.observe(...args); if(!this.fixtureConnected){this.fixtureConnected=true;fixtureObservers.active++;} }
+  disconnect(){super.disconnect(); if(this.fixtureConnected){this.fixtureConnected=false;fixtureObservers.active--;}}
+};`, nil)); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct{ name, script, reset, change, args string }{
+		{"text", AssertTextScript, `el.value='before'`, `el.value='expected';el.setAttribute('data-changed','yes')`, `'fixture-assertion','expected',5`},
+		{"value", AssertValueScript, `el.value='before'`, `el.value='expected';el.setAttribute('data-changed','yes')`, `'fixture-assertion','expected',5`},
+		{"contains", AssertValueContainsScript, `el.value='before'`, `el.value='an expected value';el.setAttribute('data-changed','yes')`, `'fixture-assertion','expected',5`},
+		{"visible", AssertVisibleScript, `el.hidden=true`, `el.hidden=false`, `'fixture-assertion',5`},
+		{"hidden", AssertHiddenScript, `el.hidden=false`, `el.hidden=true`, `'fixture-assertion',5`},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			for _, phase := range []string{"timeout", "mutation", "immediate"} {
+				body := `var el=document.getElementById('assertion-fixture');el.removeAttribute('data-changed');` + check.reset + `;`
+				if phase == "immediate" {
+					body += check.change + `;`
+				}
+				body += `var promise=(` + check.script + `)(` + check.args + `);`
+				if phase == "mutation" {
+					body += check.change + `;`
+				}
+				body += `return promise;`
+				err := EvalAssert(ctx, `(function(){`+body+`})`)
+				if phase == "timeout" {
+					if !errors.Is(err, ErrAssertionTimeout) {
+						t.Fatalf("%s: %v", phase, err)
+					}
+				} else if err != nil {
+					t.Fatalf("%s: %v", phase, err)
+				}
+				stats := evalJSON(t, ctx, `fixtureObservers`)
+				if stats["active"] != float64(0) {
+					t.Fatalf("%s left %v connected observers", phase, stats["active"])
+				}
+			}
+		})
+	}
+}
+
 func TestGetScriptStateReportsEveryFlagAtOnce(t *testing.T) {
 	ctx, cancel := newHeadlessSettleCtx(t)
 	defer cancel()

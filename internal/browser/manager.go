@@ -29,47 +29,22 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// Action settle delays — the upper bound on the pause after an action (click,
-// type, fill, scroll, etc.) before the post-action observation snapshot. The
-// settle lets the page react (DOM mutation, focus change, navigation start)
-// before we read the result.
-//
-// These are now CAPS, not fixed sleeps: runWithPrearmedSettle (below) installs
-// an in-page observer before actuation and returns when the page demonstrably
-// settles (DOM mutations quiesce ~2 frames, OR a navigation/popstate/hashchange/
-// pagehide fires, OR a network response lands) and is hard-bounded by the cap so
-// the worst case is exactly today's fixed delay — never slower. Named here so
-// every call site shares the same bound and it is easy to tune globally.
 const (
-	actionSettleDelay     = 150 * time.Millisecond // click, hover, press, drag, mouse half
-	actionSettleDelayFast = 100 * time.Millisecond // type, fill, select, scroll, upload
-	mouseHalfSettleDelay  = 75 * time.Millisecond  // mouse_down/mouse_up press/release
-	menuHoverSettleDelay  = 325 * time.Millisecond // common delayed-submenu open/close interval
-	// fileChooserWaitTimeout bounds how long file-chooser-interception upload mode
-	// waits for the Page.fileChooserOpened event after clicking the trigger.
+	actionSettleDelay     = 150 * time.Millisecond
+	actionSettleDelayFast = 100 * time.Millisecond
+	mouseHalfSettleDelay  = 75 * time.Millisecond
+	menuHoverSettleDelay  = 325 * time.Millisecond
+
 	fileChooserWaitTimeout = 5 * time.Second
 )
 
-// runWithPrearmedSettle installs the page observer immediately before
-// actuation, then waits on that exact observer afterward. If arming is
-// unavailable, it falls back to the legacy post-action settle. Settle errors
-// remain non-fatal because navigation commonly destroys the old context after
-// the browser action has already succeeded.
-//
-// The adaptive heuristics are unchanged — quiesce window, network signal, hard
-// cap all still live in SettleScript. What changed is where the NAVIGATION
-// branch gets its truth: from Page.frameNavigated on the tab's event
-// subscription rather than only from the in-page listener, which dies with the
-// execution context the navigation is destroying and so cannot report it.
 func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duration, action func() error) error {
 	if FrameReadCheckFromContext(tabCtx) != nil {
 		if err := m.guardCurrentURL(eventScopeFromCtx(tabCtx), tabCtx); err != nil {
 			return err
 		}
 	}
-	// Never actuate after the owning tab/request has already been cancelled. In
-	// particular, an ArmSettle failure caused by cancellation must not be treated
-	// like an ordinary "observer unavailable" fallback.
+
 	if err := tabCtx.Err(); err != nil {
 		return err
 	}
@@ -83,8 +58,7 @@ func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duratio
 	if err := tabCtx.Err(); err != nil {
 		return err
 	}
-	// Subscribe before actuating so a navigation the action causes cannot land
-	// in the gap between the action returning and the await starting.
+
 	var sub <-chan pageEvent
 	if scope := eventScopeFromCtx(tabCtx); scope != "" {
 		stream, release := m.events.subscribe([]pageEventKind{eventNavigated}, scope)
@@ -104,20 +78,6 @@ func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duratio
 	return nil
 }
 
-// awaitPrearmedSettle resolves the pre-armed in-page settle, or abandons it the
-// moment the event stream reports the action navigated the page. await is
-// injected so the wiring is testable without a browser.
-//
-// Abandoning on navigation is not a shortcut: the navigation destroys the
-// execution context holding the promise, so what is left to await is a reply
-// that will never come.
-//
-// The await gets its own cancellation and the window cancels it on the way out,
-// so nothing an action armed outlives that action: no goroutine parked on a
-// reply, no listener still registered for one. Cancelling ends the wait, not the
-// work — the evaluate was queued to the browser before the window closed, and
-// the in-page promise resolves and drops its own registry entry whether or not
-// anything is still listening — so a settle that is only slow is not aborted.
 func awaitPrearmedSettle(ctx context.Context, sub <-chan pageEvent, cap time.Duration, await func(context.Context)) {
 	awaitCtx, cancelAwait := context.WithCancel(ctx)
 	defer cancelAwait()
@@ -130,8 +90,7 @@ func awaitPrearmedSettle(ctx context.Context, sub <-chan pageEvent, cap time.Dur
 		defer close(done)
 		await(awaitCtx)
 	}()
-	// The in-page promise caps itself; this only bounds the wait on a renderer
-	// that never replies at all.
+
 	backstop := time.NewTimer(cap + settleAwaitGrace)
 	defer backstop.Stop()
 	for {
@@ -148,8 +107,6 @@ func awaitPrearmedSettle(ctx context.Context, sub <-chan pageEvent, cap time.Dur
 	}
 }
 
-// settleAwaitGrace is the headroom the Go-side backstop allows over the in-page
-// cap, covering the CDP round trip that carries the promise's resolution back.
 const settleAwaitGrace = 250 * time.Millisecond
 
 type Manager struct {
@@ -164,23 +121,11 @@ type Manager struct {
 	refs           *store.RefStore
 	timeout        time.Duration
 	navPolicy      *navpolicy.Policy
-	// remote is set when a plugin holding browser.provider lent brw this
-	// browser. It carries the provider session: who minted it, when it expires
-	// and how to give it back.
+
 	remote *RemoteTarget
-	// offHost records that the browser this manager drives is NOT on the
-	// machine brwd runs on, which is what every capability in RemoteUnavailable
-	// turns on. It is a separate field from remote because a provider is not the
-	// only way to reach a browser elsewhere: --remote takes a URL, and
-	// --remote http://198.51.100.7:9222 is a browser on another machine down the
-	// same code path a loopback endpoint takes. Read through BrowserOnThisHost.
+
 	offHost bool
 
-	// lastState caches each tab's most-recent post-action SemanticState so the
-	// next action can reuse it as its "before" baseline instead of taking a
-	// second viewport snapshot. The before-state only feeds the advisory
-	// ChangedState diff, so a slightly stale cache never corrupts an action
-	// result — it just halves the per-action snapshot round-trips in steady state.
 	stateMu       sync.Mutex
 	lastState     map[string]*SemanticState
 	observedState map[string]*SemanticState
@@ -188,8 +133,6 @@ type Manager struct {
 
 	traceMu sync.Mutex
 
-	// Live trace subscribers (see manager_stream.go). Separate lock from
-	// traceMu so a slow watcher cannot contend with recording.
 	streamMu   sync.RWMutex
 	streamSubs map[*traceSubscriber]struct{}
 	trace      []TraceEntry
@@ -198,160 +141,89 @@ type Manager struct {
 	consoleCaptureTabs map[string]bool
 	consoleMessages    map[string][]ConsoleMessage
 
-	// downloads tracks file downloads observed via the Browser.downloadWillBegin /
-	// Browser.downloadProgress CDP events. The listener is wired lazily on first
-	// access and writes into a bounded registry. Ordinary Downloads() calls are
-	// snapshots; recipe-scoped calls use per-tab change cursors so their pre-arm
-	// baseline cannot consume lifecycle state needed by a later capture.
 	downloadsMu      sync.Mutex
 	downloads        []DownloadEntry
-	downloadIndex    map[string]int // guid -> index into downloads
+	downloadIndex    map[string]int
 	downloadVersions map[string]uint64
-	// downloadChangedAt records when each download last changed state, so a wait
-	// can tell a download that just finished from one that finished long ago.
+
 	downloadChangedAt map[string]time.Time
-	downloadCursors   map[string]uint64 // recipe tab id -> last observed change
+	downloadCursors   map[string]uint64
 	downloadSequence  uint64
 	downloadDir       string
 	downloadDirOwned  bool
-	// retiredDownloadDirs are managed staging directories brw has stepped off but
-	// still owns. Completed downloads recorded paths inside them, so they outlive
-	// the switch and are removed at Close.
+
 	retiredDownloadDirs []string
 	userDataDir         string
 	downloadsEnabled    bool
-	// dialogs holds per-tab JavaScript-dialog arms and the answered-dialog ring.
-	// The listener it backs is mandatory: see ensureDialogHandling. Zero value is
-	// usable; its maps are created on first use.
+
 	dialogs dialogState
-	// containment enforces the navigation policy on SUBRESOURCES, not just on
-	// the URL an agent asks to open. Zero value is usable.
+
 	containment containmentState
-	// contentNavGuard arms the content boundary: a top-level navigation the
-	// PAGE initiated to another site is refused, while the same destination
-	// requested by the agent is allowed. Off by default.
+
 	contentNavGuard bool
 	pacer           *Pacer
-	// contentNav is the bookkeeping that separates the two. Zero value is usable.
+
 	contentNav contentNavState
-	// routes holds per-tab request interception rules. Zero value is usable.
+
 	routes routeState
 
-	// env holds per-tab page-environment overrides CDP cannot report back: the
-	// scoped extra-header table, the credential armed for one in-flight
-	// navigation, and the user-agent baseline. Zero value is usable.
 	env environmentState
-	// profiles holds the in-flight performance trace / CPU profile state. Zero
-	// value is usable.
+
 	profiles profileState
 
-	// cancels tracks in-flight long-running operations (plan / batch / wait
-	// loops) keyed by an operation token so brw_cancel can stop a specific
-	// run cooperatively instead of killing the whole daemon.
 	cancels *cancelRegistry
 
-	// netCaptureTabs records which tabs have had the network interceptor armed
-	// to re-install on every new document (so capture survives navigations).
 	netCaptureMu   sync.Mutex
 	netCaptureTabs map[string]bool
 
-	// shadowPierceTabs records which tabs have had the closed-shadow piercer
-	// armed at document-start (the CDP transports only), so a tab is registered once.
 	shadowPierceMu   sync.Mutex
 	shadowPierceTabs map[string]bool
 
-	// documentEpoch is a monotonic per-tab count of committed replacement
-	// documents observed after document tracking is armed. Pairing it with CDP's
-	// loaderId catches A -> B -> back-to-A/BFCache transitions that comparing the
-	// current loader alone could miss. Same-document SPA history changes do not
-	// emit Page.frameNavigated and intentionally leave the epoch unchanged.
 	documentMu      sync.Mutex
 	documentTracked map[string]bool
 	documentReady   map[string]bool
 	documentEpoch   map[string]uint64
 
-	// webmcpEnabled gates the opt-in WebMCP runtime (document.modelContext); when
-	// true, webmcpTabs records which tabs have had its document-start shim armed.
 	webmcpEnabled bool
 	webmcpMu      sync.Mutex
 	webmcpTabs    map[string]bool
 
-	// emulationStates tracks per-target DevTools device emulation so clear can
-	// restore UA/platform overrides that CDP itself has no clear command for.
 	emulationMu     sync.Mutex
 	emulationStates map[string]deviceEmulationState
 
-	// heldKeys records, per tab, the keys a caller pressed with KeyDown and has
-	// not yet released. CDP keeps no keyboard state between calls: every
-	// dispatched input event carries its own modifier mask, so a Ctrl+drag is
-	// only a Ctrl+drag while brw keeps stamping modifiers:2 onto each mouse
-	// event. This map is what the later events read.
 	heldMu   sync.Mutex
 	heldKeys map[string]map[string]actions.KeyDescriptor
 
-	// incognitoContexts tracks BrowserContextIDs created by OpenIncognito so
-	// Close can dispose any the caller never closed with CloseContext, instead of
-	// leaking the isolated context (and its tabs/storage) until Chrome exits.
 	incognitoMu       sync.Mutex
 	incognitoContexts map[string]bool
 
-	// sessionState is the browser host's scoped session-snapshot store. Nil
-	// unless the operator supplied an at-rest key, in which case brw_state
-	// refuses by name instead of writing a snapshot in the clear.
 	sessionStateMu sync.Mutex
 	sessionState   *sessionstate.Store
 
-	// signedInProfile marks a lane driving the browser the user is personally
-	// signed into (the Chrome opt-in lane). It is read by SessionState, which
-	// refuses to seal that browser's cookies whatever store is installed.
 	signedInProfile bool
 
-	// attachedBrowser reports that brw did not start this browser: some other
-	// process did, and brw holds only a DevTools connection to it.
-	//
-	// It is computed from what brw actually did — whether New built a launcher —
-	// and never from the lane, the flag the operator passed or the transport
-	// brw_identity reports, so an attach lane added later answers true here
-	// without an edit. stagesDownloads (manager_downloads.go) and connect below
-	// are its two readers.
 	attachedBrowser bool
 
-	// events is the CDP event stream every wait and post-action settle reads
-	// instead of re-asking the page. One subscription per context; see events.go.
-	// Zero value is usable, which matters because Manager is also built field by
-	// field in tests.
 	events eventHub
 
-	// takeover is the human's exclusive hold on the browser (see takeover.go).
-	// It expires rather than persisting, so a dashboard tab closed without a
-	// release cannot leave the agent locked out forever.
 	takeoverMu     sync.Mutex
 	takeoverToken  string
 	takeoverHolder string
 	takeoverTab    string
 	takeoverExpiry time.Time
-	// takeoverDispatchMu is held for read across a forwarded human event and for
-	// write by ReleaseTakeover, so a release cannot land between the token check
-	// and the event reaching the renderer.
+
 	takeoverDispatchMu sync.RWMutex
 
-	// pdfStreamChunk overrides PDFStreamChunkBytes for this manager. Zero means
-	// the default; see Manager.pdfStreamChunkBytes.
 	pdfStreamChunk int64
 }
 
-// SetNavigationPolicy installs the controller-level policy used for defense in
-// depth and final-destination checks. Call before serving requests.
+// SetNavigationPolicy installs the controller-level policy used for defense in depth and final-destination checks.
 func (m *Manager) SetNavigationPolicy(p *navpolicy.Policy) { m.navPolicy = p }
 
 func (m *Manager) prepareNavigationURL(rawURL string) (string, error) {
 	return m.navPolicy.CheckNavigation(rawURL)
 }
 
-// enforceFinalURL validates the committed top-frame URL, not merely the input
-// that initiated navigation. On a redirect/link escape, reset the tab to a
-// benign blank page before returning the policy error so later tools cannot keep
-// operating on the disallowed destination.
 func (m *Manager) enforceFinalURL(tabID string, tabCtx context.Context, rawURL string) error {
 	if check := FrameReadCheckFromContext(tabCtx); check != nil {
 		if err := check(rawURL); err != nil {
@@ -401,24 +273,17 @@ type ctxKeyTabIDRequiresCurrentOwnership struct{}
 func WithTabID(ctx context.Context, tabID string) context.Context {
 	ctx = context.WithValue(ctx, ctxKeyTabID{}, tabID)
 	ctx = context.WithValue(ctx, ctxKeyTabIDExplicit{}, true)
-	// An explicit caller selection overrides any inherited server-owned pin.
+
 	return context.WithValue(ctx, ctxKeyTabIDRequiresCurrentOwnership{}, false)
 }
 
-// WithImplicitTabID pins a server-selected working tab without pretending the
-// caller explicitly supplied it. Sequence runners may retarget an implicit pin
-// after a successful open/focus step, while a caller-supplied WithTabID remains
-// sticky for the whole operation.
+// WithImplicitTabID pins a server-selected working tab without pretending the caller explicitly supplied it.
 func WithImplicitTabID(ctx context.Context, tabID string) context.Context {
 	ctx = context.WithValue(ctx, ctxKeyTabID{}, tabID)
 	return context.WithValue(ctx, ctxKeyTabIDExplicit{}, false)
 }
 
-// WithCurrentOwnedTabID pins a server-resolved working tab and marks it for
-// connection-generation ownership checks. This is intentionally distinct from
-// WithImplicitTabID: a session lease may validly target one of several agent
-// tabs even when it is not the bridge's current global pin, while a one-shot
-// active-tab resolution must be revoked if reconnect says that pin was lost.
+// WithCurrentOwnedTabID pins a server-resolved working tab and marks it for connection-generation ownership checks.
 func WithCurrentOwnedTabID(ctx context.Context, tabID string) context.Context {
 	ctx = WithImplicitTabID(ctx, tabID)
 	return context.WithValue(ctx, ctxKeyTabIDRequiresCurrentOwnership{}, true)
@@ -434,8 +299,7 @@ func TabIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-// TabIDIsExplicit reports whether the current pin came from a caller-supplied
-// tab_id rather than server-side tab selection (for example a session lease).
+// TabIDIsExplicit reports whether the current pin came from a caller-supplied tab_id rather than server-side tab selection (for example a session lease).
 func TabIDIsExplicit(ctx context.Context) bool {
 	if ctx == nil {
 		return false
@@ -444,8 +308,7 @@ func TabIDIsExplicit(ctx context.Context) bool {
 	return v
 }
 
-// TabIDRequiresCurrentOwnership reports whether a server-resolved pin must
-// still match the browser bridge's authoritative owned tab at dispatch time.
+// TabIDRequiresCurrentOwnership reports whether a server-resolved pin must still match the browser bridge's authoritative owned tab at dispatch time.
 func TabIDRequiresCurrentOwnership(ctx context.Context) bool {
 	if ctx == nil {
 		return false
@@ -465,8 +328,7 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 	}
 	if err := m.connect(); err != nil {
 		_ = m.Close()
-		// The dialer quotes the URL it could not reach, and on a remote target
-		// that URL authenticates the session. Redact before it reaches a log.
+
 		return nil, m.scrubRemoteEndpoint(err)
 	}
 	if tabs, err := m.ListTabs(ctx); err == nil && len(tabs) > 0 {
@@ -475,13 +337,6 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 	return m, nil
 }
 
-// newManager builds the manager and everything it owns except the connection.
-//
-// Split from New so the classification every capability gate depends on — is
-// this browser on the machine brwd runs on? — is provable without a browser to
-// dial. A test that had to reach a real Chrome on a real second machine to
-// check that gate is a test nobody runs, and the gate was inert for the
-// --remote lane for exactly that long.
 func newManager(ctx context.Context, cfg Config) (*Manager, error) {
 	timeout := cfg.Timeout
 	if timeout == 0 {
@@ -489,7 +344,7 @@ func newManager(ctx context.Context, cfg Config) (*Manager, error) {
 	}
 
 	endpoint := cfg.RemoteURL
-	// A checked browser WebSocket URL is dialled as given, never re-derived.
+
 	var allocOpts []chromedp.RemoteAllocatorOption
 	if cfg.BrowserWSURL != "" {
 		endpoint = cfg.BrowserWSURL
@@ -502,13 +357,7 @@ func newManager(ctx context.Context, cfg Config) (*Manager, error) {
 			return nil, err
 		}
 		endpoint = cfg.Remote.WebSocketURL
-		// NoModifyURL because the provider handed brw the exact socket to dial.
-		// chromedp's default rewrites the URL: it resolves the host to a literal
-		// IP (which breaks TLS SNI on a wss endpoint) or, for a URL with no
-		// /devtools/browser/ path, replaces it with an http /json/version fetch
-		// against the same host. Both are brw second-guessing the provider, and
-		// the second one sends brw off to retrieve a document from a host on the
-		// strength of a string a plugin printed.
+
 		allocOpts = append(allocOpts, chromedp.NoModifyURL)
 	} else if endpoint == "" {
 		if cfg.AttachOnly {
@@ -571,9 +420,7 @@ func newManager(ctx context.Context, cfg Config) (*Manager, error) {
 }
 
 func (m *Manager) Close() error {
-	// Dispose any incognito contexts the caller never closed, while the browser
-	// is still alive, so a long-lived session that opened throwaway contexts and
-	// forgot to close them doesn't leak them.
+
 	m.disposeIncognitoContexts()
 	m.mu.Lock()
 	for id, tab := range m.tabContexts {
@@ -591,9 +438,7 @@ func (m *Manager) Close() error {
 	if m.launcher != nil {
 		closeErr = m.launcher.Close()
 	}
-	// The provider's browser is given back after brw's own connection is torn
-	// down, and its own deadline is independent of any caller's: a release that
-	// does not happen leaves a cloud browser (and its bill) running.
+
 	if m.remote != nil && m.remote.Release != nil {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), remoteReleaseTimeout)
 		if err := m.remote.Release(releaseCtx); err != nil {
@@ -608,33 +453,13 @@ func (m *Manager) Close() error {
 	return closeErr
 }
 
-// attachApprovalWindow bounds the first CDP round trip against a browser brw
-// did not start.
-//
-// Chrome 144+ asks the person at the browser to approve each remote debugging
-// connection, so the WebSocket handshake can sit unanswered until they click:
-// measured against an opted-in Chrome 153, the dial never completed and nothing
-// on the wire said why. The window is long enough for somebody to notice a
-// prompt and short enough that an unattended daemon fails with a sentence
-// instead of hanging until it is killed. A browser brw launched itself has no
-// such prompt, so its connect keeps the caller's own deadline.
-//
-// A var rather than a const so the test that proves the bound is applied does
-// not have to wait two minutes for it.
 var attachApprovalWindow = 2 * time.Minute
 
-// ErrAttachNotApproved says why a browser brw attached to never answered, and
-// names the only thing that can fix it. It is a separate error because the
-// answer is an action by a human at that browser, not a retry: Chrome 144 and
-// newer show a per-connection approval prompt, and until somebody allows it the
-// WebSocket handshake does not complete and nothing on the wire says why.
+// ErrAttachNotApproved says why a browser brw attached to never answered, and names the only thing that can fix it.
 var ErrAttachNotApproved = errors.New("the browser never answered brw's DevTools connection. Chrome 144 and newer ask the person at the browser to approve each remote debugging connection, so look for that prompt in the browser window and allow it; brw cannot answer it for you. If there is no prompt, the endpoint brw was pointed at is not speaking CDP")
 
 func (m *Manager) connect() error {
-	// Reclaim per-tab state when a target is destroyed/crashes (tabs closed
-	// outside brw_close_tab), so contexts, goroutines, and per-tab maps don't
-	// leak over a long session. chromedp keeps target discovery enabled, so the
-	// browser connection delivers these events.
+
 	chromedp.ListenBrowser(m.browserCtx, m.handleTargetLifecycle)
 	firstRoundTrip := func() error {
 		return chromedp.Run(m.browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
@@ -650,16 +475,7 @@ func (m *Manager) connect() error {
 	if !m.attachedBrowser {
 		return firstRoundTrip()
 	}
-	// What is bounded is the WAIT, not the connection. chromedp allocates the
-	// browser on the first Run and gives it the lifetime of the context that Run
-	// was handed, so running this round trip under a timeout context closes the
-	// CDP session as soon as that context is cancelled — on the success path
-	// too, which leaves every later call failing with "context canceled".
-	//
-	// So the round trip keeps m.browserCtx and this waits beside it. On the
-	// timeout New closes the Manager, which cancels m.browserCtx and ends the
-	// goroutine; the channel is buffered so it cannot block even if nobody is
-	// left to read it.
+
 	done := make(chan error, 1)
 	go func() { done <- firstRoundTrip() }()
 	timer := time.NewTimer(attachApprovalWindow)
@@ -667,9 +483,7 @@ func (m *Manager) connect() error {
 	select {
 	case err := <-done:
 		if err != nil && errors.Is(err, context.DeadlineExceeded) {
-			// The caller's own deadline ran out first. Indistinguishable from
-			// the timeout below as far as the browser is concerned, so it gets
-			// the same answer.
+
 			return fmt.Errorf("%w (%v)", ErrAttachNotApproved, err)
 		}
 		return err
@@ -678,14 +492,10 @@ func (m *Manager) connect() error {
 	}
 }
 
-// openNavigateTimeout bounds the navigation brw drives after attaching to a
-// freshly created blank target. Exceeding it is not an error — readiness is
-// reported separately — it only stops a hung load from holding the open call.
 const openNavigateTimeout = 10 * time.Second
 
 func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
-	// A new tab becomes the active one, so opening during a hold moves the target
-	// out from under the human mid-gesture. Refused like any other input action.
+
 	if err := m.guardTakeover(TraceActionOpen); err != nil {
 		return OpenResult{}, err
 	}
@@ -696,15 +506,6 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		return OpenResult{}, err
 	}
 
-	// Create the target blank rather than navigating on creation. CreateTarget
-	// with a real URL starts loading immediately, so everything the page logged
-	// while booting — console output and uncaught exceptions alike — was emitted
-	// before brw attached Runtime to the new target, and "open the page and check
-	// the console" came back empty. Attaching first costs one CDP round trip and
-	// makes load-time output observable.
-	//
-	// If attaching fails, fall back to the original create-with-URL so an open
-	// still succeeds; only load-time console output is lost.
 	var id target.ID
 	if err := m.runBrowser(ctx, func(ctx context.Context) error {
 		var err error
@@ -717,10 +518,7 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	if IsBackgroundPage(ctx) {
 		m.backgroundTabs.Store(tabID, true)
 	}
-	// The tab exists from here on, so every exit below records what became of
-	// it. tabID is read at call time because the attach-failure path recreates
-	// the target and reassigns it. Earlier failures create no tab and are not
-	// recorded: an entry without a tab id would be an unscoped URL.
+
 	recordOpen := func(finalURL string, err error) {
 		if finalURL == "" {
 			finalURL = url
@@ -728,32 +526,18 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		m.recordObservation(tabID, TraceActionOpen, finalURL, start, err)
 	}
 
-	// navErr records a navigation that never started. It does not fail the open
-	// — the previous path could not report one either — but it is carried into
-	// the result so a tab still sitting on about:blank is not reported as a page
-	// that loaded.
 	var navErr error
 	var navErrorText string
 	if url != "about:blank" {
-		// The agent asked for this destination, so the content boundary must not
-		// mistake the tab's first document for something the page initiated.
+
 		m.recordAgentNavigation(tabID, url)
-		// tabContext publishes the target's context and arms console capture on it.
+
 		if tabCtx, ctxErr := m.tabContext(tabID); ctxErr == nil {
-			// Armed on the blank tab, so the shim is in place before the first
-			// document's own scripts register their tools.
+
 			m.ensureWebMCP(tabID, tabCtx)
 			navCtx, cancelNav := context.WithTimeout(tabCtx, openNavigateTimeout)
 			defer m.armInlineDocument(navCtx, tabID, url)()
-			// Start the navigation without waiting for the load event, matching
-			// what CreateTarget(url) did. chromedp.Navigate blocks until load,
-			// which never arrives when the navigation policy aborts a
-			// disallowed destination — turning a fast policy rejection into a
-			// ten-second stall. Readiness is decided by the WaitFor below.
-			//
-			// A navigation error is not fatal (the previous path never reported
-			// one either) but it is not silent: without it, a tab that never
-			// left about:blank came back as a successful open.
+
 			navErr = chromedp.Run(navCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 				_, _, errorText, _, err := page.Navigate(url).Do(ctx)
 				navErrorText = errorText
@@ -779,22 +563,13 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		m.refs.SetActive(tabID)
 	}
 	ctx = WithTabID(ctx, tabID)
-	// Wait for the target document to actually commit, not the transient
-	// about:blank that a freshly created target reports as "ready" before the
-	// real navigation lands — otherwise an immediate snapshot races to an empty
-	// about:blank page. Plain about:blank opens just wait for readiness.
+
 	var ready bool
 	if url == "about:blank" {
 		ready = m.WaitFor(ctx, "ready", 5*time.Second) == nil
 	} else {
 		ready = m.WaitFor(ctx, "committed", 10*time.Second) == nil
 	}
-	// Do NOT activate the new tab here. OS foreground focus is reserved for the
-	// explicit FocusTab/brw_focus_tab tool so automation never steals the
-	// user's foreground, especially on a remote browser machine,
-	// where an implicit activate raises Chrome over whatever the human is doing.
-	// The tab is tracked as the active ref above; page tools bind to it via
-	// chromedp.WithTargetID without needing OS activation.
 
 	tab, err := m.tabByID(ctx, tabID)
 	if err != nil {
@@ -816,15 +591,12 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	}
 	if err := m.navPolicy.Check(tab.URL); err != nil {
 		blocked := fmt.Errorf("open redirected to a disallowed final destination: %w", err)
-		// The final URL is the useful fact here: it names where the redirect
-		// actually went, which is the whole reason the open was refused.
+
 		recordOpen(tab.URL, blocked)
 		_ = m.CloseTab(ctx, tabID)
 		return OpenResult{}, blocked
 	}
-	// A tab that never left about:blank is not a page that loaded, whatever the
-	// readiness wait concluded. Report it rather than let a caller act on a
-	// blank tab believing it holds the requested URL.
+
 	if navErr != nil && strings.HasPrefix(tab.URL, "about:") {
 		if IsNavigationAbortedError(navErr) {
 			navErr = NavigationAbortedError("open")
@@ -841,9 +613,6 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 	return result, nil
 }
 
-// navigationOutcome gathers what the CDP lane knows about a tab's last
-// brw-driven navigation: Page.navigate's errorText, the committed URL, and the
-// main document's status and auth challenge from the inline-document pause.
 func (m *Manager) navigationOutcome(tabID, requestedURL, committedURL, errorText string) NavigationOutcome {
 	outcome := NavigationOutcome{URL: requestedURL, Error: strings.TrimSpace(errorText)}
 	if IsErrorPageURL(committedURL) {
@@ -852,10 +621,6 @@ func (m *Manager) navigationOutcome(tabID, requestedURL, committedURL, errorText
 	outcome.HTTPStatus, outcome.AuthRequired = m.containment.lastDocumentResponse(tabID)
 	return outcome
 }
-
-// OpenInGroup, GroupTabs, and UngroupTabs live in manager_tabgroups.go. Chrome
-// tab grouping is not expressible over the DevTools Protocol, so those methods
-// return ErrTabGroupingUnsupported rather than silently succeeding.
 
 func (m *Manager) ListTabs(ctx context.Context) ([]Tab, error) {
 	var infos []*target.Info
@@ -907,8 +672,7 @@ func (m *Manager) CloseTab(ctx context.Context, id string) error {
 	if err := m.checkTabAccess(ctx, id); err != nil {
 		return err
 	}
-	// Closing the tab the human is driving is the most complete form of racing
-	// them for it: their next click lands in a tab that no longer exists.
+
 	if err := m.guardTakeover(TraceActionCloseTab); err != nil {
 		return err
 	}
@@ -923,22 +687,12 @@ func (m *Manager) CloseTab(ctx context.Context, id string) error {
 		return err
 	}
 	m.backgroundTabs.Delete(id)
-	// Recorded before forgetTab: the entry is scoped by the tab's lease, and
-	// dropping the tab first would leave the close itself unattributable.
+
 	m.recordObservation(id, TraceActionCloseTab, "", start, nil)
 	m.forgetTab(id)
 	return nil
 }
 
-// forgetTab releases every resource brw holds for a tab: it cancels and removes
-// the chromedp tab context (and its target-handler goroutine + listeners),
-// drops the ref store entry, invalidates cached semantic state, and clears the
-// per-tab arm-markers. It is idempotent (safe to call twice — e.g. once from
-// CloseTab and again from the targetDestroyed listener for the same tab).
-//
-// This is the single cleanup path; without it, any tab closed OUTSIDE brw_close_tab
-// (the user clicking the X, window.close(), an OAuth popup, a tab crash) would
-// leak its context/goroutine and every per-tab map entry for the daemon's life.
 func (m *Manager) forgetTab(id string) {
 	if id == "" {
 		return
@@ -956,19 +710,6 @@ func (m *Manager) forgetTab(id string) {
 	m.forgetTabCaches(id)
 }
 
-// handleTargetLifecycle reclaims tab state when Chrome reports a target was
-// destroyed or crashed, so externally-closed tabs don't leak. Registered as a
-// browser-level listener in connect(); fires for every target, but forgetTab is
-// a no-op for ids brw isn't tracking.
-//
-// The cleanup runs on its OWN goroutine, never inline. chromedp invokes this
-// listener from the browser's single event-dispatch goroutine, and forgetTab
-// calls tab.cancel(), which blocks on chromedp's target teardown (a
-// WaitGroup.Wait plus a DetachFromTarget CDP round-trip). Detaching needs the
-// dispatch goroutine to process its response — so cancelling inline here would
-// deadlock that loop against itself (observed as a 10-minute hang during
-// incognito-context disposal). forgetTab is idempotent and self-locking, so an
-// async, possibly-concurrent call is safe.
 func (m *Manager) handleTargetLifecycle(ev any) {
 	switch e := ev.(type) {
 	case *target.EventTargetDestroyed:
@@ -978,10 +719,6 @@ func (m *Manager) handleTargetLifecycle(ev any) {
 	}
 }
 
-// forgetTabCaches drops every per-tab cache / arm-marker brw keeps for id, so the
-// maps cannot grow unbounded across a long open/close churn. Keep this in sync
-// when adding new per-tab state — a map left out here leaks one entry on every
-// closed tab (the emulationStates entry was exactly that bug).
 func (m *Manager) forgetTabCaches(id string) {
 	m.downloadsMu.Lock()
 	delete(m.downloadCursors, id)
@@ -1014,16 +751,10 @@ func (m *Manager) forgetTabCaches(id string) {
 	m.heldMu.Lock()
 	delete(m.heldKeys, id)
 	m.heldMu.Unlock()
-	// The tab context's own cancellation also drops this scope; doing it here as
-	// well means a tab forgotten before its context finishes unwinding does not
-	// keep its retained event ring alive in the meantime.
+
 	m.events.closeScope(id)
 }
 
-// ctxKeyEventScope tags a tab's chromedp context with the hub scope that carries
-// its events. Deliberately separate from ctxKeyTabID: that key also records
-// whether the caller SELECTED the tab, which a context brw built for itself must
-// not claim.
 type ctxKeyEventScope struct{}
 
 func withEventScope(ctx context.Context, tabID string) context.Context {
@@ -1035,9 +766,6 @@ func eventScopeFromCtx(ctx context.Context) string {
 	return scope
 }
 
-// ensureWebMCP arms the opt-in WebMCP runtime shim to install at document-start
-// for this tab so cooperating sites can register page tools before their own
-// scripts run. No-op unless --enable-webmcp is set. Best-effort and once per tab.
 func (m *Manager) ensureWebMCP(tabID string, tabCtx context.Context) {
 	if !m.webmcpEnabled {
 		return
@@ -1048,8 +776,7 @@ func (m *Manager) ensureWebMCP(tabID string, tabCtx context.Context) {
 	if armed {
 		return
 	}
-	// Document-start covers future navigations; an immediate (idempotent) install
-	// covers the current document so a site that already loaded can still register.
+
 	_ = snapshot.RegisterWebMCPOnNewDocument(tabCtx)
 	var ignored json.RawMessage
 	_ = chromedp.Run(tabCtx, chromedp.Evaluate(snapshot.WebMCPInstallScript, &ignored))
@@ -1061,12 +788,6 @@ func (m *Manager) ensureWebMCP(tabID string, tabCtx context.Context) {
 	m.webmcpMu.Unlock()
 }
 
-// ensureShadowPierce arms the closed-shadow piercer to (re)install at
-// document-start for this tab so later navigations capture closed roots before
-// the page's own scripts run. Done once per tab and best-effort: a failure here
-// (e.g. the extension-bridge transport, which has no CDP document-start hook)
-// must not break the snapshot, because the in-walker installer
-// (__abEnsureShadowPierce) still covers post-load roots on every transport.
 func (m *Manager) ensureShadowPierce(tabID string, tabCtx context.Context) {
 	m.shadowPierceMu.Lock()
 	armed := m.shadowPierceTabs[tabID]
@@ -1111,10 +832,7 @@ func (m *Manager) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (
 			return snapshot.PageSnapshot{}, err
 		}
 	}
-	// Record whether accessibility was opt-in so agents can tell "not requested"
-	// (available:false, requested:false) apart from "requested but the AX fetch
-	// failed" (available:false, requested:true, error:...). EnrichAccessibility
-	// replaces the whole summary, so set this last to survive both paths.
+
 	snap.Accessibility.Requested = opts.IncludeAX
 	m.refs.Observe(tabID, snap.Elements)
 	return snap, nil
@@ -1140,10 +858,7 @@ func (m *Manager) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot
 	return result, nil
 }
 
-// FindLive is Find on the direct-CDP transport: every search here walks the live
-// DOM through snapshot.Find, so there is no cached element list to bypass. It is
-// spelled out rather than left to an interface probe, because the transport that
-// had no FindLive is exactly the one that fell back to a cache.
+// FindLive is Find on the direct-CDP transport: every search here walks the live DOM through snapshot.Find, so there is no cached element list to bypass.
 func (m *Manager) FindLive(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
 	return m.Find(ctx, opts)
 }
@@ -1206,9 +921,7 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 	if err := m.pacer.BeforeAction(ctx, TabIDFromContext(ctx)); err != nil {
 		return ActionResult{}, err
 	}
-	// A ref inside a cross-origin iframe lives in a document the top-document
-	// walker cannot reach, so it has to be resolved through a session attached to
-	// that frame's target before anything is dispatched.
+
 	if snapshot.IsCrossOriginElementRef(ref) {
 		return m.clickCrossOriginFrameRef(ctx, ref)
 	}
@@ -1223,12 +936,6 @@ func (m *Manager) Click(ctx context.Context, ref string) (ActionResult, error) {
 	defer cancel()
 	m.recordAgentInteraction(tabID, "click")
 
-	// Gate actuation on actionability that accepts EITHER the strict AX heuristic
-	// OR geometry+hit-test (so a custom web component reporting visible:false in
-	// the AX snapshot, but painted and hit-testable, still clicks). The
-	// present-but-invisible case fails fast inside the script rather than burning
-	// the full 5s. A "hit_test" mode means we clicked an element the AX heuristic
-	// would have refused — surfaced as a warning for observability.
 	actionable, err := snapshot.WaitForActionableResult(tabCtx, ref, 5000)
 	if err != nil {
 		return ActionResult{}, err
@@ -1342,14 +1049,6 @@ func (m *Manager) Hover(ctx context.Context, ref string) (ActionResult, error) {
 	}
 	defer cancel()
 
-	// Move the REAL cursor to the element center via CDP. Synthetic JS mouseover
-	// events (the old HoverElementScript path) do NOT trigger the CSS :hover
-	// pseudo-class — only the browser's true pointer position does — so
-	// :hover-gated reveals (caption overlays, dropdown/tooltip menus) never
-	// appeared and agents fell back to screenshots. dispatchMouseEvent(mouseMoved)
-	// updates Chromium's actual hover state, firing BOTH the native :hover styling
-	// and real mouseenter/mouseover/pointermove events. Focus emulation (enabled
-	// per target in tabContext) ensures delivery even when the window is backgrounded.
 	before := m.cachedBefore(tabID, tabCtx)
 	traceName, traceRole, traceNameIsText := m.refIdentity(tabID, ref)
 	recovery, err := m.hoverRef(tabCtx, tabID, ref)
@@ -1416,13 +1115,7 @@ func (m *Manager) hoverRef(tabCtx context.Context, tabID, ref string) (string, e
 }
 
 func (m *Manager) Evaluate(ctx context.Context, expression string) (any, error) {
-	// The most capable page-acting route in the product: an expression can click,
-	// type and navigate, so it is refused during a hold like any other input.
-	//
-	// The exemption is decided from the EXPRESSION, not from the trace label. The
-	// label crosses HTTP as a request field an --upstream-http client supplies,
-	// so a caller could name its own script a read; a generated read script is a
-	// constant of brw's carrying JSON-encoded arguments and cannot be forged.
+
 	if !isGeneratedReadExpression(traceLabelAction(ctx), expression) {
 		if err := m.guardTakeover(takeoverActionEvaluateScript); err != nil {
 			return nil, err
@@ -1435,9 +1128,7 @@ func (m *Manager) Evaluate(ctx context.Context, expression string) (any, error) 
 	}
 	defer cancel()
 	m.recordAgentInteraction(tabID, "evaluate")
-	// An expression can carry a value a sensitive recipe step supplied, so the
-	// same redaction the input actions use applies here before the text is
-	// recorded. The action is still recorded; only the script goes.
+
 	recordEvaluate := func(err error) {
 		if tabID == "" {
 			return
@@ -1596,10 +1287,7 @@ func (m *Manager) typeRef(tabCtx context.Context, ref, text string) error {
 	})
 }
 
-// Focus gives one element the keyboard focus and reports the page afterwards,
-// which is the contract every action tool answers on. The observation is the
-// point: focusing is only useful if the caller can tell that focus landed where
-// it asked, and result.Focus carries the ref the document ended up on.
+// Focus gives one element the keyboard focus and reports the page afterwards, which is the contract every action tool answers on.
 func (m *Manager) Focus(ctx context.Context, ref string) (ActionResult, error) {
 	if err := GuardCrossOriginRefs("focus", DirectCrossOriginRemedy, ref); err != nil {
 		return ActionResult{}, err
@@ -1644,9 +1332,7 @@ func (m *Manager) Focus(ctx context.Context, ref string) (ActionResult, error) {
 	return result, nil
 }
 
-// FocusRef is the narrow transport capability deterministic recipes use before
-// a key press. It avoids relying on whichever element happened to retain focus
-// from a previous browser action.
+// FocusRef is the narrow transport capability deterministic recipes use before a key press.
 func (m *Manager) FocusRef(ctx context.Context, ref string) error {
 	if err := GuardCrossOriginRefs("focus", DirectCrossOriginRemedy, ref); err != nil {
 		return err
@@ -1744,9 +1430,7 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 	if err := m.guardTakeover("upload_file"); err != nil {
 		return ActionResult{}, err
 	}
-	// Before the tab is touched: an upload hands Chrome a path it resolves on
-	// its own machine, so on a provider's browser this either finds nothing or
-	// finds a different file of that name over there.
+
 	if err := m.refuseOnRemote("local_upload"); err != nil {
 		return ActionResult{}, err
 	}
@@ -1757,10 +1441,6 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 	defer cancel()
 	m.recordAgentInteraction(tabID, "upload_file")
 
-	// Resolve the upload source on the daemon host: local path(s), inline
-	// bytes_base64, or a remote URL. bytes/url sources are materialized to temp
-	// files here; successful populations retain them briefly because Chrome reads
-	// their bytes when the page later submits the form.
 	paths, cleanup, err := ResolveUploadPaths(ctx, opts)
 	if err != nil {
 		return ActionResult{}, err
@@ -1772,11 +1452,6 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 		}
 	}()
 
-	// File-chooser-interception mode: when a trigger is named, click it with the
-	// native chooser intercepted and set the file on whatever input the chooser
-	// reports. Handles SPAs that create the input on click (which would otherwise
-	// freeze the CDP session behind a native OS dialog) and inputs in cross-origin
-	// iframes (backendNodeId is frame-agnostic).
 	if opts.ClickRef != "" || opts.ClickText != "" {
 		result, err := m.uploadFileViaChooser(tabID, tabCtx, opts, paths)
 		if err != nil {
@@ -1825,25 +1500,17 @@ func (m *Manager) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (
 	return result, nil
 }
 
-// uploadFileViaChooser drives the file-chooser-interception upload path on the
-// direct-CDP transport: enable native-dialog interception, listen for the
-// Page.fileChooserOpened event, click the trigger, then set the file on the
-// chooser's backendNodeId (frame-agnostic, so it reaches cross-origin iframes).
-// Interception is ALWAYS disabled on exit so the user's manual uploads in this
-// Chrome are unaffected.
 func (m *Manager) uploadFileViaChooser(tabID string, tabCtx context.Context, opts snapshot.UploadOptions, paths []string) (ActionResult, error) {
 	if err := chromedp.Run(tabCtx, page.SetInterceptFileChooserDialog(true)); err != nil {
 		return ActionResult{}, fmt.Errorf("enable file chooser interception: %w", err)
 	}
 	defer func() {
-		// Always restore manual uploads, even on error/cancel. Use a fresh context
-		// so a cancelled tabCtx cannot leave interception stuck on.
+
 		disableCtx, cancel := context.WithTimeout(context.WithoutCancel(tabCtx), 2*time.Second)
 		defer cancel()
 		_ = chromedp.Run(disableCtx, page.SetInterceptFileChooserDialog(false))
 	}()
 
-	// Register the chooser listener BEFORE clicking so we never miss the event.
 	chooserCh := make(chan cdp.BackendNodeID, 1)
 	var once sync.Once
 	chromedp.ListenTarget(tabCtx, func(ev any) {
@@ -1854,7 +1521,6 @@ func (m *Manager) uploadFileViaChooser(tabID string, tabCtx context.Context, opt
 
 	before := m.cachedBefore(tabID, tabCtx)
 
-	// Click the trigger that opens the (now intercepted) native chooser.
 	if opts.ClickRef != "" {
 		if err := snapshot.WaitForActionable(tabCtx, opts.ClickRef, 5000); err != nil {
 			return ActionResult{}, err
@@ -1868,7 +1534,6 @@ func (m *Manager) uploadFileViaChooser(tabID string, tabCtx context.Context, opt
 		}
 	}
 
-	// Wait for the captured Page.fileChooserOpened event (up to ~5s).
 	var backendNodeID cdp.BackendNodeID
 	select {
 	case backendNodeID = <-chooserCh:
@@ -1934,10 +1599,7 @@ func (m *Manager) selectValue(tabCtx context.Context, ref, value string) (string
 	if err := m.runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
 		return snapshot.Select(tabCtx, ref, value)
 	}); err == nil {
-		// Native selects do not pass through clickElementCenter, so settle here.
-		// Custom selects already settle as part of their click actuation below;
-		// settling again in the caller added a measurable 100 ms to every custom
-		// option selection without improving stability.
+
 		return "selected " + ref, nil
 	} else if !strings.Contains(err.Error(), snapshot.NotASelectElement) {
 		return "", err
@@ -2082,25 +1744,18 @@ func (m *Manager) Press(ctx context.Context, key string) (ActionResult, error) {
 	return result, nil
 }
 
-// pressKey sends one discrete keystroke. The dispatched mask is the chord the
-// key string named OR the keys the tab is HOLDING, so Shift+Tab works whether
-// the Shift came from "shift+tab" or from an earlier KeyDown.
 func (m *Manager) pressKey(tabCtx context.Context, tabID, key string) error {
 	desc := actions.DescribeKey(key)
 	if desc.Key == "" {
 		return errors.New("key is required")
 	}
-	// The held mask has to reach the descriptor, not just the dispatched event:
-	// Chrome inserts the event's text as given, so a held Shift that only sets
-	// the mask types the unshifted character with shiftKey true.
+
 	desc = actions.ApplyModifiers(desc, m.heldModifierMask(tabID))
 	modifiers := input.Modifier(desc.Modifiers)
 	return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		keyType := input.KeyDown
 		if desc.Text == "" {
-			// Chrome only performs native default actions for non-text keys (for
-			// example ArrowUp incrementing a number input) from rawKeyDown. A plain
-			// keyDown still fires DOM listeners but silently skips those defaults.
+
 			keyType = input.KeyRawDown
 		}
 		down := input.DispatchKeyEvent(keyType).
@@ -2201,9 +1856,6 @@ func retryAssertAfterNavigation(ctx context.Context, timeout time.Duration, oper
 			return err
 		}
 
-		// A navigation replaces the page's JavaScript execution context. Give the
-		// replacement document a brief chance to attach, then evaluate the same
-		// assertion again inside the original caller-supplied deadline.
 		remaining = time.Until(deadline)
 		if remaining <= 0 {
 			return snapshot.ErrAssertionTimeout
@@ -2406,12 +2058,6 @@ func (m *Manager) ensureConsoleCapture(tabID string, tabCtx context.Context) {
 	m.consoleCaptureTabs[tabID] = true
 	m.consoleCaptureMu.Unlock()
 
-	// CDP's native console event is non-invasive (no monkey-patching page
-	// globals), captures objects with previews, and automatically survives every
-	// navigation on the target. It arrives on the tab's single event
-	// subscription, which is installed with the context and therefore already
-	// running before Runtime is enabled here — no event in the enable handshake
-	// window is missed.
 	if err := chromedp.Run(tabCtx, runtime.Enable()); err != nil {
 		m.consoleCaptureMu.Lock()
 		delete(m.consoleCaptureTabs, tabID)
@@ -2419,9 +2065,6 @@ func (m *Manager) ensureConsoleCapture(tabID string, tabCtx context.Context) {
 	}
 }
 
-// recordConsoleEvent buffers one console line for a tab that has capture armed.
-// Called for every event on the tab subscription, so it must be cheap and must
-// ignore tabs that never asked for capture.
 func (m *Manager) recordConsoleEvent(tabID string, event any) {
 	var message ConsoleMessage
 	switch typed := event.(type) {
@@ -2532,25 +2175,10 @@ func consoleRemoteObjectText(object *runtime.RemoteObject) string {
 	return string(object.Type)
 }
 
-// screenshotMaxWidth caps the captured pixel width of plain (non-annotated)
-// screenshots. A retina/HiDPI viewport otherwise yields a multi-megabyte image
-// whose base64 dominates an agent's token budget. Capping the longest side and
-// encoding JPEG keeps a visual-fallback capture cheap; resolution is the lever
-// that survives the harness re-encoding the image to JPEG before the model sees
-// it. Annotated Set-of-Marks captures are unaffected (they need crisp PNG labels).
 const screenshotMaxWidth = 800
 
-// screenshotJPEGQuality balances legibility against bytes for plain captures.
-// Resolution is the only lever that survives the harness re-encoding every capture
-// to JPEG before the model sees it, so we cap dimensions aggressively and keep
-// quality modest while staying legible for layout/verification reads.
 const screenshotJPEGQuality = 50
 
-// screenshotAnnotateMaxDim caps the longest side (device px) of a Set-of-Marks
-// annotated capture. The legend is ref-based (semantic), so resolution is purely
-// visual — and the harness re-encodes our PNG to JPEG anyway, so a smaller source
-// directly shrinks what the model receives. Kept a touch above the plain cap so
-// ref badges stay readable.
 const screenshotAnnotateMaxDim = 900
 
 func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
@@ -2562,10 +2190,7 @@ func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
 	return shot, nil
 }
 
-// CaptureArtifactScreenshot returns raw screenshot bytes without allocating a
-// duplicate base64 string. Artifact and video capture use this path because the
-// bytes are staying on the browser host; model-facing screenshot calls keep the
-// normal Screenshot method above.
+// CaptureArtifactScreenshot returns raw screenshot bytes without allocating a duplicate base64 string.
 func (m *Manager) CaptureArtifactScreenshot(ctx context.Context, ref string) (Screenshot, error) {
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
@@ -2594,8 +2219,7 @@ func (m *Manager) CaptureArtifactScreenshot(ctx context.Context, ref string) (Sc
 
 	var data []byte
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		// Read the CSS viewport so we can clip-capture it at a scale that caps the
-		// longest side at screenshotMaxWidth (scale<=1; never upscale).
+
 		var dims []float64
 		_ = chromedp.Evaluate(`[Math.round(window.innerWidth),Math.round(window.innerHeight),window.scrollX,window.scrollY]`, &dims).Do(ctx)
 		var vw, vh, scrollX, scrollY float64
@@ -2604,7 +2228,7 @@ func (m *Manager) CaptureArtifactScreenshot(ctx context.Context, ref string) (Sc
 			scrollX, scrollY = dims[2], dims[3]
 		}
 		if vw <= 0 || vh <= 0 {
-			// Fall back to a plain capture if viewport metrics are unavailable.
+
 			d, capErr := page.CaptureScreenshot().
 				WithFormat(page.CaptureScreenshotFormatJpeg).
 				WithQuality(screenshotJPEGQuality).Do(ctx)
@@ -2636,9 +2260,7 @@ func (m *Manager) CaptureArtifactScreenshot(ctx context.Context, ref string) (Sc
 	return Screenshot{MIMEType: "image/jpeg", Data: data}, nil
 }
 
-// CapturePDF renders the active page as a PDF on the browser host. The raw
-// bytes are intentionally returned through the narrow internal capability;
-// artifact.Service persists them before any MCP response is constructed.
+// CapturePDF renders the active page as a PDF on the browser host.
 func (m *Manager) CapturePDF(ctx context.Context) ([]byte, error) {
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
@@ -2660,21 +2282,7 @@ func (m *Manager) CapturePDF(ctx context.Context) ([]byte, error) {
 	return data, nil
 }
 
-// ScreenshotAnnotated captures a Set-of-Marks (SoM) screenshot: it takes an
-// authoritative snapshot in the given mode (defaulting to "frontier"), draws a
-// transient labelled box over each frontier element using the SAME refs the
-// snapshot returned, captures the PNG via CDP, removes the overlay, and returns
-// the PNG plus a ref->box legend. The overlay is removed in every path (success
-// or error) so the page the agent then acts on is never mutated. Labels are the
-// exact refs an agent passes to brw_click, so the vision-grounded marks and
-// the semantic action surface stay in lockstep.
-//
-// Edge case: if the page navigates between overlay injection and the deferred
-// removal, the removal runs against the new document and the injected nodes are
-// left in the now-discarded old document. They are harmless (the old document is
-// gone) and the next snapshot's pre-injection cleanup clears any residue, so
-// back-to-back annotated captures on a navigating page may briefly co-exist with
-// stale overlay nodes until the next snapshot.
+// ScreenshotAnnotated captures a Set-of-Marks (SoM) screenshot: it takes an authoritative snapshot in the given mode (defaulting to "frontier"), draws a transient labelled box over each frontier element using the SAME refs the snapshot returned, captures the PNG via CDP, removes the overlay, and returns the PNG plus a ref->box legend.
 func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreenshotOptions) (AnnotatedScreenshot, error) {
 	if err := GuardCrossOriginRefs("screenshot annotate", DirectCrossOriginRemedy, aopts.Ref); err != nil {
 		return AnnotatedScreenshot{}, err
@@ -2704,12 +2312,6 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreen
 		return AnnotatedScreenshot{}, clipErr
 	}
 
-	// Build marks (and the role/name half of the legend) from the snapshot. Only
-	// in-viewport elements are worth labelling — a screenshot captures the current
-	// viewport, so an off-screen ref would draw nothing. When a clip is set, also
-	// drop elements whose box does not intersect the clip, so the legend matches
-	// exactly what is visible in the tight crop (and the crop is not littered with
-	// labels for elements painted outside it).
 	marks := make([]snapshot.AnnotationMark, 0, len(snap.Elements))
 	meta := make(map[string]snapshot.Element, len(snap.Elements))
 	for _, el := range snap.Elements {
@@ -2721,7 +2323,7 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreen
 	}
 
 	boxes, err := snapshot.InjectAnnotationOverlay(tabCtx, marks)
-	// Always tear the overlay down, even when injection itself errored partway.
+
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(tabCtx), 3*time.Second)
 		defer cancel()
@@ -2733,7 +2335,7 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreen
 
 	var data []byte
 	if err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		// Resolve the capture rect: the explicit crop clip, or the full CSS viewport.
+
 		capClip := clip
 		if capClip == nil {
 			var dims []float64
@@ -2742,11 +2344,7 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreen
 				capClip = &page.Viewport{X: 0, Y: 0, Width: dims[0], Height: dims[1], Scale: 1}
 			}
 		}
-		// Cap device pixels: on a HiDPI display a full-res Set-of-Marks PNG balloons
-		// to hundreds of KB and dominates the agent's token budget. The legend is
-		// ref-based (semantic), so the image is purely for reading labels — capping
-		// the longest side keeps labels legible while cutting bytes ~4x. PNG is kept
-		// so the drawn ref badges stay crisp (JPEG would ring around the text).
+
 		if capClip != nil {
 			var offset [2]float64
 			if err := chromedp.Evaluate(`[window.scrollX,window.scrollY]`, &offset).Do(ctx); err != nil {
@@ -2780,7 +2378,7 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreen
 		if !b.OK {
 			continue
 		}
-		// When clipped, only legend boxes that intersect the crop are meaningful.
+
 		if clip != nil && !boxIntersectsClip(b, clip) {
 			continue
 		}
@@ -2804,12 +2402,8 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreen
 	}, nil
 }
 
-// annotationClipMargin pads a ref-derived crop so the label badge (drawn ~14px
-// above the box top-left) and a thin border are not sliced off the edge.
 const annotationClipMargin = 18.0
 
-// resolveAnnotationClip turns the requested ref/region into a CDP viewport clip,
-// clamped to the page viewport. Returns nil for a full-viewport capture.
 func (m *Manager) resolveAnnotationClip(tabCtx context.Context, aopts AnnotatedScreenshotOptions) (*page.Viewport, error) {
 	var x, y, w, h float64
 	switch {
@@ -2830,8 +2424,7 @@ func (m *Manager) resolveAnnotationClip(tabCtx context.Context, aopts AnnotatedS
 	default:
 		return nil, nil
 	}
-	// Clamp into the viewport so the clip never has a negative origin or extends
-	// past the page (CDP tolerates it, but the crop dimensions stay honest).
+
 	vw, vh := m.viewportSize(tabCtx)
 	if x < 0 {
 		x = 0
@@ -2851,8 +2444,6 @@ func (m *Manager) resolveAnnotationClip(tabCtx context.Context, aopts AnnotatedS
 	return &page.Viewport{X: x, Y: y, Width: w, Height: h, Scale: 1}, nil
 }
 
-// viewportSize reads the page's layout viewport dimensions; returns 0,0 on error
-// so callers treat it as "unknown" and skip the upper clamp.
 func (m *Manager) viewportSize(tabCtx context.Context) (float64, float64) {
 	var dims struct {
 		W float64 `json:"w"`
@@ -2865,8 +2456,6 @@ func (m *Manager) viewportSize(tabCtx context.Context) (float64, float64) {
 	return dims.W, dims.H
 }
 
-// boxIntersectsClip reports whether an annotation box overlaps the clip rectangle
-// (both in top-level viewport space), used to prune the legend to the crop.
 func boxIntersectsClip(b snapshot.AnnotationBox, clip *page.Viewport) bool {
 	return b.X < clip.X+clip.Width && b.X+b.Width > clip.X &&
 		b.Y < clip.Y+clip.Height && b.Y+b.Height > clip.Y
@@ -2896,15 +2485,10 @@ func (m *Manager) ExecutePlan(ctx context.Context, steps []PlanStep) (PlanResult
 	return runPlanSteps(entry.ctx, entry, steps, m.executePlanStep), nil
 }
 
-// runPlanSteps drives the cooperative-cancellation plan loop. It is split out so
-// the cancellation control flow (stop cleanly between steps, report how far we
-// got, never crash) can be exercised without a live browser by injecting a fake
-// step runner. The production caller passes Manager.executePlanStep.
 func runPlanSteps(ctx context.Context, c interface{ Cancelled() bool }, steps []PlanStep, run func(context.Context, int, PlanStep) PlanStepResult) PlanResult {
 	result := PlanResult{OK: true, Steps: make([]PlanStepResult, 0, len(steps))}
 	for i, step := range steps {
-		// Cooperative cancellation: stop cleanly between steps and report how far
-		// we got rather than crashing or surfacing a context error.
+
 		if c.Cancelled() {
 			result.Cancelled = true
 			result.OK = false
@@ -2915,8 +2499,7 @@ func runPlanSteps(ctx context.Context, c interface{ Cancelled() bool }, steps []
 		stepResult := run(ctx, i, step)
 		result.Steps = append(result.Steps, stepResult)
 		if !stepResult.OK {
-			// A cancel that landed mid-step surfaces as a step failure; report it
-			// as a cancellation rather than an opaque error.
+
 			if c.Cancelled() {
 				result.Cancelled = true
 				result.OK = false
@@ -2940,9 +2523,6 @@ func runPlanSteps(ctx context.Context, c interface{ Cancelled() bool }, steps []
 func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep) PlanStepResult {
 	sr := PlanStepResult{Index: index, Action: step.Action, OK: true}
 
-	// Site consent, re-checked against where the tab is NOW. The plan was gated
-	// once from its arguments, and an earlier step may since have navigated the
-	// tab somewhere those arguments never named.
 	if err := GateSequenceStep(ctx, index, TabIDFromContext(ctx), step.ConsentProbe()); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
@@ -2992,8 +2572,7 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 		actionResult, actionErr = m.ClickText(ctx, snapshot.ClickTextOptions{Text: step.Text})
 		sr.Result = actionResult
 	case "find_act":
-		// Locate and act in one step, with the same exactly-one-match rule the
-		// standalone tool enforces: several matches is an error, never a guess.
+
 		if step.Find == nil {
 			actionErr = errors.New("find_act requires find")
 			break
@@ -3081,10 +2660,7 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 			actionErr = openRes.NavigationErr()
 		}
 	case "navigate_to":
-		// Distinct from "open": navigate the plan's current working tab and
-		// wait for the destination document before the following step runs.
-		// Reuse the standalone primitive so URL policy, target-bound chromedp
-		// navigation, readiness, observation, and trace behavior stay identical.
+
 		if step.URL == "" {
 			actionErr = errors.New("navigate_to requires url")
 			break
@@ -3115,9 +2691,7 @@ func (m *Manager) executePlanStep(ctx context.Context, index int, step PlanStep)
 	return sr
 }
 
-// ExecuteBatch executes multiple actions sequentially without intermediate
-// observations, then returns a single compact observation at the end. This is
-// much more token-efficient than calling individual tools or brw_plan.
+// ExecuteBatch executes multiple actions sequentially without intermediate observations, then returns a single compact observation at the end.
 func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchResult, error) {
 	if err := GuardCrossOriginRefs("batch", DirectCrossOriginRemedy, BatchStepRefs(steps)...); err != nil {
 		return BatchResult{}, err
@@ -3127,8 +2701,7 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 	}
 	entry, release := m.cancels.register(ctx, cancelToken(ctx, ""))
 	defer release()
-	// Carry the tab id into the cancel-aware context so per-step tab resolution
-	// and the wait loops still target the right tab after we replace ctx.
+
 	ctx = entry.ctx
 
 	tabID, tabCtx, cancel, err := m.activeContext(ctx)
@@ -3140,9 +2713,7 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 
 	result := BatchResult{OK: true, Steps: make([]BatchStepResult, 0, len(steps)), TabID: tabID}
 	for i, step := range steps {
-		// Cooperative cancellation: stop cleanly between steps and report how far
-		// we got. The single end-of-batch observation below still runs so the
-		// caller gets current page state for where the run stopped.
+
 		if entry.Cancelled() {
 			result.Cancelled = true
 			result.OK = false
@@ -3160,7 +2731,7 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 				result.Cancelled = true
 				result.OK = false
 				result.Error = "cancelled"
-				// A cancel mid-step does not count the interrupted step as complete.
+
 				result.Steps = result.Steps[:len(result.Steps)-1]
 				break
 			}
@@ -3189,7 +2760,6 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 	}
 	result.StepsCompleted = len(result.Steps)
 
-	// Single observation at the end
 	snap, snapErr := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if snapErr == nil {
 		if guardErr := m.enforceFinalURL(tabID, tabCtx, snap.URL); guardErr != nil {
@@ -3219,25 +2789,15 @@ func (m *Manager) ExecuteBatch(ctx context.Context, steps []BatchStep) (BatchRes
 	return result, nil
 }
 
-// executeBatchStep runs one step of a batch. tabID is threaded in because the
-// steps that actuate input have to carry the tab's held-key mask: a batch is
-// where a flow wraps a Shift+click, and a step that dropped the modifier would
-// report a successful ordinary click.
 func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index int, step BatchStep) BatchStepResult {
 	sr := BatchStepResult{Index: index, Action: step.Action, OK: true}
 
-	// Guarded per step, not only once at the top of ExecuteBatch: a batch that
-	// was already running when the human took over would otherwise keep driving
-	// the page for the whole of its remaining length. The steps below reach the
-	// low-level helpers directly, so this is their only guard.
 	if err := m.guardTakeoverStep(step); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
 		return sr
 	}
-	// Site consent, re-checked against where the tab is NOW, for the same reason
-	// the takeover guard is per step: the batch was gated once from arguments
-	// that stopped being true as soon as a step navigated.
+
 	if err := GateSequenceStep(tabCtx, index, tabID, step.ConsentProbe()); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
@@ -3248,10 +2808,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 		sr.Error = err.Error()
 		return sr
 	}
-	// A batch step reaches the low-level helpers directly rather than the public
-	// verb, so the content boundary would otherwise never hear that the agent
-	// asked for this input - and a batched click on a cross-site link would be
-	// refused as though the page had initiated it.
+
 	m.recordAgentInteraction(tabID, step.Action)
 
 	var actionErr error
@@ -3276,9 +2833,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 		}
 		_, actionErr = m.clickTextTarget(tabCtx, tabID, snapshot.ClickTextOptions{Text: step.Text}, actionSettleDelay)
 	case "find_act":
-		// Locate and act in one step. The search is deliberately not a ref
-		// lookup: it must resolve to exactly one element or the step fails, so a
-		// batch can never act on the highest-ranked of several rivals.
+
 		if step.Find == nil {
 			actionErr = errors.New("find_act requires find")
 			break
@@ -3343,9 +2898,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 			actionErr = openRes.NavigationErr()
 		}
 	case "navigate_to":
-		// Distinct from "open": this drives the batch's existing working tab to
-		// a new URL, where open spawns a new one. A multi-step flow that crosses
-		// pages needs the former and previously had no way to say so.
+
 		if step.URL == "" {
 			actionErr = errors.New("navigate_to requires url")
 			break
@@ -3353,9 +2906,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 		var url string
 		url, actionErr = m.prepareNavigationURL(step.URL)
 		if actionErr == nil {
-			// Recorded BEFORE the navigation starts, like NavigateTo does: this
-			// step drives chromedp directly, and without the intent the content
-			// boundary sees the agent's own navigation as one the page made.
+
 			m.recordAgentNavigation(tabID, url)
 			actionErr = chromedp.Run(tabCtx, chromedp.Navigate(url))
 		}
@@ -3406,9 +2957,7 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 		}
 		actionErr = snapshot.EvalAssert(tabCtx, snapshot.AssertHiddenScript, step.Ref, timeout.Milliseconds())
 	case "assert":
-		// Deliberately has no timeout: these assertions read current state once.
-		// A batch that needs the page to settle first puts a wait step in front
-		// of the assertion, where the wait is visible in the replayable flow.
+
 		if step.Assertion == nil {
 			actionErr = errors.New("assert requires assertion")
 			break
@@ -3425,15 +2974,9 @@ func (m *Manager) executeBatchStep(tabCtx context.Context, tabID string, index i
 	return sr
 }
 
-// The return is named so the deferred held-key warning reaches the caller: a
-// defer that mutates an unnamed result mutates only the local copy.
 func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, message string, before *SemanticState) (result ActionResult) {
 	result = ActionResult{OK: true, Message: message, TabID: tabID}
-	// Every action result carries the hold, not just the two key verbs: a held
-	// modifier is brw state that the page reports nowhere, so a flow that died
-	// between KeyDown and KeyUp would otherwise have no way to notice that its
-	// later clicks are all Shift-clicks. Deferred so a future early return
-	// cannot forget it.
+
 	defer m.warnHeldKeys(tabID, &result)
 	snap, err := snapshot.EvaluateWithOptions(tabCtx, snapshot.SnapshotOptions{ViewportOnly: true})
 	if err != nil {
@@ -3476,9 +3019,6 @@ func captureSemanticState(tabCtx context.Context) *SemanticState {
 	return &state
 }
 
-// cachedBefore returns the tab's most-recent post-action state as the baseline
-// for the next action, avoiding a snapshot round-trip. Falls back to a live
-// capture when no cached state exists (first action on a freshly opened tab).
 func (m *Manager) cachedBefore(tabID string, tabCtx context.Context) *SemanticState {
 	m.stateMu.Lock()
 	cached := m.lastState[tabID]
@@ -3508,14 +3048,6 @@ func (m *Manager) invalidateState(tabID string) {
 	m.stateMu.Unlock()
 }
 
-// recordTrace appends one action to the trace, enriching it with the semantic
-// identity of the ref it acted on. A ref is only meaningful against the page
-// that produced it, so a recorded flow needs the element's role and accessible
-// name to be replayed safely — without them a replay cannot tell that a ref now
-// points at a different element.
-// refIdentity resolves what a ref points at right now. Call it BEFORE acting:
-// the post-action observation refreshes the ref store, so resolving afterwards
-// records what the element became rather than what was acted on.
 func (m *Manager) refIdentity(tabID, ref string) (name, role string, nameIsText bool) {
 	if ref == "" {
 		return "", "", false
@@ -3526,10 +3058,6 @@ func (m *Manager) refIdentity(tabID, ref string) (name, role string, nameIsText 
 	return "", "", false
 }
 
-// recordObservation records a navigation or read. A trace entry with no tab id
-// is visible to EVERY caller of the shared daemon (scopedTrace and the session
-// stream both treat a tab-less entry as unscoped), so an observation that
-// cannot name its tab is dropped rather than broadcast with its URL.
 func (m *Manager) recordObservation(tabID, action, text string, start time.Time, err error) {
 	if tabID == "" {
 		return
@@ -3546,9 +3074,7 @@ func (m *Manager) recordTrace(tabID string, entry TraceEntry) {
 				entry.Role = el.Role
 				entry.NameIsVisibleText = el.NameIsVisibleText
 			}
-			// The trace is readable over the HTTP control plane and is not
-			// scoped to the lease that produced it, so a typed password must
-			// never reach it. The action is still recorded; only the value goes.
+
 			if el.Sensitive {
 				entry.Text = ""
 				entry.Value = ""
@@ -3556,10 +3082,7 @@ func (m *Manager) recordTrace(tabID string, entry TraceEntry) {
 			}
 		}
 	}
-	// A repeat of a collapsible action folds into the row it repeats instead of
-	// appending: a poll loop would otherwise push every other entry out of the
-	// ring. The decision needs the same lock as the append, so both happen in one
-	// critical section rather than racing each other.
+
 	m.traceMu.Lock()
 	if n := len(m.trace); n > 0 && IsCollapsibleAction(entry.Action) && RepeatsTraceEntry(m.trace[n-1], entry) {
 		m.trace[n-1].Repeat++
@@ -3573,9 +3096,7 @@ func (m *Manager) recordTrace(tabID string, entry TraceEntry) {
 		m.trace = m.trace[len(m.trace)-500:]
 	}
 	m.traceMu.Unlock()
-	// Published after the ring rather than before it, because a folded repeat
-	// must not reach subscribers either and only the ring can tell. Subscribers
-	// get the same fully redacted entry the ring stores; publishTrace never blocks.
+
 	m.publishTrace(entry)
 }
 
@@ -3599,20 +3120,11 @@ type ObserveResult struct {
 	Title   string   `json:"title,omitempty"`
 	Focus   string   `json:"focus,omitempty"`
 	Changed []string `json:"changed,omitempty"`
-	// Blocked reports subresources containment refused since the previous
-	// observation. Omitted entirely when nothing was blocked, so it costs
-	// nothing on the ordinary path and no policy-free session ever sees it.
-	// Reporting it here is what keeps a contained page from looking like a
-	// mysteriously broken one.
+	// Blocked reports subresources containment refused since the previous observation.
 	Blocked []BlockedRequest `json:"blocked_requests,omitempty"`
-	// ActiveRoutes reports how many interception rules are answering requests on
-	// this tab. Omitted when there are none. Mocked traffic that is invisible in
-	// the observation is how an agent ends up trusting a response brw invented.
+	// ActiveRoutes reports how many interception rules are answering requests on this tab.
 	ActiveRoutes int `json:"active_routes,omitempty"`
-	// RouteMisses reports requests a HAR-backed route had no recorded answer
-	// for, with the most recent reasons. A fixture that silently misses is how a
-	// replayed page turns into an unexplained broken one, the same way a
-	// contained page does without Blocked.
+	// RouteMisses reports requests a HAR-backed route had no recorded answer for, with the most recent reasons.
 	RouteMisses      int      `json:"route_fixture_misses,omitempty"`
 	RouteMissReasons []string `json:"route_fixture_miss_reasons,omitempty"`
 }
@@ -3669,8 +3181,7 @@ func (m *Manager) Observe(ctx context.Context) (ObserveResult, error) {
 	return result, nil
 }
 
-// SummarizeElements returns compact one-line summaries of the given elements,
-// capped at limit entries. Used by both the Manager and the extension Bridge.
+// SummarizeElements returns compact one-line summaries of the given elements, capped at limit entries.
 func SummarizeElements(elements []snapshot.Element, limit int) []string {
 	if limit <= 0 || len(elements) == 0 {
 		return nil
@@ -3692,8 +3203,7 @@ func SummarizeElements(elements []snapshot.Element, limit int) []string {
 	return out
 }
 
-// MetadataInt64 extracts an int64 from a metadata value that may be int64, int,
-// float64, or json.Number. Returns 0 for unrecognized types.
+// MetadataInt64 extracts an int64 from a metadata value that may be int64, int, float64, or json.Number.
 func MetadataInt64(value any) int64 {
 	switch v := value.(type) {
 	case int64:
@@ -3711,9 +3221,7 @@ func MetadataInt64(value any) int64 {
 }
 
 func (m *Manager) runBrowser(ctx context.Context, fn func(context.Context) error) error {
-	// One of the two funnels every browser operation passes through, so a
-	// session the provider has already reclaimed is named here rather than
-	// surfacing as an unattributable websocket failure in each verb.
+
 	if err := m.checkRemoteSession(); err != nil {
 		return err
 	}
@@ -3741,11 +3249,6 @@ func (m *Manager) runBrowser(ctx context.Context, fn func(context.Context) error
 	}))
 }
 
-// tabContextFor resolves the target tab and returns the manager-owned context
-// for it, with no wall-clock deadline of its own. It is for an operation that
-// spans many CDP round trips (a streamed capture) and must budget each one
-// separately; everything else wants activeContext, which adds the standard
-// per-operation timeout.
 func (m *Manager) tabContextFor(ctx context.Context) (context.Context, error) {
 	tabID := tabIDFromCtx(ctx)
 	if tabID == "" {
@@ -3809,7 +3312,7 @@ func (m *Manager) activeContextWithTimeout(ctx context.Context, timeout time.Dur
 }
 
 func (m *Manager) tabContext(tabID string) (context.Context, error) {
-	// The other funnel: everything tab-scoped resolves its context here.
+
 	if err := m.checkRemoteSession(); err != nil {
 		return nil, err
 	}
@@ -3819,17 +3322,9 @@ func (m *Manager) tabContext(tabID string) (context.Context, error) {
 		return tab.ctx, nil
 	}
 	m.mu.RUnlock()
-	// Validate the context before publishing it to the map so concurrent callers
-	// never observe a half-initialized entry that gets cancelled on the error path.
+
 	ctx, cancel := chromedp.NewContext(m.browserCtx, chromedp.WithTargetID(target.ID(tabID)))
 
-	// Validate the context and force focus emulation on this target. Without it,
-	// Chrome routes keyboard/mouse input through the OS-focused RenderWidgetHost,
-	// so CDP Input.dispatchKeyEvent presses are silently dropped whenever the
-	// daemon's Chrome window is not the frontmost OS window (the common case for a
-	// background automation browser). Input.insertText bypasses this, which is why
-	// typing worked but Enter/Tab/arrow presses did not submit React/SPA forms.
-	// setFocusEmulationEnabled makes the renderer treat the page as always focused.
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return emulation.SetFocusEmulationEnabled(true).Do(ctx)
 	})); err != nil {
@@ -3837,14 +3332,10 @@ func (m *Manager) tabContext(tabID string) (context.Context, error) {
 		return nil, err
 	}
 
-	// Tag the tab's own context with its id so the post-action settle can find
-	// this tab's event subscription from the context it already holds, instead of
-	// threading the id through every action helper.
 	ctx = withEventScope(ctx, tabID)
 
 	m.mu.Lock()
-	// A concurrent call may have validated and inserted while we were unlocked;
-	// prefer the first-writer's context and discard ours.
+
 	if existing, ok := m.tabContexts[tabID]; ok {
 		m.mu.Unlock()
 		cancel()
@@ -3853,33 +3344,20 @@ func (m *Manager) tabContext(tabID string) (context.Context, error) {
 	m.tabContexts[tabID] = tabContext{ctx: ctx, cancel: cancel}
 	m.mu.Unlock()
 
-	// ONE subscription for this context, carrying every event brw waits on. The
-	// raw hook runs before the hub publishes, so the state a woken waiter
-	// re-reads (download registry, dialog ring, console buffer) is already
-	// current. Dialog answering in particular is not optional and not gated on a
-	// flag: an enabled Page domain suppresses Chrome's native dialog UI and the
-	// renderer blocks until Page.handleJavaScriptDialog answers.
 	m.events.attachTab(tabID, ctx, func(ev any) {
 		m.handleDownloadEventForTab(tabID, ev)
 		m.handleDialogEvent(tabID, ctx, ev)
 		m.recordConsoleEvent(tabID, ev)
 	})
 	m.ensureConsoleCapture(tabID, ctx)
-	// No-op unless a navigation policy is configured.
+
 	m.ensureContainment(tabID, ctx)
 	return ctx, nil
 }
 
-// Every first-party transport reports its active tab, so a caller that must
-// name one (a WebMCP page-tool report) works on all of them rather than only
-// where a tab happens to be pinned into the context.
 var _ ActiveTabReporter = (*Manager)(nil)
 
-// ActiveTabID names the tab an untargeted page call lands in, which is the same
-// answer activeContext reaches on its way into every Evaluate. It reports what
-// is already open and never opens a tab: a caller asking which tab to name must
-// not change the browser to get an answer, and ensureActive opens about:blank
-// when there is nothing to report.
+// ActiveTabID names the tab an untargeted page call lands in, which is the same answer activeContext reaches on its way into every Evaluate.
 func (m *Manager) ActiveTabID(ctx context.Context) (string, error) {
 	if active := m.refs.Active(); active != "" {
 		return active, nil
