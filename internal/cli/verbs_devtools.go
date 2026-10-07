@@ -12,10 +12,6 @@ import (
 	"github.com/Don-Works/brw/internal/devtools"
 )
 
-// The developer observations get verbs of their own because the shell is where
-// a human looks at a page they are working on: `brw a11y` then `brw highlight
-// @e12` is the whole review loop, without a model in it.
-
 func devtoolsVerbs() []verb {
 	return []verb{
 		{
@@ -141,8 +137,6 @@ func renderVitals(w io.Writer, _ *options, body []byte) error {
 	return nil
 }
 
-// millis prints an absent metric as "—" rather than 0, because a page that has
-// not painted yet and a page that painted instantly are different pages.
 func millis(value *float64) string {
 	if value == nil {
 		return "—"
@@ -150,8 +144,6 @@ func millis(value *float64) string {
 	return fmt.Sprintf("%.0fms", *value)
 }
 
-// score prints the unitless metrics on the same rule: a browser that cannot
-// observe layout shift is not a browser that saw none.
 func score(value *float64) string {
 	if value == nil {
 		return "—"
@@ -174,9 +166,7 @@ func renderAudit(w io.Writer, _ *options, body []byte) error {
 	} else {
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		for _, rule := range result.Rules {
-			// refs and targets are parallel but both carry omitempty, and this
-			// decodes whatever the daemon sent rather than what the summarizer
-			// produced. Index the fallback only when it is there.
+
 			refs := make([]string, 0, len(rule.Refs))
 			for i, ref := range rule.Refs {
 				switch {

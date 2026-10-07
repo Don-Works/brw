@@ -15,12 +15,8 @@ import (
 	"github.com/Don-Works/brw/internal/readability"
 )
 
-// verb is one CLI action bound to exactly one route the daemon already serves.
-// method+path are the whole binding: build shapes only the query string and
-// body, so no verb can invent a surface internal/http does not have. The route
-// test walks this table against the daemon's own mux.
 type verb struct {
-	name    string // may be two words, e.g. "artifact read"
+	name    string
 	usage   string
 	summary string
 	method  string
@@ -29,16 +25,10 @@ type verb struct {
 	build   func(opts *options, args []string) (request, error)
 	render  func(w io.Writer, opts *options, body []byte) error
 
-	// exactBody marks a route whose handler decodes a fixed schema with
-	// DisallowUnknownFields. Nothing may be added to the request the verb built
-	// — a tab_id folded in from --tab turns the call into a 400.
 	exactBody bool
-	// serverTimeout marks a verb that forwards --timeout to the daemon, which
-	// then enforces it. Only those need the client deadline to sit beyond it.
+
 	serverTimeout bool
-	// unsupported reads a capability gap out of a 200 answer, for the routes
-	// that report one with a flag rather than an error. Without it a script
-	// branching on the exit code reads "this transport cannot" as success.
+
 	unsupported func(body []byte) (string, bool)
 }
 
@@ -196,12 +186,7 @@ func verbs() []verb {
 					return request{}, err
 				}
 				values := url.Values{}
-				// The route treats any bound parameter as "bound this read" and
-				// its absence as the unbounded contract, so send them only when
-				// asked for: an unflagged `brw read` returns the whole page. Once
-				// one bound is sent the others have to say -1 explicitly, or
-				// --offset alone would silently cap the prose at the route's
-				// 20000-char default and the lists at theirs.
+
 				if opts.maxChars > 0 || opts.offset > 0 {
 					maxChars := opts.maxChars
 					if maxChars <= 0 {
@@ -260,9 +245,7 @@ func verbs() []verb {
 				if err := noArgs(args); err != nil {
 					return request{}, err
 				}
-				// base64=1 keeps the response JSON, which is what --json has to
-				// print and what the controller can decode; the raw route hands
-				// back image bytes with no envelope at all.
+
 				return request{Query: url.Values{"base64": []string{"1"}}}, nil
 			},
 			render: renderScreenshot,
@@ -280,8 +263,7 @@ func verbs() []verb {
 					return request{}, err
 				}
 				body := map[string]any{"condition": condition}
-				// Absent timeout_ms means the daemon's own default, which is the
-				// right answer unless the caller said how long they will wait.
+
 				if opts.timeoutSet {
 					body["timeout_ms"] = opts.timeout.Milliseconds()
 				}
@@ -387,9 +369,7 @@ func verbs() []verb {
 			render: renderRevoke,
 		},
 	}
-	// The developer observations are defined beside their renderers in
-	// verbs_devtools.go; the completion scripts and the route test read this
-	// table, so they are covered the same way every verb above is.
+
 	table = append(table, pageVerbs()...)
 	table = append(table, inspectVerbs()...)
 	table = append(table, envVerbs()...)
@@ -399,9 +379,6 @@ func verbs() []verb {
 	return append(table, skillVerbs()...)
 }
 
-// downloadsUnsupported reads the flag the downloads route sets when the active
-// transport cannot observe downloads. It answers 200 with an empty list, which
-// is indistinguishable from "no downloads" to anything but this flag.
 func downloadsUnsupported(body []byte) (string, bool) {
 	var result browser.DownloadsResult
 	if err := json.Unmarshal(body, &result); err != nil || result.Supported {
@@ -413,8 +390,6 @@ func downloadsUnsupported(body []byte) (string, bool) {
 	return "this transport cannot observe downloads", true
 }
 
-// normalizeRef accepts a ref in the shape brw prints it (@e17) as well as the
-// bare form the HTTP API takes, so a pasted line of snapshot output works.
 func normalizeRef(value string) string {
 	return strings.TrimPrefix(strings.TrimSpace(value), "@")
 }

@@ -15,19 +15,6 @@ import (
 	"testing"
 )
 
-// docs/scheduling.md is the only instruction anyone has for running brw from a
-// scheduler, and a plist or a unit file that does not work is worse than none:
-// it fails at 03:00 in a log nobody reads. So the examples are not inspected,
-// they are RUN — the exact argument vector out of the document, against a
-// daemon that answers, with the exit code and the JSON checked. All three
-// examples, launchd, systemd and cron, go through the same vector.
-//
-// What is not exercised: the schedulers themselves, and the /usr/local/bin/brw
-// in each example, because the vector is handed to cli.Run in process rather
-// than executed as a path. A job that never fires because launchd rejected the
-// plist is covered by the directive assertions below and by plutil; a brw that
-// is not installed at that path is not.
-
 const schedulingDoc = "../../docs/scheduling.md"
 
 var (
@@ -58,8 +45,6 @@ func blocksOfType(t *testing.T, document, language string) []string {
 	return blocks
 }
 
-// runDocumentedCommand executes one argument vector from the docs against a
-// daemon that answers, and returns the exit code and the report.
 func runDocumentedCommand(t *testing.T, args []string, env map[string]string, daemonURL string) (int, runReport, string) {
 	t.Helper()
 	if len(args) == 0 {
@@ -73,8 +58,7 @@ func runDocumentedCommand(t *testing.T, args []string, env map[string]string, da
 	}
 	for key, value := range env {
 		if key == "BRW_URL" {
-			// The document's value is the default loopback daemon; this test has
-			// its own. Everything else about the invocation is used verbatim.
+
 			value = daemonURL
 		}
 		t.Setenv(key, value)
@@ -90,7 +74,6 @@ func runDocumentedCommand(t *testing.T, args []string, env map[string]string, da
 	return code, report, stderr.String()
 }
 
-// TestDocumentedLaunchdJobRuns runs the plist's ProgramArguments.
 func TestDocumentedLaunchdJobRuns(t *testing.T) {
 	isolateLocks(t)
 	document := schedulingDocument(t)
@@ -100,8 +83,6 @@ func TestDocumentedLaunchdJobRuns(t *testing.T) {
 	}
 	plist := blocks[0]
 
-	// Well-formed first: launchd rejects the whole job on a malformed plist and
-	// says so only in the system log.
 	decoder := xml.NewDecoder(strings.NewReader(plist))
 	decoder.Strict = true
 	for {
@@ -113,7 +94,7 @@ func TestDocumentedLaunchdJobRuns(t *testing.T) {
 			t.Fatalf("the documented plist is not well-formed XML: %v", err)
 		}
 	}
-	// And a real plist where the tool to say so exists.
+
 	if plutil, err := exec.LookPath("plutil"); err == nil {
 		path := filepath.Join(t.TempDir(), "job.plist")
 		if err := os.WriteFile(path, []byte(plist), 0o644); err != nil {
@@ -151,8 +132,6 @@ func TestDocumentedLaunchdJobRuns(t *testing.T) {
 		t.Fatalf("the documented launchd job ran the recipe %d times", daemon.runs)
 	}
 
-	// A calendar job with no schedule never fires, and one with RunAtLoad fights
-	// the browser the human is opening.
 	if !strings.Contains(plist, "StartCalendarInterval") {
 		t.Error("the documented plist has no StartCalendarInterval, so it would never run on a schedule")
 	}
@@ -161,7 +140,6 @@ func TestDocumentedLaunchdJobRuns(t *testing.T) {
 	}
 }
 
-// TestDocumentedSystemdJobRuns runs the unit's ExecStart.
 func TestDocumentedSystemdJobRuns(t *testing.T) {
 	isolateLocks(t)
 	document := schedulingDocument(t)
@@ -191,8 +169,6 @@ func TestDocumentedSystemdJobRuns(t *testing.T) {
 		t.Fatalf("the documented systemd job ran the recipe %d times", daemon.runs)
 	}
 
-	// A oneshot unit that reports a busy or postcondition outcome as a unit
-	// failure teaches an operator to ignore the failures.
 	if !strings.Contains(service, "Type=oneshot") {
 		t.Error("the documented service is not Type=oneshot, so systemd would treat the finished run as a crash")
 	}
@@ -218,9 +194,6 @@ func TestDocumentedSystemdJobRuns(t *testing.T) {
 	}
 }
 
-// parseUnit pulls ExecStart and Environment out of a systemd unit. The values
-// here carry no quoting, which the test enforces below: a quoted argument would
-// need systemd's own splitting rules and this would silently mis-split it.
 func parseUnit(t *testing.T, unit string) ([]string, map[string]string) {
 	t.Helper()
 	exec := unitValue(unit, "ExecStart")
@@ -253,9 +226,6 @@ func unitValue(unit, key string) string {
 	return ""
 }
 
-// TestSchedulingDocsAgreeWithTheExitCodeTable keeps the document from
-// describing a contract the binary does not have. An operator writes their
-// alerting against this table.
 func TestSchedulingDocsAgreeWithTheExitCodeTable(t *testing.T) {
 	document := schedulingDocument(t)
 	for _, row := range runOutcomes {
@@ -266,8 +236,7 @@ func TestSchedulingDocsAgreeWithTheExitCodeTable(t *testing.T) {
 			t.Errorf("%s does not carry the meaning of %s: %q", schedulingDoc, row.Name, row.Meaning)
 		}
 	}
-	// And the other direction: a code in the table that the binary cannot
-	// return is an operator branching on something that never happens.
+
 	codes := regexp.MustCompile(`\n\| (\d+) \| `+"`"+`([a-z_]+)`+"`").FindAllStringSubmatch(document, -1)
 	if len(codes) != len(runOutcomes) {
 		t.Fatalf("%s documents %d exit codes, the binary has %d", schedulingDoc, len(codes), len(runOutcomes))
@@ -285,10 +254,6 @@ func TestSchedulingDocsAgreeWithTheExitCodeTable(t *testing.T) {
 	}
 }
 
-// parseCrontab pulls the environment and the command out of the documented
-// crontab line. cron takes five schedule fields, then leading KEY=VALUE
-// assignments, then the command, then the shell redirections; only the command
-// and its environment are runnable here.
 func parseCrontab(t *testing.T, block string) ([]string, map[string]string) {
 	t.Helper()
 	var line string
@@ -306,8 +271,7 @@ func parseCrontab(t *testing.T, block string) ([]string, map[string]string) {
 	if len(fields) < 6 {
 		t.Fatalf("the documented crontab line has %d fields, too few for a schedule and a command: %q", len(fields), line)
 	}
-	// cron itself parses the first five as the schedule, so anything else here
-	// is a job that never fires at the hour the document claims.
+
 	schedule := fields[:5]
 	for _, field := range schedule {
 		if strings.HasPrefix(field, "-") || strings.Contains(field, "=") {
@@ -328,17 +292,13 @@ func parseCrontab(t *testing.T, block string) ([]string, map[string]string) {
 		}
 		args = append(args, field)
 	}
-	// The redirections are the second of the two caveats the document names, so
-	// an example that dropped them would teach the failure it warns about.
+
 	if !strings.Contains(line, ">>") || !strings.Contains(line, "2>>") {
 		t.Errorf("the documented crontab line does not redirect both streams, which the paragraph above it says to do: %q", line)
 	}
 	return args, env
 }
 
-// TestDocumentedCronJobRuns runs the crontab line's command. cron is the third
-// documented example and was the one nobody executed, which is how it came to
-// be missing an --input the other two carry.
 func TestDocumentedCronJobRuns(t *testing.T) {
 	isolateLocks(t)
 	blocks := blocksOfType(t, schedulingDocument(t), "crontab")
@@ -360,8 +320,6 @@ func TestDocumentedCronJobRuns(t *testing.T) {
 	}
 }
 
-// TestDocumentedJobsRunTheSameCommand: the macOS, Linux and cron examples have
-// to be the same invocation, or one of them is the one nobody tested.
 func TestDocumentedJobsRunTheSameCommand(t *testing.T) {
 	document := schedulingDocument(t)
 	plist := blocksOfType(t, document, "xml")[0]
@@ -388,8 +346,7 @@ func TestDocumentedJobsRunTheSameCommand(t *testing.T) {
 			t.Errorf("the launchd and %s examples differ:\n  launchd: %v\n  %s: %v", name, launchd, name, vector)
 		}
 	}
-	// cron carries its environment on the command line rather than in a unit
-	// stanza, and the document's own caveat is that it has to.
+
 	if _, ok := cronEnv["BRW_URL"]; !ok {
 		t.Error("the documented crontab line sets no BRW_URL, which is the first caveat the paragraph above it names")
 	}

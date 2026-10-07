@@ -7,8 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,40 +19,18 @@ import (
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
-// `brw run` is the entry point a scheduler drives.
-//
-// brw ships no scheduler and does not intend to: launchd, systemd and cron
-// already run things on a clock, survive reboots, and are what an operator's
-// other jobs use. What brw owes them is a contract, and until now it had none —
-// no documented invocation, no machine-readable result, no exit code that told
-// a policy refusal apart from a broken daemon, and nothing stopping this run
-// from landing on the tab the last one is still using.
-//
-// The contract is: one JSON object on stdout, human diagnostics on stderr, an
-// exit code from the table below, and one run at a time per browser profile.
-
-// runSchema versions the stdout contract. A scheduler parses this object, so a
-// field that changes meaning has to change this string with it.
 const runSchema = "brw.run/1"
 
-// Exit codes beyond the ones every verb shares. A scheduler sees nothing but
-// the exit code, so each of these has to mean one thing.
+// Exit codes beyond the ones every verb shares.
 const (
-	// ExitPostconditionFailed: brw ran the recipe and the state it asserted did
-	// not hold. The machine, the daemon and the browser are all fine; the work
-	// did not land. Running it again on the next tick is reasonable; paging
-	// someone is not, until it repeats.
+	// ExitPostconditionFailed: brw ran the recipe and the state it asserted did not hold.
 	ExitPostconditionFailed = 4
-	// ExitPolicyRefused: brw refused. A missing site grant, a revoked one, a
-	// blocked category, or an action that needs confirmation with nobody to
-	// confirm it. Retrying changes nothing until a human grants something.
+	// ExitPolicyRefused: brw refused.
 	ExitPolicyRefused = 5
-	// ExitBusy: another run holds this profile. Nothing was attempted. The next
-	// tick is the right time to try again.
+	// ExitBusy: another run holds this profile.
 	ExitBusy = 6
 )
 
-// runOutcome is one row of the exit-code contract.
 type runOutcome struct {
 	// Name is the outcome string in the JSON object.
 	Name string
@@ -59,15 +38,10 @@ type runOutcome struct {
 	Code int
 	// Meaning is what the operator reads in docs/scheduling.md and in --help.
 	Meaning string
-	// Retry says whether running it again unchanged could succeed. It is in the
-	// JSON so a scheduler wrapper does not have to hard-code the table.
+	// Retry says whether running it again unchanged could succeed.
 	Retry bool
 }
 
-// runOutcomes is the whole contract. It is a table rather than a switch because
-// the exit code is the entire interface a scheduler has: an outcome that is
-// classified in one place and not another is a code an operator's wrapper reads
-// as something else. TestEveryRunOutcomeIsDistinctAndDocumented enumerates it.
 var runOutcomes = []runOutcome{
 	{Name: "ok", Code: ExitOK, Meaning: "the recipe ran and every step reached its asserted state", Retry: false},
 	{Name: "failed", Code: ExitActionFailed, Meaning: "the run failed for a reason that is none of the others; read error", Retry: false},
@@ -84,13 +58,10 @@ func outcome(name string) runOutcome {
 			return row
 		}
 	}
-	// Unreachable through any call site in this file; a typo would otherwise
-	// exit 0 on a failure, which is the one thing a scheduler must never see.
+
 	return runOutcome{Name: "failed", Code: ExitActionFailed, Meaning: "unclassified"}
 }
 
-// runReport is the object on stdout. Everything a scheduler's wrapper needs is
-// here, so it never has to parse a human sentence.
 type runReport struct {
 	Schema     string            `json:"schema"`
 	OK         bool              `json:"ok"`
@@ -112,13 +83,9 @@ type runReport struct {
 type runProfile struct {
 	Workspace string `json:"workspace,omitempty"`
 	Profile   string `json:"profile,omitempty"`
-	// LockKey is the profile identity the run serialised on. Two runs that
-	// report the same lock key can never have overlapped.
+	// LockKey is the profile identity the run serialised on.
 	LockKey string `json:"lock_key,omitempty"`
-	// LockShared says the daemon named no profile, so the key above is the one
-	// every anonymous daemon shares rather than this browser's own. Runs through
-	// such daemons still serialise against each other; they do not serialise
-	// against an identified daemon driving the same browser.
+	// LockShared says the daemon named no profile, so the key above is the one every anonymous daemon shares rather than this browser's own.
 	LockShared bool `json:"lock_shared,omitempty"`
 }
 
@@ -140,18 +107,13 @@ type runOptions struct {
 	timeout    time.Duration
 }
 
-// inputList collects repeated --input key=value flags.
 type inputList map[string]string
 
 func (l inputList) String() string {
 	if len(l) == 0 {
 		return ""
 	}
-	pairs := make([]string, 0, len(l))
-	for key := range l {
-		pairs = append(pairs, key)
-	}
-	return strings.Join(pairs, ",")
+	return strings.Join(slices.Sorted(maps.Keys(l)), ",")
 }
 
 func (l inputList) Set(value string) error {
@@ -192,12 +154,6 @@ flags:
 
 exit codes:`
 
-// newRunFlagSet registers every flag `brw run` accepts.
-//
-// Split out because the completion scripts enumerate it. `brw run` takes none
-// of the global flags — its output is a fixed JSON contract, so --json means
-// nothing to it — and a shell that offered them would be offering words this
-// FlagSet rejects with exit 2.
 func newRunFlagSet(opts *runOptions) *flag.FlagSet {
 	fs := flag.NewFlagSet("brw run", flag.ContinueOnError)
 	fs.StringVar(&opts.daemon, "daemon", "", "daemon base URL")
@@ -212,17 +168,13 @@ func newRunFlagSet(opts *runOptions) *flag.FlagSet {
 	return fs
 }
 
-// runCommandFlags is the flag list the completion scripts emit for `brw run`.
 func runCommandFlags() []string {
 	opts := runOptions{inputs: inputList{}}
 	var names []string
 	newRunFlagSet(&opts).VisitAll(func(f *flag.Flag) { names = append(names, "--"+f.Name) })
-	sort.Strings(names)
 	return names
 }
 
-// runCommand is the whole non-interactive entry point. It returns the process
-// exit code and writes exactly one JSON object to stdout.
 func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	opts := runOptions{inputs: inputList{}, lockWait: 5 * time.Minute, timeout: recipe.DefaultMaxRunDuration}
 	fs := newRunFlagSet(&opts)
@@ -268,17 +220,6 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}
 	report.Profile = runProfile{Workspace: health.Identity.Workspace, Profile: health.Identity.Profile}
 
-	// Fail closed on anything that would stop and ask, and on a daemon that will
-	// not say whether it would. A daemon started with a prompter on its terminal
-	// blocks on a read nobody is going to answer, so the run hangs to its timeout
-	// and reports a timeout, which is not what happened; a daemon too old to
-	// carry the consent block cannot be distinguished from one that answered
-	// "no prompter", so it is refused by the same rule rather than trusted.
-	//
-	// The posture is the whole chain's. A proxy merges the posture of the daemon
-	// it forwards to into its own before reporting it, so "unknown" here means
-	// some hop could not be asked — which answers "could this hang" the same way
-	// "yes" does.
 	switch {
 	case health.Consent == nil:
 		return failRun(stdout, stderr, "policy_refused", report,
@@ -291,13 +232,6 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 			errors.New("this daemon, or one it forwards to, was started with --site-consent-prompt, so an un-granted origin would block it waiting for an answer nobody is there to give; run the scheduled job against a daemon without the prompt and grant origins ahead of time with brwctl grants allow"))
 	}
 
-	// The lock is keyed on the profile the daemon names at /health. A daemon
-	// that names none takes the shared "unidentified" key: that serialises it
-	// against every other anonymous daemon, but NOT against an identified daemon
-	// on the same Chrome, which takes the profile's own key. The gap is reported
-	// rather than refused — a daemon started without --workspace/--profile is
-	// the default install, and a run that cannot start at all is worse than one
-	// that says which guarantee it has.
 	lockKey := runlock.Key(health.Identity)
 	report.Profile.LockShared = lockKey == runlock.Unidentified
 	if report.Profile.LockShared {
@@ -306,8 +240,7 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 
 	report.Profile.LockKey = lockKey
 	lockStarted := time.Now()
-	// The lock directory is not an argument. A run pointed at a directory of its
-	// own would serialise against nothing while reporting that it had.
+
 	lock, err := runlock.Acquire(ctx, "", report.Profile.LockKey, opts.lockWait)
 	report.LockWaitMS = time.Since(lockStarted).Milliseconds()
 	switch {
@@ -327,10 +260,7 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	defer cancelRun()
 	result, runErr := ctrl.RunRecipe(runCtx, request)
 	report.DurationMS = time.Since(report.StartedAt).Milliseconds()
-	// Only when a run actually happened. A refusal that never reached the runner
-	// answers with a zero RunResult, and reporting that would put a started_at of
-	// year 1 and an empty status into a scheduler's ledger as though a run had
-	// been attempted.
+
 	if result.Status != "" || len(result.Steps) > 0 {
 		report.Result = &result
 	}
@@ -373,54 +303,33 @@ func prepareRunRequest(opts runOptions, positional []string) (recipe.RunRequest,
 	return request, nil
 }
 
-// classifyRun maps a finished run onto the contract.
-//
-// Every branch reads a property, never a sentence: whether the call reached a
-// daemon at all, the class the daemon itself attached to the refusal, and
-// whether the structured result says a step failed. A message-matching
-// classifier would silently reclassify the day somebody rewords an error.
 func classifyRun(ctx context.Context, result recipe.RunResult, err error) runOutcome {
 	if err == nil {
 		return outcome("ok")
 	}
-	// The call never got an answer: no daemon, or the machine's network gave up.
+
 	if unreachable(ctx, err) || errors.Is(err, errNoDaemon) {
 		return outcome("infrastructure")
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return outcome("infrastructure")
 	}
-	// A refusal is settled however far the run got: the consent gate can stop a
-	// recipe part-way, and retrying it unchanged still cannot succeed until a
-	// human grants something.
+
 	class := httpclient.RemoteClass(err)
 	if class == "policy_denied" {
 		return outcome("policy_refused")
 	}
-	// The daemon answered with the run's own result: the recipe started, and a
-	// step did not reach the state it asserted. That is a different thing from
-	// brw being unable to run it, and a scheduler treats it differently.
-	//
-	// Asked BEFORE the daemon's error class, and that order is the contract. The
-	// class names the innermost failure, and a postcondition that did not hold
-	// is a wait that ran out — so the classes the compiler's default
-	// postconditions produce are "timeout", which is retryable, which used to
-	// classify a failed step as an infrastructure failure and exit 3. A
-	// structured result carrying a failed step is positive evidence that the
-	// recipe ran, and no error class can outrank it.
+
 	if failedStep(result) {
 		return outcome("postcondition_failed")
 	}
-	// Nothing ran, or the daemon returned nothing that says otherwise. The daemon
-	// computes the class; whether it is worth another attempt is already decided
-	// in one place, so ask that rather than re-listing them.
+
 	if class != "" && usagelog.Retryable(class) {
 		return outcome("infrastructure")
 	}
 	return outcome("failed")
 }
 
-// failedStep reports whether the run reached the browser and a step failed.
 func failedStep(result recipe.RunResult) bool {
 	if result.Status != "failed" {
 		return false
@@ -450,16 +359,10 @@ func finishRun(stdout, stderr io.Writer, report runReport, decision runOutcome, 
 	if report.StartedAt.IsZero() {
 		report.StartedAt = time.Now().UTC()
 	}
-	encoded, marshalErr := json.Marshal(report)
-	if marshalErr != nil {
-		// stdout is the contract; if it cannot be written the run has not
-		// reported at all, and an exit code alone would be read as a result.
-		fmt.Fprintf(stderr, "brw run: encode the run report: %v\n", marshalErr)
+	if err := json.NewEncoder(stdout).Encode(report); err != nil {
+		fmt.Fprintf(stderr, "brw run: encode the run report: %v\n", err)
 		return ExitActionFailed
 	}
-	fmt.Fprintf(stdout, "%s\n", encoded)
-
-	// stderr is for the human reading the scheduler's log.
 	if err != nil {
 		fmt.Fprintf(stderr, "brw run %s: %s (exit %d): %v\n", report.Recipe.ID, decision.Name, decision.Code, err)
 	} else {

@@ -8,8 +8,10 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,9 +21,6 @@ import (
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
-// runDaemon is a stand-in brwd: it answers /health and /api/recipes/run and
-// records the interleaving of the runs it serves, which is the thing the
-// serialisation test has to observe.
 type runDaemon struct {
 	server *httptest.Server
 
@@ -34,14 +33,11 @@ type runDaemon struct {
 	hold     time.Duration
 
 	interactive bool
-	// identity is the raw /health identity object. Empty uses the fixture
-	// profile; a value naming none of the four profile fields stands in for a
-	// daemon that will not say which browser it drives.
+
 	identity string
-	// noConsent omits the consent block entirely, which is what a daemon built
-	// before /health carried one answers with.
+
 	noConsent bool
-	// respond overrides the run response. Nil answers a successful run.
+
 	respond func(w http.ResponseWriter, body []byte)
 }
 
@@ -60,8 +56,7 @@ func newRunDaemon(t *testing.T, d *runDaemon) *runDaemon {
 		}
 		fmt.Fprintf(w, `{"ok":true,"identity":%s%s}`, identity, consent)
 	})
-	// A proxy in front of this daemon takes a tab lease before it forwards a
-	// run, which opens a working tab through its controller.
+
 	mux.HandleFunc("POST /api/browser/open", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("content-type", "application/json")
 		fmt.Fprint(w, `{"tab":{"id":"tab-1"},"ready":true}`)
@@ -105,9 +100,6 @@ func (d *runDaemon) events() []string {
 	return append([]string(nil), d.trace...)
 }
 
-// isolateLocks points the run lock at a directory this test owns. The lock
-// directory is deliberately not a flag — a run allowed to choose its own would
-// serialise against nothing — so the test moves the whole user cache instead.
 func isolateLocks(t *testing.T) {
 	t.Helper()
 	cache := t.TempDir()
@@ -130,9 +122,6 @@ func invokeRun(t *testing.T, daemon *runDaemon, extra ...string) (int, runReport
 	return code, report, stderr.String()
 }
 
-// TestScheduledRunsSerialiseOnOneProfile is the whole reason the lock exists: a
-// scheduler fires on a clock, and two runs whose windows overlap would
-// otherwise drive the same tab at the same time.
 func TestScheduledRunsSerialiseOnOneProfile(t *testing.T) {
 	isolateLocks(t)
 	daemon := newRunDaemon(t, &runDaemon{hold: 150 * time.Millisecond})
@@ -157,8 +146,7 @@ func TestScheduledRunsSerialiseOnOneProfile(t *testing.T) {
 	if daemon.peak != 1 {
 		t.Fatalf("the daemon served %d runs at once; they interleaved", daemon.peak)
 	}
-	// The trace is the evidence, not the counter: start/end must alternate, with
-	// no run beginning inside another.
+
 	events := daemon.events()
 	if len(events) != 4 {
 		t.Fatalf("expected two start/end pairs, got %v", events)
@@ -172,8 +160,7 @@ func TestScheduledRunsSerialiseOnOneProfile(t *testing.T) {
 			t.Fatalf("a run ended inside another: %v", events)
 		}
 	}
-	// Both runs serialised on the same key, which is what says they could not
-	// have overlapped rather than merely happening not to.
+
 	if reports[0].Profile.LockKey == "" || reports[0].Profile.LockKey != reports[1].Profile.LockKey {
 		t.Fatalf("runs reported lock keys %q and %q", reports[0].Profile.LockKey, reports[1].Profile.LockKey)
 	}
@@ -182,9 +169,6 @@ func TestScheduledRunsSerialiseOnOneProfile(t *testing.T) {
 	}
 }
 
-// TestTwoDaemonsOnOneProfileStillSerialise: an --upstream-http proxy and the
-// daemon behind it are two URLs and one browser. A lock keyed by the daemon
-// would let those two interleave while each looked perfectly serialised.
 func TestTwoDaemonsOnOneProfileStillSerialise(t *testing.T) {
 	isolateLocks(t)
 	first := newRunDaemon(t, &runDaemon{hold: 120 * time.Millisecond})
@@ -216,15 +200,12 @@ func TestTwoDaemonsOnOneProfileStillSerialise(t *testing.T) {
 	if first.peak > 1 || second.peak > 1 {
 		t.Fatalf("a daemon served overlapping runs: %d and %d", first.peak, second.peak)
 	}
-	// Each daemon ran its own recipe exactly once, so the serialisation was
-	// between them rather than one of them simply not running.
+
 	if first.runs != 1 || second.runs != 1 {
 		t.Fatalf("runs served: %d and %d", first.runs, second.runs)
 	}
 }
 
-// TestZeroLockWaitRefusesRatherThanQueueing gives a scheduler the other choice:
-// skip this tick instead of piling up.
 func TestZeroLockWaitRefusesRatherThanQueueing(t *testing.T) {
 	isolateLocks(t)
 	daemon := newRunDaemon(t, &runDaemon{hold: 400 * time.Millisecond})
@@ -239,8 +220,7 @@ func TestZeroLockWaitRefusesRatherThanQueueing(t *testing.T) {
 			"--recipe-version", "1", "--digest", strings.Repeat("a", 64), "--lock-wait", "30s"}, &stdout, &stderr)
 	}()
 	<-started
-	// Wait until the first run is actually inside the daemon, so the second one
-	// is contending rather than racing the first to the lock.
+
 	deadline := time.Now().Add(5 * time.Second)
 	for atomic.LoadInt64(&daemon.inflight) == 0 {
 		if time.Now().After(deadline) {
@@ -268,8 +248,6 @@ func TestZeroLockWaitRefusesRatherThanQueueing(t *testing.T) {
 	}
 }
 
-// TestPostconditionFailureIsDistinctFromInfrastructureFailure is the acceptance
-// criterion in one test: both are non-zero, and they are different numbers.
 func TestPostconditionFailureIsDistinctFromInfrastructureFailure(t *testing.T) {
 	isolateLocks(t)
 	failing := newRunDaemon(t, &runDaemon{respond: func(w http.ResponseWriter, _ []byte) {
@@ -292,7 +270,6 @@ func TestPostconditionFailureIsDistinctFromInfrastructureFailure(t *testing.T) {
 		t.Fatalf("stderr does not name the failure: %q", stderrText)
 	}
 
-	// Infrastructure: the daemon is not there at all.
 	var stdout, stderr bytes.Buffer
 	infraCode := Run(context.Background(), []string{"run", "fixture.recipe",
 		"--daemon", "http://127.0.0.1:1", "--recipe-version", "1", "--digest", strings.Repeat("a", 64)},
@@ -312,13 +289,10 @@ func TestPostconditionFailureIsDistinctFromInfrastructureFailure(t *testing.T) {
 	}
 }
 
-// TestPolicyRefusalGetsItsOwnExitCode: a run refused by site permissions must
-// not read as a broken daemon. Retrying it forever is the failure that causes.
 func TestPolicyRefusalGetsItsOwnExitCode(t *testing.T) {
 	isolateLocks(t)
 	refusing := newRunDaemon(t, &runDaemon{respond: func(w http.ResponseWriter, _ []byte) {
-		// The class the real daemon attaches to a consent refusal; see
-		// internal/http's own test that it does.
+
 		w.Header().Set(usagelog.HeaderErrorClass, "policy_denied")
 		w.Header().Set("content-type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -335,16 +309,11 @@ func TestPolicyRefusalGetsItsOwnExitCode(t *testing.T) {
 		t.Fatalf("the report lost the daemon's classification: %q", report.ErrorClass)
 	}
 	if report.Result != nil {
-		// A refusal never reached the runner, so there is no run to report. A
-		// zero RunResult here would put a started_at of year 1 into a
-		// scheduler'''s ledger as though a run had been attempted.
+
 		t.Fatalf("a refused run carried a run result: %+v", report.Result)
 	}
 }
 
-// TestRunRefusesADaemonThatCouldPrompt is the fail-closed rule. A daemon with a
-// prompter blocks on a terminal read nobody will answer, so the scheduled run
-// that was meant to refuse would hang to its timeout and report a timeout.
 func TestRunRefusesADaemonThatCouldPrompt(t *testing.T) {
 	isolateLocks(t)
 	daemon := newRunDaemon(t, &runDaemon{interactive: true})
@@ -363,8 +332,6 @@ func TestRunRefusesADaemonThatCouldPrompt(t *testing.T) {
 	}
 }
 
-// TestRunReportsOnStdoutAndDiagnosticsOnStderr pins the half of the contract a
-// scheduler's wrapper depends on: stdout is machine-readable and nothing else.
 func TestRunReportsOnStdoutAndDiagnosticsOnStderr(t *testing.T) {
 	isolateLocks(t)
 	daemon := newRunDaemon(t, &runDaemon{})
@@ -402,9 +369,6 @@ func TestRunReportsOnStdoutAndDiagnosticsOnStderr(t *testing.T) {
 	}
 }
 
-// TestRunRefusesAnUnpinnedRecipe: version and digest are what tie a scheduled
-// job to one immutable recipe. Without them the job silently starts running
-// whatever was published last.
 func TestRunRefusesAnUnpinnedRecipe(t *testing.T) {
 	isolateLocks(t)
 	daemon := newRunDaemon(t, &runDaemon{})
@@ -423,8 +387,6 @@ func TestRunRefusesAnUnpinnedRecipe(t *testing.T) {
 	}
 }
 
-// TestRunOnlyReachesARouteTheDaemonServes keeps the CLI invariant: `brw run`
-// may not have a surface internal/http does not.
 func TestRunOnlyReachesARouteTheDaemonServes(t *testing.T) {
 	isolateLocks(t)
 	routes := daemonRoutes(t)
@@ -432,8 +394,6 @@ func TestRunOnlyReachesARouteTheDaemonServes(t *testing.T) {
 		t.Fatal("internal/http does not register POST /api/recipes/run, which brw run drives")
 	}
 
-	// And behaviourally: a daemon serving only /health and that one route
-	// answers the whole command, so nothing else was reached.
 	var reached []string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -462,10 +422,6 @@ func TestRunOnlyReachesARouteTheDaemonServes(t *testing.T) {
 	}
 }
 
-// TestEveryRunOutcomeIsDistinctAndDocumented enumerates the exit-code contract.
-// The exit code is the entire interface a scheduler has, so two outcomes
-// sharing a code, or an outcome the code produces that the table never
-// describes, is an operator's wrapper reading the wrong thing.
 func TestEveryRunOutcomeIsDistinctAndDocumented(t *testing.T) {
 	byName := map[string]runOutcome{}
 	byCode := map[int]string{}
@@ -491,10 +447,6 @@ func TestEveryRunOutcomeIsDistinctAndDocumented(t *testing.T) {
 		}
 	}
 
-	// Every outcome name the code actually produces has to be in the table. The
-	// names are read out of run.go rather than listed here: a classification
-	// added with a name nobody registered would fall through to the unclassified
-	// default and exit 1.
 	used := outcomeNamesInSource(t, "run.go")
 	if len(used) < len(runOutcomes)-1 {
 		t.Fatalf("found only %d outcome names in run.go; the scan is not reading the source", len(used))
@@ -505,13 +457,11 @@ func TestEveryRunOutcomeIsDistinctAndDocumented(t *testing.T) {
 		}
 	}
 	for name := range byName {
-		if name != "ok" && !contains(used, name) {
+		if name != "ok" && !slices.Contains(used, name) {
 			t.Errorf("runOutcomes lists %q, which nothing in run.go ever produces", name)
 		}
 	}
 
-	// The usage text an operator reads is generated from the same table, so it
-	// cannot describe a code the binary does not return.
 	var help bytes.Buffer
 	runUsageText(&help)
 	for _, row := range runOutcomes {
@@ -521,8 +471,6 @@ func TestEveryRunOutcomeIsDistinctAndDocumented(t *testing.T) {
 	}
 }
 
-// outcomeNamesInSource returns every string literal passed to outcome() or as
-// the outcome argument of failRun() in the named file.
 func outcomeNamesInSource(t *testing.T, file string) []string {
 	t.Helper()
 	parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
@@ -556,7 +504,7 @@ func outcomeNamesInSource(t *testing.T, file string) []string {
 			return true
 		}
 		name := strings.Trim(literal.Value, `"`)
-		if !contains(names, name) {
+		if !slices.Contains(names, name) {
 			names = append(names, name)
 		}
 		return true
@@ -564,9 +512,6 @@ func outcomeNamesInSource(t *testing.T, file string) []string {
 	return names
 }
 
-// failingRunDaemon answers one failed run, with the error class the argument
-// names. The class is the daemon's own classification of the innermost failure,
-// which is the thing brw run has to weigh against the structured result.
 func failingRunDaemon(t *testing.T, class string) *runDaemon {
 	t.Helper()
 	return newRunDaemon(t, &runDaemon{respond: func(w http.ResponseWriter, _ []byte) {
@@ -579,18 +524,8 @@ func failingRunDaemon(t *testing.T, class string) *runDaemon {
 	}})
 }
 
-// TestAFailedStepIsAPostconditionFailureWhateverClassTheDaemonAttached is the
-// acceptance criterion held against the classes the daemon really sends.
-//
-// Every postcondition the recipe compiler infers by default is a wait, and a
-// wait that ran out is classified "timeout" — which usagelog.Retryable says is
-// worth another attempt, which used to return "infrastructure" and exit 3, the
-// same code as an unreachable daemon. The whole point of the exit-code contract
-// is that 4 and 3 are different answers, so the structured result outranks the
-// class rather than the other way round.
 func TestAFailedStepIsAPostconditionFailureWhateverClassTheDaemonAttached(t *testing.T) {
-	// Every class the daemon computes that Retryable() says yes to, plus the two
-	// it reaches for a postcondition in practice and the empty one.
+
 	classes := []string{"", "tool", "timeout", "busy", "transport", "takeover_held", "target_not_found"}
 	for _, class := range classes {
 		t.Run("class "+class, func(t *testing.T) {
@@ -612,8 +547,6 @@ func TestAFailedStepIsAPostconditionFailureWhateverClassTheDaemonAttached(t *tes
 		})
 	}
 
-	// And the other direction: the same retryable class with no failed step is
-	// still an infrastructure failure, so this did not simply delete the arm.
 	isolateLocks(t)
 	noResult := newRunDaemon(t, &runDaemon{respond: func(w http.ResponseWriter, _ []byte) {
 		w.Header().Set(usagelog.HeaderErrorClass, "timeout")
@@ -626,8 +559,6 @@ func TestAFailedStepIsAPostconditionFailureWhateverClassTheDaemonAttached(t *tes
 		t.Fatalf("a retryable class with no run result exited %d (%s), want %d (infrastructure)", code, report.Outcome, ExitNoDaemon)
 	}
 
-	// A refusal stays a refusal even when the run got far enough to fail a step:
-	// retrying it changes nothing until a human grants something.
 	isolateLocks(t)
 	refused := failingRunDaemon(t, "policy_denied")
 	code, report, _ = invokeRun(t, refused)
@@ -636,11 +567,6 @@ func TestAFailedStepIsAPostconditionFailureWhateverClassTheDaemonAttached(t *tes
 	}
 }
 
-// TestRunRefusesADaemonThatReportsNoConsentPosture is the fail-closed rule held
-// against a daemon older than the block it reads. The Consent field decodes to
-// its zero value when /health sends nothing, so "this daemon has no prompter"
-// and "this daemon said nothing" used to be the same answer — and the second
-// one is exactly the daemon brw cannot see into.
 func TestRunRefusesADaemonThatReportsNoConsentPosture(t *testing.T) {
 	isolateLocks(t)
 	daemon := newRunDaemon(t, &runDaemon{noConsent: true})
@@ -659,16 +585,6 @@ func TestRunRefusesADaemonThatReportsNoConsentPosture(t *testing.T) {
 	}
 }
 
-// A daemon that names no profile at /health takes the key every anonymous
-// daemon shares. That serialises it against other anonymous daemons but NOT
-// against an identified daemon on the same Chrome, which takes the profile's
-// own key.
-//
-// It used to be refused outright, and that broke the default install: a daemon
-// started without --workspace/--profile is what `brwd` on its own is, and `brw
-// run` against one exited 1 every time. The gap is reported instead — in the
-// JSON a scheduler parses and on stderr a human reads — because a run that
-// cannot start at all is worse than one that says which guarantee it has.
 func TestRunAgainstAnAnonymousDaemonRunsAndReportsTheSharedLock(t *testing.T) {
 	for _, identity := range []string{`{}`, `{"mode":"direct","transport":"direct-cdp"}`} {
 		t.Run(identity, func(t *testing.T) {
@@ -694,8 +610,6 @@ func TestRunAgainstAnAnonymousDaemonRunsAndReportsTheSharedLock(t *testing.T) {
 	}
 }
 
-// And the report is not decoration: a run through a daemon that DOES name its
-// profile must not be labelled the same way, or the field says nothing.
 func TestAnIdentifiedDaemonIsNotReportedAsSharingTheAnonymousLock(t *testing.T) {
 	isolateLocks(t)
 	daemon := newRunDaemon(t, &runDaemon{})
@@ -708,9 +622,6 @@ func TestAnIdentifiedDaemonIsNotReportedAsSharingTheAnonymousLock(t *testing.T) 
 	}
 }
 
-// The guarantee the shared key does carry, which is why the run is allowed to
-// proceed on it: two anonymous daemons still queue behind each other rather
-// than driving one browser at once.
 func TestAnonymousDaemonsStillSerialiseAgainstEachOther(t *testing.T) {
 	isolateLocks(t)
 	const anonymous = `{"mode":"direct","transport":"direct-cdp"}`
@@ -737,5 +648,18 @@ func TestAnonymousDaemonsStillSerialiseAgainstEachOther(t *testing.T) {
 	}
 	if first.runs != 1 || second.runs != 1 {
 		t.Fatalf("runs served: %d and %d", first.runs, second.runs)
+	}
+}
+
+type closedOutput struct{}
+
+func (closedOutput) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+func TestScheduledRunReportsOutputFailure(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := finishRun(closedOutput{}, &stderr, runReport{}, outcome("ok"), nil); code != ExitActionFailed {
+		t.Fatalf("exit=%d after failed report output", code)
+	}
+	if !strings.Contains(stderr.String(), io.ErrClosedPipe.Error()) {
+		t.Fatalf("missing output failure: %s", &stderr)
 	}
 }

@@ -11,11 +11,6 @@ import (
 	"github.com/Don-Works/brw/internal/plugin"
 )
 
-// Plugins get shell verbs and no MCP tools. Loading one is an operator decision
-// made against a filesystem, and revoking one is an operator decision made in a
-// hurry — neither belongs in the surface an agent drives. `brw plugins` is how
-// a human answers "what did this daemon grant?" without reading the manifests.
-
 func pluginVerbs() []verb {
 	return []verb{
 		{

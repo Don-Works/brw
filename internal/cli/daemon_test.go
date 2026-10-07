@@ -26,7 +26,7 @@ func TestResolveBaseURL(t *testing.T) {
 		{Name: "work", ExtensionBridgeAllowed: true, BridgeHTTPAddr: "127.0.0.1:17410"},
 	}})
 	twoProfiles := writePolicyFile(t, profilepolicy.Policy{Profiles: []profilepolicy.Profile{
-		// Nothing listens on port 1, so the probe has to move on to the second.
+
 		{Name: "down", ExtensionBridgeAllowed: true, BridgeHTTPAddr: "127.0.0.1:1"},
 		{Name: "up", ExtensionBridgeAllowed: true, BridgeHTTPAddr: reachable.URL},
 	}})

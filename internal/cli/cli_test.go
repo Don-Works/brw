@@ -17,8 +17,6 @@ import (
 	"time"
 )
 
-// call is what the stand-in daemon saw: the whole wire contract a verb is
-// responsible for.
 type call struct {
 	method string
 	path   string
@@ -26,9 +24,6 @@ type call struct {
 	body   string
 }
 
-// fakeDaemon stands in for brwd. It records each request and replies with the
-// canned JSON for the route, so a verb test asserts what actually crossed the
-// socket rather than what the CLI intended to send.
 func fakeDaemon(t *testing.T, responses map[string]string) (*httptest.Server, *[]call) {
 	t.Helper()
 	var calls []call
@@ -209,9 +204,7 @@ func TestVerbsDriveTheDaemonHTTPAPI(t *testing.T) {
 			wantQuery:  url.Values{"settle_ms": {"0"}},
 		},
 		{
-			// The route bounds every list the moment one bound is present, so an
-			// offset on its own has to say -1 for the rest or the prose comes
-			// back capped at the route's default.
+
 			name:       "read from an offset leaves everything else unbounded",
 			args:       []string{"read", "--offset", "5000"},
 			wantMethod: http.MethodGet,
@@ -312,7 +305,6 @@ func TestVerbsDriveTheDaemonHTTPAPI(t *testing.T) {
 	}
 }
 
-// A global flag means the same thing on either side of the verb.
 func TestGlobalFlagsMayPrecedeTheVerb(t *testing.T) {
 	srv, calls := fakeDaemon(t, daemonResponses())
 	t.Setenv("BRW_URL", "http://127.0.0.1:1")
@@ -330,8 +322,6 @@ func TestGlobalFlagsMayPrecedeTheVerb(t *testing.T) {
 	}
 }
 
-// The point of --json is that the daemon's own bytes reach the pipe: a field
-// this build's structs do not know about must survive.
 func TestJSONPrintsTheDaemonEnvelopeVerbatim(t *testing.T) {
 	const envelope = `{"ok":true,"url":"https://example.test/","field_added_after_this_build":42}`
 	srv, _ := fakeDaemon(t, map[string]string{"POST /api/page/click": envelope})
@@ -397,8 +387,7 @@ func TestExitCodes(t *testing.T) {
 		},
 		{
 			name: "nothing listening",
-			// Port 1 on loopback has nothing listening, so the request never
-			// reaches a daemon.
+
 			daemon:   "http://127.0.0.1:1",
 			args:     []string{"click", "@e17"},
 			wantExit: ExitNoDaemon,
@@ -441,10 +430,6 @@ func TestExitCodes(t *testing.T) {
 	}
 }
 
-// An action the daemon answers 200 with ok:false is still a failure, and a
-// shell script only ever sees the exit code. The reason is printed once: the
-// verb's own output already carries it, so a second copy on stderr shows the
-// line twice in a terminal.
 func TestRefusedActionExitsNonZero(t *testing.T) {
 	const reason = "element is not clickable"
 	tests := []struct {
@@ -454,15 +439,14 @@ func TestRefusedActionExitsNonZero(t *testing.T) {
 		wantStderr int
 	}{
 		{
-			// Once, on stdout, from the verb's own output.
+
 			name:       "human output",
 			args:       []string{"click", "@e17"},
 			wantStdout: 1,
 			wantStderr: 0,
 		},
 		{
-			// --json prints the envelope, which carries the reason; stderr is
-			// where a person reads it, since nothing renders it in this mode.
+
 			name:       "json output",
 			args:       []string{"click", "@e17", "--json"},
 			wantStdout: 1,
@@ -491,14 +475,10 @@ func TestRefusedActionExitsNonZero(t *testing.T) {
 	}
 }
 
-// slowDaemon answers nothing until the client gives up, which is what a daemon
-// mid-action looks like from here.
 func slowDaemon(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		// Drain the body first: net/http only starts watching for the client
-		// going away once the request body has been consumed, so a handler that
-		// ignores it never sees the disconnect and blocks the server's Close.
+
 		_, _ = io.Copy(io.Discard, r.Body)
 		<-r.Context().Done()
 	}))
@@ -506,9 +486,6 @@ func slowDaemon(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// --timeout is advertised as the per-action timeout, so it has to be able to
-// shorten one. Only the verb that hands its timeout to the daemon waits longer
-// than it asked for, and that verb is not this one.
 func TestShortTimeoutAbortsTheAction(t *testing.T) {
 	srv := slowDaemon(t)
 	t.Setenv("BRW_URL", srv.URL)
@@ -532,8 +509,6 @@ func TestShortTimeoutAbortsTheAction(t *testing.T) {
 	}
 }
 
-// The wait verb is the exception: the daemon enforces its timeout server-side,
-// so the client has to outlast it rather than cut the answer off.
 func TestWaitKeepsClientHeadroomOverTheDaemonTimeout(t *testing.T) {
 	srv, calls := fakeDaemon(t, daemonResponses())
 	t.Setenv("BRW_URL", srv.URL)
@@ -553,8 +528,6 @@ func TestWaitKeepsClientHeadroomOverTheDaemonTimeout(t *testing.T) {
 	}
 }
 
-// Ctrl-C is wired into the context cmd/brw passes in. Reporting that as "no
-// daemon reachable" tells a script to start a daemon that is already running.
 func TestCancellationIsNotAMissingDaemon(t *testing.T) {
 	srv := slowDaemon(t)
 	t.Setenv("BRW_URL", srv.URL)
@@ -577,8 +550,6 @@ func TestCancellationIsNotAMissingDaemon(t *testing.T) {
 	}
 }
 
-// A capability the transport does not have answers 200 with an empty list, so
-// without the flag being read a script cannot tell it from "no downloads".
 func TestUnsupportedDownloadsExitNonZero(t *testing.T) {
 	const note = "the extension bridge cannot observe downloads"
 	const envelope = `{"downloads":[],"count":0,"supported":false,"note":"` + note + `"}`
@@ -588,8 +559,7 @@ func TestUnsupportedDownloadsExitNonZero(t *testing.T) {
 		wantStdout int
 		wantStderr int
 	}{
-		// The human line is on stdout, so stderr stays clear; --json renders
-		// nothing, and the envelope's own note is the one on stdout.
+
 		{name: "human output", args: []string{"downloads"}, wantStdout: 1, wantStderr: 0},
 		{name: "json output", args: []string{"downloads", "--json"}, wantStdout: 1, wantStderr: 1},
 	}
@@ -613,8 +583,6 @@ func TestUnsupportedDownloadsExitNonZero(t *testing.T) {
 	}
 }
 
-// A transport that can observe downloads still succeeds, so the check above is
-// reading the flag rather than failing the verb outright.
 func TestSupportedDownloadsSucceed(t *testing.T) {
 	srv, _ := fakeDaemon(t, daemonResponses())
 	t.Setenv("BRW_URL", srv.URL)
@@ -625,9 +593,6 @@ func TestSupportedDownloadsSucceed(t *testing.T) {
 	}
 }
 
-// os.WriteFile applies its mode only when it creates the file, and --out
-// defaults to a fixed name in the working directory, so overwriting yesterday's
-// screenshot is the common case.
 func TestScreenshotNarrowsAnExistingFile(t *testing.T) {
 	srv, _ := fakeDaemon(t, daemonResponses())
 	t.Setenv("BRW_URL", srv.URL)
@@ -657,9 +622,6 @@ func TestScreenshotNarrowsAnExistingFile(t *testing.T) {
 	}
 }
 
-// The write narrows an existing file before it truncates it, so a filesystem
-// that rejects fchmod costs the caller this screenshot rather than the one
-// already on disk.
 func TestScreenshotSurvivesAFilesystemThatRejectsTheMode(t *testing.T) {
 	const previous = "older screenshot"
 	wanted, _ := base64.StdEncoding.DecodeString("aGVsbG8=")
@@ -701,8 +663,6 @@ func TestScreenshotSurvivesAFilesystemThatRejectsTheMode(t *testing.T) {
 	}
 }
 
-// The walk-through in the CLI's own help: open, find, click, read, snapshot
-// against one daemon, each verb reaching its own route.
 func TestOpenFindClickReadSnapshotDriveOneDaemon(t *testing.T) {
 	srv, calls := fakeDaemon(t, daemonResponses())
 	t.Setenv("BRW_URL", srv.URL)

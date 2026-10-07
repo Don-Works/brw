@@ -12,14 +12,9 @@ import (
 	"testing"
 )
 
-// The CLI must not be able to grow a surface the daemon does not serve. The
-// route set is read out of internal/http's own mux registration rather than
-// copied here, so adding a verb without a route fails this test instead of
-// 404ing in somebody's shell.
 func TestEveryVerbBindsToARouteTheDaemonServes(t *testing.T) {
 	routes := daemonRoutes(t)
-	// A parse that silently matched nothing would pass every verb, so anchor on
-	// the order of magnitude the daemon actually registers.
+
 	if len(routes) < 30 {
 		t.Fatalf("parsed only %d routes from internal/http/server.go; the mux registration shape must have changed", len(routes))
 	}
@@ -48,42 +43,29 @@ func TestVerbTableIsWellFormed(t *testing.T) {
 		}
 		tokens := strings.Fields(v.name)
 		if len(tokens) == 0 {
-			// The dispatcher and both completion scripts skip a nameless entry
-			// rather than index it, so this report is all that is left to say
-			// the verb exists but can never be typed.
+
 			t.Errorf("a verb has a blank name: %+v", v.summary)
 			continue
 		}
 		if builtins[tokens[0]] {
-			// A verb that shadows a built-in would be unreachable, and worse,
-			// would escape the route check above by never being dispatched.
+
 			t.Errorf("verb %q starts with the built-in word %q", v.name, tokens[0])
 		}
 		if v.exactBody && v.method != http.MethodPost {
-			// The strict-schema routes this flag exists for are POST-only; a GET
-			// would carry its arguments in the query, which this flag does not
-			// keep the context out of.
+
 			t.Errorf("verb %q claims exactBody on a %s route", v.name, v.method)
 		}
 	}
 }
 
-// A verb bound to a route the daemon decodes with DisallowUnknownFields has to
-// declare exactBody, or the generic path folds tab_id into a body that route
-// answers 400 to. Which routes those are is read out of internal/http's own
-// handlers rather than matched on a path prefix: the artifact routes are not
-// the only strict ones, and the next verb to reach for a recipe route would
-// otherwise take the same 400 with nothing here to catch it.
 func TestVerbsOnStrictlyDecodedRoutesUseTheExactBodyPath(t *testing.T) {
 	strict := strictRoutes(t)
-	// A parse that resolved nothing would pass every verb, so anchor on routes
-	// whose shape this test is written against.
+
 	for pattern, want := range map[string]strictRoute{
 		"POST /api/artifacts/read":   {strict: true},
 		"POST /api/artifacts/delete": {strict: true},
 		"POST /api/recipes/search":   {strict: true},
-		// These two declare tab_id themselves, so --tab reaches them and the
-		// generic path is the right one.
+
 		"POST /api/recipes/run":       {strict: true, acceptsTabID: true},
 		"POST /api/artifacts/capture": {strict: true, acceptsTabID: true},
 		"GET /api/page/read":          {},
@@ -104,17 +86,12 @@ func TestVerbsOnStrictlyDecodedRoutesUseTheExactBodyPath(t *testing.T) {
 	}
 }
 
-// strictRoute is what internal/http does with one route's request body.
 type strictRoute struct {
-	// strict marks a handler that decodes with DisallowUnknownFields.
 	strict bool
-	// acceptsTabID marks a strict schema that declares tab_id, which is the one
-	// field the generic client path folds in from --tab.
+
 	acceptsTabID bool
 }
 
-// strictRoutes reads each registered route's handler and reports how it decodes
-// the request body.
 func strictRoutes(t *testing.T) map[string]strictRoute {
 	t.Helper()
 	files := daemonFiles(t)
@@ -154,8 +131,6 @@ func strictRoutes(t *testing.T) map[string]strictRoute {
 	return routes
 }
 
-// strictDecodeTarget names the variable a handler decodes strictly into, if it
-// decodes strictly at all.
 func strictDecodeTarget(decl *ast.FuncDecl) (string, bool) {
 	var target string
 	ast.Inspect(decl.Body, func(node ast.Node) bool {
@@ -179,10 +154,6 @@ func strictDecodeTarget(decl *ast.FuncDecl) (string, bool) {
 	return target, target != ""
 }
 
-// declaresTabID reports whether the request schema decoded into target carries a
-// tab_id field. A schema this walk cannot resolve counts as not declaring one:
-// requiring exactBody is the safe answer, since it is what the artifact routes
-// already use.
 func declaresTabID(decl *ast.FuncDecl, target string, structs map[string]*ast.StructType) bool {
 	var schema *ast.StructType
 	ast.Inspect(decl.Body, func(node ast.Node) bool {
@@ -214,9 +185,6 @@ func declaresTabID(decl *ast.FuncDecl, target string, structs map[string]*ast.St
 	return false
 }
 
-// daemonRoutes maps every mux.HandleFunc pattern internal/http registers to the
-// name of the handler method it registers, so a test can ask what that handler
-// does with the request body as well as whether the route exists.
 func daemonRoutes(t *testing.T) map[string]string {
 	t.Helper()
 	routes := map[string]string{}
@@ -242,8 +210,7 @@ func daemonRoutes(t *testing.T) map[string]string {
 			if method, ok := call.Args[1].(*ast.SelectorExpr); ok {
 				handler = method.Sel.Name
 			}
-			// Go 1.22 patterns are "METHOD /path"; a pattern with no method
-			// accepts every method.
+
 			fields := strings.Fields(pattern)
 			switch len(fields) {
 			case 1:
@@ -259,7 +226,6 @@ func daemonRoutes(t *testing.T) map[string]string {
 	return routes
 }
 
-// daemonFiles parses internal/http's own source, tests excluded.
 func daemonFiles(t *testing.T) []*ast.File {
 	t.Helper()
 	dir := filepath.Join("..", "http")
