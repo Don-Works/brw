@@ -9,6 +9,9 @@ import (
 
 	"github.com/Don-Works/brw/internal/approvalgate"
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/readability"
+	"github.com/Don-Works/brw/internal/siteconsent"
+	"github.com/Don-Works/brw/internal/snapshot"
 )
 
 const fixtureAPIApprovalToken = "fixture-api-token-distinct-from-operator-123456789"
@@ -16,11 +19,26 @@ const fixtureAPIApprovalToken = "fixture-api-token-distinct-from-operator-123456
 type approvalAuthController struct {
 	browser.Controller
 	calls int
+	url   string
 }
 
 func (c *approvalAuthController) ListTabs(context.Context) ([]browser.Tab, error) {
 	c.calls++
-	return []browser.Tab{{ID: "fixture-tab", URL: "https://example.test", Active: true}}, nil
+	pageURL := c.url
+	if pageURL == "" {
+		pageURL = "https://example.test"
+	}
+	return []browser.Tab{{ID: "fixture-tab", URL: pageURL, Active: true}}, nil
+}
+
+func (c *approvalAuthController) Read(context.Context) (readability.PageRead, error) {
+	c.calls++
+	return readability.PageRead{Main: "private operator request"}, nil
+}
+
+func (c *approvalAuthController) ClickText(context.Context, snapshot.ClickTextOptions) (browser.ActionResult, error) {
+	c.calls++
+	return browser.ActionResult{OK: true}, nil
 }
 
 func (c *approvalAuthController) Evaluate(context.Context, string) (any, error) {
@@ -119,5 +137,31 @@ func TestApprovalRouteCompositionRetainsHTTPBoundaryChecks(t *testing.T) {
 				t.Fatalf("boundary status=%d want=%d", w.Code, want)
 			}
 		})
+	}
+}
+
+func TestApprovalHTTPProtectsOperatorPageWithoutSiteConsent(t *testing.T) {
+	s, _ := newApprovalHTTPTest(t)
+	controller := &approvalAuthController{url: "http://127.0.0.1:17310/approvals"}
+	s.manager = controller
+	gate, err := approvalgate.New(controller, s.approvals, "risky")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.SetOperatorOrigin("http://127.0.0.1:17310")
+	s.SetApprovalGate(gate)
+	for _, call := range []struct{ method, path, body string }{
+		{"GET", "/api/page/read?tab_id=fixture-tab", ""},
+		{"POST", "/api/page/click_text", `{"tab_id":"fixture-tab","text":"Approve once"}`},
+	} {
+		controller.calls = 0
+		got := serveApprovalHTTP(s, call.method, call.path, call.body, "")
+		if got.Code != http.StatusBadRequest || !strings.Contains(got.Body.String(), "operator approval UI") || controller.calls != 1 {
+			t.Fatalf("operator page reached: status=%d calls=%d body=%s", got.Code, controller.calls, got.Body.String())
+		}
+	}
+	ctx := s.withConsentHooks(browser.WithTabID(context.Background(), "fixture-tab"), "brw_batch", nil, "fixture-tab")
+	if err := browser.GateSequenceStep(ctx, 0, "fixture-tab", siteconsent.StepProbe{Action: "read"}); err == nil {
+		t.Fatal("sequence read the operator page with site consent disabled")
 	}
 }

@@ -28,7 +28,8 @@ type gateController struct {
 
 func (c *gateController) ListTabs(context.Context) ([]browser.Tab, error) {
 	c.lists.Add(1)
-	return []browser.Tab{{ID: "tab-1", URL: "https://example.test", Active: true}}, nil
+	pageURL, _ := c.state["url"].(string)
+	return []browser.Tab{{ID: "tab-1", URL: pageURL, Active: true}}, nil
 }
 
 func (c *gateController) Evaluate(ctx context.Context, expression string) (any, error) {
@@ -420,7 +421,7 @@ func TestErrorAndStatusDoNotRevealMessageContent(t *testing.T) {
 func TestOperatorURLsAreDeniedBeforeBrowserAccess(t *testing.T) {
 	g, c, _ := newGate(t, "all")
 	g.SetOperatorOrigin("http://127.0.0.1:9223/")
-	for _, url := range []string{"http://127.0.0.1:9223/approvals", "http://localhost:9223/api/approvals", "http://[::1]:9223/approvals", "http://0.0.0.0:9223/approvals", "http://host.localhost:9223/approvals"} {
+	for _, url := range []string{"http://127.0.0.1:9223/approvals", "http://localhost:9223/api/approvals", "http://[::1]:9223/approvals", "http://0.0.0.0:9223/approvals", "http://host.localhost:9223/approvals", "http://2130706433:9223/approvals", "http://127.1:9223/approvals", "http://0177.0.0.1:9223/approvals", "http://0x7f000001:9223/approvals", "127.0.0.1:9223/approvals", "http://ⓛocalhost:9223/approvals", "http://127.0.0.1:9223\\@example.test/approvals"} {
 		raw, _ := json.Marshal(map[string]string{"url": url})
 		if _, _, err := g.Check(context.Background(), "brw_navigate_to", raw, "session-stable", nil, false); err == nil {
 			t.Fatalf("operator URL allowed: %s", url)
@@ -436,6 +437,46 @@ func TestOperatorURLsAreDeniedBeforeBrowserAccess(t *testing.T) {
 	}
 	if len(g.Store.List()) != 0 {
 		t.Fatal("operator page created approval")
+	}
+}
+
+func TestOperatorPageBlocksReadAndBenignActionsWithoutEvidenceCapture(t *testing.T) {
+	for _, tool := range []string{"brw_read", "brw_snapshot", "brw_click"} {
+		t.Run(tool, func(t *testing.T) {
+			g, c, _ := newGate(t, "risky")
+			g.SetOperatorOrigin("http://127.0.0.1:9223")
+			c.state["url"] = "http://127.0.0.1:9223/approvals"
+			_, _, err := g.Check(context.Background(), tool, json.RawMessage(`{"ref":"approve"}`), "session", func(string) string { return "Approve once" }, false)
+			if err == nil || !strings.Contains(err.Error(), "operator approval UI") {
+				t.Fatalf("operator page allowed: %v", err)
+			}
+			if c.lists.Load() != 1 || c.evaluations.Load() != 0 || len(g.Store.List()) != 0 {
+				t.Fatalf("guard used page capture or approvals: lists=%d evaluations=%d", c.lists.Load(), c.evaluations.Load())
+			}
+		})
+	}
+}
+
+func TestOperatorGuardKeepsBenignPagesOnMetadataOnlyPath(t *testing.T) {
+	for _, tool := range []string{"brw_read", "brw_click"} {
+		g, c, _ := newGate(t, "risky")
+		g.SetOperatorOrigin("http://127.0.0.1:9223")
+		ctx, _, err := g.Check(context.Background(), tool, json.RawMessage(`{"ref":"expand"}`), "session", func(string) string { return "Expand details" }, false)
+		if err != nil || browser.TabIDFromContext(ctx) != "tab-1" || ctx.Err() != nil || c.lists.Load() != 1 || c.evaluations.Load() != 0 || len(g.Store.List()) != 0 {
+			t.Fatalf("benign %s left metadata-only path: err=%v lists=%d evaluations=%d", tool, err, c.lists.Load(), c.evaluations.Load())
+		}
+	}
+}
+
+func TestOperatorOriginDefaultPortsAndUnverifiableTab(t *testing.T) {
+	g, c, _ := newGate(t, "risky")
+	g.SetOperatorOrigin("http://127.0.0.1:80")
+	if err := g.CheckURL("http://localhost/approvals"); err == nil {
+		t.Fatal("implicit port bypassed the operator origin")
+	}
+	c.state["url"] = ""
+	if _, _, err := g.Check(context.Background(), "brw_read", nil, "session", nil, false); err == nil {
+		t.Fatal("missing tab metadata bypassed the operator origin")
 	}
 }
 

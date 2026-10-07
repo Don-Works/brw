@@ -204,15 +204,20 @@ func (s *Server) consentMiddleware(next http.Handler) http.Handler {
 // decided about that origin — while the same call over MCP asked. Naming the
 // interface makes the next hook a compile error here instead of a silent gap.
 func (s *Server) withConsentHooks(ctx context.Context, operation string, body []byte, tabID string) context.Context {
-	if !s.consent.Enabled() {
+	if !s.consent.Enabled() && s.approvalGate == nil {
 		return ctx
 	}
 	ctx = browser.WithRuntimeConsent(ctx, s)
 	gate := s.consent.NewStepGate(operation, body)
-	if gate == nil {
+	if gate == nil && (s.approvalGate == nil || !siteconsent.SequenceTools[operation]) {
 		return ctx
 	}
 	return browser.WithSequenceGate(ctx, func(index int, stepTabID string, step siteconsent.StepProbe) error {
+		stepCtx := browser.WithTabID(ctx, stepTabID)
+		raw, _ := json.Marshal(siteconsent.Probe{Steps: []siteconsent.StepProbe{step}})
+		if _, err := s.approvalGate.CheckTargets(stepCtx, operation, raw); err != nil {
+			return err
+		}
 		// The label lookup is nil for the same reason it is nil above: this
 		// surface never returned a snapshot through a per-session cache.
 		return gate.Check(index, step, func(want string) (string, error) {
@@ -230,6 +235,9 @@ func (s *Server) withConsentHooks(ctx context.Context, operation string, body []
 // CheckFetchDestination gates a URL the daemon retrieves itself, on the call's
 // own URL and on every redirect hop after it.
 func (s *Server) CheckFetchDestination(rawURL string) error {
+	if err := s.approvalGate.CheckURL(rawURL); err != nil {
+		return err
+	}
 	if err := s.checkNavPolicy(rawURL); err != nil {
 		return err
 	}
@@ -245,6 +253,9 @@ func (s *Server) CheckFetchDestination(rawURL string) error {
 // upstream daemon has to ask this question itself, or every brw_snapshot proxied
 // through it reads its embedded third parties ungated.
 func (s *Server) CheckFrameRead(frameOrigin string) error {
+	if err := s.approvalGate.CheckURL(frameOrigin); err != nil {
+		return err
+	}
 	return s.consent.Authorize(frameOrigin, siteconsent.ScopeRead)
 }
 

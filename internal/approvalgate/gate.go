@@ -11,11 +11,13 @@ import (
 	"maps"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Don-Works/brw/internal/approval"
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/navpolicy"
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
 
@@ -106,19 +108,110 @@ func (g *Gate) CheckURL(raw string) error {
 	if err != nil {
 		return errors.New("approval operator origin is invalid")
 	}
-	got, err := url.Parse(raw)
+	normalized, err := navpolicy.NormalizeNavigationURL(raw)
+	if err != nil {
+		if relative, parseErr := url.Parse(raw); parseErr == nil && !relative.IsAbs() && relative.Host == "" {
+			return nil
+		}
+		return err
+	}
+	got, err := url.Parse(normalized)
 	if err != nil {
 		return err
 	}
-	if got.Port() != want.Port() {
+	if effectivePort(got) != effectivePort(want) {
 		return nil
 	}
-	host := strings.ToLower(strings.TrimSuffix(got.Hostname(), "."))
+	host := siteconsent.HostOfOrigin(got.String())
 	ip := net.ParseIP(host)
-	if host == strings.ToLower(want.Hostname()) || host == "localhost" || strings.HasSuffix(host, ".localhost") || (ip != nil && (ip.IsLoopback() || ip.IsUnspecified())) {
+	if host == siteconsent.HostOfOrigin(want.String()) || host == "localhost" || strings.HasSuffix(host, ".localhost") || ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) || ip == nil && numericHost(host) {
 		return errors.New("operator approval UI is not accessible through browser tools; use a separate human browser")
 	}
 	return nil
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch u.Scheme {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
+}
+
+func numericHost(host string) bool {
+	last := host[strings.LastIndexByte(host, '.')+1:]
+	base := 10
+	if strings.HasPrefix(last, "0x") {
+		last, base = last[2:], 16
+	}
+	_, err := strconv.ParseUint(last, base, 64)
+	return err == nil
+}
+
+// CheckTargets excludes the operator origin using tab metadata without page evaluation or approval capture.
+func (g *Gate) CheckTargets(ctx context.Context, tool string, raw []byte) (context.Context, error) {
+	if g == nil || g.operatorOrigin == "" {
+		return ctx, nil
+	}
+	checks, err := siteconsent.Checks(tool, siteconsent.ParseProbe(raw))
+	if err != nil {
+		return ctx, err
+	}
+	var tabs []browser.Tab
+	metadataCtx := ctx
+	for _, check := range checks {
+		if err := g.CheckURL(check.URL); err != nil {
+			return ctx, err
+		}
+		destination, _ := url.Parse(check.URL)
+		fromPage := check.FromTab || tool == "brw_replay_request" && check.URL != "" && destination != nil && !destination.IsAbs()
+		if !fromPage {
+			continue
+		}
+		if tabs == nil {
+			var cancel context.CancelFunc
+			metadataCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			tabs, err = g.manager.ListTabs(metadataCtx)
+			if err != nil {
+				return ctx, errors.New("approval cannot resolve the browser tab")
+			}
+		}
+		id := check.TabID
+		if id == "" {
+			id = browser.TabIDFromContext(ctx)
+		}
+		var target browser.Tab
+		if id == "" {
+			target, _ = browser.UntargetedTab(metadataCtx, g.manager, tabs)
+		} else {
+			for _, tab := range tabs {
+				if tab.ID == id {
+					target = tab
+					break
+				}
+			}
+		}
+		if target.ID == "" {
+			return ctx, errors.New("approval needs an explicit open tab_id")
+		}
+		if target.URL == "" {
+			return ctx, errors.New("approval cannot verify the browser tab origin")
+		}
+		if err := g.CheckURL(target.URL); err != nil {
+			return ctx, err
+		}
+		if check.TabID == "" && browser.TabIDFromContext(ctx) == "" {
+			ctx = browser.WithTabID(ctx, target.ID)
+		}
+	}
+	return ctx, nil
 }
 
 // Check prepares or consumes approval and returns the pinned execution context and arguments.
@@ -134,6 +227,10 @@ func (g *Gate) Check(ctx context.Context, tool string, raw json.RawMessage, sess
 		return ctx, raw, err
 	}
 	if !needed && !required {
+		ctx, err = g.CheckTargets(ctx, tool, raw)
+		if err != nil {
+			return ctx, raw, err
+		}
 		if !bytes.Contains(raw, []byte(`"approval_id"`)) {
 			return ctx, raw, nil
 		}

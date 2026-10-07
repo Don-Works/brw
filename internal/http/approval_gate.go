@@ -27,8 +27,21 @@ func (s *Server) approvalMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		operation := usageOperations[r.URL.Path]
-		if operation == "" || (approvalgate.ReadOnly(operation) && r.Header.Get("X-Brw-Approval-Id") == "") {
+		if operation == "" {
 			next.ServeHTTP(w, r)
+			return
+		}
+		if approvalgate.ReadOnly(operation) && r.Header.Get("X-Brw-Approval-Id") == "" {
+			ctx := r.Context()
+			if tabID := r.URL.Query().Get("tab_id"); tabID != "" {
+				ctx = browser.WithTabID(ctx, tabID)
+			}
+			ctx, err := s.approvalGate.CheckTargets(ctx, operation, nil)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(s.withConsentHooks(ctx, operation, nil, browser.TabIDFromContext(ctx))))
 			return
 		}
 		body, err := readConsentBody(w, r)
@@ -82,7 +95,7 @@ func (s *Server) approvalMiddleware(next http.Handler) http.Handler {
 			r.Body = io.NopCloser(bytes.NewReader(clean))
 			r.ContentLength = int64(len(clean))
 		}
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(s.withConsentHooks(ctx, operation, clean, browser.TabIDFromContext(ctx))))
 	})
 }
 
