@@ -351,3 +351,63 @@ func TestEventPollChecksImmediatelyAndNeverAfterCancellation(t *testing.T) {
 		t.Fatalf("cancelled poll err=%v calls=%d, want no browser check", err, calls)
 	}
 }
+
+type actionResultController struct {
+	browser.Controller
+	result browser.ActionResult
+	err    error
+}
+
+func (c *actionResultController) Click(context.Context, string) (browser.ActionResult, error) {
+	return c.result, c.err
+}
+func (c *actionResultController) Fill(context.Context, snapshot.FillOptions) (browser.ActionResult, error) {
+	return c.result, c.err
+}
+func (c *actionResultController) Type(context.Context, string, string) (browser.ActionResult, error) {
+	return c.result, c.err
+}
+func (c *actionResultController) Select(context.Context, string, string) (browser.ActionResult, error) {
+	return c.result, c.err
+}
+func (c *actionResultController) Press(context.Context, string) (browser.ActionResult, error) {
+	return c.result, c.err
+}
+func (c *actionResultController) NavigateTo(context.Context, string) (browser.ActionResult, error) {
+	return c.result, c.err
+}
+func (c *actionResultController) FocusRef(context.Context, string) error { return nil }
+
+func TestBrowserSurfaceRejectsFailedActionResults(t *testing.T) {
+	controller := &actionResultController{}
+	surface := &BrowserSurface{Browser: controller}
+	ctx := context.Background()
+	for name, run := range map[string]func() error{
+		"click":    func() error { return surface.Click(ctx, "e1") },
+		"fill":     func() error { return surface.Fill(ctx, "e1", "value") },
+		"type":     func() error { return surface.Type(ctx, "e1", "value") },
+		"select":   func() error { return surface.Select(ctx, "e1", "value") },
+		"press":    func() error { return surface.Press(ctx, "e1", "Enter") },
+		"navigate": func() error { return surface.NavigateTo(ctx, "https://example.test") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			controller.result = browser.ActionResult{Message: "element is disabled"}
+			if err := run(); err == nil || err.Error() != controller.result.Message {
+				t.Fatalf("failed action accepted: %v", err)
+			}
+			controller.result = browser.ActionResult{}
+			if err := run(); err == nil {
+				t.Fatal("empty failed action accepted")
+			}
+			controller.result = browser.ActionResult{OK: true}
+			if err := run(); err != nil {
+				t.Fatal(err)
+			}
+			controller.err = context.Canceled
+			if err := run(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("transport error lost: %v", err)
+			}
+			controller.err = nil
+		})
+	}
+}

@@ -147,23 +147,29 @@ func targetCriteria(target Target) snapshot.TargetCriteria {
 }
 
 func (s *BrowserSurface) Click(ctx context.Context, ref string) error {
-	_, err := s.Browser.Click(ctx, ref)
-	return err
+	return actionResultError(s.Browser.Click(ctx, ref))
 }
 
 func (s *BrowserSurface) Fill(ctx context.Context, ref, value string) error {
-	_, err := s.Browser.Fill(ctx, snapshot.FillOptions{Ref: ref, Text: value, Replace: true})
-	return err
+	return actionResultError(s.Browser.Fill(ctx, snapshot.FillOptions{Ref: ref, Text: value, Replace: true}))
 }
 
 func (s *BrowserSurface) Type(ctx context.Context, ref, value string) error {
-	_, err := s.Browser.Type(ctx, ref, value)
-	return err
+	return actionResultError(s.Browser.Type(ctx, ref, value))
 }
 
 func (s *BrowserSurface) Select(ctx context.Context, ref, value string) error {
-	_, err := s.Browser.Select(ctx, ref, value)
-	return err
+	return actionResultError(s.Browser.Select(ctx, ref, value))
+}
+
+func actionResultError(result browser.ActionResult, err error) error {
+	if err != nil || result.OK {
+		return err
+	}
+	if result.Message == "" {
+		return errors.New("browser action reported ok=false")
+	}
+	return errors.New(result.Message)
 }
 
 type refFocuser interface {
@@ -178,13 +184,11 @@ func (s *BrowserSurface) Press(ctx context.Context, ref, key string) error {
 	if err := focuser.FocusRef(ctx, ref); err != nil {
 		return err
 	}
-	_, err := s.Browser.Press(ctx, key)
-	return err
+	return actionResultError(s.Browser.Press(ctx, key))
 }
 
 func (s *BrowserSurface) NavigateTo(ctx context.Context, url string) error {
-	_, err := s.Browser.NavigateTo(ctx, url)
-	return err
+	return actionResultError(s.Browser.NavigateTo(ctx, url))
 }
 
 // ArmEvent prepares event sources before the causative action.
