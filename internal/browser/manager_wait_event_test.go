@@ -322,10 +322,14 @@ func TestEventWaitLatencyBeatsThePollingFallback(t *testing.T) {
 			seedDownload(m, guid, "bench.bin", string(downloadStateInProgress), time.Now())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			done := make(chan time.Time, 1)
+			type waitResult struct {
+				finished time.Time
+				err      error
+			}
+			done := make(chan waitResult, 1)
 			go func() {
-				_ = wait(m, ctx)
-				done <- time.Now()
+				err := wait(m, ctx)
+				done <- waitResult{finished: time.Now(), err: err}
 			}()
 			// Let the wait register before the completion lands, so what is
 			// measured is the delay between the state changing and the wait
@@ -333,8 +337,15 @@ func TestEventWaitLatencyBeatsThePollingFallback(t *testing.T) {
 			time.Sleep(120 * time.Millisecond)
 			completed := time.Now()
 			m.handleDownloadEventForTab("", downloadCompletedEvent(guid))
-			latencies = append(latencies, (<-done).Sub(completed))
+			result := <-done
 			cancel()
+			if result.err != nil {
+				t.Fatalf("download wait failed: %v", result.err)
+			}
+			if result.finished.Before(completed) {
+				t.Fatal("download wait returned before completion")
+			}
+			latencies = append(latencies, result.finished.Sub(completed))
 		}
 		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 		return latencies[samples/2]
