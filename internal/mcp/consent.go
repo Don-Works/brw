@@ -64,10 +64,11 @@ func (s *Server) withConsentHooks(ctx context.Context, name string, args json.Ra
 				return s.currentPageOrigin(ctx, want)
 			},
 			func(ref string) string {
-				if label := s.refLabels.label(stepTabID, ref); label != "" {
-					return label
+				labelTabID := stepTabID
+				if labelTabID == "" {
+					labelTabID = tabID
 				}
-				return s.refLabels.label(tabID, ref)
+				return s.refLabels.label(labelTabID, ref)
 			},
 		)
 	})
@@ -93,18 +94,19 @@ func (s *Server) CheckFetchDestination(rawURL string) error {
 }
 
 // CheckFrameRead gates reaching into one cross-origin iframe.
-//
-// brw_snapshot is gated against the origin the TAB is showing. include_frames
-// then attaches a session to each embedded frame's own target and runs the walker
-// in a third party's document — a read of that third party, which the embedder's
-// grant does not cover and which the tool's arguments never named. brw_click on
-// an f<i>:<ref> attaches the same session and actuates there, so it asks the same
-// question.
 func (s *Server) CheckFrameRead(frameOrigin string) error {
 	if err := s.approvalGate.CheckURL(frameOrigin); err != nil {
 		return err
 	}
 	return s.consent.Authorize(frameOrigin, siteconsent.ScopeRead)
+}
+
+// CheckFrameAct gates input into a cross-origin frame against its own act grant.
+func (s *Server) CheckFrameAct(frameOrigin string) error {
+	if err := s.approvalGate.CheckURL(frameOrigin); err != nil {
+		return err
+	}
+	return s.consent.Authorize(frameOrigin, siteconsent.ScopeAct)
 }
 
 // currentPageOrigin resolves the origin a tab is showing. An empty want is the
@@ -186,8 +188,8 @@ func (r *refLabelStore) record(tabID string, elements []snapshot.Element) {
 		if element.Ref == "" || element.Name == "" {
 			continue
 		}
-		if len(labels) >= maxRefLabelsPerTab {
-			break
+		if _, known := labels[element.Ref]; !known && len(labels) >= maxRefLabelsPerTab {
+			continue
 		}
 		labels[element.Ref] = element.Name
 	}
@@ -199,16 +201,5 @@ func (r *refLabelStore) label(tabID, ref string) string {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if label := r.byTab[tabID][ref]; label != "" {
-		return label
-	}
-	// A call with no tab_id resolves the active tab downstream, so the label may
-	// be filed under a tab id this call never saw. Refs are unique per page and
-	// a wrong label can only add a confirmation prompt, never remove one.
-	for _, labels := range r.byTab {
-		if label := labels[ref]; label != "" {
-			return label
-		}
-	}
-	return ""
+	return r.byTab[tabID][ref]
 }
