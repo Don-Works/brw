@@ -1,5 +1,7 @@
 import importlib.util
 import io
+import base64
+import time
 import json
 import pathlib
 import struct
@@ -22,7 +24,20 @@ class Response(io.BytesIO):
     headers = {'x-request-id': 'provider-fixture'}
 
 
-class DiagnosticsTest(unittest.TestCase):
+class MockHTTPTest(unittest.TestCase):
+    def setUp(self):
+        def in_process(endpoint, body, key, deadline, ledger, operation, trace_id, mode, request_id=None):
+            try:
+                return bench.HTTP.timed_http(endpoint, body, key, timeout=deadline-time.monotonic(), request_id=request_id)
+            except Exception as error:
+                metadata = {'http_status': error.code, 'context_length_exceeded': getattr(error, 'context_length_exceeded', False)} if isinstance(error, urllib.error.HTTPError) else None
+                raise bench.HTTP.OptionalFailure(bench.HTTP.failure_reason(error), metadata) from None
+        override = patch.object(bench.HTTP, 'optional_http', side_effect=in_process)
+        override.start()
+        self.addCleanup(override.stop)
+
+
+class DiagnosticsTest(MockHTTPTest):
     def answer(self, calls=None, content='', finish='stop', reasoning=0):
         return {'id': 'fixture', 'model': 'fixture-model', 'choices': [{'message': {'content': content, 'tool_calls': calls or []}, 'finish_reason': finish}], 'usage': {'prompt_tokens': 700, 'completion_tokens': 32, 'completion_tokens_details': {'reasoning_tokens': reasoning}}}
 
@@ -30,6 +45,7 @@ class DiagnosticsTest(unittest.TestCase):
         events = []
         with patch.object(bench.urllib.request, 'urlopen', return_value=Response(json.dumps(answer).encode())) as call:
             row = bench.request('http://localhost/v1', 'fixture-model', case or bench.cases()[0], structured=True, reasoning_effort='none', event=events.append)
+        self.assertEqual(call.call_args.args[0].get_header('X-request-id'), row['request_id'])
         return row, events, json.loads(call.call_args.args[0].data)
 
     def test_correct_call_and_observation_value_survive(self):
@@ -121,8 +137,9 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertNotIn(key, json.dumps(row))
 
 
-class VisionFixtureTest(unittest.TestCase):
+class VisionFixtureTest(MockHTTPTest):
     def setUp(self):
+        super().setUp()
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = pathlib.Path(self.directory.name)
@@ -177,6 +194,13 @@ class VisionFixtureTest(unittest.TestCase):
             self.assertEqual(bench.correct_proposal(actual, case), expected)
         self.assertFalse(bench.correct_proposal([{'name': 'brw_click_xy', 'arguments': None}], case))
         self.assertFalse(bench.correct_proposal([case['expected'], case['expected']], case))
+
+    def test_exact_coordinate_grading_rejects_boolean_numbers(self):
+        case = {'expected': {'name': 'brw_click_xy', 'arguments': {'x': 0, 'y': 0}}}
+        for x, y in [(False, False), (True, 0), (float('inf'), 0), ('0', 0), (2**2000, 0)]:
+            with self.subTest(x=x, y=y):
+                self.assertFalse(bench.correct_proposal([{'name': 'brw_click_xy', 'arguments': {'x': x, 'y': y}}], case))
+        self.assertTrue(bench.correct_proposal([case['expected']], case))
 
     def test_css_mapping_is_in_prompt_and_grading(self):
         self.case['image_transform'] = {'viewport_x': 100, 'viewport_y': 200, 'css_per_image_pixel': 2}
@@ -246,6 +270,8 @@ class VisionFixtureTest(unittest.TestCase):
         self.assertEqual(frozen['selection']['selected_ids'], ['visual-target'])
         self.assertEqual(frozen['runtime_identity'], self.identity)
         self.assertEqual(frozen['resource_limits']['planned_requests'], 2)
+        self.assertEqual(set(frozen['client_dependency_sha256']), {'browser-answer-worker.py', 'browser-reader-usage.py'})
+        self.assertEqual(frozen['resource_limits']['child_input_bytes'], 8 << 20)
         self.assertNotIn('data:image/png;base64,', json.dumps(report))
 
     def test_wrong_visual_point_is_quality_failure_not_transport(self):
@@ -282,6 +308,76 @@ class VisionFixtureTest(unittest.TestCase):
         self.assertEqual(report['summary']['passed'], 1)
         self.assertNotIn('data:image/png;base64,', output.read_text())
         self.assertNotIn('data:image/png;base64,', pathlib.Path(str(output) + '.jsonl').read_text())
+
+
+class WholeRequestTests(unittest.TestCase):
+    def provider(self, raw, drip=0):
+        from test_browser_answer_worker import ProviderFixture
+        provider = ProviderFixture([(200, raw, 0, drip)])
+        self.addCleanup(provider.close)
+        return provider
+
+    def answer(self, expected):
+        return json.dumps({'id': 'fixture', 'model': 'fixture-model', 'choices': [{'message': {'tool_calls': [{'function': {'name': expected['name'], 'arguments': json.dumps(expected['arguments'])}}]}, 'finish_reason': 'tool_calls'}], 'usage': {'prompt_tokens': 800, 'completion_tokens': 20}}).encode()
+
+    def test_slow_drip_probe_stops_at_deadline_and_reaps_child(self):
+        case = bench.cases()[0]
+        provider = self.provider(self.answer(case['expected']), .03)
+        processes = []
+        original = bench.HTTP.subprocess.Popen
+        def launch(*args, **kwargs):
+            process = original(*args, **kwargs)
+            processes.append(process)
+            return process
+        with patch.object(bench.HTTP.subprocess, 'Popen', side_effect=launch):
+            row = bench.request(provider.endpoint.rsplit('/', 1)[0], 'fixture-model', case, request_timeout=1)
+        self.assertTrue(provider.started.is_set())
+        self.assertFalse(row['pass'])
+        self.assertEqual(row['outcome'], 'transport_error')
+        self.assertEqual(row['error'], 'timeout')
+        self.assertLess(row['end_to_end_ms'], 2500)
+        self.assertEqual(len(processes), 1)
+        self.assertIsNotNone(processes[0].returncode)
+        self.assertTrue(provider.closed.wait(1))
+        self.assertNotIn('usage', row)
+
+    def test_maximum_image_payload_keeps_counts_identity_and_correlation(self):
+        case = {'name': 'owned-large-image', 'goal': 'Propose the point.', 'observation': [], 'expected': {'name': 'brw_click_xy', 'arguments': {'x': 0, 'y': 0}}, 'image_transform': {'viewport_x': 0, 'viewport_y': 0, 'css_per_image_pixel': 1}}
+        def chunk(kind, data):
+            return struct.pack('>I', len(data))+kind+data+struct.pack('>I', zlib.crc32(kind+data))
+        prefix = b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 2, 0, 0, 0))
+        suffix = chunk(b'IDAT', zlib.compress(b'\0\0\0\0'))+chunk(b'IEND', b'')
+        padding = (4 << 20)-len(prefix)-len(suffix)-12
+        image = prefix+chunk(b'tEXt', b'fixture\0'+b'x'*(padding-8))+suffix
+        self.assertEqual(len(image), 4 << 20)
+        self.assertEqual(bench.png_dimensions(image), (1, 1))
+        case['image'] = {'data_url': 'data:image/png;base64,'+base64.b64encode(image).decode(), 'bytes': len(image), 'width': 1, 'height': 1, 'sha256': bench.hashlib.sha256(image).hexdigest(), 'source_policy': 'owned_fixture'}
+        provider = self.provider(self.answer(case['expected']))
+        row = bench.request(provider.endpoint.rsplit('/', 1)[0], 'fixture-model', case)
+        self.assertTrue(row['pass'])
+        self.assertFalse(row['model_identity_mismatch'])
+        self.assertGreater(row['request_bytes'], 4 << 20)
+        self.assertEqual(row['provider_input_tokens'], 800)
+        self.assertEqual(row['provider_output_tokens'], 20)
+        self.assertTrue(row['estimate_excludes_image_tokens'])
+        self.assertEqual(provider.requests[0]['messages'][-1]['content'][1]['image_url']['url'], case['image']['data_url'])
+        for field in ('response_read_ms', 'decode_ms', 'http_ms', 'whole_response_ms', 'end_to_end_ms'):
+            self.assertGreaterEqual(row[field], 0)
+        self.assertGreaterEqual(row['whole_response_ms'], row['http_ms'])
+        self.assertIsNone(row['ttft_ms'])
+
+    def test_response_limit_stays_one_mib_and_counts_received_bytes(self):
+        provider = self.provider(b'x'*1048577)
+        row = bench.request(provider.endpoint.rsplit('/', 1)[0], 'fixture-model', bench.cases()[0])
+        self.assertFalse(row['pass'])
+        self.assertEqual(row['outcome'], 'response_limit_error')
+        self.assertEqual(row['response_bytes'], 1048577)
+
+    def test_child_packet_is_bounded_before_launch(self):
+        with patch.object(bench.HTTP.subprocess, 'Popen') as launch:
+            with self.assertRaises(bench.HTTP.OptionalFailure):
+                bench.HTTP.optional_http('http://fixture.invalid', {'image': 'x'*(8 << 20)}, None, time.monotonic()+1, bench.USAGE.Ledger(enabled=False), 'answer', str(uuid.uuid4()), 'off')
+        launch.assert_not_called()
 
 
 if __name__ == '__main__':

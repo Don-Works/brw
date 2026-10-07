@@ -20,7 +20,9 @@ _USAGE_SPEC.loader.exec_module(USAGE)
 
 
 class OptionalFailure(Exception):
-    pass
+    def __init__(self, reason, metadata=None):
+        super().__init__(reason)
+        self.metadata = metadata if isinstance(metadata, dict) else {}
 
 
 class OptionalCleanupFailure(Exception):
@@ -39,7 +41,7 @@ def failure_reason(error):
     return 'invalid_response'
 
 
-def optional_http(endpoint, body, key, deadline, ledger, operation, trace_id, mode):
+def optional_http(endpoint, body, key, deadline, ledger, operation, trace_id, mode, request_id=None):
     started = time.monotonic()
     started_at = USAGE.timestamp()
     process = None
@@ -49,16 +51,19 @@ def optional_http(endpoint, body, key, deadline, ledger, operation, trace_id, mo
         remaining = deadline-time.monotonic()
         if remaining <= 0:
             raise OptionalFailure('timeout')
-        request = {'endpoint': endpoint, 'body': body, 'key': key, 'timeout': remaining, 'operation': operation, 'trace_id': trace_id, 'mode': mode}
+        request = {'endpoint': endpoint, 'body': body, 'key': key, 'timeout': remaining, 'operation': operation, 'trace_id': trace_id, 'mode': mode, 'request_id': request_id}
+        request_payload = json.dumps(request).encode()
+        if len(request_payload) > 8 << 20:
+            raise OptionalFailure('invalid_response')
         process = subprocess.Popen([sys.executable, str(pathlib.Path(__file__).resolve()), '--model-request'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
-            raw, _ = process.communicate(json.dumps(request).encode(), timeout=max(.001, deadline-time.monotonic()))
+            raw, _ = process.communicate(request_payload, timeout=max(.001, deadline-time.monotonic()))
         except subprocess.TimeoutExpired:
             raise OptionalFailure('timeout') from None
         packet = USAGE.decode_json(raw)
         measurement = packet.get('measurement')
         if process.returncode or packet.get('error'):
-            raise OptionalFailure(packet.get('error', 'invalid_response'))
+            raise OptionalFailure(packet.get('error', 'invalid_response'), packet.get('error_metadata'))
         outcome = 'success'
         return packet['result'], packet['phases']
     except KeyboardInterrupt:
@@ -88,11 +93,21 @@ def model_request():
     capture = Capture()
     packet = {}
     try:
-        request = USAGE.decode_json(sys.stdin.buffer.read(2097153))
+        raw = sys.stdin.buffer.read((8 << 20)+1)
+        if len(raw) > 8 << 20:
+            raise OptionalFailure('invalid_response')
+        request = USAGE.decode_json(raw)
         packet['result'], packet['phases'] = timed_http(**request, ledger=capture)
     except Exception as error:
         packet = {'error': failure_reason(error)}
+        if isinstance(error, urllib.error.HTTPError):
+            packet['error_metadata'] = {'http_status': error.code, 'context_length_exceeded': getattr(error, 'context_length_exceeded', False)}
     packet['measurement'] = capture.fields
+    if packet.get('error') and capture.fields:
+        metadata = packet.setdefault('error_metadata', {})
+        for target, source in (('response_bytes', 'output_bytes'), ('response_text_chars', 'output_text_chars'), ('request_to_headers_ms', 'request_to_headers_ms')):
+            if capture.fields.get(source) is not None:
+                metadata[target] = capture.fields[source]
     print(json.dumps(packet, allow_nan=False))
 
 
@@ -100,11 +115,11 @@ def bounded_identifier(value):
     return value if isinstance(value, str) and len(value) <= 256 else None
 
 
-def timed_http(endpoint, body, key=None, timeout=45, ledger=None, operation="answer", trace_id=None, mode="off"):
+def timed_http(endpoint, body, key=None, timeout=45, ledger=None, operation="answer", trace_id=None, mode="off", request_id=None):
     serialization_started = time.perf_counter()
     payload = json.dumps(body).encode()
     serialization_ms = round((time.perf_counter()-serialization_started)*1000, 3)
-    request_id = str(uuid.uuid4())
+    request_id = request_id or str(uuid.uuid4())
     headers = {'Content-Type': 'application/json', 'X-Request-ID': request_id}
     if key:
         headers['Authorization'] = 'Bearer ' + key
@@ -125,12 +140,15 @@ def timed_http(endpoint, body, key=None, timeout=45, ledger=None, operation="ans
                 if key and provider_request_id and key in provider_request_id:
                     raise OptionalFailure('invalid_response')
                 raw = response.read(1048577)
+                read_at = time.perf_counter()
+                http_status = getattr(response, 'status', None)
         except urllib.error.HTTPError as error:
             response_started = True
             try:
                 raw = error.read(2048)
             finally:
                 error.close()
+            error.context_length_exceeded = b'context_length_exceeded' in raw
             raise error
         if len(raw) > 1048576:
             raise OptionalFailure('oversized_response')
@@ -142,9 +160,10 @@ def timed_http(endpoint, body, key=None, timeout=45, ledger=None, operation="ans
             raise ValueError('Provider response must be a JSON object')
         if key and json.dumps(key, ensure_ascii=False)[1:-1] in json.dumps(result, ensure_ascii=False):
             raise OptionalFailure('invalid_response')
+        response_text_chars = len(raw.decode('utf-8'))
         response_decode_ms = round((time.perf_counter()-decode_started)*1000, 3)
         outcome = 'success'
-        return result, {'ms': round((time.perf_counter()-started)*1000, 3), 'request_to_headers_ms': round((headers_at-started)*1000, 3), 'ttft_ms': None, 'request_bytes': len(payload), 'response_bytes': len(raw), 'request_sha256': hashlib.sha256(payload).hexdigest(), 'request_id': request_id, 'provider_request_id': bounded_identifier(provider_request_id), 'response_id': bounded_identifier(result.get('id')), 'requested_model': bounded_identifier(body.get('model')), 'returned_model': bounded_identifier(result.get('model')), 'usage': USAGE.provider_tokens(result.get('usage')), 'serialization_ms': serialization_ms, 'response_decode_ms': response_decode_ms}
+        return result, {'ms': round((time.perf_counter()-started)*1000, 3), 'request_to_headers_ms': round((headers_at-started)*1000, 3), 'response_read_ms': round((read_at-headers_at)*1000, 3), 'response_text_chars': response_text_chars, 'http_status': http_status, 'ttft_ms': None, 'request_bytes': len(payload), 'response_bytes': len(raw), 'request_sha256': hashlib.sha256(payload).hexdigest(), 'request_id': request_id, 'provider_request_id': bounded_identifier(provider_request_id), 'response_id': bounded_identifier(result.get('id')), 'requested_model': bounded_identifier(body.get('model')), 'returned_model': bounded_identifier(result.get('model')), 'usage': USAGE.provider_tokens(result.get('usage')), 'serialization_ms': serialization_ms, 'response_decode_ms': response_decode_ms}
     except KeyboardInterrupt:
         outcome = 'cancelled'
         raise
