@@ -89,6 +89,20 @@ tasks:
     cmds:
       - go run -ldflags "{{.GO_LDFLAGS}}" ./cmd/brwcheck --eval --eval-verify --repo-root . --eval-out dist/agenteval/verify.json
 
+  feature-check:
+    desc: Exercise the complete browser tool catalogue against the owned adversarial page
+    env:
+      BRW_FEATURE_CASE: ''
+      BRW_FEATURE_REPORT: dist/testbed/features.json
+    cmds:
+      - mkdir -p dist/testbed
+      - go test -race -timeout=15m -p=1 ./internal/mcp -run '^TestFeature(CatalogueCoverage|Exercises|TransportExtras)$' -count=1
+
+  testbed:
+    desc: Start the seeded local adversarial browser page
+    cmds:
+      - go run ./cmd/brw-testbed {{.CLI_ARGS}}
+
   lint:
     desc: Static half of check (fmt, vet, staticcheck, govulncheck, actionlint)
     cmds:
