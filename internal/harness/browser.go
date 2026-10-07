@@ -14,13 +14,11 @@ import (
 type BrowserOptions struct {
 	ChromePath string
 	Timeout    time.Duration
-	// Meter interposes a counting relay between brw and Chrome. A run that does
-	// not report transport cost does not need it.
+	// Meter interposes a counting relay between brw and Chrome.
 	Meter bool
 }
 
-// Browser is a headless Chrome on a throwaway profile, plus the manager driving
-// it and, when asked for, the meter in between.
+// Browser is a headless Chrome on a throwaway profile, plus the manager driving it and, when asked for, the meter in between.
 type Browser struct {
 	Manager *browser.Manager
 	Meter   *Meter
@@ -30,26 +28,6 @@ type Browser struct {
 	userDataDir string
 }
 
-// chromeArgs are the launch flags every harness run uses. They exist to make a
-// run repeatable rather than fast.
-//
-// A fixed window and device scale keep layout identical between machines, and
-// the first-run surfaces would otherwise steal a tab and change what a snapshot
-// sees.
-//
-// offBoxBlockedRule is what makes "nothing but the fixture origin" true rather
-// than asserted. The --disable-* networking flags below are Chrome's own
-// opt-outs and they are not sufficient: with all of them set, Chrome 153 still
-// completed GCM registration round trips to Google on every run, which is
-// network latency and CPU inside a window whose whole point is determinism. A
-// resolver rule cannot be ignored the same way — every name but the loopback
-// literal fails to resolve, so anything off this machine fails by construction
-// and the flags become defence in depth.
-//
-// localhost is deliberately NOT excluded. It is the only name that would
-// resolve without a network, so leaving it inside the rule is what lets a test
-// tell an enforced rule from an unenforced one: same port, same bytes, name
-// instead of literal, and the load has to fail.
 const offBoxBlockedRule = "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"
 
 func chromeArgs() []string {
@@ -74,8 +52,7 @@ func chromeArgs() []string {
 	}
 }
 
-// LaunchBrowser starts Chrome on a temporary profile and connects a manager to
-// it. The caller closes the result.
+// LaunchBrowser starts Chrome on a temporary profile and connects a manager to it.
 func LaunchBrowser(ctx context.Context, opts BrowserOptions) (*Browser, error) {
 	timeout := opts.Timeout
 	if timeout == 0 {
@@ -117,9 +94,6 @@ func LaunchBrowser(ctx context.Context, opts BrowserOptions) (*Browser, error) {
 		remote = meter.BrowserWSURL()
 	}
 
-	// RemoteURL rather than letting the manager launch: the browser has to exist
-	// before the meter can be put in front of it, and the meter has to exist
-	// before the manager connects or the first commands go unmetered.
 	manager, err := browser.New(ctx, browser.Config{
 		RemoteURL:   remote,
 		UserDataDir: userDataDir,
@@ -133,9 +107,7 @@ func LaunchBrowser(ctx context.Context, opts BrowserOptions) (*Browser, error) {
 	return rig, nil
 }
 
-// Close shuts the manager, the meter and the browser down, in that order, and
-// removes the throwaway profile. The browser is closed before the final
-// resource reading is taken so its CPU and memory are accounted for.
+// Close shuts the manager, the meter and the browser down, in that order, and removes the throwaway profile.
 func (b *Browser) Close() error {
 	var first error
 	if b.Manager != nil {
@@ -151,9 +123,7 @@ func (b *Browser) Close() error {
 		b.Meter = nil
 	}
 	if b.launcher != nil {
-		// Ignored deliberately: Close stops Chrome with SIGTERM and returns
-		// whatever Wait reports, so a normal shutdown surfaces as "signal:
-		// terminated". That is not a run failure and must not be reported as one.
+
 		_ = b.launcher.Close()
 		b.launcher = nil
 	}

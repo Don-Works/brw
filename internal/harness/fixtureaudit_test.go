@@ -8,10 +8,6 @@ import (
 	"testing"
 )
 
-// TestIsExternalRefClassifiesEveryReferenceShape enumerates the forms a
-// reference takes. The ones that matter are the scheme-relative "//host/x",
-// which a check for "http" walks straight past, and the uppercase scheme, which
-// a case-sensitive one does.
 func TestIsExternalRefClassifiesEveryReferenceShape(t *testing.T) {
 	cases := []struct {
 		ref  string
@@ -44,10 +40,6 @@ func TestIsExternalRefClassifiesEveryReferenceShape(t *testing.T) {
 	}
 }
 
-// TestExternalResourceRefsFindsWhatThePageWouldFetch covers the attributes a
-// page loads through, and the one it does not: a link the harness never clicks
-// is not a fetch, and flagging it would make the audit unusable against
-// fixtures that illustrate links.
 func TestExternalResourceRefsFindsWhatThePageWouldFetch(t *testing.T) {
 	page := `<!doctype html>
 <html>
@@ -85,9 +77,7 @@ func TestExternalResourceRefsFindsWhatThePageWouldFetch(t *testing.T) {
 		"https://img.example.test/hero.png",
 		"https://forms.example.test/submit",
 		"//cdn.example.test/poster.jpg",
-		// preconnect opens a connection without fetching a document, and a rel
-		// invented after this code was written has to be flagged rather than
-		// waved through: the audit exempts a closed list and flags the rest.
+
 		"https://connect.example.test",
 		"https://future.example.test/x",
 	} {
@@ -107,16 +97,6 @@ func TestExternalResourceRefsFindsWhatThePageWouldFetch(t *testing.T) {
 	}
 }
 
-// TestExternalResourceRefsCatchesEveryWayPastTheTextScan is the table the regex
-// audit could not satisfy. Every "flagged" row below went through the old scan
-// clean — unquoted values had no quotes to match, href outside <link> was never
-// read, and CSS and JavaScript inside the page were not looked at — so each one
-// was a fixture edit away from putting somebody else's network inside a
-// deterministic run.
-//
-// The "ignored" rows are the other half: an audit that cried wolf on an
-// illustrative <a href>, a JSON-LD @context or a local srcset is an audit that
-// gets switched off.
 func TestExternalResourceRefsCatchesEveryWayPastTheTextScan(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -136,8 +116,7 @@ func TestExternalResourceRefsCatchesEveryWayPastTheTextScan(t *testing.T) {
 		{name: "srcset candidate", markup: `<img srcset="local.png 1x, https://evil.test/hi.png 2x">`, flagged: "https://evil.test/hi.png"},
 		{name: "base href", markup: `<base href="https://evil.test/">`, flagged: "https://evil.test/"},
 		{name: "inline style url", markup: `<div style="background:url(https://evil.test/bg.png)"></div>`, flagged: "https://evil.test/bg.png"},
-		// Nested past the recursion limit, so the fallback scan is what catches
-		// it: running out of depth must not be a way to pass.
+
 		{name: "srcdoc nested deeper than the walk follows", markup: nestedSrcdoc(6, `<img src="https://evil.test/deep.png">`), flagged: "https://evil.test/deep.png"},
 
 		{name: "illustrative link", markup: `<a href="https://docs.example.test/guide">guide</a>`},
@@ -170,8 +149,6 @@ func TestExternalResourceRefsCatchesEveryWayPastTheTextScan(t *testing.T) {
 	}
 }
 
-// nestedSrcdoc wraps inner in depth layers of <iframe srcdoc>, escaping each
-// layer the way a real document has to.
 func nestedSrcdoc(depth int, inner string) string {
 	for range depth {
 		escaped := strings.NewReplacer("&", "&amp;", `"`, "&quot;", "<", "&lt;", ">", "&gt;").Replace(inner)

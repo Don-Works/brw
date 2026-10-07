@@ -128,6 +128,8 @@ func TestChipsFromCookies(t *testing.T) {
 		{Name: "SID", Value: "never-shown", Domain: ".google.com", Expires: 3000},
 		{Name: "old", Domain: "stale.test", Expires: 1000},
 		{Name: "s", Domain: "www.session.test", Session: true},
+		{Name: "s", Domain: "accounts.google.com", Session: true},
+		{Name: "s", Domain: "notgoogle.com", Session: true},
 	}, []profilepolicy.Pin{{Origin: "https://go.xero.com", Account: "agent@example.test"}}, "agent@example.test", now)
 	got := map[string]Chip{}
 	for _, c := range chips {
@@ -142,8 +144,25 @@ func TestChipsFromCookies(t *testing.T) {
 	if got["session.test"].Health != HealthSignedIn {
 		t.Fatalf("session chip = %+v", got["session.test"])
 	}
+	if got["accounts.google.com"].Account != "agent@example.test" || got["notgoogle.com"].Account != "" {
+		t.Fatalf("account domain matching: google=%+v unrelated=%+v", got["accounts.google.com"], got["notgoogle.com"])
+	}
 	if c := got["go.xero.com"]; c.Health != HealthMissing || !c.Pinned || c.Account != "agent@example.test" {
 		t.Fatalf("pinned chip = %+v", c)
+	}
+}
+
+func TestCreateDoesNotRecordAProfileWhoseDirectoryCannotBeCreated(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".brw"), []byte("fixture obstruction"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "browser-profiles.json")
+	if _, err := Create(CreateRequest{Name: "agent", PolicyPath: path, Home: home}); err == nil {
+		t.Fatal("created a profile under a regular file")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("recorded the profile after directory failure: %v", err)
 	}
 }
 

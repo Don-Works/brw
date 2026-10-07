@@ -9,13 +9,7 @@ import (
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
-// CopyDomain copies, or with mode "move" moves, the cookies one site's URL
-// scope holds from one brw-owned profile into another, over each profile's own
-// daemon. Values pass through this process only; the result carries counts.
-//
-// Every read and write is an ordinary brw_cookies call on the daemon that owns
-// the browser, so each daemon's own site-consent gate and navigation policy
-// decide it exactly as they would for an agent.
+// CopyDomain copies, or with mode "move" moves, the cookies one site's URL scope holds from one brw-owned profile into another, over each profile's own daemon.
 func CopyDomain(ctx context.Context, policy profilepolicy.Policy, from, to, domain, mode string) (CopyResult, error) {
 	domain = RegistrableDomain(domain)
 	if domain == "" || strings.ContainsAny(domain, "/:?#@ ") {
@@ -70,13 +64,13 @@ func CopyDomain(ctx context.Context, policy profilepolicy.Policy, from, to, doma
 	if err != nil {
 		return result, fmt.Errorf("read back %s cookies on %s: %w", domain, to, err)
 	}
-	present := map[string]bool{}
+	present := map[string]string{}
 	for _, c := range verify.Cookies {
-		present[cookieKey(c)] = true
+		present[cookieKey(c)] = c.Value
 	}
 	result.Health = HealthCopiedUnverified
 	for _, c := range matched {
-		if !present[cookieKey(c)] {
+		if value, found := present[cookieKey(c)]; !found || value != c.Value {
 			result.Health = HealthMissing
 			return result, fmt.Errorf("%s did not keep cookie %q for %s; the source was left untouched", to, c.Name, domain)
 		}
@@ -97,9 +91,6 @@ func cookieKey(c browser.Cookie) string {
 	return strings.TrimPrefix(strings.ToLower(c.Domain), ".") + "|" + c.Path + "|" + c.Name
 }
 
-// cookieURL is the URL a cookie is scoped by. A host-only cookie (no leading
-// dot) is set through its URL alone, so it stays host-only, which is also what
-// a __Host- cookie requires.
 func cookieURL(c browser.Cookie) string {
 	scheme := "https://"
 	if !c.Secure && c.SourceScheme == "NonSecure" {

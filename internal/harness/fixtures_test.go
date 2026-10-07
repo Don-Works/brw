@@ -9,10 +9,6 @@ import (
 	"testing"
 )
 
-// TestFixturesServeOnlyWhatIsInsideTheRoot enumerates the ways a request can
-// name a file outside the fixture directory. The interesting member is the
-// symlink: a check written against the requested string passes it, because the
-// string contains no "..", and only a check on the resolved path refuses it.
 func TestFixturesServeOnlyWhatIsInsideTheRoot(t *testing.T) {
 	repoRoot := t.TempDir()
 	fixtureDir := filepath.Join(repoRoot, "tests", "fixtures")
@@ -83,8 +79,6 @@ func TestFixturesServeOnlyWhatIsInsideTheRoot(t *testing.T) {
 	}
 }
 
-// TestFixtureDigestTracksContent is what makes the fingerprint load-bearing:
-// two runs against different fixture bytes must not claim to be comparable.
 func TestFixtureDigestTracksContent(t *testing.T) {
 	repoRoot := t.TempDir()
 	fixtureDir := filepath.Join(repoRoot, "tests", "fixtures")

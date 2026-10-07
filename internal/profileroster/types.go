@@ -1,7 +1,4 @@
-// Package profileroster is the operator's view of the browser profiles in a
-// policy: which sites each brw-owned profile is signed in to, creating a new
-// isolated profile, and copying one site's cookies from one brw-owned profile
-// into another. Nothing here returns a cookie value.
+// Package profileroster is the operator's view of the browser profiles in a policy: which sites each brw-owned profile is signed in to, creating a new isolated profile, and copying one site's cookies from one brw-owned profile into another.
 package profileroster
 
 import (
@@ -27,7 +24,7 @@ type Well struct {
 	Pins        []profilepolicy.Pin `json:"pins,omitempty"`
 }
 
-// Chip is one site session on a well. It carries cookie names, never values.
+// Chip is one site session on a well.
 type Chip struct {
 	Domain  string   `json:"domain"`
 	Account string   `json:"account,omitempty"`
@@ -41,7 +38,7 @@ type Board struct {
 	Wells []Well `json:"wells"`
 }
 
-// CopyResult reports a copy or move. It never carries a cookie value.
+// CopyResult reports a copy or move.
 type CopyResult struct {
 	From    string `json:"from"`
 	To      string `json:"to"`
@@ -64,8 +61,7 @@ type CreateRequest struct {
 	Now        time.Time
 }
 
-// CreateResult is the profile that was created or already existed, and the
-// commands that start its daemon.
+// CreateResult is the profile that was created or already existed, and the commands that start its daemon.
 type CreateResult struct {
 	Profile        profilepolicy.Profile `json:"profile"`
 	Created        bool                  `json:"created"`

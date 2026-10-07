@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -13,8 +14,7 @@ import (
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
-// RegistrableDomain collapses a cookie domain to the host a chip is keyed by:
-// lower case, without a leading dot or a leading "www.".
+// RegistrableDomain collapses a cookie domain to the host a chip is keyed by: lower case, without a leading dot or a leading "www.".
 func RegistrableDomain(host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
 	host = strings.TrimPrefix(host, ".")
@@ -36,8 +36,7 @@ func pinDomain(origin string) string {
 	return RegistrableDomain(u.Hostname())
 }
 
-// GoogleAccount reads the signed-in Google account from a brw-owned profile's
-// Preferences. A daily browser profile is never read.
+// GoogleAccount reads the signed-in Google account from a brw-owned profile's Preferences.
 func GoogleAccount(profile profilepolicy.Profile) string {
 	udd := strings.TrimSpace(profile.UserDataDir)
 	if udd == "" || isRealProfile(udd) {
@@ -80,7 +79,7 @@ func chipsFromCookies(cookies []browser.Cookie, pins []profilepolicy.Pin, accoun
 			chip = &Chip{Domain: d, Health: HealthExpired}
 			byDomain[d] = chip
 		}
-		if c.Name != "" && !contains(chip.Names, c.Name) {
+		if c.Name != "" && !slices.Contains(chip.Names, c.Name) {
 			chip.Names = append(chip.Names, c.Name)
 		}
 		if c.Session || c.Expires <= 0 || c.Expires >= unix {
@@ -104,7 +103,7 @@ func chipsFromCookies(cookies []browser.Cookie, pins []profilepolicy.Pin, accoun
 	}
 	out := make([]Chip, 0, len(byDomain))
 	for _, chip := range byDomain {
-		if chip.Account == "" && strings.HasSuffix(chip.Domain, "google.com") {
+		if chip.Account == "" && (chip.Domain == "google.com" || strings.HasSuffix(chip.Domain, ".google.com")) {
 			chip.Account = account
 		}
 		sort.Strings(chip.Names)
@@ -112,13 +111,4 @@ func chipsFromCookies(cookies []browser.Cookie, pins []profilepolicy.Pin, accoun
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Domain < out[j].Domain })
 	return out
-}
-
-func contains(list []string, v string) bool {
-	for _, e := range list {
-		if e == v {
-			return true
-		}
-	}
-	return false
 }

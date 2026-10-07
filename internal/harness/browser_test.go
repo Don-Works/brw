@@ -12,16 +12,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// TestHarnessBrowserReachesNothingButTheLoopbackLiteral drives the real harness
-// browser at the same bytes under three host names and requires two of them to
-// fail.
-//
-// The claim "no network beyond the fixture origin" was previously carried by
-// Chrome's own --disable-* networking flags, which Chrome does not honour for
-// every subsystem. The loopback-NAME row is what discriminates: localhost
-// resolves without a network, so a run that loads it is a run whose resolver
-// rule is absent or misspelled, while the fixture origin's literal address
-// keeps working. The off-box row says the same thing about a public name.
 func TestHarnessBrowserReachesNothingButTheLoopbackLiteral(t *testing.T) {
 	if testing.Short() {
 		t.Skip("launches a real browser")
@@ -72,8 +62,6 @@ func TestHarnessBrowserReachesNothingButTheLoopbackLiteral(t *testing.T) {
 			tabID := opened.Tab.ID
 			defer func() { _ = rig.Manager.CloseTab(ctx, tabID) }()
 
-			// An evaluate that fails is also "the fixture did not load": either
-			// way its title was never read out of the page.
 			title, err := rig.Manager.Evaluate(browser.WithTabID(ctx, tabID), "String(document.title)")
 			if err != nil {
 				if testCase.wantLoad {
@@ -90,10 +78,6 @@ func TestHarnessBrowserReachesNothingButTheLoopbackLiteral(t *testing.T) {
 	}
 }
 
-// TestChromeArgsCarryTheResolverRule guards the spelling. The rule above is a
-// single string Chrome parses itself and silently ignores when malformed, and
-// the end-to-end test is skipped in short mode, so the flag's presence and its
-// exclusion are also asserted where no browser is needed.
 func TestChromeArgsCarryTheResolverRule(t *testing.T) {
 	var rule string
 	for _, arg := range chromeArgs() {

@@ -14,10 +14,6 @@ import (
 	"github.com/Don-Works/brw/internal/mcp"
 )
 
-// TestEveryFlowIsWellFormed walks the suite table rather than a list written
-// beside it. A flow naming a fixture that does not exist, or a command labelled
-// with a tool nobody can call, only fails minutes into a run otherwise — and
-// the tool label is what makes the record mean anything to a reader.
 func TestEveryFlowIsWellFormed(t *testing.T) {
 	catalogue := map[string]bool{}
 	for _, name := range mcp.ToolNames() {
@@ -70,13 +66,6 @@ func TestEveryFlowIsWellFormed(t *testing.T) {
 	}
 }
 
-// TestBenchFixturesReachNothingOffThisMachine backs the claim the harness makes
-// about itself. A fixture that pulls one stylesheet from a CDN turns a latency
-// measurement into a measurement of somebody else's network, and it does so
-// silently: the run still passes, the numbers are just wrong.
-//
-// warmupFixture is listed with the flow fixtures because it is opened by every
-// run even though nothing reports on it.
 func TestBenchFixturesReachNothingOffThisMachine(t *testing.T) {
 	paths := []string{filepath.Join("..", "..", "tests", "fixtures", warmupFixture)}
 	for _, def := range flowDefs {
@@ -113,12 +102,6 @@ func TestSelectFlows(t *testing.T) {
 	}
 }
 
-// TestEstimateTokensMatchesThePublishedEstimator reads the divisor out of
-// scripts/measure-tool-catalogue.py rather than restating it.
-//
-// The two sets of published numbers are only on one scale if the two estimators
-// agree, and a test that compares Go against constants typed beside it would
-// keep passing after somebody changed the script.
 func TestEstimateTokensMatchesThePublishedEstimator(t *testing.T) {
 	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "measure-tool-catalogue.py"))
 	if err != nil {
@@ -157,23 +140,11 @@ func TestEstimateTokensMatchesThePublishedEstimator(t *testing.T) {
 	}
 }
 
-// TestObservationBytesMeasuresTheMCPResultAnAgentReceives is the correction to
-// a test that used to measure the internal Go value. MCP sends the payload
-// twice — escaped inside content[0].text and again as structuredContent — so a
-// figure taken from one marshal is about half the real cost under a column
-// heading that claims otherwise.
-//
-// Each case names the bytes an MCP client receives as a literal rather than
-// building them with the call ObservationBytes itself makes. Re-deriving the
-// implementation cannot disagree with it: the whole envelope could go missing
-// and both sides of the comparison would shrink together.
 func TestObservationBytesMeasuresTheMCPResultAnAgentReceives(t *testing.T) {
 	cases := []struct {
 		name  string
 		value any
-		// wire is the exact JSON the server puts on the socket for value:
-		// the payload escaped inside content[0].text, and repeated as
-		// structuredContent when — and only when — it is a JSON object.
+
 		wire string
 	}{
 		{name: "nothing was returned", value: nil, wire: ""},
@@ -202,10 +173,7 @@ func TestObservationBytesMeasuresTheMCPResultAnAgentReceives(t *testing.T) {
 				}
 				return
 			}
-			// The literal is checked against the server first, so that a
-			// changed envelope reads as "the wire moved" rather than as
-			// "ObservationBytes miscounts". The count below is still
-			// compared against the literal, never against this.
+
 			payload, err := mcp.ToolResultPayload(testCase.value)
 			if err != nil {
 				t.Fatal(err)
@@ -230,23 +198,11 @@ func TestObservationBytesMeasuresTheMCPResultAnAgentReceives(t *testing.T) {
 		})
 	}
 
-	// A value JSON cannot represent must not abort a measurement of a command
-	// that did in fact run.
 	if got := ObservationBytes(make(chan int)); got != 0 {
 		t.Errorf("unmarshalable observation = %d bytes, want 0", got)
 	}
 }
 
-// TestNoFlowSubstitutesItsOwnObservation reads the suite rather than running
-// it, because what is being guarded cannot be seen from a record: a command
-// that hands the measurement something smaller than the tool returns produces a
-// row that looks right and is not.
-//
-// The wait rows did exactly that. They reported `{"condition": ...}`, 51 bytes,
-// on the argument that a wait's result IS its condition holding — while
-// brw_wait_for answers with the whole WaitOutcome, and `resolved_by` is the
-// field that tells a caller whether the condition it picked costs a round trip
-// per check.
 func TestNoFlowSubstitutesItsOwnObservation(t *testing.T) {
 	source, err := os.ReadFile("bench.go")
 	if err != nil {

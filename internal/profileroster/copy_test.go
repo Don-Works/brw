@@ -26,6 +26,7 @@ type fakeDaemon struct {
 	jar       []browser.Cookie
 	calls     []browser.CookieParams
 	refuseSet bool
+	ignoreSet bool
 	released  int
 	owners    map[string]bool
 	srv       *httptest.Server
@@ -96,7 +97,9 @@ func (d *fakeDaemon) serve(w http.ResponseWriter, r *http.Request) {
 				domain = host
 			}
 			c := browser.Cookie{Name: p.Name, Value: p.Value, Domain: domain, Path: p.Path, Secure: p.Secure, HTTPOnly: p.HTTPOnly, SameSite: p.SameSite, Expires: p.Expires}
-			d.jar = append(d.jar, c)
+			if !d.ignoreSet {
+				d.jar = append(d.jar, c)
+			}
 			_ = json.NewEncoder(w).Encode(browser.CookieResult{Action: p.Action, Cookie: &c, Cookies: []browser.Cookie{c}})
 		case browser.CookieActionDelete:
 			kept := d.jar[:0]
@@ -346,5 +349,19 @@ func TestCopyValidatesItsArguments(t *testing.T) {
 		if _, err := CopyDomain(context.Background(), policy, tt.from, tt.to, tt.domain, tt.mode); err == nil {
 			t.Errorf("CopyDomain(%+v) succeeded", tt)
 		}
+	}
+}
+
+func TestMovePreservesTheSourceWhenTheDestinationKeepsAnOldValue(t *testing.T) {
+	home := isolatedHome(t)
+	srcUDD, dstUDD := filepath.Join(home, ".brw", "profiles", "source"), filepath.Join(home, ".brw", "profiles", "dest")
+	src := newFakeDaemon(t, directID("source", srcUDD), sessionCookies()...)
+	old := sessionCookies()
+	old[0].Value = "fixture old value"
+	dst := newFakeDaemon(t, directID("dest", dstUDD), old...)
+	dst.ignoreSet = true
+	result, err := CopyDomain(context.Background(), twoProfilePolicy(src, dst, srcUDD, dstUDD), "source", "dest", "example.com", "move")
+	if err == nil || result.Health != HealthMissing || result.Removed != 0 || src.writes() != 0 || len(src.jar) != 3 {
+		t.Fatalf("move after failed readback: result=%+v err=%v writes=%d source_count=%d", result, err, src.writes(), len(src.jar))
 	}
 }

@@ -6,10 +6,6 @@ import (
 	"testing"
 )
 
-// notCompared records the fingerprint fields that deliberately do NOT make two
-// records incomparable, each with the reason. A field that is in neither this
-// map nor ComparedFields fails the test below rather than quietly defaulting to
-// "does not matter", which is how a fingerprint stops being one.
 var notCompared = map[string]string{
 	"captured_at":  "two runs are never at the same instant; that is not what makes them different",
 	"brw_version":  "comparing one brw version against another is the point of keeping records",
@@ -17,9 +13,6 @@ var notCompared = map[string]string{
 	"cdp_protocol": "follows the browser build, which is compared",
 }
 
-// TestComparableClassifiesEveryEnvironmentField walks the struct rather than a
-// hand-written list, so adding a field to Environment forces a decision about
-// whether it affects comparability.
 func TestComparableClassifiesEveryEnvironmentField(t *testing.T) {
 	compared := map[string]bool{}
 	for _, name := range ComparedFields {
@@ -50,9 +43,6 @@ func TestComparableClassifiesEveryEnvironmentField(t *testing.T) {
 	}
 }
 
-// TestComparableRejectsEachComparedField changes one compared field at a time
-// and requires Comparable to refuse and to name it. A list of fields nothing
-// checks is how a comparison quietly narrows to one field.
 func TestComparableRejectsEachComparedField(t *testing.T) {
 	base := Environment{
 		OS: "linux", Arch: "arm64", CPUModel: "Fixture CPU", CPUs: 8,
@@ -94,8 +84,6 @@ func TestComparableRejectsEachComparedField(t *testing.T) {
 	}
 }
 
-// TestComparableIgnoresTheExcusedFields is the other half: a field excused for
-// a stated reason must actually be excused.
 func TestComparableIgnoresTheExcusedFields(t *testing.T) {
 	base := Environment{OS: "linux", Arch: "arm64", CPUModel: "Fixture CPU", CPUs: 8,
 		Browser: "Chrome/1.2.3", Headless: true, FixtureDigest: "abc123"}
