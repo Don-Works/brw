@@ -10,13 +10,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Don-Works/brw/internal/approvalgate"
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/browsertest"
 	httpapi "github.com/Don-Works/brw/internal/http"
 	"github.com/Don-Works/brw/internal/testbed"
 	"github.com/Don-Works/brw/internal/usagelog"
@@ -29,21 +29,22 @@ func TestFeatureTransportExtras(t *testing.T) {
 	t.Setenv("BRW_DASHBOARD", "1")
 	t.Setenv("BRW_STREAM_SCOPE", "")
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	fixture, err := testbed.Start(testbed.Config{Seed: 7, Chaos: 2, MaxEvents: 64, FrameAddress: "[::1]:0"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer fixture.Close()
-	manager, err := browser.New(ctx, browser.Config{UserDataDir: filepath.Join(t.TempDir(), "chrome-profile"), Headless: true, WebMCP: true, Timeout: 20 * time.Second, ChromeArgs: []string{"--disable-gpu", "--site-per-process", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-first-run", "--no-default-browser-check", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE ::1"}})
+	profile := browsertest.NewProfile(t)
+	manager, err := browser.New(ctx, browser.Config{UserDataDir: profile.Dir(), Headless: true, WebMCP: true, Timeout: 20 * time.Second, ChromeArgs: []string{"--disable-gpu", "--site-per-process", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-first-run", "--no-default-browser-check", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE ::1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	profile.StopWith(func() {
 		if err := manager.Close(); err != nil {
 			t.Error(err)
 		}
-	}()
+	})
 	h := &featureHarness{Ctx: ctx, Manager: manager, Fixture: fixture, Root: t.TempDir()}
 	h.reset(t)
 	daemon := httpapi.New("127.0.0.1:0", manager)
