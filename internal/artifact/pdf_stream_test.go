@@ -11,19 +11,10 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// capturedPDFBytes is the size the acceptance bound is stated against. It is
-// large enough that a buffered capture cannot hide inside ordinary heap noise.
 const capturedPDFBytes = 50 << 20
 
-// streamedPDFPeakBound is the stated ceiling on heap growth while a 50 MiB PDF
-// is captured through the streaming path. Measured on an idle arm64 macOS host:
-// 61 KiB streamed against 52 MiB buffered. The bound leaves two orders of
-// magnitude of headroom for GC timing and machine load, and is still far enough
-// below the payload to fail the moment the whole document is materialised.
 const streamedPDFPeakBound = 8 << 20
 
-// syntheticPDF emits PDF-shaped bytes without ever holding them, so the test's
-// own fixture cannot be what blows the heap budget it is measuring.
 type syntheticPDF struct {
 	remaining int
 	closed    atomic.Bool
@@ -84,8 +75,6 @@ func (b *bufferedPDFBrowser) Evaluate(context.Context, string) (any, error) {
 	return map[string]any{"url": "https://statements.example.test/", "title": "statement"}, nil
 }
 
-// heapPeak samples the live heap while fn runs and reports the growth over the
-// baseline taken just before it.
 func heapPeak(fn func()) uint64 {
 	runtime.GC()
 	var start runtime.MemStats
@@ -118,11 +107,6 @@ func heapPeak(fn func()) uint64 {
 	return peak.Load() - start.HeapAlloc
 }
 
-// TestPDFCaptureStreamsWithoutMaterialisingThePayload measures what the
-// streaming path is for. The same 50 MiB capture is driven through both
-// transports and the peaks compared, so the bound is not a number asserted
-// against nothing: the buffered path is there to show what it looks like when
-// the document does land in the heap.
 func TestPDFCaptureStreamsWithoutMaterialisingThePayload(t *testing.T) {
 	streamStore := newTestStore(t, 64<<20, 256<<20)
 	streamBrowser := &streamingPDFBrowser{size: capturedPDFBytes}
@@ -170,16 +154,12 @@ func TestPDFCaptureStreamsWithoutMaterialisingThePayload(t *testing.T) {
 			streamedPeak, bufferedPeak)
 	}
 
-	// The stored bytes are still exactly the document, not a truncated stream.
 	window, _, more, err := streamStore.Read(streamMeta.ID, capturedPDFBytes-8, 8)
 	if err != nil || more || len(window) != 8 {
 		t.Fatalf("tail read window=%d more=%v err=%v", len(window), more, err)
 	}
 }
 
-// TestPDFCaptureFallsBackWhenTheTransportHasNoStream keeps the older capability
-// reachable: an upstream controller that cannot stream must still produce a PDF
-// rather than report the capability missing.
 func TestPDFCaptureFallsBackWhenTheTransportHasNoStream(t *testing.T) {
 	store := newTestStore(t, 4<<20, 8<<20)
 	service, err := NewService(store, &bufferedPDFBrowser{size: 2048})
@@ -194,7 +174,6 @@ func TestPDFCaptureFallsBackWhenTheTransportHasNoStream(t *testing.T) {
 		t.Fatalf("meta = %+v", meta)
 	}
 
-	// And a transport with neither capability still says so by name.
 	plainStore := newTestStore(t, 4<<20, 8<<20)
 	plain, err := NewService(plainStore, serviceFakeBrowser{})
 	if err != nil {

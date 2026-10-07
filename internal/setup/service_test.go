@@ -124,9 +124,6 @@ const revittStyleAgent = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-// TestConflictsRefusesPreExistingAgent covers the case that must never regress:
-// a machine already carrying a hand-made LaunchAgent for the same profile or
-// the same ports. Setup reports it and writes nothing.
 func TestConflictsRefusesPreExistingAgent(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -205,8 +202,6 @@ func TestConflictsRefusesPreExistingAgent(t *testing.T) {
 	}
 }
 
-// TestConflictsIgnoresOurOwnAgent keeps a re-run from refusing to update the
-// agent setup itself wrote on the previous run.
 func TestConflictsIgnoresOurOwnAgent(t *testing.T) {
 	dir := t.TempDir()
 	params := darwinService()

@@ -36,7 +36,7 @@ func TestReadMCPServers(t *testing.T) {
 			wantFound: true,
 		},
 		{
-			// A client that was never installed is not a broken config.
+
 			name: "no config file at all",
 		},
 		{

@@ -1,7 +1,4 @@
-// Package setup holds the pure, testable half of `brwctl setup`: deriving a
-// working profile policy from nothing, rendering a per-user background service,
-// locating the bundled agent skill, and the read-only environment probes doctor
-// and setup share. The command layer in cmd/brwctl performs the side effects.
+// Package setup holds the pure, testable half of `brwctl setup`: deriving a working profile policy from nothing, rendering a per-user background service, locating the bundled agent skill, and the read-only environment probes doctor and setup share.
 package setup
 
 import (
@@ -9,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,75 +15,53 @@ import (
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
-// Transport lanes as a human names them on the command line. The policy file's
-// own "transports" array means something different (a stdio or ssh-stdio hop to
-// a brwd), so these two words never appear there.
+// Transport lanes as a human names them on the command line.
 const (
 	TransportBridge    = "bridge"
 	TransportDirectCDP = "direct-cdp"
-	// TransportHeadless is direct CDP on a brw-owned headless profile that is
-	// never signed in: the lane for quick public browsing.
+	// TransportHeadless is direct CDP on a brw-owned headless profile that is never signed in: the lane for quick public browsing.
 	TransportHeadless = "headless"
 )
 
-// The two browsers with special standing: Chrome is the fallback when nothing
-// has been run, and Chromium is the one brw champions. Every other browser is
-// data in browsers.go and needs no constant.
+// The two browsers with special standing: Chrome is the fallback when nothing has been run, and Chromium is the one brw champions.
 const (
 	BrowserChrome   = "chrome"
 	BrowserChromium = "chromium"
 )
 
-// LocalTransportName is the policy transport a local install runs over. It is
-// the name `brwctl mcp-config` falls back to when no workspace binding names
-// one, so writing it is what makes a zero-config machine resolvable.
+// LocalTransportName is the policy transport a local install runs over.
 const LocalTransportName = "local"
 
-// DefaultHTTPPort is brwd's own default control port. The bridge WebSocket
-// listens on the next port up, matching brwd's --bridge-addr default, so a
-// hand-run `brwd --bridge` and a serviced one land on the same pair.
+// DefaultHTTPPort is brwd's own default control port.
 const DefaultHTTPPort = 17310
 
-// PolicyRequest is everything setup needs to author or extend a policy. GOOS
-// and Home are parameters rather than package lookups so the whole derivation
-// is testable for every platform from any platform.
+// PolicyRequest is everything setup needs to author or extend a policy.
 type PolicyRequest struct {
 	Workspace string
 	Profile   string
 	Browser   string
 	Transport string
-	// ProfileDirectory is the browser profile directory inside the user data
-	// directory. Empty means Default, the one Chrome creates on first launch.
+	// ProfileDirectory is the browser profile directory inside the user data directory.
 	ProfileDirectory string
-	// UserDataDir overrides the table, which is how a Chromium build brw has no
-	// entry for is bound without a code change. Empty means look Browser up.
+	// UserDataDir overrides the table, which is how a Chromium build brw has no entry for is bound without a code change.
 	UserDataDir string
-	// BRWDPath is written as the local stdio transport's command. An absolute
-	// path is what makes the MCP server start under a client that does not
-	// inherit the user's PATH; "brwd" is the degraded fallback.
+	// BRWDPath is written as the local stdio transport's command.
 	BRWDPath string
 	// MCPClient is the agent client the operator named on the command line.
-	// Empty means they named no client at all, and Merge then records nothing
-	// rather than the default: a plain re-run must not overwrite an earlier
-	// deliberate `--mcp-client none`.
 	MCPClient string
 	HTTPPort  int
 	Home      string
 	GOOS      string
 }
 
-// Change is one finding about a policy: either an edit setup will make, or a
-// statement that the policy already satisfies that requirement. Edit is what
-// callers branch on, so the wording of Detail stays free to change.
+// Change is one finding about a policy: either an edit setup will make, or a statement that the policy already satisfies that requirement.
 type Change struct {
 	Kind   string
 	Detail string
 	Edit   bool
 }
 
-// DefaultProfileName is the profile a request gets when the operator names
-// none. The browser and lane are both in the name because a machine ends up
-// with one profile per (browser, lane) pair and they must not collide.
+// DefaultProfileName is the profile a request gets when the operator names none.
 func DefaultProfileName(browser, transport string) string {
 	switch transport {
 	case TransportDirectCDP:
@@ -96,14 +72,11 @@ func DefaultProfileName(browser, transport string) string {
 	return browser + "-profile"
 }
 
-// DefaultWorkspaceName keeps the workspace label tied to the profile, so a
-// second setup run for another browser adds a binding instead of fighting over
-// one workspace's default_profile.
+// DefaultWorkspaceName keeps the workspace label tied to the profile, so a second setup run for another browser adds a binding instead of fighting over one workspace's default_profile.
 func DefaultWorkspaceName(browser, transport string) string {
 	return "brw-" + DefaultProfileName(browser, transport)
 }
 
-// userDataDir prefers what the operator passed over what the table knows.
 func (r PolicyRequest) userDataDir() string {
 	if r.UserDataDir != "" {
 		return r.UserDataDir
@@ -111,10 +84,7 @@ func (r PolicyRequest) userDataDir() string {
 	return BrowserUserDataDir(r.GOOS, r.Browser)
 }
 
-// NewProfile builds the profile a first-time user needs for one lane. A bridge
-// profile points at the browser the human already uses and forbids direct CDP:
-// a second Chrome on a live profile directory corrupts it. A direct-CDP profile
-// gets its own brw-owned directory for the same reason.
+// NewProfile builds the profile a first-time user needs for one lane.
 func NewProfile(req PolicyRequest) profilepolicy.Profile {
 	port := req.HTTPPort
 	if port <= 0 {
@@ -162,15 +132,7 @@ func NewProfile(req PolicyRequest) profilepolicy.Profile {
 	}
 }
 
-// Merge folds the request into an existing policy and reports every edit. It
-// only ever appends entries or fills fields that are empty; an entry the
-// operator already wrote is left exactly as it is, so re-running setup on a
-// configured machine is a no-op that says so.
-//
-// Filling an empty default_transport matters as much as adding the transport
-// itself: a binding with neither is the state that makes `brwctl mcp-config`
-// fail with "--transport is required when workspace has no default_transport",
-// which a first-time user has no way to diagnose.
+// Merge folds the request into an existing policy and reports every edit.
 func Merge(existing profilepolicy.Policy, req PolicyRequest) (profilepolicy.Policy, []Change) {
 	merged := clonePolicy(existing)
 	var changes []Change
@@ -233,14 +195,13 @@ func Merge(existing profilepolicy.Policy, req PolicyRequest) (profilepolicy.Poli
 		changes = append(changes, Change{Kind: "workspace", Detail: fmt.Sprintf("set workspace %q default_transport to %q", req.Workspace, LocalTransportName), Edit: true})
 		filled = true
 	}
-	// An empty allow-list means "anything in the policy", so only a non-empty
-	// one needs extending; adding to an empty list would silently narrow it.
-	if len(binding.AllowedProfiles) > 0 && !containsString(binding.AllowedProfiles, req.Profile) {
+
+	if len(binding.AllowedProfiles) > 0 && !slices.Contains(binding.AllowedProfiles, req.Profile) {
 		binding.AllowedProfiles = append(binding.AllowedProfiles, req.Profile)
 		changes = append(changes, Change{Kind: "workspace", Detail: fmt.Sprintf("allow profile %q for workspace %q", req.Profile, req.Workspace), Edit: true})
 		filled = true
 	}
-	if len(binding.AllowedTransports) > 0 && !containsString(binding.AllowedTransports, LocalTransportName) {
+	if len(binding.AllowedTransports) > 0 && !slices.Contains(binding.AllowedTransports, LocalTransportName) {
 		binding.AllowedTransports = append(binding.AllowedTransports, LocalTransportName)
 		changes = append(changes, Change{Kind: "workspace", Detail: fmt.Sprintf("allow transport %q for workspace %q", LocalTransportName, req.Workspace), Edit: true})
 		filled = true
@@ -261,8 +222,7 @@ func laneLabel(transport string) string {
 	return "extension bridge"
 }
 
-// Changed reports whether any change in the list actually edits the policy, so
-// a caller can skip the backup-and-write when a re-run has nothing to do.
+// Changed reports whether any change in the list actually edits the policy, so a caller can skip the backup-and-write when a re-run has nothing to do.
 func Changed(changes []Change) bool {
 	for _, change := range changes {
 		if change.Edit {
@@ -272,10 +232,7 @@ func Changed(changes []Change) bool {
 	return false
 }
 
-// DefaultPolicyPath is where setup writes a policy when the operator names no
-// path and none of the standard locations already holds one. Unlike
-// profilepolicy.Discover it never walks up from the working directory: setup
-// must not write into whatever checkout the operator happens to be standing in.
+// DefaultPolicyPath is where setup writes a policy when the operator names no path and none of the standard locations already holds one.
 func DefaultPolicyPath(home string) (string, error) {
 	for _, candidate := range userPolicyCandidates(home) {
 		if _, err := os.Stat(candidate); err == nil {
@@ -304,8 +261,7 @@ func userPolicyCandidates(home string) []string {
 	return dedupeStrings(candidates)
 }
 
-// EncodePolicy renders a policy the way a human would have written it, so a
-// merged file stays reviewable in a diff and in git.
+// EncodePolicy renders a policy the way a human would have written it, so a merged file stays reviewable in a diff and in git.
 func EncodePolicy(policy profilepolicy.Policy) ([]byte, error) {
 	data, err := json.MarshalIndent(policy, "", "  ")
 	if err != nil {
@@ -314,14 +270,12 @@ func EncodePolicy(policy profilepolicy.Policy) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-// BackupPath is where an existing policy is copied before setup edits it. The
-// timestamp is in the name so repeated runs never overwrite an earlier backup.
+// BackupPath is where an existing policy is copied before setup edits it.
 func BackupPath(path string, now time.Time) string {
 	return path + ".bak." + now.UTC().Format("20060102T150405Z")
 }
 
 // WritePolicy backs up any existing file, then replaces it atomically at 0600.
-// The policy names browser profile directories, so it is owner-only.
 func WritePolicy(path string, policy profilepolicy.Policy, now time.Time) (backup string, err error) {
 	data, err := EncodePolicy(policy)
 	if err != nil {
@@ -349,9 +303,7 @@ func WritePolicy(path string, policy profilepolicy.Policy, now time.Time) (backu
 	return backup, nil
 }
 
-// LoadPolicyFile reads a policy without profilepolicy's discovery or path
-// expansion. Setup edits the file as written, so expanding ~/ on load would
-// bake this machine's home directory into the saved policy.
+// LoadPolicyFile reads a policy without profilepolicy's discovery or path expansion.
 func LoadPolicyFile(path string) (profilepolicy.Policy, bool, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -367,10 +319,7 @@ func LoadPolicyFile(path string) (profilepolicy.Policy, bool, error) {
 	return policy, true, nil
 }
 
-// ProfileDirectories lists the browser profile directories that exist inside a
-// user data directory, Default first and then numbered profiles in order. A
-// directory counts as a profile only when it holds a Preferences file, which is
-// what Chrome writes when a profile is first created.
+// ProfileDirectories lists the browser profile directories that exist inside a user data directory, Default first and then numbered profiles in order.
 func ProfileDirectories(userDataDir string) []string {
 	entries, err := os.ReadDir(userDataDir)
 	if err != nil {
@@ -381,9 +330,7 @@ func ProfileDirectories(userDataDir string) []string {
 		if !entry.IsDir() {
 			continue
 		}
-		// Chrome's own scaffolding directories carry a Preferences file but are
-		// not profiles a human signs into, and a bridge bound to one attaches to
-		// nothing.
+
 		if entry.Name() == "System Profile" || entry.Name() == "Guest Profile" {
 			continue
 		}
@@ -407,14 +354,10 @@ func ProfileDirectories(userDataDir string) []string {
 		}
 		return left < right
 	})
-	sort.Strings(others)
 	return append(append(defaultProfile, numbered...), others...)
 }
 
-// PickProfileDirectory chooses the profile directory a generated policy binds
-// to. Pointing at a directory that does not exist is the difference between a
-// working bridge and a doctor failure a first-time user cannot act on, so an
-// existing profile always wins over the name Chrome would create.
+// PickProfileDirectory chooses the profile directory a generated policy binds to.
 func PickProfileDirectory(userDataDir string) string {
 	if found := ProfileDirectories(userDataDir); len(found) > 0 {
 		return found[0]
@@ -427,31 +370,19 @@ func HasProfiles(userDataDir string) bool {
 	return len(ProfileDirectories(userDataDir)) > 0
 }
 
-// clonePolicy copies the value and then replaces every slice in it, so a scalar
-// field added to Policy later is carried across rather than silently dropped
-// here and erased from the file Merge writes back.
 func clonePolicy(policy profilepolicy.Policy) profilepolicy.Policy {
 	clone := policy
-	clone.WorkspaceBindings = append([]profilepolicy.WorkspaceBinding(nil), policy.WorkspaceBindings...)
-	clone.Profiles = append([]profilepolicy.Profile(nil), policy.Profiles...)
-	clone.Transports = append([]profilepolicy.Transport(nil), policy.Transports...)
+	clone.WorkspaceBindings = slices.Clone(policy.WorkspaceBindings)
+	clone.Profiles = slices.Clone(policy.Profiles)
+	clone.Transports = slices.Clone(policy.Transports)
 	for i := range clone.WorkspaceBindings {
-		clone.WorkspaceBindings[i].AllowedProfiles = append([]string(nil), clone.WorkspaceBindings[i].AllowedProfiles...)
-		clone.WorkspaceBindings[i].AllowedTransports = append([]string(nil), clone.WorkspaceBindings[i].AllowedTransports...)
+		clone.WorkspaceBindings[i].AllowedProfiles = slices.Clone(clone.WorkspaceBindings[i].AllowedProfiles)
+		clone.WorkspaceBindings[i].AllowedTransports = slices.Clone(clone.WorkspaceBindings[i].AllowedTransports)
 	}
 	for i := range clone.Transports {
-		clone.Transports[i].CommandArgs = append([]string(nil), clone.Transports[i].CommandArgs...)
+		clone.Transports[i].CommandArgs = slices.Clone(clone.Transports[i].CommandArgs)
 	}
 	return clone
-}
-
-func containsString(values []string, needle string) bool {
-	for _, value := range values {
-		if value == needle {
-			return true
-		}
-	}
-	return false
 }
 
 func dedupeStrings(values []string) []string {

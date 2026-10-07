@@ -1,6 +1,4 @@
-// Package artifact stores large or sensitive browser observations outside MCP
-// responses. Tool calls return small, opaque metadata handles; bytes enter a
-// model context only through an explicit bounded read.
+// Package artifact stores large or sensitive browser observations outside MCP responses.
 package artifact
 
 import (
@@ -18,7 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,28 +37,18 @@ type Meta struct {
 	Kind      string `json:"kind"`
 	MIMEType  string `json:"mime_type"`
 	SizeBytes int64  `json:"size_bytes"`
-	// SHA256 is the digest of the PLAINTEXT, and is recorded only for a blob
-	// stored in the clear. Beside a ciphertext it is an oracle: anyone who can
-	// read the artifact root could confirm a guessed payload, and could see that
-	// two encrypted artifacts hold identical bytes — the equality that excluding
-	// encrypted blobs from dedup exists to hide. An encrypted blob is
-	// authenticated chunk by chunk by its AEAD tags, so nothing is lost.
+	// SHA256 is the digest of the PLAINTEXT, and is recorded only for a blob stored in the clear.
 	SHA256    string    `json:"sha256,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
-	// Encrypted reports at-rest encryption. It is metadata about storage, not
-	// about the payload, so it stays safe to return alongside the handle.
+	// Encrypted reports at-rest encryption.
 	Encrypted bool `json:"encrypted,omitempty"`
-	// StoredBytes is the on-disk length when it differs from SizeBytes, which
-	// happens only for an encrypted blob (chunk tags plus a key-derivation
-	// header). Zero means the blob is exactly SizeBytes long.
+	// StoredBytes is the on-disk length when it differs from SizeBytes, which happens only for an encrypted blob (chunk tags plus a key-derivation header).
 	StoredBytes int64  `json:"stored_bytes,omitempty"`
 	SourceHash  string `json:"source_hash,omitempty"`
 	Redaction   string `json:"redaction,omitempty"`
 }
 
-// storedSize is what this artifact actually occupies, which is what the quota
-// has to be computed from.
 func (m Meta) storedSize() int64 {
 	if m.StoredBytes > 0 {
 		return m.StoredBytes
@@ -73,12 +61,9 @@ type PutOptions struct {
 	MIMEType   string
 	SourceHash string
 	Redaction  string
-	// Encrypt turns on at-rest encryption for this artifact. It requires a
-	// configured store key and, deliberately, opts the blob out of content
-	// dedup — see commitBlobLocked.
+	// Encrypt turns on at-rest encryption for this artifact.
 	Encrypt bool
-	// TTL may shorten the configured retention for a particularly sensitive
-	// artifact. Zero uses the store default; it may never lengthen retention.
+	// TTL may shorten the configured retention for a particularly sensitive artifact.
 	TTL time.Duration
 }
 
@@ -105,8 +90,6 @@ type Config struct {
 	MaxTotalBytes    int64
 	TTL              time.Duration
 	// EncryptionKey enables at-rest encryption for artifacts that ask for it.
-	// It is supplied by the operator, never generated next to the ciphertext:
-	// a key stored inside the artifact root would protect nothing.
 	EncryptionKey []byte
 }
 
@@ -118,9 +101,7 @@ type Store struct {
 	key              []byte
 	now              func() time.Time
 	mu               sync.Mutex
-	// staging names the temporary files a Put is currently writing. The payload
-	// is copied outside the lock, so without this reconcileOrphansLocked would be
-	// free to reclaim a live staging file once a slow transfer passed orphanGrace.
+
 	staging map[string]bool
 }
 
@@ -182,9 +163,7 @@ func NewStore(config Config) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A non-symlink leaf can still sit below a symlinked parent. Re-check the
-	// canonical path after creation so /outside/link-to-repo/subdir/artifacts
-	// cannot bypass the pre-create checkout walk.
+
 	if err := rejectGitCheckout(resolved); err != nil {
 		return nil, err
 	}
@@ -218,8 +197,7 @@ func NewStore(config Config) (*Store, error) {
 
 func (s *Store) Root() string { return s.root }
 
-// TTL is the store's maximum retention. A caller that wants a shorter life for
-// one artifact clamps against this rather than guessing the daemon's config.
+// TTL is the store's maximum retention.
 func (s *Store) TTL() time.Duration { return s.ttl }
 
 func (s *Store) Put(opts PutOptions, src io.Reader) (Meta, error) {
@@ -259,10 +237,6 @@ func (s *Store) PutContext(ctx context.Context, opts PutOptions, src io.Reader) 
 		return Meta{}, errors.New("artifact encryption was requested but this store has no encryption key")
 	}
 
-	// The payload is written OUTSIDE the store lock. A capture source is a
-	// browser round trip — a CDP PDF stream, a staged download — so holding the
-	// lock across the copy would stall every Info, Delete, purge and janitor pass
-	// for the whole render-and-transfer.
 	staged, err := s.stagePayload(ctx, opts, src)
 	if err != nil {
 		return Meta{}, err
@@ -284,10 +258,7 @@ func (s *Store) PutContext(ctx context.Context, opts PutOptions, src io.Reader) 
 	if err != nil {
 		return Meta{}, err
 	}
-	// Quota is enforced here rather than as a read ceiling, so a capture of bytes
-	// the store already holds is admitted even on a full store: committing it is
-	// a hard link and costs nothing. Deciding that needs the digest, and the
-	// digest needs the payload read.
+
 	source, shared := dedupSource(s, staged.digest, live)
 	if !shared && staged.stored > s.maxTotalBytes-s.bytesUsedLocked(live) {
 		return Meta{}, errors.New("artifact store quota exhausted")
@@ -313,9 +284,6 @@ func (s *Store) PutContext(ctx context.Context, opts PutOptions, src io.Reader) 
 	return meta, nil
 }
 
-// stagedPayload is what one unlocked copy produced: the temporary file holding
-// it, the plaintext length, the on-disk length, and the plaintext digest (empty
-// for an encrypted blob, which records none — see Meta.SHA256).
 type stagedPayload struct {
 	name    string
 	written int64
@@ -388,8 +356,6 @@ func (s *Store) stagePayload(ctx context.Context, opts PutOptions, src io.Reader
 	return staged, nil
 }
 
-// holdStaging and releaseStaging bracket a staging file's life so
-// reconcileOrphansLocked can tell a live transfer from crash debris.
 func (s *Store) holdStaging(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -453,9 +419,7 @@ func (s *Store) Read(id string, offset int64, maxBytes int) ([]byte, Meta, bool,
 		return nil, Meta{}, false, err
 	}
 	buf := make([]byte, maxBytes+1)
-	// ReadFull, not a single Read: a decrypting reader returns one chunk at a
-	// time, and a short read would otherwise report "no more bytes" in the
-	// middle of an artifact.
+
 	n, err := io.ReadFull(f, buf)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return nil, Meta{}, false, err
@@ -495,10 +459,7 @@ func (s *Store) SearchTextContext(ctx context.Context, id, query string, limit i
 	reader := bufio.NewReaderSize(f, 64<<10)
 	hits := make([]TextHit, 0, limit)
 	line := 1
-	// Search one bounded fragment at a time. Page text and downloaded JSON can
-	// legitimately contain a line tens of megabytes long; bufio.Scanner's token
-	// ceiling would make the whole artifact unsearchable. Keeping only the tail
-	// needed for a cross-fragment match bounds memory independently of line size.
+
 	tail := ""
 	lineMatched := false
 	for {
@@ -520,8 +481,7 @@ func (s *Store) SearchTextContext(ctx context.Context, id, query string, limit i
 					return hits, nil
 				}
 			}
-			// A Unicode case partner can use more UTF-8 bytes than the query rune.
-			// Four bytes per query byte is a small, safe overlap bound.
+
 			keep := min(len(value), max(0, len(query)*4))
 			tail = value[len(value)-keep:]
 		}
@@ -555,10 +515,6 @@ func (s *Store) PurgeExpired() (int, error) {
 }
 
 // RunJanitor physically purges expired artifacts even when the daemon is idle.
-// Expiry is still enforced synchronously by Info/Read/Search; interval only
-// bounds how long inaccessible bytes may remain on disk. The loop reports an
-// isolated scan error and continues so one damaged metadata file cannot disable
-// retention for every other artifact until restart.
 func (s *Store) RunJanitor(ctx context.Context, interval time.Duration, report func(error)) {
 	if interval <= 0 {
 		if report != nil {
@@ -585,10 +541,6 @@ func (s *Store) purgeExpiredLocked() (int, error) {
 	return purged, err
 }
 
-// scanLocked reads every committed metadata file exactly once, removing expired
-// and corrupt pairs, and returns the artifacts that survive. Put needs all three
-// answers from that single pass — what retention removed, what the quota is now,
-// and which live blob a new payload can be deduplicated against.
 func (s *Store) scanLocked() (map[string]Meta, int, error) {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
@@ -609,11 +561,7 @@ func (s *Store) scanLocked() (map[string]Meta, int, error) {
 		b, readErr := os.ReadFile(s.metaPath(id))
 		var meta Meta
 		if readErr != nil || json.Unmarshal(b, &meta) != nil || !validStoredMeta(meta, id) {
-			// A final .json file is installed only by atomic rename after a complete
-			// write+fsync. It cannot be an in-process partial commit; retaining a
-			// malformed pair would make every reopen and Put fail forever. Treat the
-			// pair as corrupt cache debris and remove it without disturbing healthy
-			// artifacts.
+
 			if deleteErr := s.deleteLocked(id); deleteErr != nil {
 				errs = append(errs, fmt.Errorf("remove corrupt artifact %s: %w", id, deleteErr))
 			}
@@ -636,19 +584,10 @@ func validStoredMeta(meta Meta, id string) bool {
 	return meta.ID == id && meta.SizeBytes >= 0 && !meta.ExpiresAt.IsZero()
 }
 
-// bytesUsedLocked charges each distinct on-disk object once, asking the
-// filesystem which handles actually share bytes rather than inferring it from
-// digest equality. Dedup is a hard link, so two handles can share one inode —
-// but a link that could not be made (no hard-link support, a source removed
-// under us, a pair written by a brw that predates dedup) is a second real file
-// and has to be charged, or the store believes it holds less than it does and
-// keeps accepting writes past the configured total. A blob whose metadata has
-// gone occupies disk too, and is charged until reconcileOrphansLocked reclaims
-// it.
 func (s *Store) bytesUsedLocked(live map[string]Meta) int64 {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
-		// An unreadable root must not read as unlimited free space.
+
 		var total int64
 		for _, meta := range live {
 			total += meta.storedSize()
@@ -672,8 +611,7 @@ func (s *Store) bytesUsedLocked(live map[string]Meta) int64 {
 		}
 		meta, known := live[id]
 		if !known || meta.Encrypted || meta.SHA256 == "" {
-			// Nothing can be hard-linked to these: an orphan has no digest to match
-			// on, and an encrypted blob is never deduplicated.
+
 			total += info.Size()
 			continue
 		}
@@ -694,11 +632,6 @@ func (s *Store) bytesUsedLocked(live map[string]Meta) int64 {
 	return total
 }
 
-// reconcileOrphansLocked repairs the only unavoidable gap in the two-file
-// commit: a crash may land a blob just before its metadata rename, or remove a
-// blob just before its metadata during deletion. Young singletons are left
-// alone because another daemon could be inside that tiny commit window; stale
-// singletons and abandoned temp files are cache debris and are removed.
 func (s *Store) reconcileOrphansLocked() error {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
@@ -726,8 +659,7 @@ func (s *Store) reconcileOrphansLocked() error {
 		name := entry.Name()
 		path := filepath.Join(s.root, name)
 		if s.staging[path] {
-			// A live transfer, not debris: the payload is copied outside the store
-			// lock, so a slow one can outlive orphanGrace while still being written.
+
 			continue
 		}
 		stale := false
@@ -868,15 +800,13 @@ func validateKind(kind, rawMIME string) (string, error) {
 		"pdf":             {"application/pdf"},
 		"video":           {"video/webm", "video/mp4"},
 		"download":        nil,
-		// manifest holds artifact IDs and never a payload; evidence holds one
-		// bounded diagnostic part of a failure bundle. Neither is reachable from
-		// brw_artifact_capture: captureArtifact has no case for them, so they can
-		// only be produced by the bundle path that owns their retention.
+
 		"manifest": {"application/json"},
 		"evidence": {"application/json", "text/plain"},
-		// Produced by brw_a11y_audit rather than by a capture request; it is in
-		// this table because the store still has to validate what it is given.
-		"a11y_report": {"application/json"},
+
+		"a11y_report":        {"application/json"},
+		KindPerformanceTrace: {"application/json"},
+		KindCPUProfile:       {"application/json"},
 	}
 	mimes, ok := allowed[kind]
 	if !ok {
@@ -885,18 +815,12 @@ func validateKind(kind, rawMIME string) (string, error) {
 	if mimes == nil {
 		return mediaType, nil
 	}
-	for _, candidate := range mimes {
-		if mediaType == candidate {
-			return mediaType, nil
-		}
+	if slices.Contains(mimes, mediaType) {
+		return mediaType, nil
 	}
-	sort.Strings(mimes)
 	return "", fmt.Errorf("artifact kind %q does not accept MIME type %q", kind, mediaType)
 }
 
-// rejectGitCheckout prevents the easiest accidental leak: pointing the artifact
-// store anywhere inside a checkout and later committing it. A private registry
-// can still be versioned separately; volatile page artifacts should not be.
 func rejectGitCheckout(path string) error {
 	current := filepath.Clean(path)
 	for {
@@ -911,10 +835,6 @@ func rejectGitCheckout(path string) error {
 	}
 }
 
-// rejectBroadArtifactRoot prevents a typo such as --artifact-dir=/ or a home,
-// cache, config, or temporary-directory root from having its permissions
-// changed or being filled with opaque blobs. The store must own a dedicated
-// child directory.
 func rejectBroadArtifactRoot(path string) error {
 	clean := filepath.Clean(path)
 	volumeRoot := filepath.Clean(filepath.VolumeName(clean) + string(filepath.Separator))
@@ -933,10 +853,6 @@ func rejectBroadArtifactRoot(path string) error {
 	return nil
 }
 
-// resolveArtifactRoot canonicalizes the existing prefix and then appends any
-// not-yet-created path components. filepath.EvalSymlinks alone cannot inspect a
-// prospective directory, which is exactly where a symlinked parent could hide
-// a checkout boundary.
 func resolveArtifactRoot(path string) (string, error) {
 	current := filepath.Clean(path)
 	var suffix []string

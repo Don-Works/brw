@@ -9,9 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// HAR 1.2 (http://www.softwareishard.com/blog/har-12-spec/) is what DevTools,
-// Charles and every HTTP analysis tool already import, so exporting it is how a
-// captured session leaves brw and reaches a human or a bug report.
 type harLog struct {
 	Log harLogBody `json:"log"`
 }
@@ -102,13 +99,6 @@ type harTimings struct {
 	Receive float64 `json:"receive"`
 }
 
-// redactedHeaderNames are dropped from an exported HAR unless redaction is
-// explicitly turned off.
-//
-// A HAR is meant to be shared — attached to a bug, sent to a vendor — and a raw
-// one carries the session that produced it. Exporting credentials by default
-// would turn a debugging aid into a credential-leak channel, so the default is
-// redacted and un-redacting is a deliberate act.
 var redactedHeaderNames = map[string]bool{
 	"cookie":              true,
 	"set-cookie":          true,
@@ -122,9 +112,6 @@ var redactedHeaderNames = map[string]bool{
 	"auth-token":          true,
 }
 
-// The replay side has to recognise this value to refuse a body-keyed fixture
-// built from a redacted capture, so the constant is declared next to the replay
-// and referenced here rather than spelled twice.
 const redactedPlaceholder = browser.HARRedactedPlaceholder
 
 func redactHeaders(headers map[string]string, redact bool) []harHeader {
@@ -135,7 +122,7 @@ func redactHeaders(headers map[string]string, redact bool) []harHeader {
 		}
 		out = append(out, harHeader{Name: name, Value: value})
 	}
-	// Stable order so two exports of the same capture compare equal.
+
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
@@ -157,10 +144,6 @@ func splitQuery(rawURL string) []harQuery {
 }
 
 // BuildHAR converts brw's captured requests into a HAR 1.2 log.
-//
-// startedAt values in a capture are page-relative milliseconds
-// (performance.now), so they are rebased onto the capture's wall-clock start to
-// produce the absolute timestamps HAR requires.
 func BuildHAR(requests []snapshot.CapturedRequest, pageURL, pageTitle, version string, redact bool) harLog {
 	base := time.Now().UTC()
 	entries := make([]harEntry, 0, len(requests))
@@ -194,9 +177,7 @@ func BuildHAR(requests []snapshot.CapturedRequest, pageURL, pageTitle, version s
 				HeadersSize: -1,
 				BodySize:    len(req.ResponseSnippet),
 			},
-			// brw captures one duration rather than the connect/send/wait/receive
-			// breakdown, so the whole duration is reported as wait and the other
-			// phases are marked unavailable (-1) rather than invented as 0.
+
 			Timings: harTimings{Send: -1, Wait: req.DurationMS, Receive: -1},
 		}
 		if req.RequestBody != "" {
@@ -215,11 +196,6 @@ func BuildHAR(requests []snapshot.CapturedRequest, pageURL, pageTitle, version s
 		entries = append(entries, entry)
 	}
 
-	// The transport blanks credential headers and URL-borne credentials before a
-	// capture ever reaches here, so redaction=none cannot restore those; it
-	// restores the request BODY, which the transport does not touch. Saying
-	// otherwise would tell a reader a redacted export is safer than it is, and a
-	// raw one more complete than it is.
 	comment := "Exported by brw. Response bodies are capture snippets, not full bodies. " +
 		"Credential-bearing request headers and credentials carried in a URL are always withheld by the capture transport."
 	if redact {
@@ -245,9 +221,6 @@ func statusTextFor(req snapshot.CapturedRequest) string {
 	if req.Error != "" {
 		return "Error"
 	}
-	if req.Status == 0 {
-		return ""
-	}
 	return ""
 }
 
@@ -258,8 +231,6 @@ func orDefault(value, fallback string) string {
 	return value
 }
 
-// brwVersionForHAR labels the HAR's creator. It is set from the build's version
-// at startup so an exported file names the brw that produced it.
 var brwVersionForHAR = "dev"
 
 // SetVersion records the running brw version for HAR creator metadata.

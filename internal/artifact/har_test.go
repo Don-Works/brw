@@ -46,7 +46,7 @@ func TestBuildHARRedactsCredentialsByDefault(t *testing.T) {
 	if !strings.Contains(text, redactedPlaceholder) {
 		t.Error("redacted values should be visibly marked, not silently dropped")
 	}
-	// Non-credential headers must survive, or the export is useless.
+
 	if !strings.Contains(text, "application/json") {
 		t.Error("ordinary headers should be preserved")
 	}
@@ -88,12 +88,11 @@ func TestBuildHARShape(t *testing.T) {
 	if entry.Time != 42.25 {
 		t.Errorf("time = %v, want 42.25", entry.Time)
 	}
-	// Query strings are parsed out, as HAR consumers expect.
+
 	if len(entry.Request.QueryString) != 1 || entry.Request.QueryString[0].Name != "next" {
 		t.Errorf("queryString = %+v, want one entry named next", entry.Request.QueryString)
 	}
-	// brw measures one duration, so the phases it did not measure are -1
-	// (unavailable) rather than 0 (measured as instant).
+
 	if entry.Timings.Send != -1 || entry.Timings.Receive != -1 {
 		t.Errorf("unmeasured timings should be -1, got %+v", entry.Timings)
 	}

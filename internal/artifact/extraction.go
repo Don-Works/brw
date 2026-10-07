@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -67,7 +66,7 @@ func ValidateExtraction(name string, spec *ExtractionSpec) error {
 	if spec.MaxBytes < 1 || spec.MaxBytes > 256<<10 {
 		return errors.New("extraction max_bytes must be 1..262144")
 	}
-	for _, value := range append([]string{spec.Section, spec.Caption, spec.ExpectedSource}, append(append([]string{}, spec.Headers...), spec.Fields...)...) {
+	for _, value := range slices.Concat([]string{spec.Section, spec.Caption, spec.ExpectedSource}, spec.Headers, spec.Fields) {
 		if !utf8.ValidString(value) || len(value) > 1000 || strings.Contains(value, "${") || strings.Contains(value, "secret://") {
 			return errors.New("extraction selectors must be bounded literal strings without templates or credential references")
 		}
@@ -149,7 +148,7 @@ func (s *Service) captureExtraction(ctx context.Context, opts CaptureOptions, pu
 		}
 		result.Data = selected
 		result.Provenance.ExpectedSource = data.Source
-		result.Provenance.Fields = append([]string(nil), spec.Fields...)
+		result.Provenance.Fields = slices.Clone(spec.Fields)
 	} else {
 		read, err := s.browser.Read(ctx)
 		if err != nil {
@@ -206,7 +205,7 @@ func (s *Service) captureExtraction(ctx context.Context, opts CaptureOptions, pu
 			}
 			selected := []readability.Table{}
 			for _, table := range read.Tables {
-				if table.Caption == spec.Caption && (len(spec.Headers) == 0 || reflect.DeepEqual(table.Headers, spec.Headers)) {
+				if table.Caption == spec.Caption && (len(spec.Headers) == 0 || slices.Equal(table.Headers, spec.Headers)) {
 					selected = append(selected, table)
 				}
 			}
@@ -229,7 +228,7 @@ func (s *Service) captureExtraction(ctx context.Context, opts CaptureOptions, pu
 			}
 			result.Data = table
 			result.Provenance.Caption = table.Caption
-			result.Provenance.Headers = append([]string(nil), table.Headers...)
+			result.Provenance.Headers = slices.Clone(table.Headers)
 		}
 	}
 	data, err := json.Marshal(result)

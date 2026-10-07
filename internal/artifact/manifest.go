@@ -11,9 +11,7 @@ import (
 // ManifestSchemaVersion is the version of the failure-bundle manifest document.
 const ManifestSchemaVersion = 1
 
-// ManifestEntry points at one stored artifact. It carries identity and
-// retention only: a manifest that inlined even a truncated payload would put
-// the evidence back into the response it exists to keep it out of.
+// ManifestEntry points at one stored artifact.
 type ManifestEntry struct {
 	Role       string    `json:"role"`
 	ArtifactID string    `json:"artifact_id"`
@@ -23,9 +21,7 @@ type ManifestEntry struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 }
 
-// Manifest is the whole of what a failed run returns: a list of artifact IDs an
-// agent can read on demand, so diagnosing a failure costs one small response
-// plus exactly the reads the agent decides to make.
+// Manifest is the whole of what a failed run returns: a list of artifact IDs an agent can read on demand, so diagnosing a failure costs one small response plus exactly the reads the agent decides to make.
 type Manifest struct {
 	SchemaVersion int             `json:"schema_version"`
 	CreatedAt     time.Time       `json:"created_at"`
@@ -34,9 +30,7 @@ type Manifest struct {
 	RecipeVersion string          `json:"recipe_version,omitempty"`
 	FailedStep    string          `json:"failed_step,omitempty"`
 	Entries       []ManifestEntry `json:"entries"`
-	// Missing names the parts that could not be collected, each with the class of
-	// failure and never its detail. A bundle that silently omits the screenshot
-	// tells the reader the page had none.
+	// Missing names the parts that could not be collected, each with the class of failure and never its detail.
 	Missing []MissingPart `json:"missing,omitempty"`
 }
 
@@ -47,14 +41,7 @@ type MissingPart struct {
 
 const maxManifestReasonBytes = 500
 
-// PutManifest stores a manifest as its own artifact. The manifest expires with
-// the parts it names, so a handle can never outlive the evidence it points at.
-//
-// encrypt is the same per-capture decision the parts were stored under. The
-// manifest is not an index of harmless names: Reason carries up to 500 bytes of
-// the failing step's error text, alongside the recipe id, version and step. A
-// bundle whose parts are encrypted and whose manifest is not is not an
-// encrypted bundle.
+// PutManifest stores a manifest as its own artifact.
 func (s *Store) PutManifest(ctx context.Context, manifest Manifest, ttl time.Duration, encrypt bool) (Meta, error) {
 	if len(manifest.Entries) == 0 && len(manifest.Missing) == 0 {
 		return Meta{}, errors.New("failure manifest has no entries")

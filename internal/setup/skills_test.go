@@ -27,8 +27,6 @@ func TestCopyTreeInstallsThenReportsNoChange(t *testing.T) {
 		t.Fatalf("re-install must be a no-op, changed=%v err=%v", changed, err)
 	}
 
-	// A page the source dropped must not survive as instructions an agent
-	// still reads.
 	if err := os.WriteFile(filepath.Join(destination, "stale.md"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +38,6 @@ func TestCopyTreeInstallsThenReportsNoChange(t *testing.T) {
 		t.Fatalf("stale file survived: %v", err)
 	}
 
-	// A locally edited page is restored from the source.
 	if err := os.WriteFile(filepath.Join(destination, "SKILL.md"), []byte("tampered"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -69,9 +66,6 @@ func TestSkillDestinations(t *testing.T) {
 	}
 }
 
-// TestProfileDirectories covers the first-launch case that produced a policy
-// doctor could not verify: a browser that is installed but has never created a
-// profile directory.
 func TestProfileDirectories(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -111,7 +105,7 @@ func TestProfileDirectories(t *testing.T) {
 			wantOne: "Profile 1",
 		},
 		{
-			// Chrome writes Preferences into these, but nobody signs into them.
+
 			name: "chrome scaffolding profiles are excluded",
 			files: map[string]string{
 				"System Profile/Preferences": "{}",

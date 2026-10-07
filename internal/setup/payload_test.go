@@ -16,15 +16,9 @@ func writeFixture(t *testing.T, path, content string) {
 	}
 }
 
-// TestRefreshExtensionPayloadsKeepsPerInstallState: the refresh replaces
-// executable code and nothing else. Each copy's bridge endpoint and handshake
-// token is its own: losing it leaves the browser presenting a token the daemon
-// no longer knows, and inheriting another profile's makes the extension connect
-// to the wrong profile's daemon.
 func TestRefreshExtensionPayloadsKeepsPerInstallState(t *testing.T) {
 	const ownDefaults = `{"endpoint":"ws://127.0.0.1:1/x","token":"per-profile"}`
-	// The refresh source is the installed extension, which on a configured
-	// machine carries the default profile's own endpoint and token.
+
 	const sourceDefaults = `{"endpoint":"ws://127.0.0.1:2/x","token":"default-profile"}`
 
 	cases := []struct {
@@ -94,9 +88,6 @@ func TestRefreshExtensionPayloadsKeepsPerInstallState(t *testing.T) {
 	}
 }
 
-// TestRefreshExtensionPayloadsLeavesSymlinkedCopiesAlone: a symlinked payload is
-// a developer pointing a profile at a checkout, and replacing it would detach
-// them from the tree they are editing.
 func TestRefreshExtensionPayloadsLeavesSymlinkedCopiesAlone(t *testing.T) {
 	appDir := t.TempDir()
 	writeFixture(t, filepath.Join(appDir, "extension", "manifest.json"), `{"version":"2.0.0"}`)
@@ -119,8 +110,6 @@ func TestRefreshExtensionPayloadsLeavesSymlinkedCopiesAlone(t *testing.T) {
 	}
 }
 
-// TestInstallPayloadReplacesOnlyWhatTheArchiveOwns: config/ and a per-profile
-// copy's own state are outside the payload, so an install cannot reach them.
 func TestInstallPayloadReplacesOnlyWhatTheArchiveOwns(t *testing.T) {
 	appDir := t.TempDir()
 	unpacked := t.TempDir()
@@ -177,9 +166,7 @@ func TestInstallPayloadReplacesOnlyWhatTheArchiveOwns(t *testing.T) {
 	if err != nil || string(defaults) != `{"endpoint":"ws://127.0.0.1:1/x"}` {
 		t.Fatalf("installed extension bridge defaults = %q (%v)", defaults, err)
 	}
-	// The refresh that follows the install copies from appDir/extension, which
-	// now holds the default profile's endpoint and token again. A profile copy
-	// that has none of its own must not come out of the install holding them.
+
 	if data, err := os.ReadFile(filepath.Join(appDir, "extension-work", BridgeDefaultsFile)); err == nil {
 		t.Fatalf("extension-work inherited another profile's bridge defaults: %q", data)
 	}
@@ -188,5 +175,23 @@ func TestInstallPayloadReplacesOnlyWhatTheArchiveOwns(t *testing.T) {
 		if err != nil || version != "2.0.0" {
 			t.Fatalf("%s = %q (%v)", dir, version, err)
 		}
+	}
+}
+
+func TestFailedPayloadCopyPreservesInstalledDirectory(t *testing.T) {
+	root := t.TempDir()
+	dst := filepath.Join(root, "extension")
+	writeFixture(t, filepath.Join(dst, "manifest.json"), `{"version":"1.0.0"}`)
+	writeFixture(t, filepath.Join(dst, BridgeDefaultsFile), `{"token":"keep"}`)
+	if err := replacePayloadDir(filepath.Join(root, "missing-source"), dst); err == nil {
+		t.Fatal("missing source unexpectedly copied")
+	}
+	data, err := os.ReadFile(filepath.Join(dst, "manifest.json"))
+	if err != nil || string(data) != `{"version":"1.0.0"}` {
+		t.Fatalf("installed payload lost after failure: %q %v", data, err)
+	}
+	data, err = os.ReadFile(filepath.Join(dst, BridgeDefaultsFile))
+	if err != nil || string(data) != `{"token":"keep"}` {
+		t.Fatalf("installed defaults lost after failure: %q %v", data, err)
 	}
 }

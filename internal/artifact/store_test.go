@@ -198,8 +198,7 @@ func TestStoreSearchKindsQuotaExpiryAndConfinement(t *testing.T) {
 
 func TestStoreSearchHandlesHugeSingleLineAndFragmentBoundary(t *testing.T) {
 	store := newTestStore(t, 4<<20, 8<<20)
-	// Put the needle across the 64 KiB reader boundary and keep the entire
-	// payload on one line. Search must not inherit bufio.Scanner's token limit.
+
 	payload := strings.Repeat("x", (64<<10)-3) + "INVOICE-BOUNDARY" + strings.Repeat("y", 3<<20)
 	meta, err := store.Put(PutOptions{Kind: "text", MIMEType: "text/plain"}, strings.NewReader(payload))
 	if err != nil {
@@ -558,9 +557,7 @@ func (f *deadlineVideoBrowser) Screenshot(ctx context.Context) (browser.Screensh
 		default:
 		}
 	}
-	// Deliberately ignore ctx until the test releases us. The service must still
-	// return on its internal deadline; a context-aware fake would not prove the
-	// hard boundary around a faulty browser transport.
+
 	<-f.release
 	if f.returned != nil {
 		f.returned <- struct{}{}
@@ -670,9 +667,6 @@ func TestServiceDownloadOpenTimeoutIsBoundedAndDoesNotAmplify(t *testing.T) {
 		t.Fatalf("blocked open returned after %s, want a bounded failure", elapsed)
 	}
 
-	// Retrying the request must not start another uninterruptible open. This was
-	// the live failure mode: every client retry stranded another goroutine and OS
-	// thread in the same macOS TCC syscall.
 	const retries = 32
 	errorsSeen := make(chan error, retries)
 	var retriesWG sync.WaitGroup
@@ -1314,17 +1308,12 @@ exec sleep 60
 	}
 	started := time.Now()
 	_, err = service.CaptureArtifact(context.Background(), CaptureOptions{Kind: "video", DurationMS: 100, FPS: 1})
-	// Derived from the budget rather than hardcoded: the guarantee is that a
-	// wedged encoder is terminated at its own ceiling, not that it is terminated
-	// at some particular number of seconds. videoProcessWaitDelay is the extra
-	// bound on Wait after the kill.
+
 	ceiling := videoCaptureBudget(100) + videoEncodeBudget(1) + videoProcessWaitDelay + time.Second
 	if elapsed := time.Since(started); elapsed > ceiling {
 		t.Fatalf("hanging encoder returned after %s, want under %s", elapsed, ceiling)
 	}
-	// The encode phase names itself: a capture that recorded every frame and
-	// then lost the encoder is a different failure from one that never finished
-	// recording, and an operator reading the error should not have to guess.
+
 	if err == nil || !strings.Contains(err.Error(), "encoder did not finish") ||
 		!errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("hanging encoder error = %v", err)
@@ -1337,11 +1326,7 @@ func TestVideoNoisyEncoderHasBoundedDiagnosticAndCleansTemp(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ffmpeg fixture is a POSIX shell script")
 	}
-	// Emit ~512 KiB of noise in one awk pass rather than an 8192-iteration
-	// shell loop. The subject is the bounded tail diagnostic, not shell
-	// throughput: the loop alone outran the capture budget on a loaded
-	// machine, so the test failed on a deadline without asserting anything
-	// about the diagnostic it exists to check.
+
 	ffmpeg := writeExecutableFixture(t, `#!/bin/sh
 cat >/dev/null
 awk 'BEGIN{s="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";for(i=0;i<8192;i++)printf "%s", s}' >&2
@@ -1381,9 +1366,7 @@ func writeExecutableFixture(t *testing.T, body string) string {
 func assertFixtureProcessStopped(t *testing.T, pidPath string) {
 	t.Helper()
 	data, err := os.ReadFile(pidPath)
-	// Under a heavily contended race run CommandContext can terminate the child
-	// after Start succeeds but before the shell executes its first instruction.
-	// Wait has already returned in that case, so no fixture process can remain.
+
 	if errors.Is(err, os.ErrNotExist) {
 		return
 	}
@@ -1460,9 +1443,6 @@ func FuzzArtifactIDConfinement(f *testing.F) {
 	})
 }
 
-// A lane that records downloads without staging them has no brw-owned file to
-// capture, and says so. Falling through to the selector's "not found" would
-// send the caller looking for a wrong filename instead of a wrong transport.
 func TestServiceDownloadCaptureNamesALaneThatStagesNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name string

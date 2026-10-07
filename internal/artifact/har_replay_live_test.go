@@ -15,10 +15,6 @@ import (
 	"github.com/Don-Works/brw/internal/cdp"
 )
 
-// harReplayFixture is a shell page whose data comes entirely from two API calls.
-// It reports READY only when both answered with the values the recording holds,
-// so "green" means the fixture actually served the page rather than the page
-// merely surviving a failed fetch.
 const harReplayFixture = `<html><head><title>fixture</title></head><body>
 <p id="status">pending</p>
 <script>
@@ -45,9 +41,7 @@ func newLiveManager(t *testing.T) *browser.Manager {
 		t.Skipf("Chrome/Chromium not available: %v", err)
 	}
 	profile := browsertest.NewProfile(t)
-	// The browser's own context has to outlive this helper: chromedp derives the
-	// allocator from it, so a cancel here would tear the browser down before the
-	// first call.
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m, err := browser.New(ctx, browser.Config{
 		Headless:    true,
@@ -58,8 +52,7 @@ func newLiveManager(t *testing.T) *browser.Manager {
 		cancel()
 		t.Skipf("headless Chrome did not start: %v", err)
 	}
-	// Stops unwind in reverse: the manager closes, then the allocator context is
-	// cancelled, and only then is the profile reclaimed.
+
 	profile.StopWith(cancel)
 	profile.StopWith(func() { _ = m.Close() })
 	return m
@@ -75,11 +68,6 @@ func evaluateStringLive(t *testing.T, m *browser.Manager, ctx context.Context, e
 	return text
 }
 
-// The whole point of a HAR fixture: record a page's traffic once, then load the
-// page again from the recording with the backend refusing every request. It is
-// the one test that drives the complete path — capture, redacted export, store,
-// decode, replay through Fetch interception — so deleting any link in it turns
-// the page red or lets a request through to the server this asserts is untouched.
 func TestPageLoadsFromARecordedHARWithTheBackendDenied(t *testing.T) {
 	var apiHits int64
 	var offline atomic.Bool
@@ -117,8 +105,6 @@ func TestPageLoadsFromARecordedHARWithTheBackendDenied(t *testing.T) {
 	}
 	tabID := opened.Tab.ID
 
-	// Installs the in-page capture before the page makes its calls; a HAR of a
-	// page whose traffic already happened is empty.
 	if _, err := m.NetworkCapture(ctx, ""); err != nil {
 		t.Fatalf("install network capture: %v", err)
 	}
@@ -150,8 +136,6 @@ func TestPageLoadsFromARecordedHARWithTheBackendDenied(t *testing.T) {
 		t.Fatalf("the HAR holds %d entries, want at least the two API calls", len(entries))
 	}
 
-	// From here the backend refuses everything under /api. Anything the page
-	// still renders came out of the recording.
 	offline.Store(true)
 	atomic.StoreInt64(&apiHits, 0)
 
@@ -194,8 +178,6 @@ func TestPageLoadsFromARecordedHARWithTheBackendDenied(t *testing.T) {
 		t.Fatalf("the listed fixture names %q, want the HAR artifact %q", fixture.ArtifactID, meta.ID)
 	}
 
-	// on_miss:"fail" has to refuse a request the recording does not hold, and say
-	// which one: an incomplete fixture otherwise reads as a broken page.
 	missed := evaluateStringLive(t, m, ctx,
 		fmt.Sprintf(`fetch(%q).then(function(){return 'reached';}).catch(function(){return 'refused';})`, srv.URL+"/api/never-recorded"))
 	if missed != "refused" {
@@ -221,11 +203,6 @@ func TestPageLoadsFromARecordedHARWithTheBackendDenied(t *testing.T) {
 		t.Fatalf("the miss reason names neither the method nor the URL: %q", miss.Reason)
 	}
 
-	// The miss has to reach brw_observe, not only brw_route{action:"list"}. An
-	// agent driving a page observes after each action and lists routes almost
-	// never, so a fixture that misses only in the route table leaves a
-	// half-loaded page pointing at nothing — which is the whole reason the
-	// observation carries the count and the reasons.
 	observed, err := m.Observe(browser.WithTabID(ctx, tabID))
 	if err != nil {
 		t.Fatalf("observe: %v", err)
@@ -241,9 +218,6 @@ func TestPageLoadsFromARecordedHARWithTheBackendDenied(t *testing.T) {
 	}
 }
 
-// harDefaultPatternFixture is a page whose data comes from one API call and one
-// oversized one, so a single load exercises both the request kinds a brw HAR can
-// hold and a response larger than the capture's per-body cap.
 const harDefaultPatternFixture = `<html><head><title>default-pattern</title></head><body>
 <p id="status">pending</p>
 <script>
@@ -262,18 +236,10 @@ window.__load = function () {
 };
 </script></body></html>`
 
-// The documented default is pattern "*" with on_miss:"fail". A brw HAR is built
-// from the in-page fetch/XHR wrappers and holds no document, script or image, so
-// a replay that claimed every request would refuse the navigation itself and
-// leave a dead tab. This drives the documented call verbatim and asserts the
-// page still loads, that its API calls come from the recording, and that the
-// fixture reports both the passthrough and the clipped recording rather than
-// serving a half body as though it were whole.
 func TestReplayWithTheDefaultPatternLoadsThePageAndReportsWhatItCannotHold(t *testing.T) {
 	var apiHits int64
 	var offline atomic.Bool
-	// Comfortably over the in-page 2048-character body cap, so the recording of
-	// this response is necessarily a clipped snippet.
+
 	bigPayload := `{"blob":"` + strings.Repeat("z", 4096) + `"}`
 
 	mux := http.NewServeMux()
@@ -348,8 +314,6 @@ func TestReplayWithTheDefaultPatternLoadsThePageAndReportsWhatItCannotHold(t *te
 	offline.Store(true)
 	atomic.StoreInt64(&apiHits, 0)
 
-	// Pattern omitted on purpose: this is the documented default, and with
-	// on_miss:"fail" it is the combination that used to refuse the document.
 	replayed, err := m.Route(ctx, browser.RouteOptions{
 		Action:        "replay",
 		TabID:         tabID,
@@ -405,8 +369,7 @@ func TestReplayWithTheDefaultPatternLoadsThePageAndReportsWhatItCannotHold(t *te
 	if fixture.ServedTruncated != 1 {
 		t.Fatalf("the fixture served %d truncated bodies, want the oversized recording counted as it is handed over", fixture.ServedTruncated)
 	}
-	// The clipped recording is served rather than withheld, so the page sees a
-	// short body; what must not happen is brw reporting it as a whole one.
+
 	if !strings.HasPrefix(status, "READY:") || status == "READY:"+fmt.Sprint(len(bigPayload)) {
 		t.Fatalf("the replayed oversized body reported as the whole %d-byte response: %q", len(bigPayload), status)
 	}

@@ -22,10 +22,6 @@ func bridgeRequest() PolicyRequest {
 	}
 }
 
-// TestMergeFromZeroConfigResolves is the first-time-user case: nothing on disk,
-// and the generated policy must satisfy the two resolutions that previously
-// failed with "--transport is required when workspace has no default_transport"
-// and "transport \"local\" is not allowed by workspace policy".
 func TestMergeFromZeroConfigResolves(t *testing.T) {
 	req := bridgeRequest()
 	policy, changes := Merge(profilepolicy.Policy{}, req)
@@ -62,8 +58,6 @@ func TestMergeFromZeroConfigResolves(t *testing.T) {
 	}
 }
 
-// TestMergeIsIdempotent locks the re-run contract: a second merge of the same
-// request reports no edits and produces byte-identical JSON.
 func TestMergeIsIdempotent(t *testing.T) {
 	req := bridgeRequest()
 	first, _ := Merge(profilepolicy.Policy{}, req)
@@ -84,10 +78,6 @@ func TestMergeIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestMergeRecordsOnlyANamedMCPClient: the recorded choice is the only trace
-// `--mcp-client` leaves, and it is what lets doctor tell a machine that
-// deliberately registers nothing from one whose registration went missing. A
-// re-run that names no client must leave an earlier choice standing.
 func TestMergeRecordsOnlyANamedMCPClient(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -120,8 +110,7 @@ func TestMergeRecordsOnlyANamedMCPClient(t *testing.T) {
 }
 
 func TestMergeExistingPolicy(t *testing.T) {
-	// A hand-written policy in exactly the shape that made mcp-config fail:
-	// bindings that name a profile but no transport, and no transports array.
+
 	handWritten := profilepolicy.Policy{
 		WorkspaceBindings: []profilepolicy.WorkspaceBinding{{
 			Workspace:       "brw-chromium",
@@ -247,8 +236,7 @@ func TestMergeExistingPolicy(t *testing.T) {
 					t.Fatalf("missing change %q in %+v", want, changes)
 				}
 			}
-			// The input must never be mutated: setup reports a plan before it
-			// writes, and a shared slice would make the plan lie.
+
 			if len(handWritten.Transports) != 0 {
 				t.Fatal("Merge mutated the policy it was given")
 			}
@@ -315,8 +303,6 @@ func TestLoadPolicyFileToleratesAbsenceAndReportsBadJSON(t *testing.T) {
 		t.Fatalf("malformed policy must be reported, not silently replaced (found=%v err=%v)", found, err)
 	}
 
-	// The saved form keeps ~/ unexpanded, unlike profilepolicy.Load, so a
-	// merge-and-write never bakes this machine's home into the file.
 	written := filepath.Join(dir, "written.json")
 	merged, _ := Merge(profilepolicy.Policy{}, bridgeRequest())
 	if _, err := WritePolicy(written, merged, time.Now()); err != nil {

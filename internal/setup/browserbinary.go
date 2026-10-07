@@ -6,10 +6,7 @@ import (
 	"strings"
 )
 
-// BrowserExecutable is the launchable binary for a browser on this machine, or
-// "" when none of its install locations hold one. macOS bundles are searched
-// before PATH because a Chromium fork installed as an .app puts nothing on PATH
-// at all, so a PATH-first probe reports an installed browser as missing.
+// BrowserExecutable is the launchable binary for a browser on this machine, or "" when none of its install locations hold one.
 func BrowserExecutable(goos string, browser Browser, lookPath func(string) (string, bool)) string {
 	if goos == "darwin" {
 		for _, app := range browser.AppPaths {
@@ -29,10 +26,6 @@ func BrowserExecutable(goos string, browser Browser, lookPath func(string) (stri
 	return ""
 }
 
-// appBundleExecutable reads Contents/MacOS rather than deriving the binary name
-// from the bundle name. The two differ per fork — Brave's bundle holds "Brave
-// Browser", Edge's holds "Microsoft Edge" — and a name that has to be guessed
-// is a name that goes stale when a vendor renames its binary.
 func appBundleExecutable(app string) string {
 	dir := filepath.Join(app, "Contents", "MacOS")
 	entries, err := os.ReadDir(dir)
@@ -50,10 +43,7 @@ func appBundleExecutable(app string) string {
 	return ""
 }
 
-// ParseBrowserVersion pulls the version out of `<browser> --version`, which
-// prints the product name first ("Google Chrome 141.0.7390.55"). An empty
-// return means the output had no version-shaped field, which is what a wrapper
-// script or a localised build can produce.
+// ParseBrowserVersion pulls the version out of `<browser> --version`, which prints the product name first ("Google Chrome 141.0.7390.55").
 func ParseBrowserVersion(out string) string {
 	for _, field := range strings.Fields(strings.TrimSpace(out)) {
 		if field[0] < '0' || field[0] > '9' {
