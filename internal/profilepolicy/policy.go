@@ -6,25 +6,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
-// DefaultBridgeExtensionID is the stable id of the published brw Chrome
-// extension. It is derived from the public key pinned in extension/manifest.json
-// (the "key" field), so a load-unpacked dev install and the Chrome Web Store
-// build share this one id. An unconfigured bridge pins to it rather than the
-// chrome-extension://* wildcard. An explicit profile bridge_extension_id still
-// overrides it.
+// DefaultBridgeExtensionID is the stable id of the published brw Chrome extension.
 const DefaultBridgeExtensionID = "amocjcgddnoakjijfggdpnefdnboilpe"
 
 type Policy struct {
 	WorkspaceBindings []WorkspaceBinding `json:"workspace_bindings,omitempty"`
 	Profiles          []Profile          `json:"profiles"`
 	Transports        []Transport        `json:"transports,omitempty"`
-	// MCPClient records which agent client `brwctl setup --mcp-client` was told
-	// to register brw with: claude, codex, both, or none. It is the only trace
-	// that choice leaves, and without it a machine that deliberately registers
-	// nothing cannot be told from one whose registration went missing.
+	// MCPClient records which agent client `brwctl setup --mcp-client` was told to register brw with: claude, codex, both, or none.
 	MCPClient string `json:"mcp_client,omitempty"`
 }
 
@@ -45,23 +38,12 @@ type Profile struct {
 	DirectCDPAllowed       bool   `json:"direct_cdp_allowed"`
 	ExtensionBridgeAllowed bool   `json:"extension_bridge_allowed"`
 	// ChromeOptInAllowed permits `brwd --chrome-opt-in` against this profile.
-	// It is its own bit, defaulting to false, because the lane's capability is
-	// not either of the other two: full browser-target CDP — HttpOnly cookie
-	// reads, incognito contexts, browser-level permission grants — against the
-	// profile the person is signed into. A profile restricted to the extension
-	// bridge is exactly the profile that restriction exists to protect, and
-	// reading direct_cdp_allowed here would grant this lane to every profile
-	// that allows brw to launch its own throwaway browser instead.
 	ChromeOptInAllowed bool `json:"chrome_opt_in_allowed,omitempty"`
-	// Headless launches this profile's Chrome with no visible window. Direct
-	// CDP only — the extension bridge attaches to a browser the user is
-	// already running, so there is nothing for brw to make headless.
+	// Headless launches this profile's Chrome with no visible window.
 	Headless bool `json:"headless,omitempty"`
 	// Pacing is "human" or "off"; empty leaves the daemon default.
 	Pacing string `json:"pacing,omitempty"`
-	// OperationTimeout overrides the daemon's per-operation timeout for this
-	// profile, as a Go duration. "0" removes the fixed limit: an operation then
-	// runs until its own step timeouts or the caller's cancellation end it.
+	// OperationTimeout overrides the daemon's per-operation timeout for this profile, as a Go duration.
 	OperationTimeout   string `json:"operation_timeout,omitempty"`
 	BridgeExtensionID  string `json:"bridge_extension_id,omitempty"`
 	BridgeInstallMode  string `json:"bridge_install_mode,omitempty"`
@@ -69,8 +51,7 @@ type Profile struct {
 	BridgeWSAddr       string `json:"bridge_ws_addr,omitempty"`
 	DevToolsMCPAllowed bool   `json:"devtools_mcp_allowed,omitempty"`
 	DevToolsMCPMode    string `json:"devtools_mcp_mode,omitempty"`
-	// Pins are the sessions the operator expects this profile to hold. brwd
-	// ignores them; the profile roster reads them.
+	// Pins are the sessions the operator expects this profile to hold.
 	Pins []Pin `json:"pins,omitempty"`
 }
 
@@ -175,10 +156,7 @@ func (p Policy) Find(name string) (Profile, error) {
 func (p Policy) ResolveProfile(workspace, name string) (Profile, error) {
 	binding, bound := p.FindWorkspace(workspace)
 	if !bound && workspace != "" && len(p.WorkspaceBindings) > 0 {
-		// The policy declares workspace authority (it has bindings) but this
-		// non-empty workspace matches none of them. Fail CLOSED — otherwise an
-		// unrecognised workspace label silently bypasses every AllowedProfiles
-		// list and can select any profile (including another tenant's).
+
 		return Profile{}, fmt.Errorf("workspace %q is not defined in the profile policy; refusing to resolve a profile for an unrecognised workspace", workspace)
 	}
 	if name == "" && bound {
@@ -187,7 +165,7 @@ func (p Policy) ResolveProfile(workspace, name string) (Profile, error) {
 	if name == "" {
 		return Profile{}, errors.New("--profile is required when workspace has no default_profile")
 	}
-	if bound && len(binding.AllowedProfiles) > 0 && !contains(binding.AllowedProfiles, name) {
+	if bound && len(binding.AllowedProfiles) > 0 && !slices.Contains(binding.AllowedProfiles, name) {
 		return Profile{}, fmt.Errorf("profile %q is not allowed for workspace %q", name, workspace)
 	}
 	return p.Find(name)
@@ -205,9 +183,7 @@ func (p Policy) FindTransport(name string) (Transport, error) {
 func (p Policy) ResolveTransport(workspace, name string) (Transport, error) {
 	binding, bound := p.FindWorkspace(workspace)
 	if !bound && workspace != "" && len(p.WorkspaceBindings) > 0 {
-		// Fail closed for an unrecognised workspace when bindings exist — see
-		// ResolveProfile. An unknown workspace must not pick any transport
-		// (e.g. an SSH transport to an arbitrary host).
+
 		return Transport{}, fmt.Errorf("workspace %q is not defined in the profile policy; refusing to resolve a transport for an unrecognised workspace", workspace)
 	}
 	if name == "" && bound {
@@ -216,7 +192,7 @@ func (p Policy) ResolveTransport(workspace, name string) (Transport, error) {
 	if name == "" {
 		return Transport{}, errors.New("--transport is required when workspace has no default_transport")
 	}
-	if bound && len(binding.AllowedTransports) > 0 && !contains(binding.AllowedTransports, name) {
+	if bound && len(binding.AllowedTransports) > 0 && !slices.Contains(binding.AllowedTransports, name) {
 		return Transport{}, fmt.Errorf("transport %q is not allowed for workspace %q", name, workspace)
 	}
 	return p.FindTransport(name)
@@ -234,18 +210,7 @@ func (p Policy) FindWorkspace(name string) (WorkspaceBinding, bool) {
 	return WorkspaceBinding{}, false
 }
 
-func contains(values []string, needle string) bool {
-	for _, value := range values {
-		if value == needle {
-			return true
-		}
-	}
-	return false
-}
-
-// ExpandPath resolves the two forms a policy may use for a browser directory: a
-// leading ~/ and ${VAR}. Policies are written unexpanded so one file stays valid
-// across machines and users; every consumer expands at the point of use.
+// ExpandPath resolves the two forms a policy may use for a browser directory: a leading ~/ and ${VAR}.
 func ExpandPath(path string) string {
 	if path == "" {
 		return ""

@@ -3,6 +3,7 @@ package brwconfig
 import (
 	"flag"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,9 +12,6 @@ import (
 	"time"
 )
 
-// testFlags registers a small stand-in for brwd's flag set: one flag of each
-// kind the precedence rule has to hold for, named exactly as brwd names them so
-// the env table applies unchanged.
 type testValues struct {
 	http     string
 	headless bool
@@ -38,9 +36,6 @@ func testFlags(values *testValues) *flag.FlagSet {
 	return fs
 }
 
-// TestPrecedenceIsFlagThenEnvThenProfileThenDefaults is the whole contract, as
-// a table. Every row is one flag with the same value available from several
-// sources; the winner has to be the strongest source present.
 func TestPrecedenceIsFlagThenEnvThenProfileThenDefaults(t *testing.T) {
 	file := &File{
 		Defaults: map[string]any{"http": "127.0.0.1:19000", "headless": true, "bridge-max-inflight": 3},
@@ -113,8 +108,7 @@ func TestPrecedenceIsFlagThenEnvThenProfileThenDefaults(t *testing.T) {
 			}
 			set := map[string]bool{}
 			fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-			// brwd reads its environment as each flag's default, so the fixture
-			// has to do the same or the env row would prove nothing.
+
 			for name, env := range EnvTable() {
 				if value, ok := tc.env[env]; ok && !set[name] {
 					if definition := fs.Lookup(name); definition != nil {
@@ -155,10 +149,6 @@ func TestPrecedenceIsFlagThenEnvThenProfileThenDefaults(t *testing.T) {
 	}
 }
 
-// TestEveryFlagWithAnEnvironmentVariableIsProtected is the enumeration that
-// makes the precedence rule hold for all of them and not just the ones somebody
-// wrote a case for. A flag missing from the env table has its environment value
-// silently overwritten by the file, and nothing anywhere would say so.
 func TestEveryFlagWithAnEnvironmentVariableIsProtected(t *testing.T) {
 	table := EnvTable()
 	if len(table) < 40 {
@@ -167,8 +157,7 @@ func TestEveryFlagWithAnEnvironmentVariableIsProtected(t *testing.T) {
 	denied := NotConfigurable()
 	for name, env := range table {
 		if _, blocked := denied[name]; blocked {
-			// A flag no file may set cannot have its environment value
-			// overwritten by one; the deny-list test covers it instead.
+
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
@@ -201,8 +190,7 @@ func TestApplyRefusesWhatAFileMayNotSet(t *testing.T) {
 	for name, reason := range NotConfigurable() {
 		var values testValues
 		fs := testFlags(&values)
-		// The flag has to exist on the set, or the refusal would be the
-		// unknown-flag one rather than the deny-list one.
+
 		fs.Bool(name, false, "")
 		file := &File{Defaults: map[string]any{name: true}}
 		_, err := file.Apply(fs, "", map[string]bool{}, func(string) (string, bool) { return "", false })
@@ -240,11 +228,15 @@ func TestApplyTakesAListForARepeatableFlag(t *testing.T) {
 
 func TestApplyRefusesAValueNoFlagTakes(t *testing.T) {
 	for name, value := range map[string]any{
-		"a fraction":  1.5,
-		"null":        nil,
-		"an object":   map[string]any{"nested": true},
-		"empty list":  []any{},
-		"nested list": []any{map[string]any{}},
+		"a fraction":        1.5,
+		"null":              nil,
+		"an object":         map[string]any{"nested": true},
+		"empty list":        []any{},
+		"nested list":       []any{map[string]any{}},
+		"integer overflow":  float64(0x1p63),
+		"integer underflow": -float64(0x1p63) - 2048,
+		"infinity":          math.Inf(1),
+		"not a number":      math.NaN(),
 	} {
 		var values testValues
 		fs := testFlags(&values)
@@ -252,6 +244,20 @@ func TestApplyRefusesAValueNoFlagTakes(t *testing.T) {
 		if _, err := file.Apply(fs, "", map[string]bool{}, func(string) (string, bool) { return "", false }); err == nil {
 			t.Errorf("%s was accepted as a flag value", name)
 		}
+	}
+}
+
+func TestLoadRequiresOneCompleteJSONDocument(t *testing.T) {
+	for _, suffix := range []string{"{}", "null", "{", "garbage", "]"} {
+		t.Run(suffix, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), FileName)
+			if err := os.WriteFile(path, []byte(`{"defaults":{"headless":true}}`+suffix), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := Load(path); err == nil {
+				t.Fatalf("accepted trailing %q", suffix)
+			}
+		})
 	}
 }
 
@@ -291,8 +297,6 @@ func TestLoadIsQuietWhenThereIsNoFileAndLoudWhenOneWasNamed(t *testing.T) {
 	}
 }
 
-// TestLoadFindsTheFileInTheUserConfigDirectory: the whole point is that a
-// machine needs no flags anywhere, so the default location has to work.
 func TestLoadFindsTheFileInTheUserConfigDirectory(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
@@ -325,14 +329,6 @@ func TestLoadFindsTheFileInTheUserConfigDirectory(t *testing.T) {
 	}
 }
 
-// brw.json is trust-bearing: it can set chrome-arg, proxy-server,
-// ignore-https-errors, allowed-domains, blocked-domains, plugin-dir,
-// recipe-provider-url and profile-policy, and every brwd on the machine reads
-// it at startup. Another local account that can write it therefore decides
-// where every browser brw drives sends its traffic. The repo already gates the
-// consent key, credential files, recipe directories and the recipe provider
-// token on their permissions; this is the same rule for the file that
-// configures all of them.
 func TestLoadRefusesAConfigFileAnotherAccountCouldWrite(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits do not express this on Windows")
@@ -355,8 +351,7 @@ func TestLoadRefusesAConfigFileAnotherAccountCouldWrite(t *testing.T) {
 			if err := os.WriteFile(path, []byte(`{"defaults":{"headless":true}}`), tt.mode); err != nil {
 				t.Fatal(err)
 			}
-			// WriteFile is subject to the process umask, so the bits the test
-			// cares about are set explicitly.
+
 			if err := os.Chmod(path, tt.mode); err != nil {
 				t.Fatal(err)
 			}
@@ -380,9 +375,6 @@ func TestLoadRefusesAConfigFileAnotherAccountCouldWrite(t *testing.T) {
 	}
 }
 
-// Not a regular file, and not unbounded. A fifo at the path would block the
-// daemon at startup and a directory is not a config file somebody wrote on
-// purpose.
 func TestLoadRefusesWhatIsNotAnOrdinaryConfigFile(t *testing.T) {
 	dir := t.TempDir()
 
@@ -400,11 +392,6 @@ func TestLoadRefusesWhatIsNotAnOrdinaryConfigFile(t *testing.T) {
 	}
 }
 
-// A symlinked brw.json is how a dotfile repository puts one on a machine: the
-// file lives in ~/dotfiles and the config path is a link to it. Refusing the
-// link protected nothing — a symlink's own mode is lrwxrwxrwx everywhere, so
-// the mode that matters is the target's, which is what is checked — and it
-// broke every machine managed that way.
 func TestLoadFollowsASymlinkedConfigAndJudgesTheFileItPointsAt(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "dotfiles-brw.json")
@@ -427,9 +414,6 @@ func TestLoadFollowsASymlinkedConfigAndJudgesTheFileItPointsAt(t *testing.T) {
 		t.Fatalf("the linked file's contents were not loaded: %+v", file)
 	}
 
-	// And the target's mode is what decides, not the link's: a link is always
-	// world-writable by its own mode, so a check that read the link would
-	// either refuse everything or check nothing.
 	if err := os.Chmod(target, 0o666); err != nil {
 		t.Fatal(err)
 	}
@@ -440,10 +424,6 @@ func TestLoadFollowsASymlinkedConfigAndJudgesTheFileItPointsAt(t *testing.T) {
 	}
 }
 
-// A dangling link is a config file that is not there. It has to fail as "not
-// there" and not as "not a regular file", because the discovered (non-explicit)
-// path treats a missing file as no config at all and reports anything else as a
-// startup failure.
 func TestLoadReportsADanglingSymlinkAsAMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	link := filepath.Join(dir, FileName)

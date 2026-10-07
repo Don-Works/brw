@@ -1,29 +1,19 @@
 // Package brwconfig reads brw.json, the per-machine defaults for brwd.
-//
-// Everything brwd takes is a flag, and a machine that wants a non-default
-// daemon therefore has to carry those flags in whatever started it — a launchd
-// plist, a systemd unit, a shell alias, a README line somebody pastes. Change
-// one and you change it in every place it was written down, and the places
-// disagree quietly. brw.json is the one place: defaults for this machine, and
-// per-profile overrides for the daemons on it.
-//
-// It is the WEAKEST source, by design. A flag on the command line wins, then the
-// environment, then the profile section, then the file's defaults, then brwd's
-// built-in default. Anything else would make a config file able to override what
-// an operator just typed.
 package brwconfig
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -31,29 +21,14 @@ import (
 // FileName is what brw looks for in the user config directory.
 const FileName = "brw.json"
 
-// File is a brw.json document. Decoding is strict, so a misspelled top-level
-// key is a startup error rather than a setting that silently does nothing.
+// File is a brw.json document.
 type File struct {
-	// Defaults apply to every daemon on this machine. Keys are brwd flag names
-	// without the leading dashes, values are what the flag would take.
+	// Defaults apply to every daemon on this machine.
 	Defaults map[string]any `json:"defaults,omitempty"`
-	// Profiles are per-daemon overrides, keyed by the --profile name the daemon
-	// is started with. A daemon started without --profile reads only Defaults.
-	//
-	// The section is chosen by the profile the operator named on the command
-	// line or in the environment, never by a "profile" key in Defaults: a file
-	// that could select its own section would decide which daemon this process
-	// is, which is the caller's decision.
+	// Profiles are per-daemon overrides, keyed by the --profile name the daemon is started with.
 	Profiles map[string]map[string]any `json:"profiles,omitempty"`
 }
 
-// notConfigurable names the flags a config file may NOT set, with the reason.
-//
-// Two kinds: flags that say what this invocation IS rather than how the daemon
-// is configured (putting "mcp": true in a file would turn every brwd on the
-// machine into a stdio server), and the diagnostic overrides that disable a
-// safety check. An operator can still pass those; what they cannot do is leave
-// one switched on in a file and forget it is there.
 var notConfigurable = map[string]string{
 	"mcp":                              "names what this invocation is, not how the daemon is configured; a file that set it would turn every brwd on the machine into a stdio server",
 	"print-system-prompt":              "prints and exits, so it is not a setting",
@@ -63,10 +38,7 @@ var notConfigurable = map[string]string{
 	"config":                           "would let a config file name another config file",
 }
 
-// Load reads a brw.json. An empty path uses DefaultPath. A missing file is not
-// an error: it returns nil, and the daemon runs on flags, environment and
-// built-in defaults exactly as it did before this existed. A path the operator
-// named explicitly and that does not exist IS an error — they meant it.
+// Load reads a brw.json.
 func Load(path string) (*File, string, error) {
 	explicit := strings.TrimSpace(path) != ""
 	resolved := strings.TrimSpace(path)
@@ -84,48 +56,26 @@ func Load(path string) (*File, string, error) {
 		}
 		return nil, resolved, err
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var file File
 	if err := decoder.Decode(&file); err != nil {
 		return nil, resolved, fmt.Errorf("parse %s: %w", resolved, err)
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err == nil {
-		return nil, resolved, fmt.Errorf("parse %s: it contains more than one JSON document", resolved)
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("it contains more than one JSON document")
+		}
+		return nil, resolved, fmt.Errorf("parse %s: %w", resolved, err)
 	}
 	return &file, resolved, nil
 }
 
-// maxConfigBytes bounds the file. A brw.json is a few hundred bytes of flag
-// names; anything approaching this is not one.
 const maxConfigBytes = 1 << 20
 
-// readTrusted reads brw.json only when nothing but its owner could have written
-// it.
-//
-// The file decides what every brwd on this machine does — chrome-arg,
-// proxy-server, ignore-https-errors, allowed-domains, plugin-dir,
-// recipe-provider-url, profile-policy — so another local account that can write
-// it can redirect every browser brw drives. The repo already gates the recipe
-// provider token, the consent key, credential files and recipe directories the
-// same way. Refused rather than warned about: a warning on a daemon's stderr at
-// boot is read by nobody.
-//
-// Writability is the check, not readability: brw.json holds no secret, and
-// requiring 0600 would reject the ordinary 0644 a person's editor writes.
-//
-// A symlink is followed. Keeping a dotfile repository at ~/dotfiles and linking
-// the config into place is how a lot of people manage this file, and refusing
-// the link broke every one of those machines while protecting nothing: what
-// matters is the mode of the file the daemon actually reads, and a symlink's
-// own mode is lrwxrwxrwx everywhere. So the permission check is made on the
-// OPEN HANDLE, after the link has been resolved — which is also why there is no
-// second stat of the path to race against.
 func readTrusted(path string) ([]byte, error) {
-	// Screened before anything is opened, because opening a fifo blocks until
-	// somebody writes to it and that would hang the daemon at startup. os.Stat
-	// follows the link, so this rejects a link to a fifo as well as a fifo.
+
 	if info, err := os.Stat(path); err != nil {
 		return nil, err
 	} else if !info.Mode().IsRegular() {
@@ -136,9 +86,7 @@ func readTrusted(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer file.Close()
-	// The handle, not the path: whatever the name pointed at when it was opened
-	// is exactly the bytes read below, so the decision cannot be made about one
-	// file and the read done on another.
+
 	opened, err := file.Stat()
 	if err != nil {
 		return nil, err
@@ -168,9 +116,7 @@ func DefaultPath() (string, error) {
 	return filepath.Join(dir, "brw", FileName), nil
 }
 
-// Applied is one setting the file supplied, for the daemon's startup log. An
-// operator debugging "why is this daemon headless" needs to see that a file did
-// it, and which section.
+// Applied is one setting the file supplied, for the daemon's startup log.
 type Applied struct {
 	Flag    string
 	Value   string
@@ -179,12 +125,7 @@ type Applied struct {
 
 func (a Applied) String() string { return fmt.Sprintf("%s=%s (%s)", a.Flag, a.Value, a.Section) }
 
-// Apply sets flags from the file for every setting the command line and the
-// environment did not already decide.
-//
-// setOnCommandLine is the set of flag names the operator actually typed;
-// lookupEnv is the environment. Both are parameters rather than globals so the
-// precedence can be tested as a table instead of by mutating the process.
+// Apply sets flags from the file for every setting the command line and the environment did not already decide.
 func (f *File) Apply(fs *flag.FlagSet, profile string, setOnCommandLine map[string]bool, lookupEnv func(string) (string, bool)) ([]Applied, error) {
 	if f == nil {
 		return nil, nil
@@ -196,30 +137,22 @@ func (f *File) Apply(fs *flag.FlagSet, profile string, setOnCommandLine map[stri
 		lookupEnv = os.LookupEnv
 	}
 
-	// The profile section is applied first and the defaults second, and a flag
-	// already set by the section is not overwritten: a per-daemon override that
-	// the machine default could undo would not be an override.
-	sections := []struct {
+	type section struct {
 		name   string
 		values map[string]any
-	}{}
+	}
+	var sections []section
 	if name := strings.TrimSpace(profile); name != "" {
 		if values, ok := f.Profiles[name]; ok {
-			sections = append(sections, struct {
-				name   string
-				values map[string]any
-			}{name: "profiles." + name, values: values})
+			sections = append(sections, section{name: "profiles." + name, values: values})
 		}
 	}
-	sections = append(sections, struct {
-		name   string
-		values map[string]any
-	}{name: "defaults", values: f.Defaults})
+	sections = append(sections, section{name: "defaults", values: f.Defaults})
 
 	applied := []Applied{}
 	done := map[string]bool{}
 	for _, section := range sections {
-		for _, name := range sortedKeys(section.values) {
+		for _, name := range slices.Sorted(maps.Keys(section.values)) {
 			if done[name] {
 				continue
 			}
@@ -231,14 +164,11 @@ func (f *File) Apply(fs *flag.FlagSet, profile string, setOnCommandLine map[stri
 				return nil, fmt.Errorf("%s in %s: brwd has no such flag", name, section.name)
 			}
 			done[name] = true
-			// The command line wins outright.
+
 			if setOnCommandLine[name] {
 				continue
 			}
-			// Then the environment. brwd reads its environment as each flag's
-			// DEFAULT, so by the time Apply runs an env-configured flag already
-			// holds the env value and looks untouched — which is why this has to
-			// ask the environment rather than compare against the zero value.
+
 			if env := EnvFor(name); env != "" {
 				if value, ok := lookupEnv(env); ok && strings.TrimSpace(value) != "" {
 					continue
@@ -259,18 +189,13 @@ func (f *File) Apply(fs *flag.FlagSet, profile string, setOnCommandLine map[stri
 	return applied, nil
 }
 
-// flagStrings converts a JSON value into the strings a flag's Set takes. A JSON
-// array is several Set calls, which is what a repeatable flag (--extension,
-// --chrome-arg) means.
 func flagStrings(value any) ([]string, error) {
 	switch typed := value.(type) {
 	case string:
 		return []string{typed}, nil
 	case bool:
 		return []string{strconv.FormatBool(typed)}, nil
-	// A JSON document only ever yields float64, but the same function is called
-	// from Go with an int in a test fixture, and a converter that rejects one is
-	// a converter nobody can call directly.
+
 	case int:
 		return []string{strconv.Itoa(typed)}, nil
 	case int64:
@@ -278,6 +203,9 @@ func flagStrings(value any) ([]string, error) {
 	case float64:
 		if typed != math.Trunc(typed) {
 			return nil, fmt.Errorf("%v is not a whole number, and no brwd flag takes a fraction", typed)
+		}
+		if typed < -0x1p63 || typed >= 0x1p63 {
+			return nil, fmt.Errorf("%v is outside the range of a signed 64-bit integer", typed)
 		}
 		return []string{strconv.FormatInt(int64(typed), 10)}, nil
 	case []any:
@@ -298,13 +226,4 @@ func flagStrings(value any) ([]string, error) {
 	default:
 		return nil, fmt.Errorf("%T is not a value any brwd flag takes", value)
 	}
-}
-
-func sortedKeys(values map[string]any) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }

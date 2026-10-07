@@ -101,9 +101,6 @@ func TestResolveProfileUsesWorkspaceDefaultAndAllowedList(t *testing.T) {
 	}
 }
 
-// TestResolveFailsClosedForUnknownWorkspace guards against the bypass where a
-// non-empty workspace that matches no binding silently skipped the allow-list
-// and could select ANY profile/transport in the policy.
 func TestResolveFailsClosedForUnknownWorkspace(t *testing.T) {
 	policy := Policy{
 		WorkspaceBindings: []WorkspaceBinding{{
@@ -122,8 +119,6 @@ func TestResolveFailsClosedForUnknownWorkspace(t *testing.T) {
 		t.Fatal("an unrecognised workspace must not resolve a transport when bindings exist")
 	}
 
-	// A policy with NO bindings is not in workspace-authority mode, so passing a
-	// workspace label must still resolve normally (back-compat).
 	noBindings := Policy{Profiles: []Profile{{Name: "work-profile"}}}
 	if _, err := noBindings.ResolveProfile("any-label", "work-profile"); err != nil {
 		t.Fatalf("policy without bindings should resolve regardless of workspace, got %v", err)

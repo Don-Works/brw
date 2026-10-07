@@ -26,7 +26,7 @@ func TestProbeReachableReportsIdentity(t *testing.T) {
 		Name:                   "work-profile",
 		Kind:                   "chrome",
 		ExtensionBridgeAllowed: true,
-		BridgeHTTPAddr:         srv.URL, // httptest gives http://127.0.0.1:PORT
+		BridgeHTTPAddr:         srv.URL,
 		BridgeWSAddr:           "127.0.0.1:19999",
 	}, 3*time.Second)
 
@@ -48,8 +48,7 @@ func TestProbeReachableReportsIdentity(t *testing.T) {
 }
 
 func TestProbeUnreachableIsRecordedNotFatal(t *testing.T) {
-	// Port 1 on loopback has nothing listening: the probe must fail fast and be
-	// recorded as unreachable rather than dropping the daemon from the listing.
+
 	rec := Probe(profilepolicy.Profile{
 		Name:                   "down-profile",
 		ExtensionBridgeAllowed: true,

@@ -7,12 +7,6 @@ import (
 	"testing"
 )
 
-// --remote takes a URL, and a URL can name another machine. The blocker this
-// answers is that every capability gate brw added for a plugin-supplied browser
-// asked "is there a provider?" instead of "where is this browser?", so
-// `brwd --remote http://198.51.100.7:9222` reached a browser on another machine
-// with all of them inert: brw_state restore would decrypt a snapshot of a
-// session a human signed into HERE and install its cookies over there.
 func TestARemoteEndpointOffThisMachineIsNotDirectCDP(t *testing.T) {
 	for name, test := range map[string]struct {
 		endpoint string
@@ -25,8 +19,7 @@ func TestARemoteEndpointOffThisMachineIsNotDirectCDP(t *testing.T) {
 		"localhost":           {"http://localhost:9222", true},
 		"localhost cased":     {"http://LocalHost:9222", true},
 		"no scheme, loopback": {"127.0.0.1:9222", true},
-		// RFC 5737 / RFC 3849 documentation ranges, so no row can name a real
-		// machine. Neither is loopback, which is the only thing that matters.
+
 		"an address elsewhere":         {"http://198.51.100.7:9222", false},
 		"an ipv6 address elsewhere":    {"http://[2001:db8::1]:9222", false},
 		"a hostname":                   {"http://browsers.example:9222", false},
@@ -40,10 +33,7 @@ func TestARemoteEndpointOffThisMachineIsNotDirectCDP(t *testing.T) {
 				t.Fatalf("BrowserRunsOnThisHost(%q) = %v, want %v", test.endpoint, got, test.onHost)
 			}
 			lane := Lane{CDPEndpoint: test.endpoint}
-			// Three answers, not two. Off this machine is off-host-cdp. On it,
-			// an endpoint brw was GIVEN is remote-cdp — brw did not start that
-			// browser, so it may not retarget its downloads — and no endpoint
-			// at all is the direct-CDP launch.
+
 			want := TransportOffHostCDP
 			switch {
 			case test.onHost && strings.TrimSpace(test.endpoint) != "":
@@ -61,10 +51,6 @@ func TestARemoteEndpointOffThisMachineIsNotDirectCDP(t *testing.T) {
 	}
 }
 
-// laneClassification is every lane a brwd process can be started in, keyed by
-// the struct field that selects it. The reflection below fails when a field is
-// added to Lane and left out of this map, which is the only way a new way of
-// naming a browser can reach the gates unclassified.
 var laneClassification = map[string]struct {
 	lane      Lane
 	transport string
@@ -104,15 +90,12 @@ func TestEveryLaneFieldChangesTheClassification(t *testing.T) {
 	}
 }
 
-// Every transport a lane can report has to be one brwidentity declares, or a
-// table keyed by transport silently fails to classify a running daemon.
 func TestEveryLaneReportsADeclaredTransport(t *testing.T) {
 	lanes := []Lane{{}}
 	for _, classified := range laneClassification {
 		lanes = append(lanes, classified.lane)
 	}
-	// And the combinations, because a lane is not one flag: --bridge with a
-	// --remote endpoint elsewhere still has to land somewhere declared.
+
 	lanes = append(lanes,
 		Lane{Bridge: true, CDPEndpoint: "http://198.51.100.7:9222"},
 		Lane{BrowserProvider: true, CDPEndpoint: "http://127.0.0.1:9222"},
@@ -134,11 +117,6 @@ func TestEveryLaneReportsADeclaredTransport(t *testing.T) {
 	}
 }
 
-// The Chrome opt-in resolves to a loopback endpoint, so the two describe the
-// same browser and the opt-in is the more specific answer. Paired with an
-// endpoint somewhere else they describe different machines, and the answer has
-// to be the restrictive one: that lane must not keep the opt-in's local
-// filesystem and clipboard.
 func TestTheOptInLaneLosesToAnEndpointOnAnotherMachine(t *testing.T) {
 	local := Lane{ChromeOptIn: true, CDPEndpoint: "http://127.0.0.1:9222"}
 	if got := local.Transport(); got != TransportChromeOptIn {
@@ -153,12 +131,6 @@ func TestTheOptInLaneLosesToAnEndpointOnAnotherMachine(t *testing.T) {
 	}
 }
 
-// --remote at a loopback endpoint is a browser on this machine that brw did not
-// start. It keeps every local-machine capability and loses only the one that
-// depends on brw having started the browser, so it must not be reported as
-// direct-cdp (which would let brw retarget that browser's downloads) and must
-// not be reported as off-host-cdp (which would refuse uploads and the clipboard
-// that work there).
 func TestALoopbackRemoteEndpointIsItsOwnLane(t *testing.T) {
 	lane := Lane{CDPEndpoint: "http://127.0.0.1:9222"}
 	if got := lane.Transport(); got != TransportRemoteCDP {
@@ -179,10 +151,6 @@ func TestALoopbackRemoteEndpointIsItsOwnLane(t *testing.T) {
 	}
 }
 
-// A proxy drives no browser of its own, so it must not be read as driving one
-// on another machine: the daemon it forwards to applies its own lane's answer,
-// and a proxy that refused this host's capabilities would break every local
-// setup that fronts a direct-CDP daemon with an MCP wrapper.
 func TestAProxyIsNotTreatedAsABrowserElsewhere(t *testing.T) {
 	proxy := Lane{UpstreamHTTP: "http://127.0.0.1:17410"}
 	if !proxy.BrowserOnThisHost() {

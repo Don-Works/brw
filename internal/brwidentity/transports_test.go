@@ -10,13 +10,6 @@ import (
 	"testing"
 )
 
-// The capability table is the gate every lane's tool catalogue is derived from,
-// so a transport constant that is not in it is a lane whose tools are
-// unclassified. Declaring the constant is the step nobody forgets; adding the
-// row is the step that gets missed, and nothing else in the build notices.
-//
-// The domain is enumerated from the source rather than from a list kept here,
-// because a list kept here has the same problem it is meant to catch.
 func TestEveryTransportConstantIsClassified(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -73,24 +66,13 @@ func TestEveryTransportConstantIsClassified(t *testing.T) {
 	}
 }
 
-// The lanes differ in exactly the properties the tool catalogue reads. A lane
-// that accidentally copied another's row would advertise the wrong catalogue
-// and nothing else would say so — that is how `--remote` came to be reported as
-// direct CDP, which claims brw owns the browser and may therefore stage its
-// downloads in a directory brw later deletes.
-//
-// Every transport has to appear, so a lane added without a row here fails
-// rather than passing unexamined.
 func TestTransportCapabilitiesDistinguishTheLanes(t *testing.T) {
 	want := map[string]TransportCapabilities{
 		TransportDirectCDP:       {CDPSession: true, BrowserTarget: true, RuntimeDownloadRouting: true, BrowserOnThisHost: true},
 		TransportRemoteCDP:       {CDPSession: true, BrowserTarget: true, BrowserOnThisHost: true},
 		TransportChromeOptIn:     {CDPSession: true, BrowserTarget: true, SignedInProfile: true, BrowserOnThisHost: true},
 		TransportExtensionBridge: {ExtensionAPIs: true, SignedInProfile: true, BrowserOnThisHost: true},
-		// The only lane whose browser is somewhere else. It is the same row as
-		// remote-cdp but for BrowserOnThisHost, and that single bit is what
-		// decides whether a path, an upload or the clipboard names the thing
-		// the caller meant.
+
 		TransportOffHostCDP: {CDPSession: true, BrowserTarget: true},
 	}
 	for _, transport := range Transports() {
@@ -108,8 +90,7 @@ func TestTransportCapabilitiesDistinguishTheLanes(t *testing.T) {
 			t.Errorf("%s capabilities = %+v, want %+v", transport, got, expected)
 		}
 	}
-	// And no two lanes are the same row: a copy would carry the wrong
-	// catalogue while satisfying every other test in this file.
+
 	seen := map[TransportCapabilities]string{}
 	for _, transport := range Transports() {
 		caps, _ := Capabilities(transport)

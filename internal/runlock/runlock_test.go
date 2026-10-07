@@ -11,19 +11,12 @@ import (
 	"github.com/Don-Works/brw/internal/brwidentity"
 )
 
-// TestKeyIsTheProfileNotTheDaemon is the property the whole package rests on.
-// Two daemons can drive one browser profile — an --upstream-http proxy in front
-// of a bridge daemon is the shipped example — so a key that moved with the
-// daemon would give each of them a lock of its own while they fought over one
-// tab.
 func TestKeyIsTheProfileNotTheDaemon(t *testing.T) {
 	profile := brwidentity.Identity{
 		Workspace: "work", Profile: "chrome-work",
 		UserDataDir: "/var/tmp/brw/chrome", ProfileDirectory: "Profile 1",
 	}
 
-	// Every field that describes the DAEMON rather than the profile, varied one
-	// at a time. Each must leave the key alone.
 	daemonOnly := map[string]brwidentity.Identity{
 		"mode":                {Mode: "upstream-http"},
 		"transport":           {Transport: brwidentity.TransportExtensionBridge},
@@ -46,8 +39,6 @@ func TestKeyIsTheProfileNotTheDaemon(t *testing.T) {
 		}
 	}
 
-	// Every field that DOES name the profile has to change the key, or two
-	// different browsers would take turns for no reason.
 	profileFields := map[string]brwidentity.Identity{
 		"workspace":         {Workspace: "other", Profile: "chrome-work", UserDataDir: "/var/tmp/brw/chrome", ProfileDirectory: "Profile 1"},
 		"profile":           {Workspace: "work", Profile: "chrome-personal", UserDataDir: "/var/tmp/brw/chrome", ProfileDirectory: "Profile 1"},
@@ -60,15 +51,12 @@ func TestKeyIsTheProfileNotTheDaemon(t *testing.T) {
 		}
 	}
 
-	// Two spellings of one directory are one profile.
 	trailing := profile
 	trailing.UserDataDir = "/var/tmp/brw/chrome/"
 	if Key(trailing) != want {
 		t.Error("a trailing separator on user_data_dir produced a different key")
 	}
 
-	// A daemon that says nothing about its profile still gets a key, and every
-	// such daemon gets the SAME key: over-serialising is the safe direction.
 	if got := Key(brwidentity.Identity{}); got != Unidentified {
 		t.Errorf("Key(empty) = %q, want %q", got, Unidentified)
 	}
@@ -77,8 +65,6 @@ func TestKeyIsTheProfileNotTheDaemon(t *testing.T) {
 	}
 }
 
-// TestSecondRunWaitsForTheFirst drives the actual contention: two holders, one
-// lock, no overlap.
 func TestSecondRunWaitsForTheFirst(t *testing.T) {
 	dir := t.TempDir()
 	var concurrent, peak int64
@@ -121,9 +107,6 @@ func TestSecondRunWaitsForTheFirst(t *testing.T) {
 	}
 }
 
-// TestZeroWaitRefusesInsteadOfQueueing gives a scheduler the other half of the
-// contract: a run that must not pile up behind its predecessor can say so and
-// get a named refusal rather than a timeout it has to interpret.
 func TestZeroWaitRefusesInsteadOfQueueing(t *testing.T) {
 	dir := t.TempDir()
 	first, err := Acquire(context.Background(), dir, "profile-key", 0)
@@ -136,7 +119,6 @@ func TestZeroWaitRefusesInsteadOfQueueing(t *testing.T) {
 		t.Fatalf("second Acquire = %v, want ErrBusy", err)
 	}
 
-	// A different profile is not contended by this one.
 	other, err := Acquire(context.Background(), dir, "another-profile-key", 0)
 	if err != nil {
 		t.Fatalf("a different profile was refused: %v", err)
@@ -145,7 +127,6 @@ func TestZeroWaitRefusesInsteadOfQueueing(t *testing.T) {
 		t.Fatalf("release: %v", err)
 	}
 
-	// And once the holder lets go, the next run gets it.
 	if err := first.Release(); err != nil {
 		t.Fatalf("release: %v", err)
 	}
@@ -156,16 +137,12 @@ func TestZeroWaitRefusesInsteadOfQueueing(t *testing.T) {
 	if err := third.Release(); err != nil {
 		t.Fatalf("release: %v", err)
 	}
-	// Releasing twice is not an error: the caller's defer and an explicit
-	// release on the success path must not fight.
+
 	if err := third.Release(); err != nil {
 		t.Fatalf("second release: %v", err)
 	}
 }
 
-// TestBoundedWaitGivesUpWithABusyError keeps a queueing run from blocking
-// forever: a scheduler that fires hourly needs the run that cannot start to end,
-// not to accumulate.
 func TestBoundedWaitGivesUpWithABusyError(t *testing.T) {
 	dir := t.TempDir()
 	held, err := Acquire(context.Background(), dir, "profile-key", 0)
@@ -183,8 +160,6 @@ func TestBoundedWaitGivesUpWithABusyError(t *testing.T) {
 	}
 }
 
-// TestCancelledWaitStopsWaiting: a scheduler that kills the job must not leave a
-// process spinning on a lock it will never get.
 func TestCancelledWaitStopsWaiting(t *testing.T) {
 	dir := t.TempDir()
 	held, err := Acquire(context.Background(), dir, "profile-key", 0)
