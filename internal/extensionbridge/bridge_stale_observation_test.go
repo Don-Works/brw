@@ -17,21 +17,13 @@ import (
 	"github.com/coder/websocket"
 )
 
-// propertyWriteFake models the extension whose snapshot cache never goes stale
-// on a form-control write. value/selected/checked live in DOM PROPERTIES, so a
-// fill or a select mutates no node, the in-page MutationObserver never fires,
-// and cached_snapshot keeps answering with whatever was last stored. Anything
-// that reads the page through that cache after such an action sees the
-// pre-action page.
 type propertyWriteFake struct {
 	mu sync.Mutex
-	// live is the page's real field value; cached is the value frozen in the
-	// extension's per-tab snapshot cache.
+
 	live     string
 	cached   string
 	hasCache bool
-	// walks counts in-page snapshot walks, so a test can prove the observation
-	// re-read the page rather than being answered from the cache.
+
 	walks int
 }
 
@@ -85,17 +77,17 @@ func (f *propertyWriteFake) serve(ctx context.Context, conn *websocket.Conn) {
 			expression, _ := msg.Params["params"].(map[string]any)["expression"].(string)
 			switch {
 			case isSnapshotWalkExpression(expression):
-				// the in-page snapshot walker
+
 				f.walks++
 				result = map[string]any{"result": map[string]any{"value": f.snapshot(f.live)}}
 			case strings.HasPrefix(expression, "(function(ref"):
-				// fill / select: writes the property, mutates no node
+
 				f.live = "beta@example.test"
 				result = map[string]any{"result": map[string]any{"value": map[string]any{
 					"ok": true, "ref": "e1", "value": f.live,
 				}}}
 			default:
-				// settle fingerprint: a page that is already quiescent
+
 				result = map[string]any{"result": map[string]any{"value": "complete|1|1|INPUT#email|https://fixture.test/form"}}
 			}
 		}
@@ -115,7 +107,7 @@ func connectPropertyWriteFake(t *testing.T) (*Bridge, *propertyWriteFake, func()
 		srv.Close()
 		t.Fatalf("dial property-write fake: %v", err)
 	}
-	// The snapshot walker arrives as one large expression.
+
 	conn.SetReadLimit(4 << 20)
 	waitUntil(t, b.liveConn)
 	fake := &propertyWriteFake{live: "alpha@example.test"}
@@ -128,11 +120,6 @@ func connectPropertyWriteFake(t *testing.T) (*Bridge, *propertyWriteFake, func()
 	}
 }
 
-// An action that writes only a DOM property must still be observed against the
-// live page. Answering the post-action observation from the extension's tab
-// cache reported changed_state:false with the pre-action value, and an agent
-// that believes a fill failed retries it — writing the value twice on a real
-// form.
 func TestObservedActionReadsPastTheTabSnapshotCache(t *testing.T) {
 	tests := []struct {
 		name string
@@ -158,8 +145,6 @@ func TestObservedActionReadsPastTheTabSnapshotCache(t *testing.T) {
 			ctx, cancel := context.WithTimeout(browser.WithTabID(context.Background(), "7"), 5*time.Second)
 			defer cancel()
 
-			// Prime the cache the way any earlier read would, so the observation
-			// below has a cache entry to be wrongly served from.
 			if _, err := b.Snapshot(ctx, snapshot.SnapshotOptions{ViewportOnly: true}); err != nil {
 				t.Fatalf("prime snapshot: %v", err)
 			}
@@ -191,11 +176,6 @@ func TestObservedActionReadsPastTheTabSnapshotCache(t *testing.T) {
 	}
 }
 
-// The in-page dirty flag backing cached_snapshot decides whether a later read
-// re-walks the page. A MutationObserver cannot see a value, checked or
-// selectedIndex write, so the observer must also listen for input/change.
-// extension/tab_resolution_test.mjs executes the injected script; this is the
-// backstop for an environment without node.
 func TestServiceWorkerObserverMarksFormControlWritesDirty(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "extension", "service_worker.js"))
 	if err != nil {

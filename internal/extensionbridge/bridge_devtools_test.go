@@ -18,10 +18,6 @@ import (
 	"github.com/Don-Works/brw/internal/devtools/axe"
 )
 
-// sentExpressions collects what crossed the socket. The stub writes it from its
-// own goroutine and the test reads it from another, and a loopback write/read
-// pair orders bytes without ordering memory, so the slice needs a latch of its
-// own rather than the socket's apparent sequencing.
 type sentExpressions struct {
 	mu   sync.Mutex
 	list []string
@@ -39,9 +35,6 @@ func (s *sentExpressions) all() []string {
 	return append([]string(nil), s.list...)
 }
 
-// serveEvaluateStub stands in for the extension: it answers every
-// Runtime.evaluate the bridge sends with whatever reply the test decides, and
-// records the expressions so a test can assert on what actually crossed.
 func serveEvaluateStub(t *testing.T, b *Bridge, reply func(expression string) any) (*sentExpressions, func()) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
@@ -55,10 +48,7 @@ func serveEvaluateStub(t *testing.T, b *Bridge, reply func(expression string) an
 		srv.Close()
 		t.Fatalf("dial bridge: %v", err)
 	}
-	// The embedded accessibility engine is half a megabyte of expression. A
-	// real extension's WebSocket has no receive cap; this client library
-	// defaults to 32 KiB and would close the socket as "message too big", so
-	// the stub has to be as permissive as the browser it stands in for.
+
 	conn.SetReadLimit(extensionFrameReadLimitBytes)
 	waitUntil(t, b.liveConn)
 
@@ -101,9 +91,6 @@ func bridgeTabContext() context.Context {
 	return browser.WithTabID(context.Background(), "42")
 }
 
-// TestBridgeVitalsEvaluatesTheSharedScript: the second transport has to send the
-// same expression the first one does, or a reading means two different things
-// depending on which browser connection an agent happens to have.
 func TestBridgeVitalsEvaluatesTheSharedScript(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	sent, cleanup := serveEvaluateStub(t, b, func(string) any {
@@ -133,9 +120,6 @@ func TestBridgeVitalsEvaluatesTheSharedScript(t *testing.T) {
 	}
 }
 
-// TestBridgeAccessibilityAuditInjectsTheEmbeddedEngine is the no-network claim
-// on the transport that drives a real signed-in Chrome: the engine has to cross
-// the bridge as an expression, never as something the page fetches.
 func TestBridgeAccessibilityAuditInjectsTheEmbeddedEngine(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -191,8 +175,7 @@ func TestBridgeAccessibilityAuditInjectsTheEmbeddedEngine(t *testing.T) {
 				if strings.Contains(expression, axe.Source) {
 					injected = true
 				}
-				// Whatever crossed, none of it may ask the page to go and load
-				// the engine from somewhere.
+
 				if strings.Contains(expression, "src=") && strings.Contains(expression, "axe.min.js") {
 					t.Fatal("the bridge asked the page to load axe over the network")
 				}
@@ -204,9 +187,6 @@ func TestBridgeAccessibilityAuditInjectsTheEmbeddedEngine(t *testing.T) {
 	}
 }
 
-// TestBridgeHighlightRoundTripsTheOverlay covers the third tool and the
-// reversibility it advertises, on the transport an agent uses against a real
-// browser window where a human can actually see the overlay.
 func TestBridgeHighlightRoundTripsTheOverlay(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	sent, cleanup := serveEvaluateStub(t, b, func(expression string) any {
@@ -243,15 +223,12 @@ func TestBridgeHighlightRoundTripsTheOverlay(t *testing.T) {
 	if len(sent.all()) != 2 {
 		t.Fatalf("bridge sent %d expressions, want one per call", len(sent.all()))
 	}
-	// A colour is a value written into an inline style, so it must reach the
-	// page as the resolved hex from the closed set, never as caller text.
+
 	if strings.Contains(sent.all()[0], "green") {
 		t.Error("the colour name was passed into the page instead of the resolved value")
 	}
 }
 
-// TestBridgeHighlightRefusesBadArgumentsBeforeTheRoundTrip: validation belongs
-// on both transports, not only in whichever one a test happened to cover.
 func TestBridgeHighlightRefusesBadArgumentsBeforeTheRoundTrip(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	sent, cleanup := serveEvaluateStub(t, b, func(string) any { return map[string]any{"ok": true} })
@@ -266,11 +243,6 @@ func TestBridgeHighlightRefusesBadArgumentsBeforeTheRoundTrip(t *testing.T) {
 	}
 }
 
-// TestBridgeRefusesAnEmptyObservation: the generic evaluate path turns an
-// undefined completion value into JSON null on purpose, because a page script
-// that returns nothing is a successful evaluation. These three expressions
-// always resolve to an object, so the same null means the script never ran —
-// and a zero Vitals reads exactly like a clean page.
 func TestBridgeRefusesAnEmptyObservation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -312,9 +284,6 @@ func TestBridgeRefusesAnEmptyObservation(t *testing.T) {
 	}
 }
 
-// TestBridgeRecordsTheDevtoolsActionsInTheTrace is the parity half of the
-// direct-CDP trace test: a human watching a bridged daemon has to see the same
-// three entries, or "what did brw do" depends on which transport answered.
 func TestBridgeRecordsTheDevtoolsActionsInTheTrace(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	_, cleanup := serveEvaluateStub(t, b, func(expression string) any {
@@ -368,7 +337,7 @@ func TestBridgeRecordsTheDevtoolsActionsInTheTrace(t *testing.T) {
 	if ref := byAction[browser.TraceActionHighlight].Ref; ref != "e9" {
 		t.Errorf("highlight recorded ref %q, want e9", ref)
 	}
-	// The caption is caller text and the trace is served over the control plane.
+
 	if strings.Contains(byAction[browser.TraceActionHighlight].Text, "look here") {
 		t.Errorf("the highlight caption reached the trace: %q", byAction[browser.TraceActionHighlight].Text)
 	}

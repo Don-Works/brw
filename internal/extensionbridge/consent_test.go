@@ -12,11 +12,8 @@ import (
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
 
-// fixtureConsentKey is an obviously fabricated MAC key for tests.
 var fixtureConsentKey = []byte("fixture-bridge-consent-key-abcdef")
 
-// fixtureConsentExtensionID is a fabricated 32-character extension id, the
-// shape Chrome assigns, used so the origin pin is a real comparison.
 const fixtureConsentExtensionID = "fixtureextensionidaaaaaaaaaaaaaa"
 
 func newConsentBridge(t *testing.T) (*Bridge, *siteconsent.Guard) {
@@ -30,10 +27,7 @@ func newConsentBridge(t *testing.T) (*Bridge, *siteconsent.Guard) {
 		t.Fatal(err)
 	}
 	guard.SetGrantor("fixture-user")
-	// Pin the fixture extension id rather than leaving it empty: the reachability
-	// rule now matches a present Origin against the configured extension, so an
-	// unpinned bridge would accept any well-formed extension origin and the test
-	// would stop exercising the pin it exists to check.
+
 	bridge := New("127.0.0.1:0", time.Second, fixtureConsentExtensionID)
 	bridge.SetSiteConsent(guard)
 	return bridge, guard
@@ -77,8 +71,6 @@ func TestBridgeConsentListsGrants(t *testing.T) {
 	}
 }
 
-// TestBridgeConsentIsNotServedToAWebPage keeps the grant list off any origin a
-// user might be browsing: it is a list of the sites they have said yes to.
 func TestBridgeConsentIsNotServedToAWebPage(t *testing.T) {
 	bridge, guard := newConsentBridge(t)
 	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://one.test", Scope: siteconsent.ScopeAct, Actor: "fixture-user"}); err != nil {

@@ -16,10 +16,6 @@ func messagesOf(fake *navigationFakeExtension) []string {
 	return append([]string(nil), fake.messages...)
 }
 
-// A tab whose only navigation turned into a download holds the initial empty
-// document. The pre-arm used to refuse it ("main-document identity is
-// unavailable"), which left the leased tab unusable for every later
-// navigate_to; it is a valid place to navigate from.
 func TestNavigateToFromTabWithoutCommittedDocument(t *testing.T) {
 	const target = "https://api.test/data.json"
 	b, fake, cleanup := newNavigationFake(t, target, "https://api.test", 20*time.Millisecond, false)
@@ -41,8 +37,6 @@ func TestNavigateToFromTabWithoutCommittedDocument(t *testing.T) {
 	}
 }
 
-// The pre-arm refusal still stands for a committed document the extension
-// cannot identify: that is the trust boundary, not the empty-tab case.
 func TestNavigateToStillRefusesAnUnidentifiableCommittedDocument(t *testing.T) {
 	b, fake, cleanup := newNavigationFake(t, "https://final.test/x", "https://final.test", 0, false)
 	defer cleanup()
@@ -74,8 +68,7 @@ func TestNavigateToArmsInlineDocumentAroundPageNavigate(t *testing.T) {
 	if !(arm < navigate && navigate < disarm) {
 		t.Fatalf("messages = %v, want arm before Page.navigate and disarm after it", messages)
 	}
-	// The extension scopes its pause to this URL's origin, so a cross-site
-	// iframe loading during the navigation is never paused.
+
 	fake.mu.Lock()
 	armURL := fake.armURL
 	fake.mu.Unlock()

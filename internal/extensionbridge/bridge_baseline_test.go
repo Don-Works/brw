@@ -24,10 +24,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// serveBaselineStub answers the three things brw_baseline asks a transport for:
-// the ARIA structure, the environment fingerprint, and a screenshot. The
-// screenshot is JPEG because that is what Bridge.Screenshot actually requests
-// from Page.captureScreenshot.
 func serveBaselineStub(t *testing.T, b *Bridge, evaluate func(expression string) any, capture func() []byte) func() {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
@@ -99,13 +95,6 @@ func baselineStubJPEG(t *testing.T, patched bool) []byte {
 	return buf.Bytes()
 }
 
-// toolSession is an MCP server speaking its real stdio JSON-RPC protocol over a
-// pair of pipes, with the bridge underneath it as the browser controller.
-//
-// Reaching for the tool rather than for the steps it performs is the point: a
-// test that evaluates, captures and compares by hand pins "the bridge can feed
-// baseline.Check" and leaves the routing that decides whether brw_baseline runs
-// on this transport at all completely unexercised.
 type toolSession struct {
 	t    *testing.T
 	in   *io.PipeWriter
@@ -140,7 +129,6 @@ func startToolSession(t *testing.T, b *Bridge, store *baseline.Store) *toolSessi
 	return session
 }
 
-// call makes one tools/call and returns the tool's decoded result.
 func (s *toolSession) call(name string, arguments map[string]any) map[string]any {
 	s.t.Helper()
 	s.id++
@@ -196,12 +184,6 @@ func (s *toolSession) call(name string, arguments map[string]any) map[string]any
 	}
 }
 
-// The ARIA structure is computed in the page precisely so a baseline is not a
-// gate only one transport can run: the bridge has no browser-level
-// Accessibility domain. brw_baseline is called for real here — over stdio JSON-
-// RPC, through the tool's own routing, onto the bridge's websocket protocol —
-// so what is pinned is "brw_baseline works on the bridge", not "these five
-// calls, in this order, would work if something made them".
 func TestBridgeProducesABaselineThatGatesTheSamePage(t *testing.T) {
 	label := "Pay invoice"
 	patched := false
@@ -225,7 +207,7 @@ func TestBridgeProducesABaselineThatGatesTheSamePage(t *testing.T) {
 					"locale":             "en-GB",
 				}
 			default:
-				// Bridge.Screenshot reads the viewport before clipping.
+
 				return []any{1280, 800}
 			}
 		},
@@ -233,8 +215,6 @@ func TestBridgeProducesABaselineThatGatesTheSamePage(t *testing.T) {
 	)
 	defer cleanup()
 
-	// The encoding is why the tool normalizes at all, so assert the transport
-	// really does hand back JPEG rather than taking it on trust.
 	if shot, err := b.Screenshot(bridgeTabContext()); err != nil {
 		t.Fatalf("screenshot over the bridge: %v", err)
 	} else if shot.MIMEType != "image/jpeg" {
@@ -254,7 +234,6 @@ func TestBridgeProducesABaselineThatGatesTheSamePage(t *testing.T) {
 		})
 	}
 
-	// A gate that has never seen the page is not a gate.
 	missing := baselineCall("check")
 	if missing["status"] != baseline.StatusMissing || missing["failed"] != true {
 		t.Fatalf("first check over the bridge = %v, want a failing %q", missing, baseline.StatusMissing)
@@ -274,7 +253,6 @@ func TestBridgeProducesABaselineThatGatesTheSamePage(t *testing.T) {
 		t.Fatalf("an unchanged page over the bridge = %v, want a passing %q", matched, baseline.StatusMatch)
 	}
 
-	// A structural regression the pixels would not show, over the same transport.
 	label = ""
 	ariaOnly := baselineCall("check")
 	if ariaOnly["status"] != baseline.StatusDiff || ariaOnly["failed"] != true {
@@ -285,8 +263,6 @@ func TestBridgeProducesABaselineThatGatesTheSamePage(t *testing.T) {
 		t.Fatalf("visual = %v, want the pixels unchanged", ariaOnly["visual"])
 	}
 
-	// And a visual one, to prove the JPEG the bridge captures is actually
-	// compared rather than merely decoded.
 	label = "Pay invoice"
 	patched = true
 	visualOnly := baselineCall("check")

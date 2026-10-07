@@ -16,40 +16,26 @@ import (
 	"github.com/coder/websocket"
 )
 
-// fakeExtension is an in-memory stand-in for the Chrome extension service
-// worker. It models a multi-window/multi-tab browser and answers the bridge's
-// list_tabs / get_active_tab_id / focus_tab RPCs from ONE shared tab model the
-// way the real service_worker now does: a single authoritative foreground tab
-// (the active tab of the focused window) backs BOTH the list_tabs active flag
-// AND get_active_tab_id, so the two can never disagree.
 type fakeExtension struct {
 	mu sync.Mutex
-	// tabs is ordered; each has an id, windowId, and per-window active flag.
+
 	tabs []fakeTab
-	// focusedWindow is the id of the OS-focused window.
+
 	focusedWindow int
-	// agentTabId mirrors the service worker's pinned agent tab: set by open_tab /
-	// focus_tab, it wins over the OS-focused tab in foregroundID() and is never
-	// moved by the user. 0 means unset.
+
 	agentTabId int
-	// noDrivableReason, when set, makes get_active_tab_id answer tabId 0 WITH a
-	// reason — the real service worker's behaviour when every candidate tab is one
-	// Chrome refuses to let brw drive (a foreign extension's popout, chrome://).
-	// Distinct from answering 0 with no reason, which means a transient failure.
+
 	noDrivableReason string
 }
 
 type fakeTab struct {
 	id       int
 	windowID int
-	active   bool // active within its window
+	active   bool
 	url      string
 	title    string
 }
 
-// foregroundID mirrors service_worker resolveForegroundTabId(): the pinned agent
-// tab wins (set by open_tab/focus_tab, never moved by the user); otherwise the
-// active tab of the focused window. This is the single source of truth.
 func (f *fakeExtension) foregroundID() int {
 	if f.agentTabId != 0 {
 		for _, t := range f.tabs {
@@ -77,15 +63,13 @@ func (f *fakeExtension) listTabs() []map[string]any {
 			"title":         t.title,
 			"active":        isFg,
 			"windowId":      t.windowID,
-			"windowFocused": isFg, // forced true for the foreground tab, like the SW
+			"windowFocused": isFg,
 			"windowType":    "normal",
 		})
 	}
 	return out
 }
 
-// focus makes tabID the active tab of its window and focuses that window —
-// matching the service_worker focus_tab handler.
 func (f *fakeExtension) focus(tabID int) bool {
 	var win int
 	found := false
@@ -105,13 +89,11 @@ func (f *fakeExtension) focus(tabID int) bool {
 		}
 	}
 	f.focusedWindow = win
-	// Explicit focus pins the agent's working tab, like the service worker.
+
 	f.agentTabId = tabID
 	return true
 }
 
-// serve runs the fake extension against the bridge's websocket until ctx is
-// done. It answers exactly the RPCs the active-tab resolution paths use.
 func (f *fakeExtension) serve(ctx context.Context, conn *websocket.Conn) {
 	for {
 		_, data, err := conn.Read(ctx)
@@ -194,9 +176,7 @@ func connectFakeExtension(t *testing.T, b *Bridge) (*fakeExtension, func()) {
 	})
 
 	fe := &fakeExtension{
-		// A 20-tab, two-window model mirroring the live-proof session. Window 2 is
-		// focused; its active tab (id 12, "Men's Carbon running shoes") is the one
-		// authoritative foreground tab.
+
 		focusedWindow: 2,
 		tabs: []fakeTab{
 			{id: 1, windowID: 1, active: false, url: "https://a.test/1", title: "Kids' Running Shoes"},
@@ -217,22 +197,12 @@ func connectFakeExtension(t *testing.T, b *Bridge) (*fakeExtension, func()) {
 	return fe, cleanup
 }
 
-// TestNoDrivableTabDoesNotFallBackToTheCachedTab is the daemon half of the
-// "Bitwarden popups break evaluate" fix. Teaching the extension to skip a tab it
-// cannot drive is not enough on its own: when resolution then yields nothing,
-// contextTabID used to fall through to its cached tab id — which is typically
-// the very tab that just became undrivable — so every no-tab_id call still died
-// on Chrome's raw "Cannot access a chrome-extension:// URL of different
-// extension". A DEFINITIVE no-drivable-tab answer must suppress that fallback,
-// while a TRANSIENT resolution failure (MV3 worker mid-reconnect) must still use
-// the cache, which is the behaviour this sits next to and must not regress.
 func TestNoDrivableTabDoesNotFallBackToTheCachedTab(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	fe, cleanup := connectFakeExtension(t, b)
 	defer cleanup()
 	ctx := context.Background()
 
-	// Warm the cache the way a normal session does.
 	if got := b.contextTabID(ctx); got != "12" {
 		t.Fatalf("contextTabID = %q, want 12", got)
 	}
@@ -240,7 +210,6 @@ func TestNoDrivableTabDoesNotFallBackToTheCachedTab(t *testing.T) {
 		t.Fatalf("cached active tab = %q, want 12", cached)
 	}
 
-	// The human's password manager pops its vault out into the focused window.
 	fe.mu.Lock()
 	fe.noDrivableReason = "no drivable tab: the active tab is " +
 		"chrome-extension://nngceckbapebfimnlniiiahkandclblb/popup/index.html, " +
@@ -250,16 +219,14 @@ func TestNoDrivableTabDoesNotFallBackToTheCachedTab(t *testing.T) {
 	if got := b.contextTabID(ctx); got != "" {
 		t.Fatalf("contextTabID = %q after a definitive no-drivable-tab answer, want \"\" so the call surfaces the real reason instead of retargeting the stale cached tab", got)
 	}
-	// The cache itself is untouched: the tab is still the right one to return to
-	// once the popout closes.
+
 	if cached := b.activeTabID(); cached != "12" {
 		t.Fatalf("cached active tab = %q, want it preserved as 12", cached)
 	}
 
-	// A TRANSIENT failure (tabId 0, no reason) must still fall back to the cache.
 	fe.mu.Lock()
 	fe.noDrivableReason = ""
-	fe.focusedWindow = 999 // no window matches -> foregroundID() == 0, no reason
+	fe.focusedWindow = 999
 	fe.agentTabId = 0
 	fe.mu.Unlock()
 
@@ -267,7 +234,6 @@ func TestNoDrivableTabDoesNotFallBackToTheCachedTab(t *testing.T) {
 		t.Fatalf("contextTabID = %q on a transient resolution failure, want the cached 12", got)
 	}
 
-	// And once a drivable tab is focused again, resolution recovers on its own.
 	fe.mu.Lock()
 	fe.focusedWindow = 2
 	fe.mu.Unlock()
@@ -276,13 +242,6 @@ func TestNoDrivableTabDoesNotFallBackToTheCachedTab(t *testing.T) {
 	}
 }
 
-// TestActiveTabResolutionIsConsistentAcrossPageTools is the regression test for
-// the live-proof bug: three back-to-back no-tab_id calls each resolved to a
-// DIFFERENT tab. It proves the daemon's single authoritative resolver
-// (contextTabID — the one every page tool funnels through for the no-tab_id
-// case) agrees with what ListTabs marks active, and is stable across repeated
-// calls and across multiple distinct resolutions (read vs observe vs snapshot
-// all call contextTabID, so resolving it repeatedly models them).
 func TestActiveTabResolutionIsConsistentAcrossPageTools(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	_, cleanup := connectFakeExtension(t, b)
@@ -290,7 +249,6 @@ func TestActiveTabResolutionIsConsistentAcrossPageTools(t *testing.T) {
 
 	ctx := context.Background()
 
-	// What list_tabs reports as the active tab.
 	tabs, err := b.ListTabs(ctx)
 	if err != nil {
 		t.Fatalf("ListTabs: %v", err)
@@ -310,9 +268,6 @@ func TestActiveTabResolutionIsConsistentAcrossPageTools(t *testing.T) {
 		t.Fatalf("list_tabs active = %q, want 12 (focused window's active tab)", listActive)
 	}
 
-	// Every page tool resolves the no-tab_id target via contextTabID. Resolve it
-	// repeatedly (modelling read, then observe, then snapshot, then find) and
-	// require every resolution to equal the SAME tab list_tabs marks active.
 	for i, tool := range []string{"read", "observe", "snapshot", "find", "click"} {
 		got := b.contextTabID(ctx)
 		if got != listActive {
@@ -320,16 +275,11 @@ func TestActiveTabResolutionIsConsistentAcrossPageTools(t *testing.T) {
 		}
 	}
 
-	// And get_active_tab_id (the bridge's resolveActiveTabID) must agree too.
 	if got := b.resolveActiveTabID(ctx); got != listActive {
 		t.Fatalf("resolveActiveTabID = %q, want %q (must match list_tabs active)", got, listActive)
 	}
 }
 
-// TestFocusTabAcceptsListTabsID proves the exact id list_tabs returns is
-// accepted by focus_tab (the user reported these ids "don't exist"), and that
-// after focusing, every no-tab_id page tool follows to the focused tab — still
-// agreeing with list_tabs.
 func TestFocusTabAcceptsListTabsID(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	fe, cleanup := connectFakeExtension(t, b)
@@ -342,7 +292,6 @@ func TestFocusTabAcceptsListTabsID(t *testing.T) {
 		t.Fatalf("ListTabs: %v", err)
 	}
 
-	// Pick a non-active tab id straight from the list_tabs output and focus it.
 	target := ""
 	for _, tab := range tabs {
 		if !(tab.Active && tab.WindowFocused) {
@@ -361,7 +310,6 @@ func TestFocusTabAcceptsListTabsID(t *testing.T) {
 		t.Fatalf("FocusTab(%q) from a list_tabs id failed: %v", target, err)
 	}
 
-	// After focus, list_tabs and every no-tab_id page tool must follow to it.
 	tabs, err = b.ListTabs(ctx)
 	if err != nil {
 		t.Fatalf("ListTabs after focus: %v", err)
@@ -401,27 +349,18 @@ func TestListTabGroupsUsesExtensionPayload(t *testing.T) {
 	}
 }
 
-// TestServiceWorkerActiveTabResolverIsAuthoritative guards the service_worker
-// contract that backs the fix: get_active_tab_id and list_tabs derive their
-// active tab from the SAME resolveForegroundTabId(), the cache is not trusted
-// ahead of the focused-window scan, and open_tab honors the daemon's foreground
-// intent (active by default, background when the daemon asks) while always
-// pinning the new tab as the agent's working target.
 func TestServiceWorkerActiveTabResolverIsAuthoritative(t *testing.T) {
 	src := readServiceWorker(t)
 	for _, want := range []string{
 		"function resolveForegroundTabId(",
-		"const foregroundId = await resolveForegroundTabId()",     // list_tabs uses the shared resolver
-		"summary.active = isForeground",                           // list_tabs marks exactly the foreground tab
-		"const id = await resolveForegroundTabId();",              // activeTabId() / get_active_tab_id uses it
-		"const makeActive = message.params?.active !== false;",    // open honors the foreground/background intent
-		"const normalWindowId = await preferredNormalWindowId();", // avoid popup/app windows
-		"tab = await chrome.tabs.create(createParams);",           // open follows that intent
-		"state.agentTabId = tab.id || null;",                      // and always pins the agent's working tab
-		// A browser running with zero windows (routine on macOS) makes
-		// tabs.create reject with "No current window". An agent cannot open a
-		// window itself, so open_tab recovers by creating one rather than
-		// dead-ending on a trivially recoverable state.
+		"const foregroundId = await resolveForegroundTabId()",
+		"summary.active = isForeground",
+		"const id = await resolveForegroundTabId();",
+		"const makeActive = message.params?.active !== false;",
+		"const normalWindowId = await preferredNormalWindowId();",
+		"tab = await chrome.tabs.create(createParams);",
+		"state.agentTabId = tab.id || null;",
+
 		"if (!/no current window/i.test(String(err?.message || err))) throw err;",
 		"const win = await chrome.windows.create({",
 	} {
@@ -429,9 +368,7 @@ func TestServiceWorkerActiveTabResolverIsAuthoritative(t *testing.T) {
 			t.Fatalf("service worker authoritative active-tab resolver missing %q", want)
 		}
 	}
-	// The cache must NOT be returned ahead of the focused-window scan inside
-	// resolveForegroundTabId — that ordering was the divergence root cause. The
-	// focused-window loop must appear before the state.activeTabId fallback.
+
 	resolver := sliceBetween(src, "async function resolveForegroundTabId()", "async function activeTabId()")
 	focusIdx := strings.Index(resolver, "win.focused")
 	cacheIdx := strings.Index(resolver, "state.activeTabId")

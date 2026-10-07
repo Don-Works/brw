@@ -9,9 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// brw_wait_for's timeout_ms was only the in-page timer. When the renderer never
-// answered the chunk's Runtime.evaluate, the round trip ran to the daemon's
-// --timeout (here 4s) and surfaced as a bare "context deadline exceeded".
 func TestWaitForHonoursTimeoutWhenTheRendererNeverAnswers(t *testing.T) {
 	b, fake, cleanup := newNavigationFake(t, "https://final.test/x", "https://final.test", 0, false)
 	defer cleanup()
@@ -39,9 +36,6 @@ func TestWaitForHonoursTimeoutWhenTheRendererNeverAnswers(t *testing.T) {
 	}
 }
 
-// A bridge request the extension never answers used to fail with the bare
-// context error, which reads as a timeout the caller chose. It names the
-// request and how long it waited.
 func TestUnansweredBridgeRequestIsNamed(t *testing.T) {
 	b, fake, cleanup := newNavigationFake(t, "https://final.test/x", "https://final.test", 0, false)
 	defer cleanup()

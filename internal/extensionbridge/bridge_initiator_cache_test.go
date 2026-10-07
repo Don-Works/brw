@@ -8,23 +8,13 @@ import (
 	"time"
 )
 
-// TestInitiatorSensitiveResponsesAreNotCacheable covers the other half of a
-// response whose body depends on who asked.
-//
-// /status carries the handshake token only for a caller tokenServable accepts,
-// and /consent is served only to that same caller, so both bodies vary on
-// Origin and Sec-Fetch-Site. A 200 that carries a token and says neither
-// "do not store this" nor "this varies" is cacheable and indistinguishable from
-// the tokenless one — the shape the initiator check exists to close.
 func TestInitiatorSensitiveResponsesAreNotCacheable(t *testing.T) {
 	tests := []struct {
 		name   string
 		method string
 		path   string
 		serve  func(*Bridge, http.ResponseWriter, *http.Request)
-		// extension is whether the request presents the accepted initiator, so
-		// both the served and the refused answer are covered: a refusal cached
-		// against the extension would lock it out.
+
 		extension bool
 	}{
 		{name: "status for the extension", method: http.MethodGet, path: "/status", extension: true,

@@ -21,10 +21,6 @@ const (
 	assertFakePageURL = "https://app.test/report/42"
 )
 
-// assertFakeExtension answers the shared getters script by the question its
-// expression ends with — ("url","",""), ("state","btn-3","") — so a batch assert
-// step is driven through the bridge's real evaluate path rather than a stub of
-// it, and the recorded questions prove which getter each assertion kind read.
 type assertFakeExtension struct {
 	mu        sync.Mutex
 	getters   map[string]any
@@ -169,12 +165,6 @@ func connectAssertFake(t *testing.T, fake *assertFakeExtension) (*Bridge, func()
 	}
 }
 
-// TestBatchAssertStepRunsOnTheExtensionBridge is the regression test for the
-// assert step being advertised on both transports while only direct CDP
-// implemented it: on the bridge every one of these returned `unknown action
-// "assert"` mid-batch instead of reading the page. The download row covers the
-// one kind the bridge genuinely cannot always answer — it must name the missing
-// capability rather than pass.
 func TestBatchAssertStepRunsOnTheExtensionBridge(t *testing.T) {
 	one := 1
 	bytes := int64(11)

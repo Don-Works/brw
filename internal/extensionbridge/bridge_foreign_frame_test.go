@@ -23,11 +23,6 @@ const (
 	testForeignFrameURL    = "chrome-extension://" + testForeignExtensionID + "/overlay/menu-list.html"
 )
 
-// foreignFrameExtension is a fake service worker for a page that embeds another
-// extension's frame. It answers the way extension/service_worker.js does once
-// Chrome has refused the debugger: page reads come back from chrome.scripting
-// with a brwTransport note, and a method with no scripting equivalent fails
-// with the named foreign_extension_frame error.
 type foreignFrameExtension struct {
 	mu            sync.Mutex
 	viaScripting  bool

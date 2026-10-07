@@ -15,28 +15,20 @@ import (
 	"github.com/coder/websocket"
 )
 
-// Markers that identify which in-page walker an evaluation is running, taken
-// from strings unique to each script.
 const (
 	snapshotScriptMarker = "low_semantic_coverage"
 	resolveBoxMarker     = "viewport_x"
 	clickTargetMarker    = "click target not hit-testable"
 )
 
-// findActExtension is a fake extension that serves a fixed element list to the
-// snapshot walker and records which walkers ran, so a batch's find_act step can
-// be observed end to end over the real websocket path.
 type findActExtension struct {
 	mu sync.Mutex
-	// elements is what the live in-page walk returns.
+
 	elements []map[string]any
-	// cached, when set, is what the extension's snapshot CACHE returns. The
-	// cache-validity probe only sees DOM mutations, so it can legitimately hold
-	// a page that a fill or a select has since changed.
+
 	cached []map[string]any
 	ran    []string
-	// expressions records every evaluated script, so a test can assert which
-	// options actually reached the page.
+
 	expressions []string
 }
 
@@ -180,9 +172,6 @@ func fixtureElement(ref, role, name string) map[string]any {
 	return map[string]any{"ref": ref, "role": role, "name": name, "tag": "button", "visible": true, "in_viewport": true}
 }
 
-// The extension transport must run a find_act batch step the same way the
-// direct-CDP one does: resolve to exactly one element, then actuate it — and on
-// several matches, actuate nothing.
 func TestBridgeBatchFindActStep(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -260,22 +249,16 @@ func TestBridgeBatchFindActStep(t *testing.T) {
 	}
 }
 
-// A locate-and-act must decide from the page as it is now. The extension's
-// cache-validity probe only sees DOM mutations, and a fill, select or checkbox
-// writes a DOM property that mutates no node, so an earlier step in the same
-// batch can leave the cache holding the pre-action page. Resolving from it
-// would let the exactly-one-match rule confirm a uniqueness the page no longer
-// has, and then actuate on it.
 func TestBridgeFindActResolvesFromTheLivePageNotTheCache(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	fe, cleanup := connectFindActExtensionWithCache(t,
 		b,
-		// Live: two rivals.
+
 		[]map[string]any{
 			fixtureElement("e1", "button", "Add to cart"),
 			fixtureElement("e2", "button", "Add to wishlist"),
 		},
-		// Cache: the page before the second button appeared.
+
 		[]map[string]any{fixtureElement("e1", "button", "Add to cart")},
 	)
 	defer cleanup()
@@ -298,8 +281,7 @@ func TestBridgeFindActResolvesFromTheLivePageNotTheCache(t *testing.T) {
 	if fe.didRun("click") {
 		t.Fatal("find_act actuated an element the live page says is ambiguous")
 	}
-	// An ordinary read may still be served from the cache; only the decision to
-	// act is forced live.
+
 	if _, err := b.Find(ctx, snapshot.FindOptions{Query: "Add"}); err != nil {
 		t.Fatalf("read-only find: %v", err)
 	}
@@ -308,9 +290,6 @@ func TestBridgeFindActResolvesFromTheLivePageNotTheCache(t *testing.T) {
 	}
 }
 
-// brw_find advertises text_content on every transport. Dropping it here made
-// the option a no-op on the extension bridge: the tool said it would match
-// visible prose and then matched only element metadata.
 func TestBridgeFindPassesTextContentToThePage(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	fe, cleanup := connectFindActExtension(t, b, []map[string]any{fixtureElement("e1", "button", "Add to cart")})

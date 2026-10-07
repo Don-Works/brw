@@ -15,28 +15,18 @@ import (
 	"github.com/coder/websocket"
 )
 
-// concExtension is a controllable stand-in for the Chrome extension service
-// worker used to exercise the bridge's concurrency protections. Unlike
-// fakeExtension it processes each RPC in its own goroutine (modelling the real
-// worker's async chrome.debugger calls) and records how many requests — overall
-// and per tab — are in flight at once, so a test can assert the bridge's
-// in-flight cap and per-tab serialization actually hold.
 type concExtension struct {
 	mu        sync.Mutex
-	cur       int            // requests currently being processed
-	maxCur    int            // peak concurrent requests observed
-	handled   int            // total requests fully processed
-	perTabCur map[string]int // concurrent requests per tab id
-	perTabMax map[string]int // peak concurrent per tab id
+	cur       int
+	maxCur    int
+	handled   int
+	perTabCur map[string]int
+	perTabMax map[string]int
 
-	writeMu sync.Mutex // coder/websocket writes are not concurrency-safe
+	writeMu sync.Mutex
 
-	// gate, when non-nil, blocks every handler until the test sends it a token,
-	// so a test can pin requests "in flight" and observe the steady state.
 	gate chan struct{}
 
-	// failFirst names RPC types whose FIRST occurrence replies as if the socket
-	// dropped ("extension disconnected"), to drive the transient-drop retry path.
 	failFirst  map[string]bool
 	failedOnce map[string]bool
 }
@@ -107,16 +97,7 @@ func (e *concExtension) serve(ctx context.Context, conn *websocket.Conn) {
 func (e *concExtension) handle(ctx context.Context, conn *websocket.Conn, id, typ string, params map[string]any) {
 	tab := tabKeyFromParams(params)
 	e.enter(tab)
-	// The in-flight window MUST close before the reply is written, not after.
-	// The bridge frees a semaphore slot the instant it READS a reply and
-	// immediately dispatches the next queued request — so if this handler
-	// decremented after replying (e.g. via a plain `defer e.exit`), the next
-	// request's enter() could race ahead of this one's exit() and the counter
-	// would transiently read cap+1. That is a measurement artifact, not a cap
-	// violation: the bridge's [write, reply-read] window is correctly bounded,
-	// but [enter, exit] overran it. Closing the window here, right before the
-	// reply, makes the measured window a subset of the bridge's and removes the
-	// flake. exited guards the ctx.Done() early-return path below.
+
 	exited := false
 	exitOnce := func() {
 		if !exited {
@@ -133,8 +114,7 @@ func (e *concExtension) handle(ctx context.Context, conn *websocket.Conn, id, ty
 	}
 	e.mu.Unlock()
 	if failNow {
-		// Model a socket drop: reply with the disconnect-drain marker the bridge
-		// treats as a transient transport failure.
+
 		exitOnce()
 		e.reply(ctx, conn, id, false, disconnectDrainReason, nil)
 		return
@@ -165,9 +145,6 @@ func (e *concExtension) reply(ctx context.Context, conn *websocket.Conn, id stri
 	e.writeMu.Unlock()
 }
 
-// startConcExtension stands up the bridge's /extension server and returns a
-// connect func that dials the extension and begins serving (split out so a test
-// can issue calls BEFORE the socket exists, exercising the reconnect-wait path).
 func startConcExtension(t *testing.T, b *Bridge, e *concExtension) (connect func(), cleanup func()) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
@@ -202,7 +179,6 @@ func startConcExtension(t *testing.T, b *Bridge, e *concExtension) (connect func
 	return connect, cleanup
 }
 
-// drain releases n gated handlers, one token at a time.
 func drain(t *testing.T, e *concExtension, n int) {
 	t.Helper()
 	go func() {
@@ -216,9 +192,6 @@ func drain(t *testing.T, e *concExtension, n int) {
 	}()
 }
 
-// TestBridgeBoundsConcurrentInflight proves the backpressure valve: with the cap
-// at 2, no more than 2 RPCs ever reach the extension at once however many agents
-// fire together — the rest queue and are served as slots free, none dropped.
 func TestBridgeBoundsConcurrentInflight(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetMaxInflight(2)
@@ -239,7 +212,6 @@ func TestBridgeBoundsConcurrentInflight(t *testing.T) {
 		}(i)
 	}
 
-	// Exactly cap=2 requests reach the extension; the other 4 queue at the sema.
 	waitUntil(t, func() bool { cur, _, _ := e.snapshot(); return cur == 2 })
 	waitUntil(t, func() bool { return b.queued.Load() >= int64(n-2) })
 	time.Sleep(100 * time.Millisecond)
@@ -262,12 +234,8 @@ func TestBridgeBoundsConcurrentInflight(t *testing.T) {
 	}
 }
 
-// TestBridgeBusyWhenSaturated proves a call that cannot get a slot before its
-// deadline fails fast with ErrBridgeBusy (a backpressure signal) rather than
-// hanging or returning an opaque timeout.
 func TestBridgeBusyWhenSaturated(t *testing.T) {
-	// Generous bridge timeout so the slot-holder keeps the only slot; the waiter
-	// supplies its own short deadline to force the busy path deterministically.
+
 	b := New("", 5*time.Second, "")
 	b.SetMaxInflight(1)
 	e := newConcExtension()
@@ -276,11 +244,9 @@ func TestBridgeBusyWhenSaturated(t *testing.T) {
 	connect()
 	defer cleanup()
 
-	// Occupy the single slot with a handler parked on the gate.
 	go func() { _, _ = b.call(context.Background(), "hold", nil) }()
 	waitUntil(t, func() bool { cur, _, _ := e.snapshot(); return cur == 1 })
 
-	// A second call with a short deadline can never get a slot -> ErrBridgeBusy.
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	_, err := b.call(ctx, "work", nil)
@@ -290,15 +256,12 @@ func TestBridgeBusyWhenSaturated(t *testing.T) {
 	if b.busyDrops.Load() == 0 {
 		t.Fatal("busy_drops should have incremented")
 	}
-	drain(t, e, 1) // release the holder so cleanup is clean
+	drain(t, e, 1)
 }
 
-// TestBridgeSerializesSameTab proves two operations on the SAME tab never run
-// concurrently (the interleaving that corrupts in-page ref state and yields
-// stale refs), even when the in-flight cap would otherwise allow it.
 func TestBridgeSerializesSameTab(t *testing.T) {
 	b := New("", 5*time.Second, "")
-	b.SetMaxInflight(8) // ensure the sema is not the limiter
+	b.SetMaxInflight(8)
 	e := newConcExtension()
 	e.gate = make(chan struct{})
 	connect, cleanup := startConcExtension(t, b, e)
@@ -315,7 +278,6 @@ func TestBridgeSerializesSameTab(t *testing.T) {
 		}()
 	}
 
-	// Only one op on tab 7 is ever in flight; the rest wait on the tab lock.
 	waitUntil(t, func() bool { cur, _, _ := e.snapshot(); return cur == 1 })
 	time.Sleep(100 * time.Millisecond)
 	if peak := e.perTabPeak("7"); peak != 1 {
@@ -332,10 +294,6 @@ func TestBridgeSerializesSameTab(t *testing.T) {
 	}
 }
 
-// TestBridgeRunsDistinctTabsInParallel is the counterpart: per-tab serialization
-// must NOT serialize across different tabs — distinct tabs run concurrently up to
-// the cap. If it wrongly serialized everything, cur would never reach n and the
-// waitUntil would time out.
 func TestBridgeRunsDistinctTabsInParallel(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetMaxInflight(8)
@@ -355,15 +313,11 @@ func TestBridgeRunsDistinctTabsInParallel(t *testing.T) {
 		}(i)
 	}
 
-	// Distinct tabs each hold their own lock -> all n overlap.
 	waitUntil(t, func() bool { cur, _, _ := e.snapshot(); return cur == n })
 	drain(t, e, n)
 	wg.Wait()
 }
 
-// TestBridgeWithoutTabLockBypassesSerialization proves the settle-probe exemption:
-// a withoutTabLock call runs even while another op holds the same tab's lock, so
-// an abandoned fingerprint probe can never stall the next foreground action.
 func TestBridgeWithoutTabLockBypassesSerialization(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetMaxInflight(8)
@@ -373,11 +327,9 @@ func TestBridgeWithoutTabLockBypassesSerialization(t *testing.T) {
 	connect()
 	defer cleanup()
 
-	// Foreground op holds tab 5's lock, parked on the gate.
 	go func() { _, _ = b.call(context.Background(), "work", map[string]any{"tabId": 5}) }()
 	waitUntil(t, func() bool { cur, _, _ := e.snapshot(); return cur == 1 })
 
-	// An exempt probe on the SAME tab must not wait on the lock -> cur reaches 2.
 	go func() {
 		_, _ = b.call(withoutTabLock(context.Background()), "work", map[string]any{"tabId": 5})
 	}()
@@ -437,9 +389,6 @@ func TestTabLockLifecycleSerializesRemovalAndNumericIDReuse(t *testing.T) {
 		return entry != nil && entry.refs == oldWaiters+1
 	})
 
-	// The browser removes tab 42 while its old operation and waiters still hold
-	// references. A new tab then reuses 42 and queues one more operation. All of
-	// them must share the original entry until the very last reference exits.
 	live := &websocket.Conn{}
 	b.mu.Lock()
 	b.conn = live
@@ -570,15 +519,11 @@ func TestTabLockTableReturnsToBaselineAfterHighCardinalityChurn(t *testing.T) {
 	}
 }
 
-// TestBridgeWaitsForReconnectInsteadOfFailing proves a call arriving while the
-// MV3 worker is momentarily disconnected parks for the reconnect instead of
-// failing fast with "not connected" — the spurious-disconnect class of errors.
 func TestBridgeWaitsForReconnectInsteadOfFailing(t *testing.T) {
 	b := New("", 3*time.Second, "")
 	e := newConcExtension()
 	connect, cleanup := startConcExtension(t, b, e)
 	defer cleanup()
-	// Deliberately do NOT connect yet: the socket is down when the call is made.
 
 	done := make(chan error, 1)
 	go func() {
@@ -586,7 +531,6 @@ func TestBridgeWaitsForReconnectInsteadOfFailing(t *testing.T) {
 		done <- err
 	}()
 
-	// The call must still be parked (not failed) while disconnected.
 	time.Sleep(150 * time.Millisecond)
 	select {
 	case err := <-done:
@@ -605,8 +549,6 @@ func TestBridgeWaitsForReconnectInsteadOfFailing(t *testing.T) {
 	}
 }
 
-// TestBridgeRetriesIdempotentReadAfterTransientDrop proves a read whose first
-// attempt hit a transient transport drop is retried once and succeeds.
 func TestBridgeRetriesIdempotentReadAfterTransientDrop(t *testing.T) {
 	b := New("", 3*time.Second, "")
 	e := newConcExtension()
@@ -623,8 +565,6 @@ func TestBridgeRetriesIdempotentReadAfterTransientDrop(t *testing.T) {
 	}
 }
 
-// TestBridgeDoesNotRetryMutatingOp proves a mutating op is NOT auto-retried after
-// a transient drop — re-issuing it could double-apply the action.
 func TestBridgeDoesNotRetryMutatingOp(t *testing.T) {
 	b := New("", 3*time.Second, "")
 	e := newConcExtension()
@@ -641,8 +581,6 @@ func TestBridgeDoesNotRetryMutatingOp(t *testing.T) {
 	}
 }
 
-// TestBridgeStatusReportsBackpressureMetrics proves the contention signal is
-// surfaced over /status for operators.
 func TestBridgeStatusReportsBackpressureMetrics(t *testing.T) {
 	b := New("", time.Second, "fake")
 	b.SetMaxInflight(4)
@@ -664,8 +602,6 @@ func TestBridgeStatusReportsBackpressureMetrics(t *testing.T) {
 	}
 }
 
-// TestBridgeUnboundedWhenCapDisabled proves SetMaxInflight(0) removes the cap:
-// all requests run concurrently with no semaphore gating.
 func TestBridgeUnboundedWhenCapDisabled(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetMaxInflight(0)
@@ -684,7 +620,7 @@ func TestBridgeUnboundedWhenCapDisabled(t *testing.T) {
 			_, _ = b.call(context.Background(), "work", nil)
 		}()
 	}
-	// With no cap, all n reach the extension at once.
+
 	waitUntil(t, func() bool { cur, _, _ := e.snapshot(); return cur == n })
 	drain(t, e, n)
 	wg.Wait()

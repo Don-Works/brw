@@ -528,8 +528,7 @@ func TestShutdownDrainsPendingPartialResponseWithoutPeerCloseHandshake(t *testin
 			return
 		}
 		close(partialSent)
-		// Deliberately neither read nor close again. A graceful WebSocket close
-		// would wait on this unresponsive peer's handshake.
+
 		peerDone <- nil
 	}()
 
@@ -577,7 +576,6 @@ func TestShutdownDrainsPendingPartialResponseWithoutPeerCloseHandshake(t *testin
 			connected, shuttingDown, pending, partials, partialBytes)
 	}
 
-	// A post-shutdown call fails immediately and cannot repopulate pending.
 	postCtx, cancelPost := context.WithTimeout(context.Background(), time.Second)
 	defer cancelPost()
 	start = time.Now()
@@ -661,8 +659,7 @@ func TestChunkedResponsesInterleaveByRequestAndDispatchOnce(t *testing.T) {
 			}
 			allFrames = append(allFrames, frames)
 		}
-		// Interleave two response IDs, then duplicate one completed final frame.
-		// The duplicate must be ignored rather than delivered twice or retained.
+
 		for _, frame := range [][]byte{allFrames[0][0], allFrames[1][0], allFrames[0][1], allFrames[0][1], allFrames[1][1]} {
 			if err := conn.Write(peerCtx, websocket.MessageText, frame); err != nil {
 				peerDone <- err

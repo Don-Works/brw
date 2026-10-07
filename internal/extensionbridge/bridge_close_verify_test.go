@@ -13,8 +13,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-// closeFailFakeExtension answers close_tab with a fixed error and reports the
-// closed tab in list_tabs for the first stillListedFor list calls.
 type closeFailFakeExtension struct {
 	mu             sync.Mutex
 	closeError     string

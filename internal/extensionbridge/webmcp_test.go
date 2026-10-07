@@ -15,9 +15,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// webmcpExtension answers set_webmcp the way the service worker does, or with
-// "unknown message type" the way an extension older than 0.7.7 does, and
-// records every set_webmcp it was sent.
 type webmcpExtension struct {
 	mu      sync.Mutex
 	legacy  bool
@@ -65,8 +62,6 @@ func (f *webmcpExtension) serve(ctx context.Context, conn *websocket.Conn) {
 	}
 }
 
-// connectWebMCPExtension attaches ext to b over a fresh socket and returns a
-// function that drops that socket.
 func connectWebMCPExtension(t *testing.T, b *Bridge, ext *webmcpExtension) func() {
 	t.Helper()
 	b.mu.RLock()
@@ -139,8 +134,6 @@ func TestEnsureWebMCPArmsOncePerTabPerConnection(t *testing.T) {
 	}
 }
 
-// A new socket can be a restarted service worker that lost every arm, so the
-// daemon must arm again rather than trust its record of the old worker.
 func TestEnsureWebMCPRearmsAfterReconnect(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetWebMCP(true)

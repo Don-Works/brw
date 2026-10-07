@@ -17,15 +17,11 @@ import (
 	"github.com/coder/websocket"
 )
 
-// frameCall is one read_cross_origin_frames message as it crossed the socket.
 type frameCall struct {
 	Origins    []string
 	Expression string
 }
 
-// frameExtension is a fake service worker carrying two cross-origin iframes. It
-// records every read_cross_origin_frames message and, like the real extension,
-// evaluates only in the origins the message named.
 type frameExtension struct {
 	mu    sync.Mutex
 	calls []frameCall
@@ -108,7 +104,7 @@ func (f *frameExtension) serve(ctx context.Context, conn *websocket.Conn) {
 			frames := make([]map[string]any, 0, len(frameFixtureOrigins))
 			for _, origin := range frameFixtureOrigins {
 				frame := map[string]any{"url": origin + "/embed", "origin": origin}
-				// The real extension evaluates only where it was told to.
+
 				if allowed[origin] && call.Expression != "" {
 					frame["snapshot"] = map[string]any{
 						"url": origin + "/embed",
@@ -154,16 +150,6 @@ func connectFrameExtension(t *testing.T, b *Bridge, f *frameExtension) func() {
 	}
 }
 
-// TestIncludeFramesReadsOnlyTheOriginsConsentAllows is the consent half of
-// include_frames on the bridge.
-//
-// brw_snapshot is granted against the origin the TAB is showing. include_frames
-// then runs brw's walker inside every cross-origin iframe of that page — the
-// payment form, the embedded editor — which is a read of a THIRD PARTY's
-// document that the embedder's grant never covered and the call's arguments
-// never named. So the extension is asked WHICH origins are embedded before any
-// expression is sent, each is put to the gate on its own, and the expression goes
-// out naming only the ones that passed.
 func TestIncludeFramesReadsOnlyTheOriginsConsentAllows(t *testing.T) {
 	frameOpts := snapshot.SnapshotOptions{Mode: "all"}
 	frameOpts.IncludeBoxes = true
@@ -227,8 +213,7 @@ func TestIncludeFramesReadsOnlyTheOriginsConsentAllows(t *testing.T) {
 			if len(calls) == 0 {
 				t.Fatal("include_frames sent no read_cross_origin_frames message")
 			}
-			// The first message must carry no expression: nothing runs in a third
-			// party's document before the daemon has decided about its origin.
+
 			if calls[0].Origins != nil || calls[0].Expression != "" {
 				t.Fatalf("the first frame message already carried an expression for %v; the origins were not decided first", calls[0].Origins)
 			}
@@ -246,8 +231,6 @@ func TestIncludeFramesReadsOnlyTheOriginsConsentAllows(t *testing.T) {
 				t.Fatalf("the expression was sent for %v, want %v", named, tc.wantOrigins)
 			}
 
-			// And what came back matches: a refused frame is still REPORTED, as the
-			// clickable box it was before include_frames could read it at all.
 			read := readFrameOrigins(snap.Elements)
 			if !sameOrigins(read, tc.wantRead) {
 				t.Fatalf("controls were merged from %v, want %v", read, tc.wantRead)
@@ -262,8 +245,6 @@ func TestIncludeFramesReadsOnlyTheOriginsConsentAllows(t *testing.T) {
 	}
 }
 
-// readFrameOrigins lists the origins whose CONTROLS were merged, by the frame
-// index their refs carry.
 func readFrameOrigins(elements []snapshot.Element) []string {
 	var out []string
 	for _, el := range elements {

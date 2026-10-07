@@ -9,14 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// A guarantee in a tool description has to hold on every transport. The
-// direct-CDP manager has its own live-Chrome test for credential redaction;
-// this is the same guarantee on the extension bridge, whose trace is read over
-// the same HTTP control plane.
-//
-// The probe value is named as probe data rather than as a credential: the OSS
-// hygiene gate flags a literal assigned to something called "secret", and a
-// gate people learn to override is worse than a duller name.
 const bridgeProbeValue = "fixture-login-value-one"
 
 func TestBridgeTraceWithholdsACredentialSourcedValue(t *testing.T) {
