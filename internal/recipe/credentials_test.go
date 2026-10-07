@@ -19,22 +19,12 @@ import (
 	"github.com/Don-Works/brw/internal/plugin"
 )
 
-// Low-entropy and obviously fabricated: every non-leakage assertion below hunts
-// for this exact literal, so it must never resemble a real credential.
 const (
 	fixtureCredentialValue = "fixture-login-value-one"
 	fixtureReference       = "work/login"
 	fixtureLoginOrigin     = "https://login.example.test"
 )
 
-// credentialSurface is the BROWSER side of the deterministic boundary.
-//
-// Everything it keeps in a field is state the daemon holds in production: the
-// trace lives in the manager or the bridge, and the other recorded arguments
-// are what brw sent browser-ward. The one thing it does not keep in a field is
-// the text it was told to type, which goes to a func the test owns — a func is
-// unreachable from a reflect walk, which models the truth that the page's copy
-// of a typed password lives in another process entirely.
 type credentialSurface struct {
 	mu        sync.Mutex
 	origin    string
@@ -93,9 +83,6 @@ func (s *credentialSurface) Type(ctx context.Context, ref, value string) error {
 	return s.typed(ctx, "type", ref, value)
 }
 
-// typed mirrors what both production transports do: hand the value to the page,
-// then write a trace entry through browser.RedactTraceEntry with the context
-// the caller built. The redaction under test is the real one.
 func (s *credentialSurface) typed(ctx context.Context, action, ref, value string) error {
 	s.mu.Lock()
 	s.trace = append(s.trace, browser.RedactTraceEntry(ctx, browser.TraceEntry{
@@ -172,8 +159,6 @@ func loginRecipe(value string) Recipe {
 	return recipe
 }
 
-// credentialRegistry builds the reference file provider holding one fixture
-// credential, so the whole flow runs on a machine with no vault CLI.
 func credentialRegistry(t *testing.T) *plugin.Registry {
 	t.Helper()
 	root, credentials := t.TempDir(), t.TempDir()
@@ -207,8 +192,6 @@ func credentialRegistry(t *testing.T) *plugin.Registry {
 	return registry
 }
 
-// typedRecorder stands in for the browser process. Nothing in the daemon's
-// object graph points at it.
 type typedRecorder struct {
 	mu     sync.Mutex
 	values []string
@@ -241,7 +224,6 @@ func TestCredentialReachesTheFillAndNothingElseThatIsWrittenDown(t *testing.T) {
 		t.Fatalf("run status = %q, steps %+v", result.Status, result.Steps)
 	}
 
-	// The feature has to actually work: the page was given the real value.
 	if got := typed.all(); len(got) != 2 || got[1] != fixtureCredentialValue {
 		t.Fatalf("browser received %q, want the resolved credential in the password field", got)
 	}
@@ -279,8 +261,7 @@ func TestCredentialReachesTheFillAndNothingElseThatIsWrittenDown(t *testing.T) {
 func TestCredentialIsScrubbedFromTheErrorResultAndFailureBundle(t *testing.T) {
 	typed := &typedRecorder{}
 	surface := newCredentialSurface(typed.record)
-	// A chatty transport quoting the text it could not type is the realistic
-	// path from a failed fill into the result, the response and the bundle.
+
 	surface.failOnRef = "e2"
 	surface.fillErr = fmt.Errorf("could not set field to %q", fixtureCredentialValue)
 	surface.bundleID = "art_11111111111111111111111111111111"
@@ -370,15 +351,6 @@ func TestRunWithNoProviderFailsBeforeTouchingTheBrowser(t *testing.T) {
 	}
 }
 
-// issuingResolver hands the run the registry's own answer and keeps the Secret
-// it issued.
-//
-// Copies of a Secret share one backing array by design, so this copy is the
-// daemon-side view of the value after the step. Without it the walk below is
-// insensitive to the wipe it is named for: the resolved Secret is a local in
-// actuateFromCredential and is unreachable from the objects the walker is
-// handed, so the walk would only catch a credential someone cached in the
-// registry, the service, the runner, the result, the recipe or the trace.
 type issuingResolver struct {
 	inner  credential.Resolver
 	issued credential.Secret
@@ -390,9 +362,6 @@ func (r *issuingResolver) Resolve(ctx context.Context, reference string) (creden
 	return secret, err
 }
 
-// Acceptance criterion 4: after the fill returns, nothing the daemon retains
-// holds the value. The walk reads unexported fields on purpose — the claim is
-// about the daemon's heap, not about what it chooses to marshal.
 func TestDaemonRetainsNoCredentialAfterTheFillReturns(t *testing.T) {
 	typed := &typedRecorder{}
 	surface := newCredentialSurface(typed.record)
@@ -419,7 +388,6 @@ func TestDaemonRetainsNoCredentialAfterTheFillReturns(t *testing.T) {
 		t.Fatalf("browser received %q; the walk below would be vacuous if the fill never carried the value", got)
 	}
 
-	// Everything brwd still owns once the run has returned.
 	retained := struct {
 		Registry *plugin.Registry
 		Resolver *issuingResolver
@@ -430,24 +398,18 @@ func TestDaemonRetainsNoCredentialAfterTheFillReturns(t *testing.T) {
 		Trace    []browser.TraceEntry
 	}{registry, resolver, service, runner, result, recipe, surface.trace}
 
-	// The issued Secret must still be a full-length buffer, or the walk over it
-	// is vacuous: an empty slice cannot hold a credential whether or not the
-	// runner wiped one.
 	if got := len(resolver.issued.Reveal()); got != len(fixtureCredentialValue) {
 		t.Fatalf("the resolver issued %d bytes, want %d; the walk cannot see the wipe", got, len(fixtureCredentialValue))
 	}
 	if hits := findRetained(reflect.ValueOf(retained), fixtureCredentialValue); len(hits) > 0 {
 		t.Fatalf("the daemon still holds the credential at %v", hits)
 	}
-	// The walk has to be able to find one, or it proves nothing.
+
 	if hits := findRetained(reflect.ValueOf(retained), fixtureReference); len(hits) == 0 {
 		t.Fatal("the walk found no occurrence of the reference name either; it is not reaching the retained state")
 	}
 }
 
-// retainingResolver keeps its own copy of the Secret it handed out. Copies of a
-// Secret share one backing array by design, so this copy is the daemon-side
-// view of the value after the step: it must read as zeroes.
 type retainingResolver struct {
 	value  string
 	issued credential.Secret
@@ -468,15 +430,12 @@ func TestRunnerWipesTheResolvedCredentialWhenTheStepReturns(t *testing.T) {
 	if got := typed.all(); len(got) != 2 || got[1] != fixtureCredentialValue {
 		t.Fatalf("browser received %q; a wipe assertion on a value that was never used proves nothing", got)
 	}
-	// Wiping zeroes the array in place, so the surviving copy keeps its length
-	// and loses its content. Checking the content is the only real check.
+
 	if got := resolver.issued.Reveal(); got != strings.Repeat("\x00", len(fixtureCredentialValue)) {
 		t.Fatalf("the credential survived the step as %q; the runner must wipe it when the fill returns", got)
 	}
 }
 
-// findRetained reports the paths of every string or byte slice under root that
-// contains needle, unexported fields included.
 func findRetained(root reflect.Value, needle string) []string {
 	var hits []string
 	seen := map[uintptr]bool{}
@@ -547,8 +506,7 @@ func TestAnInputCannotNameACredential(t *testing.T) {
 	typed := &typedRecorder{}
 	surface := newCredentialSurface(typed.record)
 	recipe := loginRecipe("fixture-static-text")
-	// The email step interpolates an input. A caller that hands it something
-	// shaped like a reference must get that text typed, not a resolved secret.
+
 	if _, err := (Runner{Surface: surface, Credentials: credentialRegistry(t)}).
 		Run(context.Background(), recipe, map[string]string{"user": credential.Scheme + fixtureReference}); err != nil {
 		t.Fatal(err)

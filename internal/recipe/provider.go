@@ -10,11 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -35,15 +37,13 @@ type Match struct {
 	Score       float64  `json:"score"`
 }
 
-// Provider is the private boundary. Search returns disclosure-safe metadata;
-// Fetch returns one exact immutable version after the caller pins its digest.
+// Provider is the private boundary.
 type Provider interface {
 	Search(context.Context, string, string, int) ([]Match, error)
 	Fetch(context.Context, string, string, string) (Recipe, error)
 }
 
-// Embedder lets a private deployment attach its own embedding model. brw never
-// sends recipe content to a model or vendor by itself.
+// Embedder lets a private deployment attach its own embedding model.
 type Embedder interface {
 	Embed(context.Context, string) ([]float64, error)
 }
@@ -56,8 +56,7 @@ type Catalog struct {
 	originPostings map[string][]int
 	byIdentity     map[string]int
 	latestByID     map[string]int
-	// byDigest answers "is this digest one of mine" without a scan, which is
-	// what routes a baseline to the provider that owns the recipe.
+
 	byDigest map[string]int
 }
 
@@ -75,19 +74,13 @@ type DirectoryConfig struct {
 	Embedder       Embedder
 }
 
-// DirectoryProvider keeps a modest, owner-only local recipe collection live
-// without requiring a browser-daemon restart after every new immutable version.
-// It fingerprints file metadata on each discovery/fetch and only rebuilds the
-// in-memory search index when the directory changes. Large collections should
-// use HTTPProvider so indexing and authorization remain provider-owned.
+// DirectoryProvider keeps a modest, owner-only local recipe collection live without requiring a browser-daemon restart after every new immutable version.
 type DirectoryProvider struct {
 	config      DirectoryConfig
 	mu          sync.Mutex
 	catalog     *Catalog
 	fingerprint string
-	// baselines is the provider-owned regression-baseline set, opened on first
-	// use and kept for the daemon's life. It lives under a reserved
-	// subdirectory of Root that recipe discovery skips; see baseline_provider.go.
+
 	baselineMu sync.Mutex
 	baselines  *baseline.Store
 }
@@ -136,9 +129,7 @@ func (p *DirectoryProvider) current(ctx context.Context) (*Catalog, error) {
 			return nil, err
 		}
 		if loadedFingerprint != fingerprint {
-			// An atomic installer changed the directory while this snapshot was
-			// loading. Retry from the observed state; never label the older index
-			// with the newer fingerprint and leave it silently stale.
+
 			fingerprint = loadedFingerprint
 			continue
 		}
@@ -303,6 +294,7 @@ func (c *Catalog) Search(ctx context.Context, query, origin string, limit int) (
 		}
 	}
 	candidates := c.candidates(queryTerms, origin, c.embedder != nil)
+	lowerQuery := strings.ToLower(query)
 	matches := make(matchMinHeap, 0, min(limit, len(candidates)))
 	for candidateIndex, entryIndex := range candidates {
 		if candidateIndex&255 == 0 {
@@ -315,15 +307,14 @@ func (c *Catalog) Search(ctx context.Context, query, origin string, limit int) (
 			continue
 		}
 		score := lexicalScore(queryTerms, entry.terms, c.idf)
-		if strings.Contains(entry.doc, strings.ToLower(query)) {
+		if strings.Contains(entry.doc, lowerQuery) {
 			score += 2
 		}
 		if c.embedder != nil {
 			if len(queryVector) != len(entry.vector) {
 				return nil, errors.New("query embedding dimension mismatch")
 			}
-			// Embeddings drive ranking; lexical overlap remains a deterministic
-			// tie-breaker and helps exact IDs/site names.
+
 			score = 10*dot(queryVector, entry.vector) + score
 		}
 		if score <= 0 {
@@ -501,17 +492,12 @@ func (c *Catalog) candidates(queryTerms map[string]float64, origin string, seman
 	seen := make(map[int]struct{})
 	for term := range queryTerms {
 		for _, index := range c.postings[term] {
-			if origin == "" || contains(c.entries[index].recipe.Origins, origin) {
+			if origin == "" || slices.Contains(c.entries[index].recipe.Origins, origin) {
 				seen[index] = struct{}{}
 			}
 		}
 	}
-	out := make([]int, 0, len(seen))
-	for index := range seen {
-		out = append(out, index)
-	}
-	sort.Ints(out)
-	return out
+	return slices.Sorted(maps.Keys(seen))
 }
 
 type matchMinHeap []Match
@@ -579,9 +565,7 @@ func NewHTTPProvider(config HTTPProviderConfig) (*HTTPProvider, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
-	// Provider replies are authenticated inputs. Refuse redirects rather than
-	// risk forwarding a bearer credential to a downgraded or substituted
-	// endpoint; operators should configure the canonical base URL directly.
+
 	clientCopy := *client
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return errors.New("recipe provider redirects are not allowed")
@@ -647,7 +631,7 @@ func validateMatch(match Match, requestedOrigin string) error {
 			return err
 		}
 	}
-	if requestedOrigin != "" && !contains(match.Origins, requestedOrigin) {
+	if requestedOrigin != "" && !slices.Contains(match.Origins, requestedOrigin) {
 		return errors.New("provider returned a match outside the requested origin")
 	}
 	digest, err := hex.DecodeString(match.Digest)
@@ -688,10 +672,6 @@ func (p *HTTPProvider) Fetch(ctx context.Context, id, version, digest string) (R
 	return out.Recipe, nil
 }
 
-// maxProviderResponseBytes caps every provider response this client reads. It
-// is a named constant because the baseline image bound is derived from it: a
-// capture the put accepts that no fetch can return is a baseline stored and
-// never usable again.
 const maxProviderResponseBytes = 8 << 20
 
 func (p *HTTPProvider) post(ctx context.Context, path string, body, out any) error {
@@ -753,7 +733,7 @@ func EnsurePrivateRoot(recipeRoot, repositoryRoot string) error {
 	if err != nil {
 		return err
 	}
-	if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+	if filepath.IsLocal(relative) {
 		return errors.New("recipe root must be outside the open-source repository")
 	}
 	return nil
@@ -791,9 +771,7 @@ func validateDirectoryRoot(config DirectoryConfig) error {
 	return nil
 }
 
-// PreparePrivateDirectory creates a dedicated local recipe root without ever
-// placing it in a Git checkout. Existing roots are tightened to owner-only
-// permissions; files within them are still validated independently on load.
+// PreparePrivateDirectory creates a dedicated local recipe root without ever placing it in a Git checkout.
 func PreparePrivateDirectory(path string) error {
 	if !filepath.IsAbs(path) {
 		return errors.New("recipe root must be absolute")
@@ -840,8 +818,7 @@ func PreparePrivateDirectory(path string) error {
 	if !opened.IsDir() || !os.SameFile(info, opened) {
 		return errors.New("recipe root changed while opening")
 	}
-	// Change permissions through the verified descriptor. A path-based chmod
-	// could follow a symlink swapped in after Lstat and modify another target.
+
 	if err := directory.Chmod(0o700); err != nil {
 		return err
 	}
@@ -859,8 +836,7 @@ func PreparePrivateDirectory(path string) error {
 	return EnsureOutsideGitCheckout(resolved)
 }
 
-// EnsureOutsideGitCheckout rejects any recipe root nested beneath a directory
-// containing .git, independent of the daemon's current working directory.
+// EnsureOutsideGitCheckout rejects any recipe root nested beneath a directory containing .git, independent of the daemon's current working directory.
 func EnsureOutsideGitCheckout(path string) error {
 	resolved, err := resolveExistingPrefix(path)
 	if err != nil {
@@ -885,31 +861,10 @@ func EnsureOutsideGitCheckout(path string) error {
 	}
 }
 
-// isReservedBaselineDir reports whether path is the provider's own baseline
-// subtree.
-//
-// Recipe discovery parses every .json file under the root as a recipe and
-// refuses the directory if one does not parse. A stored baseline is a .json
-// file, so without this the first baseline written would take the whole private
-// recipe corpus offline. It is skipped in the fingerprint walk as well, so
-// recording one does not force a re-index of every recipe either.
 func isReservedBaselineDir(root, path string) bool {
 	return filepath.Clean(path) == filepath.Join(filepath.Clean(root), BaselineRoot)
 }
 
-// checkReservedBaselineDir refuses a reserved subtree holding anything but
-// baseline records.
-//
-// Skipping the directory is what lets baselines live inside the recipe root,
-// and it is also how an operator who happened to keep recipes in a folder
-// called "baselines" would find them silently undiscovered. A recipe that
-// stopped being served with no error is worse than a root that refuses to load
-// and says why, so the name is reserved out loud.
-//
-// The name is not enough on its own: a recipe saved as baseline.json under the
-// reserved tree would pass a name check and be exactly the silently-undiscovered
-// recipe this guard exists to prevent. So every .json file here is read and
-// required to be a baseline record.
 func checkReservedBaselineDir(root string) error {
 	dir := filepath.Join(filepath.Clean(root), BaselineRoot)
 	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
@@ -922,10 +877,7 @@ func checkReservedBaselineDir(root string) error {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			return nil
 		}
-		// The offending file's own path from the recipe root, so the message
-		// names something that exists. A directory name rebuilt from the file's
-		// parent reads correctly only when the file happens to sit one level
-		// down, and sends the operator to <root>/baselines/baselines otherwise.
+
 		relative, err := filepath.Rel(root, path)
 		if err != nil {
 			relative = filepath.Join(BaselineRoot, entry.Name())
@@ -943,14 +895,8 @@ func checkReservedBaselineDir(root string) error {
 	})
 }
 
-// maxBaselineRecordBytes bounds one record file read at load. The record holds
-// no image — the screenshot lives beside it as a PNG — so this is generous for
-// a key, an environment and an ARIA tree, and it is here because the
-// fingerprint walk's own 1 MiB cap skips this subtree.
 const maxBaselineRecordBytes = 8 << 20
 
-// checkBaselineRecordFile reports whether one file under the reserved subtree
-// is a baseline record rather than a recipe wearing the record's file name.
 func checkBaselineRecordFile(path string) error {
 	file, err := os.Open(path)
 	if err != nil {
@@ -1113,15 +1059,17 @@ func normalize(vector []float64) ([]float64, error) {
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return nil, errors.New("embedding contains non-finite value")
 		}
-		total += value * value
+		total = math.Hypot(total, value)
 	}
 	if total == 0 {
 		return nil, errors.New("embedding has zero magnitude")
 	}
-	scale := 1 / math.Sqrt(total)
+	if math.IsInf(total, 0) {
+		return nil, errors.New("embedding magnitude is not finite")
+	}
 	out := make([]float64, len(vector))
 	for index, value := range vector {
-		out[index] = value * scale
+		out[index] = value / total
 	}
 	return out, nil
 }
@@ -1134,36 +1082,20 @@ func dot(left, right []float64) float64 {
 	return out
 }
 
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
-
 func cloneRecipe(value Recipe) Recipe {
 	cloned := value
 	cloned.Intents = append([]string(nil), value.Intents...)
 	cloned.Origins = append([]string(nil), value.Origins...)
-	if value.Inputs != nil {
-		cloned.Inputs = make(map[string]Input, len(value.Inputs))
-		for name, input := range value.Inputs {
-			cloned.Inputs[name] = input
-		}
-	}
-	if value.Metadata != nil {
-		cloned.Metadata = make(map[string]string, len(value.Metadata))
-		for key, item := range value.Metadata {
-			cloned.Metadata[key] = item
-		}
-	}
+	cloned.Inputs = maps.Clone(value.Inputs)
+	cloned.Metadata = maps.Clone(value.Metadata)
+	cloned.Requires = slices.Clone(value.Requires)
 	cloned.Steps = append([]Step(nil), value.Steps...)
 	for index := range cloned.Steps {
 		cloned.Steps[index].Target = cloneTarget(value.Steps[index].Target)
 		cloned.Steps[index].Event = cloneEvent(value.Steps[index].Event)
 		cloned.Steps[index].Postcondition = cloneEvent(value.Steps[index].Postcondition)
+		cloned.Steps[index].Assert = cloneAssertion(value.Steps[index].Assert)
+		cloned.Steps[index].SiteIdempotency = cloneSiteIdempotency(value.Steps[index].SiteIdempotency)
 		if value.Steps[index].Capture != nil {
 			capture := *value.Steps[index].Capture
 			capture.Target = cloneTarget(value.Steps[index].Capture.Target)
@@ -1179,27 +1111,45 @@ func cloneRecipe(value Recipe) Recipe {
 	return cloned
 }
 
+func cloneValue[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
 func cloneTarget(value *Target) *Target {
-	if value == nil {
-		return nil
+	cloned := cloneValue(value)
+	if cloned != nil {
+		cloned.Visible = cloneValue(value.Visible)
 	}
-	cloned := *value
-	if value.Visible != nil {
-		visible := *value.Visible
-		cloned.Visible = &visible
-	}
-	return &cloned
+	return cloned
 }
-
 func cloneEvent(value *Event) *Event {
-	if value == nil {
-		return nil
+	cloned := cloneValue(value)
+	if cloned != nil {
+		cloned.Target = cloneTarget(value.Target)
 	}
-	cloned := *value
-	cloned.Target = cloneTarget(value.Target)
-	return &cloned
+	return cloned
 }
-
+func cloneAssertion(value *Assertion) *Assertion {
+	cloned := cloneValue(value)
+	if cloned != nil {
+		cloned.Target = cloneTarget(value.Target)
+		cloned.Count = cloneValue(value.Count)
+		cloned.Min = cloneValue(value.Min)
+		cloned.Max = cloneValue(value.Max)
+		cloned.Bytes = cloneValue(value.Bytes)
+	}
+	return cloned
+}
+func cloneSiteIdempotency(value *SiteIdempotency) *SiteIdempotency {
+	cloned := cloneValue(value)
+	if cloned != nil {
+		cloned.Target = cloneTarget(value.Target)
+	}
+	return cloned
+}
 func isLoopback(host string) bool {
 	return host == "127.0.0.1" || host == "localhost" || host == "::1"
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -22,8 +23,7 @@ type ResolvedElement struct {
 	Name string `json:"name"`
 }
 
-// Surface is the deliberately narrow deterministic browser boundary. Its
-// implementation resolves semantic targets to ephemeral refs at execution time.
+// Surface is the deliberately narrow deterministic browser boundary.
 type Surface interface {
 	Origin(context.Context) (string, error)
 	Resolve(context.Context, Target) ([]ResolvedElement, error)
@@ -37,17 +37,12 @@ type Surface interface {
 	Capture(context.Context, CaptureSpec) (artifact.Meta, error)
 }
 
-// EventArmer is an optional stronger event contract. A browser surface uses it
-// to install network/download/tab observation before an action, eliminating the
-// race where a synchronous response happens before a postcondition starts.
+// EventArmer is an optional stronger event contract.
 type EventArmer interface {
 	ArmEvent(context.Context, Event) (func(context.Context) error, error)
 }
 
-// EventProber checks durable desired state without waiting. External writes use
-// it before actuation: if the pinned postcondition already holds, the recipe is
-// an idempotent no-op rather than a duplicate write. Transient events always
-// probe false because only a newly armed occurrence can acknowledge an action.
+// EventProber checks durable desired state without waiting.
 type EventProber interface {
 	EventSatisfied(context.Context, Event) (bool, error)
 }
@@ -87,9 +82,7 @@ type RunResult struct {
 	DurationMS    int64                    `json:"duration_ms"`
 	Steps         []StepResult             `json:"steps"`
 	Artifacts     []artifact.Meta          `json:"artifacts,omitempty"`
-	// FailureBundle is the manifest artifact id for a failed run, when the
-	// browser host collected evidence. The manifest lists artifact ids only, so
-	// this stays a handle-sized addition to a result, never a payload.
+	// FailureBundle is the manifest artifact id for a failed run, when the browser host collected evidence.
 	FailureBundle string `json:"failure_bundle_artifact_id,omitempty"`
 }
 
@@ -103,44 +96,32 @@ type StepResult struct {
 type Runner struct {
 	Surface Surface
 	Clock   Clock
-	// Credentials resolves a step's secret:// reference at the moment that step
-	// is dispatched. It is the daemon's plugin registry in production and nil
-	// when no plugin holds credential.read, in which case a recipe that names a
-	// credential fails before it touches the browser.
+	// Credentials resolves a step's secret:// reference at the moment that step is dispatched.
 	Credentials credential.Resolver
 	MaxDuration time.Duration
-	// Receipts records external writes with the provider before they are
-	// dispatched, so a daemon that dies mid-write leaves evidence the next run
-	// can find. Nil disables the mechanism: the runner then still refuses a
-	// write whose desired state already holds, but a run interrupted between
-	// dispatch and acknowledgement leaves nothing behind.
+	// Receipts records external writes with the provider before they are dispatched, so a daemon that dies mid-write leaves evidence the next run can find.
 	Receipts Receipts
 }
 
-// DefaultMaxRunDuration is shared with remote transports so their connection
-// deadline never cuts off a recipe that the runner itself still permits.
+// DefaultMaxRunDuration is shared with remote transports so their connection deadline never cuts off a recipe that the runner itself still permits.
 const DefaultMaxRunDuration = 30 * time.Minute
 
 func (r Runner) Run(ctx context.Context, value Recipe, inputs map[string]string) (result RunResult, runErr error) {
 	if err := Validate(value); err != nil {
 		return RunResult{}, err
 	}
-	// Checked here rather than in Validate so an already-published recipe stays
-	// parseable and keeps its digest, while nothing brw executes can commit an
-	// external write it never reads back.
+
 	if err := RequireWriteVerification(value); err != nil {
 		return RunResult{}, err
 	}
 	if r.Surface == nil {
 		return RunResult{}, errors.New("recipe runner needs a browser surface")
 	}
-	// After the surface is known, because the capability check asks the surface
-	// what it can do.
+
 	if err := r.checkReceiptCapabilities(value); err != nil {
 		return RunResult{}, err
 	}
-	// Same point in the run, same reason: a declared requirement is refused
-	// before the first browser action, never discovered at the login form.
+
 	if err := r.checkRequirements(value); err != nil {
 		return RunResult{}, err
 	}
@@ -158,14 +139,11 @@ func (r Runner) Run(ctx context.Context, value Recipe, inputs map[string]string)
 	if err := validateInputs(value, inputs); err != nil {
 		return RunResult{}, err
 	}
-	// Expand and revalidate the ENTIRE runtime plan before step one. Otherwise a
-	// missing optional input or an expansion that erases/overgrows a selector in
-	// a later step could fail only after earlier browser actions had already run.
+
 	if err := preflightRuntimePlan(value, inputs); err != nil {
 		return RunResult{}, err
 	}
-	// Refuse a credential-bearing recipe with no provider before step one, so a
-	// login flow does not half-run and leave a partly filled form behind.
+
 	if err := preflightCredentials(value, r.Credentials); err != nil {
 		return RunResult{}, err
 	}
@@ -184,9 +162,7 @@ func (r Runner) Run(ctx context.Context, value Recipe, inputs map[string]string)
 		stepResult := StepResult{ID: step.ID, Status: "running"}
 		attempts, err := r.runStep(runCtx, value, step, inputs, &result)
 		if err == nil {
-			// A click, navigation, timer, or wait may finish after the page has
-			// crossed origins. Never report a successful final step on a page the
-			// pinned recipe was not allowed to operate.
+
 			err = r.checkOrigin(runCtx, value.Origins)
 		}
 		stepResult.Attempts = attempts
@@ -196,12 +172,10 @@ func (r Runner) Run(ctx context.Context, value Recipe, inputs map[string]string)
 			result.Steps = append(result.Steps, stepResult)
 			result.Status = "failed"
 			failure := fmt.Errorf("step %q: %w", step.ID, redactInputs(err, inputs))
-			// The evidence is collected from the already-redacted failure, so the
-			// manifest cannot reintroduce an input the error text withheld.
+
 			if bundle := r.captureFailureEvidence(ctx, value, step.ID, failure.Error()); bundle != "" {
 				result.FailureBundle = bundle
-				// The id and nothing else. Whoever reads it decides which of the
-				// bundled artifacts is worth pulling into context.
+
 				failure = fmt.Errorf("%w; failure evidence bundle %s", failure, bundle)
 			}
 			return result, failure
@@ -215,17 +189,11 @@ func (r Runner) Run(ctx context.Context, value Recipe, inputs map[string]string)
 
 func (r Runner) runStep(ctx context.Context, value Recipe, step Step, inputs map[string]string, result *RunResult) (int, error) {
 	ctx = browser.WithAllowedOrigins(ctx, value.Origins)
-	// Sensitivity follows every runtime template the step can send into browser
-	// inspection or actuation, including event and postcondition matches. This is
-	// deliberately applied before the action-specific branch so a standalone
-	// wait_event cannot leak a declared secret through transport tracing either.
+
 	if stepUsesSecret(step, value.Inputs) {
 		ctx = browser.WithSensitiveAction(ctx)
 	}
-	// A provider-sourced value is a stronger statement than a caller-declared
-	// secret: brw knows the caller never saw it. The mark implies sensitivity,
-	// and it is what makes a later trace-to-recipe compilation refuse the step
-	// instead of inventing a placeholder for the value it cannot see.
+
 	if _, ok := StepCredentialReference(step); ok {
 		ctx = browser.WithCredentialSourced(ctx)
 	}
@@ -258,10 +226,7 @@ func (r Runner) runStep(ctx context.Context, value Recipe, step Step, inputs map
 			if len(matches) != 1 {
 				return 0, fmt.Errorf("semantic capture target resolved to %d elements; refusing to guess", len(matches))
 			}
-			// Resolving a semantic target executes against live page state. Pin the
-			// ephemeral ref only after resolution, then re-check the exact origin
-			// before allowing capture so a navigation race cannot persist bytes from
-			// a page outside this recipe's allowlist.
+
 			capture.Ref = matches[0].Ref
 			capture.Target = nil
 			if err := r.checkOrigin(ctx, value.Origins); err != nil {
@@ -280,9 +245,7 @@ func (r Runner) runStep(ctx context.Context, value Recipe, step Step, inputs map
 		}
 		return 1, err
 	case "assert":
-		// No retry and no timeout: the assertion reads current state once. A
-		// recipe that needs the page to settle first puts a wait_event in front
-		// of it, where the wait is visible to whoever reviews the recipe.
+
 		asserter, ok := r.Surface.(Asserter)
 		if !ok {
 			return 0, errors.New("deterministic assertions are unavailable on this browser surface")
@@ -338,8 +301,7 @@ func (r Runner) runActuation(ctx context.Context, recipe Recipe, step Step, inpu
 			return 0, fmt.Errorf("preflight postcondition: %w", err)
 		}
 		if satisfied {
-			// Zero attempts is intentional and visible in the result: the desired
-			// state was already present, so no browser write was issued.
+
 			return 0, nil
 		}
 		if r.Receipts != nil {
@@ -368,8 +330,7 @@ func (r Runner) runActuation(ctx context.Context, recipe Recipe, step Step, inpu
 			}
 			ref = matches[0].Ref
 		}
-		// Resolution can execute page code and race a navigation. Re-check the
-		// exact origin at the last possible point before every actuation.
+
 		if err := r.checkOrigin(ctx, origins); err != nil {
 			return attempt, err
 		}
@@ -384,9 +345,7 @@ func (r Runner) runActuation(ctx context.Context, recipe Recipe, step Step, inpu
 			} else if transientEvent(postcondition.Kind) {
 				return attempt, errors.New("transient postcondition requires pre-arm support")
 			}
-			// Arming may cross an asynchronous browser boundary. Do not actuate if
-			// the request expired or the page changed origin while the waiter was
-			// being installed.
+
 			if err := ctx.Err(); err != nil {
 				return attempt, err
 			}
@@ -426,8 +385,7 @@ func (r Runner) runActuation(ctx context.Context, recipe Recipe, step Step, inpu
 				wait = func(waitCtx context.Context) error { return r.Surface.WaitEvent(waitCtx, *postcondition) }
 			}
 			if postErr := wait(ctx); postErr == nil {
-				// Reconciles "action committed but acknowledgement was lost"
-				// without issuing the external write a second time.
+
 				acknowledged = true
 			} else {
 				lastErr = errors.Join(lastErr, postErr)
@@ -435,9 +393,7 @@ func (r Runner) runActuation(ctx context.Context, recipe Recipe, step Step, inpu
 		}
 		if acknowledged {
 			if receipt != nil {
-				// Completion evidence is recorded here and nowhere earlier: the
-				// postcondition passing is the only thing that distinguishes a
-				// write that landed from a request that left the machine.
+
 				receipt.evidence = "postcondition " + postcondition.Kind + " passed"
 				if err := receipt.commit(ctx); err != nil {
 					return attempt, fmt.Errorf("record write completion: %w", err)
@@ -728,8 +684,7 @@ func (s *Service) SearchRecipes(ctx context.Context, query, origin string, limit
 	if len(matches) > limit {
 		return nil, errors.New("recipe provider returned more matches than requested")
 	}
-	// Never return provider-owned backing storage across this trust boundary.
-	// A remote adapter or plugin may reuse its buffers after Search returns.
+
 	safeMatches := make([]Match, len(matches))
 	seen := make(map[string]bool, len(matches))
 	for index := range matches {
@@ -798,9 +753,6 @@ func (s *Service) resolveRecipe(ctx context.Context, request RunRequest) (Recipe
 	return value, nil
 }
 
-// acquireRunLocks makes a recipe one transaction with respect to other recipes
-// in this daemon. Runs on different explicit tabs remain parallel, while an
-// expanded external-write idempotency key also singleflights across tabs.
 func (s *Service) acquireRunLocks(ctx context.Context, value Recipe, inputs map[string]string) (func(), error) {
 	tabID := browser.TabIDFromContext(ctx)
 	if tabID == "" {
@@ -821,7 +773,7 @@ func (s *Service) acquireRunLocks(ctx context.Context, value Recipe, inputs map[
 		keys = append(keys, "write:"+key)
 	}
 	sort.Strings(keys)
-	keys = slicesCompact(keys)
+	keys = slices.Compact(keys)
 	releases := make([]func(), 0, len(keys))
 	for _, key := range keys {
 		release, err := s.acquireRunLock(ctx, key)
@@ -838,19 +790,6 @@ func (s *Service) acquireRunLocks(ctx context.Context, value Recipe, inputs map[
 			releases[index]()
 		}
 	}, nil
-}
-
-func slicesCompact(values []string) []string {
-	if len(values) < 2 {
-		return values
-	}
-	out := values[:1]
-	for _, value := range values[1:] {
-		if value != out[len(out)-1] {
-			out = append(out, value)
-		}
-	}
-	return out
 }
 
 func (s *Service) acquireRunLock(ctx context.Context, key string) (func(), error) {

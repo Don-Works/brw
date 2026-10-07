@@ -6,18 +6,7 @@ import (
 	"strings"
 )
 
-// ReviewBody renders a recipe as the text a human reviews before it is
-// published.
-//
-// JSON is what the runner executes and what the digest covers; it is not what a
-// reviewer can read a change out of. Reordering two keys in a 200-line document
-// produces a diff that looks like a rewrite, and a postcondition buried three
-// levels down reads as punctuation. This renders one fact per line, in a fixed
-// order with no map iteration anywhere, so recompiling an unchanged trace
-// produces a byte-identical body and a changed trace produces a diff whose size
-// matches the size of the change.
-//
-// It is a rendering, never an input: nothing parses it back.
+// ReviewBody renders a recipe as the text a human reviews before it is published.
 func ReviewBody(value Recipe, targets []CompiledTarget) string {
 	byStep := make(map[string]CompiledTarget, len(targets))
 	for _, target := range targets {
@@ -73,10 +62,7 @@ func writeReviewStep(body *strings.Builder, position int, step Step, derived Com
 	}
 	if step.URL != "" {
 		fmt.Fprintf(body, "  url %s\n", step.URL)
-		// On their own lines because a query string and a fragment are where a
-		// recording's one-time token ends up — a session id in the query, an
-		// implicit-flow token in the fragment — and buried at the end of a long
-		// URL a reviewer reads past them.
+
 		query, fragment := urlQueryAndFragment(step.URL)
 		if query != "" {
 			fmt.Fprintf(body, "  url_query %s\n", query)
@@ -104,9 +90,7 @@ func writeReviewStep(body *strings.Builder, position int, step Step, derived Com
 		fmt.Fprintf(body, "  idempotency_key %s\n", step.IdempotencyKey)
 	}
 	if step.SiteIdempotency != nil {
-		// Guarded like every other optional pointer here: this renders a recipe
-		// that may not have been through Validate, and a reviewer reading a
-		// malformed one needs the rendering, not a panic.
+
 		fmt.Fprintf(body, "  site_idempotency %s\n", step.SiteIdempotency.Kind)
 		if step.SiteIdempotency.Target != nil {
 			fmt.Fprintf(body, "  site_idempotency target %s\n", describeTarget(*step.SiteIdempotency.Target))
@@ -118,10 +102,7 @@ func writeReviewStep(body *strings.Builder, position int, step Step, derived Com
 	if step.Postcondition != nil {
 		fmt.Fprintf(body, "  postcondition %s\n", describeEvent(*step.Postcondition))
 	} else if actuationActions[step.Action] {
-		// Stated rather than left blank. The compiler infers a postcondition
-		// from the observation after the action, and an observation showing no
-		// change yields none; a reviewer who is not told reads the absence as a
-		// rendering that omits it.
+
 		body.WriteString("  postcondition none\n")
 	}
 	if step.Assert != nil {
@@ -135,9 +116,6 @@ func writeReviewStep(body *strings.Builder, position int, step Step, derived Com
 	}
 }
 
-// urlQueryAndFragment splits a URL's trailing query and fragment off, each
-// without its leading delimiter, and returns empty strings for the parts a URL
-// does not carry.
 func urlQueryAndFragment(raw string) (string, string) {
 	fragment := ""
 	if index := strings.Index(raw, "#"); index >= 0 {
@@ -206,9 +184,6 @@ func describeAssertion(assertion Assertion) string {
 	return strings.Join(parts, " ")
 }
 
-// singleLine keeps one reviewed fact on one reviewed line. A description
-// carrying a newline would otherwise turn into two lines that look like two
-// facts, one of them unlabelled.
 func singleLine(value string) string {
 	replacer := strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
 	return strings.TrimSpace(replacer.Replace(value))

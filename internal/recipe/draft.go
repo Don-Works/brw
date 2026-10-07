@@ -3,17 +3,15 @@ package recipe
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/Don-Works/brw/internal/credential"
 )
 
 // TraceAction is one entry of brw_trace, reduced to the fields a draft can use.
-// It deliberately mirrors browser.TraceEntry's JSON rather than importing it:
-// drafting is an offline transform over a saved trace, and must not drag the
-// browser package into the CLI.
 type TraceAction struct {
 	Action            string `json:"action"`
 	Ref               string `json:"ref,omitempty"`
@@ -28,26 +26,10 @@ type TraceAction struct {
 	OK                bool   `json:"ok"`
 }
 
-// ErrCredentialSourcedAction is the compile failure for a recorded action whose
-// typed value came from a credential provider.
+// ErrCredentialSourcedAction is the compile failure for a recorded action whose typed value came from a credential provider.
 var ErrCredentialSourcedAction = errors.New("trace action typed a value that came from a credential provider")
 
-// GuardTraceActionForCompilation is the refusal every trace-to-recipe
-// compilation must apply once per recorded action before emitting a step.
-//
-// A credential-sourced value is a compile FAILURE, not a placeholder to infer.
-// brw records that the value came from a provider and deliberately does not
-// record which reference produced it, so there is nothing to infer from — and a
-// guess would produce a recipe that types the wrong secret into the right
-// field. The human writes the secret:// reference by hand or the recipe does
-// not exist.
-//
-// DraftFromTrace is its only caller today. It is kept separate from that
-// function so a compiler with its own step emitter adopts the same refusal
-// instead of reimplementing it, and
-// TestEveryTraceCompilerCallsTheCredentialGuard fails on a new entry point over
-// []TraceAction that does not call it — a second compiler that refuses a
-// credential action as a side effect of some other check is not this refusal.
+// GuardTraceActionForCompilation is the refusal every trace-to-recipe compilation must apply once per recorded action before emitting a step.
 func GuardTraceActionForCompilation(index int, action TraceAction) error {
 	if !action.CredentialSourced {
 		return nil
@@ -56,8 +38,7 @@ func GuardTraceActionForCompilation(index int, action TraceAction) error {
 		index+1, action.Action, ErrCredentialSourcedAction, credential.Scheme)
 }
 
-// DraftOptions parameterises a draft. Everything a human must decide is either
-// asked for here or emitted as a TODO marker.
+// DraftOptions parameterises a draft.
 type DraftOptions struct {
 	ID          string
 	Version     string
@@ -66,45 +47,25 @@ type DraftOptions struct {
 	Origins     []string
 }
 
-// TodoMarker is planted wherever the generator refuses to guess. It is not a
-// valid value for any field it appears in, so `brwctl recipe validate` fails
-// loudly until a human resolves it. That is the point: this removes typing,
-// never review.
+// TodoMarker is planted wherever the generator refuses to guess.
 const TodoMarker = "TODO"
 
-// writeActions are the browser actuations that must declare an effect.
 var writeActions = map[string]bool{
 	"click": true, "fill": true, "type": true,
 	"select": true, "press": true, "navigate_to": true,
 }
 
-// sendish marks actions whose accessible name suggests they deliver something
-// to a third party. A trace containing one is split into two drafts so a
-// stored recipe cannot turn prior authorisation into standing permission.
 var sendishNames = []string{"send", "post", "submit", "publish", "reply", "confirm", "pay", "delete"}
 
 // DraftFromTrace converts a recorded trace into a schema-v1 recipe skeleton.
-//
-// It generates the mechanical parts — schema version, step ids, ordering,
-// action mapping, and a stable Target for each step derived from the recorded
-// role plus accessible name. It refuses to generate the judgement parts:
-// every actuation gets effect TODO and a postcondition TODO, because a
-// generator cannot know whether a click is a read or an external write, and a
-// wrong guess there is exactly the failure the effect field exists to prevent.
-//
-// When the trace contains a send-shaped action, two drafts come back: a
-// prepare draft ending before it, and a send draft containing it. Callers must
-// keep them separate.
 func DraftFromTrace(actions []TraceAction, opts DraftOptions) ([]Recipe, error) {
 	usable := make([]TraceAction, 0, len(actions))
 	for index, a := range actions {
-		// Checked before the OK filter: a credential fill that failed still says
-		// a credential was in this flow, and a draft that silently dropped it
-		// would look complete while missing the login.
+
 		if err := GuardTraceActionForCompilation(index, a); err != nil {
 			return nil, err
 		}
-		// A failed action is not evidence of a working flow.
+
 		if !a.OK {
 			continue
 		}
@@ -185,9 +146,7 @@ func draftSteps(actions []TraceAction) []Step {
 		switch a.Action {
 		case "fill", "type":
 			if a.Redacted {
-				// The value was withheld from the trace because the field is
-				// credential-bearing. Never invent one, and never inline one:
-				// point at a declared input instead.
+
 				step.Value = "${input:" + TodoMarker + "_secret_input}"
 			} else if a.Text != "" {
 				step.Value = a.Text
@@ -201,11 +160,7 @@ func draftSteps(actions []TraceAction) []Step {
 				Kind:      TodoMarker + ": page.ready | text.present | element.value | url.match | download.completed",
 				TimeoutMS: 15000,
 			}
-			// Element-kind events need a target of their own. Pre-fill it with
-			// the step's, which is the overwhelmingly common case (assert on
-			// the thing you just acted on) and is otherwise a second manual
-			// edit for information the draft already has. A human choosing a
-			// page- or url-kind event deletes it.
+
 			if step.Target != nil {
 				t := *step.Target
 				step.Postcondition.Target = &t
@@ -216,10 +171,6 @@ func draftSteps(actions []TraceAction) []Step {
 	return steps
 }
 
-// draftTarget turns a recorded ref into stable semantic identity. A ref is
-// meaningful only against the page state that produced it, so it is never
-// carried into a recipe; the role plus accessible name is what a runner can
-// resolve again.
 func draftTarget(a TraceAction) *Target {
 	role := strings.TrimSpace(a.Role)
 	name := strings.TrimSpace(a.Name)
@@ -234,8 +185,7 @@ func draftTarget(a TraceAction) *Target {
 	case name == "":
 		t.Name = TodoMarker + ": exact accessible name, test id, or href fragment"
 	case a.NameIsVisibleText:
-		// The element's own text carried its accessible name when the action
-		// ran, so an exact-name match can be asserted and will pass.
+
 		t.Name = name
 	default:
 		t.NameContains = name
@@ -243,8 +193,6 @@ func draftTarget(a TraceAction) *Target {
 	return t
 }
 
-// splitAtSend divides a trace at the first send-shaped actuation, so message
-// composition and delivery become separate reviewable recipes.
 func splitAtSend(actions []TraceAction) [][]TraceAction {
 	for i, a := range actions {
 		if !writeActions[a.Action] {
@@ -280,10 +228,5 @@ func normaliseOrigins(explicit []string, actions []TraceAction) []string {
 		}
 		seen[u.Scheme+"://"+u.Host] = struct{}{}
 	}
-	out := make([]string, 0, len(seen))
-	for o := range seen {
-		out = append(out, o)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(seen))
 }

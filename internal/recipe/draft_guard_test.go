@@ -12,16 +12,6 @@ import (
 
 const guardFunc = "GuardTraceActionForCompilation"
 
-// The refusal is only worth having if it is applied by every compiler, not by
-// the one that happened to be written first. A second trace-to-recipe compiler
-// that refuses a credential action through some other check — a redaction flag,
-// a field-name regex — refuses it incidentally, and stops refusing it the day
-// that other check changes.
-//
-// So this enumerates the package rather than naming callers. A trace-to-recipe
-// compilation is recognised by its shape: it consumes recorded trace actions
-// and produces a Recipe. Helpers that transform already-filtered actions are
-// not entry points and are not the place for the refusal.
 func TestEveryTraceCompilerCallsTheCredentialGuard(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -53,8 +43,7 @@ func TestEveryTraceCompilerCallsTheCredentialGuard(t *testing.T) {
 			}
 		}
 	}
-	// Nothing matched would mean the scan is looking for the wrong shape, not
-	// that the package is clean.
+
 	if checked == 0 {
 		t.Fatal("found no function turning []TraceAction into a Recipe; the scan is not reaching the compilers")
 	}
@@ -76,7 +65,6 @@ func takesTraceActions(fn *ast.FuncDecl) bool {
 	return false
 }
 
-// producesRecipe accepts Recipe, []Recipe and *Recipe in any result position.
 func producesRecipe(fn *ast.FuncDecl) bool {
 	if fn.Type.Results == nil {
 		return false

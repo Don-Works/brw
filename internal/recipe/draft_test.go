@@ -36,8 +36,6 @@ func TestDraftFromTraceProducesAValidatableSkeleton(t *testing.T) {
 		t.Fatalf("origins = %v, want the origin inferred from the trace", got)
 	}
 
-	// Every actuation must carry an unresolved effect and postcondition. A
-	// generator that guessed these would defeat the field's purpose.
 	for _, s := range d.Steps {
 		if !writeActions[s.Action] {
 			continue
@@ -50,7 +48,6 @@ func TestDraftFromTraceProducesAValidatableSkeleton(t *testing.T) {
 		}
 	}
 
-	// Refs are page-state-scoped and must never reach a recipe.
 	body, err := json.Marshal(d)
 	if err != nil {
 		t.Fatal(err)
@@ -64,8 +61,6 @@ func TestDraftTargetsUseSemanticIdentityNotRefs(t *testing.T) {
 	drafts, _ := DraftFromTrace(sixStepTrace(), DraftOptions{ID: "example.chat.search"})
 	steps := drafts[0].Steps
 
-	// Visible-text names can be asserted exactly; the rest must be contains,
-	// because an exact match on a name the element does not render will fail.
 	if got := steps[1].Target; got == nil || got.Role != "button" || got.Name != "Search" {
 		t.Fatalf("visible-text target = %+v, want exact Name", got)
 	}
@@ -87,8 +82,6 @@ func TestDraftNeverInlinesARedactedValue(t *testing.T) {
 	}
 }
 
-// Composition and delivery must not become one recipe: that is what stops a
-// stored recipe turning prior authorisation into standing permission.
 func TestDraftSplitsPrepareFromSend(t *testing.T) {
 	trace := append(sixStepTrace(), TraceAction{
 		Action: "click", Ref: "e13", Role: "button", Name: "Send", NameIsVisibleText: true, OK: true,

@@ -35,9 +35,6 @@ const assertRecipeJSON = `{
   ]
 }`
 
-// TestRecipeSchemaAcceptsAssertSteps proves the assertion vocabulary is reachable
-// from a recipe: the JSON parses with unknown fields disallowed, so the field
-// names here are the published ABI, not a Go struct that happens to compile.
 func TestRecipeSchemaAcceptsAssertSteps(t *testing.T) {
 	value, err := Parse([]byte(assertRecipeJSON))
 	if err != nil {
@@ -114,8 +111,6 @@ func TestRecipeSchemaRejectsAssertOnOtherActions(t *testing.T) {
 	}
 }
 
-// assertingSurface is a fakeSurface that also implements the optional Asserter
-// capability, which is how a recipe assert step reaches the browser.
 type assertingSurface struct {
 	*fakeSurface
 	mu   sync.Mutex
@@ -176,8 +171,6 @@ func TestRunnerFailsTheRunOnAFailedAssertion(t *testing.T) {
 	}
 }
 
-// TestRunnerReportsAMissingAsserterByName pins the capability contract: a
-// surface that cannot assert says so instead of quietly passing the step.
 func TestRunnerReportsAMissingAsserterByName(t *testing.T) {
 	value := validRecipe("https://billing.example.test")
 	value.Inputs = nil
@@ -189,9 +182,6 @@ func TestRunnerReportsAMissingAsserterByName(t *testing.T) {
 	}
 }
 
-// TestBrowserSurfaceAssertCountsSemanticTargets proves the recipe's element
-// assertions resolve a semantic target rather than carrying an ephemeral ref,
-// and that the failure text matches the tool surface's wording.
 func TestBrowserSurfaceAssertCountsSemanticTargets(t *testing.T) {
 	controller := &findOnlyController{result: snapshot.FindResult{Elements: []snapshot.Element{
 		{Ref: "e1", Role: "row", Name: "Invoice 1", Visible: true},
@@ -237,16 +227,8 @@ func TestBrowserSurfaceAssertRefusesAnAmbiguousTarget(t *testing.T) {
 
 func intPointer(value int) *int { return &value }
 
-// errSurfaceAssertionFailure stands in for whatever the surface reports. The
-// production wording of each kind is pinned in internal/browser against the real
-// formatter; this file only proves the runner carries a failure out intact.
 var errSurfaceAssertionFailure = errors.New("http status assertion failed: expected 200, actual 404")
 
-// TestBrowserSurfaceDownloadAssertionKeepsTheEntryForALaterCapture pins the
-// ledger read a download assertion makes when no postcondition cached the entry.
-// Downloads() is delta-scoped inside a recipe run: reading it consumes this
-// tab's window, so an assertion that read and discarded would leave a following
-// capture step with nothing to capture.
 func TestBrowserSurfaceDownloadAssertionKeepsTheEntryForALaterCapture(t *testing.T) {
 	payload := []byte("invoice bytes")
 	path := filepath.Join(t.TempDir(), "invoice.pdf")
@@ -283,9 +265,6 @@ func TestBrowserSurfaceDownloadAssertionKeepsTheEntryForALaterCapture(t *testing
 	}
 }
 
-// TestBrowserSurfaceDownloadAssertionNamesAnUnsupportedTransport keeps the
-// capability failure named on the recipe path too, in the words the tool surface
-// uses.
 func TestBrowserSurfaceDownloadAssertionNamesAnUnsupportedTransport(t *testing.T) {
 	controller := &downloadOnlyController{results: []browser.DownloadsResult{
 		{Supported: false, Note: "the extension bridge cannot observe downloads"},
@@ -301,9 +280,6 @@ func TestBrowserSurfaceDownloadAssertionNamesAnUnsupportedTransport(t *testing.T
 	}
 }
 
-// TestBrowserSurfaceAssertRejectsAMissingTarget covers the exported entry point
-// directly: Assert satisfies the exported Asserter interface, so it cannot
-// assume a Runner validated the step first.
 func TestBrowserSurfaceAssertRejectsAMissingTarget(t *testing.T) {
 	surface := &BrowserSurface{Browser: &findOnlyController{}}
 	tests := []struct {
@@ -337,10 +313,6 @@ func TestBrowserSurfaceAssertRejectsAMissingTarget(t *testing.T) {
 	}
 }
 
-// TestBrowserSurfaceCountReportsTruncationAsACountingFailure pins the wording a
-// recipe author sees when the target matches more elements than the surface
-// resolves: "refine the target before acting" alone does not read as an answer
-// to a count.
 func TestBrowserSurfaceCountReportsTruncationAsACountingFailure(t *testing.T) {
 	controller := &findOnlyController{result: snapshot.FindResult{
 		Elements: []snapshot.Element{{Ref: "e1", Role: "row", Name: "Invoice 1", Visible: true}},

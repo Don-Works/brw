@@ -249,10 +249,7 @@ func TestDownloadPostconditionPreservesOnlyNewEventForFollowingCapture(t *testin
 }
 
 func TestNetworkPostconditionIgnoresPreArmInflightRequestByLifecycleID(t *testing.T) {
-	// A is already pending at arm time. It completes before action-caused B and
-	// has the same matching URL, so status/URL alone would acknowledge the wrong
-	// request. B uses sequence 1 again after a simulated navigation; the document
-	// epoch in capture_id keeps it distinct from A.
+
 	const requestA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:1"
 	const requestB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:1"
 	controller := &networkOnlyController{results: [][]snapshot.CapturedRequest{
@@ -318,9 +315,6 @@ func TestEventPollBackoffIsBoundedAndResponsive(t *testing.T) {
 		}
 	}
 
-	// A maximum-length event wait used to issue roughly 1,200 browser calls at
-	// a fixed 100 ms cadence. The bounded backoff keeps the first probes faster
-	// while cutting that idle-call load by more than half.
 	elapsed := time.Duration(0)
 	interval := initialEventPollInterval
 	waits := 0

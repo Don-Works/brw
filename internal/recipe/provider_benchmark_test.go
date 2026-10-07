@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// This benchmark contains synthetic metadata only. It exercises the in-process
-// candidate index without placing a real recipe corpus in the source tree.
 func BenchmarkCatalogSearch100K(b *testing.B) {
 	const count = 100_000
 	catalog := &Catalog{

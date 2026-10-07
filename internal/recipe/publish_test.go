@@ -17,9 +17,6 @@ func compiledDraft(t *testing.T) Draft {
 	return NewDraft(mustCompile(t, sixStepLoggedInTrace(), compileOptions()), "brw_trace")
 }
 
-// providerStub is the private provider's write API as far as this repository
-// can know it: a server that answers the documented paths. It counts requests
-// so a test can prove a refusal happened before anything left the machine.
 type providerStub struct {
 	requests int
 	bodies   map[string]json.RawMessage
@@ -191,11 +188,6 @@ func TestReceiptClientRefusesAProviderAnsweringAboutAnotherWrite(t *testing.T) {
 		}
 	})
 
-	// Begin is the only compare-and-set in the mechanism: two runners racing
-	// against one store both miss on lookup, so whether THIS call created the
-	// record is what separates a first dispatch from a duplicate. A provider
-	// that does not say reads as "not created", which refuses rather than
-	// duplicates.
 	t.Run("begin reports whether it created the record", func(t *testing.T) {
 		for _, test := range []struct {
 			name        string
@@ -222,9 +214,6 @@ func TestReceiptClientRefusesAProviderAnsweringAboutAnotherWrite(t *testing.T) {
 		}
 	})
 
-	// A review URL is a link handed to a human. Prefix matching on
-	// "http://localhost" accepts http://localhost.example.test, which is a
-	// different host that anybody can register.
 	t.Run("review url is bounded by host, not by prefix", func(t *testing.T) {
 		for _, test := range []struct {
 			name      string

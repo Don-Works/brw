@@ -9,12 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// A credential-sourced action is a compile FAILURE. The draft generator already
-// turns a merely redacted fill into a ${input:TODO…} placeholder, which is the
-// right answer when a human supplied the value — they can supply it again. It
-// is the wrong answer when a provider supplied it: brw does not record which
-// reference produced the value, so a placeholder would be an invitation to
-// guess, and a wrong guess types the staging password into production.
 func TestTraceToRecipeCompilationRefusesACredentialSourcedAction(t *testing.T) {
 	for name, test := range map[string]struct {
 		actions []TraceAction
@@ -61,10 +55,6 @@ func TestTraceToRecipeCompilationRefusesACredentialSourcedAction(t *testing.T) {
 	}
 }
 
-// The hook reads the trace shape a compiler actually receives: browser writes
-// credential_sourced, and the draft side decodes it under the same name. A
-// rename on either side is a silently unguarded compiler, so the round trip is
-// the assertion.
 func TestTraceEntryCredentialMarkDecodesIntoTheCompilationGuard(t *testing.T) {
 	encoded, err := json.Marshal(browser.RedactTraceEntry(
 		browser.WithCredentialSourced(t.Context()),
@@ -88,7 +78,6 @@ func TestTraceEntryCredentialMarkDecodesIntoTheCompilationGuard(t *testing.T) {
 	}
 }
 
-// Nothing marks an ordinary action, so an ordinary trace still compiles.
 func TestAnUnmarkedTraceEntryPassesTheCompilationGuard(t *testing.T) {
 	encoded, err := json.Marshal(browser.RedactTraceEntry(t.Context(),
 		browser.TraceEntry{Action: "fill", Ref: "e1", Text: "fixture-user-one", OK: true}))

@@ -34,9 +34,6 @@ type cachedDownload struct {
 
 const maxCachedRecipeDownloads = 200
 
-// semanticResolveLimit bounds every semantic target search a recipe makes. A
-// truncated search answers a different question than the one the recipe asked,
-// so it is refused by name rather than silently reported short.
 const semanticResolveLimit = 200
 
 var errSemanticSearchTruncated = errors.New("semantic target search was truncated; refine the recipe target before acting")
@@ -60,9 +57,7 @@ func (s *BrowserSurface) Origin(ctx context.Context) (string, error) {
 		}
 		return identity.Origin, nil
 	}
-	// Compatibility path for custom/in-memory Controller implementations. Both
-	// production transports implement DocumentIdentityProvider, whose browser
-	// metadata cannot be shadowed by page JavaScript.
+
 	value, err := s.Browser.Evaluate(ctx, `location.origin`)
 	if err != nil {
 		return "", err
@@ -74,10 +69,7 @@ func (s *BrowserSurface) Origin(ctx context.Context) (string, error) {
 	return origin, nil
 }
 
-// CheckProfileSession forwards the question to the transport. It does NOT
-// answer on the transport's behalf: a surface that returned nil for a
-// controller with no opinion would turn a fail-closed check into a fail-open
-// one at the only layer that could tell the difference.
+// CheckProfileSession forwards the question to the transport.
 func (s *BrowserSurface) CheckProfileSession() error {
 	controller, ok := s.Browser.(browser.ProfileSessionController)
 	if !ok {
@@ -100,9 +92,6 @@ func (s *BrowserSurface) Resolve(ctx context.Context, target Target) ([]Resolved
 	return matches, nil
 }
 
-// findSemantic is the one place a semantic target becomes live page elements.
-// ElementValue needs fields ResolvedElement does not carry, and a second search
-// path would be a second set of rules about what a target matches.
 func (s *BrowserSurface) findSemantic(ctx context.Context, target Target) ([]snapshot.Element, error) {
 	query := target.Name
 	if query == "" {
@@ -134,10 +123,7 @@ func (s *BrowserSurface) findSemantic(ctx context.Context, target Target) ([]sna
 	return matches, nil
 }
 
-// ElementValue reads the current value of exactly one element, which is how a
-// step's declared site idempotency nonce is obtained. Anything other than one
-// match is refused: a nonce read off whichever of several fields happened to
-// come first is not the site's token, it is a coin toss.
+// ElementValue reads the current value of exactly one element, which is how a step's declared site idempotency nonce is obtained.
 func (s *BrowserSurface) ElementValue(ctx context.Context, target Target) (string, error) {
 	matches, err := s.findSemantic(ctx, target)
 	if err != nil {
@@ -149,10 +135,6 @@ func (s *BrowserSurface) ElementValue(ctx context.Context, target Target) (strin
 	return matches[0].Value, nil
 }
 
-// targetCriteria renders a recipe target as the snapshot-level identity the
-// element filter understands. The compiler derives targets against the same
-// type, so a target that compiles as unambiguous is unambiguous for the exact
-// predicate the runner will apply.
 func targetCriteria(target Target) snapshot.TargetCriteria {
 	return snapshot.TargetCriteria{
 		Role:         target.Role,
@@ -205,10 +187,7 @@ func (s *BrowserSurface) NavigateTo(ctx context.Context, url string) error {
 	return err
 }
 
-// ArmEvent prepares event sources before the causative action. DOM/URL/text
-// conditions are durable state and can be checked afterward; network/download
-// sources must be enabled and baselined first, while tab events need a baseline
-// so an already-open matching tab cannot produce a false acknowledgement.
+// ArmEvent prepares event sources before the causative action.
 func (s *BrowserSurface) ArmEvent(ctx context.Context, event Event) (func(context.Context) error, error) {
 	switch event.Kind {
 	case "network.response":
@@ -216,11 +195,7 @@ func (s *BrowserSurface) ArmEvent(ctx context.Context, event Event) (func(contex
 		if err != nil {
 			return nil, err
 		}
-		// Drains intentionally retain in-flight rows so a slow response cannot be
-		// lost between polls. Capture their stable lifecycle IDs at arm time and
-		// ignore only those exact pre-action requests when they later complete.
-		// IDs include a per-document epoch, so a navigation resetting the local
-		// sequence cannot collide with this baseline.
+
 		baseline := make(map[string]struct{}, len(baselineRequests))
 		for _, request := range baselineRequests {
 			if request.CaptureID != "" && !request.Completed {
@@ -236,10 +211,7 @@ func (s *BrowserSurface) ArmEvent(ctx context.Context, event Event) (func(contex
 		if !baseline.Supported {
 			return nil, downloadsUnsupportedError(baseline.Note)
 		}
-		// Intentionally discard the pre-arm baseline result. Only a download changed
-		// after the action may satisfy or feed a capture step. Clear this tab's
-		// prior recipe cache too, so a later filename selector cannot fall back to
-		// an older same-name download after a different fresh event.
+
 		s.clearCompletedDownloads(ctx)
 		return func(waitCtx context.Context) error { return s.waitDownload(waitCtx, event) }, nil
 	case "tab.opened":
@@ -337,8 +309,7 @@ func (s *BrowserSurface) WaitEvent(ctx context.Context, event Event) error {
 		}
 		return s.waitTab(ctx, event, baseline)
 	case "network.response":
-		// The first call installs the bounded in-page capture if it was not
-		// already armed; following calls drain matching completed responses.
+
 		return s.waitNetwork(ctx, event, nil)
 	default:
 		return fmt.Errorf("unsupported event %q", event.Kind)
@@ -443,10 +414,7 @@ func (s *BrowserSurface) elementValueSatisfied(ctx context.Context, event Event)
 	}
 	var assertionErr error
 	if event.Kind == "element.value_contains" {
-		// A NAMED capability interface, not an anonymous one: the cross-origin ref
-		// classification enumerates Controller plus the named capabilities, and a
-		// ref-taking method reachable only through an anonymous interface is
-		// invisible to it.
+
 		asserter, ok := s.Browser.(browser.ValueContainsAsserter)
 		if !ok {
 			return false, errors.New("element.value_contains is unavailable on this browser transport")
@@ -560,9 +528,6 @@ func (s *BrowserSurface) cacheCompletedDownloads(ctx context.Context, entries []
 	}
 }
 
-// peekCompletedDownload finds a cached completed download for this tab without
-// consuming it. A digest assertion reads the download; only a capture step
-// claims it.
 func (s *BrowserSurface) peekCompletedDownload(ctx context.Context, filename string) (browser.DownloadEntry, bool) {
 	if filename == "" {
 		return browser.DownloadEntry{}, false

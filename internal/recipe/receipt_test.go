@@ -32,8 +32,6 @@ func receiptRecipe() Recipe {
 	return value
 }
 
-// recordingReceipts is a durable store that also remembers the order it was
-// called in, so "recorded before dispatch" can be checked rather than assumed.
 type recordingReceipts struct {
 	inner *MemoryReceipts
 	calls *[]string
@@ -96,9 +94,6 @@ func TestWriteReceiptIsRecordedBeforeDispatchAndCommittedAfterThePostcondition(t
 	}
 }
 
-// A postcondition that never passes must never produce a committed receipt: the
-// receipt is the thing a later run trusts, and a receipt that reports success
-// for an unacknowledged write is worse than no receipt at all.
 func TestReceiptIsNeverCommittedWhenThePostconditionDoesNotPass(t *testing.T) {
 	calls := []string{}
 	store := newRecordingReceipts(&calls)
@@ -121,9 +116,6 @@ func TestReceiptIsNeverCommittedWhenThePostconditionDoesNotPass(t *testing.T) {
 	}
 }
 
-// The daemon dies between dispatch and acknowledgement. Everything in memory is
-// gone; the provider-side receipt is not. The rerun must find it and must not
-// click a second time.
 func TestInterruptedWriteIsNotResubmittedAfterARestart(t *testing.T) {
 	store := NewMemoryReceipts()
 	first := newFakeSurface()
@@ -157,8 +149,7 @@ func TestInterruptedWriteIsNotResubmittedAfterARestart(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			// Every rerun starts from the receipt the interrupted run left, so
-			// the two cases are independent of each other.
+
 			store.records = map[string]Receipt{}
 			seed := newFakeSurface()
 			seed.onClick = func(*fakeSurface) error { return nil }
@@ -215,8 +206,6 @@ func nonceRecipe(nonceTarget Target) Recipe {
 	return value
 }
 
-// nonceBlindSurface has every capability an external write needs except the one
-// that reads a declared nonce. A missing capability has to be named.
 type nonceBlindSurface struct{ inner *fakeSurface }
 
 func (s nonceBlindSurface) Origin(ctx context.Context) (string, error) { return s.inner.Origin(ctx) }
@@ -257,11 +246,6 @@ func (s nonceBlindSurface) Assert(ctx context.Context, assertion Assertion) erro
 	return s.inner.Assert(ctx, assertion)
 }
 
-// An interrupted write is never re-dispatched, whatever the site's own token
-// says. A page still showing the token the first attempt carried is equally
-// consistent with the site having consumed it and with the token being a
-// per-session CSRF value the site would accept again, and brw cannot tell those
-// apart from outside the site.
 func TestADeclaredSiteNonceNeverLicencesRedispatchingAnInterruptedWrite(t *testing.T) {
 	nonceTarget := Target{Role: "textbox", Name: "Submission token"}
 	value := nonceRecipe(nonceTarget)
@@ -321,8 +305,6 @@ func TestADeclaredSiteNonceNeverLicencesRedispatchingAnInterruptedWrite(t *testi
 	}
 }
 
-// The live token is what the page will accept on the next submission. A receipt
-// lives with the private provider, so only a digest of it leaves the machine.
 func TestTheLiveSiteTokenNeverReachesTheReceiptStore(t *testing.T) {
 	const recordedNonce = "fixture-nonce-value-one"
 	value := nonceRecipe(Target{Role: "textbox", Name: "Submission token"})
@@ -486,9 +468,6 @@ func TestReceiptKeyIsReproducibleAndSeparatesDistinctWrites(t *testing.T) {
 	}
 }
 
-// Go randomises map iteration on purpose. A key derived by walking the input
-// map would differ between two runs in the same process, which is the worst
-// possible failure: the receipt exists and no rerun can find it.
 func TestReceiptKeyDoesNotDependOnMapIterationOrder(t *testing.T) {
 	value := cloneRecipe(receiptRecipe())
 	value.Inputs = map[string]Input{
@@ -571,9 +550,6 @@ func TestRequireWriteVerification(t *testing.T) {
 	}
 }
 
-// evidenceAndReadBackRecipe has the shape the compiler emits for a declared
-// write: the cheap assertion inferred from the recording, then the read-back
-// the operator declared, tagged with the write it verifies.
 func evidenceAndReadBackRecipe() Recipe {
 	value := receiptRecipe()
 	evidence := Step{ID: "send_evidence", Action: "assert", Assert: &Assertion{
@@ -598,11 +574,6 @@ func interruptDispatch(t *testing.T, store Receipts, value Recipe) {
 	}
 }
 
-// An interrupted rerun must consult the assertion that reads remote state back,
-// not the first assertion it finds after the write. The compiler emits the
-// inferred evidence assertion first, and that one passes on any page the recipe
-// happens to be on, so a positional rule commits a receipt for a write nothing
-// confirmed — and a committed receipt suppresses the write for good.
 func TestAnInterruptedWriteIsDecidedByTheTaggedReadBackNotTheEvidenceAssertion(t *testing.T) {
 	value := evidenceAndReadBackRecipe()
 	inputs := map[string]string{"month": "2026-09"}
@@ -629,8 +600,7 @@ func TestAnInterruptedWriteIsDecidedByTheTaggedReadBackNotTheEvidenceAssertion(t
 
 			restarted := newFakeSurface()
 			restarted.onClick = func(*fakeSurface) error { return nil }
-			// The evidence assertion passes regardless, exactly as it would on a
-			// page the recipe merely happens to be sitting on.
+
 			restarted.onAssert = func(assertion Assertion) error {
 				if assertion.Kind == browser.AssertionURL {
 					return nil
@@ -659,10 +629,6 @@ func TestAnInterruptedWriteIsDecidedByTheTaggedReadBackNotTheEvidenceAssertion(t
 	}
 }
 
-// Lookup and Begin are two round trips against a store the design says is
-// shared. Two runners can both miss on Lookup, so Begin is the decision point:
-// a record it did not create belongs to somebody else's dispatch and is handled
-// exactly like a lookup hit.
 func TestARecordBeginDidNotCreateIsTreatedAsSomebodyElsesDispatch(t *testing.T) {
 	value := evidenceAndReadBackRecipe()
 	inputs := map[string]string{"month": "2026-09"}
@@ -690,9 +656,6 @@ func TestARecordBeginDidNotCreateIsTreatedAsSomebodyElsesDispatch(t *testing.T) 
 	}
 }
 
-// lookupBlindReceipts is the shared store as the loser of a race sees it: the
-// lookup happened before the rival's begin landed, so it reports nothing, and
-// begin is the first call that sees the record.
 type lookupBlindReceipts struct{ inner *MemoryReceipts }
 
 func (r *lookupBlindReceipts) Lookup(context.Context, string) (Receipt, bool, error) {
@@ -707,9 +670,6 @@ func (r *lookupBlindReceipts) Commit(ctx context.Context, key, evidence string) 
 	return r.inner.Commit(ctx, key, evidence)
 }
 
-// The key is a concatenation of fields, and the length prefix is what stops one
-// field's bytes being read as part of the next. Without it these pairs hash the
-// same bytes, so two different writes share one receipt.
 func TestReceiptKeyFramingSeparatesAdjacentFields(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -737,10 +697,6 @@ func digestKeyFields(fields []string) string {
 	return hex.EncodeToString(sum.Sum(nil))
 }
 
-// A nonce declared on a later step is a capability this surface may not have.
-// Discovering that at the write step means discovering it after every earlier
-// action has already run, which is the half-executed flow the capability check
-// exists to prevent.
 func TestADeclaredNonceIsCheckedBeforeStepOneEvenOnALaterStep(t *testing.T) {
 	value := receiptRecipe()
 	value.Steps = append([]Step{{
@@ -760,9 +716,6 @@ func TestADeclaredNonceIsCheckedBeforeStepOneEvenOnALaterStep(t *testing.T) {
 	}
 }
 
-// The preflight expands the whole runtime plan before step one so an expansion
-// that cannot work is reported with nothing yet done to the page. A nonce
-// target was the one template it did not cover.
 func TestPreflightExpandsTheNonceTargetBeforeStepOne(t *testing.T) {
 	value := receiptRecipe()
 	value.Inputs["token_field"] = Input{}
@@ -783,8 +736,6 @@ func TestPreflightExpandsTheNonceTargetBeforeStepOne(t *testing.T) {
 	}
 }
 
-// A nonce target interpolating a secret input goes through the same element
-// lookup every other target does, so it needs the same transport-tracing guard.
 func TestASecretInTheNonceTargetMarksTheStepSensitive(t *testing.T) {
 	value := receiptRecipe()
 	value.Inputs["token_field"] = Input{Required: true, Secret: true}
