@@ -129,6 +129,8 @@ For proxies, compare `proxy_version` with `daemon_version`.
 | Long document | `brw_read({include:["headings"]})`, then `section` and bounded `max_chars` |
 | Known ready, short page | `brw_read({settle_ms:0})`; default 800 ms, maximum 5000 |
 | Many actions | `brw_batch`, tab pinned with a `focus_tab` step |
+| Large JS result | Project fields inside `brw_evaluate`; page with `offset`/`max_bytes` |
+| Repeated change checks | `brw_watch_page` and `brw_page_events`; persist the cursor after processing |
 | Large screenshot, PDF or download | Save/capture an artifact and return its metadata |
 
 Delta history retains at most eight baselines and 2 MiB of serialized state per
