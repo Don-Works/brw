@@ -330,7 +330,8 @@ func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Write
 	}
 	ctrl.UseOwnerUnlessSet(cliOwner())
 	ctx = usagelog.WithRequestID(ctx, usagelog.NewID())
-	defer func() { recordCLIUsage(ctx, ctrl, v, args, output, started, exitCode, opts.json) }()
+	var usageErr error
+	defer func() { recordCLIUsage(ctx, ctrl, v, args, output, started, exitCode, opts.json, usageErr) }()
 
 	if opts.tab != "" {
 		ctx = browser.WithTabID(ctx, opts.tab)
@@ -340,6 +341,7 @@ func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Write
 
 	body, err := v.call(ctx, ctrl, req)
 	if err != nil {
+		usageErr = err
 		if unreachable(ctx, err) {
 			fmt.Fprintf(stderr, "brw: %v: %v\n", errNoDaemon, err)
 			return ExitNoDaemon
@@ -359,23 +361,27 @@ func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Write
 	var rendered string
 	if opts.json {
 		if _, err := stdout.Write(append([]byte(strings.TrimRight(string(body), "\n")), '\n')); err != nil {
+			usageErr = err
 			fmt.Fprintf(stderr, "brw %s: %v\n", v.name, err)
 			return ExitActionFailed
 		}
 	} else {
 		var out bytes.Buffer
 		if err := v.render(&out, opts, body); err != nil {
+			usageErr = err
 			fmt.Fprintf(stderr, "brw %s: %v\n", v.name, err)
 			return ExitActionFailed
 		}
 		rendered = out.String()
 		if _, err := stdout.Write(out.Bytes()); err != nil {
+			usageErr = err
 			fmt.Fprintf(stderr, "brw %s: %v\n", v.name, err)
 			return ExitActionFailed
 		}
 	}
 
 	if reason, failed := actionFailed(v, body); failed {
+		usageErr = errors.New(reason)
 		if reason != "" && !strings.Contains(rendered, reason) {
 			fmt.Fprintf(stderr, "brw %s: %s\n", v.name, reason)
 		}

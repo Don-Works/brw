@@ -64,7 +64,7 @@ func TestCLIUsageReportsRenderedFailureWithoutChangingExit(t *testing.T) {
 	defer server.Close()
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"fill", "@e17", "PRIVATE_INPUT", "--daemon", server.URL, "--json"}, &stdout, &stderr)
-	if code != ExitActionFailed || report.Outcome != "error" || report.OutputBytes == nil || *report.OutputBytes != int64(stdout.Len()) || !strings.Contains(stdout.String(), "PRIVATE_ERROR") {
+	if code != ExitActionFailed || report.Outcome != "error" || report.ErrorClass != "tool" || report.ErrorFingerprint == "" || report.OutputBytes == nil || *report.OutputBytes != int64(stdout.Len()) || !strings.Contains(stdout.String(), "PRIVATE_ERROR") {
 		t.Fatalf("code=%d report=%+v stdout=%s", code, report, &stdout)
 	}
 	data, _ := json.Marshal(report)
@@ -80,5 +80,48 @@ func TestCLIUsageCountingWriterExcludesBase64FromEstimates(t *testing.T) {
 	n, err := writer.Write(data)
 	if err != nil || n != len(data) || writer.bytes != int64(len(data)) || writer.binary != 8 || writer.chars != int64(len(data)-8) {
 		t.Fatalf("bytes=%d chars=%d binary=%d", writer.bytes, writer.chars, writer.binary)
+	}
+}
+
+func TestCLIUsageClassifiesFailuresWithoutRetainingPrivateContent(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, remoteClass, want string
+		status                        int
+		retryable                     bool
+	}{
+		{"stale reference", `{"ok":false,"message":"element ref PRIVATE_REF not recoverable: PRIVATE_PAGE"}`, "", "stale_reference", http.StatusOK, false},
+		{"timeout", `{"error":"timed out waiting for PRIVATE_PAGE"}`, "", "timeout", http.StatusBadRequest, true},
+		{"typed policy refusal", `{"error":"PRIVATE_ERROR"}`, "policy_denied", "policy_denied", http.StatusForbidden, false},
+		{"typed artifact absence", `{"error":"artifact operation failed PRIVATE_ERROR"}`, "artifact_not_found", "artifact_not_found", http.StatusBadRequest, false},
+		{"private category", `{"error":"PRIVATE_ERROR"}`, "PRIVATE_CLASS", "tool", http.StatusBadRequest, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var report usagelog.Event
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/usage/report" {
+					if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+						t.Error(err)
+					}
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				w.Header().Set(usagelog.HeaderErrorClass, tc.remoteClass)
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), []string{"fill", "@e17", "PRIVATE_INPUT", "--daemon", server.URL, "--json"}, &stdout, &stderr)
+			if code != ExitActionFailed || report.Outcome != "error" || report.ErrorClass != tc.want || report.Retryable != tc.retryable || report.ErrorFingerprint == "" {
+				t.Fatalf("code=%d report=%+v", code, report)
+			}
+			data, err := json.Marshal(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "PRIVATE") || strings.Contains(string(data), server.URL) {
+				t.Fatalf("private content in telemetry: %s", data)
+			}
+		})
 	}
 }
