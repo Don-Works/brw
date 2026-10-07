@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -337,19 +338,10 @@ func TestRefVerbsRefuseCrossOriginRefsByName(t *testing.T) {
 				if !errors.Is(err, snapshot.ErrCrossOriginFrameUnsupported) {
 					t.Fatalf("%s.%s refused a cross-origin ref with %v, which callers cannot recognise as the capability gap", transport, name, err)
 				}
-				if !containsRef(err.Error()) {
+				if !strings.Contains(err.Error(), crossOriginRef) {
 					t.Fatalf("%s.%s refusal does not name the ref: %v", transport, name, err)
 				}
 			})
 		}
 	}
-}
-
-func containsRef(message string) bool {
-	for i := 0; i+len(crossOriginRef) <= len(message); i++ {
-		if message[i:i+len(crossOriginRef)] == crossOriginRef {
-			return true
-		}
-	}
-	return false
 }

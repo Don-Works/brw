@@ -35,7 +35,11 @@ func (b *Bridge) CapturePDFStream(ctx context.Context) (io.ReadCloser, error) {
 	if payload.Stream == "" {
 		return nil, errors.New("Page.printToPDF returned no stream handle")
 	}
-	return &bridgeStreamReader{bridge: b, ctx: ctx, tabID: tabID, handle: payload.Stream}, nil
+	reader := &bridgeStreamReader{bridge: b, ctx: ctx, tabID: tabID, handle: payload.Stream}
+	if err := b.guardCurrentURL(browser.WithTabID(ctx, tabID)); err != nil {
+		return nil, errors.Join(err, reader.Close())
+	}
+	return reader, nil
 }
 
 // bridgeStreamReader holds one decoded chunk at a time. It keeps the request

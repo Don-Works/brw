@@ -16,6 +16,11 @@ func (b *Bridge) prepareNavigationURL(rawURL string) (string, error) {
 }
 
 func (b *Bridge) enforceFinalURL(ctx context.Context, rawURL string) error {
+	if check := browser.FrameReadCheckFromContext(ctx); check != nil {
+		if err := check(rawURL); err != nil {
+			return err
+		}
+	}
 	if b.navPolicy.Empty() {
 		return nil
 	}
@@ -31,7 +36,7 @@ func (b *Bridge) enforceFinalURL(ctx context.Context, rawURL string) error {
 }
 
 func (b *Bridge) guardCurrentURL(ctx context.Context) error {
-	if b.navPolicy.Empty() {
+	if b.navPolicy.Empty() && browser.FrameReadCheckFromContext(ctx) == nil {
 		return nil
 	}
 	raw, err := b.cdp(ctx, "", "Runtime.evaluate", map[string]any{
@@ -49,13 +54,16 @@ func (b *Bridge) guardCurrentURL(ctx context.Context) error {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return fmt.Errorf("parse current navigation destination: %w", err)
 	}
+	if strings.TrimSpace(payload.Result.Value) == "" {
+		return errors.New("current navigation destination is unavailable")
+	}
 	return b.enforceFinalURL(ctx, payload.Result.Value)
 }
 
 func (b *Bridge) verifyOpenedTabURL(ctx context.Context, tabID string) error {
 	tabs, err := b.ListTabs(ctx)
 	if err != nil {
-		if b.navPolicy.Empty() {
+		if b.navPolicy.Empty() && browser.FrameReadCheckFromContext(ctx) == nil {
 			return nil
 		}
 		return fmt.Errorf("verify open final destination: %w", err)
@@ -64,13 +72,13 @@ func (b *Bridge) verifyOpenedTabURL(ctx context.Context, tabID string) error {
 		if tab.ID != tabID {
 			continue
 		}
-		if err := b.navPolicy.Check(tab.URL); err != nil {
+		if err := b.enforceFinalURL(browser.WithTabID(ctx, tabID), tab.URL); err != nil {
 			_ = b.CloseTab(ctx, tabID)
 			return fmt.Errorf("open redirected to a disallowed final destination: %w", err)
 		}
 		return nil
 	}
-	if !b.navPolicy.Empty() {
+	if !b.navPolicy.Empty() || browser.FrameReadCheckFromContext(ctx) != nil {
 		return fmt.Errorf("verify open final destination: tab %s disappeared", tabID)
 	}
 	return nil

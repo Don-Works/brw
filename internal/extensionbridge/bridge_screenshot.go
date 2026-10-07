@@ -101,6 +101,9 @@ func (b *Bridge) CapturePDF(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := b.guardCurrentURL(browser.WithTabID(ctx, tabID)); err != nil {
+		return nil, err
+	}
 	var payload struct {
 		Data string `json:"data"`
 	}
@@ -282,6 +285,9 @@ func (b *Bridge) captureScreenshot(ctx context.Context, tabID string, params map
 		raw, err = b.cdp(ctx, tabID, "Page.captureScreenshot", legacyParams)
 	}
 	if err != nil {
+		return browser.Screenshot{}, err
+	}
+	if err := b.guardCurrentURL(browser.WithTabID(ctx, tabID)); err != nil {
 		return browser.Screenshot{}, err
 	}
 	var payload struct {

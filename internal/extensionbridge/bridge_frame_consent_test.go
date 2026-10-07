@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -67,6 +68,10 @@ func (f *frameExtension) serve(ctx context.Context, conn *websocket.Conn) {
 			params, _ := msg.Params["params"].(map[string]any)
 			expression, _ := params["expression"].(string)
 			if method != "Runtime.evaluate" || expression == "" {
+				break
+			}
+			if expression == "location.href" {
+				reply["result"] = map[string]any{"result": map[string]any{"value": "https://fixture.test/"}}
 				break
 			}
 			if normalizedSnapshotExpression(expression) != normalizedSnapshotExpression(f.cold) {
@@ -187,8 +192,13 @@ func TestIncludeFramesReadsOnlyTheOriginsConsentAllows(t *testing.T) {
 			wantRead:    []string{"https://widget.test"},
 		},
 		{
-			name:        "every origin refused sends no expression at all",
-			allow:       func(string) error { return errors.New("refused") },
+			name: "every origin refused sends no expression at all",
+			allow: func(origin string) error {
+				if strings.HasPrefix(origin, "https://fixture.test") {
+					return nil
+				}
+				return errors.New("refused")
+			},
 			wantOrigins: nil,
 			wantRead:    nil,
 		},
@@ -243,7 +253,7 @@ func TestIncludeFramesReadsOnlyTheOriginsConsentAllows(t *testing.T) {
 				t.Fatalf("controls were merged from %v, want %v", read, tc.wantRead)
 			}
 			for _, origin := range frameFixtureOrigins {
-				if contains(read, origin) || mentionsOrigin(snap.Elements, origin) {
+				if slices.Contains(read, origin) || mentionsOrigin(snap.Elements, origin) {
 					continue
 				}
 				t.Fatalf("frame %s is neither read nor surfaced as a clickable box; a frame brw will not read must still be visible to the agent", origin)
@@ -271,15 +281,6 @@ func readFrameOrigins(elements []snapshot.Element) []string {
 func mentionsOrigin(elements []snapshot.Element, origin string) bool {
 	for _, el := range elements {
 		if strings.Contains(el.Name, origin) {
-			return true
-		}
-	}
-	return false
-}
-
-func contains(list []string, want string) bool {
-	for _, item := range list {
-		if item == want {
 			return true
 		}
 	}

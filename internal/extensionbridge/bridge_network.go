@@ -48,6 +48,10 @@ func (b *Bridge) ReplayRequest(ctx context.Context, params browser.ReplayRequest
 	if reason := params.BlockedReplayReason(); reason != "" {
 		return snapshot.ReplayResult{}, errors.New(reason)
 	}
+	ctx = b.pinActiveTab(ctx)
+	if err := b.guardCurrentURL(ctx); err != nil {
+		return snapshot.ReplayResult{}, err
+	}
 	opts := map[string]any{
 		"method":   params.Method,
 		"url":      params.URL,
@@ -61,6 +65,11 @@ func (b *Bridge) ReplayRequest(ctx context.Context, params browser.ReplayRequest
 	var result snapshot.ReplayResult
 	if err := b.evaluate(ctx, expr, "", &result); err != nil {
 		return snapshot.ReplayResult{}, err
+	}
+	if check := browser.FetchCheckFromContext(ctx); check != nil && result.URL != "" {
+		if err := check(result.URL); err != nil {
+			return snapshot.ReplayResult{}, err
+		}
 	}
 	return result, nil
 }

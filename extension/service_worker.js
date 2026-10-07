@@ -1350,6 +1350,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (typeof details.tabId === "number" && details.frameId === 0) {
     state.snapshotCache.delete(details.tabId);
+    state.consoleMessages.delete(details.tabId);
     state.observerInjected.delete(details.tabId);
     state.foreignExtensionFrames.delete(details.tabId);
     state.documentEpochs.set(details.tabId, (state.documentEpochs.get(details.tabId) || 0) + 1);
@@ -1503,11 +1504,13 @@ async function connectOnce() {
     // A WebSocket may finish opening after Disable was clicked. Never send the
     // authenticated hello or accept work until the current consent is checked.
     if (!(await hasBrowserControlConsent())) {
+      if (state.socket !== socket) return;
       if (state.socket === socket) state.socket = null;
       try { socket.close(); } catch (_) {}
       await disconnectForConsent();
       return;
     }
+    if (state.socket !== socket) return;
     state.statusProbeFailures = 0;
     const platform = await chrome.runtime.getPlatformInfo().catch(() => ({}));
     // Read the per-launch handshake token from the daemon's loopback /status
@@ -1516,6 +1519,12 @@ async function connectOnce() {
     // refuses any connection whose hello lacks the token, so a malicious page or a
     // rogue local client that opened this socket cannot drive the bridge.
     const auth = await fetchBridgeToken(config);
+    if (state.socket !== socket) return;
+    if (!(await hasBrowserControlConsent())) {
+      if (state.socket === socket) await disconnectForConsent();
+      return;
+    }
+    if (state.socket !== socket) return;
     const token = auth.token;
     if (!token) {
       // The daemon refuses a tokenless hello, so this connection is about to be
@@ -1595,13 +1604,16 @@ async function connectOnce() {
     try { socket.close(); } catch (_) {}
   };
   socket.onmessage = async (event) => {
+    if (state.socket !== socket) return;
     // Storage-change delivery and WebSocket events are separate queues. This
     // closes the last race where a command was already queued as consent was
     // revoked.
     if (!(await hasBrowserControlConsent())) {
+      if (state.socket !== socket) return;
       await disconnectForConsent();
       return;
     }
+    if (state.socket !== socket) return;
     accept();
     let message;
     try {
@@ -2682,7 +2694,7 @@ async function readCrossOriginFrames(tabId, expression, origins) {
       let origin = "";
       try { origin = new URL(url).origin; } catch (_) {}
       if (url && /^https?:/i.test(url) && origin && origin !== topOrigin) {
-        wanted.push({ url, origin });
+        wanted.push({ id: child.frame?.id, url, origin });
       }
       walk(child);
     }
@@ -2695,7 +2707,7 @@ async function readCrossOriginFrames(tabId, expression, origins) {
   const usedTargets = new Set();
   const out = [];
   for (const w of wanted) {
-    const tgt = iframeTargets.find((t) => !usedTargets.has(t.id) && t.url === w.url);
+    const tgt = iframeTargets.find((t) => !usedTargets.has(t.id) && t.id === w.id && t.url === w.url);
     if (!tgt) {
       out.push({ url: w.url, origin: w.origin });
       continue;
@@ -2706,7 +2718,7 @@ async function readCrossOriginFrames(tabId, expression, origins) {
       out.push({ url: w.url, origin: w.origin });
       continue;
     }
-    const snapshot = await evaluateInFrameTarget(tabId, tgt.id, expression).catch(() => null);
+    const snapshot = await evaluateInFrameTarget(tabId, tgt.id, frameReadExpression(expression, w.origin)).catch(() => null);
     out.push({ url: w.url, origin: w.origin, snapshot });
   }
   return out;
@@ -2737,7 +2749,8 @@ async function evaluateInFrameTarget(tabId, targetId, expression) {
     }
     const res = await sendPolicedCdp(tabId, { targetId }, "Runtime.evaluate", {
       expression,
-      returnByValue: true
+      returnByValue: true,
+      awaitPromise: true
     });
     const value = res?.result?.value;
     return value && typeof value === "object" ? value : null;
@@ -2746,6 +2759,11 @@ async function evaluateInFrameTarget(tabId, targetId, expression) {
       try { await chrome.debugger.detach({ targetId }); } catch (_) {}
     }
   }
+}
+
+function frameReadExpression(expression, origin) {
+  const expected = JSON.stringify(origin);
+  return `(async () => {if (globalThis.location.origin !== ${expected}) throw new Error("frame origin changed"); const value = await (${expression}); if (globalThis.location.origin !== ${expected}) throw new Error("frame origin changed"); return value;})()`;
 }
 
 // ensureTabDrivable revives a tab whose renderer cannot execute work before we
@@ -3583,7 +3601,7 @@ async function readCrossOriginFramesWithoutDebugger(tabId, expression, origins) 
         target: { tabId, frameIds: [frame.frameId] },
         world: "MAIN",
         func: scriptingEvaluate,
-        args: [expression, true]
+        args: [frameReadExpression(expression, origin), true]
       });
       const value = injected?.[0]?.result?.value;
       snapshot = value && typeof value === "object" ? value : null;
@@ -4017,7 +4035,6 @@ function ensureObserver(tabId) {
     if (window.__brwObserver) return;
     window.__brwObserver = true;
     window.__brwDirty = false;
-    window.__brwConsole = [];
     const observer = new MutationObserver(function() {
       window.__brwDirty = true;
     });
@@ -4037,26 +4054,6 @@ function ensureObserver(tabId) {
       document.addEventListener(type, function() {
         window.__brwDirty = true;
       }, true);
-    });
-    function stringify(value) {
-      try {
-        if (value instanceof Error) return value.stack || value.message || String(value);
-        if (typeof value === 'object' && value !== null) return JSON.stringify(value, function(_key, item) {
-          return typeof item === 'bigint' ? String(item) : item;
-        });
-        return String(value);
-      } catch (_err) {
-        try { return String(value); } catch (_ignored) { return '[unprintable]'; }
-      }
-    }
-    ['log','warn','error','info','debug'].forEach(function(level) {
-      const orig = console[level];
-      console[level] = function() {
-        var text = Array.from(arguments).map(stringify).join(' ');
-        window.__brwConsole.push({level: level, text: text.slice(0, 1000), timestamp: new Date().toISOString()});
-        if (window.__brwConsole.length > 200) window.__brwConsole.shift();
-        if (orig.apply) orig.apply(console, arguments); else orig(arguments);
-      };
     });
   })()`;
   // Attach via the TRACKED attach() so this debugger session is recorded in

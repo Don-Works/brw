@@ -34,6 +34,9 @@ func (b *Bridge) SaveScreenshot(ctx context.Context, opts browser.ScreenshotSave
 			}
 			return browser.Screenshot{}, err
 		}
+		if err := b.guardCurrentURL(ctx); err != nil {
+			return browser.Screenshot{}, err
+		}
 		shot, err := screenshotFromRawMIME(raw, "image/"+o.Format)
 		shot.Base64 = ""
 		if err == nil {

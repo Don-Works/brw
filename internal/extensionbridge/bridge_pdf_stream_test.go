@@ -65,6 +65,7 @@ func serveCDPStub(t *testing.T, b *Bridge, stub *cdpStub) func() {
 		srv.Close()
 		t.Fatalf("dial bridge: %v", err)
 	}
+	conn.SetReadLimit(extensionFrameReadLimitBytes)
 	waitUntil(t, func() bool {
 		b.mu.RLock()
 		defer b.mu.RUnlock()

@@ -1195,7 +1195,11 @@ async function scenarioForeignExtensionFrameInsideThePage() {
       injections.push(injection);
       if (scriptingRefuses) throw new Error(scriptingRefuses);
       const frameId = injection.target.frameIds?.[0] ?? 0;
-      const result = await injection.func(...(injection.args || []));
+      const previousLocation = sandbox.location;
+      sandbox.location = { origin: frameId === 4 ? "https://pay.test" : "https://beta.test" };
+      let result;
+      try { result = await injection.func(...(injection.args || [])); }
+      finally { sandbox.location = previousLocation; }
       return [{ frameId, documentId: "doc", result }];
     };
 
@@ -2386,7 +2390,108 @@ async function scenarioDeviceEmulationSurvivesIdleDetach() {
   }
 }
 
+async function scenarioFrameReadsCannotGuessAnotherTabsTarget() {
+  await reset();
+  setWin({ id: 1, type: "normal", focused: true });
+  setTab({ id: 51, windowId: 1, active: true, url: "https://parent.test/" });
+  const keys = ["debugger.sendCommand", "debugger.getTargets", "debugger.attach", "debugger.detach"];
+  const saved = new Map(keys.map(key => [key, overrides[key]]));
+  const oldLocation = sandbox.location;
+  const targets = [];
+  let liveOrigin = "https://frame.test";
+  try {
+    overrides["debugger.attach"] = async () => {};
+    overrides["debugger.detach"] = async () => {};
+    overrides["debugger.getTargets"] = async () => [
+      { id: "foreign-frame", type: "iframe", url: "https://frame.test/page" },
+      { id: "owned-frame", type: "iframe", url: "https://frame.test/page" }
+    ];
+    overrides["debugger.sendCommand"] = async (target, method, params) => {
+      if (method === "Page.getFrameTree") return { frameTree: {
+        frame: { id: "main", url: "https://parent.test/" },
+        childFrames: [{ frame: { id: "owned-frame", url: "https://frame.test/page" } }]
+      }};
+      if (method === "Runtime.evaluate" && target.targetId) {
+        targets.push(target.targetId);
+        sandbox.location = { origin: liveOrigin };
+        try {
+          return { result: { value: await vm.runInContext(params.expression, sandbox) } };
+        } catch (error) {
+          return { exceptionDetails: { text: String(error) } };
+        }
+      }
+      return {};
+    };
+    const socket = new MockWebSocket(); socket.readyState = MockWebSocket.OPEN; T.state.socket = socket;
+    const read = async (id, expression) => {
+      await T.handle({ id, type: "read_cross_origin_frames", params: {
+        tabId: 51, origins: ["https://frame.test"], expression
+      }});
+      return socket.sent.at(-1)?.result?.frames?.[0];
+    };
+    const exact = await read("exact-frame", "({ elements: [{ ref: 'e1' }] })");
+    check("frame reads match exact child target instead of another tab with the same URL",
+      targets.length === 1 && targets[0] === "owned-frame" && exact?.snapshot?.elements?.[0]?.ref === "e1");
+    liveOrigin = "https://private.test";
+    sandbox.frameExecuted = false;
+    const redirected = await read("redirected-frame", "(globalThis.frameExecuted = true, {private: true})");
+    check("a frame redirect before evaluation cannot read an unapproved origin", !sandbox.frameExecuted && redirected?.snapshot === null);
+    liveOrigin = "https://frame.test";
+    const during = await read("redirect-during-frame", "Promise.resolve().then(() => {globalThis.location.origin = 'https://private.test'; return {private: true};})");
+    check("a frame redirect while its expression is pending cannot return content", during?.snapshot === null);
+    overrides["debugger.getTargets"] = async () => [{ id: "foreign-frame", type: "iframe", url: "https://frame.test/page" }];
+    const count = targets.length;
+    const missing = await read("missing-target", "({private: true})");
+    check("an absent exact target is enumerated without guessing another tab", targets.length === count && !missing?.snapshot);
+  } finally {
+    sandbox.location = oldLocation;
+    delete sandbox.frameExecuted;
+    for (const [key, value] of saved) {
+      if (value === undefined) delete overrides[key]; else overrides[key] = value;
+    }
+  }
+}
+
+async function scenarioDisplacedSocketCannotResumeConsentChecks() {
+  const savedGet = overrides["storage.local.get"];
+  try {
+    for (const granted of [true, false]) {
+      await reset();
+      await settle();
+      await T.connect();
+      const oldSocket = T.state.socket;
+      oldSocket.readyState = MockWebSocket.OPEN;
+      let resolveConsent;
+      overrides["storage.local.get"] = async key => key === "brwBrowserControlConsent"
+        ? new Promise(resolve => { resolveConsent = resolve; }) : {};
+      const pending = oldSocket.onmessage({ data: JSON.stringify({ id: "stale-ping", type: "ping" }) });
+      await settle();
+      const replacement = new MockWebSocket(); replacement.readyState = MockWebSocket.OPEN;
+      T.state.socket = replacement;
+      resolveConsent({ brwBrowserControlConsent: { granted, version: 1 } });
+      await pending;
+      check(`a displaced socket cannot ${granted ? "dispatch commands" : "disconnect a replacement"} after consent resolves`,
+        T.state.socket === replacement && replacement.sent.length === 0 && replacement.closeCalls === 0);
+      overrides["storage.local.get"] = savedGet;
+    }
+  } finally { overrides["storage.local.get"] = savedGet; }
+}
+
+async function scenarioConsoleMessagesBelongToTheCurrentDocument() {
+  await reset();
+  fireEvent("debugger.onEvent", { tabId: 51 }, "Runtime.consoleAPICalled", { args: [{ value: "old private content" }] });
+  fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 2, url: "https://frame.test/" });
+  check("a subframe commit preserves the current top document console", T.state.consoleMessages.get(51)?.length === 1);
+  fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 0, url: "https://public.test/" });
+  check("a replacement document cannot expose previous-origin console content", !T.state.consoleMessages.has(51));
+  fireEvent("debugger.onEvent", { tabId: 51 }, "Runtime.exceptionThrown", { exceptionDetails: { text: "new document load error" } });
+  check("the new document still reports load-time errors", T.state.consoleMessages.get(51)?.[0]?.text === "new document load error");
+}
+
 (async () => {
+  await scenarioFrameReadsCannotGuessAnotherTabsTarget();
+  await scenarioDisplacedSocketCannotResumeConsentChecks();
+  await scenarioConsoleMessagesBelongToTheCurrentDocument();
   await scenarioDeviceEmulationSurvivesIdleDetach();
   await scenarioConsentGateIsFailClosed();
   await scenarioPinBeatsForeground();

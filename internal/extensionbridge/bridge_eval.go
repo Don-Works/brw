@@ -115,6 +115,9 @@ func (b *Bridge) evaluateRuntime(ctx context.Context, expression, tabID string, 
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return err
 	}
+	if err := b.guardCurrentURL(ctx); err != nil {
+		return err
+	}
 	if payload.ExceptionDetails != nil {
 		if msg := browser.FormatRuntimeException(payload.ExceptionDetails); msg != "" {
 			return fmt.Errorf("runtime exception: %s", msg)
@@ -130,7 +133,7 @@ func (b *Bridge) evaluateRuntime(ctx context.Context, expression, tabID string, 
 	} else if err := json.Unmarshal(payload.Result.Value, dst); err != nil {
 		return err
 	}
-	return b.guardCurrentURL(ctx)
+	return nil
 }
 
 func (b *Bridge) cdpDispatch(ctx context.Context, tabID, method string, params map[string]any) (json.RawMessage, error) {
