@@ -24,14 +24,6 @@ const (
 	fixtureChromePath     = "/usr/bin/google-chrome"
 )
 
-// doctorFixture is a whole brw machine on disk and on loopback: app payload,
-// browser profile, policy, agent client config, daemon and bridge. Every check
-// doctor makes has something real to look at, so a test breaks a machine by
-// changing one thing and asserting on one check.
-//
-// GOOS is linux throughout: on that lane the browser binary is found through
-// the runner's PATH lookup, which a test controls, rather than through whatever
-// happens to be installed in /Applications on the machine running the test.
 type doctorFixture struct {
 	t          *testing.T
 	home       string
@@ -44,11 +36,9 @@ type doctorFixture struct {
 	daemon     *httptest.Server
 	bridge     *httptest.Server
 	policy     profilepolicy.Policy
-	// optInDir is where the Chrome opt-in check looks. It is a directory with
-	// no DevToolsActivePort file by default, so the suite's result does not
-	// depend on whether the person running it has the opt-in switched on.
+
 	optInDir string
-	// version is the installed build the report compares the daemon against.
+
 	version string
 }
 
@@ -187,9 +177,6 @@ func (fx *doctorFixture) report() doctorResult {
 	})
 }
 
-// TestDoctorFlagsADaemonOnAReplacedBuild: an install replaces the binary on
-// disk, and a daemon that was never restarted keeps serving the old one with
-// every other check green.
 func TestDoctorFlagsADaemonOnAReplacedBuild(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -226,8 +213,6 @@ func TestDoctorFlagsADaemonOnAReplacedBuild(t *testing.T) {
 	}
 }
 
-// TestDoctorExtensionsPageNamesTheBrowser: a hand-written policy often has no
-// kind, and the fix line used to read `open -a ""`, which opens nothing.
 func TestDoctorExtensionsPageNamesTheBrowser(t *testing.T) {
 	home := t.TempDir()
 	cases := []struct {
@@ -260,9 +245,6 @@ func checkByName(t *testing.T, report doctorResult, name string) doctorCheck {
 	return doctorCheck{}
 }
 
-// TestDoctorReportsAWorkingMachineAsGreen is the baseline every failure case
-// below is measured against: with the daemon up, the bridge connected and the
-// registration current, nothing is red.
 func TestDoctorReportsAWorkingMachineAsGreen(t *testing.T) {
 	fx := newDoctorFixture(t)
 	report := fx.report()
@@ -291,9 +273,6 @@ func TestDoctorReportsAWorkingMachineAsGreen(t *testing.T) {
 	}
 }
 
-// TestDoctorNamesAFixForEveryBrokenCheck injects one fault at a time and
-// asserts the check that owns it goes red with a command that addresses it. A
-// red line an operator cannot act on is a red line they learn to skip.
 func TestDoctorNamesAFixForEveryBrokenCheck(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -345,8 +324,7 @@ func TestDoctorNamesAFixForEveryBrokenCheck(t *testing.T) {
 		{
 			name: "policy no longer defines the profile",
 			break_: func(fx *doctorFixture) {
-				// The binding still names chrome-profile; the profile it points
-				// at has been renamed out from under it.
+
 				fx.policy.Profiles[0].Name = "renamed-profile"
 				fx.writePolicy()
 			},
@@ -437,8 +415,7 @@ func TestDoctorNamesAFixForEveryBrokenCheck(t *testing.T) {
 				fx.status.DisconnectReason = "handshake rejected: invalid handshake token"
 			},
 			check: "bridge_connected",
-			// A reload re-reads the same wrong token from the same status URL,
-			// so the fix has to name the setting that is wrong.
+
 			wantFix: "Extension options: set Bridge URL to ws://",
 			wantIn:  "handshake rejected",
 		},
@@ -449,8 +426,7 @@ func TestDoctorNamesAFixForEveryBrokenCheck(t *testing.T) {
 				fx.status.DisconnectReason = "handshake rejected: missing handshake token (BRW_BRIDGE_REQUIRE_TOKEN is set)"
 			},
 			check: "bridge_connected",
-			// A build too old to read /status starts presenting one as soon as
-			// the browser picks up the installed payload.
+
 			wantFix: "click Reload under brw",
 			wantIn:  "handshake rejected",
 		},
@@ -458,7 +434,7 @@ func TestDoctorNamesAFixForEveryBrokenCheck(t *testing.T) {
 			name:   "the configured transport has no live bridge",
 			break_: func(fx *doctorFixture) { fx.bridge.Close() },
 			check:  "transport",
-			// The lane is only as usable as the check it depends on.
+
 			wantFix: "systemctl --user restart brwd-chrome-profile.service",
 			wantIn:  "configured but not live",
 		},
@@ -510,7 +486,7 @@ func TestDoctorNamesAFixForEveryBrokenCheck(t *testing.T) {
 			if !strings.Contains(got.Fix, tc.wantFix) {
 				t.Fatalf("check %s fix %q is not the expected command (%q)", tc.check, got.Fix, tc.wantFix)
 			}
-			// The whole point of the fix column: nothing may be red without one.
+
 			for _, check := range report.Checks {
 				if check.Status == checkFail && strings.TrimSpace(check.Fix) == "" {
 					t.Fatalf("check %s is red with no fix command: %+v", check.Name, check)
@@ -523,11 +499,6 @@ func TestDoctorNamesAFixForEveryBrokenCheck(t *testing.T) {
 	}
 }
 
-// TestDoctorAcceptsAMachineThatRegistersNothing: `brwctl setup --mcp-client
-// none` prints the server config for the operator to paste into a client brw
-// cannot read, so an absent registration is what they asked for. Reporting it
-// red sends them to re-register a client they chose not to use, and exits 1 on
-// a machine that works.
 func TestDoctorAcceptsAMachineThatRegistersNothing(t *testing.T) {
 	fx := newDoctorFixture(t)
 	fx.policy.MCPClient = "none"
@@ -545,10 +516,6 @@ func TestDoctorAcceptsAMachineThatRegistersNothing(t *testing.T) {
 	}
 }
 
-// TestDoctorJudgesTheTransportOnTheResolvedLane: a hand-edited policy can allow
-// both lanes, and such a profile runs on direct CDP. A dead bridge is then not
-// what stops it carrying a call, so it must not be reported as the transport's
-// blocker.
 func TestDoctorJudgesTheTransportOnTheResolvedLane(t *testing.T) {
 	fx := newDoctorFixture(t)
 	fx.policy.Profiles[0].DirectCDPAllowed = true
@@ -564,7 +531,6 @@ func TestDoctorJudgesTheTransportOnTheResolvedLane(t *testing.T) {
 	}
 }
 
-// TestDoctorExitsNonZeroOnFailure is the contract a wrapper script gates on.
 func TestDoctorExitsNonZeroOnFailure(t *testing.T) {
 	fx := newDoctorFixture(t)
 	var out bytes.Buffer
@@ -587,18 +553,14 @@ func TestDoctorExitsNonZeroOnFailure(t *testing.T) {
 	}
 }
 
-// TestDoctorJSONSchemaIsStable pins the --json contract: the key set of the
-// document, the key set of one check, and the closed list of check names. A
-// consumer reads these by name, so a field that appears or vanishes without a
-// deliberate change here is a break.
 func TestDoctorJSONSchemaIsStable(t *testing.T) {
 	t.Run("a machine with one broken check", func(t *testing.T) {
 		fx := newDoctorFixture(t)
-		// One broken thing, so the failure-side keys are populated too.
+
 		fx.status.Hello.Build = "1.1.0"
 		assertDoctorSchema(t, fx.report(), true)
 	})
-	// Nothing resolvable at all: every check still has to report, as a skip.
+
 	t.Run("a machine with no readable policy", func(t *testing.T) {
 		fx := newDoctorFixture(t)
 		if err := os.Remove(fx.policyPath); err != nil {
@@ -606,15 +568,10 @@ func TestDoctorJSONSchemaIsStable(t *testing.T) {
 		}
 		assertDoctorSchema(t, fx.report(), false)
 	})
-	// Through the command, not doctorReport: a fresh machine with no policy to
-	// discover is where --json is read most, and where a hand-built result
-	// would quietly emit a different document.
+
 	t.Run("the command's own unresolvable-policy path", func(t *testing.T) {
 		dir := t.TempDir()
-		// The command reads its own environment and PATH, and this test asserts
-		// the document's shape rather than the machine it ran on: point all of
-		// it at an empty directory so no agent client, browser or policy of the
-		// operator's takes part.
+
 		t.Setenv("BRW_PROFILE", "")
 		t.Setenv("BRW_WORKSPACE", "")
 		t.Setenv("BRW_PROFILE_POLICY", "")
@@ -632,8 +589,6 @@ func TestDoctorJSONSchemaIsStable(t *testing.T) {
 	})
 }
 
-// captureStdout runs fn with os.Stdout redirected, so a command that prints its
-// report can be asserted on as the operator receives it.
 func captureStdout(t *testing.T, fn func() error) ([]byte, error) {
 	t.Helper()
 	read, write, pipeErr := os.Pipe()
@@ -671,16 +626,11 @@ func assertDoctorSchemaJSON(t *testing.T, raw []byte, requireAll bool) {
 		t.Fatalf("--json output is not JSON: %v\n%s", err, raw)
 	}
 
-	// Documented keys. The always set has no omitempty and must be present in
-	// every report, however broken the machine; the rest appear once the thing
-	// they describe has been resolved.
 	always := []string{"profile", "kind", "app_dir", "chrome_profile_dir", "checks", "ok"}
 	allowed := map[string]bool{
 		"profile_policy_path": true, "bridge_extension_id": true, "bridge_extension_installed": true,
 		"bridge_extension_source": true, "transport": true, "capabilities": true,
-		// chrome_opt_in is present whenever the opt-in lane was looked for, and
-		// absent when live checks were skipped, so it is allowed rather than
-		// required even on a fully resolved machine.
+
 		"chrome_opt_in":   true,
 		"daemon_http_url": true, "bridge_ws_addr": true, "browser_executable": true,
 		"browser_version": true, "extension_payload_version": true, "extension_loaded_version": true,
@@ -753,10 +703,6 @@ func assertDoctorSchemaJSON(t *testing.T, raw []byte, requireAll bool) {
 	}
 }
 
-// TestDoctorAcceptsAMachineRegisteredWithAnotherClient: setup supports
-// --mcp-client codex and --mcp-client none, and ~/.claude.json exists on any
-// machine Claude Code has ever run on. Reporting either of those red sends the
-// operator to re-register a client they deliberately did not use.
 func TestDoctorAcceptsAMachineRegisteredWithAnotherClient(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -814,8 +760,6 @@ func TestDoctorAcceptsAMachineRegisteredWithAnotherClient(t *testing.T) {
 	}
 }
 
-// TestDoctorSkipsLiveChecksForSetup: `brwctl setup` verifies before the operator
-// has loaded the extension, so the probes must be skipped rather than red.
 func TestDoctorSkipsLiveChecksForSetup(t *testing.T) {
 	fx := newDoctorFixture(t)
 	fx.daemon.Close()
@@ -840,9 +784,6 @@ func TestDoctorSkipsLiveChecksForSetup(t *testing.T) {
 	}
 }
 
-// TestDoctorDirectCDPProfileSkipsEveryExtensionCheck: a direct-CDP install has
-// no extension at all, and reporting its absence as a fault would send the
-// operator to fix something that is not broken.
 func TestDoctorDirectCDPProfileSkipsEveryExtensionCheck(t *testing.T) {
 	fx := newDoctorFixture(t)
 	fx.policy.Profiles[0].ExtensionBridgeAllowed = false

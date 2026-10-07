@@ -63,16 +63,14 @@ func runProfiles(args []string, out io.Writer) error {
 			return err
 		}
 		if args[0] == "list" {
-			writeJSON(out, board)
-			return nil
+			return writeJSON(out, board)
 		}
 		if fs.NArg() != 1 {
 			return errors.New("usage: brwctl profiles sessions NAME")
 		}
 		for _, well := range board.Wells {
 			if well.Name == fs.Arg(0) {
-				writeJSON(out, well)
-				return nil
+				return writeJSON(out, well)
 			}
 		}
 		return fmt.Errorf("profile %q is not in the roster", fs.Arg(0))
@@ -91,8 +89,7 @@ func runProfiles(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		writeJSON(out, result)
-		return nil
+		return writeJSON(out, result)
 	case "pin":
 		if fs.NArg() != 1 || *origin == "" {
 			return errors.New("usage: brwctl profiles pin NAME --origin https://example.com [--account A] [--label L]")
@@ -114,8 +111,7 @@ func runProfiles(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		writeJSON(out, result)
-		return nil
+		return writeJSON(out, result)
 	case "gui":
 		policy, err := profilepolicy.Load(*policyPath)
 		if err != nil {
@@ -143,8 +139,6 @@ func resolvedPolicyPath(explicit string) (string, error) {
 	return profilepolicy.Discover("")
 }
 
-// interleaved moves flags ahead of positionals, so `create bookkeeper
-// --account a@b` parses the same as `create --account a@b bookkeeper`.
 func interleaved(args []string, fs *flag.FlagSet) []string {
 	var flags, positional []string
 	for i := 0; i < len(args); i++ {

@@ -14,22 +14,11 @@ import (
 	"github.com/Don-Works/brw/internal/recipe"
 )
 
-// compilePlanEnvURL and compilePlanEnvToken configure the private provider's
-// write API. They are environment variables rather than flags because a token
-// on a command line is a token in the shell history and in every process
-// listing on the machine.
 const (
 	compilePlanEnvURL   = "BRW_RECIPE_PROVIDER_URL"
 	compilePlanEnvToken = "BRW_RECIPE_PROVIDER_TOKEN" //nolint:gosec // names the variable, holds nothing
 )
 
-// recipeCompile turns a scoped trace into a reviewed recipe.
-//
-// Nothing is written until the whole trace has compiled. A trace carrying a
-// credential field, a coordinate click, an ambiguous target, an undeclared
-// origin or a step with nothing observed after it fails here, with no file on
-// disk to redact afterwards — a draft that was written and then cleaned up is a
-// draft that existed, and on a shared machine that is the whole exposure.
 func recipeCompile(fromTrace, planPath, out string, publish bool) error {
 	planData, err := readRecipeSource(planPath, false)
 	if err != nil {
@@ -61,9 +50,6 @@ func recipeCompile(fromTrace, planPath, out string, publish bool) error {
 		return err
 	}
 
-	// The review body goes to stdout every time. It is the artifact a human
-	// actually reviews, and a compile whose only output was a JSON file would
-	// be reviewed by nobody.
 	fmt.Print(result.Review)
 
 	if destination != "" {
@@ -89,13 +75,6 @@ func recipeCompile(fromTrace, planPath, out string, publish bool) error {
 	return nil
 }
 
-// draftDestination refuses any path inside a Git checkout before compilation
-// begins, so a refusal cannot arrive after a file already exists.
-//
-// This repository is a Git checkout, so the rule alone keeps a draft out of it;
-// the check is written against every checkout rather than against this one
-// because an operator's private recipes do not belong in their other
-// repositories either.
 func draftDestination(out string) (string, error) {
 	out = strings.TrimSpace(out)
 	if out == "" {
@@ -111,16 +90,6 @@ func draftDestination(out string) (string, error) {
 	return absolute, nil
 }
 
-// writeDraftFile creates the draft without following a symlink and without
-// overwriting anything that is already there.
-//
-// draftDestination checks the path, but a check on a path is a check on what
-// that path resolved to at that moment: a dangling symlink at --out resolves to
-// nothing, so it passes the check, and a plain write then follows it into
-// whatever it names — a file inside this repository, for instance. O_EXCL
-// refuses a symlink of any kind and refuses an existing file, so the name that
-// was checked is the name that gets written, and the checkout rule is re-run
-// against the created file's own resolved path before a byte reaches it.
 func writeDraftFile(destination string, body []byte) error {
 	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -159,10 +128,6 @@ func publishDraft(draft recipe.Draft) (recipe.PublishedDraft, error) {
 	return provider.PublishDraft(context.Background(), draft)
 }
 
-// decodeCompilePlan reads the operator's declarations: identity, origins, risk
-// and which steps commit external writes. Unknown fields are rejected, because
-// a plan whose "writes" key is misspelled would otherwise compile every write
-// in the flow as a read.
 func decodeCompilePlan(data []byte) (recipe.CompileOptions, error) {
 	var options recipe.CompileOptions
 	if err := decodeStrict(data, &options); err != nil {
@@ -171,13 +136,6 @@ func decodeCompilePlan(data []byte) (recipe.CompileOptions, error) {
 	return options, nil
 }
 
-// traceStepEnvelope is a scoped trace step plus the recorder's own bookkeeping
-// fields, which the compiler ignores. It exists so the trace can be decoded
-// strictly: the reason given for rejecting an unknown key in the plan applies
-// harder here, because among the keys the compiler reads is `redacted`, the
-// strongest of the three credential signals. A trace whose recorder spelled it
-// differently would be absorbed in silence, leaving an accessible-name regex as
-// the only thing between a password field and a publishable draft.
 type traceStepEnvelope struct {
 	recipe.TraceStep
 	TabID      string `json:"tab_id,omitempty"`
@@ -187,8 +145,6 @@ type traceStepEnvelope struct {
 	Timestamp  string `json:"timestamp,omitempty"`
 }
 
-// decodeTraceSteps accepts a bare array of scoped trace steps, or the object a
-// scoped trace buffer is served as.
 func decodeTraceSteps(data []byte) ([]recipe.TraceStep, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
@@ -227,8 +183,6 @@ func unwrapTraceSteps(envelopes []traceStepEnvelope) ([]recipe.TraceStep, error)
 	return steps, nil
 }
 
-// decodeStrict refuses an unrecognised key and trailing JSON, so a shape
-// mismatch is reported rather than absorbed.
 func decodeStrict(data []byte, into any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()

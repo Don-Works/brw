@@ -17,14 +17,6 @@ import (
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
-// daemonHealth and bridgeStatus are hand-written copies of two documents other
-// packages produce. Every other test here encodes its fixture with those same
-// structs, so it is self-consistent by construction: rename a field in
-// internal/http or internal/extensionbridge and they all stay green while
-// `brwctl upgrade` silently stops refusing on a busy daemon (an in_flight that
-// no longer decodes reads as 0) and doctor stops seeing a stale extension
-// build. These two tests decode the real producers instead.
-
 func TestDaemonHealthContract(t *testing.T) {
 	identity := brwidentity.Identity{Workspace: fixtureWorkspace, Profile: fixtureProfile}
 	addr := freeLoopbackAddr(t)
@@ -51,8 +43,7 @@ func TestDaemonHealthContract(t *testing.T) {
 	if health.Identity != identity {
 		t.Fatalf("identity = %+v, want %+v; doctor uses it to catch another workspace's daemon on this port", health.Identity, identity)
 	}
-	// The counters are zero on an idle daemon, so presence in the document is
-	// what pins the names upgrade's busy check depends on.
+
 	raw := fetchRaw(t, client, url+"/health")
 	leases, ok := raw["tab_leases"].(map[string]any)
 	if !ok {
@@ -99,10 +90,7 @@ func TestBridgeStatusContract(t *testing.T) {
 	if status.Hello.Build != build {
 		t.Fatalf("hello.build = %q, want %q; doctor compares it against the payload on disk", status.Hello.Build, build)
 	}
-	// The endpoint the extension reports is what doctor's bridge_config check
-	// reads instead of guessing from a packaged file that may be overridden. A
-	// renamed tag on either side decodes as empty and the check silently falls
-	// back to the file, which is the false-green this pins shut.
+
 	if status.Hello.StatusURL != fixtureReportedStatusURL {
 		t.Fatalf("hello.status_url = %q, want %q", status.Hello.StatusURL, fixtureReportedStatusURL)
 	}
@@ -120,7 +108,6 @@ func TestBridgeStatusContract(t *testing.T) {
 		return err == nil && !status.Connected && status.DisconnectReason != ""
 	})
 
-	// Zero on an idle bridge, so presence is what pins the names.
 	raw := fetchRaw(t, client, "http://"+addr+"/status")
 	for _, key := range []string{"connected", "hello", "connected_at", "disconnect_reason", "pending", "inflight", "queued"} {
 		if _, present := raw[key]; !present {
@@ -129,18 +116,6 @@ func TestBridgeStatusContract(t *testing.T) {
 	}
 }
 
-// TestBridgeLastHandshakeContract pins the other half of the document doctor's
-// bridge_config check reads. The happy path never carries last_handshake, so the
-// required-keys list in TestBridgeStatusContract cannot cover it, and every
-// other test here encodes its fixture with the same bridgeStatus struct it
-// decodes with — so a rename on either side round-trips green while production
-// decodes an empty record, reportedBridgeConfig returns "", and the check falls
-// back to guessing from a file. That file-guessing false green is the whole
-// reason the check exists.
-//
-// A refused hello is the only producer: an extension pointed at a dead status
-// URL has no token to present, and the endpoint it tried is stated nowhere else
-// on the machine.
 func TestBridgeLastHandshakeContract(t *testing.T) {
 	addr := freeLoopbackAddr(t)
 	bridge := extensionbridge.New(addr, 5*time.Second, "")
@@ -158,7 +133,6 @@ func TestBridgeLastHandshakeContract(t *testing.T) {
 		return err == nil
 	})
 
-	// No token in the hello: the bridge refuses it and records what it reported.
 	dialBridge(t, addr, "1.4.0")
 	var status bridgeStatus
 	waitFor(t, "the refused handshake to be recorded", func() bool {
@@ -189,8 +163,6 @@ func TestBridgeLastHandshakeContract(t *testing.T) {
 		t.Fatalf("last_handshake.reason echoed the token: %q", status.LastHandshake.Reason)
 	}
 
-	// The struct above is doctor's copy. This is the producer's own document, so
-	// the two are compared rather than round-tripped.
 	raw := fetchRaw(t, client, "http://"+addr+"/status")
 	last, ok := raw["last_handshake"].(map[string]any)
 	if !ok {
@@ -203,8 +175,6 @@ func TestBridgeLastHandshakeContract(t *testing.T) {
 	}
 }
 
-// dialBridge connects as the extension does: a chrome-extension Origin the
-// bridge accepts, and a hello frame naming the loaded build.
 func dialBridge(t *testing.T, addr, build string) *websocket.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -245,9 +215,6 @@ func fetchRaw(t *testing.T, client *http.Client, url string) map[string]any {
 	return raw
 }
 
-// freeLoopbackAddr reserves a loopback port and hands it back. Both producers
-// bind an address given at construction, so a test cannot ask them for the port
-// a :0 bind chose.
 func freeLoopbackAddr(t *testing.T) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

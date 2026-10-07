@@ -22,9 +22,6 @@ import (
 	"github.com/Don-Works/brw/internal/setup"
 )
 
-// Check statuses. A check is red only when the machine cannot do what the check
-// covers; skip is for a check that does not apply to this install (no bridge on
-// a direct-CDP profile), and warn for something that works but will bite later.
 const (
 	checkOK   = "ok"
 	checkWarn = "warn"
@@ -32,9 +29,6 @@ const (
 	checkSkip = "skip"
 )
 
-// doctorCheckNames is every check doctor can emit, in report order. It is the
-// schema a consumer switches on, so a check is added here deliberately rather
-// than appearing because some code path happened to run.
 var doctorCheckNames = []string{
 	"profile_policy",
 	"profile_resolved",
@@ -52,10 +46,6 @@ var doctorCheckNames = []string{
 	"transport",
 }
 
-// doctorCheck is one diagnostic. Name is the stable handle a consumer matches
-// on and Title is what a human reads. Fix is a command to paste, never a
-// restatement of the problem: a red check that cannot name the next command has
-// not finished diagnosing, it has only finished complaining.
 type doctorCheck struct {
 	Name   string `json:"name"`
 	Title  string `json:"title"`
@@ -64,16 +54,12 @@ type doctorCheck struct {
 	Fix    string `json:"fix,omitempty"`
 }
 
-// doctorWarning is a named, non-fatal finding. The name is the stable handle a
-// consumer matches on; the message is what a human reads.
 type doctorWarning struct {
 	Name    string `json:"name"`
 	Message string `json:"message"`
 	Detail  string `json:"detail,omitempty"`
 }
 
-// doctorResult is the `brwctl doctor` JSON contract. Fields are only ever added
-// to it: an existing consumer keeps reading the keys it already knows.
 type doctorResult struct {
 	Profile                  string              `json:"profile"`
 	Kind                     string              `json:"kind"`
@@ -98,9 +84,6 @@ type doctorResult struct {
 	Failures                 []string            `json:"failures,omitempty"`
 }
 
-// doctorRequest is what doctorReport needs. Policy is optional: `brwctl setup`
-// passes the policy it has just merged in memory so --dry-run can verify a
-// configuration that is not on disk yet.
 type doctorRequest struct {
 	Workspace  string
 	Profile    string
@@ -109,29 +92,17 @@ type doctorRequest struct {
 	Home       string
 	GOOS       string
 	Policy     *profilepolicy.Policy
-	// Executable is the running brwctl. It is how doctor knows which brwd an
-	// MCP registration ought to name, so a registration left behind by an
-	// install that has since moved reads as stale instead of as fine.
+	// Executable is the running brwctl.
 	Executable string
 	// Version is the installed build, the one a daemon should be running.
-	// "dev" or empty skips the daemon build comparison.
 	Version string
 	Runner  commandRunner
 	Timeout time.Duration
-	// SkipLiveChecks leaves the daemon and the bridge unprobed. `brwctl setup`
-	// sets it because loading the extension is the first thing setup tells the
-	// operator to do by hand afterwards: probing a bridge nothing has connected
-	// to yet would end every successful setup with a red check.
+	// SkipLiveChecks leaves the daemon and the bridge unprobed.
 	SkipLiveChecks bool
-	// ResolveError is why the caller could not name a workspace itself. It is
-	// reported as the profile check rather than returned, so a machine whose
-	// policy binds no workspace still gets the whole report.
+	// ResolveError is why the caller could not name a workspace itself.
 	ResolveError error
-	// ChromeOptInUserDataDir overrides where the Chrome remote-debugging opt-in
-	// endpoint is looked for. The command leaves it empty and the check resolves
-	// the browser's real user data directory; a test sets it so its result does
-	// not depend on whether the person running the suite happens to have the
-	// opt-in switched on.
+	// ChromeOptInUserDataDir overrides where the Chrome remote-debugging opt-in endpoint is looked for.
 	ChromeOptInUserDataDir string
 }
 
@@ -151,14 +122,7 @@ func doctor(args []string) error {
 	}
 	var resolveErr error
 	if profileName == "" && workspaceName == "" {
-		// A machine configured by `brwctl setup` has exactly one binding, and
-		// making the operator retype its generated name is the kind of friction
-		// that sends people back to hand-editing the policy.
-		//
-		// Failing to pick one is a diagnosis, not a usage error, and it goes
-		// through the full report rather than a hand-built one: --json is a
-		// contract, and the commonest broken machine is exactly the one that
-		// lands here.
+
 		workspaceName, resolveErr = soleWorkspace(policyPath)
 	}
 	home, _ := os.UserHomeDir()
@@ -177,12 +141,11 @@ func doctor(args []string) error {
 	return reportDoctor(os.Stdout, report, asJSON)
 }
 
-// reportDoctor prints the report and returns the command's exit condition: any
-// failing check is a non-zero exit, so a wrapper script can gate on it without
-// parsing anything.
 func reportDoctor(w io.Writer, report doctorResult, asJSON bool) error {
 	if asJSON {
-		writeJSON(w, report)
+		if err := writeJSON(w, report); err != nil {
+			return err
+		}
 	} else {
 		renderDoctor(w, report)
 	}
@@ -192,9 +155,6 @@ func reportDoctor(w io.Writer, report doctorResult, asJSON bool) error {
 	return fmt.Errorf("%d doctor check(s) failed; run the commands printed above", len(report.Failures))
 }
 
-// soleWorkspace names the only workspace binding in the policy. More than one
-// is ambiguous and the caller has to say which; none means the policy predates
-// workspace bindings, so the profile name is the only handle.
 func soleWorkspace(policyPath string) (string, error) {
 	policy, err := profilepolicy.Load(policyPath)
 	if err != nil {
@@ -214,9 +174,6 @@ func soleWorkspace(policyPath string) (string, error) {
 	}
 }
 
-// doctorRun accumulates one report. Every check runs even when an earlier one
-// failed — an operator fixing a broken machine wants the whole list, not the
-// first problem and then silence.
 type doctorRun struct {
 	req      doctorRequest
 	result   doctorResult
@@ -224,13 +181,9 @@ type doctorRun struct {
 	profile  profilepolicy.Profile
 	resolved bool
 	client   *http.Client
-	// bridge is the live bridge status, carried from the bridge check to the
-	// extension-version check: the loaded build is only knowable from a
-	// connected extension.
+
 	bridge *bridgeStatus
-	// health is the daemon's own answer, carried from the daemon check to the
-	// checks that have to know which lane is actually running. Nil when the
-	// daemon was not probed or did not answer.
+
 	health *daemonHealth
 }
 
@@ -283,7 +236,6 @@ func (d *doctorRun) finish() doctorResult {
 	return d.result
 }
 
-// workspaceFlag is the argument that re-runs a command against this profile.
 func (d *doctorRun) workspaceFlag() string {
 	if d.req.Workspace != "" {
 		return " --workspace " + d.req.Workspace
@@ -385,9 +337,6 @@ func (d *doctorRun) checkAppFiles() {
 		d.add(checkOK, "app_files", "app files", "brwd, brwcheck, brw-devtools-mcp and the extension payload are in "+d.req.AppDir, "")
 	}
 
-	// The app-directory copy of the policy is what `task install-mac` syncs for
-	// a remote push; it is not the policy this run loaded, and a machine set up
-	// by `brwctl setup` legitimately has none. Report it, do not fail on it.
 	appPolicy := filepath.Join(d.req.AppDir, "config", "browser-profiles.json")
 	if _, err := os.Stat(appPolicy); err != nil {
 		d.result.Warnings = append(d.result.Warnings, doctorWarning{
@@ -453,9 +402,7 @@ func (d *doctorRun) checkBridgeExtension() {
 		d.add(checkSkip, "bridge_extension", "brw extension installed", "direct-CDP profile: no extension is involved", "")
 		return
 	}
-	// Match the daemon: an unconfigured bridge already trusts the published
-	// extension id, so doctor must verify against the same id rather than
-	// failing a policy that simply did not repeat it.
+
 	id := d.profile.BridgeExtensionID
 	if id == "" {
 		id = profilepolicy.DefaultBridgeExtensionID
@@ -478,10 +425,6 @@ func (d *doctorRun) checkBridgeExtension() {
 	d.add(checkOK, "bridge_extension", "brw extension installed", id+" is present in "+source, "")
 }
 
-// extensionsPageCommand opens the browser's extensions page with the step to
-// take on it spelled out. No CLI can install, reload or reconfigure an
-// extension in a running browser profile, so the closest thing to a next
-// command is opening the page with the work already named.
 func (d *doctorRun) extensionsPageCommand(note string) string {
 	kind := d.browserKind()
 	if d.req.GOOS == "darwin" {
@@ -497,9 +440,6 @@ func (d *doctorRun) extensionsPageCommand(note string) string {
 	return exe + " chrome://extensions   # " + note
 }
 
-// browserKind is the profile's browser. A hand-written policy often omits kind,
-// so it is recovered from the user data directory when that is a browser's
-// default one.
 func (d *doctorRun) browserKind() string {
 	if d.profile.Kind != "" {
 		return d.profile.Kind
@@ -525,9 +465,6 @@ func (d *doctorRun) reloadExtensionCommand() string {
 	return d.extensionsPageCommand("click Reload under brw")
 }
 
-// bridgeSettingsCommand repoints the extension at this profile's bridge. The
-// two URLs live in the extension's own storage, which nothing outside the
-// browser can write, so both values go in the note.
 func (d *doctorRun) bridgeSettingsCommand(addr string) string {
 	return d.extensionsPageCommand(fmt.Sprintf(
 		"brw > Details > Extension options: set Bridge URL to ws://%s/extension and Status URL to http://%s/status",
@@ -543,9 +480,6 @@ func (d *doctorRun) serviceParams() setup.ServiceParams {
 	}
 }
 
-// serviceRestartCommand is the one command that puts this profile's daemon
-// back. A machine with no unit installed cannot be restarted into life, so it
-// is sent to setup instead.
 func (d *doctorRun) serviceRestartCommand() string {
 	params := d.serviceParams()
 	if _, err := os.Stat(params.UnitPath()); err == nil {
@@ -579,9 +513,7 @@ func (d *doctorRun) checkDaemon() {
 		d.add(checkFail, "daemon", "daemon", daemonUnreachableDetail(url, err), d.serviceRestartCommand())
 		return
 	}
-	// A daemon answering on this port for another workspace is the failure the
-	// port number alone cannot show: everything looks up, and every tool drives
-	// somebody else's browser.
+
 	expected := brwidentity.Identity{Workspace: d.req.Workspace, Profile: d.profile.Name}
 	if mismatches := health.Identity.Mismatches(expected); len(mismatches) > 0 && !health.Identity.Empty() {
 		d.add(checkFail, "daemon", "daemon",
@@ -610,9 +542,6 @@ func (d *doctorRun) checkDaemon() {
 	d.add(checkOK, "daemon", "daemon", detail, "")
 }
 
-// daemonUnreachableDetail separates the three ways a loopback daemon fails to
-// answer, because they take different fixes: nothing bound, something bound
-// that is not brwd, and bound but wedged.
 func daemonUnreachableDetail(url string, err error) string {
 	switch {
 	case errors.Is(err, syscall.ECONNREFUSED):
@@ -653,8 +582,7 @@ func (d *doctorRun) checkBridgeConnected() {
 	}
 	d.bridge = &status
 	if !status.Connected {
-		// Installed is not connected: the extension's MV3 service worker has to
-		// be running and have completed the handshake before any tool works.
+
 		detail := addr + " is listening but no extension has connected"
 		if status.DisconnectReason != "" {
 			detail += " (last disconnect: " + status.DisconnectReason + ")"
@@ -673,14 +601,6 @@ func (d *doctorRun) checkBridgeConnected() {
 	d.add(checkOK, "bridge_connected", "extension bridge", detail, "")
 }
 
-// staleHandshakeToken reports whether the bridge refused a token the extension
-// actually presented. The extension re-reads its token from the status URL it
-// is configured with on every hello, so a token this bridge does not know means
-// that URL addresses another daemon: reloading fetches the same wrong token
-// again, and the settings are what have to change. A hello carrying NO token is
-// a different fault — a pre-0.2.0 build, or one that could not reach /status at
-// all — and a reload is the fix for that one. The wording is what
-// extensionbridge.verifyHandshake returns.
 func staleHandshakeToken(reason string) bool {
 	return strings.Contains(reason, "invalid handshake token")
 }
@@ -704,8 +624,6 @@ func (d *doctorRun) checkExtensionVersion() {
 	}
 	d.result.ExtensionPayloadVersion = expected
 
-	// A per-profile copy that has fallen behind is executable code the daemon
-	// has no view of: the browser keeps running it and nothing says so.
 	perProfile, err := setup.PerProfileExtensionDirs(d.req.AppDir)
 	if err == nil {
 		var stale []string
@@ -771,11 +689,7 @@ func (d *doctorRun) checkMCPRegistration() {
 	}
 	entry, ok := servers[name]
 	if !ok {
-		// Claude Code's JSON config is not the only place a registration can
-		// live: `brwctl setup --mcp-client codex` writes codex's TOML, which
-		// nothing here can parse, so ask codex itself. Reporting a codex-only
-		// machine red sends the operator to re-register a client they chose not
-		// to use.
+
 		if d.codexRegisters(name) {
 			d.add(checkOK, "mcp_registration", "MCP registration", name+" is registered with codex", "")
 			return
@@ -785,9 +699,7 @@ func (d *doctorRun) checkMCPRegistration() {
 			absent = "no agent client config at " + configPath + "; nothing on this machine is configured to launch brw"
 		}
 		if d.policy.MCPClient == "none" {
-			// setup was told to register nothing and printed the server config
-			// for the operator to paste into a client brw cannot read. An
-			// absent registration here is what they asked for.
+
 			d.add(checkWarn, "mcp_registration", "MCP registration",
 				absent+"; this machine was set up with --mcp-client none, so brw cannot see where it is registered", addCommand)
 			return
@@ -796,10 +708,7 @@ func (d *doctorRun) checkMCPRegistration() {
 		if _, codexOnPath := d.req.Runner.look("codex"); codexOnPath {
 			absent += ", and the codex CLI has no brw server either"
 		} else if !claudeOnPath {
-			// With neither client installed there is nothing here to say brw is
-			// unregistered: ~/.claude.json outlives the install that wrote it,
-			// and setup's --mcp-client none hands the config to a client brw
-			// has no way to read.
+
 			d.add(checkWarn, "mcp_registration", "MCP registration",
 				absent+"; no agent client CLI is on PATH, so brw may be registered in one brw cannot see", addCommand)
 			return
@@ -821,9 +730,6 @@ func (d *doctorRun) checkMCPRegistration() {
 	d.add(checkOK, "mcp_registration", "MCP registration", name+" launches "+entry.Command+" (from "+configPath+")", "")
 }
 
-// codexRegisters asks the codex CLI whether it holds this server, the way
-// setup's own registration step does. codex keeps its MCP servers in TOML and
-// there is no TOML parser in this module, so the CLI is the only reader.
 func (d *doctorRun) codexRegisters(name string) bool {
 	if _, onPath := d.req.Runner.look("codex"); !onPath {
 		return false
@@ -832,8 +738,6 @@ func (d *doctorRun) codexRegisters(name string) bool {
 	return err == nil
 }
 
-// samePath compares two commands as the filesystem sees them, so a bin/
-// symlink and its target are not reported as a stale registration.
 func samePath(a, b string) bool {
 	if a == b {
 		return true
@@ -863,18 +767,7 @@ func (d *doctorRun) checkTransport() {
 		d.add(checkSkip, "transport", "transport capabilities", "no profile resolved", "")
 		return
 	}
-	// Name the lane and its capability gap. Every lane is a complete browser,
-	// and they differ in what an agent can ask for: incognito and HttpOnly
-	// cookies on the CDP lanes, Chrome tab groups only on the bridge, download
-	// routing only where brw started the browser, and nothing that resolves a
-	// local path or the clipboard where the browser is on another machine.
-	// Nothing else tells the user which of those they have.
-	//
-	// The RUNNING daemon's answer wins over the policy's. ResolvedTransport can
-	// only ever return the two lanes a profile policy selects, so on the Chrome
-	// opt-in, --remote or a browser.provider lane it names a lane the user is
-	// not on — which is worse than saying nothing, because the capability list
-	// printed beside it is then somebody else's.
+
 	transport := ""
 	if d.health != nil {
 		transport = d.health.Identity.Transport
@@ -897,9 +790,7 @@ func (d *doctorRun) checkTransport() {
 			summary+"; live checks skipped, so nothing here says the lane is up", "")
 		return
 	}
-	// The lane the policy allows is not the lane that is carrying anything. A
-	// green capability list on a machine whose daemon or bridge is down reads
-	// as "these tools work here" when no tool can run at all.
+
 	if blocker, dead := d.deadLane(transport); dead {
 		d.add(checkFail, "transport", "transport capabilities",
 			transport+" is configured but not live: "+blocker.Detail, blocker.Fix)
@@ -908,10 +799,6 @@ func (d *doctorRun) checkTransport() {
 	d.add(checkOK, "transport", "transport capabilities", summary, "")
 }
 
-// deadLane names the failed check that stops this profile's transport carrying
-// a tool call. The bridge only counts on the lane that uses it, which is the
-// lane the profile resolves to and not everything its policy also permits: a
-// profile that allows both runs on direct CDP, where no bridge is involved.
 func (d *doctorRun) deadLane(transport string) (doctorCheck, bool) {
 	names := []string{"daemon"}
 	if transport == setup.ResolvedExtensionBridge {
@@ -925,7 +812,6 @@ func (d *doctorRun) deadLane(transport string) (doctorCheck, bool) {
 	return doctorCheck{}, false
 }
 
-// checkNamed returns a check this run has already reported.
 func (d *doctorRun) checkNamed(name string) (doctorCheck, bool) {
 	for _, check := range d.result.Checks {
 		if check.Name == name {
@@ -935,8 +821,6 @@ func (d *doctorRun) checkNamed(name string) (doctorCheck, bool) {
 	return doctorCheck{}, false
 }
 
-// daemonHealth is the part of brwd's /health that doctor and upgrade read.
-// TabLeases is what says whether an agent is mid-operation right now.
 type daemonHealth struct {
 	OK        bool                 `json:"ok"`
 	Version   string               `json:"version"`
@@ -950,27 +834,17 @@ type tabLeaseStats struct {
 	InFlight   int `json:"in_flight"`
 }
 
-// bridgeStatus is the part of the extension bridge's /status doctor and upgrade
-// read. The endpoint also serves the handshake token to a loopback caller; it is
-// deliberately not a field here, so the secret is never decoded, printed or put
-// in a report.
 type bridgeStatus struct {
 	Connected bool `json:"connected"`
 	Hello     struct {
 		Build  string `json:"build"`
 		Chrome string `json:"chrome"`
 		Label  string `json:"label"`
-		// StatusURL and ConfigSource are the endpoint the connected extension is
-		// using and the config layer that supplied it. Nothing outside the browser
-		// can read the extension's stored config, so this is the only statement of
-		// which endpoint is live rather than merely installed.
+		// StatusURL and ConfigSource are the endpoint the connected extension is using and the config layer that supplied it.
 		StatusURL    string `json:"status_url"`
 		ConfigSource string `json:"config_source"`
 	} `json:"hello"`
-	// LastHandshake is what a REFUSED hello reported. Since the handshake token
-	// became mandatory, an extension pointed at a dead status URL has no token to
-	// present and is turned away — so the refusal is the only place the endpoint
-	// it was trying is ever stated.
+	// LastHandshake is what a REFUSED hello reported.
 	LastHandshake struct {
 		StatusURL    string `json:"status_url"`
 		BridgeURL    string `json:"bridge_url"`
@@ -985,9 +859,6 @@ type bridgeStatus struct {
 	DisconnectReason string `json:"disconnect_reason"`
 }
 
-// errUnexpectedResponse marks an address that answered with something other
-// than the document that was asked for. On a loopback daemon address that means
-// a port collision rather than a dead daemon.
 var errUnexpectedResponse = errors.New("unexpected response")
 
 func probeDaemonHealth(client *http.Client, httpURL string) (daemonHealth, error) {
@@ -1011,19 +882,6 @@ func probeBridgeStatus(client *http.Client, wsAddr string) (bridgeStatus, error)
 	return status, err
 }
 
-// doctorClient is the only client doctor GETs with, and it follows no redirect.
-//
-// Every URL handed to it has already passed a gate: loopbackStatusURL for the
-// two endpoints that come from outside this process, the profile policy for the
-// daemon's own address. A redirect is a request to a URL nothing gated, and Go's
-// default CheckRedirect follows ten of them — so one 302 from a loopback port a
-// local process bound turns a gated request into a request to any host that
-// process names, which is precisely the egress the gate exists to deny.
-//
-// It returns ErrUseLastResponse rather than an error so the 3xx comes back as a
-// response: an error from CheckRedirect is wrapped in a *url.Error carrying the
-// URL of the HOP, which would put an attacker-chosen string back in the report
-// the gate keeps it out of.
 func doctorClient(timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, CheckRedirect: refuseRedirects}
 }
@@ -1032,9 +890,6 @@ func refuseRedirects(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
-// withoutRedirects is the same policy applied to a client this package was
-// handed rather than one it built, so the no-redirect rule holds at the probe
-// rather than only at the construction site a caller may not have used.
 func withoutRedirects(client *http.Client) *http.Client {
 	gated := http.Client{}
 	if client != nil {
@@ -1053,14 +908,19 @@ func fetchJSON(client *http.Client, url string, out any) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%w: HTTP %d from %s", errUnexpectedResponse, resp.StatusCode, url)
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out); err != nil {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > 1<<20 {
+		return fmt.Errorf("%w: %s response exceeds 1 MiB", errUnexpectedResponse, url)
+	}
+	if err := json.Unmarshal(data, out); err != nil {
 		return fmt.Errorf("%w: %s did not return JSON: %v", errUnexpectedResponse, url, err)
 	}
 	return nil
 }
 
-// renderDoctor prints the report as a table whose fix column is the point: a
-// red line the operator cannot act on is a red line they learn to ignore.
 func renderDoctor(w io.Writer, report doctorResult) {
 	header := "brw doctor"
 	if report.Profile != "" {

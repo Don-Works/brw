@@ -16,25 +16,16 @@ import (
 	"github.com/Don-Works/brw/internal/setup"
 )
 
-// TestDoctorNamesTheLiveBridgeEndpoint is the whole point of the check: the
-// packaged bridge-defaults.json and the extension's stored config are
-// indistinguishable on disk, so a machine with a stale file and a working stored
-// config and a machine that is genuinely broken look identical to anything that
-// reads the filesystem. Every case below is decided by what the extension
-// reported, and the two file-presence cases prove the file neither forces a red
-// nor earns a green on its own.
 func TestDoctorNamesTheLiveBridgeEndpoint(t *testing.T) {
 	tests := []struct {
 		name string
-		// packagedPort: "dead" writes a bridge-defaults.json naming a port
-		// nothing listens on, "live" writes one naming this profile's bridge,
-		// "" writes no file at all.
+
 		packagedFile string
-		// reported is what the extension said, and where it said it.
+
 		connected     bool
-		helloStatus   string // "live" or "dead"
+		helloStatus   string
 		helloSource   string
-		refusedStatus string // "live" or "dead"
+		refusedStatus string
 		refusedSource string
 
 		wantStatus   string
@@ -85,7 +76,7 @@ func TestDoctorNamesTheLiveBridgeEndpoint(t *testing.T) {
 			packagedFile: "live",
 			wantStatus:   checkOK,
 			wantDetails:  []string{"the installed bridge-defaults.json names this bridge"},
-			wantReportOK: false, // bridge_connected is red: nothing is connected.
+			wantReportOK: false,
 		},
 		{
 			name:       "nothing on disk and nothing reported is not a diagnosis",
@@ -94,9 +85,7 @@ func TestDoctorNamesTheLiveBridgeEndpoint(t *testing.T) {
 				"bridge_connected is the check that says so"},
 		},
 		{
-			// A 0.6.0+ extension whose hello omits status_url. Falling through to
-			// the refusal would print a stale URL under "the extension is using"
-			// on a green line.
+
 			name:          "a connected extension that names no endpoint does not inherit a stale refusal",
 			connected:     true,
 			refusedStatus: "dead",
@@ -163,9 +152,6 @@ func TestDoctorNamesTheLiveBridgeEndpoint(t *testing.T) {
 	}
 }
 
-// TestDoctorBridgeConfigPrefersTheLiveHelloOverAStaleRefusal: a refused
-// handshake is kept until the daemon restarts, so a reload that fixed the
-// endpoint would otherwise keep being reported as broken.
 func TestDoctorBridgeConfigPrefersTheLiveHelloOverAStaleRefusal(t *testing.T) {
 	fx := newDoctorFixture(t)
 	dead := "http://" + freeLoopbackAddr(t) + "/status"
@@ -186,8 +172,6 @@ func TestDoctorBridgeConfigPrefersTheLiveHelloOverAStaleRefusal(t *testing.T) {
 	}
 }
 
-// TestBridgeDefaultsAreReadFromEveryInstalledCopy: an upgrade preserves a
-// per-profile copy's own file, so the drift can live in any of them.
 func TestBridgeDefaultsAreReadFromEveryInstalledCopy(t *testing.T) {
 	appDir := t.TempDir()
 	write := func(dir, body string) {
@@ -226,9 +210,6 @@ func TestBridgeDefaultsAreReadFromEveryInstalledCopy(t *testing.T) {
 	}
 }
 
-// TestSameEndpointIgnoresLoopbackSpelling: the extension accepts localhost and
-// 127.0.0.1 interchangeably, so comparing the strings would call a working
-// machine misconfigured.
 func TestSameEndpointIgnoresLoopbackSpelling(t *testing.T) {
 	tests := []struct {
 		left, right string
@@ -248,13 +229,6 @@ func TestSameEndpointIgnoresLoopbackSpelling(t *testing.T) {
 	}
 }
 
-// TestDoctorOnlyContactsALoopbackStatusURL: both endpoints this check reads come
-// from outside the process. A handshake report is written by whatever opened the
-// bridge's unauthenticated websocket, and bridge-defaults.json is a file no
-// release ever rewrites. doctor GETs the endpoint and prints it, so without a
-// gate one forged handshake picks a hostname the operator's machine resolves and
-// a URL it fetches. The counter is the assertion: every refused shape must cost
-// zero requests, not merely a failed one.
 func TestDoctorOnlyContactsALoopbackStatusURL(t *testing.T) {
 	var hits int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -267,7 +241,7 @@ func TestDoctorOnlyContactsALoopbackStatusURL(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  string
-		// want is the URL that may be fetched; "" means the endpoint is refused.
+
 		want string
 	}{
 		{name: "the extension's own status URL", raw: "http://" + host + "/status", want: "http://" + host + "/status"},
@@ -302,10 +276,7 @@ func TestDoctorOnlyContactsALoopbackStatusURL(t *testing.T) {
 			if got != tc.want {
 				t.Fatalf("loopbackStatusURL(%q) = %q, want %q", tc.raw, got, tc.want)
 			}
-			// probeStatusURL is the only egress, so the gate has to hold there
-			// too: a later caller must not be able to reach the network with an
-			// endpoint it was handed. Probing is limited to the endpoints aimed
-			// at this test server, so the counter below is exact.
+
 			if tc.want != "" && !strings.Contains(tc.raw, host) {
 				return
 			}
@@ -326,10 +297,6 @@ func TestDoctorOnlyContactsALoopbackStatusURL(t *testing.T) {
 	}
 }
 
-// TestDoctorNeverEchoesAnEndpointItRefused: the string the check prints is the
-// one an operator reads in a terminal, and a refused handshake is written by
-// whoever opened the socket. Naming the fault without repeating the value is
-// what keeps the report from becoming the attacker's output channel.
 func TestDoctorNeverEchoesAnEndpointItRefused(t *testing.T) {
 	const forged = "http://brw-doctor-must-not-resolve.invalid/exfil?token=fixture-not-a-token"
 
@@ -382,10 +349,6 @@ func TestDoctorNeverEchoesAnEndpointItRefused(t *testing.T) {
 	}
 }
 
-// TestDoctorNamesAnUnreadableAppDir: InstalledBridgeDefaults returns the same
-// empty list for "no file anywhere" as for "this directory cannot be read", and
-// the first of those is a near-clean verdict. A dropped error makes the two
-// indistinguishable on the one input this check falls back to.
 func TestDoctorNamesAnUnreadableAppDir(t *testing.T) {
 	fx := newDoctorFixture(t)
 	if err := os.Chmod(fx.appDir, 0o000); err != nil {
@@ -405,18 +368,6 @@ func TestDoctorNamesAnUnreadableAppDir(t *testing.T) {
 	}
 }
 
-// TestDoctorFollowsNoRedirectAwayFromAGatedEndpoint: gating the URL gates one
-// request, and a redirect is the second. The actor the gate was built against —
-// a local process that forges a handshake on the unauthenticated websocket —
-// also binds a loopback port, so it can report an endpoint that PASSES the gate
-// and then answer doctor's GET with a 302 to anywhere. Go's default client
-// follows ten hops without re-gating, which hands back both halves of what the
-// gate denies: the operator's machine contacts a host the reporter chose, and
-// the reporter's string lands in the terminal through the url.Error of the hop
-// that actually failed.
-//
-// The counter is the assertion. A failed second request is still a second
-// request.
 func TestDoctorFollowsNoRedirectAwayFromAGatedEndpoint(t *testing.T) {
 	var reached int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -424,8 +375,7 @@ func TestDoctorFollowsNoRedirectAwayFromAGatedEndpoint(t *testing.T) {
 		_, _ = w.Write([]byte(`{"connected":true}`))
 	}))
 	defer target.Close()
-	// Loopback, so the hop would succeed if it were taken: the test must not be
-	// able to pass merely because a name failed to resolve.
+
 	exfil := target.URL + "/exfil?token=fixture-not-a-token"
 
 	hop := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -474,11 +424,6 @@ func TestDoctorFollowsNoRedirectAwayFromAGatedEndpoint(t *testing.T) {
 	})
 }
 
-// TestDoctorNeverPrintsAFailureAboutAnEndpointItDidNotContact: a *url.Error
-// names the URL whose request failed, which is only the gated one while nothing
-// moved the request. Anything that does move it — a redirect today, a transport
-// a later change installs — makes that URL a string the reporter chose, and
-// endpointFailureDetail is where it would reach a terminal.
 func TestDoctorNeverPrintsAFailureAboutAnEndpointItDidNotContact(t *testing.T) {
 	const contacted = "http://127.0.0.1:17311/status"
 	elsewhere := &url.Error{
@@ -494,9 +439,7 @@ func TestDoctorNeverPrintsAFailureAboutAnEndpointItDidNotContact(t *testing.T) {
 		{name: "an unclassified transport failure", err: elsewhere},
 		{name: "an unexpected response", err: fmt.Errorf("%w: HTTP 302 from %s", errUnexpectedResponse, elsewhere.URL)},
 		{
-			// A failing URL that carries no scheme, so nothing in the message is
-			// URL-shaped. The request it names is still not the one that was
-			// gated, and that is the fact being checked.
+
 			name: "a failure whose endpoint does not look like a URL",
 			err: &url.Error{
 				Op:  "Get",
@@ -516,20 +459,12 @@ func TestDoctorNeverPrintsAFailureAboutAnEndpointItDidNotContact(t *testing.T) {
 		})
 	}
 
-	// The gated URL is still allowed to be described, or the check stops being
-	// able to say anything useful about the endpoint it did contact.
 	own := &url.Error{Op: "Get", URL: contacted, Err: errors.New("dial tcp: i/o timeout")}
 	if detail := endpointFailureDetail(own, contacted); !strings.Contains(detail, "i/o timeout") {
 		t.Fatalf("a failure about the gated endpoint was withheld: %s", detail)
 	}
 }
 
-// TestEndpointFailureDetailClassifiesEveryProbeFailure enumerates the ways
-// probeStatusURL can fail against a real listener and requires each to land on a
-// branch that names a fix. The default branch is the one that pastes a raw
-// transport error into the report, so a failure shape nobody classified is
-// exactly the shape this check should not be printing verbatim: a new one
-// arriving unclassified fails here rather than in a terminal.
 func TestEndpointFailureDetailClassifiesEveryProbeFailure(t *testing.T) {
 	hold := make(chan struct{})
 	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -593,9 +528,6 @@ func TestEndpointFailureDetailClassifiesEveryProbeFailure(t *testing.T) {
 		},
 	}
 
-	// Long enough that a loaded machine cannot turn a local round trip into the
-	// timeout case, short enough that the one listener that never answers costs
-	// a second and a half.
 	client := &http.Client{Timeout: 1500 * time.Millisecond}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -615,12 +547,6 @@ func TestEndpointFailureDetailClassifiesEveryProbeFailure(t *testing.T) {
 	}
 }
 
-// TestDoctorBridgeConfigDoesNotGoRedOverAnOverriddenFile: an installed
-// bridge-defaults.json loses to the extension's stored config, so a machine
-// whose extension is connected and working is working whatever that file says —
-// including when it names an endpoint this check may not contact. Deciding on
-// the file before reading the live report turns a working machine red, which is
-// the failure mode the whole check exists to avoid, just from the other side.
 func TestDoctorBridgeConfigDoesNotGoRedOverAnOverriddenFile(t *testing.T) {
 	const forged = "http://brw-doctor-must-not-resolve.invalid/exfil?token=fixture-not-a-token"
 	fx := newDoctorFixture(t)
@@ -650,20 +576,9 @@ func TestDoctorBridgeConfigDoesNotGoRedOverAnOverriddenFile(t *testing.T) {
 	}
 }
 
-// TestDoctorBridgeConfigSkipNamesACheckThatIsActuallyRed covers the third drift
-// shape: a stored bridgeUrl or bridgePort moves the websocket URL too, so no
-// handshake ever reaches this daemon to be refused and there is nothing here to
-// name. The skip is the honest answer, and it is only honest while the check it
-// sends the operator to is the one going red on the same machine — otherwise it
-// is a green-looking report on a machine that cannot drive a browser.
-//
-// The assertion is the report, not the wording: every check the skip detail
-// names has to be red in that same report.
 func TestDoctorBridgeConfigSkipNamesACheckThatIsActuallyRed(t *testing.T) {
 	fx := newDoctorFixture(t)
-	// What the shape looks like from here: the extension is talking to some other
-	// websocket URL, so this daemon has no connection, no hello and no refusal,
-	// and no file on disk names anything either.
+
 	fx.status = bridgeStatus{}
 
 	report := fx.report()

@@ -11,10 +11,6 @@ import (
 	"github.com/Don-Works/brw/internal/setup"
 )
 
-// doctorChromeOptIn is what a consumer reads to find out whether the third lane
-// is available on this machine. Action is filled in only when it is not, and it
-// is a sentence for a human: the switch is deliberately a human action, so
-// there is no command that turns it on and doctor must not pretend otherwise.
 type doctorChromeOptIn struct {
 	Available   bool   `json:"available"`
 	Endpoint    string `json:"endpoint,omitempty"`
@@ -23,9 +19,6 @@ type doctorChromeOptIn struct {
 	Action      string `json:"action,omitempty"`
 }
 
-// inspectPageCommand opens the page the switch lives on. It opens the page and
-// nothing else: brw never turns the opt-in on, so the note carries what the
-// person has to do once they are there.
 func (d *doctorRun) inspectPageCommand() string {
 	browser := "chrome"
 	if d.resolved && d.profile.Kind != "" {
@@ -36,9 +29,7 @@ func (d *doctorRun) inspectPageCommand() string {
 		goos = runtime.GOOS
 	}
 	note := "then turn on remote debugging; brw cannot turn it on for you"
-	// Quoted, unlike the chrome://extensions commands next to it: this URL
-	// carries a fragment, and an unquoted # is a comment introducer in a shell
-	// with interactive comments on, which would paste as a truncated URL.
+
 	if goos == "darwin" {
 		return fmt.Sprintf("open -a %q 'chrome://inspect/#remote-debugging'   # %s", setup.BrowserDisplayName(browser), note)
 	}
@@ -49,13 +40,6 @@ func (d *doctorRun) inspectPageCommand() string {
 	return exe + " 'chrome://inspect/#remote-debugging'   # " + note
 }
 
-// checkChromeOptIn reports whether a Chrome on this machine has the
-// user-initiated remote-debugging opt-in switched on.
-//
-// It is a skip rather than a failure when the opt-in is off, because off is the
-// shipped default and every bridge and direct-CDP install works without it. The
-// exception is a daemon that is actually running on that lane: there, the
-// switch being off is why nothing works, and the check has to say so.
 func (d *doctorRun) checkChromeOptIn() {
 	if d.req.SkipLiveChecks {
 		d.add(checkSkip, "chrome_opt_in", "chrome remote-debugging opt-in",
@@ -110,7 +94,7 @@ func (d *doctorRun) checkChromeOptIn() {
 	d.result.ChromeOptIn = &doctorChromeOptIn{UserDataDir: dir, Action: chromeoptin.UserAction}
 	switch {
 	case errors.Is(err, chromeoptin.ErrChromeTooOld):
-		// Not the user's switch to flip: this Chrome has no such switch.
+
 		d.add(checkSkip, "chrome_opt_in", "chrome remote-debugging opt-in",
 			err.Error(), "")
 	case onThisLane:

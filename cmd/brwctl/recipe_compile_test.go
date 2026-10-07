@@ -22,9 +22,6 @@ func visibleElement(ref, role, name string) snapshot.Element {
 	return snapshot.Element{Ref: ref, Role: role, Name: name, Visible: true, InViewport: true, NameIsVisibleText: true}
 }
 
-// compileTrace is the smallest scoped trace that exercises the whole path: a
-// navigation, a typed value that must become a runtime input, and a click that
-// moved the page somewhere the compiler can infer a postcondition from.
 func compileTrace(t *testing.T, credential bool) string {
 	t.Helper()
 	list := recipe.TraceObservation{URL: compileTestList, Elements: []snapshot.Element{
@@ -101,9 +98,7 @@ func TestRecipeCompileWritesAnImmutableReadyDraft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Parse is the strict reader the install path uses. A compiled draft that
-	// does not survive it would need hand-editing, which is what compiling is
-	// meant to remove.
+
 	value, err := recipe.Parse(body)
 	if err != nil {
 		t.Fatalf("compiled draft does not parse: %v\n%s", err, body)
@@ -119,8 +114,6 @@ func TestRecipeCompileWritesAnImmutableReadyDraft(t *testing.T) {
 	}
 }
 
-// A credential field stops compilation, and nothing is written. Writing a draft
-// and cleaning it up afterwards would still have put the flow on disk.
 func TestRecipeCompileWritesNothingWhenTheTraceCarriesACredentialField(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "draft.json")
 	err := recipeDraft([]string{
@@ -193,24 +186,12 @@ func gitCheckout(t *testing.T) string {
 	return root
 }
 
-// The "never write a draft into this repository" rule is checked against the
-// path, and a check on a path is a check on what that path resolved to at that
-// moment. Every row below puts a second name for some other file at --out, by a
-// route that check cannot see: a dangling symlink resolves to nothing so the
-// check reads the link's own directory, a live symlink resolves somewhere the
-// check accepts and is then followed into, and a hard link is a second name
-// EvalSymlinks does not resolve at all. Each row is a route, so each must fail
-// on its own: with the O_EXCL create replaced by a plain write, the first two
-// plant a draft where the check would have refused one and the third truncates
-// the file it shares an inode with.
 func TestRecipeCompileWritesOnlyToTheNameItChecked(t *testing.T) {
 	trace, plan := compileTrace(t, false), compilePlan(t)
 
 	tests := []struct {
 		name string
-		// plant prepares --out at link and returns the file that must come
-		// through untouched together with the bytes it must still hold. A nil
-		// body means it must not exist at all.
+
 		plant func(t *testing.T, link string) (guarded string, body []byte)
 	}{
 		{
@@ -273,8 +254,6 @@ func TestRecipeCompileWritesOnlyToTheNameItChecked(t *testing.T) {
 	}
 }
 
-// An existing file at --out is somebody's file. Overwriting it is a second way
-// to write where the operator did not ask for a write.
 func TestRecipeCompileWillNotClobberAnExistingDestination(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "draft.json")
 	if err := os.WriteFile(out, []byte("keep me"), 0o600); err != nil {
@@ -292,15 +271,11 @@ func TestRecipeCompileWillNotClobberAnExistingDestination(t *testing.T) {
 	}
 }
 
-// The plan is decoded strictly because a misspelled key compiles a write as a
-// read. The same argument applies harder to the trace: among the keys the
-// compiler reads is `redacted`, the strongest of the three credential signals,
-// and a recorder that spelled it differently leaves only a name regex.
 func TestRecipeCompileRejectsAnUnknownTraceField(t *testing.T) {
 	steps := []map[string]any{{
 		"action": "navigate_to", "url": compileTestList, "ok": true,
 		"after": map[string]any{"url": compileTestList},
-		// The recorder's own bookkeeping is accepted; a key nothing produces is not.
+
 		"tab_id": "t1", "duration_ms": 12, "redact": true,
 	}}
 	path := writeFixture(t, "trace.json", steps)
@@ -310,8 +285,6 @@ func TestRecipeCompileRejectsAnUnknownTraceField(t *testing.T) {
 	}
 }
 
-// The fields brw's own recorder emits alongside an action are not part of what
-// the compiler reads, and must not make a real trace unreadable.
 func TestRecipeCompileAcceptsTheRecordersOwnFields(t *testing.T) {
 	steps := []map[string]any{{
 		"action": "navigate_to", "url": compileTestList, "ok": true,

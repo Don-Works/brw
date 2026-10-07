@@ -14,17 +14,10 @@ import (
 	"github.com/Don-Works/brw/internal/setup"
 )
 
-// fakeRunner stands in for every external tool setup shells out to, so a test
-// can assert the exact argv without launchctl or the claude CLI on the box.
-// Commands succeed unless a prefix is listed in failing, which is how a test
-// says "this probe finds nothing yet".
 type fakeRunner struct {
 	onPath  map[string]bool
 	failing []string
-	// failWith returns one specific error for a matching call, with whatever
-	// output is filed under the same prefix. A command's exit status is only
-	// readable through a real *exec.ExitError, so code that switches on one
-	// cannot be exercised with errors.New.
+
 	failWith map[string]error
 	output   map[string]string
 	calls    []string
@@ -71,8 +64,6 @@ func (f *fakeRunner) called(prefix string) bool {
 	return false
 }
 
-// newTestOptions builds a setup run confined to a temporary home, with a fake
-// app install complete enough for doctor to pass its file checks.
 func newTestOptions(t *testing.T, runner commandRunner, out *bytes.Buffer) setupOptions {
 	t.Helper()
 	home := t.TempDir()
@@ -93,9 +84,7 @@ func newTestOptions(t *testing.T, runner commandRunner, out *bytes.Buffer) setup
 	if err := os.WriteFile(filepath.Join(skills, "SKILL.md"), []byte("# brw\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The browser profile directory doctor looks for. UserDataDir in a
-	// generated policy is ~/-relative, so point the policy at this home via an
-	// explicit profile instead of relying on the real user's browser.
+
 	return setupOptions{
 		profileName: "chrome-profile",
 		workspace:   "brw-chrome-profile",
@@ -112,9 +101,6 @@ func newTestOptions(t *testing.T, runner commandRunner, out *bytes.Buffer) setup
 	}
 }
 
-// TestSetupFromZeroConfig is the first-time-user path end to end: no policy, no
-// service, no registration. The assertions are the things a hand-written
-// install script had to do.
 func TestSetupFromZeroConfig(t *testing.T) {
 	runner := newFakeRunner("defaults read", "launchctl print", "claude mcp get")
 	runner.onPath["claude"] = true
@@ -161,8 +147,7 @@ func TestSetupFromZeroConfig(t *testing.T) {
 			t.Fatalf("skill missing at %s: %v", destination, err)
 		}
 	}
-	// Registration goes through the CLI: ~/.claude.json is rewritten by a
-	// running Claude Code and must never be edited from here.
+
 	if _, err := os.Stat(filepath.Join(opts.home, ".claude.json")); !os.IsNotExist(err) {
 		t.Fatalf("setup touched ~/.claude.json: %v", err)
 	}
@@ -171,9 +156,6 @@ func TestSetupFromZeroConfig(t *testing.T) {
 	}
 }
 
-// TestSetupRecordsAnExplicitMCPClientChoice: doctor has to be able to read
-// `--mcp-client none` back, or it reports a machine that deliberately registers
-// nothing as unregistered and exits 1.
 func TestSetupRecordsAnExplicitMCPClientChoice(t *testing.T) {
 	runner := newFakeRunner("defaults read", "launchctl print", "claude mcp get")
 	runner.onPath["claude"] = true
@@ -200,8 +182,6 @@ func TestSetupRecordsAnExplicitMCPClientChoice(t *testing.T) {
 	}
 }
 
-// TestSetupIsIdempotent locks the re-run contract end to end: the second run
-// writes nothing, reloads nothing, and re-registers nothing.
 func TestSetupIsIdempotent(t *testing.T) {
 	runner := newFakeRunner("defaults read", "launchctl print", "claude mcp get")
 	runner.onPath["claude"] = true
@@ -214,8 +194,6 @@ func TestSetupIsIdempotent(t *testing.T) {
 	plist := filepath.Join(opts.home, "Library", "LaunchAgents", "co.donworks.brwd.chrome-profile.plist")
 	plistBefore := readBytes(t, plist)
 
-	// Second run: the job is now loaded, App Nap is set, and claude already
-	// knows the server.
 	second := newFakeRunner()
 	second.onPath["claude"] = true
 	second.output["defaults read com.google.Chrome NSAppSleepDisabled"] = "1"
@@ -260,8 +238,6 @@ func TestSetupIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestSetupRefusesPreExistingLaunchAgent covers the developer machine that
-// already carries a hand-made agent for the same profile.
 func TestSetupRefusesPreExistingLaunchAgent(t *testing.T) {
 	runner := newFakeRunner("defaults read")
 	var out bytes.Buffer
@@ -309,14 +285,12 @@ func TestSetupRefusesPreExistingLaunchAgent(t *testing.T) {
 			t.Fatalf("refusal output missing %q:\n%s", want, text)
 		}
 	}
-	// A refusal is a report, not a failure: the rest of setup still runs.
+
 	if !strings.Contains(text, "[4/6] MCP client registration") {
 		t.Fatalf("setup stopped after the refusal:\n%s", text)
 	}
 }
 
-// TestSetupDryRunPerformsNothing is the diffability contract: every action is
-// named, and none of them happens.
 func TestSetupDryRunPerformsNothing(t *testing.T) {
 	runner := newFakeRunner("defaults read", "launchctl print", "claude mcp get")
 	runner.onPath["claude"] = true
@@ -339,9 +313,7 @@ func TestSetupDryRunPerformsNothing(t *testing.T) {
 			t.Fatalf("dry run installed the skill at %s", destination)
 		}
 	}
-	// Read-only probes (defaults read, launchctl print, claude mcp get) still
-	// run in a dry run: that is what makes the printed plan match what a real
-	// run would do. Nothing that changes state may run.
+
 	for _, unwanted := range []string{"defaults write", "launchctl bootstrap", "launchctl bootout", "launchctl kickstart", "claude mcp add", "codex mcp add", "schtasks", "systemctl"} {
 		if runner.called(unwanted) {
 			t.Fatalf("dry run performed %q: %v", unwanted, runner.calls)
@@ -467,9 +439,6 @@ func TestSetupOptionValidation(t *testing.T) {
 	}
 }
 
-// TestDetectBrowserPrefersAUsedBrowser: an installed-but-never-launched Chrome
-// has no profile directory, so a policy bound to it cannot verify. A browser
-// with real profiles wins.
 func TestDetectBrowserPrefersAUsedBrowser(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -519,8 +488,6 @@ func TestDetectBrowserPrefersAUsedBrowser(t *testing.T) {
 	}
 }
 
-// TestSetupBindsAnExistingProfileDirectory: the generated policy must name a
-// profile directory that is actually there, not always "Default".
 func TestSetupBindsAnExistingProfileDirectory(t *testing.T) {
 	runner := newFakeRunner("defaults read", "launchctl print", "claude mcp get")
 	var out bytes.Buffer
@@ -550,7 +517,6 @@ func TestSetupBindsAnExistingProfileDirectory(t *testing.T) {
 		t.Fatalf("profile_directory = %q, want the directory that exists", profile.ProfileDirectory)
 	}
 
-	// An explicit flag still wins.
 	opts.policyPath = filepath.Join(t.TempDir(), "explicit.json")
 	opts.profileDirectory = "Profile 9"
 	if _, err := runSetup(opts); err != nil {
@@ -569,9 +535,6 @@ func TestSetupBindsAnExistingProfileDirectory(t *testing.T) {
 	}
 }
 
-// TestDeriveMCPServerFromGeneratedPolicy is the regression the whole command
-// exists for: `mcp-config` used to fail on a zero-config machine with
-// "--transport is required when workspace has no default_transport".
 func TestDeriveMCPServerFromGeneratedPolicy(t *testing.T) {
 	policy, _ := setup.Merge(profilepolicy.Policy{}, setup.PolicyRequest{
 		Workspace: "brw-chrome-profile",
@@ -625,8 +588,6 @@ func TestDeriveMCPServerFromGeneratedPolicy(t *testing.T) {
 	}
 }
 
-// TestDoctorReportContract pins the JSON keys existing consumers read and the
-// two fields added for transport honesty.
 func TestDoctorReportContract(t *testing.T) {
 	home := t.TempDir()
 	appDir := filepath.Join(home, "app")
@@ -664,8 +625,7 @@ func TestDoctorReportContract(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// The file-level contract only: the live daemon and bridge probes
-			// have their own tests against fixture servers.
+
 			report := doctorReport(doctorRequest{
 				Profile:        "chrome-profile",
 				AppDir:         appDir,
@@ -684,7 +644,7 @@ func TestDoctorReportContract(t *testing.T) {
 			if err := json.Unmarshal(encoded, &decoded); err != nil {
 				t.Fatal(err)
 			}
-			// Keys that predate this change. Consumers read them by name.
+
 			for _, key := range []string{
 				"profile", "kind", "app_dir", "chrome_profile_dir",
 				"bridge_extension_id", "bridge_extension_installed", "bridge_extension_source",
@@ -724,9 +684,6 @@ func TestDoctorReportContract(t *testing.T) {
 	}
 }
 
-// TestDoctorUsesDefaultBridgeExtensionID matches doctor to the daemon: an
-// unconfigured bridge already trusts the published id, so a policy that simply
-// omits bridge_extension_id must not fail verification.
 func TestDoctorUsesDefaultBridgeExtensionID(t *testing.T) {
 	home := t.TempDir()
 	profileDir := filepath.Join(home, "Chrome", "Default")
@@ -757,9 +714,6 @@ func TestDoctorUsesDefaultBridgeExtensionID(t *testing.T) {
 	}
 }
 
-// TestDoctorAppDirPolicyCopyIsAWarning: a machine set up by `brwctl setup`
-// legitimately has no policy copy inside the app directory, and that must not
-// be a hard failure.
 func TestDoctorAppDirPolicyCopyIsAWarning(t *testing.T) {
 	home := t.TempDir()
 	appDir := filepath.Join(home, "app")

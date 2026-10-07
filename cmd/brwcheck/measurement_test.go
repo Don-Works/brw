@@ -95,7 +95,7 @@ func driveAgentEval(t *testing.T, verify bool) *evalCall {
 }
 
 func TestTheBudgetCoversTheModesTheRunDrives(t *testing.T) {
-	
+
 	const startupSlack = time.Second
 
 	cases := []struct {

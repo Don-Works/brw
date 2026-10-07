@@ -12,11 +12,6 @@ import (
 	"github.com/Don-Works/brw/internal/recipe"
 )
 
-// recipeDraft turns a saved brw_trace into schema-v1 recipe skeletons.
-//
-// It writes drafts 0600 because `brwctl recipe install` rejects broadly
-// readable files, and a draft is the same class of artifact as the recipe it
-// becomes.
 func recipeDraft(args []string) error {
 	fs := flag.NewFlagSet("recipe draft", flag.ContinueOnError)
 	var fromTrace, out, id, version, name, description, origins, plan string
@@ -37,8 +32,7 @@ func recipeDraft(args []string) error {
 		return errors.New("recipe draft requires --from-trace")
 	}
 	if plan != "" {
-		// Compile mode makes its own decision about --out, including refusing a
-		// path inside a Git checkout, so it is not required here.
+
 		return recipeCompile(fromTrace, plan, out, publish)
 	}
 	if publish {
@@ -93,8 +87,6 @@ func recipeDraft(args []string) error {
 	return nil
 }
 
-// decodeTrace accepts either a bare array of entries or the object brw_trace
-// returns with an "entries" key.
 func decodeTrace(data []byte) ([]recipe.TraceAction, error) {
 	var direct []recipe.TraceAction
 	if err := json.Unmarshal(data, &direct); err == nil && len(direct) > 0 {

@@ -9,10 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/setup"
 )
 
-// brwdServiceUnits lists every per-user service unit that runs brwdPath,
-// whatever the unit is called. `brwctl setup` names its own units, but a
-// machine set up by hand carries units under other labels, and an upgrade that
-// only restarts the names it knows leaves those daemons on the old build.
 func brwdServiceUnits(goos, home, brwdPath string) []setup.ServiceUnit {
 	if goos != "darwin" && goos != "linux" {
 		return nil
@@ -38,7 +34,6 @@ func brwdServiceUnits(goos, home, brwdPath string) []setup.ServiceUnit {
 	return matched
 }
 
-// unitProfile is the --profile a unit passes to brwd, or "".
 func unitProfile(unit setup.ServiceUnit) string {
 	for i, token := range unit.Tokens {
 		token = strings.Trim(token, `"'`)

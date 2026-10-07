@@ -27,15 +27,10 @@ import (
 const (
 	upgradeFromVersion = "1.0.0"
 	upgradeToVersion   = "9.9.9"
-	// The bridge endpoint file each per-profile extension copy carries. It is
-	// per-install state an upgrade must not discard, so the fixture plants one
-	// and the test asserts it survives.
+
 	fixtureBridgeDefaults = `{"endpoint":"ws://127.0.0.1:47311/extension","token":"t0"}`
 )
 
-// upgradeFixture is an installed brw plus a release server: an app directory to
-// replace, a per-profile extension copy to refresh, a policy naming a daemon,
-// and an endpoint publishing an archive and its checksum.
 type upgradeFixture struct {
 	t          *testing.T
 	home       string
@@ -43,23 +38,19 @@ type upgradeFixture struct {
 	policyPath string
 	runner     *fakeRunner
 	archive    []byte
-	// publishedSHA is what the release endpoint claims the archive hashes to.
-	// A test breaks the upgrade by publishing a different one.
+
 	publishedSHA    string
 	publishChecksum bool
 	tagName         string
 	requests        atomic.Int64
-	// healthProbes counts what the daemon was asked, so a policy that names one
-	// daemon twice can be told from one that is probed twice.
+
 	healthProbes atomic.Int64
-	// busyAfterDownload makes the daemon pick up work while the archive is in
-	// flight, which is the window the second busy check exists to close.
+
 	busyAfterDownload atomic.Bool
 	health            daemonHealth
 	daemon            *httptest.Server
 	release           *httptest.Server
-	// onArchiveRequest runs when the release endpoint serves the tarball, so a
-	// test can change the machine mid-upgrade.
+
 	onArchiveRequest func()
 }
 
@@ -77,7 +68,6 @@ func newUpgradeFixture(t *testing.T) *upgradeFixture {
 	}
 	fx.health = daemonHealth{OK: true}
 
-	// The install being upgraded.
 	fx.write(filepath.Join(fx.appDir, "bin", "brwd"), "old brwd")
 	fx.write(filepath.Join(fx.appDir, "bin", "brwctl"), "old brwctl")
 	fx.write(filepath.Join(fx.appDir, "extension", "manifest.json"), `{"name":"brw","version":"1.0.0"}`)
@@ -85,7 +75,7 @@ func newUpgradeFixture(t *testing.T) *upgradeFixture {
 	fx.write(filepath.Join(fx.appDir, "extension-work", "manifest.json"), `{"name":"brw","version":"1.0.0"}`)
 	fx.write(filepath.Join(fx.appDir, "extension-work", "background.js"), "// old\n")
 	fx.write(filepath.Join(fx.appDir, "extension-work", setup.BridgeDefaultsFile), fixtureBridgeDefaults)
-	// Not part of the payload: an upgrade must not be able to reach it.
+
 	fx.write(filepath.Join(fx.appDir, "config", "browser-profiles.json"), "{}")
 
 	fx.archive = buildReleaseArchive(t, upgradeToVersion, "linux", "amd64")
@@ -134,9 +124,6 @@ func newUpgradeFixture(t *testing.T) *upgradeFixture {
 	return fx
 }
 
-// profile is a policy entry pointed at the fixture's daemon. Every profile
-// shares it, which is what a real multi-profile policy does whenever a profile
-// pins no HTTP address of its own.
 func (fx *upgradeFixture) profile(name string) profilepolicy.Profile {
 	return profilepolicy.Profile{
 		Name:                   name,
@@ -144,8 +131,7 @@ func (fx *upgradeFixture) profile(name string) profilepolicy.Profile {
 		UserDataDir:            filepath.Join(fx.home, "browser"),
 		ExtensionBridgeAllowed: true,
 		BridgeHTTPAddr:         fx.daemon.URL,
-		// No bridge WS address: the fixture's daemon serves /health only, and
-		// an unreachable bridge is correctly read as "no work in flight".
+
 		BridgeWSAddr: "127.0.0.1:1",
 	}
 }
@@ -201,8 +187,6 @@ func (fx *upgradeFixture) options() upgradeOptions {
 	}
 }
 
-// buildReleaseArchive produces the tarball shape scripts/install.sh unpacks: a
-// single brw_<version>_<os>_<arch> directory holding bin/ and extension/.
 func buildReleaseArchive(t *testing.T, version, goos, goarch string) []byte {
 	t.Helper()
 	root := "brw_" + version + "_" + goos + "_" + goarch
@@ -253,8 +237,6 @@ func refusalFrom(t *testing.T, err error) *upgradeRefusal {
 	return refusal
 }
 
-// TestUpgradeCheckReportsTheAvailableVersion drives --check against a fake
-// release endpoint and asserts it changes nothing.
 func TestUpgradeCheckReportsTheAvailableVersion(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -293,7 +275,7 @@ func TestUpgradeCheckReportsTheAvailableVersion(t *testing.T) {
 			if result.CurrentVersion != tc.current {
 				t.Fatalf("current = %q", result.CurrentVersion)
 			}
-			// --check looks; it does not touch.
+
 			if got := fx.read(filepath.Join(fx.appDir, "bin", "brwd")); got != "old brwd" {
 				t.Fatalf("--check replaced the binary: %q", got)
 			}
@@ -304,9 +286,6 @@ func TestUpgradeCheckReportsTheAvailableVersion(t *testing.T) {
 	}
 }
 
-// TestUpgradeChecksumMismatchLeavesTheInstallUntouched: an archive that does
-// not hash to its published checksum is never unpacked, so nothing on disk
-// moves and the running install stays the one that was verified.
 func TestUpgradeChecksumMismatchLeavesTheInstallUntouched(t *testing.T) {
 	fx := newUpgradeFixture(t)
 	fx.publishedSHA = strings.Repeat("a", 64)
@@ -343,9 +322,6 @@ func TestUpgradeChecksumMismatchLeavesTheInstallUntouched(t *testing.T) {
 	}
 }
 
-// TestUpgradeRefusesWhileADaemonIsBusy: replacing the binaries under a daemon
-// that is mid-request loses that agent's work, and the agent cannot tell the
-// difference between the upgrade and a crash.
 func TestUpgradeRefusesWhileADaemonIsBusy(t *testing.T) {
 	fx := newUpgradeFixture(t)
 	fx.health.TabLeases = tabLeaseStats{ActiveTabs: 2, Owners: 1, InFlight: 1}
@@ -365,7 +341,6 @@ func TestUpgradeRefusesWhileADaemonIsBusy(t *testing.T) {
 		t.Fatalf("a refused upgrade still replaced the binary: %q", got)
 	}
 
-	// --force is the stated way through, so it must actually work.
 	opts := fx.options()
 	opts.force = true
 	if _, err := runUpgrade(opts); err != nil {
@@ -376,8 +351,6 @@ func TestUpgradeRefusesWhileADaemonIsBusy(t *testing.T) {
 	}
 }
 
-// TestUpgradeReplacesThePayloadAndRefreshesPerProfileExtensions is the whole
-// upgrade end to end against a fake release endpoint.
 func TestUpgradeReplacesThePayloadAndRefreshesPerProfileExtensions(t *testing.T) {
 	fx := newUpgradeFixture(t)
 
@@ -415,7 +388,7 @@ func TestUpgradeReplacesThePayloadAndRefreshesPerProfileExtensions(t *testing.T)
 			t.Fatalf("%s/background.js = %q", dir, got)
 		}
 	}
-	// The per-profile bridge endpoint and token are install state, not payload.
+
 	if got := fx.read(filepath.Join(fx.appDir, "extension-work", setup.BridgeDefaultsFile)); got != fixtureBridgeDefaults {
 		t.Fatalf("the per-profile bridge defaults were lost: %q", got)
 	}
@@ -423,7 +396,6 @@ func TestUpgradeReplacesThePayloadAndRefreshesPerProfileExtensions(t *testing.T)
 		t.Fatalf("refreshed = %v", result.RefreshedExtensions)
 	}
 
-	// Config is outside the payload and must survive an upgrade untouched.
 	if got := fx.read(filepath.Join(fx.appDir, "config", "browser-profiles.json")); got != "{}" {
 		t.Fatalf("upgrade reached into config/: %q", got)
 	}
@@ -439,8 +411,6 @@ func TestUpgradeReplacesThePayloadAndRefreshesPerProfileExtensions(t *testing.T)
 	}
 }
 
-// TestUpgradeInstallsAPinnedOlderVersion: --version is a pin or a rollback, so
-// it installs what it names rather than reporting the machine as current.
 func TestUpgradeInstallsAPinnedOlderVersion(t *testing.T) {
 	fx := newUpgradeFixture(t)
 	opts := fx.options()
@@ -479,8 +449,6 @@ func TestUpgradeDoesNothingWhenAlreadyCurrent(t *testing.T) {
 	}
 }
 
-// TestUpgradeRefusesWithoutAPublishedChecksum: no checksum means no way to know
-// what was downloaded, and install.sh refuses there too.
 func TestUpgradeRefusesWithoutAPublishedChecksum(t *testing.T) {
 	fx := newUpgradeFixture(t)
 	fx.publishChecksum = false
@@ -495,8 +463,6 @@ func TestUpgradeRefusesWithoutAPublishedChecksum(t *testing.T) {
 	}
 }
 
-// TestUpgradeRefreshExtensionsResyncsWithoutDownloading backs the fix command
-// doctor prints for a per-profile payload that has fallen behind.
 func TestUpgradeRefreshExtensionsResyncsWithoutDownloading(t *testing.T) {
 	fx := newUpgradeFixture(t)
 	fx.write(filepath.Join(fx.appDir, "extension", "manifest.json"), `{"name":"brw","version":"2.0.0"}`)
@@ -524,10 +490,6 @@ func TestUpgradeRefreshExtensionsResyncsWithoutDownloading(t *testing.T) {
 	}
 }
 
-// TestUpgradeRefusesWhenADaemonPicksUpWorkDuringTheDownload: the first busy
-// check is a courtesy, answered before 50 MB is fetched. The one that protects
-// a running agent is the second, and an agent can start work at any point in
-// between.
 func TestUpgradeRefusesWhenADaemonPicksUpWorkDuringTheDownload(t *testing.T) {
 	fx := newUpgradeFixture(t)
 	fx.onArchiveRequest = func() { fx.busyAfterDownload.Store(true) }
@@ -546,10 +508,6 @@ func TestUpgradeRefusesWhenADaemonPicksUpWorkDuringTheDownload(t *testing.T) {
 	}
 }
 
-// TestUpgradeAsksOneDaemonOnce: profiles that pin no HTTP address of their own
-// share the default port, so a policy with several of them describes one daemon
-// several times. Probing per profile asks it the same question repeatedly and
-// can refuse in the name of a profile it does not serve.
 func TestUpgradeAsksOneDaemonOnce(t *testing.T) {
 	fx := newUpgradeFixture(t)
 	fx.writePolicy(fx.profile(fixtureProfile), fx.profile("second-profile"))
@@ -572,9 +530,6 @@ func TestUpgradeAsksOneDaemonOnce(t *testing.T) {
 	}
 }
 
-// TestUpgradeRefusalNamesTheDaemonsOwnIdentity: the policy entry that happens to
-// name a port only says which daemon was asked for; /health says which one
-// answered, and that is the one holding the work.
 func TestUpgradeRefusalNamesTheDaemonsOwnIdentity(t *testing.T) {
 	fx := newUpgradeFixture(t)
 	fx.writePolicy(fx.profile("policy-name"))
@@ -588,10 +543,6 @@ func TestUpgradeRefusalNamesTheDaemonsOwnIdentity(t *testing.T) {
 	}
 }
 
-// TestUpgradeRestartNotesOnlyWhatTheOperatorMustDo: a direct-CDP profile has no
-// daemon of its own and a stdio daemon is started by the agent client, so a
-// "start it yourself" line per unit-less profile is noise around the one case
-// that is real.
 func TestUpgradeRestartNotesOnlyWhatTheOperatorMustDo(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -646,10 +597,6 @@ func TestUpgradeRestartNotesOnlyWhatTheOperatorMustDo(t *testing.T) {
 	}
 }
 
-// TestUpgradeVerifiesBuildProvenance covers the four ways the attestation check
-// ends. gh reserves exit 4 for "not authenticated", which is an inability to
-// check rather than a failed check, and the two must not be confused: one lets
-// the upgrade through unverified and the other stops it.
 func TestUpgradeVerifiesBuildProvenance(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -723,8 +670,6 @@ func TestUpgradeVerifiesBuildProvenance(t *testing.T) {
 	}
 }
 
-// exitErrorWithCode runs a command that exits with code, because the exit status
-// production code reads is only carried by a real *exec.ExitError.
 func exitErrorWithCode(t *testing.T, code int) error {
 	t.Helper()
 	err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
@@ -758,8 +703,6 @@ func TestCompareVersions(t *testing.T) {
 	}
 }
 
-// TestExpectedSHA256 covers both published shapes, matching the two
-// scripts/install.sh accepts.
 func TestExpectedSHA256(t *testing.T) {
 	digest := strings.Repeat("b", 64)
 	cases := []struct {
@@ -782,18 +725,12 @@ func TestExpectedSHA256(t *testing.T) {
 	}
 }
 
-// TestExtractTarGzRefusesToEscape: a release archive is remote input, and one
-// crafted entry - a name that climbs out, or a link that is then written
-// through - would otherwise write outside the unpack directory. The chained
-// case is why link entries are refused rather than contained: each link in it
-// is contained when read on its own.
 func TestExtractTarGzRefusesToEscape(t *testing.T) {
 	const body = "pwned"
 
 	cases := []struct {
 		name string
-		// entries are written to the archive in order; escape is the path,
-		// relative to the test's temporary directory, that must not appear.
+
 		entries func(outside string) []tar.Header
 		escape  string
 		wantErr string
@@ -829,9 +766,7 @@ func TestExtractTarGzRefusesToEscape(t *testing.T) {
 			wantErr: "is a link",
 		},
 		{
-			// Each hop is contained when judged against the parent its own name
-			// declares, but the second is created through the first, so the pair
-			// leaves a link to dest's parent sitting inside dest.
+
 			name: "two symlinks that are each contained, chained",
 			entries: func(string) []tar.Header {
 				return []tar.Header{
@@ -845,8 +780,7 @@ func TestExtractTarGzRefusesToEscape(t *testing.T) {
 			wantErr: "is a link",
 		},
 		{
-			// A hard link entry was silently dropped, so the file it named was
-			// missing from the install with nothing said about it.
+
 			name: "a hard link out of the unpack directory",
 			entries: func(outside string) []tar.Header {
 				return []tar.Header{

@@ -139,8 +139,7 @@ func recipeValidate(args []string) error {
 	if err != nil {
 		return err
 	}
-	writeJSON(os.Stdout, recipeCommandResult{OK: true, Action: "validated", ID: value.ID, Version: value.Version, Digest: digest})
-	return nil
+	return writeJSON(os.Stdout, recipeCommandResult{OK: true, Action: "validated", ID: value.ID, Version: value.Version, Digest: digest})
 }
 
 func recipeInstall(args []string) error {
@@ -185,8 +184,7 @@ func recipeInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	writeJSON(os.Stdout, result)
-	return nil
+	return writeJSON(os.Stdout, result)
 }
 
 func defaultPrivateRecipeRoot() (string, error) {
@@ -315,10 +313,6 @@ func installPrivateRecipe(root string, value recipe.Recipe) (recipeCommandResult
 	return recipeCommandResult{OK: true, Action: "installed", ID: value.ID, Version: value.Version, Digest: digest}, nil
 }
 
-// daemons enumerates every extension-bridge profile in the profile policy and
-// probes each profile's daemon /health, emitting a JSON array of
-// discovery.Record. The discovery package is shared with the brw CLI so both
-// resolve a daemon the same way.
 func daemons(args []string) error {
 	fs := flag.NewFlagSet("daemons", flag.ContinueOnError)
 	var policyPath string
@@ -334,13 +328,9 @@ func daemons(args []string) error {
 		return err
 	}
 
-	writeJSON(os.Stdout, records)
-	return nil
+	return writeJSON(os.Stdout, records)
 }
 
-// mcpConfigRequest is one resolved MCP server derivation. `brwctl setup` builds
-// the same request so the command it registers with an MCP client is byte-for-byte
-// what `brwctl mcp-config` prints.
 type mcpConfigRequest struct {
 	Workspace  string
 	Profile    string
@@ -349,7 +339,6 @@ type mcpConfigRequest struct {
 	Mode       string
 }
 
-// mcpServerSpec is the launchable form of an MCP server entry.
 type mcpServerSpec struct {
 	Name    string
 	Command string
@@ -359,8 +348,6 @@ type mcpServerSpec struct {
 	Profile profilepolicy.Profile
 }
 
-// configJSON renders the spec as the mcpServers block an MCP client config file
-// expects, for the clients setup cannot drive through a CLI.
 func (s mcpServerSpec) configJSON() string {
 	entry := map[string]any{
 		"command": s.Command,
@@ -376,8 +363,6 @@ func (s mcpServerSpec) configJSON() string {
 	return string(data)
 }
 
-// deriveMCPServer resolves a profile and transport against a policy and returns
-// the exact command, arguments and environment an MCP client must run.
 func deriveMCPServer(policy profilepolicy.Policy, req mcpConfigRequest) (mcpServerSpec, error) {
 	profile, err := policy.ResolveProfile(req.Workspace, req.Profile)
 	if err != nil {
@@ -432,7 +417,7 @@ func deriveMCPServer(policy profilepolicy.Policy, req mcpConfigRequest) (mcpServ
 		}
 		commandArgs := append([]string{}, transport.CommandArgs...)
 		remoteArgs := append([]string{remoteBinary(transport, "brwd")}, runtimeOut...)
-		argsOut = append(commandArgs, host, shellJoin(append(shellEnv(envOut), remoteArgs...)))
+		argsOut = append(commandArgs, host, strings.Join(append(shellEnv(envOut), shellJoin(remoteArgs)), " "))
 		envOut = nil
 	default:
 		return mcpServerSpec{}, fmt.Errorf("transport %q has unsupported kind %q for stdio MCP config", transport.Name, transport.Kind)
@@ -484,8 +469,7 @@ func mcpConfig(args []string) error {
 	if len(spec.Env) > 0 {
 		entry["env"] = spec.Env
 	}
-	writeJSON(os.Stdout, map[string]any{"mcpServers": map[string]any{spec.Name: entry}})
-	return nil
+	return writeJSON(os.Stdout, map[string]any{"mcpServers": map[string]any{spec.Name: entry}})
 }
 
 type repeatFlag []string
@@ -564,10 +548,7 @@ func remoteMCPWrapper(args []string) error {
 	if !mcp.ValidToolProfile(opts.MCPTools) {
 		return fmt.Errorf("--mcp-tools must be one of %s", strings.Join(mcp.ToolProfileNames(), ", "))
 	}
-	// Validate the numeric SSH/log knobs so the generated POSIX script never
-	// emits a value that ssh rejects or that the log-rotation guard mishandles.
-	// 0 is a meaningful "disabled" value for keepalives and log rotation, but
-	// OpenSSH rejects ConnectionAttempts=0, so it must be strictly positive.
+
 	for _, nf := range []struct{ name, value string }{
 		{"server-alive-interval", opts.ServerAliveInterval},
 		{"server-alive-count-max", opts.ServerAliveCountMax},
@@ -811,8 +792,7 @@ func remoteMCPWrapperScript(opts remoteMCPWrapperOptions) string {
 	fmt.Fprintf(&b, "BRW_LOG=${BRW_LOG:-%s}\n", quoteScript(opts.LogPath))
 	fmt.Fprintf(&b, "BRW_LOG_MAX_BYTES=${BRW_LOG_MAX_BYTES:-%s}\n\n", quoteScript(opts.LogMaxBytes))
 	b.WriteString("mkdir -p \"$(dirname \"$BRW_KNOWN_HOSTS\")\" \"$(dirname \"$BRW_LOG\")\"\n\n")
-	// Rotate the stderr log at launch once it grows past the cap (single
-	// generation). Stops an unattended reconnect loop from filling the disk.
+
 	b.WriteString("if [ \"$BRW_LOG_MAX_BYTES\" -gt 0 ] && [ -f \"$BRW_LOG\" ]; then\n")
 	b.WriteString("  brw_log_size=$(wc -c < \"$BRW_LOG\" 2>/dev/null || echo 0)\n")
 	b.WriteString("  if [ \"$brw_log_size\" -ge \"$BRW_LOG_MAX_BYTES\" ]; then\n")
@@ -821,13 +801,11 @@ func remoteMCPWrapperScript(opts remoteMCPWrapperOptions) string {
 	b.WriteString("fi\n\n")
 	b.WriteString("exec \"$BRW_SSH\" \\\n")
 	b.WriteString("  -o BatchMode=yes \\\n")
-	// No TTY: keeps the binary MCP stdio stream clean even if the operator's
-	// ssh_config forces RequestTTY.
+
 	b.WriteString("  -o RequestTTY=no \\\n")
 	b.WriteString("  -o ConnectTimeout=\"$BRW_CONNECT_TIMEOUT\" \\\n")
 	b.WriteString("  -o ConnectionAttempts=\"$BRW_CONNECTION_ATTEMPTS\" \\\n")
-	// Keepalives so a silently dropped link (sleep / NAT rebind / wifi switch)
-	// fails the wrapper promptly instead of hanging the MCP client forever.
+
 	b.WriteString("  -o ServerAliveInterval=\"$BRW_SERVER_ALIVE_INTERVAL\" \\\n")
 	b.WriteString("  -o ServerAliveCountMax=\"$BRW_SERVER_ALIVE_COUNT_MAX\" \\\n")
 	b.WriteString("  -o UserKnownHostsFile=\"$BRW_KNOWN_HOSTS\" \\\n")
@@ -862,18 +840,9 @@ func defaultAppDir() string {
 func shellJoin(args []string) string {
 	quoted := make([]string, 0, len(args))
 	for _, arg := range args {
-		if isShellAssignment(arg) {
-			quoted = append(quoted, arg)
-			continue
-		}
 		quoted = append(quoted, quoteRemote(arg))
 	}
 	return strings.Join(quoted, " ")
-}
-
-func isShellAssignment(s string) bool {
-	name, _, ok := strings.Cut(s, "=")
-	return ok && strings.HasPrefix(name, "BRW_")
 }
 
 func shellEnv(env map[string]string) []string {
@@ -890,14 +859,10 @@ func shellEnv(env map[string]string) []string {
 }
 
 func quoteRemote(s string) string {
-	if s == "" {
-		return "''"
+	if tail, ok := strings.CutPrefix(s, "~/"); ok {
+		return `"$HOME"/` + quoteScript(tail)
 	}
-	if strings.HasPrefix(s, "~/") {
-		homePath := "$HOME/" + strings.TrimPrefix(s, "~/")
-		return `"` + strings.ReplaceAll(homePath, `"`, `\"`) + `"`
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	return quoteScript(s)
 }
 
 func quoteScript(s string) string {
@@ -992,10 +957,10 @@ func extensionVersion(path string) string {
 	return manifest.Version
 }
 
-func writeJSON(w io.Writer, value any) {
+func writeJSON(w io.Writer, value any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(value)
+	return enc.Encode(value)
 }
 
 func writeOutput(path string, data []byte, mode os.FileMode) error {

@@ -175,11 +175,11 @@ type cookiesStep struct {
 
 	// List assertions.
 	MinCount    int      `json:"min_count,omitempty"`
-	Require     []string `json:"require,omitempty"`      
-	Absent      []string `json:"absent,omitempty"`       
-	HTTPOnlyOf  []string `json:"http_only_of,omitempty"` 
+	Require     []string `json:"require,omitempty"`
+	Absent      []string `json:"absent,omitempty"`
+	HTTPOnlyOf  []string `json:"http_only_of,omitempty"`
 	TabID       string   `json:"tab_id,omitempty"`
-	ExpectValue string   `json:"expect_value,omitempty"` 
+	ExpectValue string   `json:"expect_value,omitempty"`
 }
 
 type openStep struct {
@@ -821,7 +821,7 @@ func (r *runner) runStep(st step) error {
 		var result browser.ActionResult
 		return r.client.postJSON("/api/page/click_xy", body, &result)
 	case st.Drag != nil:
-		
+
 		from, err := r.resolveTarget("", st.Drag.From, nil)
 		if err != nil {
 			return err
@@ -875,7 +875,7 @@ func (r *runner) runCookiesStep(st cookiesStep) (retErr error) {
 	var result browser.CookieResult
 	err := r.client.postJSON("/api/page/cookies", body, &result)
 	if err != nil {
-		
+
 		return fmt.Errorf("cookies %s: %w", st.Action, err)
 	}
 	switch st.Action {
@@ -1271,7 +1271,7 @@ func (r *runner) expandURL(raw string) string {
 		rel := strings.TrimPrefix(raw, "${HTTP_FIXTURES}/")
 		base, err := r.httpFixturesBase()
 		if err != nil {
-			
+
 			fmt.Printf("WARN http fixture server unavailable: %v\n", err)
 			return raw
 		}
@@ -1473,10 +1473,10 @@ func skipReason(sc scenario, includeNetwork, includeAuth, includeManual bool, tr
 		}
 		rule, ok := transportRequirements[req]
 		if !ok {
-			
+
 			return fmt.Sprintf("requires %q, which brwcheck does not classify", req)
 		}
-		
+
 		if transport == "" {
 			continue
 		}

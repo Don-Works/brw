@@ -11,8 +11,6 @@ import (
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
 
-// consentFixture points the grants subcommands at a throwaway config directory
-// by handing them a profile policy path inside it.
 func consentFixture(t *testing.T) (dir, policy string) {
 	t.Helper()
 	dir = t.TempDir()
@@ -81,8 +79,6 @@ func TestGrantsRevokeAllClearsEverything(t *testing.T) {
 	}
 }
 
-// TestGrantsAllowRefusesABlocklistedCategoryWithoutTheFlag is acceptance
-// criterion 2 at the operator surface, ledger check included.
 func TestGrantsAllowRefusesABlocklistedCategoryWithoutTheFlag(t *testing.T) {
 	_, policy := consentFixture(t)
 	_, err := runGrants(t, "allow", "--profile-policy", policy, "https://paypal.com")
@@ -117,8 +113,6 @@ func TestGrantsAllowRefusesABlocklistedCategoryWithoutTheFlag(t *testing.T) {
 	}
 }
 
-// TestGrantsListReportsForgedRecords proves the operator surface shows a
-// hand-written record as refused rather than silently dropping it.
 func TestGrantsListReportsForgedRecords(t *testing.T) {
 	dir, policy := consentFixture(t)
 	if _, err := runGrants(t, "allow", "--profile-policy", policy, "https://real.test"); err != nil {
