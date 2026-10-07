@@ -95,7 +95,7 @@ For `approval_required`, follow [operator approvals](references/approvals.md).
 ## If your tool list looks short
 
 `brwd --mcp` starts with 14 tools in `auto` mode and grows as you search.
-The full surface is 100 tools on a direct-CDP daemon (97 on `--remote`,
+The full surface is 100 tools on a direct-CDP daemon (99 on `--remote`,
 98 on the Chrome opt-in lane, 94 on a plugin-supplied off-host browser,
 84 on the extension bridge). Small initial catalogues reduce attached schemas.
 
@@ -116,7 +116,7 @@ surface is `GET /api/skill` or `brw skill`. A disk copy may describe an older
 installation. A gateway may also have an older tool schema; see the
 [gateway reference](references/execute-code-gateway.md) before using a new argument.
 
-For proxies, compare `proxy_version` and `daemon_version`; see the gateway reference.
+For proxies, compare `proxy_version` with `daemon_version`.
 
 ## Read less, act precisely
 
