@@ -13,8 +13,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-// newIsolationExtension builds a group-aware fake with a single tab the USER has
-// focused — the tab a worker must NOT stomp.
 func newIsolationExtension(nextTabID int) *groupAwareExtension {
 	return &groupAwareExtension{
 		focusedWindow: 1,
@@ -26,12 +24,6 @@ func newIsolationExtension(nextTabID int) *groupAwareExtension {
 	}
 }
 
-// TestIsolationAutoOpensOwnTabInsteadOfUsersFocusedTab is the core regression for
-// the reported "stomping all over existing tabs" bug. In isolation (the daemon
-// default), the first no-tab_id resolution — what the MCP/HTTP entry runs before
-// every page tool — must open a fresh tab in the default group rather than
-// resolving the user's focused tab, and it must open in the BACKGROUND so the
-// user's current tab stays put.
 func TestIsolationAutoOpensOwnTabInsteadOfUsersFocusedTab(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetDefaultGroup("brw")
@@ -62,21 +54,17 @@ func TestIsolationAutoOpensOwnTabInsteadOfUsersFocusedTab(t *testing.T) {
 		t.Fatal("the user's focused tab (1) must stay active after a background auto-open")
 	}
 
-	// A subsequent no-tab_id resolution stays on the worker's owned tab.
 	if again := b.contextTabID(ctx); again != got {
 		t.Fatalf("second no-tab_id resolution = %q, want the owned tab %q (it must not drift back to the user's tab)", again, got)
 	}
 }
 
-// TestIsolationDoesNotChaseUserTabSwitch proves that once a worker owns a tab,
-// the user manually switching to another tab does NOT pull the worker onto it —
-// the opposite of the legacy follow-focus behavior.
 func TestIsolationDoesNotChaseUserTabSwitch(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetDefaultGroup("brw")
 	b.SetFollowFocus(false)
 	fe := newIsolationExtension(300)
-	// Add a second user tab to switch to.
+
 	fe.tabs = append(fe.tabs, &gaTab{id: 2, windowID: 1, groupID: -1, active: false, url: "https://other.test", title: "Other"})
 	cleanup := connectGroupAwareExtension(t, b, fe)
 	defer cleanup()
@@ -87,7 +75,6 @@ func TestIsolationDoesNotChaseUserTabSwitch(t *testing.T) {
 		t.Fatalf("expected a freshly opened owned tab, got %q", owned)
 	}
 
-	// The user switches focus to tab 2 (and the extension would push active_tab).
 	fe.mu.Lock()
 	fe.activateExclusive(1, 2)
 	fe.mu.Unlock()
@@ -97,9 +84,6 @@ func TestIsolationDoesNotChaseUserTabSwitch(t *testing.T) {
 	}
 }
 
-// TestIsolationExplicitTabIDWins proves that targeting an existing tab is still
-// possible: an explicit tab_id always resolves to that tab and never triggers an
-// auto-open ("unless we're specifically working with an existing tab").
 func TestIsolationExplicitTabIDWins(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetDefaultGroup("brw")
@@ -121,11 +105,6 @@ func TestIsolationExplicitTabIDWins(t *testing.T) {
 	}
 }
 
-// TestIsolationAutoOpenCooldownPreventsCascade is the regression for the reported
-// "brw_evaluate 20003ms x 35 calls" spike: when a browser is wedged and open_tab
-// never succeeds, the isolation auto-open must NOT be re-attempted on every
-// no-tab_id call (each paying the full timeout). A cooldown limits it to one
-// attempt per window.
 func TestIsolationAutoOpenCooldownPreventsCascade(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetDefaultGroup("brw")
@@ -134,14 +113,14 @@ func TestIsolationAutoOpenCooldownPreventsCascade(t *testing.T) {
 		focusedWindow: 1,
 		nextTabID:     700,
 		groups:        map[int]*gaGroup{},
-		failOpen:      true, // model a wedged extension: open_tab always fails
+		failOpen:      true,
 		tabs:          []*gaTab{{id: 1, windowID: 1, groupID: -1, active: true, url: "https://user.test"}},
 	}
 	cleanup := connectGroupAwareExtension(t, b, fe)
 	defer cleanup()
 
 	ctx := context.Background()
-	// Several back-to-back no-tab_id resolutions (what a worker's rapid calls do).
+
 	for i := 0; i < 5; i++ {
 		b.ResolveActiveTabID(ctx)
 	}
@@ -154,9 +133,6 @@ func TestIsolationAutoOpenCooldownPreventsCascade(t *testing.T) {
 	}
 }
 
-// TestFollowFocusModeResolvesUsersTabWithoutOpening proves the escape hatch:
-// --bridge-follow-focus (SetFollowFocus(true)) restores the legacy behavior where
-// a no-tab_id action acts on the user's focused tab and never auto-opens.
 func TestFollowFocusModeResolvesUsersTabWithoutOpening(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetDefaultGroup("brw")

@@ -8,12 +8,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// brw_route's description promises that active routes are reported by
-// brw_observe "so mocked traffic is never invisible in the transcript", and a
-// promise in a tool description is not about one transport. This bridge cannot
-// replay a HAR — it refuses that by name — but it does install abort rules, and
-// a declarativeNetRequest rule silently eating a request reads in a transcript
-// exactly like a site being down.
 func TestBridgeObserveReportsTheTabsActiveRoutes(t *testing.T) {
 	b, _, cleanup := connectPropertyWriteFake(t)
 	defer cleanup()

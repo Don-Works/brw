@@ -15,20 +15,10 @@ import (
 	"github.com/coder/websocket"
 )
 
-// isSnapshotWalkExpression reports whether an expression the bridge sent is a
-// snapshot walk. Both forms carry the walker's private, per-process property
-// name: the install-and-call form assigns it, the call-only form invokes it. The
-// fakes in this package classify on this rather than on either literal shape, so
-// a fake cannot go on recognising one form and silently answering the other with
-// something that is not a snapshot.
 func isSnapshotWalkExpression(expression string) bool {
 	return strings.Contains(expression, "__brw_snap_")
 }
 
-// walkerExtension is a fake service worker that models the ONE thing this test is
-// about: a page where the DOM walker is installed by the first snapshot and is
-// still there for the next one. It records every expression the bridge asks it to
-// evaluate, so the test can see what actually crosses the websocket.
 type walkerExtension struct {
 	mu          sync.Mutex
 	expressions []string
@@ -87,8 +77,7 @@ func (w *walkerExtension) serve(ctx context.Context, conn *websocket.Conn) {
 			}
 			w.mu.Unlock()
 			if !isCold && !installed {
-				// The page has no walker yet, so the call expression throws exactly as
-				// it would in Chrome. This is what drives the bridge's cold fallback.
+
 				reply["ok"] = false
 				reply["error"] = "TypeError: window.__brw_snap is not a function"
 				break
@@ -118,8 +107,7 @@ func connectWalkerExtension(t *testing.T, b *Bridge, w *walkerExtension) func() 
 		srv.Close()
 		t.Fatalf("dial bridge: %v", err)
 	}
-	// A browser WebSocket has no read cap; coder/websocket defaults to 32KiB, which
-	// is smaller than the walker install expression this test exists to measure.
+
 	conn.SetReadLimit(8 << 20)
 	waitUntil(t, func() bool {
 		b.mu.RLock()
@@ -135,14 +123,6 @@ func connectWalkerExtension(t *testing.T, b *Bridge, w *walkerExtension) func() 
 	}
 }
 
-// TestBridgeSnapshotShipsTheWalkerOncePerDocument is the byte half of the
-// extension-bridge snapshot change. The bridge used to format
-// snapshot.SnapshotFunctionScript into every snapshot request, so the whole
-// walker source crossed the websocket on EVERY snapshot of the same page. It now
-// ships the walker once and calls it by name afterwards.
-//
-// The test reads the expressions off the wire rather than trusting the call site,
-// and asserts the second snapshot of the same document carries the SHORT one.
 func TestBridgeSnapshotShipsTheWalkerOncePerDocument(t *testing.T) {
 	opts := snapshot.SnapshotOptions{Mode: "all"}
 	hot, cold := snapshot.SnapshotCallExpressions(opts)
@@ -176,8 +156,6 @@ func TestBridgeSnapshotShipsTheWalkerOncePerDocument(t *testing.T) {
 		t.Fatalf("second snapshot did not use the installed walker; sent %d bytes", len(second[0]))
 	}
 
-	// Recorded numbers, not a vague "fewer": the walker source is what used to go
-	// out every time.
 	t.Logf("snapshot request bytes: before=%d (whole walker), after=%d (call only), saved=%d per repeat snapshot",
 		len(cold), len(hot), len(cold)-len(hot))
 	if len(hot) >= len(cold)/10 {
@@ -185,12 +163,6 @@ func TestBridgeSnapshotShipsTheWalkerOncePerDocument(t *testing.T) {
 	}
 }
 
-// TestBridgeSnapshotRunsTheSameWalkerAsDirectCDP is the ref half. The two
-// transports have to mint the same refs for the same page, and the only way that
-// holds through future edits is for both to run one walker source. The bridge
-// relays an expression the extension does not interpret, so "same refs" reduces
-// to "same expression", which is what this asserts — against the snapshot
-// package's own builder, for several option shapes.
 func TestBridgeSnapshotRunsTheSameWalkerAsDirectCDP(t *testing.T) {
 	cases := []snapshot.SnapshotOptions{
 		{Mode: "all"},
@@ -205,8 +177,7 @@ func TestBridgeSnapshotRunsTheSameWalkerAsDirectCDP(t *testing.T) {
 		if strings.Contains(hot, "function(opts)") {
 			t.Fatalf("the call expression for %+v carries walker source; it should only call the installed one", opts)
 		}
-		// Both halves must name the same installed function, or a bridge snapshot
-		// and a direct-CDP snapshot would be two different walkers on one page.
+
 		name := hot[:strings.Index(hot, "(")]
 		if !strings.Contains(cold, name+"=") {
 			t.Fatalf("call expression %q and install expression do not agree on the walker name", name)

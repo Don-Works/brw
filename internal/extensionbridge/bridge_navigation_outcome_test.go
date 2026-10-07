@@ -10,9 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// previewOutcome is what the extension records for a Vercel preview deployment:
-// the paused main document answered 401 with a Basic challenge, and Chrome,
-// which cancels the auth prompt under a debugger, then reported the error.
 func previewOutcome() map[string]any {
 	return map[string]any{
 		"known": true, "url": "https://preview.test/", "status": 401,
@@ -149,8 +146,7 @@ func TestBridgeBatchOpenStepStopsOnAFailedNavigation(t *testing.T) {
 func TestBridgeNavigateToReportsHowTheNavigationFailed(t *testing.T) {
 	tests := []struct {
 		name string
-		// errorText is what Page.navigate answers; empty means Chrome committed
-		// its error page as an ordinary replacement document instead.
+
 		errorText string
 		outcome   map[string]any
 		want      []string

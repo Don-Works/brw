@@ -14,42 +14,31 @@ import (
 	"github.com/coder/websocket"
 )
 
-// groupAwareExtension is a richer in-memory stand-in for the Chrome extension
-// service worker than fakeExtension: it additionally models tab GROUPS and the
-// real-Chrome invariant that a COLLAPSED group cannot hold the active tab. It
-// answers exactly the RPCs the brw_open path exercises end-to-end: open_tab, the
-// readiness-wait cdp Runtime.evaluate, get_active_tab_id, and focus_tab. It is
-// the harness for the "brw_open then no-tab_id tool hit an unrelated tab"
-// regression.
 type groupAwareExtension struct {
 	mu            sync.Mutex
 	tabs          []*gaTab
 	groups        map[int]*gaGroup
 	focusedWindow int
 	nextTabID     int
-	// recorded for assertions
+
 	lastOpenGroupName    string
 	lastOpenBackground   bool
 	lastFocusRaiseWindow bool
-	// failOpen makes open_tab return a failure and counts attempts, to model a
-	// wedged extension for the auto-open cooldown regression test.
+
 	failOpen  bool
 	openCalls int
-	// frameURL, when set, is the main frame's committed URL Page.getFrameTree
-	// reports; chrome-error://chromewebdata/ models a failed navigation.
+
 	frameURL string
-	// navOutcome, when set, is the navigation_outcome reply. Unset models an
-	// extension that predates the message.
+
 	navOutcome map[string]any
-	// frameTreeHangs leaves Page.getFrameTree unanswered, as Chrome does while
-	// the tab's document request is still waiting for the server.
+
 	frameTreeHangs bool
 }
 
 type gaTab struct {
 	id       int
 	windowID int
-	groupID  int // -1 = ungrouped
+	groupID  int
 	active   bool
 	url      string
 	title    string
@@ -62,8 +51,6 @@ type gaGroup struct {
 	collapsed bool
 }
 
-// foregroundID mirrors service_worker resolveForegroundTabId(): the active tab
-// of the focused window — the single source of truth get_active_tab_id returns.
 func (f *groupAwareExtension) foregroundID() int {
 	for _, t := range f.tabs {
 		if t.windowID == f.focusedWindow && t.active {
@@ -82,7 +69,6 @@ func (f *groupAwareExtension) tabByID(id int) *gaTab {
 	return nil
 }
 
-// activateExclusive makes id the sole active tab of its window.
 func (f *groupAwareExtension) activateExclusive(windowID, id int) {
 	for _, t := range f.tabs {
 		if t.windowID == windowID {
@@ -91,9 +77,6 @@ func (f *groupAwareExtension) activateExclusive(windowID, id int) {
 	}
 }
 
-// firstVisibleOther returns a tab in windowID, other than exclude, that is NOT
-// hidden inside a collapsed group — the candidate Chrome activates when the
-// active tab is forced into a collapsed group.
 func (f *groupAwareExtension) firstVisibleOther(windowID, exclude int) *gaTab {
 	for _, t := range f.tabs {
 		if t.windowID != windowID || t.id == exclude {
@@ -163,8 +146,7 @@ func (f *groupAwareExtension) serve(ctx context.Context, conn *websocket.Conn) {
 				}}}
 				break
 			}
-			// The only other cdp call on the open path is the readiness-wait
-			// Runtime.evaluate (condition "committed"); report it satisfied.
+
 			result = map[string]any{"result": map[string]any{"value": true}}
 		case "navigation_outcome":
 			if f.navOutcome == nil {
@@ -191,11 +173,7 @@ func (f *groupAwareExtension) serve(ctx context.Context, conn *websocket.Conn) {
 				result = map[string]any{}
 				break
 			}
-			// focus_tab RAISES the window only when asked (raiseWindow), always
-			// EXPANDS the target's group (a real service worker must, else the
-			// activate cannot stick) and activates the tab — the heal path
-			// ensureForegroundTab relies on. In a single window, activation alone
-			// makes the tab foreground without a raise.
+
 			if raise {
 				f.focusedWindow = t.windowID
 			}
@@ -215,16 +193,11 @@ func (f *groupAwareExtension) serve(ctx context.Context, conn *websocket.Conn) {
 	}
 }
 
-// handleOpen models chrome.tabs.create({active:true}) followed by grouping,
-// including the collapsed-group deactivation that demotes the freshly-opened
-// active tab — the concrete mechanism behind the reported bug.
 func (f *groupAwareExtension) handleOpen(params map[string]any) map[string]any {
 	id := f.nextTabID
 	f.nextTabID++
 	url, _ := params["url"].(string)
-	// Honor the daemon's foreground intent: active defaults to true, and the
-	// isolation daemon passes active:false for a background open that must not
-	// switch the user's current tab.
+
 	active := true
 	if v, ok := params["active"].(bool); ok {
 		active = v
@@ -233,7 +206,7 @@ func (f *groupAwareExtension) handleOpen(params map[string]any) map[string]any {
 	t := &gaTab{id: id, windowID: f.focusedWindow, groupID: -1, active: active, url: url, title: url}
 	f.tabs = append(f.tabs, t)
 	if active {
-		// active:true within its window.
+
 		f.activateExclusive(t.windowID, t.id)
 	}
 
@@ -247,9 +220,7 @@ func (f *groupAwareExtension) handleOpen(params map[string]any) map[string]any {
 		}
 		t.groupID = g.id
 		if active && g.collapsed {
-			// A collapsed group cannot show the active tab: Chrome deactivates the
-			// newcomer and activates an adjacent visible tab instead. (A background
-			// open is already inactive, so it leaves the user's active tab alone.)
+
 			t.active = false
 			if other := f.firstVisibleOther(t.windowID, t.id); other != nil {
 				other.active = true
@@ -299,12 +270,6 @@ func connectGroupAwareExtension(t *testing.T, b *Bridge, fe *groupAwareExtension
 	}
 }
 
-// TestOpenInGroupMakesOpenedTabForeground is the regression for the reported
-// bug: brw_open opened a localhost tab into a (collapsed) group, but the
-// subsequent no-tab_id tool resolved an UNRELATED existing tab (Google Chat)
-// because grouping into a collapsed group demoted the freshly-opened active tab.
-// After the fix, OpenInGroup must make the opened tab the genuine foreground tab
-// so every subsequent no-tab_id tool (modelled by contextTabID) targets it.
 func TestOpenInGroupMakesOpenedTabForeground(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	fe := &groupAwareExtension{
@@ -331,9 +296,6 @@ func TestOpenInGroupMakesOpenedTabForeground(t *testing.T) {
 		t.Fatalf("OpenInGroup returned tab %q, want 200 (the freshly opened tab)", res.Tab.ID)
 	}
 
-	// THE BUG: without making the opened tab foreground, get_active_tab_id resolves
-	// the Google Chat tab (100) that Chrome re-activated when the new tab was
-	// demoted into the collapsed group — so brw_find/read/click would all hit it.
 	if got := b.contextTabID(ctx); got != "200" {
 		t.Fatalf("after brw_open, contextTabID resolved %q, want 200 — a subsequent no-tab_id tool would act on the wrong tab", got)
 	}
@@ -342,8 +304,6 @@ func TestOpenInGroupMakesOpenedTabForeground(t *testing.T) {
 	}
 }
 
-// TestEnsureForegroundTabErrorsWithoutTabID proves brw_open never silently falls
-// back to a stale active tab: an empty opened-tab id is an explicit error.
 func TestEnsureForegroundTabErrorsWithoutTabID(t *testing.T) {
 	b := New("", time.Second, "")
 	if err := b.ensureForegroundTab(context.Background(), ""); err == nil {
@@ -351,14 +311,11 @@ func TestEnsureForegroundTabErrorsWithoutTabID(t *testing.T) {
 	}
 }
 
-// TestServiceWorkerOpenRehydratesForeground locks in the extension-side
-// hardening: open_tab re-expands a collapsed group and re-activates the opened
-// tab after grouping so the opened tab stays the foreground tab at the source.
 func TestServiceWorkerOpenRehydratesForeground(t *testing.T) {
 	src := readServiceWorker(t)
 	for _, want := range []string{
-		"chrome.tabGroups.update(groupId, { collapsed: false })", // open re-expands a collapsed group
-		"chrome.tabs.update(tab.id, { active: true })",           // open re-activates after grouping
+		"chrome.tabGroups.update(groupId, { collapsed: false })",
+		"chrome.tabs.update(tab.id, { active: true })",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("service worker open_tab must re-assert the opened tab as foreground; missing %q", want)
@@ -366,10 +323,6 @@ func TestServiceWorkerOpenRehydratesForeground(t *testing.T) {
 	}
 }
 
-// TestBridgeOpenDefaultsToConfiguredGroup proves brw_open corrals the agent's
-// tabs into the configured default group when the caller passes no group of its
-// own — the tidy "act like a person" default — and the opened tab is still the
-// foreground tab.
 func TestBridgeOpenDefaultsToConfiguredGroup(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetDefaultGroup("brw")
@@ -400,10 +353,6 @@ func TestBridgeOpenDefaultsToConfiguredGroup(t *testing.T) {
 	}
 }
 
-// TestFocusTabThreadsRaiseWindowFlag proves the daemon controls whether focus
-// raises the Chrome window: the library default raises (back-compat), but once
-// the daemon disables it (SetRaiseWindowOnFocus(false)) focus_tab tells the
-// extension NOT to raise — so automation never steals OS focus.
 func TestFocusTabThreadsRaiseWindowFlag(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	fe := &groupAwareExtension{
@@ -441,8 +390,6 @@ func TestFocusTabThreadsRaiseWindowFlag(t *testing.T) {
 	}
 }
 
-// TestServiceWorkerFocusTabHonoursRaiseWindow locks in the extension gate: the
-// window is only raised when the daemon explicitly asks (raiseWindow === true).
 func TestServiceWorkerFocusTabHonoursRaiseWindow(t *testing.T) {
 	src := readServiceWorker(t)
 	for _, want := range []string{

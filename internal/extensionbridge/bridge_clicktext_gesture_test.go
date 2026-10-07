@@ -14,13 +14,8 @@ import (
 	"github.com/coder/websocket"
 )
 
-// clickTextScriptMarker is a string that only the click_text walker contains, so
-// the fake extension can tell that evaluation apart from the snapshot and settle
-// evaluations that surround it.
 const clickTextScriptMarker = "no visible element found for text "
 
-// evalRecorder is a fake extension that answers every bridge command and records
-// the Runtime.evaluate parameters it was asked to run.
 type evalRecorder struct {
 	mu    sync.Mutex
 	evals []map[string]any
@@ -32,8 +27,6 @@ func (r *evalRecorder) record(params map[string]any) {
 	r.evals = append(r.evals, params)
 }
 
-// clickTextEval returns the recorded Runtime.evaluate that ran the click_text
-// walker, and whether one was seen at all.
 func (r *evalRecorder) clickTextEval() (map[string]any, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -81,7 +74,6 @@ func (r *evalRecorder) serve(ctx context.Context, conn *websocket.Conn) {
 	}
 }
 
-// evalReply answers each in-page evaluation with the shape its caller decodes.
 func evalReply(expr string) any {
 	switch {
 	case strings.Contains(expr, clickTextScriptMarker):
@@ -113,8 +105,7 @@ func connectEvalRecorder(t *testing.T, b *Bridge) (*evalRecorder, func()) {
 		defer b.mu.RUnlock()
 		return b.conn != nil
 	})
-	// The click_text walker ships as one large expression; the default websocket
-	// read limit closes the connection before it arrives.
+
 	conn.SetReadLimit(8 << 20)
 	rec := &evalRecorder{}
 	serveCtx, serveCancel := context.WithCancel(context.Background())
@@ -126,13 +117,6 @@ func connectEvalRecorder(t *testing.T, b *Bridge) (*evalRecorder, func()) {
 	}
 }
 
-// The extension transport ran the click_text walker under a plain
-// Runtime.evaluate and only re-ran it with userGesture when the walker had
-// DEFERRED — which it can only do for handler shapes that are readable from page
-// script. A listener registered with addEventListener is not readable, so a
-// gesture-gated call inside one was never given the activation it needs and was
-// dropped under a click that reported success. The activation has to be on the
-// first evaluation, for every target.
 func TestBridgeClickTextEvaluatesWithAUserGesture(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	rec, cleanup := connectEvalRecorder(t, b)

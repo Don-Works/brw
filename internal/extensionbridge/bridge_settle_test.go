@@ -14,10 +14,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-// settleFake serves cdp Runtime.evaluate replies for the adaptive settle /
-// WaitFor tests. value is the JSON value returned for every evaluate, so a test
-// can serve a stable "complete" fingerprint (settle returns early) or a truthy
-// condition (WaitFor returns early).
 type settleFake struct {
 	value any
 }
@@ -75,8 +71,6 @@ func connectSettleFake(t *testing.T, b *Bridge, value any) func() {
 	}
 }
 
-// connectSettleFakeChurning serves an ever-changing string fingerprint so the
-// adaptive settle never sees two equal consecutive reads (worst case).
 func connectSettleFakeChurning(t *testing.T, b *Bridge) func() {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
@@ -126,13 +120,9 @@ func connectSettleFakeChurning(t *testing.T, b *Bridge) func() {
 	}
 }
 
-// TestSettleReturnsEarlyOnQuiescentPage proves the adaptive settle returns well
-// before the cap when the page fingerprint is already stable and complete,
-// rather than always blocking the full fixed cap as the old time.Sleep did.
 func TestSettleReturnsEarlyOnQuiescentPage(t *testing.T) {
 	b := New("", 5*time.Second, "")
-	// A stable "complete" fingerprint: every read returns the same value, so
-	// settle reaches settleStableReads quickly and returns.
+
 	cleanup := connectSettleFake(t, b, "complete|10|100|BODY#|https://x.test")
 	defer cleanup()
 
@@ -145,16 +135,9 @@ func TestSettleReturnsEarlyOnQuiescentPage(t *testing.T) {
 	}
 }
 
-// TestSettleNeverExceedsCap guards the "NEVER slower than today" contract even
-// when the page keeps mutating (fingerprint differs each read so it never
-// reaches the stable threshold) — settle must still return within the cap (plus
-// a small scheduling slack), never blocking longer than the old fixed sleep did.
 func TestSettleNeverExceedsCap(t *testing.T) {
 	b := New("", 5*time.Second, "")
-	// A churning page: the fake flips the fingerprint each read so settle never
-	// sees two equal reads. value is a counter object the evaluate parser can read
-	// as a string only if it's a string, so we serve an ever-changing string by
-	// embedding time — simplest is to serve a value that unmarshals but differs.
+
 	cleanup := connectSettleFakeChurning(t, b)
 	defer cleanup()
 
@@ -162,17 +145,12 @@ func TestSettleNeverExceedsCap(t *testing.T) {
 	start := time.Now()
 	b.settle(ctx, observedActionSettle)
 	elapsed := time.Since(start)
-	// Allow generous slack for the websocket round trips + scheduler, but it must
-	// be bounded near the cap, not unbounded.
+
 	if elapsed > observedActionSettle+150*time.Millisecond {
 		t.Fatalf("settle took %v; must stay bounded near the %v cap", elapsed, observedActionSettle)
 	}
 }
 
-// TestSettleHonoursMinimumFloor proves settle does not return instantly on a
-// page that already looks stable: it holds for at least settleMinFloor so a
-// delayed handler (setTimeout(0) / framework render / rAF landing a few ms after
-// the action) is still observed, preserving the debounce the old fixed sleep had.
 func TestSettleHonoursMinimumFloor(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	cleanup := connectSettleFake(t, b, "complete|10|100|BODY#|https://x.test")
@@ -180,13 +158,6 @@ func TestSettleHonoursMinimumFloor(t *testing.T) {
 
 	ctx := browser.WithTabID(context.Background(), "5")
 
-	// Calibrate before asserting an upper bound. settle polls a fingerprint over
-	// the websocket, so its wall-clock is floor + a few round trips. The cap is
-	// 75ms and the floor 24ms, which leaves room for only a handful of fast round
-	// trips; on a loaded machine a single slow one pushes the call past the cap
-	// for reasons that have nothing to do with the floor logic under test. Time
-	// one round trip against the same fake and assert the upper bound only while
-	// the transport is quick enough for that bound to mean anything.
 	roundTripStart := time.Now()
 	var warm string
 	_ = b.evaluate(ctx, settleFingerprintExpr, "", &warm)
@@ -196,13 +167,10 @@ func TestSettleHonoursMinimumFloor(t *testing.T) {
 	b.settle(ctx, observedActionSettle)
 	elapsed := time.Since(start)
 
-	// The floor is the real invariant and is safe to assert either way: returning
-	// early is a bug no matter how slow the machine is.
 	if elapsed < settleMinFloor-5*time.Millisecond {
 		t.Fatalf("settle returned in %v, below the %v floor; a delayed mutation could be missed", elapsed, settleMinFloor)
 	}
 
-	// settle needs roughly three stable reads after the floor before it exits.
 	budget := settleMinFloor + 4*roundTrip
 	if budget >= observedActionSettle {
 		t.Skipf("transport round trip is %v, so floor+polls (%v) cannot be distinguished from the %v cap on this machine; floor assertion still held at %v",
@@ -213,12 +181,9 @@ func TestSettleHonoursMinimumFloor(t *testing.T) {
 	}
 }
 
-// TestWaitForReturnsPromptlyWhenSatisfied proves the tightened WaitFor returns
-// well under the old coarse 250ms poll when the condition is immediately true.
 func TestWaitForReturnsPromptlyWhenSatisfied(t *testing.T) {
 	b := New("", 5*time.Second, "")
-	// WaitConditionScript resolves an in-page boolean; serve true so the first
-	// promise satisfies the wait.
+
 	cleanup := connectSettleFake(t, b, true)
 	defer cleanup()
 
@@ -233,11 +198,9 @@ func TestWaitForReturnsPromptlyWhenSatisfied(t *testing.T) {
 	}
 }
 
-// TestWaitForRespectsCancellation guards that the tightened poll loop still
-// honours context cancellation promptly.
 func TestWaitForRespectsCancellation(t *testing.T) {
 	b := New("", 5*time.Second, "")
-	cleanup := connectSettleFake(t, b, false) // condition never satisfied
+	cleanup := connectSettleFake(t, b, false)
 	defer cleanup()
 
 	ctx, cancel := context.WithCancel(browser.WithTabID(context.Background(), "5"))

@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// tokenInBody reads the handshake token out of a /status response.
 func tokenInBody(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
 	var body map[string]any
@@ -19,22 +18,12 @@ func tokenInBody(t *testing.T, rec *httptest.ResponseRecorder) string {
 	return token
 }
 
-// secFetchSiteDomain is every value the Fetch Metadata spec defines for
-// Sec-Fetch-Site, plus the two shapes that are not spec values and still reach a
-// server: the header absent, and a value nobody has defined yet.
-//
-// It is written out so a value cannot be handled by accident. The verdict column
-// says what /status does with a caller presenting it, and the test below refuses
-// to run if any member has no verdict.
 var secFetchSiteDomain = []struct {
 	name string
-	// header is the raw Sec-Fetch-Site value; absent is a separate flag because
-	// "not sent" and "sent empty" are different requests.
+
 	header string
 	absent bool
-	// browserSet records whether a browser can produce this value on a request
-	// to a loopback daemon. It is not an input to the guard; it is what the
-	// verdict has to be justified against.
+
 	browserSet bool
 	served     bool
 	why        string
@@ -65,20 +54,8 @@ var secFetchSiteDomain = []struct {
 	},
 }
 
-// TestStatusTokenSecFetchSiteDomainHasAVerdictForEveryValue enumerates the
-// header's domain rather than the two values that were interesting when the
-// check was written.
-//
-// The empty-Origin case is what makes this necessary: every caller in the
-// measurement sends NO Origin (see docs/auth-model.md, measured on Chromium
-// 152.0.7977.82 on 2026-09-15), so Sec-Fetch-Site is the only thing separating
-// the extension's fetch from a request a page on another site caused. A new
-// value handled by inheriting whatever the last condition does is exactly the
-// bug this table exists to prevent.
 func TestStatusTokenSecFetchSiteDomainHasAVerdictForEveryValue(t *testing.T) {
-	// Both Origin shapes a browser can present alongside the header. The verdict
-	// must hold for each: the check is about who initiated the request, not
-	// about which of the two Origin branches happens to run after it.
+
 	origins := []struct{ name, origin string }{
 		{"no Origin", ""},
 		{"the configured extension", "chrome-extension://" + configuredExtnID},
@@ -113,9 +90,7 @@ func TestStatusTokenSecFetchSiteDomainHasAVerdictForEveryValue(t *testing.T) {
 			})
 		}
 	}
-	// One value, not "at least one": the guard admits exactly the initiator the
-	// extension produces, so a second served value would mean a browser caller
-	// other than the extension had been let in.
+
 	if servedValues != 1 {
 		t.Fatalf("%d Sec-Fetch-Site values are served, want exactly one (%q)", servedValues, initiatorSecFetchSite)
 	}
@@ -126,12 +101,6 @@ func TestStatusTokenSecFetchSiteDomainHasAVerdictForEveryValue(t *testing.T) {
 	}
 }
 
-// TestConsentSurfaceUsesTheSameInitiatorRule pins the two surfaces together.
-//
-// /consent and /consent/revoke are served on the same loopback listener and list
-// which sites the user has granted, which is a small profile of the user. They
-// share tokenServable so the rule cannot drift, and this is the test that fails
-// if one of them grows its own copy of it.
 func TestConsentSurfaceUsesTheSameInitiatorRule(t *testing.T) {
 	for _, path := range []string{"/consent", "/consent/revoke"} {
 		for _, value := range secFetchSiteDomain {

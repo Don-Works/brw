@@ -8,14 +8,6 @@ import (
 	"testing"
 )
 
-// The bridge recognises an old extension by the text its service worker sends
-// back for a message type it does not implement, and falls back instead of
-// failing. That text is written in JavaScript, so the Go constant is a second
-// copy and nothing but this test keeps the two in step.
-//
-// A reword on the JavaScript side has no loud failure mode: every capability
-// probe simply stops being recognised as "your extension is older than this
-// daemon" and starts surfacing as a hard error.
 func TestTheExtensionStillSendsTheUnknownMessageTypeError(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {

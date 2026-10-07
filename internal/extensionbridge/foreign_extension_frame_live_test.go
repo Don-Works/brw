@@ -14,13 +14,6 @@ import (
 	"time"
 )
 
-// The Chrome behaviour extension/service_worker.js works around when a page
-// embeds another extension's frame, measured rather than asserted. Two
-// unpacked extensions go into a real browser: "foreign" exposes a page that a
-// web page can frame, the way a password manager's inline menu does, and
-// "probe" holds the debugger, webNavigation and scripting permissions brw holds,
-// with brw's loopback-only host access. The probe attaches to a page, frames the
-// foreign page into it, and reports what Chrome then allows.
 func TestChromeRefusesTheDebuggerForATabHoldingAForeignExtensionFrame(t *testing.T) {
 	var mu sync.Mutex
 	reports := map[string]string{}
@@ -137,27 +130,24 @@ async function run(host) {
 	const refusal = "refused Cannot access a chrome-extension:// URL of different extension"
 	for _, host := range []string{"127.0.0.1", "off-permission.test"} {
 		want := map[string]func(string) bool{
-			// The frame committing ends a live session...
+
 			"attach-clean": func(s string) bool { return strings.HasPrefix(s, "ok") },
 			"detached":     func(s string) bool { return s == "target_closed" },
-			// ...and nothing on the debugger gets back in while it is there.
+
 			"send-after":       func(s string) bool { return s == refusal },
 			"reattach":         func(s string) bool { return s == refusal },
 			"attach-by-target": func(s string) bool { return s == refusal },
-			// brw can see the frame commit and its target, but getAllFrames
-			// leaves it out, so the extension has to remember it itself.
+
 			"committed":     func(s string) bool { return s == "reported" },
 			"target-listed": func(s string) bool { return s == `ok "listed"` },
 			"all-frames":    func(s string) bool { return strings.HasPrefix(s, "ok") && !strings.Contains(s, "chrome-extension://") },
 		}
 		if host == "127.0.0.1" {
-			// chrome.scripting ignores the foreign frame, top frame or all frames,
-			// wherever the extension holds host access.
+
 			want["script-top"] = func(s string) bool { return s == `ok "subject|1"` }
 			want["script-all"] = func(s string) bool { return s == `ok ["http:"]` }
 		} else {
-			// Without host access it is refused for the page, as it would be on
-			// any site brw's loopback-only manifest does not name.
+
 			want["script-top"] = func(s string) bool {
 				return strings.HasPrefix(s, "refused Cannot access contents of url")
 			}

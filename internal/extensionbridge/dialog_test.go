@@ -13,14 +13,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-// scriptedExtension answers exactly one bridge command with a caller-supplied
-// result, and hands back the command frame that was sent.
-//
-// Distinct from fakeExtension in bridge_activetab_test.go on purpose: that one
-// models a live browser's tabs and answers the tab RPCs from that model, which
-// is what tab-resolution tests need. These tests are about the WIRE — the exact
-// keys and types crossing the socket in each direction — so the reply has to be
-// literal rather than derived from a model.
 type scriptedExtension struct {
 	t    *testing.T
 	conn *websocket.Conn
@@ -51,7 +43,6 @@ func newScriptedExtension(t *testing.T, b *Bridge) *scriptedExtension {
 	return &scriptedExtension{t: t, conn: conn, ctx: context.Background()}
 }
 
-// serveOnce reads the next bridge command and answers it with result.
 func (f *scriptedExtension) serveOnce(result map[string]any) (cmdType string, params map[string]any) {
 	f.t.Helper()
 	readCtx, cancel := context.WithTimeout(f.ctx, 5*time.Second)
@@ -75,12 +66,6 @@ func (f *scriptedExtension) serveOnce(result map[string]any) (cmdType string, pa
 	return cmd.Type, cmd.Params
 }
 
-// The extension emits the dialog record as JSON and the daemon unmarshals it
-// into browser.DialogRecord. Those two spellings are a wire contract that no
-// compiler checks: a camelCase key silently blanks the field, and a numeric
-// timestamp fails the whole parse. This asserts the daemon reads the exact
-// shape extension/service_worker.js emits (pinned on that side by
-// extension/tab_resolution_test.mjs).
 func TestBridgeDialogStatusParsesTheExtensionWireShape(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	ext := newScriptedExtension(t, b)
@@ -125,8 +110,7 @@ func TestBridgeDialogStatusParsesTheExtensionWireShape(t *testing.T) {
 			t.Fatalf("result = %#v, want one dialog", got.result)
 		}
 		record := got.result.Dialogs[0]
-		// decided_by is the field the whole feature is for: it says why the
-		// dialog was answered the way it was.
+
 		if record.DecidedBy != "user_safe_default" {
 			t.Errorf("decided_by = %q, want user_safe_default", record.DecidedBy)
 		}
@@ -219,8 +203,7 @@ func TestBridgeDialogRejectsBadInputBeforeTouchingTheWire(t *testing.T) {
 		{"expect with bad response", browser.DialogOptions{Action: "expect", Response: "maybe"}, "unknown dialog response"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			// No extension is connected: a well-formed rejection must not depend
-			// on one, and must not hang waiting for a reply.
+
 			_, err := b.Dialog(context.Background(), tt.opts)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("err = %v, want one containing %q", err, tt.wantErr)
@@ -229,8 +212,6 @@ func TestBridgeDialogRejectsBadInputBeforeTouchingTheWire(t *testing.T) {
 	}
 }
 
-// A blocked request crosses the same wire as the dialog record and follows the
-// same convention, so it is pinned the same way.
 func TestBridgeBlockedRequestsParsesTheExtensionWireShape(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	ext := newScriptedExtension(t, b)

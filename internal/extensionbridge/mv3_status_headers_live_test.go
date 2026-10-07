@@ -22,22 +22,8 @@ import (
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
-// This file measures one thing against a real browser: what reaches a loopback
-// daemon when an MV3 service worker fetches it, and what reaches the same
-// daemon when a web page on another site causes a request to it.
-//
-// It exists because tokenServable serves the handshake token to a caller that
-// sends NO Origin, and the justification for that is a browser behaviour rather
-// than an argument. A browser behaviour can change, and a comment asserting one
-// gives the next reader no way to tell whether it is still true.
-
-// mv3ProbePath is the path every probe fetches. It is not /status: the
-// measurement wants the request headers, and standing up a real bridge to serve
-// them a token would put a secret in a fixture for nothing.
 const mv3ProbePath = "/mv3-probe"
 
-// The callers measured. Each names itself in the query string, because the
-// whole question is which of them can be told apart by what arrives.
 const (
 	callerWorker        = "mv3-service-worker"
 	callerExtensionPage = "extension-page"
@@ -45,10 +31,6 @@ const (
 	callerPageScript    = "web-page-script-element"
 )
 
-// mv3MeasuredHeaders are the request properties the empty-Origin decision turns
-// on. Sec-Fetch-* is in the list because those are the headers a browser sets
-// itself and forbids page script from overriding — the only class of request
-// property that says anything about who initiated a BROWSER request.
 var mv3MeasuredHeaders = []string{"Origin", "Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest"}
 
 type mv3Observation struct {
@@ -77,9 +59,6 @@ func (o mv3Observation) render() string {
 	return strings.Join(parts, ", ")
 }
 
-// request rebuilds the measured call as an http.Request, so the production
-// guard can be asked about the real thing rather than about a hand-written
-// approximation of it.
 func (o mv3Observation) request() *http.Request {
 	req := httptest.NewRequest(http.MethodGet, mv3ProbePath, nil)
 	req.Host = o.host
@@ -91,7 +70,6 @@ func (o mv3Observation) request() *http.Request {
 	return req
 }
 
-// mv3Recorder collects one observation per caller.
 type mv3Recorder struct {
 	mu      sync.Mutex
 	seen    map[string]mv3Observation
@@ -124,7 +102,6 @@ func (r *mv3Recorder) get(caller string) (mv3Observation, bool) {
 	return observed, ok
 }
 
-// await blocks until caller has been seen or the deadline passes.
 func (r *mv3Recorder) await(caller string, timeout time.Duration) (mv3Observation, bool) {
 	deadline := time.After(timeout)
 	for {
@@ -140,22 +117,8 @@ func (r *mv3Recorder) await(caller string, timeout time.Duration) (mv3Observatio
 	}
 }
 
-// mv3ProbeWait bounds how long one browser gets to start its worker and make
-// the call. A browser that ignores --load-extension never will, so this is the
-// cost of trying it rather than a race with a slow one.
 const mv3ProbeWait = 30 * time.Second
 
-// installedBrowsers lists the Chrome/Chromium builds present on this machine,
-// unbranded ones first.
-//
-// The order is not cdp.Candidates'. Branded Chrome 137+ ignores
-// --load-extension (docs/install.md records it, and it is why brwd --extension
-// is documented as a Chromium path), so trying it first spends the probe window
-// on a browser that cannot answer — and starts Google's separate updater
-// process, which inherits this test binary's stderr and can outlive it, which
-// `go test` reports as "Test I/O incomplete" and fails the whole package on.
-// It is still tried, last, so a machine with only branded Chrome installed gets
-// a measurement rather than a skip if that ever changes.
 func installedBrowsers() []string {
 	var unbranded, branded []string
 	for _, candidate := range cdp.Candidates(runtime.GOOS) {
@@ -180,10 +143,6 @@ func installedBrowsers() []string {
 	return append(unbranded, branded...)
 }
 
-// quietLaunchArgs keep a probe browser from doing anything but the one fetch
-// being measured. The background-networking switches are why they are here: an
-// update check spawns a process that inherits this binary's stderr and outlives
-// the browser it was started from.
 func quietLaunchArgs() []string {
 	return []string{
 		"--disable-background-networking",
@@ -193,8 +152,6 @@ func quietLaunchArgs() []string {
 	}
 }
 
-// browserVersion asks the binary what it is, so the recorded measurement names
-// the build it was taken on rather than "the browser on some machine".
 func browserVersion(t *testing.T, path string) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -206,10 +163,6 @@ func browserVersion(t *testing.T, path string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// writeProbeExtension lays down the smallest MV3 extension that reproduces the
-// two calls the real extension makes to the daemon: the service worker's fetch
-// (fetchBridgeToken) and an extension page's fetch (the options page reading
-// /consent).
 func writeProbeExtension(t *testing.T, probeURL, otherSiteURL string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -217,9 +170,7 @@ func writeProbeExtension(t *testing.T, probeURL, otherSiteURL string) string {
 		"manifest_version": 3,
 		"name":             "brw status header probe",
 		"version":          "1.0",
-		// The host permission is the whole point: it is what makes this fetch
-		// the privileged one the real extension makes rather than an ordinary
-		// cross-origin request CORS would govern.
+
 		"host_permissions": []string{"http://127.0.0.1/*"},
 		"background":       map[string]any{"service_worker": "sw.js", "type": "module"},
 	}
@@ -230,10 +181,7 @@ func writeProbeExtension(t *testing.T, probeURL, otherSiteURL string) string {
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// cache: "no-store" and nothing else, exactly as fetchBridgeToken calls it.
-	// A probe that set mode or headers would measure the options it chose.
-	// Headless Chrome accepts exactly one startup URL, so the worker opens the
-	// other two callers itself rather than the launch command line carrying them.
+
 	worker := fmt.Sprintf(`const PROBE = %q;
 const OTHER_SITE = %q;
 async function probe(caller) {
@@ -265,9 +213,6 @@ probe(%q).then(function () {
 	return dir
 }
 
-// attackerPage is a page on another site that causes requests to the daemon
-// without being able to set a header on them. Both shapes reach a loopback Host
-// with no Origin, which is the case tokenServable used to accept.
 const attackerPage = `<!doctype html><title>other site</title>
 <script>
 fetch(%q, { mode: "no-cors", cache: "no-store" }).catch(function () {});
@@ -276,23 +221,12 @@ element.src = %q;
 document.head.appendChild(element);
 </script>`
 
-// TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured is the measurement
-// behind tokenServable's empty-Origin case, taken against a real browser, and
-// then fed back through the real guard.
-//
-// It fails if the browser starts sending an Origin on the worker's fetch (at
-// which point the empty-Origin case can be closed and this is the evidence for
-// doing it), if the worker's call stops reaching the daemon at all, or if the
-// guard's verdict on the measured headers changes.
 func TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured(t *testing.T) {
 	browsers := installedBrowsers()
 	if len(browsers) == 0 {
 		t.Skip("no Chrome/Chromium build is installed")
 	}
-	// Logged before anything launches, so the run says which builds were
-	// available as well as which one the measurement came from. docs/auth-model.md
-	// records a branded-Chrome observation this test does not reproduce, and
-	// this is what lets a reader see that it was not asked to.
+
 	t.Logf("installed browsers, in the order they are tried: %s", strings.Join(browsers, ", "))
 
 	recorder := newMV3Recorder()
@@ -300,18 +234,13 @@ func TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured(t *testing.T) {
 	mux.HandleFunc(mv3ProbePath, recorder.handle)
 	mux.HandleFunc("/other-site", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		// Served on the SAME listener, reached through a different hostname, so
-		// the page's site differs from the target's. A second listener on
-		// 127.0.0.1 would only be a different port, which is the same site.
+
 		target := "http://127.0.0.1:" + portOf(t, r.Host) + mv3ProbePath
 		fmt.Fprintf(w, attackerPage, target+"?caller="+callerPageNoCORS, target+"?caller="+callerPageScript)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// httptest binds 127.0.0.1, which is the host the extension holds a
-	// permission for. Anything else would measure a request the real extension
-	// never makes.
 	if !strings.HasPrefix(srv.URL, "http://127.0.0.1:") {
 		t.Fatalf("fixture served at %s, want a 127.0.0.1 loopback origin", srv.URL)
 	}
@@ -320,10 +249,6 @@ func TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured(t *testing.T) {
 	otherSiteURL := "http://localhost:" + port + "/other-site"
 	extension := writeProbeExtension(t, probeURL, otherSiteURL)
 
-	// Branded Chrome 137+ ignores --load-extension (docs/install.md says so, and
-	// it is why brwd --extension is documented as a Chromium path), so the
-	// measurement is taken on the first installed build that actually runs the
-	// worker rather than on whichever binary happens to come first.
 	var version string
 	var refused []string
 	for _, browser := range browsers {
@@ -343,8 +268,7 @@ func TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured(t *testing.T) {
 		}
 		if _, ok := recorder.await(callerWorker, mv3ProbeWait); ok {
 			version = build
-			// The other three callers are driven by the same browser run; give
-			// them a moment to land now that it is up.
+
 			recorder.await(callerExtensionPage, 15*time.Second)
 			recorder.await(callerPageNoCORS, 15*time.Second)
 			recorder.await(callerPageScript, 15*time.Second)
@@ -357,25 +281,12 @@ func TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured(t *testing.T) {
 			break
 		}
 	}
-	// A measurement the machine cannot take is not a result. Every browser here
-	// either refused to start headless or ignored the unpacked extension, which
-	// is the state of a CI runner and of a machine with only branded Chrome 137+
-	// on it; neither says anything about brw.
-	//
-	// The skip cannot hide a regression in what this test is FOR. Everything
-	// below runs whenever one browser does start its worker, so a changed header
-	// or a changed verdict fails exactly as before — the skip is reached only
-	// when there is nothing to compare. What it does forgo is the re-measurement
-	// itself: the decision in docs/auth-model.md then rests on the last machine
-	// that could take it, which is why the reason is reported per browser rather
-	// than as "unavailable".
+
 	if version == "" {
 		t.Skipf("no installed browser could run an unpacked MV3 service worker here, so the request headers one sends to %s were not measured and tokenServable's empty-Origin case (docs/auth-model.md) was not re-measured: %s",
 			probeURL, strings.Join(refused, "; "))
 	}
 
-	// The comparator: a plain local HTTP client, which is what "curl" means
-	// here. It reaches the same handler through the same loopback address.
 	if _, err := http.Get(probeURL + "?caller=local-process"); err != nil {
 		t.Fatalf("local client request: %v", err)
 	}
@@ -400,10 +311,6 @@ func TestMV3ServiceWorkerAndWebPageStatusHeadersAreMeasured(t *testing.T) {
 			version, worker.headers["Origin"])
 	}
 
-	// The measured verdicts, run through the real guard. A page on another site
-	// reaching a loopback daemon is the caller the Sec-Fetch-Site gate exists
-	// for: it sends no Origin, so nothing else in the request distinguishes it
-	// from the extension.
 	wantServed := map[string]bool{
 		callerWorker:        true,
 		callerExtensionPage: true,
@@ -439,12 +346,6 @@ func portOf(t *testing.T, hostport string) string {
 	return hostport[index+1:]
 }
 
-// TestBridgeCommentsCiteTheMeasuredBrowser keeps the prose honest.
-//
-// The empty-Origin decision is justified in several places by a named browser
-// build. A measurement whose build is not the one the code cites is a
-// measurement of something else, so the citations and docs/auth-model.md have
-// to name the same build, and the doc has to say when it was checked.
 func TestBridgeDocumentationRecordsTheMeasuredBrowser(t *testing.T) {
 	root := repositoryRootForDocs(t)
 	doc, err := os.ReadFile(filepath.Join(root, "docs", "auth-model.md"))
@@ -464,7 +365,6 @@ func TestBridgeDocumentationRecordsTheMeasuredBrowser(t *testing.T) {
 	}
 }
 
-// repositoryRootForDocs walks up from the package directory to the module root.
 func repositoryRootForDocs(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()

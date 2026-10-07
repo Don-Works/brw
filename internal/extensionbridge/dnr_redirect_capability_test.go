@@ -22,36 +22,16 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// Why brw_route has no redirect behaviour on this transport, measured rather
-// than asserted.
-//
-// declarativeNetRequest offers a redirect action, so "the bridge cannot
-// redirect" is not a missing primitive: it is a consequence of the host
-// permissions brw's extension deliberately does not hold. That distinction
-// matters because Chrome does not refuse the rule. updateSessionRules accepts
-// it, getSessionRules lists it, and it simply never applies — the shape of
-// failure an agent cannot see, and the reason shipping it anyway would be worse
-// than not having it.
-
-// shippedManifest is the part of extension/manifest.json this file measures.
-//
-// optional_host_permissions is decoded as well as host_permissions because a
-// granted optional entry gives declarativeNetRequest exactly the host access
-// these tests exist to detect, and a struct that cannot see the field would stay
-// green while the documented reason stopped holding.
 type shippedManifest struct {
 	Permissions             []string `json:"permissions"`
 	HostPermissions         []string `json:"host_permissions"`
 	OptionalHostPermissions []string `json:"optional_host_permissions"`
 }
 
-// grantableHosts is every host pattern the extension can end up holding, whether
-// it is granted at install time or asked for later.
 func (m shippedManifest) grantableHosts() []string {
 	return append(append([]string{}, m.HostPermissions...), m.OptionalHostPermissions...)
 }
 
-// shippedExtensionManifest reads the manifest brw actually installs.
 func shippedExtensionManifest(t *testing.T) shippedManifest {
 	t.Helper()
 	var manifest shippedManifest
@@ -65,11 +45,6 @@ func shippedExtensionManifest(t *testing.T) shippedManifest {
 	return manifest
 }
 
-// The static half of the reason, enumerated over the manifest rather than
-// spot-checked: every host_permissions entry has to be loopback, because one
-// entry naming a real host is enough to make a redirect rule fire for that host
-// — and then the capability matrix in docs/install.md is describing an extension
-// that no longer exists.
 func TestShippedExtensionHoldsNoHostAccessForADeclarativeRedirect(t *testing.T) {
 	manifest := shippedExtensionManifest(t)
 	for _, permission := range manifest.Permissions {
@@ -87,9 +62,6 @@ func TestShippedExtensionHoldsNoHostAccessForADeclarativeRedirect(t *testing.T) 
 	}
 }
 
-// loopbackHostPattern reports whether a match pattern is confined to this
-// machine. Parsed rather than string-matched: "http://127.0.0.1.evil.test/*"
-// contains the loopback address and is not loopback.
 func loopbackHostPattern(pattern string) bool {
 	parsed, err := url.Parse(strings.Replace(pattern, "*.", "", 1))
 	if err != nil {
@@ -103,18 +75,6 @@ func loopbackHostPattern(pattern string) bool {
 	}
 }
 
-// The measured half, over the two host permissions a redirect action needs
-// SEPARATELY: the one for the request URL and the one for the request's
-// initiator. docs/install.md and browser.ErrRouteRedirectUnsupported both name
-// the initiator, so a table that only ever moves the request URL's host in and
-// out would be citing a measurement it never took — in the first two cases the
-// page and the request it makes are on the same host, so one added permission
-// covers both halves and neither can be attributed to.
-//
-// Each negative case is paired with a positive one that differs by a single
-// permission, because "the redirect did not happen" on its own is equally
-// satisfied by a malformed rule, an extension that never loaded, or a urlFilter
-// that matched nothing.
 func TestDeclarativeNetRequestRedirectNeverFiresUnderShippedPermissions(t *testing.T) {
 	manifest := shippedExtensionManifest(t)
 	const interceptedHost = "notlocal.test"
@@ -135,18 +95,13 @@ func TestDeclarativeNetRequestRedirectNeverFiresUnderShippedPermissions(t *testi
 			wantRedirect: true,
 		},
 		{
-			// The initiator half on its own: the request URL is loopback, which
-			// the shipped manifest already grants, and only the page issuing it
-			// is off-permission.
+
 			name:              "the request url is granted and the initiator is not",
 			requestOnLoopback: true,
 			wantRedirect:      false,
 		},
 		{
-			// The control for the case above. Same rule, same request URL, same
-			// permission set — only the initiator moves onto loopback. Without
-			// it, that negative would also be satisfied by a rule that never
-			// matches a loopback URL for some unrelated reason.
+
 			name:              "the request url is granted and so is the initiator",
 			subjectOnLoopback: true,
 			requestOnLoopback: true,
@@ -161,8 +116,7 @@ func TestDeclarativeNetRequestRedirectNeverFiresUnderShippedPermissions(t *testi
 				subjectOnLoopback: tc.subjectOnLoopback,
 				requestOnLoopback: tc.requestOnLoopback,
 			})
-			// The block rule is the liveness control: it needs no host access, so
-			// it fires in every case and proves the rules reached Chrome.
+
 			if result.blocked != "ERR" {
 				t.Fatalf("the block control returned %q rather than failing; the rules never reached Chrome, so nothing here is measuring permissions", result.blocked)
 			}
@@ -181,22 +135,16 @@ type dnrProbeResult struct {
 	blocked    string
 }
 
-// dnrProbeInput selects one permission set and where the two halves of the
-// request sit: the page that issues it (the initiator) and the URL it asks for.
 type dnrProbeInput struct {
 	permissions     []string
 	hostPermissions []string
 	interceptedHost string
-	// subjectOnLoopback serves the page making the request from loopback, which
-	// the shipped manifest grants, instead of the off-permission host.
+
 	subjectOnLoopback bool
-	// requestOnLoopback points the intercepted request at loopback, likewise.
+
 	requestOnLoopback bool
 }
 
-// runDNRRedirectProbe loads an unpacked extension carrying the given permission
-// set, installs one redirect rule and one block rule, and reports what the
-// subject page actually received.
 func runDNRRedirectProbe(t *testing.T, in dnrProbeInput) dnrProbeResult {
 	t.Helper()
 	permissions, hostPermissions, interceptedHost := in.permissions, in.hostPermissions, in.interceptedHost
@@ -206,9 +154,7 @@ func runDNRRedirectProbe(t *testing.T, in dnrProbeInput) dnrProbeResult {
 	var once sync.Once
 
 	mux := http.NewServeMux()
-	// The extension reports each rule set separately, so "Chrome would not even
-	// accept the redirect rule" is a distinguishable outcome rather than a
-	// timeout. It is the one that would falsify the documented reason.
+
 	mux.HandleFunc("/installed", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		reports[r.URL.Query().Get("rules")] = r.URL.Query().Get("outcome")
@@ -231,9 +177,7 @@ func runDNRRedirectProbe(t *testing.T, in dnrProbeInput) dnrProbeResult {
 	port := strings.TrimPrefix(srv.URL, "http://127.0.0.1:")
 	loopback := "http://127.0.0.1:" + port
 	offPermission := "http://" + interceptedHost + ":" + port
-	// The two halves of the permission question, chosen independently: the
-	// origin the page is served from is the request's initiator, the origin it
-	// fetches from is the request URL.
+
 	subjectBase, requestBase := offPermission, offPermission
 	if in.subjectOnLoopback {
 		subjectBase = loopback
@@ -241,9 +185,7 @@ func runDNRRedirectProbe(t *testing.T, in dnrProbeInput) dnrProbeResult {
 	if in.requestOnLoopback {
 		requestBase = loopback
 	}
-	// Deliberately NOT under any path the rules match, or the page's own
-	// document request is the thing that gets redirected and the fetches below
-	// never run.
+
 	mux.HandleFunc("/subject", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprintf(w, `<html><body><script>
@@ -314,9 +256,7 @@ install("block", %s).then(() => install("redirect", %s));
 	pipe, stop := launchCDPPipeBrowser(t, "--host-resolver-rules=MAP "+interceptedHost+" 127.0.0.1")
 	defer stop()
 	if _, err := pipe.call("Extensions.loadUnpacked", map[string]any{"path": extensionDir}); err != nil {
-		// A Chrome that cannot load an unpacked extension over CDP cannot answer
-		// this question at all. Skipping keeps the suite honest: the claim is
-		// unverified here rather than silently confirmed.
+
 		t.Skipf("this Chrome cannot load an unpacked extension over CDP (%v); the redirect capability claim is unverified on this machine", err)
 	}
 	select {
@@ -333,10 +273,7 @@ install("block", %s).then(() => install("redirect", %s));
 	if blockOutcome != "accepted" {
 		t.Fatalf("Chrome answered %q for the block rule, which needs no host access; nothing here is measuring permissions", blockOutcome)
 	}
-	// The documented reason is that Chrome ACCEPTS a redirect rule it will not
-	// apply. A Chrome that refused it outright would be a better browser and a
-	// wrong doc, so it fails here rather than passing as "the redirect did not
-	// fire".
+
 	if redirectOutcome != "accepted" {
 		t.Fatalf("Chrome answered %q for the redirect rule; docs/install.md says such a rule is accepted and listed, then never applied", redirectOutcome)
 	}
@@ -369,11 +306,6 @@ install("block", %s).then(() => install("redirect", %s));
 	return dnrProbeResult{redirected: out["redirected"], blocked: out["blocked"]}
 }
 
-// cdpPipeBrowser speaks CDP over the browser's stdio pipe.
-//
-// The pipe is not a preference. Extensions.loadUnpacked is only served to a
-// pipe client, and current Chrome ignores --load-extension altogether, so this
-// is the one way left to put an unpacked extension in front of a real browser.
 type cdpPipeBrowser struct {
 	toBrowser   *os.File
 	fromBrowser *bufio.Reader
@@ -395,10 +327,7 @@ func launchCDPPipeBrowser(t *testing.T, extraArgs ...string) (*cdpPipeBrowser, f
 	if err != nil {
 		t.Fatalf("open the event pipe: %v", err)
 	}
-	// Not t.TempDir: its cleanup FAILS the test if anything is still in the
-	// directory, and a killed Chrome's child processes keep writing to the
-	// profile for a moment after the parent is gone. A leftover file there is
-	// not a result worth reporting.
+
 	userDataDir, err := os.MkdirTemp("", "brw-dnr-probe-")
 	if err != nil {
 		t.Fatalf("create a browser profile directory: %v", err)
@@ -406,8 +335,7 @@ func launchCDPPipeBrowser(t *testing.T, extraArgs ...string) (*cdpPipeBrowser, f
 	t.Cleanup(func() { _ = os.RemoveAll(userDataDir) })
 	args := append([]string{
 		"--remote-debugging-pipe",
-		// A port as well as the pipe: the pipe carries Extensions.loadUnpacked,
-		// the websocket carries the ordinary page driving chromedp does.
+
 		"--remote-debugging-port=0",
 		"--user-data-dir=" + userDataDir,
 		"--headless=new",
@@ -417,7 +345,7 @@ func launchCDPPipeBrowser(t *testing.T, extraArgs ...string) (*cdpPipeBrowser, f
 		"--enable-unsafe-extension-debugging",
 	}, extraArgs...)
 	command := exec.Command(chromePath, args...)
-	// Chrome's own fds 3 and 4 are the CDP pipe.
+
 	command.ExtraFiles = []*os.File{commandsRead, eventsWrite}
 	command.Stderr = io.Discard
 	command.Stdout = io.Discard
@@ -453,9 +381,6 @@ func launchCDPPipeBrowser(t *testing.T, extraArgs ...string) (*cdpPipeBrowser, f
 	return pipe, stop
 }
 
-// call sends one CDP command and waits for the reply with the matching id.
-// Events and other replies are discarded: this client exists to issue two
-// commands, not to be a protocol implementation.
 func (b *cdpPipeBrowser) call(method string, params map[string]any) (json.RawMessage, error) {
 	b.nextID++
 	id := b.nextID

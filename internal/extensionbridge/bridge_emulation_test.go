@@ -14,8 +14,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-// emulationFake records the CDP payloads the bridge sends so a test can assert
-// on the wire form rather than on the config struct that produced it.
 type emulationFake struct {
 	mu    sync.Mutex
 	calls map[string]map[string]any
@@ -80,10 +78,6 @@ func connectEmulationFake(t *testing.T) (*Bridge, *emulationFake, func()) {
 	}
 }
 
-// Chrome rejects Emulation.setTouchEmulationEnabled with maxTouchPoints outside
-// 1-16, so a desktop request that sends the zero value fails with "Touch points
-// must be between 1 and 16" instead of turning touch off. Direct CDP omits the
-// field; the bridge has to as well or the two transports disagree.
 func TestBridgeTouchEmulationOmitsZeroMaxTouchPoints(t *testing.T) {
 	tests := []struct {
 		name              string

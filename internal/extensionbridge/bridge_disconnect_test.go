@@ -117,8 +117,7 @@ func TestNormalBridgeDisconnectIsNotLoggedAsFailure(t *testing.T) {
 	if disconnectReason != "normal closure" {
 		t.Fatalf("disconnectReason = %q, want canonical normal closure", disconnectReason)
 	}
-	// The handler logs the lifecycle line after it records the usage event, on
-	// its own goroutine, so wait for it rather than read a half-written log.
+
 	waitUntil(t, func() bool {
 		return strings.Contains(logs.String(), "extension bridge disconnected cleanly: normal closure")
 	})
@@ -127,8 +126,6 @@ func TestNormalBridgeDisconnectIsNotLoggedAsFailure(t *testing.T) {
 	}
 }
 
-// lockedLogBuffer is a log destination the test can read while the bridge's
-// handler goroutine is still writing to it.
 type lockedLogBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

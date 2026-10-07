@@ -9,9 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// The bridge refuses session snapshots as POLICY, so the refusal has to name
-// the reason and point at the transport that does support it. A silent empty
-// result would read as "this profile has no sessions worth sealing".
 func TestBridgeRefusesSessionStateByName(t *testing.T) {
 	b := New("127.0.0.1:0", 0, "")
 	for _, action := range []string{"save", "restore", "list", "delete"} {

@@ -14,8 +14,6 @@ import (
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
-// dialExtension opens a websocket to the bridge's /extension endpoint with the
-// given Origin header. Returns the connection and the dial error.
 func dialExtension(t *testing.T, wsURL, origin string) (*websocket.Conn, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -47,8 +45,6 @@ func (b *Bridge) liveConn() bool {
 	return b.conn != nil
 }
 
-// TestHandshakeTokenAcceptedAndRejected proves that with a token configured, only
-// a hello carrying the correct token brings the connection live.
 func TestHandshakeTokenAcceptedAndRejected(t *testing.T) {
 	t.Run("valid token goes live", func(t *testing.T) {
 		b := New("", 5*time.Second, "")
@@ -79,8 +75,7 @@ func TestHandshakeTokenAcceptedAndRejected(t *testing.T) {
 		}
 		defer conn.Close(websocket.StatusPolicyViolation, "done")
 		sendHello(t, conn, "wrong-token")
-		// Give the server time to process and reject; the connection must never
-		// become the live bridge.
+
 		time.Sleep(300 * time.Millisecond)
 		if b.liveConn() {
 			t.Fatal("connection with a wrong handshake token must not go live")
@@ -88,9 +83,7 @@ func TestHandshakeTokenAcceptedAndRejected(t *testing.T) {
 	})
 
 	t.Run("missing token rejected by default", func(t *testing.T) {
-		// The daemon's default, and the constructor's: a hello with no token
-		// authenticates nothing, because a local process can forge the extension
-		// Origin that gets it this far.
+
 		b := New("", 5*time.Second, "")
 		b.SetAuthToken("s3cret-token")
 		srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
@@ -147,10 +140,6 @@ func TestHandshakeTokenAcceptedAndRejected(t *testing.T) {
 	})
 }
 
-// TestRejectedHandshakeIsVisibleOnStatus: a refused handshake never becomes a
-// connection, so without this it appears nowhere but the daemon log, and
-// `brwctl doctor` can only report "no extension has connected" and offer a
-// reload that presents the same rejected token again.
 func TestRejectedHandshakeIsVisibleOnStatus(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -214,8 +203,6 @@ func TestRejectedHandshakeIsVisibleOnStatus(t *testing.T) {
 	}
 }
 
-// TestEmptyOriginRejected proves a connection with no Origin header (a non-browser
-// local client) is refused at the upgrade, closing the coder/websocket gap.
 func TestEmptyOriginRejected(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
@@ -226,16 +213,13 @@ func TestEmptyOriginRejected(t *testing.T) {
 		conn.Close(websocket.StatusNormalClosure, "done")
 		t.Fatal("a websocket with no Origin header must be rejected")
 	}
-	// A non-extension (web page) Origin must also be rejected.
+
 	if conn, err := dialExtension(t, wsURL, "https://evil.com"); err == nil {
 		conn.Close(websocket.StatusNormalClosure, "done")
 		t.Fatal("a non-extension Origin must be rejected")
 	}
 }
 
-// TestStatusTokenGating proves /status hands the token to a loopback,
-// non-web-origin caller (the extension) and withholds it from a browser web
-// origin or a non-loopback (DNS-rebinding) Host.
 func TestStatusTokenGating(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetAuthToken("s3cret-token")

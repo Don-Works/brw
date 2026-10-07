@@ -16,10 +16,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-// serveDownloadsStub connects a minimal fake extension that answers a single RPC
-// type (get_downloads) with the supplied reply, mirroring the connect pattern in
-// bridge_activetab_test.go's connectFakeExtension. reply is the JSON object the
-// extension would send back under {id, ok, result|error}.
 func serveDownloadsStub(t *testing.T, b *Bridge, ok bool, result map[string]any, errMsg string) func() {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
@@ -156,8 +152,7 @@ func TestBridgeDownloadsCapturesEntries(t *testing.T) {
 
 func TestBridgeDownloadsGracefulOnOldExtension(t *testing.T) {
 	b := New("", 5*time.Second, "")
-	// An extension predating issue #6 rejects the message; Downloads must degrade
-	// to Supported=false with a note rather than surfacing a hard error.
+
 	cleanup := serveDownloadsStub(t, b, false, nil, "unknown message type get_downloads")
 	defer cleanup()
 

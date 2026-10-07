@@ -14,12 +14,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-// retargetFakeExtension is a minimal extension stand-in for the batch/plan
-// retarget tests. It models a single authoritative foreground tab (backing both
-// get_active_tab_id and list_tabs), accepts focus_tab to move it, and records
-// the tabId of every cdp request so a test can prove which tab each page action
-// targeted. Its cdp reply is a permissive superset that satisfies the bridge's
-// ElementBox / ClickXYResult / ScrollResult parsers (all only require ok:true).
 type retargetFakeExtension struct {
 	mu          sync.Mutex
 	foreground  int
@@ -68,7 +62,7 @@ func TestRetargetPinnedTabDistinguishesImplicitLeaseFromExplicitCallerPin(t *tes
 func TestOpenedChildTabIDIgnoresConcurrentUnrelatedOpen(t *testing.T) {
 	tabs := []browser.Tab{
 		{ID: "41"},
-		{ID: "60", OpenerTabID: "59"}, // another agent opened this concurrently
+		{ID: "60", OpenerTabID: "59"},
 		{ID: "42", OpenerTabID: "41"},
 	}
 	if got := openedChildTabID(tabs, map[string]bool{"41": true}, "41"); got != "42" {
@@ -165,11 +159,6 @@ func connectRetargetFake(t *testing.T, b *Bridge, foreground int) (*retargetFake
 	return fe, cleanup
 }
 
-// TestBatchFocusTabRetargetsSubsequentSteps is the regression test for the
-// ITEM C trap: a focus_tab step mid-batch legitimately changes the active tab,
-// so every step AFTER it must target the newly-focused tab, not the tab pinned
-// at the start of the batch. The fake records the tabId of every cdp request; a
-// scroll before the focus_tab must hit tab 10, a scroll after it must hit tab 20.
 func TestBatchFocusTabRetargetsSubsequentSteps(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	fe, cleanup := connectRetargetFake(t, b, 10)
@@ -187,10 +176,6 @@ func TestBatchFocusTabRetargetsSubsequentSteps(t *testing.T) {
 		t.Fatalf("batch not OK: %+v", res)
 	}
 
-	// Each scroll step issues exactly one cdp evaluate; focus_tab uses its own
-	// RPC (not cdp). The first cdp must target the pre-focus tab (10) and the cdp
-	// after the focus_tab must target the newly-focused tab (20). A stale-pin bug
-	// would keep targeting 10 after the focus.
 	targets := fe.cdpTargets()
 	if len(targets) < 2 {
 		t.Fatalf("expected at least 2 cdp page actions, got %v", targets)
@@ -203,8 +188,6 @@ func TestBatchFocusTabRetargetsSubsequentSteps(t *testing.T) {
 	}
 }
 
-// TestPlanFocusTabRetargetsSubsequentSteps mirrors the batch test for the plan
-// runner, which shares the same pin/retarget helpers.
 func TestPlanFocusTabRetargetsSubsequentSteps(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	fe, cleanup := connectRetargetFake(t, b, 10)
@@ -234,10 +217,6 @@ func TestPlanFocusTabRetargetsSubsequentSteps(t *testing.T) {
 	}
 }
 
-// TestBatchPinsActiveTabOnce proves the resolution multiplier is collapsed: a
-// multi-step batch with NO focus_tab resolves the active tab a bounded number of
-// times (one get_active_tab_id for the pin, not one per page sub-call). We count
-// get_active_tab_id RPCs via a counting fake.
 func TestBatchPinsActiveTabOnce(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
@@ -303,27 +282,17 @@ func TestBatchPinsActiveTabOnce(t *testing.T) {
 	mu.Lock()
 	got := activeQueries
 	mu.Unlock()
-	// Without pinning, three scroll steps each re-resolve the active tab (≥3
-	// get_active_tab_id). With the one-shot pin, the whole step loop resolves it
-	// once; the final observation (obsCtx) re-resolves once more. Allow a small
-	// bound to stay robust, but it must be far below the per-step multiplier.
+
 	if got > 2 {
 		t.Fatalf("active-tab resolved %d times across a 3-step batch; pin should collapse it to <=2", got)
 	}
 }
 
-// TestBatchExplicitTabIDStaysStickyAcrossFocusTab guards the explicit-tab_id
-// trap: when the caller pins a specific tab_id, a focus_tab step mid-batch must
-// NOT retarget subsequent steps (matching the pre-pin behaviour where
-// contextTabID short-circuits on the caller's tab regardless of focus_tab side
-// effects). The focus_tab still executes, but every page action stays on the
-// explicit tab. A naive retarget would override the explicit pin after focus_tab.
 func TestBatchExplicitTabIDStaysStickyAcrossFocusTab(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	fe, cleanup := connectRetargetFake(t, b, 10)
 	defer cleanup()
 
-	// Caller pins tab 99 explicitly (as the MCP/HTTP entry does from a tab_id arg).
 	ctx := browser.WithTabID(context.Background(), "99")
 	res, err := b.ExecuteBatch(ctx, []browser.BatchStep{
 		{Action: "scroll", Direction: "down"},

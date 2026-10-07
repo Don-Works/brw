@@ -232,9 +232,6 @@ func TestBatchAndPlanUseFastPrimitives(t *testing.T) {
 	}
 }
 
-// stepActionCases reports the step.Action case labels one runner implements, so
-// a parity test compares the two transports' switches instead of trusting that
-// whoever added an action to one remembered the other.
 func stepActionCases(t *testing.T, path, funcName string) map[string]bool {
 	t.Helper()
 	fn := findPackageFunc(t, path, funcName)
@@ -345,8 +342,6 @@ func TestBridgeDebuggerDetachedErrors(t *testing.T) {
 func TestBridgeNotifyEmitsNotifyCommandAndRoundTrips(t *testing.T) {
 	b := New("", 5*time.Second, "")
 
-	// Serve the bridge's /extension websocket endpoint over a test server so a
-	// fake extension client can connect without binding a fixed port.
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
 	defer srv.Close()
 
@@ -361,7 +356,6 @@ func TestBridgeNotifyEmitsNotifyCommandAndRoundTrips(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "test done")
 
-	// Wait for the bridge to register the connection before issuing a command.
 	waitUntil(t, func() bool {
 		b.mu.RLock()
 		defer b.mu.RUnlock()
@@ -382,7 +376,6 @@ func TestBridgeNotifyEmitsNotifyCommandAndRoundTrips(t *testing.T) {
 		done <- notifyOut{result, err}
 	}()
 
-	// Act as the extension: read the emitted bridge command and assert payload.
 	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer readCancel()
 	_, data, err := conn.Read(readCtx)
@@ -404,7 +397,6 @@ func TestBridgeNotifyEmitsNotifyCommandAndRoundTrips(t *testing.T) {
 		t.Fatalf("bridge notify params = %#v", cmd.Params)
 	}
 
-	// Reply as the extension would after chrome.notifications.create succeeds.
 	reply, _ := json.Marshal(map[string]any{
 		"id": cmd.ID,
 		"ok": true,
@@ -526,11 +518,7 @@ func TestExtensionHasBridgeOptionsPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The hit-target floor, read as a number rather than matched as a string.
-	// The literal "min-height: 44px" this used to look for was satisfied by any
-	// occurrence anywhere, including a comment, and said nothing when a
-	// restyle quietly dropped every control to 34px — which is how it got
-	// there. Assert the property on the rules that actually style controls.
+
 	for _, surface := range []struct {
 		name string
 		css  []byte
@@ -572,9 +560,7 @@ func TestRequireTabIDRejectsEmptyAndInvalid(t *testing.T) {
 }
 
 func TestFocusAndCloseTabRejectEmptyIDBeforeBridgeCall(t *testing.T) {
-	// No extension connected: a valid id would fail with "not connected", but an
-	// empty id must fail earlier with the clear validation error so a batched
-	// script does not produce the opaque "No tab with id: 0".
+
 	b := New("", time.Second, "")
 	if err := b.FocusTab(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "tab id is required") {
 		t.Fatalf("FocusTab(\"\") error = %v, want 'tab id is required'", err)
@@ -599,9 +585,7 @@ func TestCloseTabClearsEmulationStateBeforeNumericIDReuse(t *testing.T) {
 	if err := b.CloseTab(context.Background(), "42"); err != nil {
 		t.Fatalf("CloseTab: %v", err)
 	}
-	// Chromium may later reuse 42 for an unrelated tab. A non-required baseline
-	// lookup models the first emulation operation on that reused id and must not
-	// recover the closed tab's UA/platform identity.
+
 	identity, found, err := b.deviceEmulationBaseline(context.Background(), "42", false)
 	if err != nil {
 		t.Fatalf("baseline lookup after close: %v", err)
@@ -620,9 +604,7 @@ func TestOpenInGroupRejectsInvalidGroupIDBeforeBridgeCall(t *testing.T) {
 }
 
 func TestContextTabIDQueriesLiveActiveTab(t *testing.T) {
-	// The daemon's cached active tab (b.active) drifts when the user switches
-	// tabs manually. contextTabID must ask the extension for the genuinely active
-	// tab via get_active_tab_id rather than blindly returning the stale cache.
+
 	b := New("", 5*time.Second, "")
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
 	defer srv.Close()
@@ -643,10 +625,8 @@ func TestContextTabIDQueriesLiveActiveTab(t *testing.T) {
 		return b.conn != nil
 	})
 
-	// Seed a stale cached value the way an old FocusTab would have.
 	b.setActiveTabID("11")
 
-	// Fake extension: reply to get_active_tab_id with the truly focused tab 77.
 	go func() {
 		ctx := context.Background()
 		_, data, err := conn.Read(ctx)
@@ -679,7 +659,7 @@ func TestContextTabIDQueriesLiveActiveTab(t *testing.T) {
 }
 
 func TestContextTabIDPrefersExplicitContextTab(t *testing.T) {
-	// An explicit tab id in the context must win without any extension round-trip.
+
 	b := New("", time.Second, "")
 	ctx := browser.WithTabID(context.Background(), "tab-9")
 	if got := b.contextTabID(ctx); got != "tab-9" {
@@ -688,8 +668,7 @@ func TestContextTabIDPrefersExplicitContextTab(t *testing.T) {
 }
 
 func TestBridgeConditionSupportsCommitted(t *testing.T) {
-	// The committed condition (used by Open for non-blank URLs) must be present
-	// in the shared in-page wait script so it is not silently ignored.
+
 	src := packageSource(t, ".")
 	if !strings.Contains(snapshot.WaitConditionScript, `condition==='committed'`) {
 		t.Fatal("shared wait script must handle the 'committed' condition")
@@ -726,10 +705,6 @@ func TestServiceWorkerInvalidatesSnapshotCacheOnNavigation(t *testing.T) {
 	}
 }
 
-// TestServiceWorkerInvalidatesSnapshotCacheOnSPARouteChange guards the SPA fix:
-// client-side pushState/replaceState navigations do not fire onCommitted, so the
-// service worker must ALSO listen on onHistoryStateUpdated (main frame) and drop
-// the per-tab snapshot cache, otherwise an SPA route change serves stale content.
 func TestServiceWorkerInvalidatesSnapshotCacheOnSPARouteChange(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "extension", "service_worker.js"))
 	if err != nil {
@@ -739,7 +714,7 @@ func TestServiceWorkerInvalidatesSnapshotCacheOnSPARouteChange(t *testing.T) {
 	if !strings.Contains(src, "chrome.webNavigation.onHistoryStateUpdated.addListener") {
 		t.Fatal("service worker must listen on onHistoryStateUpdated to invalidate cache on SPA pushState navigations")
 	}
-	// The handler must scope to the main frame and bust the snapshot cache.
+
 	idx := strings.Index(src, "onHistoryStateUpdated.addListener")
 	if idx < 0 {
 		t.Fatal("onHistoryStateUpdated listener not found")
@@ -762,11 +737,11 @@ func TestServiceWorkerRefreshesListTabsAndExposesActiveTabQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(data)
-	// list_tabs must re-fetch each tab to avoid stale populated url/title.
+
 	if !strings.Contains(src, "chrome.tabs.get(tab.id)") {
 		t.Fatal("listTabSummaries must refresh each tab via chrome.tabs.get for fresh url/title")
 	}
-	// get_active_tab_id handler backs the live active-tab query.
+
 	if !strings.Contains(src, `message.type === "get_active_tab_id"`) {
 		t.Fatal("service worker must handle get_active_tab_id for live active-tab resolution")
 	}
@@ -835,8 +810,7 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatalf("parse manifest: %v", err)
 	}
-	// The manifest version moves with every extension release; PROTOCOL_VERSION
-	// below moves only on a breaking handshake change. Release notes: CHANGELOG.md.
+
 	const wantManifest = "0.7.12"
 	if m.Version != wantManifest {
 		t.Fatalf("manifest version = %q, want %q", m.Version, wantManifest)
@@ -846,8 +820,7 @@ func TestExtensionReleaseVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Wire-protocol version: must stay in lockstep with what the daemon's handshake
-	// accepts. Do NOT bump this without a matching daemon-side protocol change.
+
 	if !strings.Contains(string(worker), `const PROTOCOL_VERSION = "0.2.0";`) {
 		t.Fatal("service worker PROTOCOL_VERSION must remain 0.2.0 (no bridge-handshake change in this release)")
 	}
@@ -918,15 +891,6 @@ func findFunc(file *ast.File, name string) *ast.FuncDecl {
 	return nil
 }
 
-// controlMinHeights returns the min-height, in px, declared by each rule whose
-// selector styles an interactive control. It exists so the hit-target check can
-// compare a number instead of matching a string: a guard keyed on the spelling
-// "min-height: 44px" passes on a comment and says nothing when a restyle drops
-// every control to 34px.
-//
-// Rules carrying no min-height are absent from the result rather than zero — a
-// control can inherit its height from a rule that does declare one, and the
-// caller's own emptiness check covers the case where nothing declares it.
 func controlMinHeights(css string) map[string]float64 {
 	out := map[string]float64{}
 	for _, block := range strings.Split(css, "}") {
@@ -948,7 +912,7 @@ func controlMinHeights(css string) map[string]float64 {
 			}
 			value = strings.TrimSpace(value)
 			if !strings.HasSuffix(value, "px") {
-				continue // a relative or viewport unit is not ours to judge
+				continue
 			}
 			px, err := strconv.ParseFloat(strings.TrimSuffix(value, "px"), 64)
 			if err != nil {
@@ -960,9 +924,6 @@ func controlMinHeights(css string) map[string]float64 {
 	return out
 }
 
-// stylesAControl reports whether a selector targets something a person clicks.
-// Deliberately narrow: the base rule for each control type, not its state and
-// variant rules, which inherit the height and would only add noise.
 func stylesAControl(selector string) bool {
 	switch selector {
 	case ".button", "input", "button", "select", "textarea",
@@ -972,8 +933,6 @@ func stylesAControl(selector string) bool {
 	return false
 }
 
-// TestControlMinHeightsReadsTheProperty pins the reader itself, so the guard
-// above cannot quietly start returning nothing and passing everything.
 func TestControlMinHeightsReadsTheProperty(t *testing.T) {
 	got := controlMinHeights(`
 /* min-height: 44px in a comment must not count */

@@ -17,15 +17,11 @@ import (
 	"github.com/coder/websocket"
 )
 
-// cdpCall is one CDP method the stub extension was asked for, with the params
-// it carried, so a test can assert on both the sequence and the arguments.
 type cdpCall struct {
 	Method string
 	Params map[string]any
 }
 
-// cdpStub answers cdp requests by method. reply returns the CDP result for one
-// call; returning a nil map with a message answers the call as a failure.
 type cdpStub struct {
 	mu    sync.Mutex
 	calls []cdpCall
@@ -50,8 +46,6 @@ func (s *cdpStub) methods() []string {
 	return out
 }
 
-// serveCDPStub stands in for the extension: it answers every cdp request from
-// the supplied reply function and records what was asked for.
 func serveCDPStub(t *testing.T, b *Bridge, stub *cdpStub) func() {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
@@ -106,9 +100,6 @@ func serveCDPStub(t *testing.T, b *Bridge, stub *cdpStub) func() {
 	}
 }
 
-// chunkedPDFStub answers printToPDF with a handle and then serves body in
-// size-bounded IO.read chunks, so the reader's chunk loop and its EOF handling
-// are both exercised rather than short-circuited by a one-chunk document.
 func chunkedPDFStub(body []byte, chunk int, encode bool) *cdpStub {
 	offset := 0
 	stub := &cdpStub{}
@@ -133,10 +124,6 @@ func chunkedPDFStub(body []byte, chunk int, encode bool) *cdpStub {
 	return stub
 }
 
-// TestBridgeCapturePDFStreamReadsInChunksAndReleasesTheHandle is the extension
-// half of the streaming capability. Parity with direct CDP is the point: a
-// memory guarantee that holds on one transport and not the other is decided by
-// which profile a caller happens to be driving.
 func TestBridgeCapturePDFStreamReadsInChunksAndReleasesTheHandle(t *testing.T) {
 	body := bytes.Repeat([]byte("%PDF-stream-body\n"), 400)
 	tests := []struct {
@@ -183,7 +170,6 @@ func TestBridgeCapturePDFStreamReadsInChunksAndReleasesTheHandle(t *testing.T) {
 				}
 			}
 
-			// The reader holds one chunk, so it must have asked for a bounded size.
 			stub.mu.Lock()
 			readParams := stub.calls[1].Params
 			stub.mu.Unlock()
@@ -192,7 +178,6 @@ func TestBridgeCapturePDFStreamReadsInChunksAndReleasesTheHandle(t *testing.T) {
 				t.Fatalf("IO.read size = %v, want the bounded chunk size %d", readParams["size"], browser.PDFStreamChunkBytes)
 			}
 
-			// A closed stream stays closed rather than reading a released handle.
 			if _, err := stream.Read(make([]byte, 8)); err == nil {
 				t.Fatal("read succeeded after the stream was closed")
 			}
@@ -206,11 +191,6 @@ func TestBridgeCapturePDFStreamReadsInChunksAndReleasesTheHandle(t *testing.T) {
 	}
 }
 
-// TestBridgeCapturePDFStreamClosesTheHandleAfterCancellation is the leak this
-// path is most likely to hit. artifact.Service closes the stream in a defer
-// after the copy, so a capture whose context died mid-copy is exactly when
-// IO.close is issued — and issuing it on the dead context would leave the
-// browser holding the whole rendered document for the life of the tab.
 func TestBridgeCapturePDFStreamClosesTheHandleAfterCancellation(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	body := bytes.Repeat([]byte("%PDF-cancelled\n"), 200)

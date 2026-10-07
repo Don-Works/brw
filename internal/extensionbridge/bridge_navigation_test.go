@@ -25,8 +25,7 @@ type navigationFakeExtension struct {
 	frameID    string
 	loaderID   string
 	url        string
-	// reportedFrameURL models Page.getFrameTree retaining a differently
-	// serialized SPA URL while Runtime.evaluate(location.href) is current.
+
 	reportedFrameURL string
 
 	targetDocumentID string
@@ -49,27 +48,20 @@ type navigationFakeExtension struct {
 	suppressNavCommit   bool
 	spuriousLoaderRoute bool
 
-	// uncommitted models a tab still on its initial empty document: no trusted
-	// identity, no frame URL, location.href about:blank.
 	uncommitted bool
-	// rejectInlineArm models an extension build that predates the
-	// arm_inline_document message.
+
 	rejectInlineArm bool
-	// abortNavigate makes Page.navigate report net::ERR_ABORTED, which is what a
-	// download-shaped response produces, without committing anything.
+
 	abortNavigate bool
-	// navigateErrorText makes Page.navigate report this errorText without
-	// committing, the way Chrome reports a cancelled HTTP auth challenge.
+
 	navigateErrorText string
-	// navOutcome, when set, is the navigation_outcome reply; unset models an
-	// extension that predates the message.
+
 	navOutcome map[string]any
-	// messages records every message type (and cdp method) in arrival order.
+
 	messages []string
-	// armURL is the url param of the last arm_inline_document.
+
 	armURL string
-	// hangWaitScript leaves the in-page wait promise unanswered; hangMethods
-	// names cdp methods that never get a reply.
+
 	hangWaitScript bool
 	hangMethods    map[string]bool
 }
@@ -171,9 +163,7 @@ func (f *navigationFakeExtension) serve(ctx context.Context, conn *websocket.Con
 					result.(map[string]any)["loaderId"] = loaderID
 				}
 				if f.spuriousLoaderRoute {
-					// Model an SPA which accepts the route in-place while Chrome's
-					// Page.navigate response nevertheless advertises a loader that never
-					// becomes the main frame's loader.
+
 					f.url = f.targetURL
 					f.replaced = true
 				} else if !f.suppressNavCommit {
@@ -192,8 +182,7 @@ func (f *navigationFakeExtension) serve(ctx context.Context, conn *websocket.Con
 			case "Runtime.evaluate":
 				expression, _ := msg.Params["params"].(map[string]any)["expression"].(string)
 				if f.hangWaitScript && strings.Contains(expression, "MutationObserver") {
-					// A renderer that never answers: the wait's round trip has to be
-					// bounded by the caller's timeout, not by the daemon's.
+
 					f.mu.Unlock()
 					continue
 				}
@@ -206,8 +195,7 @@ func (f *navigationFakeExtension) serve(ctx context.Context, conn *websocket.Con
 					}
 				}
 				if isSnapshotWalkExpression(expression) {
-					// the in-page snapshot walker, which an observed action runs
-					// against the live page rather than the tab's cached snapshot
+
 					value = f.snapshotLocked()
 				}
 				if !f.replaced && !locationRead {
@@ -266,7 +254,7 @@ func newNavigationFake(t *testing.T, finalURL, finalOrigin string, delay time.Du
 		srv.Close()
 		t.Fatalf("dial navigation fake: %v", err)
 	}
-	// The snapshot walker arrives as one large expression.
+
 	conn.SetReadLimit(4 << 20)
 	waitUntil(t, b.liveConn)
 	fake := &navigationFakeExtension{
@@ -414,10 +402,7 @@ func TestNavigateCompletionTreatsExactCurrentURLAsIdempotent(t *testing.T) {
 	const currentURL = "https://source.test/start#search/in%3Ainbox+is%3Aunread"
 	b, fake, cleanup := newNavigationFake(t, currentURL, "https://source.test", 0, false)
 	defer cleanup()
-	// Model the live failure: chrome.tabs/location.href report the requested SPA
-	// URL, Page.getFrameTree retains another serialization, and Page.navigate
-	// reports a target loader that it never commits. A frame-URL-only preflight
-	// therefore waited until its context expired.
+
 	fake.mu.Lock()
 	fake.url = currentURL
 	fake.reportedFrameURL = "https://source.test/start#search/in:inbox+is:unread"
@@ -443,8 +428,7 @@ func TestNavigateCompletionDoesNotTrustStaleFrameURLForNoop(t *testing.T) {
 	const targetURL = "https://source.test/start#target"
 	b, fake, cleanup := newNavigationFake(t, targetURL, "https://source.test", 0, false)
 	defer cleanup()
-	// Invert the discrepancy: only the frame tree claims the target while the
-	// document is still at another URL. The bridge must issue Page.navigate.
+
 	fake.mu.Lock()
 	fake.url = "https://source.test/start#old"
 	fake.reportedFrameURL = targetURL
@@ -471,8 +455,7 @@ func TestNavigateCompletionAcceptsSameDocumentRouteWithSpuriousLoader(t *testing
 	defer cleanup()
 	fake.mu.Lock()
 	fake.url = sourceURL
-	// Keep the frame-tree URL stale as observed on the real SPA. Only the pinned
-	// document's location.href exposes the completed same-document route.
+
 	fake.reportedFrameURL = sourceURL
 	fake.spuriousLoaderRoute = true
 	fake.mu.Unlock()

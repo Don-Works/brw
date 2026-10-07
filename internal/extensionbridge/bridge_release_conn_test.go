@@ -15,15 +15,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-// TestStaleConnTeardownPreservesLiveState proves the connection-replacement
-// fix: when a displaced (stale) connection's readLoop returns, its teardown
-// must NOT drain pending RPCs that belong to the live connection, must NOT
-// clear b.conn, and must NOT stamp a disconnect reason while a healthy socket
-// is still active. Only the active connection's own teardown drains.
-//
-// MV3 service workers reconnect constantly and handleExtension replaces the old
-// conn with the new one, so the old conn's readLoop returning after the swap is
-// a NORMAL occurrence, not an error path.
 func TestStaleConnTeardownPreservesLiveState(t *testing.T) {
 	b := New("", time.Second, "")
 	srv := httptest.NewServer(http.HandlerFunc(b.handleExtension))
@@ -47,15 +38,11 @@ func TestStaleConnTeardownPreservesLiveState(t *testing.T) {
 	})
 	live := b.serverConn()
 
-	// Register a pending RPC that belongs to the live connection.
 	ch := make(chan response, 1)
 	b.mu.Lock()
 	b.pending["test-999"] = ch
 	b.mu.Unlock()
 
-	// A displaced/stale connection's readLoop returns. Its conn pointer is not
-	// the active one (nil here stands in for "any conn that is not b.conn").
-	// With the guard this must be a no-op against live state.
 	b.releaseConn(nil, "stale closed")
 
 	b.mu.Lock()
@@ -73,7 +60,6 @@ func TestStaleConnTeardownPreservesLiveState(t *testing.T) {
 		t.Fatalf("stale-conn teardown stamped disconnect reason %q while still connected", reason)
 	}
 
-	// The live connection's own teardown MUST drain its pending RPCs.
 	b.releaseConn(live, "closed")
 	select {
 	case r := <-ch:
@@ -93,11 +79,6 @@ func TestStaleConnTeardownPreservesLiveState(t *testing.T) {
 	}
 }
 
-// TestStaleDecodedFramesCannotMutateReplacement proves that the generation
-// check covers every decoded frame, not only chunk bodies and disconnect
-// teardown. A displaced authenticated socket may already have decoded a frame
-// while waiting for b.mu; after the swap its hello/active hints and responses
-// must be inert, while the live replacement can still complete pending calls.
 func TestStaleDecodedFramesCannotMutateReplacement(t *testing.T) {
 	const authMarker = "synthetic-stale-frame-auth"
 	b := New("", 5*time.Second, "")
@@ -142,8 +123,6 @@ func TestStaleDecodedFramesCannotMutateReplacement(t *testing.T) {
 	b.pending["stale-chunk"] = chunkCh
 	b.mu.Unlock()
 
-	// Model frames the old read loop decoded before CloseNow took effect, but did
-	// not dispatch until after profile B became live.
 	b.handleDecodedFrame(staleServerConn, response{Type: "hello", Hello: hello{
 		Source: "brw-extension", Workspace: "workspace-a-stale", Profile: "profile-a", Label: "browser A",
 	}})
@@ -188,7 +167,6 @@ func TestStaleDecodedFramesCannotMutateReplacement(t *testing.T) {
 	default:
 	}
 
-	// The replacement generation still owns and can complete both requests.
 	b.handleDecodedFrame(liveServerConn, response{
 		ID: "stale-direct", OK: true, Result: json.RawMessage(`{"from":"live"}`),
 	})
@@ -251,8 +229,6 @@ func TestTabRemovedControlInvalidatesReusableTabState(t *testing.T) {
 	}
 }
 
-// sendIdentityHello sends a full hello frame carrying a configured identity, so
-// replace-time identity comparison has something to compare.
 func sendIdentityHello(t *testing.T, conn *websocket.Conn, token, workspace, profile, label string, agentTabIDs ...int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -276,15 +252,6 @@ func sendIdentityHello(t *testing.T, conn *websocket.Conn, token, workspace, pro
 	}
 }
 
-// TestReplaceByDifferentExtensionDrainsPending proves the two sides of the
-// replace-time pending contract:
-//   - a replacement by a DIFFERENT extension identity (another browser profile
-//     colliding onto this bridge) fails in-flight RPCs immediately with
-//     replacedDrainReason — the displaced extension can never answer them, and
-//     without the drain each call would hang for its full timeout;
-//   - a replacement by the SAME identity (an MV3 service worker reconnecting
-//     mid-call) preserves pending, because the same worker can still answer
-//     over the new socket.
 func TestReplaceByDifferentExtensionDrainsPending(t *testing.T) {
 	const token = "replace-test-token"
 	b := New("", time.Second, "")
@@ -293,8 +260,6 @@ func TestReplaceByDifferentExtensionDrainsPending(t *testing.T) {
 	defer srv.Close()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/extension"
 
-	// CloseNow throughout: displaced conns are already dead server-side, and a
-	// graceful Close would park ~5s each waiting for a close frame that never comes.
 	connA, err := dialExtension(t, wsURL, testDefaultOrigin)
 	if err != nil {
 		t.Fatalf("dial A: %v", err)
@@ -308,7 +273,6 @@ func TestReplaceByDifferentExtensionDrainsPending(t *testing.T) {
 	b.pending["replace-1"] = chDrained
 	b.mu.Unlock()
 
-	// A DIFFERENT identity takes over: pending must drain with replacedDrainReason.
 	connB, err := dialExtension(t, wsURL, testDefaultOrigin)
 	if err != nil {
 		t.Fatalf("dial B: %v", err)
@@ -335,7 +299,6 @@ func TestReplaceByDifferentExtensionDrainsPending(t *testing.T) {
 	b.pending["replace-2"] = chKept
 	b.mu.Unlock()
 
-	// The SAME identity reconnects (MV3 worker churn): pending must survive.
 	connC, err := dialExtension(t, wsURL, testDefaultOrigin)
 	if err != nil {
 		t.Fatalf("dial C: %v", err)
@@ -351,7 +314,7 @@ func TestReplaceByDifferentExtensionDrainsPending(t *testing.T) {
 	case r := <-chKept:
 		t.Fatalf("same-identity replace drained the in-flight RPC (error %q)", r.Error)
 	default:
-		// still pending — same worker may answer on the new socket
+
 	}
 	b.mu.RLock()
 	_, stillPending := b.pending["replace-2"]
@@ -361,12 +324,6 @@ func TestReplaceByDifferentExtensionDrainsPending(t *testing.T) {
 	}
 }
 
-// TestIdentityChangingReplaceResetsOnlyProfileBoundState proves that a browser
-// profile takeover cannot inherit numeric tab ownership, observation state,
-// recipe download cursors/fingerprints, or emulation baselines from the
-// displaced profile. It also proves the inverse: a same-identity MV3 worker
-// reconnect retains those caches rather than degrading every reconnect into a
-// fresh browser session.
 func TestIdentityChangingReplaceResetsOnlyProfileBoundState(t *testing.T) {
 	const authMarker = "synthetic-profile-state-auth"
 	b := New("", 5*time.Second, "")
@@ -388,8 +345,6 @@ func TestIdentityChangingReplaceResetsOnlyProfileBoundState(t *testing.T) {
 		return b.conn != nil && b.hello.Workspace == "workspace-a"
 	})
 
-	// Seed every profile-bound cache with tab id 42 and a completed download.
-	// Profile B deliberately reuses both the numeric tab id and GUID below.
 	staleDownload := browser.DownloadEntry{
 		GUID:              "reused-guid",
 		URL:               "https://example.test/invoice.pdf",
@@ -466,9 +421,6 @@ func TestIdentityChangingReplaceResetsOnlyProfileBoundState(t *testing.T) {
 		t.Fatalf("identity-changing replace retained %d device-emulation states", emulations)
 	}
 
-	// A fresh profile-B download with the same GUID and exact fingerprint must be
-	// visible to a recipe. Without the reset its old version (7) is at/below the
-	// inherited tab cursor (7), so this returns an empty delta.
 	peerDone := make(chan error, 1)
 	go func() {
 		peerCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -504,8 +456,6 @@ func TestIdentityChangingReplaceResetsOnlyProfileBoundState(t *testing.T) {
 		t.Fatalf("profile B extension peer: %v", err)
 	}
 
-	// Re-seed the remaining caches, then reconnect the same identity. These
-	// values must survive normal MV3 worker churn.
 	preserveFailureAt := time.Now().Add(-2 * time.Second)
 	b.mu.Lock()
 	b.active = "42"
@@ -570,12 +520,6 @@ func TestIdentityChangingReplaceResetsOnlyProfileBoundState(t *testing.T) {
 	}
 }
 
-// TestReconnectReconcilesLostRemovalBeforeNumericIDReuse models the dangerous
-// gap directly: tab 42 is removed while the extension socket is down, so its
-// best-effort tab_removed control frame cannot arrive, and Chrome reuses 42 for
-// an unrelated foreground page. A no-tab_id request begun during that gap must
-// wait for the replacement hello, reject the stale pin, and never substitute
-// the foreground hint. Explicit tab_id remains available by design.
 func TestReconnectReconcilesLostRemovalBeforeNumericIDReuse(t *testing.T) {
 	const authMarker = "synthetic-pin-reconcile-auth"
 	b := New("", 5*time.Second, "")
@@ -596,8 +540,6 @@ func TestReconnectReconcilesLostRemovalBeforeNumericIDReuse(t *testing.T) {
 		return b.conn != nil && b.agentPinKnown && b.active == "42"
 	})
 
-	// Seed every tab-id-keyed cache so reconciliation proves more than clearing
-	// the one active string.
 	b.observeMu.Lock()
 	b.observedState["42"] = &browser.SemanticState{URL: "https://old-agent.example.test/"}
 	b.observeVersions["42"] = 9
@@ -611,14 +553,11 @@ func TestReconnectReconcilesLostRemovalBeforeNumericIDReuse(t *testing.T) {
 		Baseline:    bridgeDeviceIdentity{UserAgent: "old-agent"},
 	}
 	b.emulationMu.Unlock()
-	// Once the new hello reports no pin, suppress auto-open so the resolution
-	// result itself is observable rather than requiring an open_tab fake.
+
 	b.mu.Lock()
 	b.autoOpenFailedAt = time.Now()
 	b.mu.Unlock()
-	// Model the other side of the reconnect window too: the server resolved this
-	// implicit pin while A was healthy, but the actual RPC will not dispatch until
-	// after A has gone away.
+
 	preResolved := b.ResolveActiveTabID(context.Background())
 	if preResolved != "42" {
 		t.Fatalf("pre-gap resolution = %q, want 42", preResolved)
@@ -645,7 +584,7 @@ func TestReconnectReconcilesLostRemovalBeforeNumericIDReuse(t *testing.T) {
 	case got := <-resolved:
 		t.Fatalf("gap resolution returned stale tab %q before reconnect hello", got)
 	case <-time.After(100 * time.Millisecond):
-		// Correct: waiting for authoritative ownership from the new generation.
+
 	}
 	select {
 	case dispatchErr := <-staleDispatch:
@@ -658,7 +597,7 @@ func TestReconnectReconcilesLostRemovalBeforeNumericIDReuse(t *testing.T) {
 		t.Fatalf("dial B: %v", err)
 	}
 	defer connB.CloseNow()
-	// Current extension explicitly says its owned pin was lost.
+
 	sendIdentityHello(t, connB, authMarker, "workspace-a", "profile-a", "browser A", 0)
 	waitUntil(t, func() bool {
 		b.mu.RLock()
@@ -666,8 +605,6 @@ func TestReconnectReconcilesLostRemovalBeforeNumericIDReuse(t *testing.T) {
 		return b.conn != nil && b.agentPinKnown && b.active == ""
 	})
 
-	// The same numeric id is now merely the user's foreground tab. Isolation must
-	// ignore this hint and leave ownership empty.
 	activeCtx, cancelActive := context.WithTimeout(context.Background(), time.Second)
 	if err := writeChunkTestJSON(activeCtx, connB, response{Type: "active_tab", TabID: 42}); err != nil {
 		cancelActive()
@@ -691,11 +628,6 @@ func TestReconnectReconcilesLostRemovalBeforeNumericIDReuse(t *testing.T) {
 		t.Fatal("pre-resolved gap RPC did not reject after reconnect reconciliation")
 	}
 
-	// Fail-closed applies only to implicit ownership. A caller that deliberately
-	// names tab 42 can still target it, proving the live bridge was not wedged.
-	// Its response also forms an in-order barrier after active_tab on the same
-	// socket, so the state assertions below cannot pass before that control frame
-	// has actually been handled.
 	peerDone := make(chan error, 1)
 	go func() {
 		peerCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -719,10 +651,7 @@ func TestReconnectReconcilesLostRemovalBeforeNumericIDReuse(t *testing.T) {
 	if err := <-peerDone; err != nil {
 		t.Fatalf("replacement extension peer: %v", err)
 	}
-	// A session lease is also server-selected, but it can legitimately own one of
-	// several agent tabs and is therefore deliberately not tied to the extension's
-	// single global pin. Prove the new continuity marker did not turn all implicit
-	// contexts into a global-active check.
+
 	leasePeerDone := make(chan error, 1)
 	go func() {
 		peerCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -765,9 +694,6 @@ func TestReconnectReconcilesLostRemovalBeforeNumericIDReuse(t *testing.T) {
 	}
 }
 
-// TestReconnectOldHelloIsCompatibleButFailsClosed proves agent_tab_id is an
-// additive protocol field: an older extension's otherwise valid authenticated
-// hello is accepted, but it cannot cause stale numeric ownership to survive.
 func TestReconnectOldHelloIsCompatibleButFailsClosed(t *testing.T) {
 	const authMarker = "synthetic-old-pin-hello-auth"
 	b := New("", 5*time.Second, "")
@@ -799,7 +725,7 @@ func TestReconnectOldHelloIsCompatibleButFailsClosed(t *testing.T) {
 		t.Fatalf("dial old extension: %v", err)
 	}
 	defer connB.CloseNow()
-	// No optional agent_tab_id argument models the previous wire schema.
+
 	sendIdentityHello(t, connB, authMarker, "workspace-a", "profile-a", "browser A")
 	waitUntil(t, func() bool {
 		b.mu.RLock()
