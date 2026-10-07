@@ -18,17 +18,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// These tests are the prototype the BiDi decision rests on. Each one answers
-// one of the four questions in docs/bidi-prototype.md against a real Firefox,
-// so the document's claims are measurements rather than readings of the spec.
-//
-// They are measurement code and run only when asked: BRW_BIDI_LIVE=1. Nothing
-// in brw's tool surface routes through this package and the recorded decision
-// is defer, so `go test ./...` launching five Firefoxes for it would be the
-// default suite paying for work that was not adopted. Re-run the measurements
-// with `BRW_BIDI_LIVE=1 go test ./internal/bidi/ -count=1 -v`, which is what
-// docs/bidi-prototype.md tells a later attempt to do.
-
 const fixtureHTML = `<!doctype html>
 <html><head><meta charset="utf-8"><title>brw bidi fixture</title>
 <style>
@@ -85,11 +74,6 @@ type session struct {
 	downloads string
 }
 
-// newSession launches Firefox, opens a BiDi session and resolves the top-level
-// browsing context. downloadDir is written into the profile's prefs because
-// Firefox 155 has no runtime command for it; see TestBiDiDownloadsAndDialogs.
-// requireLiveFirefox skips unless the measurements were explicitly asked for
-// and a Firefox is there to measure.
 func requireLiveFirefox(t *testing.T) {
 	t.Helper()
 	if os.Getenv(liveEnv) != "1" {
@@ -100,7 +84,6 @@ func requireLiveFirefox(t *testing.T) {
 	}
 }
 
-// liveEnv is named once so the skip message and the documentation cannot drift.
 const liveEnv = "BRW_BIDI_LIVE"
 
 func newSession(ctx context.Context, t *testing.T) *session {
@@ -132,11 +115,6 @@ func newSession(ctx context.Context, t *testing.T) *session {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	// unhandledPromptBehavior defaults to "dismiss", which answers every dialog
-	// before the client sees it — browsingContext.userPromptOpened still fires,
-	// but handleUserPrompt then reports "no such alert". A backend that has to
-	// route dialogs to the caller must take this capability at session.new; it
-	// cannot be changed afterwards.
 	if err := conn.Command(ctx, "session.new", map[string]any{
 		"capabilities": map[string]any{
 			"alwaysMatch": map[string]any{
@@ -171,9 +149,6 @@ func (s *session) navigate(ctx context.Context, t *testing.T, url string) {
 	}
 }
 
-// callResult is the part of script.callFunction's answer these tests read.
-// Realm is what makes the same-document question answerable: it names the
-// realm the call actually ran in, and a realm does not outlive its document.
 type callResult struct {
 	Type             string          `json:"type"`
 	Realm            string          `json:"realm"`
@@ -181,9 +156,6 @@ type callResult struct {
 	ExceptionDetails json.RawMessage `json:"exceptionDetails"`
 }
 
-// call runs fn in the page's own realm and returns the deserialized result.
-// ownership:"root" is not used: these scripts return plain JSON-able values,
-// which is exactly what brw's CDP path relies on too.
 func (s *session) call(ctx context.Context, fn string, args []any, target map[string]any) (callResult, error) {
 	if target == nil {
 		target = map[string]any{"context": s.contextID}
@@ -206,7 +178,6 @@ func (s *session) call(ctx context.Context, fn string, args []any, target map[st
 	return out, err
 }
 
-// mustCall fails the test on a protocol error or a page-side exception.
 func (s *session) mustCall(ctx context.Context, t *testing.T, what, fn string, args ...any) callResult {
 	t.Helper()
 	got, err := s.call(ctx, fn, args, nil)
@@ -223,9 +194,6 @@ func num(v float64) map[string]any  { return map[string]any{"type": "number", "v
 func str(v string) map[string]any   { return map[string]any{"type": "string", "value": v} }
 func boolean(v bool) map[string]any { return map[string]any{"type": "boolean", "value": v} }
 
-// plain converts a BiDi RemoteValue tree back into ordinary Go values. BiDi
-// serializes an object as [[key,value],...] pairs rather than as JSON, so every
-// assertion on a script result has to go through this.
 func plain(raw json.RawMessage) (any, error) {
 	var v struct {
 		Type  string          `json:"type"`
@@ -297,11 +265,6 @@ func plainMap(t *testing.T, what string, raw json.RawMessage) map[string]any {
 	return out
 }
 
-// Question 1: does BiDi expose the events brw's settle machinery resolves waits
-// from? The table is the five CDP-event equivalents named in the brief plus a
-// control. Each real event must BOTH subscribe and actually arrive — a
-// subscription that succeeds proves nothing on its own unless the browser
-// refuses a name it does not implement, which the control establishes.
 func TestBiDiSettleEventsArrive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -329,9 +292,6 @@ func TestBiDiSettleEventsArrive(t *testing.T) {
 		{name: "browsingContext.userPromptOpened"},
 	}
 
-	// The control: an event name BiDi does not define. If this subscribed
-	// cleanly, a successful subscribe would carry no information and every
-	// other row of this table would be vacuous.
 	if err := s.conn.Subscribe(ctx, "brwNoSuch.event"); err == nil {
 		t.Fatal("subscribing to an undefined event succeeded; a successful session.subscribe is then not evidence that an event exists")
 	}
@@ -343,8 +303,7 @@ func TestBiDiSettleEventsArrive(t *testing.T) {
 	}
 
 	s.navigate(ctx, t, srv.URL+"/")
-	// The prompt is opened from a timer so the command returns before alert()
-	// blocks the page's event loop.
+
 	s.mustCall(ctx, t, "open prompt", `() => { setTimeout(() => window.alert('bidi-prompt'), 0); return true; }`)
 
 	for _, ev := range events {
@@ -358,7 +317,6 @@ func TestBiDiSettleEventsArrive(t *testing.T) {
 		t.Logf("%s -> %s", ev.name, truncateForLog(string(got.Params)))
 	}
 
-	// Leave the prompt handled so the browser can be closed cleanly.
 	if err := s.conn.Command(ctx, "browsingContext.handleUserPrompt", map[string]any{
 		"context": s.contextID,
 		"accept":  true,
@@ -367,11 +325,6 @@ func TestBiDiSettleEventsArrive(t *testing.T) {
 	}
 }
 
-// Question 2, first half: brw's actionability script is a page script, so the
-// question is whether script.callFunction reaches the same verdicts. The table
-// covers every branch the script can return — the AX-visible fast path, the
-// hit-test fallback, disabled, and both ways of failing visibility — so a
-// backend that silently lost the hit test could not pass it.
 func TestBiDiReproducesActionabilityVerdicts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -388,11 +341,9 @@ func TestBiDiReproducesActionabilityVerdicts(t *testing.T) {
 		wantWhy  string
 	}{
 		{id: "ok", wantOK: true, wantMode: "ax_visible"},
-		// opacity:0 under aria-hidden fails every heuristic in visible(), so a
-		// pass here can only have come from the elementFromPoint hit test.
+
 		{id: "ghost", wantOK: true, wantMode: "hit_test"},
-		// Same element, with an overlay over the pixel. The only difference
-		// between this row and the one above is what elementFromPoint returns.
+
 		{id: "ghost-covered", wantOK: false, wantWhy: "not_visible"},
 		{id: "hidden", wantOK: false, wantWhy: "not_visible"},
 		{id: "disabled", wantOK: false, wantWhy: "disabled"},
@@ -417,9 +368,6 @@ func TestBiDiReproducesActionabilityVerdicts(t *testing.T) {
 		})
 	}
 
-	// Editable: the fill script drives the real input events a framework
-	// listens for, so reading the value back proves the script ran against the
-	// live document and not a detached copy.
 	filled := s.mustCall(ctx, t, "FillElement", snapshot.FillElementScript,
 		str(refs["field"]), str("bidi typed this"), boolean(true))
 	if result := plainMap(t, "FillElement", filled.Result); result["ok"] != true {
@@ -431,10 +379,6 @@ func TestBiDiReproducesActionabilityVerdicts(t *testing.T) {
 	}
 }
 
-// Question 2, second half: brw's refs are page-side state on window.__brw, so
-// they survive only as long as the document does. BiDi has to make both halves
-// of that observable — the ref resolving in a later call against the same
-// document, and the pinned realm going away when the document does.
 func TestBiDiRefsAndSameDocumentGuarantee(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -448,8 +392,6 @@ func TestBiDiRefsAndSameDocumentGuarantee(t *testing.T) {
 		t.Fatal("snapshot produced no ref for #ok")
 	}
 
-	// A separate BiDi command, minutes of wall clock later in principle: the
-	// ref has to resolve to the same element.
 	resolved := s.mustCall(ctx, t, "ResolveBox", snapshot.ResolveBoxScript, str(ref))
 	box := plainMap(t, "ResolveBox", resolved.Result)
 	if box["ok"] != true {
@@ -461,7 +403,6 @@ func TestBiDiRefsAndSameDocumentGuarantee(t *testing.T) {
 		t.Fatalf("ref resolved to a different box than #ok: ref %v vs element %v", box, liveBox)
 	}
 
-	// The realm the call ran in is what pins the document.
 	realm := resolved.Realm
 	if realm == "" {
 		t.Fatal("script.callFunction reported no realm; there is then nothing to pin a ref to")
@@ -469,30 +410,18 @@ func TestBiDiRefsAndSameDocumentGuarantee(t *testing.T) {
 
 	s.navigate(ctx, t, srv.URL+"/other")
 
-	// Pinned to the old realm, the call must fail rather than run against the
-	// new document. This is the guarantee brw needs: a ref taken before a
-	// navigation must never silently act on the page that replaced it.
 	_, err := s.call(ctx, `() => 1`, nil, map[string]any{"realm": realm})
 	if err == nil {
 		t.Fatal("a call pinned to the previous document's realm succeeded after navigation; the same-document guarantee is not expressible")
 	}
 	t.Logf("pinned stale realm -> %v", err)
 
-	// And unpinned, against the new document, the old ref must be gone rather
-	// than resolving to something else.
 	after := s.mustCall(ctx, t, "ResolveBox after navigation", snapshot.ResolveBoxScript, str(ref))
 	if box := plainMap(t, "ResolveBox after navigation", after.Result); box["ok"] == true {
 		t.Fatalf("a ref from the previous document still resolved after navigation: %v", box)
 	}
 }
 
-// installRefs runs brw's own snapshot script and returns id -> ref for the
-// fixture's elements. It is the same script the CDP path installs, unmodified.
-//
-// The mapping is read back off the DOM rather than out of the snapshot result:
-// brw resolves a ref through the data-brw-ref attribute the script stamps, so
-// reading the attribute is what proves the script's side effects landed in the
-// document BiDi is pointing at.
 func (s *session) installRefs(ctx context.Context, t *testing.T) map[string]string {
 	t.Helper()
 	got := s.mustCall(ctx, t, "SnapshotFunctionScript", snapshot.SnapshotFunctionScript,
@@ -522,10 +451,6 @@ func (s *session) installRefs(ctx context.Context, t *testing.T) map[string]stri
 	return out
 }
 
-// Question 3: are downloads and dialogs addressable? Dialogs are, by command.
-// Downloads report their lifecycle but their destination is a launch-time
-// profile preference, not a runtime command — which is the difference between
-// observing a download and capturing it deterministically.
 func TestBiDiDownloadsAndDialogs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -539,7 +464,6 @@ func TestBiDiDownloadsAndDialogs(t *testing.T) {
 	}
 	s.navigate(ctx, t, srv.URL+"/")
 
-	// Dialogs: open, observe, answer, and see the answer reach the page.
 	s.mustCall(ctx, t, "open confirm", `() => { window.__brwConfirm = null; setTimeout(() => { window.__brwConfirm = window.confirm('bidi-confirm'); }, 0); return true; }`)
 	prompt, err := s.conn.Await(ctx, "browsingContext.userPromptOpened", func(params json.RawMessage) bool {
 		return strings.Contains(string(params), "bidi-confirm")
@@ -568,9 +492,6 @@ func TestBiDiDownloadsAndDialogs(t *testing.T) {
 		t.Fatalf("confirm() returned %v after handleUserPrompt accept=true; the dialog answer never reached the page", answered)
 	}
 
-	// Downloads: there is no runtime command for the destination. Establish
-	// that by asking for one, so the claim in docs/bidi-prototype.md is a
-	// measurement and stays true only as long as Firefox agrees.
 	err = s.conn.Command(ctx, "browsingContext.setDownloadBehavior", map[string]any{
 		"context":          s.contextID,
 		"downloadBehavior": map[string]any{"type": "allowed", "destinationFolder": s.downloads},
@@ -595,8 +516,6 @@ func TestBiDiDownloadsAndDialogs(t *testing.T) {
 	}
 	t.Logf("downloadEnd -> %s", truncateForLog(string(ended.Params)))
 
-	// The bytes must land where the launch-time preference put them, which is
-	// what makes the destination a profile property rather than a session one.
 	body, err := os.ReadFile(filepath.Join(s.downloads, "bidi-download.txt"))
 	if err != nil {
 		entries, _ := os.ReadDir(s.downloads)
@@ -611,9 +530,6 @@ func TestBiDiDownloadsAndDialogs(t *testing.T) {
 	}
 }
 
-// Question 4: can artifacts be captured within the same bounds? Both commands
-// exist; the assertion is on the bytes, because a command that answers with an
-// empty string is not a capture.
 func TestBiDiCapturesArtifacts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -658,9 +574,6 @@ func TestBiDiCapturesArtifacts(t *testing.T) {
 		})
 	}
 
-	// Element-scoped capture is the bound brw's brw_screenshot{ref} needs. A
-	// clip by box is what the CDP path uses, so the same thing has to be
-	// expressible here.
 	box := s.mustCall(ctx, t, "element box", `() => { const r = document.getElementById('ok').getBoundingClientRect(); return {x:r.x, y:r.y, width:r.width, height:r.height}; }`)
 	rect := plainMap(t, "element box", box.Result)
 	var clipped struct {
@@ -686,15 +599,6 @@ func TestBiDiCapturesArtifacts(t *testing.T) {
 	t.Logf("clipped capture -> %d bytes", len(raw))
 }
 
-// docs/install.md says Firefox marks pages as automated for as long as the
-// remote agent is enabled, whether or not a client is driving them. That
-// sentence is why brw tells people Firefox cannot carry the signed-in-session
-// use case, so it has to be a measurement rather than a reading of the source.
-//
-// Neither case connects a BiDi client at all: the page reports
-// navigator.webdriver to the fixture server itself, so what is measured is the
-// browser's state and not a session's. The off row is the control — without it
-// a true reading could just as well mean the fixture always reports true.
 func TestFirefoxRemoteAgentMarksEveryPageAutomated(t *testing.T) {
 	requireLiveFirefox(t)
 	for _, tc := range []struct {

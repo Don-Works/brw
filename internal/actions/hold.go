@@ -2,10 +2,7 @@ package actions
 
 import "strings"
 
-// Modifier bits as CDP Input.dispatchKeyEvent / Input.dispatchMouseEvent encode
-// them. Every dispatched event carries its own mask: the protocol keeps no
-// keyboard state between calls, so a held modifier only exists for as long as
-// the caller keeps stamping it onto each event.
+// Modifier bits as CDP Input.dispatchKeyEvent / Input.dispatchMouseEvent encode them.
 const (
 	ModifierAlt   int64 = 1
 	ModifierCtrl  int64 = 2
@@ -13,20 +10,6 @@ const (
 	ModifierShift int64 = 8
 )
 
-// modifierKey maps a standalone modifier name to its descriptor, or returns nil
-// when raw does not name one. Left/right variants are distinguished by code
-// only, which is what a page reads from event.code.
-//
-// A modifier pressed on its own is a real key event, not just a mask: holding
-// Shift for a click-range or Control for a drag means dispatching keyDown for
-// "Shift" and withholding its keyUp. Without this table, "shift" falls through
-// to DescribeKey's single-rune fallback, which produces key "shift", no virtual
-// key code, and text "shift" — a page listening for keydown sees a nonsense key
-// and getModifierState stays false.
-//
-// The descriptor carries its OWN modifier bit because a real Shift keydown
-// reports shiftKey true; the matching keyUp clears it, which is why callers
-// recompute the mask after releasing rather than reusing this value.
 func modifierKey(raw string) *KeyDescriptor {
 	name := strings.ToLower(strings.TrimSpace(raw))
 	switch name {

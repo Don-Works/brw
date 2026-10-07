@@ -15,11 +15,6 @@ import (
 	"time"
 )
 
-// defaultShutdownGrace is how long Close waits for Chrome to quit gracefully
-// after SIGTERM before escalating to SIGKILL. It must be generous: Chrome
-// flushes its profile stores (LevelDB/IndexedDB/Preferences) on exit, and a
-// hard kill mid-flush corrupts the profile (lost sessions, "profile won't
-// open"). The old 2s window routinely fired mid-flush on a busy profile.
 const defaultShutdownGrace = 10 * time.Second
 
 type LaunchConfig struct {
@@ -29,16 +24,11 @@ type LaunchConfig struct {
 	Port             int
 	Extensions       []string
 	Args             []string
-	// AllowRealProfile overrides the refusal to launch against the user's real
-	// browser profile (see EnsureSafeUserDataDir). Diagnostics only.
+	// AllowRealProfile overrides the refusal to launch against the user's real browser profile (see EnsureSafeUserDataDir).
 	AllowRealProfile bool
-	// Network carries the launch-only network settings: proxy, certificate-error
-	// policy, and any privately trusted keys. See launch_env.go.
+	// Network carries the launch-only network settings: proxy, certificate-error policy, and any privately trusted keys.
 	Network NetworkEnvironment
-	// Headless launches Chrome with --headless=new. Chrome 132 removed old
-	// headless entirely (it ships separately as chrome-headless-shell), so
-	// --headless and --headless=new are the same browser now; brw emits the
-	// explicit form so the intent survives a log line.
+	// Headless launches Chrome with --headless=new.
 	Headless bool
 }
 
@@ -57,15 +47,7 @@ func Launch(ctx context.Context, cfg LaunchConfig) (*Launcher, error) {
 	if cfg.UserDataDir == "" {
 		cfg.UserDataDir = DefaultProfileDir("")
 	}
-	// Refuse to corrupt a real/in-use profile BEFORE creating the dir or spawning
-	// Chrome — this is the guard that prevents the "WhatsApp logged out + Chrome
-	// won't reopen" failure when direct CDP is mistakenly pointed at the user's
-	// live Chrome profile.
-	// Validate the EFFECTIVE user-data-dir — the one Chrome will actually use
-	// after the operator's passthrough args are applied — not just cfg.UserDataDir.
-	// Chrome keeps the LAST --user-data-dir, and cfg.Args is appended after the
-	// validated path below, so a --user-data-dir smuggled through cfg.Args would
-	// otherwise silently override the checked dir and defeat this guard.
+
 	if err := EnsureSafeUserDataDir(effectiveUserDataDir(cfg.UserDataDir, cfg.Args), cfg.AllowRealProfile); err != nil {
 		return nil, err
 	}
@@ -85,11 +67,6 @@ func Launch(ctx context.Context, cfg LaunchConfig) (*Launcher, error) {
 
 	args := launchArgs(cfg, port)
 
-	// Deliberately NOT exec.CommandContext(ctx, ...): binding Chrome's lifetime to
-	// ctx means a cancelled ctx (the daemon's SIGTERM signal context on shutdown)
-	// makes os/exec send its own SIGKILL, racing the graceful Close() below and
-	// corrupting the profile on a normal Ctrl-C. Chrome is stopped solely by
-	// Close(), which terminates it gracefully.
 	cmd := exec.Command(chromePath, args...)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
@@ -99,8 +76,6 @@ func Launch(ctx context.Context, cfg LaunchConfig) (*Launcher, error) {
 	return finishLaunch(ctx, cmd, port)
 }
 
-// launchArgs builds Chrome's command line. Split out from Launch so the flag
-// set is testable without spawning a browser.
 func launchArgs(cfg LaunchConfig, port int) []string {
 	args := []string{
 		"--remote-debugging-address=127.0.0.1",
@@ -108,17 +83,13 @@ func launchArgs(cfg LaunchConfig, port int) []string {
 		"--user-data-dir=" + cfg.UserDataDir,
 		"--no-first-run",
 		"--no-default-browser-check",
-		// Keep in-page timers (setTimeout/setInterval) firing at their requested
-		// rate. Chrome throttles timers to ~1Hz on hidden/occluded/headless
-		// pages, which silently turned the 100ms actionability poll into a
-		// ~700-900ms stall per click. These flags are standard for an automation
-		// browser and only affect background-throttling, never foreground tabs.
+
 		"--disable-background-timer-throttling",
 		"--disable-backgrounding-occluded-windows",
 		"--disable-renderer-backgrounding",
 	}
 	if cfg.Headless {
-		// headless=new opens an 800x600 window, which sites lay out as a tablet.
+
 		args = append(args, "--headless=new", "--window-size=1440,900")
 	}
 	if cfg.ProfileDirectory != "" {
@@ -127,16 +98,13 @@ func launchArgs(cfg LaunchConfig, port int) []string {
 	if len(cfg.Extensions) > 0 {
 		args = append(args, "--load-extension="+strings.Join(cfg.Extensions, ","))
 	}
-	// Before cfg.Args so an operator's explicit --chrome-arg still has the last
-	// word: Chrome keeps the last value of a repeated switch.
+
 	args = append(args, networkArgs(cfg.Network)...)
 	args = append(args, cfg.Args...)
 	args = append(args, "about:blank")
 	return args
 }
 
-// finishLaunch waits for the freshly started Chrome to answer on its debugging
-// port, tearing it down if it never does.
 func finishLaunch(ctx context.Context, cmd *exec.Cmd, port int) (*Launcher, error) {
 	launcher := &Launcher{cmd: cmd, endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), port: port, grace: defaultShutdownGrace}
 	if err := launcher.waitReady(ctx, 15*time.Second); err != nil {
@@ -164,9 +132,7 @@ func (l *Launcher) Close() error {
 	}
 	done := make(chan error, 1)
 	go func() { done <- l.cmd.Wait() }()
-	// Ask Chrome to quit gracefully (SIGTERM) so it flushes profile state before
-	// exiting; only escalate to SIGKILL if it ignores the request past the grace
-	// window. Always drain Wait() after Kill so the process is reaped.
+
 	if err := l.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		_ = l.cmd.Process.Kill()
 		return <-done
@@ -232,17 +198,7 @@ func freePort() (int, error) {
 	return listener.Addr().(*net.TCPAddr).Port, nil
 }
 
-// EnsureSafeUserDataDir refuses to launch Chrome in the two situations that
-// corrupt the user's profile — losing live logins (e.g. WhatsApp Web must be
-// relinked) and leaving Chrome unable to reopen:
-//  1. the target dir is one of the user's REAL browser profiles (unless
-//     allowRealProfile overrides), or
-//  2. a live Chrome already owns the dir (its SingletonLock points at a running
-//     pid); a second Chrome on the same profile contends over its LevelDB /
-//     IndexedDB stores and corrupts them.
-//
-// An empty dir (caller hasn't resolved one yet) and a stale lock (dead pid) are
-// both allowed.
+// EnsureSafeUserDataDir refuses to launch Chrome in the two situations that corrupt the user's profile — losing live logins (e.g.
 func EnsureSafeUserDataDir(userDataDir string, allowRealProfile bool) error {
 	if strings.TrimSpace(userDataDir) == "" {
 		return nil
@@ -256,9 +212,6 @@ func EnsureSafeUserDataDir(userDataDir string, allowRealProfile bool) error {
 	return nil
 }
 
-// knownBrowserProfileRoots returns the user-data-dir roots of the user's REAL
-// browsers — the profiles holding their live logins. brw must never CDP-launch a
-// second Chrome against one of these.
 func knownBrowserProfileRoots() []string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -276,8 +229,7 @@ func knownBrowserProfileRoots() []string {
 		".config/chromium",
 		".config/microsoft-edge",
 		".config/BraveSoftware/Brave-Browser",
-		// Windows (%LOCALAPPDATA% is <home>\AppData\Local). brw builds
-		// cross-platform, so the real-profile guard must cover Windows too.
+
 		"AppData/Local/Google/Chrome/User Data",
 		"AppData/Local/Google/Chrome Beta/User Data",
 		"AppData/Local/Google/Chrome SxS/User Data",
@@ -292,10 +244,6 @@ func knownBrowserProfileRoots() []string {
 	return out
 }
 
-// effectiveUserDataDir returns the --user-data-dir Chrome will actually use:
-// the LAST occurrence among the base dir and the passthrough args (Chrome keeps
-// the last value of a repeated switch). Both --user-data-dir=X and the
-// space-separated --user-data-dir X forms are recognised.
 func effectiveUserDataDir(base string, args []string) string {
 	dir := base
 	for i := 0; i < len(args); i++ {
@@ -313,8 +261,7 @@ func isKnownBrowserProfileRoot(dir string) bool {
 	for _, cand := range pathIdentities(dir) {
 		for _, root := range knownBrowserProfileRoots() {
 			for _, rootID := range pathIdentities(root) {
-				// EqualFold because macOS (APFS) and Windows are case-insensitive
-				// by default, so a case-variant path opens the SAME profile.
+
 				if strings.EqualFold(cand, rootID) {
 					return true
 				}
@@ -324,10 +271,7 @@ func isKnownBrowserProfileRoot(dir string) bool {
 	return false
 }
 
-// IsInsideRealBrowserProfile reports whether dir is one of the user's real
-// browser user-data-dirs or any path inside one. It resolves symlinks through
-// the nearest existing ancestor, so a link to the real profile, or a not yet
-// created child of one, is still caught.
+// IsInsideRealBrowserProfile reports whether dir is one of the user's real browser user-data-dirs or any path inside one.
 func IsInsideRealBrowserProfile(dir string) bool {
 	if strings.TrimSpace(dir) == "" {
 		return false
@@ -367,9 +311,6 @@ func resolvedThroughAncestor(p string) string {
 	}
 }
 
-// pathIdentities returns the cleaned path plus, when it exists, its
-// symlink-resolved form, so a symlink pointing at the real profile cannot slip
-// past an exact-string comparison.
 func pathIdentities(p string) []string {
 	if strings.TrimSpace(p) == "" {
 		return nil
@@ -382,11 +323,6 @@ func pathIdentities(p string) []string {
 	return ids
 }
 
-// runningChromeOwns reports whether a LIVE Chrome currently owns dir, via the
-// SingletonLock symlink Chrome maintains in every user-data-dir. The link target
-// is "<host>-<pid>"; a live pid means a Chrome already holds the profile. A
-// missing lock, a non-symlink, an unparseable target, or a dead pid (stale lock
-// Chrome will clear itself) all return false.
 func runningChromeOwns(dir string) bool {
 	pid, ok := singletonLockPID(dir)
 	return ok && processAlive(pid)
@@ -408,10 +344,6 @@ func singletonLockPID(dir string) (int, bool) {
 	return pid, true
 }
 
-// reclaimOrphanedChrome stops the Chrome holding dir's lock when it is one a
-// dead brwd launched: re-parented to init and started with remote debugging on
-// exactly this user data dir. A daemon killed with SIGKILL cannot close its
-// browser, and without this the profile stays locked until a human kills it.
 func reclaimOrphanedChrome(dir string) bool {
 	pid, ok := singletonLockPID(dir)
 	if !ok {
@@ -465,6 +397,6 @@ func processAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	// Signal 0 probes for existence without affecting the process.
+
 	return proc.Signal(syscall.Signal(0)) == nil
 }

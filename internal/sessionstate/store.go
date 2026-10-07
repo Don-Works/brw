@@ -21,19 +21,13 @@ import (
 )
 
 const (
-	// MinKeyBytes is the shortest operator key the store accepts. The key is
-	// stretched by HKDF, so this bounds the entropy an operator must supply
-	// rather than the AES key length.
+	// MinKeyBytes is the shortest operator key the store accepts.
 	MinKeyBytes = 32
-	// DefaultTTL keeps a snapshot useful for a working day's worth of runs
-	// without leaving a signed-in session sealed on disk indefinitely.
+	// DefaultTTL keeps a snapshot useful for a working day's worth of runs without leaving a signed-in session sealed on disk indefinitely.
 	DefaultTTL = 12 * time.Hour
-	// MaxSnapshots bounds the store so List, which decrypts every file, stays
-	// cheap and so a runaway caller cannot fill the disk with sealed sessions.
+	// MaxSnapshots bounds the store so List, which decrypts every file, stays cheap and so a runaway caller cannot fill the disk with sealed sessions.
 	MaxSnapshots = 64
-	// maxSealedBytes bounds one snapshot. Cookies are small; a file larger than
-	// this is a bug or an attack, and refusing it keeps the single-shot seal
-	// honest (the whole plaintext is held in memory once).
+
 	maxSealedBytes = 4 << 20
 
 	sealMagic    = "brwstate1"
@@ -42,9 +36,7 @@ const (
 	fileSuffix   = ".state"
 )
 
-// ErrEncryptionKeyRequired is the fail-closed refusal. A snapshot of a
-// signed-in session is exactly the thing that must not be written in the clear,
-// so the store has no unencrypted mode to fall back to.
+// ErrEncryptionKeyRequired refuses storage without at-rest encryption.
 var ErrEncryptionKeyRequired = errors.New("session snapshots need an at-rest encryption key; start brwd with --state-key-file pointing at an owner-only file of at least 32 bytes")
 
 var snapshotIDPattern = regexp.MustCompile(`^st_[0-9a-f]{32}$`)
@@ -52,10 +44,9 @@ var snapshotIDPattern = regexp.MustCompile(`^st_[0-9a-f]{32}$`)
 type Config struct {
 	Root string
 	TTL  time.Duration
-	// Key is the operator's at-rest key. An empty key is not a degraded mode:
-	// NewStore refuses it.
+	// Key is the operator's at-rest key.
 	Key []byte
-	// Now is a clock seam for tests. Nil means time.Now.
+	// Now defaults to time.Now.
 	Now func() time.Time
 }
 
@@ -67,8 +58,7 @@ type Store struct {
 	mu   sync.Mutex
 }
 
-// DefaultRoot is the browser host's own cache directory. It is deliberately not
-// derived from the working directory: a snapshot must never land in a checkout.
+// DefaultRoot is the browser host's own cache directory.
 func DefaultRoot() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
@@ -99,9 +89,7 @@ func NewStore(config Config) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A root any local account can walk protects nothing that the encryption is
-	// there to protect, so a pre-existing permissive directory is refused rather
-	// than silently tightened under the operator.
+
 	if info.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("session state root %s is reachable beyond its owner (mode %04o); chmod 700 it", root, info.Mode().Perm())
 	}
@@ -121,9 +109,7 @@ func (s *Store) Root() string { return s.root }
 // TTL is the store's retention ceiling; a per-save TTL may shorten it.
 func (s *Store) TTL() time.Duration { return s.ttl }
 
-// LoadKey reads the operator's key file. The rules mirror the artifact key: an
-// absolute path, a regular file, unreadable by group and other, and outside the
-// directory it protects — a key beside the ciphertext encrypts against nobody.
+// LoadKey requires an owner-only regular key file outside the state root.
 func LoadKey(path, stateRoot string) ([]byte, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -165,7 +151,7 @@ func rejectKeyInsideRoot(path, stateRoot string) error {
 	if err != nil {
 		return nil
 	}
-	if relative == "." || !strings.HasPrefix(relative, "..") {
+	if filepath.IsLocal(relative) {
 		return errors.New("session state key must not live inside the session state root")
 	}
 	return nil
@@ -176,8 +162,7 @@ type sealedDocument struct {
 	Snapshot Snapshot `json:"snapshot"`
 }
 
-// SaveOptions carries the per-save narrowing. TTL may only shorten the store's
-// retention, never lengthen it.
+// SaveOptions may shorten the store's retention ceiling.
 type SaveOptions struct {
 	TTL time.Duration
 }
@@ -189,9 +174,6 @@ func (s *Store) Save(snap Snapshot, opts SaveOptions) (Meta, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.sweepLocked(); err != nil {
-		return Meta{}, err
-	}
 	existing, err := s.listLocked()
 	if err != nil {
 		return Meta{}, err
@@ -235,16 +217,11 @@ func (s *Store) Save(snap Snapshot, opts SaveOptions) (Meta, error) {
 	return meta, nil
 }
 
-// Load decrypts one snapshot. It is the restore path's door and nothing else:
-// no MCP tool, HTTP route or CLI verb returns what it produces.
+// Load decrypts a snapshot for browser restore; callers must expose metadata only.
 func (s *Store) Load(id string) (Snapshot, Meta, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	snap, meta, err := s.loadLocked(id)
-	if err != nil {
-		return Snapshot{}, Meta{}, err
-	}
-	return snap, meta, nil
+	return s.loadLocked(id)
 }
 
 func (s *Store) loadLocked(id string) (Snapshot, Meta, error) {
@@ -277,9 +254,6 @@ func (s *Store) loadLocked(id string) (Snapshot, Meta, error) {
 func (s *Store) List() ([]Meta, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.sweepLocked(); err != nil {
-		return nil, err
-	}
 	return s.listLocked()
 }
 
@@ -296,8 +270,6 @@ func (s *Store) listLocked() ([]Meta, error) {
 		}
 		_, meta, err := s.loadLocked(id)
 		if err != nil {
-			// A lapsed or unreadable file is not a reason to fail the listing;
-			// sweepLocked has already removed what it could.
 			continue
 		}
 		out = append(out, meta)
@@ -306,8 +278,7 @@ func (s *Store) listLocked() ([]Meta, error) {
 	return out, nil
 }
 
-// Delete removes one snapshot. Deleting an unknown id is an error, so a caller
-// that meant to revoke a session learns that it did not.
+// Delete removes one snapshot.
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -323,29 +294,12 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
-// Sweep removes every expired snapshot. Exported so a daemon can run it on a
-// timer instead of waiting for the next call to notice.
+// Sweep removes every expired snapshot.
 func (s *Store) Sweep() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.sweepLocked()
-}
-
-func (s *Store) sweepLocked() error {
-	entries, err := os.ReadDir(s.root)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		id := strings.TrimSuffix(entry.Name(), fileSuffix)
-		if entry.IsDir() || id == entry.Name() {
-			continue
-		}
-		// loadLocked deletes an expired file on the way out; ignore the error,
-		// which is exactly the expiry it reports.
-		_, _, _ = s.loadLocked(id)
-	}
-	return nil
+	_, err := s.listLocked()
+	return err
 }
 
 func (s *Store) pathFor(id string) string { return filepath.Join(s.root, id+fileSuffix) }
@@ -375,9 +329,6 @@ func writeOwnerOnly(path string, data []byte) error {
 	return nil
 }
 
-// seal is AES-256-GCM under a per-file key derived from the store key and a
-// random salt. The snapshot id is the additional data, so a sealed file renamed
-// onto another id fails authentication instead of restoring the wrong session.
 func seal(storeKey []byte, id string, plain []byte) ([]byte, error) {
 	salt := make([]byte, sealSaltSize)
 	if _, err := rand.Read(salt); err != nil {

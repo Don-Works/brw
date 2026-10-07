@@ -14,15 +14,9 @@ import (
 	"time"
 )
 
-// Both inputs come from outside brw's control: the file sits in a directory
-// another program owns, and the port it names may have been taken by anything.
-// Neither read may be open-ended.
 func TestDiscoveryReadsAreBounded(t *testing.T) {
 	t.Run("a version document that never ends", func(t *testing.T) {
-		// The handler streams a string that is never closed, so a decoder with
-		// no cap consumes the whole 64 MiB. The assertion is on what the server
-		// managed to send: once the client stops reading at the cap the writes
-		// fail, and only a socket buffer's worth gets out.
+
 		const chunkBytes = 64 << 10
 		const chunks = 1024
 		written := &atomic.Int64{}
@@ -54,8 +48,7 @@ func TestDiscoveryReadsAreBounded(t *testing.T) {
 		if _, err := Discover(ctx, Options{UserDataDir: dir}); !errors.Is(err, ErrOptInOff) {
 			t.Fatalf("Discover = %v, want ErrOptInOff", err)
 		}
-		// Generous against socket buffering, and two orders of magnitude below
-		// what an uncapped decode drains.
+
 		const tolerated = 8 << 20
 		if got := written.Load(); got > tolerated {
 			t.Fatalf("the fixture streamed %d bytes into discovery; the %d-byte cap should have stopped it", got, maxVersionBytes)
@@ -83,9 +76,7 @@ func TestDiscoveryReadsAreBounded(t *testing.T) {
 	t.Run("an active-port file larger than the cap still parses its first line", func(t *testing.T) {
 		dir := t.TempDir()
 		writeActivePort(t, dir, "65535\n"+strings.Repeat("x", 1<<20))
-		// Nothing is listening on 65535 here, so this refuses at the probe. The
-		// point is that it reaches the probe at all: a capped read still sees
-		// the line that carries the port.
+
 		_, err := Discover(context.Background(), Options{UserDataDir: dir})
 		if !errors.Is(err, ErrOptInOff) {
 			t.Fatalf("Discover = %v, want ErrOptInOff", err)

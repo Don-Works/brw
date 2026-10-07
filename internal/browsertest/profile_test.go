@@ -7,11 +7,6 @@ import (
 	"testing"
 )
 
-// The contract this package exists for, asserted without a browser: the
-// shutdown runs first, in reverse registration order, and the directory is gone
-// once the test that owned it is over — including anything the shutdown itself
-// wrote on its way out, which is the write a real Chrome helper is still doing
-// when testing's own cleanup reaches for the directory.
 func TestProfileRunsEveryStopBeforeItReclaimsTheDirectory(t *testing.T) {
 	var (
 		order []string
@@ -43,8 +38,6 @@ func TestProfileRunsEveryStopBeforeItReclaimsTheDirectory(t *testing.T) {
 	}
 }
 
-// A profile nothing was started against still reclaims, so a test that skips
-// before its browser exists reports the skip rather than a cleanup failure.
 func TestProfileWithNoStopStillReclaims(t *testing.T) {
 	var dir string
 	t.Run("owner", func(t *testing.T) {

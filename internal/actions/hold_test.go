@@ -2,10 +2,6 @@ package actions
 
 import "testing"
 
-// A held modifier has to describe as a real key. Before modifierKey existed,
-// "shift" fell through to the single-rune fallback and produced key "shift",
-// virtual key code 0 and text "shift" — a page listening for keydown saw a
-// nonsense key and getModifierState never became true.
 func TestDescribeKeyResolvesStandaloneModifiers(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -25,13 +21,12 @@ func TestDescribeKeyResolvesStandaloneModifiers(t *testing.T) {
 		{name: "option alias", raw: "option", key: "Alt", code: "AltLeft", vk: 18, modifiers: ModifierAlt},
 		{name: "meta", raw: "meta", key: "Meta", code: "MetaLeft", vk: 91, modifiers: ModifierMeta},
 		{name: "cmd alias", raw: "cmd", key: "Meta", code: "MetaLeft", vk: 91, modifiers: ModifierMeta},
-		// A chord's own modifier bit survives alongside the prefix bits.
+
 		{name: "chord of two modifiers", raw: "ctrl+shift", key: "Shift", code: "ShiftLeft", vk: 16, modifiers: ModifierCtrl | ModifierShift},
-		// Ordinary keys are untouched by the modifier table.
+
 		{name: "letter", raw: "a", key: "a", code: "KeyA", vk: 65, text: "a"},
 		{name: "named key", raw: "Enter", key: "Enter", code: "Enter", vk: 13, text: "\r"},
-		// event.key is the character the keystroke PRODUCES, so a shifted letter
-		// reports "A"; code stays with the physical key.
+
 		{name: "chord over a letter", raw: "shift+a", key: "A", code: "KeyA", vk: 65, modifiers: ModifierShift, text: "A"},
 	}
 

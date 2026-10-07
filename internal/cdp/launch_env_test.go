@@ -43,7 +43,7 @@ func TestLaunchArgsCarryTheNetworkEnvironment(t *testing.T) {
 			name: "trusted keys are one comma-separated switch",
 			env:  NetworkEnvironment{TrustedSPKI: []string{"aGFzaC1vbmU=", "aGFzaC10d28="}},
 			want: []string{"--ignore-certificate-errors-spki-list=aGFzaC1vbmU=,aGFzaC10d28="},
-			// Naming one CA must not turn validation off for everything else.
+
 			unwant: []string{"--ignore-certificate-errors="},
 		},
 	}
@@ -68,8 +68,6 @@ func TestLaunchArgsCarryTheNetworkEnvironment(t *testing.T) {
 	}
 }
 
-// An operator's own --chrome-arg has to win, because it is the escape hatch when
-// brw's own switch is wrong for their setup.
 func TestExplicitChromeArgOverridesTheNetworkEnvironment(t *testing.T) {
 	args := launchArgs(LaunchConfig{
 		UserDataDir: "/tmp/brw-fixture",
@@ -93,8 +91,6 @@ func TestExplicitChromeArgOverridesTheNetworkEnvironment(t *testing.T) {
 	}
 }
 
-// Chrome's command line is whitespace-separated, so a value carrying a space is
-// a way to append a switch nobody reviewed.
 func TestNetworkEnvironmentRejectsSmuggledSwitches(t *testing.T) {
 	tests := []struct {
 		name string
@@ -126,8 +122,7 @@ func TestSPKIFingerprintsMatchTheCertificatesPublicKey(t *testing.T) {
 	if len(fingerprints) != 1 {
 		t.Fatalf("got %d fingerprints, want 1", len(fingerprints))
 	}
-	// Chrome hashes the DER SubjectPublicKeyInfo and base64s it; anything else
-	// produces a switch Chrome accepts and silently never matches.
+
 	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	if want := base64.StdEncoding.EncodeToString(sum[:]); fingerprints[0] != want {
 		t.Fatalf("fingerprint = %q, want the base64 SHA-256 of the SubjectPublicKeyInfo %q", fingerprints[0], want)
@@ -156,8 +151,6 @@ func containsArg(args []string, want string) bool {
 	return false
 }
 
-// selfSignedCertificate builds a throwaway certificate in-process, so no
-// fixture file and no machine-specific material is involved.
 func selfSignedCertificate(t *testing.T) ([]byte, *x509.Certificate) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

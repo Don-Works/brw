@@ -32,11 +32,7 @@ func FindChrome(explicit string) (string, error) {
 	return "", errors.New("Chrome/Chromium executable not found; pass --chrome-path")
 }
 
-// Candidates is the ordered list FindChrome walks when no path is given. Chrome
-// and Chromium lead, so a machine that has them keeps the binary it always
-// picked; the rest are there so a machine with only a Chromium fork on it still
-// starts. Every browser in setup's table appears here, which a test in that
-// package enforces — the two lists drift apart silently otherwise.
+// Candidates is the ordered list FindChrome walks when no path is given.
 func Candidates(goos string) []string {
 	switch goos {
 	case "darwin":

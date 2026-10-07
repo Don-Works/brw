@@ -15,9 +15,6 @@ type KeyDescriptor struct {
 	Modifiers             int64
 }
 
-// functionKey maps "f1".."f24" (case-insensitive) to its descriptor, or returns
-// nil when raw is not a function-key name. VK_F1 is 0x70 and the codes run
-// contiguously, so F<n> => 0x70 + (n-1).
 func functionKey(raw string) *KeyDescriptor {
 	s := strings.ToLower(strings.TrimSpace(raw))
 	if len(s) < 2 || s[0] != 'f' {
@@ -31,13 +28,7 @@ func functionKey(raw string) *KeyDescriptor {
 	return &KeyDescriptor{Key: name, Code: name, WindowsVirtualKeyCode: int64(0x70 + n - 1)}
 }
 
-// ApplyModifiers folds extra modifier bits into desc and re-derives the text the
-// keystroke inserts. Chrome types the event's text verbatim and applies no
-// layout of its own, so a modifier the text does not reflect types the wrong
-// character: "shift+a" inserted nothing at all, and pressing "a" while Shift was
-// held through key_down inserted a lowercase "a" the page saw with shiftKey
-// true. Ctrl, Alt and Meta suppress insertion instead, which is what Chrome does
-// for a real accelerator.
+// ApplyModifiers folds extra modifier bits into desc and re-derives the text the keystroke inserts.
 func ApplyModifiers(desc KeyDescriptor, extra int64) KeyDescriptor {
 	desc.Modifiers |= extra
 	if desc.Text == "" {
@@ -58,8 +49,7 @@ func ApplyModifiers(desc KeyDescriptor, extra int64) KeyDescriptor {
 	if shifted == r {
 		return desc
 	}
-	// event.key carries the generated character, so it moves with the text. A
-	// named key ("Enter", "Space") keeps the name it already has.
+
 	if desc.Key == desc.Text {
 		desc.Key = string(shifted)
 	}
@@ -67,9 +57,6 @@ func ApplyModifiers(desc KeyDescriptor, extra int64) KeyDescriptor {
 	return desc
 }
 
-// shiftedPunctuation is the US layout, which is the one a synthesised CDP key
-// event describes: the virtual key codes DescribeKey emits are US codes, so the
-// character Shift produces has to be read off the same layout.
 var shiftedPunctuation = map[rune]rune{
 	'1': '!', '2': '@', '3': '#', '4': '$', '5': '%',
 	'6': '^', '7': '&', '8': '*', '9': '(', '0': ')',
@@ -87,9 +74,6 @@ func shiftRune(r rune) rune {
 	return r
 }
 
-// chordModifiers are the prefixes a chord may carry. DescribeKey and
-// IsCommandKey read the same table, so the set of chords brw dispatches and the
-// set it accepts as a command cannot drift apart.
 var chordModifiers = map[string]int64{
 	"alt": ModifierAlt, "option": ModifierAlt,
 	"ctrl": ModifierCtrl, "control": ModifierCtrl,
@@ -97,9 +81,6 @@ var chordModifiers = map[string]int64{
 	"shift": ModifierShift,
 }
 
-// namedKey resolves the keys brw names — Enter, Tab, the arrows, the function
-// keys, the modifiers — as opposed to a bare character, which a page receives
-// as inserted text rather than as a command. Returns nil for anything unnamed.
 func namedKey(raw string) *KeyDescriptor {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "enter", "return":
@@ -138,27 +119,10 @@ func namedKey(raw string) *KeyDescriptor {
 		return mk
 	}
 
-	// Function keys F1–F24. event.key and code are both "F<n>", and the Windows
-	// virtual-key codes are contiguous from VK_F1 = 0x70 (112). Handled here rather
-	// than as 24 switch cases so a page listening on keyCode/which sees the right
-	// value instead of the raw-string fallback (VK 0), which silently no-ops.
 	return functionKey(raw)
 }
 
-// IsCommandKey reports whether raw names a keystroke that issues a command
-// rather than entering a character.
-//
-// A caller that persists a recorded keystroke needs the distinction: "Enter",
-// "ctrl+shift+Tab" and "meta+s" are commands, while "7" and "shift+a" are one
-// character of whatever was being typed, and storing the keystroke stores the
-// data.
-//
-// Two ways to be a command, and the second is why this is not a lookup in the
-// name table. Either the final part names a key — Enter, Tab, an arrow, F5, a
-// bare modifier — or the chord suppresses insertion, which is what makes ctrl+a
-// a command and shift+a the letter "A". Whether it suppresses is read off the
-// descriptor that actually gets dispatched rather than restated here, so a
-// modifier whose insertion behaviour changes moves both together.
+// IsCommandKey reports whether raw names a keystroke that issues a command rather than entering a character.
 func IsCommandKey(raw string) bool {
 	parts := strings.Split(raw, "+")
 	for _, part := range parts[:len(parts)-1] {
@@ -170,9 +134,7 @@ func IsCommandKey(raw string) bool {
 	if namedKey(final) != nil {
 		return true
 	}
-	// Anything else is either one character or nothing brw can name: "ctrl+foo"
-	// dispatches a keystroke with no virtual key code, and accepting it because
-	// it inserts no text would accept a step that does nothing.
+
 	if r, size := utf8.DecodeRuneInString(final); r == utf8.RuneError || size != len(final) {
 		return false
 	}
@@ -186,9 +148,7 @@ func DescribeKey(raw string) KeyDescriptor {
 		for _, part := range parts[:len(parts)-1] {
 			modifiers |= chordModifiers[strings.ToLower(strings.TrimSpace(part))]
 		}
-		// ApplyModifiers ORs rather than assigns: the final part may itself be a
-		// modifier ("ctrl+shift"), and dropping its own bit would report a chord
-		// that never had Shift down.
+
 		return ApplyModifiers(DescribeKey(parts[len(parts)-1]), modifiers)
 	}
 	if named := namedKey(raw); named != nil {

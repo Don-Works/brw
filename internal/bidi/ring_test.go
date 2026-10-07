@@ -11,10 +11,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-// A long session must not grow the event buffer without limit, and the ring
-// that bounds it must not cost Await an event it has not seen yet. Sequence
-// numbers are what separate the two: a slice index would shift under the drop
-// and Await would step over the events the ring pushed forward.
 func TestEventRingIsBoundedAndAwaitStillSeesWhatIsLeft(t *testing.T) {
 	const flood = maxRecordedEvents * 2
 	fake := &fakeBiDi{handle: func(conn *websocket.Conn, id uint64, method string, params json.RawMessage) {
@@ -26,8 +22,7 @@ func TestEventRingIsBoundedAndAwaitStillSeesWhatIsLeft(t *testing.T) {
 				"params": map[string]any{"text": fmt.Sprintf("entry-%d", i)},
 			})
 		}
-		// The one the wait is for, last, so it is in the ring while every
-		// earlier event has been pushed out of it.
+
 		send(t, conn, map[string]any{
 			"type":   "event",
 			"method": "browsingContext.load",
@@ -60,8 +55,6 @@ func TestEventRingIsBoundedAndAwaitStillSeesWhatIsLeft(t *testing.T) {
 		t.Fatalf("the connection holds %d events after %d arrived; the ring caps at %d", held, flood+1, maxRecordedEvents)
 	}
 
-	// The oldest entries are the ones that go. Asking for one by its text is
-	// how the drop is observed from outside.
 	oldest := func() bool {
 		for _, ev := range c.Events() {
 			if strings.Contains(string(ev.Params), `"entry-0"`) {
@@ -75,8 +68,6 @@ func TestEventRingIsBoundedAndAwaitStillSeesWhatIsLeft(t *testing.T) {
 	}
 }
 
-// Await must not spin when nothing matches: a wait for a method that never
-// arrives ends at its deadline, not on the first event in the ring.
 func TestAwaitStillTimesOutUnderAFullRing(t *testing.T) {
 	fake := &fakeBiDi{handle: func(conn *websocket.Conn, id uint64, method string, params json.RawMessage) {
 		send(t, conn, map[string]any{"type": "success", "id": id, "result": map[string]any{}})
