@@ -57,6 +57,9 @@ func (b *Bridge) snapshot(ctx context.Context, opts snapshot.SnapshotOptions, sk
 		}
 
 		snapshot.PromoteCrossOriginFrames(&snap, readBoxes)
+		if err := b.guardCurrentURL(ctx); err != nil {
+			return snapshot.PageSnapshot{}, err
+		}
 	}
 	snap.Metadata = transport.apply(snap.Metadata)
 	if !bypassCache {

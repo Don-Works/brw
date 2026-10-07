@@ -49,7 +49,6 @@ func Reference(value string) (string, bool) {
 	return name, true
 }
 
-
 func ValidateReference(name string) error {
 	if name == "" {
 		return errors.New("credential reference name is empty")

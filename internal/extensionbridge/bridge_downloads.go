@@ -19,6 +19,11 @@ func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error)
 		return browser.DownloadsResult{}, err
 	}
 	if !payload.Supported {
+		for _, entry := range payload.Downloads {
+			if err := browser.CheckDownloadSource(ctx, entry.URL); err != nil {
+				return browser.DownloadsResult{}, err
+			}
+		}
 		return browser.DownloadsResult{
 			Downloads: payload.Downloads,
 			Count:     len(payload.Downloads),
@@ -28,6 +33,7 @@ func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error)
 	}
 
 	b.downloadsMu.Lock()
+	var cursorTab string
 	result := append([]browser.DownloadEntry(nil), payload.Downloads...)
 	if _, recipeScoped := browser.AllowedOriginsFromContext(ctx); recipeScoped {
 		tabID := browser.TabIDFromContext(ctx)
@@ -42,9 +48,22 @@ func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error)
 				result = append(result, entry)
 			}
 		}
-		b.downloadCursors[tabID] = b.downloadSequence
+		cursorTab = tabID
 	}
 	b.downloadsMu.Unlock()
+	for _, entry := range result {
+		if err := browser.CheckDownloadSource(ctx, entry.URL); err != nil {
+			return browser.DownloadsResult{}, err
+		}
+	}
+	if err := b.guardCurrentURL(ctx); err != nil {
+		return browser.DownloadsResult{}, err
+	}
+	if cursorTab != "" {
+		b.downloadsMu.Lock()
+		b.downloadCursors[cursorTab] = max(b.downloadCursors[cursorTab], payload.Sequence)
+		b.downloadsMu.Unlock()
+	}
 	if result == nil {
 		result = []browser.DownloadEntry{}
 	}
@@ -64,6 +83,7 @@ type downloadSnapshotPayload struct {
 	Note      string                  `json:"note"`
 	// ChangedAt is decoded separately so browser.DownloadEntry, which is fingerprinted, stays unchanged.
 	ChangedAt map[string]time.Time `json:"-"`
+	Sequence  uint64               `json:"-"`
 }
 
 func decodeDownloadChangeTimes(raw []byte) map[string]time.Time {
@@ -117,6 +137,7 @@ func (b *Bridge) downloadSnapshot(ctx context.Context) (downloadSnapshotPayload,
 	b.downloadsMu.Lock()
 	b.ensureDownloadTrackingMapsLocked()
 	b.ingestDownloadSnapshotLocked(payload.Downloads)
+	payload.Sequence = b.downloadSequence
 	b.downloadsMu.Unlock()
 	return payload, nil
 }

@@ -84,7 +84,14 @@ func (b *Bridge) evaluateReadOnly(ctx context.Context, expression, tabID string,
 	return err
 }
 
-func (b *Bridge) evaluateRuntime(ctx context.Context, expression, tabID string, userGesture, replMode bool, dst any) error {
+func (b *Bridge) evaluateRuntime(ctx context.Context, expression, tabID string, userGesture, replMode bool, dst any) (resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			if err := b.guardCurrentURL(ctx); err != nil {
+				resultErr = err
+			}
+		}
+	}()
 	params := map[string]any{
 		"expression":    expression,
 		"returnByValue": true,
