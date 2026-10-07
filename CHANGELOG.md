@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.22.0 - 2026-10-07
+
+- Ship `brw-testbed`, a seeded adversarial page with difficult reading, hydration,
+  virtualized rows, overlays, child frames, synthetic sensitive forms, downloads,
+  uploads and real SSE/WebSocket disconnect, replay and reconnect. Add a strict
+  feature companion that invokes the actual MCP catalogue through real consent
+  and approval gates and compares effects with the fixture oracle.
+- Consolidate browser emulation and operator approval work. Keep read and action
+  consent independent, with exact-action approvals for gated writes. Recheck the
+  current document and child-frame destination before effects and returned data,
+  including notifications, typed getters, retained downloads and replay results.
+- Complete the Ponytail source and test audit: reuse shared validation and cleanup,
+  remove dead wrappers and obsolete profile-clone setup, simplify bounded helpers
+  and correct tests that could pass without exercising their claimed behavior.
+  Preserve private token handling, download bounds and cancellation cleanup.
+- Replace repeated snapshot serialization during byte-budget trimming with a
+  bounded search. Preserve the exact output limit and Unicode boundary behavior;
+  the measured gain applies to serialization, not whole browser tasks.
+- Keep deterministic ranked reader evidence when an optional classifier or answer
+  model is unavailable, slow or invalid. Return an explicit bounded excerpt and
+  fixed fallback reason, retain source ranges, enforce one shared model deadline
+  and reap owned HTTP children. Collection and cleanup failures remain job errors.
+- Add correlated elapsed-time MCP progress for long browser and reader calls with
+  supplied progress tokens. Preserve concurrent ping and cancellation, stop
+  progress before terminal delivery, and document Maix host-side integration gaps.
+- Improve metadata-only usage outcomes and error classification. Keep response-size
+  estimates separate from provider tokens and overlapping transport layers.
+- Document current local retrieval/vision candidates, graceful fallback and the
+  qualification contract. Add a plan-only owned-image proposal harness; ordinary
+  browser tools remain independent of models and no model activates automatically.
+- Update Go to 1.26.8, websocket to 1.8.15, x/net to 0.59.0 and axe-core to 4.14.0.
+  Bundle the testbed with all supported release/install paths and sync the complete
+  agent skill, including portable deployment links and context-efficient reads.
+
 ## 0.21.0 - 2026-10-06
 
 - Add durable read-only page watchers with metadata-only change, unavailable and
