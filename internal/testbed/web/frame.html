@@ -1,0 +1,5 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Fixture frame</title><style>body{font:16px system-ui;padding:12px}button{padding:8px}</style></head><body><h3>Owned frame report</h3><p id="version">Frame initializing</p><button id="frame-action">Frame action</button><output id="result" role="status"></output><script>
+let state;
+fetch('/api/state').then(r=>r.json()).then(value=>{state=value;document.getElementById('version').textContent='Frame version '+new URL(location.href).searchParams.get('version')+' · origin '+location.origin;});
+document.getElementById('frame-action').onclick=async()=>{if(!state)return;const response=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run_id:state.run_id,document_epoch:state.document_epoch,kind:'frame-click'})});document.getElementById('result').textContent=response.ok?'Frame action recorded':'Frame document became stale';};
+</script></body></html>
