@@ -42,7 +42,7 @@ func TestExitOnUpgradeEnabled(t *testing.T) {
 func TestUpgradeWatch(t *testing.T) {
 	cases := []struct {
 		name string
-		// replace runs once the watch has recorded the starting binary.
+
 		replace func(t *testing.T, path string)
 		busy    bool
 		want    bool

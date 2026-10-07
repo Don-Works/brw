@@ -28,8 +28,6 @@ func TestBuildSiteConsentOff(t *testing.T) {
 	}
 }
 
-// TestBuildSiteConsentRefusesHalfConfiguredGates proves a flag that could only
-// do nothing is refused rather than accepted.
 func TestBuildSiteConsentRefusesHalfConfiguredGates(t *testing.T) {
 	policy := consentFixturePolicy(t)
 	cases := []struct {
@@ -91,8 +89,6 @@ func TestBuildSiteConsentCreatesTheStoreBesideThePolicy(t *testing.T) {
 	}
 }
 
-// TestAdminConfigCannotBeWeakenedByAFlag proves the direction of the OR: the
-// flag can only add the gate, never remove one the admin config set.
 func TestAdminConfigCannotBeWeakenedByAFlag(t *testing.T) {
 	policy := consentFixturePolicy(t)
 	configPath := filepath.Join(filepath.Dir(policy), "site-consent.json")
@@ -129,8 +125,7 @@ func TestAdminConfigIsDiscoveredBesideThePolicy(t *testing.T) {
 func TestAdminConfigTypoIsRefused(t *testing.T) {
 	policy := consentFixturePolicy(t)
 	configPath := filepath.Join(filepath.Dir(policy), "site-consent.json")
-	// blocked_origin, not blocked_origins: silently ignoring it would leave an
-	// operator believing a site was blocked when it was not.
+
 	if err := os.WriteFile(configPath, []byte(`{"blocked_origin":["evil.test"]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}

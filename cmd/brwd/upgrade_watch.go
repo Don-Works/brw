@@ -12,17 +12,10 @@ import (
 
 const (
 	upgradePollInterval = 5 * time.Second
-	// upgradeSettlePolls is how many consecutive polls must see the same new
-	// file before it is trusted: an install copies the binary and then re-signs
-	// it, and exiting between the two would start the unsigned copy.
+
 	upgradeSettlePolls = 2
 )
 
-// exitOnUpgradeEnabled decides whether this daemon exits when an install
-// replaces its executable. "auto" turns it on only under a service manager that
-// starts it again: launchd (the parent is pid 1 on macOS) or systemd, which
-// sets INVOCATION_ID for every unit it runs. A daemon started from a terminal
-// would stay down.
 func exitOnUpgradeEnabled(mode, goos string, ppid int, getenv func(string) string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "on":
@@ -39,8 +32,6 @@ func exitOnUpgradeEnabled(mode, goos string, ppid int, getenv func(string) strin
 	}
 }
 
-// upgradeWatch polls the daemon's own executable and reports when it has been
-// replaced by a settled, executable file and the daemon has nothing in flight.
 type upgradeWatch struct {
 	path     string
 	interval time.Duration
@@ -84,9 +75,6 @@ func sameBinary(a, b os.FileInfo) bool {
 	return os.SameFile(a, b) && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
 }
 
-// watchForUpgrade stops the daemon once its binary has been replaced, so the
-// service manager restarts it on the new build. Without it an install updates
-// the file and the old code keeps serving until the next reboot.
 func watchForUpgrade(ctx context.Context, stop func(), busy func() bool) {
 	executable, err := os.Executable()
 	if err != nil {

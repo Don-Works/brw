@@ -11,10 +11,6 @@ import (
 	cdplaunch "github.com/Don-Works/brw/internal/cdp"
 )
 
-// A launch that asks for a plugin-supplied browser AND for something only a
-// browser on this machine can do has to fail by name. Each of these resolves
-// the same way if it is not refused: the flag is ignored and the run goes ahead
-// on a fresh, unauthenticated cloud browser.
 func TestEveryLaunchThatConflictsWithAProviderIsRefusedByName(t *testing.T) {
 	for name, test := range map[string]struct {
 		launch  providerLaunch
@@ -30,9 +26,7 @@ func TestEveryLaunchThatConflictsWithAProviderIsRefusedByName(t *testing.T) {
 		"headless":            {providerLaunch{Headless: true}, "decided over there"},
 		"extension":           {providerLaunch{Config: browser.Config{Extensions: []string{"/tmp/fixture-ext"}}}, "this machine's filesystem"},
 		"chrome arg":          {providerLaunch{Config: browser.Config{ChromeArgs: []string{"--mute-audio"}}}, "not launching Chrome"},
-		// Refused HERE, not only inside browser.New: checkRemoteConfig runs after
-		// the operator's mint program has executed and the provider has billed a
-		// session.
+
 		"debugging port": {providerLaunch{Config: browser.Config{Port: 9222}}, "no debugging port"},
 		"real profile":   {providerLaunch{Config: browser.Config{AllowRealProfile: true}}, "profile reuse"},
 		"proxy": {
@@ -65,9 +59,6 @@ func TestEveryLaunchThatConflictsWithAProviderIsRefusedByName(t *testing.T) {
 	}
 }
 
-// Three of the refusals are the shared capability table's, so the message an
-// operator reads here is the same one an agent reads from a tool error. A
-// second spelling of "why not" is how the two drift.
 func TestProviderRefusalsCarryTheSharedCapabilityClass(t *testing.T) {
 	for _, launch := range []providerLaunch{{Bridge: true}, {Login: true}, {Profile: "p"}, {Workspace: "w"}} {
 		err := refuseWithProvider(launch)
@@ -77,14 +68,9 @@ func TestProviderRefusalsCarryTheSharedCapabilityClass(t *testing.T) {
 	}
 }
 
-// Every field of the launch struct has to be something the table looks at, or
-// it is a conflict this daemon collects and never checks.
 func TestEveryProviderLaunchFieldIsCheckedBySomething(t *testing.T) {
 	launchType := reflect.TypeOf(providerLaunch{})
-	// Config's own fields are checked one by one. It gets more than one case
-	// because a single representative proves only that SOME field of Config is
-	// read: Port lived inside Config, was satisfied by the RemoteURL case, and
-	// was refused nowhere in this table until a reviewer went looking.
+
 	checked := map[string][]providerLaunch{
 		"Bridge":       {{Bridge: true}},
 		"UpstreamHTTP": {{UpstreamHTTP: "http://127.0.0.1:17410"}},
@@ -117,26 +103,15 @@ func TestEveryProviderLaunchFieldIsCheckedBySomething(t *testing.T) {
 	}
 }
 
-// configFieldsReadOffTheFlagInstead are the settings the startup table does not
-// read from the config, because the config carries a DEFAULT for them that
-// describes this machine: refusing on the default would make a provider
-// unusable without also passing a flag to unset one. Each names the launch
-// shape that IS refused when the operator asked for it explicitly.
 var configFieldsReadOffTheFlagInstead = map[string]providerLaunch{
 	"UserDataDir":      {Profile: "p"},
 	"ProfileDirectory": {Profile: "p"},
 	"Headless":         {Headless: true},
-	// Both of these are produced by the Chrome opt-in discovery rather than
-	// typed: BrowserWSURL is the endpoint it resolved, and SignedInProfile is
-	// the marker it stamps on the config. --chrome-opt-in is what an operator
-	// actually passes, so that is what startup refuses.
+
 	"BrowserWSURL":    {ChromeOptIn: true},
 	"SignedInProfile": {ChromeOptIn: true},
 }
 
-// probeConfigField returns a non-zero value for one browser.Config field, so
-// the enumeration below can ask the manager's own table about each field on its
-// own rather than trusting a hand-written list of the fields that table reads.
 func probeConfigField(field reflect.StructField) (reflect.Value, bool) {
 	switch field.Type.Kind() {
 	case reflect.String:
@@ -153,25 +128,13 @@ func probeConfigField(field reflect.StructField) (reflect.Value, bool) {
 	return reflect.Value{}, false
 }
 
-// Every setting of browser.Config the MANAGER's own table refuses has to be
-// refused at STARTUP too. The inner gate runs inside browser.New, after the
-// mint program has run and the provider has billed a session, and its failure
-// then also has to unwind a session brw already holds.
-//
-// Enumerated by reflecting over browser.Config and asking
-// browser.ProviderConfigProblems — the very function checkRemoteConfig applies —
-// about each field one at a time. A hand-written list of cases here would cover
-// the fields that table reads TODAY and stay green for a field added to it
-// tomorrow and forgotten in refuseWithProvider, which is the "satisfied by one
-// representative" defect that hid --remote-debugging-port.
 func TestConfigFieldsRefusedByTheManagerAreAlsoRefusedAtStartup(t *testing.T) {
 	configType := reflect.TypeOf(browser.Config{})
 	enumerated := 0
 	for index := 0; index < configType.NumField(); index++ {
 		field := configType.Field(index)
 		if field.Name == "Remote" {
-			// Remote IS the plugin-supplied browser, not a setting that
-			// conflicts with one, and there is no RemoteTarget at startup.
+
 			continue
 		}
 		probe, ok := probeConfigField(field)
@@ -182,7 +145,7 @@ func TestConfigFieldsRefusedByTheManagerAreAlsoRefusedAtStartup(t *testing.T) {
 		cfg := browser.Config{}
 		reflect.ValueOf(&cfg).Elem().Field(index).Set(probe)
 		if browser.ProviderConfigProblems(cfg) == nil {
-			// Not a setting the manager refuses; startup has nothing to mirror.
+
 			continue
 		}
 		enumerated++
@@ -199,8 +162,7 @@ func TestConfigFieldsRefusedByTheManagerAreAlsoRefusedAtStartup(t *testing.T) {
 	if enumerated == 0 {
 		t.Fatal("the probe found no refused field, so this test asserts nothing")
 	}
-	// A stale exemption is as bad as a missing case: it excuses a field from the
-	// config half of the check for a reason that no longer applies.
+
 	for name, launch := range configFieldsReadOffTheFlagInstead {
 		field, ok := configType.FieldByName(name)
 		if !ok {
@@ -219,10 +181,6 @@ func TestConfigFieldsRefusedByTheManagerAreAlsoRefusedAtStartup(t *testing.T) {
 	}
 }
 
-// The identity a provider-backed launch actually produces. It never runs the
-// profile-policy block (--profile and --workspace are refused with a provider),
-// so every field naming a profile on this machine is empty — and an identity
-// guard pinned to a workspace fails against it.
 func TestTheIdentityAProviderLaunchReportsCarriesNoProfile(t *testing.T) {
 	identity := resolveIdentity(identityInputs{BrowserProvider: true})
 	if identity.Workspace != "" || identity.Profile != "" || identity.UserDataDir != "" || identity.ProfileDirectory != "" {
@@ -234,14 +192,14 @@ func TestTheIdentityAProviderLaunchReportsCarriesNoProfile(t *testing.T) {
 	if identity.Transport != brwidentity.TransportOffHostCDP {
 		t.Errorf("transport = %q, want %q", identity.Transport, brwidentity.TransportOffHostCDP)
 	}
-	// The fail-closed half: a proxy pinned to a workspace must not accept it.
+
 	if got := identity.Mismatches(brwidentity.Identity{Workspace: "client-a"}); len(got) != 1 {
 		t.Fatalf("a workspace pin against a provider-backed daemon = %v, want it refused", got)
 	}
 	if got := identity.Mismatches(brwidentity.Identity{Profile: "client-a-chrome"}); len(got) != 1 {
 		t.Fatalf("a profile pin against a provider-backed daemon = %v, want it refused", got)
 	}
-	// And the local lanes still report what they always did.
+
 	for _, test := range []struct {
 		name  string
 		in    identityInputs
@@ -251,10 +209,7 @@ func TestTheIdentityAProviderLaunchReportsCarriesNoProfile(t *testing.T) {
 		{"direct", identityInputs{}, "direct", brwidentity.TransportDirectCDP},
 		{"bridge", identityInputs{Bridge: true}, "bridge", brwidentity.TransportExtensionBridge},
 		{"proxy", identityInputs{UpstreamHTTP: "http://127.0.0.1:17410"}, "upstream-http", ""},
-		// --remote and the Chrome opt-in are local lanes too, and both attach to
-		// a browser brw did not start. Neither may be reported as the provider's
-		// lane: that one refuses this machine's disk, clipboard and session
-		// store, and these three do not.
+
 		{"remote", identityInputs{RemoteURL: "http://127.0.0.1:9222"}, "remote", brwidentity.TransportRemoteCDP},
 		{"chrome opt-in", identityInputs{ChromeOptIn: true}, "chrome-opt-in", brwidentity.TransportChromeOptIn},
 	} {
@@ -267,10 +222,6 @@ func TestTheIdentityAProviderLaunchReportsCarriesNoProfile(t *testing.T) {
 	}
 }
 
-// A provider-backed daemon must not resolve to the same on-disk scope as a
-// local daemon started without a profile. Both have an identity with no profile
-// fields, and that scope is where the artifact store and the session-snapshot
-// store live — the store brw_state reads.
 func TestAProviderBackedDaemonDoesNotShareTheDefaultStoreScope(t *testing.T) {
 	local := runtimeScopeDir(brwidentity.Identity{})
 	provider := runtimeScopeDir(brwidentity.Identity{Transport: brwidentity.TransportOffHostCDP})
@@ -280,14 +231,13 @@ func TestAProviderBackedDaemonDoesNotShareTheDefaultStoreScope(t *testing.T) {
 	if provider == local {
 		t.Fatalf("a provider-backed daemon resolves to %q, the same store as a local daemon with no profile", provider)
 	}
-	// The local lanes keep the scope they already have on disk: moving them
-	// would orphan every existing artifact and snapshot.
+
 	for _, transport := range []string{"", brwidentity.TransportDirectCDP, brwidentity.TransportExtensionBridge, brwidentity.TransportRemoteCDP, brwidentity.TransportChromeOptIn} {
 		if got := runtimeScopeDir(brwidentity.Identity{Transport: transport}); got != "default" {
 			t.Errorf("transport %q = %q, want the store it already has", transport, got)
 		}
 	}
-	// And a named profile still scopes by the profile rather than by transport.
+
 	named := brwidentity.Identity{Workspace: "client-a", Profile: "client-a-chrome"}
 	if runtimeScopeDir(named) == "default" {
 		t.Error("a named profile resolved to the default scope")

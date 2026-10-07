@@ -53,7 +53,7 @@ func validateApprovalOptions(opts approvalOptions) error {
 		return errors.New("--approvals requires --approval-token-file")
 	}
 	_, port, err := net.SplitHostPort(opts.httpAddr)
-	if err != nil || !isLoopback(opts.httpAddr) {
+	if err != nil || !httpBindIsLoopback(opts.httpAddr) {
 		return errors.New("--approvals requires an enabled loopback --http listener")
 	}
 	portNumber, err := strconv.Atoi(port)
@@ -177,7 +177,7 @@ func rejectApprovalArtifactPath(path, root string) error {
 	if err != nil {
 		return err
 	}
-	if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+	if filepath.IsLocal(relative) {
 		return errors.New("approval operator token and store must live outside the artifact directory")
 	}
 	return nil

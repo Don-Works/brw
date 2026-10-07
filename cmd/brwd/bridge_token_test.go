@@ -13,11 +13,6 @@ import (
 	"github.com/Don-Works/brw/internal/extensionbridge"
 )
 
-// TestBridgeRequireTokenDefaults pins the posture an unconfigured install runs
-// with. Before this, the token was optional unless an operator set an env var
-// nothing in setup sets, so every default install accepted a tokenless hello —
-// and the Origin check that gets a caller that far is forgeable by any local
-// process.
 func TestBridgeRequireTokenDefaults(t *testing.T) {
 	tests := []struct {
 		name string
@@ -39,8 +34,6 @@ func TestBridgeRequireTokenDefaults(t *testing.T) {
 	}
 }
 
-// TestBridgeConstructorRequiresToken proves the safe default lives in the
-// library, so a caller that never calls SetRequireToken is still strict.
 func TestBridgeConstructorRequiresToken(t *testing.T) {
 	b := extensionbridge.New("", 0, "")
 	if !b.RequireToken() {
@@ -48,11 +41,6 @@ func TestBridgeConstructorRequiresToken(t *testing.T) {
 	}
 }
 
-// TestBridgeTokenIsNotWrittenByDefault: the token used to be persisted to
-// ~/.brw/bridge-token on every launch, where any process running as this user
-// could read it without the daemon's cooperation and for as long as the file
-// survived — which is forever, because nothing removed it. Nothing in the tree
-// ever read it back.
 func TestBridgeTokenIsNotWrittenByDefault(t *testing.T) {
 	const fixtureToken = "fixture-bridge-token-value-one"
 
@@ -110,8 +98,6 @@ func TestBridgeTokenIsNotWrittenByDefault(t *testing.T) {
 	}
 }
 
-// TestBridgeTokenFileIsPerWorkspace keeps two bridge daemons on one machine from
-// clobbering each other's opted-in file, last writer wins.
 func TestBridgeTokenFileIsPerWorkspace(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -126,14 +112,6 @@ func TestBridgeTokenFileIsPerWorkspace(t *testing.T) {
 	}
 }
 
-// TestBridgeTokenSweepClearsEveryCopyAnOlderDaemonLeft: the cleanup used to be
-// os.Remove on the single path THIS launch resolved to, which left two files at
-// rest that nothing would ever collect. A machine that once ran a
-// default-workspace brwd and now runs only workspace-bound ones kept
-// ~/.brw/bridge-token forever, and BRW_BRIDGE_TOKEN_FILE pointing anywhere else
-// meant the default path was never visited at all. docs/auth-model.md says a
-// launch cleans up after the versions that wrote it, so the sweep is the
-// directory, not one name.
 func TestBridgeTokenSweepClearsEveryCopyAnOlderDaemonLeft(t *testing.T) {
 	const fixtureToken = "fixture-bridge-token-value-three"
 	const stale = "fixture-bridge-token-value-four"
@@ -141,8 +119,7 @@ func TestBridgeTokenSweepClearsEveryCopyAnOlderDaemonLeft(t *testing.T) {
 	tests := []struct {
 		name      string
 		workspace string
-		// optIn is BRW_BRIDGE_TOKEN_FILE: "" unset, "~/<name>" inside ~/.brw,
-		// anything else a path outside it.
+
 		optIn    string
 		existing []string
 		wantKept []string
@@ -231,12 +208,6 @@ func TestBridgeTokenSweepClearsEveryCopyAnOlderDaemonLeft(t *testing.T) {
 	}
 }
 
-// TestBridgeTokenSweepRunsOnALaunchThatMintsNoToken: only the extension-bridge
-// mode mints a handshake token, but the file is left behind by whichever mode
-// ran last. A machine that upgrades and then runs direct-CDP or upstream-proxy
-// used to keep ~/.brw/bridge-token forever, because the only code that cleaned
-// up sat inside the branch that no longer runs — and docs/auth-model.md promises
-// the operator that every launch sweeps.
 func TestBridgeTokenSweepRunsOnALaunchThatMintsNoToken(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -264,7 +235,6 @@ func TestBridgeTokenSweepRunsOnALaunchThatMintsNoToken(t *testing.T) {
 			}
 			t.Setenv("BRW_BRIDGE_TOKEN_FILE", optIn)
 
-			// The empty token is the launch that minted none.
 			if err := bridgeTokenAtLaunch(bridgeTokenFile(""), ""); err != nil {
 				t.Fatalf("bridgeTokenAtLaunch: %v", err)
 			}
@@ -284,14 +254,6 @@ func TestBridgeTokenSweepRunsOnALaunchThatMintsNoToken(t *testing.T) {
 	}
 }
 
-// TestEveryLaunchSweepsTheBridgeTokenFile is the other half of the claim, and
-// the half a unit test on the sweep cannot reach: which launches call it.
-//
-// brwd picks one of three controllers, and the previous cleanup sat inside the
-// bridge one, so two of the three modes swept nothing while the documentation
-// said all of them did. Asserting the call is a statement of main's own body —
-// rather than of any branch inside it — is what closes that by construction: a
-// fourth mode added later cannot miss it either.
 func TestEveryLaunchSweepsTheBridgeTokenFile(t *testing.T) {
 	const call = "bridgeTokenAtLaunch"
 	fileSet := token.NewFileSet()
@@ -324,9 +286,6 @@ func TestEveryLaunchSweepsTheBridgeTokenFile(t *testing.T) {
 		return found
 	}
 
-	// Only a statement of main's own body counts, and for an `if err := ...`
-	// only its initialiser: a call in the BODY of a branch is exactly the shape
-	// this test exists to reject.
 	unconditional := 0
 	for _, stmt := range body.List {
 		switch typed := stmt.(type) {
@@ -350,5 +309,35 @@ func TestEveryLaunchSweepsTheBridgeTokenFile(t *testing.T) {
 	case total != unconditional:
 		t.Fatalf("%s is called %d time(s) in cmd/brwd/main.go, %d of them on every path; the rest sit inside a branch some launch modes do not take",
 			call, total, unconditional)
+	}
+}
+
+func TestBridgeTokenReplacementIsPrivateAndDoesNotFollowSymlinks(t *testing.T) {
+	for _, symlink := range []bool{false, true} {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		path := filepath.Join(home, "token")
+		original := filepath.Join(home, "original")
+		if err := os.WriteFile(original, []byte("keep original"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if symlink {
+			if err := os.Symlink(original, path); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.WriteFile(path, []byte("old token"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := bridgeTokenAtLaunch(bridgeTokenTarget{Path: path, OptedIn: true}, "new token"); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			t.Errorf("replacement token is not a private regular file: %v %v", info, err)
+		}
+		body, err := os.ReadFile(original)
+		if err != nil || string(body) != "keep original" {
+			t.Errorf("symlink destination overwritten: %q %v", body, err)
+		}
 	}
 }

@@ -15,14 +15,6 @@ import (
 	"time"
 )
 
-// A guard that main() never calls decides nothing, and main() has no seam a
-// unit test can reach: the decisions are taken inline between flag parsing and
-// the browser launch. So the tests that prove the wiring run the real binary.
-//
-// This used to be a strings.Contains over main.go's own source, which passes on
-// a call moved into a branch that never executes and on a call that survives
-// only inside a comment. Running the binary is what tells those apart.
-
 var (
 	sharedBrwdBinary string
 	sharedBrwdDir    string
@@ -45,7 +37,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// brwdBinary is the daemon under test, built once for the whole package.
 func brwdBinary(t *testing.T) string {
 	t.Helper()
 	if sharedBrwdErr != nil {
@@ -54,9 +45,6 @@ func brwdBinary(t *testing.T) string {
 	return sharedBrwdBinary
 }
 
-// startupEnvironment is a clean environment for a daemon under test: this
-// machine's own BRW_* settings are dropped, because a test whose result depends
-// on the developer's exported BRW_IDLE_EXIT is testing the developer.
 func startupEnvironment(home string, extra ...string) []string {
 	out := make([]string, 0, len(os.Environ())+len(extra)+1)
 	for _, entry := range os.Environ() {
@@ -74,9 +62,6 @@ func startupEnvironment(home string, extra ...string) []string {
 	return append(out, extra...)
 }
 
-// runBrwdUntilItStops runs the daemon and returns its combined output and exit
-// code. It is for invocations that refuse at startup: an invocation that got as
-// far as serving would sit here until the deadline.
 func runBrwdUntilItStops(t *testing.T, args, env []string, deadline time.Duration) (string, int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
@@ -99,9 +84,6 @@ func runBrwdUntilItStops(t *testing.T, args, env []string, deadline time.Duratio
 	return output.String(), code
 }
 
-// freePort returns a loopback port nothing is listening on. A daemon under test
-// needs a concrete --http address, and hard-coding one makes two tests (or two
-// agents on this machine) fight over it.
 func freePort(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -115,10 +97,6 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// fakeDevToolsEndpoint answers /json/version as a browser would, which is what
-// --remote auto verifies before it attaches to anything. Only the discovery
-// half is real: the WebSocket it names is not served, so a daemon that gets
-// past the policy gate fails on the connection rather than driving anything.
 func fakeDevToolsEndpoint(t *testing.T) (*httptest.Server, int) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -137,8 +115,6 @@ func fakeDevToolsEndpoint(t *testing.T) (*httptest.Server, int) {
 	return server, port
 }
 
-// writeActivePort puts a browser's ephemeral debugging port where the browser
-// itself would write it.
 func writeActivePort(t *testing.T, dir string, port int) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -149,8 +125,6 @@ func writeActivePort(t *testing.T, dir string, port int) {
 	}
 }
 
-// writeBridgeOnlyPolicy writes a profile policy barring direct CDP, which is
-// the policy --remote auto has to honour.
 func writeBridgeOnlyPolicy(t *testing.T, dir, userDataDir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "browser-profiles.json")

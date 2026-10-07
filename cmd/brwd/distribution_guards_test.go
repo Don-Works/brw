@@ -16,16 +16,6 @@ import (
 
 const policyDir = "/profiles/work"
 
-// The startup gate that bars direct CDP is skipped for any non-empty --remote,
-// and "auto" is non-empty, so discovery was a way past a profile policy: attach
-// to a browser the policy did not name and then report the policy's own user
-// data directory as the identity of what you found. That identity is what
-// brw_identity answers and what the run lock hashes.
-//
-// The gate is therefore about the BROWSER, not about how discovery found it:
-// the first version exempted every DevToolsActivePort hit as "the directory the
-// policy named", which autoConnectSearchDirs makes untrue (see
-// TestAutoConnectAlsoSearchesADirectoryTheProfilePolicyDidNotName).
 func TestAutoConnectRefusalGatesOnTheBrowserNotTheDiscoveryLane(t *testing.T) {
 	probe := cdplaunch.AutoEndpoint{URL: "http://127.0.0.1:9222", Port: 9222, Browser: "Chrome/141.0.0.0", Source: cdplaunch.SourcePortProbe}
 	ownBrowser := cdplaunch.AutoEndpoint{URL: "http://127.0.0.1:54321", Port: 54321, Browser: "Chrome/141.0.0.0", Source: cdplaunch.SourceActivePortFile, From: policyDir}
@@ -41,13 +31,11 @@ func TestAutoConnectRefusalGatesOnTheBrowserNotTheDiscoveryLane(t *testing.T) {
 		wantRefused       bool
 	}{
 		{name: "a guessed port under a bridge-only profile", endpoint: probe, policyUserDataDir: policyDir, wantRefused: true},
-		// The second route the first version left open: the browser wrote this
-		// port into a directory brw searches, but not the one the policy names.
+
 		{name: "another browser's DevToolsActivePort", endpoint: otherBrowser, policyUserDataDir: policyDir, wantRefused: true},
 		{name: "the policy's own browser", endpoint: ownBrowser, policyUserDataDir: policyDir},
 		{name: "the policy's own browser, spelled differently", endpoint: spelledDifferently, policyUserDataDir: policyDir},
-		// Fail closed: a policy that bars direct CDP without naming a directory
-		// can never match, so nothing discovery finds is its browser.
+
 		{name: "a bridge-only profile that names no directory", endpoint: ownBrowser, wantRefused: true},
 		{name: "a guessed port under a direct-CDP profile", endpoint: probe, policyUserDataDir: policyDir, directCDPAllowed: true},
 		{name: "another browser under a direct-CDP profile", endpoint: otherBrowser, policyUserDataDir: policyDir, directCDPAllowed: true},
@@ -62,8 +50,7 @@ func TestAutoConnectRefusalGatesOnTheBrowserNotTheDiscoveryLane(t *testing.T) {
 			if err == nil {
 				return
 			}
-			// The fix is always to type the endpoint, so the refusal has to name
-			// the port it found and the profile that barred it.
+
 			for _, want := range []string{strconv.Itoa(tt.endpoint.Port), "chrome-work", tt.endpoint.URL} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal does not name %q: %v", want, err)
@@ -73,12 +60,6 @@ func TestAutoConnectRefusalGatesOnTheBrowserNotTheDiscoveryLane(t *testing.T) {
 	}
 }
 
-// Every way discovery can resolve an endpoint, read out of the cdp package
-// rather than hand-listed here, because a hand-listed one is what drifts: a
-// source added next year is a new lane into the same damage, and it has to be
-// covered without an edit to autoConnectRefusal. The property each one is held
-// to is the same: it may be driven under a bridge-only policy only when it
-// names that policy's own user data directory.
 func TestEveryDiscoverySourceIsGatedOnTheDirectoryItNames(t *testing.T) {
 	sources := discoverySources(t)
 	if len(sources) < 2 {
@@ -104,10 +85,6 @@ func TestEveryDiscoverySourceIsGatedOnTheDirectoryItNames(t *testing.T) {
 	}
 }
 
-// discoverySources reads the exported Source* constants out of the cdp package's
-// source. AutoEndpoint.Source is a plain string, so there is no exhaustive
-// switch a compiler would complain about; this is what makes a new lane show up
-// here on its own.
 func discoverySources(t *testing.T) []string {
 	t.Helper()
 	path := filepath.Join("..", "..", "internal", "cdp", "autoconnect.go")
@@ -145,10 +122,6 @@ func discoverySources(t *testing.T) []string {
 	return sources
 }
 
-// The premise the first version of the gate rested on, checked: a
-// DevToolsActivePort hit does NOT imply the policy's own directory, because
-// discovery also searches brw's own default profile. A browser running there is
-// a browser the policy never named.
 func TestAutoConnectAlsoSearchesADirectoryTheProfilePolicyDidNotName(t *testing.T) {
 	dirs := autoConnectSearchDirs(policyDir)
 	if len(dirs) == 0 || dirs[0] != policyDir {
@@ -172,10 +145,6 @@ func TestAutoConnectAlsoSearchesADirectoryTheProfilePolicyDidNotName(t *testing.
 	}
 }
 
-// An --upstream-http proxy and the daemon behind it are two URLs and one
-// browser. The run lock is keyed on the four profile fields, so a proxy that
-// reported none of them took the shared "unidentified" lock while the daemon
-// behind it took the profile's own, and the two interleaved on one tab.
 func TestProxyAdoptsTheProfileOfTheDaemonItForwardsTo(t *testing.T) {
 	upstream := brwidentity.Identity{
 		Workspace:        "work",
@@ -193,8 +162,7 @@ func TestProxyAdoptsTheProfileOfTheDaemonItForwardsTo(t *testing.T) {
 		adopted.UserDataDir != upstream.UserDataDir || adopted.ProfileDirectory != upstream.ProfileDirectory {
 		t.Fatalf("a proxy without a policy did not adopt the profile it drives: %+v", adopted)
 	}
-	// Its own Mode is what it is: "upstream-http" says how the agent reaches
-	// brw, and overwriting it would make the proxy claim to be the bridge.
+
 	if adopted.Mode != "upstream-http" {
 		t.Errorf("the proxy adopted the upstream's mode: %q", adopted.Mode)
 	}
@@ -202,27 +170,16 @@ func TestProxyAdoptsTheProfileOfTheDaemonItForwardsTo(t *testing.T) {
 		t.Errorf("the proxy did not adopt the upstream's transport or headlessness: %+v", adopted)
 	}
 
-	// A proxy that has its own policy already verified the upstream against it
-	// at startup; adopting would only overwrite equals, and a bug in that
-	// verification must not be papered over here.
 	pinned := brwidentity.Identity{Workspace: "other", Profile: "chrome-other", Mode: "upstream-http"}
 	if got := adoptUpstreamIdentity(pinned, upstream, true); got.Workspace != "other" || got.Profile != "chrome-other" {
 		t.Errorf("a proxy with its own profile policy took the upstream's profile: %+v", got)
 	}
 
-	// An upstream that says nothing leaves the proxy as it was rather than
-	// blanking the transport it already knew.
 	if got := adoptUpstreamIdentity(proxy, brwidentity.Identity{}, false); got != proxy {
 		t.Errorf("an empty upstream identity changed the proxy's: %+v", got)
 	}
 }
 
-// --idle-exit measures the HTTP API, so with no listener there is no watcher.
-// That used to be a startup failure, which was worse than the silence it
-// replaced: BRW_IDLE_EXIT is one of the environment-sourced defaults, so an
-// exported variable turned an ordinary `brwd --mcp --http off` into a daemon
-// that refused to start. The duration is carried to the watcher that does work
-// on a stdio daemon instead.
 func TestResolveIdleExitCarriesTheDurationRatherThanRefusing(t *testing.T) {
 	const idle = 30 * time.Minute
 	tests := []struct {
@@ -257,8 +214,7 @@ func TestResolveIdleExitCarriesTheDurationRatherThanRefusing(t *testing.T) {
 			idleExit: idle, httpAddr: "off", mcpMode: true, mcpTyped: true,
 			wantNote: "--mcp-idle-exit you set (0s)",
 		},
-		// The disposable-proxy default is a value nobody chose, so it does not
-		// outrank the duration the operator did type.
+
 		{
 			name:     "an inherited proxy default does not outrank a typed --idle-exit",
 			idleExit: idle, mcpIdleExit: 90 * time.Minute, httpAddr: "off", mcpMode: true,

@@ -18,9 +18,6 @@ import (
 	"github.com/Don-Works/brw/internal/plugin"
 )
 
-// Obviously fabricated, low entropy, and shaped like the two things a websocket
-// endpoint hides: the path Chrome authenticates the socket with, and the key a
-// hosted provider carries in the query.
 const (
 	fixtureSessionPath = "devtools-session-fixture"
 	fixtureProviderKey = "fixture-provider-key-two"
@@ -75,10 +72,6 @@ func standInPluginDirWithEndpoint(t *testing.T, websocketURL string) *plugin.Reg
 	return registry
 }
 
-// Acceptance 4, at the call site. The daemon logs what it is driving, and the
-// line it writes is the one that would put a provider's session URL into a log
-// file on disk. Asserting the type redacts is not the same as asserting this
-// call site uses the redacting form, which is the mistake that ships.
 func TestTheDaemonLogsTheProviderSessionWithoutItsCredentials(t *testing.T) {
 	registry := standInPluginDir(t)
 
@@ -102,13 +95,13 @@ func TestTheDaemonLogsTheProviderSessionWithoutItsCredentials(t *testing.T) {
 			t.Errorf("the startup log line %q carries %q, which authenticates the session", line, secret)
 		}
 	}
-	// It still has to say enough to be worth logging.
+
 	for _, want := range []string{"local.standin", "sess-7", "browsers.example"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the startup log line %q does not name %q", line, want)
 		}
 	}
-	// And the dialable form is carried to the manager, not lost to redaction.
+
 	if !strings.Contains(target.WebSocketURL, fixtureSessionPath) || !strings.Contains(target.WebSocketURL, fixtureProviderKey) {
 		t.Fatalf("the remote target lost the URL it has to dial: %q", target.RedactedURL)
 	}
@@ -120,11 +113,6 @@ func TestTheDaemonLogsTheProviderSessionWithoutItsCredentials(t *testing.T) {
 	}
 }
 
-// brw shouts about --ignore-https-errors and about --unsafe-real-profile. A
-// provider handing back a plaintext ws:// endpoint to another machine is the
-// same class of fact — every byte of the CDP session, which is page content,
-// the cookies brw_cookies reads and the text brw_fill types, crosses the
-// network in the clear — and it was the one accepted in silence.
 func TestAPlaintextEndpointToAnotherHostIsWarnedAbout(t *testing.T) {
 	for name, test := range map[string]struct {
 		endpoint string
@@ -154,8 +142,7 @@ func TestAPlaintextEndpointToAnotherHostIsWarnedAbout(t *testing.T) {
 			if warned != test.wantWarn {
 				t.Fatalf("endpoint %q warned=%v, want %v; log was %q", test.endpoint, warned, test.wantWarn, logged.String())
 			}
-			// Warned or not, the part that authenticates the socket never
-			// reaches a log line.
+
 			if strings.Contains(logged.String(), "devtools-session-fixture") {
 				t.Fatalf("the log carries the path that authenticates the session: %q", logged.String())
 			}
@@ -163,14 +150,9 @@ func TestAPlaintextEndpointToAnotherHostIsWarnedAbout(t *testing.T) {
 	}
 }
 
-// A provider session is given back exactly once per open. Manager.Close
-// releases it on a failed connect and clears the field; a caller that released
-// again would run the operator's teardown twice, resolve the provider
-// credential twice more, and log the second exit status as a failed release —
-// which reads as a leaked session when nothing leaked.
 func TestAFailedConnectGivesTheBrowserBackExactlyOnce(t *testing.T) {
 	var releases atomic.Int64
-	// Port 1 on loopback: nothing listens, so the CDP dial fails immediately.
+
 	remote := &browser.RemoteTarget{
 		WebSocketURL: "ws://127.0.0.1:1/devtools/browser/fixture-session",
 		RedactedURL:  "ws://127.0.0.1:1",
@@ -194,8 +176,6 @@ func TestAFailedConnectGivesTheBrowserBackExactlyOnce(t *testing.T) {
 		t.Fatalf("the provider session was released %d times, want exactly 1", got)
 	}
 
-	// And the case the guard must NOT skip: a configuration refused before the
-	// connect leaves the session held, so it still has to be given back.
 	var refusedReleases atomic.Int64
 	refusedRelease := func(context.Context) error {
 		refusedReleases.Add(1)

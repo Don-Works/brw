@@ -20,13 +20,6 @@ type siteConsentOptions struct {
 	confirm    bool
 }
 
-// buildSiteConsent assembles the consent guard from the daemon's flags.
-//
-// It returns a nil guard when consent is off, which every consumer treats as
-// "no gate". Everything that would only matter with consent on is refused
-// loudly here rather than accepted and ignored: a daemon started with
-// --confirm-actions and no --site-consent would otherwise run with no
-// confirmation at all while its operator believed the opposite.
 func buildSiteConsent(opts siteConsentOptions) (*siteconsent.Guard, error) {
 	if !opts.enabled {
 		if opts.confirm {
@@ -55,9 +48,7 @@ func buildSiteConsent(opts siteConsentOptions) (*siteconsent.Guard, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The flag turns the gate ON; it can never turn an admin config's gate off.
-	// An operator who set confirm_actions on a managed machine has made a
-	// decision the local command line must not be able to undo.
+
 	admin.ConfirmActions = admin.ConfirmActions || opts.confirm
 	if err := admin.Normalize(); err != nil {
 		return nil, err
@@ -86,8 +77,7 @@ func buildSiteConsent(opts siteConsentOptions) (*siteconsent.Guard, error) {
 	}
 	log.Printf("site consent active: %s, %s, confirm-actions=%v", store.Path(), mode, admin.ConfirmActions)
 	if rejected := store.Rejected(); len(rejected) > 0 {
-		// Loud, because the only way a record fails its MAC is that something
-		// other than brw wrote to the file.
+
 		for _, record := range rejected {
 			log.Printf("WARNING: consent record for %s (%s) refused: %s", record.Origin, record.Scope, record.Reason)
 		}
@@ -95,8 +85,6 @@ func buildSiteConsent(opts siteConsentOptions) (*siteconsent.Guard, error) {
 	return guard, nil
 }
 
-// consentGrantor names who a recorded consent is attributed to: the OS account
-// this daemon runs as, which is the only identity brw can actually observe.
 func consentGrantor() string {
 	if u, err := user.Current(); err == nil && strings.TrimSpace(u.Username) != "" {
 		return u.Username
@@ -104,9 +92,6 @@ func consentGrantor() string {
 	return "unknown"
 }
 
-// stdinIsTerminal reports whether stdin is a character device, which is what
-// distinguishes "a person started this in a shell" from "a service manager gave
-// it /dev/null".
 func stdinIsTerminal() bool {
 	info, err := os.Stdin.Stat()
 	if err != nil {

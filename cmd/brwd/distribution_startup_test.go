@@ -16,14 +16,6 @@ import (
 	"time"
 )
 
-// --remote auto under a profile the policy bars from direct CDP, run for real.
-//
-// The endpoint discovery finds is in brw's own default profile directory — the
-// second directory autoConnectSearchDirs searches, and not the one the policy
-// names. The first version of the gate exempted every DevToolsActivePort hit,
-// so this exact invocation attached to a browser the policy never named and
-// then reported the policy's user_data_dir and profile_directory as its
-// identity.
 func TestStartupRefusesAutoConnectToABrowserTheProfilePolicyDoesNotName(t *testing.T) {
 	home := t.TempDir()
 	policyProfileDir := filepath.Join(home, "policy-chrome")
@@ -31,7 +23,7 @@ func TestStartupRefusesAutoConnectToABrowserTheProfilePolicyDoesNotName(t *testi
 		t.Fatal(err)
 	}
 	_, port := fakeDevToolsEndpoint(t)
-	// The browser is running out of brw's default profile, not the policy's.
+
 	writeActivePort(t, filepath.Join(home, ".brw", "chrome-profile"), port)
 	policy := writeBridgeOnlyPolicy(t, home, policyProfileDir)
 
@@ -53,10 +45,6 @@ func TestStartupRefusesAutoConnectToABrowserTheProfilePolicyDoesNotName(t *testi
 	}
 }
 
-// The other side of the same gate: the browser running out of the directory the
-// policy named IS that profile's browser, whatever the policy says about direct
-// CDP launches, so discovery is allowed to attach to it. Without this the fix
-// would be a gate that refuses everything.
 func TestStartupAttachesToTheProfilesOwnBrowser(t *testing.T) {
 	home := t.TempDir()
 	policyProfileDir := filepath.Join(home, "policy-chrome")
@@ -69,8 +57,6 @@ func TestStartupAttachesToTheProfilesOwnBrowser(t *testing.T) {
 		"--remote", "auto", "--http", "off", "--timeout", "5s",
 	}, startupEnvironment(home), 90*time.Second)
 
-	// It still fails: the stub answers discovery but serves no DevTools
-	// WebSocket. What matters is where it failed.
 	if !strings.Contains(output, "--remote auto attached to") {
 		t.Fatalf("the daemon never got past the policy gate for its own browser (exit %d):\n%s", code, output)
 	}
@@ -79,16 +65,10 @@ func TestStartupAttachesToTheProfilesOwnBrowser(t *testing.T) {
 	}
 }
 
-// No profile policy is the default install, and it has never had a direct-CDP
-// prohibition to honour. This is the row a unit table cannot tell apart from
-// "a direct-CDP profile", because both reach the same branch with the same
-// argument; at startup they are different invocations.
 func TestStartupAutoConnectsWithNoProfilePolicyAtAll(t *testing.T) {
 	home := t.TempDir()
 	_, port := fakeDevToolsEndpoint(t)
-	// Deliberately NOT the directory this daemon was pointed at: with a policy
-	// barring direct CDP that is the refusal above, so what is exercised here
-	// is only "no policy, no prohibition".
+
 	writeActivePort(t, filepath.Join(home, ".brw", "chrome-profile"), port)
 	elsewhere := filepath.Join(home, "some-other-chrome")
 	if err := os.MkdirAll(elsewhere, 0o700); err != nil {
@@ -108,14 +88,6 @@ func TestStartupAutoConnectsWithNoProfilePolicyAtAll(t *testing.T) {
 	}
 }
 
-// --idle-exit with no HTTP listener was made a startup failure, and that broke
-// working machines: BRW_IDLE_EXIT is one of the environment-sourced defaults,
-// so an exported variable turned an ordinary `brwd --mcp --http off` into a
-// daemon that would not start. It is a note now, and startup continues.
-//
-// The invocation is deliberately one that fails LATER (--headless with
-// --bridge): log.Fatalf stops at the first refusal, so seeing the later one is
-// what proves the daemon got past the idle-exit decision.
 func TestStartupDoesNotRefuseIdleExitWithoutAnHTTPListener(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -139,8 +111,7 @@ func TestStartupDoesNotRefuseIdleExitWithoutAnHTTPListener(t *testing.T) {
 			args:     []string{"--http", "off", "--idle-exit", "20m", "--headless", "--bridge"},
 			wantNote: "never fire",
 		},
-		// A disposable proxy inherits a 90-minute --mcp-idle-exit nobody typed.
-		// That must not quietly outrank the duration the operator did type.
+
 		{
 			name:     "the proxy default does not outrank the typed duration",
 			args:     []string{"--mcp", "--upstream-http", "http://127.0.0.1:1", "--http", "off", "--idle-exit", "20m", "--headless", "--bridge"},
@@ -163,13 +134,6 @@ func TestStartupDoesNotRefuseIdleExitWithoutAnHTTPListener(t *testing.T) {
 	}
 }
 
-// An --upstream-http proxy and the daemon behind it are one browser reached
-// through two URLs, and everything an unattended caller asks the proxy has to
-// be answered for the chain: which profile it drives, and whether anything in
-// it would stop and ask a human.
-//
-// Both are wired inside main() and neither has a unit seam, so this starts the
-// real daemon in front of a stub upstream and reads its /health.
 func TestProxyStartupReportsTheUpstreamsProfileAndConsentPosture(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/health" {
@@ -198,8 +162,7 @@ func TestProxyStartupReportsTheUpstreamsProfileAndConsentPosture(t *testing.T) {
 			t.Errorf("the proxy reports %s = %q, want the upstream's %q; the run lock keys on these, so a proxy that reports none takes a different lock from the daemon behind it", field, got, want)
 		}
 	}
-	// Its own mode is what it is. "upstream-http" says how the agent reaches
-	// brw; adopting the upstream's would make the proxy claim to be the bridge.
+
 	if got, _ := identity["mode"].(string); got != "upstream-http" {
 		t.Errorf("the proxy adopted the upstream's mode: %q", got)
 	}
@@ -213,10 +176,6 @@ func TestProxyStartupReportsTheUpstreamsProfileAndConsentPosture(t *testing.T) {
 	}
 }
 
-// A hop that cannot be asked is not a hop that said no. The proxy here has no
-// prompter of its own and the daemon behind it answers nothing, so the honest
-// answer to "could this stop and ask" is "brw does not know" — which an
-// unattended caller has to treat the way it treats "yes".
 func TestProxyStartupReportsAnUnreadableUpstreamPostureAsUnknown(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/health" {
@@ -224,7 +183,7 @@ func TestProxyStartupReportsAnUnreadableUpstreamPostureAsUnknown(t *testing.T) {
 			return
 		}
 		w.Header().Set("content-type", "application/json")
-		// A daemon built before /health carried a consent block.
+
 		fmt.Fprint(w, `{"ok":true,"identity":{"workspace":"work","profile":"chrome-work","user_data_dir":"/profiles/work","profile_directory":"Profile 1","mode":"direct","transport":"direct-cdp"}}`)
 	}))
 	defer upstream.Close()
@@ -242,9 +201,6 @@ func TestProxyStartupReportsAnUnreadableUpstreamPostureAsUnknown(t *testing.T) {
 	}
 }
 
-// startProxyAndReadHealth runs a real brwd as an --upstream-http proxy and
-// returns the decoded /health it serves. No browser is launched in this mode:
-// the controller is the upstream daemon.
 func startProxyAndReadHealth(t *testing.T, upstreamURL string) map[string]any {
 	t.Helper()
 	home := t.TempDir()
@@ -288,13 +244,6 @@ func startProxyAndReadHealth(t *testing.T, upstreamURL string) map[string]any {
 	}
 }
 
-// An MCP tool call never crosses the HTTP mux, so the --idle-exit watcher armed
-// on that mux counts a busy stdio session as silence. main() bridges the two by
-// reporting each MCP request to the HTTP server's activity tracker; without
-// that, this daemon shuts the browser down under the agent driving it.
-//
-// Both halves are asserted, because "still running" alone would also pass on a
-// daemon whose idle watcher never ran at all.
 func TestStdioRequestsPostponeTheHTTPIdleExit(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
@@ -372,5 +321,21 @@ func TestStdioRequestsPostponeTheHTTPIdleExit(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStartupRemoteDiagnosticsWithholdEndpointCredentials(t *testing.T) {
+	remote := "wss://fixture-user:fixture-password@browser.invalid/session-fixture?token=fixture-query#fixture-fragment"
+	output, code := runBrwdUntilItStops(t, []string{"--remote", remote, "--http", "off", "--timeout", "100ms", "--artifact-dir", "off", "--page-watch-root", "off"}, startupEnvironment(t.TempDir()), 30*time.Second)
+	if code == 0 {
+		t.Fatal("nonexistent browser accepted")
+	}
+	for _, secret := range []string{"fixture-user", "fixture-password", "session-fixture", "fixture-query", "fixture-fragment"} {
+		if strings.Contains(output, secret) {
+			t.Errorf("startup diagnostic exposes %s: %s", secret, output)
+		}
+	}
+	if !strings.Contains(output, "browser.invalid") {
+		t.Errorf("startup diagnostic lost browser host: %s", output)
 	}
 }
