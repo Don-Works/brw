@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.22.1 - 2026-10-07
+
+- Fix ad-hoc macOS tarball signing under the platform's Bash 3.2. Keep signing
+  arguments nonempty while preserving Developer ID options and keychain paths.
+  The 0.22.0 build remained an unpublished draft after this packaging failure.
+
 ## 0.22.0 - 2026-10-07
 
 - Ship `brw-testbed`, a seeded adversarial page with difficult reading, hydration,

@@ -77,7 +77,7 @@ fi
 
 if [ "$os" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
   sign_identity="${MACOS_SIGN_IDENTITY:--}"
-  sign_flags=()
+  sign_flags=(--force --sign "$sign_identity")
   if [ "$sign_identity" != "-" ]; then
     sign_flags+=(--timestamp --options runtime)
     if [ -n "${MACOS_KEYCHAIN:-}" ]; then
@@ -85,7 +85,7 @@ if [ "$os" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
     fi
   fi
   for cmd in brw brwd brwctl brwcheck brw-devtools-mcp brw-testbed; do
-    codesign --force --sign "$sign_identity" "${sign_flags[@]}" "$stage_dir/bin/$cmd" >/dev/null
+    codesign "${sign_flags[@]}" "$stage_dir/bin/$cmd" >/dev/null
   done
   echo "signed the darwin binaries with identity: $sign_identity" >&2
 fi

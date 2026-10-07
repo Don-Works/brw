@@ -267,7 +267,7 @@ class ReaderMCPTests(unittest.TestCase):
             server.dispatch({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'brw_ask', 'arguments': {'url': 'https://example.test/page', 'question': 'sleep:12'}, '_meta': {'progressToken': 'stalled-sink'}}})
             job = server.active[2]
             try:
-                self.assertTrue(output.entered.wait(8))
+                self.assertTrue(output.entered.wait(args.timeout + 6))
                 self.assertTrue(list((root / 'jobs').glob('*/cleanup')), 'stdout blocked before owned worker cleanup')
                 report = json.loads(next((root / 'jobs').glob('*/adapter.json')).read_text())
                 self.assertEqual(report['error_kind'], 'deadline_exceeded')
