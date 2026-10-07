@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -64,8 +63,7 @@ func main() {
 	var pageWatchRoot string
 	flag.StringVar(&pageWatchRoot, "page-watch-root", envDefault("BRW_PAGE_WATCH_ROOT", "auto"), "persistent page watcher store: auto uses an owner-only workspace/profile directory outside the repository; off disables watchers; otherwise an absolute directory. Sampling runs on the browser host, independently of MCP clients.")
 	log.SetOutput(os.Stderr)
-	// An exported HAR names the brw that produced it, so the build's version has
-	// to reach the artifact package as well as the usage ledger.
+
 	artifact.SetVersion(mcp.Version)
 
 	var extensions stringList
@@ -210,11 +208,6 @@ func main() {
 	flag.Parse()
 	approvalModeSet = flagWasSet("approval-mode")
 
-	// brw.json is applied after Parse and before anything reads a flag, and it
-	// only fills in what the command line and the environment left alone. The
-	// set of flags the operator actually typed is what makes that possible:
-	// brwd reads its environment as each flag's default, so a flag's value alone
-	// cannot say whether anybody chose it.
 	if config, configFile, err := brwconfig.Load(configPath); err != nil {
 		log.Fatalf("config: %v", err)
 	} else if config != nil {
@@ -232,10 +225,6 @@ func main() {
 		}
 	}
 
-	// Whether the operator chose the stdio idle exit themselves, as opposed to
-	// inheriting the disposable-proxy default. Both this and the --http off
-	// fallback below have to tell those apart, or a duration nobody typed
-	// silently outranks one they did.
 	mcpIdleExitTyped := flagWasSet("mcp-idle-exit") || strings.TrimSpace(os.Getenv("BRW_MCP_IDLE_EXIT")) != ""
 	mcpIdleExit = effectiveMCPIdleExit(mcpIdleExit, mcpMode, upstreamHTTP, mcpIdleExitTyped)
 
@@ -286,11 +275,7 @@ func main() {
 	if unsafeRealProfile {
 		log.Printf("WARNING: --unsafe-real-profile is active; brw may launch Chrome against your real browser profile, which can corrupt it (lost logins, won't reopen)")
 	}
-	// Loaded before anything can call it, and before the transport is chosen: a
-	// plugin holding browser.provider decides WHICH browser this daemon drives,
-	// so every mode check below has to be able to see it. A misconfigured plugin
-	// directory stays a startup failure rather than a daemon that silently holds
-	// no provider and fails a login three steps into a recipe.
+
 	plugins, err := plugin.Load(pluginDir)
 	if err != nil {
 		log.Fatalf("plugin directory: %v", err)
@@ -315,24 +300,14 @@ func main() {
 		if explicitProfileFlags() {
 			log.Fatalf("--user-data-dir/--profile-directory with a browser.provider plugin: %v", browser.RemoteUnavailableError("profile_reuse"))
 		}
-		// Cleared rather than left at their flag defaults, so browser.New sees
-		// the configuration this daemon actually has. The explicit spellings
-		// were already refused above; what is left is the default profile dir,
-		// which describes a machine the browser is not on.
+
 		cfg.UserDataDir = ""
 		cfg.ProfileDirectory = ""
 	}
 
-	// The profile is resolved before the opt-in block, and only resolved: this
-	// lane has to be gated by policy and pointed at the profile's own browser
-	// and directory, and both need the profile in hand before discovery runs.
-	// Everything the policy CHANGES is still applied below.
 	var profile profilepolicy.Profile
 	haveProfilePolicy := false
-	// The policy's direct-CDP verdict, kept outside the block that resolves it
-	// because --remote auto is resolved further down and has to honour it. No
-	// policy means no prohibition, which is what a daemon started without
-	// --profile has always had.
+
 	policyProfileName := ""
 	directCDPAllowed := true
 
@@ -381,9 +356,7 @@ func main() {
 			HavePolicy:  haveProfilePolicy,
 		})
 		if err != nil {
-			// Fatal, and deliberately not a fallback: the alternative to a
-			// missing opt-in endpoint is brw starting a browser with a
-			// debugging flag, which is the access Chrome asks a human to grant.
+
 			log.Fatalf("--chrome-opt-in: %v", err)
 		}
 		cfg = optInCfg
@@ -421,10 +394,7 @@ func main() {
 			log.Printf("WARNING: --unsafe-allow-default-profile-cdp is active; profile policy bypass is enabled for diagnostics")
 		}
 		if !chromeOptIn {
-			// Not on the opt-in lane: there the directory is the browser's own,
-			// the Manager writes under whatever it is given, and the daemon
-			// attaches to a running browser rather than choosing a profile
-			// inside it.
+
 			cfg.UserDataDir = profile.UserDataDir
 			cfg.ProfileDirectory = profile.ProfileDirectory
 		}
@@ -457,18 +427,14 @@ func main() {
 			IgnoreHTTPSErrors: ignoreHTTPSErrors,
 		}
 		identityExpected = runtimeIdentity
-		// Mode, Transport, Headless and the certificate policy are all properties
-		// of the daemon answering, not of the workspace/profile binding being
-		// verified. A proxy learns the last three from its upstream rather than
-		// asserting them, so pinning them here would reject every healthy upstream.
+
 		identityExpected.Mode = ""
 		identityExpected.Transport = ""
 		identityExpected.Headless = false
 		identityExpected.IgnoreHTTPSErrors = false
 		log.Printf("using workspace profile %q (%s)", profile.Name, profile.Kind)
 	}
-	// The profile policy above is the last thing that can change httpAddr, so
-	// this is where the answer is final.
+
 	resolvedMCPIdleExit, idleExitNote := resolveIdleExit(httpIdleExit, mcpIdleExit, httpAddr, mcpMode, mcpIdleExitTyped)
 	mcpIdleExit = resolvedMCPIdleExit
 	if idleExitNote != "" {
@@ -489,9 +455,7 @@ func main() {
 		case bridgeMode:
 			log.Fatalf("--headless cannot be combined with --bridge: the bridge drives the browser you are already running, so there is no window for brw to suppress")
 		case chromeOptIn:
-			// Reachable through a profile's "headless": true, since the flag
-			// itself is already refused alongside --chrome-opt-in. Named
-			// separately so the operator is not sent looking at --remote.
+
 			log.Fatalf("--chrome-opt-in cannot run headless: it attaches to the Chrome you turned remote debugging on in, which is the window you are looking at; drop \"headless\": true from the profile or use a direct-CDP profile")
 		case cfg.RemoteURL != "":
 			log.Fatalf("--headless cannot be combined with --remote: brw attaches to a browser it did not launch, so headlessness was decided by whoever started it")
@@ -509,15 +473,10 @@ func main() {
 			log.Fatalf("--proxy-server, --ignore-https-errors and --ca-cert cannot be combined with --upstream-http: set them on the daemon that launches the browser")
 		}
 	}
-	// --remote auto is resolved here, after the profile policy has decided which
-	// user data directory this daemon is for: the browser's own
-	// DevToolsActivePort lives in that directory, and it is the only place an
-	// ephemeral debugging port is ever written down.
+
 	if cdplaunch.IsAutoConnect(cfg.RemoteURL) {
 		if bridgeMode || upstreamHTTP != "" {
-			// Named rather than quietly ignored: neither of these modes uses a
-			// CDP endpoint, so discovering one would probe the machine's ports
-			// and then throw the answer away.
+
 			log.Fatalf("--remote auto cannot be combined with --bridge or --upstream-http: neither drives the browser over a CDP endpoint, so there is nothing to attach")
 		}
 		discoverCtx, cancelDiscover := context.WithTimeout(context.Background(), 15*time.Second)
@@ -534,33 +493,13 @@ func main() {
 		cfg.RemoteURL = endpoint.URL
 		log.Printf("--remote auto attached to %s (%s) found by %s", endpoint.URL, endpoint.Browser, endpoint.Source)
 	}
-	// --remote reads as "a Chrome on this machine" and takes a URL, so an
-	// operator can point it at another one without noticing. Say so once, at
-	// startup, in the same shape as the plaintext-endpoint warning: everything
-	// this daemon reports afterwards is about a browser over there, and every
-	// capability that resolves a path, a clipboard or this host's session store
-	// is refused by name rather than answered about the wrong machine.
-	//
-	// After the auto block, so a discovered endpoint is checked too rather than
-	// only one the operator typed.
+
 	if strings.TrimSpace(cfg.RemoteURL) != "" && !brwidentity.BrowserRunsOnThisHost(cfg.RemoteURL) {
 		log.Printf("WARNING: --remote %s names a browser that is not on this machine; brw reports transport %s and refuses downloads, uploads, the clipboard and brw_state, because each of those belongs to the host the browser runs on",
-			cfg.RemoteURL, brwidentity.TransportOffHostCDP)
+			browser.RedactEndpointURL(cfg.RemoteURL), brwidentity.TransportOffHostCDP)
 	}
 	cfg.Headless = headless
-	// The profile-policy block above is the only thing that populates
-	// runtimeIdentity, and a launch that drives a browser on another machine
-	// often never reaches it (--profile and --workspace are refused with a
-	// provider). Without this the on-disk scope runtimeIdentity decides — the
-	// artifact root and the session-snapshot store — would be the same "default"
-	// a local daemon started without a profile uses, so a daemon driving a
-	// browser elsewhere would resolve to this machine's stores.
-	//
-	// Keyed on the transport rather than on useBrowserProvider so --remote at an
-	// endpoint off this machine is covered by the same line, and so is whatever
-	// lane classifies as off-host-cdp next. The local transports are
-	// deliberately left unset here: mixing one in would move every existing
-	// store to a new path for no gain.
+
 	if localTransport(upstreamHTTP, cfg.RemoteURL, bridgeMode, chromeOptIn, useBrowserProvider) == brwidentity.TransportOffHostCDP {
 		runtimeIdentity.Transport = brwidentity.TransportOffHostCDP
 	}
@@ -593,11 +532,6 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// The long-lived daemon is the canonical usage-ledger writer. Disposable
-	// --upstream-http MCP proxies forward correlation headers and are deliberately
-	// not additional writers, avoiding duplicate records and cross-process
-	// rotation races. The upstream daemon records every browser operation it
-	// actually receives.
 	var usage *usagelog.Recorder
 	if upstreamHTTP == "" {
 		maxBytes, err := usageLogMaxBytes(usageLogMaxMB)
@@ -609,7 +543,7 @@ func main() {
 		}
 		usagePath, pathErr := resolveUsageLogPath(usageLog, usageIdentity)
 		if pathErr != nil {
-			// Observability must never become a new browser-control outage.
+
 			log.Printf("WARNING: usage ledger disabled: %v", pathErr)
 		} else if usagePath != "" {
 			usage, err = usagelog.New(usagelog.Config{
@@ -630,10 +564,6 @@ func main() {
 		}
 	}
 
-	// gracefulShutdown drains a server with a bounded timeout. Registered as a
-	// defer so it runs on EVERY exit path, including the MCP-mode early return —
-	// the previous trailing shutdown block was dead code in MCP mode (the most
-	// common mode), so --mcp --bridge dropped the extension connection abruptly.
 	gracefulShutdown := func(name string, fn func(context.Context) error) {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -645,8 +575,7 @@ func main() {
 	var controller browser.Controller
 	var bridge *extensionbridge.Bridge
 	var manager *browser.Manager
-	// bridgeHandshakeToken is empty on every mode but the extension bridge. The
-	// file it would live in is dealt with after the branch either way.
+
 	var bridgeHandshakeToken string
 
 	if upstreamHTTP != "" {
@@ -673,15 +602,7 @@ func main() {
 				log.Fatalf("upstream HTTP controller %s identity mismatch: %s", upstreamHTTP, strings.Join(mismatches, "; "))
 			}
 		}
-		// Without adoption every bridge daemon looked identical to every
-		// direct-CDP one from inside a tool call, and the documented advice was
-		// to shell out and grep ps for --bridge.
-		//
-		// usageIdentity is the one that is read in this mode: it is what /health
-		// serves and what the run lock is keyed on. runtimeIdentity feeds the
-		// artifact root, the session-state store and the bridge, none of which
-		// this process builds while it proxies — it is adopted anyway so the two
-		// never disagree about the browser behind them.
+
 		if healthErr == nil {
 			runtimeIdentity = adoptUpstreamIdentity(runtimeIdentity, health.Identity, haveProfilePolicy)
 			usageIdentity = adoptUpstreamIdentity(usageIdentity, health.Identity, haveProfilePolicy)
@@ -693,33 +614,17 @@ func main() {
 	} else if bridgeMode {
 		bridge = extensionbridge.NewWithIdentity(bridgeAddr, timeout, bridgeExtensionID, runtimeIdentity)
 		bridge.SetUsageRecorder(usage)
-		// Seamless defaults: never raise the Chrome window on focus (no focus
-		// theft) and corral the agent's tabs into one labelled group.
+
 		bridge.SetRaiseWindowOnFocus(bridgeRaiseWindow)
 		bridge.SetDefaultGroup(bridgeTabGroup)
 		bridge.SetWebMCP(enableWebMCP)
 		bridge.SetPacing(resolvePacing(pacingValue, true))
 		log.Printf("action pacing: %s", bridge.Pacing())
-		// Isolation by default: work in brw's own tab group on tabs it opened,
-		// never the user's focused/existing tabs. --bridge-follow-focus restores
-		// the legacy follow-the-user's-tab behavior.
+
 		bridge.SetFollowFocus(bridgeFollowFocus)
-		// Cap concurrent ops on the single shared extension socket so a fan-out of
-		// parallel agents queues cleanly instead of flooding the MV3 worker until it
-		// stops responding (the high-throughput "bridge becomes unresponsive" mode).
+
 		bridge.SetMaxInflight(bridgeMaxInflight)
-		// Provision a per-launch handshake secret so the real extension can prove
-		// itself: the daemon serves it over the loopback /status endpoint (a web
-		// page cannot read it cross-origin) and the 0.2.0+ extension presents it.
-		//
-		// Required by default. The grace period was for extensions older than
-		// 0.2.0; the bundled extension is far past that and `brwctl setup` installs
-		// it, so the only remaining effect of accepting a tokenless hello was that
-		// every default install authenticated nothing. The Origin check rejects web
-		// pages but not a local process, which can forge that header — so tokenless
-		// meant any process running as this user could take the bridge and drive
-		// the signed-in browser. BRW_BRIDGE_ALLOW_TOKENLESS=1 restores the old
-		// behaviour for anyone genuinely pinned to a pre-0.2.0 extension.
+
 		token, err := extensionbridge.NewAuthToken()
 		if err != nil {
 			log.Fatalf("generate extension bridge auth token: %v", err)
@@ -768,20 +673,10 @@ func main() {
 		}()
 	}
 
-	// Whatever mode this launch chose, deal with the handshake token on disk. It
-	// is deliberately outside the branch above: only the bridge mints a token,
-	// but a machine that upgrades and then runs direct-CDP or upstream-proxy
-	// still has the file the last bridge launch left in ~/.brw, and a launch is
-	// the only pass that will ever collect it. docs/auth-model.md says every
-	// launch sweeps, and one call site on the path every launch takes is what
-	// makes that true rather than aspirational.
 	if err := bridgeTokenAtLaunch(bridgeTokenFile(workspaceName), bridgeHandshakeToken); err != nil {
 		log.Printf("note: %v", err)
 	}
 
-	// Parse the navigation guardrail once and apply it to EVERY agent-facing
-	// surface. Both the MCP server and the HTTP API share the same controller,
-	// so a policy installed on only one of them is a silent bypass via the other.
 	navPolicy := navpolicy.Parse(allowedDomains, blockedDomains)
 	if !navPolicy.Empty() {
 		log.Printf("navigation guardrail active (allow=%d, block=%d domains)", len(navPolicy.Allowed), len(navPolicy.Blocked))
@@ -795,12 +690,7 @@ func main() {
 
 	if contentNavGuard {
 		if manager == nil {
-			// Named, not silently ignored. The boundary is implemented on CDP
-			// request interception, which every lane that drives a browser over
-			// CDP has — a Chrome brwd launched, a --remote endpoint, the Chrome
-			// opt-in and a provider's browser alike. The extension bridge has no
-			// equivalent, and a flag that quietly does nothing is worse than one
-			// that refuses.
+
 			log.Fatalf("--content-nav-guard needs a CDP transport: it is enforced on CDP request interception, which the extension bridge and the upstream HTTP proxy do not have")
 		}
 		manager.SetContentNavigationGuard(true)
@@ -819,40 +709,27 @@ func main() {
 		log.Fatalf("site consent: %v", err)
 	}
 	if bridge != nil {
-		// The extension's options page is the only consent surface a user of the
-		// signed-in browser has, and it reaches the daemon through the bridge.
+
 		bridge.SetSiteConsent(consentGuard)
 	}
 
 	var artifactAPI artifact.API
 	var recipeAPI recipe.API
-	// recipeBaselines is the provider's baseline side when it has one. It is
-	// declared out here because the provider is configured inside the
-	// browser-host branch below and read again when the MCP server is built.
+
 	var recipeBaselines recipe.BaselineStore
-	// baselineRouter answers where a capture belongs. On a browser host it is
-	// recipeBaselines; on a proxy it is the upstream hop, which can ask the
-	// question without being able to store the answer.
+
 	var baselineRouter recipe.BaselineRouter
 	if upstreamHTTP != "" {
-		// The proxy controller implements both optional APIs and forwards them to
-		// the canonical browser host. Never create a second cache/provider here.
+
 		artifactAPI, _ = controller.(artifact.API)
 		recipeAPI, _ = controller.(recipe.API)
-		// brw_baseline runs on THIS daemon (it has no HTTP route), while the
-		// private recipe provider lives upstream. Without the routing hop every
-		// capture here would be written to this process's --baseline-root,
-		// including captures of pages the provider's recipes reach.
+
 		baselineRouter, _ = controller.(recipe.BaselineRouter)
 		if strings.TrimSpace(recipeRoot) != "" || strings.TrimSpace(recipeProviderURL) != "" || strings.TrimSpace(recipeProviderTokenFile) != "" {
 			log.Printf("WARNING: recipe provider flags are ignored in --upstream-http mode; configure them on the browser-host daemon")
 		}
 		if strings.TrimSpace(pluginDir) != "" {
-			// Loaded and listed, because plugin.Load ran above and the registry is
-			// handed to the HTTP routes. What never happens in this mode is the
-			// wiring into recipe.Runner.Credentials, which is on the else branch:
-			// the recipe runner lives on the browser host, so that is where a
-			// credential is resolved.
+
 			log.Printf("WARNING: --plugin-dir manifests are loaded and listed by /api/plugins in --upstream-http mode, but never consulted; the recipe runner that resolves a credential lives on the browser-host daemon, so configure it there")
 		}
 	} else {
@@ -925,8 +802,7 @@ func main() {
 			}
 			if store != nil {
 				manager.SetSessionStateStore(store)
-				// The janitor is what makes the TTL a property of the disk rather
-				// than of whoever happens to call brw_state next.
+
 				go runSessionStateJanitor(ctx, store)
 				log.Printf("browser-host session snapshots enabled at %s (ttl=%s, encrypted at rest)", store.Root(), store.TTL())
 			}
@@ -1015,13 +891,7 @@ func main() {
 		}
 	}
 	if httpAddr != "" && httpAddr != "off" {
-		// usageIdentity, not runtimeIdentity: the resolved one carries Mode,
-		// Transport and Headless, which this process derives from its own flags
-		// and always knows. runtimeIdentity is only populated by a profile
-		// policy, so a daemon started without one reported an Empty() identity
-		// and /health omitted the block entirely — including the transport. Two
-		// surfaces on one daemon then disagreed about what they were driving,
-		// and a caller gating on transport silently got no answer.
+
 		api = httpapi.NewWithIdentity(httpAddr, controller, usageIdentity)
 		if strings.TrimSpace(httpTokenFile) != "" {
 			httpToken, err := readBearerTokenFile("http-token-file", httpTokenFile)
@@ -1032,8 +902,7 @@ func main() {
 		} else if !httpBindIsLoopback(httpAddr) {
 			log.Printf("WARNING: --http %s is not loopback and no --http-token-file is set; anything that can reach it can drive this browser", httpAddr)
 		}
-		// /api/skill serves this binary's own copy of the agent manual, and the
-		// version is what lets a caller tell it apart from the copy on disk.
+
 		api.SetVersion(mcp.Version)
 		api.SetPageWatchAPI(pageWatchAPI)
 		api.SetNavigationPolicy(navPolicy)
@@ -1047,9 +916,7 @@ func main() {
 		api.SetUsageRecorder(usage)
 		api.SetArtifactAPI(artifactAPI)
 		api.SetRecipeAPI(recipeAPI)
-		// Only on the browser host: recipeBaselines is nil in proxy mode, and a
-		// proxy answering the routing question for another proxy would answer
-		// "nobody owns this" for a provider it cannot see.
+
 		if recipeBaselines != nil {
 			api.SetBaselineRouter(recipeBaselines)
 		}
@@ -1063,26 +930,16 @@ func main() {
 			go func() {
 				if api.WatchIdle(ctx) {
 					log.Printf("no API request for %s; shutting down", httpIdleExit)
-					// stop(), not os.Exit: the deferred browser close is the
-					// only thing that detaches the debugger and tears Chrome
-					// down, and an idle exit that orphaned a browser would be
-					// worse than staying up.
+
 					stop()
 				}
 			}()
 		}
 		defer gracefulShutdown("HTTP API", api.Shutdown)
-		if !isLoopback(httpAddr) {
-			log.Printf("WARNING: HTTP API bound to non-loopback address %s; no authentication is enforced — ensure caller auth is in place (SSH/Tailscale)", httpAddr)
-		}
 		go func() {
 			log.Printf("HTTP API listening on %s", httpAddr)
 			if err := api.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				// Fail loudly, but via stop() (cancel the root ctx) rather than
-				// log.Fatalf: os.Exit would skip the deferred manager.Close(), which
-				// is the only thing that detaches the CDP debugger and tears Chrome
-				// down — a port clash would otherwise orphan the just-launched
-				// browser. Mirrors the extension-bridge goroutine below/above.
+
 				log.Printf("HTTP API failed on %s: %v", httpAddr, err)
 				stop()
 			}
@@ -1102,17 +959,13 @@ func main() {
 	}
 
 	if mcpMode {
-		// An unrecognised profile still serves the full surface, but silently
-		// doing so would hide a config typo that was meant to shrink the
-		// catalogue — say so on the way past.
+
 		if !mcp.ValidToolProfile(mcpToolProfile) {
 			log.Printf("unknown --mcp-tools %q; advertising the full surface (valid: %s)",
 				mcpToolProfile, strings.Join(mcp.ToolProfileNames(), ", "))
 		}
 		log.Printf("MCP stdio server ready (tool profile: %s)", mcpToolProfile)
-		// A stdio MCP child's lifetime is its session's lifetime. Watch for
-		// orphaning (parent died without closing our stdin) so we never
-		// outlive an abandoned session.
+
 		go watchParentExit(stop)
 		server := mcp.NewWithToolProfile(controller, mcpToolProfile)
 		server.SetPageWatchAPI(pageWatchAPI)
@@ -1121,11 +974,7 @@ func main() {
 		server.SetApprovalGate(actionApprovalGate)
 		server.SetArtifactAPI(artifactAPI)
 		server.SetRecipeAPI(recipeAPI)
-		// usageIdentity is the fully-resolved workspace/profile/mode for this
-		// process, cross-checked against the upstream daemon's /health at startup
-		// when a profile policy is set. Handing it to the MCP server lets
-		// brw_identity answer "which browser does this namespace drive?" without a
-		// live HTTP round-trip.
+
 		server.SetIdentity(usageIdentity)
 		if store, err := configureBaselineStore(baselineRoot); err != nil {
 			log.Fatalf("baseline store: %v", err)
@@ -1139,9 +988,6 @@ func main() {
 			log.Printf("%s", line)
 		}
 
-		// A direct/bridge MCP process has no upstream HTTP middleware to record its
-		// calls, so record them here. Upstream proxies intentionally rely on the
-		// canonical daemon ledger and do not create duplicate local records.
 		if upstreamHTTP == "" {
 			server.SetUsageRecorder(usage)
 		}
@@ -1149,10 +995,7 @@ func main() {
 			server.SetIdleExit(mcpIdleExit)
 			log.Printf("MCP idle-exit armed: exiting after %s without requests", mcpIdleExit)
 		}
-		// The HTTP idle watcher measures the HTTP mux, and an MCP tool call never
-		// crosses it — it reaches the controller directly. Reporting each call to
-		// the same tracker is what keeps --idle-exit from shutting the browser
-		// down under the agent that is using it over stdio.
+
 		if api != nil && api.IdleExit() > 0 {
 			server.SetActivityHook(api.NoteActivity)
 		}
@@ -1172,16 +1015,9 @@ func main() {
 	}
 	fmt.Fprintln(os.Stderr)
 	<-ctx.Done()
-	// HTTP API and extension-bridge graceful shutdown run via the deferred
-	// gracefulShutdown calls registered at construction, so they fire on every
-	// exit path (including the MCP-mode early return).
+
 }
 
-// autoConnectSearchDirs is where --remote auto looks for a browser's own
-// DevToolsActivePort file, most specific first: the directory this daemon was
-// configured for, then brw's own default profile directory. A user data
-// directory is where the browser writes its ephemeral debugging port, so a
-// directory the operator named is a far better answer than any port guess.
 func autoConnectSearchDirs(configured string) []string {
 	var dirs []string
 	if trimmed := strings.TrimSpace(configured); trimmed != "" {
@@ -1200,18 +1036,6 @@ func effectiveMCPIdleExit(configured time.Duration, mcpMode bool, upstreamHTTP s
 	return defaultProxyIdleExit
 }
 
-// extensionSearchPaths lists where an installed brw extension lives, most
-// specific first. Exposed as a variable so tests can point it at a temp dir.
-//
-// brw does NOT load its extension into a direct-CDP Chrome by default. Loading
-// it there buys nothing today: the extension reaches brw over the bridge
-// WebSocket, and a direct-CDP daemon runs no bridge listener, so chrome.tabGroups
-// stays unreachable and manager_tabgroups.go still returns
-// ErrTabGroupingUnsupported. File-chooser interception, the other thing the
-// bridge had, is plain CDP (page.SetInterceptFileChooserDialog, see
-// manager.go uploadFileViaChooser) and already works without any extension.
-// Serving tab groups on direct CDP needs a hybrid daemon that runs the bridge
-// listener alongside CDP; until that exists, --extension stays explicit.
 var extensionSearchPaths = func() []string {
 	var out []string
 	if dir := strings.TrimSpace(os.Getenv("BRW_EXTENSION_DIR")); dir != "" {
@@ -1226,8 +1050,6 @@ var extensionSearchPaths = func() []string {
 	return append(out, filepath.Join("/usr", "share", "brw", "extension"))
 }
 
-// findInstalledExtension returns the first search path holding a manifest.
-// A directory without one is somebody else's folder, not our extension.
 func findInstalledExtension() (string, bool) {
 	for _, dir := range extensionSearchPaths() {
 		if dir == "" {
@@ -1240,9 +1062,6 @@ func findInstalledExtension() (string, bool) {
 	return "", false
 }
 
-// daemonMode is the human-facing label for how this daemon reached the browser.
-// It mirrors localTransport so /health's mode and transport can never disagree
-// about which lane is running.
 func daemonMode(upstreamHTTP, remoteURL string, bridgeMode, chromeOptIn, browserProvider bool) string {
 	switch {
 	case upstreamHTTP != "":
@@ -1250,8 +1069,7 @@ func daemonMode(upstreamHTTP, remoteURL string, bridgeMode, chromeOptIn, browser
 	case bridgeMode:
 		return "bridge"
 	case browserProvider:
-		// Not "direct": that says brw launched Chrome here, and nothing on this
-		// daemon did.
+
 		return "browser-provider"
 	case chromeOptIn:
 		return "chrome-opt-in"
@@ -1262,30 +1080,10 @@ func daemonMode(upstreamHTTP, remoteURL string, bridgeMode, chromeOptIn, browser
 	}
 }
 
-// httpListenerEnabled reports whether this daemon serves the HTTP API at all.
 func httpListenerEnabled(httpAddr string) bool {
 	return httpAddr != "" && httpAddr != "off"
 }
 
-// resolveIdleExit decides what --idle-exit means on a daemon that serves no
-// HTTP API, and returns the --mcp-idle-exit to use plus a line for the log.
-//
-// The idle watcher is armed on the HTTP server and postponed by the requests
-// that reach it, plus the MCP calls the stdio server reports to it. With no
-// listener there is no watcher, so the flag on its own does nothing — which is
-// the opposite of what an operator asking a daemon to stop itself wants.
-//
-// It is NOT a startup failure. BRW_IDLE_EXIT is one of the environment-sourced
-// defaults, so an exported variable plus an ordinary `brwd --mcp --http off`
-// became a daemon that refused to start, and a refusal is a far worse answer
-// than the silence it replaced. What an operator asking for an idle exit means
-// is the same thing in both modes, so on a stdio daemon the duration is carried
-// over to the watcher that does work there.
-//
-// A --mcp-idle-exit the operator TYPED is left alone, including a typed zero
-// that turns the stdio watcher off. The disposable-proxy default is not: it is
-// a value nobody chose, and letting it outrank a duration somebody did type is
-// how `--http off --idle-exit 20m` became a 90-minute daemon.
 func resolveIdleExit(idleExit, mcpIdleExit time.Duration, httpAddr string, mcpMode, mcpIdleExitTyped bool) (time.Duration, string) {
 	if idleExit <= 0 || httpListenerEnabled(httpAddr) {
 		return mcpIdleExit, ""
@@ -1299,27 +1097,6 @@ func resolveIdleExit(idleExit, mcpIdleExit time.Duration, httpAddr string, mcpMo
 	return idleExit, fmt.Sprintf("--idle-exit %s is armed on the HTTP API and this daemon has --http off; arming the stdio idle exit for the same duration instead", idleExit)
 }
 
-// autoConnectRefusal decides whether a resolved --remote auto endpoint may be
-// driven, given the profile policy.
-//
-// The question is about the BROWSER, never about how discovery found it: is
-// this the browser running out of the user data directory this daemon's policy
-// named, or some other browser on the machine? A profile marked
-// direct_cdp_allowed=false is a browser a human is signed into, and the daemon
-// reports the policy's own user_data_dir and profile_directory as the identity
-// of whatever it attached to — which is what brw_identity answers and what the
-// run lock keys on. Attaching to a different browser under that identity is the
-// damage, and it is the same damage however the port was discovered.
-//
-// So the gate is one comparison of directories, and nothing here reads the
-// discovery Source. The first version of this check exempted every
-// DevToolsActivePort hit on the premise that the file "came out of the user
-// data directory the policy itself named" — untrue, because
-// autoConnectSearchDirs also searches brw's own default profile directory, so a
-// browser in ~/.brw/chrome-profile was accepted under a bridge-only policy and
-// reported as the policy's profile. A source added later is covered by the same
-// comparison with no edit here: an endpoint that cannot name the directory it
-// came out of cannot be the policy's browser.
 func autoConnectRefusal(endpoint cdplaunch.AutoEndpoint, profileName, policyUserDataDir string, directCDPAllowed, unsafeOverride bool) error {
 	if directCDPAllowed || unsafeOverride {
 		return nil
@@ -1339,10 +1116,6 @@ func autoConnectRefusal(endpoint cdplaunch.AutoEndpoint, profileName, policyUser
 		found, profileName, wanted, endpoint.URL)
 }
 
-// sameUserDataDir reports whether two user data directory spellings name the
-// same directory. An unnamed directory is never the same as anything: "brw does
-// not know which browser this is" has to answer the question the same way "a
-// different browser" does.
 func sameUserDataDir(a, b string) bool {
 	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
 	if a == "" || b == "" {
@@ -1351,20 +1124,6 @@ func sameUserDataDir(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
-// adoptUpstreamIdentity folds the identity of the daemon behind an
-// --upstream-http proxy into the proxy's own.
-//
-// Transport, headlessness and the certificate policy are always adopted: this
-// process is a disposable MCP proxy whose own Mode says how the AGENT reaches
-// brw and nothing about how brw reaches Chrome.
-//
-// The four profile fields are adopted only when this process has no profile
-// policy naming them, and they are what the run lock is keyed on. A proxy that
-// reported none of them handed `brw run` the shared "unidentified" key while
-// the daemon behind it handed out the profile's own — two locks, one Chrome,
-// and the interleaving on a single tab that the lock exists to prevent. With a
-// policy they are already set and verified against this same upstream at
-// startup, so adopting would only overwrite equals.
 func adoptUpstreamIdentity(local, upstream brwidentity.Identity, haveProfilePolicy bool) brwidentity.Identity {
 	if upstream.Empty() {
 		return local
@@ -1381,41 +1140,20 @@ func adoptUpstreamIdentity(local, upstream brwidentity.Identity, haveProfilePoli
 	return local
 }
 
-// identityInputs is what the profile-policy block did not decide. Named rather
-// than passed as a run of adjacent bools, because a reversal here would make a
-// daemon report somebody else's lane.
 type identityInputs struct {
 	Runtime      brwidentity.Identity
 	UpstreamHTTP string
-	// RemoteURL is the endpoint --remote names. Carried because it decides
-	// where the browser is: the flag is a URL, and a URL naming another machine
-	// is not the direct-CDP lane however local the flag's name sounds.
+	// RemoteURL is the endpoint --remote names.
 	RemoteURL         string
 	Bridge            bool
 	ChromeOptIn       bool
 	BrowserProvider   bool
 	Headless          bool
 	IgnoreHTTPSErrors bool
-	// OptInUserDataDir is the directory the Chrome opt-in endpoint was
-	// discovered in. It is the profile that daemon is driving, and a policy
-	// value that disagreed was already refused at startup. It goes in the
-	// identity only — the Manager never receives it, because the directory is
-	// the browser's, not brw's.
+	// OptInUserDataDir is the directory the Chrome opt-in endpoint was discovered in.
 	OptInUserDataDir string
 }
 
-// resolveIdentity completes the identity a daemon reports.
-//
-// Extracted from main so the shape a PROVIDER-backed launch produces is
-// testable. That launch never runs the profile-policy block — --profile and
-// --workspace are refused with a provider — so its Runtime is empty and every
-// field that names a profile on this machine stays empty. An identity guard
-// pinned to a workspace therefore fails against it, which is the fail-closed
-// half worth locking.
-//
-// Mode and transport are both delegated rather than decided here, so the two
-// answers come from the same pair of functions every other caller uses and
-// /health cannot report a mode from one lane and a transport from another.
 func resolveIdentity(in identityInputs) brwidentity.Identity {
 	out := in.Runtime
 	if out.Mode == "" {
@@ -1432,26 +1170,6 @@ func resolveIdentity(in identityInputs) brwidentity.Identity {
 	return out
 }
 
-// localTransport names how THIS process reaches the browser. A proxy cannot
-// know until it asks its upstream, so it reports empty here and adopts the
-// answer from the upstream's health response.
-//
-// The classification lives in brwidentity.Lane, which the browser manager's
-// capability gates read as well, so what tools/list filters on and what those
-// gates enforce cannot disagree.
-//
-// In particular --remote is classified by where its endpoint points rather than
-// by the flag's name. --remote at a loopback endpoint is a Chrome on this
-// machine, and --remote http://198.51.100.7:9222 is a browser on somebody
-// else's, which is off-host-cdp for the same reason a provider's browser is.
-//
-// Four lanes come back from it rather than two, because the catalogue differs
-// in more than one direction. The Chrome opt-in has the cookie and incognito
-// access the bridge lacks AND is still the browser the user is signed into, so
-// brw_state is refused there and is not on direct CDP. --remote at loopback is
-// a browser brw did not start, so it may not be pointed at a staging directory
-// brw later deletes, while a path, an upload and the clipboard still mean what
-// the caller meant. A browser on another machine shares none of those.
 func localTransport(upstreamHTTP, remoteURL string, bridgeMode, chromeOptIn, browserProvider bool) string {
 	return brwidentity.Lane{
 		UpstreamHTTP:    upstreamHTTP,
@@ -1479,7 +1197,7 @@ func resolveUsageLogPath(configured string, identity brwidentity.Identity) (stri
 			if err != nil {
 				return "", fmt.Errorf("resolve home directory: %w", err)
 			}
-			configured = filepath.Join(home, strings.TrimPrefix(configured, "~/"))
+			configured = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(configured, "~"), "/"))
 		}
 		return filepath.Clean(configured), nil
 	}
@@ -1503,6 +1221,9 @@ func safeFilenamePart(value string) string {
 	var out strings.Builder
 	lastDash := false
 	for _, r := range value {
+		if out.Len() >= 64 {
+			break
+		}
 		allowed := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_'
 		if allowed {
 			out.WriteRune(r)
@@ -1512,9 +1233,6 @@ func safeFilenamePart(value string) string {
 		if out.Len() > 0 && !lastDash {
 			out.WriteByte('-')
 			lastDash = true
-		}
-		if out.Len() >= 64 {
-			break
 		}
 	}
 	return strings.Trim(out.String(), "-.")
@@ -1552,23 +1270,11 @@ func defaultArtifactRoot(identity brwidentity.Identity) (string, error) {
 	return filepath.Join(root, runtimeScopeDir(identity)), nil
 }
 
-// runtimeScopeDir names a per-runtime subdirectory so two daemons driving
-// different profiles never share a store.
 func runtimeScopeDir(identity brwidentity.Identity) string {
 	material := strings.Join([]string{
 		identity.Workspace, identity.Profile, identity.UserDataDir, identity.ProfileDirectory,
 	}, "\x00")
-	// Every field above names a profile on this machine, and an off-host daemon
-	// has none — --profile and --workspace are refused with a provider, so its
-	// identity is empty and it would land in the same "default" scope as a local
-	// daemon started without a profile, sharing that host's artifact and
-	// snapshot stores with it. The transport is the one thing such a daemon can
-	// always say, so it is mixed in for that transport only.
-	//
-	// Only that one. remote-cdp is NOT included: --remote reaches a browser on
-	// this machine, so it has always shared this host's stores, and adding the
-	// transport there would move every existing artifact and snapshot to a new
-	// path. The same goes for the other local lanes.
+
 	if identity.Transport == brwidentity.TransportOffHostCDP {
 		material += "\x00" + identity.Transport
 	}
@@ -1579,10 +1285,6 @@ func runtimeScopeDir(identity brwidentity.Identity) string {
 	return "runtime-" + hex.EncodeToString(digest[:8])
 }
 
-// configureSessionStateStore builds the browser host's brw_state store. No key
-// means no store: a snapshot of a signed-in session is exactly the thing that
-// must not be written in the clear, so the absence of a key disables the
-// feature rather than degrading it.
 func configureSessionStateStore(root, keyFile string, identity brwidentity.Identity) (*sessionstate.Store, error) {
 	if strings.TrimSpace(keyFile) == "" {
 		return nil, nil
@@ -1613,7 +1315,6 @@ func defaultSessionStateRoot(identity brwidentity.Identity) (string, error) {
 	return filepath.Join(root, runtimeScopeDir(identity)), nil
 }
 
-// runSessionStateJanitor expires lapsed snapshots on a timer.
 func runSessionStateJanitor(ctx context.Context, store *sessionstate.Store) {
 	interval := min(15*time.Minute, max(time.Minute, store.TTL()/4))
 	ticker := time.NewTicker(interval)
@@ -1648,15 +1349,6 @@ func configureBaselineStore(root string) (*baseline.Store, error) {
 	return baseline.NewStore(resolved)
 }
 
-// recipeReceiptsFor returns the write ledger for this deployment, or nil.
-//
-// A receipt exists to be readable after the daemon that wrote it has died, so
-// it has to live with a party that outlives the daemon. An HTTP provider is
-// one; a local directory of JSON files is not — it is this machine, and a
-// receipt kept on the machine that crashed answers nothing. Those deployments
-// therefore run without receipts rather than with a record that only looks
-// like one, and the runner refuses any recipe declaring a mechanism it cannot
-// honour instead of running it with the mechanism quietly switched off.
 func recipeReceiptsFor(provider recipe.Provider) recipe.Receipts {
 	if receipts, ok := provider.(recipe.Receipts); ok {
 		return receipts
@@ -1664,13 +1356,6 @@ func recipeReceiptsFor(provider recipe.Provider) recipe.Receipts {
 	return nil
 }
 
-// recipeReceiptStatusLine says at startup which of the two deployments this is.
-//
-// The absence of receipts is invisible at run time for any recipe that does not
-// declare a site nonce: writes still run, and the difference only shows up after
-// a crash, when there is no record of the one that was in flight. An operator
-// finding that out then is finding it out too late, so it is said here, with the
-// flag that changes it.
 func recipeReceiptStatusLine(receipts recipe.Receipts) string {
 	if receipts != nil {
 		return "external-write receipts are recorded with the recipe provider, so an interrupted write survives a daemon restart"
@@ -1678,22 +1363,6 @@ func recipeReceiptStatusLine(receipts recipe.Receipts) string {
 	return "this recipe provider cannot hold external-write receipts: an interrupted write leaves no record a restarted daemon can find, and a recipe declaring a site idempotency nonce is refused; --recipe-provider-url configures a provider that can"
 }
 
-// installBaselineDestinations gives the MCP server the places a capture may go,
-// and is where a daemon that cannot decide refuses to start.
-//
-// The provider's own store is installed whether or not a local root is
-// configured: a baseline for a recipe the provider owns never goes to the local
-// root, so a daemon with a provider and no --baseline-root can still gate those
-// recipes. On a proxy there is no provider here to install — brw_baseline has
-// no HTTP route, so it runs on this daemon while the provider is upstream — and
-// only the routing question is wired, so a capture that belongs with the
-// provider is refused by name instead of written to this machine's disk.
-//
-// A proxy whose upstream controller cannot answer that question would route
-// every capture to its own --baseline-root with the tool description saying it
-// could not, so it fails to start. It returns the startup line rather than
-// printing it, because what an operator is told has to be decided in the same
-// place as what was wired.
 func installBaselineDestinations(server *mcp.Server, recipeBaselines recipe.BaselineStore, upstreamHTTP string, router recipe.BaselineRouter) (string, error) {
 	switch {
 	case recipeBaselines != nil:
@@ -1709,13 +1378,6 @@ func installBaselineDestinations(server *mcp.Server, recipeBaselines recipe.Base
 	}
 }
 
-// recipeBaselinesFor returns the provider's baseline side, or nil.
-//
-// Same shape as recipeReceiptsFor and for a related reason: the capability is
-// the provider's, not the daemon's. Both shipped providers implement it, so nil
-// here means a custom provider that does not — in which case its recipes' own
-// baselines fall back to the local root, which is the behaviour that existed
-// before there was anywhere else to put them.
 func recipeBaselinesFor(provider recipe.Provider) recipe.BaselineStore {
 	if store, ok := provider.(recipe.BaselineStore); ok {
 		return store
@@ -1723,10 +1385,6 @@ func recipeBaselinesFor(provider recipe.Provider) recipe.BaselineStore {
 	return nil
 }
 
-// recipeBaselineStatusLine says at startup where a private recipe's baselines
-// will land, because the answer differs per deployment and a screenshot of a
-// signed-in page landing somewhere unexpected is the failure this routing
-// exists to prevent.
 func recipeBaselineStatusLine(store recipe.BaselineStore) string {
 	if store == nil {
 		return "this recipe provider holds no baselines: brw_baseline for its recipes falls back to --baseline-root"
@@ -1734,9 +1392,6 @@ func recipeBaselineStatusLine(store recipe.BaselineStore) string {
 	return "regression baselines for this provider's own recipes are stored with it, at " + store.BaselineLocation()
 }
 
-// proxyBaselineStatusLine says at startup how a proxying daemon decides where a
-// baseline belongs, because the answer is the difference between gating a
-// private recipe and writing its page to this machine's disk.
 func proxyBaselineStatusLine() string {
 	return "brw_baseline asks the browser host where each capture belongs; one that belongs with its private recipe provider is refused here rather than written to --baseline-root"
 }
@@ -1773,10 +1428,6 @@ func configureRecipeProvider(ctx context.Context, directory, providerURL, tokenF
 	return recipe.NewHTTPProvider(recipe.HTTPProviderConfig{BaseURL: providerURL, Token: token})
 }
 
-// currentRepositoryRoot is a runtime safety belt for source-tree launches. It
-// lets the directory provider reject a recipe root nested in the checkout the
-// daemon was started from; release CI separately enforces that no recipe corpus
-// is tracked at all.
 func currentRepositoryRoot() string {
 	directory, err := os.Getwd()
 	if err != nil {
@@ -1847,9 +1498,6 @@ func normalizeAddr(addr string) string {
 	return "/" + addr
 }
 
-// flagsSetOnCommandLine is the set of flags the operator actually typed. It is
-// what keeps brw.json weaker than the command line: a flag's value cannot say
-// whether anybody chose it, because brwd reads the environment as the default.
 func flagsSetOnCommandLine() map[string]bool {
 	set := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
@@ -1873,11 +1521,6 @@ func envDefault(name, fallback string) string {
 	return fallback
 }
 
-// watchParentExit polls the parent pid and calls stop when this process is
-// reparented (orphaned): the session that spawned us is gone, so a stdio MCP
-// child has nothing left to serve. Normally the parent's death also closes our
-// stdin and Serve exits on EOF; this covers parents that leak the pipe to
-// other processes or otherwise die without it closing.
 func watchParentExit(stop func()) {
 	parent := os.Getppid()
 	if parent <= 1 {
@@ -1894,8 +1537,6 @@ func watchParentExit(stop func()) {
 	}
 }
 
-// envDuration returns the duration value of an environment variable, or
-// fallback when it is unset, empty, or not a valid Go duration string.
 func envDuration(name string, fallback time.Duration) time.Duration {
 	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -1905,8 +1546,6 @@ func envDuration(name string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
-// envInt returns the integer value of an environment variable, or fallback when
-// it is unset, empty, or not a valid integer.
 func envInt(name string, fallback int) int {
 	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -1916,15 +1555,10 @@ func envInt(name string, fallback int) int {
 	return fallback
 }
 
-// bridgeRequireToken reports whether the extension bridge must reject a hello
-// that carries no handshake token. It is on unless the operator opts out, which
-// only a pre-0.2.0 extension needs.
 func bridgeRequireToken() bool {
 	return !envBool("BRW_BRIDGE_ALLOW_TOKENLESS")
 }
 
-// envBool reports whether an environment variable is set to a truthy value
-// (1/true/yes/on, case-insensitive). Unset or empty is false.
 func envBool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
 	case "1", "true", "yes", "on":
@@ -1933,28 +1567,6 @@ func envBool(name string) bool {
 	return false
 }
 
-// isLoopback reports whether addr binds to a loopback address (127.0.0.1 or
-// localhost). Bare ":port" binds to all interfaces and is NOT loopback.
-func isLoopback(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		// Try treating the whole string as a host.
-		host = addr
-	}
-	host = strings.TrimSpace(host)
-	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
-		return false
-	}
-	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-// profileBrowserExecutable is the installed binary for the browser a profile
-// names, or "" to let the launcher pick. A "chromium" profile must not start
-// Google Chrome just because Chrome comes first in the discovery order.
 func profileBrowserExecutable(kind string) string {
 	browser, ok := setup.LookupBrowser(kind)
 	if !ok {
@@ -1966,8 +1578,6 @@ func profileBrowserExecutable(kind string) string {
 	})
 }
 
-// resolvePacing turns the --pacing value into a mode. Empty means human on the
-// extension bridge and off on every other lane.
 func resolvePacing(value string, bridge bool) browser.PacingMode {
 	if strings.TrimSpace(value) == "" {
 		if bridge {

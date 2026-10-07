@@ -9,17 +9,6 @@ import (
 	"testing"
 )
 
-// notAboutWhichBrowser lists brwd's flags that cannot decide which browser the
-// daemon drives or how it is started, plus the lane's own three arguments.
-// Everything else has to be refused alongside --chrome-opt-in, because this
-// lane attaches to the Chrome whose user turned remote debugging on and to no
-// other.
-//
-// The reason strings are the point of the list: a flag is excused by an
-// argument, and a new flag added without one fails the test below rather than
-// being accepted and silently ignored. These are the daemon's own surface —
-// what it listens on, what it records, what it lets an agent do once the
-// browser is reached — and none of them reaches the browser.
 var notAboutWhichBrowser = map[string]string{
 	"approvals":                   "daemon's operator approval policy",
 	"approval-token-file":         "daemon's operator credential",
@@ -72,17 +61,12 @@ var notAboutWhichBrowser = map[string]string{
 	"site-consent-prompt":         "per-origin consent prompting",
 	"confirm-actions":             "high-risk action confirmation",
 	"content-nav-guard":           "navigation interception, applied after attaching",
-	// The lane's own three arguments. These do decide which browser is driven,
-	// but they are how the lane is told, so they cannot conflict with it.
+
 	"chrome-opt-in":               "the lane itself",
 	"chrome-opt-in-browser":       "this lane's own argument for which browser to look in",
 	"chrome-opt-in-user-data-dir": "this lane's own argument for which directory to look in",
 }
 
-// Every flag brwd registers is either refused alongside --chrome-opt-in or
-// listed above with a reason it cannot apply. The domain is scanned out of
-// main.go, so a flag added there lands in neither set and fails here — which is
-// the only thing that keeps the hand-maintained conflict table complete.
 func TestEveryBrwdFlagIsClassifiedAgainstTheOptInLane(t *testing.T) {
 	source, err := os.ReadFile("main.go")
 	if err != nil {
@@ -112,8 +96,6 @@ func TestEveryBrwdFlagIsClassifiedAgainstTheOptInLane(t *testing.T) {
 		t.Fatalf("brwd registers %v, which --chrome-opt-in neither refuses nor excuses; add a chromeOptInFlags field that refuses it, or a reason in notAboutWhichBrowser saying why it cannot decide which browser is driven", unclassified)
 	}
 
-	// The excuse list must not outlive the flags it excuses, or it silently
-	// starts excusing nothing while looking complete.
 	for name := range notAboutWhichBrowser {
 		if !registered[name] {
 			t.Errorf("notAboutWhichBrowser excuses --%s, which brwd no longer registers", name)
@@ -124,8 +106,6 @@ func TestEveryBrwdFlagIsClassifiedAgainstTheOptInLane(t *testing.T) {
 	}
 }
 
-// refusedFlagNames expands the conflict table into the flag names it reports,
-// splitting the one arm that covers several launch switches at once.
 func refusedFlagNames() map[string]bool {
 	out := map[string]bool{}
 	typ := reflect.TypeOf(chromeOptInFlags{})

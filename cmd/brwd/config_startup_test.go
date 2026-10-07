@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-// runBrwd builds and runs the real daemon with --print-system-prompt, which is
-// the one invocation that reaches the startup path and then exits. Everything
-// before that point — flag parsing, the config file, the precedence rule — is
-// the same code every real launch runs.
 func runBrwd(t *testing.T, args []string, env []string) (string, string, int) {
 	t.Helper()
 	binary := brwdBinary(t)
@@ -35,9 +31,6 @@ func runBrwd(t *testing.T, args []string, env []string) (string, string, int) {
 	return stdout.String(), stderr.String(), code
 }
 
-// TestBrwdReadsBrwJSONAtStartup proves the wiring, not just the package: a
-// config file that nothing in main() ever loaded would pass every test in
-// internal/brwconfig and change nothing about a running daemon.
 func TestBrwdReadsBrwJSONAtStartup(t *testing.T) {
 	dir := t.TempDir()
 
@@ -56,8 +49,6 @@ func TestBrwdReadsBrwJSONAtStartup(t *testing.T) {
 		t.Fatalf("brwd did not reach its normal startup path: %.200s", stdout)
 	}
 
-	// The environment still wins, which is the precedence rule where it
-	// actually runs rather than in a unit test's flag set.
 	_, stderr, code = runBrwd(t, []string{"--config", good}, []string{"BRW_MCP_TOOLS=minimal"})
 	if code != 0 {
 		t.Fatalf("exited %d: %s", code, stderr)
@@ -69,7 +60,6 @@ func TestBrwdReadsBrwJSONAtStartup(t *testing.T) {
 		t.Fatalf("the rest of the file stopped applying:\n%s", stderr)
 	}
 
-	// And the command line wins over both.
 	_, stderr, code = runBrwd(t, []string{"--config", good, "--mcp-tools", "all"}, []string{"BRW_MCP_TOOLS=minimal"})
 	if code != 0 {
 		t.Fatalf("exited %d: %s", code, stderr)
@@ -78,7 +68,6 @@ func TestBrwdReadsBrwJSONAtStartup(t *testing.T) {
 		t.Fatalf("the config file reported supplying a flag the command line set:\n%s", stderr)
 	}
 
-	// A misspelled key is a startup failure, not a setting that does nothing.
 	bad := filepath.Join(dir, "bad.json")
 	if err := os.WriteFile(bad, []byte(`{"defaults":{"headles":true}}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -91,7 +80,6 @@ func TestBrwdReadsBrwJSONAtStartup(t *testing.T) {
 		t.Fatalf("the failure does not name the key: %s", stderr)
 	}
 
-	// A file that would flip what this invocation IS is refused outright.
 	dangerous := filepath.Join(dir, "dangerous.json")
 	if err := os.WriteFile(dangerous, []byte(`{"defaults":{"unsafe-real-profile":true}}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -104,8 +92,6 @@ func TestBrwdReadsBrwJSONAtStartup(t *testing.T) {
 		t.Fatalf("the refusal does not name the flag: %s", stderr)
 	}
 
-	// BRW_CONFIG finds it too, so a service unit can point at one without
-	// changing its arguments.
 	_, stderr, code = runBrwd(t, nil, []string{"BRW_CONFIG=" + good})
 	if code != 0 {
 		t.Fatalf("BRW_CONFIG exited %d: %s", code, stderr)

@@ -19,10 +19,6 @@ import (
 	"github.com/Don-Works/brw/internal/chromeoptin"
 )
 
-// A flag added to chromeOptInFlags but not to the switch would combine
-// silently, and the last writer of cfg would decide which browser the daemon
-// drove. The domain is the struct's own fields, enumerated by reflection, so a
-// new field fails this without anyone remembering to extend a list.
 func TestEveryChromeOptInFlagIsRefused(t *testing.T) {
 	typ := reflect.TypeOf(chromeOptInFlags{})
 	if typ.NumField() == 0 {
@@ -59,16 +55,12 @@ func TestEveryChromeOptInFlagIsRefused(t *testing.T) {
 	}
 }
 
-// The zero value is the whole point: --chrome-opt-in on its own has to work.
 func TestChromeOptInAloneIsAllowed(t *testing.T) {
 	if err := checkChromeOptInFlags(chromeOptInFlags{}); err != nil {
 		t.Fatalf("--chrome-opt-in on its own was refused: %v", err)
 	}
 }
 
-// A refusal that names a flag brwd no longer registers sends the user looking
-// for something that is not there. The flag names are scanned out of main.go
-// rather than listed here, so a rename fails this test.
 func TestChromeOptInRefusalsNameFlagsBrwdRegisters(t *testing.T) {
 	source, err := os.ReadFile("main.go")
 	if err != nil {
@@ -105,10 +97,6 @@ func TestChromeOptInRefusalsNameFlagsBrwdRegisters(t *testing.T) {
 	}
 }
 
-// fakeOptInChrome stages the endpoint shape Chrome records when a user turns
-// the opt-in on. The returned counter is every request the fixture served: a
-// gate that is supposed to run before discovery is only proven by that counter
-// staying at zero.
 func fakeOptInChrome(t *testing.T) (string, *atomic.Int64) {
 	t.Helper()
 	hits := &atomic.Int64{}
@@ -138,8 +126,6 @@ func fakeOptInChrome(t *testing.T) (string, *atomic.Int64) {
 	return dir, hits
 }
 
-// On the opt-in lane brw attaches to the endpoint the user turned on, and marks
-// the config as driving a browser its user is signed into.
 func TestConfigureChromeOptInAttachesToTheDiscoveredEndpoint(t *testing.T) {
 	dir, _ := fakeOptInChrome(t)
 	cfg, endpoint, err := configureChromeOptIn(context.Background(), browser.Config{}, chromeOptInRequest{UserDataDir: dir})
@@ -155,9 +141,7 @@ func TestConfigureChromeOptInAttachesToTheDiscoveredEndpoint(t *testing.T) {
 	if !cfg.SignedInProfile {
 		t.Fatal("SignedInProfile is not set, so brw_state would seal the cookies of the browser the user is signed into")
 	}
-	// The discovered directory is the browser's own profile. Handing it to the
-	// Manager would have brw staging downloads inside it, which contradicts
-	// what --chrome-opt-in tells the user it does with that directory.
+
 	if cfg.UserDataDir != "" {
 		t.Fatalf("UserDataDir = %q; brw only reads the browser's profile directory, and the Manager writes under whatever it is given", cfg.UserDataDir)
 	}
@@ -166,10 +150,6 @@ func TestConfigureChromeOptInAttachesToTheDiscoveredEndpoint(t *testing.T) {
 	}
 }
 
-// The refusal path is where the rule actually has to hold. brw must report the
-// opt-in as off and name the user action, and the config it hands back must
-// still be one that cannot launch a browser — a caller that logged the error
-// and carried on must not end up starting Chrome with a debugging flag.
 func TestConfigureChromeOptInRefusesWithoutLaunching(t *testing.T) {
 	for _, tc := range []struct {
 		name string

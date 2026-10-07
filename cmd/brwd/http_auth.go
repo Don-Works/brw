@@ -12,7 +12,6 @@ import (
 
 const minBearerTokenLen = 32
 
-// readBearerTokenFile reads a token from an absolute, non-symlink 0600 file.
 func readBearerTokenFile(flagName, path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if !filepath.IsAbs(path) {
@@ -30,6 +29,10 @@ func readBearerTokenFile(flagName, path string) (string, error) {
 		return "", fmt.Errorf("--%s: cannot open token file", flagName)
 	}
 	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() || opened.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("--%s: token file changed while opening", flagName)
+	}
 	raw, err := io.ReadAll(io.LimitReader(file, 4097))
 	if err != nil || len(raw) > 4096 {
 		return "", fmt.Errorf("--%s: cannot read token file", flagName)
@@ -53,9 +56,6 @@ func validateBearerToken(token string) error {
 	return nil
 }
 
-// resolveUpstreamToken returns the bearer token a proxy sends upstream: the
-// file wins over BRW_UPSTREAM_TOKEN, which exists so a supervisor that injects
-// credentials as environment variables need not write them to disk.
 func resolveUpstreamToken(file, envValue string) (string, error) {
 	if strings.TrimSpace(file) != "" {
 		return readBearerTokenFile("upstream-token-file", file)
@@ -70,7 +70,6 @@ func resolveUpstreamToken(file, envValue string) (string, error) {
 	return envValue, nil
 }
 
-// httpBindIsLoopback reports whether an --http address listens on loopback only.
 func httpBindIsLoopback(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

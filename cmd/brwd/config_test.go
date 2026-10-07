@@ -12,15 +12,11 @@ import (
 	"github.com/Don-Works/brw/internal/brwconfig"
 )
 
-// brwdFlag is one flag registration read out of main.go.
 type brwdFlag struct {
 	name string
 	env  string
 }
 
-// registeredFlags reads every flag brwd registers and the environment variable
-// each one reads, straight out of the registration calls. Reading the source is
-// the point: a second hand-written list would be exactly the thing that drifts.
 func registeredFlags(t *testing.T) []brwdFlag {
 	t.Helper()
 	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
@@ -41,8 +37,7 @@ func registeredFlags(t *testing.T) []brwdFlag {
 		if !ok || pkg.Name != "flag" {
 			return true
 		}
-		// StringVar/BoolVar/IntVar/DurationVar take (target, name, default,
-		// usage); Var takes (value, name, usage) and reads no environment.
+
 		var nameIndex, defaultIndex int
 		switch selector.Sel.Name {
 		case "StringVar", "BoolVar", "IntVar", "DurationVar", "Int64Var", "Float64Var", "UintVar":
@@ -74,9 +69,6 @@ func registeredFlags(t *testing.T) []brwdFlag {
 	return flags
 }
 
-// environmentVariableIn finds the environment variable a flag's default reads:
-// os.Getenv("X"), or one of brwd's envDefault/envBool/envInt/envDuration
-// helpers, whose first argument is the variable.
 func environmentVariableIn(expr ast.Expr) string {
 	found := ""
 	ast.Inspect(expr, func(node ast.Node) bool {
@@ -110,14 +102,6 @@ func environmentVariableIn(expr ast.Expr) string {
 	return found
 }
 
-// TestEveryEnvironmentVariableBrwdReadsIsInTheConfigTable is the anti-drift
-// guard for the one inversion that would be invisible.
-//
-// brwd reads its environment as each flag's DEFAULT, so by the time brw.json is
-// applied an env-configured flag looks exactly like an untouched one. The env
-// table is what tells them apart. A flag that reads an environment variable and
-// is missing from that table has its environment value silently overwritten by
-// the file, and nothing anywhere says so.
 func TestEveryEnvironmentVariableBrwdReadsIsInTheConfigTable(t *testing.T) {
 	flags := registeredFlags(t)
 	if len(flags) < 40 {
@@ -144,8 +128,6 @@ func TestEveryEnvironmentVariableBrwdReadsIsInTheConfigTable(t *testing.T) {
 	}
 }
 
-// TestEveryFlagAFileMayNotSetIsARealFlag: a deny-list entry that names nothing
-// protects nothing, and reads as though it does.
 func TestEveryFlagAFileMayNotSetIsARealFlag(t *testing.T) {
 	names := map[string]bool{}
 	for _, entry := range registeredFlags(t) {

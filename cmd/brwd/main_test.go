@@ -133,42 +133,21 @@ func TestLocalTransport(t *testing.T) {
 	}{
 		{"direct cdp", "", "", false, false, false, brwidentity.TransportDirectCDP, "direct"},
 		{"extension bridge", "", "", true, false, false, brwidentity.TransportExtensionBridge, "bridge"},
-		// The opt-in lane is its own transport, not direct CDP: it has the
-		// cookie and incognito access the bridge lacks AND it drives the
-		// browser the user is signed into, so its catalogue matches neither.
+
 		{"chrome opt-in", "", "", false, true, false, brwidentity.TransportChromeOptIn, "chrome-opt-in"},
-		// --remote at a loopback endpoint is its own transport for the same kind
-		// of reason: direct CDP means a browser brw started and may therefore be
-		// pointed at a staging directory brw later deletes, and this is somebody
-		// else's browser. Everything else about it is local, so a path, an
-		// upload and the clipboard all still mean what the caller meant.
+
 		{"remote at loopback", "", "http://127.0.0.1:9222", false, false, false, brwidentity.TransportRemoteCDP, "remote"},
 		{"remote at localhost", "", "http://localhost:9222", false, false, false, brwidentity.TransportRemoteCDP, "remote"},
-		// A browser a plugin lent brw is a fifth lane, and specifically not the
-		// --remote one above: that endpoint is on this machine. This one is
-		// elsewhere, and an agent that cannot tell the two apart cannot avoid
-		// asking a browser on another machine for this machine's files.
+
 		{"browser provider", "", "", false, false, true, brwidentity.TransportOffHostCDP, "browser-provider"},
-		// --remote is classified by WHERE ITS ENDPOINT POINTS, not by the flag's
-		// name, so an endpoint on another machine is the same lane a provider's
-		// browser is on. This is the case that reported direct-cdp while
-		// brw_state, brw_downloads, brw_upload_file and brw_clipboard stayed
-		// advertised, each of them answering about the wrong host.
-		//
-		// The MODE stays "remote": mode names how the operator reached the
-		// browser and transport names where it is, and those are different
-		// questions. Only the transport gates a capability.
+
 		{"remote off this machine", "", "http://198.51.100.7:9222", false, false, false, brwidentity.TransportOffHostCDP, "remote"},
 		{"remote at a hostname", "", "wss://browsers.example/devtools/browser/x", false, false, false, brwidentity.TransportOffHostCDP, "remote"},
-		// The opt-in lane sets RemoteURL to the endpoint it discovered, so the
-		// two must not race: it stays chrome-opt-in-cdp.
+
 		{"opt-in keeps its lane once the endpoint is resolved", "", "http://127.0.0.1:9222", false, true, false, brwidentity.TransportChromeOptIn, "chrome-opt-in"},
-		// But not when the endpoint is somewhere else. The opt-in describes a
-		// browser on this machine; an endpoint that is not on this machine
-		// contradicts it, and the restrictive answer is the safe one.
+
 		{"opt-in loses to an endpoint elsewhere", "", "http://198.51.100.7:9222", false, true, false, brwidentity.TransportOffHostCDP, "chrome-opt-in"},
-		// A proxy cannot know how its upstream reaches Chrome, so it reports
-		// empty and adopts the upstream's answer from /health.
+
 		{"upstream proxy defers", "http://127.0.0.1:17410", "", false, false, false, "", "upstream-http"},
 		{"upstream proxy defers even with bridge set", "http://127.0.0.1:17410", "", true, false, false, "", "upstream-http"},
 		{"upstream proxy defers even with opt-in set", "http://127.0.0.1:17410", "", false, true, false, "", "upstream-http"},
@@ -181,17 +160,14 @@ func TestLocalTransport(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("localTransport(%q, %q, %v, %v, %v) = %q, want %q", tt.upstream, tt.remote, tt.bridge, tt.optIn, tt.provider, got, tt.want)
 			}
-			// /health serves mode and transport together; a caller that gates
-			// on one and logs the other must not see two different lanes.
+
 			if mode := daemonMode(tt.upstream, tt.remote, tt.bridge, tt.optIn, tt.provider); mode != tt.wantMode {
 				t.Fatalf("daemonMode(%q, %q, %v, %v, %v) = %q, want %q", tt.upstream, tt.remote, tt.bridge, tt.optIn, tt.provider, mode, tt.wantMode)
 			}
 			if got != "" && !brwidentity.KnownTransport(got) {
 				t.Fatalf("localTransport returned %q, which brwidentity does not classify; every tool's availability on that lane would be undefined", got)
 			}
-			// The identity the daemon reports is built from the same lane, so a
-			// daemon cannot advertise one transport and resolve its on-disk
-			// scope as another.
+
 			identity := resolveIdentity(identityInputs{
 				UpstreamHTTP:    tt.upstream,
 				Bridge:          tt.bridge,
@@ -204,8 +180,7 @@ func TestLocalTransport(t *testing.T) {
 			}
 		})
 	}
-	// Every transport the daemon can report must be one brwidentity declares,
-	// or a table keyed by transport silently fails to classify it.
+
 	for _, tt := range tests {
 		if tt.want == "" {
 			continue
@@ -216,18 +191,6 @@ func TestLocalTransport(t *testing.T) {
 	}
 }
 
-// Every transport brwidentity classifies has to be a lane brwd can actually
-// select, and every lane brwd selects has to be classified. A transport added
-// to the table with no way to reach it is a catalogue nobody runs; a lane brwd
-// reports that brwidentity does not know is a lane on which every
-// capability-gated tool's availability is undefined.
-//
-// The table below is also where a new lane declares whether brw STARTED the
-// browser, which is the property the download refusal reads
-// (browser.Manager.stagesDownloads). Declaring it here and comparing it against
-// the transport's own RuntimeDownloadRouting is what stops the two drifting —
-// drift is what let `--remote` retarget and delete a person's downloads while
-// the Chrome opt-in lane refused.
 func TestEveryClassifiedTransportIsALaneBrwdCanSelect(t *testing.T) {
 	type lane struct {
 		upstream string
@@ -235,12 +198,9 @@ func TestEveryClassifiedTransportIsALaneBrwdCanSelect(t *testing.T) {
 		bridge   bool
 		optIn    bool
 		provider bool
-		// brwStartsTheBrowser is what this lane does, not what it is called.
+
 		brwStartsTheBrowser bool
-		// browserOnThisHost is the second, independent property: whether a
-		// filesystem path and the clipboard mean the same thing at both ends of
-		// the socket. It is not implied by the first — brw does not start the
-		// browser on three of these lanes, and shares a disk with two of them.
+
 		browserOnThisHost bool
 	}
 	lanes := map[string]lane{
@@ -278,11 +238,6 @@ func TestEveryClassifiedTransportIsALaneBrwdCanSelect(t *testing.T) {
 	}
 }
 
-// The capability gates live on browser.Manager and the tools/list filter lives
-// on the reported transport. They are two readings of one question — is the
-// browser on the machine brwd runs on? — and a lane where they disagree is a
-// daemon that advertises brw_upload_file and then refuses it, or worse, one
-// that refuses nothing while reporting a transport nobody filters on.
 func TestTheDaemonLaneAndTheManagerAgreeAboutWhereTheBrowserIs(t *testing.T) {
 	for name, lane := range map[string]struct {
 		upstream string
@@ -310,13 +265,6 @@ func TestTheDaemonLaneAndTheManagerAgreeAboutWhereTheBrowserIs(t *testing.T) {
 	}
 }
 
-// The whole chain the blocker went through, in one test: the flags a daemon was
-// started with, the identity it therefore reports, and the tools it therefore
-// offers. `brwd --remote http://198.51.100.7:9222` reported direct-cdp, so
-// tools/list handed an agent brw_state, brw_downloads, brw_upload_file and
-// brw_clipboard in full, and brw_state restore would have decrypted this host's
-// snapshot of a session a human signed into here and installed its cookies on
-// another machine.
 func TestARemoteEndpointOffThisMachineDoesNotAdvertiseThisHostsCapabilities(t *testing.T) {
 	offHost := resolveIdentity(identityInputs{RemoteURL: "http://198.51.100.7:9222"})
 	if offHost.Transport != brwidentity.TransportOffHostCDP {
@@ -328,16 +276,13 @@ func TestARemoteEndpointOffThisMachineDoesNotAdvertiseThisHostsCapabilities(t *t
 			t.Errorf("a daemon driving a browser on another machine advertises %s, which answers about the wrong host", name)
 		}
 	}
-	// The lane is narrowed, not disabled: everything that is just CDP is still
-	// there, or the refusal would have cost more than the damage it prevents.
+
 	for _, name := range []string{"brw_open", "brw_snapshot", "brw_click", "brw_cookies", "brw_open_incognito"} {
 		if !advertised[name] {
 			t.Errorf("a daemon driving a browser on another machine dropped %s, which works there", name)
 		}
 	}
 
-	// And a loopback endpoint keeps the full local surface, so the gate did not
-	// swallow every --remote setup that works today.
 	onHost := resolveIdentity(identityInputs{RemoteURL: "http://127.0.0.1:9222"})
 	if onHost.Transport != brwidentity.TransportRemoteCDP {
 		t.Fatalf("--remote at loopback reported transport %q, want %q", onHost.Transport, brwidentity.TransportRemoteCDP)
@@ -348,19 +293,12 @@ func TestARemoteEndpointOffThisMachineDoesNotAdvertiseThisHostsCapabilities(t *t
 			t.Errorf("--remote at a loopback endpoint stopped advertising %s; the browser is on this machine and it works", name)
 		}
 	}
-	// The one thing it does give up, because brw did not start that browser:
-	// Browser.setDownloadBehavior is browser-context-wide, so pointing it at
-	// brw's staging directory would move the files whoever started it downloads
-	// by hand. That is why the lane is not direct-cdp.
+
 	if localAdvertised["brw_set_download_path"] {
 		t.Error("--remote at a loopback endpoint advertises brw_set_download_path; brw did not start that browser and must not retarget its downloads")
 	}
 }
 
-// advertisedOverMCP is the tool surface an agent really sees: a tools/list
-// request served by the same mcp.Server main builds, given the identity the
-// daemon reports. Asked over the wire rather than through a helper, because the
-// wire is where a lane that classified itself wrongly did its damage.
 func advertisedOverMCP(t *testing.T, identity brwidentity.Identity) map[string]bool {
 	t.Helper()
 	server := mcp.NewWithToolProfile(nil, "all")
@@ -418,9 +356,6 @@ func TestFindInstalledExtensionNeedsAManifest(t *testing.T) {
 	}
 }
 
-// A receipt only means something if it outlives the daemon that wrote it, so
-// the write ledger is the provider — and only when the provider is a remote
-// party. A directory of local JSON files is this machine, so it gets none.
 func TestRecipeReceiptsOnlyComeFromAProviderThatOutlivesTheDaemon(t *testing.T) {
 	remote, err := recipe.NewHTTPProvider(recipe.HTTPProviderConfig{BaseURL: "https://recipes.example.test"})
 	if err != nil {
@@ -438,9 +373,6 @@ func TestRecipeReceiptsOnlyComeFromAProviderThatOutlivesTheDaemon(t *testing.T) 
 		t.Fatalf("a local catalogue was used as a write ledger: %T", got)
 	}
 
-	// A deployment with no write ledger has to say so while it is starting.
-	// Otherwise the first anyone hears of it is a daemon that came back with no
-	// record of the write it was in the middle of.
 	line := recipeReceiptStatusLine(nil)
 	for _, want := range []string{"cannot hold external-write receipts", "--recipe-provider-url"} {
 		if !strings.Contains(line, want) {
@@ -449,5 +381,16 @@ func TestRecipeReceiptsOnlyComeFromAProviderThatOutlivesTheDaemon(t *testing.T) 
 	}
 	if enabled := recipeReceiptStatusLine(recipe.NewMemoryReceipts()); strings.Contains(enabled, "cannot hold") {
 		t.Fatalf("a deployment that does hold receipts reported %q", enabled)
+	}
+}
+
+func TestUsageFilenameBoundsPlainASCIIAndExpandsBareHome(t *testing.T) {
+	if got := safeFilenamePart(strings.Repeat("a", 1000)); len(got) > 64 {
+		t.Errorf("identity filename component is unbounded: %d", len(got))
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got, err := resolveUsageLogPath("~", brwidentity.Identity{}); err != nil || got != home {
+		t.Errorf("bare home=%q %v, want %q", got, err, home)
 	}
 }

@@ -10,18 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
-// The lane is full browser-target CDP against the profile its user is signed
-// into, so a policy has to grant it explicitly. Reading direct_cdp_allowed here
-// would be the wrong question — that bit is about brw launching a browser
-// against a profile directory — and a bridge-only profile is exactly the one
-// the restriction exists to protect.
-//
-// The call under test is configureChromeOptIn, which is the whole of the lane's
-// setup, and not checkChromeOptInProfile. An earlier spelling put the gate in
-// main() and tested the checker: the four cases below passed with the call
-// deleted from main(), because nothing they ran went near it. The counter is
-// the other half — a refusal that had already probed the browser would have let
-// a policy-restricted profile be reached before being refused.
 func TestChromeOptInNeedsItsOwnPolicyGrant(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -78,20 +66,13 @@ func TestChromeOptInNeedsItsOwnPolicyGrant(t *testing.T) {
 	}
 }
 
-// brw_identity sells itself as reporting which profile this namespace drives.
-// Nothing else checks that the Chrome answering on the discovered port is the
-// profile the policy named.
-//
-// Driven through configureChromeOptIn for the same reason as the grant above:
-// this check ran in main() and every case passed without it.
 func TestChromeOptInEndpointMustBeThePolicysProfile(t *testing.T) {
 	granted := func(userDataDir string) profilepolicy.Profile {
 		return profilepolicy.Profile{Name: "work", ChromeOptInAllowed: true, UserDataDir: userDataDir}
 	}
 	for _, tc := range []struct {
 		name string
-		// policy maps the directory discovery will run in to the one the
-		// profile names, so a case can name the same place differently.
+
 		policy  func(discovered string) string
 		refused bool
 	}{
@@ -126,9 +107,6 @@ func TestChromeOptInEndpointMustBeThePolicysProfile(t *testing.T) {
 	}
 }
 
-// A daemon with no --profile and no --workspace has no policy to consult. That
-// is the shipped single-profile case, and it stays working: the gate applies to
-// a policy that exists and does not grant, not to the absence of one.
 func TestChromeOptInWithoutAPolicyIsNotGated(t *testing.T) {
 	dir, _ := fakeOptInChrome(t)
 	cfg, _, err := configureChromeOptIn(context.Background(), browser.Config{}, chromeOptInRequest{UserDataDir: dir})
@@ -140,9 +118,6 @@ func TestChromeOptInWithoutAPolicyIsNotGated(t *testing.T) {
 	}
 }
 
-// Which browser's directory to look in is a property of the profile, not a
-// constant. Defaulting to Chrome against a Chromium-bound profile reports one
-// browser and drives another.
 func TestChromeOptInBrowserFollowsTheProfile(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -163,8 +138,6 @@ func TestChromeOptInBrowserFollowsTheProfile(t *testing.T) {
 	}
 }
 
-// Discovery looks where the operator said, then where the profile says, and
-// only then at the platform default.
 func TestChromeOptInDiscoveryDirPrefersWhatIsKnown(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -182,7 +155,7 @@ func TestChromeOptInDiscoveryDirPrefersWhatIsKnown(t *testing.T) {
 			}
 		})
 	}
-	// With neither, it falls through to the platform table rather than to "".
+
 	if got := chromeOptInDiscoveryDir("", "", "linux", "chrome"); got == "" {
 		t.Fatal("no directory at all and no platform default; discovery would be told nothing")
 	}
