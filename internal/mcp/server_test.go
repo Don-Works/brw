@@ -1481,7 +1481,7 @@ func (fakeController) ExecutePlan(context.Context, []browser.PlanStep) (browser.
 	}, nil
 }
 func (fakeController) ExecuteBatch(context.Context, []browser.BatchStep) (browser.BatchResult, error) {
-	return browser.BatchResult{}, nil
+	return browser.BatchResult{OK: true}, nil
 }
 func (fakeController) Cancel(context.Context, string) (browser.CancelResult, error) {
 	return browser.CancelResult{OK: true}, nil
