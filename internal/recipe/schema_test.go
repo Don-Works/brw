@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -353,8 +354,7 @@ func TestDirectoryProviderHotReloadsAndSearchesOnlyLatestVersion(t *testing.T) {
 	if err != nil || len(newMatches) != 1 || newMatches[0].Version != "1.10.0" {
 		t.Fatalf("new matches=%+v err=%v", newMatches, err)
 	}
-	// Updating the searchable head does not invalidate an already-pinned older
-	// version; immutable fetch remains available by its original digest.
+
 	fetched, err := provider.Fetch(context.Background(), oldMatches[0].ID, oldMatches[0].Version, oldMatches[0].Digest)
 	if err != nil || fetched.Version != "1.9.0" {
 		t.Fatalf("old pinned fetch=%+v err=%v", fetched, err)
@@ -731,4 +731,74 @@ func FuzzParseNeverPanics(f *testing.F) {
 	f.Add([]byte(`{"schema_version":1,"id":"e17"}`))
 	f.Add([]byte{0, 1, 2, 255})
 	f.Fuzz(func(t *testing.T, data []byte) { _, _ = Parse(data) })
+}
+
+func TestCatalogIsolatesRequirementsAssertionsAndSiteNonce(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		nonce  bool
+		mutate func(Recipe)
+	}{
+		{"requirements", false, func(r Recipe) { r.Requires[0] = "changed" }},
+		{"assertion", false, func(r Recipe) { r.Steps[0].Assert.Expected = "changed" }},
+		{"assertion target", false, func(r Recipe) { r.Steps[2].Assert.Target.NameContains = "changed" }},
+		{"assertion visibility", false, func(r Recipe) { *r.Steps[2].Assert.Target.Visible = false }},
+		{"minimum", false, func(r Recipe) { *r.Steps[2].Assert.Min = 99 }},
+		{"maximum", false, func(r Recipe) { *r.Steps[2].Assert.Max = 99 }},
+		{"byte count", false, func(r Recipe) { *r.Steps[5].Assert.Bytes = 99 }},
+		{"element count", false, func(r Recipe) { *r.Steps[6].Assert.Count = 99 }},
+		{"site nonce", true, func(r Recipe) { r.Steps[0].SiteIdempotency.Kind = "changed" }},
+		{"nonce target", true, func(r Recipe) { r.Steps[0].SiteIdempotency.Target.Name = "changed" }},
+		{"nonce visibility", true, func(r Recipe) { *r.Steps[0].SiteIdempotency.Target.Visible = false }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value, err := Parse([]byte(assertRecipeJSON))
+			if err != nil {
+				t.Fatal(err)
+			}
+			visible := true
+			value.Requires = []string{RequiresProfileSession}
+			value.Steps[2].Assert.Target.Visible = &visible
+			value.Steps = append(value.Steps, Step{ID: "exact_count", Action: "assert", Assert: &Assertion{Kind: "element_count", Target: &Target{Role: "row", Name: "Invoice"}, Count: intPointer(1)}})
+			if test.nonce {
+				value = nonceRecipe(Target{Role: "textbox", Name: "Nonce", Visible: &visible})
+			}
+			digest, err := Digest(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			catalog, err := NewCatalog(context.Background(), []Recipe{value}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fetch := func() Recipe {
+				r, err := catalog.Fetch(context.Background(), value.ID, value.Version, digest)
+				if err != nil {
+					t.Fatal(err)
+				}
+				actual, err := Digest(r)
+				if err != nil || actual != digest {
+					t.Fatalf("catalog recipe changed after external mutation: %s %v", actual, err)
+				}
+				return r
+			}
+			first := fetch()
+			test.mutate(first)
+			fetch()
+			test.mutate(value)
+			fetch()
+		})
+	}
+}
+
+func TestEmbeddingNormalizationAvoidsMagnitudeOverflowAndUnderflow(t *testing.T) {
+	for _, magnitude := range []float64{math.SmallestNonzeroFloat64, 1e-300, 1e300, math.MaxFloat64} {
+		normalized, err := normalize([]float64{magnitude})
+		if err != nil || len(normalized) != 1 || normalized[0] != 1 {
+			t.Errorf("normalize(%g)=%v %v", magnitude, normalized, err)
+		}
+	}
+	if _, err := normalize([]float64{math.MaxFloat64, math.MaxFloat64}); err == nil {
+		t.Fatal("unrepresentable vector magnitude accepted")
+	}
 }

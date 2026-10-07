@@ -1,6 +1,4 @@
-// Package recipe defines brw's public, deterministic recipe ABI. The package
-// contains no recipe corpus: recipes are supplied by callers or fetched from an
-// operator-controlled Provider and pinned by immutable id, version, and digest.
+// Package recipe defines brw's public, deterministic recipe ABI.
 package recipe
 
 import (
@@ -35,16 +33,9 @@ type Recipe struct {
 	Inputs        map[string]Input  `json:"inputs,omitempty"`
 	Steps         []Step            `json:"steps"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
-	// Requires names properties of the browser this recipe assumes. It is not a
-	// hint: a runner refuses the whole recipe when it cannot honour one, before
-	// step one, because the failure it prevents is a login-shaped flow that runs
-	// signed out and looks like it worked until it reaches the password field.
-	// Omitted when empty, so adding it did not move any existing recipe digest.
+	// Requires names properties of the browser this recipe assumes.
 	Requires []string `json:"requires,omitempty"`
-	// CaptureOnFailure asks the browser host to collect a failure evidence
-	// bundle when a step fails. It is a request, not a guarantee: the host
-	// decides, and its default is to collect nothing. Omitted when false, so
-	// adding it did not move any existing recipe digest.
+	// CaptureOnFailure asks the browser host to collect a failure evidence bundle when a step fails.
 	CaptureOnFailure bool `json:"capture_on_failure,omitempty"`
 }
 
@@ -69,21 +60,13 @@ type Step struct {
 	IdempotencyKey string       `json:"idempotency_key,omitempty"`
 	Postcondition  *Event       `json:"postcondition,omitempty"`
 	Assert         *Assertion   `json:"assert,omitempty"`
-	// SiteIdempotency names the target site's own duplicate-suppression token
-	// for this write, when it exposes one. Omitted when absent, so adding it did
-	// not move any existing recipe digest.
+	// SiteIdempotency names the target site's own duplicate-suppression token for this write, when it exposes one.
 	SiteIdempotency *SiteIdempotency `json:"site_idempotency,omitempty"`
-	// Verifies names the external_write step this assertion reads back. A
-	// compiled write carries two assertions — the evidence the compiler infers
-	// from the recording, and the read-back the operator declared — and their
-	// order is an emission detail, so position cannot tell them apart. The tag
-	// is what an interrupted rerun consults. Omitted when absent, so adding it
-	// did not move any existing recipe digest.
+	// Verifies names the external_write step this assertion reads back.
 	Verifies string `json:"verifies,omitempty"`
 }
 
-// Target is resolved immediately before every action. Observation refs are
-// intentionally absent because their lifetime is one page state, not a recipe.
+// Target is resolved immediately before every action.
 type Target struct {
 	Role         string `json:"role"`
 	Name         string `json:"name,omitempty"`
@@ -105,8 +88,7 @@ type CaptureSpec struct {
 	Extract *artifact.ExtractionSpec `json:"extract,omitempty"`
 	Kind    string                   `json:"kind"`
 	Target  *Target                  `json:"target,omitempty"`
-	// Ref is retained only so strict parsing can return a useful validation
-	// error for old drafts. Persisted observation refs are never executable.
+	// Ref is retained only so strict parsing can return a useful validation error for old drafts.
 	Ref          string `json:"ref,omitempty"`
 	Redaction    string `json:"redaction,omitempty"`
 	TTLSeconds   int    `json:"ttl_seconds,omitempty"`
@@ -240,34 +222,19 @@ func Validate(value Recipe) error {
 	if err := validateCredentialReferences(value, encoded); err != nil {
 		problems = append(problems, err)
 	}
-	// The literal-secret heuristic below matches a credential-ish word, a colon
-	// and a value, which is the exact shape of the reference scheme itself.
-	// Neutralise the scheme before that scan so a legal reference is not
-	// reported as an embedded credential.
+
 	if secretPattern.Match(bytes.ReplaceAll(encoded, []byte(credential.Scheme), []byte("credential-reference-"))) {
 		problems = append(problems, errors.New("recipe appears to contain a literal secret"))
 	}
 	return errors.Join(problems...)
 }
 
-// RequiresProfileSession says this recipe's steps assume a browser a human has
-// already signed into — the installed profile brw drives on this machine.
+// RequiresProfileSession says this recipe's steps assume a browser a human has already signed into — the installed profile brw drives on this machine.
 const RequiresProfileSession = "profile_session"
 
-// Requirements is the CLOSED domain of requirement names, matched byte for
-// byte. A recipe naming anything else is refused at validation rather than
-// accepted and ignored: a requirement nobody enforces is worse than no
-// requirement, because the recipe author believes it is enforced.
-//
-// A test enumerates this list against the runner's own switch, so a name added
-// here and not honoured there fails rather than shipping as a declaration with
-// nothing behind it.
+// Requirements is the CLOSED domain of requirement names, matched byte for byte.
 var Requirements = []string{RequiresProfileSession}
 
-// maxRequirements bounds the list rather than pinning it to the domain size, so
-// the duplicate and unknown-name checks below are the ones that report a bad
-// list. A bound of len(Requirements) would answer "at most 1 requirement" to a
-// recipe that declared the same one twice, which names the wrong problem.
 const maxRequirements = 32
 
 func validateRequirements(requires []string) error {
@@ -289,21 +256,9 @@ func validateRequirements(requires []string) error {
 	return errors.Join(problems...)
 }
 
-// CredentialActions are the only actions whose value may be a credential
-// reference. Both write the value into one form field and nothing else; every
-// other action's value ends up in a selector, a URL, an assertion or an error
-// message, each of which is read back by a caller.
+// CredentialActions are the only actions whose value may be a credential reference.
 var CredentialActions = []string{"fill", "type"}
 
-// validateCredentialReferences keeps a secret:// reference to the one place it
-// can safely go: the ENTIRE value of a fill or type step.
-//
-// The check counts occurrences across the whole encoded recipe rather than
-// walking the fields anyone happened to remember, so a field added to the
-// schema later cannot quietly become a second place a reference is accepted,
-// and an attacker-supplied variant ("secret://x.png" inside a longer value, a
-// reference in a target name, a reference in the description) fails the count
-// instead of finding a gap in a per-field list.
 func validateCredentialReferences(value Recipe, encoded []byte) error {
 	total := bytes.Count(encoded, []byte(credential.Scheme))
 	if total == 0 {
@@ -324,13 +279,7 @@ func validateCredentialReferences(value Recipe, encoded []byte) error {
 	return nil
 }
 
-// StepCredentialReference returns the credential reference a step resolves at
-// execution, if it has one.
-//
-// It reads the recipe's own declared value, deliberately BEFORE input
-// expansion. An input that expands to "secret://x" is ordinary text and is
-// typed literally, so a caller cannot use an input to name a credential the
-// reviewed recipe did not.
+// StepCredentialReference returns the credential reference a step resolves at execution, if it has one.
 func StepCredentialReference(step Step) (string, bool) {
 	if !slices.Contains(CredentialActions, step.Action) {
 		return "", false
@@ -338,17 +287,10 @@ func StepCredentialReference(step Step) (string, bool) {
 	return credential.Reference(step.Value)
 }
 
-// actuationActions are the steps that do something to the page rather than read
-// it. One table, because "is this an action" decides what a step must declare,
-// and a second copy elsewhere is a second answer.
 var actuationActions = map[string]bool{
 	"click": true, "fill": true, "type": true, "select": true, "press": true, "navigate_to": true,
 }
 
-// checkVerifiesTarget requires a verifies tag to name an external_write step
-// that comes earlier in the recipe. A tag naming a step that does not exist, or
-// one after the assertion, would read as a declared read-back while pointing at
-// nothing a rerun can consult.
 func checkVerifiesTarget(recipe Recipe, step Step) error {
 	for _, candidate := range recipe.Steps {
 		if candidate.ID == step.ID {
@@ -563,9 +505,6 @@ func validateEvent(event Event, inputs map[string]Input) error {
 	return validateEventValue(event, inputs, true)
 }
 
-// validateExpandedEvent checks the same bounded event shape after runtime
-// interpolation without parsing the resulting user data as recipe syntax a
-// second time. Expansion is deliberately single-pass.
 func validateExpandedEvent(event Event) error {
 	return validateEventValue(event, nil, false)
 }

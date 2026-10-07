@@ -12,26 +12,11 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// Assertion is the recipe spelling of a deterministic check. It is the same
-// vocabulary brw_assert exposes, with one difference that is the whole point of
-// a recipe: elements are named by a semantic Target, never by an observation
-// ref, because a ref lives for one page state and a recipe outlives many.
-//
-// It is a step action rather than another wait_event kind because an assertion
-// does not wait. wait_event polls to a timeout; an assertion reads once and says
-// what it saw. Folding the two together would give every assertion an implicit
-// sleep that no reviewer could see in the recipe.
-//
-// element_count counts what the step's Target resolves to, which is not the set
-// brw_assert's element_count counts: a recipe target reaches hidden elements
-// only when it asks for them with visible:false, and the search is capped at
-// semanticResolveLimit matches. A recipe asserts over the elements it could act
-// on; the tool asserts over the document.
+// Assertion is the recipe spelling of a deterministic check.
 type Assertion struct {
 	Kind string `json:"kind"`
 	Mode string `json:"mode,omitempty"`
-	// Expected is the URL/prefix/regex for url, and the attribute value for
-	// attribute.
+	// Expected is the URL/prefix/regex for url, and the attribute value for attribute.
 	Expected        string  `json:"expected,omitempty"`
 	IncludeFragment bool    `json:"include_fragment,omitempty"`
 	Status          int     `json:"status,omitempty"`
@@ -42,16 +27,13 @@ type Assertion struct {
 	State           string  `json:"state,omitempty"`
 	Negate          bool    `json:"negate,omitempty"`
 	Attribute       string  `json:"attribute,omitempty"`
-	// Filename selects the download. A recipe cannot name a download GUID: the
-	// GUID is minted per download, so it can only be known after the run starts.
+	// Filename selects the download.
 	Filename string `json:"filename,omitempty"`
 	SHA256   string `json:"sha256,omitempty"`
 	Bytes    *int64 `json:"bytes,omitempty"`
 }
 
-// Asserter is an optional Surface capability. It is optional so a Surface
-// written against the previous ABI keeps compiling and reports the gap by name
-// instead of failing to build.
+// Asserter is an optional Surface capability.
 type Asserter interface {
 	Assert(context.Context, Assertion) error
 }
@@ -71,9 +53,6 @@ func validateAssertion(assertion Assertion, inputs map[string]Input) error {
 	return validateAssertionValue(assertion, inputs, true)
 }
 
-// validateExpandedAssertion checks the same bounded shape after runtime
-// interpolation without parsing the resulting user data as recipe syntax a
-// second time. Expansion is deliberately single-pass, as it is for events.
 func validateExpandedAssertion(assertion Assertion) error {
 	return validateAssertionValue(assertion, nil, false)
 }
@@ -176,10 +155,7 @@ func validateAssertionValue(assertion Assertion, inputs map[string]Input, checkT
 			}
 		}
 	}
-	// The whole request is revalidated against the browser ABI so recipe
-	// authoring and the tool surface cannot drift apart silently. An assertion
-	// still carrying templates is skipped here and checked again after
-	// expansion: "${input:digest}" is not a sha256 until it is one.
+
 	if len(problems) == 0 && !assertionHasTemplates(assertion) {
 		if err := browser.ValidateAssertRequest(assertionRequest(assertion, "placeholder-ref")); err != nil {
 			problems = append(problems, err)
@@ -198,9 +174,6 @@ func assertionHasTemplates(assertion Assertion) bool {
 	return false
 }
 
-// assertionRequest renders the transport-level request. ref is supplied by the
-// caller after semantic resolution; validation passes a placeholder because the
-// shape, not the element, is what it is checking.
 func assertionRequest(assertion Assertion, ref string) browser.AssertRequest {
 	req := browser.AssertRequest{
 		Assertion:       assertion.Kind,
@@ -260,13 +233,9 @@ func assertionTemplateValues(values []string, assertion *Assertion) []string {
 	return appendTargetTemplateValues(values, assertion.Target)
 }
 
-// Assert resolves the assertion's semantic target, then evaluates the check on
-// the browser host. Resolution happens here rather than in the browser package
-// so a recipe never has to name an observation ref.
+// Assert resolves the assertion's semantic target, then evaluates the check on the browser host.
 func (s *BrowserSurface) Assert(ctx context.Context, assertion Assertion) error {
-	// Assert is exported and satisfies the exported Asserter interface, so it
-	// cannot rely on Runner having validated the step: a nil target is named
-	// rather than dereferenced.
+
 	if assertion.Target == nil && slices.Contains([]string{
 		browser.AssertionElementCount, browser.AssertionElementState, browser.AssertionAttribute,
 	}, assertion.Kind) {
@@ -276,8 +245,7 @@ func (s *BrowserSurface) Assert(ctx context.Context, assertion Assertion) error 
 	case browser.AssertionElementCount:
 		matches, err := s.Resolve(ctx, *assertion.Target)
 		if err != nil {
-			// Resolve's cap is an acting limit; a caller who asked for a count
-			// needs to be told the count is what could not be produced.
+
 			if errors.Is(err, errSemanticSearchTruncated) {
 				return fmt.Errorf("element_count assertion cannot count past %d matching elements: %w", semanticResolveLimit, err)
 			}
@@ -300,18 +268,12 @@ func (s *BrowserSurface) Assert(ctx context.Context, assertion Assertion) error 
 		_, err = browser.Assert(ctx, s.Browser, assertionRequest(assertion, matches[0].Ref))
 		return err
 	case browser.AssertionDownload:
-		// A recipe's download.completed postcondition already drained the entry
-		// into this surface's per-tab cache, and Downloads() is delta-scoped for
-		// recipes, so the ledger would no longer return it. Check the entry the
-		// run actually observed; fall back to the ledger for a download that
-		// completed without a postcondition.
+
 		if entry, ok := s.peekCompletedDownload(ctx, assertion.Filename); ok {
 			_, err := browser.AssertDownloadEntry(entry, assertionRequest(assertion, ""))
 			return err
 		}
-		// That ledger read consumes this tab's delta window, so its entries are
-		// cached here before they are used. Reading it through browser.Assert
-		// instead would leave a later capture step with nothing to capture.
+
 		result, err := s.Browser.Downloads(ctx)
 		if err != nil {
 			return err

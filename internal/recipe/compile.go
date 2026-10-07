@@ -3,10 +3,10 @@ package recipe
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -15,20 +15,7 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// The trace compiler turns one recorded, successful run into a recipe that is
-// valid the moment it comes out, with no TODO markers to resolve.
-//
-// DraftFromTrace, next door, does the opposite job and stays: it converts a
-// bare trace — role, name, ref, nothing else — into a skeleton a human fills
-// in, and refuses to guess the parts it cannot know. Compile needs more input
-// than that (the page state around every action) and in exchange refuses to
-// emit anything a human would still have to correct. Where it cannot derive a
-// value it fails; it never plants a marker and calls the draft done.
-
-// TraceObservation is the page state brw recorded on one side of a traced
-// action: the elements it could see and the URL it was on. The compiler reads
-// the before-state to re-derive what an action pointed at, and the after-state
-// to infer what the action proved.
+// TraceObservation is the page state brw recorded on one side of a traced action: the elements it could see and the URL it was on.
 type TraceObservation struct {
 	URL       string             `json:"url"`
 	Elements  []snapshot.Element `json:"elements,omitempty"`
@@ -53,9 +40,7 @@ func (o *TraceObservation) pageURL() string {
 	return strings.TrimSpace(o.URL)
 }
 
-// TraceDownload is one download the recording saw. SHA256/Bytes are what a
-// download assertion needs to say the file arrived intact; a recording that
-// captured neither yields a filename-only postcondition and no assertion.
+// TraceDownload is one download the recording saw.
 type TraceDownload struct {
 	Filename  string `json:"filename"`
 	SHA256    string `json:"sha256,omitempty"`
@@ -63,10 +48,7 @@ type TraceDownload struct {
 	Completed bool   `json:"completed"`
 }
 
-// TraceStep is one entry of a scoped trace buffer: the action brw recorded,
-// plus the observations taken either side of it. Before is optional after the
-// first step — the preceding step's After is the same page state — but After is
-// mandatory, because an action with nothing observed after it proved nothing.
+// TraceStep is one entry of a scoped trace buffer: the action brw recorded, plus the observations taken either side of it.
 type TraceStep struct {
 	TraceAction
 	Before *TraceObservation `json:"before,omitempty"`
@@ -74,24 +56,14 @@ type TraceStep struct {
 }
 
 // WriteDeclaration marks one traced action as committing an external write.
-// Nothing in a recording distinguishes a click that filters a list from a
-// click that spends money, so the operator declares it and the declaration
-// carries what a write needs to be safe to re-run.
 type WriteDeclaration struct {
-	// Verify re-reads remote state after the write lands. A receipt brw wrote
-	// locally only records that brw dispatched something; this is the check
-	// that asks the remote side what it actually holds.
+	// Verify re-reads remote state after the write lands.
 	Verify Assertion `json:"verify"`
-	// Nonce names the site's own duplicate-suppression field, when it exposes
-	// one. brw prefers the site's token over its own derived key, because the
-	// site is the party that will reject the duplicate.
+	// Nonce names the site's own duplicate-suppression field, when it exposes one.
 	Nonce *SiteIdempotency `json:"site_idempotency,omitempty"`
 }
 
-// CompileOptions carries everything the recording cannot supply. None of it is
-// inferred: an origin list derived from the trace would make the cross-origin
-// check vacuous, and a risk level guessed from an action name would be a guess
-// stamped on the field that exists to stop guessing.
+// CompileOptions carries everything the recording cannot supply.
 type CompileOptions struct {
 	ID          string                   `json:"id"`
 	Version     string                   `json:"version"`
@@ -105,19 +77,13 @@ type CompileOptions struct {
 	CaptureOnFailure bool `json:"capture_on_failure,omitempty"`
 }
 
-// CompiledTarget records how one step's element identity was re-derived, so a
-// reviewer can see the evidence rather than trust the output.
+// CompiledTarget records how one step's element identity was re-derived, so a reviewer can see the evidence rather than trust the output.
 type CompiledTarget struct {
 	StepID string `json:"step_id"`
 	Role   string `json:"role"`
 	Name   string `json:"name"`
 	Origin string `json:"origin"`
-	// Ordinal is the acted element's position among the candidates the derived
-	// target ranked, and Candidates is how many there were. Compilation requires
-	// exactly one candidate, so both read 1 on every compiled target; they are
-	// recorded because "which of the matches, out of how many" is the question a
-	// reviewer asks of any name-based selector, and a review body that answers
-	// it cannot be quietly wrong.
+	// Ordinal is the acted element's position among the candidates the derived target ranked, and Candidates is how many there were.
 	Ordinal    int `json:"ordinal"`
 	Candidates int `json:"candidates"`
 }
@@ -126,14 +92,11 @@ type CompiledTarget struct {
 type CompileResult struct {
 	Recipe  Recipe           `json:"recipe"`
 	Targets []CompiledTarget `json:"targets"`
-	// Review is the diff-able body. Recompiling an unchanged trace produces a
-	// byte-identical one.
+	// Review is the diff-able body.
 	Review string `json:"review"`
 }
 
-// CompileError names the trace step compilation stopped on. It is a type
-// rather than a formatted string so a caller can report the index without
-// parsing prose back out of an error.
+// CompileError names the trace step compilation stopped on.
 type CompileError struct {
 	StepIndex int
 	Action    string
@@ -148,10 +111,6 @@ func (e CompileError) Error() string {
 	return fmt.Sprintf("trace step %d (%s): %s", e.StepIndex, action, e.Reason)
 }
 
-// coordinateActions are recorded by pixel position. A recipe re-runs against a
-// page that has since re-laid out, so a coordinate is not a target; it is last
-// run's geometry. Compilation fails rather than dropping the step, because a
-// silently shorter recipe is a recipe that does something else.
 var coordinateActions = map[string]bool{
 	"click_xy":     true,
 	"click_button": true,
@@ -161,7 +120,6 @@ var coordinateActions = map[string]bool{
 	"mouse_move":   true,
 }
 
-// compilableActions maps a traced action onto the recipe verb that repeats it.
 var compilableActions = map[string]string{
 	"click":       "click",
 	"fill":        "fill",
@@ -171,15 +129,6 @@ var compilableActions = map[string]string{
 	"navigate_to": "navigate_to",
 }
 
-// literalValueActions says, for every compilable action, whether the recording
-// carried literal typed characters into the page through it.
-//
-// It is the table the credential check is driven by, and it covers every entry
-// of compilableActions — a test enumerates them and fails on one with no entry,
-// because the default for an unclassified action is the default that leaks. A
-// press was the entry this table was written for: keystrokes entered one at a
-// time are the typed value, spelled differently, and the earlier check looked
-// only at fill, type and select.
 var literalValueActions = map[string]bool{
 	"click":       false,
 	"fill":        true,
@@ -189,31 +138,14 @@ var literalValueActions = map[string]bool{
 	"navigate_to": false,
 }
 
-// credentialNamePattern recognises a field whose contents are a credential
-// from its accessible name. It backs up the two stronger signals — brw's own
-// redaction flag and the snapshot's sensitive marker — for a recording made
-// against a field brw did not classify.
 var credentialNamePattern = regexp.MustCompile(`(?i)pass\s?word|passcode|passphrase|\bpin\b|\botp\b|one[- ]time code|security code|\bcvv\b|card number|api[ _-]?key|credential|\bsecret\b|recovery code`)
 
 const (
-	// postconditionTimeoutMS bounds every inferred postcondition. It is not
-	// derived from the recording's timings: a recording made on a fast day
-	// would compile a recipe that fails on a slow one.
 	postconditionTimeoutMS = 15_000
 	downloadTimeoutMS      = 60_000
 )
 
 // Compile turns a scoped trace buffer into a reviewed, immutable-ready recipe.
-//
-// Every element identity is re-derived semantically against the observation the
-// action was aimed at: the role and accessible name brw recorded are turned
-// back into a target, ranked against that observation, and accepted only when
-// they name exactly one element and that element is the one the recording acted
-// on. Refs, CSS selectors and coordinates never reach the output.
-//
-// Literal typed text never reaches the output either. Each fill/type/select
-// becomes a declared runtime input, so the recording's data stays in the
-// recording.
 func Compile(steps []TraceStep, opts CompileOptions) (CompileResult, error) {
 	compiler, err := newCompiler(opts)
 	if err != nil {
@@ -231,10 +163,7 @@ type compiler struct {
 	steps   []Step
 	inputs  map[string]Input
 	targets []CompiledTarget
-	// declaredWrites records which write declarations were actually applied.
-	// A declaration naming a step the trace does not contain is an operator
-	// error about the most consequential field in the plan, and dropping it
-	// would compile the flow as though it wrote nothing.
+
 	declaredWrites map[int]bool
 }
 
@@ -307,8 +236,7 @@ func (c *compiler) run(steps []TraceStep) error {
 			return fail("coordinate-driven action; a recipe addresses elements semantically, so last run's pixel position cannot be compiled")
 		}
 		if browser.IsObservationAction(action) {
-			// Reading a page is not part of what a recipe does, and skipping it
-			// cannot change what the compiled steps do.
+
 			if !step.After.empty() {
 				previousAfter = step.After
 			}
@@ -428,8 +356,7 @@ func (c *compiler) compileStep(position int, verb string, traced TraceStep, befo
 		if literal == "" {
 			return fail("recorded action captured no value, so the compiled step would clear the field instead of filling it")
 		}
-		// The literal is used only to decide that a value is needed. What the
-		// recording typed stays in the recording.
+
 		step.Value = "${input:" + c.declareInput(step.Target, observed) + "}"
 	case "press":
 		key := strings.TrimSpace(traced.Text)
@@ -440,12 +367,7 @@ func (c *compiler) compileStep(position int, verb string, traced TraceStep, befo
 			return fail("recorded key press captured no key")
 		}
 		if !actions.IsCommandKey(key) {
-			// The key is not named in the refusal: a literal character press is
-			// one character of whatever was being entered, and a compile that
-			// failed by quoting it back would print the thing it refused to
-			// compile. A keystroke that issues a command is a command; a
-			// keystroke that enters a character is data, and ctrl+a and shift+a
-			// land on opposite sides of that because only one of them types.
+
 			return fail("recorded key press is a literal character rather than a key that issues a command such as Enter, Tab or ctrl+a; a value entered one keystroke at a time is data, and a recipe carries inputs instead")
 		}
 		step.Key = key
@@ -459,15 +381,7 @@ func (c *compiler) compileStep(position int, verb string, traced TraceStep, befo
 	if isWrite {
 		step.Effect = "external_write"
 		step.IdempotencyKey = c.writeIdempotencyKey(step.ID)
-		if declaration.Nonce != nil {
-			// Copied, never aliased: the compiled recipe is hashed into a digest
-			// callers pin, and a plan the caller still holds must not be able to
-			// change what that digest covers.
-			nonce := *declaration.Nonce
-			target := *nonce.Target
-			nonce.Target = &target
-			step.SiteIdempotency = &nonce
-		}
+		step.SiteIdempotency = cloneSiteIdempotency(declaration.Nonce)
 	} else {
 		step.Effect = "read"
 	}
@@ -477,14 +391,11 @@ func (c *compiler) compileStep(position int, verb string, traced TraceStep, befo
 		c.steps = append(c.steps, Step{ID: step.ID + "_evidence", Action: "assert", Assert: assertion})
 	}
 	if isWrite {
-		verification := declaration.Verify
+		verification := *cloneAssertion(&declaration.Verify)
 		if err := validateAssertion(verification, c.inputs); err != nil {
 			return fail(fmt.Sprintf("declared verification is not a usable assertion: %v", err))
 		}
-		// Tagged, because the evidence assertion above is also an assert step
-		// after this write and nothing else distinguishes the two. An interrupted
-		// rerun reads the tag; a positional rule would read the cheap inferred
-		// assertion and commit a receipt for a write that never landed.
+
 		c.steps = append(c.steps, Step{
 			ID: step.ID + "_verify", Action: "assert", Assert: &verification, Verifies: step.ID,
 		})
@@ -492,14 +403,6 @@ func (c *compiler) compileStep(position int, verb string, traced TraceStep, befo
 	return nil
 }
 
-// writeIdempotencyKey composes a write's key from the inputs the flow supplied
-// before it.
-//
-// A key naming only the recipe and the step is the same string for every run.
-// Service.acquireRunLocks singleflights on the expanded key, so two runs with
-// entirely different inputs would serialise on one another, and the key the
-// review body prints would read as though it identified one submission when it
-// identifies the recipe.
 func (c *compiler) writeIdempotencyKey(stepID string) string {
 	key := c.opts.ID + ":" + stepID
 	for _, name := range sortedInputNames(c.inputs) {
@@ -508,16 +411,6 @@ func (c *compiler) writeIdempotencyKey(stepID string) string {
 	return key
 }
 
-// checkCredentialField refuses to compile a write into a credential field.
-//
-// Three signals are checked, not one: brw redacts a value it classified as
-// credential-bearing, the snapshot marks the element sensitive, and the
-// accessible name is read as a last resort. A recipe that types a password is
-// a recipe that needs one stored somewhere, which is the thing brw is not.
-//
-// Which actions are checked comes from literalValueActions rather than from a
-// list written out here, so a compilable action added without a classification
-// is refused instead of walking past the check.
 func (c *compiler) checkCredentialField(position int, traced TraceStep, before *TraceObservation) error {
 	carries, classified := literalValueActions[traced.Action]
 	if !classified {
@@ -558,8 +451,6 @@ func (c *compiler) checkCredentialField(position int, traced TraceStep, before *
 	}
 }
 
-// deriveTarget rebuilds the element identity from role and accessible name and
-// proves it against the observation the action was aimed at.
 func (c *compiler) deriveTarget(position int, traced TraceStep, before *TraceObservation) (*Target, CompiledTarget, snapshot.Element, error) {
 	fail := func(reason string) error {
 		return CompileError{StepIndex: position, Action: traced.Action, Reason: reason}
@@ -628,8 +519,6 @@ func (c *compiler) deriveTarget(position int, traced TraceStep, before *TraceObs
 	}, observed, nil
 }
 
-// narrowTarget adds a stable attribute the observation carries, so a duplicated
-// accessible name is not automatically fatal.
 func narrowTarget(target Target, observed snapshot.Element, elements []snapshot.Element) (Target, bool) {
 	if observed.TestID != "" {
 		narrowed := target
@@ -648,15 +537,6 @@ func narrowTarget(target Target, observed snapshot.Element, elements []snapshot.
 	return target, false
 }
 
-// stableHref keeps the part of a recorded href that identifies the link and
-// drops the part that identifies the recording.
-//
-// A query string and a fragment are where a session id, a one-time token or a
-// page cursor live. Matching on them publishes whatever the recording happened
-// to hold and makes the recipe unreplayable the moment the token expires, and
-// the compiler's rule is that what the recording contained stays in the
-// recording. An href that is nothing but a query yields no target at all, and
-// the caller falls through to its own refusal.
 func stableHref(href string) string {
 	trimmed := strings.TrimSpace(href)
 	if index := strings.IndexAny(trimmed, "?#"); index >= 0 {
@@ -677,22 +557,13 @@ func findObservedElement(elements []snapshot.Element, ref string) (snapshot.Elem
 	return snapshot.Element{}, false
 }
 
-// inferPostcondition reads what the action proved out of the observation taken
-// after it, in the order a reviewer would trust: where the page ended up, what
-// it newly showed, and what it delivered.
-//
-// A declared write gets neither the download nor any other transient event: a
-// transient event cannot be re-checked on a later run, and a write's whole
-// safety argument is that a rerun can tell whether the first attempt landed.
 func (c *compiler) inferPostcondition(before, after *TraceObservation, isWrite bool) (*Event, *Assertion, error) {
 	if url := after.pageURL(); url != "" && url != before.pageURL() {
 		assertion := &Assertion{Kind: browser.AssertionURL, Mode: browser.AssertModeExact, Expected: url}
 		return &Event{Kind: "url.matches", Match: url, TimeoutMS: postconditionTimeoutMS}, assertion, nil
 	}
 	if target, ok := introducedElement(before, after); ok {
-		// One element, not "at least one": the element was chosen because it
-		// resolves to exactly one candidate in the observation after the action,
-		// so a rerun that finds two has found a different page.
+
 		count := 1
 		asserted := target
 		return &Event{Kind: "element.visible", Target: &target, TimeoutMS: postconditionTimeoutMS},
@@ -719,8 +590,6 @@ func (c *compiler) inferPostcondition(before, after *TraceObservation, isWrite b
 	return nil, nil, nil
 }
 
-// introducedElement finds an element the action brought onto the page that is
-// stable enough to assert on: named, visible, absent before, and unique after.
 func introducedElement(before, after *TraceObservation) (Target, bool) {
 	existing := map[string]bool{}
 	for _, element := range before.elements() {
@@ -765,8 +634,6 @@ func newCompletedDownload(before, after *TraceObservation) (TraceDownload, bool)
 	return TraceDownload{}, false
 }
 
-// declareInput mints a runtime input for one typed field, named after the field
-// rather than after what was typed into it.
 func (c *compiler) declareInput(target *Target, observed snapshot.Element) string {
 	label := ""
 	if target != nil {
@@ -804,7 +671,6 @@ func observedRole(target *Target, observed snapshot.Element) string {
 	return "field"
 }
 
-// slugifyInputName renders a label as an input name the schema accepts.
 func slugifyInputName(label string) string {
 	var out strings.Builder
 	previousUnderscore := false
@@ -882,13 +748,4 @@ func originOf(raw string) string {
 	return parsed.Scheme + "://" + parsed.Host
 }
 
-// sortedInputNames keeps every rendering of a recipe's inputs deterministic;
-// map iteration order would make a review body differ from itself.
-func sortedInputNames(inputs map[string]Input) []string {
-	names := make([]string, 0, len(inputs))
-	for name := range inputs {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
+func sortedInputNames(inputs map[string]Input) []string { return slices.Sorted(maps.Keys(inputs)) }

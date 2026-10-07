@@ -215,9 +215,6 @@ func (f *fakeSurface) emit(kind, match string) {
 	}
 }
 
-// verifyWriteStep is the read-back an external write must declare. The runner
-// refuses a recipe whose write is not followed by one, so every write recipe in
-// these tests carries it.
 func verifyWriteStep() Step {
 	minimum := 1
 	return Step{

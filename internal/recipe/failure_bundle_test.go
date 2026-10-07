@@ -14,8 +14,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// evidenceBrowser is a browser.Controller that resolves the recipe's target,
-// fails the click, and then answers every question the evidence collection asks.
 type evidenceBrowser struct {
 	browser.Controller
 	origin string
@@ -97,10 +95,6 @@ func newEvidenceRunner(t *testing.T, policy artifact.FailureCapturePolicy) (Runn
 	return Runner{Surface: surface, MaxDuration: time.Minute}, store
 }
 
-// TestFailedRunReportsOnlyTheManifestID runs a real recipe through the real
-// runner against a browser whose click fails, and checks the shape of what comes
-// back: one manifest id, in both the result and the error, and an error that
-// grew by a handle rather than by a payload.
 func TestFailedRunReportsOnlyTheManifestID(t *testing.T) {
 	runner, store := newEvidenceRunner(t, artifact.FailureCaptureRecipe)
 
@@ -129,9 +123,6 @@ func TestFailedRunReportsOnlyTheManifestID(t *testing.T) {
 		t.Fatalf("the bundle replaced the real failure: %q", err)
 	}
 
-	// The evidence is reachable by id and nothing else: the error may not grow by
-	// more than the handle. 500 tokens is roughly 2000 bytes of English; the
-	// addition here is the id plus a short phrase.
 	growth := len(err.Error()) - len(baselineErr.Error())
 	if growth <= 0 || growth > 200 {
 		t.Fatalf("error grew by %d bytes (from %q to %q)", growth, baselineErr, err)
@@ -151,8 +142,6 @@ func TestFailedRunReportsOnlyTheManifestID(t *testing.T) {
 	}
 }
 
-// TestFailedRunWritesNothingWhenCaptureIsOff is the default. The daemon policy
-// wins over the recipe's request, and nothing reaches disk.
 func TestFailedRunWritesNothingWhenCaptureIsOff(t *testing.T) {
 	runner, store := newEvidenceRunner(t, artifact.FailureCaptureOff)
 
@@ -177,8 +166,6 @@ func TestFailedRunWritesNothingWhenCaptureIsOff(t *testing.T) {
 	}
 }
 
-// TestSucceedingRunCollectsNoEvidence keeps the cost where it belongs: a run
-// that works must not pay for diagnostics it does not need.
 func TestSucceedingRunCollectsNoEvidence(t *testing.T) {
 	runner, store := newEvidenceRunner(t, artifact.FailureCaptureAll)
 	value := failingRecipe(true)

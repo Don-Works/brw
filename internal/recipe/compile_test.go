@@ -27,11 +27,6 @@ func field(ref, name string) snapshot.Element {
 	return snapshot.Element{Ref: ref, Role: "textbox", Name: name, Tag: "input", Visible: true, InViewport: true}
 }
 
-// sixStepLoggedInTrace is one recorded pass through a signed-in reporting site:
-// open it, search, open a report, name an export, request it, confirm. Every
-// page carries the signed-in banner, which is what makes it a logged-in flow
-// rather than an anonymous one: none of these pages exists for a signed-out
-// session.
 func sixStepLoggedInTrace() []TraceStep {
 	list := TraceObservation{URL: compileOrigin + "/reports", Elements: []snapshot.Element{
 		element("e1", "heading", compileSignedIn),
@@ -97,11 +92,6 @@ func mustCompile(t *testing.T, steps []TraceStep, opts CompileOptions) CompileRe
 	return result
 }
 
-// replaySurface replays the recorded page sequence: every semantic target the
-// compiled recipe resolves is resolved against the page state the runner has
-// reached, and every postcondition is evaluated against the page the action
-// left behind. A target the compiler emitted that matches nothing, or two
-// things, fails here exactly as it would in a browser.
 type replaySurface struct {
 	pages  []TraceObservation
 	cursor int
@@ -227,11 +217,6 @@ func (s *replaySurface) Assert(ctx context.Context, assertion Assertion) error {
 	return fmt.Errorf("replay surface cannot assert %q", assertion.Kind)
 }
 
-// TestCompiledSixStepFlowReplaysGreenTwice drives the compiled recipe through a
-// runner twice, each time against a surface that starts from the first recorded
-// page — the equivalent of a fresh profile for everything a recipe can observe.
-// Both runs must complete, and neither may resolve a target ambiguously or miss
-// an inferred postcondition.
 func TestCompiledSixStepFlowReplaysGreenTwice(t *testing.T) {
 	trace := sixStepLoggedInTrace()
 	result := mustCompile(t, trace, compileOptions())
@@ -377,9 +362,6 @@ func TestCompileInfersPostconditionsFromTheObservation(t *testing.T) {
 	}
 }
 
-// TestCompileRefusesWhatCannotBecomeARecipe is the closed list of things that
-// stop compilation dead. Each case asserts the step index, because "something
-// in your trace" is not a report anyone can act on.
 func TestCompileRefusesWhatCannotBecomeARecipe(t *testing.T) {
 	base := TraceObservation{URL: compileOrigin + "/one", Elements: []snapshot.Element{
 		element("e1", "button", "Go"), field("e2", "Card number"), field("e3", "Notes"),
@@ -480,8 +462,6 @@ func TestCompileRefusesWhatCannotBecomeARecipe(t *testing.T) {
 	}
 }
 
-// A credential field must not merely be redacted out of the output: nothing may
-// be produced at all, so there is never a moment where a draft exists.
 func TestCompileProducesNothingAtAllForACredentialField(t *testing.T) {
 	trace := sixStepLoggedInTrace()
 	trace[2].Redacted = true
@@ -546,9 +526,6 @@ func TestCompileDeclaredWriteCarriesIdempotencyAndVerification(t *testing.T) {
 	}
 }
 
-// A declared write whose only evidence is a download cannot be compiled: a
-// download cannot be re-checked on a later run, so it can never tell a rerun
-// whether the first attempt landed.
 func TestCompileRefusesATransientOnlyWrite(t *testing.T) {
 	before := TraceObservation{URL: compileOrigin + "/one", Elements: []snapshot.Element{element("e1", "button", "Go")}}
 	after := TraceObservation{
@@ -618,9 +595,6 @@ func stepByID(t *testing.T, value Recipe, id string) Step {
 
 func int64Pointer(value int64) *int64 { return &value }
 
-// A write declaration is the most consequential line in a plan. One naming a
-// step the trace does not contain must not be dropped: the flow would compile
-// as though it wrote nothing.
 func TestCompileRefusesAWriteDeclarationForAStepTheTraceDoesNotHave(t *testing.T) {
 	count := 1
 	verify := Assertion{Kind: browser.AssertionElementCount, Target: &Target{Role: "status", Name: "Export ready"}, Count: &count}
@@ -633,8 +607,6 @@ func TestCompileRefusesAWriteDeclarationForAStepTheTraceDoesNotHave(t *testing.T
 	}
 }
 
-// The compiled recipe is hashed into a digest callers pin. Nothing a caller
-// still holds may reach into what that digest covers.
 func TestCompiledWriteCopiesTheDeclaredNonceRatherThanAliasingIt(t *testing.T) {
 	count := 1
 	nonce := SiteIdempotency{Kind: SiteIdempotencyFormNonce, Target: &Target{Role: "textbox", TestID: "submission-token"}}
@@ -667,11 +639,6 @@ func TestCompiledWriteCopiesTheDeclaredNonceRatherThanAliasingIt(t *testing.T) {
 	}
 }
 
-// The credential check is driven by a table rather than by a list of actions
-// written into the check, so the table has to cover every action that can be
-// compiled. An action added to compilableActions without a classification
-// reaches a page carrying whatever the recording typed, which is the failure
-// that let a keystroke-by-keystroke code through.
 func TestEveryCompilableActionIsClassifiedForCredentialChecking(t *testing.T) {
 	for action := range compilableActions {
 		if _, classified := literalValueActions[action]; !classified {
@@ -683,8 +650,7 @@ func TestEveryCompilableActionIsClassifiedForCredentialChecking(t *testing.T) {
 			t.Errorf("literalValueActions classifies %q, which is not a compilable action", action)
 		}
 	}
-	// The classification only means something if an unclassified action is
-	// refused rather than waved through.
+
 	before := TraceObservation{URL: compileOrigin + "/one", Elements: []snapshot.Element{element("e1", "button", "Go")}}
 	compiler, err := newCompiler(compileOptions())
 	if err != nil {
@@ -698,8 +664,6 @@ func TestEveryCompilableActionIsClassifiedForCredentialChecking(t *testing.T) {
 	}
 }
 
-// A code entered one keystroke at a time is the value, spelled differently:
-// every character reaches step.Key, and the schema bounds Key only by length.
 func TestCompileRefusesWhatAPressStepWouldCarry(t *testing.T) {
 	base := TraceObservation{URL: compileOrigin + "/one", Elements: []snapshot.Element{
 		{Ref: "e1", Role: "textbox", Name: "Notes", Tag: "input", Visible: true, InViewport: true},
@@ -718,8 +682,7 @@ func TestCompileRefusesWhatAPressStepWouldCarry(t *testing.T) {
 			wantHint: "literal character rather than a key that issues a command",
 		},
 		{
-			// Shift is the modifier that still types: the page receives "A",
-			// which is the same character of the same value as a bare "a".
+
 			name:     "a shifted character press",
 			traced:   TraceAction{Action: "press", Ref: "e1", Role: "textbox", Name: "Notes", Text: "shift+a", OK: true},
 			wantHint: "literal character rather than a key that issues a command",
@@ -747,10 +710,6 @@ func TestCompileRefusesWhatAPressStepWouldCarry(t *testing.T) {
 		})
 	}
 
-	// Commands are what press is for, and still compile. A Ctrl, Alt or Meta
-	// chord is one of them: Chrome attaches no text to an accelerator, so
-	// ctrl+a carries away nothing of what was being typed. Refusing it would
-	// refuse select-all, the case the refusal message itself advertises.
 	for _, key := range []string{"Enter", "ctrl+a", "meta+s", "ctrl+shift+Tab"} {
 		result := mustCompile(t, []TraceStep{{
 			TraceAction: TraceAction{Action: "press", Ref: "e1", Role: "textbox", Name: "Notes", Text: key, OK: true},
@@ -762,10 +721,6 @@ func TestCompileRefusesWhatAPressStepWouldCarry(t *testing.T) {
 	}
 }
 
-// The compiler emits two assertions after a declared write, and which one reads
-// remote state back is not something their order says. An interrupted rerun
-// that consults the inferred evidence assertion commits a receipt for a write
-// nothing confirmed, and a committed receipt suppresses the write for good.
 func TestACompiledWriteTagsTheDeclaredReadBack(t *testing.T) {
 	count := 1
 	options := compileOptions()
@@ -800,8 +755,6 @@ func TestACompiledWriteTagsTheDeclaredReadBack(t *testing.T) {
 	}
 }
 
-// Two untagged assertions after a write are two candidate read-backs and no way
-// to choose, so the recipe is refused rather than guessed at.
 func TestUntaggedAmbiguousVerificationIsRefused(t *testing.T) {
 	value := validRecipe(compileOrigin)
 	value.Risk = "external_write"
@@ -834,9 +787,6 @@ func TestUntaggedAmbiguousVerificationIsRefused(t *testing.T) {
 	}
 }
 
-// Service.acquireRunLocks singleflights on the expanded idempotency key, so a
-// key that is the same string for every run makes two runs with unrelated
-// inputs one transaction, and prints as though it named a submission.
 func TestACompiledWriteKeyNamesTheInputsItDependsOn(t *testing.T) {
 	count := 1
 	options := compileOptions()
@@ -865,9 +815,6 @@ func TestACompiledWriteKeyNamesTheInputsItDependsOn(t *testing.T) {
 	}
 }
 
-// A recorded href carries the recording's query string, and a query string is
-// where a session id or a one-time token lives. Matching on it publishes what
-// the recording held and stops replaying the moment the token expires.
 func TestCompiledHrefTargetsDropTheRecordingsQueryString(t *testing.T) {
 	const recordedQuery = "?session=fixture-token-value&page=2"
 	before := TraceObservation{URL: compileOrigin + "/one", Elements: []snapshot.Element{
@@ -893,9 +840,6 @@ func TestCompiledHrefTargetsDropTheRecordingsQueryString(t *testing.T) {
 	}
 }
 
-// The review body is what a human approves before --publish sends the draft to
-// the provider. A navigation URL's query string is the other place a recording
-// hides a one-time token, and at the end of a long URL a reviewer reads past it.
 func TestReviewBodyShowsWhatARecordingCanHide(t *testing.T) {
 	const recorded = compileOrigin + "/reports?session=fixture-session-id#access=fixture-grant-value"
 	navigated := TraceObservation{URL: recorded, Elements: []snapshot.Element{element("e1", "button", "Go")}}
@@ -905,23 +849,17 @@ func TestReviewBodyShowsWhatARecordingCanHide(t *testing.T) {
 		{TraceAction: TraceAction{Action: "click", Ref: "e1", Role: "button", Name: "Go", NameIsVisibleText: true, OK: true}, Before: &navigated, After: &unchanged},
 	}, compileOptions())
 
-	// A session id in the query and an implicit-flow grant in the fragment are
-	// the two places a recorded navigation hides one.
 	for _, want := range []string{"url_query session=fixture-session-id", "url_fragment access=fixture-grant-value"} {
 		if !strings.Contains(result.Review, want) {
 			t.Fatalf("the review body does not isolate %q:\n%s", want, result.Review)
 		}
 	}
-	// The click changed nothing observable, so the compiler inferred no
-	// postcondition for it. Silence reads as a rendering that omits the line.
+
 	if !strings.Contains(result.Review, "postcondition none") {
 		t.Fatalf("the review body does not report the step with no postcondition:\n%s", result.Review)
 	}
 }
 
-// ReviewBody is exported and documented as a rendering. A recipe that has not
-// been through Validate is exactly the recipe somebody renders to find out what
-// is wrong with it.
 func TestReviewBodyRendersARecipeThatWouldNotValidate(t *testing.T) {
 	value := Recipe{
 		SchemaVersion: SchemaVersion, ID: "example.a.b", Version: "1.0.0",
@@ -938,8 +876,6 @@ func TestReviewBodyRendersARecipeThatWouldNotValidate(t *testing.T) {
 	}
 }
 
-// A target that is unique in the recording can be ambiguous on the page a rerun
-// meets. The replay must fail then, rather than pick one.
 func TestCompiledReplayFailsWhenAReplayedPageIsAmbiguous(t *testing.T) {
 	trace := sixStepLoggedInTrace()
 	result := mustCompile(t, trace, compileOptions())
@@ -947,9 +883,7 @@ func TestCompiledReplayFailsWhenAReplayedPageIsAmbiguous(t *testing.T) {
 		"report_name":      "fixture typed search phrase",
 		"export_file_name": "fixture-export-name.csv",
 	}
-	// The page a rerun meets has grown a second element with the same identity
-	// as the one the recording clicked. Observations are shared between the
-	// steps either side of an action, so each one is twinned exactly once.
+
 	twinned := sixStepLoggedInTrace()
 	seen := map[*TraceObservation]bool{}
 	for index := range twinned {

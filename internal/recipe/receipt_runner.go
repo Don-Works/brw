@@ -7,31 +7,11 @@ import (
 	"strings"
 )
 
-// NonceReader is an optional Surface capability: reading the value of the field
-// a step declared as the site's own idempotency token.
-//
-// Optional so a Surface written against the previous ABI still compiles, and
-// named in the error so a missing capability is reported rather than worked
-// around. A step that declares a nonce never runs without one: falling back to
-// brw's derived key would swap the site's mechanism for the weaker one at the
-// exact moment the recipe asked for the site's.
+// NonceReader is an optional Surface capability: reading the value of the field a step declared as the site's own idempotency token.
 type NonceReader interface {
 	ElementValue(context.Context, Target) (string, error)
 }
 
-// checkReceiptCapabilities refuses a recipe whose write mechanism this runner
-// cannot honour, before any step executes.
-//
-// A step declaring a site nonce is declaring which mechanism protects it. Run
-// it without a receipt store and the declaration does nothing at all: the nonce
-// is never read, never recorded, and never compared on a rerun. That is a
-// silent degrade from the strong mechanism to none, so it is named instead.
-//
-// Both the store and the surface capability are checked here rather than where
-// they are used, because where they are used is the write step, and on a long
-// recipe that is after every earlier action has already run. A half-executed
-// flow that then discovers it cannot honour its own declaration is the failure
-// this function exists to prevent, so it has to see every step.
 func (r Runner) checkReceiptCapabilities(value Recipe) error {
 	var problems []error
 	for _, step := range value.Steps {
@@ -48,14 +28,10 @@ func (r Runner) checkReceiptCapabilities(value Recipe) error {
 	return errors.Join(problems...)
 }
 
-// writeReceipt carries one external write's provider-side record through the
-// dispatch it protects.
 type writeReceipt struct {
 	receipts Receipts
 	key      string
-	// resolved reports that no browser write should be issued: either the
-	// provider already holds a committed receipt, or an interrupted earlier
-	// attempt was confirmed by re-reading remote state.
+
 	resolved bool
 	evidence string
 }
@@ -65,22 +41,6 @@ func (w *writeReceipt) commit(ctx context.Context) error {
 	return err
 }
 
-// openWriteReceipt records this write with the provider before anything is
-// dispatched, and decides what to do when a record already exists.
-//
-// The caller has already preflighted the postcondition and found it unmet, so
-// arriving here means the desired state is not present. Three cases follow: the
-// provider has no record and this is a first attempt; the provider has a
-// committed record, so the write is done and dispatching would duplicate it;
-// or the provider has an in-flight record, which is what a daemon killed
-// between dispatch and acknowledgement leaves behind. Only the last needs
-// judgement, and the judgement is never "try again and see".
-//
-// Lookup is not the only way an existing record surfaces. Two runners racing
-// against one shared store both miss on Lookup, so Begin is the decision point:
-// it reports whether THIS call created the record, and a record it did not
-// create is handled exactly like a lookup hit. Without that, the loser of the
-// race dispatches the duplicate the receipt exists to prevent.
 func (r Runner) openWriteReceipt(ctx context.Context, value Recipe, step Step, inputs map[string]string) (*writeReceipt, error) {
 	origin, err := r.Surface.Origin(ctx)
 	if err != nil {
@@ -125,10 +85,6 @@ func (r Runner) openWriteReceipt(ctx context.Context, value Recipe, step Step, i
 	return pending, nil
 }
 
-// reconcileExistingWrite decides what a record somebody else already wrote
-// means for this attempt. It never ends in a dispatch: a committed record means
-// the write is done, and an in-flight record means its outcome is unknown,
-// which is the one thing an external write may not be retried on.
 func (r Runner) reconcileExistingWrite(
 	ctx context.Context, existing Receipt, pending *writeReceipt,
 	value Recipe, step Step, origin string, inputs map[string]string, nonceDigest string,
@@ -154,10 +110,6 @@ func (r Runner) reconcileExistingWrite(
 		step.ID, detail, describeNonceComparison(existing.SiteNonceDigest, nonceDigest))
 }
 
-// describeNonceComparison reports what the site's own token says about the
-// interrupted attempt, for an operator deciding what to do by hand. It decides
-// nothing: an unchanged token is consistent both with the site having consumed
-// it and with it being a per-session value the site would accept again.
 func describeNonceComparison(recorded, current string) string {
 	if recorded == "" || current == "" {
 		return ""
@@ -168,9 +120,6 @@ func describeNonceComparison(recorded, current string) string {
 	return "; the page has since minted a different submission token"
 }
 
-// receiptMatchesWrite refuses a receipt that does not describe this write. The
-// key is a hash, and a store that answers a lookup with somebody else's record
-// would otherwise suppress a write that had never been dispatched.
 func receiptMatchesWrite(receipt Receipt, key string, value Recipe, step Step, origin string) error {
 	exactOrigin, err := normalizeReceiptOrigin(origin)
 	if err != nil {
@@ -190,10 +139,6 @@ func receiptMatchesWrite(receipt Receipt, key string, value Recipe, step Step, o
 	return nil
 }
 
-// verifyInterruptedWrite runs the recipe's declared verification step against
-// live remote state. A failed assertion and a transport failure are treated the
-// same way — neither is confirmation — and the detail is carried into the
-// refusal so an operator sees which it was.
 func (r Runner) verifyInterruptedWrite(ctx context.Context, value Recipe, step Step, inputs map[string]string) (bool, string) {
 	verification, err := WriteVerification(value, step)
 	if err != nil {
@@ -213,8 +158,6 @@ func (r Runner) verifyInterruptedWrite(ctx context.Context, value Recipe, step S
 	return true, verification.ID
 }
 
-// readSiteNonce reads the site's own per-submission token, when the step
-// declares one.
 func (r Runner) readSiteNonce(ctx context.Context, step Step, inputs map[string]string) (string, error) {
 	if step.SiteIdempotency == nil {
 		return "", nil

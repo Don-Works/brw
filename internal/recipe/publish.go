@@ -9,22 +9,12 @@ import (
 	"strings"
 )
 
-// Publishing goes to the private provider and nowhere else.
-//
-// brw is public and owns the recipe ABI; an operator's recipes are theirs and
-// describe what their business does on which sites. A compiled draft is a
-// recipe that has not been reviewed yet, so it is the same class of thing. It
-// is handed to the provider over the write API, or written to a file the
-// operator names outside every Git checkout. There is no third option, and in
-// particular no default path inside this repository.
-
 // Draft is a compiled recipe together with the material that justifies it.
 type Draft struct {
 	Recipe  Recipe           `json:"recipe"`
 	Review  string           `json:"review"`
 	Targets []CompiledTarget `json:"targets,omitempty"`
-	// Source names what the draft was compiled from, for a reviewer deciding
-	// how much to trust it.
+	// Source names what the draft was compiled from, for a reviewer deciding how much to trust it.
 	Source string `json:"source"`
 }
 
@@ -37,9 +27,7 @@ type PublishedDraft struct {
 	ReviewURL string `json:"review_url,omitempty"`
 }
 
-// DraftWriter is the private provider's write side. It is separate from
-// Provider because reading recipes and creating them are different privileges:
-// a daemon that runs recipes has no business publishing them.
+// DraftWriter is the private provider's write side.
 type DraftWriter interface {
 	PublishDraft(context.Context, Draft) (PublishedDraft, error)
 }
@@ -52,9 +40,7 @@ func NewDraft(result CompileResult, source string) Draft {
 	return Draft{Recipe: result.Recipe, Review: result.Review, Targets: result.Targets, Source: source}
 }
 
-// ValidateDraft checks a draft before it leaves the machine. Publishing an
-// invalid recipe would put a document nothing can execute in front of a
-// reviewer, who would approve it on the strength of the review body.
+// ValidateDraft checks a draft before it leaves the machine.
 func ValidateDraft(draft Draft) error {
 	var problems []error
 	if err := Validate(draft.Recipe); err != nil {
@@ -90,8 +76,7 @@ func (p *HTTPProvider) PublishDraft(ctx context.Context, draft Draft) (Published
 	if err := p.post(ctx, "/v1/recipes/drafts", draft, &out); err != nil {
 		return PublishedDraft{}, err
 	}
-	// The provider is authenticated, not trusted. A reply naming a different
-	// recipe would send the operator to review something else entirely.
+
 	if out.Draft.ID != draft.Recipe.ID || out.Draft.Version != draft.Recipe.Version || out.Draft.Digest != digest {
 		return PublishedDraft{}, errors.New("recipe provider acknowledged a draft that does not match the one published")
 	}
@@ -101,11 +86,6 @@ func (p *HTTPProvider) PublishDraft(ctx context.Context, draft Draft) (Published
 	return out.Draft, nil
 }
 
-// checkReviewURL bounds where the provider may send a reviewer.
-//
-// Parsed rather than prefix-matched: "http://localhost.example.test/" has the
-// prefix "http://localhost" and is a different host entirely, so a prefix test
-// hands the operator a plaintext link to whoever registered that name.
 func checkReviewURL(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -146,15 +126,7 @@ func (p *HTTPProvider) Lookup(ctx context.Context, key string) (Receipt, bool, e
 	return out.Receipt, true, nil
 }
 
-// Begin records an in-flight receipt with the provider before dispatch and
-// reports whether this call created it.
-//
-// The provider answers with `created`, which is the only compare-and-set in the
-// mechanism: two runners racing against one store both miss on lookup, and
-// without it the loser reads its rival's in-flight record as its own and
-// dispatches the duplicate. A reply that omits the flag reads as not created,
-// so a provider that has not implemented it refuses writes rather than
-// duplicating them.
+// Begin records an in-flight receipt with the provider before dispatch and reports whether this call created it.
 func (p *HTTPProvider) Begin(ctx context.Context, receipt Receipt) (Receipt, bool, error) {
 	receipt.Status = ReceiptInFlight
 	if err := validateReceipt(receipt); err != nil {

@@ -5,30 +5,13 @@ import (
 	"fmt"
 )
 
-// SiteIdempotencyFormNonce is the one mechanism brw can actually use: a token
-// the page mints per submission and carries in a form field, which the site
-// checks when the submission arrives.
-//
-// Deliberately the only kind. A site that accepts an Idempotency-Key request
-// header is doing the same job, but a recipe drives a page, not an HTTP client:
-// brw cannot attach a header to the request a form submit issues, so declaring
-// one would promise a mechanism that never runs.
+// SiteIdempotencyFormNonce is the one mechanism brw can actually use: a token the page mints per submission and carries in a form field, which the site checks when the submission arrives.
 const SiteIdempotencyFormNonce = "form_nonce"
 
 // SiteIdempotency names the target site's own duplicate-suppression token.
-//
-// It is recorded, never acted on. A page still showing the token an interrupted
-// attempt carried is consistent with the site having consumed it, and equally
-// consistent with the token being a per-session CSRF value the site will accept
-// twice; brw cannot tell those apart from outside, so an unchanged token is
-// never grounds to dispatch again. What the declaration buys is evidence — the
-// receipt carries a digest of the token that was in flight — and a step whose
-// declared token cannot be read does not run at all, because a flow that leans
-// on the site's mechanism must not proceed when that mechanism is absent.
 type SiteIdempotency struct {
 	Kind string `json:"kind"`
-	// Target names the field carrying the token. It is a semantic target like
-	// any other, so the nonce field is found the same way every element is.
+	// Target names the field carrying the token.
 	Target *Target `json:"target"`
 }
 
@@ -42,16 +25,7 @@ func validateSiteIdempotency(value SiteIdempotency) error {
 	return validateTarget(*value.Target)
 }
 
-// RequireWriteVerification refuses a recipe whose external write has no
-// unambiguous read-back.
-//
-// A receipt records that brw dispatched a write; it is written by brw, on brw's
-// side of the network, and a process that dies mid-request writes exactly the
-// same receipt whether the remote side committed or not. The only thing that
-// can answer "did it commit" is reading the state back, so a recipe that writes
-// has to contain that read — and has to say which assertion it is, because a
-// rerun that consults the wrong one commits a receipt for a write that never
-// landed.
+// RequireWriteVerification refuses a recipe whose external write has no unambiguous read-back.
 func RequireWriteVerification(value Recipe) error {
 	var problems []error
 	for _, step := range value.Steps {
@@ -66,15 +40,6 @@ func RequireWriteVerification(value Recipe) error {
 }
 
 // WriteVerification returns the assert step that reads back what one write did.
-//
-// A step whose Verifies names the write is the answer whenever one exists: the
-// compiler emits an inferred evidence assertion as well as the operator's
-// declared read-back, and which of the two comes first is an emission detail,
-// not a statement about which one proves the write landed. Without a tag, a
-// single assertion between this write and the next is unambiguous and is
-// accepted, so a recipe hand-authored against the earlier shape keeps both its
-// meaning and its digest. Several untagged assertions are refused rather than
-// guessed between.
 func WriteVerification(value Recipe, step Step) (Step, error) {
 	reached := false
 	var untagged []Step
