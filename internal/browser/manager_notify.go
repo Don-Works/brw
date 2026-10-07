@@ -10,9 +10,6 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// validNotifyKinds is the closed, generic set of hand-off classifications the
-// notify primitive understands. They are web-standard semantic categories, not
-// site-specific behaviours.
 var validNotifyKinds = map[string]struct{}{
 	"needs_input": {},
 	"done":        {},
@@ -75,8 +72,6 @@ const PageNotifyScript = `(function(opts) {
     if (Notification.permission === 'denied') {
       return { ok: false, delivery: 'unavailable', note: 'Notification permission denied for this origin' };
     }
-    // permission === 'default': request asynchronously; we cannot await the
-    // user gesture here, so report best-effort honestly instead of faking.
     try { Notification.requestPermission(); } catch (e) {}
     return { ok: false, delivery: 'unavailable', note: 'Notification permission not yet granted; requested from this origin' };
   } catch (e) {
@@ -93,11 +88,14 @@ func (m *Manager) Notify(ctx context.Context, opts NotifyOptions) (NotifyResult,
 	if err != nil {
 		return NotifyResult{}, err
 	}
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return NotifyResult{}, err
 	}
 	defer cancel()
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		return NotifyResult{}, err
+	}
 
 	optsJSON, _ := json.Marshal(map[string]any{
 		"kind":    opts.Kind,
@@ -109,6 +107,9 @@ func (m *Manager) Notify(ctx context.Context, opts NotifyOptions) (NotifyResult,
 	if err := chromedp.Run(tabCtx, chromedp.Evaluate(expr, &result, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 		return p.WithAwaitPromise(true)
 	})); err != nil {
+		return NotifyResult{}, m.guardPageError(tabID, tabCtx, err)
+	}
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
 		return NotifyResult{}, err
 	}
 	if result.Delivery == "" {
