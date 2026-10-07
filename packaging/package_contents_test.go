@@ -273,7 +273,7 @@ printf signed > "$last.signed"
 	}
 	defer zipped.Close()
 	archive := tar.NewReader(zipped)
-	signed := 0
+	signed := map[string]bool{}
 	for {
 		header, err := archive.Next()
 		if err == io.EOF {
@@ -283,10 +283,12 @@ printf signed > "$last.signed"
 			t.Fatal(err)
 		}
 		if strings.HasSuffix(header.Name, ".signed") {
-			signed++
+			signed[strings.TrimSuffix(filepath.Base(header.Name), ".signed")] = true
 		}
 	}
-	if signed != 5 {
-		t.Fatalf("cleanup removed completed signatures: found %d, want 5", signed)
+	for _, command := range []string{"brw", "brwd", "brwctl", "brwcheck", "brw-devtools-mcp", "brw-testbed"} {
+		if !signed[command] {
+			t.Errorf("cleanup removed completed signature for %s", command)
+		}
 	}
 }

@@ -36,7 +36,7 @@ func TestBootstrapCopyFailurePreservesInstalledDirectories(t *testing.T) {
 			zipped := gzip.NewWriter(&raw)
 			archive := tar.NewWriter(zipped)
 			for name, body := range map[string]string{
-				"bin/brw": "new brw", "bin/brwd": "new brwd", "bin/brwctl": "#!/bin/sh\necho brwctl\n", "bin/brwcheck": "new brwcheck", "bin/brw-devtools-mcp": "new devtools",
+				"bin/brw": "new brw", "bin/brwd": "new brwd", "bin/brwctl": "#!/bin/sh\necho brwctl\n", "bin/brwcheck": "new brwcheck", "bin/brw-devtools-mcp": "new devtools", "bin/brw-testbed": "new testbed",
 				"extension/manifest.json": "new manifest", "extension/background.js": "new extension", "extension/bridge-defaults.json": "packaged defaults",
 			} {
 				if err := archive.WriteHeader(&tar.Header{Name: "brw_1.2.3_linux_amd64/" + name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
