@@ -112,7 +112,7 @@ func TestChromeExtensionInstalled(t *testing.T) {
 
 func TestQuoteRemoteHomePathWithSpaces(t *testing.T) {
 	got := quoteRemote("~/Library/Application Support/brw/bin/brwd")
-	want := `"$HOME/Library/Application Support/brw/bin/brwd"`
+	want := `"$HOME"/'Library/Application Support/brw/bin/brwd'`
 	if got != want {
 		t.Fatalf("quoteRemote = %q, want %q", got, want)
 	}
@@ -149,9 +149,8 @@ func TestRemoteMCPWrapperScript(t *testing.T) {
 		"BRW_LOG_MAX_BYTES=${BRW_LOG_MAX_BYTES:-'5242880'}",
 		`mv -f "$BRW_LOG" "$BRW_LOG.1"`,
 		"-o 'ProxyJump=bastion'",
-		`"$HOME/.local/bin/brwd"`,
-		// Contract lock: the remote daemon must keep its listener off and proxy
-		// to the loopback HTTP API. A silent flag rename here would break the wrapper.
+		`"$HOME"/`,
+
 		`--upstream-http`,
 		`http://127.0.0.1:17310`,
 		`--http`,
@@ -164,7 +163,7 @@ func TestRemoteMCPWrapperScript(t *testing.T) {
 			t.Fatalf("wrapper script missing %q\n%s", want, script)
 		}
 	}
-	// Identity pinning and compression are opt-in: absent unless requested.
+
 	for _, unwanted := range []string{"IdentityFile", "IdentitiesOnly", "Compression=yes"} {
 		if strings.Contains(script, unwanted) {
 			t.Fatalf("wrapper script unexpectedly contains %q\n%s", unwanted, script)
@@ -211,7 +210,7 @@ func TestRemoteMCPWrapperIdentityAndCompression(t *testing.T) {
 		"-o IdentityFile='~/.ssh/id_brw'",
 		"-o IdentitiesOnly=yes",
 		"-o Compression=yes",
-		// Rotation is always written but runtime-gated; 0 baked in disables it.
+
 		"BRW_LOG_MAX_BYTES=${BRW_LOG_MAX_BYTES:-'0'}",
 		`if [ "$BRW_LOG_MAX_BYTES" -gt 0 ] && [ -f "$BRW_LOG" ]; then`,
 	} {

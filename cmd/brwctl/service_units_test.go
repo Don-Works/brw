@@ -41,9 +41,6 @@ func writeTestFile(t *testing.T, path, content string) {
 	}
 }
 
-// TestBrwdServiceUnitsFindsUnitsByProgram: the label is whatever the operator
-// chose, so a unit is recognised by the brwd it runs. Units for another install
-// or another program are not this install's to restart.
 func TestBrwdServiceUnitsFindsUnitsByProgram(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -103,8 +100,6 @@ func TestBrwdServiceUnitsFindsUnitsByProgram(t *testing.T) {
 	}
 }
 
-// TestBrwdServiceUnitsFollowsTheBinDirSymlink: a unit may name the BINDIR link
-// rather than the file in the app directory; both run the same binary.
 func TestBrwdServiceUnitsFollowsTheBinDirSymlink(t *testing.T) {
 	home := t.TempDir()
 	appBrwd := filepath.Join(home, "app", "bin", "brwd")
@@ -123,9 +118,6 @@ func TestBrwdServiceUnitsFollowsTheBinDirSymlink(t *testing.T) {
 	}
 }
 
-// TestUpgradeRestartsHandMadeUnits: a machine set up by hand runs its daemons
-// under labels setup never wrote. Before this, upgrade restarted nothing there
-// and the old build kept serving until someone noticed.
 func TestUpgradeRestartsHandMadeUnits(t *testing.T) {
 	fx := newUpgradeFixture(t)
 	if err := os.Remove(setup.ServiceParams{GOOS: "linux", Profile: fixtureProfile, Home: fx.home}.UnitPath()); err != nil {
@@ -150,8 +142,6 @@ func TestUpgradeRestartsHandMadeUnits(t *testing.T) {
 	}
 }
 
-// TestUpgradeRestartsEachUnitOnce: a unit setup wrote also matches the program
-// scan, and restarting it twice would drop the extension's connection twice.
 func TestUpgradeRestartsEachUnitOnce(t *testing.T) {
 	fx := newUpgradeFixture(t)
 	params := setup.ServiceParams{GOOS: "linux", Profile: fixtureProfile, Home: fx.home}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -27,16 +28,12 @@ import (
 
 const (
 	releaseRepo = "Don-Works/brw"
-	// releaseWorkflow is the only workflow whose signature is accepted for a
-	// release artifact. Verifying an attestation without pinning the signer
-	// proves only that something in GitHub built the file, which any fork can
-	// arrange; scripts/install.sh pins the same workflow.
+
 	releaseWorkflow    = releaseRepo + "/.github/workflows/release.yml"
 	releaseLatestAPI   = "https://api.github.com/repos/" + releaseRepo + "/releases/latest"
 	releaseDownloadURL = "https://github.com/" + releaseRepo + "/releases/download"
 	installScriptURL   = "https://brw.donworks.co.uk/install.sh"
-	// maxArchiveBytes bounds a download from a redirect-controlled URL so a
-	// mirror cannot fill the disk before the checksum ever runs.
+
 	maxArchiveBytes = int64(512 << 20)
 )
 
@@ -62,7 +59,6 @@ options:
   --timeout D           per-request timeout for the release and daemon probes
   --help                print this message`
 
-// upgradeResult is the `brwctl upgrade` JSON contract.
 type upgradeResult struct {
 	Action              string   `json:"action"`
 	CurrentVersion      string   `json:"current_version"`
@@ -77,8 +73,6 @@ type upgradeResult struct {
 	Manual              []string `json:"manual,omitempty"`
 }
 
-// upgradeRefusal is a refusal with a name. The name is what a caller matches
-// on and what a log line is greppable by; Fix is the command that clears it.
 type upgradeRefusal struct {
 	Reason string `json:"reason"`
 	Detail string `json:"detail"`
@@ -100,14 +94,13 @@ type upgradeOptions struct {
 	appDir     string
 	policyPath string
 	version    string
-	// apiURL and baseURL exist so the release endpoint can be pointed at a
-	// mirror, and so this command is testable without reaching GitHub.
+
 	apiURL  string
 	baseURL string
 	home    string
 	goos    string
 	goarch  string
-	// current is the running binary's version, stamped in at build time.
+
 	current         string
 	check           bool
 	force           bool
@@ -155,15 +148,13 @@ func upgradeCommand(args []string) error {
 
 	result, err := runUpgrade(opts)
 	if opts.asJSON {
-		writeJSON(os.Stdout, upgradeJSON(result, err))
+		return errors.Join(err, writeJSON(os.Stdout, upgradeJSON(result, err)))
 	} else {
 		renderUpgrade(opts.out, result, err)
 	}
 	return err
 }
 
-// upgradeJSON keeps a refusal inside the same document as a success, so a
-// machine consumer never has to parse stderr to learn why nothing happened.
 func upgradeJSON(result upgradeResult, err error) any {
 	var refusal *upgradeRefusal
 	if errors.As(err, &refusal) {
@@ -181,10 +172,6 @@ func upgradeJSON(result upgradeResult, err error) any {
 	return result
 }
 
-// runUpgrade does the whole upgrade, and does every check that can refuse it
-// before it touches the app directory. Everything downloaded is verified in a
-// temporary directory first, so an archive that fails its checksum or its
-// provenance leaves the install exactly as it was.
 func runUpgrade(opts upgradeOptions) (upgradeResult, error) {
 	opts = opts.normalise()
 	result := upgradeResult{CurrentVersion: opts.current, AppDir: opts.appDir}
@@ -210,8 +197,7 @@ func runUpgrade(opts upgradeOptions) (upgradeResult, error) {
 		result.Action = "checked"
 		return result, nil
 	}
-	// An explicit --version is a pin or a rollback, so it installs what it names
-	// even when that is not newer than what is running.
+
 	pinned := strings.TrimSpace(opts.version) != ""
 	if result.UpToDate && !opts.force && !pinned {
 		result.Action = "up-to-date"
@@ -225,8 +211,7 @@ func runUpgrade(opts upgradeOptions) (upgradeResult, error) {
 	result.Archive = archive
 
 	policy := upgradePolicy(opts)
-	// Refuse before the download as well as after it: an operator who ran this
-	// mid-session should learn that in a second, not after 50 MB.
+
 	if err := ensureNotBusy(opts, policy); err != nil {
 		return result, err
 	}
@@ -270,8 +255,6 @@ func runUpgrade(opts upgradeOptions) (upgradeResult, error) {
 		return result, fmt.Errorf("%s does not contain the expected %s/bin directory", archive, filepath.Base(unpacked))
 	}
 
-	// The window between the first busy check and here is a download long, and
-	// this is the check that actually protects a running agent.
 	if err := ensureNotBusy(opts, policy); err != nil {
 		return result, err
 	}
@@ -282,8 +265,7 @@ func runUpgrade(opts upgradeOptions) (upgradeResult, error) {
 	}
 	result.RefreshedExtensions = refreshed
 	if err := finishBinaries(opts); err != nil {
-		// Unexecutable binaries are not an upgrade. Claiming one here would put
-		// action:"upgraded" in the same document as the error that stopped it.
+
 		return result, err
 	}
 	result.Action = "upgraded"
@@ -329,8 +311,6 @@ func reloadExtensionNote(refreshed []string) []string {
 	return []string{"An extension on 0.7.3 or later reloads itself onto the new payload once the agent is idle. An older one needs one reload by hand (chrome://extensions, Reload) or a browser restart."}
 }
 
-// upgradePolicy is best-effort: a machine with no readable policy still gets
-// upgraded, it just has no daemons to check for in-flight work or to restart.
 func upgradePolicy(opts upgradeOptions) profilepolicy.Policy {
 	policy, err := profilepolicy.Load(opts.policyPath)
 	if err != nil {
@@ -363,9 +343,6 @@ func resolveTargetVersion(opts upgradeOptions) (string, error) {
 	return version, nil
 }
 
-// validVersion accepts the same characters scripts/install.sh does. The version
-// is interpolated into a URL and a path, so anything else is refused rather
-// than escaped.
 func validVersion(version string) bool {
 	if version == "" {
 		return false
@@ -395,10 +372,6 @@ func releaseArchiveName(version, goos, goarch string) (string, error) {
 	return fmt.Sprintf("brw_%s_%s_%s.tar.gz", version, goos, goarch), nil
 }
 
-// verifyChecksum reproduces scripts/install.sh's rule exactly: the per-artifact
-// .sha256 first, the release-wide SHA256SUMS.txt as a fallback, and no install
-// at all when neither publishes one. A missing checksum is a refusal, never a
-// downgrade to "install it anyway".
 func verifyChecksum(opts upgradeOptions, base, name, path string) (string, error) {
 	actual, err := sha256File(path)
 	if err != nil {
@@ -427,10 +400,6 @@ func verifyChecksum(opts upgradeOptions, base, name, path string) (string, error
 	return strings.ToLower(actual), nil
 }
 
-// verifyProvenance checks that GitHub attests this artifact was built by this
-// repository's release workflow. Not being able to check (no gh, not logged in)
-// is reported and allowed, exactly as scripts/install.sh treats it; a check that
-// runs and fails aborts the upgrade.
 func verifyProvenance(opts upgradeOptions, archivePath string) (string, error) {
 	name := filepath.Base(archivePath)
 	if opts.skipAttestation {
@@ -448,8 +417,7 @@ func verifyProvenance(opts upgradeOptions, archivePath string) (string, error) {
 		}
 		return "verified", nil
 	case exitCode(err) == 4:
-		// gh reserves exit 4 for "not authenticated", which is an inability to
-		// check rather than a failed check.
+
 		return "unverified (gh is not authenticated)", nil
 	}
 	return "", refuse("attestation_failed",
@@ -457,13 +425,11 @@ func verifyProvenance(opts upgradeOptions, archivePath string) (string, error) {
 		"gh auth login   # then re-run brwctl upgrade")
 }
 
-// ensureNotBusy refuses while any of this machine's daemons is mid-operation.
 func ensureNotBusy(opts upgradeOptions, policy profilepolicy.Policy) error {
 	if opts.force {
 		return nil
 	}
-	// A short timeout of its own: a daemon that is not answering has no work to
-	// interrupt, and waiting the download timeout to learn that helps nobody.
+
 	busy := busyDaemons(policy, &http.Client{Timeout: 3 * time.Second})
 	if len(busy) == 0 {
 		return nil
@@ -477,11 +443,6 @@ func ensureNotBusy(opts upgradeOptions, policy profilepolicy.Policy) error {
 		"brwctl upgrade --force   # or wait for the run to finish and re-run brwctl upgrade")
 }
 
-// finishBinaries makes the replaced commands runnable. On Apple Silicon an
-// unpacked Go binary whose signature did not survive the round trip is SIGKILLed
-// ("Killed: 9"); only a binary that actually fails verification is re-signed, so
-// a real Developer ID signature is never thrown away to fix a problem it does
-// not have.
 func finishBinaries(opts upgradeOptions) error {
 	commands := []string{"brwd", "brwctl", "brwcheck", "brw-devtools-mcp"}
 	paths := make([]string, 0, len(commands))
@@ -571,10 +532,6 @@ func renderUpgrade(w io.Writer, result upgradeResult, err error) {
 	}
 }
 
-// extractTarGz unpacks a release archive into dest. Every entry is contained
-// inside dest before anything is written, and link entries are refused
-// outright: an archive is remote input, and one crafted entry would otherwise
-// let a mirror write outside the app directory entirely.
 func extractTarGz(archive, dest string) error {
 	file, err := os.Open(archive)
 	if err != nil {
@@ -587,6 +544,7 @@ func extractTarGz(archive, dest string) error {
 	}
 	defer zipped.Close()
 	reader := tar.NewReader(zipped)
+	var extracted int64
 	for {
 		header, err := reader.Next()
 		if errors.Is(err, io.EOF) {
@@ -605,6 +563,10 @@ func extractTarGz(archive, dest string) error {
 				return err
 			}
 		case tar.TypeReg:
+			if header.Size > maxArchiveBytes-extracted {
+				return fmt.Errorf("archive exceeds the %d byte unpacked limit", maxArchiveBytes)
+			}
+			extracted += header.Size
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
@@ -612,7 +574,7 @@ func extractTarGz(archive, dest string) error {
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(out, io.LimitReader(reader, maxArchiveBytes)); err != nil {
+			if _, err := io.Copy(out, reader); err != nil {
 				_ = out.Close()
 				return err
 			}
@@ -620,13 +582,7 @@ func extractTarGz(archive, dest string) error {
 				return err
 			}
 		case tar.TypeSymlink, tar.TypeLink:
-			// A containment check on a link entry can only read the linkname
-			// lexically, against the parent the entry DECLARES. Two links that
-			// each read as contained still chain into an escape, because the
-			// second is created THROUGH the first and so lands somewhere else
-			// entirely; repeating the hop climbs to the root. Refusal is the
-			// only check that holds, and scripts/package-tarball.sh stages a
-			// tree with no links, so a link entry is a mirror's invention.
+
 			return fmt.Errorf("archive entry %q is a link, and a release archive contains none", header.Name)
 		}
 	}
@@ -645,10 +601,6 @@ func within(root, path string) bool {
 	return strings.HasPrefix(filepath.Clean(path)+string(filepath.Separator), cleanRoot)
 }
 
-// compareVersions orders two release versions: -1 when a is older than b. An
-// unparseable version — "dev", the default when the binary was not built with
-// the release ldflags — sorts below every real release, so an unstamped build
-// is always offered the upgrade rather than told it is current.
 func compareVersions(a, b string) int {
 	numsA, preA, okA := parseVersion(a)
 	numsB, preB, okB := parseVersion(b)
@@ -673,7 +625,7 @@ func compareVersions(a, b string) int {
 	case preA == preB:
 		return 0
 	case preA == "":
-		// 1.2.3 is newer than 1.2.3-rc1.
+
 		return 1
 	case preB == "":
 		return -1
@@ -707,9 +659,6 @@ func parseVersion(v string) (nums []int, prerelease string, ok bool) {
 	return nums, prerelease, len(nums) > 0
 }
 
-// exitCode is the process exit status behind a runner error, or -1 when the
-// command never ran. gh reserves 4 for "not authenticated", which is an
-// inability to check rather than a failed check.
 func exitCode(err error) int {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -718,12 +667,8 @@ func exitCode(err error) int {
 	return -1
 }
 
-// firstJSONString returns the first value of key in document order. gh emits
-// its attestation JSON on one line with the same key names at several nesting
-// levels, so the answer has to come from a token scan rather than a map, whose
-// iteration order would pick an arbitrary one.
 func firstJSONString(data []byte, key string) string {
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	for {
 		token, err := decoder.Token()
 		if err != nil {
@@ -743,10 +688,6 @@ func firstJSONString(data []byte, key string) string {
 	}
 }
 
-// expectedSHA256 finds the checksum for name in either a single-artifact
-// "<sha>  <name>" file or the release-wide SHA256SUMS.txt, whose names carry a
-// ./ prefix and may carry a binary marker. Same two shapes scripts/install.sh
-// accepts, so the CLI and the installer cannot disagree about what verified.
 func expectedSHA256(data []byte, name string) string {
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(strings.ReplaceAll(line, "*", ""))
@@ -774,9 +715,6 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
-// upgradeClient refuses a redirect that downgrades https to http. A release URL
-// is fetched before anything about it has been verified, so a redirect chain
-// must not be able to move the download onto a plaintext hop.
 func upgradeClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
@@ -819,21 +757,14 @@ func download(client *http.Client, url, dest string) error {
 	return nil
 }
 
-// busyDaemon names one daemon that is mid-operation and what it is doing.
 type busyDaemon struct {
 	Profile string
 	Detail  string
 }
 
-// busyDaemons reports which of this policy's daemons are working right now.
-// Replacing a binary under a daemon that is driving a browser loses whatever
-// the agent was in the middle of, and the agent sees a transport error it
-// cannot distinguish from a crash.
 func busyDaemons(policy profilepolicy.Policy, client *http.Client) []busyDaemon {
 	var busy []busyDaemon
-	// Profiles that pin no HTTP address share the default port, so probing per
-	// profile asks the same daemon the same question N times and can refuse in
-	// the name of a profile that daemon is not serving.
+
 	probed := map[string]bool{}
 	for _, profile := range policy.Profiles {
 		url := discovery.HTTPURL(profile)
@@ -843,11 +774,10 @@ func busyDaemons(policy profilepolicy.Policy, client *http.Client) []busyDaemon 
 		probed[url] = true
 		health, err := probeDaemonHealth(client, url)
 		if err != nil {
-			// Not answering: there is no in-flight work to interrupt.
+
 			continue
 		}
-		// A daemon knows which profile it serves; the policy entry that happens
-		// to name this port only knows which one it asked for.
+
 		name := profile.Name
 		if health.Identity.Profile != "" {
 			name = health.Identity.Profile
@@ -877,16 +807,6 @@ func busyDaemons(policy profilepolicy.Policy, client *http.Client) []busyDaemon 
 	return busy
 }
 
-// restartServices restarts every per-user daemon running this install's brwd,
-// so the upgraded binary is the one actually running afterwards. That is the
-// unit `brwctl setup` wrote for each profile, plus any unit under another label
-// whose program is this install's brwd: a hand-made unit is left as written,
-// but restarting it is the only way its daemon picks up the new build.
-//
-// A profile with no unit is passed over in silence: a direct-CDP profile has no
-// daemon of its own, and a stdio daemon is launched by the agent client, so a
-// line per profile telling the operator to start something by hand is noise
-// around the one case that is real — no unit anywhere.
 func restartServices(opts upgradeOptions, policy profilepolicy.Policy) ([]string, []string) {
 	var labels []string
 	seen := map[string]bool{}

@@ -13,8 +13,6 @@ import (
 	"github.com/Don-Works/brw/internal/brwidentity"
 )
 
-// stageOptIn puts the endpoint shape Chrome records when the switch is on into
-// the fixture's user data directory.
 func stageOptIn(t *testing.T, fx *doctorFixture, browser string) {
 	t.Helper()
 	var doc map[string]any
@@ -40,11 +38,6 @@ func stageOptIn(t *testing.T, fx *doctorFixture, browser string) {
 	}
 }
 
-// The opt-in is off on nearly every machine, and that is not a fault: the
-// bridge and direct-CDP lanes work without it. doctor has to say the lane
-// exists and name the human action, and must not tell the operator to run a
-// command that would turn it on — there is no such command, and brw inventing
-// one would be arranging the access Chrome asks a human to grant.
 func TestDoctorReportsTheOptInAsOffAndNamesTheAction(t *testing.T) {
 	fx := newDoctorFixture(t)
 	report := fx.report()
@@ -59,7 +52,7 @@ func TestDoctorReportsTheOptInAsOffAndNamesTheAction(t *testing.T) {
 	if !strings.Contains(got.Fix, "brw cannot turn it on for you") {
 		t.Fatalf("the fix does not say brw will not do it for them: %q", got.Fix)
 	}
-	// An off opt-in must not make an otherwise healthy machine red.
+
 	if !report.OK {
 		t.Fatalf("a machine with the opt-in off reported failures: %v", report.Failures)
 	}
@@ -71,8 +64,6 @@ func TestDoctorReportsTheOptInAsOffAndNamesTheAction(t *testing.T) {
 	}
 }
 
-// With the switch on, doctor names the endpoint and the Chrome behind it, so an
-// operator can tell which browser brwd --chrome-opt-in would attach to.
 func TestDoctorReportsTheOptInAsOnWhenItIs(t *testing.T) {
 	fx := newDoctorFixture(t)
 	stageOptIn(t, fx, "Chrome/144.0.7000.0")
@@ -93,9 +84,6 @@ func TestDoctorReportsTheOptInAsOnWhenItIs(t *testing.T) {
 	}
 }
 
-// A daemon actually running on the opt-in lane is the one case where the switch
-// being off is why nothing works. Reporting it as a skip there would leave the
-// operator with a red daemon check and no reason for it.
 func TestDoctorFailsWhenTheRunningLaneNeedsTheOptIn(t *testing.T) {
 	fx := newDoctorFixture(t)
 	fx.health.Identity.Transport = brwidentity.TransportChromeOptIn
@@ -112,7 +100,6 @@ func TestDoctorFailsWhenTheRunningLaneNeedsTheOptIn(t *testing.T) {
 		t.Fatal("a daemon whose lane cannot work reported no failures")
 	}
 
-	// And with the switch on, the same daemon is fine.
 	stageOptIn(t, fx, "Chrome/144.0.7000.0")
 	report = fx.report()
 	if got := checkByName(t, report, "chrome_opt_in"); got.Status != checkOK {
@@ -120,8 +107,6 @@ func TestDoctorFailsWhenTheRunningLaneNeedsTheOptIn(t *testing.T) {
 	}
 }
 
-// A Chrome that predates the opt-in has no switch to flip, so pointing the
-// operator at a page with no switch on it would be the wrong instruction.
 func TestDoctorSeparatesAnOldChromeFromASwitchedOffOptIn(t *testing.T) {
 	fx := newDoctorFixture(t)
 	stageOptIn(t, fx, "Chrome/143.0.6000.0")

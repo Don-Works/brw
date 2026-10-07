@@ -14,12 +14,6 @@ import (
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
 
-// grantsCommand is the operator-facing view of the consent store.
-//
-// It works on the FILE rather than through a running daemon, deliberately. A
-// revocation has to be possible when the daemon is wedged, stopped, or is the
-// very thing being taken away from an agent, and the store re-reads the file on
-// its next decision, so a revocation typed here lands without a restart.
 func grantsCommand(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: brwctl grants <list|allow|revoke|revoke-all|ledger> [options]")
@@ -40,7 +34,6 @@ func grantsCommand(args []string) error {
 	}
 }
 
-// grantsOptions are the flags every grants subcommand shares.
 type grantsOptions struct {
 	policy string
 	json   bool
@@ -72,9 +65,6 @@ func (o *grantsOptions) guard() (*siteconsent.Guard, error) {
 	return guard, nil
 }
 
-// currentActor names who a consent record is attributed to. The OS account is
-// the only thing brw can actually observe; it is recorded rather than a
-// friendlier label so the ledger says something verifiable.
 func currentActor() string {
 	if u, err := user.Current(); err == nil && strings.TrimSpace(u.Username) != "" {
 		return u.Username

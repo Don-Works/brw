@@ -11,17 +11,11 @@ import (
 	"github.com/Don-Works/brw/internal/setup"
 )
 
-// TestSetupInstallsTheSkillFromThisBinary is the install half of the
-// no-shadowing rule. Setup used to look for a skills/brw directory next to the
-// executable or in the working directory, so whichever brw happened to run
-// setup decided what every later agent read — and an old tree left behind by a
-// previous install won that search.
 func TestSetupInstallsTheSkillFromThisBinary(t *testing.T) {
 	home := t.TempDir()
 	workingDir := t.TempDir()
 	appDir := filepath.Join(workingDir, "app")
 
-	// Decoys at both places the old lookup searched.
 	for _, base := range []string{workingDir, appDir} {
 		decoy := filepath.Join(base, "skills", "brw")
 		if err := os.MkdirAll(decoy, 0o755); err != nil {
@@ -56,16 +50,13 @@ func TestSetupInstallsTheSkillFromThisBinary(t *testing.T) {
 		if string(installed) != embedded.Content {
 			t.Fatalf("%s does not match the binary's copy", destination)
 		}
-		// The references travel with it: a SKILL.md that links to a page the
-		// install never wrote is a dead link in the agent's manual.
+
 		if _, err := os.Stat(filepath.Join(destination, "references", "recipes.md")); err != nil {
 			t.Fatalf("reference page missing at %s: %v", destination, err)
 		}
 	}
 }
 
-// TestSetupSkillsDirOverrideStillWorks keeps the escape hatch honest: someone
-// editing the skill itself must still be able to install what they are editing.
 func TestSetupSkillsDirOverrideStillWorks(t *testing.T) {
 	home := t.TempDir()
 	source := filepath.Join(t.TempDir(), "skills", "brw")

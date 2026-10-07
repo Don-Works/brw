@@ -25,7 +25,7 @@ func (r *runner) runGroupTabsStep(st groupTabsStep) error {
 	if len(ids) == 0 {
 		return fmt.Errorf("group_tabs needs tabs or a current tab")
 	}
-	
+
 	body := map[string]any{"tab_ids": ids}
 	if st.Title != "" {
 		body["name"] = st.Title
@@ -133,7 +133,7 @@ func (r *runner) runWindowBoundsStep(st windowBoundsStep) error {
 	if bounds.Height < st.MinHeight {
 		return fmt.Errorf("window height = %d, want at least %d", bounds.Height, st.MinHeight)
 	}
-	
+
 	if st.WantWidth > 0 {
 		if delta := bounds.Width - st.WantWidth; delta > 40 || delta < -40 {
 			return fmt.Errorf("window width = %d, want ~%d", bounds.Width, st.WantWidth)
@@ -171,7 +171,7 @@ func (r *runner) runBatchStep(st batchStep) error {
 	var result browser.BatchResult
 	err := r.client.postJSON("/api/page/batch", body, &result)
 	if st.WantError {
-		
+
 		if err != nil || !result.OK || result.Error != "" {
 			return nil
 		}

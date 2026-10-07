@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,8 +23,6 @@ import (
 	"github.com/Don-Works/brw/internal/setup"
 )
 
-// Action statuses. They are the first column of every line setup prints, so a
-// --dry-run transcript and a real transcript line up for a diff.
 const (
 	statusWould  = "would"
 	statusDid    = "did"
@@ -74,8 +74,7 @@ type setupOptions struct {
 	profileDirectory string
 	userDataDir      string
 	mcpClient        string
-	// mcpClientNamed separates the default from an operator who named a client.
-	// Only a named choice is written to the policy.
+
 	mcpClientNamed bool
 	policyPath     string
 	appDir         string
@@ -92,10 +91,6 @@ type setupOptions struct {
 	runner         commandRunner
 }
 
-// commandRunner is how setup reaches external tools (defaults, launchctl,
-// claude). It is an interface so a test can assert the exact argv without a
-// real subprocess, and so --dry-run can refuse every mutating call by
-// construction rather than by remembering to branch.
 type commandRunner interface {
 	run(name string, args ...string) (string, error)
 	look(name string) (string, bool)
@@ -132,8 +127,7 @@ type setupRunner struct {
 	current  *setupStep
 	manual   []string
 	failures []string
-	// policy is the merged in-memory policy every later step derives from, so
-	// --dry-run produces the same plan on a machine where nothing was written.
+
 	policy       profilepolicy.Policy
 	profile      profilepolicy.Profile
 	resolvedPath string
@@ -159,8 +153,7 @@ func setupCommand(args []string) error {
 	fs.BoolVar(&opts.dryRun, "dry-run", false, "print every action without performing any")
 	fs.BoolVar(&opts.assumeYes, "yes", false, "do not prompt for confirmation")
 	if err := fs.Parse(args); err != nil {
-		// A help request is a successful invocation, so an installer can probe
-		// for this subcommand with `brwctl setup --help` and read the exit code.
+
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(os.Stdout, setupUsage)
 			return nil
@@ -191,9 +184,6 @@ func setupCommand(args []string) error {
 		return err
 	}
 
-	// A prompt has to show what it is asking about, so the confirmable run is a
-	// dry run first and then the real one. Every probe in a plan is read-only,
-	// so running it twice changes nothing.
 	if !opts.dryRun && !opts.assumeYes && stdinIsTerminal() {
 		preview := opts
 		preview.dryRun = true
@@ -260,13 +250,6 @@ func (o *setupOptions) normalise() error {
 	return nil
 }
 
-// detectBrowser picks the browser to bridge. A browser that has actually been
-// run wins over one that is merely installed: a bridge profile binds to a
-// profile directory, and an installed-but-never-launched browser has none, so
-// binding to it writes a policy that cannot verify. A stale user data directory
-// left behind by an uninstalled browser has no profile directories either, so
-// it loses to a browser in use. Table order breaks the tie; --browser
-// overrides.
 func detectBrowser(goos, home string, runner commandRunner) string {
 	for _, b := range setup.Browsers() {
 		if setup.HasProfiles(browserDataDir(goos, home, b.Name)) {
@@ -281,9 +264,6 @@ func detectBrowser(goos, home string, runner commandRunner) string {
 	return setup.BrowserChrome
 }
 
-// browserInstalled reports whether the browser is on the machine at all, which
-// is weaker evidence than a profile directory but enough to name a default the
-// operator recognises.
 func browserInstalled(goos string, b setup.Browser, runner commandRunner) bool {
 	if goos == "darwin" {
 		for _, path := range b.AppPaths {
@@ -301,8 +281,6 @@ func browserInstalled(goos string, b setup.Browser, runner commandRunner) bool {
 	return false
 }
 
-// browserDataDir is the directory this run will bind to, expanded: the
-// operator's override when there is one, otherwise the table's entry.
 func (r *setupRunner) browserDataDir() string {
 	if r.opts.userDataDir != "" {
 		return profilepolicy.ExpandPath(r.opts.userDataDir)
@@ -310,8 +288,6 @@ func (r *setupRunner) browserDataDir() string {
 	return browserDataDir(r.opts.goos, r.opts.home, r.opts.browser)
 }
 
-// browserDataDir expands a policy-shaped user data directory against a known
-// home, so detection works against a home that is not the process's own.
 func browserDataDir(goos, home, browser string) string {
 	path := setup.BrowserUserDataDir(goos, browser)
 	if home != "" && strings.HasPrefix(path, "~/") {
@@ -351,8 +327,6 @@ func (r *setupRunner) act(status, format string, args ...any) {
 	}
 }
 
-// do performs one mutating action, or reports what it would have done. Every
-// side effect in setup goes through here, so --dry-run cannot leak a write.
 func (r *setupRunner) do(text string, perform func() error) bool {
 	if r.opts.dryRun {
 		r.act(statusWould, "%s", text)
@@ -384,19 +358,10 @@ func (r *setupRunner) header() {
 	}
 }
 
-// brwdPath resolves the daemon an MCP client and the background service will
-// launch. An absolute path is what makes brw start under a client that does not
-// inherit a login shell's PATH; the app directory is checked first because that
-// is where `task install-mac` and the macOS package put it, and it is not on
-// PATH.
 func (r *setupRunner) brwdPath() string {
 	return brwdPath(r.opts.appDir, r.opts.executable, r.opts.goos, r.opts.runner.look)
 }
 
-// brwdPath is the daemon binary belonging to this install: the one in the app
-// directory, else the one beside the running brwctl, else whatever is on PATH.
-// doctor resolves it the same way setup does, so a registration setup wrote and
-// a registration doctor approves can never disagree.
 func brwdPath(appDir, executable, goos string, lookPath func(string) (string, bool)) string {
 	name := "brwd"
 	if goos == "windows" {
@@ -422,9 +387,6 @@ func brwdPath(appDir, executable, goos string, lookPath func(string) (string, bo
 	return "brwd"
 }
 
-// recordedMCPClient is the client choice to persist in the policy. Nothing is
-// recorded for a run that named none, so doctor keeps reading whatever an
-// earlier run was told.
 func (r *setupRunner) recordedMCPClient() string {
 	if !r.opts.mcpClientNamed {
 		return ""
@@ -477,9 +439,7 @@ func (r *setupRunner) stepConfig() error {
 		Home:             r.opts.home,
 		GOOS:             r.opts.goos,
 	})
-	// The edits are not separate side effects: they all land in the single
-	// policy write below, so they are reported as its contents rather than as
-	// actions of their own.
+
 	var edits []string
 	for _, change := range changes {
 		if !change.Edit {
@@ -522,10 +482,6 @@ func (r *setupRunner) stepConfig() error {
 	return nil
 }
 
-// bundleIDs names the preference domains to disable App Nap in. An installed
-// application is asked for its own identifier rather than trusting the table:
-// writing the default for a bundle id the browser does not actually use leaves
-// a stray preference domain behind and fixes nothing.
 func (r *setupRunner) bundleIDs() []string {
 	browser, known := setup.LookupBrowser(r.opts.browser)
 	if known {
@@ -789,9 +745,6 @@ func (r *setupRunner) stepMCPClient() {
 	}
 }
 
-// registerClaude goes through the claude CLI rather than editing ~/.claude.json.
-// Claude Code rewrites that file while it is running, so a direct edit races it
-// and can be lost or can clobber unrelated state.
 func (r *setupRunner) registerClaude(spec mcpServerSpec) {
 	if _, ok := r.opts.runner.look("claude"); !ok {
 		r.act(statusSkip, "claude CLI not on PATH; register manually with:")
@@ -855,11 +808,7 @@ func codexAddArgs(spec mcpServerSpec) []string {
 
 func (r *setupRunner) stepSkills() {
 	r.begin("agent skill")
-	// The default source is this binary's own copy, not a directory found next
-	// to the install. Searching disk meant whichever brw happened to run setup
-	// decided what the page said for every brw afterwards, and an upgraded
-	// daemon then served a surface its own installed skill did not describe.
-	// --skills-dir stays for working on the skill itself.
+
 	source := "the brwctl binary"
 	var tree fs.FS
 	if r.opts.skillsDir != "" {
@@ -893,10 +842,7 @@ func (r *setupRunner) stepSkills() {
 
 func (r *setupRunner) stepVerify() {
 	r.begin("verify")
-	// Live checks are left to `brwctl doctor`: loading the extension is the
-	// first thing the summary below tells the operator to do by hand, so a
-	// bridge probe here would end every successful setup with a red check for
-	// work setup has just asked for.
+
 	report := doctorReport(doctorRequest{
 		Workspace:      r.opts.workspace,
 		Profile:        r.opts.profileName,
@@ -970,8 +916,6 @@ func stdinIsTerminal() bool {
 	return info.Mode()&os.ModeCharDevice != 0
 }
 
-// defaultBridgeHostPort is the daemon's control address for a profile, falling
-// back to the port setup was asked for when the profile names none.
 func defaultBridgeHostPort(profile profilepolicy.Profile, port int) string {
 	addr := strings.TrimSpace(profile.BridgeHTTPAddr)
 	if addr == "" {
@@ -980,15 +924,4 @@ func defaultBridgeHostPort(profile profilepolicy.Profile, port int) string {
 	return strings.TrimPrefix(strings.TrimPrefix(addr, "https://"), "http://")
 }
 
-func sortedEnvKeys(env map[string]string) []string {
-	keys := make([]string, 0, len(env))
-	for key := range env {
-		keys = append(keys, key)
-	}
-	for i := 1; i < len(keys); i++ {
-		for j := i; j > 0 && keys[j] < keys[j-1]; j-- {
-			keys[j], keys[j-1] = keys[j-1], keys[j]
-		}
-	}
-	return keys
-}
+func sortedEnvKeys(env map[string]string) []string { return slices.Sorted(maps.Keys(env)) }

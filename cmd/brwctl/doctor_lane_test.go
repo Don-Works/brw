@@ -9,20 +9,12 @@ import (
 	"github.com/Don-Works/brw/internal/setup"
 )
 
-// doctor prints the lane a user is on and the capabilities that go with it. The
-// profile policy can only ever select two of the lanes, so on any of the others
-// a doctor that reported the policy's answer named a lane the user is not on —
-// and printed somebody else's capability list beside it.
-//
-// Enumerated over the declared transports rather than written for the three new
-// ones, so a lane added later fails here instead of being described wrongly.
 func TestDoctorNamesTheLaneTheDaemonReports(t *testing.T) {
 	for _, transport := range brwidentity.Transports() {
 		t.Run(transport, func(t *testing.T) {
 			run := &doctorRun{
 				resolved: true,
-				// A policy that would resolve to direct-cdp on its own, so a
-				// report of anything else can only have come from the daemon.
+
 				profile: profilepolicy.Profile{Name: "fixture", DirectCDPAllowed: true},
 				health:  &daemonHealth{Identity: brwidentity.Identity{Transport: transport}},
 			}
@@ -40,8 +32,6 @@ func TestDoctorNamesTheLaneTheDaemonReports(t *testing.T) {
 	}
 }
 
-// And with no daemon answering there is still the policy's lane, so an install
-// that has not started yet is described rather than left blank.
 func TestDoctorFallsBackToThePolicyLane(t *testing.T) {
 	run := &doctorRun{
 		resolved: true,
