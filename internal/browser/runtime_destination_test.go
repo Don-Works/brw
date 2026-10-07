@@ -17,6 +17,7 @@ import (
 
 	"github.com/Don-Works/brw/internal/devtools"
 	"github.com/Don-Works/brw/internal/snapshot"
+	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/chromedp"
 )
 
@@ -76,11 +77,16 @@ func TestRuntimeDestinationGateProtectsOutputsWithoutNavigationPolicy(t *testing
 		"request replay": func(ctx context.Context) (any, error) {
 			return m.ReplayRequest(ctx, ReplayRequestParams{URL: site.URL})
 		},
-		"React":   func(ctx context.Context) (any, error) { return m.React(ctx, ReactOptions{Action: "tree"}) },
-		"cookies": func(ctx context.Context) (any, error) { return m.Cookies(ctx, CookieParams{Action: CookieActionList}) },
-		"console": func(ctx context.Context) (any, error) { return m.ConsoleMessages(ctx) },
-		"dialog":  func(ctx context.Context) (any, error) { return m.Dialog(ctx, DialogOptions{Action: "status"}) },
-		"route":   func(ctx context.Context) (any, error) { return m.Route(ctx, RouteOptions{Action: "list"}) },
+		"React":     func(ctx context.Context) (any, error) { return m.React(ctx, ReactOptions{Action: "tree"}) },
+		"cookies":   func(ctx context.Context) (any, error) { return m.Cookies(ctx, CookieParams{Action: CookieActionList}) },
+		"console":   func(ctx context.Context) (any, error) { return m.ConsoleMessages(ctx) },
+		"dialog":    func(ctx context.Context) (any, error) { return m.Dialog(ctx, DialogOptions{Action: "status"}) },
+		"downloads": func(ctx context.Context) (any, error) { return m.Downloads(ctx) },
+		"wait":      func(ctx context.Context) (any, error) { return m.WaitForOutcome(ctx, "fn:true", 10*time.Millisecond) },
+		"assertion": func(ctx context.Context) (any, error) {
+			return nil, m.AssertValue(ctx, "missing-fixture", "expected", 10*time.Millisecond)
+		},
+		"route": func(ctx context.Context) (any, error) { return m.Route(ctx, RouteOptions{Action: "list"}) },
 		"profile": func(ctx context.Context) (any, error) {
 			return m.Profile(ctx, ProfileOptions{Action: "start", Kind: ProfileKindCPU})
 		},
@@ -113,6 +119,43 @@ func TestRuntimeDestinationGateProtectsOutputsWithoutNavigationPolicy(t *testing
 	result := m.observeActionWithBefore(tabID, tabCtx, "Private fixture description", nil)
 	if result.OK || strings.Contains(result.Message, "Private fixture") || result.URL != "" || result.Title != "" || len(result.Elements) != 0 || result.Snapshot != nil {
 		t.Fatalf("refused action retained page-derived result fields: %+v", result)
+	}
+}
+
+func TestDownloadsRuntimeGateKeepsRefusedRecipeEntriesForAnAllowedRetry(t *testing.T) {
+	m := newHeadlessManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	opened, err := m.Open(ctx, "about:blank")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = WithAllowedOrigins(WithTabID(ctx, opened.Tab.ID), []string{"https://public.fixture.test"})
+	m.downloadsEnabled = true
+	privateURL := "https://private.fixture.test/file?withheld=fixture"
+	m.recordDownloadBeginForTab(opened.Tab.ID, &cdpbrowser.EventDownloadWillBegin{GUID: "private-fixture-download", URL: privateURL, SuggestedFilename: "private-fixture.txt"})
+	m.recordDownloadProgressForTab(opened.Tab.ID, &cdpbrowser.EventDownloadProgress{GUID: "private-fixture-download", State: cdpbrowser.DownloadProgressStateCanceled})
+	denied := errors.New("private recorded download refused")
+	guarded := WithFrameReadCheck(ctx, func(raw string) error {
+		if raw == privateURL {
+			return denied
+		}
+		return nil
+	})
+	if out, err := m.Downloads(guarded); !errors.Is(err, denied) || !reflect.ValueOf(out).IsZero() {
+		t.Fatalf("private download=%+v err=%v", out, err)
+	}
+	if out, err := m.WaitForOutcome(guarded, "download", 10*time.Millisecond); !errors.Is(err, denied) || !reflect.ValueOf(out).IsZero() {
+		t.Fatalf("private download wait=%+v err=%v", out, err)
+	}
+	allowed := WithFrameReadCheck(ctx, func(string) error { return nil })
+	out, err := m.Downloads(allowed)
+	if err != nil || len(out.Downloads) != 1 || out.Downloads[0].GUID != "private-fixture-download" {
+		t.Fatalf("allowed retry lost refused entry: %+v err=%v", out, err)
+	}
+	out, err = m.Downloads(allowed)
+	if err != nil || len(out.Downloads) != 0 {
+		t.Fatalf("successful recipe read did not advance cursor: %+v err=%v", out, err)
 	}
 }
 
@@ -220,7 +263,7 @@ func TestScreencastRuntimeGatePausesUntilNewDocumentIsAuthorized(t *testing.T) {
 func TestRuntimeDestinationGateChecksDocumentRollover(t *testing.T) {
 	private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><title>Private document</title><body><article><h1>Private document</h1><p>Private document content must not reach a read response after the preliminary snapshot.</p></article></body></html>`))
+		_, _ = w.Write([]byte(`<html><title>Private document</title><body><article><h1>Private document</h1><p>Private document content must not reach a read response after the preliminary snapshot.</p></article><input data-brw-ref="rollover-field"><script>Object.defineProperty(document.querySelector('input'),'value',{get(){throw new Error(document.body.innerText)}})</script></body></html>`))
 	}))
 	defer private.Close()
 	public := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -231,7 +274,7 @@ func TestRuntimeDestinationGateChecksDocumentRollover(t *testing.T) {
 	m := newHeadlessManager(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	for _, name := range []string{"read", "snapshot AX", "snapshot frames"} {
+	for _, name := range []string{"read", "snapshot AX", "snapshot frames", "actuator error", "assertion error", "wait"} {
 		t.Run(name, func(t *testing.T) {
 			opened, err := m.Open(ctx, public.URL)
 			if err != nil {
@@ -263,8 +306,21 @@ func TestRuntimeDestinationGateChecksDocumentRollover(t *testing.T) {
 				out, err = m.Snapshot(guarded, snapshot.SnapshotOptions{IncludeAX: true})
 			case "snapshot frames":
 				out, err = m.Snapshot(guarded, snapshot.SnapshotOptions{IncludeFrames: true})
+			case "actuator error":
+				_, effective, release, contextErr := m.activeContext(guarded)
+				if contextErr != nil {
+					t.Fatal(contextErr)
+				}
+				defer release()
+				err = m.runWithPrearmedSettle(effective, 0, func() error {
+					return chromedp.Run(effective, chromedp.Evaluate(`(()=>{throw new Error(document.body.innerText)})()`, nil))
+				})
+			case "assertion error":
+				err = m.AssertValue(guarded, "rollover-field", "expected", 10*time.Millisecond)
+			case "wait":
+				out, err = m.WaitForOutcome(guarded, "fn:true", 10*time.Millisecond)
 			}
-			if !rolled || !errors.Is(err, denied) || !reflect.ValueOf(out).IsZero() {
+			if !rolled || !errors.Is(err, denied) || out != nil && !reflect.ValueOf(out).IsZero() {
 				t.Fatalf("read after rollover returned a %T result, err=%v, rolled=%t", out, err, rolled)
 			}
 		})

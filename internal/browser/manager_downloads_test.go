@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,31 +19,18 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// newHeadlessManager builds a Manager wired to a headless Chrome launched via a
-// chromedp ExecAllocator. It exercises the real download-tracking code paths
-// (ensureDownloadTracking, the target-level listener, recordDownload*, and the
-// Downloads snapshot) without depending on the production visible-Chrome launcher,
-// which is slow/fragile under headless CI on this platform.
 func newHeadlessManager(t *testing.T) *Manager {
 	t.Helper()
 	return newHeadlessManagerWith(t)
 }
 
-// newHeadlessManagerWith is newHeadlessManager with extra allocator options
-// appended last, so a test can override one of chromedp's defaults. The one that
-// matters for gesture semantics is --disable-popup-blocking, which chromedp sets
-// by default: with it on, window.open succeeds without user activation and a
-// fixture meant to prove activation proves nothing.
 func newHeadlessManagerWith(t *testing.T, extra ...chromedp.ExecAllocatorOption) *Manager {
 	t.Helper()
 	chromePath, err := cdp.FindChrome("")
 	if err != nil {
 		t.Skipf("Chrome/Chromium not available: %v", err)
 	}
-	// Two directories Chrome writes into, both reclaimed after it exits. The
-	// staging root is created first so its reclaim runs LAST: the profile's
-	// reclaim is what stops the browser, and downloads are still being staged
-	// until it does.
+
 	staging := browsertest.NewProfile(t)
 	profile := browsertest.NewProfile(t)
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
@@ -84,23 +72,16 @@ func newHeadlessManagerWith(t *testing.T, extra ...chromedp.ExecAllocatorOption)
 		emulationStates:    map[string]deviceEmulationState{},
 		incognitoContexts:  map[string]bool{},
 	}
-	// Mirror production New(): connect() verifies the browser and registers the
-	// target-lifecycle listener that reclaims externally-closed tabs.
+
 	if err := m.connect(); err != nil {
 		t.Skipf("headless Chrome connect failed: %v", err)
 	}
-	// This shutdown owns the teardown, and the profile runs it before reclaiming
-	// the directory. A test must therefore NOT close this Manager itself:
-	// chromedp.Cancel only waits for the Chrome process over a live browser
-	// connection, and Manager.Close cancels browserCtx.
+
 	profile.StopWith(func() {
 		if err := m.browserCtx.Err(); err != nil {
 			t.Errorf("browser context was already cancelled (%v) before cleanup: chromedp.Cancel returns without waiting for Chrome to exit, and the user-data-dir removal then races its final writes. Let this cleanup own the shutdown.", err)
 		}
-		// chromedp's context cancel is asynchronous with respect to the Chrome
-		// process. Wait for the allocator's process-exit signal before testing's
-		// TempDir cleanup runs; otherwise Chrome can still be writing Cache_Data and
-		// make RemoveAll fail intermittently under -race / slower toolchains.
+
 		shutdownCtx, shutdownCancel := context.WithTimeout(m.browserCtx, 10*time.Second)
 		defer shutdownCancel()
 		_ = chromedp.Cancel(shutdownCtx)
@@ -114,8 +95,6 @@ func TestManagerDownloadsCapturesTriggeredDownload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 
-	// Open a blank page and register it as the active tab so the Manager's tab
-	// context (and its download listener) is bound to where the download fires.
 	var id target.ID
 	if err := m.runBrowser(ctx, func(rc context.Context) error {
 		var e error
@@ -126,14 +105,10 @@ func TestManagerDownloadsCapturesTriggeredDownload(t *testing.T) {
 	}
 	m.refs.SetActive(string(id))
 
-	// Arm download tracking before triggering. This sets Browser.setDownloadBehavior
-	// and attaches the target-level listener to the active tab context.
 	if _, err := m.Downloads(ctx); err != nil {
 		t.Fatalf("arm downloads: %v", err)
 	}
 
-	// Trigger a download of a small inline blob via standard DOM APIs. No
-	// site-specific logic — pure web standards.
 	trigger := `(function(){
 		var blob = new Blob(["hello-download-fixture"], {type:"text/plain"});
 		var a = document.createElement("a");
@@ -147,8 +122,6 @@ func TestManagerDownloadsCapturesTriggeredDownload(t *testing.T) {
 		t.Fatalf("trigger download: %v", err)
 	}
 
-	// Wait until the download has both landed its begin event (filename present)
-	// and reached a terminal state, then take a public snapshot and assert.
 	deadline := time.Now().Add(20 * time.Second)
 	var last DownloadEntry
 	ready := false
@@ -174,8 +147,6 @@ func TestManagerDownloadsCapturesTriggeredDownload(t *testing.T) {
 		t.Fatalf("download never reached a terminal state with a filename; last observed: %+v", last)
 	}
 
-	// brw_downloads is non-draining: a listed GUID remains available to a
-	// following CaptureArtifact(download_guid) call.
 	res, err := m.Downloads(ctx)
 	if err != nil {
 		t.Fatalf("downloads: %v", err)
@@ -196,7 +167,7 @@ func TestManagerDownloadsCapturesTriggeredDownload(t *testing.T) {
 	if !found {
 		t.Fatalf("no terminal download in retained snapshot: %+v", res.Downloads)
 	}
-	// Confirm a second read returns the same lifecycle state.
+
 	res2, _ := m.Downloads(ctx)
 	if res2.Count != res.Count || res2.Downloads[0].GUID != res.Downloads[0].GUID {
 		t.Fatalf("snapshot changed after read: first=%+v second=%+v", res, res2)
@@ -216,11 +187,8 @@ func assertTerminalDownload(t *testing.T, d DownloadEntry) {
 	}
 }
 
-// TestManagerDownloadsSnapshotsRecipeDeltasAndBounds is a fast, browser-free
-// unit test of snapshot, recipe-baseline, provenance, and eviction behavior.
 func TestManagerDownloadsSnapshotsRecipeDeltasAndBounds(t *testing.T) {
-	// Pre-mark download tracking as enabled so Downloads() does not try to wire a
-	// real browser; this isolates the record + drain + eviction logic.
+
 	m := &Manager{
 		downloadIndex: map[string]int{}, downloadVersions: map[string]uint64{},
 		downloadCursors: map[string]uint64{}, downloadDir: t.TempDir(), downloadsEnabled: true,
@@ -244,15 +212,11 @@ func TestManagerDownloadsSnapshotsRecipeDeltasAndBounds(t *testing.T) {
 		t.Fatalf("unexpected progress fields: %+v", got)
 	}
 
-	// Ordinary snapshots do not consume the entry.
 	res2, _ := m.Downloads(context.Background())
 	if res2.Count != 1 || res2.Downloads[0].SuggestedFilename != "a.bin" {
 		t.Fatalf("second snapshot lost state: %+v", res2)
 	}
 
-	// A guarded recipe call establishes a per-tab baseline. An in-progress
-	// event returned by that baseline remains in the registry; its later
-	// completion is returned as a new delta with begin-event fields intact.
 	recipeCtx := WithAllowedOrigins(WithTabID(context.Background(), "tab-1"), []string{"https://example.com"})
 	baseline, _ := m.Downloads(recipeCtx)
 	if baseline.Count != 1 {
@@ -282,7 +246,6 @@ func TestManagerDownloadsSnapshotsRecipeDeltasAndBounds(t *testing.T) {
 		t.Fatalf("manual snapshot should retain attributed and unattributed entries: %+v", manual)
 	}
 
-	// Eviction: pushing past the cap keeps only the most recent entries.
 	for i := 0; i < maxTrackedDownloads+50; i++ {
 		m.recordDownloadBegin(&cdpbrowser.EventDownloadWillBegin{GUID: fmt.Sprintf("g%d", i), URL: "https://example.com", SuggestedFilename: "f"})
 	}
@@ -316,12 +279,19 @@ func TestManagerDownloadStagingIsPrivateOwnedAndConfined(t *testing.T) {
 	if err := os.WriteFile(managedPath, []byte("managed"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	m.recordDownloadBeginForTab("fixture-tab", &cdpbrowser.EventDownloadWillBegin{GUID: guid, URL: "https://fixture.test/file", SuggestedFilename: "fixture.txt"})
+	if !holdsSecret(reflect.ValueOf(m).Elem(), guid, map[uintptr]bool{}) {
+		t.Fatal("fixture download was not retained before cleanup")
+	}
 	removed, err := m.CleanupManagedDownload(DownloadEntry{GUID: guid, Path: managedPath})
 	if err != nil || !removed {
 		t.Fatalf("managed cleanup removed=%v err=%v", removed, err)
 	}
 	if _, err := os.Stat(managedPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("managed source survived cleanup: %v", err)
+	}
+	if holdsSecret(reflect.ValueOf(m).Elem(), guid, map[uintptr]bool{}) {
+		t.Fatal("manager retained the cleaned download in its ledger")
 	}
 
 	outside := filepath.Join(t.TempDir(), guid)
@@ -384,11 +354,6 @@ func TestManagerDownloadStagingRejectsSymlinkAndGitCheckout(t *testing.T) {
 	})
 }
 
-// Retiring keeps a staging directory because files already reported as living
-// there must stay readable. An EMPTY one has no such file, and brw_set_download_path
-// makes a fresh one on every clear:true, so keeping those would leave one
-// directory per toggle on disk and one entry per toggle in the retired list for
-// the life of the daemon.
 func TestRetireDownloadStagingKeepsOnlyWhatStillHoldsFiles(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -421,8 +386,7 @@ func TestRetireDownloadStagingKeepsOnlyWhatStillHoldsFiles(t *testing.T) {
 			wantRetired: 1,
 		},
 		{
-			// brw removes only directories it created, so one the caller named is
-			// neither deleted nor queued for deletion at Close.
+
 			name:        "a directory the caller named",
 			rounds:      1,
 			wantOnDisk:  true,

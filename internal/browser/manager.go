@@ -38,7 +38,7 @@ const (
 	fileChooserWaitTimeout = 5 * time.Second
 )
 
-func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duration, action func() error) error {
+func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duration, action func() error) (resultErr error) {
 	if FrameReadCheckFromContext(tabCtx) != nil {
 		if err := m.guardCurrentURL(eventScopeFromCtx(tabCtx), tabCtx); err != nil {
 			return err
@@ -48,6 +48,7 @@ func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duratio
 	if err := tabCtx.Err(); err != nil {
 		return err
 	}
+	defer func() { resultErr = m.guardPageError(eventScopeFromCtx(tabCtx), tabCtx, resultErr) }()
 	if readiness, ok := tabCtx.Value(batchReadinessKey{}).(batchReadiness); ok && readiness.target == eventScopeFromCtx(tabCtx) && readiness.document != "" && readiness.document == batchDocumentIdentity(tabCtx) {
 		return m.runWithBatchReadiness(tabCtx, readiness, action)
 	}
@@ -1276,7 +1277,7 @@ func (m *Manager) typeRef(tabCtx context.Context, ref, text string) error {
 		return err
 	}
 	if err := snapshot.Focus(tabCtx, ref); err != nil {
-		return err
+		return m.guardPageError(eventScopeFromCtx(tabCtx), tabCtx, err)
 	}
 	return m.runWithPrearmedSettle(tabCtx, actionSettleDelayFast, func() error {
 		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
@@ -1352,7 +1353,7 @@ func (m *Manager) FocusRef(ctx context.Context, ref string) error {
 		return err
 	}
 	if err := snapshot.Focus(tabCtx, ref); err != nil {
-		return err
+		return m.guardPageError(tabID, tabCtx, err)
 	}
 	return m.guardCurrentURL(tabID, tabCtx)
 }
@@ -1897,7 +1898,7 @@ func (m *Manager) evalAssert(ctx context.Context, timeout time.Duration, script 
 		evalArgs[len(args)] = remaining.Milliseconds()
 		return snapshot.EvalAssert(tabCtx, script, evalArgs...)
 	}); err != nil {
-		return err
+		return m.guardPageError(tabID, tabCtx, err)
 	}
 	return m.guardCurrentURL(tabID, tabCtx)
 }
