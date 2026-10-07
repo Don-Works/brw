@@ -972,11 +972,13 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		// windows, because its whole job is to tell an agent which profile this
 		// namespace drives before it touches a tab. tabAgnosticTools keeps it
 		// off the active-tab resolution path so it never blocks on the bridge.
-		return toolJSON(map[string]any{
+		payload := map[string]any{
 			"identity":  s.identity,
 			"version":   Version,
 			"connected": !s.identity.Empty(),
-		}, nil)
+		}
+		s.identityVersions(ctx, payload)
+		return toolJSON(payload, nil)
 	case skillToolName:
 		// Served from the binary, never from disk: the whole point is that the
 		// manual and the tool surface it describes come from one build.

@@ -116,6 +116,8 @@ surface is `GET /api/skill` or `brw skill`. A disk copy may describe an older
 installation. A gateway may also have an older tool schema; see the
 [gateway reference](references/execute-code-gateway.md) before using a new argument.
 
+For proxies, compare `proxy_version` and `daemon_version`; see the gateway reference.
+
 ## Read less, act precisely
 
 | Need | Start here |

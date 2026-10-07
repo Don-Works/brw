@@ -133,8 +133,25 @@ async function sendPolicedCdp(tabId, debuggee, method, params) {
   // brw is now actively driving this tab: a dialog it triggers in the next few
   // seconds is its own and may be auto-accepted (see the dialog handler).
   markActing(tabId);
-  if (!debuggee) return await sendDebuggerCommand(tabId, method, params || {});
+  if (!debuggee) {
+    const result = await sendDebuggerCommand(tabId, method, params || {});
+    rememberDeviceEmulation(tabId, method, params || {});
+    return result;
+  }
   return await chrome.debugger.sendCommand(debuggee, method, params || {});
+}
+function rememberDeviceEmulation(tabId, method, params) {
+  if (method === "Emulation.clearDeviceMetricsOverride") {
+    state.deviceEmulationOverrides.delete(tabId);
+    return;
+  }
+  if (method === "Emulation.setDeviceMetricsOverride" && !state.deviceEmulationOverrides.has(tabId)) {
+    state.deviceEmulationOverrides.set(tabId, new Map());
+  }
+  const overrides = state.deviceEmulationOverrides.get(tabId);
+  if (overrides && ["Emulation.setDeviceMetricsOverride", "Emulation.setTouchEmulationEnabled", "Emulation.setEmitTouchEventsForMouse", "Emulation.setUserAgentOverride"].includes(method)) {
+    overrides.set(method, structuredClone(params));
+  }
 }
 let offscreenSetupPromise = null;
 let packagedDefaultConfigPromise = null;
@@ -174,6 +191,7 @@ const state = {
   // connection — bounding how many debugger sessions brw holds on the user's
   // real Chrome at once (accumulating attachments destabilize renderers).
   attachUsedAt: new Map(),
+  deviceEmulationOverrides: new Map(),
   // activeTabId is the USER-foreground hint, refreshed from tab/window activation
   // events. It is only a fallback for resolving the target tab.
   activeTabId: null,
@@ -1164,6 +1182,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   state.foreignExtensionFrames.delete(tabId);
   state.attachedTabs.delete(tabId);
   state.attachUsedAt.delete(tabId);
+  state.deviceEmulationOverrides.delete(tabId);
   state.snapshotCache.delete(tabId);
   state.observerInjected.delete(tabId);
   state.documentEpochs.delete(tabId);
@@ -2875,6 +2894,9 @@ async function attach(tabId, opts = {}) {
 	    chrome.debugger.sendCommand({ tabId }, "Runtime.enable", {}).catch(() => {}),
 	    chrome.debugger.sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {})
 	  ]);
+	  for (const [method, params] of state.deviceEmulationOverrides.get(tabId) || []) {
+	    await chrome.debugger.sendCommand({ tabId }, method, params);
+	  }
 	} catch (error) {
 	  await detach(tabId).catch(() => {});
 	  throw new Error(`cannot safely arm Page events for tab ${tabId}: ${String(error?.message || error)}`);

@@ -43,6 +43,19 @@ func TestScreenshotSaveExtensionCompositor(t *testing.T) {
 	if err := os.CopyFS(extension, os.DirFS("../../extension")); err != nil {
 		t.Fatal(err)
 	}
+	workerPath := filepath.Join(extension, "service_worker.js")
+	worker, err := os.ReadFile(workerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idleDefault := []byte("const IDLE_DETACH_MS = 120 * 1000;")
+	if bytes.Count(worker, idleDefault) != 1 {
+		t.Fatal("extension idle fixture cannot set its detach boundary")
+	}
+	worker = bytes.Replace(worker, idleDefault, []byte("const IDLE_DETACH_MS = 2000;"), 1)
+	if err := os.WriteFile(workerPath, worker, 0600); err != nil {
+		t.Fatal(err)
+	}
 	raw, err := os.ReadFile(filepath.Join(extension, "manifest.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -212,4 +225,44 @@ func TestScreenshotSaveExtensionCompositor(t *testing.T) {
 	if hidden != "visible" {
 		t.Fatal("hidden selector was not restored")
 	}
+
+	mobile := false
+	if _, err := b.EmulateDevice(ctx, browser.DeviceEmulationOptions{Width: 390, Height: 844, DeviceScaleFactor: 1, Mobile: &mobile}); err != nil {
+		t.Fatal(err)
+	}
+	type viewport struct {
+		Width  int     `json:"width"`
+		Height int     `json:"height"`
+		DPR    float64 `json:"dpr"`
+	}
+	var before, after viewport
+	expression := `({width:innerWidth,height:innerHeight,dpr:devicePixelRatio})`
+	if err := b.evaluate(ctx, expression, "", &before); err != nil {
+		t.Fatal(err)
+	}
+	if before.Width != 390 || before.Height != 844 || before.DPR != 1 {
+		t.Fatalf("emulated viewport = %+v", before)
+	}
+	shot, err := b.SaveScreenshot(ctx, browser.ScreenshotSaveOptions{SavePath: filepath.Join(dir, "emulated.png"), Preview: "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.evaluate(ctx, expression, "", &after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before || shot.Width != before.Width || shot.Height != before.Height {
+		t.Fatalf("emulated capture changed viewport: before=%+v after=%+v image=%dx%d", before, after, shot.Width, shot.Height)
+	}
+	time.Sleep(7 * time.Second)
+	idleShot, err := b.SaveScreenshot(ctx, browser.ScreenshotSaveOptions{SavePath: filepath.Join(dir, "emulated-after-idle.png"), Preview: "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.evaluate(ctx, expression, "", &after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before || idleShot.Width != before.Width || idleShot.Height != before.Height {
+		t.Fatalf("idle capture lost emulation: before=%+v after=%+v image=%dx%d", before, after, idleShot.Width, idleShot.Height)
+	}
+	t.Logf("idle extension capture: before=%+v after=%+v image=%dx%d sha256=%s", before, after, idleShot.Width, idleShot.Height, idleShot.SHA256)
 }

@@ -59,7 +59,14 @@ as a deprecated fallback by brw builds that still support it.
 
 ## Check the schema as well as the version
 
-`brw_identity` proves which daemon answers, not which schema the gateway exposes.
+On an upstream HTTP proxy, `brw_identity` reports `proxy_version`, `daemon_version`
+and `version_alignment` (`matched`, `mismatch` or `unknown`). `version` remains the
+MCP proxy's schema/manual build. An unknown daemon version cannot qualify the pair.
+Align both processes with the same reviewed build; reconnecting a proxy does not
+upgrade its running browser-host daemon. Restart only the affected service after
+its active sessions finish, then reconnect the MCP client.
+
+The browser identity does not prove which schema the gateway exposes.
 Before using a newly added argument, inspect the gateway's exact tool signature.
 If a running daemon supports inline recipes but the gateway still requires
 `id/version/digest`, refresh the downstream catalogue. Some gateways pin reviewed

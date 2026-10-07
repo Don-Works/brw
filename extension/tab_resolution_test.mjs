@@ -129,7 +129,7 @@ const sandbox = {
   fetch: async () => ({ ok: true, json: async () => ({}), text: async () => "" }),
   setInterval: () => 0, clearInterval: () => {}, setTimeout: () => 0, clearTimeout: () => {},
   navigator: { userAgent: "Mozilla/5.0 (harness) Chrome/152.0.0.0" },
-  AbortSignal, URL, TextEncoder: HarnessTextEncoder,
+  AbortSignal, URL, TextEncoder: HarnessTextEncoder, structuredClone,
   btoa: (value) => Buffer.from(value, "latin1").toString("base64"),
   console,
 };
@@ -141,6 +141,8 @@ src += `
 ;globalThis.__test = {
   get state() { return state; },
   capturePresentation,
+  sendPolicedCdp,
+  sweepIdleDebuggers,
   resolveForegroundTabId,
   publishActiveTab,
   isControllableWindowType,
@@ -210,6 +212,7 @@ async function reset() {
   model.tabs.clear(); model.windows.clear();
   T.state.activeTabId = null; T.state.agentTabId = null;
   T.state.attachedTabs.clear(); T.state.attachUsedAt.clear(); T.state.actingUntil.clear();
+  T.state.deviceEmulationOverrides?.clear();
   T.state.downloads.clear(); T.state.downloadCorrelation.clear(); T.state.downloadProvenance.length = 0;
   T.state.documentEpochs.clear();
   T.state.socket = null;
@@ -2315,7 +2318,76 @@ async function scenarioPresentationCaptureRestoresOnFailure() {
   } finally { if(saved === undefined) delete overrides["debugger.sendCommand"]; else overrides["debugger.sendCommand"] = saved; }
 }
 
+async function scenarioDeviceEmulationSurvivesIdleDetach() {
+  await reset();
+  setWin({ id: 1, type: "normal", focused: true });
+  setTab({ id: 42, windowId: 1, active: true, url: "https://fixture.test/" });
+  const savedSend = overrides["debugger.sendCommand"];
+  const savedDetach = overrides["debugger.detach"];
+  const calls = [];
+  let metrics;
+  let rejectMetrics = false;
+  overrides["debugger.detach"] = async ({ tabId }) => {
+    metrics = undefined;
+    fireEvent("debugger.onDetach", { tabId }, "canceled_by_user");
+  };
+  overrides["debugger.sendCommand"] = async (target, method, params) => {
+    calls.push({ target, method, params });
+    if (method === "Emulation.setDeviceMetricsOverride") {
+      if (rejectMetrics) throw new Error("metrics rejected");
+      metrics = params;
+    }
+    if (method === "Runtime.evaluate" && params.expression === "prepare") {
+      return { result: { value: { width: metrics?.width || 1280, height: metrics?.height || 720, clip: { x: 0, y: 0, width: metrics?.width || 1280, height: metrics?.height || 720, scale: 1 } } } };
+    }
+    if (method === "Page.captureScreenshot") return { data: "synthetic-bitmap" };
+    return {};
+  };
+  try {
+    await T.attach(42);
+    const requested = { width: 390, height: 844, deviceScaleFactor: 1, mobile: false, screenOrientation: { type: "portraitPrimary", angle: 0 } };
+    await T.sendPolicedCdp(42, null, "Emulation.setDeviceMetricsOverride", requested);
+    await T.sendPolicedCdp(42, null, "Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+    await T.sendPolicedCdp(42, null, "Emulation.setEmitTouchEventsForMouse", { enabled: true, configuration: "mobile" });
+    await T.sendPolicedCdp(42, null, "Emulation.setUserAgentOverride", { userAgent: "fixture mobile", platform: "fixture" });
+    requested.width = 900;
+    requested.screenOrientation.angle = 90;
+    T.state.attachUsedAt.set(42, Date.now() - 121000);
+    await T.sweepIdleDebuggers();
+    check("idle debugger detach drops Chrome device metrics", !metrics);
+    calls.length = 0;
+    const captured = await T.capturePresentation(42, { prepare: "prepare", cleanup: "restore", format: "png" });
+    check("presentation capture restores the emulated viewport before preparation", captured.width === 390 && captured.height === 844 && metrics.screenOrientation.angle === 0);
+    const methods = calls.map(call => call.method);
+    check("reattach restores touch and user agent with the metrics", ["Emulation.setTouchEmulationEnabled", "Emulation.setEmitTouchEventsForMouse", "Emulation.setUserAgentOverride"].every(method => methods.indexOf(method) >= 0 && methods.indexOf(method) < methods.indexOf("Runtime.evaluate")));
+
+    await T.detach(42);
+    rejectMetrics = true;
+    calls.length = 0;
+    let failure;
+    try { await T.capturePresentation(42, { prepare: "prepare", cleanup: "restore", format: "png" }); } catch (error) { failure = error; }
+    check("failed emulation restoration refuses a misleading capture", /metrics rejected/.test(failure?.message) && !calls.some(call => call.method === "Page.captureScreenshot"));
+    rejectMetrics = false;
+    await T.attach(42);
+    await T.sendPolicedCdp(42, null, "Emulation.clearDeviceMetricsOverride", {});
+    await T.detach(42);
+    calls.length = 0;
+    await T.attach(42);
+    check("explicit emulation reset is not replayed on reattach", !calls.some(call => call.method === "Emulation.setDeviceMetricsOverride"));
+
+    await T.sendPolicedCdp(42, null, "Emulation.setDeviceMetricsOverride", { width: 390, height: 844 });
+    fireEvent("tabs.onRemoved", 42);
+    calls.length = 0;
+    await T.attach(42);
+    check("a removed tab cannot transfer its emulation to a reused id", !calls.some(call => call.method === "Emulation.setDeviceMetricsOverride"));
+  } finally {
+    if (savedSend === undefined) delete overrides["debugger.sendCommand"]; else overrides["debugger.sendCommand"] = savedSend;
+    if (savedDetach === undefined) delete overrides["debugger.detach"]; else overrides["debugger.detach"] = savedDetach;
+  }
+}
+
 (async () => {
+  await scenarioDeviceEmulationSurvivesIdleDetach();
   await scenarioConsentGateIsFailClosed();
   await scenarioPinBeatsForeground();
   await scenarioUserClicksChatPWA();
