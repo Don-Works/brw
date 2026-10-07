@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestFetchDiscoversSurfacesFromLLMsTxtAndLinks(t *testing.T) {
@@ -318,8 +319,6 @@ func TestFetchSendsOneHonestUserAgentEverywhere(t *testing.T) {
 	}
 }
 
-// BenchmarkFetchDiscoveryOverhead measures what the probe batch adds to a read
-// against a loopback server where every probe answers 404.
 func BenchmarkFetchDiscoveryOverhead(b *testing.B) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/page" {
@@ -344,5 +343,33 @@ func BenchmarkFetchDiscoveryOverhead(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func TestFetchDiscoveryBudgetCoversEveryStalledProbe(t *testing.T) {
+	previous := llmsProbeTimeout
+	llmsProbeTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { llmsProbeTimeout = previous })
+	srv := fixtureServer(t, map[string]fixtureRoute{"/page": {contentType: "text/plain", body: "# Fixture"}})
+	release := make(chan struct{})
+	defer close(release)
+	done := make(chan error, 1)
+	go func() {
+		_, err := Fetch(context.Background(), Options{URL: srv.URL + "/page", PolicyCheck: func(raw string) error {
+			if raw != srv.URL+"/page" {
+				<-release
+				return errors.New("fixture stalled policy")
+			}
+			return nil
+		}})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("discovery waited past its total budget after the first stalled probe")
 	}
 }

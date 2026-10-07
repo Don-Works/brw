@@ -46,8 +46,6 @@ type probeSpec struct {
 	detectOverflow bool
 }
 
-// probe fetches one discovery resource concurrently with the main read. It
-// never fails the read: every problem reports "unknown".
 type probe struct {
 	url  string
 	done chan probeOutcome
@@ -61,9 +59,14 @@ func startProbe(ctx context.Context, spec probeSpec, opts Options, userAgent str
 	return p
 }
 
-func (p *probe) wait(deadline <-chan time.Time) probeOutcome {
+func (p *probe) wait(deadline <-chan struct{}) probeOutcome {
 	if p == nil {
 		return probeOutcome{}
+	}
+	select {
+	case outcome := <-p.done:
+		return outcome
+	default:
 	}
 	select {
 	case outcome := <-p.done:
@@ -86,6 +89,7 @@ func runProbe(ctx context.Context, spec probeSpec, opts Options, userAgent strin
 		Transport:     guardedTransport(),
 		CheckRedirect: redirectCheck(opts),
 	}
+	defer client.CloseIdleConnections()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, spec.url, nil)
 	if err != nil {
 		return out
@@ -171,9 +175,6 @@ func redirectCheck(opts Options) func(*http.Request, []*http.Request) error {
 	}
 }
 
-// markdownVariantURL is the conventional .md rendering of a page: /docs/ ->
-// /docs/index.html.md, /a.html -> /a.html.md, /a -> /a.md. Empty when the path
-// is already a text resource.
 func markdownVariantURL(target *url.URL) string {
 	path := target.Path
 	if path == "" {
@@ -197,11 +198,8 @@ func markdownVariantURL(target *url.URL) string {
 	return variant.String()
 }
 
-// discovery is the batch of probes run alongside one read. All of them start
-// before the main request and share one deadline, so the batch adds at most
-// the probe timeout to a read.
 type discovery struct {
-	deadline   <-chan time.Time
+	deadline   <-chan struct{}
 	llms       *probe
 	variant    *probe
 	apiCatalog *probe
@@ -211,7 +209,7 @@ type discovery struct {
 
 func startDiscovery(ctx context.Context, target *url.URL, opts Options, userAgent string) *discovery {
 	timeout := llmsProbeTimeout
-	d := &discovery{deadline: time.After(timeout + 100*time.Millisecond)}
+	d := &discovery{deadline: ctx.Done()}
 	root := func(path string) string { return target.ResolveReference(&url.URL{Path: path}).String() }
 	start := func(spec probeSpec) *probe { return startProbe(ctx, spec, opts, userAgent, timeout) }
 	d.llms = start(probeSpec{url: root("/llms.txt"), accept: "text/markdown, text/plain;q=0.9", maxBytes: llmsProbeMaxBytes, accepts: acceptsText})
@@ -224,8 +222,6 @@ func startDiscovery(ctx context.Context, target *url.URL, opts Options, userAgen
 	return d
 }
 
-// apply folds the probe outcomes into s. markdownVariant is false when the main
-// response was already markdown, so a .md twin adds nothing.
 func (d *discovery) apply(s *AgentSurfaces, markdownVariant bool) {
 	llms := d.llms.wait(d.deadline)
 	s.LLMsTxt = llms.state
@@ -270,8 +266,6 @@ func parseOr(primary, fallback string) *url.URL {
 	return u
 }
 
-// linksetHrefs reads an RFC 9727 API catalog (an RFC 9264 linkset) and returns
-// the hrefs of its service-desc, service-doc and item links.
 func linksetHrefs(body []byte) ([]surfaceLink, bool) {
 	var doc struct {
 		Linkset []map[string]json.RawMessage `json:"linkset"`
@@ -281,10 +275,7 @@ func linksetHrefs(body []byte) ([]surfaceLink, bool) {
 	}
 	var links []surfaceLink
 	for _, entry := range doc.Linkset {
-		// service-desc names a machine-readable API description. An item is
-		// classified by its path like a prose link, so an OpenAPI file or a
-		// retired plugin manifest is recognised and the API's own base URL is
-		// not. service-doc is documentation for people and is not reported.
+
 		for _, rel := range []string{"service-desc", "item"} {
 			var targets []struct {
 				Href string `json:"href"`
@@ -311,11 +302,6 @@ func linksetHrefs(body []byte) ([]surfaceLink, bool) {
 
 var mcpURLKeys = map[string]bool{"url": true, "endpoint": true, "href": true, "uri": true, "server_url": true, "serverurl": true, "mcp_url": true, "remote": true}
 
-// aiCatalogMCP pulls MCP server URLs out of an ai-catalog.json document. The
-// format is young, so it reads the document structurally: a URL-valued field
-// counts when its object or an enclosing key says "mcp", or when the URL path
-// itself is an MCP endpoint. A trailing /server-card is dropped so the MCP URL
-// is what gets reported.
 func aiCatalogMCP(body []byte) []string {
 	var doc any
 	if err := json.Unmarshal(body, &doc); err != nil {
