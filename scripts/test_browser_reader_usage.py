@@ -26,6 +26,24 @@ class UsageTest(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = pathlib.Path(self.directory.name)
 
+    def test_json_rejects_nonfinite_literals_and_exponent_overflow(self):
+        for value in ('NaN', 'Infinity', '-Infinity', '1e999', '-1e999'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                USAGE.decode_json('{"value":'+value+'}')
+        self.assertEqual(USAGE.decode_json('{"value":1.25}'), {'value': 1.25})
+
+    def test_fallback_metadata_accepts_only_fixed_enums(self):
+        ledger = USAGE.Ledger(self.root/'usage')
+        for stage, reason in [('answer', 'timeout'), ('PRIVATE', 'PRIVATE'), (True, []), ({}, None)]:
+            ledger.write('job', 'reader', str(uuid.uuid4()), fallback_stage=stage, fallback_reason=reason)
+        rows = [json.loads(line) for line in (self.root/'usage/reader.jsonl').read_text().splitlines()]
+        self.assertEqual(rows[0]['fallback_stage'], 'answer')
+        self.assertEqual(rows[0]['fallback_reason'], 'timeout')
+        for row in rows[1:]:
+            self.assertNotIn('fallback_stage', row)
+            self.assertNotIn('fallback_reason', row)
+        self.assertNotIn('PRIVATE', json.dumps(rows))
+
     def test_rotation_is_private_and_bounded(self):
         ledger = USAGE.Ledger(self.root/'usage', max_bytes=4096, keep=2)
         for index in range(100):

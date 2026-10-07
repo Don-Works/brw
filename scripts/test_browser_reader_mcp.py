@@ -47,6 +47,9 @@ if a.question == 'oversized-report':
     raise SystemExit(0)
 answer = 'Grounded answer.' if a.question != 'oversized-answer' else 'x' * 2001
 report = {'parent_result': {'answer': answer, 'source': a.url, 'secret': 'PRIVATE_API_KEY'}, 'worker_ms': 3.0, 'collection_ms': 1.0, 'source_chars': 40000, 'evidence_chars': 2000, 'mode': {'answer_model': 'model', 'classifier': 'select'}, 'main': 'PRIVATE_PAGE' * 10000, 'configuration': {'secret': 'PRIVATE_API_KEY'}}
+if a.question == 'fallback':
+    report['parent_result'] = {'excerpt': 'Bounded evidence.', 'source': a.url, 'fallback': {'stage': 'answer', 'reason': 'timeout'}}
+    report['evidence_spans'] = [{'id': 'p0', 'start': 1, 'end': 20}]
 f.write_text(json.dumps(report))
 print('UNBOUNDED_STDOUT_MUST_NOT_ESCAPE' * 1000)
 '''
@@ -168,6 +171,27 @@ class ReaderMCPTests(unittest.TestCase):
         self.assertEqual(len(reports), 1)
         if os.name == 'posix':
             self.assertEqual(reports[0].parent.stat().st_mode & 0o077, 0)
+
+    def test_fallback_is_a_normal_bounded_wire_result_and_classified_usage(self):
+        client = self.client(usage=True)
+        client.initialize()
+        client.call('fallback')
+        result = client.receive()['result']
+        self.assertNotIn('isError', result)
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        packet = json.loads(result['content'][0]['text'])
+        self.assertEqual(packet['excerpt'], 'Bounded evidence.')
+        self.assertNotIn('answer', packet)
+        self.assertEqual(packet['fallback'], {'stage': 'answer', 'reason': 'timeout'})
+        self.assertEqual(packet['trace']['evidence_spans'], [{'id': 'p0', 'start': 1, 'end': 20}])
+        path = client.directory/'usage/reader.jsonl'
+        deadline = time.monotonic()+1
+        while not path.exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        row = json.loads(path.read_text().splitlines()[-1])
+        self.assertEqual(row['outcome'], 'success')
+        self.assertEqual(row['fallback_stage'], 'answer')
+        self.assertEqual(row['fallback_reason'], 'timeout')
 
     def test_model_and_command_arguments_are_rejected(self):
         client = self.client()
@@ -320,6 +344,55 @@ class ReaderMCPTests(unittest.TestCase):
         report['evidence_spans'] = [{'start': -1, 'end': 5}]
         self.assertNotIn('evidence_spans', ADAPTER.bounded_result(report, 'test', 1)['trace'])
 
+    def test_fallback_wire_contract_preserves_excerpt_and_evidence(self):
+        fallback = {'stage': 'answer', 'reason': 'timeout'}
+        report = {'parent_result': {'excerpt': 'Bounded evidence.', 'source': 'https://example.test', 'fallback': fallback}, 'source_chars': 100, 'source_total_chars': 200, 'source_truncated': True, 'evidence_spans': [{'id': 'p0', 'start': 1, 'end': 20}]}
+        packet = ADAPTER.bounded_result(report, 'test', 1)
+        self.assertEqual(packet['fallback'], fallback)
+        self.assertIn('excerpt', packet)
+        self.assertNotIn('answer', packet)
+        self.assertEqual(packet['trace']['evidence_spans'], report['evidence_spans'])
+        self.assertEqual(packet['trace']['source_total_chars'], 200)
+        for invalid in ({'stage': 'PRIVATE', 'reason': 'timeout'}, {'stage': 'answer', 'reason': 'PRIVATE'}, {'stage': 'answer', 'reason': 'timeout', 'detail': 'PRIVATE'}, [], None):
+            report['parent_result']['fallback'] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                ADAPTER.bounded_result(report, 'test', 1)
+        report['parent_result'] = {'answer': 'Must not label fallback generated.', 'source': 'https://example.test', 'fallback': fallback}
+        with self.assertRaises(ValueError):
+            ADAPTER.bounded_result(report, 'test', 1)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX reader process-group cancellation')
+    def test_real_optional_model_child_is_cancelled_without_fallback_delivery(self):
+        from test_browser_answer_worker import ProviderFixture
+        provider = ProviderFixture([(200, b'{"model":"writer","choices":[]}', 0, .03)])
+        self.addCleanup(provider.close)
+        root = pathlib.Path(self.directory.name)
+        binary = root/'fixture-brw'
+        binary.write_text('#!'+sys.executable+'\nimport json,sys\ncommand=sys.argv[1]\nresponses={"health":{"ok":True,"identity":{"headless":True},"version":"fixture"},"open":{"tab":{"id":"owned"},"ready":True},"read":{"url":"https://example.test/page","main":"Owned fixture evidence."},"tab":{"ok":True}}\nprint(json.dumps(responses[command]))\n')
+        binary.chmod(0o700)
+        config = root/'config.json'
+        config.write_text(json.dumps({'brw': str(binary), 'answer_model': 'writer', 'answer_endpoint': provider.endpoint, 'answer_key_env': None, 'request_timeout': 5}))
+        client = self.client(config=config, concurrent=1, usage=True, timeout=15)
+        actual = pathlib.Path(__file__).with_name('browser-answer-worker.py').resolve()
+        client.worker.write_text('import runpy\nrunpy.run_path('+repr(str(actual))+',run_name="__main__")\n')
+        client.initialize()
+        client.call(request_id=2)
+        self.assertTrue(provider.started.wait(10))
+        client.send('notifications/cancelled', {'requestId': 2})
+        deadline = time.monotonic()+3
+        while time.monotonic() < deadline and not list(client.artifacts.glob('*/adapter.json')):
+            time.sleep(.01)
+        diagnostic = json.loads(next(client.artifacts.glob('*/adapter.json')).read_text())
+        self.assertTrue(diagnostic['cancelled'])
+        self.assertTrue(client.messages.empty())
+        self.assertFalse(list(client.artifacts.glob('*/report.json')))
+        self.assertTrue(provider.closed.wait(1))
+        client.send('ping', request_id=4)
+        self.assertEqual(client.receive()['id'], 4)
+        rows = [json.loads(line) for line in (root/'usage/reader.jsonl').read_text().splitlines()]
+        self.assertTrue(any(row['outcome']=='cancelled' for row in rows))
+        self.assertNotIn('fallback_reason', rows[-1])
+
     def test_cancellation_interrupts_and_retains_capacity_through_cleanup(self):
         delayed = WORKER.replace("(f.parent / 'cleanup').write_text('yes')", "time.sleep(.2)\n        (f.parent / 'cleanup').write_text('yes')")
         with patch.object(sys.modules[__name__], 'WORKER', delayed):
@@ -357,6 +430,24 @@ class ReaderMCPTests(unittest.TestCase):
         encoded = json.dumps(rows)
         for secret in ('PRIVATE', 'https://example', 'sleep:', 'Grounded answer'):
             self.assertNotIn(secret, encoded)
+
+    def test_windows_cleanup_uses_owned_process_tree_and_bounds_failures(self):
+        server = ADAPTER.Server(argparse_namespace(), io.StringIO())
+        process = Mock(pid=987654, returncode=None)
+        process.poll.return_value = None
+        with patch.object(ADAPTER.os, 'name', 'nt'), patch.object(ADAPTER.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+            server.stop_process(process)
+        self.assertEqual(run.call_args.args[0], ['taskkill', '/PID', '987654', '/T', '/F'])
+        self.assertEqual(run.call_args.kwargs['timeout'], 5)
+        process.wait.assert_called_once_with(timeout=1)
+        for failure in (FileNotFoundError(), subprocess.TimeoutExpired('taskkill', 5), subprocess.CompletedProcess([], 1)):
+            process.reset_mock()
+            with self.subTest(failure=failure):
+                kwargs = {'side_effect': failure} if isinstance(failure, Exception) else {'return_value': failure}
+                with patch.object(ADAPTER.os, 'name', 'nt'), patch.object(ADAPTER.subprocess, 'run', **kwargs), self.assertRaises(RuntimeError):
+                    server.stop_process(process)
+                process.kill.assert_called_once()
+                process.wait.assert_called_once_with(timeout=1)
 
     def test_darwin_group_probe_permission_race_waits_for_leader_exit(self):
         server = ADAPTER.Server(argparse_namespace(), io.StringIO())

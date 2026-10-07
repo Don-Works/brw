@@ -42,10 +42,130 @@ navigation and network policy. Cancellation interrupts the child worker and
 suppresses its reply. The adapter retains its capacity slot until the child has
 exited and cleanup has completed. On POSIX it first sends SIGINT, allowing Python
 `finally` cleanup, then force-kills after at most five seconds. Windows uses
-process termination. A forced kill or termination cannot guarantee tab cleanup;
+bounded native process-tree termination. A forced kill or termination cannot
+guarantee tab cleanup;
 inspect the job journal and owned browser resources after failures. Interrupting
 the client does not promise cancellation of work already running at a provider or
 zero further provider spend.
+
+## Model failure and deadline contract
+
+The worker collects and saves deterministic ranked evidence before attempting any
+optional model. `request_timeout` is one absolute budget shared by classifier and
+answer stages, including their Python child startup and response reading. Each
+HTTP request runs in an owned child so slow header/body delivery cannot extend
+that budget indefinitely. A timed-out or interrupted child is killed and reaped,
+with at most one second of child cleanup. Failed child cleanup fails the job.
+The adapter's whole-job timeout remains separate and includes collection and
+artifact work; leave room for model and cleanup budgets within it.
+
+Successful generation retains the existing `answer` and `source` packet. No-model
+reads return `excerpt` and `source`. If an optional classifier (including shadow)
+or answer stage fails, remaining model stages are skipped and the worker restores
+the same deterministic excerpt and evidence ranges as a no-model read. It adds:
+
+```json
+{"fallback":{"stage":"answer","reason":"timeout"}}
+```
+
+`stage` is `classifier` or `answer`. Reasons are `unavailable`, `timeout`, `http`,
+`invalid_response`, `oversized_response`, `truncated_response`, `empty_response`,
+`unknown_candidate` or `unknown_identity`. These fixed fields reach the MCP packet
+and metadata ledger; provider error bodies and credential names/values do not.
+The adapter retains source completeness, hash and bounded ranges in `trace`.
+A fallback excerpt is evidence for the caller to read, not a generated answer.
+A valid selector choice of `none` produces a deterministic insufficient-evidence
+message under `excerpt` and skips generation.
+
+The returned model ID must exactly match the configured ID. Missing or different
+IDs cause `unknown_identity`; configure the service's actual returned ID rather
+than relying on an alias. This check identifies the response label, not the
+checkpoint, quantization or image processor behind it. Qualification must verify
+those separately. Missing optional credentials cause `unavailable` after evidence
+collection. Collection, invalid job configuration, cancellation, whole-job timeout
+and cleanup failures remain job errors. Cancellation suppresses result delivery.
+
+On Windows the adapter uses native `taskkill /PID <owned-worker-pid> /T /F` with a
+five-second bound to terminate its process tree. If that command is unavailable
+or fails, it kills the worker and reports cleanup failure; descendant cleanup is
+then uncertain. Windows process-tree behavior is covered by mocked command tests,
+not a Windows runtime qualification. POSIX cancellation and slow-drip model
+fallback are exercised with owned local fixtures. Terminating a local HTTP client
+does not guarantee that the provider stops already submitted work or spending.
+
+There is no persistent circuit breaker in the short-lived worker. A deployment
+may add host-owned admission/cooldown around repeated failures. No fallback
+switches providers, escalates to cloud or enables a model automatically.
+
+## Qualifying optional local and visual models
+
+Keep ordinary DOM reads and deterministic selection available. The reader is
+currently text-only; an OpenAI-compatible text endpoint or a `/v1/models` listing
+does not establish image support. Its fallback implementation does not enable
+OCR, vision, embeddings or interactive action proposals.
+
+Before an operator enables a local model, pin the runtime version, exact model
+revision/checkpoint hash, quantization/dtype, tokenizer and chat template, thinking
+mode, context/output budgets and returned model ID. Record cold load, warm request,
+preprocessing and complete job timings separately, plus provider-reported tokens;
+character/4 estimates remain separate. Include child startup, failures, retries,
+fallback and cleanup when comparing this release to historical reader timings.
+Use public or explicitly owned fixtures, freeze a held-out set before tuning and
+score evidence coverage, factuality, abstention and schema/identity failures before
+latency or token savings. Provider work must be approved and budgeted by the host.
+
+Google's [Gemma releases](https://ai.google.dev/gemma/docs/releases) identify
+EmbeddingGemma 2, released 6 October 2026, as a retrieval candidate, and Gemma 4
+[E2B](https://huggingface.co/google/gemma-4-E2B-it) and
+[12B](https://huggingface.co/google/gemma-4-12B-it) as visual-reading candidates.
+[EmbeddingGemma 2's model card](https://huggingface.co/google/embeddinggemma-2)
+requires float32 or bfloat16; float16 can silently degrade results. Its embeddings
+could improve passage recall, but brw has no measured gain from these models.
+Gemma 2 is an older 2024 family and is not this release's newer visual candidate.
+
+For image experiments verify the exact multimodal runtime and processor, image
+request format, resize/crop/token budget and response schema. Text-only MLX-LM
+support is insufficient; use a verified image-serving adapter, such as a qualified
+[MLX-VLM Gemma 4 build](https://github.com/Blaizzy/mlx-vlm/blob/main/mlx_vlm/models/gemma4/README.md),
+and test its exact checkpoint. Record image hashes and geometry; measure small-text
+OCR and ambiguous/unsupported cases against the same deterministic evidence.
+Do not send signed-in pages or screenshots to a provider without the operator's
+permission. A loopback URL alone does not prove local processing.
+
+The checkout's `scripts/measure-local-browser-model.py` accepts public/owned PNG
+corpora separately from the text reader. Prepare a corpus and runtime identity
+manifest, then freeze and validate the plan without contacting any endpoint:
+
+```sh
+python3 scripts/measure-local-browser-model.py \
+  --model EXACT_RETURNED_MODEL_ID \
+  --vision-fixtures /private/qualification/corpus.json \
+  --identity-manifest /private/qualification/runtime.json \
+  --plan-only --out /private/qualification/plan.json
+```
+
+The corpus has `schema_version:1`, `source_policy:public_fixture` or `owned_fixture`,
+and `cases` with `name`, `goal`, relative PNG `image` and expected tool `name`/
+`arguments`. Optional `target_region` uses image pixels; `image_transform` declares
+viewport offset and CSS pixels per image pixel for coordinate proposals. Never
+assume image coordinates equal browser coordinates. The identity manifest pins
+`schema_version:1`, `model`, `runtime:{name,version,backend,device}`,
+`checkpoint:{publisher,revision,quantization,adapter,sha256}` and
+`tokenizer:{revision,chat_template_sha256}`, with lowercase SHA-256 hashes.
+Its identity values are operator declarations, not runtime attestations.
+
+`--plan-only` makes no network or inference call and writes a frozen
+`.manifest.json` alongside the output. After separate operator approval and budget
+admission, a run against a qualified image server may omit that flag. The harness
+proposes tool calls only; it executes no browser effects. `--first-request-state`
+is `unknown`, `cold` or `warm`, an operator declaration rather than an inferred
+cache state. Verify rendering/preprocessing and actual task outcomes separately;
+a passing fixture score does not activate vision in `brw_ask` or qualify private
+page processing.
+
+Model output remains untrusted evidence. A proposed action must be checked against
+fresh DOM refs and the existing browser policies. Models cannot authorize writes,
+bypass consent/approvals or turn failed perception into an executed action.
 
 ## Automatic usage metadata
 
@@ -67,8 +187,8 @@ Set `usage_log` to `false` to disable logging. Bounds are 4096 to 67108864 bytes
 and zero to sixteen archives.
 
 Records contain timestamps, generated job/request correlations, counts and phase
-durations. They exclude prompts, page text, answers, URLs, raw errors, credential
-values and model names. Model requests record actual serialized input/output
+durations, plus fixed fallback stage/reason fields. They exclude prompts, page
+text, answers, URLs, raw errors, credential values and model names. Model requests record actual serialized input/output
 bytes, explicit character/4 estimates and provider-reported input, output,
 cached-input, cache-write and reasoning tokens where supplied. Missing provider
 counts remain unknown rather than zero. Nonstreaming first-token timing remains

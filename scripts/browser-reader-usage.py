@@ -10,10 +10,19 @@ import json
 import uuid
 
 
+FALLBACK_STAGES = ('classifier', 'answer')
+FALLBACK_REASONS = ('unavailable', 'timeout', 'http', 'invalid_response', 'oversized_response', 'truncated_response', 'empty_response', 'unknown_candidate', 'unknown_identity')
+
+
 def decode_json(raw):
     def reject(value):
         raise ValueError('Non-finite JSON number')
-    return json.loads(raw, parse_constant=reject)
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            reject(value)
+        return number
+    return json.loads(raw, parse_constant=reject, parse_float=finite_float)
 
 def default_directory():
     if sys.platform == 'darwin':
@@ -112,7 +121,7 @@ class Ledger:
             return
         operations = {'job', 'adapter', 'answer', 'classifier'}
         scopes = {'reader', 'model', 'transport'}
-        allowed = {'started_at', 'finished_at', 'duration_ms', 'duration_us', 'input_bytes', 'output_bytes', 'input_text_chars', 'output_text_chars', 'estimated_input_tokens_chars4', 'estimated_output_tokens_chars4', 'provider_input_tokens', 'provider_output_tokens', 'provider_cached_input_tokens', 'provider_cache_write_tokens', 'provider_reasoning_tokens', 'mode', 'representation', 'outcome', 'collection_ms', 'worker_ms', 'request_to_headers_ms', 'first_visible_delta_ms', 'source_chars', 'source_total_chars', 'source_truncated', 'evidence_chars', 'evidence_narrowed', 'cleanup_ms', 'cancelled', 'job_id', 'request_id', 'serialization_ms', 'response_decode_ms', 'collection_health_ms', 'collection_open_ms', 'collection_read_ms', 'collection_cleanup_ms', 'collection_replayed'}
+        allowed = {'started_at', 'finished_at', 'duration_ms', 'duration_us', 'input_bytes', 'output_bytes', 'input_text_chars', 'output_text_chars', 'estimated_input_tokens_chars4', 'estimated_output_tokens_chars4', 'provider_input_tokens', 'provider_output_tokens', 'provider_cached_input_tokens', 'provider_cache_write_tokens', 'provider_reasoning_tokens', 'mode', 'representation', 'outcome', 'collection_ms', 'worker_ms', 'request_to_headers_ms', 'first_visible_delta_ms', 'source_chars', 'source_total_chars', 'source_truncated', 'evidence_chars', 'evidence_narrowed', 'cleanup_ms', 'cancelled', 'job_id', 'request_id', 'serialization_ms', 'response_decode_ms', 'collection_health_ms', 'collection_open_ms', 'collection_read_ms', 'collection_cleanup_ms', 'collection_replayed', 'fallback_stage', 'fallback_reason'}
         try:
             trace_id = str(uuid.UUID(trace_id))
             if operation not in operations or scope not in scopes:
@@ -121,7 +130,10 @@ class Ledger:
             for key, value in fields.items():
                 if key not in allowed:
                     continue
-                if value is None or isinstance(value, bool) or (isinstance(value, int) and -9223372036854775808 <= value <= 9223372036854775807) or (isinstance(value, float) and math.isfinite(value)):
+                if key in {'fallback_stage', 'fallback_reason'}:
+                    if value in (FALLBACK_STAGES if key == 'fallback_stage' else FALLBACK_REASONS):
+                        row[key] = value
+                elif value is None or isinstance(value, bool) or (isinstance(value, int) and -9223372036854775808 <= value <= 9223372036854775807) or (isinstance(value, float) and math.isfinite(value)):
                     row[key] = value
                 elif key in {'started_at', 'finished_at'}:
                     datetime.datetime.fromisoformat(value.replace('Z', '+00:00'))

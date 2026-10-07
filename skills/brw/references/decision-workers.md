@@ -99,6 +99,22 @@ For chat classifiers, configure `classifier_response_format` as `json_schema`,
 `reasoning_effort:omit` leaves it to the server. These are supported wire formats,
 not a claim that arbitrary vendor APIs are interchangeable.
 
+`request_timeout` is one absolute optional-stage budget shared by classifier and
+answer, including child startup and response reads. Deterministic ranked evidence
+is retained first. If either optional stage fails, including a shadow classifier,
+the worker skips later model stages and returns the usual bounded `excerpt`,
+`source` and completeness/range trace with a fixed `fallback:{stage,reason}`.
+Treat that excerpt as source evidence to read; do not describe it as a generated
+answer. Missing credentials, unavailable endpoints, timeouts, HTTP failures,
+invalid/oversized/truncated/empty responses, unknown candidate IDs and missing or
+mismatched returned model IDs trigger fallback. The returned model ID must equal
+the configured ID; that label does not attest the underlying checkpoint/runtime.
+A valid `none` choice skips generation and returns a deterministic abstention under
+`excerpt`. Collection, cancellation, whole-job deadline and cleanup failures remain
+errors. No fallback changes provider or escalates to cloud. There is no cross-job
+circuit breaker; admission/cooldown belongs to the host when required. See the
+[deployment and qualification contract](../../../docs/reader-deployment.md).
+
 The same settings work for local or cloud services. Maix can own job scheduling,
 credential injection, cancellation and mesh delivery without teaching brw about
 those services. A completion handler should forward only the bounded stdout
@@ -110,7 +126,9 @@ bounded worker contract and measure that wrapper separately.
 The runner writes a report, `.source.json` and `.jsonl` progress events. Retain
 request IDs/hashes, requested/returned models, usage, phase timings, source
 truncation, evidence size and parent-result size. Unknown first-token, queue and
-prefill times stay unmeasured. Failed calls and shadow failures remain visible.
+prefill times stay unmeasured. Provider usage in phase reports is normalized to
+validated counts; arbitrary provider metadata is excluded. Failed calls and
+fallback stage/reason remain visible.
 The source and report directories must already exist; use a unique private output
 path per concurrent job. The host scheduler remains responsible for the whole-job
 deadline and cancellation when invoking the standalone worker. The MCP adapter
@@ -176,10 +194,11 @@ other requests while a bounded number of reads run; use the host's job scheduler
 for background execution and mesh completion delivery. Cancellation interrupts
 the child and suppresses delivery; its capacity slot remains occupied through
 child exit and cleanup. POSIX uses SIGINT followed by force-kill after at most
-five seconds; Windows uses process termination. Forced termination can prevent
-tab cleanup. Cancellation does not promise interruption of already-running
-provider work or zero further spend. The adapter does not install a mesh trigger
-or an approval channel for browser writes.
+five seconds. Windows uses bounded native process-tree termination and reports
+cleanup failure if it cannot complete; it has not been runtime qualified. Forced
+termination can prevent tab cleanup. Cancellation does not promise interruption
+of already-running provider work or zero further spend. The adapter does not
+install a mesh trigger or an approval channel for browser writes.
 
 ## Evidence and promotion
 
