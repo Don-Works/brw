@@ -47,65 +47,7 @@ func (b *Bridge) openTabParams(params map[string]any) map[string]any {
 }
 
 func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, error) {
-	// An explicit group via OpenInGroup always wins.
-	if group := b.defaultGroup; group != "" {
-		return b.OpenInGroup(ctx, url, browser.TabGroupOptions{Name: group})
-	}
-	start := time.Now()
-	var err error
-	url, err = b.prepareNavigationURL(url)
-	if err != nil {
-		return browser.OpenResult{}, err
-	}
-	params := b.openTabParams(map[string]any{"url": url})
-	if browser.IsBackgroundPage(ctx) {
-		params["active"] = false
-	}
-	raw, err := b.call(ctx, "open_tab", params)
-	if err != nil {
-		return browser.OpenResult{}, err
-	}
-	var tab extTab
-	if err := json.Unmarshal(raw, &tab); err != nil {
-		return browser.OpenResult{}, err
-	}
-	out := tab.toBrowserTab()
-	if out.ID == "" {
-		return browser.OpenResult{}, errors.New("open_tab returned no tab id")
-	}
-	// Only exits after the tab exists are recorded: an entry without a tab id
-	// would be an unscoped URL.
-	recordOpen := func(finalURL string, err error) {
-		if finalURL == "" {
-			finalURL = url
-		}
-		b.recordObservation(out.ID, browser.TraceActionOpen, finalURL, start, err)
-	}
-	if !browser.IsBackgroundPage(ctx) {
-		b.setActiveTabID(out.ID)
-	}
-	// Containment is armed just AFTER the first document starts; only scripts
-	// already run in it can hold pristine WebSocket/RTC references.
-	b.ensureContainment(ctx, out.ID)
-	b.noteOpenedWebMCP(ctx, out.ID, tab.WebMCPArmed)
-	ready := b.waitOpenReady(ctx, url, out.ID)
-	b.disarmInlineDocument(out.ID)
-	// chrome.tabs.create often returns empty url/title mid-navigation.
-	out = b.refreshOpenedTab(ctx, out, url)
-	result := b.openResult(ctx, out, url, ready)
-	// Isolation resolves by owned id, so only follow-focus must foreground the tab.
-	if b.followFocus && !browser.IsBackgroundPage(ctx) {
-		if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
-			recordOpen(out.URL, err)
-			return result, err
-		}
-	}
-	if err := b.verifyOpenedTabURL(ctx, out.ID); err != nil {
-		recordOpen(out.URL, err)
-		return browser.OpenResult{}, err
-	}
-	recordOpen(out.URL, result.NavigationErr())
-	return result, nil
+	return b.OpenInGroup(ctx, url, browser.TabGroupOptions{Name: b.defaultGroup})
 }
 
 // waitOpenReady waits on the new tab id so an immediate evaluate or read does
@@ -336,10 +278,10 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 	if err := json.Unmarshal(raw, &tab); err != nil {
 		return browser.OpenResult{}, err
 	}
-	out := tab.toBrowserTab()
-	if out.ID == "" {
+	if tab.ID <= 0 {
 		return browser.OpenResult{}, errors.New("open_tab returned no tab id")
 	}
+	out := tab.toBrowserTab()
 	recordOpen := func(finalURL string, err error) {
 		if finalURL == "" {
 			finalURL = url

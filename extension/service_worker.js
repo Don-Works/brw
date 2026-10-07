@@ -4035,7 +4035,6 @@ function ensureObserver(tabId) {
     if (window.__brwObserver) return;
     window.__brwObserver = true;
     window.__brwDirty = false;
-    window.__brwConsole = [];
     const observer = new MutationObserver(function() {
       window.__brwDirty = true;
     });
@@ -4055,26 +4054,6 @@ function ensureObserver(tabId) {
       document.addEventListener(type, function() {
         window.__brwDirty = true;
       }, true);
-    });
-    function stringify(value) {
-      try {
-        if (value instanceof Error) return value.stack || value.message || String(value);
-        if (typeof value === 'object' && value !== null) return JSON.stringify(value, function(_key, item) {
-          return typeof item === 'bigint' ? String(item) : item;
-        });
-        return String(value);
-      } catch (_err) {
-        try { return String(value); } catch (_ignored) { return '[unprintable]'; }
-      }
-    }
-    ['log','warn','error','info','debug'].forEach(function(level) {
-      const orig = console[level];
-      console[level] = function() {
-        var text = Array.from(arguments).map(stringify).join(' ');
-        window.__brwConsole.push({level: level, text: text.slice(0, 1000), timestamp: new Date().toISOString()});
-        if (window.__brwConsole.length > 200) window.__brwConsole.shift();
-        if (orig.apply) orig.apply(console, arguments); else orig(arguments);
-      };
     });
   })()`;
   // Attach via the TRACKED attach() so this debugger session is recorded in

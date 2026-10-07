@@ -3,6 +3,7 @@ package extensionbridge
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/draw"
@@ -34,25 +35,24 @@ func rasterizeBridgePDF(ctx context.Context, pdfData []byte, params map[string]a
 	}
 
 	type converter struct {
-		name   string
-		output string
-		args   []string
+		name string
+		args []string
 	}
 	var converters []converter
 	if path, err := exec.LookPath("pdftoppm"); err == nil {
 		converters = append(converters, converter{
-			name: path, output: pngPath,
+			name: path,
 			args: []string{"-f", "1", "-l", "1", "-singlefile", "-png", "-r", "96", pdfPath, strings.TrimSuffix(pngPath, ".png")},
 		})
 	}
 	if runtime.GOOS == "darwin" {
 		if path, err := exec.LookPath("sips"); err == nil {
-			converters = append(converters, converter{name: path, output: pngPath, args: []string{"-s", "format", "png", pdfPath, "--out", pngPath}})
+			converters = append(converters, converter{name: path, args: []string{"-s", "format", "png", pdfPath, "--out", pngPath}})
 		}
 	}
 	for _, binary := range []string{"magick", "convert"} {
 		if path, err := exec.LookPath(binary); err == nil {
-			converters = append(converters, converter{name: path, output: pngPath, args: []string{"-density", "96", pdfPath + "[0]", pngPath}})
+			converters = append(converters, converter{name: path, args: []string{"-density", "96", pdfPath + "[0]", pngPath}})
 		}
 	}
 	if len(converters) == 0 {
@@ -61,13 +61,13 @@ func rasterizeBridgePDF(ctx context.Context, pdfData []byte, params map[string]a
 
 	var failures []string
 	for _, candidate := range converters {
-		_ = os.Remove(candidate.output)
+		_ = os.Remove(pngPath)
 		output, runErr := exec.CommandContext(ctx, candidate.name, candidate.args...).CombinedOutput()
 		if runErr != nil {
 			failures = append(failures, filepath.Base(candidate.name)+": "+runErr.Error()+" "+strings.TrimSpace(string(output)))
 			continue
 		}
-		pngData, readErr := os.ReadFile(candidate.output)
+		pngData, readErr := os.ReadFile(pngPath)
 		if readErr != nil || len(pngData) == 0 {
 			if readErr == nil {
 				readErr = fmt.Errorf("empty output")
@@ -130,17 +130,10 @@ func mapNumber(values map[string]any, key string) float64 {
 		return float64(value)
 	case int64:
 		return float64(value)
-	case jsonNumber:
+	case json.Number:
 		parsed, _ := value.Float64()
 		return parsed
 	default:
 		return 0
 	}
-}
-
-// jsonNumber is the small interface implemented by encoding/json.Number. Using
-// an interface keeps this helper compatible with both ordinary map values and a
-// decoder configured with UseNumber without importing another concrete type.
-type jsonNumber interface {
-	Float64() (float64, error)
 }

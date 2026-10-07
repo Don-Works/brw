@@ -138,7 +138,7 @@ func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any
 		}
 		if typ == "open_tab" && browser.IsBackgroundPage(ctx) {
 			var opened extTab
-			if err := json.Unmarshal(resp.Result, &opened); err != nil || opened.ID == 0 {
+			if err := json.Unmarshal(resp.Result, &opened); err != nil || opened.ID <= 0 {
 				return nil, errors.New("background tab open returned no tab id")
 			}
 			b.mu.Lock()
