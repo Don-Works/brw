@@ -210,7 +210,11 @@ class Server:
                 if len(self.active) >= self.args.max_concurrent:
                     self.result(request_id, {'isError': True, 'content': [{'type': 'text', 'text': 'Reader capacity reached; retry after an active request finishes.'}]})
                     return
-                job = {'cancelled': False, 'cancel_event': threading.Event(), 'input_bytes': input_bytes}
+                meta = params.get('_meta')
+                token = meta.get('progressToken') if isinstance(meta, dict) else None
+                if not valid_id(token) or len(json.dumps(token)) > 256:
+                    token = None
+                job = {'cancelled': False, 'cancel_event': threading.Event(), 'input_bytes': input_bytes, 'progress_token': token}
                 thread = threading.Thread(target=self.run_worker, args=(request_id, url, question, job))
                 job['thread'] = thread
                 self.active[request_id] = job
@@ -311,6 +315,7 @@ class Server:
                 stderr_thread = threading.Thread(target=drain_stderr, args=(process.stderr,), daemon=True)
                 stderr_thread.start()
                 deadline = started+self.args.timeout
+                next_progress = started+5
                 while process.poll() is None:
                     cancelled = job['cancel_event'].is_set()
                     if cancelled or time.monotonic() >= deadline:
@@ -321,6 +326,12 @@ class Server:
                             cleanup_ms = round((time.monotonic()-cleanup_started)*1000, 3)
                         returncode = process.returncode
                         raise ValueError('cancelled' if cancelled else 'deadline_exceeded')
+                    now = time.monotonic()
+                    if job.get('progress_token') is not None and now >= next_progress:
+                        with self.lock:
+                            if not job['cancelled']:
+                                self.emit({'jsonrpc': '2.0', 'method': 'notifications/progress', 'params': {'progressToken': job['progress_token'], 'progress': now-started, 'message': 'Elapsed seconds waiting for reader'}})
+                        next_progress = now+5
                     try:
                         process.wait(timeout=min(.05, max(.001, deadline-time.monotonic())))
                     except subprocess.TimeoutExpired:

@@ -480,7 +480,11 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			defer workers.Done()
 			defer cancelRequest()
 			defer endActivity()
+			stopProgress := toolProgress(requestCtx, req, func(params any) {
+				_ = write(mode, notification{JSONRPC: "2.0", Method: "notifications/progress", Params: params})
+			})
 			result, rpcErr := s.handle(requestCtx, req.Method, req.Params)
+			stopProgress()
 			err := write(mode, response{JSONRPC: "2.0", ID: req.ID, Result: result, Error: rpcErr})
 			inflightMu.Lock()
 			if inflight[key] == entry {
@@ -493,6 +497,55 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			}
 		}(req, msg.mode, key, entry)
 	}
+}
+
+func toolProgress(ctx context.Context, req request, notify func(any)) func() {
+	var params struct {
+		Meta struct {
+			Token json.RawMessage `json:"progressToken"`
+		} `json:"_meta"`
+	}
+	if req.Method != "tools/call" || json.Unmarshal(req.Params, &params) != nil || !validProgressToken(params.Meta.Token) {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	started := time.Now()
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if ctx.Err() == nil {
+					notify(map[string]any{"progressToken": params.Meta.Token, "progress": time.Since(started).Seconds(), "message": "Elapsed seconds waiting for browser operation"})
+				}
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
+}
+
+func validProgressToken(raw json.RawMessage) bool {
+	if len(raw) == 0 || len(raw) > 256 {
+		return false
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&value) != nil {
+		return false
+	}
+	switch value := value.(type) {
+	case string:
+		return len(value) <= 128
+	case json.Number:
+		return !strings.ContainsAny(value.String(), ".eE")
+	}
+	return false
 }
 
 func requestIDKey(raw json.RawMessage) string {
