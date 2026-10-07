@@ -30,10 +30,6 @@ func tableWith(t *testing.T, route *Route) *routeState {
 	return state
 }
 
-// A brw HAR is built from the in-page fetch/XHR wrappers, so it holds no
-// document, script, stylesheet or image entry. A replay that claimed those would
-// make the documented default pattern "*" with on_miss:"fail" refuse the
-// navigation itself and leave a dead tab.
 func TestReplayOnlyClaimsRequestKindsAHARCanHold(t *testing.T) {
 	entries := []HAREntry{{Method: "GET", URL: "https://x.test/api", Status: 200, Body: "{}"}}
 	tests := []struct {
@@ -78,8 +74,6 @@ func TestReplayOnlyClaimsRequestKindsAHARCanHold(t *testing.T) {
 	}
 }
 
-// A times budget spent on the document would retire the rule before the first
-// API call the fixture exists to answer.
 func TestReplayTimesBudgetIsNotSpentOnADocument(t *testing.T) {
 	route := replayRouteForTest(t, []HAREntry{{Method: "GET", URL: "https://x.test/api", Status: 200}}, nil, HARMissFail)
 	route.Times = 1
@@ -93,9 +87,6 @@ func TestReplayTimesBudgetIsNotSpentOnADocument(t *testing.T) {
 	}
 }
 
-// An export redacts request bodies unless it was taken with redaction:"none", so
-// a body-keyed replay of an ordinary capture matches nothing and, under the
-// default on_miss:"passthrough", runs the whole test against the real backend.
 func TestReplayRefusesABodyKeyedMatchOnARedactedCapture(t *testing.T) {
 	redacted := []HAREntry{
 		{Method: "POST", URL: "https://x.test/a", RequestBody: HARRedactedPlaceholder},
@@ -148,9 +139,6 @@ func TestReplayRefusesABodyKeyedMatchOnARedactedCapture(t *testing.T) {
 	}
 }
 
-// brw's capture clips a response at 2 KiB. Serving that as though it were the
-// whole body reaches the page as a syntax error that points at the page, so the
-// fixture has to say how many of its recordings are snippets.
 func TestReplayReportsTruncatedRecordings(t *testing.T) {
 	entries := []HAREntry{
 		{Method: "GET", URL: "https://x.test/small", Status: 200, Body: "{}"},
@@ -183,8 +171,6 @@ func TestReplayReportsTruncatedRecordings(t *testing.T) {
 	}
 }
 
-// The note is what an agent reads before driving the page, so it has to name the
-// one thing the pattern does not cover.
 func TestReplayNoteSaysWhatTheRecordingCannotAnswer(t *testing.T) {
 	route := replayRouteForTest(t, []HAREntry{{Method: "GET", URL: "https://x.test/api"}}, nil, HARMissFail)
 	note := harReplayNote(route.har)
@@ -199,9 +185,6 @@ func TestReplayNoteSaysWhatTheRecordingCannotAnswer(t *testing.T) {
 	}
 }
 
-// A closed tab's routes pin the whole decoded HAR - entries, bodies and all -
-// for the life of the daemon if they are not dropped with the rest of the
-// per-tab state.
 func TestForgetTabCachesDropsTheRouteTableAndContainment(t *testing.T) {
 	m := &Manager{}
 	route := replayRouteForTest(t, []HAREntry{{Method: "GET", URL: "https://x.test/api", Body: "recorded"}}, nil, HARMissFail)
@@ -216,8 +199,13 @@ func TestForgetTabCachesDropsTheRouteTableAndContainment(t *testing.T) {
 	m.containment.armed["tab-gone"] = true
 	m.containment.blocked["tab-gone"] = []BlockedRequest{{URL: "https://x.test/blocked"}}
 	m.containment.mu.Unlock()
+	m.env.addInitScript("tab-gone", NewInitScript("gone-script", "window.closedFixture=true"))
+	m.env.addInitScript("tab-live", NewInitScript("live-script", "window.liveFixture=true"))
 
 	m.forgetTabCaches("tab-gone")
+	if len(m.env.listInitScripts("tab-gone")) != 0 || len(m.env.listInitScripts("tab-live")) != 1 {
+		t.Fatal("closed-tab cleanup retained its init script or removed another tab's script")
+	}
 
 	if got := m.routes.count("tab-gone"); got != 0 {
 		t.Fatalf("the closed tab still holds %d route(s), pinning its HAR", got)
@@ -237,8 +225,6 @@ func TestForgetTabCachesDropsTheRouteTableAndContainment(t *testing.T) {
 	}
 }
 
-// brw_observe reports active routes as a bare count, so a fixture that is
-// missing every request looks exactly like one that is answering them.
 func TestRouteMissSummaryNamesWhatTheFixtureCouldNotAnswer(t *testing.T) {
 	route := replayRouteForTest(t, []HAREntry{{Method: "GET", URL: "https://x.test/api"}}, nil, HARMissFail)
 	state := tableWith(t, route)
@@ -261,10 +247,6 @@ func TestRouteMissSummaryNamesWhatTheFixtureCouldNotAnswer(t *testing.T) {
 	}
 }
 
-// answerRoute runs on the Fetch.requestPaused goroutine, which has no recover:
-// a nil dereference there takes the whole daemon down rather than failing one
-// request. Nothing in brw_route can build a replay route without a fixture
-// today, so this asserts the guard rather than a live path.
 func TestAnswerRouteOnAReplayWithoutAFixtureDoesNotPanic(t *testing.T) {
 	m := &Manager{}
 	paused := &fetch.EventRequestPaused{
@@ -272,8 +254,7 @@ func TestAnswerRouteOnAReplayWithoutAFixtureDoesNotPanic(t *testing.T) {
 		Request:      &network.Request{URL: "https://x.test/api", Method: "GET"},
 		ResourceType: network.ResourceTypeFetch,
 	}
-	// A context with no CDP executor: continueWithEnvironmentHeaders reports that
-	// as an error, which is the failure mode this has to degrade to.
+
 	if err := m.answerRoute(context.Background(), "tab-1", &Route{Behaviour: RouteReplay}, paused); err == nil {
 		t.Fatal("continuing a request with no CDP executor should report an error")
 	}
