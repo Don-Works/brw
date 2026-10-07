@@ -170,3 +170,47 @@ func TestBridgeFrameReadRejectsReturnedProtectedOrUnknownDocument(t *testing.T) 
 		t.Fatalf("returned frame origin bypassed: %+v %v", frames, err)
 	}
 }
+
+func TestBridgeProtectedExceptionTextDoesNotEscapeAsAnError(t *testing.T) {
+	const protected = "http://127.0.0.1:9223/approvals"
+	blocked := errors.New("operator origin refused")
+	b := New("", time.Second, "")
+	stub := &cdpStub{reply: func(call cdpCall, _ int) (map[string]any, string) {
+		if call.Params["expression"] == "location.href" {
+			return map[string]any{"result": map[string]any{"value": protected}}, ""
+		}
+		return map[string]any{"exceptionDetails": map[string]any{
+			"exception": map[string]any{"description": "PRIVATE_OPERATOR_EXCEPTION"},
+		}}, ""
+	}}
+	cleanup := serveCDPStub(t, b, stub)
+	defer cleanup()
+	ctx := browser.WithFrameReadCheck(browser.WithTabID(context.Background(), "42"), func(raw string) error {
+		if raw == protected {
+			return blocked
+		}
+		return nil
+	})
+	_, err := b.Evaluate(ctx, "throw Error(document.body.innerText)")
+	if !errors.Is(err, blocked) || strings.Contains(err.Error(), "PRIVATE_OPERATOR_EXCEPTION") {
+		t.Fatalf("protected exception leaked: %v", err)
+	}
+}
+
+func TestBridgeRuntimeOriginRequiresCurrentDocumentURL(t *testing.T) {
+	b := New("", time.Second, "")
+	stub := &cdpStub{reply: func(call cdpCall, _ int) (map[string]any, string) {
+		value := any("private document")
+		if call.Params["expression"] == "location.href" {
+			value = nil
+		}
+		return map[string]any{"result": map[string]any{"value": value}}, ""
+	}}
+	cleanup := serveCDPStub(t, b, stub)
+	defer cleanup()
+	ctx := browser.WithFrameReadCheck(browser.WithTabID(context.Background(), "42"), func(string) error { return nil })
+	result, err := b.Evaluate(ctx, "document.body.innerText")
+	if err == nil || !strings.Contains(err.Error(), "destination is unavailable") || result != nil {
+		t.Fatalf("unknown current origin returned data: %v %v", result, err)
+	}
+}

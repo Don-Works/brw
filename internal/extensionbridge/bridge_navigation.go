@@ -54,6 +54,9 @@ func (b *Bridge) guardCurrentURL(ctx context.Context) error {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return fmt.Errorf("parse current navigation destination: %w", err)
 	}
+	if strings.TrimSpace(payload.Result.Value) == "" {
+		return errors.New("current navigation destination is unavailable")
+	}
 	return b.enforceFinalURL(ctx, payload.Result.Value)
 }
 

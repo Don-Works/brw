@@ -21,6 +21,11 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if tabID := browser.TabIDFromContext(ctx); tabID != "" {
+		if _, err := requireTabID(tabID); err != nil {
+			return nil, err
+		}
+	}
 	if b.tabAccessGuard != nil {
 		if err := b.tabAccessGuard(ctx, tabKeyFromParams(params)); err != nil {
 			return nil, err

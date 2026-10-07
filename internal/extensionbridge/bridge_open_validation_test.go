@@ -35,3 +35,20 @@ func TestBridgeOpenRejectsInvalidReturnedTabID(t *testing.T) {
 		}
 	}
 }
+
+func TestBridgeInvalidCallerPinCannotFallBackToActiveTab(t *testing.T) {
+	for _, id := range []string{"0", "-1", "garbage", "9999999999999999999999999999"} {
+		t.Run(id, func(t *testing.T) {
+			b := New("", time.Second, "")
+			stub := &cdpStub{reply: func(cdpCall, int) (map[string]any, string) {
+				return map[string]any{"result": map[string]any{"value": "private active tab"}}, ""
+			}}
+			cleanup := serveCDPStub(t, b, stub)
+			defer cleanup()
+			result, err := b.Evaluate(browser.WithTabID(context.Background(), id), "document.body.innerText")
+			if err == nil || result != nil || len(stub.methods()) != 0 {
+				t.Fatalf("invalid explicit pin retargeted active tab: result=%v err=%v calls=%v", result, err, stub.methods())
+			}
+		})
+	}
+}
