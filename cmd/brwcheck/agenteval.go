@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/Don-Works/brw/internal/agenteval"
@@ -16,31 +15,17 @@ type evalOptions struct {
 	Only     string
 	JSON     bool
 	OutPath  string
-	// Verify runs every task honestly AND sabotaged, and requires the honest run
-	// to pass and the sabotaged one to fail. It is how the harness is shown to
-	// be capable of reporting a failure.
+	// Verify runs every task honestly AND sabotaged, and requires the honest run to pass and the sabotaged one to fail.
 	Verify bool
-	// Judge turns on the optional LLM layer. It needs ANTHROPIC_API_KEY; without
-	// one the run is graded by the deterministic end-state check alone.
+	// Judge turns on the optional LLM layer.
 	Judge bool
 }
 
-// evalBudget and verifyBudget bound the whole run, the way benchBudget does.
-// Verify runs every task twice and may wait on the judge, so it gets more.
 const (
 	evalBudget   = 15 * time.Minute
 	verifyBudget = 30 * time.Minute
 )
 
-// evalPlanFor reports what one flag choice implies: the modes the run drives
-// and the whole-run budget it gets. The two are returned from a single branch
-// so they cannot be edited apart. A run handed more modes than its budget
-// covers is killed partway through, and every task it never reached is
-// reported as failing rather than as never attempted.
-//
-// An ordinary run only wants to know whether the agent can do the task;
-// --eval-verify also drives the sabotaged task, because a harness that passes
-// everything is indistinguishable from one that cannot report a failure.
 func evalPlanFor(verify bool) ([]agenteval.Mode, time.Duration) {
 	if verify {
 		return agenteval.Modes(), verifyBudget
@@ -48,16 +33,8 @@ func evalPlanFor(verify bool) ([]agenteval.Mode, time.Duration) {
 	return []agenteval.Mode{agenteval.ModeHonest}, evalBudget
 }
 
-// runEvalSuite is the suite runner, indirected so a test can drive
-// runAgentEval end to end and read the modes and the deadline it actually
-// passes, rather than re-asking evalPlanFor what they should have been.
-// Nothing outside the tests replaces it.
 var runEvalSuite = agenteval.Run
 
-// runAgentEval drives the agent-level evaluations against the local fixture
-// suite. Like the benchmark it launches its own browser and serves the fixtures
-// itself, so it needs no daemon; unlike the benchmark it needs no network
-// either unless the judge is asked for.
 func runAgentEval(opts evalOptions) error {
 	modes, budget := evalPlanFor(opts.Verify)
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
@@ -87,7 +64,7 @@ func runAgentEval(opts evalOptions) error {
 	}
 
 	if opts.OutPath != "" {
-		if err := writeEvalReport(opts.OutPath, report); err != nil {
+		if err := writeJSONReport(opts.OutPath, report.WriteJSON); err != nil {
 			return err
 		}
 	}
@@ -105,18 +82,4 @@ func runAgentEval(opts evalOptions) error {
 		return errors.New("agent evaluation failed")
 	}
 	return nil
-}
-
-func writeEvalReport(path string, report agenteval.Report) error {
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-	}
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	return report.WriteJSON(file)
 }
