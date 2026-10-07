@@ -10,9 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// gettersController answers the getters script with canned page values, so a
-// brw_assert call exercises the real dispatch, argument decoding and evaluation
-// path without a browser.
 type gettersController struct {
 	fakeController
 	values map[string]any
@@ -99,10 +96,6 @@ func TestBrwAssertReportsAnInvalidRequest(t *testing.T) {
 	}
 }
 
-// TestBatchAcceptsAnAssertStep proves the assertion vocabulary reaches brw_batch
-// through the MCP surface: the step decodes into the controller's BatchStep and
-// the decoded request is one the evaluator accepts and answers. Recording the
-// fields alone would pass for a step that decodes and then evaluates to nothing.
 func TestBatchAcceptsAnAssertStep(t *testing.T) {
 	controller := &batchRecordingController{gettersController: newGettersController()}
 	server := New(controller)
@@ -143,9 +136,6 @@ type batchRecordingController struct {
 	steps []browser.BatchStep
 }
 
-// ExecuteBatch evaluates each decoded assertion instead of only recording it.
-// The production Manager does the same thing; a step that decodes into fields
-// the evaluator would reject has not actually reached the feature.
 func (c *batchRecordingController) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
 	c.steps = steps
 	for index, step := range steps {

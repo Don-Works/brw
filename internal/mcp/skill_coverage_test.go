@@ -8,19 +8,10 @@ import (
 	"testing"
 )
 
-// skillToolMention matches a tool name wherever the skill file names one, in
-// prose or in a table cell. The trailing class has to admit digits or
-// brw_a11y_audit reads as brw_a.
 var skillToolMention = regexp.MustCompile(`brw_[a-z0-9_]+`)
 
 var skillToolCall = regexp.MustCompile("brw_[a-z0-9_]+\\(|`brw_[a-z0-9_]+`")
 
-// TestEverySkillDocumentsEveryAdvertisedTool: skills/brw/SKILL.md is the
-// agent-facing surface doc, it ships in the package (see
-// packaging/package_contents_test.go and internal/setup/skills.go), and a tool
-// that is in tools/list but not in the skill is one an agent has to discover by
-// accident. Enumerating the catalogue rather than listing names by hand is the
-// point: a tool added next week fails this test on the commit that adds it.
 func TestEverySkillDocumentsEveryAdvertisedTool(t *testing.T) {
 	skill := readSkillBundle(t)
 	documented := map[string]bool{}
@@ -42,9 +33,6 @@ func TestEverySkillDocumentsEveryAdvertisedTool(t *testing.T) {
 		}
 	}
 
-	// The reverse direction catches the other drift: a skill entry for a tool
-	// that was renamed or removed sends an agent after something that no longer
-	// answers.
 	callable := append(advertised, (&Server{toolProfile: "auto"}).advertisedTools()...)
 	externalReaderTools := map[string]bool{"brw_ask": true}
 	for _, call := range skillToolCall.FindAllString(string(skill), -1) {

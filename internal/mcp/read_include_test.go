@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-// The include parameter is documented as an array of section names OR one
-// comma-separated string, and both forms have to reach the same windowed read.
 func TestReadToolAcceptsIncludeAsArrayOrCommaString(t *testing.T) {
 	for _, args := range []string{
 		`{"include":["headings","links"]}`,
@@ -44,9 +42,6 @@ func TestReadToolRejectsIncludeOfOtherTypesByName(t *testing.T) {
 	}
 }
 
-// The published schema has to say what the decoder accepts, or a client that
-// follows the schema sends the array and one that follows the description
-// sends the string and one of them is refused.
 func TestReadToolSchemaDeclaresBothIncludeForms(t *testing.T) {
 	var include map[string]any
 	for _, tl := range tools() {

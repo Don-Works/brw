@@ -7,18 +7,6 @@ import (
 	"testing"
 )
 
-// Every tool that advertises tab_id must also ACCEPT it.
-//
-// callTool lifts tab_id off any payload and puts it on the context, so the
-// targeting works for free — but each case unmarshals its own arguments
-// strictly, and a request struct that does not declare the field rejects the
-// call outright with "unknown field tab_id". brw_get and brw_storage shipped
-// that way in v0.13.0: their schemas offered a tab_id the dispatch then refused,
-// so a multi-tab agent could not read a fact from a named tab.
-//
-// The schema is the contract, so this walks the real catalogue rather than a
-// hand-maintained list: a new tool that advertises tab_id is covered the moment
-// it is added.
 func TestEveryToolAdvertisingTabIDAcceptsIt(t *testing.T) {
 	server := New(fakeController{})
 	ctx := context.Background()
@@ -36,8 +24,7 @@ func TestEveryToolAdvertisingTabIDAcceptsIt(t *testing.T) {
 
 		t.Run(name, func(t *testing.T) {
 			args := map[string]any{"tab_id": "SOME-TAB-ID"}
-			// Fill required fields so the call reaches argument unmarshalling
-			// rather than stopping at validation.
+
 			if required, ok := schema["required"].([]string); ok {
 				for _, field := range required {
 					args[field] = placeholderFor(properties[field])
@@ -48,9 +35,6 @@ func TestEveryToolAdvertisingTabIDAcceptsIt(t *testing.T) {
 				t.Fatalf("marshal args: %v", err)
 			}
 
-			// The fake controller cannot really drive a browser, so most tools
-			// fail here. What matters is HOW: a rejection naming tab_id as an
-			// unknown field means the schema and the request struct disagree.
 			result, rpcErr := server.callTool(ctx, name, payload)
 			for _, text := range []string{rpcErrText(rpcErr), resultText(result)} {
 				if strings.Contains(text, "unknown field") && strings.Contains(text, "tab_id") {

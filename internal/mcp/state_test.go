@@ -12,7 +12,6 @@ import (
 	"github.com/Don-Works/brw/internal/sessionstate"
 )
 
-// Fabricated fixture material, low entropy on purpose.
 const (
 	fixtureStateKey         = "fixture-session-state-key-for-tests-0001"
 	fixtureStateCookieName  = "fixture-session-cookie-one"
@@ -43,8 +42,6 @@ func seededStateManager(t *testing.T) (*browser.Manager, string) {
 	return manager, meta.ID
 }
 
-// The extension bridge drives the browser the user is personally signed into.
-// brw_state must not be offered there at all.
 func TestStateToolIsHiddenOnTheExtensionBridge(t *testing.T) {
 	for _, tc := range []struct {
 		transport string
@@ -63,8 +60,6 @@ func TestStateToolIsHiddenOnTheExtensionBridge(t *testing.T) {
 	}
 }
 
-// The catalogue entry has to advertise what the handler reads, or an agent
-// cannot use the parameters that make the guarantees hold.
 func TestStateToolAdvertisesItsParameters(t *testing.T) {
 	props := toolProperties(t, stateToolName)
 	for _, param := range []string{"action", "snapshot_id", "origins", "redact", "ttl_seconds", "context_id"} {
@@ -77,8 +72,7 @@ func TestStateToolAdvertisesItsParameters(t *testing.T) {
 	if len(required) != 1 || required[0] != "action" {
 		t.Fatalf("required = %v, want exactly [action]", required)
 	}
-	// There must be no verb that reads a snapshot back out; the absence of one
-	// is what the security argument in docs/auth-model.md rests on.
+
 	actions, _ := props["action"].(map[string]any)
 	enum, _ := actions["enum"].([]string)
 	allowed := map[string]bool{"save": true, "restore": true, "list": true, "delete": true}
@@ -92,9 +86,6 @@ func TestStateToolAdvertisesItsParameters(t *testing.T) {
 	}
 }
 
-// End to end through the real MCP dispatch, a real controller and a real sealed
-// store: the response an agent sees carries the handle and the counts, never the
-// cookie.
 func TestStateToolResponseCarriesNoCookieMaterial(t *testing.T) {
 	manager, snapshotID := seededStateManager(t)
 	s := New(manager)
@@ -120,8 +111,6 @@ func TestStateToolResponseCarriesNoCookieMaterial(t *testing.T) {
 	}
 }
 
-// A daemon started without a key must refuse by name rather than silently
-// behaving as though it had no snapshots.
 func TestStateToolRefusesWhenSnapshotsAreNotEnabled(t *testing.T) {
 	s := New(&browser.Manager{})
 	result, rpcErr := s.callTool(context.Background(), stateToolName, json.RawMessage(`{"action":"list"}`))
@@ -134,8 +123,6 @@ func TestStateToolRefusesWhenSnapshotsAreNotEnabled(t *testing.T) {
 	}
 }
 
-// A controller with no session-state capability at all is a different failure
-// from one whose store is off, and the message has to say which.
 func TestStateToolRefusesATransportWithoutTheCapability(t *testing.T) {
 	s := New(stateless{})
 	result, rpcErr := s.callTool(context.Background(), stateToolName, json.RawMessage(`{"action":"list"}`))
@@ -148,8 +135,6 @@ func TestStateToolRefusesATransportWithoutTheCapability(t *testing.T) {
 	}
 }
 
-// stateless satisfies browser.Controller by embedding the interface and
-// implements no optional capability.
 type stateless struct{ browser.Controller }
 
 const stateToolName = "brw_state"

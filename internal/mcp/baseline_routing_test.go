@@ -14,23 +14,16 @@ import (
 	"github.com/Don-Works/brw/internal/recipe"
 )
 
-// recordingBaselines is a provider stand-in. It records what it was asked and
-// keeps whatever it was given, so a test can say which store a capture landed
-// in rather than inferring it from a status string.
 type recordingBaselines struct {
 	owned map[string]bool
-	// origins is the other half of the routing question: the sites this
-	// provider has some recipe for, whatever the caller's digest says.
+
 	origins map[string]bool
-	// visits is what the OWNED recipes themselves declare. A real provider
-	// answers this from the recipe the digest pins, and it is what stops an
-	// owned digest naming a page that recipe never goes to.
+
 	visits    map[string]bool
 	records   map[string]baseline.Record
 	ownsError error
 	asked     []string
-	// askedAbout is the page URL each routing question carried, so a test can
-	// say the destination was decided from the page and not only the argument.
+
 	askedAbout []string
 }
 
@@ -62,7 +55,6 @@ func (r *recordingBaselines) RouteBaseline(_ context.Context, digest, pageURL st
 	}), nil
 }
 
-// testOriginOf is what a provider reduces a page URL to before it answers.
 func testOriginOf(pageURL string) string {
 	parsed, err := url.Parse(strings.TrimSpace(pageURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -106,8 +98,6 @@ func (r *recordingBaselines) BaselineLocation() string { return "the private rec
 
 var _ recipe.BaselineStore = (*recordingBaselines)(nil)
 
-// isToolError reports whether a tool result is the refusal envelope, and
-// returns the message with it so a test can say which refusal it got.
 func isToolError(t *testing.T, result any) (bool, string) {
 	t.Helper()
 	encoded, err := json.Marshal(result)
@@ -130,9 +120,6 @@ func isToolError(t *testing.T, result any) (bool, string) {
 	return envelope.IsError, message
 }
 
-// localBaselineFiles counts the baseline records written under a local root, so
-// "it did not go to the local store" is checked against the filesystem rather
-// than against a label in the result.
 func localBaselineFiles(t *testing.T, root string) int {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join(root, "*", "step-*", "*", "baseline.json"))
@@ -142,20 +129,13 @@ func localBaselineFiles(t *testing.T, root string) int {
 	return len(matches)
 }
 
-// TestBaselineForAProviderOwnedRecipeGoesToTheProvider is T3B4JJ's routing
-// rule: a baseline of a page a private recipe reached is stored with the
-// provider that owns that recipe, and the local root is left for the ones it
-// does not own.
 func TestBaselineForAProviderOwnedRecipeGoesToTheProvider(t *testing.T) {
-	// A second digest, for a recipe the provider does not hold: the public
-	// fixture case, which must still land in the local root.
+
 	const publicDigest = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 
 	tests := []struct {
 		name string
-		// pageURL is the page the capture is of. It is per-case because the
-		// destination is the pair: the provider's recipe on the provider's site,
-		// or a public fixture on a site no recipe of theirs reaches.
+
 		pageURL      string
 		digest       string
 		wantProvider bool
@@ -211,16 +191,11 @@ func TestBaselineForAProviderOwnedRecipeGoesToTheProvider(t *testing.T) {
 				}
 			}
 
-			// The check that follows must read back from the same place: a
-			// baseline written to one store and compared against the other is a
-			// gate that never fires.
 			checked := callBaselineTool(t, s, fmt.Sprintf(`{"action":"check","recipe_digest":%q,"step_index":1}`, tc.digest))
 			if status, _ := checked["status"].(string); status != baseline.StatusMatch {
 				t.Fatalf("check after update = %v, want match", checked["status"])
 			}
 
-			// And so must delete, or an operator who drops a baseline is told it
-			// worked while the stored one keeps gating.
 			deleted := callBaselineTool(t, s, fmt.Sprintf(`{"action":"delete","recipe_digest":%q,"step_index":1}`, tc.digest))
 			if note, _ := deleted["note"].(string); note != "baseline deleted" {
 				t.Fatalf("delete = %+v", deleted)
@@ -232,9 +207,6 @@ func TestBaselineForAProviderOwnedRecipeGoesToTheProvider(t *testing.T) {
 	}
 }
 
-// TestBaselineRoutingRefusesRatherThanFallingBackToTheLocalRoot: the fallback
-// would put a screenshot of a private page in the local root at exactly the
-// moment the provider cannot be reached to say it is private.
 func TestBaselineRoutingRefusesRatherThanFallingBackToTheLocalRoot(t *testing.T) {
 	controller := &pageController{label: "Pay invoice", encoding: "jpeg", url: providerRecipeOrigin + "/invoices"}
 	s := baselineServer(t, controller)
@@ -260,9 +232,6 @@ func TestBaselineRoutingRefusesRatherThanFallingBackToTheLocalRoot(t *testing.T)
 	}
 }
 
-// TestBaselinesWorkWithAProviderAndNoLocalRoot: a deployment whose recipes all
-// come from the provider should not have to configure a local root it never
-// writes to.
 func TestBaselinesWorkWithAProviderAndNoLocalRoot(t *testing.T) {
 	controller := &pageController{label: "Pay invoice", encoding: "jpeg", url: providerRecipeOrigin + "/invoices"}
 	s := New(controller)
@@ -279,9 +248,6 @@ func TestBaselinesWorkWithAProviderAndNoLocalRoot(t *testing.T) {
 		t.Fatalf("the provider holds %d baselines", len(provider.records))
 	}
 
-	// A recipe the provider does not own still has nowhere to go, and says so.
-	// On a page no recipe of the provider's reaches, so that the refusal is the
-	// missing local root rather than the page disagreeing with the digest.
 	controller.url = "https://fixtures.example.test/report"
 	const publicDigest = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 	args := fmt.Sprintf(`{"action":"update","recipe_digest":%q,"step_index":0}`, publicDigest)

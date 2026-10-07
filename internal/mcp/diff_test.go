@@ -129,8 +129,6 @@ func TestDiffSnapshots(t *testing.T) {
 	}
 }
 
-// A re-render that keeps element identity must not read as a wholesale replace;
-// that is the failure mode that makes a naive diff useless on a real SPA.
 func TestDiffMatchesOnIdentityNotPosition(t *testing.T) {
 	before := snap("https://x/", "X", el("a", "listitem", "One"), el("b", "listitem", "Two"), el("c", "listitem", "Three"))
 	after := snap("https://x/", "X", el("c", "listitem", "Three"), el("a", "listitem", "One"), el("b", "listitem", "Two"))
@@ -140,8 +138,6 @@ func TestDiffMatchesOnIdentityNotPosition(t *testing.T) {
 	}
 }
 
-// The counts must stay exact even when the enumerated lists are capped, or a
-// large diff would under-report what happened.
 func TestDiffCapsListsButKeepsExactCounts(t *testing.T) {
 	var after []snapshot.Element
 	for i := 0; i < maxDiffEntries*3; i++ {

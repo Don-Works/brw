@@ -9,8 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// navigationOutcomeController opens a tab whose navigation ended as outcome
-// says, the way the extension bridge reports it.
 type navigationOutcomeController struct {
 	fakeController
 	outcome browser.NavigationOutcome

@@ -13,8 +13,6 @@ func TestToolProfileFiltersAdvertisedTools(t *testing.T) {
 		t.Fatalf("core profile advertised %d tools, want %d (every coreToolNames entry must be a real tool)", len(core), len(coreToolNames))
 	}
 
-	// Every advertised core tool must be in the core set; a few essentials must
-	// always be present.
 	got := map[string]bool{}
 	for _, tl := range core {
 		name, _ := tl["name"].(string)
@@ -29,7 +27,6 @@ func TestToolProfileFiltersAdvertisedTools(t *testing.T) {
 		}
 	}
 
-	// An empty/unknown profile must behave as "all".
 	if def := (&Server{toolProfile: ""}).advertisedTools(); len(def) != len(full) {
 		t.Fatalf("empty profile advertised %d tools, want full %d", len(def), len(full))
 	}

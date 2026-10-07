@@ -10,9 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/brwidentity"
 )
 
-// environmentToolNames is every tool backed by the page-environment capability.
-// Kept as one list so a tool added to the capability and forgotten in the
-// transport table fails a test rather than being advertised where it cannot run.
 var environmentToolNames = []string{
 	"brw_set_geolocation",
 	"brw_set_network_conditions",
@@ -42,8 +39,6 @@ func TestEnvironmentToolsAreNotAdvertisedOnTheExtensionBridge(t *testing.T) {
 	}
 }
 
-// An advertised-nowhere tool is still callable, so the refusal has to say which
-// transport this is and why, not merely "unsupported".
 func TestEnvironmentToolsReturnTheNamedCapabilityError(t *testing.T) {
 	for _, name := range environmentToolNames {
 		t.Run(name, func(t *testing.T) {
@@ -54,8 +49,7 @@ func TestEnvironmentToolsReturnTheNamedCapabilityError(t *testing.T) {
 				"params":  map[string]any{"name": name, "arguments": map[string]any{}},
 			})
 			var output bytes.Buffer
-			// fakeController implements browser.Controller and nothing else, which
-			// is exactly the shape of a transport without the capability.
+
 			if err := New(fakeController{}).Serve(context.Background(), strings.NewReader(input), &output); err != nil {
 				t.Fatal(err)
 			}
@@ -76,9 +70,6 @@ func TestEnvironmentToolsReturnTheNamedCapabilityError(t *testing.T) {
 	}
 }
 
-// recordingEnvironmentController captures what each tool forwarded, so a schema
-// whose field names drift from the options struct is caught here rather than by
-// an agent whose override silently did nothing.
 type recordingEnvironmentController struct {
 	fakeController
 	geolocation browser.GeolocationOptions
@@ -265,12 +256,6 @@ func TestEnvironmentToolsForwardTheirArguments(t *testing.T) {
 	}
 }
 
-// brw_authenticate decodes strictly like every other tool: a misspelled
-// "password" has to be an argument error, not an empty password, a challenge
-// that is never answered and a caller left to work out why the server "never
-// asked". Strictness and not echoing the body are independent, so the error is
-// still the constant one rather than the decoder's, which quotes the JSON it
-// choked on — and here that JSON is the credential.
 func TestAuthenticateIsStrictAboutFieldsAndStillNeverEchoesThem(t *testing.T) {
 	const fixtureCredential = "fabricated-pw-8f14"
 	tests := []struct {
@@ -281,8 +266,7 @@ func TestAuthenticateIsStrictAboutFieldsAndStillNeverEchoesThem(t *testing.T) {
 		{
 			name: "a misspelled password",
 			args: map[string]any{"origin": "https://staging.example.com", "username": "u", "passwrd": fixtureCredential},
-			// A field this tool does not define cannot be silently dropped: the
-			// call would load the page unauthenticated and say so obscurely.
+
 			wantError: true,
 		},
 		{

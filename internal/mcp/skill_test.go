@@ -11,9 +11,6 @@ import (
 	"github.com/Don-Works/brw/internal/agentskill"
 )
 
-// callSkillTool runs brw_skill against a server with no controller. The tool is
-// in tabAgnosticTools and touches no browser, so a nil manager is the honest
-// fixture: anything that reached for one would panic here rather than pass.
 func callSkillTool(t *testing.T, args string) (map[string]any, bool) {
 	t.Helper()
 	server := &Server{toolProfile: "all"}
@@ -45,9 +42,6 @@ func callSkillTool(t *testing.T, args string) (map[string]any, bool) {
 	return envelope.StructuredContent, true
 }
 
-// TestServedSkillCarriesTheVersionOfTheBinaryServingIt is the whole point of
-// serving the skill from the daemon: the page and the tool surface it describes
-// come out of one build, and the page says which.
 func TestServedSkillCarriesTheVersionOfTheBinaryServingIt(t *testing.T) {
 	const stamped = "9.9.9-test-build"
 	previous := Version
@@ -71,9 +65,7 @@ func TestServedSkillCarriesTheVersionOfTheBinaryServingIt(t *testing.T) {
 	if !strings.Contains(content, "# brw — driving a real browser over MCP") {
 		t.Fatalf("served skill is not the brw skill page:\n%.400s", content)
 	}
-	// The same call carries the version brw_identity reports, so an agent can
-	// line a manual up against the daemon that gave it. A version reported by
-	// only one of the two is a version nobody can check.
+
 	identity, rpcErr := (&Server{toolProfile: "all"}).callTool(context.Background(), "brw_identity", json.RawMessage(`{}`))
 	if rpcErr != nil {
 		t.Fatalf("brw_identity: %+v", rpcErr)
@@ -87,14 +79,6 @@ func TestServedSkillCarriesTheVersionOfTheBinaryServingIt(t *testing.T) {
 	}
 }
 
-// TestStaleSkillOnDiskDoesNotShadowTheServedSkill is the failure this feature
-// exists to remove. `brwctl setup` writes skills/brw onto disk; upgrade the
-// daemon without re-running setup and that copy describes a surface this build
-// no longer has, with nothing to say so.
-//
-// The decoy is planted at every path the old on-disk lookup searched — the
-// working directory, and the directory the executable sits in — so the test
-// fails if the serving path is ever changed to read a file.
 func TestStaleSkillOnDiskDoesNotShadowTheServedSkill(t *testing.T) {
 	const stale = "---\nname: brw\n---\n\n# STALE COPY FROM AN OLDER INSTALL\n"
 
@@ -114,9 +98,7 @@ func TestStaleSkillOnDiskDoesNotShadowTheServedSkill(t *testing.T) {
 	plant(workingDir)
 	executable, err := os.Executable()
 	if err == nil {
-		// The test binary's own directory is a temp dir the go tool owns, so
-		// writing a decoy beside it is safe and is exactly where the old
-		// "next to the install" lookup would have found one.
+
 		plant(filepath.Dir(executable))
 		plant(filepath.Join(filepath.Dir(executable), ".."))
 	}
@@ -137,17 +119,11 @@ func TestStaleSkillOnDiskDoesNotShadowTheServedSkill(t *testing.T) {
 	}
 }
 
-// jsonString quotes a string as JSON. Named for what it does at the call site;
-// json.Marshal on a string cannot fail.
 func jsonString(value string) string {
 	encoded, _ := json.Marshal(value)
 	return string(encoded)
 }
 
-// TestSkillToolRefusesADocumentOutsideTheEmbeddedSet keeps the document
-// argument from becoming a file reader. The guard is membership in what was
-// embedded, so a path that escapes a prefix check still has nothing to resolve
-// against.
 func TestSkillToolRefusesADocumentOutsideTheEmbeddedSet(t *testing.T) {
 	escapes := []string{
 		"../../../etc/hosts",
@@ -169,9 +145,6 @@ func TestSkillToolRefusesADocumentOutsideTheEmbeddedSet(t *testing.T) {
 	}
 }
 
-// TestEverySkillDocumentIsServable enumerates the embedded set rather than
-// naming pages by hand: a reference added to skills/brw that the serving path
-// cannot return is a page an agent is told about and then refused.
 func TestEverySkillDocumentIsServable(t *testing.T) {
 	all, err := agentskill.Documents()
 	if err != nil {

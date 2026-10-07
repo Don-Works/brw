@@ -12,8 +12,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// surfacesController answers the page-surfaces evaluate with a fixed digest and
-// counts how often it was asked.
 type surfacesController struct {
 	fakeController
 	digest  map[string]any
@@ -116,8 +114,6 @@ func TestNavigationResultsCarryThePagesAgentSurfaces(t *testing.T) {
 	}
 }
 
-// pageToolConsentController serves a page with one consequential tool and one
-// plain one, and records which tools were actually started.
 type pageToolConsentController struct {
 	*consentController
 	started []string

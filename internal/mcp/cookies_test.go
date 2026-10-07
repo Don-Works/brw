@@ -11,8 +11,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// cookieRecordingController captures brw_cookies arguments so the handler test
-// can assert the full argument surface reaches the controller unchanged.
 type cookieRecordingController struct {
 	fakeController
 	cookiesCalls []browser.CookieParams
@@ -81,8 +79,6 @@ func TestCookiesToolForwardsAllActions(t *testing.T) {
 	}
 }
 
-// The list result must surface the cookie metadata agents act on — HttpOnly
-// above all, the whole reason the tool exists.
 func TestCookiesToolListResultCarriesCookieMetadata(t *testing.T) {
 	result := callCookiesTool(t, &cookieRecordingController{}, `{"action":"list"}`)
 	content, _ := result["content"].([]any)
@@ -103,8 +99,6 @@ func TestCookiesToolListResultCarriesCookieMetadata(t *testing.T) {
 	}
 }
 
-// A transport-limitation error (extension bridge) must surface as a tool error
-// carrying the reason, not as an RPC failure — mirroring brw_open_incognito.
 func TestCookiesToolSurfacesTransportLimitationAsToolError(t *testing.T) {
 	ctrl := &cookieRecordingController{cookiesErr: errors.New("cookie access is not supported on the extension-bridge transport; use a direct-CDP profile")}
 	result := callCookiesTool(t, ctrl, `{"action":"list"}`)
@@ -132,7 +126,6 @@ func TestCookiesToolIsInCatalogue(t *testing.T) {
 	}
 }
 
-// Progressive disclosure must be able to find the tool by plain intent.
 func TestCookiesToolDiscoverableViaSearch(t *testing.T) {
 	for _, query := range []string{"list the cookies", "set a cookie", "delete cookie", "httponly cookies"} {
 		if !searchRanksFirst(query, "brw_cookies") {
@@ -142,10 +135,6 @@ func TestCookiesToolDiscoverableViaSearch(t *testing.T) {
 }
 
 func searchRanksFirst(query, name string) bool {
-	for _, match := range searchTools(query) {
-		if match.Name == name {
-			return true
-		}
-	}
-	return false
+	matches := searchTools(query)
+	return len(matches) > 0 && matches[0].Name == name
 }

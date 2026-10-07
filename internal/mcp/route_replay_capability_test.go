@@ -10,9 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// errNoResponseBodies stands in for a transport that can refuse a request but
-// never supply one, which is what declarativeNetRequest gives the extension
-// bridge.
 var errNoResponseBodies = errors.New("answering a request from a body is not supported on this transport")
 
 type refusingReplayController struct {
@@ -49,11 +46,6 @@ func callRouteTool(t *testing.T, ctrl browser.Controller, args map[string]any) s
 	return result["content"].([]any)[0].(map[string]any)["text"].(string)
 }
 
-// A replay on a transport that cannot supply a response body has to report the
-// capability, not whatever the artifact read happened to produce. The HAR is up
-// to 32 MiB and the artifact store may not even be configured on this side, so
-// asking the transport first is also what stops a bad artifact id from
-// masquerading as the reason.
 func TestRouteReplayReportsTheCapabilityBeforeReadingTheHAR(t *testing.T) {
 	tests := []struct {
 		name       string
