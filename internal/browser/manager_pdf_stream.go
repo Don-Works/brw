@@ -55,7 +55,7 @@ func (m *Manager) CapturePDFStream(ctx context.Context) (io.ReadCloser, error) {
 	if handle == "" {
 		return nil, errors.New("browser returned no PDF stream handle")
 	}
-	return &cdpStreamReader{
+	reader := &cdpStreamReader{
 		handle: handle,
 		chunk:  m.pdfStreamChunkBytes(),
 		read: func(h cdpio.StreamHandle, size int64) (string, bool, bool, error) {
@@ -80,7 +80,13 @@ func (m *Manager) CapturePDFStream(ctx context.Context) (io.ReadCloser, error) {
 				return cdpio.Close(handle).Do(runCtx)
 			})
 		},
-	}, nil
+	}
+	if err := m.runPDFStreamOp(tabCtx, func(runCtx context.Context) error {
+		return m.guardCurrentURL(eventScopeFromCtx(tabCtx), runCtx)
+	}); err != nil {
+		return nil, errors.Join(err, reader.Close())
+	}
+	return reader, nil
 }
 
 // runPDFStreamOp executes one CDP round trip under its own deadline derived

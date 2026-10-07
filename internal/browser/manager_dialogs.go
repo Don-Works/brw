@@ -184,19 +184,11 @@ func clipDialogText(s string) string {
 
 // Dialog implements the DialogController capability for the direct-CDP transport.
 func (m *Manager) Dialog(ctx context.Context, opts DialogOptions) (DialogResult, error) {
-	tabID := strings.TrimSpace(opts.TabID)
-	if tabID == "" {
-		active, err := m.ensureActive(ctx)
-		if err != nil {
-			return DialogResult{}, err
-		}
-		tabID = active
-	}
-	// Touching the tab context is what guarantees the listener is installed, so
-	// a caller that arms before the first dialog is never racing it.
-	if _, err := m.tabContext(tabID); err != nil {
+	tabID, _, cancel, err := m.contextForTab(ctx, strings.TrimSpace(opts.TabID))
+	if err != nil {
 		return DialogResult{}, err
 	}
+	defer cancel()
 
 	switch strings.ToLower(strings.TrimSpace(opts.Action)) {
 	case "", "status":

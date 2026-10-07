@@ -39,6 +39,9 @@ func (m *Manager) Vitals(ctx context.Context, opts devtools.VitalsOptions) (devt
 
 	var vitals devtools.Vitals
 	err = evaluateAwait(tabCtx, devtools.BuildVitalsExpression(opts), &vitals)
+	if err == nil {
+		err = m.enforceFinalURL(tabID, tabCtx, vitals.URL)
+	}
 	m.recordObservation(tabID, TraceActionVitals, vitals.URL, start, err)
 	if err != nil {
 		return devtools.Vitals{}, err
@@ -67,7 +70,13 @@ func (m *Manager) AccessibilityAudit(ctx context.Context, opts devtools.AuditOpt
 		}
 		return devtools.SummarizeAudit(raw, opts, time.Now())
 	}()
+	if err == nil {
+		err = m.enforceFinalURL(tabID, tabCtx, result.URL)
+	}
 	m.recordObservation(tabID, TraceActionAudit, result.URL, start, err)
+	if err != nil {
+		return devtools.AuditResult{}, err
+	}
 	return result, err
 }
 
@@ -86,6 +95,9 @@ func (m *Manager) Highlight(ctx context.Context, opts devtools.HighlightOptions)
 
 	var result devtools.HighlightResult
 	err = evaluateAwait(tabCtx, devtools.BuildHighlightExpression(opts), &result)
+	if err == nil {
+		err = m.guardCurrentURL(tabID, tabCtx)
+	}
 	// An input action, not an observation: this one appends an element to the
 	// document, so it belongs in the trace a human reads to see what brw did.
 	if tabID != "" {
@@ -118,14 +130,6 @@ func HighlightTraceText(opts devtools.HighlightOptions) string {
 func (m *Manager) devtoolsContext(ctx context.Context, timeout time.Duration) (string, context.Context, context.CancelFunc, error) {
 	if timeout < m.timeout {
 		timeout = m.timeout
-	}
-	if tabID := tabIDFromCtx(ctx); tabID != "" {
-		tabCtx, err := m.tabContext(tabID)
-		if err != nil {
-			return "", nil, nil, err
-		}
-		timeoutCtx, cancel := context.WithTimeout(tabCtx, timeout)
-		return tabID, timeoutCtx, cancel, nil
 	}
 	return m.activeContextWithTimeout(ctx, timeout)
 }

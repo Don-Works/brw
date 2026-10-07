@@ -348,6 +348,11 @@ func (m *Manager) prepareNavigationURL(rawURL string) (string, error) {
 // benign blank page before returning the policy error so later tools cannot keep
 // operating on the disallowed destination.
 func (m *Manager) enforceFinalURL(tabID string, tabCtx context.Context, rawURL string) error {
+	if check := FrameReadCheckFromContext(tabCtx); check != nil {
+		if err := check(rawURL); err != nil {
+			return err
+		}
+	}
 	if m.navPolicy.Empty() {
 		return nil
 	}
@@ -360,7 +365,7 @@ func (m *Manager) enforceFinalURL(tabID string, tabCtx context.Context, rawURL s
 }
 
 func (m *Manager) guardCurrentURL(tabID string, tabCtx context.Context) error {
-	if m.navPolicy.Empty() {
+	if m.navPolicy.Empty() && FrameReadCheckFromContext(tabCtx) == nil {
 		return nil
 	}
 	var current string
@@ -779,7 +784,7 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 
 	tab, err := m.tabByID(ctx, tabID)
 	if err != nil {
-		if !m.navPolicy.Empty() {
+		if !m.navPolicy.Empty() || FrameReadCheckFromContext(ctx) != nil {
 			verifyErr := fmt.Errorf("verify open final destination: %w", err)
 			recordOpen(url, verifyErr)
 			_ = m.CloseTab(ctx, tabID)
@@ -787,6 +792,13 @@ func (m *Manager) Open(ctx context.Context, url string) (OpenResult, error) {
 		}
 		recordOpen(url, nil)
 		return OpenResult{Tab: Tab{ID: tabID, URL: url, Type: "page"}, Ready: ready}, nil
+	}
+	if check := FrameReadCheckFromContext(ctx); check != nil {
+		if err := check(tab.URL); err != nil {
+			recordOpen(tab.URL, err)
+			_ = m.CloseTab(ctx, tabID)
+			return OpenResult{}, err
+		}
 	}
 	if err := m.navPolicy.Check(tab.URL); err != nil {
 		blocked := fmt.Errorf("open redirected to a disallowed final destination: %w", err)
@@ -1138,7 +1150,13 @@ func (m *Manager) Read(ctx context.Context) (readability.PageRead, error) {
 	if url == "" {
 		url = snap.URL
 	}
+	if readErr == nil {
+		readErr = m.enforceFinalURL(tabID, tabCtx, url)
+	}
 	m.recordObservation(tabID, TraceActionRead, url, start, readErr)
+	if readErr != nil {
+		return readability.PageRead{}, readErr
+	}
 	return read, readErr
 }
 
@@ -1153,7 +1171,13 @@ func (m *Manager) ReadData(ctx context.Context) (snapshot.StructuredData, error)
 		return snapshot.StructuredData{}, err
 	}
 	data, dataErr := snapshot.EvaluateStructured(tabCtx)
+	if dataErr == nil {
+		dataErr = m.enforceFinalURL(tabID, tabCtx, data.URL)
+	}
 	m.recordObservation(tabID, TraceActionReadData, data.URL, start, dataErr)
+	if dataErr != nil {
+		return snapshot.StructuredData{}, dataErr
+	}
 	return data, dataErr
 }
 
@@ -1780,12 +1804,8 @@ func (m *Manager) uploadFileViaChooser(tabID string, tabCtx context.Context, opt
 	defer func() {
 		// Always restore manual uploads, even on error/cancel. Use a fresh context
 		// so a cancelled tabCtx cannot leave interception stuck on.
-		disableCtx, cancel := context.WithTimeout(tabCtx, 2*time.Second)
+		disableCtx, cancel := context.WithTimeout(context.WithoutCancel(tabCtx), 2*time.Second)
 		defer cancel()
-		if errors.Is(disableCtx.Err(), context.Canceled) {
-			disableCtx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-		}
 		_ = chromedp.Run(disableCtx, page.SetInterceptFileChooserDialog(false))
 	}()
 
@@ -2475,7 +2495,7 @@ func (m *Manager) Screenshot(ctx context.Context) (Screenshot, error) {
 // bytes are staying on the browser host; model-facing screenshot calls keep the
 // normal Screenshot method above.
 func (m *Manager) CaptureArtifactScreenshot(ctx context.Context, ref string) (Screenshot, error) {
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return Screenshot{}, err
 	}
@@ -2492,6 +2512,9 @@ func (m *Manager) CaptureArtifactScreenshot(ctx context.Context, ref string) (Sc
 			data, captureErr = page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatPng).WithClip(clip).Do(ctx)
 			return captureErr
 		})); err != nil {
+			return Screenshot{}, err
+		}
+		if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
 			return Screenshot{}, err
 		}
 		return Screenshot{MIMEType: "image/png", Data: data}, nil
@@ -2535,6 +2558,9 @@ func (m *Manager) CaptureArtifactScreenshot(ctx context.Context, ref string) (Sc
 	})); err != nil {
 		return Screenshot{}, err
 	}
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		return Screenshot{}, err
+	}
 	return Screenshot{MIMEType: "image/jpeg", Data: data}, nil
 }
 
@@ -2542,7 +2568,7 @@ func (m *Manager) CaptureArtifactScreenshot(ctx context.Context, ref string) (Sc
 // bytes are intentionally returned through the narrow internal capability;
 // artifact.Service persists them before any MCP response is constructed.
 func (m *Manager) CapturePDF(ctx context.Context) ([]byte, error) {
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -2554,6 +2580,9 @@ func (m *Manager) CapturePDF(ctx context.Context) ([]byte, error) {
 		data, _, printErr = page.PrintToPDF().WithPrintBackground(true).Do(ctx)
 		return printErr
 	})); err != nil {
+		return nil, err
+	}
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
 		return nil, err
 	}
 	return data, nil
@@ -2591,6 +2620,9 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreen
 	opts := snapshot.NormalizeOptions(snapshot.SnapshotOptions{Mode: mode})
 	snap, err := snapshot.EvaluateWithOptions(tabCtx, opts)
 	if err != nil {
+		return AnnotatedScreenshot{}, err
+	}
+	if err := m.enforceFinalURL(tabID, tabCtx, snap.URL); err != nil {
 		return AnnotatedScreenshot{}, err
 	}
 	m.refs.Observe(tabID, snap.Elements)
@@ -2661,6 +2693,9 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context, aopts AnnotatedScreen
 		}
 		return chromedp.CaptureScreenshot(&data).Do(ctx)
 	})); err != nil {
+		return AnnotatedScreenshot{}, err
+	}
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
 		return AnnotatedScreenshot{}, err
 	}
 
@@ -3607,15 +3642,21 @@ func (m *Manager) runBrowser(ctx context.Context, fn func(context.Context) error
 	if err := m.checkRemoteSession(); err != nil {
 		return err
 	}
-	timeoutCtx, cancel := context.WithTimeout(m.browserCtx, m.timeout)
-	defer cancel()
 	if ctx != nil {
-		if deadline, ok := ctx.Deadline(); ok {
-			var cancel2 context.CancelFunc
-			timeoutCtx, cancel2 = context.WithDeadline(m.browserCtx, deadline)
-			defer cancel2()
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 	}
+	timeoutCtx, cancel := context.WithTimeout(m.browserCtx, m.timeout)
+	if ctx != nil {
+		if deadline, ok := ctx.Deadline(); ok {
+			cancel()
+			timeoutCtx, cancel = context.WithDeadline(m.browserCtx, deadline)
+		}
+		stop := context.AfterFunc(ctx, cancel)
+		defer stop()
+	}
+	defer cancel()
 	return chromedp.Run(timeoutCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		c := chromedp.FromContext(ctx)
 		if c == nil || c.Browser == nil {
@@ -3638,7 +3679,14 @@ func (m *Manager) tabContextFor(ctx context.Context) (context.Context, error) {
 			return nil, err
 		}
 	}
-	return m.tabContext(tabID)
+	if err := m.checkTabAccess(ctx, tabID); err != nil {
+		return nil, err
+	}
+	tabCtx, err := m.tabContext(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return carryConsentHooks(ctx, tabCtx), nil
 }
 
 func (m *Manager) activeContext(ctx context.Context) (string, context.Context, context.CancelFunc, error) {
@@ -3649,17 +3697,17 @@ func (m *Manager) activeContext(ctx context.Context) (string, context.Context, c
 }
 
 func (m *Manager) contextForTab(ctx context.Context, tabID string) (string, context.Context, context.CancelFunc, error) {
-	if err := m.checkTabAccess(ctx, tabID); err != nil {
-		return "", nil, nil, err
-	}
 	if tabID == "" {
 		return m.activeContext(ctx)
+	}
+	if err := m.checkTabAccess(ctx, tabID); err != nil {
+		return "", nil, nil, err
 	}
 	tabCtx, err := m.tabContext(tabID)
 	if err != nil {
 		return "", nil, nil, err
 	}
-	timeoutCtx, timeoutCancel := context.WithTimeout(tabCtx, m.timeout)
+	timeoutCtx, timeoutCancel := context.WithTimeout(carryConsentHooks(ctx, tabCtx), m.timeout)
 	stop := context.AfterFunc(ctx, timeoutCancel)
 	return tabID, timeoutCtx, func() { stop(); timeoutCancel() }, nil
 }
@@ -3680,7 +3728,7 @@ func (m *Manager) activeContextWithTimeout(ctx context.Context, timeout time.Dur
 	if err != nil {
 		return "", nil, nil, err
 	}
-	timeoutCtx, timeoutCancel := context.WithTimeout(tabCtx, timeout)
+	timeoutCtx, timeoutCancel := context.WithTimeout(carryConsentHooks(ctx, tabCtx), timeout)
 	stop := context.AfterFunc(ctx, timeoutCancel)
 	return tabID, timeoutCtx, func() { stop(); timeoutCancel() }, nil
 }

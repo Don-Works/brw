@@ -64,13 +64,11 @@ func (m *Manager) SaveScreenshot(ctx context.Context, opts ScreenshotSaveOptions
 	}
 	defer unlock()
 	return SaveScreenshotFile(ctx, opts, func(o ScreenshotSaveOptions) (shot Screenshot, err error) {
-		_, tabCtx, cancel, err := m.activeContext(ctx)
+		tabID, tabCtx, cancel, err := m.activeContext(ctx)
 		if err != nil {
 			return shot, err
 		}
 		defer cancel()
-		stop := context.AfterFunc(ctx, cancel)
-		defer stop()
 		prepare, cleanup := ScreenshotExpressions(o)
 		err = chromedp.Run(tabCtx, chromedp.ActionFunc(func(execCtx context.Context) (err error) {
 			defer func() {
@@ -159,6 +157,12 @@ func (m *Manager) SaveScreenshot(ctx context.Context, opts ScreenshotSaveOptions
 			shot.MIMEType = "image/" + o.Format
 			return err
 		}))
+		if err == nil {
+			err = m.guardCurrentURL(tabID, tabCtx)
+		}
+		if err != nil {
+			return Screenshot{}, err
+		}
 		return shot, err
 	})
 }
