@@ -93,7 +93,7 @@ tasks:
     desc: Exercise the complete browser tool catalogue against the owned adversarial page
     env:
       BRW_FEATURE_CASE: ''
-      BRW_FEATURE_REPORT: dist/testbed/features.json
+      BRW_FEATURE_REPORT: '{{.TASKFILE_DIR}}/dist/testbed/features.json'
     cmds:
       - mkdir -p dist/testbed
       - go test -race -timeout=15m -p=1 ./internal/mcp -run '^TestFeature(CatalogueCoverage|Exercises|TransportExtras)$' -count=1
