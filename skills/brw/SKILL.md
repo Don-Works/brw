@@ -1,6 +1,6 @@
 ---
 name: brw
-description: Drive browser pages with brw — navigate, read, fill, click, capture, download and inspect signed-in Chrome. Use semantic refs, tab leases and profile capabilities. Applies to browser operations; excludes general repository work.
+description: Use when driving browser pages with brw — navigate, read, fill, click, capture, download and inspect signed-in Chrome. Use semantic refs, tab leases and profile capabilities. Applies to browser operations; excludes general repository work.
 metadata:
   tags: [browser, chrome, chromium, web-automation, signed-in-sites, forms, screenshots, cdp, incognito, browser-automation, reader, context-efficiency]
 ---

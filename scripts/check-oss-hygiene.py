@@ -29,7 +29,7 @@ SYNTHETIC_HOME_FIXTURES = {
 
 
 SYNTHETIC_VECTOR_WAIVERS = {
-	"scripts/test_oss_hygiene.py": {"private network address"},
+    "scripts/test_oss_hygiene.py": {"private network address"},
     "internal/http/server_guard_test.go": {"tailscale host"},
     "internal/browser/upload_test.go": {"private network address"},
     "internal/extensionbridge/bridge_release_conn_test.go": {"credential literal"},
