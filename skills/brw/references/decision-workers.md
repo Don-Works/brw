@@ -113,7 +113,7 @@ A valid `none` choice skips generation and returns a deterministic abstention un
 `excerpt`. Collection, cancellation, whole-job deadline and cleanup failures remain
 errors. No fallback changes provider or escalates to cloud. There is no cross-job
 circuit breaker; admission/cooldown belongs to the host when required. See the
-[deployment and qualification contract](../../../docs/reader-deployment.md).
+[deployment and qualification contract](https://github.com/Don-Works/brw/blob/main/docs/reader-deployment.md).
 
 The same settings work for local or cloud services. Maix can own job scheduling,
 credential injection, cancellation and mesh delivery without teaching brw about

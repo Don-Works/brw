@@ -220,9 +220,29 @@ models or update a Maix image. The Maix deployment owner must:
    Repeat from each intended harness; a source build alone does not prove routing.
 
 The adapter supports initialize-based MCP stdio through protocol `2025-11-25`.
-Tool calls return bounded answer/source/trace packets synchronously. Background
-job dispatch and mesh completion delivery belong to the host and must be tested
-separately. This reader does not propose or execute interactive browser writes.
+Tool calls return bounded answer-or-excerpt/source/trace packets. Calls can overlap
+within the configured capacity; ping and cancellation remain responsive while a
+worker runs. A supplied `_meta.progressToken` enables elapsed-time progress every
+five seconds until completion or cancellation. Progress is a liveness signal,
+not a percentage, page change or task result. Background job dispatch and mesh
+completion delivery belong to the host. This reader does not propose or execute
+interactive browser writes.
+
+The browser MCP server likewise accepts correlated concurrent calls and cancellation
+and emits elapsed-time `notifications/progress` for long tool calls with a supplied
+string or integer token. Preserve notification routing and session identity when
+proxying it. brw does not advertise experimental MCP Tasks support.
+
+The current Maix integration needs three host-side fixes before its native reader
+and browser-event polling meet this contract: preserve `SessionID` when looking
+up a browser event journal; accept `excerpt`/`fallback` with source evidence in
+addition to a generated `answer`; and terminate the owned reader process tree
+on cancellation. Killing only its Python parent can leave HTTP children running.
+The standalone brw reader adapter already owns and reaps its process group.
+These host changes belong to the Maix deployment; the brw release does not install
+them. See the [MCP progress](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/progress)
+and [cancellation](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation)
+contracts when checking gateway routing.
 
 ## Next integration: page event backchannel
 

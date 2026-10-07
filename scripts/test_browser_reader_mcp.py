@@ -242,6 +242,28 @@ class ReaderMCPTests(unittest.TestCase):
         self.assertTrue(client.receive()['result']['isError'])
         self.assertEqual(client.receive()['id'], 2)
 
+    def test_long_call_progress_ping_and_cancellation(self):
+        client = self.client(timeout=15)
+        client.initialize()
+        client.send('tools/call', {'name': 'brw_ask', 'arguments': {'url': 'https://example.test/page', 'question': 'sleep:12'}, '_meta': {'progressToken': 'opaque-job'}}, request_id=2)
+        client.wait_started()
+        client.send('ping', request_id=3)
+        self.assertEqual(client.receive()['id'], 3)
+        packet = client.receive(timeout=7)
+        self.assertEqual(packet['method'], 'notifications/progress')
+        self.assertEqual(packet['params']['progressToken'], 'opaque-job')
+        self.assertGreater(packet['params']['progress'], 0)
+        self.assertEqual(set(packet['params']), {'progressToken', 'progress', 'message'})
+        client.send('notifications/cancelled', {'requestId': 2})
+        deadline = time.monotonic()+3
+        while time.monotonic() < deadline and not list(client.artifacts.glob('*/adapter.json')):
+            time.sleep(.01)
+        self.assertTrue(json.loads(next(client.artifacts.glob('*/adapter.json')).read_text())['cancelled'])
+        client.send('ping', request_id=4)
+        self.assertEqual(client.receive()['id'], 4)
+        with self.assertRaises(queue.Empty):
+            client.receive(timeout=.2)
+
     def test_cancellation_suppresses_reply_and_preserves_cleanup(self):
         client = self.client()
         client.initialize()
