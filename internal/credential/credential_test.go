@@ -10,9 +10,6 @@ import (
 	"testing"
 )
 
-// fixtureValue is deliberately low-entropy and obviously fake. Every assertion
-// below searches for this literal, so a real-looking string here would be a
-// secret-shaped token committed to a public repository for no benefit.
 const fixtureValue = "fixture-login-value-one"
 
 func TestReferenceAcceptsOnlyAnExactWholeValue(t *testing.T) {
@@ -87,10 +84,6 @@ func TestValidateBoundsWhatAProviderMayReturn(t *testing.T) {
 	}
 }
 
-// A Secret that ends up rendered anywhere must render as the placeholder, not
-// as the value and not as its bytes. Each case asserts the placeholder is what
-// comes out: asserting only "the value is absent" would pass even with every
-// redaction removed, because the unexported field renders as bytes either way.
 func TestSecretRendersAsThePlaceholderOnEveryPath(t *testing.T) {
 	secret := New(fixtureValue)
 	for name, got := range map[string]string{
@@ -132,8 +125,7 @@ func TestWipeClearsTheValueForEveryCopyOfTheSecret(t *testing.T) {
 	if !secret.Empty() || secret.Reveal() != "" {
 		t.Fatalf("wiped secret still reveals %q", secret.Reveal())
 	}
-	// The copy shares the backing array on purpose: a deferred wipe in the
-	// runner has to clear the value every holder can still read.
+
 	if copied.Reveal() != strings.Repeat("\x00", len(fixtureValue)) {
 		t.Fatalf("a copy of the wiped secret still reveals %q", copied.Reveal())
 	}
@@ -150,14 +142,11 @@ func TestScrubRemovesTheValueAndKeepsNoWrappedCopy(t *testing.T) {
 	if !strings.Contains(scrubbed.Error(), Placeholder) {
 		t.Fatalf("scrubbed error %q does not name the redaction", scrubbed.Error())
 	}
-	// Not wrapped: the wrapped error's own Error() still holds the value, so a
-	// chain would keep a live copy for anything walking Unwrap to find.
+
 	if unwrapped := errors.Unwrap(scrubbed); unwrapped != nil {
 		t.Fatalf("scrubbed error unwraps to %v, which still carries the value", unwrapped)
 	}
 
-	// An error that never mentioned the value keeps its chain, so errors.Is
-	// still works for every ordinary failure.
 	sentinel := errors.New("bridge is not connected")
 	wrapped := fmt.Errorf("fill: %w", sentinel)
 	if got := Scrub(wrapped, secret); !errors.Is(got, sentinel) {
@@ -168,17 +157,8 @@ func TestScrubRemovesTheValueAndKeepsNoWrappedCopy(t *testing.T) {
 	}
 }
 
-// fixtureAwkwardValue is low-entropy and obviously fabricated, and it carries
-// the characters that change under escaping. A fixture made only of letters and
-// dashes renders identically raw, quoted, JSON-encoded and percent-encoded, so
-// it cannot tell a scrubber that handles one form from a scrubber that handles
-// all of them.
 const fixtureAwkwardValue = `fixture-"quote\back one`
 
-// A transport does not have to write the value out raw. The snapshot scripts
-// marshal the text they are told to type into a JSON expression, and a %q-
-// formatted Go error quotes it — both of which leave a value containing a quote
-// or a backslash looking nothing like itself.
 func TestScrubRemovesTheValueInEveryFormATransportWritesIt(t *testing.T) {
 	secret := New(fixtureAwkwardValue)
 	for name, test := range map[string]struct {
@@ -207,8 +187,7 @@ func TestScrubRemovesTheValueInEveryFormATransportWritesIt(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			// Without this the case proves nothing: a form that is not in the
-			// message cannot be scrubbed out of it.
+
 			if !strings.Contains(test.message, test.form) {
 				t.Fatalf("the %s message %q does not contain the form under test", name, test.message)
 			}
@@ -224,7 +203,7 @@ func TestScrubRemovesTheValueInEveryFormATransportWritesIt(t *testing.T) {
 			}
 		})
 	}
-	// Scrub goes through ScrubString, so the error path gets the same net.
+
 	chatty := fmt.Errorf("could not set field to %q", fixtureAwkwardValue)
 	if got := Scrub(chatty, secret); strings.Contains(got.Error(), `fixture-\"quote`) {
 		t.Fatalf("Scrub left the quoted value in %q", got)

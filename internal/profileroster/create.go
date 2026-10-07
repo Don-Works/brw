@@ -12,11 +12,7 @@ import (
 	"github.com/Don-Works/brw/internal/setup"
 )
 
-// Create adds a direct-CDP profile with its own user-data-dir under
-// ~/.brw/profiles/<slug> and its own control port. It writes the policy and the
-// directory and nothing else: starting or installing the daemon is left to the
-// commands the result names. Re-creating an existing slug changes nothing and
-// reports Created=false.
+// Create adds a direct-CDP profile with its own user-data-dir under ~/.brw/profiles/<slug> and its own control port.
 func Create(req CreateRequest) (CreateResult, error) {
 	slug, err := Slug(req.Name)
 	if err != nil {
@@ -89,10 +85,10 @@ func Create(req CreateRequest) (CreateResult, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	if _, err := setup.WritePolicy(policyPath, merged, now); err != nil {
+	if err := os.MkdirAll(expandHome(udd, home), 0o700); err != nil {
 		return CreateResult{}, err
 	}
-	if err := os.MkdirAll(expandHome(udd, home), 0o700); err != nil {
+	if _, err := setup.WritePolicy(policyPath, merged, now); err != nil {
 		return CreateResult{}, err
 	}
 	return createResult(profile, true, req, policyPath, workspace), nil

@@ -12,8 +12,7 @@ import (
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
-// Open asks a profile's own daemon to open rawURL, so that daemon's navigation
-// policy and site-consent gate decide it as they would for an agent.
+// Open asks a profile's own daemon to open rawURL, so that daemon's navigation policy and site-consent gate decide it as they would for an agent.
 func Open(ctx context.Context, policy profilepolicy.Policy, name, rawURL string) (browser.OpenResult, error) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" {
