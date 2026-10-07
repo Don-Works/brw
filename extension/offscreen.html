@@ -5,12 +5,6 @@
     <title>brw keepalive</title>
   </head>
   <body>
-    <!-- This offscreen document exists only to keep the MV3 service worker
-         alive: it plays genuine (silent, zero-gain) looping audio so Chrome
-         never reaps the document, and holds a long-lived port to the worker so
-         the worker itself never idles out. Keeping the worker alive keeps the
-         daemon WebSocket connected, which is what stops brw "going away" /
-         "disconnecting" while Chrome runs in the background. See offscreen.js. -->
     <script src="offscreen.js"></script>
   </body>
 </html>

@@ -34,12 +34,7 @@ func statusTokenFor(t *testing.T, b *Bridge, host, origin string) string {
 	}
 	rec := httptest.NewRecorder()
 	b.handleStatus(rec, req)
-	var body map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode status: %v", err)
-	}
-	token, _ := body["token"].(string)
-	return token
+	return tokenInBody(t, rec)
 }
 
 // TestStatusTokenOriginIsAnExactMatch: the guard was a PREFIX match on

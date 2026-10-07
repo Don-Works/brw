@@ -18,9 +18,6 @@ const revokeAllGrantsButton = document.getElementById("revokeAllGrants");
 let refreshTimer = 0;
 let refreshing = false;
 let consentGranted = false;
-// The poll re-renders every 3s. Setting `open` fires `toggle` just as a click
-// does, so without this flag the first programmatic collapse would look like an
-// operator preference and freeze the disclosure for the rest of the session.
 let operatorSetConsentMore = false;
 let programmaticConsentMore = false;
 
@@ -67,10 +64,6 @@ async function init() {
   window.addEventListener("pagehide", () => window.clearInterval(refreshTimer), { once: true });
 }
 
-// refreshGrants renders the per-origin permissions the daemon holds. It is a
-// separate, on-demand read rather than part of the 3-second status poll: the
-// list changes when a person changes it, and polling it would put the sites the
-// user has visited through the message channel every few seconds for nothing.
 async function refreshGrants() {
   try {
     const response = await chrome.runtime.sendMessage({ type: "BRW_GET_CONSENT" });
@@ -349,7 +342,6 @@ function syncStatusEndpoint() {
     document.getElementById("statusUrl").value = `http://${url.host}/status`;
     updatePresetSelection();
   } catch (_) {
-    // Save-time validation provides the actionable error.
   }
 }
 
@@ -427,15 +419,6 @@ function isLoopback(hostname) {
   return hostname === "127.0.0.1" || hostname === "localhost";
 }
 
-// humanizeError turns a failure into something an operator can act on.
-//
-// The unmapped case is the one that matters. It used to capitalise the raw
-// exception and put it on screen, so a reader was shown "Cannot read properties
-// of undefined (reading 'sendMessage')" and told nothing about what to do —
-// which is the raw-diagnostic-dump anti-reference in PRODUCT.md, reached by
-// accident rather than by choice. Every branch now names a problem AND a
-// recovery; the exception text stays available under Diagnostic details, where
-// someone who wants it knows to look.
 function humanizeError(error) {
   const text = String(error?.message || error || "").replace(/^Error:\s*/i, "").trim();
 
@@ -448,8 +431,6 @@ function humanizeError(error) {
   if (/profile mismatch/i.test(text)) {
     return "This daemon belongs to a different browser profile. Check the identity binding under Advanced configuration.";
   }
-  // Chrome tears the message port down with the service worker, so both of
-  // these mean the worker is not running rather than that anything is broken.
   if (/sendmessage|message port closed|receiving end does not exist|extension context invalidated/i.test(text)) {
     return "The extension's background worker is not running. Reload brw on chrome://extensions, then refresh this page.";
   }

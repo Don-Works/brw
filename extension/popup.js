@@ -1,5 +1,3 @@
-// Canonical state lexicon (matches toolbar badge tooltips):
-//   Idle · Agent active · Reconnecting · Down
 const LEXICON = {
   connected: { state: "connected", label: "Idle", heading: "Idle", summary: "" },
   used: { state: "used", label: "Agent active", heading: "Agent active", summary: "An agent is driving a page in this browser right now." },
@@ -20,9 +18,6 @@ const detailsPanel = document.getElementById("detailsPanel");
 
 let refreshTimer = 0;
 let busy = false;
-// Setting `open` from render() fires `toggle` exactly as a click does. Without
-// the flag, the first automatic open (any unhealthy state) reads as an operator
-// preference and Details never collapses again, even once the bridge recovers.
 let operatorOpenedDetails = false;
 let programmaticDetails = false;
 let consentGranted = false;
@@ -68,7 +63,6 @@ async function reconnect() {
     if (!response?.ok) throw new Error(response?.error || "Reconnect failed");
     render(response.status || {}, false);
 
-    // Verified reconnect: poll until Idle/Agent active or deadline.
     const deadline = Date.now() + 12_000;
     while (Date.now() < deadline) {
       await sleep(400);
@@ -174,8 +168,6 @@ function render(status, announce) {
     ? `:${port} · ${socketLabel(socket).toLowerCase()}`
     : socketLabel(socket).toLowerCase();
 
-  // Progressive disclosure: open Details when unhealthy unless the operator
-  // already chose. Healthy Idle stays collapsed so the popup can disappear.
   if (!operatorOpenedDetails) {
     const wanted = mode !== "connected" && mode !== "used";
     if (detailsPanel.open !== wanted) {
@@ -268,9 +260,6 @@ function clearMessage() {
   delete formMessage.dataset.kind;
 }
 
-// Same contract as the options page: name the problem and the recovery, and
-// never put a raw exception in front of the reader. The popup is smaller, so
-// the recovery is a place to go rather than a paragraph.
 function humanize(error) {
   const text = String(error?.message || error || "").replace(/^Error:\s*/i, "").trim();
 
@@ -302,8 +291,6 @@ async function revealProfileRoster() {
   profilesButton.hidden = stored.profileRosterEnabled !== true;
 }
 
-// The roster page lives on the daemon's HTTP control port, which brwctl setup
-// places one below the bridge port the extension is configured with.
 async function openProfileRoster() {
   const response = await chrome.runtime.sendMessage({ type: "BRW_GET_STATUS" });
   const config = response?.status?.config || {};

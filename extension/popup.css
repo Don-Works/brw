@@ -1,27 +1,11 @@
-/* brw profile bridge — toolbar popup.
- *
- * The surface an operator actually sees day to day, usually for two seconds to
- * answer one question: is the bridge up, and if not, what do I do. So state
- * leads, detail is one disclosure away, and the two actions sit where a thumb
- * or cursor already is.
- *
- * Shares the options page's system exactly — same ramp, same semantics, same
- * one-accent rule — because they are one product and a popup that invents its
- * own palette reads as a different tool.
- */
+
 
 :root {
   color-scheme: light dark;
 
-  /* One type scale, five steps, shared by both surfaces. Sizes were ad hoc
-   * before — nineteen of them on the options page alone — which is how a
-   * hierarchy ends up flat: every element a little different from its
-   * neighbour and nothing clearly above anything else. */
   --t-xs: .75rem;
   --t-sm: .8125rem;
   --t-md: .875rem;
-  --t-lg: 1rem;
-  --t-xl: 1.25rem;
 
   --font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -31,7 +15,6 @@
   --n-2: #f3f1f5;
   --n-3: #e9e6ec;
   --n-4: #d8d3dc;
-  --n-5: #b4acba;
   --n-6: #7d7386;
   --n-7: #554d5c;
   --n-9: #1b1720;
@@ -62,7 +45,6 @@
   --focus: #5b34c7;
 
   --r-sm: 6px;
-  --r-md: 10px;
 
   --ease: cubic-bezier(.2, .8, .3, 1);
   --fast: 120ms;
@@ -75,7 +57,6 @@
     --n-2: #242029;
     --n-3: #2f2a36;
     --n-4: #3d3745;
-    --n-5: #6b6275;
     --n-6: #978da1;
     --n-7: #c3b9cb;
     --n-9: #f7f4f9;
@@ -112,7 +93,6 @@
   box-sizing: border-box;
 }
 
-/* Outranks every display rule below; the JS hides the message block with it. */
 [hidden] {
   display: none !important;
 }
@@ -154,27 +134,23 @@ code {
 
 .popup {
   --state: var(--idle);
-  --state-line: var(--line);
   --state-wash: var(--surface-sunken);
   display: block;
 }
 
 .popup[data-state="connected"] {
   --state: var(--ok);
-  --state-line: var(--ok-line);
   --state-wash: var(--ok-wash);
 }
 
 .popup[data-state="used"] {
   --state: var(--accent);
-  --state-line: var(--line);
   --state-wash: var(--surface-sunken);
 }
 
 .popup[data-state="connecting"],
 .popup[data-state="consent"] {
   --state: var(--warn);
-  --state-line: var(--warn-line);
   --state-wash: var(--warn-wash);
 }
 
@@ -182,11 +158,8 @@ code {
 .popup[data-state="rejected"],
 .popup[data-state="error"] {
   --state: var(--bad);
-  --state-line: var(--bad-line);
   --state-wash: var(--bad-wash);
 }
-
-/* ─── Head ───────────────────────────────────────────────────────────────── */
 
 .head {
   display: flex;
@@ -239,8 +212,6 @@ code {
   font-variant-numeric: tabular-nums;
   color: var(--ink-3);
 }
-
-/* ─── Status ─────────────────────────────────────────────────────────────── */
 
 .status {
   display: grid;
@@ -302,8 +273,6 @@ code {
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
-
-/* ─── Details ────────────────────────────────────────────────────────────── */
 
 .details {
   border-bottom: 1px solid var(--line);
@@ -403,16 +372,10 @@ code {
   flex: none;
 }
 
-/* Literal toolbar badge colours, from BADGE_*_BG in service_worker.js. Chrome
- * paints the badge the same in both schemes, and this legend exists to decode
- * that badge — so it cannot use the theme tokens. A green that is not the
- * badge's green explains nothing. Keep these in step with the constants. */
 .dot.connected { background: #1a7f37; }
 .dot.used { background: #9f006f; }
 .dot.connecting { background: #bf8700; }
 .dot.disconnected { background: #c5221f; }
-
-/* ─── Message ────────────────────────────────────────────────────────────── */
 
 .message {
   margin: 12px 14px 0;
@@ -440,8 +403,6 @@ code {
   background: var(--bad-wash);
   color: var(--bad);
 }
-
-/* ─── Actions ────────────────────────────────────────────────────────────── */
 
 .actions {
   display: grid;
@@ -478,8 +439,6 @@ code {
   transform: translateY(.5px);
 }
 
-/* Reconnect is the one thing a popup is opened to do when something is wrong,
- * so it carries the single accent — and only while it would actually help. */
 .popup[data-state="disconnected"] #reconnect,
 .popup[data-state="rejected"] #reconnect,
 .popup[data-state="error"] #reconnect,
