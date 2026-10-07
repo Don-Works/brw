@@ -1,8 +1,3 @@
-// Surface guards for the two operator-facing pages.
-//
-// These are enumeration guards, not spot checks: each derives what it expects
-// from the source of truth and fails on a member nobody wired up, so adding a
-// badge mode or renaming an element cannot silently skip them.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -22,20 +17,11 @@ function check(name, fn) {
   }
 }
 
-// ── 1. The popup legend decodes the toolbar badge ──────────────────────────
-//
-// The legend's whole job is to tell an operator what the colour on their
-// toolbar means. If popup.css drifts from the BADGE_*_BG constants the legend
-// is not merely ugly, it is wrong: it names a colour Chrome never paints.
 
 check("popup legend dots match the toolbar badge colours", () => {
   const worker = read("service_worker.js");
   const css = read("popup.css");
 
-  // Every mode applyBadgeFrame can paint, paired with the constant it uses.
-  // BADGE_AGENT_PULSE_BG and BADGE_CONNECTING_DIM_BG are the second animation
-  // frame of a mode the legend already lists, so they get no legend row of
-  // their own; the resting frame is what the legend names.
   const wanted = {
     connected: "BADGE_IDLE_BG",
     used: "BADGE_AGENT_BG",
@@ -75,11 +61,6 @@ check("popup legend dots match the toolbar badge colours", () => {
   }
 });
 
-// ── 2. Every element the page scripts address actually exists ──────────────
-//
-// getElementById on a renamed node returns null and the page throws mid-render,
-// leaving whatever the previous pass wrote on screen. That reads as a stale
-// status rather than a crash, so it survives a casual look at the page.
 
 check("every getElementById target exists in its page", () => {
   for (const [script, page] of [["options.js", "options.html"], ["popup.js", "popup.html"]]) {
@@ -96,11 +77,6 @@ check("every getElementById target exists in its page", () => {
   }
 });
 
-// ── 3. The consent disclosure keeps every word ─────────────────────────────
-//
-// The Chrome Web Store listing rests on this wording. Collapsing it into a
-// <details> once the decision is made is a layout choice; dropping a clause is
-// a different thing entirely.
 
 check("the consent disclosure still carries each required clause", () => {
   const html = read("options.html");
@@ -120,11 +96,6 @@ check("the consent disclosure still carries each required clause", () => {
   }
 });
 
-// ── 4. No raw exception text reaches either page ───────────────────────────
-//
-// Both pages route failures through a humanizer that names the problem and the
-// recovery. A textContent assignment taking a caught error directly undoes
-// that for exactly the reader who is already having a bad day.
 
 check("caught errors are humanized before they are shown", () => {
   for (const script of ["options.js", "popup.js"]) {
