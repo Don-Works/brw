@@ -47,6 +47,9 @@ if a.question == 'oversized-report':
     raise SystemExit(0)
 answer = 'Grounded answer.' if a.question != 'oversized-answer' else 'x' * 2001
 report = {'parent_result': {'answer': answer, 'source': a.url, 'secret': 'PRIVATE_API_KEY'}, 'worker_ms': 3.0, 'collection_ms': 1.0, 'source_chars': 40000, 'evidence_chars': 2000, 'mode': {'answer_model': 'model', 'classifier': 'select'}, 'main': 'PRIVATE_PAGE' * 10000, 'configuration': {'secret': 'PRIVATE_API_KEY'}}
+if a.question == 'fallback':
+    report['parent_result'] = {'excerpt': 'Bounded evidence.', 'source': a.url, 'fallback': {'stage': 'answer', 'reason': 'timeout'}}
+    report['evidence_spans'] = [{'id': 'p0', 'start': 1, 'end': 20}]
 f.write_text(json.dumps(report))
 print('UNBOUNDED_STDOUT_MUST_NOT_ESCAPE' * 1000)
 '''
@@ -168,6 +171,27 @@ class ReaderMCPTests(unittest.TestCase):
         self.assertEqual(len(reports), 1)
         if os.name == 'posix':
             self.assertEqual(reports[0].parent.stat().st_mode & 0o077, 0)
+
+    def test_fallback_is_a_normal_bounded_wire_result_and_classified_usage(self):
+        client = self.client(usage=True)
+        client.initialize()
+        client.call('fallback')
+        result = client.receive()['result']
+        self.assertNotIn('isError', result)
+        self.assertNotIn('PRIVATE', json.dumps(result))
+        packet = json.loads(result['content'][0]['text'])
+        self.assertEqual(packet['excerpt'], 'Bounded evidence.')
+        self.assertNotIn('answer', packet)
+        self.assertEqual(packet['fallback'], {'stage': 'answer', 'reason': 'timeout'})
+        self.assertEqual(packet['trace']['evidence_spans'], [{'id': 'p0', 'start': 1, 'end': 20}])
+        path = client.directory/'usage/reader.jsonl'
+        deadline = time.monotonic()+1
+        while not path.exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        row = json.loads(path.read_text().splitlines()[-1])
+        self.assertEqual(row['outcome'], 'success')
+        self.assertEqual(row['fallback_stage'], 'answer')
+        self.assertEqual(row['fallback_reason'], 'timeout')
 
     def test_model_and_command_arguments_are_rejected(self):
         client = self.client()
