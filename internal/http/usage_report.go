@@ -40,6 +40,14 @@ func (s *Server) reportUsage(w http.ResponseWriter, r *http.Request) {
 		BinaryInputBytes: event.BinaryInputBytes, BinaryOutputBytes: event.BinaryOutputBytes, StructuredOutputBytes: event.StructuredOutputBytes,
 		SessionID: r.Header.Get(usagelog.HeaderSessionID), RequestID: r.Header.Get(usagelog.HeaderRequestID), Client: "brw-usage-report",
 	}
+	if event.Outcome == "error" {
+		clean.ErrorClass = usagelog.SafeErrorClass(event.ErrorClass)
+		if clean.ErrorClass == "" {
+			clean.ErrorClass = "tool"
+		}
+		clean.ErrorFingerprint = usagelog.SafeFingerprint(event.ErrorFingerprint)
+		clean.Retryable = usagelog.Retryable(clean.ErrorClass)
+	}
 	if err := s.usage.Record(clean); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
