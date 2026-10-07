@@ -14,5 +14,8 @@ observed page state. A changed binding needs a new request. A consumed approval
 cannot be replayed; it does not prove the backend transaction succeeded. If an
 outcome is uncertain, inspect it and involve the operator before taking another
 consequential action. Split gated mutations into single visible actions:
-mutating batches, plans and recipes require splitting or human takeover.
+mutating batches and plans require splitting or human takeover. The current
+`risky`/`all` gate refuses `brw_recipe_run` as `approval_split_required` even for
+a `read_only` recipe; its risk label does not bypass the gate. Do not disable
+approvals or switch transports to evade a refusal.
 Ordinary read calls do not capture approval evidence or access its store.

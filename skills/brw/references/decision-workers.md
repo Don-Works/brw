@@ -152,7 +152,7 @@ serialization/request/decode durations are recorded where observable. Replayed
 sources do not attribute their historical collection timing to the current job.
 First-token, provider queue/prefill and the caller model's context remain
 unobservable to this nonstreaming worker. Detailed artifacts remain separately
-retained and private. Use the [usage summary](../../../docs/usage-logs.md) with its
+retained and private. Use the [usage summary](https://github.com/Don-Works/brw/blob/main/docs/usage-logs.md) with its
 scope labels; adding model, worker and transport byte counts together double
 counts their different boundaries.
 
@@ -184,7 +184,7 @@ and negotiates the initialize-based MCP protocol through `2025-11-25`; do not
 claim support for newer protocol families without an integration test.
 
 Verify each deployment through its actual client: initialize, list `brw_ask`,
-invoke it on a public test page, inspect the concise answer and source, and
+invoke it on a public test page, inspect the bounded answer or excerpt and source, and
 confirm the private report records the intended provider and model. Repeat the
 discovery check after any gateway tool-schema acceptance or reload. A local
 stdio test does not verify a cloud deployment or an existing client's cache.
@@ -214,5 +214,6 @@ had a 710 ms median, Jev-selected local answers 829 ms, and deterministic-passag
 local answers 441 ms. Shorter evidence caused a factual regression on the Merkle
 tree question. These are exploratory replay timings with warm/cache effects;
 collection and main-model review are separate. They do not qualify unattended
-browsing or justify enabling a classifier by default. See the repository's
-`docs/competitive-review-2026-10.md` and measurement artifacts for full limits.
+browsing or justify enabling a classifier by default. See the
+[competitive review](https://github.com/Don-Works/brw/blob/main/docs/competitive-review-2026-10.md)
+and measurement artifacts for full limits.

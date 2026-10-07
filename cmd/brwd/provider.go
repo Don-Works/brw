@@ -43,8 +43,8 @@ func refuseWithProvider(launch providerLaunch) error {
 		return errors.New("--headless with a browser.provider plugin: the provider launched its own browser, so whether it has a window was decided over there")
 	case len(launch.Config.Extensions) > 0:
 		return errors.New("--extension with a browser.provider plugin: an unpacked extension is loaded from this machine's filesystem, which the provider's browser cannot read")
-	case len(launch.Config.ChromeArgs) > 0:
-		return errors.New("--chrome-arg with a browser.provider plugin: brw is not launching Chrome, so it has no command line to add to")
+	case len(launch.Config.ChromeArgs) > 0 || launch.Config.ChromeOutput != nil:
+		return errors.New("--chrome-arg or a Chrome output file with a browser.provider plugin: brw is not launching Chrome, so it has no command line or output file to configure")
 	case launch.Config.Port != 0:
 
 		return errors.New("--remote-debugging-port with a browser.provider plugin: brw is not launching Chrome, so there is no debugging port for it to open")

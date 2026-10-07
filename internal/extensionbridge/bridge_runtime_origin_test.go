@@ -19,7 +19,7 @@ import (
 func TestRuntimeOriginGuardWithEmptyNavigationPolicy(t *testing.T) {
 	t.Setenv("BRW_SCREENSHOT_ALLOW_OUTSIDE_HOME", "1")
 	const protected = "http://127.0.0.1:9223/approvals"
-	const secret = "PRIVATE_OPERATOR_CONTENT"
+	const privateContent = "PRIVATE_OPERATOR_CONTENT"
 	blocked := errors.New("operator origin refused")
 	for _, tc := range []struct {
 		name string
@@ -52,7 +52,7 @@ func TestRuntimeOriginGuardWithEmptyNavigationPolicy(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := New("", time.Second, "")
-			page := map[string]any{"url": protected, "title": secret, "main": secret, "elements": []any{}, "metadata": map[string]any{"version": 1}}
+			page := map[string]any{"url": protected, "title": privateContent, "main": privateContent, "elements": []any{}, "metadata": map[string]any{"version": 1}}
 			stub := &cdpStub{reply: func(call cdpCall, _ int) (map[string]any, string) {
 				switch call.Method {
 				case "Runtime.evaluate":
@@ -64,11 +64,11 @@ func TestRuntimeOriginGuardWithEmptyNavigationPolicy(t *testing.T) {
 					}
 					return map[string]any{"result": map[string]any{"value": value}}, ""
 				case "Page.printToPDF":
-					return map[string]any{"stream": "private-stream", "data": base64.StdEncoding.EncodeToString([]byte(secret))}, ""
+					return map[string]any{"stream": "private-stream", "data": base64.StdEncoding.EncodeToString([]byte(privateContent))}, ""
 				case "IO.close":
 					return map[string]any{}, ""
 				default:
-					return map[string]any{"cached": true, "snapshot": page, "data": base64.StdEncoding.EncodeToString([]byte(secret)), "width": 1, "height": 1}, ""
+					return map[string]any{"cached": true, "snapshot": page, "data": base64.StdEncoding.EncodeToString([]byte(privateContent)), "width": 1, "height": 1}, ""
 				}
 			}}
 			cleanup := serveCDPStub(t, b, stub)
@@ -84,7 +84,7 @@ func TestRuntimeOriginGuardWithEmptyNavigationPolicy(t *testing.T) {
 				t.Fatalf("runtime origin guard bypassed: result=%+v err=%v", result, err)
 			}
 			encoded, _ := json.Marshal(result)
-			if strings.Contains(string(encoded), secret) {
+			if strings.Contains(string(encoded), privateContent) {
 				t.Fatal("refused operator content escaped in the returned result")
 			}
 			if tc.name == "PDF stream" {

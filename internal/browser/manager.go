@@ -371,6 +371,7 @@ func newManager(ctx context.Context, cfg Config) (*Manager, error) {
 			Port:             cfg.Port,
 			Extensions:       cfg.Extensions,
 			Args:             cfg.ChromeArgs,
+			Output:           cfg.ChromeOutput,
 			AllowRealProfile: cfg.AllowRealProfile,
 			Network:          cfg.Network,
 			Headless:         cfg.Headless,

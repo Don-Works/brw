@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -26,6 +27,7 @@ func TestEveryLaunchThatConflictsWithAProviderIsRefusedByName(t *testing.T) {
 		"headless":            {providerLaunch{Headless: true}, "decided over there"},
 		"extension":           {providerLaunch{Config: browser.Config{Extensions: []string{"/tmp/fixture-ext"}}}, "this machine's filesystem"},
 		"chrome arg":          {providerLaunch{Config: browser.Config{ChromeArgs: []string{"--mute-audio"}}}, "not launching Chrome"},
+		"chrome output":       {providerLaunch{Config: browser.Config{ChromeOutput: os.Stderr}}, "output file"},
 
 		"debugging port": {providerLaunch{Config: browser.Config{Port: 9222}}, "no debugging port"},
 		"real profile":   {providerLaunch{Config: browser.Config{AllowRealProfile: true}}, "profile reuse"},
@@ -124,6 +126,10 @@ func probeConfigField(field reflect.StructField) (reflect.Value, bool) {
 		return reflect.ValueOf([]string{"/tmp/fixture"}).Convert(field.Type), true
 	case reflect.Struct:
 		return reflect.ValueOf(cdplaunch.NetworkEnvironment{ProxyServer: "http://127.0.0.1:8080"}), true
+	case reflect.Pointer:
+		if field.Type == reflect.TypeOf((*os.File)(nil)) {
+			return reflect.ValueOf(os.Stderr), true
+		}
 	}
 	return reflect.Value{}, false
 }

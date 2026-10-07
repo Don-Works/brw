@@ -24,6 +24,8 @@ type LaunchConfig struct {
 	Port             int
 	Extensions       []string
 	Args             []string
+	// Output receives Chrome's stdout and stderr; nil uses this process's stderr. The caller owns the file.
+	Output *os.File
 	// AllowRealProfile overrides the refusal to launch against the user's real browser profile (see EnsureSafeUserDataDir).
 	AllowRealProfile bool
 	// Network carries the launch-only network settings: proxy, certificate-error policy, and any privately trusted keys.
@@ -68,8 +70,12 @@ func Launch(ctx context.Context, cfg LaunchConfig) (*Launcher, error) {
 	args := launchArgs(cfg, port)
 
 	cmd := exec.Command(chromePath, args...)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
+	output := cfg.Output
+	if output == nil {
+		output = os.Stderr
+	}
+	cmd.Stdout = output
+	cmd.Stderr = output
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}

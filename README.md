@@ -68,6 +68,12 @@ after the normal fast screenshot path stalls.
 
 ## Measurement
 
+Use `brw-testbed` (or `task testbed` from a checkout) for the seeded adversarial
+page, with real SSE/WebSocket reconnects, difficult reading and synthetic forms.
+`task feature-check` exercises the browser tool catalogue through real MCP calls
+and permissions and writes an explicit coverage report. See the
+[testbed contract and feature inventory](docs/adversarial-testbed.md).
+
 Two harnesses run from a clean checkout, against the fixtures in `tests/`, with
 no network beyond the loopback origin they start themselves and no account of
 any kind:

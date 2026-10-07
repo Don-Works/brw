@@ -30,7 +30,7 @@ func TestBrwIdentityReportsProfile(t *testing.T) {
 	srv.SetIdentity(brwidentity.Identity{
 		Workspace:        "brw-example",
 		Profile:          "example-profile",
-		UserDataDir:      "/Users/x/Library/Application Support/Chromium",
+		UserDataDir:      "/fixture/Chromium",
 		ProfileDirectory: "Default",
 		Mode:             "bridge",
 	})

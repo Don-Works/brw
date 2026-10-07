@@ -13,6 +13,10 @@ profile or an explicitly owned fixture tab. Stop the server with Ctrl-C.
 stable ports. There are no external resources, accounts, model calls, or
 package downloads at runtime.
 
+Installed releases also provide `brw-testbed`; a checkout provides `task testbed`.
+Use `?frames=none` for isolated permission scenarios; the default page retains all
+three adversarial frames. Dedicated frame scenarios exercise that full page.
+
 The page offers manual seeded steps and a bounded automatic stream. Changing
 the delivery cadence does not change the logical sequence for the same seed,
 chaos level, and explicit step sequence. Chaos 0 changes text; 1 also replaces
@@ -105,6 +109,7 @@ before its own body is produced.
 go test -race -p 1 ./internal/testbed ./cmd/brw-testbed
 node --check internal/testbed/web/app.js
 BRW_TESTBED_LIVE=1 go test -race -p 1 ./internal/testbed -run TestBrowserFixtureReconnectsAndReadsGroundTruth
+task feature-check
 ```
 
 The protocol tests compare seeds, enforce the finite budget, reject stale
@@ -116,3 +121,38 @@ The opt-in browser test launches one disposable headless profile, reads the
 report's ground truth, verifies hydration and both stream reconnections, and
 compares rendered virtual rows with acknowledged cursors. It performs no form
 writes. `BRW_TESTBED_SCREENSHOT=/absolute/path.png` optionally saves its page.
+
+The feature companion starts a temporary headless browser profile and invokes the
+actual MCP server over stdio pipes. It uses real site consent and an authenticated
+operator approval inbox. Synthetic password, card, payment and deletion cases
+exercise refusals before approval and compare approved effects with the oracle.
+It creates no account, calls no model and sends no operating-system notification.
+
+Its inventory comes from `mcp.ToolNames()` plus deferred `brw_skill` and `brw_tools`
+discovery. Every tool must have exactly one scenario owner, an executed call and
+an observable assertion; adding a tool without a scenario fails the catalogue
+check. HTTP/CLI aliases use the same browser operations and retain their separate
+transport tests. The JSON report records each tool, scenario, call/assertion counts
+and outcome. Unsupported CDP tab grouping and deliberately unavailable page
+notifications remain explicit outcomes rather than successful delivery claims.
+With action confirmations enabled, a whole read-only recipe currently returns
+`approval_split_required`; its MCP row is `policy_refused`. The companion also
+checks that refusal causes no effect and verifies the same recipe's captured
+evidence through the shared recipe service. That service check is not an MCP
+success or an approval bypass.
+
+| Scenario group | Observable checks |
+| --- | --- |
+| Navigation and reading | Owned tab identities, committed history/SPA destinations, corrected report facts, structured data, semantic refs and bounded snapshots. |
+| Forms and assertions | Exact input values, trusted keys/clicks, selections, focus, sensitive withholding, pending approvals and failed assertions. |
+| Pointer, frames and dialogs | Actual pointer/drag effects, same-origin and cross-origin child controls, replaced documents and native dialog outcomes. |
+| Events and page tools | SSE/WebSocket reconnect and acknowledged cursors, page-event channels, WebMCP schema and approval-gated synthetic mutation. |
+| Browser capabilities | Isolated contexts/auth, cookies/storage, emulation and reset, origin-scoped headers, init scripts, touch, profiles, routes and replay. |
+| Artifacts and services | Actual image/PDF/profile/download contents and hashes, upload results, artifact lifecycle, recipes, plans, watchers, cancellation and discovery. |
+
+`task feature-check` writes `dist/testbed/features.json` and always runs the whole
+catalogue without cached results. For development only, `BRW_FEATURE_CASE` filters
+the direct Go command by scenario substring; its output is partial coverage.
+`BRW_FEATURE_REPORT=/absolute/path.json` selects a private report path for a direct
+run. The companion runs in ordinary non-short Go tests as a correctness check;
+latency measurements and provider billing remain separate.

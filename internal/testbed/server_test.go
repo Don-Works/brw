@@ -182,8 +182,12 @@ func TestEmbeddedPageToolsAndInteractionBindings(t *testing.T) {
 		t.Skip("node unavailable")
 	}
 	s := start(t, 17, 12)
-	if output, err := exec.Command(node, "app_test.mjs", s.URL()).CombinedOutput(); err != nil {
-		t.Fatalf("actual embedded page bindings: %v: %s", err, output)
+	for _, mode := range []string{"default", "none"} {
+		t.Run(mode, func(t *testing.T) {
+			if output, err := exec.Command(node, "app_test.mjs", s.URL(), mode).CombinedOutput(); err != nil {
+				t.Fatalf("actual embedded page bindings: %v: %s", err, output)
+			}
+		})
 	}
 }
 

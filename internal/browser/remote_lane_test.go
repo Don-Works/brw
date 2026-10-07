@@ -179,6 +179,7 @@ var configFieldsThatDecideWhereTheBrowserIs = map[string]bool{
 	"Port":             false,
 	"Extensions":       false,
 	"ChromeArgs":       false,
+	"ChromeOutput":     false,
 	"Timeout":          false,
 	"WebMCP":           false,
 	"AllowRealProfile": false,
@@ -233,6 +234,9 @@ func probeValueForField(t *testing.T, field reflect.StructField) reflect.Value {
 	case reflect.Slice:
 		return reflect.ValueOf([]string{"/tmp/fixture"}).Convert(field.Type)
 	case reflect.Pointer:
+		if field.Type == reflect.TypeOf((*os.File)(nil)) {
+			return reflect.ValueOf(os.Stderr)
+		}
 		return reflect.ValueOf(&RemoteTarget{WebSocketURL: "wss://browsers.example/devtools/browser/x"})
 	case reflect.Struct:
 		return reflect.ValueOf(cdplaunch.NetworkEnvironment{ProxyServer: "http://127.0.0.1:8080"})

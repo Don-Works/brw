@@ -74,18 +74,11 @@ func TestNormalizeUploadPaths_TildeExpansion(t *testing.T) {
 	if err != nil {
 		t.Skip("cannot determine home dir")
 	}
-	// We can't guarantee a file exists at ~/test-upload.txt, so just test that
-	// the path is expanded correctly by checking a nonexistent path under home.
-	_, err = NormalizeUploadPaths(snapshot.UploadOptions{Path: "~/test-upload-nonexistent-12345.txt"})
-	if err == nil {
-		t.Fatal("expected error for nonexistent file under home")
-	}
-	// The error message should contain the expanded home path.
-	if err != nil {
-		absHome, _ := filepath.Abs(home)
-		if !filepath.IsAbs(absHome) {
-			t.Fatalf("expected absolute path in error, got %q", err)
-		}
+	name := filepath.Base(t.TempDir()) + "-upload-nonexistent.txt"
+	_, err = NormalizeUploadPaths(snapshot.UploadOptions{Path: "~/" + name})
+	var pathError *os.PathError
+	if !errors.Is(err, os.ErrNotExist) || !errors.As(err, &pathError) || pathError.Path != filepath.Join(home, name) {
+		t.Fatalf("expected missing expanded home path, got %v", err)
 	}
 }
 
@@ -245,14 +238,19 @@ func TestFetchUploadTempRemovesDirectoryOnOversizeError(t *testing.T) {
 }
 
 func TestResolveUploadPaths_URLBadStatus(t *testing.T) {
+	orig := blockedFetchIP
+	blockedFetchIP = func(ip net.IP) bool { return !ip.IsLoopback() }
+	defer func() { blockedFetchIP = orig }()
+	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
 		http.Error(w, "nope", http.StatusNotFound)
 	}))
 	defer srv.Close()
 	_, cleanup, err := ResolveUploadPaths(context.Background(), snapshot.UploadOptions{URL: srv.URL})
 	defer cleanup()
-	if err == nil {
-		t.Fatal("expected error for non-2xx status")
+	if hits.Load() != 1 || err == nil || !strings.Contains(err.Error(), "unexpected status 404") {
+		t.Fatalf("expected reached HTTP404 refusal, got hits=%d err=%v", hits.Load(), err)
 	}
 }
 

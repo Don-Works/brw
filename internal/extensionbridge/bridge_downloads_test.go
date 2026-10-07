@@ -125,7 +125,7 @@ func TestBridgeDownloadsCapturesEntries(t *testing.T) {
 				"state":              "completed",
 				"received_bytes":     1234,
 				"total_bytes":        1234,
-				"path":               "/Users/me/Downloads/report.pdf",
+				"path":               "/fixture/Downloads/report.pdf",
 			},
 		},
 	}, "")
@@ -145,7 +145,7 @@ func TestBridgeDownloadsCapturesEntries(t *testing.T) {
 	if d.GUID != "42" || d.SuggestedFilename != "report.pdf" || d.State != "completed" {
 		t.Fatalf("download fields not parsed: %+v", d)
 	}
-	if d.Path != "/Users/me/Downloads/report.pdf" || d.TotalBytes != 1234 {
+	if d.Path != "/fixture/Downloads/report.pdf" || d.TotalBytes != 1234 {
 		t.Fatalf("download path/bytes not parsed: %+v", d)
 	}
 }

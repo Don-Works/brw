@@ -234,7 +234,7 @@ string or integer token. Progress is a liveness signal, not a percentage, page
 change or task result. Preserve notification routing and session identity when
 proxying it. brw does not advertise experimental MCP Tasks support.
 
-The current Maix integration needs three host-side fixes before its native reader
+The Maix review at `d232cf3` identified three host-side fixes before its native reader
 and browser-event polling meet this contract: preserve `SessionID` when looking
 up a browser event journal; accept `excerpt`/`fallback` with source evidence in
 addition to a generated `answer`; and terminate the owned reader process tree

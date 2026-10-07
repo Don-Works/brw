@@ -1,6 +1,8 @@
 "use strict";
 
 const $ = id => document.getElementById(id);
+const framesEnabled = new URL(location.href).searchParams.get("frames") !== "none";
+if (!framesEnabled) document.querySelectorAll("iframe").forEach(frame => frame.remove());
 const app = { state: null, applied: 0, sse: null, ws: null, timer: null, reconnect: null, running: false, stepping: false, lastSSE: 0, lastWS: 0, sseConnections: 0, wsConnections: 0 };
 
 async function request(path, body) {
@@ -71,7 +73,7 @@ function renderView(view, kind) {
   document.querySelector("main").inert = view.overlay_open;
   if (kind === "focus") $("note").focus();
   if (kind === "initial" || kind === "reading") renderArticle();
-  if (kind === "initial" || kind === "frame") {
+  if (framesEnabled && (kind === "initial" || kind === "frame")) {
     $("same-frame").src = `/frame?version=${view.frame_version}`;
     $("cross-frame").src = `${app.state.frame_origin}/frame?version=${view.frame_version}`;
   }

