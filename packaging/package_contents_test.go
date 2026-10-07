@@ -254,10 +254,6 @@ exit 1
 		"codesign": `#!/bin/sh
 arguments=$(printf '%s\n' "$@")
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = --keychain ]; then
-    shift
-    [ "$1" = "$BRW_TEST_KEYCHAIN" ] || exit 7
-  fi
   last=$1
   shift
 done
@@ -273,8 +269,7 @@ printf '%s\n' "$arguments" > "$last.flags"
 	keychain := filepath.Join(root, "keychain with spaces")
 	cmd := exec.Command(bash, filepath.Join(root, "scripts/package-tarball.sh"), "1.2.3", "darwin", "arm64")
 	cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "fake-bin")+string(os.PathListSeparator)+os.Getenv("PATH"), "MACOS_SIGN_IDENTITY="+identity,
-		"MACOS_KEYCHAIN="+keychain,
-		"BRW_TEST_KEYCHAIN="+keychain)
+		"MACOS_KEYCHAIN="+keychain)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("signing package: %v: %s", err, output)
 	}
