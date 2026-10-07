@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
@@ -184,6 +185,33 @@ window.MutationObserver=class extends MutationObserver {
 				if stats["active"] != float64(0) {
 					t.Fatalf("%s left %v connected observers", phase, stats["active"])
 				}
+			}
+		})
+	}
+	for _, phase := range []string{"mutation", "interval", "timeout"} {
+		t.Run("throw after registration/"+phase, func(t *testing.T) {
+			timeoutMS := 5
+			if phase == "interval" {
+				timeoutMS = 200
+			}
+			mutation := ""
+			if phase == "mutation" {
+				mutation = `el.setAttribute('data-thrown','yes');`
+			}
+			script := fmt.Sprintf(`(function(){
+var el=document.getElementById('assertion-fixture');delete el.value;el.value='before';
+var promise=(%s)('fixture-assertion','expected',%d);
+Object.defineProperty(el,'value',{configurable:true,get:function(){throw new Error('owned getter failed');}});
+%s return promise;
+})`, AssertValueScript, timeoutMS, mutation)
+			bounded, stop := context.WithTimeout(ctx, 2*time.Second)
+			defer stop()
+			if err := EvalAssert(bounded, script); !errors.Is(err, ErrAssertionTimeout) {
+				t.Fatalf("throwing predicate did not finish safely: %v", err)
+			}
+			stats := evalJSON(t, ctx, `fixtureObservers`)
+			if stats["active"] != float64(0) {
+				t.Fatalf("throwing predicate left %v connected observers", stats["active"])
 			}
 		})
 	}

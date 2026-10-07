@@ -2542,13 +2542,19 @@ const assertionWaitHelper = `
         if (timeout) clearTimeout(timeout);
         resolve(value);
       }
-      function recheck() { if (check()) finish(true); }
+      function recheck(final) {
+        try {
+          var value = check();
+          if (value || final) finish(value);
+        } catch (_) { finish(false); }
+      }
+      function poll() { recheck(false); }
       try {
-        observer = new MutationObserver(recheck);
+        observer = new MutationObserver(poll);
         observer.observe(document.documentElement || document, {subtree:true, childList:true, characterData:true, attributes:true});
       } catch (_) {}
-      interval = setInterval(recheck, 100);
-      timeout = setTimeout(function() { finish(check()); }, Math.max(0, timeoutMs|0));
+      interval = setInterval(poll, 100);
+      timeout = setTimeout(function() { recheck(true); }, Math.max(0, timeoutMs|0));
     });
   }
 `
