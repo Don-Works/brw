@@ -3,6 +3,7 @@ package httpclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -157,8 +158,6 @@ func TestAgentNameHeaderForwarding(t *testing.T) {
 		t.Fatalf("sanitized agent name = %q", gotName)
 	}
 
-	// The first installed name wins; a later MCP initialize cannot rename the
-	// session's group mid-run.
 	c.SetAgentName("other")
 	if _, err := c.ListTabs(context.Background()); err != nil {
 		t.Fatal(err)
@@ -202,9 +201,6 @@ func TestLogicalOwnerIsStableAcrossDisposableProxyRestarts(t *testing.T) {
 	}
 }
 
-// The pre-decoupling env var still produces a stable owner so a gateway that
-// has not moved to BRW_OWNER_ID yet does not silently lose lease ownership
-// across proxy restarts. Delete this test with the fallback read.
 func TestDeprecatedGatewaySessionIDStillYieldsStableOwner(t *testing.T) {
 	t.Setenv("BRW_OWNER_ID", "")
 	t.Setenv("MCPLEXER_BROWSER_SESSION_ID", "worker:agent-42")
@@ -470,6 +466,41 @@ func TestClick_ForwardsTabID(t *testing.T) {
 	}
 }
 
+func TestRequestContextPreservesExactArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, tab, snapshot string
+	}{
+		{"defaults", `{"value":9007199254740993,"nested":{"value":9007199254740993}}`, `"context-tab"`, `true`},
+		{"explicit", `{"value":9007199254740993,"nested":{"value":9007199254740993},"tab_id":"explicit-tab","snapshot":false}`, `"explicit-tab"`, `false`},
+		{"null", `null`, `"context-tab"`, `true`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var got map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Error(err)
+				}
+				if string(got["tab_id"]) != tc.tab || string(got["snapshot"]) != tc.snapshot {
+					t.Errorf("context fields = %s, %s", got["tab_id"], got["snapshot"])
+				}
+				if tc.body != "null" && (string(got["value"]) != "9007199254740993" || string(got["nested"]) != `{"value":9007199254740993}`) {
+					t.Errorf("arguments lost precision: %s", got)
+				}
+				fmt.Fprint(w, `{}`)
+			}))
+			defer srv.Close()
+			c, err := New(srv.URL, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := browser.WithWantSnapshot(browser.WithTabID(context.Background(), "context-tab"))
+			if _, err := c.Request(ctx, http.MethodPost, "/api/page/example", nil, json.RawMessage(tc.body)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestSnapshot_ForwardsOptions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/page/snapshot" {
@@ -598,11 +629,6 @@ func TestReadWindowSendsZeroToSelectHostDefaults(t *testing.T) {
 	}
 }
 
-// TestEvaluateForwardsTheTraceLabel: the MCP server labels the generated script
-// behind brw_get and brw_frame so the trace names the verb rather than the
-// walker expression. With --upstream-http the evaluation happens on the daemon,
-// and a context value does not cross HTTP — so the label rides in the body or it
-// is lost, and every proxied typed read looks like hand-written JavaScript.
 func TestEvaluateForwardsTheTraceLabel(t *testing.T) {
 	tests := []struct {
 		name       string

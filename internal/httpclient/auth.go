@@ -2,9 +2,7 @@ package httpclient
 
 import "net/http"
 
-// SetAuthToken sends "Authorization: Bearer <token>" on every request to the
-// upstream daemon, and only to it: a redirect to another host does not carry
-// the token. Call it before the first request.
+// SetAuthToken sends "Authorization: Bearer <token>" on every request to the upstream daemon, and only to it: a redirect to another host does not carry the token.
 func (c *Controller) SetAuthToken(token string) {
 	if token == "" {
 		return
