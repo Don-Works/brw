@@ -135,6 +135,11 @@ check. HTTP/CLI aliases use the same browser operations and retain their separat
 transport tests. The JSON report records each tool, scenario, call/assertion counts
 and outcome. Unsupported CDP tab grouping and deliberately unavailable page
 notifications remain explicit outcomes rather than successful delivery claims.
+With action confirmations enabled, a whole read-only recipe currently returns
+`approval_split_required`; its MCP row is `policy_refused`. The companion also
+checks that refusal causes no effect and verifies the same recipe's captured
+evidence through the shared recipe service. That service check is not an MCP
+success or an approval bypass.
 
 | Scenario group | Observable checks |
 | --- | --- |
