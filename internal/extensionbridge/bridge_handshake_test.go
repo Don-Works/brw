@@ -240,32 +240,16 @@ func TestStatusTokenGating(t *testing.T) {
 	b := New("", 5*time.Second, "")
 	b.SetAuthToken("s3cret-token")
 
-	statusToken := func(host, origin string) string {
-		req := httptest.NewRequest(http.MethodGet, "/status", nil)
-		req.Host = host
-		if origin != "" {
-			req.Header.Set("Origin", origin)
-		}
-		rec := httptest.NewRecorder()
-		b.handleStatus(rec, req)
-		var body map[string]any
-		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-			t.Fatalf("decode status: %v", err)
-		}
-		tok, _ := body["token"].(string)
-		return tok
-	}
-
-	if got := statusToken("127.0.0.1:17311", ""); got != "s3cret-token" {
+	if got := statusTokenFor(t, b, "127.0.0.1:17311", ""); got != "s3cret-token" {
 		t.Errorf("extension (loopback, no origin) should receive the token, got %q", got)
 	}
-	if got := statusToken("localhost:17311", "chrome-extension://"+profilepolicy.DefaultBridgeExtensionID); got != "s3cret-token" {
+	if got := statusTokenFor(t, b, "localhost:17311", "chrome-extension://"+profilepolicy.DefaultBridgeExtensionID); got != "s3cret-token" {
 		t.Errorf("the configured extension's origin over loopback should receive the token, got %q", got)
 	}
-	if got := statusToken("127.0.0.1:17311", "https://evil.com"); got != "" {
+	if got := statusTokenFor(t, b, "127.0.0.1:17311", "https://evil.com"); got != "" {
 		t.Errorf("web origin must NOT receive the token, got %q", got)
 	}
-	if got := statusToken("evil.com:17311", ""); got != "" {
+	if got := statusTokenFor(t, b, "evil.com:17311", ""); got != "" {
 		t.Errorf("non-loopback (rebinding) Host must NOT receive the token, got %q", got)
 	}
 }

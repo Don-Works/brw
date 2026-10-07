@@ -2,6 +2,7 @@ package extensionbridge
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,15 +14,6 @@ func messagesOf(fake *navigationFakeExtension) []string {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	return append([]string(nil), fake.messages...)
-}
-
-func indexOf(list []string, want string) int {
-	for i, item := range list {
-		if item == want {
-			return i
-		}
-	}
-	return -1
 }
 
 // A tab whose only navigation turned into a download holds the initial empty
@@ -75,7 +67,7 @@ func TestNavigateToArmsInlineDocumentAroundPageNavigate(t *testing.T) {
 		t.Fatalf("navigate_to: %v", err)
 	}
 	messages := messagesOf(fake)
-	arm, navigate, disarm := indexOf(messages, "arm_inline_document"), indexOf(messages, "Page.navigate"), indexOf(messages, "disarm_inline_document")
+	arm, navigate, disarm := slices.Index(messages, "arm_inline_document"), slices.Index(messages, "Page.navigate"), slices.Index(messages, "disarm_inline_document")
 	if arm == -1 || navigate == -1 || disarm == -1 {
 		t.Fatalf("messages = %v, want arm, Page.navigate and disarm", messages)
 	}
@@ -104,7 +96,7 @@ func TestNavigateToWorksWithAnExtensionThatCannotArmInlineDocuments(t *testing.T
 	if err := b.navigateToURLAndWait(ctx, target); err != nil {
 		t.Fatalf("navigate_to with an old extension: %v", err)
 	}
-	if messages := messagesOf(fake); indexOf(messages, "disarm_inline_document") != -1 {
+	if messages := messagesOf(fake); slices.Index(messages, "disarm_inline_document") != -1 {
 		t.Fatalf("messages = %v, want no disarm after a refused arm", messages)
 	}
 }
@@ -121,7 +113,7 @@ func TestNavigateToNamesADownloadShapedAbort(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "served as a download") {
 		t.Fatalf("navigate_to error = %v, want it to say the destination was a download", err)
 	}
-	if messages := messagesOf(fake); indexOf(messages, "disarm_inline_document") == -1 {
+	if messages := messagesOf(fake); slices.Index(messages, "disarm_inline_document") == -1 {
 		t.Fatalf("messages = %v, want the arm released after the failed navigation", messages)
 	}
 }

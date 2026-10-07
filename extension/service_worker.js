@@ -8,105 +8,38 @@ const PROTOCOL_VERSION = "0.2.0";
 const KEEPALIVE_INTERVAL_MS = 5 * 1000;
 const DAEMON_STATUS_INTERVAL_MS = 10 * 1000;
 const DAEMON_STATUS_TIMEOUT_MS = 2 * 1000;
-// A single loopback /status fetch can fail while macOS wakes, the daemon is
-// briefly busy, or Chromium is resuming its network service. The WebSocket is
-// the authoritative transport, so do not tear a healthy one down on one noisy
-// HTTP probe. Three consecutive failures still recover a genuinely stale link.
 const MAX_DAEMON_STATUS_FAILURES = 3;
-// The MV3 worker respawn is sub-second, so a long backoff just widens the
-// window where an agent call hits a dead bridge. Keep reconnects fast; the
-// offscreen keepalive port re-pins the worker the instant it comes back.
 const MAX_RECONNECT_DELAY_MS = 3 * 1000;
-// The daemon sends no frame when it accepts a hello; it refuses by closing the
-// socket within milliseconds of reading it. A socket still open after this long,
-// or one that has delivered a daemon frame, has been accepted.
 const BRIDGE_ACCEPT_GRACE_MS = 1000;
-// Close codes the daemon uses to refuse a connection rather than drop one:
-// 1013 while another browser profile holds the bridge (flap guard), 1008 when
-// the hello fails authentication.
 const WS_CLOSE_TRY_AGAIN_LATER = 1013;
 const WS_CLOSE_POLICY_VIOLATION = 1008;
-// Detach a tab's debugger after this long without a CDP command, so brw doesn't
-// hold debugger sessions on idle tabs of the user's real Chrome.
 const IDLE_DETACH_MS = 120 * 1000;
-// Toolbar badge colours / animation. Chrome only allows solid badge colours, so
-// "flashing" and "pulsing" are phase toggles on a short interval.
-// Canonical lexicon (same words in popup + tooltip): Idle / Agent active /
-// Reconnecting / Down. Green is reserved for verified Idle only — agent-active
-// is brand magenta so the two "good" states never collide.
 const BADGE_IDLE_BG = "#1a7f37";
 const BADGE_AGENT_BG = "#9f006f";
 const BADGE_AGENT_PULSE_BG = "#d1008f";
 const BADGE_CONNECTING_BG = "#bf8700";
 const BADGE_CONNECTING_DIM_BG = "#8a6200";
 const BADGE_DOWN_BG = "#c5221f";
-// How long after agent activity the badge stays in Agent active.
 const BADGE_USED_WINDOW_MS = 10 * 1000;
 const BADGE_ANIM_MS = 450;
-// Debounce disconnect notifications so brief reconnect flaps (MV3 respawn) do
-// not spam the operator. Only fire after we have been connected at least once
-// this worker lifetime.
 const DISCONNECT_NOTIFY_MS = 12 * 1000;
 const DISCONNECT_NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
-// How long after a brw-initiated CDP command a JS dialog on that tab is treated
-// as brw's own (auto-accepted to let the agent's flow proceed). Outside this
-// window a dialog is the user's / a background script's, and is answered with the
-// NON-destructive choice instead of blindly accepting.
 const BRW_ACTING_WINDOW_MS = 8 * 1000;
-// Closing an ordinary page must keep Page events/debugger attachment live long
-// enough to answer beforeunload, but Page.close itself has occasionally stayed
-// pending forever. Bound command + disappearance confirmation to one budget so
-// a single dirty tab cannot strand its request handler indefinitely.
 const CLOSE_TAB_BUDGET_MS = 2 * 1000;
-// Once Chrome has accepted Page.close the close is committed, but removal can
-// lag the budget: a Gmail tab that had just started a 34 MB attachment
-// download stayed in the strip for longer than 2s and then went away, after
-// close_tab had already reported failure. Keep watching for removal this much
-// longer before calling an accepted close a failure.
 const CLOSE_TAB_SETTLE_MS = 8 * 1000;
-// An install writes the unpacked payload one file at a time, so a new manifest
-// is only trusted once it has stayed put this long. SELF_UPDATE_RETRY_MS stops a
-// payload Chrome refuses to load from being retried on every alarm tick.
 const SELF_UPDATE_SETTLE_MS = 5 * 1000;
-// Several agents sharing one browser can keep it "active" indefinitely, and an
-// update that waits for a quiet moment then never lands. Past this deferral it
-// waits only for the command in flight, not for the agents to go idle.
 const SELF_UPDATE_MAX_DEFER_MS = 5 * 60 * 1000;
 const SELF_UPDATE_RETRY_MS = 10 * 60 * 1000;
 const SELF_UPDATE_KEY = "brwSelfUpdate";
-// The daemon deliberately keeps a 4 MiB WebSocket read limit per frame. Large
-// snapshots/PDF responses therefore travel as independently bounded base64
-// frames, while the receiver enforces the matching aggregate limit. Two MiB of
-// raw payload expands to ~2.67 MiB in base64, leaving ample room for the JSON
-// envelope below the daemon's 4 MiB ceiling.
 const RESPONSE_DIRECT_MAX_BYTES = 3 * 1024 * 1024;
 const RESPONSE_CHUNK_BYTES = 2 * 1024 * 1024;
-// This is a serialized-response cap, not the artifact store's raw-byte cap.
-// Base64 means extension-backed binary captures top out around 48 MiB. Keeping
-// that distinction explicit avoids a single capture transiently consuming
-// hundreds of MiB in both the MV3 worker and daemon.
 const RESPONSE_TOTAL_MAX_BYTES = 64 * 1024 * 1024;
-// A capture that spans an MV3 service-worker restart must fail closed: the
-// in-memory per-tab navigation epoch below is intentionally reset with the
-// worker. Pairing it with a fresh instance id turns that reset into a mismatch
-// instead of allowing an A -> B -> BFCache-A transition to reuse epoch zero.
 const WORKER_INSTANCE_ID = (() => {
   try {
     if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   } catch (_) {}
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 })();
-// CDP methods brw refuses to forward, enforcing its promise not to read or export
-// cookies and site storage: every cookie read/write method (which can reach
-// HttpOnly cookies page JS cannot) plus the whole family of storage domains that
-// can bulk-export a site's local/session/indexed/cache/SQL storage —
-// Storage.*, DOMStorage.*, IndexedDB.*, CacheStorage.*, and Database.* (Web SQL).
-// brw itself uses none of these, so denying them never breaks a feature — it
-// turns the privacy claim from a convention into an enforced boundary that holds
-// even against a rogue server that answered the extension's outbound socket.
-// (Runtime.evaluate is NOT on this list — brw needs it to drive the page — so a
-// caller can still read non-HttpOnly document.cookie or an input .value through
-// it; the enforced boundary is "no HttpOnly cookies, no bulk storage export".)
 const STORAGE_DOMAIN_PREFIXES = [
   "Storage.",
   "DOMStorage.",
@@ -119,19 +52,10 @@ function isDeniedCdpMethod(method) {
   if (/cookie/i.test(m)) return true;
   return STORAGE_DOMAIN_PREFIXES.some((prefix) => m.startsWith(prefix));
 }
-// sendPolicedCdp is the ONE route from a daemon message to the debugger. The
-// denylist and the acting pulse belong to brw's policy rather than to whichever
-// handler happened to remember them: a second route that skipped either is how
-// the denylist stops being an enforced boundary and becomes a convention.
-// debuggee is null for the tab's own session (which carries the attach/revive
-// handling), or {targetId} for an out-of-process frame's; tabId is passed either
-// way so the pulse names the tab the work belongs to.
 async function sendPolicedCdp(tabId, debuggee, method, params) {
   if (isDeniedCdpMethod(method)) {
     throw new Error(`cdp method ${method} is blocked by brw policy: cookie and storage access are not permitted`);
   }
-  // brw is now actively driving this tab: a dialog it triggers in the next few
-  // seconds is its own and may be auto-accepted (see the dialog handler).
   markActing(tabId);
   if (!debuggee) {
     const result = await sendDebuggerCommand(tabId, method, params || {});
@@ -155,16 +79,8 @@ function rememberDeviceEmulation(tabId, method, params) {
 }
 let offscreenSetupPromise = null;
 let packagedDefaultConfigPromise = null;
-// Activate→work→restore "juggles" (screenshot capture, frozen-tab revival) are
-// serialized per extension profile because each one may briefly activate its
-// background tab and then restore the previously active tab. Overlapping
-// juggles would race those restorations.
 let tabJuggleQueue = Promise.resolve();
 
-// enqueueTabJuggle runs fn once every earlier juggle has finished. fn's
-// rejection propagates to its caller but never wedges the queue. Never call
-// this from code already running inside a juggle — that deadlocks; pass
-// skipRevive to attach() instead (see captureScreenshotForTab).
 async function enqueueTabJuggle(fn) {
   const previous = tabJuggleQueue;
   let release;
@@ -186,156 +102,53 @@ const state = {
   statusProbeInFlight: null,
   statusProbeFailures: 0,
   attachedTabs: new Set(),
-  // attachUsedAt records the last time each attached tab's debugger was used, so
-  // sweepIdleDebuggers can release debuggers that have gone idle within a long
-  // connection — bounding how many debugger sessions brw holds on the user's
-  // real Chrome at once (accumulating attachments destabilize renderers).
   attachUsedAt: new Map(),
   deviceEmulationOverrides: new Map(),
-  // activeTabId is the USER-foreground hint, refreshed from tab/window activation
-  // events. It is only a fallback for resolving the target tab.
   activeTabId: null,
-  // agentTabId is the agent's PINNED working tab — the tab it opened or explicitly
-  // focused. It is the HIGHEST-precedence target for no-tab_id tools and is NEVER
-  // moved by the user clicking around their own tabs/windows, which is what stops
-  // the "user selected another tab" bug class on a Chrome the human drives at the
-  // same time. Set only by agent intent (open_tab / focus_tab); cleared when that
-  // tab closes or stops being controllable.
   agentTabId: null,
-  // handling counts daemon commands still being executed, so a self-update
-  // reload never lands in the middle of one.
   handling: 0,
   selfUpdateCheck: null,
   selfUpdatePending: null,
   reconnectAttempt: 0,
-  // acceptedSocket is the socket the daemon has accepted. An open socket is not
-  // a live bridge until then, and the badge must not go green for it.
   acceptedSocket: null,
   acceptTimer: null,
   lastError: "",
-  // lastAgentActivityAt is the wall-clock of the most recent agent-driven work
-  // (CDP / tab ops). Drives the green "used" badge pulse while the bridge is up.
   lastAgentActivityAt: 0,
-  // reportedStatus is the last markBridgeStatus value; the badge animator re-
-  // resolves connected→used from it without rewriting storage on every pulse.
   reportedStatus: "starting",
   bridgeConfig: null,
-  // Which layer of the config supplied the endpoint currently in use: "stored"
-  // (chrome.storage.local, written by the options page), "packaged"
-  // (bridge-defaults.json inside the extension directory) or "built-in". Nothing
-  // outside the browser can read chrome.storage.local, so a machine can hold a
-  // packaged file pointing at a dead port AND a working stored config; this is
-  // what lets the daemon side say which one is live.
   bridgeConfigSource: "built-in",
   snapshotCache: new Map(),
   observerInjected: new Set(),
-  // Monotonic committed replacement-document count per main-frame tab. It is
-  // paired with webNavigation.documentId during recipe artifact capture so an
-  // A -> B -> back-to-A BFCache round trip cannot masquerade as uninterrupted
-  // capture. SPA history updates intentionally do not increment it.
   documentEpochs: new Map(),
-  // tabId -> Map(frameId -> url) of subframes that committed another extension's
-  // chrome-extension:// page. webNavigation.getAllFrames hides those frames from
-  // brw, but onCommitted reports them, and they are what makes Chrome refuse the
-  // debugger for the whole tab. Kept so the refusal can name the extension.
   foreignExtensionFrames: new Map(),
-  // Per-tab capture of the most recent Page.fileChooserOpened CDP event, keyed
-  // by tabId. File-chooser-interception upload mode enables interception, clicks
-  // the trigger, then reads the chooser's backendNodeId from here to set the file
-  // without the native OS dialog ever opening (which would freeze the CDP
-  // session). backendNodeId is frame-agnostic, so this also reaches inputs in
-  // cross-origin iframes.
   fileChooserEvents: new Map(),
-  // dialogArm holds a PRE-DECLARED answer for the next JS dialog(s) on a tab:
-  // {accept, promptText, remaining, armedAt}. Pre-arming is what lets an agent
-  // control a confirm()/prompt() outcome WITHOUT the renderer ever blocking on a
-  // round trip to the daemon — the answer is already here when the dialog opens.
-  // containment holds the daemon's navigation policy for SUBRESOURCE gating.
-  // The nav policy alone only gates the URL an agent asks to open; without this
-  // an allowlisted page can still fetch, beacon and socket anywhere it likes.
   containment: { allowed: [], blocked: [], enabled: false },
-  // containmentGuard is the in-page guard source the daemon last sent. Kept so a
-  // tab whose debugger session was dropped (idle sweep, SW-side detach) is
-  // re-contained on its next attach instead of running uncontained.
   containmentGuard: "",
   containmentTabs: new Set(),
-  // webmcpSource is the daemon's WebMCP shim, set once by set_webmcp when the
-  // daemon runs with --enable-webmcp. Every debugger session brw opens while it
-  // is set registers it to run at document-start, so a session lost to an idle
-  // detach re-arms on the next attach. webmcpTabs holds the tabs whose CURRENT
-  // session carries the registration.
   webmcpSource: "",
   webmcpTabs: new Set(),
-  // inlineDocumentTabs maps each tab whose next main-document response is
-  // rewritten so a text download renders as a page to { patterns, mainFrameId }:
-  // the Fetch URL patterns covering the destination's origin and each redirect
-  // it takes, and the frame whose document is the one rewritten. Set by one
-  // daemon-driven navigation and cleared once that document is answered (see
-  // inlineDocumentRewrite).
   inlineDocumentTabs: new Map(),
-  // navigationOutcomes maps a tab to what its last daemon-driven navigation
-  // ended with: { url, status, authenticate, error }. Reset when the daemon arms
-  // a navigation, filled from the paused main-document response and from
-  // webNavigation.onErrorOccurred, and read back with navigation_outcome so the
-  // daemon can say why a tab holds chrome-error://chromewebdata/.
   navigationOutcomes: new Map(),
   blockedRequests: new Map(),
-  // routeRuleIds maps a tab to the declarativeNetRequest session rule ids brw
-  // installed for it in THIS worker lifetime. DNR is the only interception
-  // available here: the extension is never handed a response body, so a rule can
-  // refuse a request but cannot answer it.
-  //
-  // It is a hint, never the record. Session rules live in the browser for the
-  // whole browser session, which outlives an MV3 service worker, so after a
-  // worker restart this map is empty while the rules are still enforcing in the
-  // user's Chrome. Every change therefore reconciles against
-  // chrome.declarativeNetRequest.getSessionRules() and allocates ids from what is
-  // actually live; trusting this map alone is how a duplicate id gets Chrome to
-  // reject the whole update and strands rules nothing can remove.
   routeRuleIds: new Map(),
   dialogArm: new Map(),
-  // dialogLog is a bounded per-tab ring of dialogs that were answered, so an
-  // agent can see that a dialog happened and how it was resolved. Without this a
-  // dialog is invisible: brw answers it immediately and the page moves on.
   dialogLog: new Map(),
-  // Per-tab expiry timestamp marking that brw is actively driving the tab, so a
-  // JS dialog opening during the window is treated as brw's own (see
-  // BRW_ACTING_WINDOW_MS). Set on every brw-initiated CDP command.
   actingUntil: new Map(),
-	// Native CDP console/exception events, captured from Runtime.enable before
-	// page scripts run and drained by get_console_messages. This catches load-time
-	// errors that an in-page console monkeypatch installed after navigation misses.
 	consoleMessages: new Map(),
-  // CSS.forcePseudoState nodes/timers bridge the short interval where Chrome has
-  // accepted a pointer move for a locked/background tab but has not yet applied
-  // its compositor :hover state. Cleared on the next hover, after five seconds,
-  // or when the debugger/tab detaches.
   forcedHoverNodes: new Map(),
   forcedHoverTimers: new Map(),
-  // Downloads that started during this worker lifetime, keyed by
-  // chrome.downloads id. get_downloads returns retained snapshots so a listed
-  // GUID remains capturable by the next call. CDP Page.downloadWillBegin events
-  // carry the initiating source.tabId; recent events are correlated with
-  // chrome.downloads items below and ambiguous matches remain unattributed.
   downloads: new Map(),
   downloadCorrelation: new Map(),
   downloadProvenance: []
 };
 
-// MAX_TRACKED_DOWNLOADS bounds the download buffer so a long-lived session that
-// triggers many downloads cannot grow it without limit. Mirrors the direct-CDP
-// Manager's maxTrackedDownloads cap (internal/browser/manager_downloads.go).
 const MAX_TRACKED_DOWNLOADS = 200;
 const MAX_DOWNLOAD_PROVENANCE = MAX_TRACKED_DOWNLOADS * 2;
 const DOWNLOAD_PROVENANCE_WINDOW_MS = 5 * 1000;
 const MAX_DOWNLOAD_URL_CHARS = 8 * 1024;
 const MAX_DOWNLOAD_FILENAME_CHARS = 1000;
 const MAX_CONSOLE_MESSAGES = 200;
-// Dialogs are rare compared with console lines; a short ring is enough to answer
-// "did anything pop up during my last few actions?" without unbounded growth.
 const MAX_DIALOG_RECORDS = 20;
-// Blocked-request records exist so a contained page that half-renders can be
-// explained rather than guessed at.
 const MAX_BLOCKED_REQUESTS = 100;
 
 function remoteObjectText(arg) {
@@ -355,10 +168,6 @@ function recordConsoleMessage(tabId, level, text) {
   state.consoleMessages.set(tabId, messages);
 }
 
-// recordDialog appends an answered JS dialog to the tab's bounded ring. brw
-// always answers a dialog immediately so the renderer never hangs, which means
-// the dialog is over before an agent could observe it; the ring is how the agent
-// finds out it happened and how it was resolved.
 function recordDialog(tabId, record) {
   if (typeof tabId !== "number") return;
   const entries = state.dialogLog.get(tabId) || [];
@@ -374,9 +183,6 @@ function containmentHostMatches(host, domain) {
   return host === domain || host.endsWith("." + domain);
 }
 
-// containmentHostOf mirrors the Go policy's subresource host extraction: ws/wss
-// are mapped onto http/https so a WebSocket is gated by host like any other
-// request, and non-network schemes yield "" (nothing to confine).
 function containmentHostOf(raw) {
   try {
     const u = new URL(String(raw));
@@ -389,7 +195,6 @@ function containmentHostOf(raw) {
   }
 }
 
-// containmentPermits answers the same question as navpolicy.CheckSubresource.
 function containmentPermits(raw) {
   const host = containmentHostOf(raw);
   if (!host) return true;
@@ -408,21 +213,13 @@ function recordBlockedRequest(tabId, record) {
   state.blockedRequests.set(tabId, entries);
 }
 
-// Media types Chrome downloads although the body is text. Mirrors
-// browser.inlineDocumentTextTypes; the daemon's test measures the list against
-// a real Chromium.
 const INLINE_DOCUMENT_TEXT_TYPES = new Set([
   "text/csv", "text/tab-separated-values", "application/csv",
   "application/x-ndjson", "application/ndjson", "application/jsonl", "application/x-jsonlines",
   "application/yaml", "application/x-yaml", "application/toml"
 ]);
-// Bodies above this are left to download: a media-type change only takes
-// effect through Fetch.fulfillRequest, which carries the body through here.
 const INLINE_DOCUMENT_BODY_LIMIT = 8 << 20;
 
-// inlineDocumentRewrite mirrors browser.InlineDocumentHeaders: drop an
-// attachment disposition, turn a downloaded text type into text/plain, and say
-// whether the change needs the body re-served.
 function inlineDocumentRewrite(headers) {
   const out = [];
   let changed = false;
@@ -461,11 +258,6 @@ function inlineDocumentBodyWithinLimit(headers) {
   return true;
 }
 
-// inlineDocumentPattern mirrors browser.inlineDocumentPattern: the Fetch URL
-// pattern covering every document on url's origin, or "" when url is not
-// http(s). The origin rather than "*" keeps a cross-site iframe from pausing
-// under it: a frame document paused as Fetch.disable lands is neither reported
-// nor released by Chrome, and the frame stays on about:blank for good.
 function inlineDocumentPattern(url) {
   let parsed;
   try {
@@ -477,8 +269,6 @@ function inlineDocumentPattern(url) {
   return parsed.origin.replace(/[\\*?]/g, (c) => "\\" + c) + "/*";
 }
 
-// redirectLocation resolves the Location of a paused 3xx response against the
-// request URL, or returns "" when the response is not a redirect.
 function redirectLocation(params) {
   const status = Number(params?.responseStatusCode) || 0;
   if (status < 300 || status > 399) return "";
@@ -491,10 +281,6 @@ function redirectLocation(params) {
   }
 }
 
-// recordDocumentResponse keeps the main document's status and, for a 401 or
-// 407, its authentication challenges. Chrome under a debugger cancels the auth
-// prompt and commits its error page, so this is the only place the challenge is
-// visible.
 function recordDocumentResponse(tabId, params) {
   const outcome = state.navigationOutcomes.get(tabId);
   if (!outcome) return;
@@ -510,10 +296,6 @@ function recordDocumentResponse(tabId, params) {
     : [];
 }
 
-// answerInlineDocumentResponse answers a request paused at the response stage.
-// Once the main frame's document is answered the arm has done its job and is
-// released at once rather than on the daemon's disarm, which arrives while the
-// page's frames are loading.
 async function answerInlineDocumentResponse(tabId, params, resourceType) {
   const requestId = params.requestId;
   const continueAsIs = () => chrome.debugger.sendCommand({ tabId }, "Fetch.continueResponse", { requestId });
@@ -568,9 +350,6 @@ async function answerInlineDocument(tabId, params) {
   });
 }
 
-// fetchPatternsForTab is the one place the Fetch.enable pattern set is built,
-// so containment and an inline-document arm compose instead of overwriting each
-// other: Fetch.enable replaces the whole set every time it is sent.
 function fetchPatternsForTab(tabId) {
   const patterns = [];
   if (state.containmentTabs.has(tabId)) patterns.push({ urlPattern: "*" });
@@ -589,9 +368,6 @@ async function syncFetchInterception(tabId) {
   await sendDebuggerCommand(tabId, "Fetch.enable", { patterns });
 }
 
-// armInlineDocument arms tabId for the next main-document response from url's
-// origin. A daemon that predates the url param sends none, and gets the old
-// every-document pattern.
 async function armInlineDocument(tabId, url) {
   state.navigationOutcomes.delete(tabId);
   const pattern = url ? inlineDocumentPattern(url) : "*";
@@ -608,33 +384,17 @@ async function disarmInlineDocument(tabId) {
   await syncFetchInterception(tabId);
 }
 
-// MAX_ROUTE_RULES mirrors browser.MaxRoutesPerTab: the daemon bounds its own
-// table and the browser must not be asked to hold more than it agreed to.
 const MAX_ROUTE_RULES = 50;
 
-// Session rule ids brw allocates from. declarativeNetRequest session rules are
-// per-extension, so nothing else competes for them; the range is bounded anyway
-// so a later non-route rule can be given ids outside it and survive a route
-// reconcile.
 const ROUTE_RULE_ID_MIN = 1;
 const ROUTE_RULE_ID_MAX = 100000;
 
-// ROUTE_RESOURCE_TYPES is every request kind a route rule applies to.
-//
-// A DNR condition naming neither resourceTypes nor excludedResourceTypes matches
-// every type EXCEPT main_frame, and an empty excludedResourceTypes is the same as
-// naming nothing. Without this list an abort route would let a top-level
-// navigation through while the same route on direct CDP fails it — one brw_route
-// call meaning two different things depending on the transport.
 const ROUTE_RESOURCE_TYPES = [
   "main_frame", "sub_frame", "stylesheet", "script", "image", "font", "object",
   "xmlhttprequest", "ping", "csp_report", "media", "websocket", "webtransport",
   "webbundle", "other"
 ];
 
-// routeResourceTypes narrows the list to what this Chrome build declares.
-// updateSessionRules rejects the WHOLE update on one unknown enum value, so a
-// type this build predates would otherwise take every route down with it.
 function routeResourceTypes() {
   const declared = chrome.declarativeNetRequest && chrome.declarativeNetRequest.ResourceType;
   if (!declared || typeof declared !== "object") return ROUTE_RESOURCE_TYPES.slice();
@@ -649,8 +409,6 @@ function hasRouteRuleApi() {
     && chrome.declarativeNetRequest.getSessionRules);
 }
 
-// liveRouteRules reads back the session rules Chrome is actually enforcing, which
-// is the only source of truth that survives a service-worker restart.
 async function liveRouteRules() {
   const rules = await chrome.declarativeNetRequest.getSessionRules();
   if (!Array.isArray(rules)) return [];
@@ -663,13 +421,6 @@ function routeRuleTargetsTab(rule, tabId) {
   return Array.isArray(tabIds) && tabIds.includes(tabId);
 }
 
-// dropOrphanedRouteRules removes rules whose tab is gone, at worker start.
-//
-// A service worker that restarts mid-session comes back with no memory of the
-// rules it installed while they are still blocking requests. Rules for tabs that
-// are still open are left alone — the daemon replaces them on its next
-// set_routes — but Chrome reuses numeric tab ids, so a rule left behind for a
-// closed tab would start refusing requests in an unrelated one.
 async function dropOrphanedRouteRules() {
   if (!hasRouteRuleApi()) return;
   const live = await liveRouteRules();
@@ -687,17 +438,6 @@ async function dropOrphanedRouteRules() {
   await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds, addRules: [] });
 }
 
-// setTabRouteRules replaces the declarativeNetRequest session rules brw holds
-// for one tab.
-//
-// Session rules (not dynamic ones) because a route is scoped to one automation
-// run: they live in memory, are dropped when the browser closes, and never
-// persist into the user's profile. condition.tabIds confines each rule to the
-// tab the agent is driving, so a route never touches the human's other tabs.
-//
-// Only "abort" is expressible. A DNR rule decides whether a request happens; it
-// is never given the response, so fulfilling from a body or a HAR is refused by
-// the daemon before it reaches here.
 async function setTabRouteRules(tabId, rules) {
   if (!hasRouteRuleApi()) {
     throw new Error("this Chrome build has no chrome.declarativeNetRequest session rules; request interception is unavailable");
@@ -706,8 +446,6 @@ async function setTabRouteRules(tabId, rules) {
   if (rules.length > MAX_ROUTE_RULES) {
     throw new Error(`at most ${MAX_ROUTE_RULES} routes per tab`);
   }
-  // Validated before anything is sent, so a rule this transport cannot express
-  // leaves the browser exactly as it was.
   for (const rule of rules) {
     if (typeof rule?.regex !== "string" || !rule.regex) throw new Error("each route rule needs a regex");
     if (rule?.behaviour !== "abort") {
@@ -721,9 +459,6 @@ async function setTabRouteRules(tabId, rules) {
     }
   }
 
-  // Reconcile against the browser, not against worker memory: after a restart
-  // routeRuleIds is empty while the rules are still live, and reusing an id that
-  // is already installed makes Chrome reject the entire update.
   const remembered = new Set(state.routeRuleIds.get(tabId) || []);
   const live = await liveRouteRules();
   const removeRuleIds = [];
@@ -747,25 +482,15 @@ async function setTabRouteRules(tabId, rules) {
   for (const rule of rules) {
     const id = allocateRuleId();
     addedIds.push(id);
-    // A rule that names resourceTypes narrows to those; the daemon sends the
-    // canonical declarativeNetRequest names. An empty/absent list means every
-    // kind, spelled out so a top-level navigation is refused here too; the
-    // default set excludes main_frame. See ROUTE_RESOURCE_TYPES.
     const ruleResourceTypes = Array.isArray(rule.resourceTypes) && rule.resourceTypes.length
       ? rule.resourceTypes.filter((type) => resourceTypes.includes(type))
       : resourceTypes;
     addRules.push({
       id,
-      // Rules are evaluated highest-priority-first and brw installs the tab's set
-      // in the daemon's order, so a rule added earlier has to win: descending
-      // priority reproduces the first-match-wins the direct-CDP backend gives.
       priority: MAX_ROUTE_RULES - addRules.length,
       action: { type: "block" },
       condition: {
         regexFilter: rule.regex,
-        // The daemon's matcher is case-sensitive; DNR's default is not, and a
-        // pattern that meant two different things per transport would be worse
-        // than one that works on neither.
         isUrlFilterCaseSensitive: true,
         resourceTypes: ruleResourceTypes,
         tabIds: [tabId]
@@ -778,11 +503,6 @@ async function setTabRouteRules(tabId, rules) {
   return { tabId, count: addedIds.length };
 }
 
-// clearTabRouteRules drops a closed tab's rules. Chrome reuses numeric tab ids,
-// so a rule left behind would start blocking requests in an unrelated tab.
-//
-// The removal is resolved from the live rule set rather than from routeRuleIds,
-// which is empty for anything installed before the last service-worker restart.
 async function clearTabRouteRules(tabId) {
   const remembered = new Set(state.routeRuleIds.get(tabId) || []);
   state.routeRuleIds.delete(tabId);
@@ -794,14 +514,9 @@ async function clearTabRouteRules(tabId) {
     if (!removeRuleIds.length) return;
     await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds, addRules: [] });
   } catch (_) {
-    // The rules go with the browser session anyway; a failure here is not worth
-    // surfacing to the agent that closed the tab.
   }
 }
 
-// mapDownloadState translates a chrome.downloads state to the wire vocabulary the
-// Go side expects (inProgress | completed | canceled), matching the direct-CDP
-// backend's DownloadEntry.State so brw_downloads reads identically on both.
 function mapDownloadState(state) {
   switch (state) {
     case "complete": return "completed";
@@ -811,10 +526,6 @@ function mapDownloadState(state) {
   }
 }
 
-// recordDownload upserts a chrome.downloads item into the session buffer in the
-// Go DownloadEntry wire shape. filename is the full local path; suggested_filename
-// is its basename. Only fields present on the item/delta are overwritten so a
-// later onChanged delta never clobbers a value an earlier event already set.
 function recordDownload(item) {
   if (!item || typeof item.id !== "number") return;
   const guid = String(item.id);
@@ -826,14 +537,6 @@ function recordDownload(item) {
     MAX_DOWNLOAD_FILENAME_CHARS
   );
   const nextState = item.state ? mapDownloadState(item.state) : (prev.state || "inProgress");
-  // changed_at_ms is what lets a download wait tell "this finished a second ago"
-  // from "this finished last week". The daemon applies the same 15s recency
-  // window to it that the direct-CDP transport applies to its own registry, so
-  // a fast download that beats the wait still satisfies it on this transport.
-  // It moves only when the state actually changes, so repeated polling does not
-  // churn the entry's change fingerprint; Chrome's own endTime wins for a
-  // terminal state so a service-worker restart cannot make an old download look
-  // freshly finished.
   let changedAt = Number(prev.changed_at_ms) || 0;
   if (!changedAt || nextState !== prev.state) changedAt = Date.now();
   if (nextState === "completed" || nextState === "canceled") {
@@ -860,9 +563,6 @@ function recordDownload(item) {
   let directConflict = priorCorrelation?.directConflict === true;
   if (Number.isInteger(item.tabId) && item.tabId >= 0) {
     const supplied = String(item.tabId);
-    // A future chrome.downloads implementation may expose tabId directly. If
-    // it ever contradicts an earlier value, fail closed instead of switching
-    // ownership on a retained download.
     if (directTabId && directTabId !== supplied) directConflict = true;
     directTabId = directConflict ? "" : supplied;
   }
@@ -873,9 +573,6 @@ function recordDownload(item) {
     directTabId,
     directConflict
   });
-  // Re-insert at the end so the most-recently-touched download is freshest and
-  // terminal entries are the first eviction candidates. Map.set on an existing
-  // key keeps original order, so delete first to move it to the tail.
   state.downloads.delete(guid);
   state.downloads.set(guid, next);
   while (state.downloads.size > MAX_TRACKED_DOWNLOADS) {
@@ -905,10 +602,6 @@ function downloadBasename(path) {
   return String(path || "").split(/[\\/]/).pop() || "";
 }
 
-// Page.downloadWillBegin supplies source.tabId, which chrome.downloads omits.
-// Keep a bounded set of recent start observations and correlate only exact URL
-// candidates. When simultaneous matching starts came from different tabs the
-// result deliberately has no tab_id, so recipe polling rejects it.
 function recordDownloadProvenance(tabId, params) {
   if (!Number.isInteger(tabId) || tabId < 0 || !params) return;
   const url = boundedDownloadText(params.url || "", MAX_DOWNLOAD_URL_CHARS);
@@ -921,9 +614,6 @@ function recordDownloadProvenance(tabId, params) {
     suggestedFilename: boundedDownloadText(params.suggestedFilename || "", MAX_DOWNLOAD_FILENAME_CHARS),
     observedAt: Date.now()
   };
-  // Some Chromium versions expose the same logical event under both the old
-  // Page and current Browser domain names. Deduplicate their CDP GUID so one
-  // download does not become artificially ambiguous.
   const duplicate = guid ? state.downloadProvenance.findIndex((entry) => entry.guid === guid) : -1;
   if (duplicate >= 0) {
     const previous = state.downloadProvenance[duplicate];
@@ -970,9 +660,6 @@ function downloadSnapshot() {
     let tabId = correlation?.directTabId || "";
     if (!tabId) {
       const candidates = candidatesByGUID.get(guid) || [];
-      // Require a one-to-one match. One attached-tab CDP event plus two
-      // indistinguishable chrome.downloads items could mean the second download
-      // came from an unattached human tab; assigning either would be unsafe.
       if (candidates.length === 1 && usesByProvenance.get(candidates[0]) === 1) {
         tabId = candidates[0].tabId;
       }
@@ -982,8 +669,6 @@ function downloadSnapshot() {
   });
 }
 
-// flattenDownloadDelta turns a chrome.downloads.onChanged delta ({id, state:{current}})
-// into the flat item shape recordDownload consumes.
 function flattenDownloadDelta(delta) {
   if (!delta || typeof delta.id !== "number") return null;
   const item = { id: delta.id };
@@ -995,8 +680,6 @@ function flattenDownloadDelta(delta) {
   return item;
 }
 
-// chrome.downloads is gated on the "downloads" manifest permission and absent on
-// very old Chrome; guard so the service worker still loads if it is unavailable.
 if (chrome.downloads && chrome.downloads.onCreated) {
   chrome.downloads.onCreated.addListener((item) => recordDownload(item));
   chrome.downloads.onChanged.addListener((delta) => {
@@ -1005,27 +688,19 @@ if (chrome.downloads && chrome.downloads.onCreated) {
   });
 }
 
-// markActing records that brw is driving tabId right now, so a dialog it triggers
-// (e.g. a beforeunload while navigating, or a confirm it clicked) is auto-handled.
 function markActing(tabId) {
   if (typeof tabId === "number") state.actingUntil.set(tabId, Date.now() + BRW_ACTING_WINDOW_MS);
   queueAgentActivity(tabId);
 }
 
-// isActing reports whether brw is within its acting window for tabId.
 function isActing(tabId) {
   return Date.now() < (state.actingUntil.get(tabId) || 0);
 }
 
-// isOperatorChromeUrl is chrome/extension/devtools chrome the human (or the
-// status popup itself) uses — driving those must NOT light the "agent used" pulse.
 function isOperatorChromeUrl(url) {
   return /^(chrome|chrome-extension|devtools|edge|about|brave|chrome-search):/i.test(String(url || ""));
 }
 
-// queueAgentActivity promotes the green "used" pulse when the agent drives a
-// real page. Fire-and-forget: tab URL lookup is async, and badge work must never
-// block a CDP command.
 function queueAgentActivity(tabId) {
   Promise.resolve().then(async () => {
     if (typeof tabId === "number") {
@@ -1036,15 +711,9 @@ function queueAgentActivity(tabId) {
   }).catch(() => {});
 }
 
-// touchAgentActivity records that the agent is currently driving this browser
-// and promotes the toolbar badge into the green "used" pulse while connected.
-// Never forces a connected badge when the bridge is already down — only re-
-// resolves the connected→used pulse.
 function touchAgentActivity() {
   state.lastAgentActivityAt = Date.now();
   if (isBridgeLive() || state.reportedStatus === "connected") {
-    // Prefer socket: per-request faults used to stamp reportedStatus "error"
-    // while the bridge stayed up; isBridgeLive keeps the badge honest.
     setBridgeBadge(isBridgeLive() ? "connected" : state.reportedStatus);
   }
 }
@@ -1111,12 +780,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   sendResponse({ ok: true });
   return false;
 });
-// The offscreen keepalive holds a long-lived port here. An open runtime port
-// keeps this worker non-idle for as long as it stays connected, so the worker
-// does not idle out and sever the daemon bridge. Touch the bridge on (re)connect
-// so a worker that just respawned reconnects immediately instead of waiting for
-// the 30s alarm. The port reference is retained so it is never GC'd out from
-// under the connection.
 let keepAlivePort = null;
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== "brw-keepalive") return;
@@ -1139,11 +802,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
     return;
   }
   if (!changes[BRIDGE_CONFIG_KEY]) return;
-  // Re-resolve through loadBridgeConfig rather than normalising the changed
-  // value alone: the stored record is a PARTIAL override of the packaged
-  // defaults, so normalising it by itself drops whatever only the packaged file
-  // sets and leaves the running worker on a different endpoint than the one it
-  // would pick after a restart.
   loadBridgeConfig().then(() => {
     state.lastError = "";
     if (state.socket) {
@@ -1156,8 +814,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
     markBridgeStatus("error", state.lastError).catch(() => {});
   });
 });
-// Toolbar click is handled by default_popup (popup.html). With a popup set,
-// chrome.action.onClicked does not fire — reconnect lives in the popup actions.
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "brw-connect") {
     ensureOffscreen();
@@ -1168,8 +824,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.runtime.onSuspend.addListener(() => {
   stopKeepAlive();
   setBridgeBadge("disconnected");
-  // Best-effort: release every debugger before the service worker is torn down,
-  // so a suspend never leaves the user's Chrome in a debugged state.
   detachAll().catch(() => {});
 });
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
@@ -1195,20 +849,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   state.forcedHoverTimers.delete(tabId);
   void clearTabRouteRules(tabId);
   if (state.activeTabId === tabId) state.activeTabId = null;
-  // The agent's pinned tab was closed — drop the pin so resolution falls back to a
-  // live tab instead of repeatedly probing a dead one.
   if (state.agentTabId === tabId) state.agentTabId = null;
-  // Tell the daemon immediately so its isolation ownership and every cache
-  // keyed by Chrome's reusable numeric tab id are invalidated before a later
-  // call can target or suppress state on an unrelated replacement tab. Older
-  // daemons safely ignore this additive id-less control frame.
   send({ type: "tab_removed", tabId });
 });
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) return;
-  // Ignore only genuine non-browser surfaces (PWA/app + devtools). Track every
-  // other window type — normal, popup, and clone/test-profile windows that may not
-  // classify as "normal" — so the agent can target them without landing on a PWA.
   const win = await chrome.windows.get(windowId).catch(() => null);
   if (win && (win.type === "app" || win.type === "devtools")) return;
   const tabs = await chrome.tabs.query({ windowId, active: true }).catch(() => []);
@@ -1231,13 +876,6 @@ chrome.debugger.onDetach.addListener((source) => {
     state.forcedHoverTimers.delete(source.tabId);
   }
 });
-// Capture CDP events the daemon needs to observe out-of-band. Page.downloadWillBegin
-// supplies the initiating source.tabId that chrome.downloads omits, while
-// Page.fileChooserOpened supports file-chooser interception. When interception is enabled
-// (Page.setInterceptFileChooserDialog), clicking a file-picker trigger fires this
-// event with the chooser's backendNodeId instead of opening the native OS dialog.
-// We stash the latest per tab so the daemon can poll for it via
-// get_file_chooser_event and then set the file with DOM.setFileInputFiles.
 chrome.debugger.onEvent.addListener((source, method, params) => {
 	if ((method === "Page.downloadWillBegin" || method === "Browser.downloadWillBegin") && typeof source.tabId === "number") {
 	  recordDownloadProvenance(source.tabId, params);
@@ -1254,24 +892,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 	  recordConsoleMessage(source.tabId, "error", text);
 	  return;
 	}
-  // A JS dialog (alert/confirm/prompt/beforeunload) opening while Page is enabled
-  // is intercepted by CDP and MUST be answered or the renderer hangs. We answer,
-  // but the choice is no longer a blanket accept:
-  //   - If brw is actively driving this tab (isActing), the dialog is the agent's
-  //     own — accept it so its flow proceeds (e.g. confirm it just clicked, or a
-  //     beforeunload while brw navigates).
-  //   - Otherwise the dialog is the USER's (or a background script's): answer with
-  //     the NON-destructive choice — Cancel/Stay for confirm/prompt/beforeunload
-  //     (never auto-OK "Delete account?", never silently discard unsaved changes),
-  //     and OK only for alert, whose sole button is OK.
   if (method === "Fetch.requestPaused" && typeof source.tabId === "number") {
     const requestId = params?.requestId;
     const url = params?.request?.url || "";
     const resourceType = params?.resourceType || "";
     if (!requestId) return;
-    // A response-stage pause was already permitted at the request stage. Only
-    // an inline-document arm asks for it, and only the document itself is
-    // rewritten; everything else continues untouched.
     if (params?.responseStatusCode !== undefined || Array.isArray(params?.responseHeaders)) {
       answerInlineDocumentResponse(source.tabId, params, resourceType).catch(() => {});
       return;
@@ -1291,9 +916,6 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   }
   if (method === "Page.javascriptDialogOpening" && typeof source.tabId === "number") {
     const type = params?.type || "";
-    // A pre-armed answer (brw_dialog action:"expect") wins over the default
-    // policy. It is consumed here, at native speed, so the renderer is never
-    // held open waiting for the daemon to be asked what to do.
     const arm = state.dialogArm.get(source.tabId);
     let accept;
     let promptText;
@@ -1309,13 +931,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       decidedBy = isActing(source.tabId) ? "agent_acting" : "user_safe_default";
     }
     const command = { accept };
-    // promptText is only meaningful for prompt(); sending it otherwise is a
-    // protocol error on some Chrome builds.
     if (type === "prompt" && typeof promptText === "string") command.promptText = promptText;
-    // Field names and types are the DAEMON's wire contract (browser.DialogRecord),
-    // not this file's house style: snake_case keys and an RFC 3339 string for at.
-    // Emitting camelCase here silently blanks decided_by on the daemon side, and
-    // a numeric timestamp fails the whole parse.
     recordDialog(source.tabId, {
       type,
       message: String(params?.message || "").slice(0, 2000),
@@ -1341,12 +957,6 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     capturedAt: Date.now()
   });
 });
-// A full-page navigation replaces the document, so any snapshot cached for that
-// tab (and the MutationObserver / console hook injected into the old execution
-// context) is stale. Clear the per-tab cache + observer flag on main-frame
-// commits so the next Snapshot()/Find() re-evaluates against the new document
-// instead of serving pre-navigation content. frameId === 0 = main frame only;
-// subframe (iframe) navigations don't replace the top document.
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (typeof details.tabId === "number" && details.frameId === 0) {
     state.snapshotCache.delete(details.tabId);
@@ -1359,18 +969,6 @@ chrome.webNavigation.onCommitted.addListener((details) => {
     noteSubframeCommit(details.tabId, details.frameId, details.url);
   }
 });
-// SPA route changes via history.pushState/replaceState (the way frameworks like
-// Decathlon's storefront navigate) do NOT fire onCommitted — the document is
-// never replaced — so the snapshot cache would go stale across a client-side
-// route change and serve pre-navigation content. onHistoryStateUpdated fires
-// exactly for these in-page history transitions; invalidate the per-tab snapshot
-// cache on a main-frame (frameId === 0) update so the next Snapshot()/Find()
-// re-evaluates against the new route. The injected MutationObserver/console hook
-// survive (same execution context), so observerInjected is intentionally NOT
-// cleared here — only the stale snapshot is dropped.
-// A failed main-frame navigation commits chrome-error://chromewebdata/, which
-// says nothing about why. Keep the net error for the navigation the daemon
-// armed; one it did not arm is not its to explain.
 chrome.webNavigation.onErrorOccurred.addListener((details) => {
   if (typeof details?.tabId !== "number" || details.frameId !== 0) return;
   const outcome = state.navigationOutcomes.get(details.tabId);
@@ -1390,10 +988,6 @@ dropOrphanedRouteRules().catch(() => {});
 markBridgeStatus("starting").catch(() => {});
 connect();
 
-// onDiskBuild is the manifest version of the payload directory this extension
-// was loaded from. Chrome serves an unpacked extension's files from disk on
-// every request, so this is what a reload would run, while getManifest() is
-// what is running now.
 async function onDiskBuild() {
   try {
     const response = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" });
@@ -1409,10 +1003,6 @@ function selfUpdateBusy(overdue = false) {
   return state.handling > 0 || (!overdue && isAgentActive());
 }
 
-// selfUpdateIfStale reloads the extension when an install has put a different
-// build on disk than the one running. Without it a browser keeps executing the
-// old payload until someone clicks Reload. It waits for the agent to go idle,
-// and the reload fires onInstalled, which reconnects the bridge.
 function selfUpdateIfStale(options = {}) {
   if (state.selfUpdateCheck) return state.selfUpdateCheck;
   state.selfUpdateCheck = selfUpdateCheckOnce(options).finally(() => {
@@ -1472,15 +1062,10 @@ async function connectOnce() {
     await markBridgeStatus("error", state.lastError);
     return;
   }
-  // Consent can be revoked while the asynchronous config read above is in
-  // flight. Re-check immediately before creating any transport so an older
-  // connect attempt cannot outlive the user's choice.
   if (!(await hasBrowserControlConsent())) {
     await markBridgeStatus("consent_required", "Browser control has not been enabled by the user.");
     return;
   }
-  // While the daemon is refusing this browser, each retry would otherwise flash
-  // Reconnecting between two Refused frames. Stay on Refused until accepted.
   if (state.reportedStatus !== "rejected") await markBridgeStatus("connecting");
 
   const socket = new WebSocket(config.bridgeUrl);
@@ -1501,8 +1086,6 @@ async function connectOnce() {
 
   socket.onopen = async () => {
     if (state.socket !== socket) return;
-    // A WebSocket may finish opening after Disable was clicked. Never send the
-    // authenticated hello or accept work until the current consent is checked.
     if (!(await hasBrowserControlConsent())) {
       if (state.socket !== socket) return;
       if (state.socket === socket) state.socket = null;
@@ -1513,11 +1096,6 @@ async function connectOnce() {
     if (state.socket !== socket) return;
     state.statusProbeFailures = 0;
     const platform = await chrome.runtime.getPlatformInfo().catch(() => ({}));
-    // Read the per-launch handshake token from the daemon's loopback /status
-    // (our host_permissions let us read the body; a web page's cross-origin fetch
-    // gets an opaque response) and present it as the FIRST frame. The daemon
-    // refuses any connection whose hello lacks the token, so a malicious page or a
-    // rogue local client that opened this socket cannot drive the bridge.
     const auth = await fetchBridgeToken(config);
     if (state.socket !== socket) return;
     if (!(await hasBrowserControlConsent())) {
@@ -1527,9 +1105,6 @@ async function connectOnce() {
     if (state.socket !== socket) return;
     const token = auth.token;
     if (!token) {
-      // The daemon refuses a tokenless hello, so this connection is about to be
-      // closed. Say why HERE: the daemon logs its rejection, the extension logs
-      // nothing, and neither half of that diagnosis is conclusive alone.
       acceptDetail = auth.reachable
         ? `${auth.detail} at ${config.statusUrl}. A daemon that requires the token will refuse this connection; it is probably older than the extension.`
         : `${auth.detail} at ${config.statusUrl}. The connection will be refused. Check the bridge address on the options page.`;
@@ -1540,36 +1115,19 @@ async function connectOnce() {
       hello: {
         source: "brw-extension",
         version: PROTOCOL_VERSION,
-        // The actual manifest version of the LOADED code, distinct from the
-        // wire-protocol version above. This is what lets an operator confirm
-        // an unpacked-extension reload really picked up a new build — the
-        // browsers on this pattern have been caught running months-stale code
-        // while the on-disk extension directory was current.
         build: (chrome.runtime.getManifest?.() || {}).version || "",
         chrome: navigator.userAgent,
         platform: platform.os || "",
         workspace: config.workspace || "",
         profile: config.profile || "",
         label: config.label || "",
-        // This is the extension's AGENT-OWNED pin, never the user's foreground
-        // tab. The daemon reconciles it before publishing a reconnected socket,
-        // so a tab_removed control frame lost during the disconnect gap cannot
-        // leave a stale numeric tab id pointing at an unrelated replacement.
         agent_tab_id: agentOwnedTabIdForHello(),
-        // The endpoints this worker is ACTUALLY using and which config layer
-        // supplied them. They are reported even on a hello that is about to be
-        // refused (no token, because status_url could not be reached): that
-        // rejection is the only moment a daemon ever learns the URL a
-        // misconfigured extension is trying, and `brwctl doctor` reads it back
-        // off /status to name the fault from the daemon side.
         status_url: config.statusUrl,
         bridge_url: config.bridgeUrl,
         config_source: state.bridgeConfigSource,
         token
       }
     });
-    // Start keepalive only AFTER the hello so hello is guaranteed to be the
-    // bridge's first frame — the authenticated handshake requires it.
     startKeepAlive();
     if (state.socket === socket) state.acceptTimer = setTimeout(accept, BRIDGE_ACCEPT_GRACE_MS);
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
@@ -1584,11 +1142,6 @@ async function connectOnce() {
     state.acceptTimer = null;
     const wasAccepted = state.acceptedSocket === socket;
     if (wasAccepted) state.acceptedSocket = null;
-    // The daemon is gone — release every debugger so brw never keeps the user's
-    // real Chrome in a debugged state while disconnected (the next CDP call
-    // re-attaches lazily, so this is safe). This is the primary fix for
-    // debugger sessions accumulating and destabilizing Chrome / corrupting tab
-    // storage (e.g. WhatsApp Web logging out).
     detachAll().catch(() => {});
     const refusal = wasAccepted ? "" : refusalDetail(event, acceptDetail);
     if (refusal) {
@@ -1605,9 +1158,6 @@ async function connectOnce() {
   };
   socket.onmessage = async (event) => {
     if (state.socket !== socket) return;
-    // Storage-change delivery and WebSocket events are separate queues. This
-    // closes the last race where a command was already queued as consent was
-    // revoked.
     if (!(await hasBrowserControlConsent())) {
       if (state.socket !== socket) return;
       await disconnectForConsent();
@@ -1631,8 +1181,6 @@ async function connectOnce() {
   };
 }
 
-// refusalDetail names why the daemon refused a socket it never accepted, or
-// returns "" for an ordinary close.
 function refusalDetail(event, handshakeDetail) {
   const code = Number(event?.code) || 0;
   const reason = String(event?.reason || "").trim();
@@ -1660,10 +1208,6 @@ async function loadBridgeConfig() {
   return state.bridgeConfig;
 }
 
-// BRIDGE_ENDPOINT_KEYS are the config keys that decide which daemon this
-// extension talks to, in the order normalizeBridgeConfig consults them:
-// statusUrl wins outright, otherwise it is derived from bridgeUrl / url /
-// bridgePort.
 const BRIDGE_ENDPOINT_KEYS = ["statusUrl", "bridgeUrl", "url", "bridgePort"];
 
 function hasConfigValue(layer, key) {
@@ -1671,15 +1215,6 @@ function hasConfigValue(layer, key) {
   return value !== undefined && value !== null && value !== "";
 }
 
-// bridgeConfigSource names the layer that supplied the endpoint in use. The
-// stored record is a per-key override of the packaged file, so provenance is
-// resolved per key in the same order the endpoint itself is: the first key
-// either layer sets is the one that decided the URL.
-//
-// This is the only way the fault is nameable at all. An upgrade preserves each
-// profile's bridge-defaults.json, so a machine that once had one keeps it even
-// after its port moved — and reading that file is not an answer, because a
-// stored config silently overrides it. On disk the two cases are identical.
 function bridgeConfigSource(defaults, stored) {
   for (const key of BRIDGE_ENDPOINT_KEYS) {
     if (hasConfigValue(stored, key)) return "stored";
@@ -1750,7 +1285,6 @@ async function packagedDefaultBridgeConfig() {
 async function configureBridge(config) {
   const normalized = normalizeBridgeConfig(config || {});
   state.bridgeConfig = normalized;
-  // Everything configureBridge writes is a stored override, endpoint included.
   state.bridgeConfigSource = "stored";
   await chrome.storage.local.set({ [BRIDGE_CONFIG_KEY]: normalized });
   state.lastError = "";
@@ -1885,9 +1419,6 @@ globalThis.brwConfigure = configureBridge;
 
 async function handle(message) {
   try {
-    // "Used" pulse is lit only from markActing / sendDebuggerCommand on real
-    // page tabs (see queueAgentActivity). Bookkeeping + extension-page CDP must
-    // not keep the badge permanently pulsing.
     if (message.type === "ping") {
       send({ id: message.id, ok: true, result: { pong: true } });
       return;
@@ -1901,10 +1432,6 @@ async function handle(message) {
       return;
     }
     if (message.type === "get_active_tab_id") {
-      // Resolve the browser's genuinely focused/active tab dynamically rather
-      // than letting the daemon trust a cached reference that drifts when the
-      // user switches tabs manually. activeTabId() prefers the focused window's
-      // active tab and self-heals the cached state.activeTabId.
       let tabId = null;
       let resolveError = "";
       try {
@@ -1912,12 +1439,6 @@ async function handle(message) {
       } catch (error) {
         resolveError = String(error?.message || error);
       }
-      // Report WHY resolution found nothing. Without this the daemon cannot tell
-      // "the worker was mid-reconnect" (retry, then trust the cached tab) from
-      // "every candidate is a tab Chrome will not let brw drive" (never fall back
-      // — the cached id is very likely that same undrivable tab). Swallowing the
-      // reason is what let a Bitwarden popout keep breaking every no-tab_id call
-      // even after tab resolution itself learned to skip it.
       send({ id: message.id, ok: true, result: { tabId: tabId || 0, error: resolveError } });
       return;
     }
@@ -1928,9 +1449,6 @@ async function handle(message) {
       }
       let frame = null;
       try {
-        // frameId 0 is the committed top-level document. Chrome's documentId is
-        // stable across pushState/replaceState/hash changes, but a reload or
-        // same/cross-origin replacement document receives a new UUID.
         frame = await chrome.webNavigation.getFrame({ tabId, frameId: 0 });
       } catch (_) {
         throw new Error("main-document identity is unavailable");
@@ -1942,17 +1460,9 @@ async function handle(message) {
       } catch (_) {
         throw new Error("main-document identity is unavailable");
       }
-      // Opaque-origin replacement documents (about:blank/data:) still have a
-      // trustworthy webNavigation documentId and are valid navigation-completion
-      // boundaries. Return origin:"null" on the wire; artifact capture keeps
-      // rejecting it in the daemon because its stronger origin guard requires a
-      // concrete security origin.
       if (!documentId || documentId.length > 256 || !origin || origin.length > 2048) {
         throw new Error("main-document identity is unavailable");
       }
-      // Do not return the page URL. The browser-host capture guard needs only
-      // an opaque document id and exact origin, and neither leaves artifact
-      // metadata or an MCP response.
       send({ id: message.id, ok: true, result: {
         document_id: documentId,
         document_epoch: state.documentEpochs.get(tabId) || 0,
@@ -1963,45 +1473,18 @@ async function handle(message) {
       return;
     }
     if (message.type === "open_tab") {
-      // Foreground vs background. By default (active !== false) the tab is created
-      // ACTIVE within its window so it becomes the authoritative foreground tab
-      // (resolveForegroundTabId returns it) and subsequent no-tab_id page tools —
-      // read, observe, snapshot — follow it, matching what list_tabs reports as
-      // active. The daemon passes active:false in isolation mode: the tab opens in
-      // the BACKGROUND so it never switches the tab the user is looking at, while
-      // still being pinned as the agent's working target below (the daemon resolves
-      // it by id, so it does not need to be the foreground tab). Either way we
-      // never call chrome.windows.update({focused:true}), so automation never
-      // raises Chrome over the user's other OS apps.
       const makeActive = message.params?.active !== false;
       const targetUrl = message.params?.url || "about:blank";
-      // With inlineDocument the tab is created blank, armed, and only then sent
-      // to its URL, so a text response the server flags as an attachment renders
-      // as the tab's first document instead of leaving an empty tab and a file.
       const inlineDocument = message.params?.inlineDocument === true && targetUrl !== "about:blank";
-      // With webmcp the tab is likewise created blank and armed first, so the
-      // shim is in place before the first document's own scripts register tools.
       const webmcpSource = typeof message.params?.webmcp === "string" ? message.params.webmcp : "";
       const armFirst = inlineDocument || (webmcpSource !== "" && targetUrl !== "about:blank");
       const createParams = { url: armFirst ? "about:blank" : targetUrl, active: makeActive };
-      // chrome.tabs.create without windowId inherits Chrome's last-focused
-      // window — including a popup created by the previous automation step.
-      // Popup windows cannot host tab groups, so the new tab would be created
-      // successfully and then open_tab would fail while grouping it. Prefer a
-      // normal browser window explicitly; omit windowId only when none exists so
-      // Chrome can create its normal fallback window.
       const normalWindowId = await preferredNormalWindowId();
       if (typeof normalWindowId === "number") createParams.windowId = normalWindowId;
       let tab;
       try {
         tab = await chrome.tabs.create(createParams);
       } catch (err) {
-        // Chrome rejects tabs.create with "No current window" when the browser
-        // process is alive with zero windows — routine on macOS, where closing
-        // the last window leaves the app running. Chrome does not create the
-        // fallback window here, and an agent cannot open one itself, so the
-        // call used to dead-end on a state that is trivially recoverable.
-        // Create the window brw needs and carry on.
         if (!/no current window/i.test(String(err?.message || err))) throw err;
         const win = await chrome.windows.create({
           url: createParams.url,
@@ -2018,16 +1501,8 @@ async function handle(message) {
         if (inlineDocument) await armInlineDocument(tab.id, targetUrl).catch(() => {});
         tab = await chrome.tabs.update(tab.id, { url: targetUrl });
       }
-      // brw drives this tab for the rest of the agent session, usually in the
-      // background. Memory Saver would see an idle background tab and discard
-      // it — killing the renderer so every later CDP call hangs. Opt the tab
-      // out of automatic discard for its lifetime.
       if (tab.id) await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
       if (makeActive) state.activeTabId = tab.id || null;
-      // Pin the agent's own tab as its working target so subsequent no-tab_id tools
-      // stay on it no matter which tab/window the human selects next. This holds for
-      // background opens too — the pin, not the foreground state, is what no-tab_id
-      // resolution follows.
       state.agentTabId = tab.id || null;
       let resultTab = tab;
       let groupWarning = "";
@@ -2035,22 +1510,11 @@ async function handle(message) {
         try {
           const groupId = await groupTabForParams(tab, message.params);
           if (typeof groupId === "number" && groupId >= 0 && makeActive) {
-            // Grouping can DEMOTE the freshly-opened active tab: a collapsed group
-            // cannot hold the active tab, so Chrome deactivates the newcomer and
-            // activates an adjacent visible tab. Re-expand the group and re-activate
-            // the opened tab so it stays the foreground tab the agent will act on —
-            // otherwise the next no-tab_id tool resolves the wrong tab. Skipped for a
-            // background open, which intentionally stays inactive.
             await chrome.tabGroups.update(groupId, { collapsed: false }).catch(() => {});
             await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
           }
           resultTab = await chrome.tabs.get(tab.id).catch(() => tab);
         } catch (error) {
-          // Grouping is organizational, not required for tab isolation (the
-          // agentTabId pin above is the actual safety boundary). Chrome can refuse
-          // grouping for special/transient window states. Do not turn a successfully
-          // created, controllable tab into a failed open or leak an orphan; surface a
-          // candid warning and continue ungrouped.
           groupWarning = `tab opened ungrouped: ${tabGroupingFailureMessage(error)}`;
         }
       }
@@ -2062,49 +1526,25 @@ async function handle(message) {
     }
     if (message.type === "focus_tab") {
       const tabId = Number(message.params?.tabId);
-      // Only RAISE the Chrome window to the OS foreground when the daemon
-      // explicitly asks (raiseWindow === true). The default is to NOT raise, so
-      // automation never steals the user's focus while they work in another app
-      // or window — we still activate the tab within its window below, which is
-      // all the no-tab_id resolver needs in the common single-window case.
       const raiseWindow = message.params?.raiseWindow === true;
       const before = await chrome.tabs.get(tabId).catch(() => null);
       if (raiseWindow && before?.windowId) await chrome.windows.update(before.windowId, { focused: true });
-      // Expand the target's group first: a tab inside a collapsed group cannot
-      // become (and stay) the active tab, so activating it without expanding
-      // would let Chrome bounce focus back to a visible tab.
       if (typeof before?.groupId === "number" && before.groupId >= 0) {
         await chrome.tabGroups.update(before.groupId, { collapsed: false }).catch(() => {});
       }
       const tab = await chrome.tabs.update(tabId, { active: true });
       state.activeTabId = tabId;
-      // The agent explicitly chose this tab — pin it as the working target so
-      // no-tab_id tools follow the agent's intent, not the user's later clicks.
       state.agentTabId = tabId;
       send({ id: message.id, ok: true, result: await tabSummary(tab) });
       return;
     }
     if (message.type === "close_tab") {
       const tabId = Number(message.params?.tabId);
-      // Keep Page debugging attached while Chrome closes the tab. A page with
-      // unsaved state may raise a beforeunload dialog during close; Page's
-      // dialog event is the only reliable way to answer it. Detaching first left
-      // chrome.tabs.remove pending forever and wedged every later action on that
-      // tab. markActing makes the dialog handler choose Leave/accept for this
-      // explicit agent close. onRemoved/onDetach clears the debugger bookkeeping
-      // after Chrome has actually removed the tab.
       const tab = await chrome.tabs.get(tabId);
-      // A discarded tab has no live renderer and browser-internal/foreign
-      // extension surfaces cannot be debugged. Neither can raise a page-owned
-      // beforeunload prompt, so the tabs API is the safe close path. Do not
-      // revive a discarded tab merely to destroy it.
       const needsPageClose = !tab.discarded && isAgentDrivableUrl(tab.url);
       if (!needsPageClose) {
         await chrome.tabs.remove(tabId);
       } else {
-        // skipRevive avoids flashing a frozen/background tab active just to
-        // close it. requirePageEvents makes Page.enable a hard prerequisite:
-        // without its dialog event an unsaved page can wedge forever.
         let closedWhilePending = false;
         try {
           await promiseWithin(
@@ -2113,11 +1553,6 @@ async function handle(message) {
             `Page.enable timed out after ${CLOSE_TAB_BUDGET_MS}ms`
           );
         } catch (error) {
-          // Chrome answers no debugger command on a tab whose navigation is
-          // still waiting for its server, so Page.enable never settles. The
-          // document being replaced already ran beforeunload when that
-          // navigation began, so the tabs API can close it without a prompt.
-          // Any other failure keeps the tab open, as above.
           const current = await chrome.tabs.get(tabId).catch(() => null);
           if (!current?.pendingUrl) throw error;
           forceDetach(tabId).catch(() => {});
@@ -2130,19 +1565,12 @@ async function handle(message) {
           const closeDeadline = Date.now() + CLOSE_TAB_BUDGET_MS;
           let closeError = null;
           try {
-            // Page.close is explicitly defined to run beforeunload hooks. Use the
-            // raw command rather than sendDebuggerCommand: a successful close may
-            // detach/destroy the target while replying, which is success here and
-            // must not trigger the generic detached-session reattach retry.
             await promiseWithin(
               chrome.debugger.sendCommand({ tabId }, "Page.close", {}),
               CLOSE_TAB_BUDGET_MS,
               `Page.close timed out after ${CLOSE_TAB_BUDGET_MS}ms`
             );
           } catch (error) {
-            // Closing destroys the target and can reject the command with a
-            // detached-session error after the tab is already gone. Record the
-            // error, then let tab disappearance—not error-string timing—decide.
             closeError = error;
           }
           const remaining = Math.max(0, closeDeadline - Date.now());
@@ -2150,10 +1578,6 @@ async function handle(message) {
           const gone = (await waitForTabGone(tabId, remaining)) ||
             (closeAccepted && (await waitForTabGone(tabId, CLOSE_TAB_SETTLE_MS)));
           if (!gone) {
-            // Do not await detach here: a debugger command already exceeded the
-            // whole close budget, so another Chrome API wait would make the
-            // timeout nominal rather than real. forceDetach clears bookkeeping
-            // synchronously before issuing its best-effort asynchronous detach.
             forceDetach(tabId).catch(() => {});
             if (closeError && !isDetachedDebuggerError(closeError)) throw closeError;
             const detail = closeError ? `: ${String(closeError?.message || closeError)}` : "";
@@ -2181,10 +1605,6 @@ async function handle(message) {
         const value = message.params?.[key];
         if (value !== undefined && value !== null) geometry[key] = Math.round(Number(value));
       }
-      // chrome.windows.update rejects bounds sent alongside a non-normal state,
-      // and a minimized or maximized window ignores bounds outright. Restore to
-      // normal first when geometry was asked for, then apply state last so
-      // "size it, then maximize" works in a single request.
       const wantsGeometry = Object.keys(geometry).length > 0;
       const current = await chrome.windows.get(tab.windowId);
       const priorState = current.state;
@@ -2197,13 +1617,8 @@ async function handle(message) {
       if (state && (state !== "normal" || !wantsGeometry)) {
         await chrome.windows.update(tab.windowId, { state });
       } else if (wantsGeometry && !state && priorState !== "normal") {
-        // Asking for a width is not asking to be shown. With no state named,
-        // put the window back the way it was so a size-only request cannot
-        // unminimize and expose it.
         await chrome.windows.update(tab.windowId, { state: priorState });
       }
-      // Report what Chrome settled on, not what was asked for: Chrome clamps to
-      // the display, so the two legitimately differ.
       const applied = await chrome.windows.get(tab.windowId);
       send({
         id: message.id,
@@ -2236,12 +1651,6 @@ async function handle(message) {
       if (existingID != null) groupArgs.groupId = existingID;
       else if (existing?.id != null) groupArgs.groupId = existing.id;
       else if (typeof firstTab?.windowId === "number") {
-        // In an MV3 service worker Chrome's implicit "current window" is not
-        // necessarily the tab's window. This matters especially with native
-        // vertical tabs: tabs.group() can otherwise resolve an unrelated tab
-        // strip and reject a perfectly groupable normal window. Pin new-group
-        // creation to the first requested tab's real window. Do not combine
-        // createProperties with groupId; Chromium rejects that parameter pair.
         groupArgs.createProperties = { windowId: firstTab.windowId };
       }
       let groupId;
@@ -2255,10 +1664,6 @@ async function handle(message) {
       if (hasColor || existingID == null) update.color = color;
       if (Object.keys(update).length > 0) await chrome.tabGroups.update(groupId, update);
       const group = await chrome.tabGroups.get(groupId);
-      // Report the group's full membership, not just the tabs moved in this
-      // call. Otherwise adding tabs to an existing group (by group_id or by
-      // reusing a title) undercounts tab_ids/tab_count, diverging from
-      // list_tab_groups, which always reports every member.
       const members = (await chrome.tabs.query({ groupId }).catch(() => []))
         .map((t) => t.id)
         .filter((id) => typeof id === "number");
@@ -2280,11 +1685,6 @@ async function handle(message) {
       const cacheKey = String(message.params?.cacheKey || "");
       const cached = state.snapshotCache.get(tabId);
       if (cached && cached.cacheKey === cacheKey) {
-        // A full-document navigation can happen without our webNavigation.onCommitted
-        // hook clearing the cache (e.g. debugger/CDP-driven navigations don't always
-        // surface there). The snapshot cacheKey is URL-agnostic, so verify the tab is
-        // still on the URL the snapshot was captured at; if it moved, the cache is
-        // stale and must be re-evaluated against the new document.
         let liveUrl = null;
         try { liveUrl = (await chrome.tabs.get(tabId))?.url ?? null; } catch (_) {}
         if (cached.url != null && liveUrl != null && liveUrl !== cached.url) {
@@ -2293,7 +1693,6 @@ async function handle(message) {
           send({ id: message.id, ok: true, result: { cached: false } });
           return;
         }
-        // Check if the page's MutationObserver flagged DOM changes
         let pageDirty = false;
         try {
           await attach(tabId);
@@ -2304,15 +1703,12 @@ async function handle(message) {
           );
           pageDirty = Boolean(evalResult?.result?.value);
         } catch (_) {
-          // Unknown is not clean: a tab whose debugger is refused (another
-          // extension's frame) would otherwise serve this snapshot forever.
           pageDirty = true;
         }
         if (!pageDirty && !cached.dirty) {
           send({ id: message.id, ok: true, result: { cached: true, snapshot: cached.snapshot } });
           return;
         }
-        // Reset dirty flags
         cached.dirty = false;
         try {
           await chrome.debugger.sendCommand(
@@ -2355,17 +1751,7 @@ async function handle(message) {
 	  }
 	  await attach(tabId);
 	  markActing(tabId);
-	  // A locked/fully occluded Chrome can delay applying real :hover even after
-	  // accepting the pointer event. Force the hit-tested node + ancestors FIRST
-	  // so its CDP commands are not queued behind Chrome's slow mouse-event ACK;
-	  // the short bounded window makes CSS menus/tooltips immediately deterministic.
-	  // synthetic JS hover listeners were already fired by the daemon.
 	  const forced = await forceHoverAt(tabId, x, y).catch(() => 0);
-	  // Only queue native input when Chrome can actually route it now. On an
-	  // inactive/unfocused/locked tab the ACK stalls for seconds and blocks every
-	  // later debugger command (breaking nested hover menus). The daemon already
-	  // dispatched the standard JS hover events and forced CSS state above covers
-	  // :hover; a foreground target additionally gets the trusted pointer event.
 	  const tab = await chrome.tabs.get(tabId).catch(() => null);
 	  const win = tab ? await chrome.windows.get(tab.windowId).catch(() => null) : null;
 	  const trustedQueued = Boolean(tab?.active && win?.focused);
@@ -2403,11 +1789,6 @@ async function handle(message) {
 	}
 	if (message.type === "cdp") {
       const method = message.params?.method;
-      // Refuse a denied method BEFORE the tab is attached: sendPolicedCdp enforces
-      // the same denylist for every route to the debugger, and this is the early
-      // out that keeps a method brw will not run from earning a debugger session.
-      // A rogue server that answered our outbound socket cannot exfiltrate cookies
-      // through brw, because brw simply will not run those methods.
       if (isDeniedCdpMethod(method)) {
         send({ id: message.id, ok: false, error: `cdp method ${method} is blocked by brw policy: cookie and storage access are not permitted` });
         return;
@@ -2418,10 +1799,6 @@ async function handle(message) {
       return;
     }
     if (message.type === "set_intercept_file_chooser") {
-      // Toggle native-file-dialog interception for file-chooser-interception
-      // upload mode. When enabling we clear any stale captured chooser event so a
-      // subsequent poll only sees the chooser this upload actually triggers. The
-      // daemon ALWAYS disables on exit so the user's manual uploads are unaffected.
       const tabId = Number(message.params?.tabId || (await activeTabId()));
       const enabled = message.params?.enabled === true;
       await attach(tabId);
@@ -2432,9 +1809,6 @@ async function handle(message) {
       return;
     }
     if (message.type === "get_file_chooser_event") {
-      // Return (and consume) the most recent Page.fileChooserOpened event for the
-      // tab, captured by the chrome.debugger.onEvent listener. Returns
-      // captured:false until the click actually opens a chooser.
       const tabId = Number(message.params?.tabId || (await activeTabId()));
       const ev = state.fileChooserEvents.get(tabId);
       if (ev) state.fileChooserEvents.delete(tabId);
@@ -2442,8 +1816,6 @@ async function handle(message) {
       return;
     }
     if (message.type === "set_containment") {
-      // The daemon owns the policy; the extension only enforces it. Arming is
-      // per tab because Fetch interception is a per-target debugger domain.
       const allowed = Array.isArray(message.params?.allowed) ? message.params.allowed.map(String) : [];
       const blocked = Array.isArray(message.params?.blocked) ? message.params.blocked.map(String) : [];
       const enabled = message.params?.enabled === true;
@@ -2454,13 +1826,9 @@ async function handle(message) {
         return;
       }
       const tabId = Number(message.params?.tabId || (await activeTabId()));
-      // A fresh attach arms the tab itself (rearmContainment); an existing
-      // session is armed here. The guard then runs before each new document's
-      // own scripts, so its wrappers land before page code captures the originals.
       await attach(tabId);
       await rearmContainment(tabId);
       if (state.containmentGuard) {
-        // Catch-up for the document already loaded; best-effort only.
         await sendDebuggerCommand(tabId, "Runtime.evaluate", {
           expression: state.containmentGuard,
           returnByValue: true
@@ -2500,9 +1868,6 @@ async function handle(message) {
       return;
     }
     if (message.type === "set_routes") {
-      // The daemon sends the tab's COMPLETE rule set every time, so this replaces
-      // rather than merges: a partial update that lost a frame would otherwise
-      // leave Chrome enforcing rules brw no longer believes in.
       const tabId = Number(message.params?.tabId || (await activeTabId()));
       const result = await setTabRouteRules(tabId, Array.isArray(message.params?.rules) ? message.params.rules : []);
       send({ id: message.id, ok: true, result });
@@ -2516,8 +1881,6 @@ async function handle(message) {
       return;
     }
     if (message.type === "arm_dialog") {
-      // Pre-declare the answer for the next dialog(s) on this tab. Page must be
-      // enabled or Chrome shows the native dialog and never fires the CDP event.
       const tabId = Number(message.params?.tabId || (await activeTabId()));
       await attach(tabId);
       await sendDebuggerCommand(tabId, "Page.enable", {}).catch(() => {});
@@ -2538,8 +1901,6 @@ async function handle(message) {
       return;
     }
     if (message.type === "get_dialogs") {
-      // Return the tab's answered-dialog ring. Consumed by default so repeated
-      // observations do not re-report the same dialog.
       const tabId = Number(message.params?.tabId || (await activeTabId()));
       const entries = state.dialogLog.get(tabId) || [];
       if (message.params?.peek !== true) state.dialogLog.delete(tabId);
@@ -2550,24 +1911,16 @@ async function handle(message) {
         result: {
           dialogs: entries,
           count: entries.length,
-          // snake_case here too: one convention across the whole bridge wire.
           armed: arm ? { accept: arm.accept, remaining: arm.remaining, prompt_text: arm.promptText || "" } : null
         }
       });
       return;
     }
     if (message.type === "get_downloads") {
-      // Return a retained bounded snapshot. Keeping entries after a read makes
-      // brw_downloads -> brw_capture_artifact(download_guid) deterministic.
-      // chrome.downloads is gated on the manifest "downloads" permission; if
-      // unavailable, report supported:false for older Chrome builds.
       if (!chrome.downloads || !chrome.downloads.search) {
         send({ id: message.id, ok: true, result: { downloads: [], count: 0, supported: false, note: "chrome.downloads API unavailable in this Chrome/extension build" } });
         return;
       }
-      // onChanged is authoritative. Refresh only a bounded tail of in-progress
-      // entries; firing 200 concurrent chrome.downloads.search calls on every
-      // poll needlessly wakes Chrome and was visible as CPU/fan churn.
       const ids = Array.from(state.downloads.entries())
         .filter(([, entry]) => entry.state === "inProgress")
         .slice(-20)
@@ -2583,19 +1936,6 @@ async function handle(message) {
       return;
     }
     if (message.type === "read_cross_origin_frames") {
-      // Read interactive controls inside cross-origin (out-of-process) iframes of
-      // the tab (issue #11 P0-2). Best-effort: any failure yields an empty list so
-      // the daemon keeps the same-origin snapshot. The expression is the daemon's
-      // own DOM walker: this file must not grow a second one, because the roles,
-      // names and ref rules it would carry are the ones brw's ref-stability
-      // guarantees are written against.
-      //
-      // Running a daemon-supplied expression in a THIRD PARTY's document is the
-      // widest reach any message here has, so it is not open-ended: the message
-      // must name every origin it may run in, and this enumerates rather than
-      // evaluates when it names none. That is what lets the daemon decide, per
-      // embedded origin, before anything runs there — and it keeps a message that
-      // simply forgot to say from reaching a frame by omission.
       const tabId = Number(message.params?.tabId || (await activeTabId()));
       const origins = Array.isArray(message.params?.origins) ? message.params.origins : null;
       const expression = String(message.params?.expression || "");
@@ -2637,10 +1977,6 @@ async function handle(message) {
       return;
     }
     if (message.type === "notify") {
-      // Surface a desktop notification so the user is pulled back to a
-      // human-handoff point (MFA/CAPTCHA/purchase confirmation), a completed
-      // run, or an error — even when the agent tab is backgrounded.
-      // chrome.notifications.create works regardless of which tab is focused.
       const result = await createNotification(message.params || {});
       send({ id: message.id, ok: true, result });
       return;
@@ -2648,9 +1984,6 @@ async function handle(message) {
     send({ id: message.id, ok: false, error: `unknown message type ${message.type}` });
   } catch (error) {
     state.lastError = `request failed: ${String(error?.message || error)}`;
-    // A single CDP/tab fault is not a bridge drop. Demoting the badge to red
-    // "off" while the socket is still open is what made the toolbar lie during
-    // routine evaluate failures (e.g. extension pages / missing contexts).
     if (isBridgeLive()) {
       noteRequestFault(state.lastError).catch(() => {});
     } else {
@@ -2660,13 +1993,6 @@ async function handle(message) {
   }
 }
 
-// readCrossOriginFrames enumerates the tab's cross-origin child frames (from
-// Page.getFrameTree on the tab's own session, so we only ever read frames that
-// belong to THIS tab), matches each to its debugger iframe target by URL, and
-// runs the DAEMON-SUPPLIED expression inside the ones whose origin the caller
-// listed. A null origins list enumerates and evaluates nothing. Same-origin
-// frames are skipped — the in-page walker already reads those. Never throws;
-// returns [] on any failure.
 async function readCrossOriginFrames(tabId, expression, origins) {
   const allowed = origins ? new Set(origins.map((o) => String(o))) : null;
   try {
@@ -2714,7 +2040,6 @@ async function readCrossOriginFrames(tabId, expression, origins) {
     }
     usedTargets.add(tgt.id);
     if (!allowed || !allowed.has(w.origin)) {
-      // Enumerated, not read: the caller did not name this origin.
       out.push({ url: w.url, origin: w.origin });
       continue;
     }
@@ -2724,17 +2049,6 @@ async function readCrossOriginFrames(tabId, expression, origins) {
   return out;
 }
 
-// evaluateInFrameTarget briefly attaches a debugger to ONE cross-origin frame
-// target, runs the daemon's expression in it, and ALWAYS detaches (even on error)
-// so no extra debugger session lingers on the user's Chrome. If another debugger
-// already owns the target, it is left untouched and the existing session is used
-// opportunistically. The expression is opaque here on purpose: the extension
-// relays a result, it does not decide what a control is.
-//
-// It goes through sendPolicedCdp for the same reason the "cdp" message type
-// does: the cookie/storage denylist and the acting pulse are brw's policy, not
-// one message handler's, and a second route to the debugger that skipped them
-// would be the way around them.
 async function evaluateInFrameTarget(tabId, targetId, expression) {
   let owned = false;
   try {
@@ -2743,8 +2057,6 @@ async function evaluateInFrameTarget(tabId, targetId, expression) {
       owned = true;
     } catch (error) {
       if (!String(error?.message || error).includes("Another debugger is already attached")) throw error;
-      // Someone else (or a leaked session) owns it; do not detach what we did not
-      // attach. Try to use the existing session opportunistically.
       owned = false;
     }
     const res = await sendPolicedCdp(tabId, { targetId }, "Runtime.evaluate", {
@@ -2766,20 +2078,10 @@ function frameReadExpression(expression, origin) {
   return `(async () => {if (globalThis.location.origin !== ${expected}) throw new Error("frame origin changed"); const value = await (${expression}); if (globalThis.location.origin !== ${expected}) throw new Error("frame origin changed"); return value;})()`;
 }
 
-// ensureTabDrivable revives a tab whose renderer cannot execute work before we
-// try to drive it. A DISCARDED tab (Memory Saver) has no renderer at all — any
-// CDP command hangs until the daemon's deadline. A FROZEN tab (collapsed tab
-// group ≥5 min, or Energy Saver since Chrome 133) has its event loop paused —
-// injected work never runs. An attached debugger is NOT exempt from either, so
-// detect-and-revive here converts silent multi-second hangs into fast recovery
-// (or one candid, classified error the agent can act on).
 async function ensureTabDrivable(tabId) {
   let tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab) throw new Error(`cannot find tab ${tabId}`);
   if (tab.discarded) {
-    // Reload recreates the renderer at the tab's committed URL. Pin
-    // autoDiscardable off so Memory Saver does not immediately re-discard the
-    // tab brw is actively driving.
     await chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
     await chrome.tabs.reload(tabId).catch(() => {});
     await waitForTabLoad(tabId, 10000);
@@ -2790,14 +2092,7 @@ async function ensureTabDrivable(tabId) {
     return;
   }
   if (tab.frozen && !tab.active) {
-    // Unfreezing needs visibility, not a reload (which would lose page state):
-    // expand a collapsed group, flash the tab active inside its own window —
-    // never raising the window over other OS apps — then restore the user's
-    // tab. Serialized on the juggle queue so concurrent revivals/screenshots
-    // cannot restore each other's target.
     await enqueueTabJuggle(async () => {
-      // Re-read once at the front of the queue: an earlier juggle (or the
-      // user) may have unfrozen or moved the tab while this one waited.
       const fresh = await chrome.tabs.get(tabId).catch(() => null);
       if (!fresh || !fresh.frozen || fresh.active) return;
       if (typeof fresh.groupId === "number" && fresh.groupId >= 0) {
@@ -2818,10 +2113,6 @@ async function ensureTabDrivable(tabId) {
   }
 }
 
-// waitForTabLoad polls until the tab's renderer reports a settled load or the
-// deadline passes. Deliberately non-fatal on deadline: a slow page that is
-// still loading already has a live renderer, which is all driving requires —
-// the subsequent CDP call surfaces any real failure.
 async function waitForTabLoad(tabId, deadlineMs) {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
@@ -2832,9 +2123,6 @@ async function waitForTabLoad(tabId, deadlineMs) {
   }
 }
 
-// Page.close acknowledges that a target is closing, not necessarily that its
-// chrome.tabs entry has disappeared. Keep the close_tab RPC deterministic by
-// waiting a short bounded interval for onRemoved to land before replying.
 async function waitForTabGone(tabId, deadlineMs) {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
@@ -2845,10 +2133,6 @@ async function waitForTabGone(tabId, deadlineMs) {
   return !(await chrome.tabs.get(tabId).catch(() => null));
 }
 
-// promiseWithin bounds a Chrome API promise without attaching any late
-// continuation to the underlying operation. Once the timer wins, a subsequent
-// resolution/rejection is observed by Promise.race but cannot resume the caller
-// or emit a second bridge response.
 async function promiseWithin(promise, timeoutMs, timeoutMessage) {
   let timer = null;
   try {
@@ -2864,10 +2148,6 @@ async function promiseWithin(promise, timeoutMs, timeoutMessage) {
 }
 
 async function attach(tabId, opts = {}) {
-  // Revive frozen/discarded tabs before every drive, including on an existing
-  // attachment — a tab can freeze WHILE attached. The screenshot juggle skips
-  // this (skipRevive): it already activates the tab itself, and re-entering
-  // the juggle queue from inside it would deadlock.
   if (!opts.skipRevive) await ensureTabDrivable(tabId);
   if (state.attachedTabs.has(tabId)) {
     state.attachUsedAt.set(tabId, Date.now());
@@ -2887,13 +2167,6 @@ async function attach(tabId, opts = {}) {
   } catch (error) {
     if (isForeignExtensionRefusal(error)) throw await foreignExtensionFrameError(tabId, error);
     if (!String(error?.message || error).includes("Another debugger is already attached")) throw error;
-    // A debugger is already attached. It is EITHER ours (a previous attach this
-    // service worker lost track of — e.g. across an SW restart) OR the user's
-    // DevTools. Probe with a trivial command: an extension can only drive a
-    // session it owns, so if this succeeds we hold the session and adopt it; if it
-    // fails, DevTools owns the tab and brw genuinely cannot control it. Previously
-    // we marked the tab attached unconditionally, so a DevTools conflict left brw
-    // believing it was attached while every subsequent command failed silently.
     try {
       await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: "0", returnByValue: true });
     } catch (_) {
@@ -2902,9 +2175,6 @@ async function attach(tabId, opts = {}) {
   }
   state.attachedTabs.add(tabId);
   state.attachUsedAt.set(tabId, Date.now());
-	// Enable Page events for dialogs, Runtime events for console/load-time
-	// exceptions, and focus emulation so trusted pointer/key input reaches a
-	// background automation tab without stealing the user's OS focus.
 	try {
 	  const pageEvents = chrome.debugger.sendCommand({ tabId }, "Page.enable", {});
 	  await Promise.all([
@@ -2923,10 +2193,6 @@ async function attach(tabId, opts = {}) {
 	await registerWebMCP(tabId).catch(() => {});
 }
 
-// rearmContainment puts a tab under the daemon's containment policy for its
-// current debugger session. Fetch interception and document-start scripts both
-// die with the session, so this runs on every fresh attach while containment is
-// enabled, not only when the daemon first arms the tab.
 async function rearmContainment(tabId) {
   if (!state.containment.enabled || state.containmentTabs.has(tabId) || !state.attachedTabs.has(tabId)) return false;
   state.containmentTabs.add(tabId);
@@ -2938,10 +2204,6 @@ async function rearmContainment(tabId) {
   return true;
 }
 
-// registerWebMCP adds the daemon's WebMCP shim to the tab's debugger session so
-// it runs before each new document's own scripts. It talks to chrome.debugger
-// directly because it runs inside attach(), which sendDebuggerCommand would
-// re-enter on a detached session.
 async function registerWebMCP(tabId) {
   const source = state.webmcpSource;
   if (!source || state.webmcpTabs.has(tabId) || !state.attachedTabs.has(tabId)) return false;
@@ -2950,9 +2212,6 @@ async function registerWebMCP(tabId) {
   return true;
 }
 
-// armWebMCP records the shim, registers it on the tab, and optionally runs it in
-// the document already loaded. The shim is idempotent, so the catch-up is safe
-// on a document that already has it.
 async function armWebMCP(tabId, source, catchUp) {
   state.webmcpSource = source;
   await attach(tabId);
@@ -2966,14 +2225,6 @@ async function armWebMCP(tabId, source, catchUp) {
   return { armed: state.webmcpTabs.has(tabId), installed };
 }
 
-// reconcileDebuggerAttachments releases brw debugger sessions that leaked across
-// a service-worker restart or abrupt kill. After such an event state.attachedTabs
-// is empty, but Chrome may still hold attachments this extension made — which
-// show as a stuck "being debugged" banner and are never released by detachAll /
-// sweepIdleDebuggers (they only know about tracked tabs). We enumerate targets
-// and, for any attached one we are NOT currently tracking, attempt a detach: an
-// extension can only detach its OWN session, so this releases brw's leaks while a
-// DevTools/other-client attachment fails harmlessly and is left untouched.
 async function reconcileDebuggerAttachments() {
   let targets;
   try {
@@ -2987,14 +2238,10 @@ async function reconcileDebuggerAttachments() {
     try {
       await chrome.debugger.detach({ tabId: target.tabId });
     } catch (_) {
-      // Not our session (DevTools / another client) — detach refused; leave it.
     }
   }
 }
 
-// detach releases the debugger brw holds on one tab and forgets its per-tab
-// caches. Safe to call when not attached (no-op). The next CDP call re-attaches
-// lazily via attach(), so detaching an idle tab never breaks a later action.
 async function detach(tabId) {
   await clearForcedHover(tabId).catch(() => {});
   state.attachUsedAt.delete(tabId);
@@ -3002,23 +2249,15 @@ async function detach(tabId) {
   state.attachedTabs.delete(tabId);
   state.observerInjected.delete(tabId);
   state.fileChooserEvents.delete(tabId);
-  // Detaching tears down the Fetch domain with the debugger session, so the tab
-  // must re-arm on the next attach. Leaving it in the set would silently drop
-  // containment on a tab that still believes it is contained.
   state.containmentTabs.delete(tabId);
   state.webmcpTabs.delete(tabId);
   state.inlineDocumentTabs.delete(tabId);
   try {
     await chrome.debugger.detach({ tabId });
   } catch (_) {
-    // Already detached (tab closed / Chrome reclaimed it) — nothing to do.
   }
 }
 
-// forceDetach is used to cancel a CDP command that itself is stuck (notably
-// captureScreenshot on a locked/fully occluded Chrome Stable). Do not trust the
-// in-memory set here: onDetach can clear bookkeeping before the browser has fully
-// released the session, so always ask Chrome to detach.
 async function forceDetach(tabId) {
   if (state.forcedHoverTimers.has(tabId)) clearTimeout(state.forcedHoverTimers.get(tabId));
   state.forcedHoverTimers.delete(tabId);
@@ -3033,19 +2272,12 @@ async function forceDetach(tabId) {
   try { await chrome.debugger.detach({ tabId }); } catch (_) {}
 }
 
-// detachAll releases every debugger brw currently holds. Called when the daemon
-// disconnects or the service worker suspends so brw never leaves the user's
-// real Chrome in a debugged state.
 async function detachAll() {
   for (const tabId of Array.from(state.attachedTabs)) {
     await detach(tabId);
   }
 }
 
-// sweepIdleDebuggers detaches any tab whose debugger has not been used within
-// IDLE_DETACH_MS, bounding how many debugger sessions pile up during a single
-// long-lived connection (one run can touch dozens of tabs). Runs on the
-// keepalive tick while connected.
 async function sweepIdleDebuggers() {
   const now = Date.now();
   for (const tabId of Array.from(state.attachedTabs)) {
@@ -3083,19 +2315,12 @@ async function clearForcedHover(tabId) {
   ));
 }
 
-// forceHoverAt walks from the deepest painted element at x/y through its DOM,
-// shadow-host, and same-origin iframe ancestors, then briefly forces :hover on
-// each node. This makes ancestor selectors such as `.figure:hover .caption` and
-// nested menus deterministic while Chrome catches up with the trusted pointer
-// move on a locked/background desktop.
 async function forceHoverAt(tabId, x, y) {
   await clearForcedHover(tabId);
   await Promise.all([
     sendDebuggerCommand(tabId, "DOM.enable", {}).catch(() => {}),
     sendDebuggerCommand(tabId, "CSS.enable", {}).catch(() => {})
   ]);
-  // DOM.requestNode returns nodeId:0 until the frontend document has been
-  // requested at least once. A depth-0 request is cheap and unlocks stable IDs.
   await sendDebuggerCommand(tabId, "DOM.getDocument", { depth: 0, pierce: true });
   const objectGroup = `brw-hover-${tabId}-${Date.now()}`;
   const expression = `(function(x,y){
@@ -3167,13 +2392,6 @@ async function forceHoverAt(tabId, x, y) {
   }
 }
 
-// captureScreenshotForTab obtains a real compositor surface without leaving the
-// user's selected tab changed. Chrome's extension debugger only allows surface
-// screenshots, and Page.captureScreenshot can remain pending indefinitely when
-// its target tab is inactive. Activate inside the existing window (never raise
-// the OS window), give the compositor one frame, capture with a hard deadline,
-// then restore the prior tab in a finally block. The queue prevents concurrent
-// captures from restoring each other's target.
 async function captureScreenshotForTab(tabId, params) {
   return enqueueTabJuggle(() => captureScreenshotJuggled(tabId, params));
 }
@@ -3199,19 +2417,10 @@ async function captureScreenshotJuggled(tabId, params) {
       return await Promise.race([
         sendDebuggerCommand(tabId, "Page.captureScreenshot", captureParams),
         new Promise((_, reject) => {
-          // Capped 800–900px captures normally complete in well under 250ms.
-          // One second leaves generous load headroom while keeping the locked-
-          // session print fallback responsive instead of burning the daemon's
-          // whole request deadline on a compositor that cannot produce a frame.
           timer = setTimeout(() => reject(new Error("screenshot compositor capture timed out")), 1000);
         })
       ]);
     } catch (error) {
-      // Chrome Stable can suspend every compositor surface while the macOS user
-      // session is locked. Page.captureScreenshot then never resolves, even for
-      // an active tab. Cancel that command and use Chrome's print renderer, which
-      // remains available without a surface. The daemon rasterizes page 1 and
-      // applies the original viewport clip, preserving the screenshot contract.
       await forceDetach(tabId);
       await attach(tabId, { skipRevive: true });
       const width = Math.max(1, Number(fallbackViewport?.width || captureParams?.clip?.width || 1280));
@@ -3319,87 +2528,25 @@ function isDetachedDebuggerError(error) {
     message.includes("target closed");
 }
 
-// resolveForegroundTabId computes the SINGLE authoritative "active tab": the
-// active tab of the focused window. This is the one source of truth that both
-// get_active_tab_id AND list_tabs's active flag are derived from, so every
-// no-tab_id page tool (read, observe, snapshot, click, ...) targets the exact
-// tab list_tabs marks active. Returns null when no foreground tab can be found
-// (e.g. no window is focused and no fallback active tab exists).
-//
-// Precedence, in order:
-//   1. The active tab of the focused normal/popup window — the genuine
-//      foreground tab the user (or the agent's last focus_tab/open) is on.
-//   2. state.activeTabId, but ONLY when it still resolves to a live tab — used
-//      when Chrome reports no focused window (e.g. another OS app is foreground)
-//      so the agent keeps acting on the tab it last targeted instead of drifting.
-//   3. The active tab of the current window, then any active tab — last-resort
-//      fallbacks so a headless/odd-focus state still resolves something.
-//
-// Critically, the cache is NOT trusted ahead of the focused-window scan: the
-// previous implementation returned state.activeTabId whenever the tab merely
-// existed, which drifted away from list_tabs (which scans focused windows) the
-// moment the cache pointed at a background tab — the root cause of read/observe/
-// list_tabs each resolving a different tab.
-// A window is controllable unless it is a PWA/app or devtools surface. Unknown or
-// undetermined window types default to controllable so tab resolution and
-// list_tabs never silently drop real browser tabs — e.g. a freshly launched
-// Chromium clone/test profile whose window has not yet classified as "normal".
 function isControllableWindowType(win) {
   return !win || (win.type !== "app" && win.type !== "devtools");
 }
 
-// isAgentDrivableUrl reports whether brw can actually run CDP against a tab
-// showing this URL. Chrome REFUSES chrome.debugger access to another extension's
-// pages — "Cannot access a chrome-extension:// URL of different extension" — and
-// to browser-internal surfaces (chrome://, devtools://) and the Web Store.
-//
-// This is load-bearing for tab RESOLUTION, not just for actions, because such a
-// page can become the foreground tab. A password manager that pops its vault out
-// into its own focused window (Bitwarden's unlock / passkey prompt is the common
-// one, and it steals focus on its own) otherwise becomes the authoritative active
-// tab, and then EVERY no-tab_id tool — evaluate, read, snapshot, click — fails
-// with that Chrome error until the human happens to close it. That is the
-// "Bitwarden popups intermittently break evaluate" failure: nothing is wrong with
-// the bridge, brw has simply pointed itself at a tab it can never drive.
-//
-// Only IMPLICIT resolution is filtered. An explicit tab_id still reaches these
-// pages (brw can drive its OWN extension pages — that is how the options/popup
-// surfaces are exercised), so this removes no capability; it only stops brw from
-// silently CHOOSING a tab it cannot drive. navpolicy already refuses to navigate
-// to these schemes — this applies the same rule to resolution.
 function isAgentDrivableUrl(url) {
   const raw = String(url || "").trim();
-  // A tab mid-creation reports no URL yet. Treat it as drivable so a freshly
-  // opened agent tab is never skipped before its first commit.
   if (!raw) return true;
   const lower = raw.toLowerCase();
-  // about:blank is brw's own scratch target (open_tab defaults to it).
   if (lower === "about:blank" || lower.startsWith("about:blank?") || lower.startsWith("about:blank#")) return true;
   if (/^(chrome|chrome-search|chrome-untrusted|chrome-native|devtools|edge|brave|vivaldi|opera|about|view-source):/.test(lower)) return false;
   if (lower.startsWith("chrome-extension://")) {
-    // Chrome lets an extension debug its OWN pages but refuses every other
-    // extension's — that exact refusal is the error we are fixing. brw's own
-    // options page is a SUPPORTED target (opening it and calling
-    // chrome.runtime.reload() is the documented way to make a new build live, see
-    // docs/reliability.md), so only FOREIGN extension pages are excluded.
     const ownID = String(chrome.runtime?.id || "").toLowerCase();
     return Boolean(ownID) && lower.startsWith(`chrome-extension://${ownID}/`);
   }
-  // The Web Store blocks extension scripting and debugger access outright.
   if (/^https?:\/\/chromewebstore\.google\.com(\/|$)/.test(lower)) return false;
   if (/^https?:\/\/chrome\.google\.com\/webstore(\/|$)/.test(lower)) return false;
   return true;
 }
 
-// A page that embeds ANOTHER extension's frame (a password manager's inline
-// autofill menu is the usual one) is off limits to chrome.debugger for the whole
-// tab, not just that frame. Measured in TestChromeRefusesTheDebuggerForATabHoldingAForeignExtensionFrame:
-// the frame committing detaches a live session ("target_closed"), and every
-// later attach or sendCommand, by tabId or by targetId, fails with
-// "Cannot access a chrome-extension:// URL of different extension" until the
-// frame is gone. chrome.scripting is not subject to that rule; it needs host
-// access to the page instead, and webNavigation.getAllFrames leaves the foreign
-// frame out of the list it returns.
 const FOREIGN_EXTENSION_FRAME = "foreign_extension_frame";
 
 function isForeignExtensionRefusal(error) {
@@ -3433,9 +2580,6 @@ function noteSubframeCommit(tabId, frameId, url) {
   if (!frames.size) state.foreignExtensionFrames.delete(tabId);
 }
 
-// foreignExtensionFramesIn lists the other-extension frames recorded for a tab.
-// webNavigation has no frame-removed event, so a recorded frame whose URL no
-// longer has a debugger target anywhere is treated as closed.
 async function foreignExtensionFramesIn(tabId) {
   const recorded = Array.from(state.foreignExtensionFrames.get(tabId)?.entries() || [])
     .map(([frameId, url]) => ({ frame_id: frameId, url, extension_id: extensionIdOf(url) }));
@@ -3452,9 +2596,6 @@ async function foreignExtensionFramesIn(tabId) {
 }
 
 async function foreignExtensionFrameError(tabId, cause) {
-  // The same refusal answers a tab that IS another extension's page (a vault
-  // popped out into its own window). That is not a frame in a page, and
-  // nothing below applies to it.
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (isForeignExtensionUrl(tab?.url)) return cause?.message ? cause : new Error(String(cause));
   const frames = await foreignExtensionFramesIn(tabId).catch(() => []);
@@ -3472,9 +2613,6 @@ async function foreignExtensionFrameError(tabId, cause) {
   return error;
 }
 
-// scriptingEvaluate runs inside the page (frame 0, main world) as the
-// chrome.scripting stand-in for Runtime.evaluate. It is serialized by Chrome,
-// so it must not reference anything outside its own body.
 async function scriptingEvaluate(expression, awaitPromise) {
   try {
     let value = (0, eval)(expression);
@@ -3492,7 +2630,6 @@ async function scriptingEvaluate(expression, awaitPromise) {
   }
 }
 
-// scriptingInsertText is the chrome.scripting stand-in for Input.insertText.
 function scriptingInsertText(text) {
   let el = document.activeElement;
   while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
@@ -3519,12 +2656,6 @@ function runtimeEvaluateResultFromScripting(out) {
   return type === "undefined" ? { result: { type } } : { result: { type, value: out.value } };
 }
 
-// cdpWithoutDebugger answers the CDP methods that have a chrome.scripting
-// equivalent, in the tab's top frame only. Other extensions' frames are never
-// entered: they are why the debugger was refused, and brw has no access to
-// them either way. Returns null for a method with no equivalent. A page brw
-// holds no host access to rejects the injection, and that becomes part of the
-// named error rather than a second, unrelated one.
 async function cdpWithoutDebugger(tabId, method, params, refusal) {
   if (!chrome.scripting?.executeScript) return null;
   let func;
@@ -3559,8 +2690,6 @@ async function cdpWithoutDebugger(tabId, method, params, refusal) {
   return { ...runtimeEvaluateResultFromScripting(out), brwTransport: transport };
 }
 
-// runCdpForTab is the "cdp" message's route to the page: the debugger when
-// Chrome allows it, chrome.scripting when a foreign extension frame blocks it.
 async function runCdpForTab(tabId, method, params) {
   try {
     await attach(tabId);
@@ -3574,9 +2703,6 @@ async function runCdpForTab(tabId, method, params) {
   }
 }
 
-// readCrossOriginFramesWithoutDebugger is readCrossOriginFrames for a tab whose
-// debugger is refused. getAllFrames omits other extensions' frames, and each
-// frame is injected separately so one frame brw cannot reach costs only itself.
 async function readCrossOriginFramesWithoutDebugger(tabId, expression, origins) {
   if (!chrome.scripting?.executeScript) return [];
   const allowed = origins ? new Set(origins.map((o) => String(o))) : null;
@@ -3611,11 +2737,6 @@ async function readCrossOriginFramesWithoutDebugger(tabId, expression, origins) 
   return out;
 }
 
-// preferredNormalWindowId returns the safest window for a newly-created agent
-// tab. A still-live agent tab wins when it already lives in a normal window;
-// otherwise prefer the focused normal window, then any normal window. Popup/app
-// windows are deliberately excluded because popup windows cannot be grouped and
-// app/PWA windows must never become agent workspaces.
 async function preferredNormalWindowId() {
   if (state.agentTabId) {
     const pinned = await chrome.tabs.get(state.agentTabId).catch(() => null);
@@ -3632,13 +2753,6 @@ async function preferredNormalWindowId() {
 }
 
 async function resolveForegroundTabId() {
-  // 0. The agent's PINNED working tab wins over the OS foreground. Set when the
-  //    agent opens or focuses a tab (open_tab / focus_tab), and never moved by the
-  //    user clicking around their own tabs/windows. This is the general fix for the
-  //    "user selected another tab" bug class on a shared Chrome: once the agent owns
-  //    a tab, every no-tab_id tool stays on it until the agent explicitly focuses
-  //    elsewhere. Falls through only when that tab is gone or no longer controllable
-  //    (e.g. it somehow became a PWA/app surface).
   if (state.agentTabId) {
     const pinned = await chrome.tabs.get(state.agentTabId).catch(() => null);
     if (pinned?.id) {
@@ -3648,10 +2762,6 @@ async function resolveForegroundTabId() {
       } else if (isAgentDrivableUrl(pinned.url)) {
         return pinned.id;
       }
-      // The pinned tab exists but cannot be driven. Keep the pin so it resumes
-      // if the tab returns to a normal page, but FAIL CLOSED: falling through
-      // here would silently redirect no-tab-id actions onto an unrelated human
-      // tab, violating the sticky agent-target guarantee.
       throw new Error(
         `no drivable tab: agent-pinned tab ${pinned.id} is ${String(pinned.url || "a browser-internal page").split("?")[0]}`
       );
@@ -3659,9 +2769,6 @@ async function resolveForegroundTabId() {
       state.agentTabId = null;
     }
   }
-  // 1. Active tab of the OS-focused controllable window. Enumerate ALL window types
-  //    (not just normal/popup) so a clone/test-profile window is seen, then drop
-  //    only PWA/devtools.
   const windows = await chrome.windows.getAll({
     populate: true,
     windowTypes: ["normal", "popup", "panel", "app", "devtools"]
@@ -3669,44 +2776,25 @@ async function resolveForegroundTabId() {
   for (const win of windows) {
     if (!win.focused || !isControllableWindowType(win)) continue;
     const tab = (win.tabs || []).find((candidate) => candidate.active);
-    // A focused window whose active tab brw cannot drive (a password manager's
-    // popout, a chrome:// settings tab) must NOT become the answer. Fall through
-    // to the last-focused / cached / any-active candidates below rather than
-    // handing back a tab every subsequent CDP call would fail on.
     if (tab?.id && isAgentDrivableUrl(tab.url)) return tab.id;
   }
-  // 2. No window is OS-focused (Chrome is backgrounded behind another app — the
-  // common case when an agent drives it while the human works elsewhere). Use the
-  // active tab of the LAST-focused window if it is controllable: deterministic and
-  // stable, unlike currentWindow (unreliable in a service worker, which has no
-  // window of its own) and unlike trusting the cache ahead of a live query. This is
-  // the single source of truth that list_tabs and every no-tab_id page tool share.
   const lastFocused = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
   for (const tab of lastFocused) {
     if (!tab?.id || !isAgentDrivableUrl(tab.url)) continue;
     const win = await chrome.windows.get(tab.windowId).catch(() => null);
     if (isControllableWindowType(win)) return tab.id;
   }
-  // 3. Honor the last-targeted tab if it is still alive (focus_tab/open set this)
-  //    AND its window is still controllable — re-validate the type here so a stale
-  //    cache (or a window that became a PWA/app surface) can NEVER leak a Google
-  //    Chat / installed-PWA tab to the agent, even though publishActiveTab already
-  //    refuses to cache one. Defense in depth on the exact path that drove Chat.
   if (state.activeTabId) {
     const cached = await chrome.tabs.get(state.activeTabId).catch(() => null);
     if (cached?.id) {
       const win = await chrome.windows.get(cached.windowId).catch(() => null);
       if (!isControllableWindowType(win)) {
-        // Cached tab is no longer controllable; drop it so we don't keep retrying it.
         state.activeTabId = null;
       } else if (isAgentDrivableUrl(cached.url)) {
         return cached.id;
       }
-      // Cached tab is temporarily showing a non-drivable page — keep the cache
-      // (it is still the right tab) and fall through to a usable one for now.
     }
   }
-  // 4. Last resort: any active tab in a controllable window that brw can drive.
   const any = await chrome.tabs.query({ active: true }).catch(() => []);
   for (const tab of any) {
     if (!tab?.id || !isAgentDrivableUrl(tab.url)) continue;
@@ -3716,9 +2804,6 @@ async function resolveForegroundTabId() {
   return null;
 }
 
-// activeTabId resolves and CACHES the authoritative foreground tab. The cache is
-// a hint that self-heals on every call — it is refreshed to match the resolver
-// rather than being trusted ahead of it, so it can never cause divergence.
 async function activeTabId() {
   const id = await resolveForegroundTabId();
   if (id) {
@@ -3726,11 +2811,6 @@ async function activeTabId() {
     return id;
   }
   state.activeTabId = null;
-  // Distinguish "no tabs at all" from "every candidate is a page brw cannot
-  // drive" (a password-manager popout or a chrome:// tab holding the foreground).
-  // Without this the operator gets a bare "no active tab" while looking at a
-  // browser full of tabs, which reads as a bridge fault rather than the fixable
-  // situation it is.
   const blocked = (await chrome.tabs.query({ active: true }).catch(() => []))
     .filter((tab) => !isAgentDrivableUrl(tab?.url));
   if (blocked.length) {
@@ -3744,20 +2824,6 @@ async function activeTabId() {
 }
 
 async function listTabSummaries() {
-  // Enumerate EVERY tab via chrome.tabs.query({}) — which returns tabs across all
-  // window types — then drop only PWA/app and devtools surfaces. The previous
-  // chrome.windows.getAll({windowTypes:["normal","popup"]}) allowlist silently
-  // returned 0 tabs whenever a window was not classified as normal/popup (e.g. a
-  // freshly launched Chromium clone/test profile), even though those tabs were fully
-  // controllable. The denylist preserves the PWA-exclusion intent without the false
-  // negatives.
-  //
-  // A REJECTED query must propagate (handle() answers ok:false) instead of being
-  // swallowed into an empty-but-ok list: the daemon cannot tell "no tabs" from
-  // "tabs API failed" and agents then act on a fake-empty world — the
-  // "list_tabs suddenly returns []" flake. An empty RESULT gets one brief retry
-  // (a just-woken service worker can answer before tab state is warm); empty
-  // after the retry is trusted, since macOS Chrome can genuinely run windowless.
   let allTabs = await chrome.tabs.query({});
   if (!allTabs?.length) {
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -3772,42 +2838,18 @@ async function listTabSummaries() {
     return win;
   };
   const groupsById = await tabGroupsById();
-  // Resolve the authoritative foreground tab ONCE and mark exactly that tab as
-  // active in the list. This guarantees list_tabs's active flag is identical to
-  // what get_active_tab_id (and therefore every no-tab_id page tool) resolves —
-  // they share resolveForegroundTabId(). Without this, list_tabs reported
-  // Chrome's per-window active flag while page tools used the cache, and the two
-  // diverged whenever they disagreed about which window was foreground.
   const foregroundId = await resolveForegroundTabId().catch(() => null);
   const out = [];
   for (const tab of allTabs) {
     const win = await getWin(tab.windowId);
-    // Drop only PWA/app and devtools surfaces; include normal, popup, and any
-    // window whose type cannot be determined (default to controllable).
     if (!isControllableWindowType(win)) continue;
-    // chrome.tabs can lag a recent navigation by a few seconds. Re-fetch each tab
-    // with chrome.tabs.get(), which talks to the live tab record, so list_tabs
-    // reports the current URL/title. Fall back to the queried tab if the per-tab
-    // fetch fails (tab closed mid enumeration), preserving metadata either way.
     let fresh = tab;
     if (typeof tab.id === "number") {
       const got = await chrome.tabs.get(tab.id).catch(() => null);
       if (got) fresh = got;
     }
     const summary = await tabSummaryFrom(fresh, win, groupsById);
-    // Override Chrome's per-window active flag with the single authoritative
-    // foreground tab so only one tab in the whole list is reported active, and it
-    // is the same tab page tools act on. windowFocused is also forced true for that
-    // tab so the daemon's (Active && WindowFocused) filter selects it even when
-    // Chrome briefly reports no focused window.
     if (typeof fresh.id === "number") {
-      // NOTE the deliberate absence of a `foregroundId != null` guard. When
-      // resolution finds NO drivable tab, falling back to Chrome's raw per-window
-      // active flag re-reports the very tab brw just refused to target — and the
-      // daemon's ListTabs caches (Active && WindowFocused) as its active tab, so
-      // a Bitwarden popout came straight back through this path even after the
-      // resolver learned to skip it. No resolvable foreground means no tab is
-      // reported active, which is what get_active_tab_id says too.
       const isForeground = foregroundId != null && fresh.id === foregroundId;
       summary.active = isForeground;
       if (isForeground) summary.windowFocused = true;
@@ -3845,9 +2887,6 @@ async function tabSummaryFrom(tab, win, groupsById = null) {
     groupColor: group?.color || "",
     groupCollapsed: Boolean(group?.collapsed),
     openerTabId: tab.openerTabId || 0,
-    // Renderer-health flags: a discarded (Memory Saver) or frozen (Energy
-    // Saver / collapsed group) tab cannot run work until revived. tab.frozen
-    // requires Chrome 132+; earlier Chrome simply reports false.
     discarded: Boolean(tab.discarded),
     frozen: Boolean(tab.frozen)
   };
@@ -3903,9 +2942,6 @@ async function groupTabForParams(tab, params = {}) {
   const groupArgs = { tabIds: [tab.id] };
   if (existing?.id != null) groupArgs.groupId = existing.id;
   else if (typeof tab.windowId === "number") {
-    // See group_tabs: service workers have no stable implicit current window.
-    // Explicit window targeting is required for reliable native vertical-tab
-    // group creation and is also safer when Chrome has several windows.
     groupArgs.createProperties = { windowId: tab.windowId };
   }
   const groupId = await chrome.tabs.group(groupArgs);
@@ -3951,20 +2987,8 @@ async function publishActiveTab(tabId) {
   if (!tabId) return;
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab) return;
-  // CHOKE POINT: never let a PWA/app or devtools surface become the cached active
-  // tab. chrome.tabs.onActivated / onCreated fire for EVERY window — including the
-  // Google Chat (and any installed-PWA) app window — so without this guard a user
-  // clicking into Google Chat would stash that tab in state.activeTabId, and
-  // resolveForegroundTabId's cache fallback would then hand the agent the Chat PWA.
-  // The agent must NEVER drive those windows. onFocusChanged already filters them;
-  // this closes the onActivated/onCreated path too.
   const win = await chrome.windows.get(tab.windowId).catch(() => null);
   if (!isControllableWindowType(win)) return;
-  // Same choke point for pages brw cannot drive. onActivated / onFocusChanged fire
-  // when the human opens a password-manager popout or a chrome:// tab; caching that
-  // here would poison resolveForegroundTabId's step-3 cache fallback with the exact
-  // tab every CDP call fails on — re-breaking no-tab_id tools through the back door
-  // even though the resolver itself now skips it.
   if (!isAgentDrivableUrl(tab.url)) return;
   state.activeTabId = tabId;
   await connect();
@@ -4000,12 +3024,6 @@ function ensureConnectAlarm() {
   chrome.alarms.create("brw-connect", { delayInMinutes: 0.05, periodInMinutes: 0.5 }).catch(() => {});
 }
 
-// ensureOffscreen creates the offscreen keepalive document if it is not already
-// open. The offscreen page is exempt from the MV3 idle timer and holds a
-// long-lived port to this worker (offscreen.js), preventing Chrome from
-// terminating it — which keeps the daemon WebSocket connected and active-tab
-// resolution reliable while Chrome is idle in the background. Safe to call
-// repeatedly; a second create on an existing document is caught and ignored.
 async function ensureOffscreen() {
   if (offscreenSetupPromise) return offscreenSetupPromise;
   offscreenSetupPromise = (async () => {
@@ -4020,7 +3038,6 @@ async function ensureOffscreen() {
           "Keep the service worker alive so the bridge WebSocket and active-tab resolution remain reliable while Chrome is idle."
       });
     } catch (_) {
-      // Document already exists (creation race) or the offscreen API is unavailable.
     }
   })().finally(() => {
     offscreenSetupPromise = null;
@@ -4044,23 +3061,12 @@ function ensureObserver(tabId) {
       attributes: true,
       characterData: true
     });
-    // A form control's value, checked and selectedIndex are DOM PROPERTIES, not
-    // attributes, so filling a field, picking an option or ticking a box mutates
-    // no node and a MutationObserver never fires. Without these listeners the
-    // cached snapshot is reported clean and a later read returns the pre-edit
-    // page. Capture phase on document also sees composed events crossing a
-    // shadow boundary, and catches the human typing as well as brw.
     ['input', 'change'].forEach(function(type) {
       document.addEventListener(type, function() {
         window.__brwDirty = true;
       }, true);
     });
   })()`;
-  // Attach via the TRACKED attach() so this debugger session is recorded in
-  // state.attachedTabs and is therefore released by detachAll / sweepIdleDebuggers
-  // / detach. The previous raw chrome.debugger.attach() here was invisible to that
-  // bookkeeping, so the observer's attachment leaked and left a stuck "being
-  // debugged" banner. On failure, drop the flag so a later snapshot can retry.
   attach(tabId)
     .then(() => chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
       expression: observerScript,
@@ -4069,11 +3075,6 @@ function ensureObserver(tabId) {
     .catch(() => { state.observerInjected.delete(tabId); });
 }
 
-// createNotification turns a bridge "notify" command into a basic desktop
-// notification. The icon path falls back to the extension action icon if none
-// is bundled; chrome.notifications requires an iconUrl, so we use the
-// extension's own packaged URL. Returns { ok, delivery, note } so the daemon
-// can report the honest delivery channel rather than faking success.
 function createNotification(params) {
   const title = String(params.title || "brw");
   const messageText = String(params.message || "");
@@ -4089,9 +3090,6 @@ function createNotification(params) {
     try {
       chrome.notifications.create("", options, (notificationId) => {
         if (chrome.runtime.lastError) {
-          // Retry without an iconUrl — a missing packaged icon is the most
-          // common create() failure, and the notification is still useful
-          // without one.
           const fallback = Object.assign({}, options);
           delete fallback.iconUrl;
           chrome.notifications.create("", fallback, (retryId) => {
@@ -4112,8 +3110,6 @@ function createNotification(params) {
 }
 
 function bytesToBase64(bytes) {
-  // Spreading a multi-megabyte Uint8Array into one String.fromCharCode call
-  // exceeds V8's argument limit. Convert in small blocks, then encode once.
   const parts = [];
   const blockSize = 0x8000;
   for (let offset = 0; offset < bytes.length; offset += blockSize) {
@@ -4127,10 +3123,6 @@ function send(payload) {
   if (!socket || socket.readyState !== WebSocket.OPEN) return false;
   try {
     const serialized = JSON.stringify(payload);
-    // Most bridge frames are small. A JSON string whose UTF-16 length is at
-    // most one third of the byte threshold is guaranteed to fit even if every
-    // code unit needs three UTF-8 bytes, so avoid allocating TextEncoder output
-    // on the hot path.
     if (serialized.length <= Math.floor(RESPONSE_DIRECT_MAX_BYTES / 3)) {
       socket.send(serialized);
       return true;
@@ -4141,9 +3133,6 @@ function send(payload) {
       socket.send(serialized);
       return true;
     }
-    // Hello, focus, and keepalive events have no request id and are expected to
-    // be tiny. Never violate the daemon's frame ceiling for a malformed giant
-    // event: without a request id there is no safe reassembly correlation key.
     if (typeof payload?.id !== "string" || payload.id === "") {
       state.lastError = "oversized uncorrelated bridge message was not sent";
       return false;
@@ -4183,9 +3172,6 @@ function send(payload) {
   }
 }
 
-// consentURL derives the daemon's consent surface from the configured status
-// endpoint. It is derived rather than configured so there is one address to get
-// wrong, and normalizeStatusURL has already pinned that address to loopback.
 function consentURL(config, path) {
   const url = new URL(config.statusUrl);
   url.pathname = path;
@@ -4193,10 +3179,6 @@ function consentURL(config, path) {
   return url.toString();
 }
 
-// fetchSiteConsent reads the per-origin grants the daemon holds, for the options
-// page. The page cannot fetch this itself: it runs on a chrome-extension origin
-// and the daemon serves the surface only to a request with host_permissions
-// behind it, which is what the service worker has.
 async function fetchSiteConsent() {
   const config = await loadBridgeConfig();
   const response = await fetch(consentURL(config, "/consent"), {
@@ -4223,20 +3205,8 @@ async function revokeSiteConsent(request) {
   return result;
 }
 
-// fetchBridgeToken reads the per-launch handshake token from the daemon's
-// loopback /status endpoint. The extension can read the response body because
-// the loopback origin is in host_permissions; a web page cannot.
-//
-// It returns {token, reachable, detail} rather than a bare string because the
-// three ways of ending up with no token are no longer equivalent. The daemon
-// now requires the token, so an unreachable or wrong statusUrl produces a
-// refused connection rather than a tokenless one - and a caller that cannot
-// tell "the daemon offered none" from "I never reached the daemon" reports a
-// bridge that will not come up with the cause three layers away.
 async function fetchBridgeToken(config) {
   try {
-    // Bounded so a hung /status can never block hello indefinitely; the bridge's
-    // own handshake timeout would otherwise drop us and force a reconnect loop.
     const response = await fetch(config.statusUrl, { cache: "no-store", signal: AbortSignal.timeout(DAEMON_STATUS_TIMEOUT_MS) });
     if (!response.ok) {
       return { token: "", reachable: false, detail: `the daemon status endpoint answered HTTP ${response.status}` };
@@ -4251,9 +3221,6 @@ async function fetchBridgeToken(config) {
 
 async function probeDaemonStatus() {
   if (!isSocketOpen()) return false;
-  // Alarms, the keepalive interval, and connect({probe:true}) can land at the
-  // same moment. Coalesce them so one slow /status response cannot create a
-  // burst of probes that all count as independent failures.
   if (state.statusProbeInFlight) return state.statusProbeInFlight;
   const socket = state.socket;
   const probe = (async () => {
@@ -4273,8 +3240,6 @@ async function probeDaemonStatus() {
       }
       return true;
     } catch (error) {
-      // A probe belonging to an old socket must never close or downgrade the
-      // replacement connection that won the race while the fetch was pending.
       if (state.socket !== socket || socket?.readyState !== WebSocket.OPEN) return false;
       state.statusProbeFailures += 1;
       const message = `daemon status probe failed: ${String(error?.message || error)}`;
@@ -4322,7 +3287,6 @@ function isSocketOpen() {
   return Boolean(state.socket && state.socket.readyState === WebSocket.OPEN);
 }
 
-// isBridgeLive is an open socket the daemon has accepted.
 function isBridgeLive() {
   return isSocketOpen() && state.acceptedSocket === state.socket;
 }
@@ -4331,11 +3295,6 @@ function isSocketConnecting() {
   return Boolean(state.socket && state.socket.readyState === WebSocket.CONNECTING);
 }
 
-// Badge mode is derived from connection status + recent agent activity:
-//   connected    → Idle          solid green "on"
-//   used         → Agent active  magenta pulse "act"
-//   connecting   → Reconnecting  amber flash "…"
-//   disconnected → Down          solid red "off"
 let badgeMode = "disconnected";
 let badgeAnimTimer = null;
 let badgeAnimPhase = 0;
@@ -4344,17 +3303,10 @@ let disconnectNotifyTimer = null;
 let lastDisconnectNotifyAt = 0;
 
 function isAgentActive() {
-  // lastAgentActivityAt is the sole source of truth for Agent active. It is only
-  // written by touchAgentActivity after queueAgentActivity filters out
-  // chrome-extension / chrome:// pages — so attachUsedAt alone (debugger on the
-  // popup) must not keep the badge pulsing after operator inspection.
   return Date.now() - (state.lastAgentActivityAt || 0) < BADGE_USED_WINDOW_MS;
 }
 
 function resolveBadgeMode(status) {
-  // Transport socket wins over last markBridgeStatus stamp. Per-request faults
-  // briefly set status "error" while the WS stayed open; the badge must stay
-  // Idle (or Agent active) in that case, never Down.
   if (isBridgeLive()) return isAgentActive() ? "used" : "connected";
   if (status === "rejected") return "rejected";
   if (status === "connected") return isAgentActive() ? "used" : "connected";
@@ -4362,11 +3314,9 @@ function resolveBadgeMode(status) {
     return "connecting";
   }
   if (status === "consent_required") return "consent";
-  // "error", "disconnected", empty — Down.
   return "disconnected";
 }
 
-// noteRequestFault records lastError without demoting the connection badge.
 async function noteRequestFault(detail = "") {
   const config = state.bridgeConfig || normalizeBridgeConfig({});
   const status = isBridgeLive() ? "connected" : (state.reportedStatus || "error");
@@ -4391,7 +3341,6 @@ function setBadgeVisual(text, color, title) {
   chrome.action.setBadgeText({ text }).catch(() => {});
   chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
   chrome.action.setTitle({ title }).catch(() => {});
-  // White label on coloured badge for contrast (Chrome 110+).
   if (typeof chrome.action.setBadgeTextColor === "function") {
     chrome.action.setBadgeTextColor({ color: "#ffffff" }).catch(() => {});
   }
@@ -4403,7 +3352,6 @@ function applyBadgeFrame(mode, phase) {
     return;
   }
   if (mode === "used") {
-    // Magenta pulse: brand colour, never a second green.
     if (phase % 2 === 0) {
       setBadgeVisual("act", BADGE_AGENT_PULSE_BG, "brw · Agent active");
     } else {
@@ -4441,8 +3389,6 @@ function ensureBadgeAnim(mode) {
   }
   if (badgeAnimTimer) return;
   badgeAnimTimer = setInterval(() => {
-    // Re-resolve every tick so Agent active drops back to Idle when activity
-    // ends, and Reconnecting settles when the socket opens.
     const next = resolveBadgeMode(state.reportedStatus || "disconnected");
     if (next !== badgeMode) {
       badgeMode = next;
@@ -4467,7 +3413,6 @@ function setBridgeBadge(status) {
     badgeAnimPhase = 0;
     applyBadgeFrame(mode, 0);
   } else if (!badgeAnimTimer) {
-    // Steady state refresh (e.g. reconnect while already connected).
     applyBadgeFrame(mode, badgeAnimPhase);
   }
   ensureBadgeAnim(mode);
@@ -4489,8 +3434,6 @@ function noteConnectionLifecycle(status) {
     }
     return;
   }
-  // Only notify after a real prior connection — not on cold start before the
-  // first hello. Debounce so a 3–11s MV3 respawn never pops a toast.
   if (!everConnectedThisWorker) return;
   if (disconnectNotifyTimer) return;
   disconnectNotifyTimer = setTimeout(() => {
