@@ -12,8 +12,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// observingController is a backend that can say how a wait resolved, which both
-// first-party transports can.
 type observingController struct {
 	*fakeController
 	outcome browser.WaitOutcome
@@ -26,10 +24,6 @@ func (o *observingController) WaitForOutcome(_ context.Context, condition string
 	return outcome, nil
 }
 
-// The route body is what `brw wait` prints and what a proxying brw reads back,
-// so the outcome has to survive the HTTP hop. Writing a bare {ok:true} here is
-// what made brw_wait_for's advertised return shape false on the remote
-// transport and on the CLI.
 func TestWaitRouteCarriesTheOutcome(t *testing.T) {
 	ctrl := &observingController{
 		fakeController: &fakeController{},
@@ -54,8 +48,6 @@ func TestWaitRouteCarriesTheOutcome(t *testing.T) {
 	}
 }
 
-// A backend that cannot report an outcome still answers the route: the wait is
-// what the caller asked for, and only the reporting is missing.
 func TestWaitRouteStillAnswersABackendThatCannotReport(t *testing.T) {
 	server := New("", &fakeController{})
 

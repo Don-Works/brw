@@ -10,8 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// A daemon that proxies or bridges cannot stream, and must say so rather than
-// hold open an empty connection the caller will wait on forever.
 func TestSessionStreamRefusesControllersThatCannotSubscribe(t *testing.T) {
 	s := New("127.0.0.1:0", nonStreamingController{})
 	rec := httptest.NewRecorder()
@@ -27,9 +25,6 @@ func TestSessionStreamRefusesControllersThatCannotSubscribe(t *testing.T) {
 
 type nonStreamingController struct{ browser.Controller }
 
-// The daemon is shared. An unscoped stream would hand one agent session
-// another's browsing live — on a signed-in profile that means authenticated
-// page titles and URLs. Scoping must match /api/page/trace exactly.
 func TestSessionStreamScopesEntriesToTheCallersLeases(t *testing.T) {
 	s := New("127.0.0.1:0", nonStreamingController{})
 
@@ -61,9 +56,6 @@ func TestSessionStreamScopesEntriesToTheCallersLeases(t *testing.T) {
 	}
 }
 
-// The operator running the daemon is a different actor from the agent sessions
-// sharing it. BRW_STREAM_SCOPE=all is their opt-in, set at launch — a request
-// cannot widen its own view by asking.
 func TestSessionStreamOperatorScopeIsLaunchTimeOnly(t *testing.T) {
 	t.Setenv("BRW_STREAM_SCOPE", "all")
 	if !strings.EqualFold(strings.TrimSpace(os.Getenv("BRW_STREAM_SCOPE")), "all") {
@@ -73,7 +65,7 @@ func TestSessionStreamOperatorScopeIsLaunchTimeOnly(t *testing.T) {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("BRW_STREAM_SCOPE")), "all") {
 		t.Fatal("empty scope must not enable watch-all")
 	}
-	// There is no query parameter or header that turns it on.
+
 	req := httptest.NewRequest(http.MethodGet, "/api/session/stream?scope=all", nil)
 	if strings.EqualFold(req.URL.Query().Get("scope"), "all") &&
 		strings.EqualFold(strings.TrimSpace(os.Getenv("BRW_STREAM_SCOPE")), "all") {

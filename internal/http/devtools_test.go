@@ -19,23 +19,14 @@ import (
 	"github.com/Don-Works/brw/internal/httpclient"
 )
 
-// routeFixtureDelay is the server think-time the fixture controls. Without it
-// a loopback response is fast enough that TTFB rounds to zero, and an assertion
-// on "greater than zero" would be an assertion about the machine.
 const routeFixtureDelay = 150 * time.Millisecond
 
-// devtoolsRouteFixture fails one axe rule on purpose: #bbbbbb text on white is
-// about 1.9:1 where 4.5:1 is required.
 const devtoolsRouteFixture = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Route fixture</title></head><body>
 <h1>Route fixture</h1>
 <p id="low-contrast" style="color:#bbbbbb;background-color:#ffffff">Unreadable on purpose.</p>
 </body></html>`
 
-// newDevtoolsRouteServer is the daemon as an upstream proxy actually meets it:
-// a real browser behind the routes and a real artifact store beside them. The
-// routes are where the audit and its artifact are joined, so a fake on either
-// side would test the wrong seam.
 func newDevtoolsRouteServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	chromePath, err := cdp.FindChrome("")
@@ -85,8 +76,6 @@ func newDevtoolsRouteServer(t *testing.T) (*Server, string) {
 	return server, fixture.URL
 }
 
-// ttfbFloor is eighty per cent of the fixture's own think-time: a reading below
-// it did not come from this navigation.
 func ttfbFloor() float64 { return float64(routeFixtureDelay/time.Millisecond) * 0.8 }
 
 func postRoute(t *testing.T, server *Server, path, body string, out any) {
@@ -102,10 +91,6 @@ func postRoute(t *testing.T, server *Server, path, body string, out any) {
 	}
 }
 
-// TestDevtoolsRoutesAnswerFromTheRealBrowser covers the daemon surface an
-// upstream MCP proxy forwards to. The audit route is the one that does more
-// than forward: it has to store the report here and answer with a handle,
-// because the process on the other side of the proxy has no store.
 func TestDevtoolsRoutesAnswerFromTheRealBrowser(t *testing.T) {
 	server, _ := newDevtoolsRouteServer(t)
 
@@ -130,24 +115,17 @@ func TestDevtoolsRoutesAnswerFromTheRealBrowser(t *testing.T) {
 		t.Fatal("the route answered with the full report; it belongs in the artifact")
 	}
 
-	// The handle has to name a report readable through the artifact routes the
-	// same daemon serves, or the two halves are not actually joined.
 	var chunk artifact.Chunk
 	postRoute(t, server, "/api/artifacts/read",
 		fmt.Sprintf(`{"artifact_id":%q,"max_bytes":%d}`, audit.Artifact.ID, artifact.MaxReadBytes), &chunk)
 	if !strings.Contains(chunk.Text, "color-contrast") {
 		t.Errorf("stored report = %.300s, want the audit document", chunk.Text)
 	}
-	// The audit is read-shaped but not effect-free, and the route has to carry
-	// that out with the answer rather than leaving it to the tool description.
+
 	if !strings.Contains(audit.PageEffects, "data-brw-ref") || !strings.Contains(audit.PageEffects, "window.axe") {
 		t.Errorf("page_effects = %q, want it to name what the audit left in the page", audit.PageEffects)
 	}
 
-	// The stored report holds the raw HTML of every failing element, so a caller
-	// on a page carrying real data has to be able to bound its retention through
-	// this route — it is the one an upstream MCP process forwards to. The store
-	// behind these routes keeps artifacts for an hour.
 	var bounded devtools.AuditResult
 	postRoute(t, server, "/api/page/a11y", `{"rules":["color-contrast"],"ttl_seconds":120}`, &bounded)
 	if bounded.Artifact == nil {
@@ -171,9 +149,6 @@ func TestDevtoolsRoutesAnswerFromTheRealBrowser(t *testing.T) {
 	}
 }
 
-// TestAccessibilityRouteSaysSoWhenItCannotStoreTheReport: a daemon started with
-// --artifact-dir off still answers, and says the report is gone rather than
-// letting the summary read as everything axe found.
 func TestAccessibilityRouteSaysSoWhenItCannotStoreTheReport(t *testing.T) {
 	server, _ := newDevtoolsRouteServer(t)
 	server.SetArtifactAPI(nil)
@@ -191,9 +166,6 @@ func TestAccessibilityRouteSaysSoWhenItCannotStoreTheReport(t *testing.T) {
 	}
 }
 
-// TestDevtoolsRoutesRefuseATransportThatCannotObserve pins the named capability
-// error. A transport without the capability must not answer 200 with an empty
-// page report, which reads exactly like a clean result.
 func TestDevtoolsRoutesRefuseATransportThatCannotObserve(t *testing.T) {
 	server := New("", &fakeController{})
 	for _, path := range []string{"/api/page/vitals", "/api/page/a11y", "/api/page/highlight"} {
@@ -211,11 +183,6 @@ func TestDevtoolsRoutesRefuseATransportThatCannotObserve(t *testing.T) {
 	}
 }
 
-// TestUpstreamProxyGetsTheHandleAndNotTheReport is the --upstream-http topology
-// end to end: a disposable MCP process holds an httpclient.Controller pointed
-// at this daemon. The audit runs here, the report is stored here, and what
-// crosses is a summary and a handle — the data-locality rule the artifact
-// capture path already follows.
 func TestUpstreamProxyGetsTheHandleAndNotTheReport(t *testing.T) {
 	server, fixtureURL := newDevtoolsRouteServer(t)
 	daemon := httptest.NewServer(server.server.Handler)
@@ -227,10 +194,6 @@ func TestUpstreamProxyGetsTheHandleAndNotTheReport(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// A proxied session gets its own leased working tab rather than whatever the
-	// browser was already showing, so it has to put the page there itself. That
-	// is the flow an agent runs, and it is what makes the readings below belong
-	// to this session's page.
 	if _, err := proxy.Open(ctx, fixtureURL); err != nil {
 		t.Fatalf("open the fixture over the proxy: %v", err)
 	}
@@ -260,9 +223,6 @@ func TestUpstreamProxyGetsTheHandleAndNotTheReport(t *testing.T) {
 		t.Fatalf("summary across the proxy = %+v", audit.Rules)
 	}
 
-	// An upstream MCP process runs the same attach step, with its own artifact
-	// API being the proxy. It must leave the daemon's handle alone rather than
-	// reporting the report lost.
 	forwarded := artifact.AttachAuditReport(ctx, proxy, audit, 0)
 	if forwarded.Artifact == nil || forwarded.Artifact.ID != audit.Artifact.ID {
 		t.Fatalf("the upstream process lost the daemon's handle: %+v", forwarded.Artifact)

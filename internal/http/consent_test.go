@@ -14,25 +14,17 @@ import (
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
 
-// fixtureConsentKey is an obviously fabricated MAC key for tests.
 var fixtureConsentKey = []byte("fixture-http-consent-key-abcdefgh")
 
-// consentController reports an open tab so the act-scope gate has a live page
-// origin, and records whether the underlying handler actually ran.
 type consentController struct {
 	fakeController
 	tabURL  string
 	clicked bool
-	// tabURLAfterStep moves the tab once a sequence step has run, which is what
-	// a click on a cross-site link does to the steps that follow it.
+
 	tabURLAfterStep map[int]string
 	ranSteps        int
 }
 
-// ExecuteBatch runs the steps the way the real runners do: ask the installed
-// per-step consent gate BEFORE each step, and stop on a refusal. Without this
-// the fake would pass a batch the real runner refuses, and whether this surface
-// installs the gate at all would be untested.
 func (c *consentController) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
 	result := browser.BatchResult{OK: true, TabID: "tab1"}
 	for index, step := range steps {
@@ -80,9 +72,6 @@ func newConsentServerWithController[C browser.Controller](t *testing.T, ctrl C) 
 	return server, guard, ctrl
 }
 
-// TestConsentGatesTheHTTPAPIToo is the bypass test. The MCP server and this API
-// drive the same controller, so a gate on MCP alone would be walked past by
-// calling the daemon's own route - which is exactly what `brw open` does.
 func TestConsentGatesTheHTTPAPIToo(t *testing.T) {
 	server, guard, ctrl := newConsentServerWithController(t, &consentController{tabURL: "https://shop.test/cart"})
 
@@ -125,20 +114,6 @@ func TestConsentGatesTheHTTPAPIToo(t *testing.T) {
 	}
 }
 
-// TestEveryGatedOperationIsRefusedOverHTTP walks the daemon's own route table
-// and proves each route whose operation carries a consent rule is actually
-// refused without a grant.
-//
-// It is the anti-drift test for the two surfaces: the middleware finds the
-// operation through usageOperations, so a gated tool whose route is missing from
-// that map, or a rule added to the shared table with no route wiring, shows up
-// here as a route that answered 200.
-//
-// The request uses the method the route is REGISTERED with, discovered from the
-// Allow header a method mismatch returns. Posting to every route instead would
-// count a GET-only route's 405 as proof the gate fired, which is a pass for the
-// wrong reason - and the refusal body is checked for the same reason, since only
-// the gate names the origin and the missing scope.
 func TestEveryGatedOperationIsRefusedOverHTTP(t *testing.T) {
 	for route, operation := range usageOperations {
 		rule, gated := siteconsent.ToolRules[operation]
@@ -154,8 +129,7 @@ func TestEveryGatedOperationIsRefusedOverHTTP(t *testing.T) {
 					case siteconsent.SequenceTools[operation]:
 						body = `{"steps":[{"action":"open","url":"https://ungranted.test/x"}]}`
 					case rule.Target == siteconsent.TargetURL:
-						// Addressed in the argument the RULE declares, so a rule
-						// naming a field the tool does not have fails here too.
+
 						body = destinationBody(t, rule.Fields[0])
 					default:
 						body = `{}`
@@ -177,8 +151,6 @@ func TestEveryGatedOperationIsRefusedOverHTTP(t *testing.T) {
 	}
 }
 
-// destinationBody writes an un-granted origin into the argument a rule says the
-// tool names its destination in.
 func destinationBody(t *testing.T, field siteconsent.DestinationField) string {
 	t.Helper()
 	switch field {
@@ -195,13 +167,9 @@ func destinationBody(t *testing.T, field siteconsent.DestinationField) string {
 	return ""
 }
 
-// registeredMethods asks the route table which methods a path is registered
-// with. A mismatch answers 405 with an Allow header, so the test reads the
-// methods out of the mux rather than guessing them.
 func registeredMethods(t *testing.T, route string) []string {
 	t.Helper()
-	// A server with no consent guard, so the gate cannot answer before the mux
-	// reports the method mismatch.
+
 	server := New("", &consentController{})
 	req := httptest.NewRequest("BREW", route, strings.NewReader(""))
 	rec := httptest.NewRecorder()
@@ -222,25 +190,14 @@ func registeredMethods(t *testing.T, route string) []string {
 	return methods
 }
 
-// TestEveryAPIRouteIsClassifiedForConsent is the route-table half of the
-// exhaustiveness rule: an /api/ route whose operation is in neither half of the
-// consent table is a route nothing decided about.
 func TestEveryAPIRouteIsClassifiedForConsent(t *testing.T) {
-	// brw's own administration surface: HTTP-only routes that configure or
-	// inspect the daemon rather than drive a site, and which therefore have no
-	// MCP tool to classify in siteconsent. Gating the consent routes behind a
-	// grant would make a user unable to revoke without first granting; the same
-	// argument covers withdrawing a plugin capability, which only ever narrows
-	// what brw can do.
+
 	surface := map[string]string{
 		"brw_consent_grants": "lists this profile's own grants; it touches no site",
 		"brw_consent_revoke": "revokes this profile's own grants; it touches no site",
 		"brw_plugins":        "reports which plugins are loaded and what capabilities they hold; it names no origin",
 		"brw_plugin_revoke":  "withdraws a capability from a loaded plugin, which narrows brw rather than reaching a site",
-		// The roster reaches a browser only as an HTTP client of that profile's
-		// own daemon, whose middleware classifies the call as brw_cookies or
-		// brw_open and gates it there. TestRosterCopyIsGatedByTheDestinationsConsent
-		// drives that path.
+
 		"brw_roster_board":  "lists cookie names through each profile's own daemon, whose brw_cookies gate decides every read",
 		"brw_roster_create": "writes a new profile to the policy file and creates its directory; it touches no site",
 		"brw_roster_copy":   "reads and writes cookies only through the source and destination daemons, whose brw_cookies gates decide every call",
@@ -262,9 +219,6 @@ func TestEveryAPIRouteIsClassifiedForConsent(t *testing.T) {
 	}
 }
 
-// TestConsentMiddlewareLeavesUngatedRoutesAlone keeps the gate from becoming a
-// blanket refusal: a route that drives no site passes through untouched, and a
-// gated one still delivers its body to the handler once the origin is granted.
 func TestConsentMiddlewareLeavesUngatedRoutesAlone(t *testing.T) {
 	ctrl := &consentController{tabURL: "https://shop.test/cart"}
 	ctrl.snap = sampleSnapshot()
@@ -326,8 +280,6 @@ func TestConsentGrantsListsRecordsAndProvenance(t *testing.T) {
 	}
 }
 
-// TestConsentGrantsReportsForgedRecords proves a hand-written record is both
-// refused and visible as a refusal on the surface a person actually looks at.
 func TestConsentGrantsReportsForgedRecords(t *testing.T) {
 	server, guard := newConsentServer(t)
 	path := guard.Store().Path()
@@ -411,14 +363,10 @@ func TestConsentRoutesWithoutAGuard(t *testing.T) {
 	}
 }
 
-// TestASequenceIsRegatedInsideTheRunnerOverHTTP is the same wiring proof as the
-// MCP surface's: this API drives the same controller, so a step gate installed
-// on one dispatch path and not the other is a bypass by choice of surface.
 func TestASequenceIsRegatedInsideTheRunnerOverHTTP(t *testing.T) {
 	ctrl := &consentController{
 		tabURL: "https://start.test/",
-		// The click lands somewhere else, which is what a cross-site link does
-		// to the steps that follow it.
+
 		tabURLAfterStep: map[int]string{1: "https://elsewhere.test/inbox"},
 	}
 	server, guard, _ := newConsentServerWithController(t, ctrl)

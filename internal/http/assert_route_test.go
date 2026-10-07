@@ -12,9 +12,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// gettersController answers the getters script with canned page values so the
-// route test covers decoding, tab routing and evaluation rather than a stub
-// that simply returns success.
 type gettersController struct {
 	fakeController
 	values map[string]any
@@ -75,9 +72,7 @@ func TestAssertRouteEvaluatesAndReportsExpectedAgainstActual(t *testing.T) {
 	if failed.Error != want {
 		t.Fatalf("error = %q, want %q", failed.Error, want)
 	}
-	// The failure body carries the comparison as well as the message. Without
-	// it, browser.AssertResult's contract would hold on direct CDP and quietly
-	// not hold for anything reading this route.
+
 	if failed.OK || failed.Assertion != browser.AssertionURL {
 		t.Fatalf("failure body = %+v, want a populated failed result", failed)
 	}
@@ -86,8 +81,6 @@ func TestAssertRouteEvaluatesAndReportsExpectedAgainstActual(t *testing.T) {
 	}
 }
 
-// assertFailureBody is the shape of a refused assertion: the comparison, plus
-// the message a caller that only checks err sees.
 type assertFailureBody struct {
 	browser.AssertResult
 	Error string `json:"error"`

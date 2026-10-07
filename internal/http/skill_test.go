@@ -25,9 +25,6 @@ func getSkill(t *testing.T, server *Server, query string) (agentskill.Document, 
 	return document, rec.Code
 }
 
-// TestSkillRouteServesTheDaemonsOwnBuild pins the HTTP half of the same
-// contract the MCP tool holds: the manual comes out of this binary and says
-// which build served it.
 func TestSkillRouteServesTheDaemonsOwnBuild(t *testing.T) {
 	server := New("", &fakeController{})
 	server.SetVersion("4.2.1-http-test")
@@ -65,9 +62,6 @@ func TestSkillRouteServesTheDaemonsOwnBuild(t *testing.T) {
 	}
 }
 
-// TestSkillRouteIgnoresACopyOnDisk is the HTTP half of the shadowing guard. A
-// daemon started in a source checkout, or next to an old installed skill tree,
-// still answers with its own build's page.
 func TestSkillRouteIgnoresACopyOnDisk(t *testing.T) {
 	workingDir := t.TempDir()
 	decoy := filepath.Join(workingDir, "skills", "brw")
@@ -90,10 +84,6 @@ func TestSkillRouteIgnoresACopyOnDisk(t *testing.T) {
 	}
 }
 
-// TestSkillRouteIsRecordedAndUngated keeps the route inside the two tables a
-// new route has to be in: the usage allowlist and the consent classification.
-// Both are checked exhaustively elsewhere; this pins the values for this route
-// so a rename shows up here rather than as a silently unrecorded operation.
 func TestSkillRouteIsRecordedAndUngated(t *testing.T) {
 	if got := usageOperations["/api/skill"]; got != "brw_skill" {
 		t.Fatalf("usageOperations[/api/skill] = %q, want brw_skill", got)

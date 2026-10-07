@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -10,12 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
-// usageOperations is intentionally an allowlist. Unknown/raw paths are never
-// copied to the ledger because a caller could put secrets in a URL path.
-//
-// Each operation is named for the MCP tool it is the same call as. The site
-// consent gate finds a route's rule through this map, so a route whose operation
-// is spelled differently from its tool is a route with no rule.
 var usageOperations = map[string]string{
 	"/api/watchers/register":         "brw_watch_page",
 	"/api/watchers/manage":           "brw_page_watchers",
@@ -178,9 +171,9 @@ func (s *Server) usageMiddleware(next http.Handler) http.Handler {
 		errorFingerprint := ""
 		if status >= http.StatusBadRequest {
 			outcome = "error"
-			errorClass = usagelog.SafeID(capture.Header().Get(usagelog.HeaderErrorClass))
+			errorClass = usagelog.SafeErrorClass(capture.Header().Get(usagelog.HeaderErrorClass))
 			if errorClass == "" {
-				errorClass = fmt.Sprintf("http_%d", status)
+				errorClass = "tool"
 			}
 			errorFingerprint = usagelog.SafeFingerprint(capture.Header().Get(usagelog.HeaderErrorFingerprint))
 		}

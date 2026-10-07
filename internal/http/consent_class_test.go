@@ -9,13 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
-// TestConsentRefusalsAreClassifiedPolicyDenied is where the scheduled entry
-// point's policy exit code comes from. An unattended run only ever sees an exit
-// code, and "a human has to grant something" and "the daemon fell over" need
-// opposite handling: one is settled, the other is worth retrying. The class
-// travels on the response header, so if the daemon stops attaching it, every
-// refusal downstream reads as a generic failure and a scheduler retries it
-// forever.
 func TestConsentRefusalsAreClassifiedPolicyDenied(t *testing.T) {
 	refusals := []struct {
 		name   string
@@ -23,11 +16,11 @@ func TestConsentRefusalsAreClassifiedPolicyDenied(t *testing.T) {
 		route  string
 		body   string
 	}{
-		// An origin nobody granted.
+
 		{name: "navigation", method: http.MethodPost, route: "/api/browser/open", body: `{"url":"https://ungranted.test/page"}`},
-		// A read of the page the tab is on, which is also un-granted.
+
 		{name: "page read", method: http.MethodPost, route: "/api/page/find", body: `{"query":"button"}`},
-		// A local target, which has no origin anyone could grant.
+
 		{name: "local target", method: http.MethodPost, route: "/api/browser/open", body: `{"url":"file:///etc/hosts"}`},
 	}
 	for _, refusal := range refusals {
@@ -43,8 +36,6 @@ func TestConsentRefusalsAreClassifiedPolicyDenied(t *testing.T) {
 		})
 	}
 
-	// And a granted call is not classified as a refusal, or every success would
-	// look like one to a caller reading the header.
 	granted := &consentController{tabURL: "https://shop.test/cart"}
 	granted.snap = sampleSnapshot()
 	server, guard, _ := newConsentServerWithController(t, granted)
@@ -60,9 +51,6 @@ func TestConsentRefusalsAreClassifiedPolicyDenied(t *testing.T) {
 	}
 }
 
-// TestHealthReportsWhetherThisDaemonCanPrompt: an unattended caller has to know
-// before it starts. With a prompter on its terminal the daemon blocks on a read
-// nobody will answer, and the run that was meant to fail closed hangs instead.
 func TestHealthReportsWhetherThisDaemonCanPrompt(t *testing.T) {
 	server, guard, _ := newConsentServerWithController(t, &consentController{tabURL: "https://shop.test/cart"})
 
@@ -83,8 +71,6 @@ func TestHealthReportsWhetherThisDaemonCanPrompt(t *testing.T) {
 		t.Fatalf("/health does not report a daemon that can prompt: %s", rec.Body.String())
 	}
 
-	// A daemon with consent off says so rather than omitting the block, which a
-	// caller would otherwise read as "an older build that cannot tell me".
 	plain := New("", &consentController{})
 	rec = doJSON(t, plain, http.MethodGet, "/health", "")
 	if !strings.Contains(rec.Body.String(), `"enabled":false`) {

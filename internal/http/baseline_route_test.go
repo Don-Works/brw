@@ -15,8 +15,6 @@ import (
 	"github.com/Don-Works/brw/internal/recipe"
 )
 
-// privateProviderRoot writes one private recipe into a 0700 directory outside
-// any checkout, which is what a directory provider requires of its root.
 func privateProviderRoot(t *testing.T) (string, recipe.Recipe) {
 	t.Helper()
 	visible := true
@@ -48,14 +46,6 @@ func privateProviderRoot(t *testing.T) (string, recipe.Recipe) {
 	return root, value
 }
 
-// TestBaselineRouteAnswersAProxyingDaemon is the hop that keeps the baseline
-// routing rule true on a --upstream-http deployment.
-//
-// brw_baseline has no HTTP route of its own: it runs on whichever daemon the
-// agent is talking to, while the private recipe provider lives on the browser
-// host. Without this route a proxy cannot tell a public fixture from a capture
-// of a page the provider's recipes reach, and writes both to its own
-// --baseline-root.
 func TestBaselineRouteAnswersAProxyingDaemon(t *testing.T) {
 	root, value := privateProviderRoot(t)
 	owned, err := recipe.Digest(value)
@@ -112,9 +102,6 @@ func TestBaselineRouteAnswersAProxyingDaemon(t *testing.T) {
 	}
 }
 
-// TestBaselineRouteOnAHostWithNoProviderOwnsNothing: a browser host with no
-// private recipes has nothing to protect, and answering with an error would
-// stop a proxy gating public fixtures against it.
 func TestBaselineRouteOnAHostWithNoProviderOwnsNothing(t *testing.T) {
 	host := New("", &fakeController{})
 	upstream := httptest.NewServer(host.Handler())
@@ -133,9 +120,6 @@ func TestBaselineRouteOnAHostWithNoProviderOwnsNothing(t *testing.T) {
 	}
 }
 
-// TestBaselineRouteDisclosesOnlyTheDestination. The route exists so a proxy can
-// decide where a capture belongs; a recipe body, an id or a digest list coming
-// back would make it a way to read the private corpus over HTTP.
 func TestBaselineRouteDisclosesOnlyTheDestination(t *testing.T) {
 	root, value := privateProviderRoot(t)
 	owned, err := recipe.Digest(value)

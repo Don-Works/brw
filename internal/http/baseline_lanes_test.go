@@ -20,22 +20,11 @@ import (
 	"github.com/Don-Works/brw/internal/recipe"
 )
 
-// The routing rule is a property of the pair — this recipe, this page — and not
-// of the lane the question arrived on. Every implementation of
-// recipe.BaselineRouter therefore has to answer it the same way, so this file
-// drives all of them through one matrix and fails when a new one appears that
-// nobody classified. A rule enforced on the lanes that existed when it was
-// written is a rule the next transport walks around.
-
-// baselineLane is one implementation of recipe.BaselineRouter under test,
-// keyed by the "package.Type" the source declares it as.
 type baselineLane struct {
 	name   string
 	router recipe.BaselineRouter
 }
 
-// ownerAnswer is the /v1/baselines/owner handler a real HTTPS provider serves:
-// it holds one recipe, and answers both halves of the question about it.
 func ownerAnswer(ownedDigest string, ownedOrigins []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -62,7 +51,6 @@ func ownerAnswer(ownedDigest string, ownedOrigins []string) http.HandlerFunc {
 	}
 }
 
-// baselineLanes builds every shipped router over the same one private recipe.
 func baselineLanes(t *testing.T, ownedDigest string, value recipe.Recipe, root string) []baselineLane {
 	t.Helper()
 
@@ -80,8 +68,6 @@ func baselineLanes(t *testing.T, ownedDigest string, value recipe.Recipe, root s
 		t.Fatalf("https provider: %v", err)
 	}
 
-	// The proxy lane: a browser host holding the directory provider, and a
-	// daemon that can only ask it. brw_baseline runs on the asking daemon.
 	host := New("", &fakeController{})
 	host.SetBaselineRouter(directory)
 	hostServer := httptest.NewServer(host.Handler())
@@ -98,8 +84,6 @@ func baselineLanes(t *testing.T, ownedDigest string, value recipe.Recipe, root s
 	}
 }
 
-// TestEveryBaselineLaneRoutesOnTheRecipeAndThePage drives the matrix through
-// every router, and fails on a router the matrix does not cover.
 func TestEveryBaselineLaneRoutesOnTheRecipeAndThePage(t *testing.T) {
 	root, value := privateProviderRoot(t)
 	owned, err := recipe.Digest(value)
@@ -148,9 +132,7 @@ func TestEveryBaselineLaneRoutesOnTheRecipeAndThePage(t *testing.T) {
 			digest: owned, pageURL: "", want: recipe.BaselineProvider,
 		},
 		{
-			// A page with no origin is not the same as no page. A lane that
-			// reduced the URL to an origin before passing it on would lose the
-			// difference, and an owned digest would decide on its own again.
+
 			name:   "the provider's recipe, on a page with no origin at all",
 			digest: owned, pageURL: "about:blank", want: recipe.BaselineRefusedPageOutsideRecipe,
 		},
@@ -170,11 +152,6 @@ func TestEveryBaselineLaneRoutesOnTheRecipeAndThePage(t *testing.T) {
 	}
 }
 
-// baselineRouterImplementations lists every type in this module that declares a
-// RouteBaseline method, as "package.Type".
-//
-// Read from the source rather than from a hand-kept list, because a hand-kept
-// list is what a new lane is added without touching.
 func baselineRouterImplementations(t *testing.T) []string {
 	t.Helper()
 	root := moduleRoot(t)
@@ -191,8 +168,7 @@ func baselineRouterImplementations(t *testing.T) []string {
 			}
 			return nil
 		}
-		// Test files are skipped: a stand-in written for one test is not a lane
-		// a deployment routes through.
+
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}

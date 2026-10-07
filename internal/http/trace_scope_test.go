@@ -18,14 +18,11 @@ type tracingController struct {
 
 func (c *tracingController) GetTrace() browser.TraceResult { return c.trace }
 
-// A shared daemon serves several agent sessions. An unscoped trace handed one
-// session another's actions, including the URLs it had navigated to — on a
-// signed-in profile, authenticated URLs carrying message ids and search terms.
 func TestTraceIsScopedToTheSessionThatProducedIt(t *testing.T) {
 	ctrl := &tracingController{trace: browser.TraceResult{Entries: []browser.TraceEntry{
 		{Action: "navigate_to", Text: "https://example.com/mine", TabID: "tab-mine", OK: true},
 		{Action: "navigate_to", Text: "https://private.example/theirs/secret-id", TabID: "tab-theirs", OK: true},
-		{Action: "press", Value: "Enter", OK: true}, // no tab: browser-level
+		{Action: "press", Value: "Enter", OK: true},
 	}}}
 	ctrl.trace.Count = len(ctrl.trace.Entries)
 
@@ -42,8 +39,6 @@ func TestTraceIsScopedToTheSessionThatProducedIt(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), leaseContextKey{}, "owner-mine"))
 	server.trace(rec, req)
 
-	// Capture the body before decoding: the decoder consumes the buffer, and a
-	// substring check against the drained recorder would pass vacuously.
 	body := rec.Body.String()
 	var got browser.TraceResult
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
@@ -56,7 +51,7 @@ func TestTraceIsScopedToTheSessionThatProducedIt(t *testing.T) {
 	if !strings.Contains(body, "example.com/mine") {
 		t.Fatalf("the caller's own action was filtered out:\n%s", body)
 	}
-	// A browser-level action belongs to nobody in particular and stays visible.
+
 	if len(got.Entries) != 2 {
 		t.Fatalf("entries = %+v, want the caller's action plus the tab-less one", got.Entries)
 	}
@@ -65,8 +60,6 @@ func TestTraceIsScopedToTheSessionThatProducedIt(t *testing.T) {
 	}
 }
 
-// Without a lease identity there is no way to establish entitlement, so only
-// tab-less entries are returned rather than everything.
 func TestTraceWithoutAnOwnerReturnsOnlyTablessEntries(t *testing.T) {
 	ctrl := &tracingController{trace: browser.TraceResult{Entries: []browser.TraceEntry{
 		{Action: "navigate_to", Text: "https://private.example/theirs", TabID: "tab-theirs", OK: true},

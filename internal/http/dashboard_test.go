@@ -31,8 +31,6 @@ func TestDashboardIsOffByDefault(t *testing.T) {
 	}
 }
 
-// The API may be bound to a Tailscale or LAN address. That is not consent to
-// stream the screen of a signed-in browser to those clients.
 func TestDashboardRefusesNonLoopbackClients(t *testing.T) {
 	t.Setenv(dashboardEnvVar, "1")
 	tests := []struct {
@@ -42,8 +40,7 @@ func TestDashboardRefusesNonLoopbackClients(t *testing.T) {
 	}{
 		{"loopback v4", "127.0.0.1:54321", http.StatusOK},
 		{"loopback v6", "[::1]:54321", http.StatusOK},
-		// Built rather than written as a literal so the hygiene scanner does not
-		// read a test table as a leaked internal address.
+
 		{"LAN peer", net.JoinHostPort(net.IPv4(192, 168, 1, 44).String(), "54321"), http.StatusForbidden},
 		{"tailscale peer", "100.101.102.103:54321", http.StatusForbidden},
 		{"public peer", "93.184.216.34:54321", http.StatusForbidden},
@@ -93,8 +90,7 @@ func TestDashboardPageIsSelfContainedAndLocked(t *testing.T) {
 	if !strings.Contains(body, "<title>brw dashboard</title>") {
 		t.Error("dashboard page should render its own title")
 	}
-	// No external fetches: the daemon serves this page under a default-deny CSP
-	// and nothing on it should need that relaxed.
+
 	for _, forbidden := range []string{"http://", "https://"} {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("dashboard page must not reference external resources (%q)", forbidden)
@@ -136,7 +132,6 @@ func TestClampAndQueryInt(t *testing.T) {
 	}
 }
 
-// The frame payload is the SSE wire contract, so its shape is pinned here.
 func TestDashboardFrameWireShape(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	if !writeFrame(recorder, recorder, 7, []byte{0xff, 0xd8, 0xff}, 1280, 720) {
@@ -157,7 +152,7 @@ func TestDashboardFrameWireShape(t *testing.T) {
 	if frame.At == "" {
 		t.Error("frame must carry a timestamp")
 	}
-	// Takeover maps a click on the rendered image back onto these.
+
 	if frame.Width != 1280 || frame.Height != 720 {
 		t.Errorf("frame geometry = %vx%v, want 1280x720", frame.Width, frame.Height)
 	}
@@ -168,7 +163,7 @@ func TestDashboardFrameWireShape(t *testing.T) {
 	if len(decoded) != 3 || decoded[0] != 0xff {
 		t.Errorf("decoded frame bytes = %v, want the original JPEG bytes", decoded)
 	}
-	// An SSE event ends at a blank line, so a payload may never contain one.
+
 	if strings.Contains(payload, "\n") {
 		t.Error("frame payload must not contain a newline; it would terminate the SSE event early")
 	}

@@ -21,8 +21,6 @@ import (
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
 
-// jarController is a browser with a real cookie jar behind brw_cookies, so a
-// copy through the daemon's own middleware can be observed end to end.
 type jarController struct {
 	fakeController
 	mu  sync.Mutex

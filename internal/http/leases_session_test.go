@@ -52,9 +52,6 @@ func TestLeaseReleaseRenewsLessForAnAbandonedCall(t *testing.T) {
 	}
 }
 
-// A lease whose holder's call never returned was still enforced after its
-// reported expiry: close_tab from another session at 21:48 was refused with
-// "leased by another browser session until 21:18:56Z".
 func TestExpiredLeaseIsNotEnforced(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -121,8 +118,6 @@ func TestAbandonedTTLNeverExceedsTheConfiguredTTL(t *testing.T) {
 	}
 }
 
-// cancelOnCallController cancels the HTTP request's context from inside the
-// controller call, the way a gateway killing a script mid-call does.
 type cancelOnCallController struct {
 	leaseTestController
 	cancel context.CancelFunc
@@ -229,8 +224,7 @@ func TestReleaseSessionFreesTheOwnersTabs(t *testing.T) {
 				}
 				return rec
 			}
-			// owner-a: an explicitly opened tab, an automatic working tab, and a
-			// claimed tab that existed before the session. owner-b: its own tab.
+
 			serve(ownerRequest(http.MethodPost, "/api/browser/open", "owner-a", `{"url":"https://example.com/"}`))
 			serve(ownerRequest(http.MethodPost, "/api/browser/focus", "owner-a", `{"tab_id":"human"}`))
 			serve(ownerRequest(http.MethodGet, "/api/page/snapshot", "owner-b", ""))

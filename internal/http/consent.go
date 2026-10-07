@@ -14,17 +14,10 @@ import (
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
 
-// SetSiteConsent installs the per-origin consent guard. Nil (the default) leaves
-// the routes reporting that consent is not configured rather than pretending an
-// empty grant list means "nothing is allowed".
+// SetSiteConsent installs the per-origin consent guard.
 func (s *Server) SetSiteConsent(guard *siteconsent.Guard) { s.consent = guard }
 
 // GrantView is one grant as the listing surfaces render it.
-//
-// Expired is computed here rather than left to each caller: the extension
-// options page and the CLI must not each decide what "expired" means, and a
-// record that has lapsed but is still listed is exactly what a user needs to see
-// to understand why an agent started asking again.
 type GrantView struct {
 	siteconsent.Grant
 	Expired bool `json:"expired"`
@@ -38,9 +31,6 @@ type consentListResponse struct {
 	Category consentCategoryProvenanceView `json:"categories"`
 }
 
-// consentCategoryProvenanceView carries where the shipped blocklist came from
-// and how to change it, so a user looking at a refused origin can act on it
-// without reading the source.
 type consentCategoryProvenanceView struct {
 	Version  string   `json:"version"`
 	Source   string   `json:"source"`
@@ -127,21 +117,6 @@ func (s *Server) consentRevoke(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, map[string]any{"ok": err == nil, "removed": removed}, err)
 }
 
-// consentMiddleware applies the site-permission gate to the daemon's own HTTP
-// routes.
-//
-// It exists because the MCP server and this API drive the SAME controller. A
-// gate on one surface alone is a bypass through the other: `brw open <url>` goes
-// straight to /api/browser/open and would never meet an MCP-layer check. The
-// rules are the shared table in internal/siteconsent, keyed by the operation
-// names usageOperations already maps each route to, so the two surfaces cannot
-// drift apart.
-//
-// POST /dashboard/input is deliberately outside the table. It carries a takeover
-// token and dispatches the keystrokes and clicks of a HUMAN who has taken the
-// browser over at that moment, and a person at the keyboard IS the consent this
-// gate exists to obtain; the token is what proves someone is there. Nothing else
-// off /api/ reaches the controller.
 func (s *Server) consentMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.consent.Enabled() {
@@ -167,10 +142,7 @@ func (s *Server) consentMiddleware(next http.Handler) http.Handler {
 			_ = json.Unmarshal(body, &probe)
 			tabID = probe.TabID
 		}
-		// The label lookup is nil here: this surface never returned a snapshot
-		// through a per-session cache, so there is no accessible name to recover
-		// for a bare ref. Such an action is classified by its origin alone,
-		// exactly as an unseen ref is on the MCP surface.
+
 		if err := s.consent.CheckTool(operation, body, func(want string) (string, error) {
 			if want == "" {
 				want = tabID
@@ -184,25 +156,11 @@ func (s *Server) consentMiddleware(next http.Handler) http.Handler {
 			}
 			r = r.WithContext(markApprovalRequired(r.Context()))
 		}
-		// The checks that cannot be made here: a plan or batch step lands where
-		// an earlier step left the tab, and a daemon-side fetch lands where a
-		// redirect sends it. Both are decided while the handler runs, against the
-		// origin it actually reaches.
+
 		next.ServeHTTP(w, r.WithContext(s.withConsentHooks(r.Context(), operation, body, tabID)))
 	})
 }
 
-// withConsentHooks installs the runtime half of the gate on the request
-// context, exactly as the MCP surface does. A rule enforced on one surface and
-// not the other is a bypass by choice of surface, which is the shape of hole
-// this whole table exists to close.
-//
-// It installs them through browser.WithRuntimeConsent rather than one call per
-// hook because this function is where that hole reopened: it installed the fetch
-// check alone, so `GET /api/page/snapshot?include_frames=true` attached a session
-// to every embedded third party's target and walked its document with nothing
-// decided about that origin — while the same call over MCP asked. Naming the
-// interface makes the next hook a compile error here instead of a silent gap.
 func (s *Server) withConsentHooks(ctx context.Context, operation string, body []byte, tabID string) context.Context {
 	if !s.consent.Enabled() && s.approvalGate == nil {
 		return ctx
@@ -218,8 +176,7 @@ func (s *Server) withConsentHooks(ctx context.Context, operation string, body []
 		if _, err := s.approvalGate.CheckTargets(stepCtx, operation, raw); err != nil {
 			return err
 		}
-		// The label lookup is nil for the same reason it is nil above: this
-		// surface never returned a snapshot through a per-session cache.
+
 		return gate.Check(index, step, func(want string) (string, error) {
 			if want == "" {
 				want = stepTabID
@@ -232,8 +189,7 @@ func (s *Server) withConsentHooks(ctx context.Context, operation string, body []
 	})
 }
 
-// CheckFetchDestination gates a URL the daemon retrieves itself, on the call's
-// own URL and on every redirect hop after it.
+// CheckFetchDestination gates a URL the daemon retrieves itself, on the call's own URL and on every redirect hop after it.
 func (s *Server) CheckFetchDestination(rawURL string) error {
 	if err := s.approvalGate.CheckURL(rawURL); err != nil {
 		return err
@@ -244,14 +200,7 @@ func (s *Server) CheckFetchDestination(rawURL string) error {
 	return s.consent.Authorize(rawURL, siteconsent.ScopeRead)
 }
 
-// CheckFrameRead gates reaching into one cross-origin iframe, against that
-// frame's own origin rather than the embedder's.
-//
-// This route is also the one a proxied call arrives on: a daemon running against
-// an upstream one forwards include_frames to GET /api/page/snapshot
-// (internal/httpclient), and a Go func cannot cross that boundary. So the
-// upstream daemon has to ask this question itself, or every brw_snapshot proxied
-// through it reads its embedded third parties ungated.
+// CheckFrameRead gates reaching into one cross-origin iframe, against that frame's own origin rather than the embedder's.
 func (s *Server) CheckFrameRead(frameOrigin string) error {
 	if err := s.approvalGate.CheckURL(frameOrigin); err != nil {
 		return err
@@ -259,8 +208,6 @@ func (s *Server) CheckFrameRead(frameOrigin string) error {
 	return s.consent.Authorize(frameOrigin, siteconsent.ScopeRead)
 }
 
-// readConsentBody buffers a request body so the gate can read it and the handler
-// behind it still receives every byte.
 func readConsentBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	if r.Body == nil || r.Method == http.MethodGet {
 		return nil, nil
@@ -269,15 +216,11 @@ func readConsentBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The same bytes are replayed, so ContentLength stays true and a handler
-	// that decodes strictly behaves exactly as it did.
+
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	return body, nil
 }
 
-// currentPageOrigin resolves what the targeted tab is showing. It fails CLOSED
-// for the same reason the MCP side does: an action allowed because brw could not
-// tell where it was landing is the failure this exists to stop.
 func (s *Server) currentPageOrigin(ctx context.Context, tabID string) (string, error) {
 	tabs, err := s.manager.ListTabs(ctx)
 	if err != nil {

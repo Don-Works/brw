@@ -13,10 +13,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// interactionController is a fakeController that also implements the optional
-// interaction capabilities, so the routes can be exercised on both sides of the
-// capability check: this type for the supported path, a bare fakeController for
-// the named refusal.
 type interactionController struct {
 	*fakeController
 	expression   string
@@ -110,8 +106,7 @@ func TestKeyHoldRoutesForwardToTheController(t *testing.T) {
 }
 
 func TestInteractionRoutesNameTheMissingCapability(t *testing.T) {
-	// A bare fakeController implements browser.Controller and none of the
-	// optional interaction capabilities — the extension-bridge shape.
+
 	server := New("", &fakeController{})
 	for _, tc := range []struct {
 		path string
@@ -159,7 +154,6 @@ func TestPushStateRouteAppliesNavigationPolicy(t *testing.T) {
 		t.Fatalf("an off-allowlist pushstate still reached the controller: %+v", ctrl.pushState)
 	}
 
-	// A relative route is same-origin by construction and must still pass.
 	rec = call(t, server, http.MethodPost, "/api/page/pushstate", `{"url":"/settings","replace":true}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("relative pushstate status = %d, body = %s", rec.Code, rec.Body.String())
@@ -178,8 +172,7 @@ func TestFocusRouteForwardsTheRef(t *testing.T) {
 	if ctrl.focusedRef != "e12" {
 		t.Fatalf("focused ref = %q", ctrl.focusedRef)
 	}
-	// The route answers with the post-action observation, not {ok,ref}: an agent
-	// has to be able to read focus/url out of the result the way it can for press.
+
 	var observed browser.ActionResult
 	if err := json.Unmarshal(rec.Body.Bytes(), &observed); err != nil {
 		t.Fatalf("decode focus result %s: %v", rec.Body.String(), err)
@@ -190,7 +183,7 @@ func TestFocusRouteForwardsTheRef(t *testing.T) {
 	if ctrl.focusSnap {
 		t.Fatal("focus without snapshot:true asked for a snapshot")
 	}
-	// snapshot:true must reach the controller, the way it does on press/select.
+
 	if rec := call(t, server, http.MethodPost, "/api/page/focus", `{"ref":"e12","snapshot":true}`); rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -222,7 +215,6 @@ func TestGetRouteAcceptsQueryAndBody(t *testing.T) {
 		t.Fatalf("POST /api/page/get evaluated the wrong expression")
 	}
 
-	// Validation happens before the browser is touched.
 	calls := ctrl.evaluateCall
 	rec = call(t, server, http.MethodPost, "/api/page/get", `{"what":"count"}`)
 	if rec.Code == http.StatusOK {
@@ -236,13 +228,6 @@ func TestGetRouteAcceptsQueryAndBody(t *testing.T) {
 	}
 }
 
-// TestEvaluateRouteReappliesAProxiedTraceLabel: with --upstream-http the MCP
-// server's controller is the HTTP client, so brw_get and brw_frame reach the
-// daemon as /api/page/evaluate and their label — a context value — cannot come
-// with them. The daemon recorded the generated walker script as a hand-written
-// evaluate, which is exactly the confusion the two verbs exist to prevent. The
-// label crosses as body fields, and only for the verbs whose script brw writes:
-// an arbitrary expression must not be able to name itself something else.
 func TestEvaluateRouteReappliesAProxiedTraceLabel(t *testing.T) {
 	tests := []struct {
 		name       string
