@@ -1,12 +1,4 @@
 // Package stepscan reads the case labels out of a switch in brw's own source.
-//
-// It exists so a policy table can be tested against the code it decides for
-// rather than against a second hand-written list. The plan and batch runners
-// dispatch on a step's action with a switch; a consent rule or a content-boundary
-// rule that classifies those actions is only as complete as the list it was
-// written from, and a verb added to the switch with no row in the table is a step
-// no rule decides. Reading the switch is what turns "we remembered" into "the
-// test fails".
 package stepscan
 
 import (
@@ -18,10 +10,7 @@ import (
 	"strings"
 )
 
-// SwitchCases returns every string case label of the switch on field inside the
-// named function of a Go file. Two functions may share a name in one file only
-// if they are methods on different types, which brw's runners are not, so the
-// first match is the one.
+// SwitchCases returns every string case label of the switch on field inside the named function of a Go file.
 func SwitchCases(path, function, field string) ([]string, error) {
 	fileSet := token.NewFileSet()
 	parsed, err := parser.ParseFile(fileSet, path, nil, 0)
@@ -64,11 +53,6 @@ func SwitchCases(path, function, field string) ([]string, error) {
 	return labels, nil
 }
 
-// caseValue resolves one case label to the string it matches: a literal
-// directly, or a named string constant declared in the same file. A switch that
-// names its verbs as constants is the same list as one that spells them inline,
-// and a scan that only reads literals would report such a switch as empty -
-// which reads as "nothing to classify" rather than as "the source moved".
 func caseValue(expr ast.Expr, constants map[string]string) (string, bool) {
 	switch node := expr.(type) {
 	case *ast.BasicLit:
@@ -84,7 +68,6 @@ func caseValue(expr ast.Expr, constants map[string]string) (string, bool) {
 	return "", false
 }
 
-// stringConstants collects the file's top-level string constants by name.
 func stringConstants(file *ast.File) map[string]string {
 	out := map[string]string{}
 	for _, decl := range file.Decls {
@@ -114,11 +97,6 @@ func stringConstants(file *ast.File) map[string]string {
 	return out
 }
 
-// switchesOn reports whether a switch tag selects the named field, whatever the
-// receiver is called (step.Action, st.Action) and through whatever normalising
-// calls wrap it (strings.ToLower(strings.TrimSpace(p.Action))). Unwrapping the
-// calls is what lets a table be checked against a switch that lowercases its
-// subject first, which every verb a user types goes through.
 func switchesOn(tag ast.Expr, field string) bool {
 	switch node := tag.(type) {
 	case *ast.SelectorExpr:

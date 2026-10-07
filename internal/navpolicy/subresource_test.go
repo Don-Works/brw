@@ -18,8 +18,6 @@ func TestCheckSubresource(t *testing.T) {
 		{"blocklist permits an unlisted host", Policy{Blocked: []string{"tracker.example"}}, "https://example.com/app.js", false},
 		{"blocked wins over allowed", Policy{Allowed: []string{"example.com"}, Blocked: []string{"ads.example.com"}}, "https://ads.example.com/px.gif", true},
 
-		// Inline and same-document subresources carry no network destination.
-		// Blocking them confines nothing and breaks ordinary pages.
 		{"data: image passes under an allowlist", Policy{Allowed: []string{"example.com"}}, "data:image/png;base64,iVBORw0KGgo=", false},
 		{"blob: worker script passes under an allowlist", Policy{Allowed: []string{"example.com"}}, "blob:https://example.com/9f8e", false},
 		{"about:blank frame passes under an allowlist", Policy{Allowed: []string{"example.com"}}, "about:blank", false},
@@ -38,8 +36,6 @@ func TestCheckSubresource(t *testing.T) {
 	}
 }
 
-// A data: NAVIGATION can execute attacker content as a document, so navigation
-// keeps the stricter rule even though the subresource rule relaxes it.
 func TestSubresourceRelaxationDoesNotWeakenNavigation(t *testing.T) {
 	p := Policy{Allowed: []string{"example.com"}}
 	if err := p.CheckSubresource("data:text/html,<h1>x"); err != nil {

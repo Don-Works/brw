@@ -1,18 +1,7 @@
 package brwconfig
 
-// flagEnv names the environment variable brwd reads for each flag.
-//
-// It has to be complete and it has to be right, because it is what makes the
-// environment beat the config file: brwd reads its environment as each flag's
-// DEFAULT, so by the time a config file is applied an env-configured flag looks
-// exactly like an untouched one. A flag missing from this table would have its
-// environment value silently overwritten by brw.json — the one inversion of
-// precedence that would be invisible to whoever set the variable.
-//
-// It is spelled out rather than derived from the flag name because the two do
-// not match: --http reads BRW_HTTP_ADDR and --remote reads BRW_REMOTE_URL.
-// TestEveryEnvironmentVariableBrwdReadsIsInTheConfigTable reads cmd/brwd/main.go
-// and fails on any drift in either direction.
+import "maps"
+
 var flagEnv = map[string]string{
 	"allowed-domains":             "BRW_ALLOWED_DOMAINS",
 	"artifact-dir":                "BRW_ARTIFACT_DIR",
@@ -35,9 +24,7 @@ var flagEnv = map[string]string{
 	"chrome-opt-in-browser":       "BRW_CHROME_OPT_IN_BROWSER",
 	"chrome-opt-in-user-data-dir": "BRW_CHROME_OPT_IN_USER_DATA_DIR",
 	"chrome-path":                 "BRW_CHROME_PATH",
-	// Listed because brwd does read it, even though notConfigurable stops a
-	// file from setting it: the table's job is to describe what brwd reads, and
-	// an entry missing from it is what the drift test is looking for.
+
 	"config":                     "BRW_CONFIG",
 	"confirm-actions":            "BRW_CONFIRM_ACTIONS",
 	"content-nav-guard":          "BRW_CONTENT_NAV_GUARD",
@@ -77,27 +64,15 @@ var flagEnv = map[string]string{
 	"workspace":                  "BRW_WORKSPACE",
 }
 
-// EnvFor names the environment variable brwd reads for a flag, or "" when it
-// reads none. A flag with no environment variable is decided by the command
-// line, then the config file, then its built-in default.
+// EnvFor names the environment variable brwd reads for a flag, or "" when it reads none.
 func EnvFor(flag string) string { return flagEnv[flag] }
 
-// EnvTable exposes the mapping for the drift test, which compares it against
-// what cmd/brwd actually reads.
+// EnvTable exposes the mapping for the drift test, which compares it against what cmd/brwd actually reads.
 func EnvTable() map[string]string {
-	out := make(map[string]string, len(flagEnv))
-	for name, env := range flagEnv {
-		out[name] = env
-	}
-	return out
+	return maps.Clone(flagEnv)
 }
 
-// NotConfigurable exposes the deny-list and its reasons, for the drift test and
-// for an error message that has to say why.
+// NotConfigurable exposes the deny-list and its reasons, for the drift test and for an error message that has to say why.
 func NotConfigurable() map[string]string {
-	out := make(map[string]string, len(notConfigurable))
-	for name, reason := range notConfigurable {
-		out[name] = reason
-	}
-	return out
+	return maps.Clone(notConfigurable)
 }

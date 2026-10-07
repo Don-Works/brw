@@ -53,8 +53,6 @@ func TestEmptyCountsTransportAndHeadless(t *testing.T) {
 	}
 }
 
-// A proxy learns transport and headlessness from its upstream instead of
-// asserting them, so neither may be treated as an identity mismatch.
 func TestMismatchesIgnoresTransportAndHeadless(t *testing.T) {
 	upstream := Identity{
 		Workspace: "brw-agent",
@@ -72,9 +70,6 @@ func TestMismatchesIgnoresTransportAndHeadless(t *testing.T) {
 	}
 }
 
-// A daemon that launched Chrome with certificate validation off has to say so:
-// an agent reading a page over it cannot otherwise tell a real site from an
-// intercepted one, and there is no other surface that would reveal it.
 func TestIgnoreHTTPSErrorsIsReportedAndCountsAsIdentity(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -88,8 +83,7 @@ func TestIgnoreHTTPSErrorsIsReportedAndCountsAsIdentity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// /health serves this struct as JSON, so the encoded form is where a
-			// caller either learns that validation is off or does not.
+
 			encoded, err := json.Marshal(tt.id)
 			if err != nil {
 				t.Fatalf("marshal identity: %v", err)
@@ -102,8 +96,7 @@ func TestIgnoreHTTPSErrorsIsReportedAndCountsAsIdentity(t *testing.T) {
 			}
 		})
 	}
-	// It is a property of the daemon answering, not of the workspace binding, so
-	// pinning a profile must not reject a daemon over it.
+
 	upstream := Identity{Workspace: "brw-agent", Profile: "chromium-agent", IgnoreHTTPSErrors: true}
 	if mismatches := upstream.Mismatches(Identity{Workspace: "brw-agent", Profile: "chromium-agent"}); len(mismatches) != 0 {
 		t.Fatalf("unexpected mismatches: %v", mismatches)

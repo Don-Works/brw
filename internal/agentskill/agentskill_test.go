@@ -9,10 +9,6 @@ import (
 	"testing"
 )
 
-// TestEmbeddedSkillMatchesTheCommittedTree is the guard on the embed itself.
-// An embed pattern that stops matching — a reference renamed, a new
-// subdirectory — fails silently: the binary keeps building and serves a skill
-// missing the page it points at.
 func TestEmbeddedSkillMatchesTheCommittedTree(t *testing.T) {
 	var onDisk []string
 	root := filepath.Join("..", "..", "skills", "brw")
@@ -52,7 +48,6 @@ func TestEmbeddedSkillMatchesTheCommittedTree(t *testing.T) {
 		}
 	}
 
-	// And the bytes are the committed bytes, not an older build's.
 	for _, name := range embedded {
 		want, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
 		if err != nil {
@@ -71,8 +66,6 @@ func TestEmbeddedSkillMatchesTheCommittedTree(t *testing.T) {
 	}
 }
 
-// TestSKILLmdIsFirst: an agent that fetches without naming a document must get
-// the page that tells it about the others.
 func TestSKILLmdIsFirst(t *testing.T) {
 	documents, err := Documents()
 	if err != nil {
@@ -90,17 +83,14 @@ func TestSKILLmdIsFirst(t *testing.T) {
 	}
 }
 
-// TestReadIsBoundedToTheEmbeddedSet. The allowlist is what was embedded, which
-// is a property of the binary; a prefix or ".." check on the request would be a
-// property of the string somebody sent.
 func TestReadIsBoundedToTheEmbeddedSet(t *testing.T) {
 	for _, name := range []string{
 		"../../go.mod",
 		"/etc/hosts",
 		"references/../../../etc/hosts",
 		"references",
-		"",  // handled: this one is the default, checked below
-		" ", // whitespace is not a document either
+		"",
+		" ",
 	} {
 		document, err := Read(name, "v1")
 		if strings.TrimSpace(name) == "" {
@@ -115,8 +105,6 @@ func TestReadIsBoundedToTheEmbeddedSet(t *testing.T) {
 	}
 }
 
-// TestFSCarriesTheWholeTree: the installer writes what this returns, so a
-// reference missing from it is a dead link in the manual on disk.
 func TestFSCarriesTheWholeTree(t *testing.T) {
 	tree, err := FS()
 	if err != nil {

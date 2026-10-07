@@ -30,7 +30,7 @@ func (w *cliUsageWriter) Write(data []byte) (int, error) {
 	return n, err
 }
 
-func recordCLIUsage(ctx context.Context, controller *httpclient.Controller, v verb, args []string, output *cliUsageWriter, started time.Time, exitCode int, jsonOutput bool) {
+func recordCLIUsage(ctx context.Context, controller *httpclient.Controller, v verb, args []string, output *cliUsageWriter, started time.Time, exitCode int, jsonOutput bool, failure error) {
 	operation := httpapi.UsageOperation(v.path)
 	if operation == "" {
 		return
@@ -56,6 +56,15 @@ func recordCLIUsage(ctx context.Context, controller *httpclient.Controller, v ve
 	event.OutputFormat = "human"
 	if jsonOutput {
 		event.OutputFormat = "json"
+	}
+	if failure != nil {
+		event.ErrorClass = usagelog.SafeErrorClass(httpclient.RemoteClass(failure))
+		if event.ErrorClass == "" {
+			event.ErrorClass = usagelog.ClassifyError(failure)
+		}
+		event.ErrorFingerprint = usagelog.Fingerprint(failure.Error())
+		event.Retryable = usagelog.Retryable(event.ErrorClass)
+		event.HTTPStatus = httpclient.RemoteStatus(failure)
 	}
 	_ = controller.ReportUsage(ctx, event)
 }

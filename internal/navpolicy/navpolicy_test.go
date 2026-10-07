@@ -25,10 +25,10 @@ func TestBlocklistMatchesDomainAndSubdomains(t *testing.T) {
 		}
 	}
 	for _, ok := range []string{
-		"https://notevil.com",      // suffix must be on a dot boundary
-		"https://evilcom.org",      // not a subdomain
-		"https://example.net",      // parent of ads.example.net is allowed
-		"https://good.example.org", // unrelated
+		"https://notevil.com",
+		"https://evilcom.org",
+		"https://example.net",
+		"https://good.example.org",
 	} {
 		if err := p.Check(ok); err != nil {
 			t.Errorf("expected %q to be allowed, got %v", ok, err)
@@ -50,7 +50,7 @@ func TestAllowlistOnlyPermitsListed(t *testing.T) {
 	}
 	for _, blocked := range []string{
 		"https://evil.com",
-		"https://example.com.attacker.net", // not the allowed apex
+		"https://example.com.attacker.net",
 		"https://nottrusted.org",
 	} {
 		if err := p.Check(blocked); err == nil {
@@ -69,8 +69,6 @@ func TestBlockWinsOverAllow(t *testing.T) {
 	}
 }
 
-// In blocklist-only mode the policy is a denylist, not confinement, so
-// non-network schemes pass — they cannot match a blocked domain.
 func TestNonNetworkSchemesPassInBlocklistMode(t *testing.T) {
 	p := Parse("", "evil.com")
 	for _, u := range []string{"about:blank", "data:text/html,<b>x</b>", "blob:abc", "", "javascript:void(0)", "file:///etc/passwd", "chrome://settings"} {
@@ -80,11 +78,6 @@ func TestNonNetworkSchemesPassInBlocklistMode(t *testing.T) {
 	}
 }
 
-// Allowlist mode is a confinement boundary: it must FAIL CLOSED on non-http
-// schemes that can read local files (file:), reach browser internals (chrome:),
-// or execute attacker-controlled content (data:/javascript:/blob:). A confused
-// or prompt-injected agent must not be able to escape the allowlist by changing
-// scheme. about:blank stays allowed as a benign blank page.
 func TestAllowlistFailsClosedOnNonHTTPSchemes(t *testing.T) {
 	p := Parse("example.com", "")
 	for _, ok := range []string{"about:blank", "about:newtab", "", "  "} {
@@ -109,17 +102,13 @@ func TestAllowlistFailsClosedOnNonHTTPSchemes(t *testing.T) {
 	}
 }
 
-// The policy must not be bypassable by feeding a URL that Go's net/url rejects
-// (or parses differently) but Chrome accepts. In allowlist mode such inputs
-// fail closed; in blocklist mode the normalisation pins the effective host so a
-// backslash/control-char trick cannot smuggle a blocked host past the check.
 func TestParserDifferentialDoesNotBypass(t *testing.T) {
 	allow := Parse("allowed.com", "")
 	for _, blocked := range []string{
-		`https://evil.com\@allowed.com/`, // Chrome host = evil.com, not allowed.com
-		"https:///nohost",                // empty host
-		"https://ev\til.com",             // tab stripped -> evil.com, not allowed
-		"https://\nallowed.com.evil.com", // newline games
+		`https://evil.com\@allowed.com/`,
+		"https:///nohost",
+		"https://ev\til.com",
+		"https://\nallowed.com.evil.com",
 	} {
 		if err := allow.Check(blocked); err == nil {
 			t.Errorf("allowlist must fail closed on %q", blocked)
@@ -128,8 +117,8 @@ func TestParserDifferentialDoesNotBypass(t *testing.T) {
 
 	block := Parse("", "evil.com")
 	for _, blocked := range []string{
-		`https://evil.com\@notblocked.com/`, // effective host is evil.com
-		"https://ev\t" + "il.com/path",      // tab-stripped to evil.com
+		`https://evil.com\@notblocked.com/`,
+		"https://ev\t" + "il.com/path",
 	} {
 		if err := block.Check(blocked); err == nil {
 			t.Errorf("blocklist must still catch %q after normalisation", blocked)
@@ -137,10 +126,6 @@ func TestParserDifferentialDoesNotBypass(t *testing.T) {
 	}
 }
 
-// A protocol-relative reference ("//evil.com") has no scheme, so it once slipped
-// through as a same-origin relative reference — but brw's Open prepends "https://"
-// to any scheme-less input, so Chrome actually navigates to https://evil.com.
-// hostOf must resolve its real host and gate it in BOTH allow and block modes.
 func TestProtocolRelativeIsGated(t *testing.T) {
 	allow := Parse("allowed.com", "")
 	for _, u := range []string{"//evil.com", "//evil.com/path", "///evil.com", `/\evil.com`} {
@@ -148,7 +133,7 @@ func TestProtocolRelativeIsGated(t *testing.T) {
 			t.Errorf("allowlist must fail closed on protocol-relative %q", u)
 		}
 	}
-	// A protocol-relative reference to an allowlisted host must still pass.
+
 	if err := allow.Check("//allowed.com/app"); err != nil {
 		t.Errorf("protocol-relative to an allowlisted host must pass, got %v", err)
 	}
@@ -160,21 +145,15 @@ func TestProtocolRelativeIsGated(t *testing.T) {
 	}
 }
 
-// Relative references (no scheme) are same-origin — they resolve against the
-// current allowlisted page and cannot escape it — so they must pass even in
-// allowlist mode (e.g. a relative brw_replay_request target). This guards
-// against the fail-closed guard over-blocking legitimate same-origin requests.
 func TestAllowlistPermitsRelativeReferences(t *testing.T) {
 	p := Parse("corp.example.com", "")
-	// These parse to an empty host (a relative path/query/fragment). A bare
-	// "host/path" like "api/x" is instead treated as the host "api" (matching
-	// brw_open's bare-host => https behavior) and is gated normally.
+
 	for _, rel := range []string{"/api/data", "?q=1", "#frag"} {
 		if err := p.Check(rel); err != nil {
 			t.Errorf("relative reference %q is same-origin and must pass the allowlist, got %v", rel, err)
 		}
 	}
-	// But a non-http scheme is still blocked, and an absolute off-list host too.
+
 	if err := p.Check("file:///etc/passwd"); err == nil {
 		t.Error("file: scheme must still be blocked")
 	}
@@ -233,16 +212,12 @@ func TestCheckNavigationReturnsOnlyApprovedCanonicalURL(t *testing.T) {
 	}
 }
 
-// TestBlocklistIDNPunycodeEquivalence verifies a blocklist entry written in one
-// spelling (Unicode or punycode) also blocks the other, since Chrome treats them
-// as the same site. Without IDNA normalisation the xn-- form bypasses a Unicode
-// blocklist entry and vice-versa.
 func TestBlocklistIDNPunycodeEquivalence(t *testing.T) {
 	const (
-		unicodeHost = "münchen.de"        // Unicode spelling
-		asciiHost   = "xn--mnchen-3ya.de" // its punycode equivalent
+		unicodeHost = "münchen.de"
+		asciiHost   = "xn--mnchen-3ya.de"
 	)
-	// Blocklist in Unicode must block the punycode candidate (and subdomains).
+
 	uni := Parse("", unicodeHost)
 	for _, blocked := range []string{
 		"https://" + asciiHost,
@@ -253,7 +228,7 @@ func TestBlocklistIDNPunycodeEquivalence(t *testing.T) {
 			t.Errorf("unicode blocklist should block %q", blocked)
 		}
 	}
-	// Blocklist in punycode must block the Unicode candidate (and subdomains).
+
 	asc := Parse("", asciiHost)
 	for _, blocked := range []string{
 		"https://" + unicodeHost,
@@ -264,7 +239,7 @@ func TestBlocklistIDNPunycodeEquivalence(t *testing.T) {
 			t.Errorf("punycode blocklist should block %q", blocked)
 		}
 	}
-	// An unrelated IDN host must still pass.
+
 	if err := uni.Check("https://köln.de"); err != nil {
 		t.Errorf("unrelated IDN host should be allowed, got %v", err)
 	}

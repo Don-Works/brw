@@ -1,8 +1,4 @@
-// Package discovery is brw's single profile-daemon discovery path: it turns the
-// profile policy into the set of configured bridge daemons and probes each
-// daemon's /health. `brwctl daemons` emits its records verbatim and the brw CLI
-// resolves the daemon it acts against through the same functions, so neither can
-// drift from the discovery contract a gateway consumes.
+// Package discovery is brw's single profile-daemon discovery path: it turns the profile policy into the set of configured bridge daemons and probes each daemon's /health.
 package discovery
 
 import (
@@ -15,11 +11,7 @@ import (
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
-// Record is one configured browser-profile bridge daemon, as emitted by
-// `brwctl daemons`. It is the discovery contract a gateway consumes to
-// register one namespace per brw profile-daemon. http_addr/ws_addr
-// are the daemon's loopback control + extension-bridge addresses; identity is the
-// live /health identity when the daemon is reachable.
+// Record is one configured browser-profile bridge daemon, as emitted by `brwctl daemons`.
 type Record struct {
 	Name        string                `json:"name"`
 	Kind        string                `json:"kind,omitempty"`
@@ -33,10 +25,7 @@ type Record struct {
 	Error       string                `json:"error,omitempty"`
 }
 
-// Candidates returns every extension-bridge profile in the policy at path (an
-// empty path means the policy's normal discovery order). It iterates
-// policy.Profiles directly, not ResolveProfile, because the point is to list ALL
-// configured daemons rather than resolve one for a workspace.
+// Candidates returns every extension-bridge profile in the policy at path (an empty path means the policy's normal discovery order).
 func Candidates(policyPath string) ([]profilepolicy.Profile, error) {
 	policy, err := profilepolicy.Load(policyPath)
 	if err != nil {
@@ -65,11 +54,7 @@ func List(policyPath string, timeout time.Duration) ([]Record, error) {
 	return records, nil
 }
 
-// Probe builds the discovery record for one bridge profile: it derives the
-// daemon's loopback addresses and extension id from the profile, then GETs the
-// daemon's /health to fill in reachability and live identity. A probe failure is
-// recorded (reachable=false + error), never fatal — an offline daemon must still
-// appear in the listing so a consumer can decide whether to register it.
+// Probe builds the discovery record for one bridge profile: it derives the daemon's loopback addresses and extension id from the profile, then GETs the daemon's /health to fill in reachability and live identity.
 func Probe(profile profilepolicy.Profile, timeout time.Duration) Record {
 	extID := profile.BridgeExtensionID
 	if extID == "" {
