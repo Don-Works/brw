@@ -428,6 +428,25 @@ func TestQueueBoundAndTerminalCleanup(t *testing.T) {
 	}
 }
 
+func TestTerminalEvictionBreaksCreationTimeTiesByID(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := time.Now().UTC()
+	s.now = func() time.Time { return now }
+	for i := 0; i < maxRequests; i++ {
+		r := request()
+		r.ID, r.Fingerprint = fmt.Sprintf("id-%04d", i), fmt.Sprintf("fp-%d", i)
+		r.Status, r.CreatedAt, r.ExpiresAt = Expired, now.Add(-time.Hour), now.Add(-time.Minute)
+		s.requests[r.ID] = r
+	}
+	enqueue(t, s)
+	if _, found := s.Get("id-0000"); found {
+		t.Fatal("terminal eviction did not remove the lowest ID for equal creation times")
+	}
+	if _, found := s.Get("id-0001"); !found {
+		t.Fatal("terminal eviction removed more than one request")
+	}
+}
+
 func TestPermissionsAndExclusiveLock(t *testing.T) {
 	s, path := openTestStore(t)
 	enqueue(t, s)

@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -192,15 +192,15 @@ func (s *Store) ready() error {
 }
 
 func (s *Store) working() (map[string]Request, bool) {
-	requests := make(map[string]Request, len(s.requests))
+	requests := maps.Clone(s.requests)
 	changed := false
 	now := s.now()
-	for id, r := range s.requests {
+	for id, r := range requests {
 		if (r.Status == Pending || r.Status == Approved) && !now.Before(r.ExpiresAt) {
 			r.Status = Expired
+			requests[id] = r
 			changed = true
 		}
-		requests[id] = r
 	}
 	return requests, changed
 }
@@ -255,22 +255,18 @@ func (s *Store) Enqueue(r Request) (Request, error) {
 		return s.result(requests, changed, Request{}, refusal("invalid_request", "", err.Error()))
 	}
 	if len(requests) >= maxRequests {
-		terminal := make([]Request, 0)
+		var oldest Request
 		for _, existing := range requests {
 			if existing.Status == Stale || existing.Status == Expired || !s.now().Before(existing.ExpiresAt) {
-				terminal = append(terminal, existing)
+				if oldest.ID == "" || existing.CreatedAt.Before(oldest.CreatedAt) || existing.CreatedAt.Equal(oldest.CreatedAt) && existing.ID < oldest.ID {
+					oldest = existing
+				}
 			}
 		}
-		sort.Slice(terminal, func(i, j int) bool {
-			if terminal[i].CreatedAt.Equal(terminal[j].CreatedAt) {
-				return terminal[i].ID < terminal[j].ID
-			}
-			return terminal[i].CreatedAt.Before(terminal[j].CreatedAt)
-		})
-		if len(terminal) == 0 {
+		if oldest.ID == "" {
 			return s.result(requests, changed, Request{}, refusal("queue_full", "", "approval queue is full"))
 		}
-		delete(requests, terminal[0].ID)
+		delete(requests, oldest.ID)
 	}
 	r = copyRequest(r)
 	requests[r.ID] = r
@@ -440,11 +436,4 @@ func (s *Store) Close() error {
 	}
 	s.closed = true
 	return errors.Join(releaseLock(s.lock), s.lock.Close())
-}
-
-func lockError(err error) error {
-	if err != nil {
-		return fmt.Errorf("exclusive approval store lock: %w", err)
-	}
-	return nil
 }
