@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -18,18 +19,8 @@ type benchOptions struct {
 	OutPath  string
 }
 
-// benchBudget bounds the whole suite. The per-operation Timeout below only
-// bounds one browser call: a browser that never answers the launch handshake,
-// or a wait the manager does not time out, would otherwise hang `task bench`
-// with no output and nothing to read. The suite takes seconds, so this is
-// generous by two orders of magnitude and only ever catches a wedge.
 const benchBudget = 10 * time.Minute
 
-// runBench drives the fixture suite and reports what each command cost.
-//
-// It launches its own browser and serves the fixtures itself, so it needs no
-// daemon and no network. The record is written where a later run can be
-// compared against it; the summary is what a human reads.
 func runBench(opts benchOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), benchBudget)
 	defer cancel()
@@ -47,7 +38,7 @@ func runBench(opts benchOptions) error {
 	}
 
 	if opts.OutPath != "" {
-		if err := writeBenchRecord(opts.OutPath, record); err != nil {
+		if err := writeJSONReport(opts.OutPath, record.WriteJSON); err != nil {
 			return err
 		}
 	}
@@ -67,7 +58,7 @@ func runBench(opts benchOptions) error {
 	return nil
 }
 
-func writeBenchRecord(path string, record bench.Record) error {
+func writeJSONReport(path string, write func(io.Writer) error) error {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
@@ -77,6 +68,5 @@ func writeBenchRecord(path string, record bench.Record) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-	return record.WriteJSON(file)
+	return errors.Join(write(file), file.Close())
 }

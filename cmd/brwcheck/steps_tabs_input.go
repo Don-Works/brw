@@ -7,16 +7,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// Handlers for the tab-group, window, pointer and batch steps.
-//
-// These exist because the scenario suite drove 18 of the 69 registered tools.
-// Everything an agent uses to manage tabs, size a window, aim the pointer at a
-// coordinate, or run several actions in one call was reaching real Chrome only
-// through Go tests against a fake controller, which proves the MCP layer
-// marshals correctly and proves nothing about the browser.
-
-// resolveTabRef turns a scenario's saved tab name into a live tab id, falling
-// back to the literal string so a scenario can also name an id directly.
 func (r *runner) resolveTabRef(name string) string {
 	if id, ok := r.tabRefs[name]; ok {
 		return id
@@ -35,9 +25,7 @@ func (r *runner) runGroupTabsStep(st groupTabsStep) error {
 	if len(ids) == 0 {
 		return fmt.Errorf("group_tabs needs tabs or a current tab")
 	}
-	// The API names a group with "name"; TabGroup.Title reads it back. Grouping
-	// returns only ok, so the group itself is verified by a following
-	// list_tab_groups step rather than from this response.
+	
 	body := map[string]any{"tab_ids": ids}
 	if st.Title != "" {
 		body["name"] = st.Title
@@ -145,8 +133,7 @@ func (r *runner) runWindowBoundsStep(st windowBoundsStep) error {
 	if bounds.Height < st.MinHeight {
 		return fmt.Errorf("window height = %d, want at least %d", bounds.Height, st.MinHeight)
 	}
-	// A resize is only proven by reading the width back. Chrome rounds and
-	// clamps to the display, so allow a small tolerance rather than equality.
+	
 	if st.WantWidth > 0 {
 		if delta := bounds.Width - st.WantWidth; delta > 40 || delta < -40 {
 			return fmt.Errorf("window width = %d, want ~%d", bounds.Width, st.WantWidth)
@@ -165,10 +152,6 @@ func (r *runner) runMousePoint(path string, st mousePointStep) error {
 	return r.client.postJSON(path, body, &result)
 }
 
-// runBatchStep posts brw_batch's steps in one call. A step addresses an element
-// by the ref a preceding snapshot saved, so scenarios name the saved key and
-// this substitutes the live ref; an unknown key is passed through so a scenario
-// can still exercise the error path deliberately.
 func (r *runner) runBatchStep(st batchStep) error {
 	steps := make([]map[string]any, 0, len(st.Steps))
 	for _, raw := range st.Steps {
@@ -188,8 +171,7 @@ func (r *runner) runBatchStep(st batchStep) error {
 	var result browser.BatchResult
 	err := r.client.postJSON("/api/page/batch", body, &result)
 	if st.WantError {
-		// A batch that must stop on a bad step: either the call itself fails or
-		// the result reports the failure. Both are the contract being asserted.
+		
 		if err != nil || !result.OK || result.Error != "" {
 			return nil
 		}
@@ -203,27 +185,19 @@ func (r *runner) runBatchStep(st batchStep) error {
 	if err != nil {
 		return err
 	}
-	ok := 0
 	for _, s := range result.Steps {
 		if s.OK {
 			continue
 		}
 		return fmt.Errorf("batch step %d (%s) failed: %s", s.Index, s.Action, s.Error)
 	}
-	for _, s := range result.Steps {
-		if s.OK {
-			ok++
-		}
-	}
+	ok := len(result.Steps)
 	if ok < st.MinOK {
 		return fmt.Errorf("batch ok steps = %d, want at least %d", ok, st.MinOK)
 	}
 	return nil
 }
 
-// runAssertStep posts one brw_assert request. A passing assertion answers 200
-// with ok=true; a failing one answers 400 with the expected-against-actual text,
-// which is what want_error scenarios exist to reach.
 func (r *runner) runAssertStep(st assertStep) error {
 	body := make(map[string]any, len(st.Assertion)+1)
 	for key, value := range st.Assertion {

@@ -16,8 +16,6 @@ import (
 
 const failureBundleID = "art_00112233445566778899aabbccddeeff"
 
-// failingRecipeAPI is a browser host whose run fails and collected evidence,
-// which is the only shape that carries failure_bundle_artifact_id.
 type failingRecipeAPI struct{ recipe.API }
 
 func (failingRecipeAPI) RunRecipe(_ context.Context, request recipe.RunRequest) (recipe.RunResult, error) {
@@ -29,11 +27,6 @@ func (failingRecipeAPI) RunRecipe(_ context.Context, request recipe.RunRequest) 
 		errors.New(`step "pay": element detached before the click landed; failure evidence bundle ` + failureBundleID)
 }
 
-// TestFailedRunCarriesTheEvidenceBundleAcrossTheProxy runs the real daemon
-// handler behind the real proxy client. A failed run is the only run that
-// reports failure_bundle_artifact_id, so an error writer that reduces the
-// failure to its message would leave the field the tool description promises
-// unreachable on this transport while it works on direct CDP.
 func TestFailedRunCarriesTheEvidenceBundleAcrossTheProxy(t *testing.T) {
 	daemon := httpapi.New("", strictHandlerController{})
 	daemon.SetRecipeAPI(failingRecipeAPI{})
@@ -61,7 +54,6 @@ func TestFailedRunCarriesTheEvidenceBundleAcrossTheProxy(t *testing.T) {
 		t.Fatalf("failed run result = %+v, want the run detail decoded alongside the error", result)
 	}
 
-	// A successful run is untouched: it still answers 200 with the result alone.
 	okDaemon := httpapi.New("", strictHandlerController{})
 	okDaemon.SetRecipeAPI(succeedingRecipeAPI{})
 	okServer := httptest.NewServer(okDaemon.Handler())
@@ -81,10 +73,6 @@ func TestFailedRunCarriesTheEvidenceBundleAcrossTheProxy(t *testing.T) {
 	}
 }
 
-// TestLongFailedRunStillCarriesTheEvidenceBundle bounds the fix. A recipe may
-// declare up to 500 steps, and a refused body sized for an error STRING would
-// truncate that result — and a truncated body is not decoded at all, so the
-// bundle id would go missing on exactly the long runs most worth diagnosing.
 func TestLongFailedRunStillCarriesTheEvidenceBundle(t *testing.T) {
 	daemon := httpapi.New("", strictHandlerController{})
 	daemon.SetRecipeAPI(longFailingRecipeAPI{steps: 500})
@@ -123,8 +111,7 @@ func (a longFailingRecipeAPI) RunRecipe(_ context.Context, request recipe.RunReq
 	for index := range a.steps {
 		result.Steps = append(result.Steps, recipe.StepResult{
 			ID: fmt.Sprintf("step-with-a-realistically-long-identifier-%03d", index),
-			// A completed step carries every field, so the body is as large as a
-			// real long run makes it rather than as small as a stub makes it.
+
 			Status: "done", Attempts: 2, DurationMS: 1234,
 		})
 	}

@@ -13,13 +13,6 @@ import (
 	"github.com/Don-Works/brw/internal/readability"
 )
 
-// The fake daemon elsewhere in this package answers anything sent to it, which
-// is what a wire-contract test wants and what a request-shape test cannot use:
-// only internal/http's own handler rejects a query or body it does not accept.
-
-// daemonController is the browser side of the real handler, cut down to the
-// methods the routes under test reach. The embedded interface is nil, so any
-// other call panics rather than quietly answering.
 type daemonController struct {
 	browser.Controller
 	read readability.PageRead
@@ -29,8 +22,6 @@ func (c *daemonController) Read(context.Context) (readability.PageRead, error) {
 	return c.read, nil
 }
 
-// The daemon opens a working tab for a session that named none, which every
-// lease-scoped route goes through before it reaches the handler.
 func (c *daemonController) OpenInGroup(context.Context, string, browser.TabGroupOptions) (browser.OpenResult, error) {
 	return browser.OpenResult{Tab: browser.Tab{ID: "tab-1"}, Ready: true}, nil
 }
@@ -58,10 +49,6 @@ func realDaemon(t *testing.T, ctrl browser.Controller, artifacts artifact.API) *
 	return server
 }
 
-// `brw read --offset N` bounds where the prose starts and nothing else. The
-// route reads any bound parameter as "this read is bounded" and then applies its
-// own 20000-char default to the rest, so the request has to say -1 for what the
-// caller did not bound — which only the real handler can prove.
 func TestReadFromAnOffsetIsNotCappedByTheRealHandler(t *testing.T) {
 	const total = 60000
 	ctrl := &daemonController{read: readability.PageRead{
@@ -84,8 +71,6 @@ func TestReadFromAnOffsetIsNotCappedByTheRealHandler(t *testing.T) {
 	}
 }
 
-// The same page with an explicit window still comes back windowed, so the -1
-// the offset case sends is not just disabling bounding everywhere.
 func TestReadWithAnExplicitWindowStillBounds(t *testing.T) {
 	ctrl := &daemonController{read: readability.PageRead{Main: strings.Repeat("q", 60000)}}
 	server := realDaemon(t, ctrl, nil)
@@ -103,9 +88,6 @@ func TestReadWithAnExplicitWindowStillBounds(t *testing.T) {
 	}
 }
 
-// The artifact routes decode a fixed schema with DisallowUnknownFields. The CLI
-// has to send exactly that schema — nothing folded in from the context — or the
-// daemon answers 400.
 func TestArtifactReadIsAcceptedByTheRealHandler(t *testing.T) {
 	store := &artifactStore{}
 	server := realDaemon(t, &daemonController{}, store)
@@ -125,8 +107,6 @@ func TestArtifactReadIsAcceptedByTheRealHandler(t *testing.T) {
 	}
 }
 
-// --tab has no meaning on a host-local artifact handle, and the route rejects a
-// tab_id it does not declare. Say so rather than sending a request that 400s.
 func TestArtifactReadRejectsTab(t *testing.T) {
 	store := &artifactStore{}
 	server := realDaemon(t, &daemonController{}, store)

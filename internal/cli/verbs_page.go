@@ -235,8 +235,6 @@ func keyVerb(name, summary, path string) verb {
 	}
 }
 
-// assertVerb is an assertion the daemon waits on, so --timeout is forwarded as
-// its timeout_ms. field names the expected-value argument, or is empty.
 func assertVerb(name, field, summary, path string) verb {
 	usage := "@<ref>"
 	if field != "" {

@@ -14,15 +14,6 @@ import (
 	"github.com/Don-Works/brw/internal/agenteval"
 )
 
-// TestMeasurementRunsCarryAWholeRunDeadline reads the two entry points rather
-// than driving them, because the thing being guarded is a wedge: a browser that
-// never answers the launch handshake, or a wait nothing times out, and neither
-// can be provoked without hanging this test for as long as the bug would hang
-// the run.
-//
-// The per-operation Timeout the entry points pass bounds one browser call, not
-// the run, so context.Background() on its own means `task bench` hangs with no
-// output and nothing to read.
 func TestMeasurementRunsCarryAWholeRunDeadline(t *testing.T) {
 	const root = "context.Background()"
 	const wrapper = "context.WithTimeout("
@@ -51,20 +42,8 @@ func TestMeasurementRunsCarryAWholeRunDeadline(t *testing.T) {
 	}
 }
 
-// perModeBudget is the room one pass over the whole suite is given. It is
-// written here rather than divided out of evalBudget so that the check below
-// weighs the deadline a run actually gets against a number, not against the
-// constant the run was built from.
 const perModeBudget = 15 * time.Minute
 
-// TestEveryMeasurementBudgetIsSet pins that each entry point has one, since a
-// zero duration makes context.WithTimeout expire immediately rather than never
-// — `task bench` would then fail before it launched anything, and the failure
-// would read as a browser problem.
-//
-// This checks the constants only. That the entry points run under them is
-// TestMeasurementRunsCarryAWholeRunDeadline's job, and which one an evaluation
-// picks is TestTheBudgetCoversTheModesTheRunDrives'.
 func TestEveryMeasurementBudgetIsSet(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -83,12 +62,8 @@ func TestEveryMeasurementBudgetIsSet(t *testing.T) {
 	}
 }
 
-// errEvalStub stands in for whatever the suite would have returned. It is an
-// error so that runAgentEval returns before printing a report, and a sentinel
-// so a test can tell "the suite ran" from "runAgentEval failed earlier".
 var errEvalStub = errors.New("stub suite")
 
-// evalCall records what runAgentEval handed the suite runner.
 type evalCall struct {
 	ran         bool
 	modes       []agenteval.Mode
@@ -96,11 +71,6 @@ type evalCall struct {
 	remaining   time.Duration
 }
 
-// driveAgentEval runs the real entry point with the suite runner swapped out,
-// and reports the modes and the deadline it was actually given. The entry
-// point is what is under test: re-asking evalPlanFor what the budget should
-// have been cannot notice runAgentEval building its context from a different
-// constant, which is the mistake the pairing exists to prevent.
 func driveAgentEval(t *testing.T, verify bool) *evalCall {
 	t.Helper()
 	call := &evalCall{}
@@ -124,19 +94,8 @@ func driveAgentEval(t *testing.T, verify bool) *evalCall {
 	return call
 }
 
-// TestTheBudgetCoversTheModesTheRunDrives drives runAgentEval and reads the
-// deadline it puts on the context against the modes it puts in the options,
-// because the two are picked off the same flag and nothing else makes the
-// budget grow when the mode list does. A verify run given the honest-only
-// budget is killed midway, and every task it never reached is reported as
-// failing rather than as never attempted.
-//
-// It also pins which run drives the sabotaged task. Dropping it from
-// --eval-verify leaves a run that passes everything, which is the state the
-// flag exists to rule out, and one a mode count alone would not notice.
 func TestTheBudgetCoversTheModesTheRunDrives(t *testing.T) {
-	// startupSlack is the time between the context being created and the
-	// stub reading it. It is microseconds; a second is generous.
+	
 	const startupSlack = time.Second
 
 	cases := []struct {
@@ -168,13 +127,6 @@ func TestTheBudgetCoversTheModesTheRunDrives(t *testing.T) {
 	}
 }
 
-// TestEveryEvaluationModeIsReachable enumerates the modes the package offers
-// and requires each to be driven by some run, so that a mode added later is
-// covered without editing this test. A mode nothing selects is dead grading
-// code that still compiles and silently never runs.
-//
-// The modes come from driving the entry point rather than from evalPlanFor, so
-// a runAgentEval that overrides the plan with a list of its own fails here.
 func TestEveryEvaluationModeIsReachable(t *testing.T) {
 	driven := map[agenteval.Mode]string{}
 	for _, verify := range []bool{false, true} {
@@ -200,13 +152,6 @@ func TestEveryEvaluationModeIsReachable(t *testing.T) {
 	}
 }
 
-// TestMeasurementTasksStampAVersion guards the documented entry points against
-// producing records stamped "brw dev".
-//
-// Environment.Comparable deliberately leaves brw_version out of what it
-// compares, on the grounds that holding one brw version against another is the
-// point of keeping records. That cannot happen if every record made through
-// `task bench` says dev, which is what a bare `go run` produces.
 func TestMeasurementTasksStampAVersion(t *testing.T) {
 	taskfile, err := os.ReadFile(filepath.Join("..", "..", "Taskfile.yml"))
 	if err != nil {

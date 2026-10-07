@@ -11,12 +11,6 @@ import (
 	"github.com/Don-Works/brw/internal/agentskill"
 )
 
-// `brw skill` prints the operating manual the DAEMON holds, not the copy this
-// machine has on disk. The two differ the moment a daemon is upgraded without
-// re-running `brwctl setup`, and the copy on disk is the one that goes stale
-// silently: it still reads like a current document. Asking the daemon is how a
-// human, a script, or an agent finds out which build it is actually driving.
-
 func skillVerbs() []verb {
 	return []verb{
 		{
@@ -40,10 +34,6 @@ func skillVerbs() []verb {
 	}
 }
 
-// renderSkill prints the markdown itself, with the provenance on the lines
-// before it: a page with no build on it is the failure this verb exists to make
-// visible, and a comment banner is the only place to put it that survives a
-// pipe into a file.
 func renderSkill(w io.Writer, _ *options, body []byte) error {
 	var doc agentskill.Document
 	if err := json.Unmarshal(body, &doc); err != nil {

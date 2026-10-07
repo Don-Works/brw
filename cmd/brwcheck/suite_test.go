@@ -9,12 +9,6 @@ import (
 	"testing"
 )
 
-// TestShippedSuitesNameStepsTheRunnerImplements decodes every scenario the way
-// the runner does and requires each step to name exactly one implemented step.
-//
-// loadSuite is deliberately lenient, so a mistyped step key decodes to an empty
-// step and only fails after the daemon, a real browser and the fixture server
-// have started — several minutes into a run, as "empty or unknown step".
 func TestShippedSuitesNameStepsTheRunnerImplements(t *testing.T) {
 	suites := []string{"core.json", "decathlon.json"}
 	for _, name := range suites {
@@ -62,8 +56,6 @@ func decodeRawScenarios(t *testing.T, path string) []rawScenario {
 	return file.Scenarios
 }
 
-// checkStep proves the decoded step carries exactly one action, and that the
-// raw object contained no key the step type does not know.
 func checkStep(t *testing.T, scenarioID string, index int, decoded step, raw json.RawMessage) {
 	t.Helper()
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))

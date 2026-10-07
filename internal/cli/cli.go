@@ -1,8 +1,4 @@
-// Package cli is brw's per-action command surface: one short-lived process
-// that issues one request to a running brwd and prints the answer. Every verb
-// is a binding onto a route internal/http already serves, so the CLI can add no
-// capability the HTTP API does not already have — and a verb without a route
-// fails cli's route test rather than 404ing in someone's shell.
+// Package cli is brw's per-action command surface: one short-lived process that issues one request to a running brwd and prints the answer.
 package cli
 
 import (
@@ -16,7 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/user"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -26,13 +22,10 @@ import (
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
-// Version is stamped at link time (-X github.com/Don-Works/brw/internal/cli.Version),
-// the same way the MCP server's version is.
+// Version is stamped at link time (-X github.com/Don-Works/brw/internal/cli.Version), the same way the MCP server's version is.
 var Version = "dev"
 
-// Exit codes. Scripting brw needs "the daemon is not there" told apart from
-// "the daemon said no": the first is worth retrying after starting brwd, the
-// second never is.
+// Exit codes.
 const (
 	ExitOK           = 0
 	ExitActionFailed = 1
@@ -42,36 +35,19 @@ const (
 
 const (
 	defaultTimeout = 30 * time.Second
-	// Headroom for the one verb that hands its timeout to the daemon: the client
-	// deadline has to sit beyond the daemon's own so a wait that runs its full
-	// timeout is answered rather than cut off here, which would report a
-	// transport failure for a working daemon. Every other verb forwards no
-	// timeout, so adding this to its deadline would only make --timeout a lie.
+
 	clientHeadroom = 10 * time.Second
 )
 
-// errNoDaemon marks every failure where the action never reached a daemon.
 var errNoDaemon = errors.New("no brw daemon reachable")
 
-// builtinCommand is a first word dispatched before the verb table. Most print
-// and exit; `run` is the non-interactive scheduled entry point, which owns its
-// own output contract (JSON on stdout, diagnostics on stderr, its own exit
-// codes) and so cannot go through runVerb's human rendering.
 type builtinCommand struct {
 	name    string
 	summary string
-	// flags lists the flags this built-in accepts, for the completion scripts.
-	// Nil means it takes none; a built-in with its own FlagSet must set this or
-	// the shell falls through to offering the global flags, every one of which
-	// that FlagSet rejects with exit 2.
+
 	flags func() []string
 }
 
-// builtinCommandTable is the one place these words are listed. The completion
-// scripts are generated from it as well as the dispatcher's shadowing check, so
-// a built-in added here is completable without a second edit — the zsh script
-// used to carry its own hand-written copy, and a new word reached the shell
-// only if somebody remembered both.
 var builtinCommandTable = []builtinCommand{
 	{name: "completion", summary: "print the shell completion script"},
 	{name: "help", summary: "print the verb list"},
@@ -80,8 +56,6 @@ var builtinCommandTable = []builtinCommand{
 	{name: "usage", summary: "review local context usage and latency logs", flags: usageCommandFlags},
 }
 
-// builtinCommands lists the words a verb may not start with, or it would never
-// be dispatched.
 func builtinCommands() []string {
 	names := make([]string, 0, len(builtinCommandTable))
 	for _, command := range builtinCommandTable {
@@ -90,13 +64,8 @@ func builtinCommands() []string {
 	return names
 }
 
-// builtinFlagWords are the built-ins people also spell with dashes, as in
-// `brw --help`.
 var builtinFlagWords = map[string]bool{"h": true, "help": true, "version": true}
 
-// options carries every flag any verb can take. One struct rather than one per
-// verb keeps build/render free of type assertions; a verb only registers the
-// flags it accepts, so `brw click --limit 3` is still rejected as unknown.
 type options struct {
 	json       bool
 	daemon     string
@@ -148,16 +117,13 @@ type options struct {
 	timezone   string
 }
 
-// Run executes one brw invocation and returns its process exit code. args
-// excludes the program name.
+// Run executes one brw invocation and returns its process exit code.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		usage(stderr)
 		return ExitUsage
 	}
-	// Hoisting runs before the built-ins are matched, so a global flag typed to
-	// the left of one (`brw --json completion bash`) is the same argument order
-	// every verb already accepts rather than an unknown-command error.
+
 	leading, rest, err := hoistGlobalFlags(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "brw: %v\n\n", err)
@@ -180,9 +146,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "usage":
 		return usageCommand(ctx, append(leading, rest[1:]...), stdout, stderr)
 	case "run":
-		// The scheduled entry point takes the global flags itself: its output is
-		// a fixed JSON contract, so --json means nothing to it and hoisting one
-		// in would be an unknown flag.
+
 		return runCommand(ctx, append(leading, rest[1:]...), stdout, stderr)
 	}
 
@@ -195,10 +159,6 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return runVerb(ctx, v, append(leading, verbArgs...), stdout, stderr)
 }
 
-// hoistGlobalFlags moves global flags typed before the verb to the verb's own
-// flag set, so `brw --json tabs` and `brw tabs --json` mean the same thing. Each
-// flag's value is consumed as a value, which is what keeps a profile or daemon
-// named after a verb from being mistaken for one.
 func hoistGlobalFlags(args []string) (leading, rest []string, err error) {
 	globals := flag.NewFlagSet("brw", flag.ContinueOnError)
 	globals.SetOutput(io.Discard)
@@ -214,9 +174,7 @@ func hoistGlobalFlags(args []string) (leading, rest []string, err error) {
 		}
 		name := strings.TrimLeft(arg, "-")
 		if builtinFlagWords[name] {
-			// help and version are commands spelled like flags, not globals.
-			// Handing them back as the verb is what lets `brw --json --help`
-			// print usage instead of dying on an unknown flag.
+
 			return leading, args[i:], nil
 		}
 		if strings.Contains(name, "=") {
@@ -239,33 +197,19 @@ func hoistGlobalFlags(args []string) (leading, rest []string, err error) {
 	return leading, nil, nil
 }
 
-// lookupVerb matches the longest verb name against the leading arguments, so a
-// two-word verb ("artifact read") wins over any one-word prefix of it.
 func lookupVerb(all []verb, args []string) (verb, []string, bool) {
-	// Ordering is this lookup's own business; the caller's table keeps its shape.
-	all = append([]verb(nil), all...)
-	sort.SliceStable(all, func(i, j int) bool {
-		return len(strings.Fields(all[i].name)) > len(strings.Fields(all[j].name))
-	})
+	var matched verb
+	longest := 0
 	for _, v := range all {
 		tokens := strings.Fields(v.name)
-		// A malformed entry with a blank name has no tokens, and matching zero
-		// tokens would dispatch it for any argument list at all.
-		if len(tokens) == 0 || len(args) < len(tokens) {
-			continue
-		}
-		matched := true
-		for i, token := range tokens {
-			if args[i] != token {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return v, args[len(tokens):], true
+		if len(tokens) > longest && len(args) >= len(tokens) && slices.Equal(tokens, args[:len(tokens)]) {
+			matched, longest = v, len(tokens)
 		}
 	}
-	return verb{}, nil, false
+	if longest == 0 {
+		return verb{}, nil, false
+	}
+	return matched, args[longest:], true
 }
 
 func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Writer) (exitCode int) {
@@ -304,9 +248,7 @@ func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Write
 	}
 
 	if v.exactBody && opts.tab != "" {
-		// The strict-schema routes are host-local and have no tab to act on, and
-		// their handlers answer 400 to any field they do not declare. Saying so
-		// beats sending a request that cannot work.
+
 		fmt.Fprintf(stderr, "brw %s: --tab does not apply to this verb\n", v.name)
 		return ExitUsage
 	}
@@ -316,9 +258,7 @@ func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Write
 		fmt.Fprintf(stderr, "brw: %v\n", err)
 		return ExitNoDaemon
 	}
-	// --timeout is the whole wait for every verb that keeps its own deadline;
-	// only a verb the daemon times out server-side needs the client to wait
-	// longer than it asked for.
+
 	deadline := opts.timeout
 	if v.serverTimeout {
 		deadline += clientHeadroom
@@ -355,9 +295,6 @@ func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Write
 		return ExitActionFailed
 	}
 
-	// Human output is rendered into a buffer first so the failure path below can
-	// see whether the verb already printed the daemon's reason, and not print it
-	// a second time on stderr.
 	var rendered string
 	if opts.json {
 		if _, err := stdout.Write(append([]byte(strings.TrimRight(string(body), "\n")), '\n')); err != nil {
@@ -390,8 +327,6 @@ func runVerb(ctx context.Context, v verb, args []string, stdout, stderr io.Write
 	return ExitOK
 }
 
-// call issues the verb's request, keeping the strict-schema routes off the
-// path that folds context values into the body.
 func (v verb) call(ctx context.Context, ctrl *httpclient.Controller, req request) (json.RawMessage, error) {
 	if v.exactBody {
 		return ctrl.RequestExact(ctx, v.method, v.path, req.Query, req.Body)
@@ -399,9 +334,6 @@ func (v verb) call(ctx context.Context, ctrl *httpclient.Controller, req request
 	return ctrl.Request(ctx, v.method, v.path, req.Query, req.Body)
 }
 
-// actionFailed reports the daemon's own reason for a 200 that is not a success:
-// an ok:false envelope, or a capability the active transport does not have.
-// Both answer 200, and a shell script only ever sees the exit code.
 func actionFailed(v verb, body []byte) (string, bool) {
 	if message, failed := envelopeRefused(body); failed {
 		return message, true
@@ -412,12 +344,6 @@ func actionFailed(v verb, body []byte) (string, bool) {
 	return v.unsupported(body)
 }
 
-// unreachable reports whether an error means the request never got an answer
-// from a daemon. httpclient turns every HTTP status into a plain error, so
-// anything still carrying a *url.Error is a transport failure — except a
-// cancelled or expired one: the daemon may be up and still working, and exit 3
-// tells a script to go start one. cmd/brw wires SIGINT into this context, so
-// Ctrl-C lands here too.
 func unreachable(ctx context.Context, err error) bool {
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
@@ -426,14 +352,10 @@ func unreachable(ctx context.Context, err error) bool {
 	if !errors.As(err, &urlErr) {
 		return false
 	}
-	// http.Client's own deadline surfaces as a timeout on the *url.Error rather
-	// than as a context error.
+
 	return !urlErr.Timeout()
 }
 
-// actionError names why an action ended without an answer. The transport error
-// says only that the connection went away, which reads as a broken daemon; the
-// operator's Ctrl-C or their --timeout is the real reason.
 func actionError(ctx context.Context, deadline time.Duration, err error) error {
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
@@ -453,9 +375,6 @@ func writeJSONError(w io.Writer, err error) {
 	fmt.Fprintf(w, "%s\n", encoded)
 }
 
-// envelopeRefused reads the ok/error fields shared by the daemon's action
-// responses. Absent fields mean the response is not an action envelope (a
-// snapshot, a page read), which is never a refusal.
 func envelopeRefused(body []byte) (string, bool) {
 	var envelope struct {
 		OK      *bool  `json:"ok"`
@@ -486,9 +405,6 @@ func registerGlobalFlags(fs *flag.FlagSet, opts *options) {
 	fs.DurationVar(&opts.timeout, "timeout", defaultTimeout, "per-action timeout")
 }
 
-// splitFlags separates flags from positional arguments. Go's flag package stops
-// at the first non-flag word, which would make `brw click @e17 --json` parse
-// --json as a positional — the order people actually type.
 func splitFlags(fs *flag.FlagSet, args []string) (flagArgs, positional []string, err error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -580,8 +496,6 @@ func verbUsage(w io.Writer, v verb, fs *flag.FlagSet) {
 	fs.PrintDefaults()
 }
 
-// request is what a verb contributes to the call: the route itself is fixed on
-// the verb, so a verb can only shape the query string and the JSON body.
 type request struct {
 	Query url.Values
 	Body  any

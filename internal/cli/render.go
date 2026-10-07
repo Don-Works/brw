@@ -16,7 +16,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// Element names are the widest column and a page can put a paragraph in one.
 const maxNameChars = 72
 
 func renderOpen(w io.Writer, _ *options, body []byte) error {
@@ -77,9 +76,6 @@ func renderElementList(w io.Writer, _ *options, body []byte) error {
 	return nil
 }
 
-// renderElements prints one element per line as `@ref role name [state]`, the
-// shape the whole CLI is built around: the first column pastes straight into
-// `brw click`.
 func renderElements(w io.Writer, elements []snapshot.Element) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, el := range elements {
@@ -153,8 +149,7 @@ func renderDownloads(w io.Writer, _ *options, body []byte) error {
 		return err
 	}
 	if !result.Supported {
-		// The exit code comes from the verb's unsupported hook, which reads the
-		// same flag; this line is only the human-readable half.
+
 		note, _ := downloadsUnsupported(body)
 		fmt.Fprintf(w, "downloads unavailable: %s\n", note)
 		return nil
@@ -194,22 +189,8 @@ func renderScreenshot(w io.Writer, opts *options, body []byte) error {
 	return nil
 }
 
-// narrowToOwner is a variable because the only filesystems that reject fchmod
-// (exFAT, msdos, some bind mounts) cannot be mounted from a test, and the
-// ordering in writeOwnerOnly is only correct if a rejection there leaves the
-// previous file whole.
 var narrowToOwner = func(file *os.File) error { return file.Chmod(0o600) }
 
-// writeOwnerOnly replaces path's contents with data at mode 0600.
-//
-// A screenshot of a signed-in browser is as sensitive as the session it shows,
-// so it lands owner-only rather than at the process umask. The mode passed to a
-// create applies only when the file is new, and the default --out is a fixed
-// name in the working directory, so re-use is the common case: an existing file
-// is narrowed explicitly. The narrowing happens before the truncate so that a
-// filesystem which cannot represent the mode costs the caller a screenshot
-// rather than yesterday's, and before the write so that no open descriptor ever
-// holds screenshot bytes at a wider mode.
 func writeOwnerOnly(path string, data []byte) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
@@ -285,10 +266,6 @@ func truncate(value string, max int) string {
 	return string(runes[:max-1]) + "…"
 }
 
-// renderGrants prints the site permission records a profile holds. Expired and
-// override records are labelled rather than filtered out: a user looking for
-// "why is it asking me again" needs to see the lapsed record, and a user
-// auditing what was crossed needs to see the override.
 func renderGrants(w io.Writer, _ *options, body []byte) error {
 	var response struct {
 		Enabled bool   `json:"enabled"`

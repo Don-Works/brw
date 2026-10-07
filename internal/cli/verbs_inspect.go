@@ -370,7 +370,6 @@ func renderConsole(w io.Writer, _ *options, body []byte) error {
 	return tw.Flush()
 }
 
-// renderCookies prints names, domains and paths. Values are only in --json.
 func renderCookies(w io.Writer, _ *options, body []byte) error {
 	var result browser.CookieResult
 	if err := json.Unmarshal(body, &result); err != nil {

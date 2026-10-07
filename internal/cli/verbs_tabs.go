@@ -131,8 +131,6 @@ func tabVerbs() []verb {
 	}
 }
 
-// tabIDVerb sends the tab as "id": the generic path folds --tab into tab_id,
-// which the handler prefers, so the positional must not share that field.
 func tabIDVerb(name, summary, path string) verb {
 	return verb{
 		name:    name,

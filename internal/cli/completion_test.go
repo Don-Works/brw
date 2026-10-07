@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,8 +18,7 @@ func TestCompletionScriptsCoverTheVerbTable(t *testing.T) {
 	scripts := map[string]string{"bash": BashCompletion(), "zsh": ZshCompletion()}
 	for shell, script := range scripts {
 		t.Run(shell, func(t *testing.T) {
-			// Comments are stripped first: a script gutted down to a no-op body
-			// that still carries the verb list in a comment passed this check.
+
 			code := withoutComments(script)
 			for _, word := range topLevelWords(verbs()) {
 				if !mentionsWord(code, word) {
@@ -39,8 +39,6 @@ func TestCompletionScriptsCoverTheVerbTable(t *testing.T) {
 	}
 }
 
-// The bash script is run by bash, not merely inspected: completion that parses
-// but returns nothing is worse than none at all.
 func TestBashCompletionCompletesInBash(t *testing.T) {
 	bash := lookShell(t, "bash")
 	path := writeScript(t, "brw.bash", BashCompletion())
@@ -59,10 +57,6 @@ func TestBashCompletionCompletesInBash(t *testing.T) {
 	}
 }
 
-// zsh's own completion system is loaded and the shipped script is sourced into
-// it, then _brw is called with the words a shell would hand it. compadd and
-// _describe are captured so the test sees the candidates the function actually
-// produces: `zsh -n` alone passed against a _brw whose body had been deleted.
 func TestZshCompletionCompletesInZsh(t *testing.T) {
 	zsh := lookShell(t, "zsh")
 	path := writeScript(t, "_brw", ZshCompletion())
@@ -82,7 +76,7 @@ _files() { : }
 				words = append(words, `"`+word+`"`)
 			}
 			script := preamble + "words=(brw " + strings.Join(words, " ") + ")\nCURRENT=" + strconv.Itoa(tt.current) + "\n_brw\n"
-			// -f keeps the developer's own zsh configuration out of the run.
+
 			cmd := exec.CommandContext(context.Background(), zsh, "-f", "-c", script, zsh, path, filepath.Dir(path))
 			out, err := cmd.CombinedOutput()
 			if err != nil {
@@ -93,8 +87,6 @@ _files() { : }
 	}
 }
 
-// completionCase is one shell completion request: the words already on the
-// command line and which of them the cursor is on, 1-based as zsh counts.
 type completionCase struct {
 	name     string
 	words    []string
@@ -110,8 +102,7 @@ func completionCases() []completionCase {
 			name:    "the verb list",
 			words:   []string{""},
 			current: 2,
-			// Every verb, not a sample: a script that offers a stale subset is
-			// the failure this catches.
+
 			wantAll: topLevelWords(verbs()),
 		},
 		{
@@ -128,8 +119,7 @@ func completionCases() []completionCase {
 		},
 		{
 			name: "the verb list after a global bool flag",
-			// brw accepts a global flag on either side of the verb, so
-			// completion has to find the verb position rather than assume it.
+
 			words:   []string{"--json", ""},
 			current: 3,
 			wantAll: topLevelWords(verbs()),
@@ -153,8 +143,7 @@ func completionCases() []completionCase {
 			want:    []string{"--group", "--json"},
 		},
 		{
-			// brw run owns its flag set: it takes the global flags itself, so
-			// every global the shell offered here is a word run rejects.
+
 			name:    "flags for a built-in with its own flag set",
 			words:   []string{"run", "--"},
 			current: 3,
@@ -175,20 +164,17 @@ func checkCompletions(t *testing.T, tt completionCase, got []string) {
 		}
 	}
 	for _, want := range tt.want {
-		if !contains(got, want) {
+		if !slices.Contains(got, want) {
 			t.Errorf("completions %v do not include %q", got, want)
 		}
 	}
 	for _, unwanted := range tt.unwanted {
-		if contains(got, unwanted) {
+		if slices.Contains(got, unwanted) {
 			t.Errorf("completions %v unexpectedly include %q", got, unwanted)
 		}
 	}
 }
 
-// compgen filters candidates on the typed prefix; the zsh completion system
-// does the same for compadd. Only bash's filtering is observable here, because
-// the zsh harness stubs compadd to capture what the function offers.
 func TestBashCompletionFiltersOnThePrefix(t *testing.T) {
 	bash := lookShell(t, "bash")
 	path := writeScript(t, "brw.bash", BashCompletion())
@@ -199,8 +185,6 @@ func TestBashCompletionFiltersOnThePrefix(t *testing.T) {
 	}
 }
 
-// The script also has to be loadable the way it ships: dropped into fpath under
-// its #compdef header, or sourced from a shell rc.
 func TestZshCompletionParsesInZsh(t *testing.T) {
 	zsh := lookShell(t, "zsh")
 	path := writeScript(t, "_brw", ZshCompletion())
@@ -234,8 +218,6 @@ func TestCompletionCommandWritesTheScript(t *testing.T) {
 	}
 }
 
-// A global flag typed before a built-in is the argument order every verb
-// accepts, so the built-ins have to accept it too.
 func TestGlobalFlagsMayPrecedeABuiltin(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -299,15 +281,6 @@ func lines(out string) []string {
 	return kept
 }
 
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
-
 func withoutComments(script string) string {
 	var kept []string
 	for _, line := range strings.Split(script, "\n") {
@@ -323,10 +296,6 @@ func mentionsWord(script, word string) bool {
 	return regexp.MustCompile(`(^|[^A-Za-z0-9_-])` + regexp.QuoteMeta(word) + `([^A-Za-z0-9_-]|$)`).MatchString(script)
 }
 
-// A blank verb name is a malformed table entry that TestVerbTableIsWellFormed
-// reports. It must not take the binary down before that report: every consumer
-// here indexes the first token, and lookupVerb matching zero tokens would
-// dispatch the nameless entry for any argument list at all.
 func TestAMalformedVerbNameIsSkippedNotIndexed(t *testing.T) {
 	table := []verb{
 		{name: "", summary: "a malformed entry"},

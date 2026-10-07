@@ -10,13 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/brwidentity"
 )
 
-// Every lane brw can report has to get an answer out of skipReason, and the
-// answer has to follow the lane's declared capabilities.
-//
-// The earlier spelling named lanes, so a scenario requiring "direct-cdp" was
-// skipped against chrome-opt-in-cdp — a lane with the same browser-target CDP —
-// and the conformance suite reported the whole lane as untested. A skip is not
-// a failure, so nothing said so.
 func TestSkipReasonAnswersForEveryTransport(t *testing.T) {
 	transports := brwidentity.Transports()
 	if len(transports) < 3 {
@@ -48,9 +41,6 @@ func TestSkipReasonAnswersForEveryTransport(t *testing.T) {
 	}
 }
 
-// A requirement value nothing classifies must stop the run, not quietly skip
-// the scenario: an unrecognised requirement is a coverage gap that looks like
-// a clean result.
 func TestSuiteRequirementsAreClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -90,16 +80,6 @@ func TestSuiteRequirementsAreClosed(t *testing.T) {
 	}
 }
 
-// Every lane has to be exercised for a capability it actually has, not merely
-// reached by the scenarios that ask for nothing.
-//
-// Counting every scenario was the earlier spelling and it proved nothing: a
-// scenario with no `requires` runs on every lane, so the map was full before any
-// capability-bearing scenario was consulted. Rewriting both `browser-target`
-// and `cdp-session` in core.json to `extension-apis` — which leaves every
-// CDP lane with no capability coverage at all — still passed it. Only the
-// scenarios that name a transport capability are counted here, which is the
-// population the claim is about.
 func TestShippedSuitesExerciseEveryLane(t *testing.T) {
 	covered := map[string]bool{}
 	capabilityScenarios := 0
@@ -130,9 +110,6 @@ func TestShippedSuitesExerciseEveryLane(t *testing.T) {
 	}
 }
 
-// declaresATransportCapability reports whether a scenario asks for anything
-// about the lane. A scenario that asks only for a run flag, or for nothing,
-// runs everywhere and so says nothing about which lanes are covered.
 func declaresATransportCapability(sc scenario) bool {
 	for _, req := range sc.Requires {
 		if _, ok := transportRequirements[req]; ok {

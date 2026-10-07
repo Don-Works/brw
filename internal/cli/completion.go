@@ -4,12 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 )
-
-// Completion scripts are generated from the verb table rather than written by
-// hand, so a verb or flag added below is completable the moment it exists.
 
 func runCompletion(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
@@ -28,8 +27,6 @@ func runCompletion(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-// topLevelWords is what a user can type as the first word: every verb's first
-// token plus the built-ins that carry no route.
 func topLevelWords(all []verb) []string {
 	seen := map[string]bool{}
 	var words []string
@@ -50,9 +47,6 @@ func topLevelWords(all []verb) []string {
 	return words
 }
 
-// globalFlagNames lists the flags every verb accepts. withValue is the subset
-// that consumes the following word, which is what lets a completion script walk
-// past `--profile work` to the verb behind it.
 func globalFlagNames() (all, withValue []string) {
 	fs := flag.NewFlagSet("brw", flag.ContinueOnError)
 	registerGlobalFlags(fs, &options{})
@@ -62,13 +56,9 @@ func globalFlagNames() (all, withValue []string) {
 			withValue = append(withValue, "--"+f.Name)
 		}
 	})
-	sort.Strings(all)
-	sort.Strings(withValue)
 	return all, withValue
 }
 
-// subWords maps a first token to its second tokens, for the verbs whose name is
-// two words.
 func subWords(all []verb) map[string][]string {
 	subs := map[string][]string{}
 	for _, v := range all {
@@ -85,8 +75,6 @@ func subWords(all []verb) map[string][]string {
 	return subs
 }
 
-// verbFlags lists the flags one verb accepts, globals included, by registering
-// them exactly as the dispatcher does.
 func verbFlags(v verb) []string {
 	fs := flag.NewFlagSet(v.name, flag.ContinueOnError)
 	opts := &options{}
@@ -96,16 +84,9 @@ func verbFlags(v verb) []string {
 	}
 	var names []string
 	fs.VisitAll(func(f *flag.Flag) { names = append(names, "--"+f.Name) })
-	sort.Strings(names)
 	return names
 }
 
-// flagsByFirstWord collapses flags onto the first word of each verb name, which
-// is what a shell has in hand when completing.
-//
-// The built-ins that carry their own FlagSet are folded in from the same table
-// the dispatcher reads, so a shell never offers `brw run --json`: run takes the
-// global flags itself and rejects the ones it does not register.
 func flagsByFirstWord(all []verb) map[string][]string {
 	byWord := map[string][]string{}
 	for _, command := range builtinCommandTable {
@@ -124,24 +105,12 @@ func flagsByFirstWord(all []verb) map[string][]string {
 		for _, name := range append(byWord[first], verbFlags(v)...) {
 			seen[name] = true
 		}
-		merged := make([]string, 0, len(seen))
-		for name := range seen {
-			merged = append(merged, name)
-		}
-		sort.Strings(merged)
-		byWord[first] = merged
+		byWord[first] = slices.Sorted(maps.Keys(seen))
 	}
 	return byWord
 }
 
-func sortedKeys(values map[string][]string) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
+func sortedKeys(values map[string][]string) []string { return slices.Sorted(maps.Keys(values)) }
 
 // BashCompletion returns the bash completion script for brw.
 func BashCompletion() string { return bashCompletion(verbs()) }
@@ -149,14 +118,11 @@ func BashCompletion() string { return bashCompletion(verbs()) }
 func bashCompletion(all []verb) string {
 	globals, valueGlobals := globalFlagNames()
 	var b strings.Builder
-	b.WriteString(`# brw bash completion. Regenerate with: brw completion bash
-_brw() {
+	b.WriteString(`_brw() {
     local cur verb verb_index flags
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
 
-    # A global flag may be typed before the verb, so the verb is the first word
-    # that is neither a flag nor a flag's value — not always COMP_WORDS[1].
     verb_index=1
     while [ "$verb_index" -lt "${#COMP_WORDS[@]}" ]; do
         case "${COMP_WORDS[$verb_index]}" in
@@ -207,18 +173,14 @@ complete -F _brw brw
 	return b.String()
 }
 
-// ZshCompletion returns the zsh completion script for brw. It works both when
-// dropped into fpath as _brw and when sourced directly from a shell rc.
+// ZshCompletion returns the zsh completion script for brw.
 func ZshCompletion() string { return zshCompletion(verbs()) }
 
 func zshCompletion(all []verb) string {
 	globals, valueGlobals := globalFlagNames()
 	var b strings.Builder
-	b.WriteString("#compdef brw\n# brw zsh completion. Regenerate with: brw completion zsh\n_brw() {\n    local -a _brw_verbs _brw_subs _brw_flags\n    local -i _brw_verb_index\n    _brw_verbs=(\n")
-	// A word may be BOTH a verb of its own and the first token of a two-word
-	// verb ("grants" and "grants revoke"). Emitting it from both loops offered
-	// it to the shell twice, so the first word is recorded here and the group
-	// loop skips what the verb loop already described.
+	b.WriteString("#compdef brw\n_brw() {\n    local -a _brw_verbs _brw_subs _brw_flags\n    local -i _brw_verb_index\n    _brw_verbs=(\n")
+
 	described := map[string]bool{}
 	for _, v := range all {
 		tokens := strings.Fields(v.name)
@@ -238,15 +200,12 @@ func zshCompletion(all []verb) string {
 		}
 		fmt.Fprintf(&b, "        '%s:%s'\n", word, describeForZsh(groupSummary(all, word)))
 	}
-	// Generated from the same table the dispatcher uses, so a built-in cannot
-	// exist in one and not the other.
+
 	for _, command := range builtinCommandTable {
 		fmt.Fprintf(&b, "        '%s:%s'\n", command.name, describeForZsh(command.summary))
 	}
 	b.WriteString(`    )
 
-    # A global flag may be typed before the verb, so the verb is the first word
-    # that is neither a flag nor a flag's value — not always words[2].
     _brw_verb_index=2
     while (( _brw_verb_index <= ${#words} )); do
         case "${words[_brw_verb_index]}" in
@@ -298,7 +257,6 @@ fi
 	return b.String()
 }
 
-// groupSummary describes a first word that is shared by two-word verbs.
 func groupSummary(all []verb, word string) string {
 	var summaries []string
 	for _, v := range all {
@@ -311,8 +269,6 @@ func groupSummary(all []verb, word string) string {
 	return word + " commands: " + strings.Join(summaries, ", ")
 }
 
-// describeForZsh strips the two characters zsh's completion-list syntax treats
-// as structure, so a summary can be written for humans in the verb table.
 func describeForZsh(summary string) string {
 	summary = strings.ReplaceAll(summary, ":", " -")
 	return strings.ReplaceAll(summary, "'", "")

@@ -10,10 +10,6 @@ import (
 	httpapi "github.com/Don-Works/brw/internal/http"
 )
 
-// evaluateLabelController is the browser side of internal/http's handler, cut
-// down to Evaluate. The embedded interface is nil, so any other call panics
-// rather than quietly answering — and it deliberately does NOT implement the
-// active-tab resolver, which is the direct-CDP shape of an upstream daemon.
 type evaluateLabelController struct {
 	browser.Controller
 	label   browser.TraceLabel
@@ -25,8 +21,6 @@ func (c *evaluateLabelController) Evaluate(ctx context.Context, _ string) (any, 
 	return "ok", nil
 }
 
-// The client sends a session header, so the daemon's lease middleware opens the
-// session's working tab before the route runs. These are what it needs.
 func (c *evaluateLabelController) OpenInGroup(context.Context, string, browser.TabGroupOptions) (browser.OpenResult, error) {
 	return browser.OpenResult{Tab: browser.Tab{ID: "tab-1"}, Ready: true}, nil
 }
@@ -35,17 +29,6 @@ func (c *evaluateLabelController) ListTabs(context.Context) ([]browser.Tab, erro
 	return []browser.Tab{{ID: "tab-1"}}, nil
 }
 
-// A bounded wait on a WebMCP page tool runs one Evaluate per poll — close to six
-// hundred at the ten-minute cap — and the daemon's trace is a 500-entry ring, so
-// the page_tool label is what keeps those polls folded into a single row instead
-// of evicting the session's real activity. With --upstream-http the evaluation
-// happens on the daemon and the label is a context value, which does not cross
-// HTTP: it has to ride the request body out of the client AND be reapplied by
-// the daemon's route, or a proxied wait floods the ring there.
-//
-// This runs the real client against internal/http's real handler, because each
-// half passes its own unit test while the hop between them is where the label is
-// actually lost.
 func TestPageToolLabelCrossesTheHTTPSurface(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -82,9 +65,7 @@ func TestPageToolLabelCrossesTheHTTPSurface(t *testing.T) {
 			ctx:  context.Background,
 		},
 		{
-			// A hand-written expression must not be able to record itself in the
-			// daemon's trace as a typed read, which is the distinction the label
-			// exists to draw.
+
 			name: "a caller cannot claim an input action",
 			ctx: func() context.Context {
 				return browser.WithTraceLabel(context.Background(), "click", "e3")

@@ -7,11 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -21,6 +19,7 @@ import (
 
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
+	"github.com/Don-Works/brw/internal/harness"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/snapshot"
 )
@@ -78,12 +77,6 @@ type step struct {
 	MouseUp           *mousePointStep        `json:"mouse_up,omitempty"`
 	Batch             *batchStep             `json:"batch,omitempty"`
 }
-
-// The tab-group, window, pointer and batch steps below exist because the suite
-// drove 18 of the 69 registered tools. Everything an agent uses to manage tabs,
-// size a window, aim the pointer at a coordinate, or run several actions in one
-// call was covered only by Go tests against a fake controller, which cannot
-// catch a tool that marshals correctly and then fails against real Chrome.
 
 type groupTabsStep struct {
 	Tabs    []string `json:"tabs,omitempty"`
@@ -163,18 +156,11 @@ type assertValueStep struct {
 	TimeoutMS int    `json:"timeout_ms,omitempty"`
 }
 
-// assertStep drives brw_assert. The assertion is carried as the raw object a
-// caller would send, so the suite exercises the published field names against
-// real Chrome rather than a Go struct that happens to marshal. want_error is the
-// other half of the contract: a deterministic check that cannot fail is not one.
 type assertStep struct {
 	Assertion map[string]any `json:"assertion"`
 	WantError bool           `json:"want_error,omitempty"`
 }
 
-// cookiesStep drives brw_cookies over the daemon's HTTP API: set a cookie
-// (with attributes), list applicable cookies, or delete by name, with list-side
-// assertions. Values support ${HTTP_FIXTURES}-style expansion like other URLs.
 type cookiesStep struct {
 	Action   string  `json:"action"`
 	URL      string  `json:"url,omitempty"`
@@ -189,11 +175,11 @@ type cookiesStep struct {
 
 	// List assertions.
 	MinCount    int      `json:"min_count,omitempty"`
-	Require     []string `json:"require,omitempty"`      // cookie names that must be present
-	Absent      []string `json:"absent,omitempty"`       // cookie names that must NOT be present
-	HTTPOnlyOf  []string `json:"http_only_of,omitempty"` // names that must be present AND http_only
+	Require     []string `json:"require,omitempty"`      
+	Absent      []string `json:"absent,omitempty"`       
+	HTTPOnlyOf  []string `json:"http_only_of,omitempty"` 
 	TabID       string   `json:"tab_id,omitempty"`
-	ExpectValue string   `json:"expect_value,omitempty"` // with name: the set/read-back value must match exactly
+	ExpectValue string   `json:"expect_value,omitempty"` 
 }
 
 type openStep struct {
@@ -361,11 +347,9 @@ type runner struct {
 	preClick map[string]bool
 	tabID    string
 
-	// httpFixtures lazily serves tests/fixtures over loopback HTTP so cookie
-	// scenarios get a real http-origin (file:// pages cannot hold cookies).
 	httpFixturesOnce sync.Once
-	httpFixturesURL  string
-	httpFixturesLn   net.Listener
+	httpFixtures     *harness.Fixtures
+	httpFixturesErr  error
 }
 
 type apiClient struct {
@@ -837,8 +821,7 @@ func (r *runner) runStep(st step) error {
 		var result browser.ActionResult
 		return r.client.postJSON("/api/page/click_xy", body, &result)
 	case st.Drag != nil:
-		// Saved keys resolve through the target parameter; resolveTarget
-		// returns a ref verbatim, which would hand the daemon the key itself.
+		
 		from, err := r.resolveTarget("", st.Drag.From, nil)
 		if err != nil {
 			return err
@@ -865,8 +848,6 @@ func (r *runner) runStep(st step) error {
 	}
 }
 
-// runCookiesStep posts one brw_cookies action to the daemon and applies the
-// step's list/set assertions to the result.
 func (r *runner) runCookiesStep(st cookiesStep) (retErr error) {
 	body := map[string]any{"action": st.Action}
 	r.addTabID(body)
@@ -894,8 +875,7 @@ func (r *runner) runCookiesStep(st cookiesStep) (retErr error) {
 	var result browser.CookieResult
 	err := r.client.postJSON("/api/page/cookies", body, &result)
 	if err != nil {
-		// A scenario may be optional on transports lacking cookie support
-		// (extension bridge); surface the daemon's refusal verbatim.
+		
 		return fmt.Errorf("cookies %s: %w", st.Action, err)
 	}
 	switch st.Action {
@@ -1291,8 +1271,7 @@ func (r *runner) expandURL(raw string) string {
 		rel := strings.TrimPrefix(raw, "${HTTP_FIXTURES}/")
 		base, err := r.httpFixturesBase()
 		if err != nil {
-			// A scenario URL that cannot be served is a suite setup failure;
-			// returning the raw marker keeps the error identifiable.
+			
 			fmt.Printf("WARN http fixture server unavailable: %v\n", err)
 			return raw
 		}
@@ -1305,39 +1284,14 @@ func (r *runner) expandURL(raw string) string {
 	return raw
 }
 
-// httpFixturesBase lazily starts a loopback HTTP server rooted at
-// tests/fixtures and returns its base URL. Cookie scenarios need a real
-// http(s) origin — Chrome does not store cookies for file:// pages — so the
-// same fixture directory is also served over http://127.0.0.1:<ephemeral>.
-// The listener intentionally lives for the process lifetime: brwcheck is
-// short-lived and scenario cleanup only closes tabs, never this server.
 func (r *runner) httpFixturesBase() (string, error) {
-	var err error
 	r.httpFixturesOnce.Do(func() {
-		root := filepath.Join(r.repoRoot, "tests", "fixtures")
-		ln, listenErr := net.Listen("tcp", "127.0.0.1:0")
-		if listenErr != nil {
-			err = listenErr
-			return
-		}
-		r.httpFixturesLn = ln
-		r.httpFixturesURL = "http://" + ln.Addr().String()
-		mux := http.NewServeMux()
-		mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-			// Serve only files inside the fixtures root; no directory listing.
-			rel := strings.TrimPrefix(path.Clean(req.URL.Path), "/")
-			if rel == "" || strings.HasPrefix(rel, "..") {
-				http.NotFound(w, req)
-				return
-			}
-			http.ServeFile(w, req, filepath.Join(root, filepath.FromSlash(rel)))
-		})
-		go func() { _ = http.Serve(ln, mux) }()
+		r.httpFixtures, r.httpFixturesErr = harness.ServeFixtures(r.repoRoot)
 	})
-	if err != nil {
-		return "", err
+	if r.httpFixturesErr != nil {
+		return "", r.httpFixturesErr
 	}
-	return r.httpFixturesURL, nil
+	return r.httpFixtures.BaseURL(), nil
 }
 
 func (r *runner) expandPath(raw string) string {
@@ -1353,10 +1307,6 @@ func (r *runner) expandPath(raw string) string {
 	return raw
 }
 
-// health confirms the daemon is up and reports which transport it drives the
-// browser over. /health already carries identity.transport; this used to decode
-// the payload and throw it away, so the runner had no way to tell a scenario
-// that cannot work here from one that is broken.
 func (c *apiClient) health() (string, error) {
 	var result struct {
 		Identity struct {
@@ -1399,29 +1349,36 @@ func (c *apiClient) postJSON(path string, body any, dst any) error {
 }
 
 func (c *apiClient) doJSON(req *http.Request, dst any) error {
-	resp, err := c.http.Do(req)
-	if err != nil {
+	data, err := c.doBytes(req)
+	if err != nil || dst == nil {
 		return err
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s returned %s: %s", req.Method, req.URL.Path, resp.Status, strings.TrimSpace(string(data)))
-	}
-	if dst == nil {
-		return nil
 	}
 	if err := json.Unmarshal(data, dst); err != nil {
 		return fmt.Errorf("decode %s: %w", req.URL.Path, err)
+	}
+	switch result := dst.(type) {
+	case *browser.ActionResult:
+		if !result.OK {
+			return fmt.Errorf("%s reported ok=false: %s", req.URL.Path, result.Message)
+		}
+	case *browser.BatchResult:
+		if !result.OK {
+			return fmt.Errorf("%s reported ok=false: %s", req.URL.Path, result.Error)
+		}
 	}
 	return nil
 }
 
 func (c *apiClient) getBytes(path string) ([]byte, error) {
-	resp, err := c.http.Get(c.base + path)
+	req, err := http.NewRequest(http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.doBytes(req)
+}
+
+func (c *apiClient) doBytes(req *http.Request) ([]byte, error) {
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1431,7 +1388,7 @@ func (c *apiClient) getBytes(path string) ([]byte, error) {
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("GET %s returned %s: %s", path, resp.Status, strings.TrimSpace(string(data)))
+		return nil, fmt.Errorf("%s %s returned %s: %s", req.Method, req.URL.RequestURI(), resp.Status, strings.TrimSpace(string(data)))
 	}
 	return data, nil
 }
@@ -1454,15 +1411,6 @@ func loadSuite(path string) (suiteFile, error) {
 	return suite, nil
 }
 
-// transportRequirements are the capability requirements a scenario may declare,
-// each read off the transport's own properties rather than off its name.
-//
-// Naming lanes was the earlier spelling and it did not survive a third lane:
-// every scenario that said "direct-cdp" was skipped against a daemon reporting
-// chrome-opt-in-cdp, which is a lane with the same browser-target CDP, so the
-// suite reported the whole lane as untested and a skip is not a failure. A
-// property is true of a lane or it is not, and a lane added to brwidentity
-// answers every one of these without a suite edit.
 var transportRequirements = map[string]struct {
 	explain string
 	has     func(brwidentity.TransportCapabilities) bool
@@ -1485,18 +1433,12 @@ var transportRequirements = map[string]struct {
 	},
 }
 
-// runFlagRequirements are the requirements answered by how brwcheck was
-// invoked rather than by the lane.
 var runFlagRequirements = map[string]string{
 	"network": "--include-network",
 	"auth":    "--include-auth",
 	"manual":  "--include-manual",
 }
 
-// validateSuiteRequirements refuses a suite naming a requirement brwcheck does
-// not know. It is a hard error and not a skip on purpose: a skip for a typo, or
-// for a lane name this no longer understands, reads as "nothing to run here"
-// and hides exactly the coverage gap it causes.
 func validateSuiteRequirements(suite suiteFile) error {
 	for _, sc := range suite.Scenarios {
 		for _, req := range sc.Requires {
@@ -1520,16 +1462,6 @@ func validateSuiteRequirements(suite suiteFile) error {
 	return nil
 }
 
-// skipReason reports why a scenario cannot run here, or "" to run it.
-//
-// A scenario naming a capability the lane does not have is SKIPPED, not failed.
-// Some capabilities exist on a subset of lanes by construction: incognito
-// contexts and HttpOnly cookie access need the CDP browser target the extension
-// APIs do not expose, Chrome tab groups exist only in the extension APIs, and
-// routing downloads is refused on a browser its user is signed into. Running
-// the suite against a bridged daemon used to report "1 failed" for a capability
-// that was never going to be there, which buries a real regression among
-// expected noise.
 func skipReason(sc scenario, includeNetwork, includeAuth, includeManual bool, transport string) string {
 	flags := map[string]bool{"network": includeNetwork, "auth": includeAuth, "manual": includeManual}
 	for _, req := range sc.Requires {
@@ -1541,13 +1473,10 @@ func skipReason(sc scenario, includeNetwork, includeAuth, includeManual bool, tr
 		}
 		rule, ok := transportRequirements[req]
 		if !ok {
-			// loadSuite refuses these, so reaching here means the suite was not
-			// loaded through it. Say so rather than running a scenario whose
-			// requirement nothing checked.
+			
 			return fmt.Sprintf("requires %q, which brwcheck does not classify", req)
 		}
-		// An empty transport means the daemon did not report one; run the
-		// scenario rather than silently skipping the whole suite.
+		
 		if transport == "" {
 			continue
 		}
@@ -1611,8 +1540,9 @@ func containsFold(haystack, needle string) bool {
 }
 
 func containsAny(haystack string, needles []string) bool {
+	haystack = strings.ToLower(haystack)
 	for _, needle := range needles {
-		if containsFold(haystack, needle) {
+		if strings.Contains(haystack, strings.ToLower(needle)) {
 			return true
 		}
 	}
@@ -1634,29 +1564,28 @@ func describeTabStep(step tabStep) string {
 }
 
 func expandVars(raw string) string {
+	var out strings.Builder
 	for {
 		start := strings.Index(raw, "${ENV:")
 		if start < 0 {
-			return raw
+			break
 		}
 		end := strings.Index(raw[start:], "}")
 		if end < 0 {
-			return raw
+			break
 		}
 		end += start
-		body := raw[start+len("${ENV:") : end]
-		name := body
-		fallback := ""
-		if idx := strings.Index(body, ":"); idx >= 0 {
-			name = body[:idx]
-			fallback = body[idx+1:]
-		}
+		name, fallback, _ := strings.Cut(raw[start+len("${ENV:"):end], ":")
 		value := os.Getenv(name)
 		if value == "" {
 			value = fallback
 		}
-		raw = raw[:start] + value + raw[end+1:]
+		out.WriteString(raw[:start])
+		out.WriteString(value)
+		raw = raw[end+1:]
 	}
+	out.WriteString(raw)
+	return out.String()
 }
 
 func fatal(err error) {

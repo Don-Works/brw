@@ -11,11 +11,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// A brw that proxies a remote brwd is the third transport, and brw_wait_for
-// advertises one return shape for all of them. Without WaitForOutcome here the
-// MCP server's WaitObserver assertion fails over to the plain WaitFor and the
-// tool answers a bare {"ok":true}: no resolved_by, no wakeups, and no error to
-// say why.
 func TestWaitForOutcomeCarriesTheUpstreamOutcome(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -67,8 +62,7 @@ func TestWaitForOutcomeCarriesTheUpstreamOutcome(t *testing.T) {
 			if !outcome.OK {
 				t.Fatalf("outcome = %+v, want ok", outcome)
 			}
-			// Condition is filled in locally, so it is present whatever the
-			// upstream answered.
+
 			if outcome.Condition != "dialog" {
 				t.Fatalf("condition = %q, want %q", outcome.Condition, "dialog")
 			}
@@ -82,15 +76,10 @@ func TestWaitForOutcomeCarriesTheUpstreamOutcome(t *testing.T) {
 	}
 }
 
-// The MCP server picks the outcome path by type assertion, so the interface
-// itself is the contract: drop the method and brw_wait_for silently degrades on
-// this transport rather than failing to build.
 func TestControllerImplementsWaitObserver(t *testing.T) {
 	var _ browser.WaitObserver = (*Controller)(nil)
 }
 
-// A failing wait must still surface as an error, not as an outcome that says it
-// was fine.
 func TestWaitForOutcomeReportsAnUpstreamFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("content-type", "application/json")
