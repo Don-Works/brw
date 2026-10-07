@@ -5,11 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/Don-Works/brw/internal/plugin"
 )
 
 // RemoteTarget is a browser brw did not launch and does not own: a plugin holding browser.provider handed over a CDP websocket URL and brw drives what is on the other end of it.
@@ -70,7 +69,7 @@ func checkRemoteConfig(cfg Config) error {
 	}
 	if strings.TrimSpace(cfg.Remote.RedactedURL) == "" {
 
-		cfg.Remote.RedactedURL = RedactWebSocketURL(cfg.Remote.WebSocketURL)
+		cfg.Remote.RedactedURL = RedactEndpointURL(cfg.Remote.WebSocketURL)
 	}
 	return ProviderConfigProblems(cfg)
 }
@@ -103,13 +102,13 @@ func ProviderConfigProblems(cfg Config) error {
 	return errors.Join(problems...)
 }
 
-// RedactWebSocketURL removes credentials, fragments and provider tokens from a diagnostic endpoint.
-func RedactWebSocketURL(raw string) string {
-	endpoint, err := plugin.ParseEndpoint(raw)
-	if err != nil {
+// RedactEndpointURL exposes only scheme and host for HTTP discovery and WebSocket diagnostics.
+func RedactEndpointURL(raw string) string {
+	endpoint, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || endpoint.Hostname() == "" || !slices.Contains([]string{"http", "https", "ws", "wss"}, endpoint.Scheme) {
 		return "the remote browser endpoint"
 	}
-	return endpoint.String()
+	return endpoint.Scheme + "://" + endpoint.Host
 }
 
 func (m *Manager) scrubRemoteEndpoint(err error) error {
