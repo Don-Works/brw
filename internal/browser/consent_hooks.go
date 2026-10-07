@@ -3,6 +3,8 @@ package browser
 import (
 	"context"
 	"errors"
+	"net/url"
+	"strings"
 
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
@@ -23,6 +25,25 @@ type FetchCheck func(rawURL string) error
 
 // FrameReadCheck gates page and cross-origin document reads against each committed origin.
 type FrameReadCheck func(frameOrigin string) error
+
+// CheckDownloadSource checks a download's verifiable HTTP source against the runtime read hook.
+func CheckDownloadSource(ctx context.Context, source string) error {
+	check := FrameReadCheckFromContext(ctx)
+	if check == nil {
+		return nil
+	}
+	source = strings.TrimSpace(source)
+	parsed, err := url.Parse(source)
+	if err == nil && strings.EqualFold(parsed.Scheme, "blob") {
+		source = parsed.Opaque
+		parsed, err = url.Parse(source)
+	}
+	if err != nil || parsed.Opaque != "" || parsed.Hostname() == "" ||
+		!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return errors.New("download source has no verifiable HTTP origin")
+	}
+	return check(source)
+}
 
 // FrameActCheck gates acting inside a cross-origin document against its own origin.
 type FrameActCheck func(frameOrigin string) error
