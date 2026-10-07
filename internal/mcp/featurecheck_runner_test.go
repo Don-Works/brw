@@ -115,7 +115,7 @@ func TestFeatureExercises(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer fixture.Close()
-	manager, err := browser.New(ctx, browser.Config{UserDataDir: filepath.Join(t.TempDir(), "chrome-profile"), Headless: true, WebMCP: true, Timeout: 20 * time.Second, ChromeArgs: []string{"--disable-gpu", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-first-run", "--no-default-browser-check", "--window-size=1280,800", "--force-device-scale-factor=1", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"}})
+	manager, err := browser.New(ctx, browser.Config{UserDataDir: filepath.Join(t.TempDir(), "chrome-profile"), Headless: true, WebMCP: true, Timeout: 20 * time.Second, ChromeArgs: []string{"--disable-gpu", "--site-per-process", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-first-run", "--no-default-browser-check", "--window-size=1280,800", "--force-device-scale-factor=1", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE ::1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
