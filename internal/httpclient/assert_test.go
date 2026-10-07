@@ -10,9 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// TestControllerForwardsAssertionsUpstream pins the proxy contract: the whole
-// request crosses to the browser host, and a failure comes back with its
-// expected-against-actual text intact rather than as a bare transport error.
 func TestControllerForwardsAssertionsUpstream(t *testing.T) {
 	var seenPath string
 	var seenBody map[string]any
@@ -39,8 +36,7 @@ func TestControllerForwardsAssertionsUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The upstream proxy must present itself as an Asserter, or a download digest
-	// would be hashed on the wrong machine.
+	
 	if _, ok := any(controller).(browser.Asserter); !ok {
 		t.Fatal("controller does not implement browser.Asserter")
 	}
@@ -71,9 +67,7 @@ func TestControllerForwardsAssertionsUpstream(t *testing.T) {
 	if err.Error() != want {
 		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}
-	// AssertResult promises a populated result alongside the error. A caller
-	// that renders expected against actual must not have to parse the message
-	// back out on this transport and not on the other one.
+	
 	if failed.OK || failed.Assertion != browser.AssertionDownload {
 		t.Fatalf("failed result = %+v, want the refusal decoded", failed)
 	}
@@ -82,9 +76,6 @@ func TestControllerForwardsAssertionsUpstream(t *testing.T) {
 	}
 }
 
-// TestControllerAssertSurvivesAnUpstreamFailureWithoutAResult keeps the decode
-// best-effort: a refusal that carries only a message (a request rejected before
-// it reached the evaluator) still returns that message, not a decode error.
 func TestControllerAssertSurvivesAnUpstreamFailureWithoutAResult(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("content-type", "application/json")

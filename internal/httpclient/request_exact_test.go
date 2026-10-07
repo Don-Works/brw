@@ -16,9 +16,6 @@ import (
 	"github.com/Don-Works/brw/internal/readability"
 )
 
-// strictHandlerController is the browser side of internal/http's handler, cut
-// down to the methods the artifact routes reach. The embedded interface is nil,
-// so any other call panics rather than quietly answering.
 type strictHandlerController struct {
 	browser.Controller
 }
@@ -39,10 +36,6 @@ func (s *readArtifactStub) ReadArtifact(_ context.Context, id string, offset int
 	return artifact.Chunk{ArtifactID: id, Offset: offset, SizeBytes: 4, Text: "safe", Encoding: "utf-8"}, nil
 }
 
-// The artifact routes decode a fixed schema with DisallowUnknownFields, so any
-// field folded in from the context turns the call into a 400. This runs against
-// internal/http's real handler rather than a permissive stand-in, because a
-// stand-in accepts the extra field and the bug only shows against the daemon.
 func TestRequestExactKeepsContextFieldsOutOfStrictBodies(t *testing.T) {
 	stub := &readArtifactStub{}
 	daemon := httpapi.New("", strictHandlerController{})
@@ -76,8 +69,6 @@ func TestRequestExactKeepsContextFieldsOutOfStrictBodies(t *testing.T) {
 	}
 }
 
-// Each artifact operation has its own response bound; an untyped request must
-// get the same one its typed method applies rather than the generic 64 MiB.
 func TestExactResponseBoundMatchesTheTypedMethods(t *testing.T) {
 	tests := []struct {
 		path string
@@ -101,8 +92,6 @@ func TestExactResponseBoundMatchesTheTypedMethods(t *testing.T) {
 	}
 }
 
-// queryRecorder answers every request with an empty envelope and keeps the
-// query string it was reached with.
 func queryRecorder(t *testing.T) (*Controller, *url.Values) {
 	t.Helper()
 	var seen url.Values
@@ -119,9 +108,6 @@ func queryRecorder(t *testing.T) (*Controller, *url.Values) {
 	return client, &seen
 }
 
-// A strict route that takes its arguments in the query rejects a parameter it
-// does not declare for the same reason it rejects a body field, so the GET half
-// of RequestExact has to leave the query as the caller built it.
 func TestRequestExactKeepsTheContextTabOutOfTheQuery(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -152,8 +138,6 @@ func TestRequestExactKeepsTheContextTabOutOfTheQuery(t *testing.T) {
 	}
 }
 
-// The GET half of RequestExact applies the route's own response bound, the same
-// as the POST half; an unrecognised strict route gets the smallest of them.
 func TestRequestExactGETHoldsTheResponseToTheRouteBound(t *testing.T) {
 	payload := `{"padding":"` + strings.Repeat("x", int(maxArtifactDeleteResponseBytes)) + `"}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -176,7 +160,6 @@ func TestRequestExactGETHoldsTheResponseToTheRouteBound(t *testing.T) {
 	}
 }
 
-// Neither entry point invents a verb the daemon does not serve.
 func TestRequestExactRefusesAnUnsupportedMethod(t *testing.T) {
 	client, _ := queryRecorder(t)
 	if _, err := client.RequestExact(context.Background(), "DELETE", "/api/artifacts/delete", nil, nil); err == nil {

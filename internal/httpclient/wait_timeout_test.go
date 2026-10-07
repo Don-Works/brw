@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// A wait's own timeout_ms has to be able to exceed the client's flat timeout,
-// or a proxying daemon cuts off waits the upstream is still legitimately
-// running.
 func TestWaitForOutcomeOutlastsTheFlatClientTimeout(t *testing.T) {
 	const upstreamTakes = 600 * time.Millisecond
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
