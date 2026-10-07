@@ -1,8 +1,3 @@
-// Regression harness: runs the ACTUAL service_worker.js in a vm sandbox with a
-// mocked chrome API, then asserts the agent-tab-pin + PWA/app-window guard
-// behaviour that keeps brw from drifting onto the user's tabs (e.g. the Google
-// Chat PWA) on a Chrome the human drives at the same time. Run: `make test-extension`
-// or `node extension/tab_resolution_test.mjs`.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -13,8 +8,6 @@ import vm from "node:vm";
 const OVERSIZE_ENCODER_MARKER = "__BRW_TEST_OVERSIZE_RESPONSE__";
 class HarnessTextEncoder {
   encode(value) {
-    // Exercise the hard-cap branch without asking CI to allocate hundreds of
-    // megabytes. All ordinary fixtures still use the platform implementation.
     if (String(value).includes(OVERSIZE_ENCODER_MARKER)) return { length: Number.MAX_SAFE_INTEGER };
     return new TextEncoder().encode(value);
   }
@@ -24,11 +17,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const SRC_PATH = process.argv[2] || join(here, "service_worker.js");
 let src = readFileSync(SRC_PATH, "utf8");
 
-// ---- mutable browser model the mock reads from ----
 const model = {
-  tabs: new Map(),      // id -> {id, windowId, active, url, title}
-  windows: new Map(),   // id -> {id, type, focused}
-  events: {},           // captured event listeners by full path
+  tabs: new Map(),
+  windows: new Map(),
+  events: {},
 };
 function setTab(t) { model.tabs.set(t.id, t); }
 function setWin(w) { model.windows.set(w.id, w); }
@@ -39,7 +31,6 @@ function makeEvent(path) {
   return ev;
 }
 
-// Flat override map keyed by full dotted path.
 const overrides = {
   "runtime.lastError": undefined,
   "runtime.getURL": (p) => "mock://" + p,
@@ -91,7 +82,7 @@ function automock(path) {
       if (typeof prop === "symbol") return undefined;
       const full = path ? path + "." + prop : prop;
       if (Object.prototype.hasOwnProperty.call(overrides, full)) return overrides[full];
-      if (prop === "then") return undefined; // never look thenable
+      if (prop === "then") return undefined;
       if (prop.startsWith && prop.startsWith("on") && prop[2] >= "A" && prop[2] <= "Z") {
         return model.events[full] || makeEvent(full);
       }
@@ -136,7 +127,6 @@ const sandbox = {
 sandbox.globalThis = sandbox;
 sandbox.self = sandbox;
 
-// Expose the module-scope symbols we want to drive/inspect.
 src += `
 ;globalThis.__test = {
   get state() { return state; },
@@ -163,9 +153,6 @@ src += `
   revokeSiteConsent,
   loadBridgeConfig,
   bridgeConfigSource,
-  // The packaged bridge-defaults.json is fetched once and memoised for the life
-  // of the worker, so a scenario cannot supply one through the fetch mock after
-  // any earlier scenario has already resolved it.
   setPackagedDefaults(value) { packagedDefaultConfigPromise = value === null ? null : Promise.resolve(value); },
   ensureObserver,
   attach,
@@ -192,7 +179,6 @@ vm.createContext(sandbox);
 vm.runInContext(src, sandbox, { filename: "service_worker.js" });
 const T = sandbox.__test;
 
-// ---- assertions ----
 let failures = 0;
 function check(name, cond) {
   if (cond) { console.log("  PASS", name); } else { console.log("  FAIL", name); failures++; }
@@ -202,8 +188,6 @@ function fireEvent(path, ...args) {
   for (const listener of model.events[path]?._l || []) listener(...args);
 }
 
-// settle drains the microtask queue, which is where an event listener that
-// returns void but continues in a .then() does the rest of its work.
 function settle() {
   return new Promise((resolve) => setImmediate(resolve));
 }
@@ -330,8 +314,6 @@ async function scenarioDownloadSnapshotsAndFailClosedProvenance() {
   socket.readyState = MockWebSocket.OPEN;
   T.state.socket = socket;
 
-  // CDP names the initiating tab; chrome.downloads supplies the durable numeric
-  // id/path/lifecycle. Exercise both event streams in their normal order.
   fireEvent("debugger.onEvent", { tabId: 11 }, "Page.downloadWillBegin", {
     guid: "cdp-guid-1", url: "https://files.test/report.pdf", suggestedFilename: "report.pdf"
   });
@@ -351,22 +333,12 @@ async function scenarioDownloadSnapshotsAndFailClosedProvenance() {
   await T.handle({ id: "downloads-3", type: "get_downloads" });
   const repeated = socket.sent.at(-1)?.result;
 
-  // changed_at_ms is what lets the daemon apply the same 15s recency window the
-  // direct-CDP transport applies, so a download that finished just before the
-  // wait was written still satisfies it. It must move on a state change and
-  // stand still otherwise, or every poll would churn the entry fingerprint.
   const completedAt = completed?.downloads[0]?.changed_at_ms;
   check("download completion is timestamped",
     Number.isFinite(completedAt) && completedAt >= beforeCompletion && Math.abs(Date.now() - completedAt) < 60000);
   check("a read that observes no state change does not move the timestamp",
     repeated?.downloads[0]?.changed_at_ms === completedAt);
 
-  // A delta that carries no state change (a size correction, a renamed file)
-  // must not restamp the entry either: the daemon reads the stamp as "when this
-  // download finished", and a poll-driven restamp would make an old download
-  // look fresh forever.
-  // Far enough after the completion that a restamp would be visible: Date.now()
-  // inside the same millisecond would be indistinguishable from holding still.
   await new Promise((resolve) => setTimeout(resolve, 25));
   fireEvent("downloads.onChanged", { id: 42, totalBytes: { current: 4096 } });
   await T.handle({ id: "downloads-4", type: "get_downloads" });
@@ -378,8 +350,6 @@ async function scenarioDownloadSnapshotsAndFailClosedProvenance() {
   check("get_downloads is retained and non-draining",
     repeated?.count === 1 && repeated.downloads[0]?.guid === "42" && repeated.downloads[0]?.state === "completed");
 
-  // Two indistinguishable starts in different tabs cannot be correlated safely.
-  // The correct behavior is unknown provenance, never FIFO guessing.
   await reset();
   const ambiguousSocket = new MockWebSocket();
   ambiguousSocket.readyState = MockWebSocket.OPEN;
@@ -396,9 +366,6 @@ async function scenarioDownloadSnapshotsAndFailClosedProvenance() {
   check("simultaneous same-name downloads across tabs fail closed",
     ambiguous.length === 2 && ambiguous.every((entry) => !entry.tab_id));
 
-  // A matching human-tab download may have no CDP observation because brw was
-  // never attached to that tab. One provenance event therefore cannot be
-  // assigned to either of two identical chrome.downloads items.
   await reset();
   const unmatchedSocket = new MockWebSocket();
   unmatchedSocket.readyState = MockWebSocket.OPEN;
@@ -413,8 +380,6 @@ async function scenarioDownloadSnapshotsAndFailClosedProvenance() {
   check("one CDP event cannot claim either of two identical downloads",
     unmatched.length === 2 && unmatched.every((entry) => !entry.tab_id));
 
-  // Event ordering is not guaranteed across Chrome APIs; a unique reverse-order
-  // pair must still correlate at snapshot time.
   await reset();
   const reverseSocket = new MockWebSocket();
   reverseSocket.readyState = MockWebSocket.OPEN;
@@ -427,7 +392,6 @@ async function scenarioDownloadSnapshotsAndFailClosedProvenance() {
   check("reverse event ordering still correlates unique source tab",
     reverseSocket.sent.at(-1)?.result?.downloads[0]?.tab_id === "33");
 
-  // The registry is independently bounded even if Chrome produces a burst.
   await reset();
   const boundedSocket = new MockWebSocket();
   boundedSocket.readyState = MockWebSocket.OPEN;
@@ -453,8 +417,6 @@ async function scenarioWaitForTabGoneIsBoundedAndHonest() {
   check("live tab at a zero deadline is not falsely reported gone", await T.waitForTabGone(5, 0) === false);
 }
 
-// Runs the REAL observer script the service worker injects, against a minimal
-// DOM, and returns handles to fire the signals it listens for.
 function runInjectedObserver(expression) {
   const listeners = new Map();
   let mutationCallback = null;
@@ -485,11 +447,6 @@ function runInjectedObserver(expression) {
   };
 }
 
-// The daemon re-reads a tab's cached snapshot only when the page reports itself
-// dirty. value, checked and selectedIndex are DOM PROPERTIES, so a fill, a
-// select or a ticked box mutates no node and a MutationObserver alone leaves the
-// cache marked clean — the pre-edit page is then served back as the result of
-// the edit.
 async function scenarioObserverMarksFormControlWritesDirty() {
   await reset();
   setWin({ id: 1, type: "normal", focused: true });
@@ -556,9 +513,6 @@ async function scenarioTabRemovalPublishesDaemonInvalidation() {
   check("tab removal immediately tells the daemon to invalidate its caches",
     socket.sent.length === 1 && socket.sent[0]?.type === "tab_removed" && socket.sent[0]?.tabId === 88);
 
-  // A disconnect can make the best-effort control frame unsendable. The next
-  // hello must still report the cleared AGENT pin rather than substituting the
-  // user's foreground hint, which is deliberately unrelated ownership state.
   T.state.socket = null;
   T.state.activeTabId = 91;
   T.state.agentTabId = 89;
@@ -585,9 +539,6 @@ async function scenarioLargeResponsesUseBoundedFrames() {
 
   socket.sent.length = 0;
   socket.sentRaw.length = 0;
-  // Multibyte text catches implementations that confuse JS UTF-16 length with
-  // UTF-8 wire bytes. The logical JSON body is intentionally larger than the
-  // daemon's unchanged 4 MiB per-WebSocket-message limit.
   const value = "€".repeat(1_500_000);
   const large = { id: "large-response", ok: true, result: { value } };
   const serialized = JSON.stringify(large);
@@ -616,8 +567,6 @@ async function scenarioLargeResponsesUseBoundedFrames() {
   const overLimit = {
     id: "over-limit-response",
     ok: true,
-    // Cross the fast-path character threshold so HarnessTextEncoder can model
-    // an over-cap UTF-8 body without a real 64+ MiB test allocation.
     result: { value: OVERSIZE_ENCODER_MARKER + "x".repeat(Math.floor(T.RESPONSE_DIRECT_MAX_BYTES / 3) + 1) }
   };
   check("an over-cap response returns a deterministic transport error", T.send(overLimit) === true &&
@@ -721,9 +670,6 @@ async function scenarioCloseTabIsBoundedAndFailClosed() {
     await T.handle({ id: "close-conflict", type: "close_tab", params: { tabId: 36 } });
     check("debugger conflict fails closed without tabs.remove", model.tabs.has(36) && removeCalls === 0 && conflictSocket.sent.at(-1)?.ok === false);
 
-		// Page.close can itself remain pending (the failure that originally wedged
-		// close_tab). Use real timers only for this bounded scenario; the harness
-		// otherwise stubs timers so service-worker background loops cannot leak.
 		const savedSetTimeout = sandbox.setTimeout;
 		const savedClearTimeout = sandbox.clearTimeout;
 		let resolveLateClose;
@@ -759,9 +705,6 @@ async function scenarioCloseTabIsBoundedAndFailClosed() {
 			await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
 			check("late Page.close resolution cannot emit a second reply", wedgedSocket.sent.length === 2);
 
-			// Chrome accepts Page.close but removes the tab after the close
-			// budget, as a Gmail tab mid-download did. The close happened, so
-			// close_tab must report success rather than "did not close".
 			overrides["debugger.sendCommand"] = async ({ tabId }, method) => {
 				if (method === "Page.close") {
 					globalThis.setTimeout(() => model.tabs.delete(tabId), 2600);
@@ -779,9 +722,6 @@ async function scenarioCloseTabIsBoundedAndFailClosed() {
 				slowElapsed >= 2500 && slowSocket.sent.length === 1 && slowSocket.sent[0]?.ok === true &&
 				slowSocket.sent[0]?.result?.closed === 38 && !model.tabs.has(38));
 
-			// A navigation still waiting for its server leaves Page.enable
-			// unanswered. The tab is closed through the tabs API when Chrome
-			// reports the navigation as pending, and stays open otherwise.
 			overrides["debugger.sendCommand"] = async (_target, method) => {
 				if (method === "Page.enable") return new Promise(() => {});
 				return {};
@@ -821,8 +761,6 @@ async function scenarioCloseTabIsBoundedAndFailClosed() {
 
 async function scenarioPinBeatsForeground() {
   await reset();
-  // Agent's pinned tab (5) lives in window 1; the user has FOCUSED window 2 and is
-  // on their own tab (9). The agent must still resolve to its pinned tab 5.
   setWin({ id: 1, type: "normal", focused: false });
   setWin({ id: 2, type: "normal", focused: true });
   setTab({ id: 5, windowId: 1, active: true, url: "https://app.test/agent", title: "agent" });
@@ -835,11 +773,10 @@ async function scenarioPinBeatsForeground() {
 async function scenarioUserClicksChatPWA() {
   await reset();
   setWin({ id: 1, type: "normal", focused: true });
-  setWin({ id: 3, type: "app", focused: false }); // Google Chat PWA app window
+  setWin({ id: 3, type: "app", focused: false });
   setTab({ id: 5, windowId: 1, active: true, url: "https://app.test/agent", title: "agent" });
   setTab({ id: 7, windowId: 3, active: true, url: "https://mail.google.com/chat/u/0/", title: "Google Chat" });
   T.state.agentTabId = 5;
-  // User clicks into the Chat PWA → onActivated fires for tab 7.
   const onActivated = model.events["tabs.onActivated"];
   await onActivated._l[0]({ tabId: 7, windowId: 3 });
   check("onActivated for Chat PWA does NOT poison agentTabId", T.state.agentTabId === 5);
@@ -850,11 +787,9 @@ async function scenarioUserClicksChatPWA() {
 
 async function scenarioPoisonedCacheNoPin() {
   await reset();
-  // No pin yet. The cache somehow points at a Chat PWA tab, and no normal window is
-  // OS-focused. The step-3 guard must refuse to return the app tab.
   setWin({ id: 3, type: "app", focused: false });
   setTab({ id: 7, windowId: 3, active: true, url: "https://mail.google.com/chat/u/0/", title: "Google Chat" });
-  T.state.activeTabId = 7; // poisoned
+  T.state.activeTabId = 7;
   const got = await T.resolveForegroundTabId();
   check("poisoned cache pointing at Chat PWA is NOT returned", got !== 7);
   check("poisoned uncontrollable cache is cleared", T.state.activeTabId === null);
@@ -862,7 +797,6 @@ async function scenarioPoisonedCacheNoPin() {
 
 async function scenarioUserSwitchesNormalTab() {
   await reset();
-  // Agent pinned tab 5; user switches to their OWN normal tab 9 in same window.
   setWin({ id: 1, type: "normal", focused: true });
   setTab({ id: 5, windowId: 1, active: false, url: "https://app.test/agent", title: "agent" });
   setTab({ id: 9, windowId: 1, active: true, url: "https://news.test/", title: "user" });
@@ -877,7 +811,6 @@ async function scenarioUserSwitchesNormalTab() {
 
 async function scenarioBootstrapFallback() {
   await reset();
-  // No pin (agent hasn't opened/focused yet): resolve to the OS-foreground tab.
   setWin({ id: 1, type: "normal", focused: true });
   setTab({ id: 2, windowId: 1, active: true, url: "https://start.test/", title: "start" });
   const got = await T.resolveForegroundTabId();
@@ -935,21 +868,15 @@ async function scenarioNewGroupsTargetTheTabsRealWindow() {
 
 async function scenarioListTabsErrorAndRetry() {
   await reset();
-  // The harness's default setTimeout never fires its callback, which would hang
-  // listTabSummaries' warm-up retry; fire immediately for this scenario only.
   const origTimeout = sandbox.setTimeout;
   const origQuery = overrides["tabs.query"];
   sandbox.setTimeout = (fn) => { if (typeof fn === "function") queueMicrotask(fn); return 0; };
 
-  // A rejected tabs.query must surface as an ERROR to the daemon (handle()
-  // replies ok:false), never as an empty-but-ok tab list the agent trusts.
   overrides["tabs.query"] = async () => { throw new Error("tabs API unavailable"); };
   let threw = false;
   try { await T.listTabSummaries(); } catch { threw = true; }
   check("rejected tabs.query propagates as error, not silent empty list", threw);
 
-  // A just-woken service worker can answer [] before tab state is warm: one
-  // retry must see the real tabs.
   setWin({ id: 1, type: "normal", focused: true });
   setTab({ id: 11, windowId: 1, active: true, url: "https://a.test/", title: "A" });
   let calls = 0;
@@ -968,8 +895,6 @@ async function scenarioListTabsErrorAndRetry() {
 
 async function scenarioFrozenDiscardedRevival() {
   await reset();
-  // ensureTabDrivable sleeps 150ms mid-juggle and waitForTabLoad polls with
-  // setTimeout; fire timers immediately for this scenario only.
   const origTimeout = sandbox.setTimeout;
   sandbox.setTimeout = (fn) => { if (typeof fn === "function") queueMicrotask(fn); return 0; };
   const origUpdate = overrides["tabs.update"];
@@ -989,7 +914,7 @@ async function scenarioFrozenDiscardedRevival() {
       for (const other of model.tabs.values()) {
         if (other.windowId === t.windowId) other.active = other.id === id;
       }
-      if (t.frozen) t.frozen = false; // visibility unfreezes
+      if (t.frozen) t.frozen = false;
     }
     return { ...model.tabs.get(id) };
   };
@@ -1000,20 +925,15 @@ async function scenarioFrozenDiscardedRevival() {
   };
   overrides["tabGroups.update"] = async (groupId, props) => ({ id: groupId, ...props });
 
-  // 1. Healthy tab: driving must add zero side effects.
   await T.ensureTabDrivable(5);
   check("healthy tab needs no revival side effects", reloads === 0 && updates.length === 0);
 
-  // 2. Discarded (Memory Saver) tab: reload revives, autoDiscardable pinned off,
-  //    and the user's foreground tab is never touched.
   Object.assign(model.tabs.get(5), { discarded: true, status: "unloaded" });
   await T.ensureTabDrivable(5);
   check("discarded tab is reloaded", reloads === 1 && model.tabs.get(5).discarded === false);
   check("revived tab is pinned autoDiscardable:false", updates.some((u) => u.id === 5 && u.autoDiscardable === false));
   check("discard revival never activates the tab", !updates.some((u) => u.id === 5 && u.active === true));
 
-  // 3. Frozen background tab in a collapsed group: expand group, flash active
-  //    inside its window, restore the user's tab.
   updates.length = 0;
   const groupCalls = [];
   overrides["tabGroups.update"] = async (groupId, props) => { groupCalls.push({ groupId, ...props }); return { id: groupId }; };
@@ -1025,8 +945,6 @@ async function scenarioFrozenDiscardedRevival() {
   check("the user's previously active tab is restored", last?.id === 6 && last?.active === true && model.tabs.get(6).active === true);
   check("frozen flag is cleared by the revival", model.tabs.get(5).frozen === false);
 
-  // 4. Unrevivable frozen tab (activation does not stick): one classified error
-  //    instead of a silent daemon-deadline hang.
   updates.length = 0;
   overrides["tabs.update"] = async (id, props) => { updates.push({ id, ...props }); return { ...model.tabs.get(id) }; };
   Object.assign(model.tabs.get(5), { frozen: true, active: false });
@@ -1070,23 +988,12 @@ async function scenarioStatusProbeToleratesTransientFailure() {
   sandbox.fetch = originalFetch;
 }
 
-// Regression for "Bitwarden popups intermittently break evaluate": a password
-// manager pops its vault out into its own FOCUSED window. Chrome refuses
-// chrome.debugger access to another extension's pages, so if brw resolves that
-// tab as the foreground tab, every no-tab_id tool fails with
-// "Cannot access a chrome-extension:// URL of different extension" until the
-// human closes the popout. brw must skip it and keep working on a real page.
 const BITWARDEN_POPOUT = "chrome-extension://nngceckbapebfimnlniiiahkandclblb/popup/index.html";
 
 async function scenarioForeignExtensionPopoutNeverStealsForeground() {
   await reset();
 
-  // The predicate itself: foreign + own extension pages and browser chrome are
-  // not drivable; real pages and brw's own about:blank scratch target are.
   check("foreign extension page is not drivable", T.isAgentDrivableUrl(BITWARDEN_POPOUT) === false);
-  // brw CAN debug its own pages, and the documented "make a new build live" flow
-  // opens options.html and calls chrome.runtime.reload() on it — so own-extension
-  // pages must stay drivable. Only foreign extensions are refused by Chrome.
   check("brw's own extension page stays drivable", T.isAgentDrivableUrl("chrome-extension://amocjcgddnoakjijfggdpnefdnboilpe/options.html") === true);
   check("own-extension check is id-scoped, not prefix-loose", T.isAgentDrivableUrl("chrome-extension://amocjcgddnoakjijfggdpnefdnboilpeEVIL/x.html") === false);
   check("chrome:// settings is not drivable", T.isAgentDrivableUrl("chrome://settings/") === false);
@@ -1096,8 +1003,6 @@ async function scenarioForeignExtensionPopoutNeverStealsForeground() {
   check("about:blank is drivable", T.isAgentDrivableUrl("about:blank") === true);
   check("a URL-less (mid-creation) tab is drivable", T.isAgentDrivableUrl("") === true);
 
-  // 1. The popout is a FOCUSED popup window; the user's real page sits in an
-  //    unfocused normal window. Resolution must land on the real page.
   setWin({ id: 1, type: "normal", focused: false });
   setTab({ id: 11, windowId: 1, active: true, url: "https://app.test/invoices", title: "app" });
   setWin({ id: 2, type: "popup", focused: true });
@@ -1105,18 +1010,12 @@ async function scenarioForeignExtensionPopoutNeverStealsForeground() {
   check("focused foreign-extension popout does not become the foreground tab",
     (await T.resolveForegroundTabId()) === 11);
 
-  // 2. The focus event for that popout must not poison the cache either — that
-  //    would re-break resolution through step 3's cache fallback.
   await T.publishActiveTab(22);
   check("a foreign-extension tab is never cached as active", T.state.activeTabId !== 22);
 
-  // 3. With an agent pin on a real tab, the pin still wins outright.
   T.state.agentTabId = 11;
   check("agent pin still wins over a focused popout", (await T.resolveForegroundTabId()) === 11);
 
-  // 4. If the agent's OWN pinned tab is showing a non-drivable page, fail closed
-  //    rather than silently moving work onto a usable human tab. Keep the pin so
-  //    it resumes after navigating back.
   await reset();
   setWin({ id: 1, type: "normal", focused: true });
   setTab({ id: 5, windowId: 1, active: false, url: BITWARDEN_POPOUT, title: "vault" });
@@ -1129,24 +1028,16 @@ async function scenarioForeignExtensionPopoutNeverStealsForeground() {
   model.tabs.get(5).url = "https://back.test/";
   check("the pin resumes once it navigates back to a real page", (await T.resolveForegroundTabId()) === 5);
 
-  // 5. Degenerate case: the ONLY tab is a foreign extension page. Resolution must
-  //    return null (surfacing "no active tab") rather than a tab that cannot be
-  //    driven — a clear failure beats a confusing CDP error on every call.
   await reset();
   setWin({ id: 1, type: "normal", focused: true });
   setTab({ id: 9, windowId: 1, active: true, url: BITWARDEN_POPOUT, title: "Bitwarden" });
   check("no drivable tab resolves to null, not the extension page",
     (await T.resolveForegroundTabId()) === null);
-  // ...and list_tabs must agree. Falling back to Chrome's raw per-window active
-  // flag here is what let the daemon re-cache the undrivable tab as active and
-  // keep targeting it, defeating the resolver fix entirely.
   const nothingDrivable = await T.listTabSummaries();
   check("list_tabs reports the undrivable tab", nothingDrivable.some((t) => t.id === 9));
   check("list_tabs marks NO tab active when none is drivable",
     nothingDrivable.every((t) => t.active === false));
 
-  // 6. list_tabs must still REPORT the extension tab (it is a real target an
-  //    agent can address explicitly by tab_id) — it just must not be marked active.
   await reset();
   setWin({ id: 1, type: "normal", focused: true });
   setTab({ id: 11, windowId: 1, active: true, url: "https://app.test/", title: "app" });
@@ -1158,12 +1049,6 @@ async function scenarioForeignExtensionPopoutNeverStealsForeground() {
   check("the real page is reported active", listed.find((t) => t.id === 11)?.active === true);
 }
 
-// A password manager's inline menu is a chrome-extension:// iframe from ANOTHER
-// extension inside an ordinary https page. Chrome then refuses the debugger for
-// the whole tab (TestChromeRefusesTheDebuggerForATabHoldingAForeignExtensionFrame
-// measures it). Page reads must keep working in the top frame through
-// chrome.scripting, never enter the foreign frame, and every refusal must name
-// the extension that caused it.
 async function scenarioForeignExtensionFrameInsideThePage() {
   const BITWARDEN_ID = "nngceckbapebfimnlniiiahkandclblb";
   const MENU = `chrome-extension://${BITWARDEN_ID}/overlay/menu-list.html`;
@@ -1253,8 +1138,6 @@ async function scenarioForeignExtensionFrameInsideThePage() {
     check("no injection ever targets the foreign extension's frame",
       injections.every((injection) => !(injection.target.frameIds || []).includes(9) && !injection.target.allFrames));
 
-    // The frame is gone once the menu navigates away or the page replaces its
-    // document; a later refusal must not blame an extension that left.
     fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 9, url: "about:blank" });
     check("a foreign frame that navigates away is forgotten", !T.state.foreignExtensionFrames?.has(51));
     fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 9, url: MENU });
@@ -1263,8 +1146,6 @@ async function scenarioForeignExtensionFrameInsideThePage() {
     fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 3, url: "chrome-extension://amocjcgddnoakjijfggdpnefdnboilpe/options.html" });
     check("brw's own extension frames are not foreign", !T.state.foreignExtensionFrames?.has(51));
 
-    // A session that WAS attached when the frame committed is detached by
-    // Chrome; the next command must fall back rather than surface the raw text.
     fireEvent("webNavigation.onCommitted", { tabId: 51, frameId: 9, url: MENU });
     T.state.attachedTabs.add(51);
     debuggerCommands = 0;
@@ -1273,16 +1154,12 @@ async function scenarioForeignExtensionFrameInsideThePage() {
       afterDetach?.ok === true && afterDetach.result?.result?.value === "still here" && debuggerCommands === 1);
     check("the refused session is no longer counted as attached", !T.state.attachedTabs.has(51));
 
-    // A tab that IS another extension's page keeps Chrome's own refusal: there
-    // is no page around a frame to fall back to.
     setTab({ id: 52, windowId: 1, active: false, url: MENU, title: "vault" });
     const injectionsBefore = injections.length;
     const popout = await run("ext-popout", "cdp", { tabId: 52, method: "Runtime.evaluate", params: { expression: "1" } });
     check("a foreign extension's own tab is not reported as a frame inside a page",
       popout?.ok === false && String(popout.error).startsWith(REFUSAL) && injections.length === injectionsBefore);
 
-    // The snapshot cache's dirty probe goes through the debugger. When that is
-    // refused the cache is unknown, and must not be served as fresh.
     T.state.snapshotCache.set(51, { cacheKey: "k", url: "https://beta.test/thanks", dirty: false, snapshot: { url: "stale" } });
     model.tabs.get(51).url = "https://beta.test/thanks";
     const cached = await run("ext-cache", "cached_snapshot", { tabId: 51, cacheKey: "k" });
@@ -1297,9 +1174,6 @@ async function scenarioForeignExtensionFrameInsideThePage() {
   }
 }
 
-// brw ALWAYS answers a JS dialog, because an unanswered one blocks the renderer
-// and wedges the tab. These scenarios pin down WHAT it answers: a pre-declared
-// arm wins, and without one the non-destructive choice is taken.
 async function scenarioDialogArmingAndSafeDefaults() {
   await reset();
   const savedSend = overrides["debugger.sendCommand"];
@@ -1312,25 +1186,19 @@ async function scenarioDialogArmingAndSafeDefaults() {
     setWin({ id: 1, type: "normal", focused: true });
     setTab({ id: 11, windowId: 1, active: true, url: "https://app.test/", title: "app" });
 
-    // 1. Unarmed alert: accepted, because OK is its only button.
     fireEvent("debugger.onEvent", { tabId: 11 }, "Page.javascriptDialogOpening",
       { type: "alert", message: "heads up", url: "https://app.test/" });
     await new Promise((r) => setTimeout(r, 0));
     check("unarmed alert is accepted", answers.at(-1)?.accept === true);
 
-    // 2. Unarmed confirm: the non-destructive answer, NOT a blanket accept.
     fireEvent("debugger.onEvent", { tabId: 11 }, "Page.javascriptDialogOpening",
       { type: "confirm", message: "Delete this account?", url: "https://app.test/" });
     await new Promise((r) => setTimeout(r, 0));
     check("unarmed confirm is not rubber-stamped", answers.at(-1)?.accept === false);
 
-    // 3. Both were recorded so an agent can see a dialog happened at all.
     const listed = await T.handle({ id: "dlg-1", type: "get_dialogs", params: { tabId: 11, peek: true } });
     const ring = T.state.dialogLog.get(11) || [];
     check("answered dialogs are recorded", ring.length === 2);
-    // The record shape is the daemon's wire contract (browser.DialogRecord).
-    // camelCase keys blank the field on the Go side, and a numeric `at` fails
-    // the whole parse, so both are pinned here rather than left to house style.
     check("records use the daemon's snake_case wire keys",
       "decided_by" in ring[0] && "default_prompt" in ring[0] && "prompt_text" in ring[0]);
     check("records carry no camelCase aliases",
@@ -1340,7 +1208,6 @@ async function scenarioDialogArmingAndSafeDefaults() {
     check("records name why they were answered that way",
       ring[0].decided_by === "user_safe_default" || ring[0].decided_by === "agent_acting");
 
-    // 4. An arm wins over the default, and carries prompt text.
     await T.handle({ id: "arm-1", type: "arm_dialog",
       params: { tabId: 11, accept: true, promptText: "brw-was-here" } });
     fireEvent("debugger.onEvent", { tabId: 11 }, "Page.javascriptDialogOpening",
@@ -1350,9 +1217,6 @@ async function scenarioDialogArmingAndSafeDefaults() {
     check("armed prompt text reaches the page", answers.at(-1)?.promptText === "brw-was-here");
     check("a single-shot arm is consumed", !T.state.dialogArm.has(11));
 
-    // The armed block crosses the same wire and follows the same convention.
-    // Assert on the FRAME the extension actually sends, not on internal state:
-    // the bug this guards against is a key name that only exists on the wire.
     const wireSocket = new MockWebSocket();
     wireSocket.readyState = MockWebSocket.OPEN;
     T.state.socket = wireSocket;
@@ -1372,7 +1236,6 @@ async function scenarioDialogArmingAndSafeDefaults() {
     T.state.socket = null;
     await T.handle({ id: "arm-shape-clear", type: "arm_dialog", params: { tabId: 11, clear: true } });
 
-    // 5. promptText is only sent for prompt(); other types must not carry it.
     await T.handle({ id: "arm-2", type: "arm_dialog",
       params: { tabId: 11, accept: true, promptText: "ignored" } });
     fireEvent("debugger.onEvent", { tabId: 11 }, "Page.javascriptDialogOpening",
@@ -1380,13 +1243,11 @@ async function scenarioDialogArmingAndSafeDefaults() {
     await new Promise((r) => setTimeout(r, 0));
     check("promptText is not sent for a confirm", answers.at(-1)?.promptText === undefined);
 
-    // 6. count arms several, and clear discards a pending arm.
     await T.handle({ id: "arm-3", type: "arm_dialog", params: { tabId: 11, accept: true, count: 3 } });
     check("count arms several dialogs", T.state.dialogArm.get(11)?.remaining === 3);
     await T.handle({ id: "arm-4", type: "arm_dialog", params: { tabId: 11, clear: true } });
     check("clear discards the arm", !T.state.dialogArm.has(11));
 
-    // 7. status consumes by default so the same dialog is not re-reported.
     await T.handle({ id: "dlg-2", type: "get_dialogs", params: { tabId: 11 } });
     check("reading the ring without peek consumes it", (T.state.dialogLog.get(11) || []).length === 0);
   } finally {
@@ -1395,13 +1256,6 @@ async function scenarioDialogArmingAndSafeDefaults() {
   }
 }
 
-// --allowed-domains must confine SUBRESOURCES, not just navigation: without this
-// an allowlisted page can still fetch, socket and beacon anywhere it likes.
-// A main-document response the server flags as an attachment (Google's suggest
-// endpoint) or serves as a type Chrome downloads (text/csv) used to abort the
-// navigation and leave the tab without a document. While a daemon-driven
-// navigation is armed, the response stage is paused and the headers rewritten so
-// the body renders as the page.
 async function scenarioInlineDocumentRendering() {
   await reset();
   const savedSend = overrides["debugger.sendCommand"];
@@ -1523,10 +1377,6 @@ async function scenarioInlineDocumentRendering() {
   }
 }
 
-// A daemon-armed navigation that Chrome ends on chrome-error://chromewebdata/
-// has to be explainable: the paused main document carries the HTTP status and
-// auth challenge, webNavigation.onErrorOccurred the net error, and
-// navigation_outcome hands both back.
 async function scenarioNavigationOutcome() {
   await reset();
   const savedSend = overrides["debugger.sendCommand"];
@@ -1589,10 +1439,6 @@ async function scenarioNavigationOutcome() {
   }
 }
 
-// The WebMCP shim and containment both live on the tab's debugger session, and
-// the idle sweep detaches that session. Each fresh attach has to put them back,
-// or a tab brw left alone for two minutes is silently uncontained and loses the
-// page tools it registered.
 async function scenarioWebMCPAndContainmentSurviveADetach() {
   await reset();
   const savedSend = overrides["debugger.sendCommand"];
@@ -1647,7 +1493,6 @@ async function scenarioWebMCPAndContainmentSurviveADetach() {
     check("the next attach re-contains the tab", T.state.containmentTabs.has(21) && fetchEnables() === enablesBefore + 1);
     check("the next attach registers the guard again", scripts(21, "GUARD()") === 2);
 
-    // A tab brw never armed is still covered once WebMCP is on for the daemon.
     setTab({ id: 22, windowId: 1, active: false, url: "https://app.test/2", title: "two" });
     await T.attach(22);
     check("any tab brw attaches to gets the shim while WebMCP is on", scripts(22, "SHIM()") === 1);
@@ -1657,7 +1502,6 @@ async function scenarioWebMCPAndContainmentSurviveADetach() {
     await T.attach(23);
     check("turning WebMCP off stops arming new sessions", scripts(23, "SHIM()") === 0);
 
-    // open_tab arms the shim on a blank tab before the first document loads.
     await T.handle({ id: "wm-4", type: "set_webmcp", params: { tabId: 21, enabled: true, source: "SHIM()", catchUp: false } });
     const created = [];
     const updated = [];
@@ -1725,13 +1569,10 @@ async function scenarioSubresourceContainment() {
     check("an off-allowlist subresource is refused", verdicts.at(-1)?.verdict === "fail");
     check("the refusal uses BlockedByClient", verdicts.at(-1)?.errorReason === "BlockedByClient");
 
-    // A WebSocket is the most direct way out of a contained page, and the
-    // navigation rules do not gate ws:/wss: at all.
     paused("wss://exfil.example/socket", "r4", "WebSocket");
     await new Promise((r) => setTimeout(r, 0));
     check("an off-allowlist WebSocket is refused", verdicts.at(-1)?.verdict === "fail");
 
-    // Inline destinations carry no network host and must not be broken.
     paused("data:image/png;base64,iVBORw0KGgo=", "r5", "Image");
     await new Promise((r) => setTimeout(r, 0));
     check("a data: subresource still continues", verdicts.at(-1)?.verdict === "continue");
@@ -1742,11 +1583,9 @@ async function scenarioSubresourceContainment() {
     check("blocked records use the daemon's wire keys",
       "resource_type" in blocked[0] && typeof blocked[0].at === "string");
 
-    // Reading them consumes, so the same refusal is not re-reported every turn.
     await T.handle({ id: "cont-2", type: "get_blocked_requests", params: { tabId: 11 } });
     check("reading blocked requests consumes them", (T.state.blockedRequests.get(11) || []).length === 0);
 
-    // With containment off, nothing is filtered.
     await T.handle({ id: "cont-3", type: "set_containment", params: { tabId: 11, enabled: false } });
     paused("https://tracker.example/px.gif", "r6", "Image");
     await new Promise((r) => setTimeout(r, 0));
@@ -1758,9 +1597,6 @@ async function scenarioSubresourceContainment() {
 }
 
 
-// Regression for the failure mode the required-token default introduced: an
-// empty token used to mean "connect anyway" and now means "refused", so the
-// extension has to be able to say which of the three causes it hit.
 async function scenarioHandshakeTokenFailuresAreDistinguishable() {
   await reset();
   const originalFetch = sandbox.fetch;
@@ -1791,10 +1627,6 @@ async function scenarioHandshakeTokenFailuresAreDistinguishable() {
   sandbox.fetch = originalFetch;
 }
 
-// The options page reads and revokes site permissions through the worker,
-// because a chrome-extension page cannot reach the daemon surface itself. What
-// matters is the address it derives and that a refusal reaches the page as an
-// error rather than as a silent success.
 async function scenarioSiteConsentSurface() {
   await reset();
   const originalFetch = sandbox.fetch;
@@ -1849,14 +1681,6 @@ async function scenarioSiteConsentSurface() {
   sandbox.fetch = originalFetch;
 }
 
-// brw_route on this transport is declarativeNetRequest, not Fetch interception:
-// the extension is never handed a response, so a rule can only refuse a request.
-//
-// The mock below is a real session-rule store rather than the harness auto-mock,
-// because everything worth asserting here is about what Chrome ends up holding:
-// which resource types a rule covers, and whether the previous ids were removed.
-// A store that swallows updateSessionRules and answers getSessionRules with
-// undefined would pass whatever this file claimed.
 function installDeclarativeNetRequestMock() {
   const store = { rules: [], updates: [], rejected: [] };
   const saved = {
@@ -1870,9 +1694,6 @@ function installDeclarativeNetRequestMock() {
     const removeRuleIds = new Set(arg?.removeRuleIds || []);
     const kept = store.rules.filter((rule) => !removeRuleIds.has(rule.id));
     for (const rule of arg?.addRules || []) {
-      // Chrome rejects the WHOLE update when an added id already exists. That is
-      // exactly the failure a worker restart used to cause, so the mock has to
-      // reproduce it rather than quietly accept the duplicate.
       if (kept.some((existing) => existing.id === rule.id)) {
         store.rejected.push(rule.id);
         throw new Error(`rule with id ${rule.id} does not have a unique ID`);
@@ -1892,10 +1713,6 @@ function installDeclarativeNetRequestMock() {
 const ABORT_TRACKER = { regex: "^https://tracker\\.test/.*", behaviour: "abort" };
 const ABORT_ADS = { regex: "^https://ads\\.test/.*", behaviour: "abort" };
 
-// The daemon sends the tab's complete rule set; this asserts what actually
-// reaches Chrome — scoped to one tab, case-sensitive like the daemon's matcher,
-// covering a top-level navigation, and with the previous ids removed rather than
-// accumulated.
 async function scenarioRouteRulesAreTabScopedAndReplaced() {
   await reset();
   T.state.routeRuleIds.clear();
@@ -1916,9 +1733,6 @@ async function scenarioRouteRulesAreTabScopedAndReplaced() {
     check("the first push removes nothing", (first?.removeRuleIds || []).length === 0);
     check("the reply reports what was installed", socket.sent.at(-1)?.result?.count === 2);
 
-    // Without an explicit list a DNR condition matches everything EXCEPT
-    // main_frame, so an abort route would let the navigation through while the
-    // same route on direct CDP fails it.
     check("a route rule names its resource types explicitly",
       first?.addRules?.every((r) => Array.isArray(r.condition?.resourceTypes) && r.condition.resourceTypes.length > 0));
     check("a route rule refuses a top-level navigation too",
@@ -1948,9 +1762,6 @@ async function scenarioRouteRulesAreTabScopedAndReplaced() {
   }
 }
 
-// Session rules live for the browser session; an MV3 service worker does not.
-// A restart therefore arrives with rules still enforcing and no memory of them,
-// which is where ids allocated from a worker counter start colliding.
 async function scenarioRouteRulesSurviveAServiceWorkerRestart() {
   await reset();
   T.state.routeRuleIds.clear();
@@ -1966,7 +1777,6 @@ async function scenarioRouteRulesSurviveAServiceWorkerRestart() {
     const installed = dnr.rules.length;
     check("three rules are installed across two tabs", installed === 3);
 
-    // The worker restart: the browser keeps its rules, this map does not.
     T.state.routeRuleIds.clear();
 
     await T.handle({ id: "restart-3", type: "set_routes", params: { tabId: 11, rules: [ABORT_TRACKER] } });
@@ -1980,14 +1790,11 @@ async function scenarioRouteRulesSurviveAServiceWorkerRestart() {
     check("every installed rule id is unique",
       new Set(dnr.rules.map((rule) => rule.id)).size === dnr.rules.length);
 
-    // Closing a tab has to remove its rules even when the worker never saw them
-    // installed: Chrome reuses numeric tab ids.
     T.state.routeRuleIds.clear();
     await T.clearTabRouteRules(11);
     check("a closed tab's rules are removed from memory brw does not hold",
       dnr.rules.every((rule) => !rule.condition.tabIds.includes(11)));
 
-    // And a rule whose tab is already gone is swept at worker start.
     T.state.routeRuleIds.clear();
     model.tabs.delete(12);
     await T.dropOrphanedRouteRules();
@@ -1997,8 +1804,6 @@ async function scenarioRouteRulesSurviveAServiceWorkerRestart() {
   }
 }
 
-// An unknown resource-type string makes Chrome reject the whole update, taking
-// every route on the tab with it.
 async function scenarioRouteResourceTypesFollowTheBuild() {
   await reset();
   const dnr = installDeclarativeNetRequestMock();
@@ -2017,12 +1822,6 @@ async function scenarioRouteResourceTypesFollowTheBuild() {
   }
 }
 
-// An upgrade carries each profile's bridge-defaults.json across, so a machine
-// that once had one keeps it — including when its port moved. The stored config
-// written by the options page silently overrides that file, so the packaged file
-// on disk says nothing about which endpoint is live. The hello is where the
-// extension states it, and it states it even on a hello that is about to be
-// refused, which is the only case where the daemon would otherwise learn nothing.
 async function scenarioHelloReportsTheEndpointActuallyInUse() {
   await reset();
   const savedGet = overrides["storage.local.get"];
@@ -2059,8 +1858,6 @@ async function scenarioHelloReportsTheEndpointActuallyInUse() {
     check("the hello says the live endpoint came from the stored config",
       overridden?.config_source === "stored");
 
-    // Nothing stored: the packaged file IS the live config, and a daemon that
-    // sees this endpoint named is seeing the real fault rather than a file.
     const packagedOnly = await helloFor({ packaged: stalePackaged, stored: null, token: "" });
     check("with nothing stored the hello names the packaged endpoint",
       packagedOnly?.status_url === "http://127.0.0.1:19999/status");
@@ -2071,8 +1868,6 @@ async function scenarioHelloReportsTheEndpointActuallyInUse() {
     check("no config anywhere reports the built-in default",
       builtIn?.config_source === "built-in" && builtIn?.status_url === "http://127.0.0.1:17311/status");
 
-    // Provenance is resolved per key, in the order the endpoint itself is: a
-    // stored record that sets only a label has not chosen an endpoint.
     check("a stored record with no endpoint leaves the packaged file in charge",
       T.bridgeConfigSource(stalePackaged, { label: "desk" }) === "packaged");
     check("a stored statusUrl outranks a packaged bridgeUrl",
@@ -2085,17 +1880,6 @@ async function scenarioHelloReportsTheEndpointActuallyInUse() {
   }
 }
 
-// A stored bridge config is a PARTIAL override of the packaged bridge-defaults.
-// chrome.storage.onChanged carries the stored RECORD, not the resolved config,
-// so normalising that record on its own drops whatever only the packaged file
-// set and leaves the worker naming an endpoint it would never have picked at
-// startup — which is exactly the drift the daemon-side bridge_config check has
-// to be able to trust the hello about.
-//
-// Consent is withheld throughout, because that is where the difference is
-// durable: connect() returns before it re-resolves the config, so what the
-// handler worked out is what the worker keeps and what markBridgeStatus
-// publishes for the popup to show.
 async function scenarioStoredConfigChangeKeepsThePackagedEndpoint() {
   await reset();
   const savedGet = overrides["storage.local.get"];
@@ -2118,7 +1902,6 @@ async function scenarioStoredConfigChangeKeepsThePackagedEndpoint() {
     check("the packaged file decides the endpoint while nothing is stored",
       T.state.bridgeConfig?.statusUrl === "http://127.0.0.1:19311/status");
 
-    // The options page saved a label. Nothing about the endpoint changed.
     stored = { label: "desk" };
     fireEvent("storage.onChanged", { brwBridgeConfig: { newValue: stored } }, "local");
     await settle();
@@ -2129,8 +1912,6 @@ async function scenarioStoredConfigChangeKeepsThePackagedEndpoint() {
     check("and the endpoint is still attributed to the packaged file",
       T.state.bridgeConfigSource === "packaged");
 
-    // A stored endpoint still takes over: the re-resolve is a merge, not a
-    // refusal to read the record.
     stored = { label: "desk", bridgeUrl: "ws://127.0.0.1:17311/extension" };
     fireEvent("storage.onChanged", { brwBridgeConfig: { newValue: stored } }, "local");
     await settle();
@@ -2138,7 +1919,6 @@ async function scenarioStoredConfigChangeKeepsThePackagedEndpoint() {
       T.state.bridgeConfig?.statusUrl === "http://127.0.0.1:17311/status" &&
       T.state.bridgeConfigSource === "stored");
 
-    // An unparseable record must not leave the worker on a half-applied config.
     stored = { bridgeUrl: "ws://evil.example:17311/extension" };
     fireEvent("storage.onChanged", { brwBridgeConfig: { newValue: stored } }, "local");
     await settle();
@@ -2155,10 +1935,6 @@ async function scenarioStoredConfigChangeKeepsThePackagedEndpoint() {
   }
 }
 
-// A daemon that refuses this browser (another profile holds the bridge, or the
-// hello fails authentication) closes the socket right after it opens. The badge
-// must hold one steady Refused state across retries instead of cycling
-// Idle / Down / Reconnecting, and goes green only once the daemon accepts.
 async function scenarioRefusedBridgeDoesNotFlapTheBadge() {
   await reset();
   const savedGet = overrides["storage.local.get"];
@@ -2206,7 +1982,6 @@ async function scenarioRefusedBridgeDoesNotFlapTheBadge() {
     check("a handshake refusal is also reported as rejected",
       T.state.reportedStatus === "rejected" && /refused the handshake/.test(T.state.lastError));
 
-    // The daemon accepts: the socket stays open past the grace timer.
     T.state.socket = null;
     timers.length = 0;
     badges.length = 0;
@@ -2236,10 +2011,6 @@ async function scenarioRefusedBridgeDoesNotFlapTheBadge() {
   }
 }
 
-// An install replaces the unpacked payload on disk, but Chrome keeps running
-// the code it loaded until the extension reloads. The worker compares the two
-// and reloads itself, but never mid-command, never while an agent is working,
-// and never twice in a row for a build Chrome would not load.
 async function scenarioSelfUpdateReloadsAStalePayload() {
   await reset();
   const savedFetch = sandbox.fetch;

@@ -123,6 +123,10 @@ func TestBridgeConsentRevoke(t *testing.T) {
 		{name: "neither", body: `{}`, wantStatus: http.StatusBadRequest, wantLeft: 2},
 		{name: "unknown field", body: `{"origins":"https://one.test"}`, wantStatus: http.StatusBadRequest, wantLeft: 2},
 		{name: "bad scope", body: `{"origin":"https://one.test","scope":"sideways"}`, wantStatus: http.StatusBadRequest, wantLeft: 2},
+		{name: "trailing object", body: `{"all":true}{"origin":"https://one.test"}`, wantStatus: http.StatusBadRequest, wantLeft: 2},
+		{name: "trailing garbage", body: `{"all":true}broken`, wantStatus: http.StatusBadRequest, wantLeft: 2},
+		{name: "all with an origin", body: `{"all":true,"origin":"https://one.test"}`, wantStatus: http.StatusBadRequest, wantLeft: 2},
+		{name: "all with a scope", body: `{"all":true,"scope":"read"}`, wantStatus: http.StatusBadRequest, wantLeft: 2},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

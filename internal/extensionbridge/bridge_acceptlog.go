@@ -5,10 +5,6 @@ import (
 	"time"
 )
 
-// acceptLogInterval bounds how often one origin's refused connections are
-// logged. A foreign extension that retries every few seconds is otherwise one
-// log line per attempt for as long as both run: one machine collected 34,701
-// lines in ten weeks from a leftover extension nobody saw.
 const acceptLogInterval = time.Hour
 
 type acceptLogLimiter struct {
@@ -17,8 +13,6 @@ type acceptLogLimiter struct {
 	suppressed map[string]int
 }
 
-// admit reports whether a refusal from origin should be logged now, and how
-// many refusals from it went unlogged since the last line.
 func (l *acceptLogLimiter) admit(origin string, now time.Time) (bool, int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

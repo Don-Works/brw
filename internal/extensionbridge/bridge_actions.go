@@ -15,42 +15,34 @@ import (
 )
 
 const (
-	// observedActionSettle and batchActionSettle cap the adaptive settle.
 	observedActionSettle = 75 * time.Millisecond
 	menuHoverSettleDelay = 325 * time.Millisecond
 	batchActionSettle    = 25 * time.Millisecond
 	waitForPollInterval  = 250 * time.Millisecond
-	// Adaptive settle poll cadence: start tight, back off to settlePollMax.
+
 	settlePollStart   = 12 * time.Millisecond
 	settlePollMax     = 40 * time.Millisecond
 	settleStableReads = 2
-	// settleMinFloor keeps a setTimeout(0), render or rAF just after the action
-	// observable even when the page already looks stable.
+
 	settleMinFloor = 24 * time.Millisecond
-	// waitConditionChunk resolves one in-page wait before b.timeout would cancel
-	// it; WaitFor re-arms. waitForErrBackoff paces re-arming after a navigation.
+
 	waitConditionChunk = 6 * time.Second
 	waitForErrBackoff  = 100 * time.Millisecond
-	// Bound contextTabID's retries through an MV3 reconnect before using the cache.
+
 	activeTabResolveAttempts = 3
 	activeTabResolveBackoff  = 150 * time.Millisecond
-	// File-chooser upload wait for Page.fileChooserOpened.
+
 	fileChooserPollTimeout  = 5 * time.Second
 	fileChooserPollInterval = 200 * time.Millisecond
-	// bridgeWriteTimeout is independent of the request ctx: coder/websocket closes
-	// the WHOLE socket when a write's ctx is cancelled, so one cancelled request
-	// queued behind a busy extension would drain every in-flight RPC.
+
 	bridgeWriteTimeout = 10 * time.Second
 )
 
-// settleFingerprintExpr is a cheap O(1)-ish "has the page changed?" probe.
 const settleFingerprintExpr = `(function(){try{
   var ae=document.activeElement;
   return document.readyState+'|'+(document.getElementsByTagName('*').length)+'|'+((document.body&&document.body.innerText)?document.body.innerText.length:0)+'|'+(ae?ae.tagName+'#'+(ae.id||''):'')+'|'+location.href;
 }catch(e){return 'err';}})()`
 
-// settle polls settleFingerprintExpr and returns once the page is stable and
-// ready, or when capDur elapses. An unreadable page just waits out the cap.
 func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 	if capDur <= 0 {
 		return
@@ -68,8 +60,7 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 	}
 	prev := ""
 	stable := 0
-	// Bound the wait with a watchdog, not a short ctx: cancelling mid-write makes
-	// coder/websocket drop the whole connection. An abandoned read finishes under b.timeout.
+
 	read := func() (string, bool) {
 		type fpRes struct {
 			fp string
@@ -78,8 +69,7 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 		resCh := make(chan fpRes, 1)
 		go func() {
 			var fp string
-			// withoutTabLock: an abandoned probe must not hold the tab lock and stall the
-			// next action on that tab.
+
 			err := b.evaluate(withoutTabLock(ctx), settleFingerprintExpr, "", &fp)
 			resCh <- fpRes{fp: fp, ok: err == nil && fp != "" && fp != "err"}
 		}()
@@ -120,7 +110,7 @@ func (b *Bridge) settle(ctx context.Context, capDur time.Duration) {
 			stable = 1
 		}
 		if interval < settlePollMax {
-			interval += interval / 2 // mild geometric backoff (12,18,27,40…)
+			interval += interval / 2
 			if interval > settlePollMax {
 				interval = settlePollMax
 			}
@@ -207,9 +197,7 @@ func (b *Bridge) hoverRef(ctx context.Context, ref string) error {
 	if err != nil {
 		return err
 	}
-	// JS hover listeners in one evaluate, then extension-applied CSS :hover. Only a
-	// foreground tab gets trusted CDP pointer input: background tabs stall for
-	// seconds on the Input ACK. Old extensions fall back to the blocking CDP command.
+
 	refJSON, _ := json.Marshal(box.Ref)
 	var hovered struct {
 		OK    bool   `json:"ok"`
@@ -450,8 +438,7 @@ func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (b
 	if err := browser.GuardCrossOriginRefs("upload file", browser.BridgeCrossOriginRemedy, opts.Ref, opts.ClickRef); err != nil {
 		return browser.ActionResult{}, err
 	}
-	// bytes/url sources become temp files, retained briefly after
-	// DOM.setFileInputFiles so a later form submit can still read them.
+
 	paths, cleanup, err := browser.ResolveUploadPaths(ctx, opts)
 	if err != nil {
 		return browser.ActionResult{}, err
@@ -463,9 +450,6 @@ func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (b
 		}
 	}()
 
-	// With a trigger named, intercept the native chooser and set the file on the
-	// input it reports. Covers inputs created on click (a native dialog would
-	// freeze the CDP session) and cross-origin iframes (backendNodeId is frame-agnostic).
 	if opts.ClickRef != "" || opts.ClickText != "" {
 		result, err := b.uploadViaFileChooser(ctx, opts, paths)
 		if err != nil {
@@ -548,11 +532,7 @@ func (b *Bridge) UploadFile(ctx context.Context, opts snapshot.UploadOptions) (b
 	return result, nil
 }
 
-// uploadViaFileChooser clicks the trigger with native-dialog interception on
-// and sets the file on the chooser's backendNodeId. Interception is always
-// disabled on exit so the user's own uploads work.
 func (b *Bridge) uploadViaFileChooser(ctx context.Context, opts snapshot.UploadOptions, paths []string) (browser.ActionResult, error) {
-	// Pin the tab so every step hits the same tab if the user switches mid-upload.
 	tabID := b.contextTabID(ctx)
 
 	if _, err := b.call(ctx, "set_intercept_file_chooser", map[string]any{
@@ -562,7 +542,6 @@ func (b *Bridge) uploadViaFileChooser(ctx context.Context, opts snapshot.UploadO
 		return browser.ActionResult{}, fmt.Errorf("enable file chooser interception: %w", err)
 	}
 	defer func() {
-		// Fresh context so a cancelled ctx cannot leave interception on.
 		disableCtx, cancel := context.WithTimeout(context.Background(), b.timeout)
 		defer cancel()
 		_, _ = b.call(disableCtx, "set_intercept_file_chooser", map[string]any{
@@ -739,8 +718,7 @@ func (b *Bridge) pressKey(ctx context.Context, key string) error {
 	if desc.Key == "" {
 		return errors.New("key is required")
 	}
-	// Chrome silently drops Input.dispatchKeyEvent for an inactive tab, and
-	// activating it would flash-switch the user's tab; use the DOM fallback there.
+
 	rawState, stateErr := b.call(ctx, "get_tab_input_state", map[string]any{
 		"tabId": parseTabID(b.contextTabID(ctx)),
 	})
@@ -779,7 +757,6 @@ func (b *Bridge) pressKey(ctx context.Context, key string) error {
 	}
 	for _, typ := range []string{"keyDown", "keyUp"} {
 		if typ == "keyDown" && desc.Text == "" {
-			// rawKeyDown triggers Chrome's native non-text defaults (ArrowUp on number inputs).
 			typ = "rawKeyDown"
 		}
 		params := map[string]any{

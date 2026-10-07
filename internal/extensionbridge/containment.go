@@ -9,9 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// tabArm tracks which tabs have already had a per-tab install (containment, the
-// WebMCP shim) sent to the extension, so arming is one message per tab rather
-// than one per navigation.
 type tabArm struct {
 	mu    sync.Mutex
 	armed map[string]bool
@@ -36,27 +33,12 @@ func (c *tabArm) release(tabID string) {
 	delete(c.armed, tabID)
 }
 
-// reset forgets every tab. A new extension connection is a new service worker
-// whose in-memory arming is gone, so every tab has to be armed again.
 func (c *tabArm) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.armed = nil
 }
 
-// ensureContainment installs subresource containment on a tab before brw drives
-// it.
-//
-// It must run BEFORE the navigation it protects: the in-page guard is installed
-// with Page.addScriptToEvaluateOnNewDocument, which only beats page scripts for
-// documents that have not loaded yet.
-//
-// On the extension lane brw attaches to a tab in the user's real, already-running
-// Chrome, so the guarantee is narrower than on a browser brw launched itself:
-// requests issued before brw attached were never seen, and the catch-up
-// injection into an already-loaded document can lose a race with page code that
-// already captured the originals. HTTP requests stay covered by Fetch
-// interception either way.
 func (b *Bridge) ensureContainment(ctx context.Context, tabID string) {
 	if !b.navPolicy.Confines() {
 		return
@@ -81,14 +63,11 @@ func (b *Bridge) ensureContainment(ctx context.Context, tabID string) {
 		"guard":   guard,
 	}
 	if _, err := b.call(ctx, "set_containment", params); err != nil {
-		// A failed arm must not be remembered as armed, or the tab would run
-		// uncontained while the daemon believed otherwise.
 		b.containment.release(tabID)
 	}
 }
 
-// BlockedRequests reports (and clears) the subresources containment refused on a
-// tab. A contained page that half-renders is otherwise an unexplained bug.
+// BlockedRequests reports (and clears) the subresources containment refused on a tab.
 func (b *Bridge) BlockedRequests(ctx context.Context, tabID string) ([]browser.BlockedRequest, error) {
 	params := map[string]any{}
 	if strings.TrimSpace(tabID) != "" {

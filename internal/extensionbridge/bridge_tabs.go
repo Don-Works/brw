@@ -13,16 +13,13 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// SetDefaultGroup sets the tab-group title brw_open uses when the caller gives
-// none; empty disables it. Call before serving.
+// SetDefaultGroup sets the tab-group title brw_open uses when the caller gives none; empty disables it.
 func (b *Bridge) SetDefaultGroup(name string) { b.defaultGroup = strings.TrimSpace(name) }
 
-// SetRaiseWindowOnFocus sets whether focus_tab raises the Chrome window to the
-// OS foreground. Call before serving.
+// SetRaiseWindowOnFocus sets whether focus_tab raises the Chrome window to the OS foreground.
 func (b *Bridge) SetRaiseWindowOnFocus(v bool) { b.raiseWindowOnFocus = v }
 
-// SetFollowFocus selects follow-focus (true) or isolation (false) for no-tab_id
-// actions; see the followFocus field. Call before serving.
+// SetFollowFocus selects follow-focus (true) or isolation (false) for no-tab_id actions; see the followFocus field.
 func (b *Bridge) SetFollowFocus(v bool) { b.followFocus = v }
 
 // SetTabAccessGuard reserves the browser-host service's private watcher tabs.
@@ -30,15 +27,12 @@ func (b *Bridge) SetTabAccessGuard(check func(context.Context, string) error) {
 	b.tabAccessGuard = check
 }
 
-// openTabParams opens the tab in the background in isolation so the user's
-// view never switches. Extensions without the active flag treat it as true.
 func (b *Bridge) openTabParams(params map[string]any) map[string]any {
 	if params == nil {
 		params = map[string]any{}
 	}
 	params["active"] = b.followFocus
-	// The extension arms the inline-document rewrite before navigating, so an
-	// attachment-flagged text response becomes the tab's first document.
+
 	params["inlineDocument"] = true
 	if b.webmcp {
 		params["webmcp"] = snapshot.WebMCPInstallScript
@@ -50,9 +44,6 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	return b.OpenInGroup(ctx, url, browser.TabGroupOptions{Name: b.defaultGroup})
 }
 
-// waitOpenReady waits on the new tab id so an immediate evaluate or read does
-// not race Chrome's transient about:blank. A timeout is not fatal; it reports
-// false.
 func (b *Bridge) waitOpenReady(ctx context.Context, url, tabID string) bool {
 	if tabID == "" {
 		return false
@@ -93,7 +84,7 @@ func (b *Bridge) ListTabs(ctx context.Context) ([]browser.Tab, error) {
 	if activeID == "" && !hasFocusedWindow && b.activeTabID() == "" {
 		activeID = fallbackActiveID
 	}
-	// Only follow-focus may repoint the cache; in isolation it is brw's owned tab.
+
 	if activeID != "" && b.followFocus {
 		b.setActiveTabID(activeID)
 	}
@@ -134,7 +125,7 @@ func (b *Bridge) FocusTab(ctx context.Context, id string) error {
 		b.recordObservation(focused, browser.TraceActionFocusTab, "", start, nil)
 		return nil
 	}
-	// focus_tab succeeded even though the tab metadata could not be read.
+
 	if strings.TrimSpace(id) != "" {
 		b.setActiveTabID(id)
 	}
@@ -153,7 +144,7 @@ func (b *Bridge) CloseTab(ctx context.Context, id string) error {
 	if err != nil && b.tabGoneAfterFailedClose(ctx, tabID) {
 		err = nil
 	}
-	// Record before dropping tab state: the entry is scoped by the tab's lease.
+
 	b.recordObservation(tabKey, browser.TraceActionCloseTab, "", start, err)
 	if err == nil {
 		b.invalidateTabState(tabKey)
@@ -166,9 +157,6 @@ const (
 	closeTabVerifyInterval = 250 * time.Millisecond
 )
 
-// tabGoneAfterFailedClose decides a failed close by its post-condition, the tab
-// being gone: Chrome can finish an accepted close after the extension's
-// budget, and an already-gone tab fails with "No tab with id".
 func (b *Bridge) tabGoneAfterFailedClose(ctx context.Context, tabID int) bool {
 	deadline := time.Now().Add(closeTabVerifyWindow)
 	for {
@@ -195,7 +183,6 @@ func (b *Bridge) tabGoneAfterFailedClose(ctx context.Context, tabID int) bool {
 	}
 }
 
-// tabListed reads the raw list; ListTabs would also refresh the cached active tab.
 func (b *Bridge) tabListed(ctx context.Context, tabID int) (bool, error) {
 	raw, err := b.call(ctx, "list_tabs", nil)
 	if err != nil {
@@ -312,8 +299,6 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 	return result, nil
 }
 
-// refreshOpenedTab re-lists tabs for the committed url/title, falling back to
-// the requested URL while the record is still blank.
 func (b *Bridge) refreshOpenedTab(ctx context.Context, tab browser.Tab, requestedURL string) browser.Tab {
 	tabs, err := b.ListTabs(ctx)
 	if err == nil {
@@ -493,8 +478,6 @@ func parseTabID(id string) int {
 	return n
 }
 
-// requireTabID rejects an empty or non-numeric id that parseTabID would turn
-// into 0, which the extension reports only as "No tab with id: 0".
 func requireTabID(id string) (int, error) {
 	trimmed := strings.TrimSpace(id)
 	if trimmed == "" {

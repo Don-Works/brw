@@ -13,8 +13,6 @@ import (
 var _ devtools.Observer = (*Bridge)(nil)
 
 // Vitals reads the Core Web Vitals through the extension's debugger session.
-// It evaluates the same expression the direct-CDP transport does, so a reading
-// means the same thing on both.
 func (b *Bridge) Vitals(ctx context.Context, opts devtools.VitalsOptions) (devtools.Vitals, error) {
 	start := time.Now()
 	opts = opts.Normalize()
@@ -30,9 +28,7 @@ func (b *Bridge) Vitals(ctx context.Context, opts devtools.VitalsOptions) (devto
 	return vitals, nil
 }
 
-// AccessibilityAudit runs the embedded axe-core engine in the bridged tab. The
-// engine crosses the bridge as an expression, never as a network fetch the page
-// makes, so a signed-in profile is never asked to load third-party script.
+// AccessibilityAudit runs the embedded axe-core engine in the bridged tab.
 func (b *Bridge) AccessibilityAudit(ctx context.Context, opts devtools.AuditOptions) (devtools.AuditResult, error) {
 	start := time.Now()
 	opts = opts.Normalize()
@@ -65,8 +61,7 @@ func (b *Bridge) Highlight(ctx context.Context, opts devtools.HighlightOptions) 
 	}
 	var result devtools.HighlightResult
 	err = b.evaluateObservation(ctx, devtools.BuildHighlightExpression(opts), false, &result)
-	// An input action, not an observation: this appends an element to the
-	// document, so a human reading the daemon's activity sees it as a change.
+
 	if tabID := b.contextTabID(ctx); strings.TrimSpace(tabID) != "" {
 		entry := browser.NewObservationTrace(browser.TraceActionHighlight, browser.HighlightTraceText(opts), start, err)
 		if len(opts.Refs) > 0 {
@@ -81,9 +76,6 @@ func (b *Bridge) Highlight(ctx context.Context, opts devtools.HighlightOptions) 
 	return result, nil
 }
 
-// ensureAxeInstalled injects the embedded engine unless the document already
-// has a usable one. The probe is what keeps the half-megabyte payload to once
-// per document rather than once per audit.
 func (b *Bridge) ensureAxeInstalled(ctx context.Context) error {
 	var probe struct {
 		Present bool `json:"present"`
@@ -106,14 +98,6 @@ func (b *Bridge) ensureAxeInstalled(ctx context.Context) error {
 	return nil
 }
 
-// evaluateObservation runs one of the shared devtools expressions and decodes
-// its value.
-//
-// It does not decode straight into dst, because the generic evaluate path turns
-// an undefined completion value into JSON null on purpose — a page script that
-// returns nothing is a successful evaluation. These expressions always resolve
-// to an object, so the same null here means the script never ran, and decoding
-// it would answer with a zero reading that reads exactly like a clean page.
 func (b *Bridge) evaluateObservation(ctx context.Context, expression string, readOnly bool, dst any) error {
 	var value json.RawMessage
 	var err error

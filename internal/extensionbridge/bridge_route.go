@@ -10,38 +10,17 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// ErrRouteResponseBodyUnsupported is returned by the extension-bridge transport
-// for any route that has to supply a response body: behaviour=fulfill and the
-// HAR replay built on it.
-//
-// The bridge drives the user's real signed-in Chrome, where interception is
-// declarativeNetRequest rather than Fetch: a declarative rule decides whether a
-// request happens, and Chrome never hands the extension the response to write.
-// CDP's Fetch domain could, but only through the chrome.debugger session the
-// extension attaches and detaches around each operation, and interception
-// dropped at detach would be worse than an error — the page would silently
-// reach the real endpoint while the caller believed it was mocked. So the gap is
-// named rather than degraded.
+// ErrRouteResponseBodyUnsupported is returned by the extension-bridge transport for any route that has to supply a response body: behaviour=fulfill and the HAR replay built on it.
 var ErrRouteResponseBodyUnsupported = errors.New("answering a request from a body is not supported on the extension-bridge transport: declarativeNetRequest can refuse a request but cannot supply a response, so brw_route fulfill and HAR replay need a direct-CDP profile; behaviour=abort works here")
 
-// ErrRouteTimesUnsupported is returned for a rule asked to retire itself after a
-// fixed number of matches. A declarativeNetRequest rule applies until it is
-// removed and the extension is never told a rule fired, so brw cannot count
-// matches on this transport; silently ignoring times would leave a caller
-// believing one request was blocked when every later one was too.
+// ErrRouteTimesUnsupported is returned for a rule asked to retire itself after a fixed number of matches.
 var ErrRouteTimesUnsupported = errors.New("times is not supported on the extension-bridge transport: a declarativeNetRequest rule applies until it is cleared and reports no match count; use a direct-CDP profile, or clear the route when you are done with it")
 
-// CheckRouteReplay implements browser.RouteReplayer. It always refuses: the
-// answer is a property of the transport, not of the request, so the surface
-// holding the artifact store can skip reading a recording this bridge would
-// reject anyway.
+// CheckRouteReplay implements browser.RouteReplayer.
 func (b *Bridge) CheckRouteReplay() error {
 	return ErrRouteResponseBodyUnsupported
 }
 
-// bridgeRouteTable holds the rules the daemon believes are installed, per tab.
-// The extension owns the live declarativeNetRequest rule set; this is the copy
-// brw_route lists and rebuilds from.
 type bridgeRouteTable struct {
 	mu     sync.Mutex
 	routes map[string][]browser.Route
@@ -67,18 +46,7 @@ func (t *bridgeRouteTable) set(tabID string, routes []browser.Route) {
 }
 
 // Route implements the RouteController capability over declarativeNetRequest.
-//
-// Rules are pushed as one complete per-tab set rather than incrementally: the
-// extension replaces the tab's session rules wholesale, so a failed push leaves
-// the browser and the daemon's table on the same side of the change instead of
-// drifting apart.
 func (b *Bridge) Route(ctx context.Context, opts browser.RouteOptions) (browser.RouteResult, error) {
-	// Before the action switch and before a tab is resolved, for the reason the
-	// direct-CDP backend does the same: the refusal belongs to the behaviour,
-	// so every shape carrying it has to reach the same answer. Checked only
-	// inside the rule builder, action=replay was answered by this transport's
-	// own capability error instead — "use a direct-CDP profile", for a
-	// behaviour no profile has.
 	if err := browser.CheckRouteBehaviourSupported(opts.Behaviour); err != nil {
 		return browser.RouteResult{}, err
 	}
@@ -141,21 +109,16 @@ func (b *Bridge) Route(ctx context.Context, opts browser.RouteOptions) (browser.
 	}
 }
 
-// bridgeRoute validates one rule against what declarativeNetRequest can express.
 func bridgeRoute(opts browser.RouteOptions) (browser.Route, error) {
 	pattern := strings.TrimSpace(opts.Pattern)
 	if pattern == "" {
 		return browser.Route{}, errors.New("route add requires a pattern (a URL glob such as https://api.example.com/*)")
 	}
-	// A behaviour brw refuses by name never reaches here; Bridge.Route answers
-	// it first, so the transport-specific errors below can never be the answer
-	// for one.
+
 	switch browser.RouteBehaviour(strings.ToLower(strings.TrimSpace(opts.Behaviour))) {
 	case browser.RouteAbort:
 	case "", browser.RouteFulfill:
-		// An omitted behaviour means fulfill, which is the one this transport
-		// cannot do, so the default has to be refused as loudly as the explicit
-		// spelling rather than quietly becoming an abort.
+
 		return browser.Route{}, ErrRouteResponseBodyUnsupported
 	default:
 		return browser.Route{}, fmt.Errorf("unknown route behaviour %q: use abort (fulfill needs a direct-CDP profile)", opts.Behaviour)
@@ -170,7 +133,6 @@ func bridgeRoute(opts browser.RouteOptions) (browser.Route, error) {
 	return browser.Route{Pattern: pattern, Behaviour: browser.RouteAbort, ResourceTypes: resourceTypes}, nil
 }
 
-// pushRoutes replaces the tab's declarativeNetRequest session rules.
 func (b *Bridge) pushRoutes(ctx context.Context, tabID string, routes []browser.Route) error {
 	rules := make([]map[string]any, 0, len(routes))
 	for _, route := range routes {
@@ -178,7 +140,7 @@ func (b *Bridge) pushRoutes(ctx context.Context, tabID string, routes []browser.
 			"regex":     browser.RoutePatternRegex(route.Pattern),
 			"behaviour": string(route.Behaviour),
 		}
-		// Empty means every kind; the extension falls back to its full list.
+
 		if len(route.ResourceTypes) > 0 {
 			rule["resourceTypes"] = route.ResourceTypes
 		}

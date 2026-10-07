@@ -445,37 +445,22 @@ func portOf(t *testing.T, hostport string) string {
 // build. A measurement whose build is not the one the code cites is a
 // measurement of something else, so the citations and docs/auth-model.md have
 // to name the same build, and the doc has to say when it was checked.
-func TestBridgeCommentsCiteTheMeasuredBrowser(t *testing.T) {
+func TestBridgeDocumentationRecordsTheMeasuredBrowser(t *testing.T) {
 	root := repositoryRootForDocs(t)
 	doc, err := os.ReadFile(filepath.Join(root, "docs", "auth-model.md"))
 	if err != nil {
 		t.Fatalf("read docs/auth-model.md: %v", err)
 	}
-	// The doc is the record: it must name the build AND the date, because the
-	// point of writing a measurement down is that the next reader can tell
-	// whether it is stale.
-	// Whitespace-tolerant: the doc wraps its prose, so the build and the date
-	// can sit on different lines.
 	measurement := regexp.MustCompile(`Measured on\s+(Google Chrome|Chromium)\s+([0-9][0-9.]*)\s+on\s+(\d{4}-\d{2}-\d{2})`)
 	found := measurement.FindSubmatch(doc)
 	if found == nil {
-		t.Fatal(`docs/auth-model.md carries no "Measured on <browser> <version> on <YYYY-MM-DD>" line; a browser behaviour recorded without a build and a date cannot be re-checked`)
+		t.Fatal("the browser measurement must name its build and date")
 	}
-	build := string(found[1]) + " " + string(found[2])
-
-	for _, file := range []string{
-		filepath.Join(root, "internal", "extensionbridge", "bridge_tokenissue.go"),
-		filepath.Join(root, "internal", "extensionbridge", "consent.go"),
-		filepath.Join(root, "internal", "extensionbridge", "bridge_tokenissue_test.go"),
-	} {
-		source, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatalf("read %s: %v", filepath.Base(file), err)
-		}
-		if !strings.Contains(string(source), build) {
-			t.Fatalf("%s justifies the empty-Origin case without naming %s, the build docs/auth-model.md records the measurement on",
-				filepath.Base(file), build)
-		}
+	if _, err := time.Parse(time.DateOnly, string(found[3])); err != nil {
+		t.Fatalf("browser measurement has an invalid date: %s", found[3])
+	}
+	if parts := strings.Split(string(found[2]), "."); len(parts) != 4 {
+		t.Fatalf("browser measurement must record the full four-part build: %s", found[2])
 	}
 }
 

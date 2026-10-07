@@ -16,10 +16,6 @@ func (b *Bridge) Snapshot(ctx context.Context, opts snapshot.SnapshotOptions) (s
 	return b.snapshot(ctx, opts, false)
 }
 
-// snapshotLive re-walks the page, skipping and then refreshing the cache. The
-// extension's cache probe sees only DOM mutations, and fill/select/checkbox
-// write properties that mutate no node, so a cached read would report the
-// action as a no-op and invite a duplicate write on retry.
 func (b *Bridge) snapshotLive(ctx context.Context, opts snapshot.SnapshotOptions) (snapshot.PageSnapshot, error) {
 	return b.snapshot(ctx, opts, true)
 }
@@ -27,9 +23,7 @@ func (b *Bridge) snapshotLive(ctx context.Context, opts snapshot.SnapshotOptions
 func (b *Bridge) snapshot(ctx context.Context, opts snapshot.SnapshotOptions, skipCacheRead bool) (snapshot.PageSnapshot, error) {
 	var snap snapshot.PageSnapshot
 	opts.IncludeAX = false
-	// A since-delta must bypass the cache both ways: a cached full snapshot
-	// defeats the delta, and a cached partial result corrupts later full reads.
-	// include_frames bypasses it so cross-origin frame reads are never stale.
+
 	sinceDelta := opts.Since > 0
 	bypassCache := sinceDelta || opts.IncludeFrames
 	if !bypassCache && !skipCacheRead {
@@ -41,8 +35,7 @@ func (b *Bridge) snapshot(ctx context.Context, opts snapshot.SnapshotOptions, sk
 		}
 	}
 	ctx, transport := withPageTransportNote(ctx)
-	// The walker installs once per document; later snapshots ship only the call.
-	// SnapshotCallExpressions is shared with direct CDP so both mint the same refs.
+
 	hot, cold := snapshot.SnapshotCallExpressions(opts)
 	if err := b.evaluateReadOnly(ctx, hot, "", &snap); err != nil || !snapshot.SnapshotLooksInstalled(snap) {
 		snap = snapshot.PageSnapshot{}
@@ -58,13 +51,11 @@ func (b *Bridge) snapshot(ctx context.Context, opts snapshot.SnapshotOptions, sk
 		Error:     "accessibility tree is unavailable through the Chrome extension bridge; use direct CDP attach for AX enrichment",
 	}
 	if opts.IncludeFrames {
-		// Best effort: needs a debugger sub-target the extension can attach to and no
-		// other debugger owning it.
 		readBoxes := map[int]bool{}
 		if frames, err := b.readCrossOriginFrames(ctx, opts); err == nil && len(frames) > 0 {
 			_, readBoxes = snapshot.MergeCrossOriginFrames(&snap, frames)
 		}
-		// Unread frames still become clickable f<i> elements at their center.
+
 		snapshot.PromoteCrossOriginFrames(&snap, readBoxes)
 	}
 	snap.Metadata = transport.apply(snap.Metadata)
@@ -74,12 +65,7 @@ func (b *Bridge) snapshot(ctx context.Context, opts snapshot.SnapshotOptions, sk
 	return snap, nil
 }
 
-// readCrossOriginFrames reads the controls of each cross-origin iframe via
-// debugger sub-targets. An older extension yields an empty slice, not an error.
 func (b *Bridge) readCrossOriginFrames(ctx context.Context, opts snapshot.SnapshotOptions) ([]snapshot.CrossOriginFrame, error) {
-	// Phase one only lists origins, so consent can be checked first. The live
-	// frame URL is authoritative: a redirected iframe serves an origin its src
-	// never named.
 	listed, err := b.callCrossOriginFrames(ctx, nil, "")
 	if err != nil || len(listed) == 0 {
 		return listed, err
@@ -102,9 +88,7 @@ func (b *Bridge) readCrossOriginFrames(ctx context.Context, opts snapshot.Snapsh
 	if len(origins) == 0 {
 		return listed, nil
 	}
-	// Phase two sends the shared walker and the exact origins it may run in, so
-	// the extension holds no second extractor. include_boxes lets the daemon map
-	// controls to top-level coordinates.
+
 	frameOpts := opts
 	frameOpts.Since = 0
 	frameOpts.IncludeFrames = false
@@ -114,8 +98,6 @@ func (b *Bridge) readCrossOriginFrames(ctx context.Context, opts snapshot.Snapsh
 	return b.callCrossOriginFrames(ctx, origins, cold)
 }
 
-// callCrossOriginFrames sends one read_cross_origin_frames. nil origins only
-// enumerates; otherwise the extension evaluates in those origins and no other.
 func (b *Bridge) callCrossOriginFrames(ctx context.Context, origins []string, expression string) ([]snapshot.CrossOriginFrame, error) {
 	params := map[string]any{"tabId": parseTabID(b.contextTabID(ctx))}
 	if origins != nil {
@@ -203,9 +185,7 @@ func (b *Bridge) Find(ctx context.Context, opts snapshot.FindOptions) (snapshot.
 	return b.find(ctx, opts, false)
 }
 
-// FindLive is Find without the cached snapshot, used by locate-and-act
-// (browser.LiveFinder): after a fill or select a cached list is the pre-action
-// page, and the exactly-one-match decision would be made against it.
+// FindLive is Find without the cached snapshot, used by locate-and-act (browser.LiveFinder): after a fill or select a cached list is the pre-action page, and the exactly-one-match decision would be made against it.
 func (b *Bridge) FindLive(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
 	return b.find(ctx, opts, true)
 }
@@ -218,7 +198,7 @@ func (b *Bridge) find(ctx context.Context, opts snapshot.FindOptions, live bool)
 		Limit:         opts.Limit,
 		ViewportOnly:  opts.ViewportOnly,
 		IncludeHidden: opts.IncludeHidden,
-		// Must be forwarded: brw_find advertises text_content on every transport.
+
 		TextContent: opts.TextContent,
 	}
 	snap, err := b.snapshot(ctx, snapOpts, live)

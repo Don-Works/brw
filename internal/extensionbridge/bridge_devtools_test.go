@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,27 +23,20 @@ import (
 // pair orders bytes without ordering memory, so the slice needs a latch of its
 // own rather than the socket's apparent sequencing.
 type sentExpressions struct {
-	mu   chan struct{}
+	mu   sync.Mutex
 	list []string
 }
 
-func newSentExpressions() *sentExpressions {
-	s := &sentExpressions{mu: make(chan struct{}, 1)}
-	s.mu <- struct{}{}
-	return s
-}
-
 func (s *sentExpressions) add(expression string) {
-	<-s.mu
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.list = append(s.list, expression)
-	s.mu <- struct{}{}
 }
 
 func (s *sentExpressions) all() []string {
-	<-s.mu
-	out := append([]string(nil), s.list...)
-	s.mu <- struct{}{}
-	return out
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.list...)
 }
 
 // serveEvaluateStub stands in for the extension: it answers every
@@ -68,7 +62,7 @@ func serveEvaluateStub(t *testing.T, b *Bridge, reply func(expression string) an
 	conn.SetReadLimit(extensionFrameReadLimitBytes)
 	waitUntil(t, b.liveConn)
 
-	sent := newSentExpressions()
+	sent := &sentExpressions{}
 	done := make(chan struct{})
 	serveCtx, serveCancel := context.WithCancel(context.Background())
 	go func() {

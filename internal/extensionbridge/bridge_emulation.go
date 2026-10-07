@@ -39,8 +39,7 @@ func (b *Bridge) EmulateDevice(ctx context.Context, opts browser.DeviceEmulation
 	}); err != nil {
 		return browser.DeviceEmulationResult{}, err
 	}
-	// CDP rejects maxTouchPoints outside 1-16, so clearing touch emulation has to
-	// omit the field rather than send the zero value. Direct CDP already omits it.
+
 	touchPayload := map[string]any{"enabled": cfg.Touch}
 	if cfg.Touch && cfg.MaxTouchPoints > 0 {
 		touchPayload["maxTouchPoints"] = cfg.MaxTouchPoints

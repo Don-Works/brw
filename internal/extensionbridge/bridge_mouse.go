@@ -12,11 +12,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// Coordinate computer-action family for the extension bridge. These actuate
-// through in-page pointer/mouse/HTML5 drag event sequences, with CDP-backed page
-// evaluation supplied by the extension. Each action emits a post-action
-// observation, mirroring the direct-CDP Manager path.
-
 func mousePointArg(point browser.MousePoint) map[string]any {
 	arg := map[string]any{}
 	if point.HasRef() {
@@ -99,10 +94,7 @@ func (b *Bridge) Drag(ctx context.Context, opts browser.DragOptions) (browser.Ac
 		return browser.ActionResult{}, err
 	}
 	before := b.captureSemanticState(ctx)
-	// HTML5 drag-and-drop is its own protocol: pointermove/mousemove alone does
-	// not fire dragstart/dragover/drop or carry a DataTransfer. Prefer the shared
-	// ref-to-ref HTML5 sequence and fall back to the generic pointer drag for
-	// sliders, canvas panning, coordinate targets, and libraries that reject it.
+
 	if opts.From.HasRef() && opts.To.HasRef() {
 		fromJSON, _ := json.Marshal(opts.From.Ref)
 		toJSON, _ := json.Marshal(opts.To.Ref)

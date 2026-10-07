@@ -9,9 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// ScrollTo runs the shared scroll-into-view expression through the bridge's own
-// Evaluate. The element-targeted scroll is a page action, not debugger-session
-// state, so it works on the signed-in transport.
 var _ browser.ScrollToController = (*Bridge)(nil)
 
 func (b *Bridge) ScrollTo(ctx context.Context, target string) (browser.ActionResult, error) {

@@ -21,7 +21,6 @@ func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (bro
 	defer release()
 	ctx = entry.ctx
 
-	// Pin the tab once for the plan; retargetPinnedTab re-pins after focus_tab/open.
 	stepCtx := b.pinActiveTab(ctx)
 
 	result := browser.PlanResult{OK: true, Steps: make([]browser.PlanStepResult, 0, len(steps))}
@@ -56,14 +55,10 @@ func (b *Bridge) ExecutePlan(ctx context.Context, steps []browser.PlanStep) (bro
 	return result, nil
 }
 
-// executePlanStep returns the step result and the tab id a successful
-// focus_tab/open moved to, or "".
 func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.PlanStep) (browser.PlanStepResult, string) {
 	sr := browser.PlanStepResult{Index: index, Action: step.Action, OK: true}
 	retargetTo := ""
 
-	// Re-check site consent against where the tab is NOW; an earlier step may
-	// have navigated.
 	if err := browser.GateSequenceStep(ctx, index, b.contextTabID(ctx), step.ConsentProbe()); err != nil {
 		sr.OK = false
 		sr.Error = err.Error()
@@ -107,7 +102,7 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 		}
 		b.settle(ctx, batchActionSettle)
 	case "find_act":
-		// Several matches is an error, never a guess.
+
 		if step.Find == nil {
 			actionErr = errors.New("find_act requires find")
 			break
@@ -213,8 +208,7 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 			retargetTo = openRes.Tab.ID
 		}
 	case "navigate_to":
-		// Drives the existing tab; raw primitives so plans do not pay for an observed
-		// wrapper on top of their own final observation.
+
 		if step.URL == "" {
 			actionErr = errors.New("navigate_to requires url")
 			break
@@ -262,8 +256,6 @@ func (b *Bridge) executePlanStep(ctx context.Context, index int, step browser.Pl
 	return sr, retargetTo
 }
 
-// waitChunkLimit keeps one in-page wait inside the bridge request timeout, with
-// headroom for the WS round-trip.
 func (b *Bridge) waitChunkLimit() time.Duration {
 	limit := waitConditionChunk
 	if budget := b.timeout - 2*time.Second; budget > 0 && budget < limit {
@@ -275,9 +267,6 @@ func (b *Bridge) waitChunkLimit() time.Duration {
 	return limit
 }
 
-// waitConditionOnce awaits WaitConditionScript once: true when the condition
-// holds, false at chunk. The check runs in the renderer on DOM mutations, so N
-// concurrent waits cost N held evaluates, not N polling loops.
 func (b *Bridge) waitConditionOnce(ctx context.Context, condition string, chunk time.Duration) (bool, error) {
 	ctx = b.pinActiveTab(ctx)
 	token, err := NewAuthToken()

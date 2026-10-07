@@ -10,13 +10,9 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// downloadsUnsupportedNote is returned for an extension predating get_downloads
-// (issue #6), keeping the Supported=false contract.
 const downloadsUnsupportedNote = "Download capture is unavailable: the connected brw extension predates chrome.downloads support (issue #6). Reload the brw extension, or restart brw with the direct-CDP backend. Check Supported=false to detect this programmatically."
 
-// Downloads returns the extension's retained chrome.downloads snapshot, with
-// tab provenance correlated extension-side. Recipe-scoped contexts get only
-// entries from their tab changed since their baseline; other calls get it all.
+// Downloads returns the extension's retained chrome.downloads snapshot, with tab provenance correlated extension-side.
 func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error) {
 	payload, err := b.downloadSnapshot(ctx)
 	if err != nil {
@@ -56,13 +52,12 @@ func (b *Bridge) Downloads(ctx context.Context) (browser.DownloadsResult, error)
 		Downloads: result,
 		Count:     len(result),
 		Supported: payload.Supported,
-		// chrome.downloads always reports the local path.
+
 		FilePaths: payload.Supported,
 		Note:      payload.Note,
 	}, nil
 }
 
-// downloadSnapshotPayload is the extension's registry before caller filtering.
 type downloadSnapshotPayload struct {
 	Downloads []browser.DownloadEntry `json:"downloads"`
 	Supported bool                    `json:"supported"`
@@ -71,8 +66,6 @@ type downloadSnapshotPayload struct {
 	ChangedAt map[string]time.Time `json:"-"`
 }
 
-// decodeDownloadChangeTimes reads per-entry changed_at_ms. Older extensions
-// send none, and a wait then treats already-terminal downloads as old.
 func decodeDownloadChangeTimes(raw []byte) map[string]time.Time {
 	var timing struct {
 		Downloads []struct {
@@ -93,8 +86,6 @@ func decodeDownloadChangeTimes(raw []byte) map[string]time.Time {
 	return out
 }
 
-// downloadSnapshot fetches and ingests without advancing a recipe's per-tab
-// cursor, so a download wait's polling cannot consume that baseline.
 func (b *Bridge) downloadSnapshot(ctx context.Context) (downloadSnapshotPayload, error) {
 	var payload downloadSnapshotPayload
 	raw, err := b.call(ctx, "get_downloads", nil)

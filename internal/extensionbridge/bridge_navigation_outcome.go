@@ -8,8 +8,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// extensionNavigationOutcome is the extension's navigation_outcome reply: what
-// the last navigation the daemon armed on a tab ended with.
 type extensionNavigationOutcome struct {
 	Known        bool     `json:"known"`
 	URL          string   `json:"url"`
@@ -18,20 +16,10 @@ type extensionNavigationOutcome struct {
 	Error        string   `json:"error"`
 }
 
-// navigationOutcomeSettle bounds the wait for webNavigation.onErrorOccurred
-// after Chrome has already committed its error page.
 const navigationOutcomeSettle = 500 * time.Millisecond
 
-// navigationOutcomeCallTimeout bounds each call that reads the outcome. While
-// the document request is still waiting for the server, Chrome answers no
-// debugger command on the tab, and the bridge's default call timeout would
-// hold the open that long after its readiness wait gave up.
 const navigationOutcomeCallTimeout = 2 * time.Second
 
-// navigationOutcome reports how the tab's last brw-driven navigation ended.
-// committedURL is the main frame's URL when the caller has it; empty reads it
-// here. An extension older than navigation_outcome still yields the committed
-// URL, which is enough to tell a failed navigation from a loaded page.
 func (b *Bridge) navigationOutcome(ctx context.Context, tabID, requestedURL, committedURL string) browser.NavigationOutcome {
 	out := browser.NavigationOutcome{URL: requestedURL, CommittedURL: committedURL}
 	if out.CommittedURL == "" {
@@ -78,9 +66,6 @@ func (b *Bridge) readNavigationOutcome(ctx context.Context, tabID string) (exten
 	return ext, true
 }
 
-// openResult builds an open's result and folds in how its navigation ended.
-// The extension bridge has no brw_authenticate, so an auth challenge names the
-// CDP lane as the way past it.
 func (b *Bridge) openResult(ctx context.Context, tab browser.Tab, requestedURL string, ready bool) browser.OpenResult {
 	result := browser.OpenResult{Tab: tab, Ready: ready}
 	if requestedURL == "about:blank" {
@@ -90,8 +75,6 @@ func (b *Bridge) openResult(ctx context.Context, tab browser.Tab, requestedURL s
 	return result
 }
 
-// navigationFailure is the error navigate_to returns when the navigation ended
-// on Chrome's error page or a network error.
 func (b *Bridge) navigationFailure(ctx context.Context, tabID, targetURL, committedURL, errorText string) error {
 	outcome := b.navigationOutcome(ctx, tabID, targetURL, committedURL)
 	if outcome.Error == "" {

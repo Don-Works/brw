@@ -9,14 +9,9 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// windowResizeUnsupportedNote explains a bridge that predates resize support,
-// so an agent can tell "your extension is old" apart from "the resize failed".
 const windowResizeUnsupportedNote = "this brw extension build predates window resizing; update the extension to resize the browser window"
 
-// ResizeWindow moves and resizes the real OS window hosting a tab, via the
-// extension's chrome.windows API. The direct-CDP backend does the same thing
-// through Browser.setWindowBounds; both validate identically so an agent gets
-// the same errors whichever transport it is on.
+// ResizeWindow moves and resizes the real OS window hosting a tab, via the extension's chrome.windows API.
 func (b *Bridge) ResizeWindow(ctx context.Context, opts browser.WindowResizeOptions) (browser.WindowResizeResult, error) {
 	if err := browser.ValidateWindowResize(opts); err != nil {
 		return browser.WindowResizeResult{}, err
@@ -26,9 +21,6 @@ func (b *Bridge) ResizeWindow(ctx context.Context, opts browser.WindowResizeOpti
 		return browser.WindowResizeResult{}, err
 	}
 
-	// Resolve through the same path every page tool uses, so an explicit
-	// tab_id, an HTTP session lease, and the session's working tab all behave
-	// here exactly as they do elsewhere.
 	tabID := b.contextTabID(ctx)
 	if tabID == "" {
 		return browser.WindowResizeResult{}, errors.New("no tab to resize: open or focus a tab first, or pass tab_id")
@@ -73,7 +65,6 @@ func (b *Bridge) ResizeWindow(ctx context.Context, opts browser.WindowResizeOpti
 		result.Clamped = true
 	}
 	if state != "" && state != "normal" {
-		// A maximize is expected to land on a different size; that is not a clamp.
 		result.Clamped = false
 	}
 	if result.Clamped {
