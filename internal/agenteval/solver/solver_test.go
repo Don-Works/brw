@@ -5,14 +5,6 @@ import (
 	"testing"
 )
 
-// TestAgentExposesOnlyTheSemanticVerbs is what the package boundary is for.
-//
-// The grader reads its evidence by evaluating script in the page. A solver that
-// could reach the same channel could arrange for the evidence to agree with it,
-// so the manager is unexported and lives here rather than beside the task
-// bodies. That only holds while the surface stays closed: an exported field, an
-// accessor, or an Evaluate added later would reopen it without anyone noticing,
-// because nothing else in the tree would fail.
 func TestAgentExposesOnlyTheSemanticVerbs(t *testing.T) {
 	allowed := map[string]bool{
 		"Snapshot":  true,

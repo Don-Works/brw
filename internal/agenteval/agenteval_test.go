@@ -14,9 +14,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// TestEveryTaskIsWellFormed walks the task table itself, so a task added
-// without a fixture, a goal or a grader fails here instead of minutes into a
-// run.
 func TestEveryTaskIsWellFormed(t *testing.T) {
 	tasks := Tasks()
 	if len(tasks) != 4 {
@@ -58,10 +55,6 @@ func TestEveryTaskIsWellFormed(t *testing.T) {
 	}
 }
 
-// TestEvaluationFixturesReachNothingOffThisMachine backs the claim the harness
-// makes about itself. A task whose fixture fetched anything from another host
-// would grade differently depending on that host's availability, and would do
-// so silently.
 func TestEvaluationFixturesReachNothingOffThisMachine(t *testing.T) {
 	var paths []string
 	seen := map[string]bool{}
@@ -77,12 +70,6 @@ func TestEvaluationFixturesReachNothingOffThisMachine(t *testing.T) {
 	}
 }
 
-// TestNoTaskPassesWithoutEvidence is the property that makes the whole set an
-// evaluation: given an end state the harness never observed, no task may report
-// success — whatever the run claimed about itself.
-//
-// It enumerates the table rather than naming tasks, so a task added later
-// cannot quietly be the one that passes on nothing.
 func TestNoTaskPassesWithoutEvidence(t *testing.T) {
 	claims := []struct {
 		name    string
@@ -110,13 +97,6 @@ func TestNoTaskPassesWithoutEvidence(t *testing.T) {
 	}
 }
 
-// TestSabotagedRunIsGradedAFailure drives one task through the real harness —
-// real headless Chrome, the real fixture origin, the real probe — in both
-// modes.
-//
-// This is the assertion the evaluation rests on: an evaluation that cannot
-// report a failure measures nothing. It runs ONE task, not the suite; the suite
-// run is a measurement and lives behind `task eval`, not behind `go test`.
 func TestSabotagedRunIsGradedAFailure(t *testing.T) {
 	if testing.Short() {
 		t.Skip("launches a real browser")
@@ -166,9 +146,7 @@ func TestSabotagedRunIsGradedAFailure(t *testing.T) {
 	if len(sabotaged.Reasons) == 0 {
 		t.Error("the sabotaged run failed without naming what was missing")
 	}
-	// The end state has to come from the page, not from the run's own account of
-	// itself: a sabotaged run that produced no observation would fail for the
-	// wrong reason.
+
 	if sabotaged.EndState.Fields == nil {
 		t.Fatal("the sabotaged run recorded no observed end state")
 	}
@@ -187,13 +165,8 @@ func TestSabotagedRunIsGradedAFailure(t *testing.T) {
 	}
 }
 
-// waitPrefixPattern reads brw's own in-page wait grammar rather than a list
-// written next to it, so a condition prefix added there shows up here.
 var waitPrefixPattern = regexp.MustCompile(`condition\.indexOf\('([a-z_]+:)'\)===0`)
 
-// nonScriptWaitPrefixes are the wait conditions that compare a value the caller
-// supplies against page state. Each is a string comparison or a selector match,
-// so none of them is a way to execute caller-supplied code.
 var nonScriptWaitPrefixes = map[string]bool{
 	"url:": true, "not_url:": true,
 	"title:": true, "not_title:": true,
@@ -202,12 +175,6 @@ var nonScriptWaitPrefixes = map[string]bool{
 	"selector:": true, "not_selector:": true,
 }
 
-// TestEveryWaitConditionPrefixIsClassified is the guard on the solver surface.
-//
-// The Agent deliberately cannot run script in the page, and the wait grammar is
-// the one place a caller-supplied string reaches an evaluator. A prefix added
-// to that grammar and left unclassified here fails, rather than quietly
-// becoming a way back in.
 func TestEveryWaitConditionPrefixIsClassified(t *testing.T) {
 	matches := waitPrefixPattern.FindAllStringSubmatch(snapshot.WaitConditionScript, -1)
 	if len(matches) == 0 {
@@ -240,13 +207,8 @@ func TestEveryWaitConditionPrefixIsClassified(t *testing.T) {
 	}
 }
 
-// TestAgentRefusesAWaitThatCarriesScript proves the classification is acted on,
-// not merely recorded.
 func TestAgentRefusesAWaitThatCarriesScript(t *testing.T) {
-	// The Agent carries no manager: the refusal has to happen before anything
-	// reaches the browser, so a condition that got past it cannot quietly
-	// succeed. The recover turns that into this test's failure rather than the
-	// whole binary's.
+
 	agent := solver.New(context.Background(), nil, "")
 	refused := []string{
 		"fn:document.title='x'",
@@ -275,8 +237,6 @@ func TestAgentRefusesAWaitThatCarriesScript(t *testing.T) {
 	}
 }
 
-// waitWithoutCrashing calls WaitFor on a manager-less Agent and turns the
-// nil-pointer panic a removed guard would cause into an ordinary error.
 func waitWithoutCrashing(agent *solver.Agent, condition string) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {

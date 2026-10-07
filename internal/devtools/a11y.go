@@ -10,9 +10,7 @@ import (
 	"github.com/Don-Works/brw/internal/devtools/axe"
 )
 
-// Summary bounds. An axe report on a real application is tens of thousands of
-// lines; the whole point of the artifact is that the MCP answer stays small
-// enough to read. These are the defaults, not the ceiling a caller may ask for.
+// Summary bounds.
 const (
 	DefaultAuditMaxRules = 10
 	MaxAuditMaxRules     = 50
@@ -21,40 +19,25 @@ const (
 	auditSampleLimit     = 300
 )
 
-// impactOrder ranks axe's impact labels worst-first. A summary that listed
-// rules in axe's own order would bury a critical failure under three minor ones.
 var impactOrder = map[string]int{"critical": 0, "serious": 1, "moderate": 2, "minor": 3}
 
-// AuditTagNames are the axe rule tags the brw_a11y_audit schema names as
-// examples: the WCAG conformance levels and the best-practice set. They are
-// examples rather than a schema enum because axe accepts many more tags and the
-// run forwards whatever it is given, so a closed list would advertise a
-// restriction the code does not impose.
+// AuditTagNames are the axe rule tags the brw_a11y_audit schema names as examples: the WCAG conformance levels and the best-practice set.
 func AuditTagNames() []string {
 	return []string{"wcag2a", "wcag2aa", "wcag2aaa", "wcag21a", "wcag21aa", "wcag22aa", "best-practice"}
 }
 
 type AuditOptions struct {
-	// Tags limits the run to axe rules carrying one of these tags. Empty runs
-	// every rule axe ships.
+	// Tags limits the run to axe rules carrying one of these tags.
 	Tags []string `json:"tags,omitempty"`
-	// Rules limits the run to these exact axe rule ids, for re-checking one
-	// finding after a fix without paying for a whole audit.
+	// Rules limits the run to these exact axe rule ids, for re-checking one finding after a fix without paying for a whole audit.
 	Rules []string `json:"rules,omitempty"`
-	// Selector scopes the audit to the subtree matching one CSS selector, so a
-	// component can be audited without the rest of the page's violations in the
-	// way. Empty audits the whole document.
+	// Selector scopes the audit to the subtree matching one CSS selector, so a component can be audited without the rest of the page's violations in the way.
 	Selector string `json:"selector,omitempty"`
-	// IncludePasses keeps the passing nodes in the stored report. Off by
-	// default: on a large page the passes outweigh everything else combined.
+	// IncludePasses keeps the passing nodes in the stored report.
 	IncludePasses bool `json:"include_passes,omitempty"`
 	MaxRules      int  `json:"max_rules,omitempty"`
 	MaxRefs       int  `json:"max_refs,omitempty"`
-	// TTLSeconds shortens how long the stored report is kept. Zero takes the
-	// artifact store's own retention, and a value past that retention is
-	// clamped down to it: this can shorten the store default, never extend it.
-	// The report carries the raw outerHTML of every failing element, so a
-	// caller auditing a page that holds real data needs a way to bound it.
+	// TTLSeconds shortens how long the stored report is kept.
 	TTLSeconds int    `json:"ttl_seconds,omitempty"`
 	TabID      string `json:"tab_id,omitempty"`
 }
@@ -81,8 +64,7 @@ func (o AuditOptions) Normalize() AuditOptions {
 	return o
 }
 
-// ReportTTL is the retention the caller asked for on the stored report. Zero
-// means the artifact store's own default.
+// ReportTTL is the retention the caller asked for on the stored report.
 func (o AuditOptions) ReportTTL() time.Duration {
 	if o.TTLSeconds <= 0 {
 		return 0
@@ -103,8 +85,7 @@ func trimmedList(in []string) []string {
 	return out
 }
 
-// AuditRule is one failing axe rule, reduced to what an agent acts on: what is
-// wrong, how bad it is, and which elements to go and look at.
+// AuditRule is one failing axe rule, reduced to what an agent acts on: what is wrong, how bad it is, and which elements to go and look at.
 type AuditRule struct {
 	ID      string   `json:"id"`
 	Impact  string   `json:"impact"`
@@ -112,18 +93,14 @@ type AuditRule struct {
 	HelpURL string   `json:"help_url,omitempty"`
 	Tags    []string `json:"tags,omitempty"`
 	Nodes   int      `json:"nodes"`
-	// Refs are brw refs for the offending elements, usable directly with
-	// brw_highlight, brw_click and the rest. Bounded by max_refs.
+	// Refs are brw refs for the offending elements, usable directly with brw_highlight, brw_click and the rest.
 	Refs []string `json:"refs,omitempty"`
-	// Targets are the CSS selectors axe reported, in the same order as Refs,
-	// for an element brw could not stamp a ref onto.
+	// Targets are the CSS selectors axe reported, in the same order as Refs, for an element brw could not stamp a ref onto.
 	Targets []string `json:"targets,omitempty"`
 	Sample  string   `json:"sample,omitempty"`
 }
 
-// ArtifactRef is the payload-free handle to the stored full report. It mirrors
-// artifact.Meta without importing it: the artifact package already depends on
-// browser, and this package sits underneath both.
+// ArtifactRef is the payload-free handle to the stored full report.
 type ArtifactRef struct {
 	ID        string    `json:"artifact_id"`
 	MIMEType  string    `json:"mime_type,omitempty"`
@@ -132,9 +109,7 @@ type ArtifactRef struct {
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
-// AuditResult is the bounded answer. The complete axe document never travels
-// in it: Report is populated by the transport that ran the audit and is moved
-// into an artifact by the layer that has a store, then dropped.
+// AuditResult is the bounded answer.
 type AuditResult struct {
 	URL    string `json:"url"`
 	Title  string `json:"title"`
@@ -142,10 +117,7 @@ type AuditResult struct {
 
 	Violations     int `json:"violations"`
 	ViolationNodes int `json:"violation_nodes"`
-	// ByImpact counts failing ELEMENTS, not rules, and each element is counted
-	// at its own node impact where axe gave it one. A rule whose nodes differ
-	// in severity therefore spreads across buckets instead of putting its whole
-	// node count under the rule's worst label.
+	// ByImpact counts failing ELEMENTS, not rules, and each element is counted at its own node impact where axe gave it one.
 	ByImpact        map[string]int `json:"by_impact,omitempty"`
 	Rules           []AuditRule    `json:"rules,omitempty"`
 	Incomplete      int            `json:"incomplete"`
@@ -155,34 +127,20 @@ type AuditResult struct {
 	Truncated       bool           `json:"truncated,omitempty"`
 
 	Artifact *ArtifactRef `json:"artifact,omitempty"`
-	// PageEffects names what the audit left behind in the document, the way
-	// HighlightResult.Reversible does for the overlay. The audit is read-shaped
-	// but it is not effect-free, and a caller should not have to read the
-	// source to find that out.
+	// PageEffects names what the audit left behind in the document, the way HighlightResult.Reversible does for the overlay.
 	PageEffects string `json:"page_effects"`
 	Note        string `json:"note,omitempty"`
 
-	// Report is the complete audit document destined for the artifact store. It
-	// is never serialized into a response.
+	// Report is the complete audit document destined for the artifact store.
 	Report json.RawMessage `json:"-"`
 }
 
 // AxeProbeScript reports whether a usable axe is already in the document.
-//
-// It answers only that, because a document that ships its own engine keeps it:
-// replacing another script's global is a side effect an audit has no business
-// having. What actually ran is read off the run instead — RawAudit.Engine
-// carries the page engine's version and RawAudit.Ours says whether brw put it
-// there — and SummarizeAudit names both in the answer, so a stale copy is
-// visible to the caller rather than silently passed off as the embedded one.
 const AxeProbeScript = `(function() {
   return { present: !!(window.axe && typeof window.axe.run === 'function') };
 })()`
 
-// AxeInstallExpression wraps the embedded bundle so evaluating it returns a
-// small confirmation instead of whatever the UMD wrapper's completion value
-// happens to be. The bundle takes the global explicitly, so nesting it inside
-// another function changes nothing about how it installs itself.
+// AxeInstallExpression wraps the embedded bundle so evaluating it returns a small confirmation instead of whatever the UMD wrapper's completion value happens to be.
 func AxeInstallExpression() string {
 	return `(function() {
 ` + axe.Source + `
@@ -191,8 +149,7 @@ func AxeInstallExpression() string {
 })()`
 }
 
-// BuildAuditExpression renders one axe run. It normalizes defensively so a
-// caller that skipped Normalize still gets a trimmed selector and lists.
+// BuildAuditExpression renders one axe run.
 func BuildAuditExpression(opts AuditOptions) string {
 	opts = opts.Normalize()
 	args, _ := json.Marshal(map[string]any{
@@ -204,19 +161,7 @@ func BuildAuditExpression(opts AuditOptions) string {
 	return fmt.Sprintf("%s(%s)", AuditScript, args)
 }
 
-// AuditScript runs the installed axe engine and stamps a brw ref onto every
-// element a rule failed on, so the answer names elements the rest of the tool
-// surface can act on rather than CSS selectors an agent has to re-resolve.
-//
-// Stamping reuses the data-brw-ref attribute brw_snapshot already writes, and
-// the same window.__brw counter, so a ref minted here is the same ref a later
-// snapshot reports for that element.
-//
-// That attribute is not the audit's only effect on the page. Whichever
-// transport ran this had to define window.axe first, and the engine stays
-// installed for the life of the document so that re-checking one rule after a
-// fix does not pay the half-megabyte injection again. AuditResult.PageEffects
-// states that in the answer rather than leaving it to be discovered.
+// AuditScript runs the installed axe engine and stamps a brw ref onto every element a rule failed on, so the answer names elements the rest of the tool surface can act on rather than CSS selectors an agent has to re-resolve.
 const AuditScript = `(function(opts) {
   if (!window.axe || typeof window.axe.run !== 'function') {
     return Promise.resolve({ ok: false, error: 'axe-core is not installed in this document' });
@@ -308,7 +253,6 @@ type RawAudit struct {
 	Report json.RawMessage `json:"report"`
 }
 
-// axeReport is the slice of the axe document the summary reads.
 type axeReport struct {
 	Violations   []axeRule `json:"violations"`
 	Incomplete   []axeRule `json:"incomplete"`
@@ -332,9 +276,7 @@ type axeNode struct {
 	Ref            string          `json:"brw_ref"`
 }
 
-// SummarizeAudit reduces one axe document to a bounded answer and packages the
-// complete document for the artifact store. Both transports call it, so the
-// summary cannot mean different things over CDP and over the extension bridge.
+// SummarizeAudit reduces one axe document to a bounded answer and packages the complete document for the artifact store.
 func SummarizeAudit(raw RawAudit, opts AuditOptions, now time.Time) (AuditResult, error) {
 	if !raw.OK {
 		message := strings.TrimSpace(raw.Error)
@@ -367,10 +309,7 @@ func SummarizeAudit(raw RawAudit, opts AuditOptions, now time.Time) (AuditResult
 	for _, rule := range report.Violations {
 		result.ViolationNodes += len(rule.Nodes)
 		impact := impactOf(rule)
-		// Per node, not per rule: axe labels each node it found, and a rule
-		// holding one minor and one critical element is one of each. Bucketing
-		// both under the rule's worst label would tell a caller sizing the work
-		// that there are two critical elements to fix.
+
 		for _, node := range rule.Nodes {
 			bucket := node.Impact
 			if bucket == "" {
@@ -400,8 +339,7 @@ func SummarizeAudit(raw RawAudit, opts AuditOptions, now time.Time) (AuditResult
 		}
 		rules = append(rules, summarized)
 	}
-	// Worst impact first, then most nodes, then rule id: an agent reading only
-	// the first entry should be reading the worst thing on the page.
+
 	sort.SliceStable(rules, func(i, j int) bool {
 		a, b := rules[i], rules[j]
 		if rankImpact(a.Impact) != rankImpact(b.Impact) {
@@ -422,10 +360,7 @@ func SummarizeAudit(raw RawAudit, opts AuditOptions, now time.Time) (AuditResult
 	}
 	result.PageEffects = pageEffects(raw)
 	if !raw.Ours {
-		// Name both versions. The engine already in the document may be older
-		// than the embedded one, and axe moves rule ids and impact labels
-		// between majors, so "which engine produced this" is part of the answer
-		// rather than something a caller has to infer.
+
 		engine := result.Engine
 		if engine == "" {
 			engine = "an unidentified axe-core"
@@ -461,10 +396,6 @@ func SummarizeAudit(raw RawAudit, opts AuditOptions, now time.Time) (AuditResult
 	return result, nil
 }
 
-// pageEffects describes what the audit left in the document. The stamped refs
-// are the point of the tool; the engine staying installed is the cost of not
-// re-injecting half a megabyte on every re-check, and it is stated rather than
-// glossed as a pure read.
 func pageEffects(raw RawAudit) string {
 	stamped := "data-brw-ref attributes stamped on the failing elements, the same attribute brw_snapshot writes"
 	if !raw.Ours {
@@ -473,9 +404,6 @@ func pageEffects(raw RawAudit) string {
 	return stamped + "; axe-core " + axe.Version + " is left installed as window.axe for the life of this document, so a re-check does not re-inject it"
 }
 
-// impactOf prefers the rule's own impact and falls back to the worst impact any
-// of its nodes carries, because axe leaves the rule-level field empty on some
-// rules whose severity depends on what was found.
 func impactOf(rule axeRule) string {
 	if rule.Impact != "" {
 		return rule.Impact
@@ -499,8 +427,6 @@ func rankImpact(impact string) int {
 	return len(impactOrder)
 }
 
-// flattenTarget renders an axe target chain as one readable selector. Frame and
-// shadow hops are joined with " >> ", the notation axe itself prints.
 func flattenTarget(target json.RawMessage) string {
 	if len(target) == 0 {
 		return ""

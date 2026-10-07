@@ -5,10 +5,6 @@ import (
 	"testing"
 )
 
-// The offsets are computed in-page by searching the extracted prose for each
-// heading's text. That only works while both strings come from the same
-// whitespace-collapsing helper, so it has to be proven against a real render
-// rather than a hand-built fixture.
 func TestLiveHeadingOffsetsAddressRealProse(t *testing.T) {
 	html := `<!DOCTYPE html><html><body><main>
 <h1>Getting  started</h1>
@@ -44,16 +40,13 @@ func TestLiveHeadingOffsetsAddressRealProse(t *testing.T) {
 			t.Errorf("heading %q offset %d is past the end of the prose (%d)", heading.Text, offset, len(runes))
 			continue
 		}
-		// The offset must land exactly on the heading's own text, or every
-		// section slice is off by however far it drifted.
+
 		at := string(runes[offset:min(offset+len([]rune(heading.Text)), len(runes))])
 		if at != heading.Text {
 			t.Errorf("offset %d for heading %q lands on %q", offset, heading.Text, at)
 		}
 	}
 
-	// Whitespace in the source heading ("Getting  started") is collapsed by the
-	// same helper on both sides, so the match still lands.
 	if read.Headings[0].Text != "Getting started" {
 		t.Fatalf("heading text = %q, want whitespace collapsed", read.Headings[0].Text)
 	}

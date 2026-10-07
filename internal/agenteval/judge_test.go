@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// TestJudgeIsAbsentWithoutAKey is what makes the harness runnable: with no key
-// there is no judge, and therefore no request to anywhere.
 func TestJudgeIsAbsentWithoutAKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	if judge, ok := NewJudgeFromEnv(); ok || judge != nil {
@@ -47,9 +45,6 @@ func TestJudgeReadsItsConfigurationFromTheEnvironment(t *testing.T) {
 	}
 }
 
-// TestJudgeSendsTheEndStateAndNotTheClaim is the property the judge exists for.
-// It is shown the task, the criteria and what the harness observed; anything
-// the run said about itself must not reach it.
 func TestJudgeSendsTheEndStateAndNotTheClaim(t *testing.T) {
 	var captured struct {
 		path   string
@@ -95,9 +90,7 @@ func TestJudgeSendsTheEndStateAndNotTheClaim(t *testing.T) {
 	if got := captured.header.Get("anthropic-version"); got != anthropicVersion {
 		t.Errorf("anthropic-version = %q, want %q", got, anthropicVersion)
 	}
-	// Both halves of the refusal fallback, because either alone does nothing:
-	// the beta header without the field is an unused opt-in, and the field
-	// without the header is rejected.
+
 	if got := captured.header.Get("anthropic-beta"); !strings.Contains(got, serverSideFallbackBeta) {
 		t.Errorf("anthropic-beta = %q, want it to carry %q so a policy decline is re-served rather than dropping the judge", got, serverSideFallbackBeta)
 	}
@@ -143,12 +136,6 @@ func TestJudgeSurfacesAnErrorResponse(t *testing.T) {
 	}
 }
 
-// TestJudgeReportsWhatFailedRatherThanTheDecoder covers the endpoints that do
-// not answer in the API's own shape. A proxy in front of an operator-set
-// ANTHROPIC_BASE_URL answers a 502 with an HTML page, and decoding before
-// checking the status reported every one of those as "judge response was not
-// JSON" — the decoder's complaint, not the failure, and it sends whoever reads
-// the log looking at the wrong thing.
 func TestJudgeReportsWhatFailedRatherThanTheDecoder(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -207,10 +194,6 @@ func TestJudgeReportsWhatFailedRatherThanTheDecoder(t *testing.T) {
 	}
 }
 
-// TestJudgeBoundsTheBodyItDecodes drives an endpoint that answers with more
-// than the limit. The reply below is valid JSON carrying a valid verdict at the
-// very end, so an unbounded decoder reads all of it and reports a pass: the
-// error this test requires IS the bound.
 func TestJudgeBoundsTheBodyItDecodes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
@@ -250,12 +233,8 @@ func TestJudgeRefusalIsAnError(t *testing.T) {
 	}
 }
 
-// TestJudgeHonoursAContextDeadline pins that the caller's context reaches the
-// request. A judge that ignored it would hang a whole evaluation run.
 func TestJudgeHonoursAContextDeadline(t *testing.T) {
-	// The stall has a bound of its own: httptest.Server.Close waits for
-	// outstanding handlers, so a handler that only watched the request context
-	// would hang this test instead of failing it.
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
@@ -274,9 +253,7 @@ func TestJudgeHonoursAContextDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("a stalled judge did not return an error")
 	}
-	// Both halves matter. Any error at all would also be returned by a judge that
-	// ignored the context and waited for the handler's own bound, so the call has
-	// to come back on the deadline and say that is why.
+
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error %v is not the caller's deadline; the context did not reach the request", err)
 	}
@@ -318,9 +295,6 @@ func TestParseJudgeVerdict(t *testing.T) {
 	}
 }
 
-// TestJudgeCanFailARunButNeverRescueOne pins the layering. A judge that could
-// turn a failed end-state check into a pass would make the page stop being the
-// evidence.
 func TestJudgeCanFailARunButNeverRescueOne(t *testing.T) {
 	cases := []struct {
 		name        string

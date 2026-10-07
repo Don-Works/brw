@@ -3,26 +3,22 @@ package devtools
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// MaxHighlightRefs bounds one call. A highlight is something a human looks at;
-// past a dozen boxes the screen says nothing.
+// MaxHighlightRefs bounds one call.
 const MaxHighlightRefs = 12
 
-// MaxHighlightDurationMS caps the auto-clear timer. An overlay that outlives
-// the session it was drawn for is litter in someone's browser.
+// MaxHighlightDurationMS caps the auto-clear timer.
 const MaxHighlightDurationMS = 300000
 
-// MaxHighlightLabelBytes bounds the caption. It is drawn on one line above the
-// first box, so a caption longer than this is unreadable on screen anyway.
+// MaxHighlightLabelBytes bounds the caption.
 const MaxHighlightLabelBytes = 120
 
-// highlightColors is a closed set because the value is written into an inline
-// style. A caller-supplied colour string would be caller-supplied CSS.
 var highlightColors = map[string]string{
 	"red":    "#e5484d",
 	"orange": "#f76b15",
@@ -32,15 +28,9 @@ var highlightColors = map[string]string{
 	"purple": "#8e4ec6",
 }
 
-// HighlightColorNames lists the accepted colours in a stable order, for the
-// tool schema and the error message.
+// HighlightColorNames lists the accepted colours in a stable order, for the tool schema and the error message.
 func HighlightColorNames() []string {
-	names := make([]string, 0, len(highlightColors))
-	for name := range highlightColors {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(highlightColors))
 }
 
 type HighlightOptions struct {
@@ -51,17 +41,14 @@ type HighlightOptions struct {
 	Clear bool   `json:"clear,omitempty"`
 	Label string `json:"label,omitempty"`
 	Color string `json:"color,omitempty"`
-	// DurationMS auto-clears the overlay after this long. Zero leaves it until
-	// a clear call or the next navigation.
+	// DurationMS auto-clears the overlay after this long.
 	DurationMS int `json:"duration_ms,omitempty"`
-	// Scroll brings the first matched element into view. Off by default: moving
-	// the page is a side effect a read-shaped tool should not take uninvited.
+	// Scroll brings the first matched element into view.
 	Scroll bool   `json:"scroll,omitempty"`
 	TabID  string `json:"tab_id,omitempty"`
 }
 
-// Normalize folds ref into refs, applies defaults and rejects what the script
-// must not be handed.
+// Normalize folds ref into refs, applies defaults and rejects what the script must not be handed.
 func (o HighlightOptions) Normalize() (HighlightOptions, error) {
 	refs := make([]string, 0, len(o.Refs)+1)
 	seen := map[string]bool{}
@@ -120,8 +107,7 @@ type HighlightResult struct {
 	Note       string `json:"note,omitempty"`
 }
 
-// BuildHighlightExpression renders the overlay call for one already-normalized
-// options value.
+// BuildHighlightExpression renders the overlay call for one already-normalized options value.
 func BuildHighlightExpression(opts HighlightOptions) string {
 	args, _ := json.Marshal(map[string]any{
 		"refs":        opts.Refs,
@@ -135,18 +121,9 @@ func BuildHighlightExpression(opts HighlightOptions) string {
 }
 
 // HighlightHostID is the id of the single element the overlay adds to a page.
-// It is named here so the tool description, the script and a test all say the
-// same thing about what is added and what a clear removes.
 const HighlightHostID = "__brw_highlight_overlay"
 
 // HighlightScript draws a pointer-events-none overlay over one or more refs.
-//
-// It is the one observation in this package that changes what the page looks
-// like, so the change is confined and undoable: a single fixed-position container with a
-// reserved id is appended to the top document, the target elements are never
-// touched, and a clear (or the duration timer, or any navigation) removes the
-// container and the two listeners that keep it aligned. Nothing else in the
-// page is read, moved or restyled.
 const HighlightScript = `(function(opts) {` + snapshot.FrameWalkHelpers + `
   var HOST_ID = '` + HighlightHostID + `';
   var state = window.__brwHighlight || null;

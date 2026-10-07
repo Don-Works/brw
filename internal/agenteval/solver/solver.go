@@ -1,13 +1,4 @@
-// Package solver is the surface an evaluation's solver acts through: the
-// semantic verbs brw exposes to an agent over MCP, and nothing else.
-//
-// It is a package rather than a type in internal/agenteval because the
-// constraint it carries is only real across a package boundary. The grader
-// reads its evidence by evaluating script in the page; a solver that could
-// reach the same channel could arrange for the evidence to agree with it. Agent
-// holds the browser manager in an unexported field, so a task body — which
-// lives in internal/agenteval, not here — cannot take it back out. The one way
-// back in is a wait condition carrying JavaScript, which WaitFor refuses.
+// Package solver is the surface an evaluation's solver acts through: the semantic verbs brw exposes to an agent over MCP, and nothing else.
 package solver
 
 import (
@@ -28,8 +19,7 @@ type Agent struct {
 	tabID   string
 }
 
-// New binds an agent to one tab. Only the harness calls it: a solver is given
-// an Agent and has no manager of its own to build another with.
+// New binds an agent to one tab.
 func New(ctx context.Context, manager *browser.Manager, tabID string) *Agent {
 	return &Agent{ctx: ctx, manager: manager, tabID: tabID}
 }
@@ -87,17 +77,10 @@ func (a *Agent) Select(ref, value string) error {
 	return err
 }
 
-// ScriptCarryingWaitPrefixes are the wait conditions that take JavaScript
-// rather than a value to compare against.
-//
-// brw's wait grammar has one, and a solver allowed to use it would be back in
-// the page with arbitrary script — the same channel the grader reads its
-// evidence through. Exported so a test can check this list against brw's own
-// in-page grammar instead of against a copy of it.
+// ScriptCarryingWaitPrefixes are the wait conditions that take JavaScript rather than a value to compare against.
 var ScriptCarryingWaitPrefixes = []string{"fn:"}
 
-// WaitFor blocks until a page condition holds, refusing a condition that
-// carries script. See ScriptCarryingWaitPrefixes.
+// WaitFor blocks until a page condition holds, refusing a condition that carries script.
 func (a *Agent) WaitFor(condition string, timeout time.Duration) error {
 	if prefix, refused := IsScriptCarryingCondition(condition); refused {
 		return fmt.Errorf("a solver may not wait on %s, which runs script in the page", prefix)
@@ -105,8 +88,7 @@ func (a *Agent) WaitFor(condition string, timeout time.Duration) error {
 	return a.manager.WaitFor(a.context(), condition, timeout)
 }
 
-// IsScriptCarryingCondition reports whether a wait condition would execute
-// JavaScript, and names the prefix that makes it so.
+// IsScriptCarryingCondition reports whether a wait condition would execute JavaScript, and names the prefix that makes it so.
 func IsScriptCarryingCondition(condition string) (string, bool) {
 	trimmed := strings.ToLower(strings.TrimSpace(condition))
 	for _, prefix := range ScriptCarryingWaitPrefixes {

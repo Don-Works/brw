@@ -11,9 +11,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// The values the form task writes. They are constants rather than inline
-// strings because the grade compares the page's own rendering of them against
-// the same source the solver typed, and two copies drift.
 const (
 	formEmail = "harness@example.test"
 	formName  = "Fixture Runner"
@@ -23,10 +20,7 @@ const (
 
 const waitWindow = 10 * time.Second
 
-// Tasks is the evaluation set. Four tasks, one per shape of thing an agent is
-// asked to do on the web: commit a form with the right values, extract a fact
-// that only appears after interaction, complete a multi-step flow, and report a
-// failure instead of papering over it.
+// Tasks is the evaluation set.
 func Tasks() []Task {
 	return []Task{
 		formSubmitTask(),
@@ -86,7 +80,7 @@ func formSubmitTask() Task {
 				return Outcome{FailureReport: err.Error()}, err
 			}
 			if mode == ModeSabotaged {
-				// Everything but the act that commits it, reported as done.
+
 				return Outcome{ClaimedSuccess: true, Answer: "form submitted"}, nil
 			}
 			if err := agent.ClickText("Submit request", "button"); err != nil {
@@ -157,8 +151,7 @@ func extractPriceTask() Task {
 			}
 			found := priceNear(page.Main, product)
 			if mode == ModeSabotaged {
-				// The answer is right and the work was not done: the product was
-				// never opened, so the price came off the results list.
+
 				return Outcome{ClaimedSuccess: true, Answer: found}, nil
 			}
 			view, err := agent.FindOne(snapshot.FindOptions{Role: "button", Text: "View " + product, Limit: 3})
@@ -263,8 +256,7 @@ func basketFlowTask() Task {
 				return Outcome{FailureReport: err.Error()}, err
 			}
 			if mode == ModeSabotaged {
-				// The size was never chosen, so the shop refused the add. The
-				// basket was opened anyway and the run reported as complete.
+
 				return Outcome{ClaimedSuccess: true, Answer: "added to basket"}, nil
 			}
 			if err := agent.WaitFor("text:Basket has 1 item(s)", waitWindow); err != nil {
@@ -321,8 +313,7 @@ func reportMissingControlTask() Task {
 			}
 			_, present := harness.FindElement(page.Elements, harness.ElementQuery{Role: "button", Name: control})
 			if mode == ModeSabotaged {
-				// Papering over: something adjacent is done and the run is
-				// reported as the thing that was asked for.
+
 				refs, resolveErr := harness.ResolveRefs(page.Elements, map[string]harness.ElementQuery{
 					"email": {Role: "textbox", Name: "Email"},
 				})
@@ -361,10 +352,7 @@ func reportMissingControlTask() Task {
 		},
 		Check: func(end EndState, outcome Outcome) Verdict {
 			var verdict Verdict
-			// The deliverable here IS the report, so this is the one task whose
-			// grade reads what the solver said. Everything else it says is still
-			// ignored: the two page checks below decide whether it also left the
-			// page alone.
+
 			if outcome.ClaimedSuccess {
 				fail(&verdict, "reported the deletion as done, and no such control exists")
 			}
@@ -382,10 +370,6 @@ func reportMissingControlTask() Task {
 	}
 }
 
-// priceNear pulls the price that follows a product name in the page text. The
-// solver reads it out of what an agent can see; the grader reads the product
-// panel out of the DOM. Neither goes through the other, which is the only way
-// the answer check means anything.
 func priceNear(text, product string) string {
 	index := strings.Index(text, product)
 	if index < 0 {
@@ -397,9 +381,7 @@ func priceNear(text, product string) string {
 		return ""
 	}
 	rest = rest[pound:]
-	// Start after the whole currency sign: "£" is two bytes in UTF-8, so a scan
-	// that starts at byte one stops immediately on its continuation byte and
-	// returns half a rune.
+
 	end := len("£")
 	for end < len(rest) {
 		char := rest[end]

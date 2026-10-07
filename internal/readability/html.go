@@ -1,6 +1,7 @@
 package readability
 
 import (
+	"bytes"
 	"net/url"
 	"regexp"
 	"strings"
@@ -9,9 +10,6 @@ import (
 	"golang.org/x/net/html/atom"
 )
 
-// resolveURL turns a page-relative href into an absolute one so links survive
-// being read out of the page they came from. An href that will not parse is
-// returned unchanged rather than dropped.
 func resolveURL(base, href string) string {
 	baseURL, err := url.Parse(base)
 	if err != nil {
@@ -24,16 +22,9 @@ func resolveURL(base, href string) string {
 	return baseURL.ResolveReference(ref).String()
 }
 
-// FromHTML extracts a PageRead from raw HTML using the same shape the in-page
-// reader produces, so a no-browser read pages, sections and renders exactly like
-// a read taken through a tab.
-//
-// This is deliberately a structural extractor rather than a scoring one: it
-// drops chrome (script/style/nav/header/footer/aside), prefers the most
-// specific container that still holds the bulk of the prose, and keeps block
-// boundaries as newlines. It carries no site-specific rules.
+// FromHTML extracts a PageRead from raw HTML using the same shape the in-page reader produces, so a no-browser read pages, sections and renders exactly like a read taken through a tab.
 func FromHTML(pageURL string, htmlBytes []byte) (PageRead, error) {
-	doc, err := html.Parse(strings.NewReader(string(htmlBytes)))
+	doc, err := html.Parse(bytes.NewReader(htmlBytes))
 	if err != nil {
 		return PageRead{}, err
 	}
@@ -55,30 +46,16 @@ func FromHTML(pageURL string, htmlBytes []byte) (PageRead, error) {
 	return Normalize(read), nil
 }
 
-// FromMarkdown wraps already-markdown content in a PageRead. A server that
-// honours Accept: text/markdown has done the extraction for us, and re-parsing
-// its output as HTML would only damage it.
+// FromMarkdown wraps already-markdown content in a PageRead.
 func FromMarkdown(pageURL, title, markdown string) PageRead {
 	read := PageRead{URL: pageURL, Title: strings.TrimSpace(title), Main: collapseBlankRuns(markdown)}
-	if read.Title == "" {
-		read.Title = firstMarkdownHeading(markdown)
-	}
 	read.Headings = markdownHeadings(read.Main)
+	if read.Title == "" && len(read.Headings) > 0 {
+		read.Title = read.Headings[0].Text
+	}
 	return Normalize(read)
 }
 
-func firstMarkdownHeading(markdown string) string {
-	for _, line := range strings.Split(markdown, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
-			return strings.TrimSpace(strings.TrimLeft(trimmed, "# "))
-		}
-	}
-	return ""
-}
-
-// markdownHeadings indexes ATX headings so a markdown read is section-addressable
-// on the same code path as an HTML one.
 func markdownHeadings(markdown string) []Heading {
 	var headings []Heading
 	offset := 0
@@ -107,8 +84,6 @@ func markdownHeadings(markdown string) []Heading {
 	return headings
 }
 
-// skippedContainers never carry the document's prose. Dropping them before
-// extraction is what keeps a no-browser read from being mostly navigation.
 var skippedContainers = map[atom.Atom]bool{
 	atom.Script: true, atom.Style: true, atom.Noscript: true, atom.Template: true,
 	atom.Nav: true, atom.Header: true, atom.Footer: true, atom.Aside: true,
@@ -143,10 +118,6 @@ func findFirst(n *html.Node, a atom.Atom) *html.Node {
 	return nil
 }
 
-// pickMainContainer prefers an explicit <main> or <article>, then falls back to
-// the deepest single element that still holds most of the body's text. Without
-// the fallback, a page whose prose sits in an unlabelled <div> would be read
-// together with every sidebar the body contains.
 func pickMainContainer(body *html.Node) *html.Node {
 	if m := findFirst(body, atom.Main); m != nil {
 		return m
@@ -168,8 +139,7 @@ func pickMainContainer(body *html.Node) *html.Node {
 			if child.Type != html.ElementNode || skippedContainers[child.DataAtom] {
 				continue
 			}
-			// 60% keeps the container that holds the bulk of the prose while still
-			// descending past wrappers that merely contain it.
+
 			if len(strings.TrimSpace(textOf(child)))*100 >= total*60 {
 				best = child
 				walk(child)
@@ -203,8 +173,6 @@ func textOf(n *html.Node) string {
 	return b.String()
 }
 
-// renderBlock flattens an element tree to prose, emitting a newline at block
-// boundaries so paragraph structure survives into Main.
 func renderBlock(n *html.Node, b *strings.Builder) {
 	if n == nil {
 		return
@@ -270,9 +238,6 @@ func endBlock(b *strings.Builder) {
 	b.WriteString("\n")
 }
 
-// normalizeInlineSpace collapses runs of whitespace to a single space, which is
-// how a browser renders inline text and what keeps indented source HTML from
-// arriving as ragged prose.
 func normalizeInlineSpace(s string) string {
 	return inlineSpace.ReplaceAllString(s, " ")
 }
@@ -315,8 +280,6 @@ func collapseBlankRuns(s string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
-// headingsOf indexes headings by their character offset within the extracted
-// prose, which is what makes a section addressable by name.
 func headingsOf(root *html.Node, main string) []Heading {
 	var headings []Heading
 	searchFrom := 0

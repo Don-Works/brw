@@ -5,9 +5,6 @@ import (
 	"testing"
 )
 
-// A caller-supplied bound near MaxInt overflowed offset+limit to a negative
-// number and panicked the slice that followed — a single tool call could take
-// the daemon down.
 func TestWindowSurvivesExtremeBounds(t *testing.T) {
 	read := PageRead{Main: "hello world this is prose"}
 	total := len([]rune(read.Main))
@@ -26,7 +23,6 @@ func TestWindowSurvivesExtremeBounds(t *testing.T) {
 	}
 }
 
-// A huge bound must simply mean "all of it", not a truncation or an error.
 func TestWindowExtremeBoundReturnsWholeDocument(t *testing.T) {
 	read := PageRead{Main: "hello world"}
 	got := Window(read, ReadOptions{MaxChars: 1<<63 - 1})
@@ -38,11 +34,9 @@ func TestWindowExtremeBoundReturnsWholeDocument(t *testing.T) {
 	}
 }
 
-// FindSectionSpan must pick the NEAREST following sibling heading, not the
-// first one that happens to appear in the slice.
 func TestFindSectionSpanUsesNearestFollowingHeading(t *testing.T) {
 	main := strings.Repeat("x", 200)
-	// Deliberately out of document order.
+
 	headings := []Heading{
 		{Level: 1, Text: "A", Offset: intPtr(0)},
 		{Level: 1, Text: "C", Offset: intPtr(100)},
