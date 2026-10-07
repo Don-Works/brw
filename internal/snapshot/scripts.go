@@ -15,12 +15,6 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// snapshotInstallTarget is the window property the DOM walker is cached under so
-// it ships once per document instead of once per call. The name carries a
-// per-process random token so a page cannot predefine, shadow, or spoof the
-// snapshot entry point (it would have to guess the token), and the install path
-// overwrites it unconditionally so a hostile/colliding page value cannot wedge
-// snapshots. Stable for the process so the fast path keeps hitting.
 var snapshotInstallTarget = "window.__brw_snap_" + randomToken()
 
 var snapshotVersion atomic.Uint64
@@ -40,8 +34,7 @@ func nextSnapshotVersion() uint64 {
 func randomToken() string {
 	var b [12]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// RNG failure is effectively impossible; fall back to a fixed suffix so
-		// the property name stays a valid identifier.
+
 		return "fallback"
 	}
 	return hex.EncodeToString(b[:])
@@ -1152,9 +1145,6 @@ const ResolveOrRecoverBoxScript = `(function(ref) {` + FrameWalkHelpers + `
 })`
 
 const FocusElementScript = `(function(ref) {` + FrameWalkHelpers + `
-  function roots() {
-    return __abRootList();
-  }
   function findByRef(ref) {
     var hit = __abFindDeep(ref);
     return hit ? hit.el : null;
@@ -1179,31 +1169,13 @@ const FocusElementScript = `(function(ref) {` + FrameWalkHelpers + `
   return focused(el);
 })`
 
-// NotASelectElement is the exact text SelectElementScript returns when the ref
-// names something that is not a <select>. It is a CONTRACT rather than a
-// message: two callers branch on it to fall back to the custom-dropdown path,
-// and they have to branch on the text because the value crosses into JavaScript
-// and back as a string, with no error type to carry.
-//
-// Declared once and interpolated into the script below, so a reword cannot
-// leave the script saying one thing while the callers look for another. That
-// desync has no loud failure mode — the fallback simply stops firing and every
-// custom dropdown starts returning a hard error instead of being clicked.
+// NotASelectElement is the exact text SelectElementScript returns when the ref names something that is not a <select>.
 const NotASelectElement = "ref is not a select element"
 
-// ErrAssertionTimeout is the one assertion-timed-out error, for the same reason
-// NotASelectElement is one string: a caller branches on it to tell "the page has
-// not got there yet" apart from "the assertion is wrong", and it was written out
-// by hand in four places across three packages.
-//
-// The recipe runner reads it through an interface that may be an in-process
-// Manager, the extension bridge, or an HTTP client proxying to another daemon.
-// Over that last one the error arrives as text with no wrapping left, so callers
-// match the sentinel AND its message; AssertionTimedOut does both.
+// ErrAssertionTimeout reports that the assertion deadline passed without a match.
 var ErrAssertionTimeout = errors.New("assertion did not pass within timeout")
 
-// AssertionTimedOut reports whether err is the assertion-timeout sentinel,
-// including when it has crossed a process boundary and arrived as plain text.
+// AssertionTimedOut reports whether err is the assertion-timeout sentinel, including when it has crossed a process boundary and arrived as plain text.
 func AssertionTimedOut(err error) bool {
 	if err == nil {
 		return false
@@ -1212,17 +1184,11 @@ func AssertionTimedOut(err error) bool {
 		strings.Contains(err.Error(), ErrAssertionTimeout.Error())
 }
 
-// settleObserverMissing is the reason AwaitSettle's script reports when the
-// observer it was asked about is gone. Interpolated into that script rather than
-// written on both sides, so the Go check and the JavaScript cannot drift.
 const settleObserverMissing = "missing"
 
 const SelectElementScript = `(function(ref, value) {` + FrameWalkHelpers + `
   function clean(s) {
     return String(s || '').replace(/\s+/g, ' ').trim();
-  }
-  function roots() {
-    return __abRootList();
   }
   function findByRef(ref) {
     var hit = __abFindDeep(ref);
@@ -1244,9 +1210,6 @@ const SelectElementScript = `(function(ref, value) {` + FrameWalkHelpers + `
 })`
 
 const FillElementScript = `(function(ref, text, replace) {` + FrameWalkHelpers + `
-  function roots() {
-    return __abRootList();
-  }
   function findByRef(ref) {
     var hit = __abFindDeep(ref);
     return hit ? hit.el : null;
@@ -1357,9 +1320,6 @@ const FileInputEventsScript = `(function(ref) {` + FrameWalkHelpers + `
 })`
 
 const HoverElementScript = `(function(ref) {` + FrameWalkHelpers + `
-  function roots() {
-    return __abRootList();
-  }
   function findByRef(ref) {
     var hit = __abFindDeep(ref);
     return hit ? hit.el : null;
@@ -1406,13 +1366,7 @@ const HoverElementScript = `(function(ref) {` + FrameWalkHelpers + `
   return { ok: true, ref: ref, delayed_hover: __abNeedsDelayedHover(el) };
 })`
 
-// PressKeyFallbackScript provides keyboard semantics on an inactive extension-
-// bridge tab. Chrome accepts Input.dispatchKeyEvent for such a tab but drops it
-// before the renderer, so no DOM event or native default occurs. The extension
-// cannot activate that tab without visibly switching what the user is viewing.
-// This bounded fallback dispatches the expected DOM events and implements the
-// browser defaults automation most often needs. Foreground tabs still use trusted
-// CDP key input; this script is never used there.
+// PressKeyFallbackScript provides keyboard semantics on an inactive extension- bridge tab.
 const PressKeyFallbackScript = `(function(desc) {
   desc = desc || {};
   const key = String(desc.key || '');
@@ -1733,32 +1687,12 @@ const ScrollPageScript = `(function(direction) {
   return { ok: true, target: 'none', changed: false };
 })`
 
-// SnapshotCallExpressions returns the two expressions every transport runs the
-// DOM walker through.
-//
-// hot assumes an earlier call on this document left the walker installed under
-// the private per-process name, so it ships only the call — a couple of hundred
-// bytes instead of the walker source. cold installs the walker and calls it in
-// one round trip; its assignment is UNCONDITIONAL so a page that predefined the
-// name (collision) or set it to a non-function can neither shadow, spoof nor
-// wedge snapshots. A caller runs hot first and falls back to cold when it fails.
-//
-// Both transports build the pair here rather than each formatting its own
-// expression: the walker is where refs are minted and ranked, so an
-// extension-bridge snapshot and a direct-CDP snapshot of the same document have
-// to be running the same source to return the same refs.
-// SnapshotLooksInstalled reports whether a result from the hot call actually came
-// from the walker. The walker always reports location.href, so an empty URL means
-// the call expression evaluated to something else — a page or a transport that
-// answered the property with a value of its own — and the caller must install the
-// walker and ask again rather than hand that back as a snapshot of the page.
+// SnapshotLooksInstalled reports whether a hot walker result includes its document URL.
 func SnapshotLooksInstalled(snap PageSnapshot) bool {
 	return snap.URL != ""
 }
 
-// SnapshotCallExpressions creates a hot/cold pair sharing one daemon-lifetime
-// version. Each pair is for one snapshot operation; retained versions expire
-// across daemon restarts and when the bounded document history evicts them.
+// SnapshotCallExpressions creates a hot/cold pair sharing one daemon-lifetime version.
 func SnapshotCallExpressions(opts SnapshotOptions) (hot, cold string) {
 	args, _ := json.Marshal(struct {
 		SnapshotOptions
@@ -1775,7 +1709,7 @@ func EvaluateWithOptions(ctx context.Context, opts SnapshotOptions) (PageSnapsho
 	hit, cold := SnapshotCallExpressions(opts)
 	err := chromedp.Run(ctx, chromedp.Evaluate(hit, &snap))
 	if err != nil || !SnapshotLooksInstalled(snap) {
-		// Cold document (first call, or a navigation replaced the JS context).
+
 		snap = PageSnapshot{}
 		if err := chromedp.Run(ctx, chromedp.Evaluate(cold, &snap)); err != nil {
 			return PageSnapshot{}, err
@@ -1917,15 +1851,7 @@ func Fill(ctx context.Context, ref, text string, replace bool) error {
 	return nil
 }
 
-// DragHtml5Script simulates the native HTML5 drag-and-drop protocol between two
-// refs. CDP mouse events (mousedown/move/up) do NOT drive HTML5 DnD
-// (draggable=true elements that listen for dragstart/dragover/drop) — the browser
-// only synthesises drag events for a real OS drag loop — so a coordinate drag
-// silently no-ops on those widgets. This dispatches the real sequence
-// (dragstart → drag → dragenter → dragover → drop → dragend) carrying ONE shared
-// DataTransfer, which is exactly what a drop handler reads. Returns
-// {ok, dropped} where dropped reports whether the target's drop handler ran
-// (preventDefault) so the caller can fall back to a coordinate drag when false.
+// DragHtml5Script simulates the native HTML5 drag-and-drop protocol between two refs.
 const DragHtml5Script = `(function(fromRef, toRef){` + FrameWalkHelpers + `
   function findByRef(ref) {
     var hit = __abFindDeep(ref);
@@ -1955,9 +1881,7 @@ const DragHtml5Script = `(function(fromRef, toRef){` + FrameWalkHelpers + `
   return {ok:true, dropped: overCancelled || dropCancelled};
 })`
 
-// DragHtml5 runs the HTML5 drag-and-drop simulation between two refs. It returns
-// (dropped, err): dropped is true when the target accepted the drop (its handler
-// called preventDefault), letting the caller fall back to a coordinate drag.
+// DragHtml5 runs the HTML5 drag-and-drop simulation between two refs.
 func DragHtml5(ctx context.Context, fromRef, toRef string) (bool, error) {
 	fr, _ := json.Marshal(fromRef)
 	tr, _ := json.Marshal(toRef)
@@ -1979,9 +1903,7 @@ func DragHtml5(ctx context.Context, fromRef, toRef string) (bool, error) {
 	return res.Dropped, nil
 }
 
-// RefDraggable reports whether the element identified by ref has the native HTML5
-// draggable affordance (draggable=true), so the caller can pick the HTML5 drag
-// path over a coordinate drag.
+// RefDraggable reports whether the element identified by ref has the native HTML5 draggable affordance (draggable=true), so the caller can pick the HTML5 drag path over a coordinate drag.
 func RefDraggable(ctx context.Context, ref string) bool {
 	rj, _ := json.Marshal(ref)
 	expr := fmt.Sprintf(`(function(ref){`+FrameWalkHelpers+`
@@ -1995,12 +1917,7 @@ func RefDraggable(ctx context.Context, ref string) bool {
 	return draggable
 }
 
-// WaitConditionScript returns a Promise that resolves true as soon as the given
-// condition holds, or false after timeoutMs. It checks immediately, then re-checks
-// on DOM mutations (MutationObserver), history events and document readiness
-// changes, with a 100ms safety interval for signals those miss (e.g. pushState
-// URL changes) — replacing a fixed-interval CDP poll loop with a single awaited
-// in-page promise.
+// WaitConditionScript returns a Promise that resolves true as soon as the given condition holds, or false after timeoutMs.
 const WaitConditionScript = `(function(condition, timeoutMs, cancelKey){` + FrameWalkHelpers + `
   // 'load' is NOT an alias of 'ready': a document is interactive (and satisfies
   // 'ready') before its load event fires, and a caller that asked for the load
@@ -2133,8 +2050,7 @@ const WaitConditionScript = `(function(condition, timeoutMs, cancelKey){` + Fram
   });
 })`
 
-// WaitForCondition evaluates WaitConditionScript and awaits its promise, returning
-// whether the condition was met within timeoutMs.
+// WaitForCondition evaluates WaitConditionScript and awaits its promise, returning whether the condition was met within timeoutMs.
 func WaitForCondition(ctx context.Context, condition string, timeoutMs int64) (bool, error) {
 	return waitForCondition(ctx, condition, timeoutMs, "")
 }
@@ -2153,9 +2069,7 @@ func waitForCondition(ctx context.Context, condition string, timeoutMs int64, ca
 			return err
 		}
 		if exception != nil {
-			// A rejected promise carries the reason in Description; surface that
-			// directly so a bad fn: predicate reports its own syntax error rather
-			// than a wall of CDP exception JSON.
+
 			if exception.Exception != nil && exception.Exception.Description != "" {
 				return fmt.Errorf("wait condition failed: %s", exception.Exception.Description)
 			}
@@ -2172,30 +2086,7 @@ func waitForCondition(ctx context.Context, condition string, timeoutMs int64, ca
 	return matched, nil
 }
 
-// SettleScript returns a Promise that resolves the MOMENT the page settles after
-// an action, bounded by capMs. It replaces the old unconditional fixed
-// post-action chromedp.Sleep with an event-driven wait that returns early when the
-// page has demonstrably reacted and gone quiet:
-//
-//   - DOM-mutation quiesce: a MutationObserver watches the whole tree; every
-//     mutation arms a short quiet timer (quietMs, ~2 animation frames). When no
-//     further mutation lands for quietMs after at least one mutation was seen, the
-//     page has visibly reacted and stopped, so resolve.
-//   - Navigation / history signals: popstate, hashchange, and pagehide all mean
-//     the action triggered a navigation; resolve promptly (the post-action snapshot
-//     reads the new state). beforeunload is treated the same way.
-//   - Network signal: a PerformanceObserver for 'resource' entries starts the
-//     same short quiet window. It does not resolve immediately: frameworks often
-//     render shortly after a response, and returning before that mutation would
-//     trade correctness for a misleading latency win.
-//
-// The hard cap (capMs, via performance.now) bounds the worst case so a page that
-// never quiesces (continuous animation, polling) degrades to exactly today's fixed
-// delay — never slower. It always resolves an object reporting how long it actually
-// waited (settledMs) and why (reason), so the caller can record the latency win.
-//
-// Reuses the same MutationObserver + nav-event + performance.now() primitives proven
-// by WaitConditionScript; it is additive and carries no site-specific logic.
+// SettleScript returns a Promise that resolves the MOMENT the page settles after an action, bounded by capMs.
 const SettleScript = `(function(capMs){
   var cap=Math.max(0, capMs|0);
   // quietMs is the DOM-mutation quiesce window: once a mutation is seen, the page
@@ -2250,34 +2141,26 @@ const SettleScript = `(function(capMs){
   });
 })`
 
-// SettleResult reports how an in-page settle wait resolved: how long it actually
-// waited (SettledMS), why it stopped (Reason: quiesce | network_quiesce | navigation |
-// quiesce_cap | cap), and the cap that bounded it.
+// SettleResult reports how an in-page settle wait resolved: how long it actually waited (SettledMS), why it stopped (Reason: quiesce | network_quiesce | navigation | quiesce_cap | cap), and the cap that bounded it.
 type SettleResult struct {
 	SettledMS int64  `json:"settledMs"`
 	Reason    string `json:"reason"`
 	Cap       int64  `json:"cap"`
 }
 
-// SettleHandle identifies a settle observer that was installed before browser
-// input. Pre-arming is essential for synchronous click/input handlers: attaching
-// the observer after actuation permanently misses their mutation and burns the
-// full settle cap.
+// SettleHandle identifies a settle observer that was installed before browser input.
 type SettleHandle struct {
 	Token string
 	CapMS int64
 }
 
-// ArmSettle installs SettleScript and stores its promise in an unguessable,
-// process-namespaced page registry, then returns immediately. The action can run
-// in a following CDP command without racing observer installation.
+// ArmSettle installs SettleScript and stores its promise in an unguessable, process-namespaced page registry, then returns immediately.
 func ArmSettle(ctx context.Context, capMS int64) (SettleHandle, error) {
 	if capMS < 0 {
 		capMS = 0
 	}
 	token := randomToken()
-	// The registry name itself is recorded in the handle token prefix so Await
-	// can address the same object without exposing a stable page-global name.
+
 	registry := "__brw_settle_" + randomToken()
 	compound := registry + ":" + token
 	compoundJSON, _ := json.Marshal(compound)
@@ -2313,9 +2196,7 @@ func ArmSettle(ctx context.Context, capMS int64) (SettleHandle, error) {
 	return SettleHandle{Token: compound, CapMS: capMS}, nil
 }
 
-// AwaitSettle waits for a previously armed observer and removes its registry
-// entry. A navigation may destroy the execution context; callers preserve the
-// existing non-fatal settle semantics for that case.
+// AwaitSettle waits for a previously armed observer and removes its registry entry.
 func AwaitSettle(ctx context.Context, handle SettleHandle) (SettleResult, error) {
 	if handle.Token == "" {
 		return SettleResult{}, errors.New("settle handle is empty")
@@ -2354,11 +2235,7 @@ func AwaitSettle(ctx context.Context, handle SettleHandle) (SettleResult, error)
 	return result, nil
 }
 
-// Settle awaits SettleScript: it resolves the moment the page settles after an
-// action (DOM mutations quiesce, OR a navigation/popstate/hashchange/pagehide
-// fires, OR a network response lands) bounded by capMs so the worst case equals
-// today's fixed delay. On any evaluation error it returns a zero result and the
-// error; callers treat that as "no settle observed" without failing the action.
+// Settle awaits SettleScript: it resolves the moment the page settles after an action (DOM mutations quiesce, OR a navigation/popstate/hashchange/pagehide fires, OR a network response lands) bounded by capMs so the worst case equals today's fixed delay.
 func Settle(ctx context.Context, capMs int64) (SettleResult, error) {
 	expr := fmt.Sprintf("%s(%d)", SettleScript, capMs)
 	var result SettleResult
@@ -2384,9 +2261,7 @@ func Settle(ctx context.Context, capMs int64) (SettleResult, error) {
 	return result, nil
 }
 
-// WaitForActionableScript returns a Promise that resolves true when the element
-// identified by ref is visible, stable (bounding box unchanged for two
-// consecutive checks 100ms apart), and enabled. Resolves false on timeout.
+// WaitForActionableScript returns a Promise that resolves true when the element identified by ref is visible, stable (bounding box unchanged for two consecutive checks 100ms apart), and enabled.
 const WaitForActionableScript = `(function(ref, timeoutMs){` + FrameWalkHelpers + `
   function roots(){
     return __abRootList();
@@ -2608,23 +2483,14 @@ const WaitForActionableScript = `(function(ref, timeoutMs){` + FrameWalkHelpers 
   });
 })`
 
-// ActionableResult reports how WaitForActionableScript resolved: whether the
-// element became actionable (OK), which path established it (Mode: "ax_visible"
-// when the strict AX heuristic passed, "hit_test" when only geometry+elementFromPoint
-// did), and the failure reason on timeout. Mode lets callers decide whether the
-// optimized in-page click suffices ("ax_visible") or a coordinate/CDP fallback is
-// the more reliable actuation ("hit_test" custom components).
+// ActionableResult reports how WaitForActionableScript resolved: whether the element became actionable (OK), which path established it (Mode: "ax_visible" when the strict AX heuristic passed, "hit_test" when only geometry+elementFromPoint did), and the failure reason on timeout.
 type ActionableResult struct {
 	OK     bool   `json:"ok"`
 	Mode   string `json:"mode,omitempty"`
 	Reason string `json:"reason,omitempty"`
 }
 
-// WaitForActionableResult waits for the element identified by ref to become
-// actionable (AX-visible OR geometry+hit-test actionable), stable, and enabled
-// within timeoutMs, returning the resolution detail. A present-but-AX-invisible
-// element that is also not geometry-actionable fails fast (short bounded wait)
-// rather than burning the full timeout.
+// WaitForActionableResult waits for the element identified by ref to become actionable (AX-visible OR geometry+hit-test actionable), stable, and enabled within timeoutMs, returning the resolution detail.
 func WaitForActionableResult(ctx context.Context, ref string, timeoutMs int64) (ActionableResult, error) {
 	refJSON, _ := json.Marshal(ref)
 	expr := fmt.Sprintf("%s(%s,%d)", WaitForActionableScript, refJSON, timeoutMs)
@@ -2651,8 +2517,7 @@ func WaitForActionableResult(ctx context.Context, ref string, timeoutMs int64) (
 	return res, nil
 }
 
-// WaitForActionable waits for the element identified by ref to become actionable,
-// stable, and enabled within timeoutMs. Returns nil on success, error on timeout.
+// WaitForActionable waits for the element identified by ref to become actionable, stable, and enabled within timeoutMs.
 func WaitForActionable(ctx context.Context, ref string, timeoutMs int64) error {
 	res, err := WaitForActionableResult(ctx, ref, timeoutMs)
 	if err != nil {
@@ -2664,13 +2529,32 @@ func WaitForActionable(ctx context.Context, ref string, timeoutMs int64) error {
 	return nil
 }
 
-// AssertTextScript returns a Promise that resolves true when the element
-// identified by ref contains the expected text (case-insensitive substring
-// match). Resolves false on timeout.
-const AssertTextScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelpers + `
-  function roots(){
-    return __abRootList();
+const assertionWaitHelper = `
+  function __abAssertWait(check, timeoutMs) {
+    return new Promise(function(resolve) {
+      if (check()) { resolve(true); return; }
+      var done = false, observer = null, interval = 0, timeout = 0;
+      function finish(value) {
+        if (done) return;
+        done = true;
+        if (observer) observer.disconnect();
+        if (interval) clearInterval(interval);
+        if (timeout) clearTimeout(timeout);
+        resolve(value);
+      }
+      function recheck() { if (check()) finish(true); }
+      try {
+        observer = new MutationObserver(recheck);
+        observer.observe(document.documentElement || document, {subtree:true, childList:true, characterData:true, attributes:true});
+      } catch (_) {}
+      interval = setInterval(recheck, 100);
+      timeout = setTimeout(function() { finish(check()); }, Math.max(0, timeoutMs|0));
+    });
   }
+`
+
+// AssertTextScript returns a Promise that resolves true when the element identified by ref contains the expected text (case-insensitive substring match).
+const AssertTextScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelpers + assertionWaitHelper + `
   function findByRef(ref) {
     var hit = __abFindDeep(ref);
     return hit ? hit.el : null;
@@ -2681,24 +2565,11 @@ const AssertTextScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelpe
     var text=(el.innerText||el.textContent||el.value||'').toLowerCase();
     return text.indexOf(expected.toLowerCase())!==-1;
   }
-  return new Promise(function(resolve){
-    if(check()){ resolve(true); return; }
-    var done=false,iv=0,to=0;
-    function finish(v){ if(done)return; done=true; if(iv)clearInterval(iv); if(to)clearTimeout(to); resolve(v); }
-    var obs=null;
-    try{ obs=new MutationObserver(function(){ if(check()) finish(true); });
-         obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
-    iv=setInterval(function(){ if(check()) finish(true); }, 100);
-    to=setTimeout(function(){ finish(check()); }, Math.max(0, timeoutMs|0));
-  });
+  return __abAssertWait(check, timeoutMs);
 })`
 
-// AssertValueScript returns a Promise that resolves true when the element
-// identified by ref has a value matching expected (exact match).
-const AssertValueScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelpers + `
-  function roots(){
-    return __abRootList();
-  }
+// AssertValueScript returns a Promise that resolves true when the element identified by ref has a value matching expected (exact match).
+const AssertValueScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelpers + assertionWaitHelper + `
   function findByRef(ref) {
     var hit = __abFindDeep(ref);
     return hit ? hit.el : null;
@@ -2716,23 +2587,11 @@ const AssertValueScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelp
     if(text===expected) return true;
     return String(el.innerText||'')===expected;
   }
-  return new Promise(function(resolve){
-    if(check()){ resolve(true); return; }
-    var done=false,iv=0,to=0;
-    function finish(v){ if(done)return; done=true; if(iv)clearInterval(iv); if(to)clearTimeout(to); resolve(v); }
-    try{ var obs=new MutationObserver(function(){ if(check()) finish(true); });
-         obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
-    iv=setInterval(function(){ if(check()) finish(true); }, 100);
-    to=setTimeout(function(){ finish(check()); }, Math.max(0, timeoutMs|0));
-  });
+  return __abAssertWait(check, timeoutMs);
 })`
 
 // AssertValueContainsScript is the substring counterpart to AssertValueScript.
-// It deliberately reads form-control value before DOM text so a textarea's
-// initial textContent or a select's option labels cannot satisfy current-value
-// postconditions by accident.
-const AssertValueContainsScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelpers + `
-  function roots(){ return __abRootList(); }
+const AssertValueContainsScript = `(function(ref, expected, timeoutMs){` + FrameWalkHelpers + assertionWaitHelper + `
   function findByRef(ref) {
     var hit = __abFindDeep(ref);
     return hit ? hit.el : null;
@@ -2746,23 +2605,11 @@ const AssertValueContainsScript = `(function(ref, expected, timeoutMs){` + Frame
     var el=findByRef(ref);
     return !!el && currentValue(el).toLowerCase().indexOf(expected.toLowerCase())!==-1;
   }
-  return new Promise(function(resolve){
-    if(check()){ resolve(true); return; }
-    var done=false,iv=0,to=0;
-    function finish(v){ if(done)return; done=true; if(iv)clearInterval(iv); if(to)clearTimeout(to); resolve(v); }
-    try{ var obs=new MutationObserver(function(){ if(check()) finish(true); });
-         obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
-    iv=setInterval(function(){ if(check()) finish(true); }, 100);
-    to=setTimeout(function(){ finish(check()); }, Math.max(0, timeoutMs|0));
-  });
+  return __abAssertWait(check, timeoutMs);
 })`
 
-// AssertVisibleScript returns a Promise that resolves true when the element
-// identified by ref is visible in the viewport.
-const AssertVisibleScript = `(function(ref, timeoutMs){` + FrameWalkHelpers + `
-  function roots(){
-    return __abRootList();
-  }
+// AssertVisibleScript returns a Promise that resolves true when the element identified by ref is visible in the viewport.
+const AssertVisibleScript = `(function(ref, timeoutMs){` + FrameWalkHelpers + assertionWaitHelper + `
   function findByRef(ref) {
     var hit = __abFindDeep(ref);
     return hit ? hit.el : null;
@@ -2777,23 +2624,11 @@ const AssertVisibleScript = `(function(ref, timeoutMs){` + FrameWalkHelpers + `
     return r&&r.length>0&&Array.from(r).some(function(x){return x.width>0&&x.height>0;});
   }
   function check(){ return visible(findByRef(ref)); }
-  return new Promise(function(resolve){
-    if(check()){ resolve(true); return; }
-    var done=false,iv=0,to=0;
-    function finish(v){ if(done)return; done=true; if(iv)clearInterval(iv); if(to)clearTimeout(to); resolve(v); }
-    try{ var obs=new MutationObserver(function(){ if(check()) finish(true); });
-         obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
-    iv=setInterval(function(){ if(check()) finish(true); }, 100);
-    to=setTimeout(function(){ finish(check()); }, Math.max(0, timeoutMs|0));
-  });
+  return __abAssertWait(check, timeoutMs);
 })`
 
-// AssertHiddenScript returns a Promise that resolves true when the element
-// identified by ref is hidden or absent from the DOM.
-const AssertHiddenScript = `(function(ref, timeoutMs){` + FrameWalkHelpers + `
-  function roots(){
-    return __abRootList();
-  }
+// AssertHiddenScript returns a Promise that resolves true when the element identified by ref is hidden or absent from the DOM.
+const AssertHiddenScript = `(function(ref, timeoutMs){` + FrameWalkHelpers + assertionWaitHelper + `
   function findByRef(ref) {
     var hit = __abFindDeep(ref);
     return hit ? hit.el : null;
@@ -2808,20 +2643,12 @@ const AssertHiddenScript = `(function(ref, timeoutMs){` + FrameWalkHelpers + `
     var r=el.getClientRects();
     return !r||r.length===0||!Array.from(r).some(function(x){return x.width>0&&x.height>0;});
   }
-  return new Promise(function(resolve){
-    if(hidden()){ resolve(true); return; }
-    var done=false,iv=0,to=0;
-    function finish(v){ if(done)return; done=true; if(iv)clearInterval(iv); if(to)clearTimeout(to); resolve(v); }
-    try{ var obs=new MutationObserver(function(){ if(hidden()) finish(true); });
-         obs.observe(document.documentElement||document, {subtree:true, childList:true, characterData:true, attributes:true}); }catch(e){}
-    iv=setInterval(function(){ if(hidden()) finish(true); }, 100);
-    to=setTimeout(function(){ finish(hidden()); }, Math.max(0, timeoutMs|0));
-  });
+  return __abAssertWait(hidden, timeoutMs);
 })`
 
 // EvalAssert evaluates an assertion script that returns a Promise<bool>.
 func EvalAssert(ctx context.Context, script string, args ...any) error {
-	// Marshal each arg and build the expression
+
 	marshaled := make([]string, len(args))
 	for i, a := range args {
 		j, _ := json.Marshal(a)
@@ -2941,11 +2768,7 @@ const ClickXYScript = `(function(x, y) {
   return { ok: true, x: x, y: y, tag: tag, role: role, name: name.trim() };
 })`
 
-// MouseEventScript resolves a target by ref or x,y, then dispatches a full
-// pointer + mouse event sequence with the requested button and click count.
-// Used by the extension bridge (which has no direct CDP Input access) for
-// right/double/triple/middle click. clickCount>1 fires the extra click events
-// (dblclick for 2) the way browsers do for repeated clicks.
+// MouseEventScript resolves a target by ref or x,y, then dispatches a full pointer + mouse event sequence with the requested button and click count.
 const MouseEventScript = `(function(opts) {` + FrameWalkHelpers + `
   opts = opts || {};
   function buttonConsts(name) {
@@ -3010,9 +2833,7 @@ const MouseEventScript = `(function(opts) {` + FrameWalkHelpers + `
   return { ok: true, x: x, y: y, tag: tag, role: role, name: name.trim(), href: target.href || target.getAttribute('href') || '' };
 })`
 
-// MouseHalfScript dispatches a single pointerdown+mousedown (down) or
-// pointerup+mouseup (up) at a ref or x,y — the decomposed press-and-hold the
-// extension bridge uses for mouse_down / mouse_up.
+// MouseHalfScript dispatches a single pointerdown+mousedown (down) or pointerup+mouseup (up) at a ref or x,y — the decomposed press-and-hold the extension bridge uses for mouse_down / mouse_up.
 const MouseHalfScript = `(function(opts) {` + FrameWalkHelpers + `
   opts = opts || {};
   function buttonConsts(name) {
@@ -3057,10 +2878,7 @@ const MouseHalfScript = `(function(opts) {` + FrameWalkHelpers + `
   return { ok: true, x: x, y: y, tag: target.tagName.toLowerCase(), role: target.getAttribute('role') || '', name: name.trim(), href: target.href || target.getAttribute('href') || '' };
 })`
 
-// DragScript presses at a source (ref or x,y), emits interpolated pointermove +
-// mousemove events with the button held, then releases at the target. Generic
-// pointer-event drag the extension bridge uses for sliders/range inputs,
-// drag-and-drop reorder, and canvas/map panning.
+// DragScript presses at a source (ref or x,y), emits interpolated pointermove + mousemove events with the button held, then releases at the target.
 const DragScript = `(function(opts) {` + FrameWalkHelpers + `
   opts = opts || {};
   function buttonConsts(name) {
@@ -3311,13 +3129,7 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
     if (!hit) return { ok: false, error: 'no in-viewport element found for text ' + JSON.stringify(opts.text) + ' (auto_scroll disabled)' };
   }
   const el = hit.el;
-  if (autoScroll && !inViewportNow(el)) {
-    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-  } else if (autoScroll) {
-    // Already in view: a cheap centering scroll keeps the click point hit-testable
-    // for elements partially clipped by sticky headers/footers.
-    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-  }
+  if (autoScroll) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   const r = el.getBoundingClientRect();
   const doc = el.ownerDocument || document;
   const offset = offsetFor(el);
@@ -3395,9 +3207,6 @@ const ClickTextScript = `(function(opts) {` + FrameWalkHelpers + `
 })`
 
 const CommitFieldScript = `(function(ref) {` + FrameWalkHelpers + `
-  function roots() {
-    return __abRootList();
-  }
   function findByRef(ref) {
     var hit = __abFindDeep(ref);
     return hit ? hit.el : null;
@@ -3452,13 +3261,9 @@ type ClickXYResult struct {
 	Text  string  `json:"text,omitempty"`
 	Href  string  `json:"href,omitempty"`
 	Error string  `json:"error,omitempty"`
-	// RequiresTrusted reports that the resolved target only responds to a real
-	// browser input gesture (target="_blank", window.open, download, fullscreen,
-	// clipboard, file pickers).
+	// RequiresTrusted reports that the resolved target only responds to a real browser input gesture (target="_blank", window.open, download, fullscreen, clipboard, file pickers).
 	RequiresTrusted bool `json:"requires_trusted,omitempty"`
-	// Deferred reports that NOTHING was clicked in-page: the caller must actuate
-	// at X/Y with real CDP input. Treating a deferred result as a completed click
-	// is the bug this field exists to prevent.
+	// Deferred reports that NOTHING was clicked in-page: the caller must actuate at X/Y with real CDP input.
 	Deferred bool `json:"deferred,omitempty"`
 }
 
@@ -3467,9 +3272,7 @@ func ClickXY(ctx context.Context, x, y float64) (ClickXYResult, error) {
 	xJSON, _ := json.Marshal(x)
 	yJSON, _ := json.Marshal(y)
 	expr := fmt.Sprintf("%s(%s,%s)", ClickXYScript, xJSON, yJSON)
-	// Same reason as ClickText: the in-page dispatch is the fast path for EVERY
-	// ordinary click, and a gesture-gated listener brw cannot see is dropped
-	// without activation while the click still reports ok.
+
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &result, EvalWithUserGesture)); err != nil {
 		return ClickXYResult{}, err
 	}
@@ -3482,8 +3285,7 @@ func ClickXY(ctx context.Context, x, y float64) (ClickXYResult, error) {
 	return result, nil
 }
 
-// MouseActionResult is the by-value result of an in-page mouse action
-// (MouseEvent/MouseHalf/Drag) dispatched through the extension bridge.
+// MouseActionResult is the by-value result of an in-page mouse action (MouseEvent/MouseHalf/Drag) dispatched through the extension bridge.
 type MouseActionResult struct {
 	OK    bool    `json:"ok"`
 	X     float64 `json:"x,omitempty"`
@@ -3495,18 +3297,7 @@ type MouseActionResult struct {
 	Error string  `json:"error,omitempty"`
 }
 
-// EvalWithUserGesture runs the evaluation inside a transient user-activation
-// window. A handler registered with addEventListener cannot be read back from
-// page script — no API hands back a node's listeners — so brw cannot tell in
-// advance that a click will reach a gesture-gated call (window.open, a download,
-// fullscreen, the clipboard, a file picker). Without activation those calls are
-// dropped while the click itself still reports success, which is the failure an
-// agent cannot detect. Carrying activation on the dispatch removes the need to
-// predict: the handler runs inside the window whether or not brw could see it.
-//
-// This grants activation, not event.isTrusted. A handler that tests isTrusted
-// still rejects an in-page dispatch; that is what the deferred/CDP-input path is
-// for, and why brw_click_text's description promises activation and not trust.
+// EvalWithUserGesture runs the evaluation inside a transient user-activation window.
 func EvalWithUserGesture(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 	return p.WithUserGesture(true)
 }
@@ -3527,14 +3318,7 @@ func ClickText(ctx context.Context, opts ClickTextOptions) (ClickXYResult, error
 	return result, nil
 }
 
-// WindowBoundsScript reads the tab's window/viewport geometry in one in-page
-// evaluation. window.screenX/screenY give the viewport's top-left in SCREEN CSS
-// pixels, and device_pixel_ratio converts CSS px <-> device px — together they
-// let a caller map a screen pixel from an OS/desktop screenshot into viewport CSS
-// pixels for brw_click_xy (issue #11 P2-6 / P1-4d):
-//
-//	viewport_css_x = screen_device_x / device_pixel_ratio - screen_x
-//	viewport_css_y = screen_device_y / device_pixel_ratio - screen_y
+// WindowBoundsScript reads the tab's window/viewport geometry in one in-page evaluation.
 const WindowBoundsScript = `(function(){
   var s = window.screen || {};
   return {
@@ -3552,8 +3336,7 @@ const WindowBoundsScript = `(function(){
   };
 })()`
 
-// WindowBoundsResult is the tab window/viewport geometry returned by
-// brw_window_bounds. All distances are in CSS pixels except device_pixel_ratio.
+// WindowBoundsResult is the tab window/viewport geometry returned by brw_window_bounds.
 type WindowBoundsResult struct {
 	DevicePixelRatio float64 `json:"device_pixel_ratio"`
 	ScreenX          float64 `json:"screen_x"`
