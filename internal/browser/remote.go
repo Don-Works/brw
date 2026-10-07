@@ -70,7 +70,7 @@ func checkRemoteConfig(cfg Config) error {
 	}
 	if strings.TrimSpace(cfg.Remote.RedactedURL) == "" {
 
-		cfg.Remote.RedactedURL = redactWebSocketURL(cfg.Remote.WebSocketURL)
+		cfg.Remote.RedactedURL = RedactWebSocketURL(cfg.Remote.WebSocketURL)
 	}
 	return ProviderConfigProblems(cfg)
 }
@@ -103,7 +103,8 @@ func ProviderConfigProblems(cfg Config) error {
 	return errors.Join(problems...)
 }
 
-func redactWebSocketURL(raw string) string {
+// RedactWebSocketURL removes credentials, fragments and provider tokens from a diagnostic endpoint.
+func RedactWebSocketURL(raw string) string {
 	endpoint, err := plugin.ParseEndpoint(raw)
 	if err != nil {
 		return "the remote browser endpoint"

@@ -450,8 +450,8 @@ func TestARemoteTargetWithoutARedactedURLStillRedacts(t *testing.T) {
 		{"wss://fixture-user:fixture-password@browsers.example/devtools/browser/x", "the remote browser endpoint"},
 		{"wss://[::1]:9222/devtools/browser/x?token=fixture-token", "wss://[::1]:9222"},
 	} {
-		if got := redactWebSocketURL(tc.raw); got != tc.want {
-			t.Errorf("redactWebSocketURL(%q) = %q, want %q", tc.raw, got, tc.want)
+		if got := RedactWebSocketURL(tc.raw); got != tc.want {
+			t.Errorf("RedactWebSocketURL(%q) = %q, want %q", tc.raw, got, tc.want)
 		}
 	}
 }
