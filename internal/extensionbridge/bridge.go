@@ -562,8 +562,17 @@ func (b *Bridge) Notify(ctx context.Context, opts browser.NotifyOptions) (browse
 
 func (b *Bridge) ConsoleMessages(ctx context.Context) ([]browser.ConsoleMessage, error) {
 	tabID := b.contextTabID(ctx)
+	if tabID != "" {
+		ctx = browser.WithTabID(ctx, tabID)
+	}
+	if err := b.guardCurrentURL(ctx); err != nil {
+		return nil, err
+	}
 	raw, err := b.call(ctx, "get_console_messages", map[string]any{"tabId": parseTabID(tabID)})
 	if err == nil {
+		if err := b.guardCurrentURL(ctx); err != nil {
+			return nil, err
+		}
 		var payload struct {
 			Messages []browser.ConsoleMessage `json:"messages"`
 		}

@@ -19,6 +19,15 @@ const dialogsUnsupportedNote = "Dialog control is unavailable: the connected brw
 // daemon round trip holding the renderer.
 func (b *Bridge) Dialog(ctx context.Context, opts browser.DialogOptions) (browser.DialogResult, error) {
 	tabID := strings.TrimSpace(opts.TabID)
+	if tabID == "" {
+		tabID = b.contextTabID(ctx)
+	}
+	if tabID != "" {
+		ctx = browser.WithTabID(ctx, tabID)
+	}
+	if err := b.guardCurrentURL(ctx); err != nil {
+		return browser.DialogResult{}, err
+	}
 	action := strings.ToLower(strings.TrimSpace(opts.Action))
 	if action == "" {
 		action = "status"
@@ -50,6 +59,17 @@ func (b *Bridge) Dialog(ctx context.Context, opts browser.DialogOptions) (browse
 		if len(raw) > 0 {
 			if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
 				return browser.DialogResult{}, fmt.Errorf("parse dialogs: %w", jsonErr)
+			}
+		}
+		if err := b.guardCurrentURL(ctx); err != nil {
+			return browser.DialogResult{}, err
+		}
+		for _, dialog := range payload.Dialogs {
+			if dialog.URL == "" {
+				continue
+			}
+			if err := b.enforceFinalURL(ctx, dialog.URL); err != nil {
+				return browser.DialogResult{}, err
 			}
 		}
 		if payload.Dialogs == nil {

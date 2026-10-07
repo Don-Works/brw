@@ -20,6 +20,9 @@ func (b *Bridge) Vitals(ctx context.Context, opts devtools.VitalsOptions) (devto
 	opts = opts.Normalize()
 	var vitals devtools.Vitals
 	err := b.evaluateObservation(ctx, devtools.BuildVitalsExpression(opts), true, &vitals)
+	if err == nil {
+		err = b.enforceFinalURL(ctx, vitals.URL)
+	}
 	b.recordObservation(b.contextTabID(ctx), browser.TraceActionVitals, vitals.URL, start, err)
 	if err != nil {
 		return devtools.Vitals{}, err
@@ -43,7 +46,13 @@ func (b *Bridge) AccessibilityAudit(ctx context.Context, opts devtools.AuditOpti
 		}
 		return devtools.SummarizeAudit(raw, opts, time.Now())
 	}()
+	if err == nil {
+		err = b.enforceFinalURL(ctx, result.URL)
+	}
 	b.recordObservation(b.contextTabID(ctx), browser.TraceActionAudit, result.URL, start, err)
+	if err != nil {
+		return devtools.AuditResult{}, err
+	}
 	return result, err
 }
 
