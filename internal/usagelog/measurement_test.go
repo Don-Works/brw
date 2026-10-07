@@ -30,7 +30,7 @@ func TestMeasurementRecorderPreservesKnownZeroAndDropsUnknownEnums(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Record(Event{Layer: "mcp", Operation: "brw_fill", Outcome: "ok", Scope: "SECRET_SCOPE", Representation: "SECRET_REP", InputBytes: Count(0)}); err != nil {
+	if err := r.Record(Event{Layer: "mcp", Operation: "brw_fill", Outcome: "ok", Scope: "SECRET_SCOPE", Representation: "SECRET_REP", ErrorClass: "SECRET_CLASS", Retryable: true, InputBytes: Count(0)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Close(); err != nil {
@@ -47,7 +47,7 @@ func TestMeasurementRecorderPreservesKnownZeroAndDropsUnknownEnums(t *testing.T)
 	if err := json.Unmarshal(data, &event); err != nil {
 		t.Fatal(err)
 	}
-	if event.SchemaVersion != 1 || event.InputBytes == nil || *event.InputBytes != 0 || event.OutputBytes != nil {
+	if event.SchemaVersion != 1 || event.InputBytes == nil || *event.InputBytes != 0 || event.OutputBytes != nil || event.Retryable {
 		t.Fatalf("known vs unknown: %+v", event)
 	}
 }

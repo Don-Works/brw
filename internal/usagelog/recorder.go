@@ -169,7 +169,8 @@ func (r *Recorder) Record(event Event) error {
 	event.SessionID = SafeID(event.SessionID)
 	event.RequestID = SafeID(event.RequestID)
 	event.Client = SafeID(event.Client)
-	event.ErrorClass = SafeID(event.ErrorClass)
+	event.ErrorClass = SafeErrorClass(event.ErrorClass)
+	event.Retryable = Retryable(event.ErrorClass)
 	event.ErrorFingerprint = SafeFingerprint(event.ErrorFingerprint)
 	event.ExtensionBuild = SafeVersion(event.ExtensionBuild)
 	event.Workspace = SafeID(event.Workspace)
@@ -273,6 +274,22 @@ func (r *Recorder) rotate() error {
 
 var safeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$`)
 var safeVersionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
+
+// SafeErrorClass returns a known error category or an empty string.
+func SafeErrorClass(value string) string {
+	switch value {
+	case "rpc", "tool", "invalid_argument", "not_found", "stale_reference",
+		"target_not_found", "target_not_actionable", "page_script_error", "artifact_error", "artifact_not_found",
+		"policy_denied", "timeout", "canceled", "navigation_failed", "tab_contended", "takeover_held",
+		"foreign_extension_frame", "tab_not_drivable", "debugger_conflict", "tab_lost", "tab_frozen", "tab_discarded",
+		"busy", "transport", "capability", "document_identity_unavailable", "document_changed",
+		"approval_required", "approval_pending", "approval_approved", "approval_denied", "approval_consumed",
+		"approval_expired", "approval_stale", "approval_not_found", "approval_binding_mismatch", "approval_invalid_request",
+		"approval_store_closed", "approval_persistence_failed", "approval_queue_full":
+		return value
+	}
+	return ""
+}
 
 func SafeID(value string) string {
 	value = strings.TrimSpace(value)
