@@ -36,7 +36,7 @@ func TestControllerForwardsAssertionsUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	if _, ok := any(controller).(browser.Asserter); !ok {
 		t.Fatal("controller does not implement browser.Asserter")
 	}
@@ -67,7 +67,7 @@ func TestControllerForwardsAssertionsUpstream(t *testing.T) {
 	if err.Error() != want {
 		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}
-	
+
 	if failed.OK || failed.Assertion != browser.AssertionDownload {
 		t.Fatalf("failed result = %+v, want the refusal decoded", failed)
 	}

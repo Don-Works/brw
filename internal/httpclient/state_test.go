@@ -116,7 +116,7 @@ func TestSessionStateNeverPutsCookieMaterialOnTheWire(t *testing.T) {
 	if len(capture.bodies) < 4 {
 		t.Fatalf("captured %d bodies, want at least the two request/response pairs", len(capture.bodies))
 	}
-	
+
 	for i, body := range capture.bodies {
 		for _, secret := range []string{fixtureWireCookieValue, fixtureWireCookieName} {
 			if bytes.Contains(body, []byte(secret)) {

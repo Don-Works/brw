@@ -111,7 +111,7 @@ func (a longFailingRecipeAPI) RunRecipe(_ context.Context, request recipe.RunReq
 	for index := range a.steps {
 		result.Steps = append(result.Steps, recipe.StepResult{
 			ID: fmt.Sprintf("step-with-a-realistically-long-identifier-%03d", index),
-			
+
 			Status: "done", Attempts: 2, DurationMS: 1234,
 		})
 	}

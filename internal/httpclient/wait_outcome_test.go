@@ -62,7 +62,7 @@ func TestWaitForOutcomeCarriesTheUpstreamOutcome(t *testing.T) {
 			if !outcome.OK {
 				t.Fatalf("outcome = %+v, want ok", outcome)
 			}
-			
+
 			if outcome.Condition != "dialog" {
 				t.Fatalf("condition = %q, want %q", outcome.Condition, "dialog")
 			}

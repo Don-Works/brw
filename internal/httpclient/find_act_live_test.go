@@ -108,7 +108,7 @@ func TestLocateAndActOverTheProxyActsOnTheLiveMatch(t *testing.T) {
 }
 
 func TestLocateAndActOverTheProxyRefusesAnUnmarkedAnswer(t *testing.T) {
-	
+
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/page/find" {
 			http.NotFound(w, r)
@@ -131,7 +131,7 @@ func TestLocateAndActOverTheProxyRefusesAnUnmarkedAnswer(t *testing.T) {
 	} else if !strings.Contains(err.Error(), daemon.URL) {
 		t.Fatalf("err = %v, want it to name the upstream that could not answer", err)
 	}
-	
+
 	_, actErr := browser.RunFindAct(context.Background(), proxy, browser.FindAct{
 		Query: "Add", Role: "button", Action: "click",
 	})

@@ -65,7 +65,7 @@ func TestPageToolLabelCrossesTheHTTPSurface(t *testing.T) {
 			ctx:  context.Background,
 		},
 		{
-			
+
 			name: "a caller cannot claim an input action",
 			ctx: func() context.Context {
 				return browser.WithTraceLabel(context.Background(), "click", "e3")
