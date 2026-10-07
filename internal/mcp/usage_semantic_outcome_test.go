@@ -4,12 +4,95 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Don-Works/brw/internal/browser"
+	"github.com/Don-Works/brw/internal/snapshot"
 	"github.com/Don-Works/brw/internal/usagelog"
 )
+
+type semanticFailureController struct {
+	usageForwardingController
+	actions int
+}
+
+func (c *semanticFailureController) Click(context.Context, string) (browser.ActionResult, error) {
+	c.actions++
+	return browser.ActionResult{Message: `element ref "e9" not recoverable: no_key PRIVATE_FAILURE_SENTINEL`, TabID: "fixture-tab", URL: "https://fixture.test/"}, nil
+}
+
+func (c *semanticFailureController) Press(ctx context.Context, _ string) (browser.ActionResult, error) {
+	return c.Click(ctx, "e9")
+}
+
+func (c *semanticFailureController) Scroll(ctx context.Context, _ string) (browser.ActionResult, error) {
+	return c.Click(ctx, "e9")
+}
+
+func (c *semanticFailureController) NavigateTo(ctx context.Context, _ string) (browser.ActionResult, error) {
+	return c.Click(ctx, "e9")
+}
+
+func (c *semanticFailureController) Find(context.Context, snapshot.FindOptions) (snapshot.FindResult, error) {
+	return snapshot.FindResult{Elements: []snapshot.Element{findFixtureElement("e9", "button", "Next")}}, nil
+}
+
+func (c *semanticFailureController) FindLive(ctx context.Context, opts snapshot.FindOptions) (snapshot.FindResult, error) {
+	return c.Find(ctx, opts)
+}
+
+func (*semanticFailureController) Evaluate(context.Context, string) (any, error) {
+	return map[string]any{"ok": false, "error": "timed out"}, nil
+}
+
+func TestMCPSemanticActionFailuresKeepDetailsAndClassifyUsage(t *testing.T) {
+	for _, call := range []struct{ name, args string }{
+		{"brw_click", `{"ref":"e9"}`},
+		{"brw_press", `{"key":"Enter","repeat":4}`},
+		{"brw_scroll", `{"direction":"down","repeat":4}`},
+		{"brw_navigate_to", `{"url":"https://fixture.test/"}`},
+		{"brw_find", `{"query":"Next","action":"click"}`},
+	} {
+		for _, level := range []string{"full", "minimal", "none"} {
+			t.Run(call.name+"/"+level, func(t *testing.T) {
+				controller := &semanticFailureController{}
+				args := json.RawMessage(`{"name":` + jsonString(call.name) + `,"arguments":` + withObserve(t, call.args, level) + `}`)
+				result, rpcErr := New(controller).handle(context.Background(), "tools/call", args)
+				if rpcErr != nil || result.(map[string]any)["isError"] != true || controller.actions != 1 {
+					t.Fatalf("rpc=%v actions=%d result=%+v", rpcErr, controller.actions, result)
+				}
+				body := toolText(t, result.(map[string]any))
+				if !strings.Contains(body, "PRIVATE_FAILURE_SENTINEL") || !strings.Contains(body, "fixture-tab") {
+					t.Fatalf("failure details dropped: %s", body)
+				}
+				if len(controller.events) != 1 {
+					t.Fatalf("events=%+v", controller.events)
+				}
+				event := controller.events[0]
+				if event.Outcome != "error" || event.ErrorClass != "stale_reference" || event.ErrorFingerprint == "" {
+					t.Fatalf("event=%+v", event)
+				}
+				encoded, _ := json.Marshal(event)
+				if strings.Contains(string(encoded), "PRIVATE_FAILURE_SENTINEL") || strings.Contains(string(encoded), "fixture.test") {
+					t.Fatalf("private failure details entered usage ledger: %s", encoded)
+				}
+			})
+		}
+	}
+}
+
+func TestMCPEvaluateFalseOKRemainsPageData(t *testing.T) {
+	controller := &semanticFailureController{}
+	result, rpcErr := New(controller).handle(context.Background(), "tools/call", json.RawMessage(`{"name":"brw_evaluate","arguments":{"expression":"fixture"}}`))
+	if rpcErr != nil || result.(map[string]any)["isError"] == true || len(controller.events) != 1 || controller.events[0].Outcome != "ok" {
+		t.Fatalf("result=%+v rpc=%v events=%+v", result, rpcErr, controller.events)
+	}
+	if text := toolText(t, result.(map[string]any)); text != `{"error":"timed out","ok":false}` {
+		t.Fatalf("page data changed: %s", text)
+	}
+}
 
 func TestUsageRecordsSemanticBatchAndPlanFailures(t *testing.T) {
 	for _, level := range []browser.ObserveLevel{browser.ObserveFull, browser.ObserveMinimal, browser.ObserveNone} {
@@ -32,8 +115,9 @@ func TestUsageRecordsSemanticBatchAndPlanFailures(t *testing.T) {
 					} else {
 						result, rpcErr = obs.plan(browser.PlanResult{OK: false, Error: tc.message, Cancelled: tc.cancelled}, nil)
 					}
-					if rpcErr != nil || result.(map[string]any)["isError"] == true {
-						t.Fatal("fixture should use existing normal MCP result contract")
+					result = withSemanticFailure(operation, result)
+					if rpcErr != nil || (result.(map[string]any)["isError"] == true) == tc.cancelled {
+						t.Fatal("failed sequence status or documented cancellation status changed")
 					}
 					before, _ := json.Marshal(result)
 					controller := &usageForwardingController{}
@@ -65,6 +149,8 @@ func TestUsageSemanticClassificationIgnoresPageDataAndMismatchedTypes(t *testing
 		{"brw_batch", map[string]any{"ok": false, "error": "timed out"}},
 		{"brw_plan", browser.BatchResult{OK: false, Error: "timed out"}},
 		{"brw_evaluate", browser.BatchResult{OK: false, Error: "timed out"}},
+		{"brw_evaluate", browser.ActionResult{Message: "timed out"}},
+		{"brw_find", browser.FindActResult{Result: browser.ActionResult{Message: "timed out"}}},
 		{"brw_batch", browser.BatchResult{OK: true}},
 		{"brw_plan", browser.PlanResult{OK: true}},
 	} {
@@ -75,6 +161,37 @@ func TestUsageSemanticClassificationIgnoresPageDataAndMismatchedTypes(t *testing
 		if event.Outcome != "ok" || event.ErrorClass != "" || event.ErrorFingerprint != "" {
 			t.Fatalf("operation=%s type=%T misclassified", tc.operation, tc.value)
 		}
+	}
+}
+
+func TestMCPCancelledSequencesRetainPartialProgress(t *testing.T) {
+	for _, operation := range []string{"brw_batch", "brw_plan"} {
+		t.Run(operation, func(t *testing.T) {
+			var result any
+			if operation == "brw_batch" {
+				result, _ = toolJSON(browser.BatchResult{Cancelled: true, StepsCompleted: 1, Error: "cancelled", Steps: []browser.BatchStepResult{{Index: 0, OK: true}}}, nil)
+			} else {
+				result, _ = toolJSON(browser.PlanResult{Cancelled: true, StepsCompleted: 1, Error: "cancelled", Steps: []browser.PlanStepResult{{Index: 0, OK: true}}}, nil)
+			}
+			result = withSemanticFailure(operation, result)
+			if result.(map[string]any)["isError"] == true {
+				t.Fatal("documented cancellation became a wire error")
+			}
+			var progress struct {
+				Cancelled bool `json:"cancelled"`
+				Completed int  `json:"steps_completed"`
+				Steps     []struct {
+					OK bool `json:"ok"`
+				} `json:"steps"`
+			}
+			if err := json.Unmarshal([]byte(toolText(t, result.(map[string]any))), &progress); err != nil || !progress.Cancelled || progress.Completed != 1 || len(progress.Steps) != 1 || !progress.Steps[0].OK {
+				t.Fatalf("progress=%+v err=%v", progress, err)
+			}
+			outcome, class, _ := mcpUsageOperationOutcome(operation, result, nil)
+			if outcome != "error" || class != "canceled" {
+				t.Fatalf("outcome=%s class=%s", outcome, class)
+			}
+		})
 	}
 }
 

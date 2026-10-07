@@ -904,8 +904,9 @@ func pinActiveTabForTool(ctx context.Context, manager browser.Controller, name s
 	return ctx
 }
 
-func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage) (any, *rpcError) {
+func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage) (result any, rpcErr *rpcError) {
 	name = canonicalToolName(name)
+	defer func() { result = withSemanticFailure(name, result) }()
 
 	// Extract optional tab_id from any tool call and inject into context
 	var tabProbe struct {

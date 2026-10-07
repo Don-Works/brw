@@ -24,7 +24,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// fixtureDigest is a fabricated 64-character content digest.
 const fixtureDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func fixtureEnvironment() Environment {
@@ -47,8 +46,6 @@ func newBaselineStore(t *testing.T) *Store {
 	return store
 }
 
-// solidPNG paints one colour, with an optional differently-coloured rectangle,
-// so a test can express "this part of the page changed" exactly.
 func solidPNG(t *testing.T, width, height int, base color.RGBA, patch image.Rectangle, patchColor color.RGBA) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
@@ -107,7 +104,7 @@ func TestEnvironmentFingerprintMovesWithEveryDimension(t *testing.T) {
 			}
 		})
 	}
-	// Normalization must not create spurious mismatches.
+
 	noisy := base
 	noisy.Locale = " EN-GB "
 	noisy.BrowserBuild = " Chrome/141.0.0.0 "
@@ -158,8 +155,6 @@ func TestStoreRefusesARootInsideARepository(t *testing.T) {
 		t.Fatal("a refused root must not be created")
 	}
 
-	// The store it does accept carries an ignore-everything file, so a
-	// repository created around it later still picks nothing up.
 	store := newBaselineStore(t)
 	ignore, err := os.ReadFile(filepath.Join(store.Root(), ".gitignore"))
 	if err != nil {
@@ -198,7 +193,7 @@ func TestCompareImagesCountsOnlyWhatMoved(t *testing.T) {
 	})
 
 	t.Run("a tolerance above the fraction passes it", func(t *testing.T) {
-		// 20 of 800 pixels is 0.025.
+
 		diff, err := CompareImages(before, after, VisualOptions{PixelTolerance: 0.03})
 		if err != nil {
 			t.Fatalf("CompareImages: %v", err)
@@ -212,8 +207,7 @@ func TestCompareImagesCountsOnlyWhatMoved(t *testing.T) {
 	})
 
 	t.Run("a named ignore region excludes its pixels", func(t *testing.T) {
-		// The capture is 40 image pixels wide and covers 40 CSS pixels, so a CSS
-		// rectangle is an image rectangle here.
+
 		diff, err := CompareImages(before, after, VisualOptions{
 			IgnoreRegions: []IgnoreRegion{{Name: "clock", X: 0, Y: 0, Width: 4, Height: 5}},
 			ViewportWidth: 40,
@@ -233,15 +227,13 @@ func TestCompareImagesCountsOnlyWhatMoved(t *testing.T) {
 	})
 
 	t.Run("a comparison with regions and no viewport is refused", func(t *testing.T) {
-		// Fail closed. A guessed factor is wrong in both directions at once: the
-		// region a caller named is still compared, and pixels nobody named stop
-		// being compared, with nothing in the result saying either happened.
+
 		if _, err := CompareImages(before, after, VisualOptions{
 			IgnoreRegions: []IgnoreRegion{{Name: "clock", X: 0, Y: 0, Width: 4, Height: 5}},
 		}); err == nil || !strings.Contains(err.Error(), "ViewportWidth") {
 			t.Fatalf("error = %v, want a refusal naming the missing viewport width", err)
 		}
-		// With nothing to place, the viewport is not needed and not demanded.
+
 		if _, err := CompareImages(before, after, VisualOptions{}); err != nil {
 			t.Fatalf("CompareImages with no regions: %v", err)
 		}
@@ -302,8 +294,6 @@ func TestCompareImagesCountsOnlyWhatMoved(t *testing.T) {
 	})
 }
 
-// The gate's central property: a deliberate CSS change fails, and keeps failing,
-// until someone explicitly accepts it.
 func TestAnIntentionalChangeFailsUntilItIsExplicitlyAccepted(t *testing.T) {
 	store := newBaselineStore(t)
 	key := Key{RecipeDigest: fixtureDigest, StepIndex: 3, Environment: fixtureEnvironment()}
@@ -370,8 +360,6 @@ func TestAnIntentionalChangeFailsUntilItIsExplicitlyAccepted(t *testing.T) {
 	}
 }
 
-// A different display is not a regression. Reporting it as one is how a visual
-// gate gets switched off by the team it was meant to protect.
 func TestADifferentDevicePixelRatioReportsAnEnvironmentMismatch(t *testing.T) {
 	store := newBaselineStore(t)
 	key := Key{RecipeDigest: fixtureDigest, StepIndex: 0, Environment: fixtureEnvironment()}
@@ -383,8 +371,7 @@ func TestADifferentDevicePixelRatioReportsAnEnvironmentMismatch(t *testing.T) {
 
 	retina := key
 	retina.Environment.DevicePixelRatio = 2
-	// Deliberately a different-sized capture, which is what a 2x display
-	// actually produces: a naive comparison would report every pixel moved.
+
 	retinaShot := solidPNG(t, 80, 40, pageWhite, image.Rectangle{}, pageWhite)
 	result, err := Check(store, CheckOptions{Key: retina, Screenshot: retinaShot, Tree: tree})
 	if err != nil {
@@ -404,7 +391,6 @@ func TestADifferentDevicePixelRatioReportsAnEnvironmentMismatch(t *testing.T) {
 		t.Fatalf("differences = %q, want the device pixel ratio named", differences)
 	}
 
-	// Recording the second environment leaves both usable side by side.
 	if _, err := Check(store, CheckOptions{Key: retina, Screenshot: retinaShot, Tree: tree, Update: true}); err != nil {
 		t.Fatalf("record retina: %v", err)
 	}
@@ -424,8 +410,6 @@ func TestADifferentDevicePixelRatioReportsAnEnvironmentMismatch(t *testing.T) {
 	}
 }
 
-// The reason the ARIA half exists: a control can lose its accessible name
-// without a single pixel moving.
 func TestAnARIAOnlyRegressionFailsWhileThePixelsMatch(t *testing.T) {
 	store := newBaselineStore(t)
 	key := Key{RecipeDigest: fixtureDigest, StepIndex: 1, Environment: fixtureEnvironment()}
@@ -474,8 +458,6 @@ func TestCheckRefusesIncompleteInput(t *testing.T) {
 	}
 }
 
-// solidJPEG is what both transports actually hand back: Manager.Screenshot and
-// Bridge.Screenshot both ask Page.captureScreenshot for jpeg.
 func solidJPEG(t *testing.T, width, height int, base color.RGBA, patch image.Rectangle, patchColor color.RGBA) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
@@ -495,14 +477,6 @@ func solidJPEG(t *testing.T, width, height int, base color.RGBA, patch image.Rec
 	return buf.Bytes()
 }
 
-// NormalizePNG's own behaviour: a JPEG capture becomes a PNG that still gates.
-//
-// This calls NormalizePNG directly, so it says nothing about whether anything in
-// production does. The call site is pinned separately, on the bytes the tool
-// writes to the store, by internal/mcp
-// TestBaselineToolStoresLosslessPNGWhateverTheTransportCaptured — the
-// comparison path decodes JPEG happily, so dropping the production call breaks
-// only the file on disk.
 func TestNormalizePNGTurnsABrowserCaptureIntoAPNGThatStillGates(t *testing.T) {
 	store := newBaselineStore(t)
 	key := Key{RecipeDigest: fixtureDigest, StepIndex: 0, Environment: fixtureEnvironment()}
@@ -523,7 +497,6 @@ func TestNormalizePNGTurnsABrowserCaptureIntoAPNGThatStillGates(t *testing.T) {
 		t.Fatalf("record = %+v, want %q", recorded, StatusRecorded)
 	}
 
-	// The same page captured again produces the same bytes, so the gate passes.
 	again, err := NormalizePNG(solidJPEG(t, 40, 20, pageWhite, image.Rectangle{}, pageWhite))
 	if err != nil {
 		t.Fatalf("NormalizePNG: %v", err)
@@ -536,7 +509,6 @@ func TestNormalizePNGTurnsABrowserCaptureIntoAPNGThatStillGates(t *testing.T) {
 		t.Fatalf("unchanged page = %+v, want a passing %q", matched, StatusMatch)
 	}
 
-	// A real change still fails, so the normalization did not flatten the gate.
 	changed, err := NormalizePNG(solidJPEG(t, 40, 20, pageWhite, image.Rect(0, 0, 20, 10), brandBlue))
 	if err != nil {
 		t.Fatalf("NormalizePNG: %v", err)
@@ -549,7 +521,6 @@ func TestNormalizePNGTurnsABrowserCaptureIntoAPNGThatStillGates(t *testing.T) {
 		t.Fatalf("restyled page = %+v, want a failing %q", failed, StatusDiff)
 	}
 
-	// The file on disk is what its name says it is.
 	stored, found, err := store.Load(key)
 	if err != nil || !found {
 		t.Fatalf("load: (%v, %v)", found, err)
@@ -559,9 +530,6 @@ func TestNormalizePNGTurnsABrowserCaptureIntoAPNGThatStillGates(t *testing.T) {
 	}
 }
 
-// EnvironmentsFor is the one Store method a caller reaches without a Key, and
-// the digest it takes becomes a directory name. Anything that is not the pinned
-// 64-hex digest is either a typo or a traversal out of the store root.
 func TestStoreRefusesADigestThatIsNotAPinnedDigest(t *testing.T) {
 	store := newBaselineStore(t)
 	outside := filepath.Join(filepath.Dir(store.Root()), "secret", "step-0", "env")
@@ -594,17 +562,11 @@ func TestStoreRefusesADigestThatIsNotAPinnedDigest(t *testing.T) {
 		})
 	}
 
-	// The valid shape still works, so the guard is not simply refusing
-	// everything.
 	if _, err := store.EnvironmentsFor(strings.ToUpper(fixtureDigest), 0); err != nil {
 		t.Fatalf("EnvironmentsFor with a valid digest: %v", err)
 	}
 }
 
-// A symlinked root defeats a lexical ancestor walk: the check has to run over
-// where the directory really lands, or --baseline-root /tmp/bl pointed three
-// levels inside a working tree is accepted and the tool description's "cannot
-// end up committed" is false.
 func TestStoreRefusesARootSymlinkedIntoARepository(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation needs a privilege this test does not assume on windows")
@@ -627,8 +589,6 @@ func TestStoreRefusesARootSymlinkedIntoARepository(t *testing.T) {
 		t.Fatalf("NewStore through a symlink into a checkout = %v, want ErrRootInsideRepository", err)
 	}
 
-	// A link whose parent is the repository counts too: the root itself need
-	// not exist yet, so the check resolves the deepest ancestor that does.
 	parentLink := filepath.Join(elsewhere, "parent")
 	if err := os.Symlink(filepath.Join(repo, "nested"), parentLink); err != nil {
 		t.Skipf("symlinks unavailable here: %v", err)
@@ -638,9 +598,6 @@ func TestStoreRefusesARootSymlinkedIntoARepository(t *testing.T) {
 	}
 }
 
-// A baseline holds a screenshot of a signed-in page. A root any local account
-// can walk is refused rather than silently tightened, exactly as
-// internal/sessionstate treats its own root.
 func TestStoreRefusesAWorldReachableRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "baselines")
 	if err := os.MkdirAll(root, 0o777); err != nil {
@@ -661,15 +618,10 @@ func TestStoreRefusesAWorldReachableRoot(t *testing.T) {
 	}
 }
 
-// An ignore region the size of the capture turns the visual half into a no-op.
-// Reporting that as a pass is the worst outcome available: unionRegions keeps a
-// region recorded with the baseline for every later check, so nothing would ever
-// say the pixel comparison stopped looking.
 func TestAnIgnoreRegionCoveringEverythingIsNotAPass(t *testing.T) {
 	store := newBaselineStore(t)
 	key := Key{RecipeDigest: fixtureDigest, StepIndex: 0, Environment: fixtureEnvironment()}
-	// The whole CSS viewport, which is what a caller writes down: the capture
-	// covering it is 40x20 image pixels.
+
 	everything := []IgnoreRegion{{Name: "everything", X: 0, Y: 0, Width: 1280, Height: 800}}
 
 	if _, err := Check(store, CheckOptions{
@@ -682,7 +634,6 @@ func TestAnIgnoreRegionCoveringEverythingIsNotAPass(t *testing.T) {
 		t.Fatalf("record: %v", err)
 	}
 
-	// The region is now recorded with the baseline, so this check never names it.
 	result, err := Check(store, CheckOptions{
 		Key:        key,
 		Screenshot: solidPNG(t, 40, 20, brandBlue, image.Rectangle{}, brandBlue),
@@ -707,9 +658,6 @@ func TestAnIgnoreRegionCoveringEverythingIsNotAPass(t *testing.T) {
 	}
 }
 
-// A resized capture is not compared at all, so counting the pixels that moved
-// produces "0 of 0 compared pixels moved" — true about nothing, and printed
-// over the sentence that says what happened.
 func TestAResizedCaptureReportsTheResizeRatherThanAPixelCount(t *testing.T) {
 	store := newBaselineStore(t)
 	key := Key{RecipeDigest: fixtureDigest, StepIndex: 0, Environment: fixtureEnvironment()}
@@ -743,10 +691,6 @@ func TestAResizedCaptureReportsTheResizeRatherThanAPixelCount(t *testing.T) {
 	}
 }
 
-// EnvironmentExpression only ever runs in a browser, so that is the only place
-// it can be checked. A user-agent regex that stopped matching would fall back to
-// a UA prefix, which still fingerprints — the failure is quiet, which is the
-// argument for pinning it.
 func TestEnvironmentExpressionMeasuresARealBrowser(t *testing.T) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
@@ -788,9 +732,7 @@ func TestEnvironmentExpressionMeasuresARealBrowser(t *testing.T) {
 	if err := environment.Validate(); err != nil {
 		t.Fatalf("a real browser produced an incomplete fingerprint (%+v): %v", environment, err)
 	}
-	// The point of the regex is a browser BUILD, not a user-agent prefix: the
-	// fallback still fingerprints, so a silent fall-through would key baselines
-	// on a 120-character string nobody notices is wrong.
+
 	build := regexp.MustCompile(`^(?:Chrome|Chromium|Edg|Firefox|Version)/[0-9][0-9.]*$`)
 	if !build.MatchString(environment.BrowserBuild) {
 		t.Fatalf("browser_build = %q, want a Name/version pair rather than a user-agent prefix", environment.BrowserBuild)

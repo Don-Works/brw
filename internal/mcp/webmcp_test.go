@@ -280,6 +280,7 @@ func TestPageToolTimeoutClamping(t *testing.T) {
 		{name: "absent uses the default", ms: 0, want: snapshot.DefaultPageToolTimeout.String()},
 		{name: "negative is refused", ms: -1, wantErr: true},
 		{name: "over the cap clamps", ms: 60 * 60 * 1000, want: snapshot.MaxPageToolTimeout.String()},
+		{name: "maximum integer clamps before duration conversion", ms: int(^uint(0) >> 1), want: snapshot.MaxPageToolTimeout.String()},
 		{name: "in range passes through", ms: 1500, want: "1.5s"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

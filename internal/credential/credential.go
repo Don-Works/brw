@@ -49,8 +49,6 @@ func Reference(value string) (string, bool) {
 	return name, true
 }
 
-// HasSchemePrefix reports whether value contains the credential scheme anywhere.
-func HasSchemePrefix(value string) bool { return strings.Contains(value, Scheme) }
 
 func ValidateReference(name string) error {
 	if name == "" {
@@ -91,7 +89,7 @@ func (s *Secret) Wipe() {
 	s.value = nil
 }
 
-// The rendering paths below all redact.
+// String renders the credential placeholder.
 func (s Secret) String() string   { return Placeholder }
 func (s Secret) GoString() string { return Placeholder }
 

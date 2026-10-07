@@ -1,11 +1,13 @@
 package mcp
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -114,38 +116,59 @@ func (s *Server) recordMCPUsage(ctx context.Context, operation, scope, represent
 	}
 }
 
-func mcpUsageOperationOutcome(operation string, result any, rpcErr *rpcError) (outcome, errorClass, fingerprint string) {
-	outcome, errorClass, fingerprint = mcpUsageOutcome(result, rpcErr)
-	if outcome != "ok" {
-		return
-	}
+func semanticToolFailure(operation string, result any) (failed, cancelled bool, message string) {
 	payload, ok := result.(map[string]any)
 	if !ok {
 		return
 	}
-	var failed, cancelled bool
-	var message string
 	switch operation {
 	case "brw_batch":
 		if batch, ok := payload["structuredContent"].(browser.BatchResult); ok {
-			failed, cancelled, message = !batch.OK, batch.Cancelled, batch.Error
+			return !batch.OK, batch.Cancelled, batch.Error
 		}
 	case "brw_plan":
 		if plan, ok := payload["structuredContent"].(browser.PlanResult); ok {
-			failed, cancelled, message = !plan.OK, plan.Cancelled, plan.Error
+			return !plan.OK, plan.Cancelled, plan.Error
+		}
+	case "brw_find":
+		if found, ok := payload["structuredContent"].(browser.FindActResult); ok && found.Action != "" {
+			return !found.Result.OK, false, found.Result.Message
+		}
+	default:
+		if !slices.Contains(observeToolNames(), operation) && operation != "brw_upload_file" {
+			return
+		}
+		switch action := payload["structuredContent"].(type) {
+		case browser.ActionResult:
+			return !action.OK, false, action.Message
+		case navigationWithSurfaces:
+			if operation == "brw_navigate" || operation == "brw_navigate_to" {
+				return !action.OK, false, action.Message
+			}
 		}
 	}
-	if !failed {
-		return
+	return
+}
+
+func withSemanticFailure(operation string, result any) any {
+	if failed, cancelled, _ := semanticToolFailure(operation, result); failed && !cancelled {
+		result.(map[string]any)["isError"] = true
 	}
-	if message == "" {
-		message = "sequence failed"
+	return result
+}
+
+func mcpUsageOperationOutcome(operation string, result any, rpcErr *rpcError) (outcome, errorClass, fingerprint string) {
+	if rpcErr == nil {
+		if failed, cancelled, message := semanticToolFailure(operation, result); failed {
+			message = cmp.Or(message, "action failed")
+			errorClass = cmp.Or(usagelog.SafeErrorClass(usagelog.ClassifyError(errors.New(message))), "tool")
+			if cancelled {
+				errorClass = "canceled"
+			}
+			return "error", errorClass, usagelog.Fingerprint(message)
+		}
 	}
-	errorClass = usagelog.ClassifyError(errors.New(message))
-	if cancelled {
-		errorClass = "canceled"
-	}
-	return "error", errorClass, usagelog.Fingerprint(message)
+	return mcpUsageOutcome(result, rpcErr)
 }
 
 func mcpUsageOutcome(result any, rpcErr *rpcError) (outcome, errorClass, fingerprint string) {
@@ -162,7 +185,7 @@ func mcpUsageOutcome(result any, rpcErr *rpcError) (outcome, errorClass, fingerp
 	}
 	errorClass = "tool"
 	if structured, ok := m["structuredContent"].(map[string]any); ok {
-		if code, ok := structured["error"].(string); ok && usagelog.SafeID(code) != "" {
+		if code, ok := structured["error"].(string); ok && usagelog.SafeErrorClass(code) != "" {
 			errorClass = code
 		}
 	}

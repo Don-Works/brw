@@ -54,11 +54,10 @@ func pageToolTimeout(ms int, fallback time.Duration) (time.Duration, error) {
 	if ms == 0 {
 		return fallback, nil
 	}
-	timeout := time.Duration(ms) * time.Millisecond
-	if timeout > snapshot.MaxPageToolTimeout {
+	if ms > int(snapshot.MaxPageToolTimeout/time.Millisecond) {
 		return snapshot.MaxPageToolTimeout, nil
 	}
-	return timeout, nil
+	return time.Duration(ms) * time.Millisecond, nil
 }
 
 func (s *Server) callPageTool(ctx context.Context, args json.RawMessage) (any, *rpcError) {

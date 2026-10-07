@@ -21,8 +21,7 @@ type Record struct {
 	Tree          snapshot.AriaTree `json:"aria_tree"`
 	IgnoreRegions []IgnoreRegion    `json:"ignore_regions,omitempty"`
 	CreatedAt     time.Time         `json:"created_at"`
-	// Screenshot lives beside the record as a PNG rather than base64 inside it,
-	// so a baseline directory is inspectable with an image viewer.
+	// Screenshot lives beside the record as a PNG rather than base64 inside it, so a baseline directory is inspectable with an image viewer.
 	Screenshot []byte `json:"-"`
 }
 
@@ -32,10 +31,7 @@ const (
 	gitignoreFile  = ".gitignore"
 )
 
-// ErrRootInsideRepository refuses a baseline root that lives in a Git working
-// tree. A baseline of a signed-in page is a screenshot of private content, and
-// the failure mode is not subtle: someone runs a baseline update, `git add -A`
-// picks up the PNGs, and a private page is in a public history forever.
+// ErrRootInsideRepository refuses a baseline root that lives in a Git working tree.
 var ErrRootInsideRepository = errors.New("baseline root is inside a Git working tree; baselines are private captures and must not be storable in a checkout — point --baseline-root at a directory outside any repository")
 
 type Store struct {
@@ -43,8 +39,7 @@ type Store struct {
 	mu   sync.Mutex
 }
 
-// DefaultRoot puts baselines in the browser host's cache directory, outside any
-// checkout by construction.
+// DefaultRoot puts baselines in the browser host's cache directory, outside any checkout by construction.
 func DefaultRoot() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
@@ -75,16 +70,11 @@ func NewStore(root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A baseline holds a screenshot of a signed-in page and an ARIA tree whose
-	// accessible names carry whatever the page rendered. A root any local
-	// account can walk is refused rather than silently tightened under the
-	// operator, the same way internal/sessionstate treats its own root.
+
 	if info.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("baseline root %s is reachable beyond its owner (mode %04o); chmod 700 it", root, info.Mode().Perm())
 	}
-	// Belt and braces for the case the refusal above cannot see: a repository
-	// initialised around the root later. An ignore-everything file means a
-	// `git add -A` in that repository still picks up nothing.
+
 	if err := writeIfAbsent(filepath.Join(root, gitignoreFile), []byte("*\n")); err != nil {
 		return nil, err
 	}
@@ -93,14 +83,6 @@ func NewStore(root string) (*Store, error) {
 
 func (s *Store) Root() string { return s.root }
 
-// rejectRootInsideRepository walks up from the root looking for a .git entry.
-// It checks the root itself and every ancestor, because a baseline written
-// three directories below a repository root is just as committable.
-//
-// The walk runs over the REAL path as well as the one the operator typed: a
-// lexical walk of /tmp/bl finds no .git above /tmp even when /tmp/bl is a
-// symlink into a working tree three levels down, which is the whole check
-// defeated by one ln -s.
 func rejectRootInsideRepository(root string) error {
 	clean := filepath.Clean(root)
 	candidates := []string{clean}
@@ -123,9 +105,6 @@ func rejectRootInsideRepository(root string) error {
 	return nil
 }
 
-// resolveThroughSymlinks returns where a path really lands. The root need not
-// exist yet, so the deepest ancestor that does is resolved and the missing tail
-// re-appended: a link anywhere above the root is still followed.
 func resolveThroughSymlinks(path string) string {
 	clean := filepath.Clean(path)
 	current, tail := clean, ""
@@ -159,10 +138,6 @@ func (s *Store) dirFor(key Key) string {
 	return filepath.Join(s.root, key.digest(), fmt.Sprintf("step-%d", key.StepIndex), key.Environment.Fingerprint())
 }
 
-// scopeDir is the only place a caller-supplied digest becomes a path, so the
-// validation lives here rather than in each entry point: an unchecked digest is
-// a directory traversal ("../..") out of the store root, and EnvironmentsFor is
-// reachable from brw_baseline without a Key to validate.
 func (s *Store) scopeDir(digest string, step int) (string, error) {
 	normalized, err := NormalizeRecipeDigest(digest)
 	if err != nil {
@@ -207,8 +182,7 @@ func (s *Store) loadLocked(dir string) (Record, bool, error) {
 	return record, true, nil
 }
 
-// Save writes a baseline. It is called only from an explicit update: nothing in
-// Check writes without the caller having asked for it.
+// Save writes a baseline.
 func (s *Store) Save(record Record) error {
 	if err := record.Key.Validate(); err != nil {
 		return err
@@ -248,9 +222,7 @@ func writeAtomic(path string, data []byte) error {
 	return nil
 }
 
-// EnvironmentsFor lists the environments a baseline already exists under for
-// this recipe step. It is what turns "no baseline for this key" into "you have
-// a baseline, but it was captured at a different device pixel ratio".
+// EnvironmentsFor lists the environments a baseline already exists under for this recipe step.
 func (s *Store) EnvironmentsFor(digest string, step int) ([]Environment, error) {
 	scope, err := s.scopeDir(digest, step)
 	if err != nil {
@@ -280,8 +252,7 @@ func (s *Store) EnvironmentsFor(digest string, step int) ([]Environment, error) 
 	return out, nil
 }
 
-// Delete removes one baseline, so a key that should no longer be gated stops
-// failing runs.
+// Delete removes one baseline, so a key that should no longer be gated stops failing runs.
 func (s *Store) Delete(key Key) error {
 	if err := key.Validate(); err != nil {
 		return err

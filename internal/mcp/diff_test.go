@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/Don-Works/brw/internal/snapshot"
@@ -8,6 +9,42 @@ import (
 
 func snap(url, title string, elements ...snapshot.Element) snapshot.PageSnapshot {
 	return snapshot.PageSnapshot{URL: url, Title: title, Elements: elements}
+}
+
+func TestDiffCapsSelectTheSameOrderedChanges(t *testing.T) {
+	elements := make([]snapshot.Element, maxDiffEntries*3)
+	for i := range elements {
+		elements[i] = el(fmt.Sprintf("e%03d", i), "button", "before")
+	}
+	for _, kind := range []string{"added", "removed", "updated"} {
+		t.Run(kind, func(t *testing.T) {
+			before, after := snap("https://x/", "X"), snap("https://x/", "X")
+			if kind != "added" {
+				before.Elements = elements
+			}
+			if kind != "removed" {
+				after.Elements = append([]snapshot.Element(nil), elements...)
+				for i := range after.Elements {
+					after.Elements[i].Name = "after"
+				}
+			}
+			got := diffSnapshots(baselineFrom(before), after, "")
+			changes := got.Added
+			if kind == "removed" {
+				changes = got.Removed
+			} else if kind == "updated" {
+				changes = got.Updated
+			}
+			if len(changes) != maxDiffEntries || !got.Truncated {
+				t.Fatalf("unbounded or unmarked result: %+v", got)
+			}
+			for i, change := range changes {
+				if want := fmt.Sprintf("e%03d", i); change.Ref != want {
+					t.Fatalf("change %d = %s, want deterministic prefix %s", i, change.Ref, want)
+				}
+			}
+		})
+	}
 }
 
 func el(ref, role, name string) snapshot.Element {
